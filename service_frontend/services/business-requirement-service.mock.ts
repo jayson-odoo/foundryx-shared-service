@@ -57,6 +57,7 @@ const BLOCKED_REASON = 'Missing: Success metric, Constraints';
 function noBuild(over: Partial<BuildInfo> = {}): BuildInfo {
   return {
     canSend: false,
+    sendEdgeAvailable: true,
     blockers: [BLOCKED_REASON],
     repo: MOCK_REPO,
     issueUrl: null,
@@ -109,6 +110,7 @@ function sentBuild(): BuildInfo {
   const last = SENT_EVENTS[SENT_EVENTS.length - 1];
   return {
     canSend: false,
+    sendEdgeAvailable: false,
     blockers: [],
     repo: MOCK_REPO,
     issueUrl: `https://github.com/${MOCK_REPO}/issues/1402`,
@@ -294,6 +296,7 @@ export const mockBusinessRequirementService: BusinessRequirementService = {
     br.build = {
       ...br.build,
       canSend: false,
+      sendEdgeAvailable: false,
       state: 'sent',
       issueNumber: number,
       issueUrl: `https://github.com/${MOCK_REPO}/issues/${number}`,

@@ -21,6 +21,8 @@ const PROMOTE_EDGE_ID = 'br-tr-promote';
  * path into `sent_to_build`) - never offered as a status move. */
 const SEND_EDGE_PREFIX = 'br-tr-send-to-build';
 /** "Back to ready" on a sent BR rides `send_to_build`, not `.manage`. */
+/** Fired only by the crew write-back (merged/released), never from the menu. */
+const BUILD_DELIVERED_EDGE_ID = 'br-tr-build-delivered';
 const BUILD_BACK_EDGE_ID = 'br-tr-build-back';
 
 export interface UseBrActionsHandlers {
@@ -76,7 +78,7 @@ export function useBrActions(
     if (!current) return [];
 
     const edges = graph.transitions
-      .filter((t) => t.fromStatusId === current.id && !t.id.startsWith(SEND_EDGE_PREFIX))
+      .filter((t) => t.fromStatusId === current.id && !t.id.startsWith(SEND_EDGE_PREFIX) && t.id !== BUILD_DELIVERED_EDGE_ID)
       .sort((a, b) => a.sortOrder - b.sortOrder);
 
     return edges.map((edge) => {

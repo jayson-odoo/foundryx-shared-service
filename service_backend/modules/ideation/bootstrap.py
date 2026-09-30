@@ -103,6 +103,10 @@ def register_engine_entities() -> None:
             migrate_records=br_migrate_records,
             record_label_attr="title",
             required_flags=["is_initial", "is_archived"],
+            # Platform-owned: the promote gate and the Send-to-build edges are
+            # edge-id contracts that only hold on the platform tier, so tenants
+            # never fork the BR status set (operators edit it).
+            platform_owned=True,
         )
     )
     # Conversational-Intake engine (D18, AC-A-13): register the single ``ideation``
@@ -180,9 +184,12 @@ def install(engine: Engine, db: Session) -> None:
     ``install_tenant`` when a tenant actually installs the module.
     """
     create_schema_and_tables(engine)
-    PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
-    # Existing tenants: every role holding `.promote` gets `.send_to_build`.
-    sweep_send_to_build_grants(db)
+    created_permissions = PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    # Existing tenants: every role holding `.promote` gets `.send_to_build` -
+    # ONE-SHOT, only when the permission row is created by this very sync (install
+    # runs at every boot; a later deliberate removal must be respected).
+    if SEND_TO_BUILD_PERMISSION in created_permissions:
+        sweep_send_to_build_grants(db)
     # Idea status set + transition graph as platform defaults (AC-A-10, D-A3).
     # Two-tier: every tenant uses these until it forks the set. Idempotent.
     from .services.br_templates import seed_br_template

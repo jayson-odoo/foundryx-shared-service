@@ -147,8 +147,10 @@ export function ProductFormDialog({
         const domainChanged = isEdit ? trimmed !== (initialDomainBase ?? '') : trimmed.length > 0;
         const repoChanged = isEdit ? repo !== initialBuildRepo : repo.length > 0;
         if ((domainChanged && trimmed.length > 0) || repoChanged) {
+          // productDomainBase is sent only when set: a product with just a build
+          // repository must not be forced to carry a domain base.
           await productService.setDelivery(saved.id, {
-            productDomainBase: trimmed,
+            ...(trimmed.length > 0 ? { productDomainBase: trimmed } : {}),
             buildRepo: repo.length > 0 ? repo : null,
           });
         }

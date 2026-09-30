@@ -145,3 +145,50 @@ describe('useBrBuild.confirmSend (AC-STB-08)', () => {
     expect(result.current.pending).toBe(false);
   });
 });
+
+describe('useBrBuild fix round (R4 re-send, R7 no send edge)', () => {
+  it('R4 AC-STB-07 a sent build back in ready with canSend shows the CTA and keeps the issue link in the note', async () => {
+    sendToBuild.mockResolvedValue(brWithBuild(buildInfo({ state: 'sent' })));
+    const { result } = renderHook(() =>
+      useBrBuild(
+        brWithBuild(
+          buildInfo({
+            state: 'sent',
+            canSend: true,
+            issueNumber: 1402,
+            issueUrl: 'https://github.com/jayson-odoo/sorento-crm/issues/1402',
+            sentAt: '2026-09-30T08:00:00Z',
+            sentBy: { id: 'u1', name: 'Aisha' },
+          }),
+          { status: 'ready' },
+        ),
+        { onChanged: vi.fn() },
+      ),
+    );
+    expect(result.current.primaryAction?.label).toBe('Send to build');
+    expect(result.current.primaryAction?.disabled).toBeFalsy();
+    expect(result.current.primaryAction?.href).toBeUndefined();
+    expect(JSON.stringify(result.current.actionsNote)).toContain('sorento-crm #1402');
+    await act(async () => {
+      await result.current.confirmSend();
+    });
+    expect(sendToBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['in_fr', 'delivered', 'archived'])(
+    'R7 AC-STB-07 %s with no send edge: no primaryAction and no note (plain Edit returns)',
+    (status) => {
+      const { result } = renderHook(() =>
+        useBrBuild(
+          brWithBuild(
+            buildInfo({ state: 'none', canSend: false, sendEdgeAvailable: false, blockers: [] }),
+            { status },
+          ),
+          { onChanged: vi.fn() },
+        ),
+      );
+      expect(result.current.primaryAction).toBeUndefined();
+      expect(result.current.actionsNote).toBeUndefined();
+    },
+  );
+});

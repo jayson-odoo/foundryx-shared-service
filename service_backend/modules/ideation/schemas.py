@@ -146,14 +146,18 @@ class DeliveryConfigOut(ApiModel):
     updatedAt: Optional[datetime] = None
 
 
-BUILD_REPO_PATTERN = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+BUILD_REPO_PATTERN = (
+    r"^(?!\.{1,2}/)(?!-)[A-Za-z0-9_.-]{1,100}/(?!\.{1,2}$)(?!-)[A-Za-z0-9_.-]{1,100}$"
+)
 
 
 class DeliveryConfigIn(ApiModel):
-    productDomainBase: str
+    # Omitted = left untouched (a product may carry only a build repository).
+    productDomainBase: Optional[str] = None
     # ``owner/repo`` for the BR Send-to-build issue; null clears it. Omitted =
     # left untouched (see ``DeliveryService.set``).
-    buildRepo: Optional[str] = Field(default=None, pattern=BUILD_REPO_PATTERN)
+    # Shape-checked in ``DeliveryService.set`` (422 with ``fieldErrors``).
+    buildRepo: Optional[str] = None
 
 
 class VoteIn(ApiModel):
@@ -294,6 +298,9 @@ class BuildOut(ApiModel):
     until a ``br_builds`` row exists."""
 
     canSend: bool
+    # A ``br-tr-send-to-build-*`` edge leaves the BR's current status (false in
+    # FR, delivered, archived: the header keeps the plain Edit primary).
+    sendEdgeAvailable: bool = False
     blockers: List[str] = []
     repo: Optional[str] = None
     issueUrl: Optional[str] = None
@@ -314,7 +321,7 @@ class BuildEventIn(ApiModel):
     message: str = Field(min_length=1, max_length=2000)
     prUrl: Optional[str] = Field(default=None, pattern=r"^https?://\S+$", max_length=2000)
     handtestUrl: Optional[str] = Field(default=None, pattern=r"^https?://\S+$", max_length=2000)
-    status: Literal["in_progress", "merged", "released", "failed", "cancelled"] = "in_progress"
+    status: Optional[Literal["in_progress", "merged", "released", "failed", "cancelled"]] = None
 
 
 class BuildKeyMintIn(ApiModel):

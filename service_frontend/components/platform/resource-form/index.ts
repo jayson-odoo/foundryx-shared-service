@@ -4,6 +4,7 @@ export { FormRow, RequiredMark } from './form-row';
 export type {
   ResourceFormConfig,
   FormTab,
+  FormActionsNote,
   FormPrimaryAction,
   BreadcrumbStep,
   RecordNavConfig,

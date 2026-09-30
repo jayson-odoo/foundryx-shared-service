@@ -479,3 +479,108 @@ def test_ac_stb_22_merged_on_an_archived_br_stores_and_reports_not_moved(
     ok = _post(ideation_client, control, key, {"stage": "Merged", "message": "m", "status": "merged"})
     assert ok.status_code == 201 and ok.json()["statusMoved"] is True
     assert br_status_key(ideation_client, h, control) == "delivered"
+
+
+# ── SEC F1: a key of a suspended tenant / inactive module is refused ─────────
+
+
+def _assert_service_not_enabled(res):
+    assert res.status_code == 403, res.text
+    assert res.json()["error"]["code"] == "service_not_enabled"
+
+
+def _five_bad_then_throttled(client, br_id):
+    """A recorded failure would shorten this run: 5 bad keys must all 401 and
+    the 6th must 429 (default policy), i.e. the 403 above consumed no budget."""
+    bad = bearer("fxb_live_" + "z" * 32)
+    for _ in range(5):
+        r = client.post(f"/ideation/build/{br_id}/events", headers=bad, json=GOOD)
+        assert r.status_code == 401, r.text
+    assert client.post(f"/ideation/build/{br_id}/events", headers=bad, json=GOOD).status_code == 429
+
+
+def test_sec_f1_ac_stb_16_suspended_tenant_key_403(ideation_client, ideation_session_factory):
+    from app.models.tenant import Tenant
+
+    h = _auth(ideation_client)
+    _pid, br_id, key = _sent(ideation_client, h)
+    assert _post(ideation_client, br_id, key).status_code == 201  # control: live tenant works
+    db = ideation_session_factory()
+    try:
+        tenant = db.get(Tenant, DEFAULT_TENANT_ID)
+        tenant.status.blocks_access = True
+        db.commit()
+        assert tenant.signin_allowed is False
+    finally:
+        db.close()
+
+    res = _post(ideation_client, br_id, key)
+    _assert_service_not_enabled(res)
+    assert len(_event_rows(ideation_client._factory, br_id)) == 2  # sent + control only
+    _five_bad_then_throttled(ideation_client, br_id)
+
+
+def test_sec_f1_ac_stb_16_archived_tenant_key_403(ideation_client, ideation_session_factory):
+    from app.models.tenant import Tenant
+
+    h = _auth(ideation_client)
+    _pid, br_id, key = _sent(ideation_client, h)
+    db = ideation_session_factory()
+    try:
+        tenant = db.get(Tenant, DEFAULT_TENANT_ID)
+        tenant.status.is_archived = True
+        db.commit()
+    finally:
+        db.close()
+    _assert_service_not_enabled(_post(ideation_client, br_id, key))
+
+
+def test_sec_f1_ac_stb_16_inactive_module_key_403(ideation_client, ideation_session_factory):
+    from app.services.app_store_service import AppStoreService
+
+    h = _auth(ideation_client)
+    _pid, br_id, key = _sent(ideation_client, h)
+    assert _post(ideation_client, br_id, key).status_code == 201  # control
+    db = ideation_session_factory()
+    try:
+        AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "ideation")
+        db.commit()
+    finally:
+        db.close()
+
+    _assert_service_not_enabled(_post(ideation_client, br_id, key))
+    assert len(_event_rows(ideation_client._factory, br_id)) == 2
+    _five_bad_then_throttled(ideation_client, br_id)
+
+
+def test_sec_f1_ac_stb_16_refused_key_does_not_stamp_last_used(
+    ideation_client, ideation_session_factory
+):
+    """Mirrors the pull gateway: a key refused for service-not-enabled must not
+    record usage it never got."""
+    from app.services.app_store_service import AppStoreService
+    from modules.ideation.models import BrBuildKey
+
+    h = _auth(ideation_client)
+    _pid, br_id, key = _sent(ideation_client, h)
+    db = ideation_session_factory()
+    try:
+        AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "ideation")
+        db.commit()
+        _assert_service_not_enabled(_post(ideation_client, br_id, key))
+        db.expire_all()
+        assert all(k.last_used_at is None for k in db.query(BrBuildKey).all())
+    finally:
+        db.close()
+
+
+# ── R15: an explicit null status defaults like an omitted one ────────────────
+
+
+def test_r15_ac_stb_16_null_status_is_in_progress(ideation_client):
+    h = _auth(ideation_client)
+    _pid, br_id, key = _sent(ideation_client, h)
+    res = _post(ideation_client, br_id, key, {"stage": "x", "message": "y", "status": None})
+    assert res.status_code == 201, res.text
+    assert res.json()["status"] == "in_progress"
+    assert _event_rows(ideation_client._factory, br_id)[-1][2] == "in_progress"

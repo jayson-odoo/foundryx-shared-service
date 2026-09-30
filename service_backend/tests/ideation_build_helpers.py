@@ -28,6 +28,14 @@ from tests.test_ideation_br import (  # noqa: F401  (re-exported fixtures/helper
     ideation_client,
 )
 
+# Send readiness needs EVERY input field of the stamped template non-empty
+# (required or not), so the "sendable" fixture fills all six seeded fields.
+ALL_ANSWERS = {
+    **_FULL_ANSWERS,
+    "stakeholders": "Customer support.",
+    "scope": "Order export only.",
+    "constraints": "Ship this quarter.",
+}
 REPO = "acme-org/sorento-crm"
 GITHUB_TOKEN = "ghp_test"
 OTHER_TENANT_ID = "tenant-x-build"
@@ -51,7 +59,15 @@ class FakeGitHub:
         search_items: Optional[List[Dict[str, Any]]] = None,
         connect_error: bool = False,
         repo_private: Optional[bool] = True,
+        issue_timeout: bool = False,
+        label_lookup_status: Optional[int] = None,
+        label_create_status: int = 201,
     ) -> None:
+        # R3: ``issue_timeout`` = a transport timeout ONLY on the issue create;
+        # ``label_lookup_status`` / ``label_create_status`` fail the label step.
+        self.issue_timeout = issue_timeout
+        self.label_lookup_status = label_lookup_status
+        self.label_create_status = label_create_status
         # ``repo_private`` answers ``GET /repos/{r}`` (SEC F6 visibility check).
         self.repo_private = repo_private
         self.label_exists = label_exists
@@ -86,17 +102,23 @@ class FakeGitHub:
                 200, json={"full_name": REPO, "private": self.repo_private}
             )
         if method == "GET" and path == f"{repo_prefix}/labels/crew-intake":
+            if self.label_lookup_status is not None:
+                return httpx.Response(self.label_lookup_status, json={"message": "x"})
             if self.label_exists:
                 return httpx.Response(200, json={"name": "crew-intake"})
             return httpx.Response(404, json={"message": "Not Found"})
         if method == "POST" and path == f"{repo_prefix}/labels":
             payload = json.loads(request.content)
             self.label_posts.append(payload)
+            if self.label_create_status != 201:
+                return httpx.Response(self.label_create_status, json={"message": "x"})
             self.label_exists = True
             return httpx.Response(201, json={"name": payload.get("name")})
         if method == "POST" and path == f"{repo_prefix}/issues":
             payload = json.loads(request.content)
             self.issue_posts.append(payload)
+            if self.issue_timeout:
+                raise httpx.ReadTimeout("timed out", request=request)
             if self.issue_status != 201:
                 return httpx.Response(
                     self.issue_status, json={"message": "nope"}
@@ -176,7 +198,7 @@ def make_br(client, h, product_id: str, *, title="Order export", answers=None) -
         json={
             "productId": product_id,
             "title": title,
-            "answers": _FULL_ANSWERS if answers is None else answers,
+            "answers": ALL_ANSWERS if answers is None else answers,
         },
     )
     assert res.status_code == 201, res.text
@@ -243,6 +265,26 @@ def ensure_other_tenant(factory) -> str:
                 name="Other Build Co",
                 slug="other-build-co",
                 status_id=default_tenant.status_id,
+            )
+        )
+        db.flush()
+        # Ideation is ACTIVE for the other tenant too (a key of a tenant without
+        # the module is refused 403 service_not_enabled, SEC F1) so the
+        # cross-tenant tests keep exercising the 404-not-in-tenant path.
+        from app.models.module import Module, TenantModule
+
+        module = db.query(Module).filter(Module.name == "ideation").first()
+        mine = (
+            db.query(TenantModule)
+            .filter(TenantModule.tenant_id == DEFAULT_TENANT_ID, TenantModule.module_id == module.id)
+            .first()
+        )
+        db.add(
+            TenantModule(
+                tenant_id=OTHER_TENANT_ID,
+                module_id=module.id,
+                status="ACTIVE",
+                installed_version=mine.installed_version,
             )
         )
         db.commit()

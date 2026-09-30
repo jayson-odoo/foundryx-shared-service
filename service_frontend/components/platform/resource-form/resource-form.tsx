@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { isValidElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, ChevronLeft, ChevronRight, Info, Pencil } from 'lucide-react';
@@ -445,7 +445,28 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
             className="flex basis-full items-center gap-1.5 text-sm text-muted-foreground sm:justify-end"
           >
             <Info className="size-3.5 shrink-0" />
-            <span className="min-w-0">{actionsNote}</span>
+            <span className="min-w-0">
+              {typeof actionsNote === 'object' && actionsNote !== null && !isValidElement(actionsNote) && 'text' in actionsNote ? (
+                <>
+                  {actionsNote.text}
+                  {actionsNote.href && (
+                    <>
+                      {' '}
+                      <a
+                        href={actionsNote.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline"
+                      >
+                        {actionsNote.linkLabel ?? actionsNote.href}
+                      </a>
+                    </>
+                  )}
+                </>
+              ) : (
+                actionsNote
+              )}
+            </span>
           </p>
         )}
       </div>

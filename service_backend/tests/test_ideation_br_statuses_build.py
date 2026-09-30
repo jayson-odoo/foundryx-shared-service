@@ -368,3 +368,156 @@ def test_ac_stb_s1_br_build_keys_model_columns():
     ):
         assert name in cols, name
     assert BrBuildKey.__tablename__ == "br_build_keys"
+
+
+# ── R8 / R9: the generic move on the reserved edges ──────────────────────────
+
+
+def _move(client, h, br_id, status):
+    return client.post(
+        f"/ideation/business-requirements/{br_id}/status", headers=h, json={"status": status}
+    )
+
+
+def test_r8_ac_stb_13_back_to_ready_needs_send_to_build(ideation_client, ideation_session_factory):
+    from tests.ideation_build_helpers import insert_sent_br
+
+    _make_user(
+        ideation_session_factory,
+        "manageonly@example.com",
+        "Manage123!",
+        {"ideation.business_requirements.read", "ideation.business_requirements.manage"},
+    )
+    _make_user(
+        ideation_session_factory,
+        "managesend@example.com",
+        "Manage123!",
+        {
+            "ideation.business_requirements.read",
+            "ideation.business_requirements.manage",
+            SEND_PERM,
+        },
+    )
+    admin = _auth(ideation_client)
+    pid = _product(ideation_client, admin)
+    br_a = insert_sent_br(ideation_session_factory, product_id=pid)
+    br_b = insert_sent_br(ideation_session_factory, product_id=pid)
+
+    h = _auth(ideation_client, email="manageonly@example.com", password="Manage123!")
+    res = _move(ideation_client, h, br_a, "ready")
+    assert res.status_code == 403, res.text
+    assert br_status_key(ideation_client, admin, br_a) == "sent_to_build"
+
+    h2 = _auth(ideation_client, email="managesend@example.com", password="Manage123!")
+    ok = _move(ideation_client, h2, br_b, "ready")
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == "ready"
+
+
+def test_r9_ac_stb_13_generic_move_to_delivered_is_409_reserved_for_write_back(
+    ideation_client, ideation_session_factory
+):
+    from tests.ideation_build_helpers import insert_sent_br, mint_key_via_api
+
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    br_id = insert_sent_br(ideation_session_factory, product_id=pid)
+    res = _move(ideation_client, h, br_id, "delivered")
+    assert res.status_code == 409, res.text
+    assert br_status_key(ideation_client, h, br_id) == "sent_to_build"
+
+    # Control: the write-back path still delivers the same BR.
+    key = mint_key_via_api(ideation_client, h)["plaintext"]
+    ev = ideation_client.post(
+        f"/ideation/build/{br_id}/events",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"stage": "Merged", "message": "m", "status": "merged"},
+    )
+    assert ev.status_code == 201 and ev.json()["statusMoved"] is True
+    assert br_status_key(ideation_client, h, br_id) == "delivered"
+
+
+# ── R10: the grant sweep runs only when the permission is newly created ──────
+
+
+def test_r10_sync_reports_newly_created_permission_keys(ideation_session_factory):
+    """Pinned mechanism: ``PermissionRepository.sync`` RETURNS the list of keys
+    it newly created (``[]`` when every declared key already existed)."""
+    from app.repositories.permission_repository import PermissionRepository
+
+    rows = [
+        {
+            "resource": "zzmod.things",
+            "resource_label": "Things",
+            "action": "read",
+            "action_label": "Read",
+            "description": "d",
+        }
+    ]
+    db = ideation_session_factory()
+    try:
+        repo = PermissionRepository(db)
+        assert repo.sync("zzmod", rows) == ["zzmod.things.read"]
+        assert repo.sync("zzmod", rows) == []
+    finally:
+        db.close()
+
+
+def _promote_role(db, name):
+    return _role_with(db, name, ["ideation.business_requirements.promote"])
+
+
+def test_r10_install_does_not_regrant_a_deliberately_removed_send_to_build(
+    ideation_session_factory,
+):
+    from sqlalchemy import text
+
+    from app.models.permission import Permission
+    from modules.ideation.bootstrap import install, sweep_send_to_build_grants
+
+    db = ideation_session_factory()
+    try:
+        role_id = _promote_role(db, "PromoteThenRevoked")
+        sweep_send_to_build_grants(db)
+        db.commit()
+        assert SEND_PERM in _held(db, role_id)
+
+        # An Admin deliberately removes the grant.
+        perm_id = db.query(Permission).filter(Permission.key == SEND_PERM).one().id
+        db.execute(
+            text("DELETE FROM role_permissions WHERE role_id = :r AND permission_id = :p"),
+            {"r": role_id, "p": perm_id},
+        )
+        db.commit()
+        assert SEND_PERM not in _held(db, role_id)
+
+        # The next bootstrap (install runs at EVERY boot) must not undo it.
+        install(db.get_bind(), db)
+        db.commit()
+        assert SEND_PERM not in _held(db, role_id)
+    finally:
+        db.close()
+
+
+def test_r10_install_sweeps_when_the_permission_row_is_newly_created(ideation_session_factory):
+    """Control for the test above: when the permission row does not exist yet
+    (an existing deployment upgrading), install creates it AND sweeps."""
+    from sqlalchemy import text
+
+    from app.models.permission import Permission
+    from modules.ideation.bootstrap import install
+
+    db = ideation_session_factory()
+    try:
+        role_id = _promote_role(db, "UpgradingRole")
+        perm = db.query(Permission).filter(Permission.key == SEND_PERM).one()
+        db.execute(text("DELETE FROM role_permissions WHERE permission_id = :p"), {"p": perm.id})
+        db.delete(perm)
+        db.commit()
+        assert SEND_PERM not in _held(db, role_id)
+
+        install(db.get_bind(), db)
+        db.commit()
+        assert SEND_PERM in _held(db, role_id)
+    finally:
+        db.close()

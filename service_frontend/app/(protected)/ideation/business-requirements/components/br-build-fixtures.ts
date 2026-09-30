@@ -8,6 +8,7 @@ import type {
 export function buildInfo(over: Partial<BuildInfo> = {}): BuildInfo {
   return {
     canSend: true,
+    sendEdgeAvailable: true,
     blockers: [],
     repo: 'jayson-odoo/sorento-crm',
     issueUrl: null,

@@ -57,6 +57,7 @@ const GRAPH: StatusGraph = {
     edge('br-tr-send-to-build-2', 's-ready', 's-stb', 'Send to build', 2),
     edge('br-tr-ready-draft', 's-ready', 's-draft', 'Back to draft', 3),
     edge('br-tr-build-back', 's-stb', 's-ready', 'Back to ready', 1),
+    edge('br-tr-build-delivered', 's-stb', 's-draft', 'Delivered', 2),
   ],
 };
 
@@ -86,5 +87,16 @@ describe('useBrActions send-to-build edges (AC-STB-07)', () => {
     await waitFor(() => expect(result.current.length).toBe(1));
     expect(result.current[0].id).toBe('transition-br-tr-build-back');
     expect(result.current[0].label).toBe('Ready');
+  });
+
+  it('AC-STB-07 filters out br-tr-build-delivered (reserved for the crew write-back)', async () => {
+    const { result } = renderHook(() =>
+      useBrActions(brWithBuild(buildInfo({ state: 'sent' }), { status: 'sent_to_build' }), {
+        onChanged: vi.fn(),
+        onFieldErrors: vi.fn(),
+      }),
+    );
+    await waitFor(() => expect(result.current.length).toBeGreaterThan(0));
+    expect(result.current.map((a) => a.id)).toEqual(['transition-br-tr-build-back']);
   });
 });

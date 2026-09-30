@@ -13,8 +13,11 @@ from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.database import get_db
+from app.models.tenant import Tenant
+from app.repositories.module_repository import ModuleRepository
 from app.services.throttle import Throttled, ThrottleService, client_ip
 
+from .bootstrap import MODULE_NAME
 from .models import BrBuildKey
 from .services.build_keys import BuildKeyService
 
@@ -48,6 +51,18 @@ def get_build_key(
     if row is None:
         throttle.record_build_failure(ip=ip)
         raise ApiError(401, "invalid_api_key", "Missing or invalid API key.")
+    # Same predicate as the AutoCount pull gateway: the tenant's lifecycle
+    # chokepoint (not blocked, not archived) AND the module active for it. A
+    # refused key records NO throttle failure and stamps NO usage.
+    tenant = db.get(Tenant, row.tenant_id)
+    if (
+        tenant is None
+        or not tenant.signin_allowed
+        or not ModuleRepository(db).is_active(row.tenant_id, MODULE_NAME)
+    ):
+        raise ApiError(
+            403, "service_not_enabled", "This service is not enabled for this tenant."
+        )
     service.mark_used(row)
     request.state.build_key = row
     return row

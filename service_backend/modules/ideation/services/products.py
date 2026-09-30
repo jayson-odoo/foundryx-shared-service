@@ -5,6 +5,7 @@ service owns ONLY the ideation delivery extension (``product_delivery``): the
 validated ``product_domain_base`` origin that mints product-domain idea links.
 """
 from typing import Optional
+import re
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.catalog import Product
 
 from ..models import ProductDelivery
+from ..schemas import BUILD_REPO_PATTERN
 
 _UNSET = "\0unset"  # sentinel: an omitted build_repo (None means clear)
 
@@ -66,19 +68,26 @@ class DeliveryService:
         self,
         tenant_id: str,
         product_id: str,
-        product_domain_base: str,
+        product_domain_base: Optional[str],
         build_repo: Optional[str] = _UNSET,
     ) -> ProductDelivery:
         """Upsert the delivery config (one row per product). 404 if the product
-        is missing; 422 if the origin is invalid. ``build_repo`` left out keeps
+        is missing; 422 if the origin is invalid. ``product_domain_base`` omitted keeps the stored value. ``build_repo`` left out keeps
         the stored value; ``None`` clears it."""
         self._product_or_404(tenant_id, product_id)
-        origin = validate_origin(product_domain_base)
+        if build_repo is not _UNSET and build_repo is not None:
+            if not re.fullmatch(BUILD_REPO_PATTERN, build_repo):
+                message = "Enter the build repository as owner/repo."
+                raise HTTPException(
+                    422, detail={"message": message, "fieldErrors": {"buildRepo": message}}
+                )
+        origin = validate_origin(product_domain_base) if product_domain_base is not None else None
         row = self._row(tenant_id, product_id)
         if row is None:
             row = ProductDelivery(tenant_id=tenant_id, product_id=product_id)
             self.db.add(row)
-        row.product_domain_base = origin
+        if origin is not None:
+            row.product_domain_base = origin
         if build_repo is not _UNSET:
             row.build_repo = build_repo
         self.db.commit()

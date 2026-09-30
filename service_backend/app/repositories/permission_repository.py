@@ -27,8 +27,11 @@ class PermissionRepository:
     def all_keys(self) -> List[str]:
         return [row.key for row in self.db.query(Permission.key).all()]
 
-    def sync(self, module: str, rows: List[dict]) -> None:
-        """Upsert the module's declared permissions; delete its undeclared ones."""
+    def sync(self, module: str, rows: List[dict]) -> List[str]:
+        """Upsert the module's declared permissions; delete its undeclared ones.
+        Returns the keys NEWLY created by this call (``[]`` when none), so a
+        module can run a one-shot grant sweep only for a brand-new permission."""
+        created: List[str] = []
         existing = {p.key: p for p in self.db.query(Permission).filter(Permission.module == module).all()}
         declared_keys = set()
 
@@ -37,6 +40,7 @@ class PermissionRepository:
             declared_keys.add(key)
             perm = existing.get(key)
             if perm is None:
+                created.append(key)
                 self.db.add(
                     Permission(
                         key=key,
@@ -61,3 +65,4 @@ class PermissionRepository:
                 self.db.delete(perm)
 
         self.db.commit()
+        return created

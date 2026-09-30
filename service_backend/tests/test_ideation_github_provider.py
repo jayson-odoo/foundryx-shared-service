@@ -190,3 +190,51 @@ def test_ac_stb_12_client_transport_error_is_not_swallowed_as_success():
     with pytest.raises((GitHubError, httpx.HTTPError)) as exc:
         client.create_issue(REPO, "T", "B", ["crew-intake"])
     assert TOKEN not in str(exc.value)
+
+
+# ── SEC F3 / F7 ──────────────────────────────────────────────────────────────
+
+
+def test_sec_f3_ac_stb_09_request_path_is_exactly_the_repo_issues_path():
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return httpx.Response(201, json={"number": 1, "html_url": "https://x/1", "node_id": "n"})
+
+    from modules.ideation.github_client import GitHubClient
+
+    GitHubClient(TOKEN, transport=httpx.MockTransport(handler)).create_issue(
+        "owner/repo", "T", "B", ["crew-intake"]
+    )
+    assert seen == ["/repos/owner/repo/issues"]
+
+
+def test_sec_f7_ac_stb_09_timeout_constant_is_10_seconds():
+    from modules.ideation.github_client import GITHUB_TIMEOUT_SECONDS
+
+    assert GITHUB_TIMEOUT_SECONDS == 10
+
+
+def test_sec_f7_ac_stb_09_httpx_client_is_built_with_the_10s_timeout(monkeypatch):
+    captured = []
+    real_client = httpx.Client
+
+    class Spy(real_client):
+        def __init__(self, *args, **kwargs):
+            captured.append(kwargs.get("timeout"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", Spy)
+    from modules.ideation.github_client import GitHubClient
+
+    GitHubClient(
+        TOKEN,
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(201, json={"number": 1, "html_url": "u", "node_id": "n"})
+        ),
+    ).create_issue("owner/repo", "T", "B", ["crew-intake"])
+    assert captured, "no httpx.Client constructed"
+    for t in captured:
+        seconds = t.read if isinstance(t, httpx.Timeout) else t
+        assert float(seconds) == 10.0

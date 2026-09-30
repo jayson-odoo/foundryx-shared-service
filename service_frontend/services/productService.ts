@@ -133,7 +133,7 @@ export interface ProductService {
   /** Set a software product's product-domain base + build repository (ideation.products.manage). */
   setDelivery(
     productId: string,
-    body: { productDomainBase: string; buildRepo?: string | null },
+    body: { productDomainBase?: string; buildRepo?: string | null },
   ): Promise<DeliveryConfig>;
 }
 

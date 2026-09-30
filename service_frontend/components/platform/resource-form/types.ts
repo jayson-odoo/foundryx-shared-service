@@ -46,6 +46,13 @@ export interface FormPrimaryAction {
   href?: string;
 }
 
+/** Structured actions note: plain text plus one external link (e.g. the issue). */
+export interface FormActionsNote {
+  text: string;
+  href?: string;
+  linkLabel?: string;
+}
+
 export interface ResourceFormConfig<T> {
   breadcrumb: BreadcrumbStep[];
   /** Where the breadcrumb "back" + Back button return to (the list). */
@@ -92,7 +99,7 @@ export interface ResourceFormConfig<T> {
    * plain Edit primary. */
   primaryAction?: FormPrimaryAction;
   /** Muted line under the record-actions row; wins over `primaryAction.reason`. */
-  actionsNote?: ReactNode;
+  actionsNote?: ReactNode | FormActionsNote;
 
   /** Whether the Edit toggle is offered (false for create/new). */
   editable: boolean;

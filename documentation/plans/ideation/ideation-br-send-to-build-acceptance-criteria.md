@@ -42,10 +42,11 @@ keyed to these ids. Status keys below are the SEEDED platform keys; the UI never
 
 ### AC-STB-06 [BE][T] Readiness is server-computed on the BR detail
 - **Given** `GET /ideation/business-requirements/{id}`, **then** the detail carries
-  `build: { canSend, blockers[], issueUrl, issueNumber, repo, sentAt, sentBy, stage, status }`.
-- `canSend` is true only when ALL hold: the BR is not test-excluded from the lane, its answers pass
-  the stamped template's required-field validation (the SAME validator Promote uses), the product has a
-  `buildRepo`, the tenant has an ACTIVE `github` connection, and no build row exists yet.
+  `build: { canSend, sendEdgeAvailable, blockers[], issueUrl, issueNumber, repo, state, sentAt, sentBy, stage, prUrl, handtestUrl, events[] }` (`state` = none | creating | sent | delivered | failed).
+- `canSend` is true only when ALL hold: the BR is not a test BR, EVERY input field of its stamped
+  template holds a non-blank answer (the "6 of 6" model; Promote keeps required-only, both use one
+  missing-labels helper in document order), the product has a `buildRepo`, the tenant has an ACTIVE
+  `github` connection, and no build row exists yet.
 - `blockers[]` lists the human reasons in that order, e.g. `"Missing: Success metric, Constraints"`,
   `"Set the build repository on the product Sorento CRM"`, `"Connect GitHub in Settings > Integrations"`.
 
@@ -86,19 +87,25 @@ keyed to these ids. Status keys below are the SEEDED platform keys; the UI never
 - **And** the body has no em/en dashes and is under GitHub's 65536-char limit (truncate the transcript
   first, with a "(transcript truncated)" line).
 
-### AC-STB-11 [BE][T] Idempotent, including after a crash between create and store
+### AC-STB-11 [BE][T] Idempotent, including concurrent clicks and a crash between create and store
 - **Given** a BR already sent, **when** send is POSTed again, **then** 200 with the existing issue in the
   detail and NO GitHub call.
-- **Given** a `br_builds` row in state `creating` with no issue yet (a prior request died), **when** send
-  is POSTed, **then** the server first searches the repo for the marker (`search/issues` with
-  `"br-id: <id>" in:body repo:<r>`) and adopts a hit instead of creating a second issue.
+- **Given** a `br_builds` row in state `creating` that is FRESH (younger than the staleness window,
+  another request in flight), **when** send is POSTed, **then** 409 and no GitHub call.
+- **Given** a `br_builds` row in state `creating` that is STALE (a prior request died), **when** send is
+  POSTed, **then** the server searches the repo for the marker and adopts a hit only if the hit carries
+  the `crew-intake` label and its body ends with this BR's exact two marker lines; otherwise it creates
+  the issue. Tenant text is neutralised so it can never contain a marker (`<!--` defused) and cannot
+  ping people (`@mention` and `#ref` defused).
 - **Given** two concurrent sends, **then** exactly one issue exists (the unique index makes the loser
   409 -> the client reloads and sees the link).
 
 ### AC-STB-12 [BE][T] Refusals are precise
 - Not sendable -> 422 `{ message, blockers[] }` naming the first blocker; missing permission -> 403;
   GitHub 401/403 -> 502 "GitHub rejected the token" and the BR status is unchanged and the build row is
-  removed; GitHub 404 -> 502 "Repository <r> not found or the token cannot see it"; unreachable -> 502.
+  removed; GitHub 404 -> 502 "Repository <r> not found or the token cannot see it"; a public repository
+  -> 422 naming "public" (the BR content never leaves the tenant into a public repo); unreachable or 5xx
+  at the create step -> 502 and the `creating` row is KEPT as the recovery anchor.
   The status move happens AFTER the issue exists and in the same transaction as the row update.
 
 ### AC-STB-13 [BE][T] New status + edges seeded for every tenant
@@ -167,8 +174,8 @@ keyed to these ids. Status keys below are the SEEDED platform keys; the UI never
 ## F. Guards
 
 ### AC-STB-21 [BE][T] Test BRs
-- A test BR (`is_test`) can be sent only to a repo whose product delivery has `allowTestBuilds`
-  unset -> refused 422 "Test requirements cannot be sent to build" (no crew lane for a test row).
+- A test BR (`is_test`) is never sent: refused 422 "Test requirements cannot be sent to build" and the
+  blocker appears in `build.blockers` (no crew lane for a test row).
 
 ### AC-STB-22 [BE][T] Failure isolation
 - A GitHub outage during Send never leaves the BR in `sent_to_build` without an issue; a write-back

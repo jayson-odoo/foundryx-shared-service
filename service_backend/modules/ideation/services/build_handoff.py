@@ -13,7 +13,7 @@ create. Every query is tenant-scoped; stored ids resolve WITH ``tenant_id``.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import httpx
@@ -47,7 +47,8 @@ from ..models import (
 )
 from ..schemas import BuildEventIn, BuildEventOut, BuildOut, SentByOut
 from .br_templates import get_stamped_doc
-from .issue_body import render_issue_body
+from .business_requirements import missing_labels
+from .issue_body import clean_text, render_issue_body
 from .statuses import BR_ENTITY, BR_SEND_EDGE_PREFIX, BR_STATUS_IDS
 
 # Test seam: the httpx transport GitHub calls ride (None = the real network).
@@ -58,6 +59,7 @@ LABEL_COLOR = "ff5a00"
 GITHUB_PROVIDER = "github"
 GITHUB_CONNECTION_TYPE = "scm"
 
+IN_FLIGHT_SECONDS = 120
 DELIVERED_EDGE_ID = "br-tr-build-delivered"
 BLOCKER_TEST = "Test requirements cannot be sent to build"
 BLOCKER_GITHUB = "Connect GitHub in Settings > Integrations"
@@ -148,12 +150,15 @@ class BuildHandoffService:
         blockers: List[str] = []
         if br.is_test:
             blockers.append(BLOCKER_TEST)
-        try:
-            _errors, missing = self._brs().missing_required(br)
+        doc = get_stamped_doc(self.db, br.template_key, br.template_version, tenant_id)
+        if doc is None:
+            blockers.append("The stamped template version could not be resolved.")
+        else:
+            # Send needs EVERY input field of the stamped template filled
+            # (Promote keeps the required-only rule).
+            missing = missing_labels(doc, dict(br.answers_json or {}), required_only=False)
             if missing:
                 blockers.append("Missing: " + ", ".join(missing))
-        except HTTPException as exc:  # stamped template version unresolvable
-            blockers.append(str(exc.detail))
         if not self._build_repo(tenant_id, br.product_id):
             product = self._product(tenant_id, br.product_id)
             blockers.append(
@@ -215,6 +220,7 @@ class BuildHandoffService:
                 sent_by = SentByOut(id=row.sent_by, name=name)
         return BuildOut(
             canSend=can_send,
+            sendEdgeAvailable=self._send_edge_available(tenant_id, br),
             blockers=blockers,
             repo=row.repo if row is not None else self._build_repo(tenant_id, br.product_id),
             issueUrl=row.issue_url if row is not None else None,
@@ -323,7 +329,18 @@ class BuildHandoffService:
             return brs.get(tenant_id, br.id)
 
         recovering = row is not None
-        if row is None:
+        if recovering:
+            age = _now() - (row.updated_at or row.created_at or _now())
+            if age < timedelta(seconds=IN_FLIGHT_SECONDS):
+                # Another request is (probably) mid-flight: no GitHub call, the
+                # row is left for it.
+                raise HTTPException(
+                    409, "This requirement is already being sent to build."
+                )
+            # Stale leftover: claim it (refresh updated_at) before recovering.
+            row.updated_at = _now()
+            self.db.commit()
+        else:
             row = BrBuild(
                 tenant_id=tenant_id,
                 business_requirement_id=br.id,
@@ -337,17 +354,37 @@ class BuildHandoffService:
                 self.db.rollback()
                 raise HTTPException(409, "This requirement is already being sent to build.") from exc
 
+        issue = None
+        step = "repo"
         try:
-            issue = None
+            info = client.get_repo(repo)
+            if info.get("private") is not True:
+                self._drop_row(row)
+                message = (
+                    f"Repository {repo} is public; the requirement is not sent to a public repository."
+                )
+                raise HTTPException(422, detail={"message": message, "blockers": [message]})
             if recovering:
-                issue = client.search_issue_by_marker(repo, f"br-id: {br.id}")
+                step = "search"
+                marker_tail = f"<!-- br-id: {br.id} -->\n<!-- br-product: {br.product_id} -->"
+                for hit in client.search_issues_by_marker(repo, f"br-id: {br.id}"):
+                    if LABEL in hit["labels"] and (hit["body"] or "").rstrip().endswith(marker_tail):
+                        issue = {k: hit[k] for k in ("number", "html_url", "node_id")}
+                        break
             if issue is None:
+                step = "label"
                 client.ensure_label(repo, LABEL, LABEL_COLOR)
+                step = "create"
                 issue = client.create_issue(
-                    repo, br.title or "Untitled", self._issue_body(tenant_id, br), [LABEL]
+                    repo, clean_text(br.title or "Untitled"), self._issue_body(tenant_id, br), [LABEL]
                 )
         except GitHubError as exc:
-            self._drop_row(row)
+            # An ambiguous issue-create outcome (timeout, 5xx) may have created
+            # the issue: KEEP the ``creating`` row as the recovery anchor. Any
+            # definitive refusal, or a failure before the create, drops it.
+            ambiguous = step == "create" and (exc.status_code is None or exc.status_code >= 500)
+            if not ambiguous:
+                self._drop_row(row)
             raise _github_http_error(repo, exc) from exc
 
         self._finalize(tenant_id, br, row, actor, issue=issue)
@@ -430,8 +467,9 @@ class BuildHandoffService:
         if br is None or row is None:
             raise HTTPException(404, "Not found.")
 
+        status_value = payload.status or "in_progress"
         moved = False
-        if payload.status in ("merged", "released"):
+        if status_value in ("merged", "released"):
             tier = StatusRepository(self.db).resolve_tier(BR_ENTITY, tenant_id)
             delivered = BR_STATUS_IDS["delivered"]
             edge = StatusTransitionRepository(self.db).find_edge(
@@ -466,7 +504,7 @@ class BuildHandoffService:
             message=payload.message,
             pr_url=payload.prUrl,
             handtest_url=payload.handtestUrl,
-            status=payload.status,
+            status=status_value,
             key_id=key.id,
             status_moved=moved,
         )

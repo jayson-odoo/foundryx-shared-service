@@ -57,6 +57,9 @@ export interface BuildEvent {
  * `blockers`) and, once sent, the issue + the Trace. */
 export interface BuildInfo {
   canSend: boolean;
+  /** A send edge leaves the BR's current status (false for in FR, delivered,
+   * archived: the header keeps the plain Edit primary). */
+  sendEdgeAvailable: boolean;
   blockers: string[];
   repo: string | null;
   issueUrl: string | null;

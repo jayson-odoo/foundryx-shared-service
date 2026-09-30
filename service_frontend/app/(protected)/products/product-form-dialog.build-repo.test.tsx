@@ -89,4 +89,35 @@ describe('ProductFormDialog build repository (AC-STB-02)', () => {
     expect(await screen.findByText('Use the owner/name form.')).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it('R6 AC-STB-02 the real 422 shape {message, fieldErrors.buildRepo} renders the field error inline', async () => {
+    setDelivery.mockRejectedValue(
+      new ApiError('Unprocessable', 422, null, {
+        message: 'Build repository must look like owner/repo.',
+        fieldErrors: { buildRepo: 'Enter it as owner/repo.' },
+      }),
+    );
+    const onClose = vi.fn();
+    render(<ProductFormDialog product={SOFTWARE} kinds={KINDS} onClose={onClose} onSaved={vi.fn()} />);
+    const input = await screen.findByLabelText('Build repository');
+    await waitFor(() => expect(input).toHaveValue('jayson-odoo/old-repo'));
+    fireEvent.change(input, { target: { value: 'bad' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText('Enter it as owner/repo.')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('R6 AC-STB-02 a build repo with an empty domain base sends {buildRepo} only (no productDomainBase key)', async () => {
+    getDelivery.mockResolvedValue({ productId: 'p1', productDomainBase: null, buildRepo: null });
+    render(<ProductFormDialog product={SOFTWARE} kinds={KINDS} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const input = await screen.findByLabelText('Build repository');
+    await waitFor(() => expect(getDelivery).toHaveBeenCalled());
+    fireEvent.change(input, { target: { value: 'owner/repo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(setDelivery).toHaveBeenCalledTimes(1));
+    const [id, body] = setDelivery.mock.calls[0];
+    expect(id).toBe('p1');
+    expect(body).toEqual({ buildRepo: 'owner/repo' });
+    expect(Object.keys(body as object)).not.toContain('productDomainBase');
+  });
 });

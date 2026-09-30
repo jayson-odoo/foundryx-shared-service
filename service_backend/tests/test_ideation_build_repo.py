@@ -173,3 +173,94 @@ def test_ac_stb_01_build_repo_column_exists_on_model():
 
     col = ProductDelivery.__table__.c.build_repo
     assert col.nullable is True
+
+
+# ── SEC F3: path-traversal / dot-segment / leading-dash shapes ───────────────
+
+
+@pytest.mark.parametrize("bad", ["../user", "./x", "a/..", "a/.", "-/x"])
+def test_sec_f3_ac_stb_01_traversal_shapes_are_422(ideation_client, bad):
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    res = _put(
+        ideation_client,
+        h,
+        pid,
+        {"productDomainBase": "https://fe-sorento.foundryx.my", "buildRepo": bad},
+    )
+    assert res.status_code == 422, (bad, res.text)
+    got = ideation_client.get(f"/ideation/products/{pid}/delivery", headers=h).json()
+    assert got.get("buildRepo") is None
+
+
+@pytest.mark.parametrize("good", ["jayson-odoo/crew-intake-sandbox", "a.b/c_d-e"])
+def test_sec_f3_ac_stb_01_legitimate_shapes_still_accepted(ideation_client, good):
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    res = _put(
+        ideation_client,
+        h,
+        pid,
+        {"productDomainBase": "https://fe-sorento.foundryx.my", "buildRepo": good},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["buildRepo"] == good
+
+
+# ── R6: productDomainBase optional on the delivery PUT ───────────────────────
+
+
+def test_r6_ac_stb_01_put_only_build_repo_without_a_domain_base(ideation_client):
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)  # no delivery row yet, so no domain base
+    res = _put(ideation_client, h, pid, {"buildRepo": "owner/repo"})
+    assert res.status_code == 200, res.text
+    assert res.json()["buildRepo"] == "owner/repo"
+    assert res.json()["productDomainBase"] is None
+    got = ideation_client.get(f"/ideation/products/{pid}/delivery", headers=h).json()
+    assert got["buildRepo"] == "owner/repo" and got["productDomainBase"] is None
+
+
+def test_r6_ac_stb_01_omitted_domain_base_is_left_untouched(ideation_client):
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    base = "https://fe-sorento.foundryx.my"
+    assert _put(ideation_client, h, pid, {"productDomainBase": base, "buildRepo": "a/b"}).status_code == 200
+    res = _put(ideation_client, h, pid, {"buildRepo": "c/d"})
+    assert res.status_code == 200, res.text
+    assert res.json()["productDomainBase"] == base
+    assert res.json()["buildRepo"] == "c/d"
+
+
+def test_r6_ac_stb_01_present_domain_base_is_still_validated(ideation_client):
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    for bad in ("not a url", "https://x.example.com/path"):
+        res = _put(ideation_client, h, pid, {"productDomainBase": bad, "buildRepo": "a/b"})
+        assert res.status_code == 422, (bad, res.text)
+    got = ideation_client.get(f"/ideation/products/{pid}/delivery", headers=h).json()
+    assert got["buildRepo"] is None  # the refused write persisted nothing
+
+
+def test_r6_ac_stb_01_empty_body_leaves_everything_untouched(ideation_client):
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    base = "https://fe-sorento.foundryx.my"
+    assert _put(ideation_client, h, pid, {"productDomainBase": base, "buildRepo": "a/b"}).status_code == 200
+    res = _put(ideation_client, h, pid, {})
+    assert res.status_code == 200, res.text
+    assert res.json()["productDomainBase"] == base and res.json()["buildRepo"] == "a/b"
+
+
+@pytest.mark.parametrize("bad", ["no-slash", "../user", "a/b/c", ""])
+def test_r6_ac_stb_01_invalid_build_repo_422_body_has_message_and_field_errors(
+    ideation_client, bad
+):
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    res = _put(ideation_client, h, pid, {"buildRepo": bad})
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert isinstance(detail, dict), detail
+    assert isinstance(detail["message"], str) and detail["message"]
+    assert isinstance(detail["fieldErrors"]["buildRepo"], str) and detail["fieldErrors"]["buildRepo"]

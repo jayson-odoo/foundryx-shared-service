@@ -6,7 +6,7 @@ import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
-import type { FormPrimaryAction } from '@/components/platform/resource-form';
+import type { FormActionsNote, FormPrimaryAction } from '@/components/platform/resource-form';
 import { businessRequirementService } from '@/services/business-requirement-service';
 import type { BusinessRequirementDetail } from '@/types/business-requirement';
 
@@ -26,7 +26,7 @@ export interface BrBuildSummary {
 export interface UseBrBuildResult {
   /** Undefined when the caller may not send (the plain Edit primary stays). */
   primaryAction: FormPrimaryAction | undefined;
-  actionsNote: string | undefined;
+  actionsNote: string | FormActionsNote | undefined;
   confirmOpen: boolean;
   closeConfirm: () => void;
   confirmSend: () => Promise<void>;
@@ -129,19 +129,35 @@ export function useBrBuild(
     if (!br || !build || !canSendPermission) {
       return { primaryAction: undefined, actionsNote: undefined };
     }
-    if (build.issueUrl) {
-      const label = `${repoShortName(build.repo, build.issueUrl)} #${build.issueNumber ?? ''}`.trim();
-      const by = build.sentBy?.name ? ` by ${build.sentBy.name}` : '';
+    const issueUrl = build.issueUrl;
+    const issueLabel = issueUrl
+      ? `${repoShortName(build.repo, issueUrl)} #${build.issueNumber ?? ''}`.trim()
+      : '';
+    // No issue and no send edge (in FR, delivered, archived): plain Edit returns.
+    if (!issueUrl && !build.sendEdgeAvailable) {
+      return { primaryAction: undefined, actionsNote: undefined };
+    }
+    // The issue chip is the primary only while a re-send is not possible.
+    const by = build.sentBy?.name ? ` by ${build.sentBy.name}` : '';
+    if (issueUrl && !build.canSend) {
       return {
         primaryAction: {
           id: 'build-issue',
-          label,
+          label: issueLabel,
           icon: ExternalLink,
-          href: build.issueUrl,
+          href: issueUrl,
         } satisfies FormPrimaryAction,
         actionsNote: build.sentAt ? `Sent ${formatDateTime(build.sentAt)}${by}` : undefined,
       };
     }
+    // D10 re-send: the CTA returns and the issue link moves into the note.
+    const resendNote: FormActionsNote | undefined = issueUrl
+      ? {
+          text: build.sentAt ? `Sent ${formatDateTime(build.sentAt)}${by}` : 'Sent',
+          href: issueUrl,
+          linkLabel: issueLabel,
+        }
+      : undefined;
     const reason = build.canSend ? undefined : build.blockers[0];
     return {
       primaryAction: {
@@ -152,7 +168,7 @@ export function useBrBuild(
         reason,
         onRun: openConfirm,
       } satisfies FormPrimaryAction,
-      actionsNote: reason,
+      actionsNote: reason ?? resendNote,
     };
   }, [br, build, canSendPermission, formatDateTime, openConfirm, pending]);
 

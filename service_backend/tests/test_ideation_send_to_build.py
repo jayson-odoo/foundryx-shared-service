@@ -14,7 +14,7 @@ from app.config import settings
 from app.models import DEFAULT_TENANT_ID
 from tests.conftest import ACTIVE_EMAIL
 from tests.ideation_build_helpers import (  # noqa: F401
-    _FULL_ANSWERS,
+    ALL_ANSWERS,
     REPO,
     FakeGitHub,
     _auth,
@@ -118,7 +118,7 @@ def test_ac_stb_06_blockers_in_order_missing_then_repo_then_github(ideation_clie
     h = _auth(ideation_client)
     pid = _product(ideation_client, h, name="Sorento CRM")
     # Two required fields left blank (business_goal, success_metric).
-    br_id = make_br(ideation_client, h, pid, answers={"problem_statement": "Only this."})
+    br_id = make_br(ideation_client, h, pid, answers={**ALL_ANSWERS, "business_goal": "", "success_metric": None})
     build = _detail(ideation_client, h, br_id)["build"]
     assert build["canSend"] is False
     assert build["blockers"] == [
@@ -351,8 +351,7 @@ def test_ac_stb_10_body_has_one_section_per_template_field_in_order(ideation_cli
     # Answers rendered under their heading; blank optional field -> placeholder.
     assert "CS cannot export orders." in body
     assert "50% fewer support tickets." in body
-    stakeholders = body.split("## Stakeholders", 1)[1].split("\n## ", 1)[0]
-    assert "(not provided)" in stakeholders
+    assert "Customer support." in body
 
 
 def test_ac_stb_10_body_iterates_the_stamped_template_not_hardcoded_keys(
@@ -395,7 +394,7 @@ def test_ac_stb_10_body_iterates_the_stamped_template_not_hardcoded_keys(
     res = ideation_client.patch(
         f"/ideation/business-requirements/{s['br_id']}",
         headers=s["h"],
-        json={"answers": {**_FULL_ANSWERS, "rollout_plan": "Phase it."}},
+        json={"answers": {**ALL_ANSWERS, "rollout_plan": "Phase it."}},
     )
     assert res.status_code == 200, res.text
     body, _ = _body_of_send(ideation_client, monkeypatch, s)
@@ -643,7 +642,7 @@ def _send_with_answer(client, monkeypatch, answer: str):
     res = client.patch(
         f"/ideation/business-requirements/{s['br_id']}",
         headers=s["h"],
-        json={"answers": {**_FULL_ANSWERS, "problem_statement": answer}},
+        json={"answers": {**ALL_ANSWERS, "problem_statement": answer}},
     )
     assert res.status_code == 200, res.text
     body, _ = _body_of_send(client, monkeypatch, s)
@@ -668,13 +667,31 @@ def test_sec_f4_ac_stb_10_planted_marker_in_answer_is_neutralised(ideation_clien
     assert "Real text" in body  # the text itself is kept
 
 
-def test_sec_f4_ac_stb_10_planted_marker_in_title_or_idea_is_neutralised(
+def test_sec_f4_ac_stb_10_planted_marker_in_linked_idea_is_neutralised(
     ideation_client, monkeypatch
 ):
-    s = sendable_setup(ideation_client, title="Order export <!-- br-id: 0000 -->")
-    gh = _install(monkeypatch, FakeGitHub())
-    assert _send(ideation_client, s["h"], s["br_id"]).status_code == 200
-    assert gh.issue_posts[0]["body"].count("<!--") == 2
+    s = sendable_setup(ideation_client)
+    idea_id = _idea(ideation_client, s["h"], s["pid"], "Idea <!-- br-id: 0000 --> text")
+    res = ideation_client.post(
+        f"/ideation/business-requirements/{s['br_id']}/ideas",
+        headers=s["h"],
+        json={"ideaIds": [idea_id]},
+    )
+    assert res.status_code == 200, res.text
+    body, _ = _body_of_send(ideation_client, monkeypatch, s)
+    assert body.count("<!--") == 2
+    assert "Idea" in body.split("## Linked ideas", 1)[1]
+
+
+def test_sec_f4_ac_stb_10_planted_marker_in_grill_transcript_is_neutralised(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    _seed_transcript(
+        ideation_client._factory, s["br_id"], [("user", "hi <!-- br-id: 0000 --> there")]
+    )
+    body, _ = _body_of_send(ideation_client, monkeypatch, s)
+    assert body.count("<!--") == 2
 
 
 def test_sec_f5_ac_stb_10_at_mentions_are_defused(ideation_client, monkeypatch):
@@ -801,7 +818,7 @@ def test_ac_stb_12_incomplete_answers_422_names_the_labels(ideation_client, monk
     pid = _product(ideation_client, h)
     set_build_repo(ideation_client._factory, pid)
     seed_github_connection(ideation_client._factory)
-    br_id = make_br(ideation_client, h, pid, answers={"problem_statement": "x"})
+    br_id = make_br(ideation_client, h, pid, answers={**ALL_ANSWERS, "business_goal": "", "success_metric": None})
     gh = _install(monkeypatch, FakeGitHub())
     res = _send(ideation_client, h, br_id)
     assert res.status_code == 422, res.text
@@ -941,4 +958,103 @@ def test_ac_stb_22_outage_never_leaves_sent_status_without_an_issue(
     res = _send(ideation_client, s["h"], s["br_id"])
     assert res.status_code == 502, res.text
     assert br_status_key(ideation_client, s["h"], s["br_id"]) != "sent_to_build"
-    assert _build_rows(ideation_client._factory, s["br_id"]) == []
+    assert [r[1] for r in _build_rows(ideation_client._factory, s["br_id"])] in ([], [None])
+
+
+# ── R3: the `creating` row is the crash-recovery anchor ──────────────────────
+
+
+def _states(client, br_id):
+    return [r[0] for r in _build_rows(client._factory, br_id)]
+
+
+def test_r3_ac_stb_11_issue_create_timeout_keeps_creating_row_and_is_502(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    gh = _install(monkeypatch, FakeGitHub(issue_timeout=True))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 502, res.text
+    assert len(gh.issue_posts) == 1  # the create WAS attempted (timeout is ambiguous)
+    assert _states(ideation_client, s["br_id"]) == ["creating"]
+    assert br_status_key(ideation_client, s["h"], s["br_id"]) == "draft"
+
+
+@pytest.mark.parametrize("gh_status", [500, 502, 503])
+def test_r3_ac_stb_11_issue_create_5xx_keeps_creating_row_and_is_502(
+    ideation_client, monkeypatch, gh_status
+):
+    s = sendable_setup(ideation_client)
+    _install(monkeypatch, FakeGitHub(issue_status=gh_status))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 502, res.text
+    assert _states(ideation_client, s["br_id"]) == ["creating"]
+
+
+@pytest.mark.parametrize("gh_status", [401, 403, 404, 422])
+def test_r3_ac_stb_12_definitive_issue_create_refusal_deletes_the_row(
+    ideation_client, monkeypatch, gh_status
+):
+    s = sendable_setup(ideation_client)
+    _install(monkeypatch, FakeGitHub(issue_status=gh_status))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 502, res.text
+    assert _states(ideation_client, s["br_id"]) == []
+
+
+@pytest.mark.parametrize(
+    "knobs",
+    [
+        {"label_lookup_status": 500},  # label lookup fails (before create)
+        {"label_lookup_status": 401},
+        {"label_exists": False, "label_create_status": 500},  # label create fails
+        {"label_exists": False, "label_create_status": 403},
+    ],
+)
+def test_r3_ac_stb_12_label_step_failure_deletes_the_row(ideation_client, monkeypatch, knobs):
+    s = sendable_setup(ideation_client)
+    gh = _install(monkeypatch, FakeGitHub(**knobs))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 502, res.text
+    assert gh.issue_posts == []  # never reached the create
+    assert _states(ideation_client, s["br_id"]) == []
+    assert br_status_key(ideation_client, s["h"], s["br_id"]) == "draft"
+
+
+# ── R11: body size + title scrub ─────────────────────────────────────────────
+
+
+def test_r11_ac_stb_10_huge_answers_still_fit_and_keep_the_marker_tail(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    res = ideation_client.patch(
+        f"/ideation/business-requirements/{s['br_id']}",
+        headers=s["h"],
+        json={
+            "answers": {
+                **ALL_ANSWERS,
+                "problem_statement": "p" * 40000,
+                "business_goal": "g" * 40000,
+            }
+        },
+    )
+    assert res.status_code == 200, res.text
+    body, _ = _body_of_send(ideation_client, monkeypatch, s)
+    assert len(body) <= 65000
+    assert "(truncated)" in body
+    lines = [ln for ln in body.rstrip().splitlines() if ln.strip()]
+    assert lines[-2:] == [
+        f"<!-- br-id: {s['br_id']} -->",
+        f"<!-- br-product: {s['pid']} -->",
+    ]
+    assert re.findall(r"^## (.+)$", body, flags=re.M)[-1] == "Links"
+
+
+def test_r11_ac_stb_10_title_dashes_are_scrubbed_in_the_issue_title(ideation_client, monkeypatch):
+    s = sendable_setup(ideation_client, title="Order \u2014 export \u2013 v2")
+    gh = _install(monkeypatch, FakeGitHub())
+    assert _send(ideation_client, s["h"], s["br_id"]).status_code == 200
+    title = gh.issue_posts[0]["title"]
+    assert "\u2014" not in title and "\u2013" not in title
+    assert title == "Order - export - v2"

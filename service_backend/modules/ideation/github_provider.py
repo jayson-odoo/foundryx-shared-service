@@ -12,7 +12,7 @@ import httpx
 
 from app.integrations.base import TestResult
 
-from .github_client import GITHUB_API
+from .github_client import GITHUB_API, GITHUB_TIMEOUT_SECONDS
 
 GITHUB_PROVIDER_KEY = "github"
 GITHUB_CONNECTION_TYPE = "scm"
@@ -54,7 +54,7 @@ class GitHubProvider:
         if not token:
             return TestResult(ok=False, message="Enter the GitHub access token.")
         try:
-            with httpx.Client(timeout=15.0, transport=self._transport) as client:
+            with httpx.Client(timeout=float(GITHUB_TIMEOUT_SECONDS), transport=self._transport) as client:
                 response = client.get(
                     f"{GITHUB_API}/user",
                     headers={
