@@ -7,14 +7,17 @@ so the router's ONE translator renders the flat Appendix A6 envelope.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from ..canonical.masters import ENTITY_PRODUCT
+from ..doc_feed.constants import BACKFILL_FROM_DEFAULT
 from ..models import (
     DELIVERY_MODE_PUSH,
+    DOC_FEED_DELIVERY_ORDERS,
     ETL_STATUS_ACTIVE,
     PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_FAILED,
@@ -31,10 +34,12 @@ from ..repositories import (
     PullAuditRepository,
     PullSnapshotRepository,
 )
+from ..repositories.doc_feed_repository import DocFeedRepository
 from .company_service import CompanyNotFound
 from .pull_service import (
     MAX_PULL_PAGE_SIZE,
     PullBuildCooldownError,
+    PullBuildInFlightError,
     PullPushActiveError,
     PullService,
 )
@@ -47,6 +52,8 @@ from .pull_service import (
 ENTITY_WIRE_TO_INTERNAL: Dict[str, str] = {
     "products": ENTITY_PRODUCT,
     "stock_balances": "stock_balance",
+    # plan 16 - internal key == wire key (the doc-feed key).
+    "delivery_orders": DOC_FEED_DELIVERY_ORDERS,
 }
 ENTITY_INTERNAL_TO_WIRE: Dict[str, str] = {v: k for k, v in ENTITY_WIRE_TO_INTERNAL.items()}
 
@@ -98,6 +105,74 @@ def gateway_failed_message(error_code: Optional[str]) -> str:
     return GATEWAY_FAILED_MESSAGES.get(error_code or "", GATEWAY_FAILED_FALLBACK_MESSAGE)
 
 
+# ── plan 16: the `delivery_orders` scope (contract section 2) ──────────────
+
+DO_SCOPE_KEYS = ("fromDay", "toDay", "docNo")
+DO_MAX_RANGE_DAYS = 31
+DO_MAX_DOC_NO_LEN = 64
+_ISO_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _invalid(message: str) -> PullGatewayError:
+    return PullGatewayError(422, "INVALID_REQUEST", message)
+
+
+def _parse_day(value: Any, field: str) -> date:
+    if not isinstance(value, str) or not _ISO_DAY_RE.match(value):
+        raise _invalid(f"{field} must be a date in YYYY-MM-DD form.")
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise _invalid(f"{field} must be a real calendar date in YYYY-MM-DD form.")
+
+
+def parse_do_scope(raw_body: Any, *, today_myt: date) -> Dict[str, Optional[str]]:
+    """Validate + normalise the `delivery_orders` build scope. Returns
+    ``{"fromDay","toDay","docNo"}`` (ISO strings; ``docNo`` trimmed, ``None``
+    when absent) or raises ``PullGatewayError(422, INVALID_REQUEST)`` naming
+    the field. Messages never echo the client's value."""
+    body = raw_body if isinstance(raw_body, dict) else {}
+    from_raw = body.get("fromDay")
+    to_raw = body.get("toDay")
+    doc_raw = body.get("docNo")
+
+    doc_no: Optional[str] = None
+    if doc_raw is not None:
+        if not isinstance(doc_raw, str):
+            raise _invalid("docNo must be a string.")
+        doc_no = doc_raw.strip()
+        if not doc_no:
+            raise _invalid("docNo must not be empty.")
+        if len(doc_no) > DO_MAX_DOC_NO_LEN:
+            raise _invalid(f"docNo must be at most {DO_MAX_DOC_NO_LEN} characters.")
+
+    if from_raw is None and to_raw is not None:
+        raise _invalid("toDay requires fromDay.")
+    if from_raw is None and doc_no is None:
+        raise _invalid("fromDay or docNo is required.")
+
+    if from_raw is None:
+        # docNo alone: the 31 MYT days ending today (the vendor has no
+        # by-DocNo door, so the number is a filter over this range).
+        from_day = today_myt - timedelta(days=DO_MAX_RANGE_DAYS - 1)
+        to_day = today_myt
+    else:
+        from_day = _parse_day(from_raw, "fromDay")
+        to_day = _parse_day(to_raw, "toDay") if to_raw is not None else from_day
+        if from_day > to_day:
+            raise _invalid("fromDay must not be after toDay.")
+        if (to_day - from_day).days + 1 > DO_MAX_RANGE_DAYS:
+            raise _invalid(
+                f"The range from fromDay to toDay may span at most {DO_MAX_RANGE_DAYS} days."
+            )
+        if to_day > today_myt:
+            raise _invalid("toDay must not be after today.")
+        if from_day < date.fromisoformat(BACKFILL_FROM_DEFAULT):
+            raise _invalid(f"fromDay must not be before {BACKFILL_FROM_DEFAULT}.")
+
+    return {"fromDay": from_day.isoformat(), "toDay": to_day.isoformat(), "docNo": doc_no}
+
+
 def translate_entity_wire(wire: str) -> Optional[str]:
     return ENTITY_WIRE_TO_INTERNAL.get(wire)
 
@@ -134,6 +209,16 @@ def gateway_snapshot_header(snapshot: AcPullSnapshot) -> Dict[str, Any]:
         "status": snapshot.status,
     }
     metadata = snapshot.metadata_json or {}
+    is_do = snapshot.entity_type == DOC_FEED_DELIVERY_ORDERS
+    if is_do:
+        header.update(
+            {
+                "fromDay": metadata.get("fromDay"),
+                "toDay": metadata.get("toDay"),
+                "docNo": metadata.get("docNo"),
+                "book": metadata.get("book"),
+            }
+        )
     if snapshot.status == PULL_SNAPSHOT_STATUS_READY:
         header.update(
             {
@@ -147,6 +232,14 @@ def gateway_snapshot_header(snapshot: AcPullSnapshot) -> Dict[str, Any]:
                 "excludedRows": metadata.get("excludedRows", []),
             }
         )
+        if is_do:
+            header.update(
+                {
+                    "daysRead": metadata.get("daysRead"),
+                    "fetchedCount": metadata.get("fetchedCount"),
+                    "lineCount": metadata.get("lineCount"),
+                }
+            )
         for key in (
             "zeroListPriceCount",
             "negativeListPriceCount",
@@ -208,7 +301,11 @@ class PullGatewayService:
     # ── build (POST /snapshots, AC-10-29/30/31) ─────────────────────────
 
     def build(
-        self, key_row: AcPullApiKey, company_code_raw: str, internal_entity: str
+        self,
+        key_row: AcPullApiKey,
+        company_code_raw: str,
+        internal_entity: str,
+        scope: Optional[Dict[str, Optional[str]]] = None,
     ) -> Tuple[AcCompany, AcPullSnapshot]:
         # Security round 1 LOW 7 - ALL matches, never pick one arbitrarily.
         # `set_sink_target` does not (yet) prevent two companies in one
@@ -235,31 +332,53 @@ class PullGatewayService:
                 company_id=company.id,
             )
 
-        config = EntityConfigRepository(self.db).get(
-            key_row.tenant_id, company.id, internal_entity
-        )
-        if config is None:
-            raise PullGatewayError(
-                409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
+        if internal_entity == DOC_FEED_DELIVERY_ORDERS:
+            # plan 16 D5 - the gate is a delivery_orders feed row WITH a
+            # connection (tenant AND company scoped); the feed's mode gates
+            # the hourly push, never this read; no entity config, no
+            # PUSH_ACTIVE.
+            feed = DocFeedRepository(self.db).get(
+                key_row.tenant_id, company.id, DOC_FEED_DELIVERY_ORDERS
             )
-        if config.delivery_mode == DELIVERY_MODE_PUSH:
-            if config.etl_status == ETL_STATUS_ACTIVE:
+            if feed is None or not (feed.connection_id or "").strip():
                 raise PullGatewayError(
-                    409, "PUSH_ACTIVE", "This book is now automatic.",
+                    409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE,
                     company_id=company.id,
                 )
-            raise PullGatewayError(
-                409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
+            scope = {**(scope or {}), "book": feed.book}
+        else:
+            config = EntityConfigRepository(self.db).get(
+                key_row.tenant_id, company.id, internal_entity
             )
-        if config.etl_status != ETL_STATUS_ACTIVE:
-            raise PullGatewayError(
-                409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
-            )
+            if config is None:
+                raise PullGatewayError(
+                    409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
+                )
+            if config.delivery_mode == DELIVERY_MODE_PUSH:
+                if config.etl_status == ETL_STATUS_ACTIVE:
+                    raise PullGatewayError(
+                        409, "PUSH_ACTIVE", "This book is now automatic.",
+                        company_id=company.id,
+                    )
+                raise PullGatewayError(
+                    409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
+                )
+            if config.etl_status != ETL_STATUS_ACTIVE:
+                raise PullGatewayError(
+                    409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
+                )
 
         try:
             snapshot = PullService(self.db).request_build(
                 key_row.tenant_id, company.id, internal_entity,
-                requested_via="gateway", requested_by=None,
+                requested_via="gateway", requested_by=None, scope=scope,
+            )
+        except PullBuildInFlightError:
+            raise PullGatewayError(
+                409, "BUILD_IN_FLIGHT",
+                "A build with a different scope is still running for this company. "
+                "Wait for it to finish.",
+                company_id=company.id,
             )
         except PullBuildCooldownError as exc:
             raise PullGatewayError(

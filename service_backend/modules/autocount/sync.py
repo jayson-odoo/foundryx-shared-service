@@ -86,6 +86,7 @@ from .mapping import (
 )
 from .models import (
     DELIVERY_MODE_PULL,
+    DOC_FEED_DELIVERY_ORDERS,
     ETL_STATUS_ACTIVE,
     PULL_SNAPSHOT_STATUS_BUILDING,
     RUN_ABORTED,
@@ -2802,7 +2803,12 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
     snapshot_service = SnapshotService(db)
     snapshot = snap_repo.get(tenant_id, snapshot_id)
     company = CompanyRepository(db).get(tenant_id, company_id)
-    config = EntityConfigRepository(db).get(tenant_id, company_id, entity_type)
+    # plan 16 - a delivery_orders snapshot reads the DO doc feed's vendor door;
+    # it has no ``ac_entity_config`` row (never consulted).
+    is_do_snapshot = entity_type == DOC_FEED_DELIVERY_ORDERS
+    config = (
+        None if is_do_snapshot else EntityConfigRepository(db).get(tenant_id, company_id, entity_type)
+    )
 
     def _fail_snapshot(message: str, error_code: str) -> None:
         # review round 2 (item 1) - fail CLOSED on an un-pinned code: every
@@ -2822,6 +2828,32 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
                     "autocount pull snapshot %s could not be stamped failed", snapshot_id
                 )
         service.finish(job, status=JOB_FAILED, error=message)
+
+    if is_do_snapshot:
+        from .repositories.doc_feed_repository import DocFeedRepository
+
+        feed_row = DocFeedRepository(db).get(tenant_id, company_id, DOC_FEED_DELIVERY_ORDERS)
+        if snapshot is None or company is None or feed_row is None:
+            _fail_snapshot(
+                "The delivery-orders feed this build was requested for no longer exists.",
+                ERROR_CODE_SOURCE_PAGE_FAILED,
+            )
+            return
+        do_run = SyncRunRepository(db).add(
+            AcSyncRun(
+                tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+                job_id=job.id, mode=RUN_MODE_SNAPSHOT,
+            )
+        )
+        db.commit()
+        from .doc_feed.snapshot import build_delivery_orders_snapshot
+
+        build_delivery_orders_snapshot(
+            db, job, snapshot, company, feed_row,
+            {key: payload.get(key) for key in ("fromDay", "toDay", "docNo")},
+            run=do_run, started=started, fail_snapshot=_fail_snapshot,
+        )
+        return
 
     if snapshot is None or company is None or config is None:
         _fail_snapshot(

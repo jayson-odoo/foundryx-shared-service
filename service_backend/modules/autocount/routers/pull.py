@@ -234,6 +234,16 @@ def build_pull_snapshot(
 ) -> PullSnapshotOut:
     """Build a snapshot AS THE OPERATOR (``requested_via='operator'``) - the
     SAME ``PullService.request_build`` the public gateway (S4) calls."""
+    if body.entityType == "delivery_orders":
+        # plan 16 D11 - the operator wire carries no scope; the delivery
+        # orders snapshot is built through the public gateway only.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Delivery orders snapshots are built through the public pull "
+                "gateway (they need a day range or a document number)."
+            ),
+        )
     service = PullService(db)
     try:
         snapshot = service.request_build(

@@ -78,6 +78,19 @@ class PullBuildCooldownError(AutocountServiceError):
         self.retry_after_seconds = max(1, int(retry_after_seconds))
 
 
+class PullBuildInFlightError(AutocountServiceError):
+    """A ``delivery_orders`` build with a DIFFERENT scope is still building
+    for this company (plan 16 D6): one DO build per company at a time, and a
+    different range / DO number must never silently re-attach to the wrong
+    extraction."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "A build with a different scope is still running for this entity. "
+            "Wait for it to finish."
+        )
+
+
 class PullPushActiveError(AutocountServiceError):
     """A build was requested for a (company, entity) that has flipped to
     automatic PUSH (AC-10-15's pull-only rule) - review round 2 (item 4):
@@ -110,6 +123,7 @@ class SnapshotService:
         company_code: Optional[str],
         requested_via: str,
         requested_by: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> AcPullSnapshot:
         """Construct + ``flush`` (never ``commit``) ONE ``building`` row -
         the shared core ``create_building`` and ``PullService.request_build``
@@ -128,6 +142,8 @@ class SnapshotService:
             requested_via=requested_via,
             requested_by=requested_by,
         )
+        if metadata is not None:
+            snapshot.metadata_json = dict(metadata)
         self.repo.add(snapshot)
         return snapshot
 
@@ -325,6 +341,27 @@ class PullSnapshotNotFound(AutocountServiceError):
     - uniform (AC-10-30: possession of an id is not authorisation)."""
 
 
+_SCOPE_KEYS = ("fromDay", "toDay", "docNo")
+# stored with the scope at creation so a `building` / `failed` header can echo
+# it, but never part of scope equality (the book is the feed's, not the caller's).
+_SCOPE_EXTRA_KEYS = ("book",)
+
+
+def _scope_key(scope: Optional[Dict[str, Any]]) -> Optional[tuple]:
+    """The comparable form of a build scope (the three normalised keys), or
+    ``None`` for an unscoped entity (products / stock)."""
+    if scope is None:
+        return None
+    return tuple(scope.get(key) for key in _SCOPE_KEYS)
+
+
+def _stored_scope_key(snapshot: AcPullSnapshot) -> Optional[tuple]:
+    metadata = snapshot.metadata_json or {}
+    if "fromDay" not in metadata:
+        return None
+    return tuple(metadata.get(key) for key in _SCOPE_KEYS)
+
+
 class PullService:
     """Owns the build LIFECYCLE: at most one ``building`` snapshot per
     triple, the re-attach/cooldown rule, and enqueuing the background job
@@ -343,10 +380,16 @@ class PullService:
         requested_via: str,
         requested_by: Optional[str] = None,
         now: Optional[datetime] = None,
+        scope: Optional[Dict[str, Any]] = None,
     ) -> AcPullSnapshot:
         now = now or datetime.now(timezone.utc)
         existing = self.repo.latest_for_triple(tenant_id, company_id, entity_type)
+        requested_scope = _scope_key(scope)
+        same_scope = existing is not None and _stored_scope_key(existing) == requested_scope
         if existing is not None and existing.status == PULL_SNAPSHOT_STATUS_BUILDING:
+            if not same_scope:
+                # plan 16 D6 - one scoped build per company at a time.
+                raise PullBuildInFlightError()
             #     !!  RE-ATTACH HAS NO TIME LIMIT WHILE THE BUILD IS ALIVE.  !!
             # A consumer that stopped polling re-clicks and lands on the SAME
             # snapshot id, never a second extraction (AC-10-26/88). A build
@@ -368,7 +411,8 @@ class PullService:
         ):
             raise PullPushActiveError()
 
-        if existing is not None:
+        if existing is not None and same_scope:
+            # plan 16 D6 - the cooldown only applies to the SAME scope.
             # review round 2 (item 3, AC-10-26) - keyed on ``extracted_at``
             # when present (a READY snapshot's own explicit build-end
             # timestamp, unchanged from before) OR ``created_at`` as the
@@ -386,6 +430,11 @@ class PullService:
         from .company_service import CompanyService
 
         company = CompanyService(self.db).get(tenant_id, company_id)
+        requested_scope_metadata = (
+            {key: scope.get(key) for key in _SCOPE_KEYS + _SCOPE_EXTRA_KEYS if key in scope}
+            if scope is not None
+            else None
+        )
         #     !!  SHOULD-FIX 4 (AC-10-26) - THE DATABASE, NOT JUST THIS
         #         READ-THEN-WRITE CHECK, ENFORCES "AT MOST ONE BUILDING".  !!
         # Two concurrent Build clicks can both pass the ``existing is
@@ -411,10 +460,13 @@ class PullService:
                     company_code=company.sorento_company_code,
                     requested_via=requested_via,
                     requested_by=requested_by,
+                    metadata=dict(requested_scope_metadata) if requested_scope_metadata else None,
                 )
         except IntegrityError:
             winner = self.repo.latest_for_triple(tenant_id, company_id, entity_type)
             if winner is not None and winner.status == PULL_SNAPSHOT_STATUS_BUILDING:
+                if _stored_scope_key(winner) != requested_scope:
+                    raise PullBuildInFlightError()
                 return winner
             raise
 
@@ -427,15 +479,18 @@ class PullService:
 
         from ..sync import AUTOCOUNT_PULL_SNAPSHOT
 
+        payload: Dict[str, Any] = {
+            "companyId": company_id,
+            "entityType": entity_type,
+            "snapshotId": snapshot.id,
+        }
+        if requested_scope_metadata is not None:
+            payload.update({key: requested_scope_metadata.get(key) for key in _SCOPE_KEYS})
         job = JobService(self.db).create_and_enqueue(
             type=AUTOCOUNT_PULL_SNAPSHOT,
             tenant_id=tenant_id,
             actor_user_id=requested_by,
-            payload={
-                "companyId": company_id,
-                "entityType": entity_type,
-                "snapshotId": snapshot.id,
-            },
+            payload=payload,
         )
         snapshot.job_id = job.id
         self.db.commit()
