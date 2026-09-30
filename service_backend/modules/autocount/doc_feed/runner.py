@@ -267,7 +267,10 @@ def _new_run(
     return run
 
 
-def _finish_failed(db, run: AcDocFeedRun, code: str, message: str) -> AcDocFeedRun:
+def _finish_failed(
+    db, run: AcDocFeedRun, code: str, message: str,
+    summary: Optional[Dict[str, Any]] = None,
+) -> AcDocFeedRun:
     # S2 - a failed chunk/day may have left the session's transaction in a
     # PendingRollbackError state (an ON CONFLICT race, or any other DB
     # error raised mid-``on_chunk``) - roll it back FIRST so this run's own
@@ -275,8 +278,9 @@ def _finish_failed(db, run: AcDocFeedRun, code: str, message: str) -> AcDocFeedR
     # commits it at creation), so a rollback here only discards the
     # UNCOMMITTED work of the failed attempt, never the run row.
     db.rollback()
-    if run.summary_json is None:
-        run.summary_json = _new_summary()
+    # Counters committed before the failing step are kept; the rest of the attempt is rolled back.
+    if summary is not None:
+        run.summary_json = dict(summary)
     run.outcome = RUN_FAILED
     run.error_code = code
     run.error = message[:4000]
@@ -503,7 +507,9 @@ def run_poll(
         resolved.vendor_client.close()
 
     if chunk_error is not None:
-        return _finish_failed(db, run, "SINK_ERROR", _sink_failure_text(chunk_error, resolved.sink))
+        return _finish_failed(
+            db, run, "SINK_ERROR", _sink_failure_text(chunk_error, resolved.sink), summary=summary,
+        )
 
     if not dry_run:
         feed_row.cursor_day = (end + timedelta(days=1)) if capped else today
@@ -583,6 +589,7 @@ def run_sweep(
             db, run, "DELETE_GUARD",
             f"The sweep would deactivate {len(candidates)} of {len(window_rows)} "
             "ledger rows - over the safety guard, refusing.",
+            summary={**_new_summary(), "candidates": len(candidates), "deactivated": 0, "notFound": 0},
         )
 
     summary = _new_summary()
@@ -600,7 +607,9 @@ def run_sweep(
             _record_vendor_activity(db, resolved.vendor_client, run)
             if vendor_transport is None:
                 resolved.vendor_client.close()
-            return _finish_failed(db, run, "SINK_ERROR", _sink_failure_text(exc, resolved.sink))
+            return _finish_failed(
+                db, run, "SINK_ERROR", _sink_failure_text(exc, resolved.sink), summary=summary,
+            )
 
         for key, value in (result.get("summary") or {}).items():
             if isinstance(value, int):
@@ -936,7 +945,8 @@ def _new_run_for_backfill(
         day_from=day_from, day_to=day_to,
         requests=requests, fetched_count=fetched_count,
         outcome=outcome, error=error, error_code=error_code,
-        summary_json=summary if summary is not None else _new_summary(), started_at=now, finished_at=datetime.now(timezone.utc),
+        summary_json=summary if summary is not None else _new_summary(),
+        started_at=now, finished_at=datetime.now(timezone.utc),
     )
     db.add(run)
     db.commit()

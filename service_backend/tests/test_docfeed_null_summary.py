@@ -168,3 +168,128 @@ def test_orphan_hook_fills_a_missing_summary_on_the_run_it_closes(session_factor
     reloaded = _reload(db, run.id)
     assert reloaded.outcome == "FAILED"  # control: the hook closed it
     assert isinstance(reloaded.summary_json, dict)
+
+
+# ── round 2 - a FAILED run keeps the counters of the work it really did ─────
+
+
+def test_finish_failed_with_an_explicit_summary_persists_it(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    run = _new_run(db, feed, kind="poll", dry_run=False, now=NOW)
+
+    _finish_failed(db, run, "X", "boom", summary={"created": 7})
+
+    assert _reload(db, run.id).summary_json == {"created": 7}
+
+
+def test_a_poll_that_fails_on_a_later_chunk_keeps_the_committed_chunk_counters(session_factory, monkeypatch):
+    """Chunk mechanism: the poll sink chunks by
+    `settings.autocount_sink_batch_size` (one POST per that many records;
+    `SORENTO_MAX_BATCH` is only the ceiling), so the vendor returns
+    chunk + 1 records = 2 chunks. The sink answers the
+    first records POST with a created verdict per record and every later
+    POST with 400."""
+    import json
+
+    from app.config import settings
+
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    chunk = settings.autocount_sink_batch_size
+    total = chunk + 1
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"DocKey": k, "DocNo": f"DO-{k}", "DocDate": "2026-09-29",
+                 "LastModified": "2026-09-29T09:00:00.000", "Details": []}
+                for k in range(1, total + 1)
+            ],
+        )
+
+    posts = {"n": 0}
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        posts["n"] += 1
+        if posts["n"] > 1:
+            return httpx.Response(400, text="denied")
+        recs = json.loads(request.content.decode("utf-8")).get("records") or []
+        return httpx.Response(
+            200,
+            json={
+                "dry_run": False, "summary": {"total": len(recs), "created": len(recs)},
+                "records": [
+                    {"source_ref": r.get("source_ref") or f"db1:DO:{r.get('DocKey')}", "outcome": "created", "entity_id": "x"}
+                    for r in recs
+                ],
+            },
+        )
+
+    run_poll(
+        db, feed, dry_run=False, now=NOW,
+        vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=httpx.MockTransport(sink),
+    )
+    db.expire_all()
+    run = (
+        db.query(AcDocFeedRun).filter(AcDocFeedRun.feed_id == feed.id)
+        .order_by(AcDocFeedRun.started_at.desc()).first()
+    )
+    assert run.outcome == "FAILED" and run.error_code == "SINK_ERROR"
+    assert run.summary_json["created"] == chunk
+
+
+def _sweep_helpers():
+    from . import test_s14_doc_feed_sweep as sw
+
+    return sw
+
+
+def test_a_delete_guard_tripped_sweep_records_the_candidate_count(session_factory):
+    from modules.autocount.doc_feed.runner import run_sweep
+
+    sw = _sweep_helpers()
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = sw._feed(db, co, ac_conn)
+    for key in range(1, 101):
+        sw._ledger(db, feed, key, doc_date=sw.WINDOW_FROM)
+    db.commit()
+
+    run_sweep(
+        db, feed, dry_run=False, now=sw.NOW,
+        vendor_transport=sw._vendor_by_day({sw.WINDOW_FROM.strftime("%Y%m%d"): list(range(1, 50))}),
+        sink_transport=httpx.MockTransport(sw._contract_first(lambda r: httpx.Response(200, json={}))),
+    )
+    run = sw._latest_run(db, feed)
+    assert run.error_code == "DELETE_GUARD"
+    assert run.summary_json["candidates"] == 51
+
+
+def test_a_sweep_that_fails_at_the_sink_records_its_candidate_count(session_factory):
+    """Setup mirrors the SS1 sweep SINK_ERROR test: one ledger row, no vendor
+    keys, so exactly 1 candidate reaches the (400) sink."""
+    from modules.autocount.doc_feed.runner import run_sweep
+
+    sw = _sweep_helpers()
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = sw._feed(db, co, ac_conn)
+    sw._ledger(db, feed, 333, doc_date=sw.WINDOW_FROM)
+    db.commit()
+
+    run_sweep(
+        db, feed, dry_run=False, now=sw.NOW,
+        vendor_transport=sw._vendor_by_day({}),
+        sink_transport=httpx.MockTransport(sw._contract_first(lambda r: httpx.Response(400, text="denied"))),
+    )
+    run = sw._latest_run(db, feed)
+    assert run.outcome == "FAILED" and run.error_code == "SINK_ERROR"
+    assert run.summary_json["candidates"] == 1
