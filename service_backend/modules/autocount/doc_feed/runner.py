@@ -256,6 +256,7 @@ def _new_run(
     run = AcDocFeedRun(
         tenant_id=feed_row.tenant_id, company_id=feed_row.company_id, feed_id=feed_row.id,
         feed=feed_row.feed, kind=kind, dry_run=dry_run, job_id=job_id, started_at=now,
+        summary_json=_new_summary(),
     )
     db.add(run)
     # B3 - COMMIT at creation (was only flushed): the orphan hook matches
@@ -274,6 +275,8 @@ def _finish_failed(db, run: AcDocFeedRun, code: str, message: str) -> AcDocFeedR
     # commits it at creation), so a rollback here only discards the
     # UNCOMMITTED work of the failed attempt, never the run row.
     db.rollback()
+    if run.summary_json is None:
+        run.summary_json = _new_summary()
     run.outcome = RUN_FAILED
     run.error_code = code
     run.error = message[:4000]
@@ -933,7 +936,7 @@ def _new_run_for_backfill(
         day_from=day_from, day_to=day_to,
         requests=requests, fetched_count=fetched_count,
         outcome=outcome, error=error, error_code=error_code,
-        summary_json=summary, started_at=now, finished_at=datetime.now(timezone.utc),
+        summary_json=summary if summary is not None else _new_summary(), started_at=now, finished_at=datetime.now(timezone.utc),
     )
     db.add(run)
     db.commit()
