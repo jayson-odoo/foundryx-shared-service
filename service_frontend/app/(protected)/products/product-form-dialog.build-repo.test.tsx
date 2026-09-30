@@ -121,3 +121,61 @@ describe('ProductFormDialog build repository (AC-STB-02)', () => {
     expect(Object.keys(body as object)).not.toContain('productDomainBase');
   });
 });
+
+describe('ProductFormDialog Add flow with an invalid build repository (live evidence defect)', () => {
+  it.each(['not-a-repo', '../x', 'owner/..', 'a/b/c'])(
+    'AC-STB-02 client-side check: "%s" blocks createProduct, shows the inline error and stays open',
+    async (bad) => {
+      const onClose = vi.fn();
+      render(<ProductFormDialog kinds={KINDS} onClose={onClose} onSaved={vi.fn()} />);
+      fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'New product' } });
+      fireEvent.change(await screen.findByLabelText('Build repository'), { target: { value: bad } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add product' }));
+      expect(
+        await screen.findByText('Enter the build repository as owner/repo.'),
+      ).toBeInTheDocument();
+      expect(createProduct).not.toHaveBeenCalled();
+      expect(setDelivery).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    },
+  );
+
+  it('AC-STB-02 a valid owner/repo passes the client check and creates the product', async () => {
+    render(<ProductFormDialog kinds={KINDS} onClose={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'New product' } });
+    fireEvent.change(await screen.findByLabelText('Build repository'), {
+      target: { value: 'jayson-odoo/sorento-crm' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add product' }));
+    await waitFor(() => expect(createProduct).toHaveBeenCalledTimes(1));
+  });
+
+  it('AC-STB-02 a server 422 AFTER a successful create switches to edit mode: no duplicate create on the second Save', async () => {
+    setDelivery
+      .mockRejectedValueOnce(
+        new ApiError('Unprocessable', 422, null, {
+          message: 'Build repository must look like owner/repo.',
+          fieldErrors: { buildRepo: 'Server says no.' },
+        }),
+      )
+      .mockResolvedValue({});
+    const onClose = vi.fn();
+    render(<ProductFormDialog kinds={KINDS} onClose={onClose} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'New product' } });
+    fireEvent.change(await screen.findByLabelText('Build repository'), {
+      target: { value: 'owner/repo' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add product' }));
+    expect(await screen.findByText('Server says no.')).toBeInTheDocument();
+    expect(createProduct).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The dialog now edits the CREATED product.
+    expect(await screen.findByRole('heading', { name: 'Edit product' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Build repository'), { target: { value: 'owner/fixed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(setDelivery).toHaveBeenCalledTimes(2));
+    expect(setDelivery).toHaveBeenLastCalledWith('p1', { buildRepo: 'owner/fixed' });
+    expect(createProduct).toHaveBeenCalledTimes(1);
+  });
+});

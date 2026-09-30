@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { ApiError } from '@/lib/api-client';
+import { BUILD_REPO_ERROR, isValidBuildRepo } from '@/lib/build-repo';
 import { SearchSelect } from '@/components/platform/search-select';
 import {
   productService,
@@ -54,7 +55,11 @@ export function ProductFormDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const isEdit = Boolean(product);
+  // A product created by THIS dialog becomes the edit target if the follow-up
+  // delivery save fails, so a second Save never creates a duplicate.
+  const [created, setCreated] = useState<Product | null>(null);
+  const current = product ?? created;
+  const isEdit = Boolean(current);
 
   const [name, setName] = useState(product?.name ?? '');
   const [kind, setKind] = useState<string>(
@@ -120,6 +125,11 @@ export function ProductFormDialog({
 
   const handleSave = async () => {
     if (!valid) return;
+    // Add mode only: catch a bad repo BEFORE createProduct runs (no orphan product).
+    if (!isEdit && isSoftware && buildRepo.trim().length > 0 && !isValidBuildRepo(buildRepo.trim())) {
+      setBuildRepoError(BUILD_REPO_ERROR);
+      return;
+    }
     setSaving(true);
     setError(null);
     setBuildRepoError(null);
@@ -135,9 +145,10 @@ export function ProductFormDialog({
         isActive,
       };
 
-      const saved = product
-        ? await productService.updateProduct(product.id, payload)
+      const saved = current
+        ? await productService.updateProduct(current.id, payload)
         : await productService.createProduct(payload);
+      if (!current) setCreated(saved);
 
       // Persist the software delivery base when applicable. On create we always
       // write a provided base; on edit only when it actually changed.
