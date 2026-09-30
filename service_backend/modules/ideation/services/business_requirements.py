@@ -272,10 +272,13 @@ class BusinessRequirementService:
         doc = get_stamped_doc(
             self.db, br.template_key, br.template_version, br.tenant_id
         )
+        from .build_handoff import BuildHandoffService
+
         return BusinessRequirementDetailOut(
             **base.model_dump(),
             answers=dict(br.answers_json or {}),
             templateDoc=doc or {},
+            build=BuildHandoffService(self.db).detail_build(tenant_id, br),
         )
 
     def linked_ideas(self, tenant_id: str, br_id: str) -> List:
@@ -623,11 +626,13 @@ class BusinessRequirementService:
         # partial, but promote requires every required field present.
         self._enforce_promote_completeness(br)
 
-    def _enforce_promote_completeness(self, br: BusinessRequirement) -> None:
+    def missing_required(
+        self, br: BusinessRequirement
+    ) -> Tuple[Dict[str, str], List[str]]:
         """Re-validate the BR's ``answers_json`` against its STAMPED template with
-        ``required`` ENFORCED (AC-BI-34). A promote with missing required fields is
-        refused with a friendly, specific message naming the blank field LABELS
-        (AC-BI-34b) plus the per-field ``fieldErrors`` map (inline highlight)."""
+        ``required`` ENFORCED. Returns ``(per-field errors, missing field LABELS
+        in document order)`` - the ONE completeness check Promote and Send to
+        build share."""
         doc = get_stamped_doc(
             self.db, br.template_key, br.template_version, br.tenant_id
         )
@@ -638,8 +643,6 @@ class BusinessRequirementService:
         _clean, errors = validate_submission(
             doc, br.answers_json or {}, enforce_required=True
         )
-        if not errors:
-            return
         labels = _field_labels(doc)
         # Preserve document order + de-dup for the human-facing list.
         missing: List[str] = []
@@ -647,6 +650,15 @@ class BusinessRequirementService:
             label = labels.get(key, key)
             if label not in missing:
                 missing.append(label)
+        return errors, missing
+
+    def _enforce_promote_completeness(self, br: BusinessRequirement) -> None:
+        """A promote with missing required fields is refused with a friendly,
+        specific message naming the blank field LABELS (AC-BI-34/34b) plus the
+        per-field ``fieldErrors`` map (inline highlight)."""
+        errors, missing = self.missing_required(br)
+        if not errors:
+            return
         raise HTTPException(
             422,
             detail={

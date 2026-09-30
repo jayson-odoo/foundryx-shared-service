@@ -264,6 +264,46 @@ class BusinessRequirementOut(ApiModel):
     updatedAt: datetime
 
 
+class SentByOut(ApiModel):
+    id: str
+    name: str
+
+
+class BuildEventOut(ApiModel):
+    """One Trace entry of a BR's build (append-only, ascending ``seq``)."""
+
+    id: str
+    seq: int
+    kind: str
+    stage: str
+    message: str
+    prUrl: Optional[str] = None
+    handtestUrl: Optional[str] = None
+    status: Optional[str] = None
+    statusMoved: bool = False
+    actorName: Optional[str] = None
+    createdAt: datetime
+
+
+class BuildOut(ApiModel):
+    """The BR's Send-to-build state: server-computed readiness (``canSend`` +
+    ``blockers``) and, once sent, the issue + the Trace. ``state`` is ``none``
+    until a ``br_builds`` row exists."""
+
+    canSend: bool
+    blockers: List[str] = []
+    repo: Optional[str] = None
+    issueUrl: Optional[str] = None
+    issueNumber: Optional[int] = None
+    state: str = "none"
+    sentAt: Optional[datetime] = None
+    sentBy: Optional[SentByOut] = None
+    stage: Optional[str] = None
+    prUrl: Optional[str] = None
+    handtestUrl: Optional[str] = None
+    events: List[BuildEventOut] = []
+
+
 class BusinessRequirementDetailOut(BusinessRequirementOut):
     """The BR detail - adds ``answers`` (the form_engine answer map) and
     ``templateDoc`` (the STAMPED template version's block document, for the
@@ -271,6 +311,8 @@ class BusinessRequirementDetailOut(BusinessRequirementOut):
 
     answers: Dict[str, Any] = {}
     templateDoc: Dict[str, Any] = {}
+    # Populated by ``BusinessRequirementService.get`` only (list rows omit it).
+    build: Optional[BuildOut] = None
 
 
 class BrTemplateVersionOut(ApiModel):
