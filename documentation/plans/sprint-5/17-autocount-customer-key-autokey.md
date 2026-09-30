@@ -1,7 +1,9 @@
 # 17 - AutoCount Customer (open REST API) entity: identity key vs the CRM's AutoKey references
 
 Lane `crew/customer-key-autokey` (worktree `foundryx-shared-service-customer-key-autokey`, base `origin/main`
-cb4766e3). Status: **scout complete, blocked on an owner decision** (see "Decision needed").
+cb4766e3). Status: **decided (a), 2026-09-30** - no ss code change; this document is the record. The CRM change lands in
+sorento_crm lane `CUSTOMER-CODE-IDENTITY` (same resolver/adopt code; owner rule "debtor code identifies the
+customer").
 
 ## Symptom (owner, 2026-09-30)
 
@@ -41,7 +43,12 @@ PostCode, SalesAgent, TaxEntityID`. **No `AutoKey`.** `GET /debtor` (bare array)
 Consequence: the briefed fix (flip `CUSTOMER_HTTP_PRESET.key_fields` to `AutoKey`, migrate stored
 `keyFields`) is **not possible** on the ss side - the wrapper never exposes the value the ref would need.
 
-## Decision needed (owner)
+## Decision (owner, 2026-09-30): (a)
+
+The Customer HTTP entity keeps `AccNo` as its key and `{database}:{AccNo}` as its `source_ref`. Sorento CRM
+resolves a customer by debtor code (code-wins, mirroring products), keeps the stored `AED_SORENTO:<AutoKey>`
+reference and answers `ref_mismatch` - which ss already carries as a DELIVERED warning (`sinks.py`,
+`sync_service.py`), so the owner's preview shows updates, not failures. Options as filed:
 
 (a) **CRM code-wins for customers** (recommended): in `master_ingest_service._apply_scoped`'s adopt branch,
     treat `customers` like `products` - when the `(code, name)`-adopted row is claimed by the SAME source
