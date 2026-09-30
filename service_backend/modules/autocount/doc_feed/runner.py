@@ -130,6 +130,14 @@ class RunRefusal(Exception):
 
 
 @dataclass
+class ResolvedVendor:
+    company: AcCompany
+    vendor_client: HttpApiClient
+    vendor: DocFeedVendor
+    book: str
+
+
+@dataclass
 class _Resolved:
     company: AcCompany
     vendor_client: HttpApiClient
@@ -138,12 +146,13 @@ class _Resolved:
     book: str
 
 
-def _resolve(
-    db, feed_row: AcDocFeed, *, vendor_transport=None, sink_transport=None
-) -> _Resolved:
-    """Plan section 3.6 step 1 - resolve every dependency or refuse loudly.
-    Never a bare ``get_by_id`` on a stored connection id (the polymorphic-
-    stored-id rule) - every lookup is tenant- AND provider-scoped."""
+def resolve_vendor(db, feed_row: AcDocFeed, *, vendor_transport=None) -> ResolvedVendor:
+    """The vendor half of the run resolution (company active, connection,
+    book match, ``HttpApiClient`` + ``DocFeedVendor``) - no sink, no
+    contract probe. Shared by the feed run (``_resolve``) and the pull
+    gateway's ``delivery_orders`` snapshot. Never a bare ``get_by_id`` on a
+    stored connection id (the polymorphic-stored-id rule) - every lookup is
+    tenant- AND provider-scoped."""
     tenant_id = feed_row.tenant_id
     company = CompanyRepository(db).get(tenant_id, feed_row.company_id)
     if company is None or not company.is_active:
@@ -162,6 +171,45 @@ def _resolve(
             "The connection's book no longer matches this feed's stored book.",
         )
 
+    sizing = connection_sizing(conn.config_json or {})
+    # B1 (review round 1) - the connection's OWN `baseUrl` already ends in
+    # the book (plan 08 D2, e.g. `https://hapi.sorento.cc.cd/api/db1`); the
+    # vendor client must be built from the FULL base URL, exactly like
+    # `HttpApiSource.__init__` (`http_source/source.py:302-318`) - dropping
+    # the path down to scheme+host (the former `_host_root`) sent every GET
+    # to the bare host and 404d on every real vendor read.
+    vendor_client = HttpApiClient(
+        str((conn.config_json or {}).get("baseUrl") or ""),
+        transport=vendor_transport, timeout_seconds=sizing.request_timeout_seconds,
+    )
+    return ResolvedVendor(
+        company=company, vendor_client=vendor_client, vendor=DocFeedVendor(vendor_client),
+        book=book,
+    )
+
+
+def _resolve(
+    db, feed_row: AcDocFeed, *, vendor_transport=None, sink_transport=None
+) -> _Resolved:
+    """Plan section 3.6 step 1 - resolve every dependency or refuse loudly:
+    the vendor half (``resolve_vendor``) then the sink + contract gate."""
+    tenant_id = feed_row.tenant_id
+    resolved = resolve_vendor(db, feed_row, vendor_transport=vendor_transport)
+    company, book = resolved.company, resolved.book
+    conn_repo = ConnectionRepository(db)
+
+    try:
+        return _resolve_sink_half(
+            db, feed_row, company, book, resolved, conn_repo, tenant_id, sink_transport
+        )
+    except BaseException:
+        resolved.vendor_client.close()
+        raise
+
+
+def _resolve_sink_half(
+    db, feed_row, company, book, resolved, conn_repo, tenant_id, sink_transport
+) -> _Resolved:
     if (
         company.sink_impl != SINK_IMPL_SORENTO
         or not company.sink_connection_id
@@ -225,19 +273,8 @@ def _resolve(
             f"support '{feed_row.feed}'.",
         )
 
-    sizing = connection_sizing(conn.config_json or {})
-    # B1 (review round 1) - the connection's OWN `baseUrl` already ends in
-    # the book (plan 08 D2, e.g. `https://hapi.sorento.cc.cd/api/db1`); the
-    # vendor client must be built from the FULL base URL, exactly like
-    # `HttpApiSource.__init__` (`http_source/source.py:302-318`) - dropping
-    # the path down to scheme+host (the former `_host_root`) sent every GET
-    # to the bare host and 404d on every real vendor read.
-    vendor_client = HttpApiClient(
-        str((conn.config_json or {}).get("baseUrl") or ""),
-        transport=vendor_transport, timeout_seconds=sizing.request_timeout_seconds,
-    )
     return _Resolved(
-        company=company, vendor_client=vendor_client, vendor=DocFeedVendor(vendor_client),
+        company=company, vendor_client=resolved.vendor_client, vendor=resolved.vendor,
         sink=sink, book=book,
     )
 
