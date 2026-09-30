@@ -80,6 +80,7 @@ from .ideas import IdeaReadService
 from .statuses import (
     BR_ENTITY,
     BR_PROMOTE_EDGE_ID,
+    BR_SEND_EDGE_PREFIX,
     br_status_id,
     initial_br_status_id,
 )
@@ -607,6 +608,9 @@ class BusinessRequirementService:
         edge = StatusTransitionRepository(self.db).find_edge(
             br.status_id, target_id, tier
         )
+        # The Send-to-build edges belong to the Send endpoint alone.
+        if edge is not None and edge.id.startswith(BR_SEND_EDGE_PREFIX):
+            raise HTTPException(409, "Use Send to build")
         if edge is None or edge.id != BR_PROMOTE_EDGE_ID:
             return
         held = effective_permission_keys(actor) if actor else set()

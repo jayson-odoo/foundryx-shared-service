@@ -9,3 +9,4 @@ ideation.bindings,Workspace Bindings,manage,Manage,Bind respond.io workspaces to
 ideation.business_requirements,Business Requirements,read,Read,View business requirements & detail
 ideation.business_requirements,Business Requirements,manage,Manage,Create/edit BRs, link ideas & run the grill (Triager)
 ideation.business_requirements,Business Requirements,promote,Promote,Promote a draft BR to ready - the Gate-0 human action (Maintainer)
+ideation.business_requirements,Business Requirements,send_to_build,Send to build,Hand a complete BR to the build crew and manage write-back keys (Maintainer)

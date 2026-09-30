@@ -29,6 +29,23 @@ export interface RecordNavConfig {
   buildHref: (recordId: string, ctx: string, index: number) => string;
 }
 
+/**
+ * A page-specific call to action (D12): renders as ONE plain primary button in
+ * the record-actions slot where Edit sits. While it is set the shell moves Edit
+ * into the "..." menu as its first item. `href` renders it as an external link
+ * (new tab) instead of a button; `reason` is the muted line under the row when
+ * the CTA is disabled.
+ */
+export interface FormPrimaryAction {
+  id: string;
+  label: string;
+  icon?: LucideIcon;
+  disabled?: boolean;
+  reason?: ReactNode;
+  onRun?: () => void | Promise<void>;
+  href?: string;
+}
+
 export interface ResourceFormConfig<T> {
   breadcrumb: BreadcrumbStep[];
   /** Where the breadcrumb "back" + Back button return to (the list). */
@@ -70,6 +87,12 @@ export interface ResourceFormConfig<T> {
    * form (plan 06 - the connection Health card went stale otherwise).
    */
   onReload?: () => void;
+
+  /** Page CTA taking Edit's slot (Edit moves into the "..." menu). Omit for the
+   * plain Edit primary. */
+  primaryAction?: FormPrimaryAction;
+  /** Muted line under the record-actions row; wins over `primaryAction.reason`. */
+  actionsNote?: ReactNode;
 
   /** Whether the Edit toggle is offered (false for create/new). */
   editable: boolean;

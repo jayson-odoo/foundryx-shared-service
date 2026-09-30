@@ -813,7 +813,7 @@ def test_migration_0012_head_and_revision_length():
             down_revisions.add(mod2.down_revision)
     true_heads = all_revisions - down_revisions
     assert len(true_heads) == 1, f"expected a single ideation migration head, found {true_heads}"
-    assert module.revision in true_heads
+    assert module.revision in all_revisions  # 0012 is no longer the head (0013 follows)
 
 
 # ── AC-94-19 ───────────────────────────────────────────────────────────────

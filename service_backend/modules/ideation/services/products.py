@@ -4,6 +4,7 @@ Product CRUD is the CORE catalog's job (``/products``, ``products.*``); this
 service owns ONLY the ideation delivery extension (``product_delivery``): the
 validated ``product_domain_base`` origin that mints product-domain idea links.
 """
+from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
@@ -12,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.models.catalog import Product
 
 from ..models import ProductDelivery
+
+_UNSET = "\0unset"  # sentinel: an omitted build_repo (None means clear)
 
 
 def validate_origin(value: str) -> str:
@@ -59,9 +62,16 @@ class DeliveryService:
         self._product_or_404(tenant_id, product_id)
         return self._row(tenant_id, product_id)
 
-    def set(self, tenant_id: str, product_id: str, product_domain_base: str) -> ProductDelivery:
+    def set(
+        self,
+        tenant_id: str,
+        product_id: str,
+        product_domain_base: str,
+        build_repo: Optional[str] = _UNSET,
+    ) -> ProductDelivery:
         """Upsert the delivery config (one row per product). 404 if the product
-        is missing; 422 if the origin is invalid."""
+        is missing; 422 if the origin is invalid. ``build_repo`` left out keeps
+        the stored value; ``None`` clears it."""
         self._product_or_404(tenant_id, product_id)
         origin = validate_origin(product_domain_base)
         row = self._row(tenant_id, product_id)
@@ -69,6 +79,8 @@ class DeliveryService:
             row = ProductDelivery(tenant_id=tenant_id, product_id=product_id)
             self.db.add(row)
         row.product_domain_base = origin
+        if build_repo is not _UNSET:
+            row.build_repo = build_repo
         self.db.commit()
         self.db.refresh(row)
         return row

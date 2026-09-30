@@ -17,7 +17,7 @@ import { BrDetailsTab } from './br-details-tab';
 import { BrGrillTab } from './br-grill-tab';
 import { BrIdeasTab } from './br-ideas-tab';
 import { BrVersionsTab } from './br-versions-tab';
-import { BrPlaceholderTab } from './br-placeholder-tab';
+import { BrTraceTab } from './br-trace-tab';
 import { useBrActions } from './use-br-actions';
 
 interface Detail422 {
@@ -36,6 +36,11 @@ export interface UseBrFormResult {
   config: ResourceFormConfig<BusinessRequirementDetail> | null;
   isLoading: boolean;
   notFound: boolean;
+  /** The loaded BR + its refresh callback - `BrFormView` feeds them to
+   * `useBrBuild` (the header's Send to build action) and merges the result into
+   * the config. */
+  br: BusinessRequirementDetail | null;
+  onBrChanged: (updated: BusinessRequirementDetail) => void;
 }
 
 function answersEqual(a: FormAnswers, b: FormAnswers): boolean {
@@ -44,8 +49,8 @@ function answersEqual(a: FormAnswers, b: FormAnswers): boolean {
 
 /**
  * BR detail form config (tabbed ResourceForm). Tabs: Details · Grill · Ideas ·
- * Trace · Versions - but in S2 only Details/Ideas/Versions carry content (Grill =
- * S3, Trace = S4 render empty placeholders). The Details tab renders answers
+ * Trace · Versions. The Trace tab is the crew's build timeline (Send to build);
+ * the header's primary action + note are merged in by `BrFormView`. The Details tab renders answers
  * through the form-engine renderer against the BR's STAMPED template doc.
  */
 export function useBrForm(
@@ -158,6 +163,14 @@ export function useBrForm(
 
   // Graph-driven lifecycle + promote actions (AC-BI-34). The promote edge is
   // gated by the separate .promote permission; a refused promote surfaces inline.
+  // Trace tab refresh (on open + window focus; no polling).
+  const reloadBuild = useCallback(() => {
+    businessRequirementService
+      .getBuild(brId)
+      .then((fresh) => setBr((prev) => (prev ? { ...prev, build: fresh } : prev)))
+      .catch(() => undefined);
+  }, [brId]);
+
   const lifecycleActions = useBrActions(br, {
     onChanged: onBrChanged,
     onFieldErrors: setServerFieldErrors,
@@ -283,7 +296,9 @@ export function useBrForm(
           id: 'trace',
           label: 'Trace',
           icon: GitBranch,
-          render: () => <BrPlaceholderTab label="Available after grilling." />,
+          render: () => (
+            <BrTraceTab brId={brId} build={br.build ?? null} reload={reloadBuild} />
+          ),
         },
         {
           id: 'versions',
@@ -320,7 +335,8 @@ export function useBrForm(
     serverFieldErrors,
     fetchRecordAt,
     buildRecordHref,
+    reloadBuild,
   ]);
 
-  return { config, isLoading, notFound };
+  return { config, isLoading, notFound, br, onBrChanged };
 }

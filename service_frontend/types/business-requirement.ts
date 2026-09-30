@@ -11,6 +11,7 @@ export type BusinessRequirementStatus =
   | 'draft'
   | 'grilling'
   | 'ready'
+  | 'sent_to_build'
   | 'in_fr'
   | 'delivered'
   | 'archived';
@@ -36,10 +37,58 @@ export interface BusinessRequirement {
   isTest?: boolean;
 }
 
+/** One Trace entry of a BR's build (`sent` by a human, `crew` progress via the
+ * write-back key, `system`). Append-only; `seq` orders the timeline. */
+export interface BuildEvent {
+  id: string;
+  seq: number;
+  kind: 'sent' | 'crew' | 'system';
+  stage: string;
+  message: string;
+  prUrl: string | null;
+  handtestUrl: string | null;
+  status: 'in_progress' | 'merged' | 'released' | 'failed' | 'cancelled' | null;
+  statusMoved: boolean;
+  actorName: string | null;
+  createdAt: string;
+}
+
+/** The BR's Send-to-build state (server-computed): readiness (`canSend` +
+ * `blockers`) and, once sent, the issue + the Trace. */
+export interface BuildInfo {
+  canSend: boolean;
+  blockers: string[];
+  repo: string | null;
+  issueUrl: string | null;
+  issueNumber: number | null;
+  state: 'none' | 'creating' | 'sent' | 'delivered' | 'failed';
+  sentAt: string | null;
+  sentBy: { id: string; name: string } | null;
+  stage: string | null;
+  prUrl: string | null;
+  handtestUrl: string | null;
+  events: BuildEvent[];
+}
+
+/** One issued build write-back key (never carries the plaintext). */
+export interface BuildKey {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** Mint response: the plaintext is shown ONCE. */
+export interface BuildKeyMinted extends BuildKey {
+  plaintext: string;
+}
+
 /** BR detail - adds the answer map + the STAMPED template block document. */
 export interface BusinessRequirementDetail extends BusinessRequirement {
   answers: FormAnswers;
   templateDoc: FormDocument;
+  build: BuildInfo;
 }
 
 /** One BR-template version (Versions tab). `isStamped` marks the version this BR

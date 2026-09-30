@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Info, Pencil } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { MENU_SIDEBAR } from '@/config/menu.config';
 import { buildListNav } from '@/lib/list-context';
@@ -29,6 +29,7 @@ import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
 import { RecordNav } from './record-nav';
+import type { ResourceAction } from '@/components/platform/resource-list/types';
 import type { ResourceFormConfig } from './types';
 
 export interface ResourceFormProps<T> {
@@ -210,10 +211,27 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
     deferredEntityTypeRef.current = derivedDeferred.entityType;
   }, [derivedDeferred]);
 
+  // With a page CTA in Edit's slot, Edit becomes the "..." menu's first item.
+  const primaryAction = config.primaryAction;
+  const editMenuAction: ResourceAction<T> | null =
+    primaryAction && config.editable && canEdit
+      ? {
+          id: 'form-edit',
+          label: 'Edit',
+          icon: Pencil,
+          surfaces: { form: true },
+          run: () => setEditing(true),
+        }
+      : null;
+  const menuActions = editMenuAction ? [editMenuAction, ...config.actions] : config.actions;
+
+  const actionsNote =
+    config.actionsNote ?? (primaryAction?.disabled ? primaryAction.reason : undefined);
+
   const gear =
-    !editing && !deferredPending && config.actions.some((a) => a.surfaces.form) ? (
+    !editing && !deferredPending && menuActions.some((a) => a.surfaces.form) ? (
       <ActionMenu
-        actions={config.actions}
+        actions={menuActions}
         rows={config.actionRows}
         getEntityId={config.getEntityId}
         runtime={{
@@ -282,6 +300,25 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         {config.editable ? saveLabel : config.backLabel ? createLabel : saveLabel}
       </Button>
     </>
+  ) : primaryAction ? (
+    primaryAction.href ? (
+      <Button variant="outline" size="sm" asChild>
+        <a href={primaryAction.href} target="_blank" rel="noopener noreferrer">
+          {primaryAction.icon && <primaryAction.icon />}
+          {primaryAction.label}
+        </a>
+      </Button>
+    ) : (
+      <Button
+        variant="primary"
+        size="sm"
+        disabled={primaryAction.disabled}
+        onClick={() => void primaryAction.onRun?.()}
+      >
+        {primaryAction.icon && <primaryAction.icon />}
+        {primaryAction.label}
+      </Button>
+    )
   ) : (
     config.editable &&
     canEdit && (
@@ -401,6 +438,16 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
           {gear}
           {primary}
         </div>
+
+        {actionsNote && !editing && (
+          <p
+            data-slot="actions-note"
+            className="flex basis-full items-center gap-1.5 text-sm text-muted-foreground sm:justify-end"
+          >
+            <Info className="size-3.5 shrink-0" />
+            <span className="min-w-0">{actionsNote}</span>
+          </p>
+        )}
       </div>
 
       {/* Tabs - the strip scrolls horizontally on narrow screens (responsive

@@ -30,9 +30,9 @@
  * Ideation delivery extension (service_backend/modules/ideation/routers/products.py,
  * mounted at prefix '/ideation/products'; permission ideation.products.manage):
  *   GET /ideation/products/{id}/delivery → DeliveryConfigOut
- *   PUT /ideation/products/{id}/delivery body DeliveryConfigIn { productDomainBase }
+ *   PUT /ideation/products/{id}/delivery body DeliveryConfigIn { productDomainBase, buildRepo? }
  *                                        → DeliveryConfigOut
- *   DeliveryConfigOut { productId, productDomainBase, createdAt?, updatedAt? }
+ *   DeliveryConfigOut { productId, productDomainBase, buildRepo, createdAt?, updatedAt? }
  *   Only software products carry a delivery row; product_domain_base is the
  *   absolute origin (e.g. https://fe-sorento.foundryx.my) used to mint ideation
  *   idea links. Null until a Maintainer sets it.
@@ -83,6 +83,8 @@ export type ProductUpdateInput = Partial<ProductCreateInput>;
 export interface DeliveryConfig {
   productId: string;
   productDomainBase: string | null;
+  /** `owner/repo` the BR Send-to-build issue is filed in. */
+  buildRepo: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 }
@@ -128,10 +130,10 @@ export interface ProductService {
   exportCsv(query: ListQuery, columns: string[], ids?: string[]): Promise<string>;
   /** Read a software product's delivery config (ideation.products.manage). */
   getDelivery(productId: string): Promise<DeliveryConfig>;
-  /** Set a software product's product-domain base (ideation.products.manage). */
+  /** Set a software product's product-domain base + build repository (ideation.products.manage). */
   setDelivery(
     productId: string,
-    body: { productDomainBase: string },
+    body: { productDomainBase: string; buildRepo?: string | null },
   ): Promise<DeliveryConfig>;
 }
 

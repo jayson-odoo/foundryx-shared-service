@@ -138,12 +138,19 @@ class DeliveryConfigOut(ApiModel):
 
     productId: str
     productDomainBase: Optional[str] = None
+    buildRepo: Optional[str] = None
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None
 
 
+BUILD_REPO_PATTERN = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+
+
 class DeliveryConfigIn(ApiModel):
     productDomainBase: str
+    # ``owner/repo`` for the BR Send-to-build issue; null clears it. Omitted =
+    # left untouched (see ``DeliveryService.set``).
+    buildRepo: Optional[str] = Field(default=None, pattern=BUILD_REPO_PATTERN)
 
 
 class VoteIn(ApiModel):

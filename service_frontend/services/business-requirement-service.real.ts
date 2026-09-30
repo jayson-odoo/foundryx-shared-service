@@ -12,12 +12,20 @@
  * - listVersions→ GET    /ideation/business-requirements/{id}/versions
  * - remove      → DELETE /ideation/business-requirements/{id}          (204)
  * - templateStatus → GET /ideation/business-requirements/template-status
+ * - sendToBuild → POST   /ideation/business-requirements/{id}/send-to-build
+ * - getBuild    → GET    /ideation/business-requirements/{id}/build
+ * - listBuildKeys → GET  /ideation/build-keys
+ * - mintBuildKey  → POST /ideation/build-keys {name}   (plaintext returned once)
+ * - revokeBuildKey → DELETE /ideation/build-keys/{id}
  */
 import { apiFetch } from '@/lib/api-client';
 import type { Idea } from '@/types/ideation';
 import type { StatusGraph } from '@/types/status-engine';
 import type {
   BrTemplateVersion,
+  BuildInfo,
+  BuildKey,
+  BuildKeyMinted,
   BusinessRequirement,
   BusinessRequirementDetail,
 } from '@/types/business-requirement';
@@ -28,6 +36,7 @@ import type {
 } from './business-requirement-service';
 
 const base = '/ideation/business-requirements';
+const keysBase = '/ideation/build-keys';
 const one = (id: string) => `${base}/${encodeURIComponent(id)}`;
 
 function listQuery(params?: BrListFilter): string {
@@ -107,5 +116,30 @@ export const realBusinessRequirementService: BusinessRequirementService = {
 
   templateStatus() {
     return apiFetch<BrTemplateStatus>(`${base}/template-status`);
+  },
+
+  sendToBuild(id) {
+    return apiFetch<BusinessRequirementDetail>(`${one(id)}/send-to-build`, {
+      method: 'POST',
+    });
+  },
+
+  getBuild(id) {
+    return apiFetch<BuildInfo>(`${one(id)}/build`);
+  },
+
+  listBuildKeys() {
+    return apiFetch<BuildKey[]>(keysBase);
+  },
+
+  mintBuildKey(name) {
+    return apiFetch<BuildKeyMinted>(keysBase, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  revokeBuildKey(id) {
+    return apiFetch<void>(`${keysBase}/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 };

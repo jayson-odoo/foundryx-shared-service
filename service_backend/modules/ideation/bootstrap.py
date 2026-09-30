@@ -24,6 +24,9 @@ from .db import IDEATION_SCHEMA, IdeationBase
 MODULE_NAME = "ideation"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
 
+PROMOTE_PERMISSION = "ideation.business_requirements.promote"
+SEND_TO_BUILD_PERMISSION = "ideation.business_requirements.send_to_build"
+
 
 def register_capabilities() -> None:
     """Boot-time capability registration (plan sprint-3/10 D5). Idempotent.
@@ -125,6 +128,14 @@ def register_engine_entities() -> None:
 
     register_event_subscriber(bus_subscriber)
 
+    # BR Send to build: the GitHub crew-intake provider joins the core
+    # connections registry (type ``scm``). Idempotent.
+    from app.integrations import register_provider
+
+    from .github_provider import GitHubProvider
+
+    register_provider(GitHubProvider())
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + the ``pg_trgm`` extension + all
@@ -161,6 +172,8 @@ def install(engine: Engine, db: Session) -> None:
     """
     create_schema_and_tables(engine)
     PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    # Existing tenants: every role holding `.promote` gets `.send_to_build`.
+    sweep_send_to_build_grants(db)
     # Idea status set + transition graph as platform defaults (AC-A-10, D-A3).
     # Two-tier: every tenant uses these until it forks the set. Idempotent.
     from .services.br_templates import seed_br_template
@@ -176,6 +189,50 @@ def install(engine: Engine, db: Session) -> None:
     from .services.grill_seed import seed_grill_skill
 
     seed_grill_skill(db)
+
+
+def sweep_send_to_build_grants(db: Session) -> None:
+    """Grant ``send_to_build`` to every role (every tenant) that already holds
+    ``promote``. Idempotent: one ``role_permissions`` row per role, stamped with
+    the role's OWN tenant_id. No commit - the caller owns the transaction."""
+    from sqlalchemy import select
+
+    from app.models import Role
+    from app.models.permission import Permission, role_permissions
+
+    ids = {
+        key: pid
+        for key, pid in db.execute(
+            select(Permission.key, Permission.id).where(
+                Permission.key.in_([PROMOTE_PERMISSION, SEND_TO_BUILD_PERMISSION])
+            )
+        )
+    }
+    promote_id = ids.get(PROMOTE_PERMISSION)
+    send_id = ids.get(SEND_TO_BUILD_PERMISSION)
+    if promote_id is None or send_id is None:
+        return
+    holders = db.execute(
+        select(Role.id, Role.tenant_id)
+        .join(role_permissions, role_permissions.c.role_id == Role.id)
+        .where(role_permissions.c.permission_id == promote_id)
+    ).all()
+    already = {
+        r[0]
+        for r in db.execute(
+            select(role_permissions.c.role_id).where(
+                role_permissions.c.permission_id == send_id
+            )
+        )
+    }
+    rows = [
+        {"role_id": role_id, "permission_id": send_id, "tenant_id": tenant_id}
+        for role_id, tenant_id in holders
+        if role_id not in already
+    ]
+    if rows:
+        db.execute(role_permissions.insert(), rows)
+    db.flush()
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:

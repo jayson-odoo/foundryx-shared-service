@@ -14,6 +14,17 @@ vi.mock('@/services/business-requirement-service', () => ({
   },
 }));
 
+// The dialog renders created/last-used through useDatetime (house rule), which
+// reads the NextAuth session; the test has no SessionProvider.
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({
+    timeZone: 'UTC',
+    formatDate: (v: string) => v ?? '',
+    formatDateTime: (v: string) => `T(${v})`,
+    formatTime: (v: string) => v ?? '',
+  }),
+}));
+
 const FULL_KEY = 'fxb_live_abcdefabcdefabcdefabcdefabcdefabcd';
 
 const KEY = {

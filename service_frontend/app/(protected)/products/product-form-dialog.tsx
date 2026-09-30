@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { ApiError } from '@/lib/api-client';
 import { SearchSelect } from '@/components/platform/search-select';
 import {
   productService,
@@ -71,6 +72,9 @@ export function ProductFormDialog({
   // Software-only delivery config (product-domain base).
   const [domainBase, setDomainBase] = useState('');
   const [initialDomainBase, setInitialDomainBase] = useState<string | null>(null);
+  const [buildRepo, setBuildRepo] = useState('');
+  const [initialBuildRepo, setInitialBuildRepo] = useState('');
+  const [buildRepoError, setBuildRepoError] = useState<string | null>(null);
   const [deliveryLoading, setDeliveryLoading] = useState(false);
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
 
@@ -93,6 +97,8 @@ export function ProductFormDialog({
         if (cancelled) return;
         setDomainBase(cfg.productDomainBase ?? '');
         setInitialDomainBase(cfg.productDomainBase ?? '');
+        setBuildRepo(cfg.buildRepo ?? '');
+        setInitialBuildRepo(cfg.buildRepo ?? '');
       })
       .catch((e) => {
         if (cancelled) return;
@@ -116,6 +122,7 @@ export function ProductFormDialog({
     if (!valid) return;
     setSaving(true);
     setError(null);
+    setBuildRepoError(null);
     try {
       const payload = {
         name: name.trim(),
@@ -136,15 +143,35 @@ export function ProductFormDialog({
       // write a provided base; on edit only when it actually changed.
       if (isSoftware) {
         const trimmed = domainBase.trim();
-        const changed = isEdit ? trimmed !== (initialDomainBase ?? '') : trimmed.length > 0;
-        if (changed && trimmed.length > 0) {
-          await productService.setDelivery(saved.id, { productDomainBase: trimmed });
+        const repo = buildRepo.trim();
+        const domainChanged = isEdit ? trimmed !== (initialDomainBase ?? '') : trimmed.length > 0;
+        const repoChanged = isEdit ? repo !== initialBuildRepo : repo.length > 0;
+        if ((domainChanged && trimmed.length > 0) || repoChanged) {
+          await productService.setDelivery(saved.id, {
+            productDomainBase: trimmed,
+            buildRepo: repo.length > 0 ? repo : null,
+          });
         }
       }
 
       onSaved();
       onClose();
     } catch (e) {
+      const fieldErrors =
+        e instanceof ApiError && e.status === 422
+          ? (e.detail as { fieldErrors?: Record<string, string> } | undefined)?.fieldErrors
+          : undefined;
+      // FastAPI's own pattern 422 arrives as a message naming the field.
+      const repoMessage =
+        fieldErrors?.buildRepo ??
+        (e instanceof ApiError && e.status === 422 && /buildRepo/i.test(e.message)
+          ? e.message
+          : undefined);
+      if (repoMessage) {
+        setBuildRepoError(repoMessage);
+        setSaving(false);
+        return;
+      }
       setError(e instanceof Error ? e.message : 'Could not save the product.');
       setSaving(false);
     }
@@ -274,6 +301,21 @@ export function ProductFormDialog({
                 uses it to mint idea links (e.g. an idea captured on WhatsApp
                 deep-links back here). Set it once the app has a hosted URL.
               </p>
+              <Label htmlFor="prod-build-repo" className="pt-2">
+                Build repository
+              </Label>
+              <Input
+                id="prod-build-repo"
+                value={buildRepo}
+                onChange={(e) => {
+                  setBuildRepo(e.target.value);
+                  setBuildRepoError(null);
+                }}
+                placeholder="owner/repository"
+                aria-invalid={buildRepoError ? true : undefined}
+                disabled={deliveryLoading || Boolean(deliveryError)}
+              />
+              {buildRepoError && <p className="text-xs text-destructive">{buildRepoError}</p>}
               {deliveryLoading && (
                 <p className="text-xs text-muted-foreground">Loading delivery config…</p>
               )}
