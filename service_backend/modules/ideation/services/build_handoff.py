@@ -38,13 +38,14 @@ from app.services.status_machine import (
 from ..github_client import GitHubClient, GitHubError
 from ..models import (
     BrBuild,
+    BrBuildKey,
     BrBuildEvent,
     BusinessRequirement,
     Idea,
     IdeaBusinessRequirement,
     ProductDelivery,
 )
-from ..schemas import BuildEventOut, BuildOut, SentByOut
+from ..schemas import BuildEventIn, BuildEventOut, BuildOut, SentByOut
 from .br_templates import get_stamped_doc
 from .issue_body import render_issue_body
 from .statuses import BR_ENTITY, BR_SEND_EDGE_PREFIX, BR_STATUS_IDS
@@ -57,6 +58,7 @@ LABEL_COLOR = "ff5a00"
 GITHUB_PROVIDER = "github"
 GITHUB_CONNECTION_TYPE = "scm"
 
+DELIVERED_EDGE_ID = "br-tr-build-delivered"
 BLOCKER_TEST = "Test requirements cannot be sent to build"
 BLOCKER_GITHUB = "Connect GitHub in Settings > Integrations"
 
@@ -405,3 +407,82 @@ class BuildHandoffService:
             )
         )
         self.db.commit()
+
+    # ── write-back (crew -> Trace) ────────────────────────────────────────
+    def append_event(
+        self, key: BrBuildKey, br_id: str, payload: BuildEventIn
+    ) -> BuildEventOut:
+        """Append one Trace entry. 404 (one body) unless the BR is in the key's
+        tenant AND has a build row. ``merged``/``released`` move the BR to
+        ``delivered`` through the engine (no actor) in the same transaction when
+        the edge is available from its current status; otherwise the entry is
+        stored with ``statusMoved=False``. Never raises for a refused move."""
+        tenant_id = key.tenant_id
+        br = (
+            self.db.query(BusinessRequirement)
+            .filter(
+                BusinessRequirement.id == br_id,
+                BusinessRequirement.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        row = self._row(tenant_id, br_id) if br is not None else None
+        if br is None or row is None:
+            raise HTTPException(404, "Not found.")
+
+        moved = False
+        if payload.status in ("merged", "released"):
+            tier = StatusRepository(self.db).resolve_tier(BR_ENTITY, tenant_id)
+            delivered = BR_STATUS_IDS["delivered"]
+            edge = StatusTransitionRepository(self.db).find_edge(
+                br.status_id, delivered, tier
+            )
+            if edge is not None and edge.id == DELIVERED_EDGE_ID:
+                try:
+                    status_machine.transition(
+                        self.db,
+                        BR_ENTITY,
+                        br,
+                        delivered,
+                        actor=None,
+                        tenant_id=tenant_id,
+                        commit=False,
+                    )
+                    row.state = "delivered"
+                    moved = True
+                except (
+                    TransitionForbidden,
+                    TransitionNotAllowed,
+                    TransitionConditionsNotMet,
+                ):
+                    self.db.rollback()
+                    br = self.db.get(BusinessRequirement, br_id)
+                    row = self._row(tenant_id, br_id)
+        event = BrBuildEvent(
+            tenant_id=tenant_id,
+            business_requirement_id=br_id,
+            kind="crew",
+            stage=payload.stage,
+            message=payload.message,
+            pr_url=payload.prUrl,
+            handtest_url=payload.handtestUrl,
+            status=payload.status,
+            key_id=key.id,
+            status_moved=moved,
+        )
+        self.db.add(event)
+        self.db.commit()
+        self.db.refresh(event)
+        return BuildEventOut(
+            id=event.id,
+            seq=event.seq,
+            kind=event.kind,
+            stage=event.stage,
+            message=event.message,
+            prUrl=event.pr_url,
+            handtestUrl=event.handtest_url,
+            status=event.status,
+            statusMoved=moved,
+            actorName=None,
+            createdAt=event.created_at,
+        )

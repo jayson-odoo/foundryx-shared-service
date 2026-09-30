@@ -25,6 +25,20 @@ vi.mock('@/hooks/use-datetime', () => ({
   }),
 }));
 
+// Revoke rides the deferred-action (grace window) engine through the shell's
+// ActionMenu: no session, no network - the hooks are mocked.
+const startDeferred = vi.fn();
+vi.mock('@/hooks/use-deferred-action', () => ({
+  useDeferredAction: () => ({
+    state: { status: 'idle' },
+    start: (...a: unknown[]) => startDeferred(...a),
+    cancel: vi.fn(),
+  }),
+}));
+vi.mock('@/hooks/use-can', () => ({
+  useCan: () => ({ can: () => true, ready: true, permissions: new Set<string>() }),
+}));
+
 const FULL_KEY = 'fxb_live_abcdefabcdefabcdefabcdefabcdefabcd';
 
 const KEY = {
@@ -39,6 +53,12 @@ beforeEach(() => {
   listBuildKeys.mockReset().mockResolvedValue([KEY]);
   mintBuildKey.mockReset().mockResolvedValue({ ...KEY, id: 'k2', name: 'New key', plaintext: FULL_KEY });
   revokeBuildKey.mockReset().mockResolvedValue(undefined);
+  startDeferred.mockReset().mockResolvedValue({
+    commitAt: new Date(Date.now() + 10_000).toISOString(),
+    windowSeconds: 10,
+    failedCount: 0,
+    parkedEntityIds: ['k1'],
+  });
 });
 
 function Harness() {
@@ -82,14 +102,15 @@ describe('BuildKeysDialog (AC-STB-15)', () => {
     expect(screen.queryByDisplayValue(FULL_KEY)).not.toBeInTheDocument();
   });
 
-  it('AC-STB-15 Revoke asks for confirmation before calling revokeBuildKey(id)', async () => {
+  it('AC-STB-15 Revoke parks a deferred action (grace window), no confirm dialog and no direct call', async () => {
     render(<Harness />);
     await screen.findByText('Crew daemon');
-    fireEvent.click(screen.getByRole('button', { name: /revoke/i }));
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions' }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Revoke' }));
+    await waitFor(() => expect(startDeferred).toHaveBeenCalledTimes(1));
+    expect(startDeferred.mock.calls[0][0]).toBe('ideation_build_key.revoke');
+    expect(startDeferred.mock.calls[0][1]).toEqual([{ entityType: 'ideation_build_key', entityId: 'k1' }]);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     expect(revokeBuildKey).not.toHaveBeenCalled();
-    // The confirm (AlertDialog) exposes its own Revoke action button.
-    const confirms = await screen.findAllByRole('button', { name: /^revoke$/i });
-    fireEvent.click(confirms[confirms.length - 1]);
-    await waitFor(() => expect(revokeBuildKey).toHaveBeenCalledWith('k1'));
   });
 });

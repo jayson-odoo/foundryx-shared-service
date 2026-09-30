@@ -307,6 +307,34 @@ class BuildOut(ApiModel):
     events: List[BuildEventOut] = []
 
 
+class BuildEventIn(ApiModel):
+    """Crew progress entry (write-back). ``stage`` is crew's own vocabulary."""
+
+    stage: str = Field(min_length=1, max_length=40)
+    message: str = Field(min_length=1, max_length=2000)
+    prUrl: Optional[str] = Field(default=None, pattern=r"^https?://\S+$", max_length=2000)
+    handtestUrl: Optional[str] = Field(default=None, pattern=r"^https?://\S+$", max_length=2000)
+    status: Literal["in_progress", "merged", "released", "failed", "cancelled"] = "in_progress"
+
+
+class BuildKeyMintIn(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class BuildKeyOut(ApiModel):
+    id: str
+    name: str
+    keyPrefix: str
+    createdAt: datetime
+    lastUsedAt: Optional[datetime] = None
+
+
+class BuildKeyMintOut(BuildKeyOut):
+    """Mint response - the plaintext is shown ONCE."""
+
+    plaintext: str
+
+
 class BusinessRequirementDetailOut(BusinessRequirementOut):
     """The BR detail - adds ``answers`` (the form_engine answer map) and
     ``templateDoc`` (the STAMPED template version's block document, for the

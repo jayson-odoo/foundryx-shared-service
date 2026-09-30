@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.auth_throttle import (
+    THROTTLE_SCOPE_BUILD,
     THROTTLE_SCOPE_DOC_SHARE,
     THROTTLE_SCOPE_EMAIL,
     THROTTLE_SCOPE_EMBED,
@@ -95,6 +96,12 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
             settings.throttle_pull_max_fails,
             timedelta(minutes=settings.throttle_pull_window_minutes),
             None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_BUILD:
+        return (
+            settings.throttle_build_max_fails,
+            timedelta(minutes=settings.throttle_build_window_minutes),
+            None,
         )
     if scope == THROTTLE_SCOPE_PULL_KEY:
         return (
@@ -355,3 +362,13 @@ class ThrottleService:
 
     def record_pull_key_request(self, *, key_id: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_PULL_KEY, key_id)
+
+    # ---- Ideation BR build write-back gateway (own bucket, AC-STB-16) ----
+
+    def enforce_build(self, *, ip: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_BUILD, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_build_failure(self, *, ip: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_BUILD, ip)

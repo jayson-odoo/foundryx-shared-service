@@ -29,6 +29,15 @@
       "prefix": "/ideation/business-requirements"
     },
     {
+      "name": "build_keys",
+      "prefix": "/ideation/build-keys"
+    },
+    {
+      "name": "build_writeback",
+      "prefix": "/ideation/build",
+      "public": true
+    },
+    {
       "name": "intake",
       "prefix": "/ideation/intake",
       "public": true

@@ -14,6 +14,7 @@ from app.deferred_actions.registry import DeferredActionDef, register_deferred_a
 from app.repositories.user_repository import UserRepository
 
 MANAGE = "ideation.triage.manage"
+BUILD_KEY_MANAGE = "ideation.business_requirements.send_to_build"
 BR_MANAGE = "ideation.business_requirements.manage"
 
 
@@ -192,7 +193,39 @@ EMBED_CONNECTIONS_SET_ACTIVE = DeferredActionDef(
     exists=_embed_connection_exists,
 )
 
+# ---- BR build write-back keys ---------------------------------------------
+
+
+def _build_key_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from .models import BrBuildKey
+
+    return (
+        db.query(BrBuildKey.id)
+        .filter(BrBuildKey.id == entity_id, BrBuildKey.tenant_id == tenant_id)
+        .first()
+        is not None
+    )
+
+
+def _build_key_revoke(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from .services.build_keys import BuildKeyService
+
+    BuildKeyService(db).revoke(entity_id, tenant_id)
+
+
+BUILD_KEY_REVOKE = DeferredActionDef(
+    key="ideation_build_key.revoke",
+    module="ideation",
+    entity_type="ideation_build_key",
+    permission=BUILD_KEY_MANAGE,
+    window="destructive",
+    label="Revoke",
+    execute=_build_key_revoke,
+    exists=_build_key_exists,
+)
+
 _ALL = (
+    BUILD_KEY_REVOKE,
     IDEAS_ARCHIVE,
     IDEAS_DELETE,
     BR_DELETE,

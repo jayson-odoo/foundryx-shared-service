@@ -1,19 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Check, Copy, KeyRound, Trash2 } from 'lucide-react';
+import { Check, Copy, KeyRound } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import {
   Dialog,
   DialogBody,
@@ -25,10 +15,24 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ClampedText } from '@/components/platform/clamped-text';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import type { ResourceAction } from '@/components/platform/resource-list/types';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useDatetime } from '@/hooks/use-datetime';
+import { SEND_TO_BUILD_PERMISSION } from './use-br-build';
 import { businessRequirementService } from '@/services/business-requirement-service';
 import type { BuildKey } from '@/types/business-requirement';
+
+/** Revoke rides the CORE deferred-action (grace window) engine - never a confirm
+ * dialog. Registered server-side in `modules/ideation/deferred_actions.py`. */
+const REVOKE_ACTION: ResourceAction<BuildKey> = {
+  id: 'revoke',
+  label: 'Revoke',
+  tone: 'destructive',
+  surfaces: { row: true },
+  permission: SEND_TO_BUILD_PERMISSION,
+  deferred: { actionKey: 'ideation_build_key.revoke', entityType: 'ideation_build_key' },
+};
 
 export interface BuildKeysDialogProps {
   open: boolean;
@@ -48,7 +52,6 @@ export function BuildKeysDialog({ open, onOpenChange }: BuildKeysDialogProps) {
   const [name, setName] = useState('');
   const [minting, setMinting] = useState(false);
   const [plaintext, setPlaintext] = useState<string | null>(null);
-  const [revoking, setRevoking] = useState<BuildKey | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -68,7 +71,6 @@ export function BuildKeysDialog({ open, onOpenChange }: BuildKeysDialogProps) {
     }
     setName('');
     setPlaintext(null);
-    setRevoking(null);
   }, [open, reload]);
 
   async function mint() {
@@ -83,16 +85,6 @@ export function BuildKeysDialog({ open, onOpenChange }: BuildKeysDialogProps) {
       toast.error(e instanceof Error ? e.message : 'Could not mint the key.');
     } finally {
       setMinting(false);
-    }
-  }
-
-  async function revoke(key: BuildKey) {
-    try {
-      await businessRequirementService.revokeBuildKey(key.id);
-      toast.success('Key revoked.');
-      void reload();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Could not revoke the key.');
     }
   }
 
@@ -175,15 +167,12 @@ export function BuildKeysDialog({ open, onOpenChange }: BuildKeysDialogProps) {
                             {key.lastUsedAt ? ` · Last used ${formatDateTime(key.lastUsedAt)}` : ''}
                           </span>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          mode="icon"
-                          aria-label={`Revoke ${key.name}`}
-                          onClick={() => setRevoking(key)}
-                        >
-                          <Trash2 />
-                        </Button>
+                        <ActionMenu
+                          actions={[REVOKE_ACTION]}
+                          rows={[key]}
+                          runtime={{ reload: () => void reload() }}
+                          surface="row"
+                        />
                       </li>
                     ))}
                   </ul>
@@ -202,28 +191,6 @@ export function BuildKeysDialog({ open, onOpenChange }: BuildKeysDialogProps) {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={revoking !== null} onOpenChange={(next) => !next && setRevoking(null)}>
-        <AlertDialogContent className="md:max-w-[400px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Revoke key?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {revoking ? `${revoking.name} stops working immediately.` : ''}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                const target = revoking;
-                setRevoking(null);
-                if (target) void revoke(target);
-              }}
-            >
-              Revoke
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
   );
 }

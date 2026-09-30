@@ -89,6 +89,8 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   // sprint-5/10 (AC-10-38) - pull API key revoke rides the CORE
   // deferred-actions engine, never a hand-rolled confirm dialog.
   autocount_pull_api_key: { singular: 'key', plural: 'keys' },
+  // BR Send to build write-back key revoke (deferred-actions engine).
+  ideation_build_key: { singular: 'key', plural: 'keys' },
 };
 
 function capitalize(word: string): string {
