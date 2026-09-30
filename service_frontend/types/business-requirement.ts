@@ -60,11 +60,14 @@ export interface BuildInfo {
   /** A send edge leaves the BR's current status (false for in FR, delivered,
    * archived: the header keeps the plain Edit primary). */
   sendEdgeAvailable: boolean;
+  /** Visible template fields filled / total (hidden conditional fields excluded). */
+  fieldsDone: number;
+  fieldsTotal: number;
   blockers: string[];
   repo: string | null;
   issueUrl: string | null;
   issueNumber: number | null;
-  state: 'none' | 'creating' | 'sent' | 'delivered' | 'failed';
+  state: 'none' | 'creating' | 'recovering' | 'sent' | 'delivered' | 'failed';
   sentAt: string | null;
   sentBy: { id: string; name: string } | null;
   stage: string | null;

@@ -34,27 +34,6 @@ export interface UseBrBuildResult {
   summary: BrBuildSummary;
 }
 
-function isEmptyAnswer(value: unknown): boolean {
-  if (value === undefined || value === null) return true;
-  if (typeof value === 'string') return value.trim().length === 0;
-  if (Array.isArray(value)) return value.length === 0;
-  return false;
-}
-
-/** "<n> of <m> fields complete" over the STAMPED template's input fields. */
-function fieldsComplete(br: BusinessRequirementDetail): { done: number; total: number } {
-  const keys: string[] = [];
-  for (const page of br.templateDoc?.pages ?? []) {
-    for (const section of page.sections) {
-      for (const field of section.fields) {
-        if (field.key) keys.push(field.key);
-      }
-    }
-  }
-  const done = keys.filter((k) => !isEmptyAnswer(br.answers?.[k])).length;
-  return { done, total: keys.length };
-}
-
 function repoShortName(repo: string | null, issueUrl: string | null): string {
   if (repo) return repo.split('/').pop() ?? repo;
   const match = issueUrl?.match(/github\.com\/[^/]+\/([^/]+)\//);
@@ -120,9 +99,9 @@ export function useBrBuild(
     () => ({
       repo: build?.repo ?? null,
       ideaCount: br?.ideaCount ?? 0,
-      fieldsComplete: br ? fieldsComplete(br) : { done: 0, total: 0 },
+      fieldsComplete: { done: build?.fieldsDone ?? 0, total: build?.fieldsTotal ?? 0 },
     }),
-    [br, build?.repo],
+    [br, build?.repo, build?.fieldsDone, build?.fieldsTotal],
   );
 
   const view = useMemo(() => {

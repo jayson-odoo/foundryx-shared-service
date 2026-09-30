@@ -58,6 +58,8 @@ function noBuild(over: Partial<BuildInfo> = {}): BuildInfo {
   return {
     canSend: false,
     sendEdgeAvailable: true,
+    fieldsDone: 4,
+    fieldsTotal: 6,
     blockers: [BLOCKED_REASON],
     repo: MOCK_REPO,
     issueUrl: null,
@@ -111,6 +113,8 @@ function sentBuild(): BuildInfo {
   return {
     canSend: false,
     sendEdgeAvailable: false,
+    fieldsDone: 6,
+    fieldsTotal: 6,
     blockers: [],
     repo: MOCK_REPO,
     issueUrl: `https://github.com/${MOCK_REPO}/issues/1402`,
@@ -297,6 +301,8 @@ export const mockBusinessRequirementService: BusinessRequirementService = {
       ...br.build,
       canSend: false,
       sendEdgeAvailable: false,
+      fieldsDone: 6,
+      fieldsTotal: 6,
       state: 'sent',
       issueNumber: number,
       issueUrl: `https://github.com/${MOCK_REPO}/issues/${number}`,

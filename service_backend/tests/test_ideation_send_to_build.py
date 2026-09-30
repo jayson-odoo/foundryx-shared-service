@@ -1347,6 +1347,8 @@ def test_r_n2_ac_stb_06_hidden_conditional_fields_are_not_required(ideation_clie
     assert build["blockers"] == [], build
     assert build["canSend"] is True
     assert "Rollout plan" not in " ".join(build["blockers"])
+    # The hidden rollout_plan and legal_note are excluded from the counts.
+    assert (build["fieldsDone"], build["fieldsTotal"]) == (7, 7)
 
     # 2. Trigger "yes": rollout_plan becomes visible and blank -> named.
     shown = make_br(ideation_client, h, pid, answers={**ALL_ANSWERS, "rollout_needed": "yes"})
@@ -1378,3 +1380,46 @@ def test_r_n2_ac_stb_06_hidden_conditional_fields_are_not_required(ideation_clie
     )
     assert ok.status_code == 200, ok.text
     assert _detail(ideation_client, h, shown)["build"]["canSend"] is True
+
+
+# ── S2-3b: case-insensitive defusing ─────────────────────────────────────────
+
+
+def test_s2_3b_ac_stb_10_lowercase_gh_reference_is_defused(ideation_client, monkeypatch):
+    _s, body = _send_with_answer(ideation_client, monkeypatch, "Duplicate of gh-123 please")
+    assert "gh-123" not in body
+    assert "gh-\u200b123" in body
+
+
+def test_s2_3b_ac_stb_10_mixed_case_github_host_is_defused(ideation_client, monkeypatch):
+    _s, body = _send_with_answer(
+        ideation_client, monkeypatch, "See https://GitHub.com/o/r/issues/1 for context"
+    )
+    assert "GitHub.com/o/r/issues/1" not in body
+    assert "GitHub.com\u200b/o/r/issues/1" in body
+
+
+# ── stored build_repo that fails the pattern (rows older than the regex) ─────
+
+
+@pytest.mark.parametrize("stored", ["../user", "a/..", "a/b/c", "-/x"])
+def test_s2_5_ac_stb_06_invalid_stored_build_repo_is_a_blocker_never_a_500(
+    ideation_client, monkeypatch, stored
+):
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h, name="Sorento CRM")
+    set_build_repo(ideation_client._factory, pid, stored)  # direct row, bypasses the API
+    seed_github_connection(ideation_client._factory)
+    br_id = make_br(ideation_client, h, pid)
+    gh = _install(monkeypatch, FakeGitHub())
+
+    build = _detail(ideation_client, h, br_id)["build"]
+    assert build["canSend"] is False
+    assert build["blockers"] == ["Set the build repository on the product Sorento CRM"]
+
+    res = _send(ideation_client, h, br_id)
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["message"] == "Set the build repository on the product Sorento CRM"
+    assert gh.calls == []
+    assert _build_rows(ideation_client._factory, br_id) == []
+    assert br_status_key(ideation_client, h, br_id) == "draft"

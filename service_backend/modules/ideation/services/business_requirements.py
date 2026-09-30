@@ -63,7 +63,7 @@ def _field_labels(doc: Dict) -> Dict[str, str]:
     form = FormDocument.model_validate(doc)
     return {f.key: (f.label or f.key) for f in form.input_fields() if f.key}
 
-def _is_blank(value) -> bool:
+def is_blank_answer(value) -> bool:
     if value is None:
         return True
     if isinstance(value, str):
@@ -90,7 +90,7 @@ def missing_labels(doc: Dict, answers: Dict, required_only: bool) -> List[str]:
         found = [
             (fld.label or fld.key)
             for fld in visible_input_fields(doc, answers)
-            if _is_blank(answers.get(fld.key))
+            if is_blank_answer(answers.get(fld.key))
         ]
     out: List[str] = []
     for label in found:

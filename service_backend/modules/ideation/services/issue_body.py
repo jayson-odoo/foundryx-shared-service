@@ -23,7 +23,8 @@ _ZWSP = "\u200b"
 
 _MENTION = re.compile(r"@(?=[A-Za-z0-9_-])")
 _XREF = re.compile(r"#(?=\d)")
-_GH_REF = re.compile(r"GH-(?=\d)")
+_GH_REF = re.compile(r"(GH-)(?=\d)", re.I)
+_GH_HOST = re.compile(r"(github\.com)/", re.I)
 
 
 def clean_text(text: str) -> str:
@@ -36,8 +37,8 @@ def clean_text(text: str) -> str:
     # be mistaken for a genuine marker line.
     out = out.replace("br-id:", "br-" + _ZWSP + "id:").replace("br-product:", "br-" + _ZWSP + "product:")
     out = _MENTION.sub("@" + _ZWSP, out)
-    out = _GH_REF.sub("GH-" + _ZWSP, out)
-    out = out.replace("github.com/", "github.com" + _ZWSP + "/")
+    out = _GH_REF.sub(lambda m: m.group(1) + _ZWSP, out)
+    out = _GH_HOST.sub(lambda m: m.group(1) + _ZWSP + "/", out)
     return _XREF.sub("#" + _ZWSP, out)
 
 

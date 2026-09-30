@@ -301,6 +301,10 @@ class BuildOut(ApiModel):
     # A ``br-tr-send-to-build-*`` edge leaves the BR's current status (false in
     # FR, delivered, archived: the header keeps the plain Edit primary).
     sendEdgeAvailable: bool = False
+    # Visible stamped-template input fields, and how many are filled (hidden
+    # conditional fields are excluded).
+    fieldsDone: int = 0
+    fieldsTotal: int = 0
     blockers: List[str] = []
     repo: Optional[str] = None
     issueUrl: Optional[str] = None

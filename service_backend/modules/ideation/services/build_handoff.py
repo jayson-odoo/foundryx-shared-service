@@ -13,6 +13,7 @@ create. Every query is tenant-scoped; stored ids resolve WITH ``tenant_id``.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -46,9 +47,11 @@ from ..models import (
     IdeaBusinessRequirement,
     ProductDelivery,
 )
-from ..schemas import BuildEventIn, BuildEventOut, BuildOut, SentByOut
+from ..schemas import BUILD_REPO_PATTERN, BuildEventIn, BuildEventOut, BuildOut, SentByOut
 from .br_templates import get_stamped_doc
-from .business_requirements import missing_labels
+from app.form_engine.validation import visible_input_fields
+
+from .business_requirements import is_blank_answer, missing_labels
 from .issue_body import clean_text, render_issue_body
 from .statuses import BR_ENTITY, BR_SEND_EDGE_PREFIX, BR_STATUS_IDS
 
@@ -125,7 +128,10 @@ class BuildHandoffService:
             )
             .first()
         )
-        return (row.build_repo or None) if row else None
+        repo = (row.build_repo or None) if row else None
+        # A stored value that fails the shape check (a row older than the regex)
+        # counts as no repo: it is never sent to GitHub.
+        return repo if repo and re.fullmatch(BUILD_REPO_PATTERN, repo) else None
 
     def _connection(self, tenant_id: str):
         conn = ConnectionRepository(self.db).get_by_type(
@@ -185,9 +191,19 @@ class BuildHandoffService:
         blockers = self._blockers(tenant_id, br)
         return (not blockers), blockers
 
+    def _field_counts(self, tenant_id: str, br: BusinessRequirement) -> Tuple[int, int]:
+        doc = get_stamped_doc(self.db, br.template_key, br.template_version, tenant_id)
+        if doc is None:
+            return 0, 0
+        answers = dict(br.answers_json or {})
+        visible = visible_input_fields(doc, answers)
+        done = sum(1 for fld in visible if not is_blank_answer(answers.get(fld.key)))
+        return done, len(visible)
+
     # ── read model ────────────────────────────────────────────────────────
     def detail_build(self, tenant_id: str, br: BusinessRequirement) -> BuildOut:
         can_send, blockers = self.readiness(tenant_id, br)
+        fields_done, fields_total = self._field_counts(tenant_id, br)
         row = self._row(tenant_id, br.id)
         events = (
             self.db.query(BrBuildEvent)
@@ -228,6 +244,8 @@ class BuildHandoffService:
         return BuildOut(
             canSend=can_send,
             sendEdgeAvailable=self._send_edge_available(tenant_id, br),
+            fieldsDone=fields_done,
+            fieldsTotal=fields_total,
             blockers=blockers,
             repo=row.repo if row is not None else self._build_repo(tenant_id, br.product_id),
             issueUrl=row.issue_url if row is not None else None,
@@ -385,6 +403,10 @@ class BuildHandoffService:
                 issue = client.create_issue(
                     repo, clean_text(br.title or "Untitled"), self._issue_body(tenant_id, br), [LABEL]
                 )
+        except ValueError as exc:  # repo shape rejected by the client (belt and braces)
+            self._drop_row(row)
+            message = "Set the build repository on the product"
+            raise HTTPException(422, detail={"message": message, "blockers": [message]}) from exc
         except GitHubError as exc:
             # An ambiguous issue-create outcome (timeout, 5xx) may have created
             # the issue: KEEP the ``creating`` row as the recovery anchor. Any
