@@ -31,9 +31,11 @@ function windowLabel(run: DocFeedRun): string {
 
 /** The summary counters that apply to THIS run's kind (plan section 3.1) -
  * absent keys read as 0, never rendered as a false zero for a kind they do
- * not apply to (e.g. `candidates` only means something on a sweep). */
+ * not apply to (e.g. `candidates` only means something on a sweep). A null
+ * summary (in-flight or legacy failed row) reads '-'; Outcome shows the state. */
 function summaryLabel(run: DocFeedRun): string {
   const s = run.summary;
+  if (!s) return '-';
   if (run.kind === 'sweep') {
     return `${s.candidates ?? 0} candidate(s), ${s.deactivated ?? 0} deactivated, ${s.notFound ?? 0} not found`;
   }

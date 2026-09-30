@@ -337,6 +337,8 @@ def on_job_orphaned(
         )
         for run in open_feed_runs:
             run.outcome = "FAILED"
+            if run.summary_json is None:
+                run.summary_json = {}
             run.error = (
                 getattr(job, "error", None)
                 or "Interrupted: the worker stopped before this run finished."
