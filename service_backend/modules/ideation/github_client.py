@@ -7,19 +7,17 @@ the ``Authorization`` header - never logged, never in an exception message.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import httpx
 
+from .schemas import BUILD_REPO_PATTERN
+
 GITHUB_API = "https://api.github.com"
 GITHUB_TIMEOUT_SECONDS = 10
 _TIMEOUT = float(GITHUB_TIMEOUT_SECONDS)
-
-
-def _repo_path(repo: str) -> str:
-    """``owner/name`` with each segment percent-encoded (never a raw path)."""
-    return "/".join(quote(seg, safe="") for seg in repo.split("/"))
 
 
 class GitHubError(Exception):
@@ -40,6 +38,15 @@ class GitHubClient:
             "Authorization": f"Bearer {token}",
         }
         self._transport = transport
+
+    @staticmethod
+    def _repo_path(repo: str) -> str:
+        """``owner/name`` re-validated against the stored-repo shape (a row saved
+        before the pattern existed must never reach the wire) and percent-encoded
+        per segment. Raises ``ValueError`` before any request."""
+        if not re.fullmatch(BUILD_REPO_PATTERN, repo or ""):
+            raise ValueError("Invalid repository name.")
+        return "/".join(quote(seg, safe="") for seg in repo.split("/"))
 
     def _request(
         self,
@@ -68,13 +75,13 @@ class GitHubClient:
     def get_repo(self, repo: str) -> Dict[str, Any]:
         """The repository record (``private`` decides whether tenant text may be
         posted into it)."""
-        data = self._request("repository lookup", "GET", f"/repos/{_repo_path(repo)}").json()
+        data = self._request("repository lookup", "GET", f"/repos/{self._repo_path(repo)}").json()
         return {"private": data.get("private")}
 
     def ensure_label(self, repo: str, name: str, color: str) -> None:
         """GET the label; create it on 404 (colour without a leading ``#``)."""
         try:
-            self._request("label lookup", "GET", f"/repos/{_repo_path(repo)}/labels/{name}")
+            self._request("label lookup", "GET", f"/repos/{self._repo_path(repo)}/labels/{name}")
             return
         except GitHubError as exc:
             if exc.status_code != 404:
@@ -82,7 +89,7 @@ class GitHubClient:
         self._request(
             "label create",
             "POST",
-            f"/repos/{_repo_path(repo)}/labels",
+            f"/repos/{self._repo_path(repo)}/labels",
             json={"name": name, "color": color},
         )
 
@@ -92,7 +99,7 @@ class GitHubClient:
         data = self._request(
             "issue create",
             "POST",
-            f"/repos/{_repo_path(repo)}/issues",
+            f"/repos/{self._repo_path(repo)}/issues",
             json={"title": title, "body": body, "labels": labels},
         ).json()
         return {
@@ -105,33 +112,39 @@ class GitHubClient:
         self._request(
             "issue comment",
             "POST",
-            f"/repos/{_repo_path(repo)}/issues/{number}/comments",
+            f"/repos/{self._repo_path(repo)}/issues/{number}/comments",
             json={"body": body},
         )
 
-    def search_issues_by_marker(self, repo: str, marker: str) -> List[Dict[str, Any]]:
-        """Crash-recovery lookup: every issue whose body carries ``marker``, with
-        body and label names so the caller can verify a hit strictly."""
-        data = self._request(
-            "issue search",
-            "GET",
-            "/search/issues",
-            params={"q": f'"{marker}" in:body repo:{repo} is:issue'},
-        ).json()
-        return [
-            {
-                "number": hit["number"],
-                "html_url": hit["html_url"],
-                "node_id": hit.get("node_id"),
-                "body": hit.get("body") or "",
-                "labels": [
-                    (lab.get("name") if isinstance(lab, dict) else str(lab))
-                    for lab in (hit.get("labels") or [])
-                ],
-            }
-            for hit in (data.get("items") or [])
-        ]
-
-    def search_issue_by_marker(self, repo: str, marker: str) -> Optional[Dict[str, Any]]:
-        hits = self.search_issues_by_marker(repo, marker)
-        return hits[0] if hits else None
+    def list_labelled_issues(
+        self, repo: str, label: str, *, max_pages: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Issues carrying ``label`` (any state), following ``Link: rel="next"``
+        up to ``max_pages``. Body and label names are returned so the caller can
+        verify a hit strictly. Pull requests are skipped."""
+        out: List[Dict[str, Any]] = []
+        path = f"/repos/{self._repo_path(repo)}/issues"
+        params: Optional[Dict[str, str]] = {"labels": label, "state": "all", "per_page": "100"}
+        for _ in range(max_pages):
+            response = self._request("issue list", "GET", path, params=params)
+            for hit in response.json() or []:
+                if hit.get("pull_request"):
+                    continue
+                out.append(
+                    {
+                        "number": hit["number"],
+                        "html_url": hit["html_url"],
+                        "node_id": hit.get("node_id"),
+                        "body": hit.get("body") or "",
+                        "labels": [
+                            (lab.get("name") if isinstance(lab, dict) else str(lab))
+                            for lab in (hit.get("labels") or [])
+                        ],
+                    }
+                )
+            next_url = (response.links.get("next") or {}).get("url")
+            # Only ever follow a next link on GitHub's own API host.
+            if not next_url or not next_url.startswith(GITHUB_API + "/"):
+                break
+            path, params = next_url, None
+        return out

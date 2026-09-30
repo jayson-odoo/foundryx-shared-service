@@ -531,11 +531,13 @@ def test_ac_stb_11_creating_row_adopts_existing_issue_by_marker(ideation_client,
     gh = _install(monkeypatch, FakeGitHub(search_items=[genuine]))
     res = _send(ideation_client, s["h"], s["br_id"])
     assert res.status_code == 200, res.text
-    searches = [c for c in gh.calls if c.url.path == "/search/issues"]
-    assert len(searches) == 1
-    q = searches[0].url.params["q"]
-    assert f'"br-id: {s["br_id"]}" in:body' in q
-    assert f"repo:{REPO}" in q
+    assert gh.unexpected == []  # never touched /search/issues
+    lists = gh.list_calls()
+    assert len(lists) == 1
+    params = lists[0].url.params
+    assert params["labels"] == "crew-intake"
+    assert params["state"] == "all"
+    assert params["per_page"] == "100"
     assert gh.issue_posts == []  # adopted, not re-created
     build = res.json()["build"]
     assert build["issueNumber"] == 55 and build["state"] == "sent"
@@ -573,7 +575,7 @@ def test_sec_f2_ac_stb_11_fresh_creating_row_is_409_and_makes_no_github_call(
     assert [r[0] for r in _build_rows(ideation_client._factory, s["br_id"])] == ["creating"]
 
 
-def test_sec_f2_ac_stb_11_creating_row_older_than_120s_runs_recovery_search(
+def test_sec_f2_ac_stb_11_creating_row_older_than_120s_runs_recovery_list(
     ideation_client, monkeypatch
 ):
     s = sendable_setup(ideation_client)
@@ -581,7 +583,7 @@ def test_sec_f2_ac_stb_11_creating_row_older_than_120s_runs_recovery_search(
     gh = _install(monkeypatch, FakeGitHub(search_items=[], issue_number=70))
     res = _send(ideation_client, s["h"], s["br_id"])
     assert res.status_code == 200, res.text
-    assert len([c for c in gh.calls if c.url.path == "/search/issues"]) == 1
+    assert len(gh.list_calls()) == 1 and gh.unexpected == []
     assert res.json()["build"]["issueNumber"] == 70
 
 
@@ -1058,3 +1060,321 @@ def test_r11_ac_stb_10_title_dashes_are_scrubbed_in_the_issue_title(ideation_cli
     title = gh.issue_posts[0]["title"]
     assert "\u2014" not in title and "\u2013" not in title
     assert title == "Order - export - v2"
+
+
+# ── S2-1: stale-row recovery is claimed with a compare-and-set ───────────────
+
+
+def _row_id_and_seen(factory, br_id):
+    from modules.ideation.models import BrBuild
+
+    db = factory()
+    try:
+        row = db.query(BrBuild).filter(BrBuild.business_requirement_id == br_id).one()
+        return row.id, row.updated_at
+    finally:
+        db.close()
+
+
+def test_s2_1_ac_stb_11_claim_stale_row_is_a_compare_and_set(ideation_client):
+    from modules.ideation.services.build_handoff import BuildHandoffService
+
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    row_id, seen = _row_id_and_seen(ideation_client._factory, s["br_id"])
+    db1, db2 = ideation_client._factory(), ideation_client._factory()
+    try:
+        assert BuildHandoffService(db1).claim_stale_row(row_id, seen) is True
+        assert BuildHandoffService(db2).claim_stale_row(row_id, seen) is False  # lost the race
+    finally:
+        db1.close()
+        db2.close()
+    from modules.ideation.models import BrBuild
+
+    db = ideation_client._factory()
+    try:
+        row = db.get(BrBuild, row_id)
+        assert row.state == "recovering"
+        assert row.updated_at > seen  # the claim refreshed updated_at
+    finally:
+        db.close()
+
+
+def test_s2_1_ac_stb_11_claim_of_unknown_row_is_false(ideation_client):
+    from datetime import datetime, timezone
+
+    from modules.ideation.services.build_handoff import BuildHandoffService
+
+    db = ideation_client._factory()
+    try:
+        assert BuildHandoffService(db).claim_stale_row("nope", datetime.now(timezone.utc)) is False
+    finally:
+        db.close()
+
+
+def test_s2_1_ac_stb_11_send_is_409_without_github_call_when_the_claim_fails(
+    ideation_client, monkeypatch
+):
+    from modules.ideation.services.build_handoff import BuildHandoffService
+
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    monkeypatch.setattr(BuildHandoffService, "claim_stale_row", lambda self, row_id, seen: False)
+    gh = _install(monkeypatch, FakeGitHub())
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 409, res.text
+    assert gh.calls == []
+    assert br_status_key(ideation_client, s["h"], s["br_id"]) == "draft"
+
+
+def test_s2_1_ac_stb_11_successful_recovery_goes_through_the_claim(ideation_client, monkeypatch):
+    """Control: the same stale row recovers when the claim wins (and the claim
+    was really consulted)."""
+    from modules.ideation.services.build_handoff import BuildHandoffService
+
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    claims = []
+    real = BuildHandoffService.claim_stale_row
+
+    def spy(self, row_id, seen):
+        out = real(self, row_id, seen)
+        claims.append(out)
+        return out
+
+    monkeypatch.setattr(BuildHandoffService, "claim_stale_row", spy)
+    _install(monkeypatch, FakeGitHub(issue_number=90))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 200, res.text
+    assert claims == [True]
+
+
+@pytest.mark.parametrize(
+    "knobs",
+    [
+        {"list_status": 500},  # transient during the recovery list
+        {"list_status": 404},  # definitive during the recovery list
+        {"list_status": 401},
+        {"issue_status": 401},  # definitive at the create after an empty list
+        {"issue_status": 422},
+        {"issue_timeout": True},
+        {"label_lookup_status": 401},  # label step after an empty list
+    ],
+)
+def test_s2_1_ac_stb_12_recovering_row_is_never_dropped(ideation_client, monkeypatch, knobs):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    _install(monkeypatch, FakeGitHub(**knobs))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 502, res.text
+    assert _states(ideation_client, s["br_id"]) == ["recovering"]
+    assert br_status_key(ideation_client, s["h"], s["br_id"]) == "draft"
+
+
+def test_s2_1_ac_stb_12_drop_row_refuses_a_recovering_row(ideation_client):
+    from modules.ideation.models import BrBuild
+    from modules.ideation.services.build_handoff import BuildHandoffService
+
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    row_id, _seen = _row_id_and_seen(ideation_client._factory, s["br_id"])
+    db = ideation_client._factory()
+    try:
+        row = db.get(BrBuild, row_id)
+        row.state = "recovering"
+        db.commit()
+        BuildHandoffService(db)._drop_row(row)
+        assert db.query(BrBuild).filter(BrBuild.id == row_id).count() == 1
+    finally:
+        db.close()
+
+
+# ── S2-2: recovery lists the labelled issues (no search API), paginated ──────
+
+
+def test_s2_2_ac_stb_11_recovery_never_calls_the_search_api(ideation_client, monkeypatch):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    gh = _install(monkeypatch, FakeGitHub())
+    assert _send(ideation_client, s["h"], s["br_id"]).status_code == 200
+    assert [c for c in gh.calls if c.url.path == "/search/issues"] == []
+    assert gh.unexpected == []
+
+
+def test_s2_2_ac_stb_11_adopts_the_exact_tail_match_from_a_later_page(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    filler = [search_item(100 + i, f"unrelated {i}\n") for i in range(2)]
+    genuine = search_item(55, "x\n\n" + marker_tail(s["br_id"], s["pid"]))
+    gh = _install(
+        monkeypatch, FakeGitHub(search_items=[*filler, genuine], list_page_size=1)
+    )
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 200, res.text
+    assert gh.issue_posts == []
+    assert res.json()["build"]["issueNumber"] == 55
+    assert len(gh.list_calls()) == 3  # followed Link rel="next" to page 3
+
+
+def test_s2_2_ac_stb_11_pagination_is_capped_at_5_pages(ideation_client, monkeypatch):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    filler = [search_item(100 + i, f"unrelated {i}\n") for i in range(5)]
+    beyond = search_item(77, "x\n\n" + marker_tail(s["br_id"], s["pid"]))  # page 6
+    gh = _install(
+        monkeypatch,
+        FakeGitHub(search_items=[*filler, beyond], list_page_size=1, issue_number=88),
+    )
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 200, res.text
+    assert len(gh.list_calls()) == 5
+    assert len(gh.issue_posts) == 1  # not found within 5 pages -> a new issue
+    assert res.json()["build"]["issueNumber"] == 88
+
+
+def test_s2_2_ac_stb_11_unlabelled_issue_is_excluded_by_the_filter_not_adopted(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    plain = search_item(9, "x\n\n" + marker_tail(s["br_id"], s["pid"]), labels=("bug",))
+    gh = _install(monkeypatch, FakeGitHub(search_items=[plain], issue_number=89))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 200, res.text
+    assert gh.list_calls()[0].url.params["labels"] == "crew-intake"
+    assert len(gh.issue_posts) == 1
+
+
+# ── S2-3: more auto-link / cross-reference forms are defused ─────────────────
+
+
+def test_s2_3_ac_stb_10_gh_reference_is_defused(ideation_client, monkeypatch):
+    _s, body = _send_with_answer(ideation_client, monkeypatch, "Duplicate of GH-123 please")
+    assert "GH-123" not in body
+    assert "GH-\u200b123" in body
+
+
+def test_s2_3_ac_stb_10_github_issue_and_pull_urls_are_no_longer_auto_links(
+    ideation_client, monkeypatch
+):
+    _s, body = _send_with_answer(
+        ideation_client,
+        monkeypatch,
+        "See https://github.com/o/r/issues/12 and https://github.com/o/r/pull/12 now",
+    )
+    assert "github.com/o/r/issues/12" not in body
+    assert "github.com/o/r/pull/12" not in body
+    assert "github.com\u200b/o/r/issues/12" in body
+    assert "github.com\u200b/o/r/pull/12" in body
+
+
+# ── N2: hidden conditional fields/sections are not "missing" ─────────────────
+
+
+def _cond(fact, value):
+    return {
+        "kind": "group",
+        "combinator": "and",
+        "rules": [{"kind": "condition", "fact": fact, "operator": "eq", "value": value}],
+    }
+
+
+def _stamp_conditional_template(factory):
+    """Active template v2 = the seeded fields + `rollout_needed` (always shown),
+    `rollout_plan` (field condition: rollout_needed == "yes") and a whole
+    section (condition: rollout_needed == "legal") holding `legal_note`."""
+    from modules.ideation.models import (
+        IdeationArtifactTemplate,
+        IdeationArtifactTemplateVersion,
+    )
+    from modules.ideation.services.br_templates import BR_TEMPLATE_KEY, br_target_schema
+
+    db = factory()
+    try:
+        template = (
+            db.query(IdeationArtifactTemplate)
+            .filter(
+                IdeationArtifactTemplate.template_key == BR_TEMPLATE_KEY,
+                IdeationArtifactTemplate.tenant_id.is_(None),
+            )
+            .first()
+        )
+        doc = br_target_schema().model_dump(mode="json", by_alias=True)
+        section = doc["pages"][0]["sections"][0]
+        section["fields"] += [
+            {"id": "f-rollout-needed", "type": "textarea", "key": "rollout_needed",
+             "label": "Rollout needed", "required": False},
+            {"id": "f-rollout-plan", "type": "textarea", "key": "rollout_plan",
+             "label": "Rollout plan", "required": False,
+             "conditionsJson": _cond("answers.rollout_needed", "yes")},
+        ]
+        doc["pages"][0]["sections"].append(
+            {
+                "id": "sec-legal",
+                "title": "Legal",
+                "conditionsJson": _cond("answers.rollout_needed", "legal"),
+                "fields": [
+                    {"id": "f-legal-note", "type": "textarea", "key": "legal_note",
+                     "label": "Legal note", "required": False}
+                ],
+            }
+        )
+        v = IdeationArtifactTemplateVersion(
+            template_id=template.id, tenant_id=None, version=2, doc_json=doc
+        )
+        db.add(v)
+        db.flush()
+        template.active_version_id = v.id
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_r_n2_ac_stb_06_hidden_conditional_fields_are_not_required(ideation_client, monkeypatch):
+    _stamp_conditional_template(ideation_client._factory)
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    set_build_repo(ideation_client._factory, pid)
+    seed_github_connection(ideation_client._factory)
+    gh = _install(monkeypatch, FakeGitHub())
+
+    # 1. Trigger answered "no": rollout_plan (field) and legal_note (section) are
+    #    hidden and blank -> nothing is missing and Send succeeds.
+    hidden = make_br(ideation_client, h, pid, answers={**ALL_ANSWERS, "rollout_needed": "no"})
+    build = _detail(ideation_client, h, hidden)["build"]
+    assert build["blockers"] == [], build
+    assert build["canSend"] is True
+    assert "Rollout plan" not in " ".join(build["blockers"])
+
+    # 2. Trigger "yes": rollout_plan becomes visible and blank -> named.
+    shown = make_br(ideation_client, h, pid, answers={**ALL_ANSWERS, "rollout_needed": "yes"})
+    build = _detail(ideation_client, h, shown)["build"]
+    assert build["canSend"] is False
+    assert build["blockers"][0] == "Missing: Rollout plan"
+    res = _send(ideation_client, h, shown)
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["message"] == "Missing: Rollout plan"
+
+    # 3. Trigger "legal": the WHOLE section shows; its blank field is named,
+    #    while rollout_plan (needs "yes") stays hidden.
+    legal = make_br(ideation_client, h, pid, answers={**ALL_ANSWERS, "rollout_needed": "legal"})
+    build = _detail(ideation_client, h, legal)["build"]
+    assert build["blockers"][0] == "Missing: Legal note"
+    assert "Rollout plan" not in build["blockers"][0]
+
+    # Send the hidden-blank BR for real (the control that the hidden field never blocked it).
+    sent = _send(ideation_client, h, hidden)
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["status"] == "sent_to_build"
+    assert len(gh.issue_posts) == 1
+
+    # Filling the visible blank clears the blocker.
+    ok = ideation_client.patch(
+        f"/ideation/business-requirements/{shown}",
+        headers=h,
+        json={"answers": {**ALL_ANSWERS, "rollout_needed": "yes", "rollout_plan": "Phase 1."}},
+    )
+    assert ok.status_code == 200, ok.text
+    assert _detail(ideation_client, h, shown)["build"]["canSend"] is True

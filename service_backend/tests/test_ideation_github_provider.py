@@ -154,20 +154,6 @@ def test_ac_stb_11_client_create_comment_posts_body():
     assert gh.paths("POST") == [f"/repos/{REPO}/issues/5/comments"]
 
 
-def test_ac_stb_11_client_search_by_marker_hit_and_miss():
-    hit = FakeGitHub(
-        search_items=[
-            {"number": 9, "html_url": f"https://github.com/{REPO}/issues/9", "node_id": "I_9"}
-        ]
-    )
-    found = _client(hit).search_issue_by_marker(REPO, "br-id: abc")
-    assert found is not None and found["number"] == 9
-    q = hit.calls[0].url.params["q"]
-    assert '"br-id: abc" in:body' in q and f"repo:{REPO}" in q
-
-    assert _client(FakeGitHub(search_items=[])).search_issue_by_marker(REPO, "br-id: zzz") is None
-
-
 @pytest.mark.parametrize("status", [401, 404, 422])
 def test_ac_stb_12_client_raises_github_error_with_step_and_status(status):
     from modules.ideation.github_client import GitHubError
@@ -238,3 +224,40 @@ def test_sec_f7_ac_stb_09_httpx_client_is_built_with_the_10s_timeout(monkeypatch
     for t in captured:
         seconds = t.read if isinstance(t, httpx.Timeout) else t
         assert float(seconds) == 10.0
+
+
+# ── S2-4 defence in depth: the client re-validates the repo shape ────────────
+
+
+@pytest.mark.parametrize("bad", ["../x", "a/..", "a/b/c", "", "a b/c", "./x", "-/x", "owner/repo/../../x"])
+def test_s2_4_ac_stb_01_repo_path_rejects_a_bad_shape_with_value_error(bad):
+    from modules.ideation.github_client import GitHubClient
+
+    with pytest.raises(ValueError):
+        GitHubClient("t")._repo_path(bad)
+
+
+def test_s2_4_ac_stb_01_repo_path_accepts_a_good_shape():
+    from modules.ideation.github_client import GitHubClient
+
+    out = GitHubClient("t")._repo_path("jayson-odoo/crew-intake-sandbox")
+    assert out.endswith("jayson-odoo/crew-intake-sandbox")
+
+
+@pytest.mark.parametrize("bad", ["../x", "a/..", "a/b/c"])
+def test_s2_4_ac_stb_01_no_request_is_made_for_a_bad_stored_repo(bad):
+    """A row stored before the regex existed must never reach the wire."""
+    from modules.ideation.github_client import GitHubClient
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"private": True})
+
+    client = GitHubClient(TOKEN, transport=httpx.MockTransport(handler))
+    with pytest.raises(ValueError):
+        client.create_issue(bad, "T", "B", ["crew-intake"])
+    with pytest.raises(ValueError):
+        client.get_repo(bad)
+    assert calls == []

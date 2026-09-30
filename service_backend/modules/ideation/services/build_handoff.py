@@ -8,7 +8,7 @@ tab's read model.
 Idempotency (D7): a ``br_builds`` row (UNIQUE per BR) is inserted in state
 ``creating`` and COMMITTED before GitHub is called; refs + ``sent`` + the status
 move + the ``sent`` event land in ONE transaction afterwards. A leftover
-``creating`` row (a request died) is resolved by a marker search before any
+``creating`` row (a request died) is resolved by listing the labelled issues before any
 create. Every query is tenant-scoped; stored ids resolve WITH ``tenant_id``.
 """
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -60,6 +61,12 @@ GITHUB_PROVIDER = "github"
 GITHUB_CONNECTION_TYPE = "scm"
 
 IN_FLIGHT_SECONDS = 120
+IN_FLIGHT_MESSAGE = (
+    "This requirement is already being sent to build. Try again in two minutes."
+)
+# ``creating`` = first attempt in flight; ``recovering`` = a stale row claimed by
+# one recovery (never dropped: the issue may exist on GitHub).
+IN_PROGRESS_STATES = ("creating", "recovering")
 DELIVERED_EDGE_ID = "br-tr-build-delivered"
 BLOCKER_TEST = "Test requirements cannot be sent to build"
 BLOCKER_GITHUB = "Connect GitHub in Settings > Integrations"
@@ -304,7 +311,7 @@ class BuildHandoffService:
         can_edge = self._send_edge_available(tenant_id, br)
 
         # Already sent (status past the send edges): return it, no GitHub call.
-        if row is not None and row.state != "creating" and not can_edge:
+        if row is not None and row.state not in IN_PROGRESS_STATES and not can_edge:
             return brs.get(tenant_id, br.id)
 
         can_send, blockers = self.readiness(tenant_id, br)
@@ -316,7 +323,7 @@ class BuildHandoffService:
         client = self._client(tenant_id)
 
         # D10: re-send after "Back to ready" = a comment on the SAME issue.
-        if row is not None and row.state != "creating" and row.issue_number:
+        if row is not None and row.state not in IN_PROGRESS_STATES and row.issue_number:
             try:
                 client.create_comment(
                     row.repo,
@@ -334,12 +341,12 @@ class BuildHandoffService:
             if age < timedelta(seconds=IN_FLIGHT_SECONDS):
                 # Another request is (probably) mid-flight: no GitHub call, the
                 # row is left for it.
-                raise HTTPException(
-                    409, "This requirement is already being sent to build."
-                )
-            # Stale leftover: claim it (refresh updated_at) before recovering.
-            row.updated_at = _now()
-            self.db.commit()
+                raise HTTPException(409, IN_FLIGHT_MESSAGE)
+            # Stale leftover: claim it with ONE compare-and-set so two racing
+            # recoveries cannot both proceed; the loser gets 409, no GitHub call.
+            if not self.claim_stale_row(row.id, row.updated_at or row.created_at):
+                raise HTTPException(409, IN_FLIGHT_MESSAGE)
+            self.db.refresh(row)
         else:
             row = BrBuild(
                 tenant_id=tenant_id,
@@ -352,7 +359,7 @@ class BuildHandoffService:
                 self.db.commit()
             except IntegrityError as exc:
                 self.db.rollback()
-                raise HTTPException(409, "This requirement is already being sent to build.") from exc
+                raise HTTPException(409, IN_FLIGHT_MESSAGE) from exc
 
         issue = None
         step = "repo"
@@ -365,10 +372,10 @@ class BuildHandoffService:
                 )
                 raise HTTPException(422, detail={"message": message, "blockers": [message]})
             if recovering:
-                step = "search"
+                step = "list"
                 marker_tail = f"<!-- br-id: {br.id} -->\n<!-- br-product: {br.product_id} -->"
-                for hit in client.search_issues_by_marker(repo, f"br-id: {br.id}"):
-                    if LABEL in hit["labels"] and (hit["body"] or "").rstrip().endswith(marker_tail):
+                for hit in client.list_labelled_issues(repo, LABEL):
+                    if (hit["body"] or "").rstrip().endswith(marker_tail):
                         issue = {k: hit[k] for k in ("number", "html_url", "node_id")}
                         break
             if issue is None:
@@ -390,9 +397,26 @@ class BuildHandoffService:
         self._finalize(tenant_id, br, row, actor, issue=issue)
         return brs.get(tenant_id, br.id)
 
+    def claim_stale_row(self, row_id: str, seen_updated_at: datetime) -> bool:
+        """ONE conditional UPDATE: ``state='recovering'`` and a fresh
+        ``updated_at`` iff the row is still exactly as the caller saw it. True
+        iff this caller won (rowcount 1); False for a lost race or unknown row."""
+        result = self.db.execute(
+            update(BrBuild)
+            .where(BrBuild.id == row_id, BrBuild.updated_at == seen_updated_at)
+            .values(state="recovering", updated_at=_now())
+        )
+        self.db.commit()
+        return result.rowcount == 1
+
     def _drop_row(self, row: BrBuild) -> None:
+        """Remove a definitively-failed ``creating`` row. A ``recovering`` row is
+        never dropped (the issue may already exist on GitHub)."""
         self.db.rollback()
-        self.db.delete(self.db.merge(row))
+        current = self.db.query(BrBuild).filter(BrBuild.id == row.id).first()
+        if current is None or current.state == "recovering":
+            return
+        self.db.delete(current)
         self.db.commit()
 
     def _finalize(

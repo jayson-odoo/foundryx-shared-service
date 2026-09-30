@@ -78,8 +78,6 @@ def missing_labels(doc: Dict, answers: Dict, required_only: bool) -> List[str]:
     fields whose answer is blank. ``required_only`` = the Promote rule (the form
     engine's own required check); otherwise EVERY input field must be filled
     (the Send-to-build rule)."""
-    from app.form_engine.schemas import FormDocument
-
     answers = answers or {}
     if required_only:
         _clean, errors = validate_submission(doc, answers, enforce_required=True)
@@ -87,11 +85,12 @@ def missing_labels(doc: Dict, answers: Dict, required_only: bool) -> List[str]:
         keys = list(errors)
         found = [labels.get(k, k) for k in keys]
     else:
-        form = FormDocument.model_validate(doc)
+        from app.form_engine.validation import visible_input_fields
+
         found = [
-            (f.label or f.key)
-            for f in form.input_fields()
-            if f.key and _is_blank(answers.get(f.key))
+            (fld.label or fld.key)
+            for fld in visible_input_fields(doc, answers)
+            if _is_blank(answers.get(fld.key))
         ]
     out: List[str] = []
     for label in found:

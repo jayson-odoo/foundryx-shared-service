@@ -62,7 +62,15 @@ class FakeGitHub:
         issue_timeout: bool = False,
         label_lookup_status: Optional[int] = None,
         label_create_status: int = 201,
+        list_status: int = 200,
+        list_page_size: Optional[int] = None,
     ) -> None:
+        # S2-2: recovery lists ``GET /repos/{r}/issues?labels=crew-intake...``;
+        # ``search_items`` are the PLANTED/pre-existing issues that route serves
+        # (filtered by the requested label, like GitHub). ``list_status`` fails
+        # the route; ``list_page_size`` paginates with a ``Link: rel="next"``.
+        self.list_status = list_status
+        self.list_page_size = list_page_size
         # R3: ``issue_timeout`` = a transport timeout ONLY on the issue create;
         # ``label_lookup_status`` / ``label_create_status`` fail the label step.
         self.issue_timeout = issue_timeout
@@ -81,6 +89,44 @@ class FakeGitHub:
         self.issue_posts: List[dict] = []
         self.comment_posts: List[dict] = []
         self.auth_headers: List[str] = []
+
+    def _list_issues(self, request: httpx.Request) -> httpx.Response:
+        if self.list_status != 200:
+            return httpx.Response(self.list_status, json={"message": "x"})
+        params = request.url.params
+        want = params.get("labels", "")
+        created = [
+            {
+                "number": self.issue_number,
+                "html_url": f"https://github.com/{REPO}/issues/{self.issue_number}",
+                "node_id": f"I_node_{self.issue_number}",
+                "body": p.get("body", ""),
+                "labels": [{"name": n} for n in p.get("labels", [])],
+            }
+            for p in self.issue_posts
+        ]
+        items = [
+            it
+            for it in [*self.search_items, *created]
+            if not want or want in [l["name"] for l in it.get("labels", [])]
+        ]
+        size = self.list_page_size or 100
+        page = int(params.get("page", "1"))
+        chunk = items[(page - 1) * size : page * size]
+        headers = {}
+        if page * size < len(items):
+            headers["Link"] = (
+                f'<https://api.github.com/repos/{REPO}/issues?labels={want}'
+                f'&state=all&per_page={size}&page={page + 1}>; rel="next"'
+            )
+        return httpx.Response(200, json=chunk, headers=headers)
+
+    def list_calls(self) -> List[httpx.Request]:
+        return [
+            c
+            for c in self.calls
+            if c.method == "GET" and c.url.path == f"/repos/{REPO}/issues"
+        ]
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self)
@@ -137,14 +183,12 @@ class FakeGitHub:
         ):
             self.comment_posts.append(json.loads(request.content))
             return httpx.Response(201, json={"id": 1})
-        if method == "GET" and path == "/search/issues":
-            return httpx.Response(
-                200,
-                json={
-                    "total_count": len(self.search_items),
-                    "items": self.search_items,
-                },
-            )
+        if path == "/search/issues":
+            # Recovery must NOT use the search API: fail loudly on any hit.
+            self.unexpected.append(f"{method} {path}")
+            raise AssertionError("recovery must not call /search/issues")
+        if method == "GET" and path == f"{repo_prefix}/issues":
+            return self._list_issues(request)
         self.unexpected.append(f"{method} {path}")
         return httpx.Response(599, json={"message": "unexpected"})
 

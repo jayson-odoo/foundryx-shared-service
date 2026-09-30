@@ -190,6 +190,8 @@ def install(engine: Engine, db: Session) -> None:
     # runs at every boot; a later deliberate removal must be respected).
     if SEND_TO_BUILD_PERMISSION in created_permissions:
         sweep_send_to_build_grants(db)
+        # Commit right away: a later seed failure must not lose the one-shot grant.
+        db.commit()
     # Idea status set + transition graph as platform defaults (AC-A-10, D-A3).
     # Two-tier: every tenant uses these until it forks the set. Idempotent.
     from .services.br_templates import seed_br_template
