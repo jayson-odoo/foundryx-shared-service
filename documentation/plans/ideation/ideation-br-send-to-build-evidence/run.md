@@ -29,3 +29,17 @@ Build repository. Send to build cannot be enabled, so steps 2, 3, 5(c,e) were no
 Backend: `cd service_backend && .venv/bin/python -m pytest -q tests/test_ideation_send_to_build.py tests/test_ideation_build_writeback.py
 tests/test_ideation_build_repo.py tests/test_ideation_br_statuses_build.py tests/test_ideation_github_provider.py` -> 236 passed, 12 warnings in 50.10s.
 Owner BRs (a9d14956..., c9ea6d12...) and the existing connections untouched. My key was revoked. No GitHub issue was created, so none closed.
+
+## Re-run of the deferred parts (owner connected GitHub + set Sorento CRM Build repository), 30 Sep 2026 16:35-16:40
+Sign-in again, sidebar navigation, same click method. BR "Evidence run 1027" (all six fields already filled).
+2. Open BR: Send to build enabled (21). Click: confirm dialog "Repository jayson-odoo/crew-intake-sandbox", "Linked ideas 0", "Fields 6 of 6 complete" (22, 1280+375).
+   Cancel closed it, reopen, confirm: toast "Sent to build." (23), header status "Sent to build", chip "crew-intake-sandbox #2", "Sent 30 Sept 2026, 16:37 by Demo User" (24, 1280+375).
+   Chip href https://github.com/jayson-odoo/crew-intake-sandbox/issues/2 target=_blank; clicking opened a new tab to the issue (headless browser is not signed in to GitHub, private repo, so the page is GitHub's 404: 25).
+   `gh issue view 2 --json labels,title,body`: labels [crew-intake], title "Evidence run 1027", body = six `## <label>` sections in template order, `## Linked ideas` "(not provided)", `## Links`, and the last two lines:
+   <!-- br-id: adb23a2d-1c49-404e-8ec6-9a10b4c883a1 -->
+   <!-- br-product: 37068122-a1a3-47b0-8544-a33b38e80e9f -->
+3. Reload: no Send button, chip present; "..." menu Edit, Ready, Delete (26).
+5. New key evidence-1027-c (the first re-run key evidence-1027-b was minted but its plaintext was not captured, revoked via the dialog). (c) PR+CI event with prUrl+handtestUrl -> 201 statusMoved false;
+   random uuid -> 404. Trace (27, 1280+375): summary Issue #2 / Stage PR+CI / PR #1410 / Open test copy, timeline Sent + PR+CI with PR and Hand test links, no h-scroll.
+   (e) Merged/status merged -> 201 statusMoved true. Trace after tab switch (28): Stage Merged, third green Merged entry. Header still read "Sent to build" until reload (D2); after reload "Delivered", menu Edit, Archived, Delete (29, 1280+375).
+6. Revoked evidence-1027-c via row Actions (30), curl with it -> 401. `gh issue close 2 --repo jayson-odoo/crew-intake-sandbox` done, state CLOSED.
