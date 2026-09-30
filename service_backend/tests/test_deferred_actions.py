@@ -940,28 +940,25 @@ def test_teams_delete_blocked_by_reference_guard_fails_with_message(client, sess
         return 2 if entity_id == team["id"] else 0
 
     register_reference_guard("team", "conversations", _fake_checker)
-    try:
-        row = client.post(
-            "/api/v1/pending-actions",
-            json={"actionKey": "teams.delete", "entityType": "team", "entityId": team["id"]},
-            headers=h,
-        ).json()
+    row = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "teams.delete", "entityType": "team", "entityId": team["id"]},
+        headers=h,
+    ).json()
 
-        db = session_factory()
-        pa = db.get(PendingAction, row["id"])
-        pa.commit_at = _now() - timedelta(seconds=1)
-        db.commit()
-        db.close()
+    db = session_factory()
+    pa = db.get(PendingAction, row["id"])
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+    db.close()
 
-        cur = client.get(
-            "/api/v1/pending-actions/current",
-            params={"entityType": "team", "entityId": team["id"]},
-            headers=h,
-        ).json()
-        assert cur["pending"] is None
-        assert cur["lastOutcome"]["status"] == PENDING_ACTION_FAILED
-        assert "conversations" in cur["lastOutcome"]["errorText"]
-        # Never deleted - the reference guard blocked the commit.
-        assert client.get(f"/teams/{team['id']}", headers=h).status_code == 200
-    finally:
-        register_reference_guard("team", "conversations", lambda db, t, i: 0)
+    cur = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": "team", "entityId": team["id"]},
+        headers=h,
+    ).json()
+    assert cur["pending"] is None
+    assert cur["lastOutcome"]["status"] == PENDING_ACTION_FAILED
+    assert "conversations" in cur["lastOutcome"]["errorText"]
+    # Never deleted - the reference guard blocked the commit.
+    assert client.get(f"/teams/{team['id']}", headers=h).status_code == 200
