@@ -72,3 +72,6 @@ Thumbs.db
 .claude/handoffs/*
 !.claude/handoffs/README.md
 .lavish/
+
+# test-runner artifacts
+.vite/

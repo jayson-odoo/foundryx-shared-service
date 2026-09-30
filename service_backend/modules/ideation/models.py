@@ -85,6 +85,8 @@ class ProductDelivery(IdeationBase):
     # Normal cross-schema FK into core public.products (referenced UNqualified).
     product_id = Column(String, ForeignKey(_PRODUCT_FK), nullable=False, index=True)
     product_domain_base = Column(String, nullable=True)
+    # ``owner/repo`` the BR "Send to build" hand-off files its issue in.
+    build_repo = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -534,3 +536,81 @@ class IdeaStatusEvent(IdeationBase):
     __table_args__ = (
         Index("ix_idea_status_events_tenant_seq", "tenant_id", "seq"),
     )
+
+
+class BrBuild(IdeationBase):
+    """One Send-to-build hand-off per BR (``business_requirement_id`` UNIQUE, the
+    idempotency anchor: the loser of two concurrent sends hits the unique
+    violation). ``state``: ``creating | sent | delivered | failed``. Refs to
+    core / the BR are plain indexed columns (BL-030), no DB FK."""
+
+    __tablename__ = "br_builds"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    business_requirement_id = Column(String, nullable=False)
+    repo = Column(String, nullable=False)
+    state = Column(String, nullable=False, default="creating")
+    issue_number = Column(Integer, nullable=True)
+    issue_url = Column(Text, nullable=True)
+    issue_node_id = Column(String, nullable=True)
+    sent_by = Column(String, nullable=True)
+    sent_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("business_requirement_id", name="uq_br_builds_br"),
+    )
+
+
+class BrBuildEvent(IdeationBase):
+    """One Trace entry of a BR's build (``sent`` by a human, ``crew`` progress via
+    the write-back key, ``system``). Append-only. ``seq`` is the ordering cursor;
+    ``created_at`` is the database clock."""
+
+    __tablename__ = "br_build_events"
+
+    seq = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, nullable=False, unique=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    business_requirement_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)  # sent | crew | system
+    stage = Column(String(40), nullable=False)
+    message = Column(Text, nullable=False)
+    pr_url = Column(Text, nullable=True)
+    handtest_url = Column(Text, nullable=True)
+    status = Column(String, nullable=True)
+    actor_user_id = Column(String, nullable=True)
+    key_id = Column(String, nullable=True)
+    status_moved = Column(Boolean, nullable=False, default=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_br_build_events_tenant_br_seq",
+            "tenant_id",
+            "business_requirement_id",
+            "seq",
+        ),
+    )
+
+
+class BrBuildKey(IdeationBase):
+    """One issued build write-back key (``fxb_live_<32>``): plaintext returned
+    ONCE, only sha256 + an 8-char indexed lookup prefix stored. A deliberate
+    mirror of ``AcPullApiKey`` (cross-module table reads are forbidden)."""
+
+    __tablename__ = "br_build_keys"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False, default="")
+    key_prefix = Column(String, nullable=False, index=True)
+    key_hash = Column(String, nullable=False)
+    last_used_at = Column(UTCDateTime(), nullable=True)
+    revoked_at = Column(UTCDateTime(), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

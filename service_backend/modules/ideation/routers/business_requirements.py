@@ -20,6 +20,7 @@ from ..schemas import (
     BrStatusIn,
     BrTemplateStatusOut,
     BrTemplateVersionOut,
+    BuildOut,
     BusinessRequirementCreateIn,
     BusinessRequirementDetailOut,
     BusinessRequirementOut,
@@ -27,6 +28,7 @@ from ..schemas import (
     IdeaOut,
 )
 from ..services.br_templates import br_template_is_active
+from ..services.build_handoff import BuildHandoffService
 from ..services.business_requirements import BusinessRequirementService
 
 router = APIRouter()
@@ -218,6 +220,34 @@ def set_br_status(
     return BusinessRequirementService(db).set_status(
         current_user.tenant_id, br_id, body.status, actor=current_user
     )
+
+
+@router.post("/{br_id}/send-to-build", response_model=BusinessRequirementDetailOut)
+def send_br_to_build(
+    br_id: str,
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.send_to_build")
+    ),
+    db: Session = Depends(get_db),
+) -> BusinessRequirementDetailOut:
+    """Hand a sendable BR to the build crew: one GitHub ``crew-intake`` issue,
+    the BR moves to ``sent_to_build``. Idempotent (a second send returns the
+    existing issue)."""
+    return BuildHandoffService(db).send(current_user.tenant_id, br_id, current_user)
+
+
+@router.get("/{br_id}/build", response_model=BuildOut)
+def get_br_build(
+    br_id: str,
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.read")
+    ),
+    db: Session = Depends(get_db),
+) -> BuildOut:
+    """The BR's build state + Trace (readiness, issue, timeline)."""
+    service = BusinessRequirementService(db)
+    br = service._br_or_404(current_user.tenant_id, br_id)
+    return BuildHandoffService(db).detail_build(current_user.tenant_id, br)
 
 
 @router.delete("/{br_id}", status_code=status.HTTP_204_NO_CONTENT)

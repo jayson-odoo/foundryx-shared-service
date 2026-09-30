@@ -4,11 +4,19 @@
  * Frontend-first scaffolding: drives every UI state (loading/error/success) with
  * no backend. The shipped app binds `.real` (see business-requirement-service.ts);
  * this mock is retained ONLY for Vitest. Do NOT ship this behind a "done" slice.
+ *
+ * Send-to-build seeds (plan ideation-br-send-to-build S0): br-1 blocked
+ * (missing fields), br-2 sendable, br-3 already sent (issue 1402 + 5 trace events).
  */
+import { ApiError } from '@/lib/api-client';
 import type { Idea } from '@/types/ideation';
 import type { FormDocument } from '@/types/forms';
 import type {
   BrTemplateVersion,
+  BuildEvent,
+  BuildInfo,
+  BuildKey,
+  BuildKeyMinted,
   BusinessRequirement,
   BusinessRequirementDetail,
   BusinessRequirementStatus,
@@ -43,14 +51,97 @@ const MOCK_TEMPLATE_DOC: FormDocument = {
   ],
 } as FormDocument;
 
-function seedBr(id: string, title: string, status: BusinessRequirementStatus): BusinessRequirementDetail {
+const MOCK_REPO = 'jayson-odoo/sorento-crm';
+const BLOCKED_REASON = 'Missing: Success metric, Constraints';
+
+function noBuild(over: Partial<BuildInfo> = {}): BuildInfo {
+  return {
+    canSend: false,
+    sendEdgeAvailable: true,
+    fieldsDone: 4,
+    fieldsTotal: 6,
+    blockers: [BLOCKED_REASON],
+    repo: MOCK_REPO,
+    issueUrl: null,
+    issueNumber: null,
+    state: 'none',
+    sentAt: null,
+    sentBy: null,
+    stage: null,
+    prUrl: null,
+    handtestUrl: null,
+    events: [],
+    ...over,
+  };
+}
+
+function ev(seq: number, over: Partial<BuildEvent>): BuildEvent {
+  return {
+    id: `ev-${seq}`,
+    seq,
+    kind: 'crew',
+    stage: 'Plan',
+    message: '',
+    prUrl: null,
+    handtestUrl: null,
+    status: 'in_progress',
+    statusMoved: false,
+    actorName: null,
+    createdAt: `2026-09-29T15:${String(40 + seq).padStart(2, '0')}:00Z`,
+    ...over,
+  };
+}
+
+const SENT_EVENTS: BuildEvent[] = [
+  ev(1, { kind: 'sent', stage: 'Sent', message: 'Sent to build', status: null, actorName: 'Jayson Teh' }),
+  ev(2, { stage: 'Plan', message: 'Plan approved, lane started' }),
+  ev(3, { stage: 'Mock', message: 'Mock ready for review' }),
+  ev(4, {
+    stage: 'PR+CI',
+    message: 'Draft PR opened, CI running',
+    prUrl: 'https://github.com/jayson-odoo/sorento-crm/pull/1410',
+  }),
+  ev(5, {
+    stage: 'Review',
+    message: 'Ready for hand test',
+    handtestUrl: 'http://localhost:3103',
+  }),
+];
+
+function sentBuild(): BuildInfo {
+  const last = SENT_EVENTS[SENT_EVENTS.length - 1];
+  return {
+    canSend: false,
+    sendEdgeAvailable: false,
+    fieldsDone: 6,
+    fieldsTotal: 6,
+    blockers: [],
+    repo: MOCK_REPO,
+    issueUrl: `https://github.com/${MOCK_REPO}/issues/1402`,
+    issueNumber: 1402,
+    state: 'sent',
+    sentAt: SENT_EVENTS[0].createdAt,
+    sentBy: { id: 'u-1', name: 'Jayson Teh' },
+    stage: last.stage,
+    prUrl: 'https://github.com/jayson-odoo/sorento-crm/pull/1410',
+    handtestUrl: 'http://localhost:3103',
+    events: SENT_EVENTS,
+  };
+}
+
+function seedBr(
+  id: string,
+  title: string,
+  status: BusinessRequirementStatus,
+  build: BuildInfo = noBuild(),
+): BusinessRequirementDetail {
   return {
     id,
     productId: 'prod-1',
     productName: 'Sorento CRM',
     status,
-    statusLabel: status.charAt(0).toUpperCase() + status.slice(1),
-    statusColor: status === 'ready' ? 'green' : 'gray',
+    statusLabel: status === 'sent_to_build' ? 'Sent to build' : status.charAt(0).toUpperCase() + status.slice(1),
+    statusColor: status === 'ready' ? 'green' : status === 'sent_to_build' ? 'violet' : 'gray',
     templateKey: 'business_requirement',
     templateVersion: 1,
     title,
@@ -63,13 +154,27 @@ function seedBr(id: string, title: string, status: BusinessRequirementStatus): B
       success_metric: '50% fewer support tickets.',
     },
     templateDoc: MOCK_TEMPLATE_DOC,
+    build,
   };
 }
 
 const store = new Map<string, BusinessRequirementDetail>([
   ['br-1', seedBr('br-1', 'Order export to Excel', 'draft')],
-  ['br-2', seedBr('br-2', 'Bulk invoice download', 'ready')],
+  ['br-2', seedBr('br-2', 'Bulk invoice download', 'ready', noBuild({ canSend: true, blockers: [] }))],
+  ['br-3', seedBr('br-3', 'Quote approval by WhatsApp', 'sent_to_build', sentBuild())],
 ]);
+
+const keys: BuildKeyMinted[] = [];
+let keySeq = 0;
+function toKey(k: BuildKeyMinted): BuildKey {
+  return {
+    id: k.id,
+    name: k.name,
+    keyPrefix: k.keyPrefix,
+    createdAt: k.createdAt,
+    lastUsedAt: k.lastUsedAt,
+  };
+}
 
 const MOCK_IDEAS: Idea[] = [
   {
@@ -95,6 +200,7 @@ function toRow(d: BusinessRequirementDetail): BusinessRequirement {
   const row = { ...d } as Partial<BusinessRequirementDetail>;
   delete row.answers;
   delete row.templateDoc;
+  delete row.build;
   return row as BusinessRequirement;
 }
 
@@ -174,5 +280,77 @@ export const mockBusinessRequirementService: BusinessRequirementService = {
 
   async templateStatus(): Promise<BrTemplateStatus> {
     return { active: true };
+  },
+
+  async sendToBuild(id) {
+    const br = store.get(id);
+    if (!br) throw new Error('Business requirement not found.');
+    if (br.build.state === 'sent') return { ...br };
+    if (!br.build.canSend) {
+      throw new ApiError('Unprocessable', 422, null, {
+        message: br.build.blockers[0] ?? 'This requirement cannot be sent yet.',
+        blockers: br.build.blockers,
+      });
+    }
+    const number = 1403 + Array.from(store.values()).filter((b) => b.build.state === 'sent').length;
+    const sentAt = new Date().toISOString();
+    br.status = 'sent_to_build';
+    br.statusLabel = 'Sent to build';
+    br.statusColor = 'violet';
+    br.build = {
+      ...br.build,
+      canSend: false,
+      sendEdgeAvailable: false,
+      fieldsDone: 6,
+      fieldsTotal: 6,
+      state: 'sent',
+      issueNumber: number,
+      issueUrl: `https://github.com/${MOCK_REPO}/issues/${number}`,
+      sentAt,
+      sentBy: { id: 'u-1', name: 'Jayson Teh' },
+      stage: 'Sent',
+      events: [
+        ev(1, {
+          kind: 'sent',
+          stage: 'Sent',
+          message: 'Sent to build',
+          status: null,
+          actorName: 'Jayson Teh',
+          createdAt: sentAt,
+        }),
+      ],
+    };
+    store.set(id, br);
+    return { ...br };
+  },
+
+  async getBuild(id) {
+    const br = store.get(id);
+    if (!br) throw new Error('Business requirement not found.');
+    return { ...br.build };
+  },
+
+  async listBuildKeys() {
+    return keys.map(toKey);
+  },
+
+  async mintBuildKey(name) {
+    keySeq += 1;
+    const plaintext = `fxb_live_${String(keySeq).padStart(4, '0')}abcdefabcdefabcdefabcdefabcd`;
+    const minted: BuildKeyMinted = {
+      id: `key-${keySeq}`,
+      name,
+      keyPrefix: plaintext.slice(9, 17),
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null,
+      plaintext,
+    };
+    keys.push(minted);
+    return { ...minted };
+  },
+
+  async revokeBuildKey(id) {
+    const at = keys.findIndex((k) => k.id === id);
+    if (at >= 0) keys.splice(at, 1);
   },
 };

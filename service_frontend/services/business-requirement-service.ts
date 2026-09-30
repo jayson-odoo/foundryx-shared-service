@@ -11,6 +11,9 @@ import type { Idea } from '@/types/ideation';
 import type { StatusGraph } from '@/types/status-engine';
 import type {
   BrTemplateVersion,
+  BuildInfo,
+  BuildKey,
+  BuildKeyMinted,
   BusinessRequirement,
   BusinessRequirementCreateInput,
   BusinessRequirementDetail,
@@ -72,6 +75,16 @@ export interface BusinessRequirementService {
    * create dialog before offering Create. Gated
    * `ideation.business_requirements.read`. */
   templateStatus(): Promise<BrTemplateStatus>;
+  /** Hand a sendable BR to the build crew (creates the GitHub issue, moves the BR
+   * to `sent_to_build`). Gated `ideation.business_requirements.send_to_build`;
+   * a not-sendable BR rejects 422 `{message, blockers[]}`. */
+  sendToBuild(id: string): Promise<BusinessRequirementDetail>;
+  /** The BR's build state + Trace (Trace tab refresh). */
+  getBuild(id: string): Promise<BuildInfo>;
+  /** Write-back keys (Keys dialog); gated `send_to_build`. */
+  listBuildKeys(): Promise<BuildKey[]>;
+  mintBuildKey(name: string): Promise<BuildKeyMinted>;
+  revokeBuildKey(id: string): Promise<void>;
 }
 
 export const businessRequirementService: BusinessRequirementService =

@@ -141,12 +141,23 @@ class DeliveryConfigOut(ApiModel):
 
     productId: str
     productDomainBase: Optional[str] = None
+    buildRepo: Optional[str] = None
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None
 
 
+BUILD_REPO_PATTERN = (
+    r"^(?!\.{1,2}/)(?!-)[A-Za-z0-9_.-]{1,100}/(?!\.{1,2}$)(?!-)[A-Za-z0-9_.-]{1,100}$"
+)
+
+
 class DeliveryConfigIn(ApiModel):
-    productDomainBase: str
+    # Omitted = left untouched (a product may carry only a build repository).
+    productDomainBase: Optional[str] = None
+    # ``owner/repo`` for the BR Send-to-build issue; null clears it. Omitted =
+    # left untouched (see ``DeliveryService.set``).
+    # Shape-checked in ``DeliveryService.set`` (422 with ``fieldErrors``).
+    buildRepo: Optional[str] = None
 
 
 class VoteIn(ApiModel):
@@ -260,6 +271,81 @@ class BusinessRequirementOut(ApiModel):
     updatedAt: datetime
 
 
+class SentByOut(ApiModel):
+    id: str
+    name: str
+
+
+class BuildEventOut(ApiModel):
+    """One Trace entry of a BR's build (append-only, ascending ``seq``)."""
+
+    id: str
+    seq: int
+    kind: str
+    stage: str
+    message: str
+    prUrl: Optional[str] = None
+    handtestUrl: Optional[str] = None
+    status: Optional[str] = None
+    statusMoved: bool = False
+    actorName: Optional[str] = None
+    createdAt: datetime
+
+
+class BuildOut(ApiModel):
+    """The BR's Send-to-build state: server-computed readiness (``canSend`` +
+    ``blockers``) and, once sent, the issue + the Trace. ``state`` is ``none``
+    until a ``br_builds`` row exists."""
+
+    canSend: bool
+    # A ``br-tr-send-to-build-*`` edge leaves the BR's current status (false in
+    # FR, delivered, archived: the header keeps the plain Edit primary).
+    sendEdgeAvailable: bool = False
+    # Visible stamped-template input fields, and how many are filled (hidden
+    # conditional fields are excluded).
+    fieldsDone: int = 0
+    fieldsTotal: int = 0
+    blockers: List[str] = []
+    repo: Optional[str] = None
+    issueUrl: Optional[str] = None
+    issueNumber: Optional[int] = None
+    state: str = "none"
+    sentAt: Optional[datetime] = None
+    sentBy: Optional[SentByOut] = None
+    stage: Optional[str] = None
+    prUrl: Optional[str] = None
+    handtestUrl: Optional[str] = None
+    events: List[BuildEventOut] = []
+
+
+class BuildEventIn(ApiModel):
+    """Crew progress entry (write-back). ``stage`` is crew's own vocabulary."""
+
+    stage: str = Field(min_length=1, max_length=40)
+    message: str = Field(min_length=1, max_length=2000)
+    prUrl: Optional[str] = Field(default=None, pattern=r"^https?://\S+$", max_length=2000)
+    handtestUrl: Optional[str] = Field(default=None, pattern=r"^https?://\S+$", max_length=2000)
+    status: Optional[Literal["in_progress", "merged", "released", "failed", "cancelled"]] = None
+
+
+class BuildKeyMintIn(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class BuildKeyOut(ApiModel):
+    id: str
+    name: str
+    keyPrefix: str
+    createdAt: datetime
+    lastUsedAt: Optional[datetime] = None
+
+
+class BuildKeyMintOut(BuildKeyOut):
+    """Mint response - the plaintext is shown ONCE."""
+
+    plaintext: str
+
+
 class BusinessRequirementDetailOut(BusinessRequirementOut):
     """The BR detail - adds ``answers`` (the form_engine answer map) and
     ``templateDoc`` (the STAMPED template version's block document, for the
@@ -267,6 +353,8 @@ class BusinessRequirementDetailOut(BusinessRequirementOut):
 
     answers: Dict[str, Any] = {}
     templateDoc: Dict[str, Any] = {}
+    # Populated by ``BusinessRequirementService.get`` only (list rows omit it).
+    build: Optional[BuildOut] = None
 
 
 class BrTemplateVersionOut(ApiModel):

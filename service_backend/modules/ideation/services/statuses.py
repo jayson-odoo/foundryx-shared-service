@@ -211,10 +211,15 @@ BR_ENTITY = "ideation_business_requirement"
 # tenant-editable status key), so this does not fall into the hardcoded-key trap.
 BR_PROMOTE_EDGE_ID = "br-tr-promote"
 
+# Edge ids starting with this prefix are the Send-to-build hand-off: only the
+# Send endpoint may fire them (code contract, same trick as the promote gate).
+BR_SEND_EDGE_PREFIX = "br-tr-send-to-build"
+
 BR_STATUS_IDS: Dict[str, str] = {
     "draft": "br-status-draft",
     "grilling": "br-status-grilling",
     "ready": "br-status-ready",
+    "sent_to_build": "br-status-sent-to-build",
     "in_fr": "br-status-in-fr",
     "delivered": "br-status-delivered",
     "archived": "br-status-archived",
@@ -225,9 +230,10 @@ BR_STATUS_SEED: List[Tuple[str, str, str, int, Dict[str, bool]]] = [
     ("draft", "Draft", "gray", 1, {"is_initial": True, "is_default": True}),
     ("grilling", "Grilling", "blue", 2, {}),
     ("ready", "Ready", "green", 3, {}),
-    ("in_fr", "In FR", "violet", 4, {}),
-    ("delivered", "Delivered", "teal", 5, {}),
-    ("archived", "Archived", "gray", 6, {"is_archived": True}),
+    ("sent_to_build", "Sent to build", "violet", 4, {}),
+    ("in_fr", "In FR", "violet", 5, {}),
+    ("delivered", "Delivered", "teal", 6, {}),
+    ("archived", "Archived", "gray", 7, {"is_archived": True}),
 ]
 
 # (id, from_key, to_key, label, sort_order)
@@ -241,6 +247,13 @@ BR_TRANSITION_SEED: List[Tuple[str, str, str, str, int]] = [
     ("br-tr-archive-ready", "ready", "archived", "Archive", 6),
     ("br-tr-archive-delivered", "delivered", "archived", "Archive", 7),
     ("br-tr-restore", "archived", "draft", "Restore", 8),
+    # Send to build: the three send edges are fired ONLY by the Send endpoint
+    # (the generic status move refuses the ``br-tr-send-to-build`` id prefix).
+    ("br-tr-send-to-build-draft", "draft", "sent_to_build", "Send to build", 9),
+    ("br-tr-send-to-build-grilling", "grilling", "sent_to_build", "Send to build", 10),
+    ("br-tr-send-to-build-ready", "ready", "sent_to_build", "Send to build", 11),
+    ("br-tr-build-delivered", "sent_to_build", "delivered", "Delivered", 12),
+    ("br-tr-build-back", "sent_to_build", "ready", "Back to ready", 13),
 ]
 
 

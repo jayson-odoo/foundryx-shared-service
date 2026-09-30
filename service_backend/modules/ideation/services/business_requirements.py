@@ -34,6 +34,10 @@ from app.services.status_machine import (
 )
 
 BR_PROMOTE_PERMISSION = "ideation.business_requirements.promote"
+BR_SEND_PERMISSION = "ideation.business_requirements.send_to_build"
+# Edge ids reserved by the Send-to-build hand-off (code contracts).
+BR_BUILD_BACK_EDGE_ID = "br-tr-build-back"
+BR_BUILD_DELIVERED_EDGE_ID = "br-tr-build-delivered"
 
 # Warm-start title cap (AC-BI-32b) - a derived title truncates on a word
 # boundary so a promoted BR never carries a runaway problem string as its name.
@@ -59,6 +63,42 @@ def _field_labels(doc: Dict) -> Dict[str, str]:
     form = FormDocument.model_validate(doc)
     return {f.key: (f.label or f.key) for f in form.input_fields() if f.key}
 
+def is_blank_answer(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
+
+
+def missing_labels(doc: Dict, answers: Dict, required_only: bool) -> List[str]:
+    """Labels (document order, de-duplicated) of the stamped template's input
+    fields whose answer is blank. ``required_only`` = the Promote rule (the form
+    engine's own required check); otherwise EVERY input field must be filled
+    (the Send-to-build rule)."""
+    answers = answers or {}
+    if required_only:
+        _clean, errors = validate_submission(doc, answers, enforce_required=True)
+        labels = _field_labels(doc)
+        keys = list(errors)
+        found = [labels.get(k, k) for k in keys]
+    else:
+        from app.form_engine.validation import visible_input_fields
+
+        found = [
+            (fld.label or fld.key)
+            for fld in visible_input_fields(doc, answers)
+            if is_blank_answer(answers.get(fld.key))
+        ]
+    out: List[str] = []
+    for label in found:
+        if label not in out:
+            out.append(label)
+    return out
+
+
 from ..models import (
     BusinessRequirement,
     Idea,
@@ -80,6 +120,7 @@ from .ideas import IdeaReadService
 from .statuses import (
     BR_ENTITY,
     BR_PROMOTE_EDGE_ID,
+    BR_SEND_EDGE_PREFIX,
     br_status_id,
     initial_br_status_id,
 )
@@ -271,10 +312,13 @@ class BusinessRequirementService:
         doc = get_stamped_doc(
             self.db, br.template_key, br.template_version, br.tenant_id
         )
+        from .build_handoff import BuildHandoffService
+
         return BusinessRequirementDetailOut(
             **base.model_dump(),
             answers=dict(br.answers_json or {}),
             templateDoc=doc or {},
+            build=BuildHandoffService(self.db).detail_build(tenant_id, br),
         )
 
     def linked_ideas(self, tenant_id: str, br_id: str) -> List:
@@ -607,6 +651,18 @@ class BusinessRequirementService:
         edge = StatusTransitionRepository(self.db).find_edge(
             br.status_id, target_id, tier
         )
+        # The Send-to-build edges belong to the Send endpoint alone.
+        if edge is not None and edge.id.startswith(BR_SEND_EDGE_PREFIX):
+            raise HTTPException(409, "Use Send to build")
+        # Delivered is reserved for the crew write-back (merged/released).
+        if edge is not None and edge.id == BR_BUILD_DELIVERED_EDGE_ID:
+            raise HTTPException(409, "Delivered is set by the build crew")
+        if edge is not None and edge.id == BR_BUILD_BACK_EDGE_ID:
+            held = effective_permission_keys(actor) if actor else set()
+            if BR_SEND_PERMISSION not in held:
+                raise HTTPException(
+                    403, "You are not allowed to send a requirement back from build."
+                )
         if edge is None or edge.id != BR_PROMOTE_EDGE_ID:
             return
         held = effective_permission_keys(actor) if actor else set()
@@ -619,11 +675,13 @@ class BusinessRequirementService:
         # partial, but promote requires every required field present.
         self._enforce_promote_completeness(br)
 
-    def _enforce_promote_completeness(self, br: BusinessRequirement) -> None:
+    def missing_required(
+        self, br: BusinessRequirement
+    ) -> Tuple[Dict[str, str], List[str]]:
         """Re-validate the BR's ``answers_json`` against its STAMPED template with
-        ``required`` ENFORCED (AC-BI-34). A promote with missing required fields is
-        refused with a friendly, specific message naming the blank field LABELS
-        (AC-BI-34b) plus the per-field ``fieldErrors`` map (inline highlight)."""
+        ``required`` ENFORCED. Returns ``(per-field errors, missing field LABELS
+        in document order)`` - the ONE completeness check Promote and Send to
+        build share."""
         doc = get_stamped_doc(
             self.db, br.template_key, br.template_version, br.tenant_id
         )
@@ -634,8 +692,6 @@ class BusinessRequirementService:
         _clean, errors = validate_submission(
             doc, br.answers_json or {}, enforce_required=True
         )
-        if not errors:
-            return
         labels = _field_labels(doc)
         # Preserve document order + de-dup for the human-facing list.
         missing: List[str] = []
@@ -643,6 +699,15 @@ class BusinessRequirementService:
             label = labels.get(key, key)
             if label not in missing:
                 missing.append(label)
+        return errors, missing
+
+    def _enforce_promote_completeness(self, br: BusinessRequirement) -> None:
+        """A promote with missing required fields is refused with a friendly,
+        specific message naming the blank field LABELS (AC-BI-34/34b) plus the
+        per-field ``fieldErrors`` map (inline highlight)."""
+        errors, missing = self.missing_required(br)
+        if not errors:
+            return
         raise HTTPException(
             422,
             detail={

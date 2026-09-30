@@ -49,6 +49,10 @@ THROTTLE_SCOPE_PULL = "pull"
 # call regardless of outcome (mirrors `record_webchat`'s IP bucket - "not a
 # failed credential attempt", same reused counter mechanism).
 THROTTLE_SCOPE_PULL_KEY = "pull_key"
+# Ideation BR build write-back gateway per IP (plan ideation-br-send-to-build,
+# AC-STB-16) - own bucket, the pull-gateway pattern: only a 401 (missing/
+# malformed/unknown/revoked key) records a failure.
+THROTTLE_SCOPE_BUILD = "build"
 
 
 class AuthThrottle(Base):

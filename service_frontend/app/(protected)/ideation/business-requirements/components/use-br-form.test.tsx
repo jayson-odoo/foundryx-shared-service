@@ -2,6 +2,7 @@ import { render, renderHook, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ListQuery } from '@/types/resource';
 import type { BusinessRequirementDetail } from '@/types/business-requirement';
+import { buildInfo } from './br-build-fixtures';
 import { useBrForm } from './use-br-form';
 
 /**
@@ -58,6 +59,7 @@ const brDetail = (over: Partial<BusinessRequirementDetail> = {}): BusinessRequir
   isTest: false,
   answers: {},
   templateDoc: { schemaVersion: 1, pages: [] },
+  build: buildInfo(),
   ...over,
 });
 

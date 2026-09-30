@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     # every 5s, so 600 requests / 5 minutes is comfortably above legitimate
     # traffic for one key while still bounding an out-of-scope probing spree.
     throttle_pull_key_max_requests: int = 600
+    # Ideation build write-back per IP (AC-STB-16): failures (401s) only.
+    throttle_build_max_fails: int = 5
+    throttle_build_window_minutes: int = 15
     throttle_pull_key_window_minutes: int = 5
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10
