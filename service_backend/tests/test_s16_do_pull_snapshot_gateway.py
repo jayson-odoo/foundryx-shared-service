@@ -858,3 +858,97 @@ def test_ac_16_44_the_operator_build_route_refuses_delivery_orders_with_422(
     db.expire_all()
     assert db.query(AcPullSnapshot).filter(AcPullSnapshot.company_id == env.company.id).count() == 0
     assert env.stub.requests == []
+
+
+# ── PR #103 round 1 ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bad", ["DO\x00-1", "DO\n1", "DO\x1f1", "DO\x7f1"])
+def test_ac_16_04_a_docno_with_a_control_character_is_a_fixed_422_never_echoed(
+    client, db, monkeypatch, bad,
+):
+    """SEC L1."""
+    env = build_env(db, monkeypatch)
+
+    response = post_build(client, env.key, docNo=bad)
+
+    _assert_flat_error(response, status=422, code="INVALID_REQUEST")
+    message = response.json()["message"]
+    assert "docNo" in message and "control" in message
+    assert "DO" not in message.replace("docNo", "")
+    assert env.stub.requests == []
+
+
+def _force_reattach_race(monkeypatch, winner_id):
+    """Make the pre-check see nothing, so the INSERT loses to the winner and the
+    IntegrityError re-attach path is the one under test."""
+    from modules.autocount.repositories import PullSnapshotRepository
+
+    real = PullSnapshotRepository.latest_for_triple
+    state = {"calls": 0}
+
+    def fake(self, *args, **kwargs):
+        state["calls"] += 1
+        return None if state["calls"] == 1 else real(self, *args, **kwargs)
+
+    monkeypatch.setattr(PullSnapshotRepository, "latest_for_triple", fake)
+
+
+def test_ac_16_10_integrity_race_with_a_different_scope_winner_is_409_build_in_flight(
+    client, db, monkeypatch,
+):
+    """REV should-fix 1: kills deleting the winner scope check in the IntegrityError branch."""
+    env = build_env(db, monkeypatch)
+    defer_jobs(monkeypatch)
+    first = post_build(client, env.key, fromDay=iso(day_ago(2)))
+    assert first.status_code == 202, first.text
+    _force_reattach_race(monkeypatch, first.json()["snapshotId"])
+
+    second = post_build(client, env.key, fromDay=iso(day_ago(5)))
+
+    _assert_flat_error(second, status=409, code="BUILD_IN_FLIGHT")
+
+
+def test_ac_16_10_integrity_race_with_the_same_scope_winner_reattaches(
+    client, db, monkeypatch,
+):
+    env = build_env(db, monkeypatch)
+    defer_jobs(monkeypatch)
+    first = post_build(client, env.key, fromDay=iso(day_ago(2)))
+    assert first.status_code == 202, first.text
+    _force_reattach_race(monkeypatch, first.json()["snapshotId"])
+
+    second = post_build(client, env.key, fromDay=iso(day_ago(2)))
+
+    assert second.status_code == 202, second.text
+    assert second.json()["snapshotId"] == first.json()["snapshotId"]
+
+
+def test_ac_16_10_scope_equality_compares_docno_trimmed_and_case_insensitively(
+    client, db, monkeypatch,
+):
+    """REV nit 3: re-attach across casing; the echo keeps the caller's casing."""
+    env = build_env(db, monkeypatch)
+    defer_jobs(monkeypatch)
+    first = post_build(client, env.key, docNo="DO-2609/0201")
+    assert first.status_code == 202, first.text
+
+    second = post_build(client, env.key, docNo="  do-2609/0201 ")
+
+    assert second.status_code == 202, second.text
+    assert second.json()["snapshotId"] == first.json()["snapshotId"]
+    assert second.json()["docNo"] == "do-2609/0201"
+
+
+def test_ac_16_07_a_feed_whose_connection_row_was_deleted_is_pull_not_enabled(
+    client, db, monkeypatch,
+):
+    """REV nit 4: the gate requires the connection to resolve."""
+    env = build_env(db, monkeypatch)
+    db.delete(env.conn)
+    db.commit()
+
+    response = post_build(client, env.key, fromDay=iso(day_ago(1)))
+
+    _assert_flat_error(response, status=409, code="PULL_NOT_ENABLED")
+    assert env.stub.requests == []

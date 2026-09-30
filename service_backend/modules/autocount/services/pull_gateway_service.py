@@ -27,9 +27,11 @@ from ..models import (
     AcPullAudit,
     AcPullSnapshot,
 )
+from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
 from ..pull_auth import PullGatewayError
 from ..repositories import (
     CompanyRepository,
+    ConnectionRepository,
     EntityConfigRepository,
     PullAuditRepository,
     PullSnapshotRepository,
@@ -110,6 +112,7 @@ def gateway_failed_message(error_code: Optional[str]) -> str:
 DO_SCOPE_KEYS = ("fromDay", "toDay", "docNo")
 DO_MAX_RANGE_DAYS = 31
 DO_MAX_DOC_NO_LEN = 64
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 _ISO_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -140,6 +143,8 @@ def parse_do_scope(raw_body: Any, *, today_myt: date) -> Dict[str, Optional[str]
     if doc_raw is not None:
         if not isinstance(doc_raw, str):
             raise _invalid("docNo must be a string.")
+        if _CONTROL_CHARS_RE.search(doc_raw):
+            raise _invalid("docNo must not contain control characters.")
         doc_no = doc_raw.strip()
         if not doc_no:
             raise _invalid("docNo must not be empty.")
@@ -340,7 +345,14 @@ class PullGatewayService:
             feed = DocFeedRepository(self.db).get(
                 key_row.tenant_id, company.id, DOC_FEED_DELIVERY_ORDERS
             )
-            if feed is None or not (feed.connection_id or "").strip():
+            feed_conn = (
+                ConnectionRepository(self.db).get_for_provider(
+                    key_row.tenant_id, feed.connection_id, PROVIDER_KEY
+                )
+                if feed is not None and (feed.connection_id or "").strip()
+                else None
+            )
+            if feed_conn is None or auth_mode(feed_conn.config_json or {}) != AUTH_NONE:
                 raise PullGatewayError(
                     409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE,
                     company_id=company.id,

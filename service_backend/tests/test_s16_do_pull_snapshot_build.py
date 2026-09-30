@@ -709,3 +709,77 @@ def test_ac_16_33_each_vendor_call_is_recorded_in_integration_activity_without_r
     )
     for secret in ("Anon Trading Sdn Bhd", "Beta Hardware Sdn Bhd", "0123456789", "DO-2609/0201"):
         assert secret not in blob, f"{secret!r} (a record body value) leaked into integration_activity"
+
+
+# ── PR #103 round 1: caps, payload guard ─────────────────────────────────────
+
+
+def test_ac_16_29_a_document_over_1mb_is_an_excluded_too_large_row_never_stored(
+    client, db, monkeypatch,
+):
+    """SEC M1: per-document byte cap; the sibling is stored, counts exclude it."""
+    day = day_ago(1)
+    big = do_rec(55130, "DO-BIG", "2026-09-28T00:00:00", "2026-09-28T10:00:00.000", Ref="x" * (1024 * 1024 + 10))
+    ok = do_rec(55131, "DO-OK", "2026-09-28T00:00:00", "2026-09-28T10:00:00.000")
+    env = build_env(db, monkeypatch, day_fn=lambda d: [big, ok] if d == day else [])
+
+    snapshot_id = _build(client, env, fromDay=iso(day))
+
+    snap = stored_snapshot(db, snapshot_id)
+    assert snap.status == "ready", snap.error
+    assert [p["DocKey"] for p in _payloads(db, snapshot_id)] == [55131]
+    assert snap.record_count == 1
+    assert snap.metadata_json["lineCount"] == 2
+    assert snap.metadata_json["excludedCount"] == 1
+    assert snap.metadata_json["excludedRows"] == [
+        {
+            "source_ref": f"{BOOK}:DO:55130", "code": "DO-BIG", "reason": "too_large",
+            "message": "Delivery order exceeds 1 MB and cannot be stored in a snapshot.",
+        }
+    ]
+
+
+def test_ac_16_29_raw_fetched_count_over_10000_stops_reading_further_days(
+    client, db, monkeypatch,
+):
+    """SEC M1: ROW_LIMIT on the RAW count after each day read."""
+    first, second = day_ago(3), day_ago(2)
+    many = [tiny_rec(i) for i in range(1, 10_002)]
+    env = build_env(db, monkeypatch, day_fn=lambda d: many if d == first else [])
+
+    snapshot_id = _build(client, env, fromDay=iso(first), toDay=iso(second))
+
+    snap = stored_snapshot(db, snapshot_id)
+    assert snap.status == "failed"
+    assert snap.error_code == "ROW_LIMIT"
+    assert env.stub.days == [first], "the later day must never be read"
+    assert stored_rows(db, snapshot_id) == []
+
+
+def test_ac_16_20_a_payload_without_a_valid_scope_fails_cleanly(db, monkeypatch):
+    """REV nit 5: missing / unparsable fromDay fails SOURCE_PAGE_FAILED, never raises."""
+    from app.jobs.service import JobService
+    from modules.autocount.services.pull_service import SnapshotService
+    from modules.autocount.sync import AUTOCOUNT_PULL_SNAPSHOT, _run_pull_snapshot
+
+    env = build_env(db, monkeypatch)
+    snap = SnapshotService(db).create_building(
+        DEFAULT_TENANT_ID, env.company.id, ENTITY_DO,
+        company_code="SRT", requested_via="gateway",
+    )
+    jobs = JobService(db)
+    job = jobs.create(
+        type=AUTOCOUNT_PULL_SNAPSHOT, tenant_id=DEFAULT_TENANT_ID,
+        payload={"companyId": env.company.id, "entityType": ENTITY_DO, "snapshotId": snap.id},
+    )
+    assert jobs.claim(job.id)
+    job = jobs.get(DEFAULT_TENANT_ID, job.id)
+
+    _run_pull_snapshot(db, job)
+
+    after = stored_snapshot(db, snap.id)
+    assert after.status == "failed"
+    assert after.error_code == "SOURCE_PAGE_FAILED"
+    assert after.error == "The build payload carries no valid scope."
+    assert env.stub.requests == []
+    assert db.get(BackgroundJob, job.id).status == "failed"

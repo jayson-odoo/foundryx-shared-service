@@ -13,6 +13,7 @@ ladder stays in ONE place.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -40,7 +41,9 @@ from .vendor import DocFeedVendorError
 logger = logging.getLogger("foundryx.autocount")
 
 MAX_SNAPSHOT_DOCUMENTS = 10_000
+MAX_SNAPSHOT_DOCUMENT_BYTES = 1024 * 1024
 ROW_INSERT_HEARTBEAT_INTERVAL = 200
+TOO_LARGE_MESSAGE = "Delivery order exceeds 1 MB and cannot be stored in a snapshot."
 MISSING_DOC_KEY_MESSAGE = (
     "DocKey is missing or not an integer; the record cannot be identified."
 )
@@ -53,6 +56,13 @@ class _Abandoned(Exception):
 def _doc_no_matches(record: Dict[str, Any], wanted: str) -> bool:
     value = record.get("DocNo")
     return isinstance(value, str) and value.strip().casefold() == wanted.casefold()
+
+
+def _too_large(record: Dict[str, Any]) -> bool:
+    try:
+        return len(json.dumps(record, default=str)) > MAX_SNAPSHOT_DOCUMENT_BYTES
+    except (TypeError, ValueError):
+        return True
 
 
 def _days_in_range(from_day: date, to_day: date) -> List[date]:
@@ -120,8 +130,12 @@ def build_delivery_orders_snapshot(
         finish_run_failed(message)
         fail_snapshot(message, code)
 
-    from_day = date.fromisoformat(str(scope["fromDay"]))
-    to_day = date.fromisoformat(str(scope["toDay"]))
+    try:
+        from_day = date.fromisoformat(str(scope.get("fromDay")))
+        to_day = date.fromisoformat(str(scope.get("toDay")))
+    except ValueError:
+        fail("The build payload carries no valid scope.", ERROR_CODE_SOURCE_PAGE_FAILED)
+        return
     doc_no: Optional[str] = scope.get("docNo")
 
     try:
@@ -136,11 +150,15 @@ def build_delivery_orders_snapshot(
     book = resolved.book
     days = _days_in_range(from_day, to_day)
     fetched: List[Dict[str, Any]] = []
+    raw_over_limit = False
     try:
         try:
             for index, day in enumerate(days, start=1):
                 fetched.extend(resolved.vendor.day_by_doc_date(FEED_DELIVERY_ORDERS, day))
                 beat_and_check("source", index, len(days))
+                if len(fetched) > MAX_SNAPSHOT_DOCUMENTS:
+                    raw_over_limit = True
+                    break
         except _Abandoned as exc:
             abandon(exc)
             return
@@ -151,11 +169,21 @@ def build_delivery_orders_snapshot(
             fail(f"Fetch failed: {exc}", ERROR_CODE_SOURCE_PAGE_FAILED)
             return
     finally:
-        record_client_calls(
-            db, resolved.vendor_client, tenant_id=tenant_id, trace_id=trace_id,
-            external_ref=company.database_name,
+        try:
+            record_client_calls(
+                db, resolved.vendor_client, tenant_id=tenant_id, trace_id=trace_id,
+                external_ref=company.database_name,
+            )
+        finally:
+            resolved.vendor_client.close()
+
+    if raw_over_limit:
+        fail(
+            f"The range returned more than {MAX_SNAPSHOT_DOCUMENTS} records; one snapshot "
+            f"carries at most {MAX_SNAPSHOT_DOCUMENTS} documents.",
+            ERROR_CODE_ROW_LIMIT,
         )
-        resolved.vendor_client.close()
+        return
 
     excluded_rows: List[Dict[str, Any]] = []
     for record in fetched:
@@ -174,6 +202,22 @@ def build_delivery_orders_snapshot(
     if doc_no is not None:
         documents = [r for r in documents if _doc_no_matches(r, doc_no)]
     documents.sort(key=lambda r: (doc_date(r) or date.min, doc_key(r) or 0))
+
+    kept: List[Dict[str, Any]] = []
+    for record in documents:
+        if _too_large(record):
+            code = record.get("DocNo")
+            excluded_rows.append(
+                {
+                    "source_ref": source_ref(FEED_DELIVERY_ORDERS, book, record),
+                    "code": code if isinstance(code, str) and code else None,
+                    "reason": "too_large",
+                    "message": TOO_LARGE_MESSAGE,
+                }
+            )
+        else:
+            kept.append(record)
+    documents = kept
 
     if len(documents) > MAX_SNAPSHOT_DOCUMENTS:
         fail(

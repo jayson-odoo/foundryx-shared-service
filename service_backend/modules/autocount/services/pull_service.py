@@ -352,14 +352,23 @@ def _scope_key(scope: Optional[Dict[str, Any]]) -> Optional[tuple]:
     ``None`` for an unscoped entity (products / stock)."""
     if scope is None:
         return None
-    return tuple(scope.get(key) for key in _SCOPE_KEYS)
+    return _normalise_scope_values(tuple(scope.get(key) for key in _SCOPE_KEYS))
+
+
+def _normalise_scope_values(values: tuple) -> tuple:
+    """``docNo`` is compared trimmed and case-insensitively (contract section
+    2); the stored / echoed value keeps the caller's own casing."""
+    from_day, to_day, doc_no = values
+    if isinstance(doc_no, str):
+        doc_no = doc_no.strip().casefold()
+    return (from_day, to_day, doc_no)
 
 
 def _stored_scope_key(snapshot: AcPullSnapshot) -> Optional[tuple]:
     metadata = snapshot.metadata_json or {}
     if "fromDay" not in metadata:
         return None
-    return tuple(metadata.get(key) for key in _SCOPE_KEYS)
+    return _normalise_scope_values(tuple(metadata.get(key) for key in _SCOPE_KEYS))
 
 
 class PullService:
