@@ -57,7 +57,7 @@ orchestrator (ask a95074396 answered 29 Sep: option a); section 6 below is that 
 - `br_builds`: `id`, `tenant_id` (idx), `business_requirement_id` (UNIQUE), `repo`, `state` (`creating | sent | delivered | failed`), `issue_number INT NULL`, `issue_url TEXT NULL`, `issue_node_id VARCHAR NULL`, `sent_by` (user id, resolved WITH tenant at read time), `sent_at`, `created_at`, `updated_at`.
 - `br_build_events`: `seq` PK, `id` unique, `tenant_id` (idx), `business_requirement_id` (idx), `kind` (`sent | crew | system`), `stage VARCHAR(40)`, `message TEXT`, `pr_url TEXT NULL`, `handtest_url TEXT NULL`, `status VARCHAR NULL`, `actor_user_id NULL`, `key_id NULL`, `status_moved BOOL`, `created_at` (DB clock). Index `(tenant_id, business_requirement_id, seq)`.
 - `br_build_keys`: mirror of `AcPullApiKey` minus company scope: `id`, `tenant_id` (idx), `name`, `key_prefix` (idx), `key_hash`, `last_used_at`, `revoked_at`, `created_by`, `created_at`.
-- Data migration in 0013: re-sort BR statuses (`in_fr`=5, `delivered`=6, `archived`=7) on a frozen `sa.table`. No other backfill needed (new tables; nullable column).
+- Data migration in 0014: re-sort BR statuses (`in_fr`=5, `delivered`=6, `archived`=7) on a frozen `sa.table`. No other backfill needed (new tables; nullable column).
 - `JSON` columns: none new. Datetimes: `UTCDateTime`.
 
 ### 3.2 Backend (module `ideation`)
@@ -79,7 +79,7 @@ orchestrator (ask a95074396 answered 29 Sep: option a); section 6 below is that 
 - Types: `BusinessRequirementStatus` += `'sent_to_build'`; `BuildInfo`, `BuildEvent`, `BuildKey` in `types/business-requirement.ts`; `DeliveryConfig.buildRepo`.
 - Services: `business-requirement-service.{ts,mock.ts,real.ts}` += `sendToBuild(id)`, `getBuild(id)`, `listBuildKeys/mintBuildKey/revokeBuildKey`; `ideation-service` delivery add `buildRepo`. Phase 1 mock carries the four header states + a trace fixture; swap = one line at the service boundary.
 - Hooks/components under `app/(protected)/ideation/business-requirements/components/`: `use-br-build.ts` (readiness + send + confirm state), `br-send-to-build-button.tsx` (builds the `primaryAction` config: CTA / disabled + reason / issue-link chip; rendering lives in the shell), `br-trace-tab.tsx` (summary card + timeline; `useDatetime`; `ClampedText` for long messages; `Badge` for stages; success tone for merged/released), `build-keys-dialog.tsx` (clone of autocount `issue-key-dialog.tsx`, list + mint + revoke, plaintext shown once with copy), product dialog field.
-- Shell: `ResourceFormConfig.primaryAction` + `actionsNote` (D12) in `resource-form/types.ts` + `resource-form.tsx`: when `primaryAction` is set the plain primary CTA takes Edit's slot inside `data-slot="record-actions"` and Edit becomes the first `ActionMenu` item (Cancel/Save while editing are unchanged; the `ActionMenu` gains an optional leading item, not a parallel menu); the note is a full-width muted line under the flex row so it wraps under the identity at 375.
+- Shell: `ResourceFormConfig.primaryAction` + `actionsNote` (D12) in `resource-form/types.ts` + `resource-form.tsx`: when `primaryAction` is set the plain primary CTA takes Edit's slot inside `data-slot="record-actions"` and Edit becomes the first `ActionMenu` item (Cancel/Save while editing are unchanged; the shell prepends a synthetic Edit action to the existing `ActionMenu`, which itself is untouched); the note is a full-width muted line under the flex row so it wraps under the identity at 375.
 - Status menu: `use-br-actions.tsx` filters out edges whose id starts with `br-tr-send-to-build` (they are the button's), keeps "Back to ready".
 
 ### 3.4 Trace tab data
@@ -90,12 +90,12 @@ orchestrator (ask a95074396 answered 29 Sep: option a); section 6 below is that 
 | Slice | Content | Tests (tester writes first) |
 |---|---|---|
 | S0 | Mock approval gate. Frontend against `business-requirement-service.mock.ts`: header states, confirm dialog, Trace tab, product field, keys dialog. Shell props D12. | vitest: `br-send-to-build-button.test.tsx` (4 states, permission-hidden, pending never double-fires), `br-trace-tab.test.tsx` (empty, timeline order, success tone), `resource-form` prop render test |
-| S1 | Alembic 0013 + models + `build_repo` on delivery (BE+FE) + statuses/edges + permission + grant sweep + GitHub provider registration. | pytest: `test_ideation_build_repo.py` (AC-01/03), `test_ideation_br_statuses_build.py` (AC-13 seed converge, sort), `test_ideation_send_to_build_perm.py` (AC-14 sweep), `test_github_provider.py` (AC-04/05 with a fake transport) |
+| S1 | Alembic 0014 + models + `build_repo` on delivery (BE+FE) + statuses/edges + permission + grant sweep + GitHub provider registration. | pytest: `test_ideation_build_repo.py` (AC-01/03), `test_ideation_br_statuses_build.py` (AC-13 seed converge, sort), `test_ideation_send_to_build_perm.py` (AC-14 sweep), `test_github_provider.py` (AC-04/05 with a fake transport) |
 | S2 | Send endpoint + readiness + issue body + idempotency (httpx `MockTransport`). | `test_ideation_send_to_build.py` (AC-06,09,10,11,12,21,22); kill test: remove the unique index -> the concurrency test must fail |
 | S3 | Write-back keys + public events endpoint + status close. | `test_ideation_build_writeback.py` (AC-15..18, 22) |
 | S4 | Swap mocks to real; Trace tab live; agent-browser evidence at 375 + 1280; `documentation/engineering/ideation-build-handoff.md`; engine index row in `AGENTS.md`. | AC-STB-19/20/23 report |
 
-Hand test (crew contract): script at `laneboard/scripts/<PR>.md`; schema SQL at `crew/state/migrations/BR-TO-CREW.sql` (additive: `ADD COLUMN IF NOT EXISTS build_repo`, `CREATE TABLE IF NOT EXISTS` x3; the status re-sort UPDATE is held for the owner or skipped on the test copy - the copy runs `bootstrap_db`, which applies 0013 itself).
+Hand test (crew contract): script at `laneboard/scripts/<PR>.md`; schema SQL at `crew/state/migrations/BR-TO-CREW.sql` (additive: `ADD COLUMN IF NOT EXISTS build_repo`, `CREATE TABLE IF NOT EXISTS` x3; the status re-sort UPDATE is held for the owner or skipped on the test copy - the copy runs `bootstrap_db`, which applies 0014 itself).
 
 ## 5. Risks and open points
 

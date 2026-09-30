@@ -56,7 +56,7 @@ keyed to these ids. Status keys below are the SEEDED platform keys; the UI never
   `ideation.business_requirements.send_to_build` sees the plain Edit primary as today.
 - **When** `canSend` is false and no issue exists, **then** the button is disabled, the "..." menu stays
   enabled (Edit reachable), and ONE muted reason line renders under the actions row with `blockers[0]`
-  (a product blocker links to the product).
+  (plain text: there is no product detail route to link to, see BL-SS-295).
 - **When** an issue exists, **then** the button's slot shows the issue-link chip "<repo short name> #<n>"
   (opens the issue in a new tab) plus the line "Sent <date time in the user's tz> by <name>"; the "..."
   menu is unchanged.
@@ -121,7 +121,8 @@ keyed to these ids. Status keys below are the SEEDED platform keys; the UI never
 - **Given** an Admin (`ideation.business_requirements.send_to_build`), **when** they mint a key from the
   Keys dialog on the Business requirements list, **then** the plaintext `fxb_live_<32 url-safe chars>`
   is returned ONCE; the table stores only sha256 + 8-char prefix; list shows name, prefix, created,
-  last used; revoke sets `revoked_at` and the key stops resolving immediately.
+  last used; revoke sets `revoked_at` and the key stops resolving immediately (the dialog's Revoke
+  runs on the core grace-window countdown, no confirm dialog; the DELETE route is the immediate form).
 
 ### AC-STB-16 [BE][T] Append a Trace entry
 - **Given** `POST /ideation/build/{brId}/events` with `Authorization: Bearer <key>` and body

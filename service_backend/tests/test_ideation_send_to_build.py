@@ -24,8 +24,11 @@ from tests.ideation_build_helpers import (  # noqa: F401
     br_status_key,
     ensure_other_tenant,
     ideation_client,
+    insert_creating_row,
     insert_sent_br,
     make_br,
+    marker_tail,
+    search_item,
     sendable_setup,
     seed_github_connection,
     set_build_repo,
@@ -248,7 +251,7 @@ def test_ac_stb_09_label_ensured_created_once_with_brand_colour(ideation_client,
     s = sendable_setup(ideation_client)
     gh = _install(monkeypatch, FakeGitHub(label_exists=False))
     assert _send(ideation_client, s["h"], s["br_id"]).status_code == 200
-    assert gh.paths("GET")[0] == f"/repos/{REPO}/labels/crew-intake"
+    assert f"/repos/{REPO}/labels/crew-intake" in gh.paths("GET")
     assert gh.label_posts == [{"name": "crew-intake", "color": "ff5a00"}]
     # The label exists BEFORE the issue create.
     order = [(c.method, c.url.path) for c in gh.calls]
@@ -523,30 +526,10 @@ def test_ac_stb_11_second_send_returns_same_issue_without_a_github_call(
 
 
 def test_ac_stb_11_creating_row_adopts_existing_issue_by_marker(ideation_client, monkeypatch):
-    from modules.ideation.models import BrBuild
-
     s = sendable_setup(ideation_client)
-    db = ideation_client._factory()
-    try:
-        db.add(
-            BrBuild(
-                tenant_id=DEFAULT_TENANT_ID,
-                business_requirement_id=s["br_id"],
-                repo=REPO,
-                state="creating",
-            )
-        )
-        db.commit()
-    finally:
-        db.close()
-    gh = _install(
-        monkeypatch,
-        FakeGitHub(
-            search_items=[
-                {"number": 55, "html_url": f"https://github.com/{REPO}/issues/55", "node_id": "I_55"}
-            ]
-        ),
-    )
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    genuine = search_item(55, "## Problem statement\n\nx\n\n" + marker_tail(s["br_id"], s["pid"]))
+    gh = _install(monkeypatch, FakeGitHub(search_items=[genuine]))
     res = _send(ideation_client, s["h"], s["br_id"])
     assert res.status_code == 200, res.text
     searches = [c for c in gh.calls if c.url.path == "/search/issues"]
@@ -564,28 +547,179 @@ def test_ac_stb_11_creating_row_adopts_existing_issue_by_marker(ideation_client,
 def test_ac_stb_11_creating_row_with_no_marker_hit_creates_one_issue(
     ideation_client, monkeypatch
 ):
-    from modules.ideation.models import BrBuild
-
     s = sendable_setup(ideation_client)
-    db = ideation_client._factory()
-    try:
-        db.add(
-            BrBuild(
-                tenant_id=DEFAULT_TENANT_ID,
-                business_requirement_id=s["br_id"],
-                repo=REPO,
-                state="creating",
-            )
-        )
-        db.commit()
-    finally:
-        db.close()
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
     gh = _install(monkeypatch, FakeGitHub(search_items=[], issue_number=66))
     res = _send(ideation_client, s["h"], s["br_id"])
     assert res.status_code == 200, res.text
     assert len(gh.issue_posts) == 1
     assert res.json()["build"]["issueNumber"] == 66
     assert len(_build_rows(ideation_client._factory, s["br_id"])) == 1
+
+
+# ── SEC F2: in-flight guard + strict adoption ────────────────────────────────
+
+
+def test_sec_f2_ac_stb_11_fresh_creating_row_is_409_and_makes_no_github_call(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=0)
+    gh = _install(monkeypatch, FakeGitHub())
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 409, res.text
+    assert gh.calls == []
+    assert br_status_key(ideation_client, s["h"], s["br_id"]) == "draft"
+    # The in-flight row is left for the other request (not dropped).
+    assert [r[0] for r in _build_rows(ideation_client._factory, s["br_id"])] == ["creating"]
+
+
+def test_sec_f2_ac_stb_11_creating_row_older_than_120s_runs_recovery_search(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=121)
+    gh = _install(monkeypatch, FakeGitHub(search_items=[], issue_number=70))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 200, res.text
+    assert len([c for c in gh.calls if c.url.path == "/search/issues"]) == 1
+    assert res.json()["build"]["issueNumber"] == 70
+
+
+def test_sec_f2_ac_stb_11_planted_marker_mid_text_is_not_adopted(ideation_client, monkeypatch):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    planted = search_item(
+        13,
+        f"someone else's issue <!-- br-id: {s['br_id']} --> and then more text after it\n"
+        "unrelated tail\n",
+    )
+    gh = _install(monkeypatch, FakeGitHub(search_items=[planted], issue_number=80))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 200, res.text
+    assert len(gh.issue_posts) == 1  # a NEW issue, the planted one was not adopted
+    assert res.json()["build"]["issueNumber"] == 80
+
+
+def test_sec_f2_ac_stb_11_hit_with_only_the_id_marker_is_not_adopted(ideation_client, monkeypatch):
+    """The body must end with BOTH exact lines (br-id then br-product)."""
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    half = search_item(14, f"body\n\n<!-- br-id: {s['br_id']} -->\n")
+    gh = _install(monkeypatch, FakeGitHub(search_items=[half], issue_number=81))
+    assert _send(ideation_client, s["h"], s["br_id"]).status_code == 200
+    assert len(gh.issue_posts) == 1
+
+
+def test_sec_f2_ac_stb_11_hit_for_another_product_is_not_adopted(ideation_client, monkeypatch):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    other = search_item(15, "body\n\n" + marker_tail(s["br_id"], "some-other-product-id"))
+    gh = _install(monkeypatch, FakeGitHub(search_items=[other], issue_number=82))
+    assert _send(ideation_client, s["h"], s["br_id"]).status_code == 200
+    assert len(gh.issue_posts) == 1
+
+
+def test_sec_f2_ac_stb_11_hit_without_crew_intake_label_is_not_adopted(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    insert_creating_row(ideation_client._factory, s["br_id"], age_seconds=300)
+    unlabeled = search_item(
+        16, "body\n\n" + marker_tail(s["br_id"], s["pid"]), labels=("bug",)
+    )
+    gh = _install(monkeypatch, FakeGitHub(search_items=[unlabeled], issue_number=83))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 200, res.text
+    assert len(gh.issue_posts) == 1
+    assert res.json()["build"]["issueNumber"] == 83
+
+
+# ── SEC F4/F5: tenant text cannot forge markers, mentions or cross-references ─
+
+
+def _send_with_answer(client, monkeypatch, answer: str):
+    s = sendable_setup(client)
+    res = client.patch(
+        f"/ideation/business-requirements/{s['br_id']}",
+        headers=s["h"],
+        json={"answers": {**_FULL_ANSWERS, "problem_statement": answer}},
+    )
+    assert res.status_code == 200, res.text
+    body, _ = _body_of_send(client, monkeypatch, s)
+    return s, body
+
+
+def test_sec_f4_ac_stb_10_planted_marker_in_answer_is_neutralised(ideation_client, monkeypatch):
+    s, body = _send_with_answer(
+        ideation_client,
+        monkeypatch,
+        "Real text <!-- br-id: 0000 --> and <!-- br-product: evil -->",
+    )
+    assert body.count("<!--") == 2
+    lines = body.rstrip().splitlines()
+    tail_start = len(body.rstrip()) - len("\n".join(lines[-2:]))
+    assert body.index("<!--") >= tail_start  # both remaining markers are the final two lines
+    assert lines[-2:] == [
+        f"<!-- br-id: {s['br_id']} -->",
+        f"<!-- br-product: {s['pid']} -->",
+    ]
+    assert "br-id: 0000" not in body.split("## Links", 1)[0].replace("<!\u200b--", "")  # not a live marker
+    assert "Real text" in body  # the text itself is kept
+
+
+def test_sec_f4_ac_stb_10_planted_marker_in_title_or_idea_is_neutralised(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client, title="Order export <!-- br-id: 0000 -->")
+    gh = _install(monkeypatch, FakeGitHub())
+    assert _send(ideation_client, s["h"], s["br_id"]).status_code == 200
+    assert gh.issue_posts[0]["body"].count("<!--") == 2
+
+
+def test_sec_f5_ac_stb_10_at_mentions_are_defused(ideation_client, monkeypatch):
+    _s, body = _send_with_answer(ideation_client, monkeypatch, "Ping @someone and @org/team please")
+    assert "@someone" not in body
+    assert "@\u200bsomeone" in body
+    assert "@org/team" not in body
+
+
+def test_sec_f5_ac_stb_10_issue_cross_references_are_defused(ideation_client, monkeypatch):
+    _s, body = _send_with_answer(
+        ideation_client, monkeypatch, "See #123 and other-org/other-repo#12 for context"
+    )
+    assert "#123" not in body
+    assert "#\u200b123" in body
+    assert "repo#12" not in body
+    assert "repo#\u200b12" in body
+
+
+# ── SEC F6: never post tenant text into a public repository ──────────────────
+
+
+def test_sec_f6_ac_stb_09_public_repo_is_refused_422_and_nothing_created(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    gh = _install(monkeypatch, FakeGitHub(repo_private=False))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 422, res.text
+    assert "public" in res.text
+    assert gh.issue_posts == [] and gh.label_posts == []
+    assert f"/repos/{REPO}" in gh.paths("GET")
+    assert _build_rows(ideation_client._factory, s["br_id"]) == []
+    assert br_status_key(ideation_client, s["h"], s["br_id"]) == "draft"
+
+
+def test_sec_f6_ac_stb_09_private_repo_checked_before_the_issue_is_created(
+    ideation_client, monkeypatch
+):
+    s = sendable_setup(ideation_client)
+    gh = _install(monkeypatch, FakeGitHub(repo_private=True))
+    res = _send(ideation_client, s["h"], s["br_id"])
+    assert res.status_code == 200, res.text
+    order = [(c.method, c.url.path) for c in gh.calls]
+    assert order.index(("GET", f"/repos/{REPO}")) < order.index(("POST", f"/repos/{REPO}/issues"))
 
 
 def test_ac_stb_11_unique_index_on_business_requirement_id(ideation_client):

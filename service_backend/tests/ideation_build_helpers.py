@@ -50,7 +50,10 @@ class FakeGitHub:
         issue_number: int = 4242,
         search_items: Optional[List[Dict[str, Any]]] = None,
         connect_error: bool = False,
+        repo_private: Optional[bool] = True,
     ) -> None:
+        # ``repo_private`` answers ``GET /repos/{r}`` (SEC F6 visibility check).
+        self.repo_private = repo_private
         self.label_exists = label_exists
         self.issue_status = issue_status
         self.issue_number = issue_number
@@ -78,6 +81,10 @@ class FakeGitHub:
         self.auth_headers.append(request.headers.get("authorization", ""))
         path, method = request.url.path, request.method
         repo_prefix = f"/repos/{REPO}"
+        if method == "GET" and path == repo_prefix:
+            return httpx.Response(
+                200, json={"full_name": REPO, "private": self.repo_private}
+            )
         if method == "GET" and path == f"{repo_prefix}/labels/crew-intake":
             if self.label_exists:
                 return httpx.Response(200, json={"name": "crew-intake"})
@@ -311,3 +318,44 @@ def mint_key_via_api(client, h, name: str = "crew") -> Dict[str, Any]:
 
 def bearer(plaintext: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {plaintext}"}
+
+
+def marker_tail(br_id: str, product_id: str) -> str:
+    """The exact two machine-marker lines a genuine crew-intake issue body ends with."""
+    return f"<!-- br-id: {br_id} -->\n<!-- br-product: {product_id} -->\n"
+
+
+def search_item(number: int, body: str, *, labels=("crew-intake",)) -> Dict[str, Any]:
+    """A ``/search/issues`` item carrying body + labels (SEC F2 adoption checks)."""
+    return {
+        "number": number,
+        "html_url": f"https://github.com/{REPO}/issues/{number}",
+        "node_id": f"I_{number}",
+        "body": body,
+        "labels": [{"name": n} for n in labels],
+    }
+
+
+def insert_creating_row(factory, br_id: str, *, age_seconds: int) -> None:
+    """A ``br_builds`` row in state ``creating`` whose ``updated_at`` is
+    ``age_seconds`` old (fresh = another request in flight)."""
+    from datetime import datetime, timedelta, timezone
+
+    from modules.ideation.models import BrBuild
+
+    stamp = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    db = factory()
+    try:
+        db.add(
+            BrBuild(
+                tenant_id=DEFAULT_TENANT_ID,
+                business_requirement_id=br_id,
+                repo=REPO,
+                state="creating",
+                created_at=stamp,
+                updated_at=stamp,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
