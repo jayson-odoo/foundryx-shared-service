@@ -30,7 +30,7 @@ issue rows: it is a read for the CRM's own "Pull from AutoCount" review + confir
 | `entity` | `delivery_orders` (the only new value; `products` / `stock_balances` unchanged) |
 | `fromDay` | optional `YYYY-MM-DD`, an MYT calendar day (the vendor's `DocDate`) |
 | `toDay` | optional `YYYY-MM-DD`; defaults to `fromDay` when only `fromDay` is given |
-| `docNo` | optional, a single DO number, matched TRIMMED and case-insensitively against the vendor's `DocNo` |
+| `docNo` | optional, a single DO number, matched TRIMMED and case-insensitively against the vendor's `DocNo`; at most 64 characters, no control characters (else 422 `INVALID_REQUEST`); echoed back with the caller's own casing |
 
 Scope rules (each violation is a flat `422 INVALID_REQUEST` naming the field):
 
@@ -56,8 +56,8 @@ to today).
 Re-attach and cooldown (A3 / A5, adjusted for scope):
 
 - A build already `building` for the same (company, `delivery_orders`) with the **same
-  scope** (same `fromDay`, `toDay`, `docNo` after normalisation) returns THAT id, no second
-  extraction.
+  scope** (same `fromDay`, `toDay`, and `docNo` compared trimmed and case-insensitively) returns
+  THAT id, no second extraction.
 - A build already `building` for the same company but a **different scope** is
   `409 BUILD_IN_FLIGHT` (additive code): one DO build per company at a time. Poll the one in
   flight (its id is not returned; the CRM side holds it from its own earlier build call) or
@@ -65,9 +65,10 @@ Re-attach and cooldown (A3 / A5, adjusted for scope):
 - The 60 s cooldown (`429 TOO_MANY_BUILDS` + `Retry-After`) applies only when the previous
   build had the **same scope**; a different range or DO number within 60 s is allowed.
 
-Gating: `409 PULL_NOT_ENABLED` when the company has no `delivery_orders` feed row with an
-AutoCount connection (the feed's mode may be `off`, `dry_run` or `push`: the mode gates the
-hourly push, never this read). `409 PUSH_ACTIVE` is never raised for `delivery_orders`.
+Gating: `409 PULL_NOT_ENABLED` when the company has no `delivery_orders` feed row, or the row's
+AutoCount connection no longer resolves in this tenant (deleted, or not an open `autocount`
+connection). The feed's mode may be `off`, `dry_run` or `push`: the mode gates the hourly push,
+never this read. `409 PUSH_ACTIVE` is never raised for `delivery_orders`.
 `404 UNKNOWN_COMPANY`, `403 COMPANY_NOT_ALLOWED`, `409 AMBIGUOUS_COMPANY`, the throttles and the
 auth codes are as today.
 
@@ -99,7 +100,10 @@ auth codes are as today.
   whole build (nothing partial is ever served), exactly like the feed's "only speak for days
   read" rule. `sourcePageSize` is `null` (the DO doors are plain arrays, not paged).
 - `excludedRows` (shape `{source_ref, code, reason, message}`, A6's no-combine shape) lists
-  records with no usable `DocKey` (`reason: "missing_doc_key"`, `code` = the vendor `DocNo`).
+  records with no usable `DocKey` (`reason: "missing_doc_key"`, `code` = the vendor `DocNo`,
+  `source_ref: null`) and records whose JSON is over 1 MB (`reason: "too_large"`, `source_ref`
+  = `{book}:DO:{DocKey}`; the CRM's own ingest record cap is 1 MB / 2,000 lines, so such a
+  document could never be confirmed anyway).
   As with products, exclusions do NOT block Confirm; the CRM's own ingest rules decide what
   to do with what it receives.
 - A zero-row DO snapshot is a normal `ready` snapshot (a day range with no DOs, or a `docNo`
@@ -153,8 +157,13 @@ renamed, dropped or re-typed; `Details[]` included; unknown vendor keys included
 
 ## 5. Limits and sizing
 
-- Range cap 31 days; document cap 10,000 per snapshot (`ROW_LIMIT`); `pageSize` max 1000 as
-  today. A 31-day SRT range is on the order of a few thousand DOs; expect a build of a few
+- Range cap 31 days; document cap 10,000 per snapshot (`ROW_LIMIT`, checked on the raw count
+  after every day read, so an over-cap range stops early); per-document cap 1 MB (excluded,
+  see section 3); `pageSize` max 1000 as today.
+- The 60 s cooldown is per scope (section 2), so a caller can start a new range as soon as the
+  previous build ends; the one-build-in-flight rule and the per-key request throttle are the
+  limits that apply across scopes. `BUILD_IN_FLIGHT` can only be held by a key of the SAME tenant
+  and company, and only for as long as that build is alive. A 31-day SRT range is on the order of a few thousand DOs; expect a build of a few
   seconds per day read (one vendor GET per day, plain array) plus row storage.
 - TTL 24 h from `extractedAt`; newest 3 ready snapshots kept per (company, entity) as today.
 
