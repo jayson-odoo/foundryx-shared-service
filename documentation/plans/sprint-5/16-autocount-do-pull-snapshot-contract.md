@@ -132,6 +132,14 @@ renamed, dropped or re-typed; `Details[]` included; unknown vendor keys included
   ] }
 ```
 
+- The row carries every vendor field, so the CRM's Excel compare needs no extra request:
+  `CreatedTimeStamp`, `LastModified`, `Cancelled`, `DocStatus`, `DebtorCode` / `DebtorName`,
+  `SalesAgent`, `Total` / `Tax` / `NetTotal` / `LocalNetTotal`, and per line `Location`,
+  `UnitPrice`, `Discount` / `DiscountAmt`, `SubTotal`, `Qty` / `UOM`. A field the vendor does
+  not return cannot be added here; raise it via crew report.
+- Owner ruling 2026-09-30: the DO feed stays pull-on-request (no `push` switch until the CRM
+  compare + approve flow is proven); `goods_receive_notes` gets the same snapshot as a follow-on
+  after DO, not in this lane.
 - Identity: `source_ref` is NOT inside the row (the feed does not send it either); derive it as
   `{book}:DO:{DocKey}` with `book` from the header, the same derivation the CRM's DO ingest
   already uses (`13.3 / C2`). The stored row's `source_ref` column holds that string for the

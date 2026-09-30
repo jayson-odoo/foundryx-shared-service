@@ -71,3 +71,19 @@ UAC: `16-autocount-do-pull-snapshot-acceptance-criteria.md`.
   `test_s10_s4_gateway_build.py` does).
 - The DO build must NOT call `/api/v1/external/contract` or any `/api/v1/external/ingest/*`
   path: use `route_transport` with only the DO door routed (an unrouted path asserts).
+
+## 5. Owner rulings (2026-09-30)
+
+- R1: the DO feed stays pull-on-request; no switch to `push` until the CRM pull + Excel compare +
+  approve flow is proven. This snapshot reads a DocDate window and never touches the feed's
+  `cursor_day` / ledger / issues (D2, D5): unchanged.
+- R2: the CRM lane adds an Excel compare step on its side. Every field it named (created time,
+  cancelled, location, unit price, discount, totals, debtor, agent) is already in the raw vendor
+  row (`CreatedTimeStamp`, `Cancelled`, `Details[].Location`, `Details[].UnitPrice`,
+  `Details[].Discount` / `DiscountAmt`, `Total` / `Tax` / `NetTotal` / `LocalNetTotal`,
+  `DebtorCode` / `DebtorName`, `SalesAgent`) because rows are the vendor dict verbatim (D7). Any
+  field the vendor does not return is coordinated via crew report, never invented here.
+- R3: GRN gets the same pull (`goods_receive_notes` entity, `/goodsreceivenotebydocdate`,
+  `source_ref` `{book}:GRN:{DocKey}`) as a follow-on AFTER DO ships. Not built in this lane; the
+  entity map, scope parser and `doc_feed/snapshot.py` are written so adding it is one map entry
+  plus the feed key. Backlog: BL-SS-286 keeps the GRN half open.
