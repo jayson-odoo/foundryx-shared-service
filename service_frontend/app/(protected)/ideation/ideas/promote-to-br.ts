@@ -8,6 +8,8 @@ import {
   NO_TEMPLATE_MESSAGE,
   isBrTemplateUnavailable,
 } from '@/app/(protected)/ideation/business-requirements/components/br-template-error';
+import type { IdeationRuntime } from '@/hooks/use-ideation-runtime';
+import { ApiError } from '@/lib/api-client';
 import type { Idea } from '@/types/ideation';
 
 type Router = ReturnType<typeof useRouter>;
@@ -17,7 +19,13 @@ export interface PromoteOptions {
    * bulk promote - the backend derives the title from the representative idea's
    * problem so the BR is never "Untitled BR". */
   title?: string;
+  /** The active ideation runtime. Embed -> `runtime.service.promoteToBr` and stay
+   * in the iframe (no BR surface there); omitted / operator -> create via the BR
+   * service and land on the Grill tab. */
+  runtime?: IdeationRuntime;
 }
+
+const FORBIDDEN_MESSAGE = 'You do not have permission to promote ideas.';
 
 /**
  * Promote a set of ideas to a NEW draft BR and land on its Grill tab (AC-BI-32 /
@@ -40,6 +48,16 @@ export async function promoteIdeasToBr(
     return;
   }
   try {
+    if (opts.runtime?.mode === 'embed') {
+      const promote = opts.runtime.service.promoteToBr;
+      if (!promote) throw new Error('Promote is not available here.');
+      const br = await promote(
+        ideas.map((i) => i.id),
+        opts.title,
+      );
+      toast.success(`Draft requirement created: ${br.brNumber ?? br.title}`);
+      return;
+    }
     const created = await businessRequirementService.create({
       productId: ideas[0].productId,
       ideaIds: ideas.map((i) => i.id),
@@ -48,6 +66,10 @@ export async function promoteIdeasToBr(
     toast.success('Draft requirement created - start grilling.');
     router.push(brFormHref(created.id, { tab: 'grill' }));
   } catch (e) {
+    if (e instanceof ApiError && e.status === 403) {
+      toast.error(FORBIDDEN_MESSAGE);
+      return;
+    }
     if (isBrTemplateUnavailable(e)) {
       toast.error(NO_TEMPLATE_MESSAGE);
       return;

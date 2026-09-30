@@ -121,6 +121,8 @@ A sink failure is stored on `run.error` / `backfill.error` through
 `describe_consumer_failure(exc, sink=...)` (status + captured body, URL removed, API key
 redacted, capped), never `str(exc)`.
 
+A run row carries a summary dict from creation; a failed run keeps the counters of the steps that committed before the failure; the frontend still tolerates a null summary for legacy rows.
+
 ## 7. Scheduler and jobs
 
 A 60 s beat tick claims due feeds with a guarded UPDATE (two beats never both enqueue) and

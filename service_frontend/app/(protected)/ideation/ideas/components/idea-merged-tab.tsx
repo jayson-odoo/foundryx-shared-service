@@ -55,6 +55,7 @@ export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
     const columns: ColumnDef<Idea>[] = [
       {
         id: 'title',
+        meta: { headerTitle: 'Title' },
         header: () => 'Title',
         cell: ({ row }) => (
           <div className="flex items-start gap-1.5">
@@ -73,6 +74,7 @@ export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
       },
       {
         id: 'submitter',
+        meta: { headerTitle: 'Submitter' },
         header: () => 'Submitter',
         cell: ({ row }) => <span className="text-muted-foreground">{row.original.submitterName}</span>,
         size: 150,

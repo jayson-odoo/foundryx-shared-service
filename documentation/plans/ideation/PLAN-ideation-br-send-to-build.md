@@ -51,7 +51,7 @@ orchestrator (ask a95074396 answered 29 Sep: option a); section 6 below is that 
 
 ## 3. Design
 
-### 3.1 Data (module schema `app_ideation`, alembic `0013_ideation_br_build`, revision id <= 32 chars, single head after `0012_ideation_merge_rank_events`)
+### 3.1 Data (module schema `app_ideation`, alembic `0014_ideation_br_build`, revision id <= 32 chars, single head after `0013_ideation_attachment_upload`)
 
 - `product_delivery.build_repo VARCHAR NULL` (owner/repo).
 - `br_builds`: `id`, `tenant_id` (idx), `business_requirement_id` (UNIQUE), `repo`, `state` (`creating | sent | delivered | failed`), `issue_number INT NULL`, `issue_url TEXT NULL`, `issue_node_id VARCHAR NULL`, `sent_by` (user id, resolved WITH tenant at read time), `sent_at`, `created_at`, `updated_at`.

@@ -7,15 +7,17 @@ status / delete (``ideation.triage.manage``). Status moves ride the core status
 engine (server-authoritative - illegal moves refused)."""
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.api.v1.documents import _serve_blob
 from app.database import get_db
 from app.dependencies import require_permission
 from app.models.user import User
 
 from ..schemas import (
     BoardOut,
+    IdeaAttachmentOut,
     BusinessRequirementOut,
     ClusterSuggestionsOut,
     IdeaCreateIn,
@@ -27,12 +29,16 @@ from ..schemas import (
     VoteIn,
 )
 from ..services.actions import IdeaActionService
+from ..services.attachments import IdeaAttachmentService
 from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
 
 router = APIRouter()
+
+# Attachment upload read cap (25 MB); one extra byte tells "at the cap" from "over".
+ATTACHMENT_CAP_BYTES = 25 * 1024 * 1024
 
 
 @router.get("", response_model=List[IdeaOut])
@@ -168,6 +174,43 @@ def get_idea(
     return IdeaReadService(db).get(
         current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
     )
+
+
+@router.post(
+    "/{idea_id}/attachments",
+    response_model=IdeaAttachmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_idea_attachment(
+    idea_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    db: Session = Depends(get_db),
+) -> IdeaAttachmentOut:
+    """Upload a file onto an idea (sniff-first, 25 MB cap). 404 outside the
+    tenant, 413 over the cap, 415 on an unverifiable type."""
+    service = IdeaAttachmentService(db)
+    service.ensure_idea(current_user.tenant_id, idea_id)
+    content = await file.read(ATTACHMENT_CAP_BYTES + 1)
+    if len(content) > ATTACHMENT_CAP_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
+    return service.upload(
+        current_user.tenant_id, idea_id, file.filename or "", content
+    )
+
+
+@router.get("/{idea_id}/attachments/{attachment_id}/content")
+def get_idea_attachment_content(
+    idea_id: str,
+    attachment_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+):
+    """Serve an uploaded attachment CSP-sandboxed + nosniff (tenant-scoped)."""
+    key, mime, filename = IdeaAttachmentService(db).content(
+        current_user.tenant_id, idea_id, attachment_id
+    )
+    return _serve_blob(db, current_user.tenant_id, key, mime, filename, "inline")
 
 
 @router.get("/{idea_id}/business-requirements", response_model=List[BusinessRequirementOut])

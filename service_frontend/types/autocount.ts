@@ -1716,7 +1716,7 @@ export interface DocFeedRun {
   dayTo: string | null; // YYYY-MM-DD
   requests: number;
   fetchedCount: number;
-  summary: DocFeedRunSummary;
+  summary: DocFeedRunSummary | null; // null on an in-flight or legacy failed row
   outcome: DocFeedRunOutcome | null;
   error: string | null;
   errorCode: string | null;

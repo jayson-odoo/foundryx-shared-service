@@ -15,7 +15,11 @@ import type { EmbedConnectionItem } from '@/types/embed-connection';
 import type { Product } from '@/types/ideation';
 import { toCsv } from '@/lib/csv';
 
+// The page itself requires triage; create / rotate / activate-deactivate ALSO need
+// the BR-manage key (the backend gate for connection create/patch/rotate), so
+// only actions that will work are offered. Delete + list stay triage-only.
 const MANAGE = 'ideation.triage.manage';
+const MINT = 'ideation.business_requirements.manage';
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 function sortItems(rows: EmbedConnectionItem[], sort: ListQuery['sort']): EmbedConnectionItem[] {
@@ -72,7 +76,7 @@ export function useEmbedConnectionsListConfig(
         id: 'rotate',
         label: 'Rotate secret',
         icon: RefreshCw,
-        permission: MANAGE,
+        permission: MINT,
         surfaces: { row: true },
         run: (rows) => {
           const [c] = rows;
@@ -83,7 +87,7 @@ export function useEmbedConnectionsListConfig(
         id: 'toggle-active',
         label: (rows) => (rows[0]?.isActive ? 'Deactivate' : 'Activate'),
         icon: PowerOff,
-        permission: MANAGE,
+        permission: MINT,
         surfaces: { row: true },
         // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
         // 15) - no confirm, no `run` (the registered
@@ -269,7 +273,7 @@ export function useEmbedConnectionsListConfig(
       exportFilename: 'embed-connections',
       enableStatusViews: false,
       createLabel: 'Add connection',
-      createPermission: MANAGE,
+      createPermission: MINT,
       onCreate,
     };
   }, [actions, onCreate, formatDateTime, productName]);

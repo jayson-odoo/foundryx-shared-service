@@ -31,6 +31,7 @@ export function IdeaBrsTab({ ideaId }: IdeaBrsTabProps) {
     const columns: ColumnDef<BusinessRequirement>[] = [
       {
         id: 'title',
+        meta: { headerTitle: 'Title' },
         header: () => 'Title',
         cell: ({ row }) => (
           <div className="flex items-start gap-1.5">
@@ -49,6 +50,7 @@ export function IdeaBrsTab({ ideaId }: IdeaBrsTabProps) {
       },
       {
         id: 'product',
+        meta: { headerTitle: 'Product' },
         header: () => 'Product',
         cell: ({ row }) => <Badge variant="secondary">{row.original.productName}</Badge>,
         size: 150,
@@ -56,6 +58,7 @@ export function IdeaBrsTab({ ideaId }: IdeaBrsTabProps) {
       },
       {
         id: 'status',
+        meta: { headerTitle: 'Status' },
         header: () => 'Status',
         cell: ({ row }) => (
           <Badge variant="outline" appearance="light">

@@ -424,6 +424,24 @@ def ideation_session_factory(_ideation_session_factory_template):
     engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_reference_guards():
+    """Snapshot/restore the process-global reference-guard registry per test.
+
+    omnichannel bootstrap registers the REAL ("team", "conversations") checker at
+    app boot. A test that swaps in a fake and "restores" a dummy would replace
+    the real checker for the rest of the worker process, so a later
+    test_core_team_delete_blocked_by_real_conversations_guard got 204 not 409.
+    Restoring in place keeps the defaultdict object identity.
+    """
+    from app.module_platform import reference_guards as _reference_guards
+
+    snapshot = {k: list(v) for k, v in _reference_guards._GUARDS.items()}
+    yield
+    _reference_guards._GUARDS.clear()
+    _reference_guards._GUARDS.update({k: list(v) for k, v in snapshot.items()})
+
+
 _HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_|s11_)")
 
 

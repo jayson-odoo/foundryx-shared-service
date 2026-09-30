@@ -10,7 +10,8 @@ import {
   DataGridTableRowSelectAll,
 } from '@/components/ui/data-grid-table';
 import { Badge } from '@/components/ui/badge';
-import { StatusBadge, colorToHex, colorToTone, type StatusRegistry } from '@/components/platform/status-badge';
+import { StatusBadge } from '@/components/platform/status-badge';
+import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import type {
   ResourceAction,
   ResourceListConfig,
@@ -18,22 +19,13 @@ import type {
 import type { ListQuery, ListResult } from '@/types/resource';
 import { IDEA_SOURCE_LABEL, type Idea } from '@/types/ideation';
 import { toCsv } from '@/lib/csv';
+import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { selectIdeaRows } from './select-idea-rows';
 import { VoteCell } from './components/vote-cell';
+import { statusRegistryFor } from './components/status-registry';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
-
-function statusRegistryFor(idea: Idea): StatusRegistry<string> {
-  const label = idea.statusLabel ?? idea.status;
-  return {
-    [idea.status]: {
-      label,
-      tone: colorToTone(idea.statusColor),
-      hex: colorToHex(idea.statusColor),
-    },
-  };
-}
 
 /** "Move to {label}" when every selected row's advance target agrees, else the
  * generic verb (AC-94-57) - never a hardcoded key. */
@@ -47,12 +39,12 @@ function advanceLabel(rows: Idea[]): string {
 
 /**
  * Ideas list config (plan Phase A, grown by issue #94 "ideation round 2") on
- * the shared ResourceList - SAME component as the Users list. Row order IS
- * the server's rank order (top = highest priority, AC-94-47); reordered via
- * the left grip (config.rowReorder). Column sorting is disabled so the drag
- * order stays meaningful. Row-click opens the idea form; votes are a per-user
- * toggle; status/transitions come from the statuses engine, never a hardcoded
- * union (AC-94-49..57).
+ * the shared ResourceList - SAME component as the Users list. Rows are ordered
+ * by NET votes by default (plan sprint-5/15); every data column sorts and the
+ * Status/Submitter filters are built from the loaded ideas (`selectIdeaRows`
+ * applies both). Row-click opens the idea form; votes are a per-user toggle;
+ * status/transitions come from the statuses engine, never a hardcoded union
+ * (AC-94-49..57).
  */
 export function useIdeasListConfig(
   ideas: Idea[],
@@ -64,7 +56,9 @@ export function useIdeasListConfig(
     /** No longer called by this config (fix round 1, T5, item 15 - Delete is
      * `deferred`). Kept in the signature so the caller needs no change. */
     onDelete: (idea: Idea) => Promise<void>;
-    onReorder: (orderedIds: string[]) => void | Promise<void>;
+    /** No longer called (plan sprint-5/15 removed the manual reorder grip);
+     * kept in the signature so the caller needs no change. */
+    onReorder?: (orderedIds: string[]) => void | Promise<void>;
     onPromote: (ideas: Idea[]) => Promise<void>;
     /** Opens the survivor-picker dialog (issue #94, AC-94-21/22). */
     onMerge: (ideas: Idea[]) => void;
@@ -73,8 +67,9 @@ export function useIdeasListConfig(
   },
   opts?: { includeTest?: boolean },
 ): ResourceListConfig<Idea> {
-  const { onCreate, onVote, onAdvance, onRestore, onReorder, onPromote, onMerge, onUnmerge } = handlers;
+  const { onCreate, onVote, onAdvance, onRestore, onPromote, onMerge, onUnmerge } = handlers;
   const { paths, mode } = useIdeationRuntime();
+  const { formatDate } = useDatetime();
 
   return useMemo<ResourceListConfig<Idea>>(() => {
     const actions: ResourceAction<Idea>[] = [
@@ -82,8 +77,10 @@ export function useIdeasListConfig(
         id: 'promote-br',
         label: 'Promote to BR',
         icon: FileText,
-        // Gated by the BR write perm - the destination is a new draft BR.
-        permission: 'ideation.business_requirements.manage',
+        // Gated by the BR write perm - the destination is a new draft BR. The
+        // embed has no session to gate against: shown ungated, the backend 403
+        // (token email -> user permission) surfaces as a toast.
+        ...(mode === 'operator' ? { permission: 'ideation.business_requirements.manage' } : {}),
         surfaces: { row: true, form: true, bulk: true },
         // Only non-archived ideas that all share ONE product (a BR links
         // same-product ideas, AC-BI-17). A mixed-product selection is disabled
@@ -179,12 +176,22 @@ export function useIdeasListConfig(
       },
     ];
 
-    const col = (id: string, title: string, cell: ColumnDef<Idea>['cell'], size: number): ColumnDef<Idea> => ({
+    // `accessorFn` is what makes a column sortable in TanStack (`getCanSort`
+    // needs one); the value is only a marker, `selectIdeaRows` does the sort.
+    const col = (
+      id: string,
+      title: string,
+      value: (idea: Idea) => string | number,
+      cell: ColumnDef<Idea>['cell'],
+      size: number,
+    ): ColumnDef<Idea> => ({
       id,
-      header: () => title,
+      accessorFn: value,
+      header: ({ column }) => <DataGridColumnHeader title={title} column={column} />,
       cell,
       size,
-      enableSorting: false, // order = server rank (drag); no column sort
+      enableSorting: true,
+      meta: { headerTitle: title },
     });
 
     const columns: ColumnDef<Idea>[] = [
@@ -206,7 +213,7 @@ export function useIdeasListConfig(
         enableHiding: false,
         enableResizing: false,
       },
-      col('problem', 'Idea', ({ row }) => (
+      col('problem', 'Idea', (i) => i.title ?? i.problem, ({ row }) => (
         <div className="flex items-start gap-1.5">
           <div className="min-w-0 flex-1">
             <ClampedText text={row.original.title ?? row.original.problem} lines={2} />
@@ -223,19 +230,30 @@ export function useIdeasListConfig(
           )}
         </div>
       ), 340),
-      col('submitter', 'Submitter', ({ row }) => (
+      col('submitter', 'Submitter', (i) => i.submitterName, ({ row }) => (
         <span className="text-muted-foreground">{row.original.submitterName}</span>
       ), 130),
-      col('channel', 'Channel', ({ row }) => (
+      col('channel', 'Channel', (i) => i.source, ({ row }) => (
         <Badge variant="outline" appearance="light">{IDEA_SOURCE_LABEL[row.original.source]}</Badge>
       ), 110),
-      col('product', 'Product', ({ row }) => (
-        <Badge variant="secondary">{row.original.productName}</Badge>
-      ), 140),
-      col('status', 'Status', ({ row }) => (
+      // The embed iframe is already product-scoped; only the operator page
+      // (all products) shows the Product column.
+      ...(mode === 'embed'
+        ? []
+        : [
+            col('product', 'Product', (i) => i.productName, ({ row }) => (
+              <Badge variant="secondary">{row.original.productName}</Badge>
+            ), 140),
+          ]),
+      col('status', 'Status', (i) => i.statusLabel ?? i.status, ({ row }) => (
         <StatusBadge status={row.original.status} registry={statusRegistryFor(row.original)} />
       ), 120),
-      col('votes', 'Votes', ({ row }) => <VoteCell idea={row.original} onVote={onVote} />, 130),
+      col('votes', 'Votes', (i) => (i.upvotes ?? 0) - (i.downvotes ?? 0), ({ row }) => (
+        <VoteCell idea={row.original} onVote={onVote} />
+      ), 130),
+      col('submitted', 'Submitted', (i) => i.createdAt, ({ row }) => (
+        <span className="text-muted-foreground">{formatDate(row.original.createdAt)}</span>
+      ), 130),
       {
         id: 'actions',
         meta: { reorderable: false },
@@ -267,7 +285,7 @@ export function useIdeasListConfig(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Idea', 'Submitter', 'Channel', 'Product', 'Status', 'Up', 'Down'],
+        ['Idea', 'Submitter', 'Channel', 'Product', 'Status', 'Up', 'Down', 'Submitted'],
         data.map((r) => [
           r.problem,
           r.submitterName,
@@ -276,6 +294,7 @@ export function useIdeasListConfig(
           r.statusLabel ?? r.status,
           String(r.upvotes),
           String(r.downvotes),
+          formatDate(r.createdAt),
         ]),
       );
     };
@@ -285,7 +304,6 @@ export function useIdeasListConfig(
       // user, so it uses a distinct key (its best-effort save 401s harmlessly).
       viewKey: mode === 'embed' ? 'ideation.ideas.embed' : 'ideation.ideas',
       getRowId: (row) => row.id,
-      rowReorder: { onReorder },
       rowHref: (row) => paths.formHref(row.id, { includeTest: opts?.includeTest }),
       fetcher,
       exporter,
@@ -296,13 +314,40 @@ export function useIdeasListConfig(
       createLabel: 'Capture idea',
       onCreate,
       columns,
-      filterFields: [],
+      filterFields: [
+        {
+          field: 'status',
+          label: 'Status',
+          type: 'enum',
+          options: Array.from(new Map(ideas.map((i) => [i.status, i.statusLabel ?? i.status])).entries()).map(
+            ([value, label]) => ({ label, value }),
+          ),
+        },
+        {
+          field: 'submitter',
+          label: 'Submitter',
+          type: 'enum',
+          options: Array.from(new Set(ideas.map((i) => i.submitterName))).map((name) => ({
+            label: name,
+            value: name,
+          })),
+        },
+        {
+          field: 'channel',
+          label: 'Channel',
+          type: 'enum',
+          options: Object.entries(IDEA_SOURCE_LABEL).map(([value, label]) => ({ label, value })),
+        },
+        { field: 'submitted', label: 'Submitted', type: 'date' },
+      ],
+      defaultSort: { id: 'votes', desc: true },
       exportColumns: [
         { id: 'problem', label: 'Idea' },
         { id: 'submitter', label: 'Submitter' },
         { id: 'status', label: 'Status' },
+        { id: 'submitted', label: 'Submitted' },
       ],
       actions,
     };
-  }, [ideas, onCreate, onVote, onAdvance, onRestore, onReorder, onPromote, onMerge, onUnmerge, paths, mode, opts?.includeTest]);
+  }, [ideas, onCreate, onVote, onAdvance, onRestore, onPromote, onMerge, onUnmerge, paths, mode, formatDate, opts?.includeTest]);
 }

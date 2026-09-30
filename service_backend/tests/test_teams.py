@@ -621,16 +621,13 @@ def test_delete_blocked_by_reference_guard_returns_409_with_counts(client):
         return 3 if entity_id == team["id"] else 0
 
     register_reference_guard("team", "conversations", _fake_checker)
-    try:
-        res = client.delete(f"/teams/{team['id']}", headers=h)
-        assert res.status_code == 409
-        body = res.json()["detail"]
-        assert body["error"] == "team_in_use"
-        assert body["counts"] == {"conversations": 3}
-        # Nothing deleted on 409.
-        assert client.get(f"/teams/{team['id']}", headers=h).status_code == 200
-    finally:
-        register_reference_guard("team", "conversations", lambda db, t, i: 0)
+    res = client.delete(f"/teams/{team['id']}", headers=h)
+    assert res.status_code == 409
+    body = res.json()["detail"]
+    assert body["error"] == "team_in_use"
+    assert body["counts"] == {"conversations": 3}
+    # Nothing deleted on 409.
+    assert client.get(f"/teams/{team['id']}", headers=h).status_code == 200
 
 
 def test_broken_reference_guard_never_wedges_the_delete_decision(client):
@@ -641,10 +638,27 @@ def test_broken_reference_guard_never_wedges_the_delete_decision(client):
         raise RuntimeError("boom")
 
     register_reference_guard("team", "flaky_source", _broken_checker)
-    try:
-        assert client.delete(f"/teams/{team['id']}", headers=h).status_code == 204
-    finally:
-        register_reference_guard("team", "flaky_source", lambda db, t, i: 0)
+    assert client.delete(f"/teams/{team['id']}", headers=h).status_code == 204
+
+
+def test_reference_guard_swap_does_not_leak_a(client):
+    register_reference_guard("team", "conversations", lambda db, t, i: 99)
+    register_reference_guard("team", "leak_marker", lambda db, t, i: 99)
+
+
+def test_reference_guard_swap_does_not_leak_past_the_test():
+    from app.module_platform import reference_guards
+
+    guards = dict(reference_guards._GUARDS).get("team", [])
+    labels = [lbl for lbl, _ in guards]
+    assert "leak_marker" not in labels
+    assert "flaky_source" not in labels
+    for lbl, checker in guards:
+        if lbl == "conversations":
+            assert (
+                checker.__module__ + "." + checker.__name__
+                == "modules.omnichannel.services.team_directory.count_conversations_for_team"
+            )
 
 
 # ── capability seam (AC-TEM-13/14/15) ───────────────────────────────────────

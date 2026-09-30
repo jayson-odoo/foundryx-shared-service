@@ -17,16 +17,16 @@ Plan: ``documentation/plans/ideation/PLAN-ideation-br-send-to-build.md`` 3.1.
 Idempotent (``IF NOT EXISTS``). Postgres-only DDL; a no-op on the SQLite test
 engine (the suite builds the same schema via ``IdeationBase.metadata.create_all``).
 
-Revision ID: 0013_ideation_br_build
-Revises: 0012_ideation_merge_rank_events
+Revision ID: 0014_ideation_br_build
+Revises: 0013_ideation_attachment_upload
 Create Date: 2026-09-30
 """
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import text
 
-revision = "0013_ideation_br_build"
-down_revision = "0012_ideation_merge_rank_events"
+revision = "0014_ideation_br_build"
+down_revision = "0013_ideation_attachment_upload"
 branch_labels = None
 depends_on = None
 
