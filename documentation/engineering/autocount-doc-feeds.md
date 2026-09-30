@@ -152,3 +152,29 @@ caller is byte-identical), `dry_run` on `write_batch` (`?dry_run=true` on every 
 configure). The models declare the migration's own index names explicitly (never
 `index=True`, which auto-names `ix_app_autocount_...` and would double up on a create_all-first
 host).
+
+## 11. Delivery-orders pull snapshot (plan 16, BL-SS-286)
+
+The CRM's "Pull from AutoCount" on Delivery Orders is NOT a run-now of this feed: it is a
+third `entity` (`delivery_orders`) on the public pull gateway (`/api/v1/autocount/snapshots`,
+plan 10 Appendix A), built by the same `autocount_pull_snapshot` job, stored in the same
+`ac_pull_snapshot` / `ac_pull_snapshot_row` tables, pruned / expired / audited the same way.
+**Contract of record: `documentation/plans/sprint-5/16-autocount-do-pull-snapshot-contract.md`.**
+Facts a maintainer needs:
+
+- **Scope:** flat `fromDay` / `toDay` / `docNo` on the build body (MYT doc-date days, 31-day
+  cap, floor 2023-01-01, `toDay` <= MYT today; `docNo` alone = the 31 days ending today, filter
+  only, the vendor has no by-DocNo door). Stored in `metadata_json` from creation and echoed on
+  every response for this entity.
+- **Source:** this feed's own `ac_doc_feed` row for `delivery_orders` (its connection and book)
+  and the `bydocdate` door via `DocFeedVendor`, one GET per day. `doc_feed/runner.py`'s
+  `resolve_vendor` is the shared vendor-side resolution (`_resolve` = `resolve_vendor` + the
+  sink / contract-gate half). The feed's `mode` never gates a pull; the pull never touches the
+  cursor, ledger, issue rows or the sink.
+- **Rows:** the raw vendor DO dict verbatim (D18), one per `DocKey` (greatest `LastModified`),
+  ordered `DocDate` asc / `DocKey` asc, `source_ref` column `{book}:DO:{DocKey}`; `book` on the
+  header. No `EMPTY_EXTRACT` guard (a scoped range may be empty); any failed day =
+  `SOURCE_PAGE_FAILED`, nothing partial; over 10,000 documents = `ROW_LIMIT`.
+- **Lifecycle:** same-scope re-attach; a different scope while one is building = 409
+  `BUILD_IN_FLIGHT`; the 60 s cooldown applies to the same scope only. The DO build body is
+  `doc_feed/snapshot.py`, dispatched from `sync._run_pull_snapshot`.

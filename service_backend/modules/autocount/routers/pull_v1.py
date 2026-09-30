@@ -30,6 +30,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
@@ -38,12 +39,15 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 
-from ..models import AcPullApiKey
+from ..doc_feed.clock import myt_date
+from ..models import DOC_FEED_DELIVERY_ORDERS, AcPullApiKey
 from ..pull_auth import PullGatewayError, resolve_pull_key
 from ..services.pull_gateway_service import (
     ENTITY_WIRE_TO_INTERNAL,
     PullGatewayService,
+    DO_SCOPE_KEYS,
     gateway_snapshot_header,
+    parse_do_scope,
     translate_entity_wire,
     write_pull_audit,
 )
@@ -301,8 +305,22 @@ def build_snapshot(
             )
         ctx.entity_type = internal_entity
 
+        scope = None
+        if internal_entity == DOC_FEED_DELIVERY_ORDERS:
+            scope = parse_do_scope(
+                raw if isinstance(raw, dict) else {},
+                today_myt=myt_date(datetime.now(timezone.utc)),
+            )
+        elif isinstance(raw, dict):
+            for scope_key in DO_SCOPE_KEYS:
+                if scope_key in raw:
+                    raise PullGatewayError(
+                        422, "INVALID_REQUEST",
+                        f"{scope_key} is only accepted for the delivery_orders entity.",
+                    )
+
         company, snapshot = PullGatewayService(db).build(
-            key_row, company_code_raw, internal_entity
+            key_row, company_code_raw, internal_entity, scope=scope
         )
         ctx.company_id = company.id
         ctx.snapshot_id = snapshot.id
@@ -313,6 +331,8 @@ def build_snapshot(
             "entity": entity_wire,
             "companyCode": company_code_raw,
         }
+        if scope is not None:
+            body.update({key: scope.get(key) for key in DO_SCOPE_KEYS})
         _finalize(db, ctx, "build", 202)
         return _json_response(202, body)
     except PullGatewayError as exc:
