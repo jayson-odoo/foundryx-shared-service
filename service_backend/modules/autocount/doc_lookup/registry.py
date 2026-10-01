@@ -61,6 +61,11 @@ class AcDocType:
     snapshot_entity_type: Optional[str] = None  # ac_pull_snapshot.entity_type
     ledger_feed: Optional[str] = None  # ac_doc_feed_ledger.feed
     by_doc_no: Optional[ByDocNoDoor] = None
+    # The permission that may see this type's records. Delivery orders are the
+    # Pull page's audience (`autocount.pull.read`, the same key that already
+    # serves DO snapshot rows); a type whose data that audience never saw
+    # (GRN supplier/cost data) names the key that already exposes it.
+    permission: str = "autocount.pull.read"
     module: str = "autocount"
 
 
@@ -75,6 +80,13 @@ def register_doc_type(doc_type: AcDocType) -> None:
         raise DocTypeRegistryError(f"AutoCount doc type '{doc_type.key}' is already registered.")
     if not doc_type.by_doc_date_path.startswith("/"):
         raise DocTypeRegistryError(f"'{doc_type.key}': by_doc_date_path must start with '/'.")
+    if doc_type.snapshot_entity_type is not None and doc_type.doc_no_field != "DocNo":
+        # The stored snapshot search and its 0024 expression index key on
+        # payload DocNo; a snapshot-backed type with another field would
+        # silently never show stored sightings.
+        raise DocTypeRegistryError(
+            f"'{doc_type.key}': a snapshot-backed type must use doc_no_field 'DocNo'."
+        )
     _REGISTRY[doc_type.key] = doc_type
 
 
@@ -119,6 +131,9 @@ GOODS_RECEIVE_NOTE = AcDocType(
     by_last_modified_path=GRN_BY_LAST_MODIFIED_PATH,
     doc_no_prefixes=("GRN", "GR"),
     ledger_feed=FEED_GOODS_RECEIVE_NOTES,
+    # GRN records (supplier + cost data) are already visible to sync.read
+    # through the doc feed's issue records - never widened to pull.read.
+    permission="autocount.sync.read",
 )
 
 register_doc_type(DELIVERY_ORDER)

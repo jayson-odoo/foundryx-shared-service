@@ -9,7 +9,7 @@ record whose number matches. Read only (D1).
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import AbstractSet, Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -46,16 +46,26 @@ STEP_ERROR = "error"
 STEP_SKIPPED = "skipped"
 
 AROUND_DAY_RADIUS = 3
+# aroundDay must sit within this many days of today (security round 1: an
+# extreme date overflowed ``date`` arithmetic inside the job).
+AROUND_DAY_MAX_DISTANCE_DAYS = 5 * 366
+# A pull.read holder starts vendor reads; cap the live searches a tenant can
+# run at once (one per company is enforced separately).
+MAX_RUNNING_LOOKUPS_PER_TENANT = 3
 
 
 class DocLookupError(AutocountServiceError):
     """Operator-safe message + a stable ``code``; the router maps
-    ``status_code`` straight onto the HTTP response."""
+    ``status_code`` straight onto the HTTP response. ``extra`` keys ride the
+    detail body (e.g. the blocking ``jobId`` of a 409)."""
 
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self, status_code: int, code: str, message: str, extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+        self.extra = extra or {}
 
 
 def _invalid(message: str) -> DocLookupError:
@@ -84,12 +94,22 @@ def norm_key(doc_no: str) -> str:
     return doc_no.strip().casefold()
 
 
-def resolve_doc_type(key: Optional[str], doc_no: str) -> AcDocType:
+def resolve_doc_type(
+    key: Optional[str], doc_no: str, permissions: Optional[AbstractSet[str]] = None,
+) -> AcDocType:
+    """The requested (or detected) type; 403 when ``permissions`` is given
+    and lacks the type's own key (security round 1 - GRN is not pull.read)."""
     if key is None or key == "":
-        return detect_doc_type(doc_no)
-    doc_type = get_doc_type(key)
-    if doc_type is None:
-        raise _invalid("docType is not a known AutoCount document type.")
+        doc_type = detect_doc_type(doc_no)
+    else:
+        found = get_doc_type(key)
+        if found is None:
+            raise _invalid("docType is not a known AutoCount document type.")
+        doc_type = found
+    if permissions is not None and doc_type.permission not in permissions:
+        raise DocLookupError(
+            403, "DOC_TYPE_FORBIDDEN", f"You do not have access to {doc_type.label.lower()}s.",
+        )
     return doc_type
 
 
@@ -97,9 +117,12 @@ def parse_around_day(raw: Optional[str]) -> Optional[date]:
     if raw is None or raw == "":
         return None
     try:
-        return date.fromisoformat(str(raw))
+        day = date.fromisoformat(str(raw))
     except ValueError:
         raise _invalid("aroundDay must be a YYYY-MM-DD date.") from None
+    if abs((day - today_myt()).days) > AROUND_DAY_MAX_DISTANCE_DAYS:
+        raise _invalid("aroundDay must be within 5 years of today.")
+    return day
 
 
 def today_myt() -> date:
@@ -211,7 +234,10 @@ class DocLookupService:
 
     # ── registry ─────────────────────────────────────────────────────────────
 
-    def types(self, tenant_id: str, company_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def types(
+        self, tenant_id: str, company_id: Optional[str] = None,
+        permissions: Optional[AbstractSet[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """The registry. With ``company_id``, each type also says whether the
         company has an AutoCount connection for it (``connected``) - so the
         page warns before a search instead of after a 409 (foolproof-UI)."""
@@ -231,6 +257,7 @@ class DocLookupService:
                 "connected": None if connected is None else connected[t.key],
             }
             for t in all_doc_types()
+            if permissions is None or t.permission in permissions
         ]
 
     # ── shared lookups ───────────────────────────────────────────────────────
@@ -282,9 +309,10 @@ class DocLookupService:
 
     def stored(
         self, tenant_id: str, company_id: str, doc_no_raw: Any, doc_type_key: Optional[str],
+        permissions: Optional[AbstractSet[str]] = None,
     ) -> Dict[str, Any]:
         doc_no = normalize_doc_no(doc_no_raw)
-        doc_type = resolve_doc_type(doc_type_key, doc_no)
+        doc_type = resolve_doc_type(doc_type_key, doc_no, permissions)
         self._company(tenant_id, company_id)
         return self.stored_history(tenant_id, company_id, doc_type, doc_no)
 
@@ -317,11 +345,15 @@ class DocLookupService:
     def start(
         self, tenant_id: str, actor_id: Optional[str], *, company_id: str, doc_no_raw: Any,
         doc_type_key: Optional[str], around_day_raw: Optional[str],
+        permissions: Optional[AbstractSet[str]] = None,
     ) -> BackgroundJob:
         doc_no = normalize_doc_no(doc_no_raw)
-        doc_type = resolve_doc_type(doc_type_key, doc_no)
+        doc_type = resolve_doc_type(doc_type_key, doc_no, permissions)
         around = parse_around_day(around_day_raw)
         company = self._company(tenant_id, company_id)
+        # Serialise starts per company (Postgres row lock; a no-op on SQLite)
+        # so two concurrent POSTs cannot both pass the in-flight check below.
+        self.repo.lock_company(tenant_id, company.id)
 
         feed_row = DocFeedRepository(self.db).get(tenant_id, company.id, doc_type.feed)
         if feed_row is None or not feed_row.connection_id:
@@ -332,7 +364,8 @@ class DocLookupService:
             )
 
         wanted = norm_key(doc_no)
-        for open_job in self.repo.open_jobs(tenant_id, DOC_LOOKUP_JOB_TYPE):
+        open_jobs = self.repo.open_jobs(tenant_id, DOC_LOOKUP_JOB_TYPE)
+        for open_job in open_jobs:
             payload = open_job.payload_json or {}
             if payload.get("companyId") != company.id:
                 continue
@@ -341,6 +374,13 @@ class DocLookupService:
             raise DocLookupError(
                 409, "LOOKUP_IN_FLIGHT",
                 "Another document search is running for this company. Wait for it or stop it.",
+                extra={"jobId": open_job.id},
+            )
+        if len(open_jobs) >= MAX_RUNNING_LOOKUPS_PER_TENANT:
+            raise DocLookupError(
+                429, "TOO_MANY_LOOKUPS",
+                f"At most {MAX_RUNNING_LOOKUPS_PER_TENANT} document searches can run at once. "
+                "Wait for one to finish.",
             )
 
         jobs = JobService(self.db)
@@ -357,14 +397,23 @@ class DocLookupService:
         self.db.refresh(job)
         return job
 
-    def get_job(self, tenant_id: str, job_id: str) -> BackgroundJob:
+    def get_job(
+        self, tenant_id: str, job_id: str, permissions: Optional[AbstractSet[str]] = None,
+    ) -> BackgroundJob:
         job = self.repo.get_job(tenant_id, DOC_LOOKUP_JOB_TYPE, job_id)
         if job is None:
             raise DocLookupError(404, "JOB_NOT_FOUND", "Document search not found.")
+        if permissions is not None:
+            doc_type = get_doc_type(str((job.payload_json or {}).get("docType") or ""))
+            if doc_type is None or doc_type.permission not in permissions:
+                # Same answer as a miss - never confirm another type's search.
+                raise DocLookupError(404, "JOB_NOT_FOUND", "Document search not found.")
         return job
 
-    def stop(self, tenant_id: str, job_id: str) -> BackgroundJob:
-        job = self.get_job(tenant_id, job_id)
+    def stop(
+        self, tenant_id: str, job_id: str, permissions: Optional[AbstractSet[str]] = None,
+    ) -> BackgroundJob:
+        job = self.get_job(tenant_id, job_id, permissions)
         if job.status not in JOB_TERMINAL_STATUSES:
             JobService(self.db).finish(job, status=JOB_ABORTED, error="Stopped by the user.")
         self.db.refresh(job)

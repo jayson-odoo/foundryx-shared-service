@@ -13,6 +13,7 @@ from app.models.background_job import JOB_PENDING, JOB_RUNNING, BackgroundJob
 
 from ..models import (
     PULL_SNAPSHOT_STATUS_READY,
+    AcCompany,
     AcDocFeedLedger,
     AcDocLookupHint,
     AcDocLookupSettings,
@@ -117,6 +118,16 @@ class DocLookupRepository:
         return row
 
     # ── jobs ─────────────────────────────────────────────────────────────────
+
+    def lock_company(self, tenant_id: str, company_id: str) -> None:
+        """``SELECT ... FOR UPDATE`` on the company row - serialises lookup
+        starts per company. SQLAlchemy drops FOR UPDATE on SQLite (tests)."""
+        (
+            self.db.query(AcCompany.id)
+            .filter(AcCompany.tenant_id == tenant_id, AcCompany.id == company_id)
+            .with_for_update()
+            .first()
+        )
 
     def open_jobs(self, tenant_id: str, job_type: str) -> List[BackgroundJob]:
         return (

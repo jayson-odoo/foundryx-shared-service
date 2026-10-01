@@ -26,7 +26,14 @@ from app.models.background_job import JOB_ABORTED, JOB_DONE, JOB_FAILED, Backgro
 from ..activity import record_client_calls, trace_id_for_job
 from ..doc_feed.records import parse_doc_day
 from ..doc_feed.runner import RunRefusal, resolve_vendor
-from ..doc_feed.vendor import DocFeedVendorError
+from ..doc_feed.vendor import (
+    VENDOR_HTTP,
+    VENDOR_NOT_JSON,
+    VENDOR_PAGED,
+    VENDOR_SHAPE,
+    VENDOR_TRANSPORT,
+    DocFeedVendorError,
+)
 from ..repositories.doc_feed_repository import DocFeedRepository
 from ..repositories.doc_lookup_repository import DocLookupRepository
 from .reader import DocLookupReader
@@ -70,18 +77,42 @@ def _hint_days(stored: Dict[str, Any], hint) -> List[date]:
 
 
 def _last_known(stored: Dict[str, Any], hint) -> Optional[Tuple[datetime, str, str]]:
-    """The most recent stored DocDate we knew before this search: (when,
-    docDate, source). Compared against the live DocDate to flag a re-date."""
-    candidates: List[Tuple[datetime, str, str]] = []
+    """The DocDate our PULLS last saw: (when, docDate, source), compared
+    against the live DocDate to flag a re-date. Snapshot / ledger history
+    wins over the finder's own hint - the hint is refreshed by every hit, so
+    letting it win would hide the re-date from the second search on while
+    the pulls still hold the old date (found in the live click-through). The
+    hint is the fallback only when no pull ever saw the document."""
+    external: List[Tuple[datetime, str, str]] = []
     for sighting in stored.get("snapshots") or []:
         if sighting.get("docDate") and sighting.get("createdAt"):
-            candidates.append((sighting["createdAt"], sighting["docDate"], "snapshot"))
+            external.append((sighting["createdAt"], sighting["docDate"], "snapshot"))
     ledger = stored.get("ledger")
     if ledger and ledger.get("docDate") and ledger.get("pushedAt"):
-        candidates.append((ledger["pushedAt"], ledger["docDate"], "ledger"))
+        external.append((ledger["pushedAt"], ledger["docDate"], "ledger"))
+    if external:
+        return max(external, key=lambda c: c[0])
     if hint is not None and hint.doc_date is not None and hint.found_at is not None:
-        candidates.append((hint.found_at, hint.doc_date.isoformat(), "hint"))
-    return max(candidates, key=lambda c: c[0]) if candidates else None
+        return (hint.found_at, hint.doc_date.isoformat(), "hint")
+    return None
+
+
+# Step errors are shown to every reader of the search; a transport message
+# embeds the connection's base URL, so only these fixed sentences are stored
+# (security round 1). ``VENDOR_HTTP``'s own message is built without the host
+# ("AutoCount answered HTTP 404.") and is kept as-is.
+_STEP_ERROR_SENTENCES = {
+    VENDOR_TRANSPORT: "AutoCount could not be reached.",
+    VENDOR_NOT_JSON: "AutoCount answered something that is not JSON.",
+    VENDOR_SHAPE: "AutoCount answered in an unexpected shape.",
+    VENDOR_PAGED: "AutoCount answered in an unexpected shape.",
+}
+
+
+def _step_error(exc: DocFeedVendorError) -> str:
+    if exc.code == VENDOR_HTTP:
+        return str(exc)[:MAX_STEP_ERROR_LEN]
+    return _STEP_ERROR_SENTENCES.get(exc.code, "AutoCount could not be read for this day.")
 
 
 def _path_for(doc_type: AcDocType, door: str) -> Tuple[str, str]:
@@ -160,7 +191,7 @@ def run_doc_lookup(db: Session, job: BackgroundJob) -> None:
             except DocFeedVendorError as exc:
                 errors += 1
                 step["status"] = STEP_ERROR
-                step["error"] = str(exc)[:MAX_STEP_ERROR_LEN]
+                step["error"] = _step_error(exc)
             else:
                 matches = [r for r in rows if isinstance(r, dict) and record_matches(doc_type, r, wanted)]
                 step["count"] = len(rows)
@@ -208,13 +239,13 @@ def run_doc_lookup(db: Session, job: BackgroundJob) -> None:
 
     done = sum(1 for s in steps if s["status"] in (STEP_HIT, STEP_MISS, STEP_ERROR))
     save(done)
-    if aborted:
+    # A stop can land while the LAST read (a hit) is in flight - re-read the
+    # status so the final finish never overwrites it (review round 1).
+    if aborted or repo.job_status(job.id) == JOB_ABORTED:
         return  # the stop already set the terminal status; keep the partial steps
     if found_record is None and errors and errors == done:
-        jobs.finish(
-            job, status=JOB_FAILED,
-            error="Every AutoCount read failed. " + (steps[0].get("error") or ""),
-        )
+        first_error = next((s.get("error") for s in steps if s.get("error")), "")
+        jobs.finish(job, status=JOB_FAILED, error=f"Every AutoCount read failed. {first_error}".strip())
         return
     jobs.finish(job, status=JOB_DONE)
 
