@@ -446,6 +446,27 @@ def test_redated_doc_found_by_last_modified(client, headers, db, monkeypatch):
     assert all(s["status"] == "skipped" for s in result["steps"][2:])
 
 
+def test_redate_warning_survives_a_second_lookup(client, headers, db, monkeypatch):
+    """AC-17-11 / AC-17-30 - the finder's own hint must not hide the re-date:
+    pulls saw 01/10, AutoCount says 05/10, so EVERY lookup says so (found
+    live: the 2nd search compared against its own fresh hint and went quiet)."""
+    company, _ = env(db)
+    seed_snapshot(db, company, doc_date=today(), modified=iso_dt(day(-1), "18:02:00"))
+    current = do_rec(doc_date=day(4), modified=iso_dt(today(), "07:39:22.000"))
+    DoorStub({
+        (DO_BY_MOD, yyyymmdd(today())): [current],
+        (DO_BY_DATE, yyyymmdd(day(4))): [current],
+    }).install(monkeypatch)
+
+    first = run_lookup(client, headers, company)["result"]
+    second = run_lookup(client, headers, company)["result"]
+    assert first["redated"]["from"] == today().isoformat()
+    assert second["foundBy"] == {"door": "by_doc_date", "day": day(4).isoformat()}
+    assert second["redated"] == {
+        "from": today().isoformat(), "to": day(4).isoformat(), "source": "snapshot",
+    }
+
+
 def test_step_plan_order_and_no_duplicates(client, headers, db, monkeypatch):
     """AC-17-10 + AC-17-16 - not found: every step a miss, windows echoed."""
     company, _ = env(db)
