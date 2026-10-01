@@ -21,7 +21,7 @@ Evidence: `17-evidence/` (screenshots of the live click-through).
 | Suite | Result |
 |---|---|
 | `tests/test_s17_doc_lookup.py` | 50 passed |
-X
+| AutoCount + s1x backend regression (`-n 4`), final code | 2,666 passed, 3 skipped (the AC-12-32 migration-ceiling guard moved 23 -> 24 for this plan's migration) |
 | Vitest: find page, hook, lib, real service | 28 passed |
 | Vitest: existing autocount + menu suites | 670 passed |
 | eslint (lane files) | clean |
