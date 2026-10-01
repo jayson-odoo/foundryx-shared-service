@@ -870,6 +870,22 @@ _OLD_SO_HEADER_QUERY = (
     ") AS l"
 )
 
+# The text 0019 rewrites a byte-identical OLD query TO - pinned FROZEN (it is
+# the `presets._SO_HEADER_QUERY` text of sprint-5/07), never read off the live
+# preset: once SS-SO-TRANSFERABLE moved the preset on, a live read would make
+# 0019 jump a pre-`Ref` task straight to the newest text while appending only
+# `Ref` to `result_columns`, and 0025 (which then sees its own target text)
+# would skip it - stranding `Transferable` outside the row hash.
+_REF_SO_HEADER_QUERY = _OLD_SO_HEADER_QUERY.replace(
+    "h.Note AS Note, ", "h.Note AS Note, h.Ref AS Ref, ", 1
+)
+
+# SS-SO-TRANSFERABLE's own target text (0025) - FROZEN for the same reason:
+# a later SO column must not let 0025 skip past it.
+_TRANSFERABLE_SO_HEADER_QUERY = _REF_SO_HEADER_QUERY.replace(
+    "h.Ref AS Ref, ", "h.Ref AS Ref, h.Transferable AS Transferable, ", 1
+)
+
 _SALES_ORDER_REF_ENTITY_CONFIG_COLUMNS = {
     "id", "tenant_id", "company_id", "entity_type", "source_config", "result_columns",
 }
@@ -920,8 +936,6 @@ def backfill_sales_order_ref(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCH
         have = existing_columns(bind, table, schema=schema)
         if have is None or not columns <= have:
             return 0
-
-    from .presets import _SO_HEADER_QUERY
 
     entity_config = sa.table(
         "ac_entity_config",
@@ -1002,11 +1016,17 @@ def backfill_sales_order_ref(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCH
         stored_query = source_config.get("query")
         columns_list = list(result_columns or [])
         old_text = _OLD_SO_HEADER_QUERY.replace("{database}", database_name)
-        new_text = _SO_HEADER_QUERY.replace("{database}", database_name)
+        new_text = _REF_SO_HEADER_QUERY.replace("{database}", database_name)
+        later_texts = {
+            new_text,
+            _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name),
+        }
 
-        if stored_query == new_text:
-            # Already migrated (a previous pass, or a freshly-created task
-            # already on the new preset) - nothing to do, no warning.
+        if stored_query in later_texts:
+            # Already migrated (a previous pass, a later SO backfill, or a
+            # freshly-created task already on a newer preset) - nothing to
+            # do, no warning, and an operator's deliberately DELETED `ref`
+            # row is never reseeded on the next `update_tenant`.
             continue
 
         query_replaced = False
@@ -1062,6 +1082,190 @@ def backfill_sales_order_ref(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCH
                 "does not recognise as the AutoCount SO preset - left "
                 "untouched. Add `h.Ref AS Ref` to the Query tab and enable "
                 "the `Ref -> ref` row on the Mapping tab.",
+                config_id,
+            )
+    return touched
+
+
+# ── SS-SO-TRANSFERABLE - SO `Transferable` (partner of sorento #1421) ──────
+
+
+def backfill_sales_order_transferable(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """The 0019 (`Ref`) repair, one column later: for every ``sales_order``
+    ``ac_entity_config`` row across every tenant/company, a query byte-
+    identical to the 0019 preset text (``_REF_SO_HEADER_QUERY``, own
+    company's ``database_name`` substituted) is swapped to the FROZEN 0025
+    text ``_TRANSFERABLE_SO_HEADER_QUERY`` (``h.Transferable AS Transferable``
+    added after ``h.Ref AS Ref``) and ``"Transferable"`` appended to a
+    non-empty ``result_columns``; a query already at that text is skipped
+    silently (no row reseeded either); anything else (the production
+    ``AED_SORENTO`` shape) is left byte-untouched. A ``Transferable ->
+    transferable`` header row (``bool``, not required, source-owned, next
+    ``sort_order``) is created the moment none exists in ANY state - ENABLED
+    when the query was just rewritten or already selects ``Transferable``,
+    DISABLED with one WARNING naming the config id otherwise.
+
+    Returns the number of changes (rows created + queries replaced); 0 on a
+    schema predating these tables. Module Alembic 0025 and ``update_tenant``
+    both call it unconditionally - idempotent. Frozen ``sa.table`` only,
+    never the live ORM model; company resolved WITH the config's own
+    ``tenant_id`` (polymorphic-target_id rule) - see
+    ``backfill_sales_order_ref`` for both rules' history.
+    """
+    needed = {
+        "ac_entity_config": _SALES_ORDER_REF_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _SALES_ORDER_REF_COMPANY_COLUMNS,
+        "ac_field_mapping": _SALES_ORDER_REF_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+
+    configs = connectable.execute(
+        sa.select(
+            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+            entity_config.c.source_config, entity_config.c.result_columns,
+        ).where(entity_config.c.entity_type == ENTITY_SALES_ORDER)
+    ).fetchall()
+
+    touched = 0
+    for config_id, tenant_id, company_id, source_config, result_columns in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            logger.warning(
+                "Sales-order task %s's company could not be resolved under "
+                "its own tenant - the SO `Transferable` backfill skipped it.",
+                config_id,
+            )
+            continue
+        database_name = company_row[0]
+
+        source_config = source_config or {}
+        stored_query = source_config.get("query")
+        columns_list = list(result_columns or [])
+        old_text = _REF_SO_HEADER_QUERY.replace("{database}", database_name)
+        new_text = _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name)
+
+        if stored_query == new_text:
+            # Already migrated (a previous pass, or a freshly-created task
+            # already on the new preset, whose row `seed_company_defaults`
+            # owns) - nothing to do, no warning, and an operator's
+            # deliberately DELETED row is never reseeded.
+            continue
+
+        query_replaced = False
+        if stored_query == old_text:
+            fresh = dict(source_config)
+            fresh["query"] = new_text
+            values = {"source_config": fresh}
+            # An EMPTY `result_columns` means "never previewed" - leave it
+            # empty rather than caching a one-column list that would make the
+            # watermark check fail with a misleading message.
+            if columns_list and "Transferable" not in columns_list:
+                columns_list.append("Transferable")
+                values["result_columns"] = columns_list
+            connectable.execute(
+                sa.update(entity_config)
+                .where(entity_config.c.id == config_id)
+                .values(**values)
+            )
+            touched += 1
+            query_replaced = True
+
+        has_row = connectable.execute(
+            sa.select(field_mapping.c.id).where(
+                field_mapping.c.tenant_id == tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == ENTITY_SALES_ORDER,
+                field_mapping.c.scope == SCOPE_HEADER,
+                field_mapping.c.canonical_field == "transferable",
+            )
+        ).first() is not None
+        if has_row:
+            # An operator's own row (or one an earlier pass seeded) - never
+            # duplicated or modified, in ANY state.
+            continue
+
+        sort_order = connectable.execute(
+            sa.select(sa.func.coalesce(sa.func.max(field_mapping.c.sort_order), -1) + 1)
+            .where(
+                field_mapping.c.tenant_id == tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == ENTITY_SALES_ORDER,
+                field_mapping.c.scope == SCOPE_HEADER,
+            )
+        ).scalar()
+        enabled = query_replaced or "Transferable" in columns_list
+        connectable.execute(
+            sa.insert(field_mapping).values(
+                id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                company_id=company_id,
+                entity_type=ENTITY_SALES_ORDER,
+                scope=SCOPE_HEADER,
+                source_path="Transferable",
+                canonical_field="transferable",
+                transform="bool",
+                formula=None,
+                is_required=False,
+                is_enabled=enabled,
+                is_source_owned=True,
+                sort_order=sort_order,
+            )
+        )
+        touched += 1
+        if not enabled:
+            logger.warning(
+                "Sales-order task %s has a header query the `transferable` "
+                "backfill does not recognise as the AutoCount SO preset - left "
+                "untouched. Add `h.Transferable AS Transferable` to the Query "
+                "tab and enable the `Transferable -> transferable` row on the "
+                "Mapping tab.",
                 config_id,
             )
     return touched

@@ -338,6 +338,11 @@ class CanonicalDocument(CanonicalRecord):
     # rule that used to be a one-off `sink_payload` override on
     # `CanonicalShippingOrder`. Empty on the shared base; SO/SPO populate it.
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ()
+    # SS-SO-TRANSFERABLE - the boolean-safe sibling of the list above: a
+    # field named here is dropped from the payload ONLY when it is `None`, so
+    # a genuine `False` (or `0`) still reaches the wire. Use this, never
+    # `OMIT_WHEN_EMPTY_FIELDS`, for a boolean/numeric field.
+    OMIT_WHEN_NONE_FIELDS: ClassVar[Tuple[str, ...]] = ()
 
     @field_validator("status")
     @classmethod
@@ -387,6 +392,9 @@ class CanonicalDocument(CanonicalRecord):
         for name in self.OMIT_WHEN_EMPTY_FIELDS:
             if not payload.get(name):
                 payload.pop(name, None)
+        for name in self.OMIT_WHEN_NONE_FIELDS:
+            if payload.get(name) is None:
+                payload.pop(name, None)
         payload["lines"] = [
             line.sink_payload(contract_version=contract_version) for line in self.lines
         ]
@@ -420,6 +428,11 @@ class CanonicalSalesOrder(CanonicalDocument):
     # declare no such attribute). v2+ only, same fallback gate as every other
     # field below; never sent as an explicit `null` (`OMIT_WHEN_EMPTY_FIELDS`).
     ref: Optional[str] = Field(None, max_length=255)
+    # SS-SO-TRANSFERABLE (partner of sorento #1421) - AutoCount
+    # `SO.Transferable` ('T'/'F' through the `bool` transform). SO only; v2+
+    # only like `ref`; omitted when `None` (never an explicit `null`), but a
+    # real `False` IS sent (`OMIT_WHEN_NONE_FIELDS`, not the EMPTY list).
+    transferable: Optional[bool] = None
     lines: List[CanonicalSalesOrderLine] = Field(default_factory=list)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
@@ -427,9 +440,10 @@ class CanonicalSalesOrder(CanonicalDocument):
         "doc_date", "requested_delivery_date", "status", "internal_note",
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
-        "customer_code", "customer_name", "agent_code", "ref",
+        "customer_code", "customer_name", "agent_code", "ref", "transferable",
     )
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("ref",)
+    OMIT_WHEN_NONE_FIELDS: ClassVar[Tuple[str, ...]] = ("transferable",)
 
 
 class CanonicalPurchaseOrder(CanonicalDocument):
