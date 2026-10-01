@@ -880,6 +880,12 @@ _REF_SO_HEADER_QUERY = _OLD_SO_HEADER_QUERY.replace(
     "h.Note AS Note, ", "h.Note AS Note, h.Ref AS Ref, ", 1
 )
 
+# SS-SO-TRANSFERABLE's own target text (0025) - FROZEN for the same reason:
+# a later SO column must not let 0025 skip past it.
+_TRANSFERABLE_SO_HEADER_QUERY = _REF_SO_HEADER_QUERY.replace(
+    "h.Ref AS Ref, ", "h.Ref AS Ref, h.Transferable AS Transferable, ", 1
+)
+
 _SALES_ORDER_REF_ENTITY_CONFIG_COLUMNS = {
     "id", "tenant_id", "company_id", "entity_type", "source_config", "result_columns",
 }
@@ -1011,10 +1017,16 @@ def backfill_sales_order_ref(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCH
         columns_list = list(result_columns or [])
         old_text = _OLD_SO_HEADER_QUERY.replace("{database}", database_name)
         new_text = _REF_SO_HEADER_QUERY.replace("{database}", database_name)
+        later_texts = {
+            new_text,
+            _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name),
+        }
 
-        if stored_query == new_text:
-            # Already migrated (a previous pass, or a freshly-created task
-            # already on the new preset) - nothing to do, no warning.
+        if stored_query in later_texts:
+            # Already migrated (a previous pass, a later SO backfill, or a
+            # freshly-created task already on a newer preset) - nothing to
+            # do, no warning, and an operator's deliberately DELETED `ref`
+            # row is never reseeded on the next `update_tenant`.
             continue
 
         query_replaced = False
@@ -1084,10 +1096,11 @@ def backfill_sales_order_transferable(
     """The 0019 (`Ref`) repair, one column later: for every ``sales_order``
     ``ac_entity_config`` row across every tenant/company, a query byte-
     identical to the 0019 preset text (``_REF_SO_HEADER_QUERY``, own
-    company's ``database_name`` substituted) is swapped to the CURRENT preset
-    text (``h.Transferable AS Transferable`` added after ``h.Ref AS Ref``) and
-    ``"Transferable"`` appended to ``result_columns``; a query already at the
-    current text is skipped silently; anything else (the production
+    company's ``database_name`` substituted) is swapped to the FROZEN 0025
+    text ``_TRANSFERABLE_SO_HEADER_QUERY`` (``h.Transferable AS Transferable``
+    added after ``h.Ref AS Ref``) and ``"Transferable"`` appended to a
+    non-empty ``result_columns``; a query already at that text is skipped
+    silently (no row reseeded either); anything else (the production
     ``AED_SORENTO`` shape) is left byte-untouched. A ``Transferable ->
     transferable`` header row (``bool``, not required, source-owned, next
     ``sort_order``) is created the moment none exists in ANY state - ENABLED
@@ -1110,8 +1123,6 @@ def backfill_sales_order_transferable(
         have = existing_columns(bind, table, schema=schema)
         if have is None or not columns <= have:
             return 0
-
-    from .presets import _SO_HEADER_QUERY
 
     entity_config = sa.table(
         "ac_entity_config",
@@ -1178,18 +1189,30 @@ def backfill_sales_order_transferable(
         stored_query = source_config.get("query")
         columns_list = list(result_columns or [])
         old_text = _REF_SO_HEADER_QUERY.replace("{database}", database_name)
-        new_text = _SO_HEADER_QUERY.replace("{database}", database_name)
+        new_text = _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name)
+
+        if stored_query == new_text:
+            # Already migrated (a previous pass, or a freshly-created task
+            # already on the new preset, whose row `seed_company_defaults`
+            # owns) - nothing to do, no warning, and an operator's
+            # deliberately DELETED row is never reseeded.
+            continue
 
         query_replaced = False
         if stored_query == old_text:
             fresh = dict(source_config)
             fresh["query"] = new_text
-            if "Transferable" not in columns_list:
+            values = {"source_config": fresh}
+            # An EMPTY `result_columns` means "never previewed" - leave it
+            # empty rather than caching a one-column list that would make the
+            # watermark check fail with a misleading message.
+            if columns_list and "Transferable" not in columns_list:
                 columns_list.append("Transferable")
+                values["result_columns"] = columns_list
             connectable.execute(
                 sa.update(entity_config)
                 .where(entity_config.c.id == config_id)
-                .values(source_config=fresh, result_columns=columns_list)
+                .values(**values)
             )
             touched += 1
             query_replaced = True
@@ -1217,9 +1240,7 @@ def backfill_sales_order_transferable(
                 field_mapping.c.scope == SCOPE_HEADER,
             )
         ).scalar()
-        enabled = (
-            query_replaced or stored_query == new_text or "Transferable" in columns_list
-        )
+        enabled = query_replaced or "Transferable" in columns_list
         connectable.execute(
             sa.insert(field_mapping).values(
                 id=str(uuid.uuid4()),

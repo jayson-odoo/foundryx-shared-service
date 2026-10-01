@@ -529,3 +529,46 @@ def test_ref_backfill_alone_targets_its_frozen_text_not_the_live_preset(db):
     assert db.get(AcEntityConfig, config_id).source_config["query"] == (
         _REF_SO_HEADER_QUERY.replace("{database}", "AED_REF_FROZEN")
     )
+
+
+def test_frozen_0025_target_equals_todays_preset():  # review: frozen target
+    from modules.autocount.backfill import _TRANSFERABLE_SO_HEADER_QUERY
+
+    assert _TRANSFERABLE_SO_HEADER_QUERY == _NEW_SO_HEADER_QUERY == _SO_HEADER_QUERY
+
+
+def test_update_tenant_never_reseeds_rows_an_operator_deleted(db):  # review: no reseed
+    from modules.autocount.bootstrap import update_tenant
+
+    company = _api_company(db, database="AED_TR_DELETED")
+    _so_config(db, company, query=_PRE_REF_SO_HEADER_QUERY.replace("{database}", "AED_TR_DELETED"))
+    update_tenant(db, DEFAULT_TENANT_ID, "0.12.0")
+    db.commit()
+    db.expire_all()
+    for field in ("ref", "transferable"):
+        rows = _rows(db, company.id, field)
+        assert len(rows) == 1, field
+        db.delete(rows[0])
+    db.commit()
+
+    update_tenant(db, DEFAULT_TENANT_ID, "0.13.0")
+    db.commit()
+    db.expire_all()
+    assert _rows(db, company.id, "ref") == []
+    assert _rows(db, company.id, "transferable") == []
+
+
+def test_backfill_leaves_an_empty_result_columns_empty(db):  # review: nit 3
+    helper = _backfill()
+    company = _api_company(db, database="AED_TR_EMPTY")
+    config = _so_config(db, company, query=_REF_SO_HEADER_QUERY.replace("{database}", "AED_TR_EMPTY"))
+    config.result_columns = []
+    db.commit()
+    config_id = config.id
+    db.expire_all()
+    helper(db, schema=None)
+    db.expire_all()
+    after = db.get(AcEntityConfig, config_id)
+    assert after.source_config["query"] == _NEW_SO_HEADER_QUERY.replace("{database}", "AED_TR_EMPTY")
+    assert after.result_columns == []
+    assert _rows(db, company.id)[0].is_enabled is True
