@@ -77,7 +77,12 @@ def doc_date(record: Dict[str, Any]) -> Optional[date]:
     """Parses ISO date / ISO datetime / ``yyyyMMdd``. ``None`` when
     unparseable - the record is still sent (D19); the CRM fails it and no
     ledger row appears."""
-    raw = record.get("DocDate")
+    return parse_doc_day(record.get("DocDate"))
+
+
+def parse_doc_day(raw: Any) -> Optional[date]:
+    """``doc_date``'s parser on its own, for any date-bearing field (the doc
+    finder's registry names the field per doc type)."""
     if not raw:
         return None
     text = str(raw)

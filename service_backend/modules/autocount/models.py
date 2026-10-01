@@ -950,3 +950,41 @@ class AcDocFeedBackfill(AutocountBase):
     started_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     finished_at = Column(UTCDateTime(), nullable=True)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+
+# ── document finder (sprint-5/17, AC-DOC-FINDER) ─────────────────────────────
+
+DOC_LOOKUP_DEFAULT_BACK_DAYS = 7
+DOC_LOOKUP_DEFAULT_FORWARD_DAYS = 14
+DOC_LOOKUP_MAX_WINDOW_DAYS = 31
+
+
+class AcDocLookupHint(AutocountBase):
+    """WHERE a document was last found (D5) - never its content. The next
+    lookup reads the hinted DocDate first (one GET, fresh data); a miss there
+    falls through to the full scan, which replaces the hint. Misses are never
+    stored."""
+
+    __tablename__ = "ac_doc_lookup_hint"
+
+    tenant_id = Column(String, primary_key=True)
+    company_id = Column(String, primary_key=True)
+    doc_type = Column(String, primary_key=True)
+    doc_no_norm = Column(String, primary_key=True)  # trimmed + casefolded
+
+    doc_key = Column(BigInteger, nullable=True)
+    doc_date = Column(Date, nullable=True)
+    last_modified = Column(String, nullable=True)  # the vendor's own string
+    found_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
+class AcDocLookupSettings(AutocountBase):
+    """Per-company live-search windows (D7); absent row = the defaults."""
+
+    __tablename__ = "ac_doc_lookup_settings"
+
+    tenant_id = Column(String, primary_key=True)
+    company_id = Column(String, primary_key=True)
+    back_days = Column(Integer, nullable=False, default=DOC_LOOKUP_DEFAULT_BACK_DAYS)
+    forward_days = Column(Integer, nullable=False, default=DOC_LOOKUP_DEFAULT_FORWARD_DAYS)
+    updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

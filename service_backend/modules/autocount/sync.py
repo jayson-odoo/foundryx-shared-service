@@ -3258,3 +3258,9 @@ register_preview_job_handler()
 from .doc_feed.jobs import register_doc_feed_job_handlers  # noqa: E402
 
 register_doc_feed_job_handlers()
+
+# sprint-5/17 - the doc finder's live search job, registered here for the
+# same reason as the doc feed handlers above (the worker imports this module).
+from .doc_lookup.job import register_doc_lookup_job_handler  # noqa: E402
+
+register_doc_lookup_job_handler()

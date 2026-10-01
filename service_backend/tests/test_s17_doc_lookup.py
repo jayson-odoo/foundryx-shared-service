@@ -118,10 +118,12 @@ class DoorStub:
         import modules.autocount.doc_feed.runner as runner_module
         from modules.autocount.http_source.client import HttpApiClient as RealClient
 
-        inner = httpx.Client(transport=httpx.MockTransport(self.handler))
+        # A fresh inner client per connection - each lookup closes its own.
         monkeypatch.setattr(
             runner_module, "HttpApiClient",
-            lambda base_url, **_kw: RealClient(base_url, transport=inner),
+            lambda base_url, **_kw: RealClient(
+                base_url, transport=httpx.Client(transport=httpx.MockTransport(self.handler)),
+            ),
         )
         return self
 
@@ -331,7 +333,7 @@ def test_stored_finds_snapshot_sighting_case_insensitive(client, headers, db, mo
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["docType"] == "delivery_order"
-    assert body["docNo"] == DOC_NO
+    assert body["docNo"] == "ps202610-0004"  # trimmed input echo
     assert len(body["snapshots"]) == 1
     sighting = body["snapshots"][0]
     assert sighting["snapshotId"] == snap.id
