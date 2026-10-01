@@ -211,8 +211,16 @@ class DocLookupService:
 
     # ── registry ─────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def types() -> List[Dict[str, Any]]:
+    def types(self, tenant_id: str, company_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """The registry. With ``company_id``, each type also says whether the
+        company has an AutoCount connection for it (``connected``) - so the
+        page warns before a search instead of after a 409 (foolproof-UI)."""
+        connected: Optional[Dict[str, bool]] = None
+        if company_id is not None:
+            company = self._company(tenant_id, company_id)
+            feeds = DocFeedRepository(self.db).list_for_company(tenant_id, company.id)
+            wired = {f.feed for f in feeds if f.connection_id}
+            connected = {t.key: t.feed in wired for t in all_doc_types()}
         return [
             {
                 "key": t.key,
@@ -220,6 +228,7 @@ class DocLookupService:
                 "prefixes": list(t.doc_no_prefixes),
                 "hasLastModified": t.by_last_modified_path is not None,
                 "hasByDocNo": t.by_doc_no is not None,
+                "connected": None if connected is None else connected[t.key],
             }
             for t in all_doc_types()
         ]

@@ -36,9 +36,14 @@ def _raise(exc: DocLookupError) -> NoReturn:
 
 @router.get("/types", response_model=DocTypeListOut)
 def list_doc_types(
-    _user: User = Depends(require_permission(READ)),
+    company_id: Optional[str] = Query(None, alias="companyId"),
+    current_user: User = Depends(require_permission(READ)),
+    db: Session = Depends(get_db),
 ) -> DocTypeListOut:
-    return DocTypeListOut(data=DocLookupService.types())
+    try:
+        return DocTypeListOut(data=DocLookupService(db).types(current_user.tenant_id, company_id))
+    except DocLookupError as exc:
+        _raise(exc)
 
 
 @router.get("/stored", response_model=StoredLookupOut)

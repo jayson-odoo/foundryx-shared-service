@@ -17,6 +17,7 @@ class DocTypeOut(BaseModel):
     prefixes: List[str]
     hasLastModified: bool
     hasByDocNo: bool
+    connected: Optional[bool] = None
 
 
 class DocTypeListOut(BaseModel):

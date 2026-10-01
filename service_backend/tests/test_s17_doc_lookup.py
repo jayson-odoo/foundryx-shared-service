@@ -232,6 +232,27 @@ def test_types_lists_registered_doc_types(client, headers):
     assert do["hasByDocNo"] is False
 
 
+def test_types_for_company_report_connection(client, headers, db, monkeypatch):
+    """AC-17-01 (foolproof-UI) - with ``companyId`` each type says whether the
+    company has an AutoCount connection for it, so the page can warn before
+    the user searches instead of after a 409."""
+    company, _ = env(db, feeds=("delivery_orders",))
+    response = client.get(f"{BASE}/types", params={"companyId": company.id}, headers=headers)
+    assert response.status_code == 200, response.text
+    by_key = {t["key"]: t for t in response.json()["data"]}
+    assert by_key["delivery_order"]["connected"] is True
+    assert by_key["goods_receive_note"]["connected"] is False
+    # without a company the flag is absent (null), never a guess
+    plain = client.get(f"{BASE}/types", headers=headers).json()["data"]
+    assert all(t["connected"] is None for t in plain)
+    # a foreign company id is a 404, never another tenant's wiring
+    tenant = other_tenant(db)
+    foreign, _ = make_company(db, tenant_id=tenant, code="FRN", database_name="AED_FRN")
+    assert client.get(
+        f"{BASE}/types", params={"companyId": foreign.id}, headers=headers,
+    ).status_code == 404
+
+
 def test_registry_rejects_duplicate_key():
     """AC-17-03 - a duplicate registry key is a loud boot error."""
     from modules.autocount.doc_lookup.registry import (
