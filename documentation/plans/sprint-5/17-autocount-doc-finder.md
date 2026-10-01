@@ -48,9 +48,11 @@ What the code can do today (verified):
   hinted DocDate first: one GET, fresh data. If that misses (re-dated again), the full scan runs
   and the hint is replaced. Misses are not cached, because a doc created a minute later must be
   findable. This keeps "cache results" without ever showing a stale record.
-- **D6 Optional by-DocNo door** per registry entry (`by_doc_no`), OFF by default. It is enabled
-  only after someone confirms it works on the customer host (crew-ask #2). When enabled it is
-  tried first, ahead of the day scan.
+- **D6 By-DocNo door = a reserved registry slot** (`by_doc_no`). Crew probed the host on
+  2026-10-01: `POST .../api/db1/DeliveryOrder/GetDeliveryOrder` and
+  `.../api/DeliveryOrder/GetDeliveryOrder` both answer 404 "No HTTP resource was found". No
+  entry sets the slot and the search never sends it. The executor for it lands with the first
+  host that answers it.
 - **D7 Windows** (OWNER CALL, crew-ask #1): default LastModified back **7** days and DocDate
   forward **14** days (today..+14). Both are configurable per company, capped at 31 days each.
   The user can also enter "Around date" to scan +/-3 days around a date they remember.
@@ -60,13 +62,24 @@ What the code can do today (verified):
   job and shows "checked N of M days". It reuses `JobService.beat_progress` plus cooperative
   abort (the user can Stop). Re-attach: the same (company, type, number) while running returns
   the same job.
-- **D9 Permission = `autocount.pull.read`** (existing key, same audience as the Pull page), so
-  there is no new key and no grant sweep. Starting a live search is a vendor read, not a write.
+- **D9 Permission per doc type** (registry `permission`, security review round 1). Delivery
+  orders use `autocount.pull.read`, the Pull page's audience and the key that already serves DO
+  snapshot rows. GRN uses `autocount.sync.read`, the key that already shows GRN records on the
+  doc-feed issues route (`routers/doc_feeds.py:156`), because GRN supplier and cost data was
+  never part of the pull.read audience. `GET /types` lists only the types the user may use. Jobs
+  of a type the user can't see answer 404. No new key, so no grant sweep.
+- **D9b Load caps.** At most 1 running search per company (re-attach on the same number, else
+  409 `LOOKUP_IN_FLIGHT` carrying the blocking `jobId`, which the page offers to stop). At most 3
+  running per tenant (429 `TOO_MANY_LOOKUPS`). The company row is locked (`FOR UPDATE`) while a
+  search starts, so two concurrent POSTs cannot both pass the check. `aroundDay` must be within
+  5 years of today.
 - **D10 Placement**: new page `/autocount/find` ("Find document") in the AutoCount menu, in all
   three menu arrays with `module: 'autocount'` + `permission`. It is also a deep link from the
   snapshot detail page.
-- **D11 Re-date is shown, not hidden.** The page compares every stored sighting's DocDate with
-  the live DocDate. When they differ it shows a warning banner: "DocDate changed from 01/10/2026
+- **D11 Re-date is shown, not hidden.** The live DocDate is compared with the newest DocDate the
+  PULLS saw (snapshot or ledger). The finder's own hint is used only when no pull ever saw the
+  document, because the hint is refreshed by every hit and would otherwise hide the re-date from
+  the second search onwards (found in the live click-through). When they differ it shows a warning banner: "DocDate changed from 01/10/2026
   to 05/10/2026 - last modified by AIN on 01/10/2026 07:39. A pull for 01/10 will no longer
   return it." Each snapshot row in the history table shows "in range: yes/no" for today's
   DocDate.
@@ -168,8 +181,8 @@ The plan is a list of steps, built and returned up front so the UI can show prog
 The job skips a step already covered by an earlier one (same door + same day) and stops at
 the first record whose `doc_no_field` matches (casefold + trim, the existing `_doc_no_matches`).
 If several copies share the DocKey, it picks the newest LastModified (`dedupe_latest`). On a
-hit it upserts the hint row. A vendor error on one day is recorded on that step, and the scan
-continues. The job FAILS only when every step failed (for example, no connection).
+hit it upserts the hint row. A vendor error on one day is recorded on that step as a fixed sentence
+(never the transport message, which embeds the connection host), and the scan continues. The job FAILS only when every step failed (for example, no connection).
 
 Result payload (the job's `result_json`, also the API shape):
 ```
@@ -213,7 +226,7 @@ collapsible "All fields" table.
 
 Router -> `DocLookupService` -> repositories (no SQL in the router). Every query is
 tenant-scoped, and the company is loaded with `CompanyRepository.get(tenant_id, id)`. Rate
-guard: at most 1 running lookup per (tenant, company), and a 10 s cooldown on the same number.
+guard: see D9b.
 
 ## 7. Frontend
 

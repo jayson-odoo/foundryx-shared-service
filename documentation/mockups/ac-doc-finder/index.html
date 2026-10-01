@@ -253,7 +253,7 @@ table.reg td code{font-size:12px}
 <p class="why">Shown when snapshots and the feed don't know the document, or while the current copy is still being fetched. The reads run in order (dates we already know, then modified-on going back 7 days, then DocDate going forward 14 days) and stop at the first hit. Stop is always available.</p>
 <div class="frame"><div class="cap">Find document - searching (card body)</div><div class="body">
   <div class="alert info"><svg class="i"><use href="#db"/></svg><div><div class="t">Not in any stored snapshot</div>The feed never pushed it either.</div></div>
-  <div class="card"><div class="ch"><h3>Searching AutoCount · checked 6 of 22 days</h3><span class="btn outline sm"><svg class="i s"><use href="#stop"/></svg>Stop</span></div>
+  <div class="card"><div class="ch"><h3>Searching AutoCount · checked 6 of 23 days</h3><span class="btn outline sm"><svg class="i s"><use href="#stop"/></svg>Stop</span></div>
     <div class="cb">
       <div class="bar"><i style="width:27%"></i></div>
       <div class="grp-h">Modified on (today back 7 days)</div>
@@ -275,7 +275,7 @@ table.reg td code{font-size:12px}
     </div>
   </div>
 </div></div>
-<p class="note"><span class="nb">1</span>An error on one day (AutoCount timeout) doesn't stop the search. Hovering the red chip shows the error. "Today" for the DocDate group is already covered by the modified-on reads, so it is not read twice.</p>
+<p class="note"><span class="nb">1</span>An error on one day (AutoCount timeout) doesn't stop the search. The error text is listed under the chips. A (door, day) pair is never read twice; modified-on and DocDate are different doors, so today is read once by each (8 + 15 = 23 reads).</p>
 </section>
 
 <!-- 3 -->
@@ -285,7 +285,7 @@ table.reg td code{font-size:12px}
 <div class="frame"><div class="cap">Find document - not found (card body)</div><div class="body">
   <div class="card"><div class="empty">
     <b>PS202610-0099 was not found</b>
-    Searched snapshots, the delivery-order feed, modified-on 24/09 to 01/10/2026 and DocDate 01/10 to 15/10/2026 (22 AutoCount reads).
+    Searched snapshots, the delivery-order feed, modified-on 24/09 to 01/10/2026 and DocDate 01/10 to 15/10/2026 (23 AutoCount reads).
     <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;flex-wrap:wrap">
       <div class="inp" style="width:170px"><span class="ph">Around date</span><svg class="i s"><use href="#cal"/></svg></div>
       <span class="btn outline"><svg class="i"><use href="#search"/></svg>Search around date</span>

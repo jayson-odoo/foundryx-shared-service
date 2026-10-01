@@ -92,3 +92,17 @@ Reference case used throughout: `PS202610-0004`, re-dated by AIN from 01/10/2026
 - AC-17-33 [E2E] Real clicks: menu -> Find document -> pick company -> type PS202610-0004 ->
   Find -> re-date banner + current DocDate 05/10/2026, at 1280 and 375 with no horizontal
   scroll.
+
+## Review + security round 1 (added during build)
+
+- AC-17-34 [BE] The re-date warning compares against what the pulls saw (snapshot/ledger); a
+  second lookup of PS202610-0004 still reports 01/10 -> 05/10.
+- AC-17-35 [BE] GRN lookups need `autocount.sync.read`; `GET /types` hides types the user
+  can't use; a GRN lookup by a pull.read-only user is 403 `DOC_TYPE_FORBIDDEN`.
+- AC-17-36 [BE] At most 3 running searches per tenant (429 `TOO_MANY_LOOKUPS`); the in-flight
+  409 names the blocking `jobId`.
+- AC-17-37 [BE] Step errors are fixed sentences that never contain the connection host.
+- AC-17-38 [BE] `aroundDay` more than 5 years from today is 422 (never a crashed job).
+- AC-17-39 [BE] A stop that lands during the final (hit) read leaves the job aborted.
+- AC-17-40 [FE] With a company picked, a type without an AutoCount connection shows a warning
+  and Find stays disabled (`GET /types?companyId=` reports `connected`).
