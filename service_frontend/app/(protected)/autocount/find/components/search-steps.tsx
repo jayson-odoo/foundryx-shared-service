@@ -66,6 +66,17 @@ export function SearchSteps({ steps, running = false }: SearchStepsProps) {
           </div>
         </div>
       ))}
+      {steps.some((s) => s.status === 'error') && (
+        <ul className="flex flex-col gap-0.5 text-xs text-destructive" data-testid="ac-find-step-errors">
+          {steps
+            .filter((s) => s.status === 'error')
+            .map((s) => (
+              <li key={`${s.door}-${s.day}`}>
+                {formatVendorDay(s.day)}: {s.error ?? 'AutoCount could not be read for this day.'}
+              </li>
+            ))}
+        </ul>
+      )}
     </div>
   );
 }

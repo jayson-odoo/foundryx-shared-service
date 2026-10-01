@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Database, Search, TriangleAlert } from 'lucide-react';
-import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui/alert';
+import { Database, Search, Square, TriangleAlert } from 'lucide-react';
+import { Alert, AlertDescription, AlertIcon, AlertTitle, AlertToolbar } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
@@ -75,6 +75,14 @@ export function FindDocumentView({ lookupOptions }: FindDocumentViewProps) {
               <TriangleAlert />
             </AlertIcon>
             <AlertTitle>{lookup.error}</AlertTitle>
+            {lookup.blockingJob && (
+              <AlertToolbar>
+                <Button variant="outline" size="sm" onClick={() => void lookup.stopBlocking()}>
+                  <Square className="size-3.5" />
+                  Stop that search
+                </Button>
+              </AlertToolbar>
+            )}
           </Alert>
         )}
 

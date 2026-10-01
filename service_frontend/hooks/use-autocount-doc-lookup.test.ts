@@ -102,6 +102,54 @@ describe('useDocLookup', () => {
   });
 });
 
+describe('useDocLookup - review round 1', () => {
+  it('names the blocking search on a 409 and can stop it', async () => {
+    const stop = vi.fn().mockResolvedValue({});
+    const service: AutocountDocLookupService = {
+      ...mockAutocountDocLookupService,
+      start: vi.fn().mockRejectedValue(
+        new ApiError('Request failed', 409, null, {
+          code: 'LOOKUP_IN_FLIGHT', message: 'Another document search is running for this company.', jobId: 'jb',
+        }),
+      ),
+      stop,
+    };
+    const { result } = renderHook(() => useDocLookup({ service, pollDelay: fast }));
+    await act(async () => {
+      await result.current.search({ companyId: 'c1', docNo: 'X' });
+    });
+    expect(result.current.blockingJob).toBe('jb');
+    await act(async () => {
+      await result.current.stopBlocking();
+    });
+    expect(stop).toHaveBeenCalledWith('jb');
+    expect(result.current.phase).toBe('idle');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('retries one failed poll before giving up', async () => {
+    const running: DocLookupJob = {
+      jobId: 'j3', status: 'running', companyId: 'c1', docNo: 'X', docType: 'delivery_order',
+      progressDone: 0, progressTotal: 1, result: null, error: null, createdAt: null, finishedAt: null,
+    };
+    const getJob = vi
+      .fn<AutocountDocLookupService['getJob']>()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce({ ...running, status: 'done' });
+    const service: AutocountDocLookupService = {
+      ...mockAutocountDocLookupService,
+      start: vi.fn().mockResolvedValue(running),
+      getJob,
+    };
+    const { result } = renderHook(() => useDocLookup({ service, pollDelay: fast }));
+    await act(async () => {
+      await result.current.search({ companyId: 'c1', docNo: 'X' });
+    });
+    expect(result.current.phase).toBe('done');
+    expect(getJob).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('useDocLookupTypes', () => {
   it('reports connection per type once a company is chosen', async () => {
     const { result } = renderHook(() => useDocLookupTypes('c1', mockAutocountDocLookupService));
