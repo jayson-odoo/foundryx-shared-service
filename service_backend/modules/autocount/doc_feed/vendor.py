@@ -59,6 +59,11 @@ class DocFeedVendor:
         path = BY_DOC_DATE_PATH[feed]
         return self._document_day(path, {"DocDate": yyyymmdd(day)})
 
+    def get_day(self, path: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Any registered day door (sprint-5/17 doc finder) - the SAME retry
+        ladder and plain-array parse the two feed doors above use."""
+        return self._document_day(path, params)
+
     def _document_day(self, path: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
         response = self._fetch_with_retry(path, params)
         body = self._as_json(response)

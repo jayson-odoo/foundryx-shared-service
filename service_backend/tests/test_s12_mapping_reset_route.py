@@ -259,11 +259,12 @@ def test_ac_12_30_permissions_parity_no_new_key_added():
 def test_ac_12_32_no_new_autocount_migration_added():
     """No schema change FOR THIS PLAN (2.2); `hasPreset` is derived at read
     time. The ceiling here tracks whatever the LATEST plan to actually ship
-    an autocount migration left as its own baseline - sprint-5/14 (D1/D16)
-    is that latest plan, shipping `0023_autocount_doc_feed` (five new
-    doc-feed tables) deliberately, so the guard's ceiling moves to 23 with
-    it; a reviewer/coder adding one beyond THAT for a schema-free slice
-    still trips this guard rather than the drift going unnoticed."""
+    an autocount migration left as its own baseline - sprint-5/17 (doc
+    finder) is that latest plan, shipping `0024_autocount_doc_lookup` (two
+    new tables + two expression indexes) deliberately, so the guard's
+    ceiling moves to 24 with it; a reviewer/coder adding one beyond THAT for
+    a schema-free slice still trips this guard rather than the drift going
+    unnoticed."""
     versions_dir = (
         Path(__file__).resolve().parents[1]
         / "modules" / "autocount" / "alembic" / "versions"
@@ -273,8 +274,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
         match = re.match(r"^(\d+)_", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    assert highest <= 23, (
-        f"a new autocount migration (>0023) exists ({highest}) - AC-12-32 "
+    assert highest <= 24, (
+        f"a new autocount migration (>0024) exists ({highest}) - AC-12-32 "
         "says THIS plan ships no schema change (a later plan may legitimately "
-        "move this ceiling again, as sprint-5/14 just did from 22 to 23)"
+        "move this ceiling again, as sprint-5/17 just did from 23 to 24)"
     )

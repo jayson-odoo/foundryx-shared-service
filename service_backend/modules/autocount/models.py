@@ -31,7 +31,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 from sqlalchemy.types import JSON as GenericJSON
 
 from app.models.utc_datetime import UTCDateTime
@@ -731,6 +731,13 @@ class AcPullSnapshotRow(AutocountBase):
         # second, auto-named duplicate on the same column (see the sibling
         # comment on ``AcPullSnapshot.expires_at`` above).
         Index("ix_ac_pull_snapshot_row_company", "company_id"),
+        # sprint-5/17 doc finder - case-insensitive DocNo lookup (migration
+        # 0024 builds the SAME expression on upgraded hosts; create_all builds
+        # it here on fresh ones, which are stamped at head with no DDL).
+        Index(
+            "ix_ac_pull_snapshot_row_docno",
+            "tenant_id", "company_id", text("lower(trim(payload_json ->> 'DocNo'))"),
+        ).ddl_if(dialect="postgresql"),
     )
 
     tenant_id = Column(String, primary_key=True)
@@ -825,6 +832,11 @@ class AcDocFeedLedger(AutocountBase):
             "ix_ac_doc_feed_ledger_window", "tenant_id", "company_id", "feed", "book",
             "doc_date",
         ),
+        # sprint-5/17 doc finder (see ``ix_ac_pull_snapshot_row_docno``).
+        Index(
+            "ix_ac_doc_feed_ledger_docno",
+            "tenant_id", "company_id", "feed", text("lower(trim(doc_no))"),
+        ).ddl_if(dialect="postgresql"),
     )
 
     tenant_id = Column(String, primary_key=True)
@@ -949,4 +961,42 @@ class AcDocFeedBackfill(AutocountBase):
 
     started_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     finished_at = Column(UTCDateTime(), nullable=True)
+    updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+
+# ── document finder (sprint-5/17, AC-DOC-FINDER) ─────────────────────────────
+
+DOC_LOOKUP_DEFAULT_BACK_DAYS = 7
+DOC_LOOKUP_DEFAULT_FORWARD_DAYS = 14
+DOC_LOOKUP_MAX_WINDOW_DAYS = 31
+
+
+class AcDocLookupHint(AutocountBase):
+    """WHERE a document was last found (D5) - never its content. The next
+    lookup reads the hinted DocDate first (one GET, fresh data); a miss there
+    falls through to the full scan, which replaces the hint. Misses are never
+    stored."""
+
+    __tablename__ = "ac_doc_lookup_hint"
+
+    tenant_id = Column(String, primary_key=True)
+    company_id = Column(String, primary_key=True)
+    doc_type = Column(String, primary_key=True)
+    doc_no_norm = Column(String, primary_key=True)  # trimmed + casefolded
+
+    doc_key = Column(BigInteger, nullable=True)
+    doc_date = Column(Date, nullable=True)
+    last_modified = Column(String, nullable=True)  # the vendor's own string
+    found_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
+class AcDocLookupSettings(AutocountBase):
+    """Per-company live-search windows (D7); absent row = the defaults."""
+
+    __tablename__ = "ac_doc_lookup_settings"
+
+    tenant_id = Column(String, primary_key=True)
+    company_id = Column(String, primary_key=True)
+    back_days = Column(Integer, nullable=False, default=DOC_LOOKUP_DEFAULT_BACK_DAYS)
+    forward_days = Column(Integer, nullable=False, default=DOC_LOOKUP_DEFAULT_FORWARD_DAYS)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

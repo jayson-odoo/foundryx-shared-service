@@ -44,6 +44,10 @@
     {
       "name": "doc_feeds",
       "prefix": "/autocount/doc-feeds"
+    },
+    {
+      "name": "doc_lookup",
+      "prefix": "/autocount/doc-lookup"
     }
   ],
   "permissions_csv": "permissions/permissions.csv"

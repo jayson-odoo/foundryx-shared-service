@@ -429,6 +429,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/autocount/pull',
         permission: 'autocount.pull.read',
       },
+      {
+        title: 'Find document',
+        path: '/autocount/find',
+        permission: 'autocount.pull.read',
+      },
     ],
   },
 ];
@@ -607,6 +612,11 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/autocount/pull',
                 permission: 'autocount.pull.read',
               },
+              {
+                title: 'Find document',
+                path: '/autocount/find',
+                permission: 'autocount.pull.read',
+              },
             ],
           },
         ],
@@ -765,6 +775,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
       {
         title: 'Pull',
         path: '/autocount/pull',
+        permission: 'autocount.pull.read',
+      },
+      {
+        title: 'Find document',
+        path: '/autocount/find',
         permission: 'autocount.pull.read',
       },
     ],
