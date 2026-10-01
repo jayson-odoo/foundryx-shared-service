@@ -195,6 +195,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_entity_config_defaults,
         backfill_etl_defaults,
         backfill_sales_order_ref,
+        backfill_sales_order_transferable,
         backfill_shipping_order_container_number,
         backfill_sink_impl_defaults,
         default_schema,
@@ -248,6 +249,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # behaviour before this plan existed. Module Alembic 0020 runs the same
     # repair on deploy.
     backfill_delivery_mode_defaults(db, schema=schema)
+    # 0.12.0 -> 0.13.0 (SS-SO-TRANSFERABLE, partner of sorento #1421): every
+    # existing `sales_order` task gets a `Transferable -> transferable` header
+    # row (enabled when the query already selects it, disabled + one warning
+    # otherwise), and a byte-identical 0019 preset query is rewritten to the
+    # NEW text carrying `h.Transferable AS Transferable`. Runs AFTER the `Ref`
+    # backfill (0019 -> 0025 order). Module Alembic 0025 runs the same repair.
+    backfill_sales_order_transferable(db, schema=schema)
 
     service = CompanyService(db)
     page = 0

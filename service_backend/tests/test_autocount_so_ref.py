@@ -157,9 +157,14 @@ def _backfill():
 
 
 def test_so_header_query_selects_ref_after_note():
-    assert "h.Ref AS Ref" in _SO_HEADER_QUERY, _SO_HEADER_QUERY
-    assert _SO_HEADER_QUERY == _NEW_SO_HEADER_QUERY, (
-        "presets._SO_HEADER_QUERY must select `h.Ref AS Ref` right after "
+    assert "h.Note AS Note, h.Ref AS Ref, " in _SO_HEADER_QUERY, _SO_HEADER_QUERY
+    # SS-SO-TRANSFERABLE moved the live preset one column on; 0019's own
+    # target text is now FROZEN in `backfill.py` and must stay byte-identical
+    # to what this lane shipped.
+    from modules.autocount.backfill import _REF_SO_HEADER_QUERY
+
+    assert _REF_SO_HEADER_QUERY == _NEW_SO_HEADER_QUERY, (
+        "0019's target text must select `h.Ref AS Ref` right after "
         "`h.Note AS Note` and be otherwise byte-identical to the OLD text"
     )
 
@@ -555,9 +560,12 @@ def test_update_tenant_runs_the_sales_order_ref_backfill(db):
     assert len(rows) == 1 and rows[0].canonical_field == "ref"
     assert rows[0].is_enabled is True
     after = db.get(AcEntityConfig, config_id)
-    assert after.source_config["query"] == _NEW_SO_HEADER_QUERY.replace(
+    # `update_tenant` chains 0019 -> 0025 (SS-SO-TRANSFERABLE): the task ends
+    # on the CURRENT preset text, which still carries `h.Ref AS Ref`.
+    assert after.source_config["query"] == _SO_HEADER_QUERY.replace(
         "{database}", "AED_UPD_REF"
     )
+    assert "h.Ref AS Ref" in after.source_config["query"]
     assert "Ref" in (after.result_columns or [])
 
 
