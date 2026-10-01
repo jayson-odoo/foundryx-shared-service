@@ -31,7 +31,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 from sqlalchemy.types import JSON as GenericJSON
 
 from app.models.utc_datetime import UTCDateTime
@@ -731,6 +731,13 @@ class AcPullSnapshotRow(AutocountBase):
         # second, auto-named duplicate on the same column (see the sibling
         # comment on ``AcPullSnapshot.expires_at`` above).
         Index("ix_ac_pull_snapshot_row_company", "company_id"),
+        # sprint-5/17 doc finder - case-insensitive DocNo lookup (migration
+        # 0024 builds the SAME expression on upgraded hosts; create_all builds
+        # it here on fresh ones, which are stamped at head with no DDL).
+        Index(
+            "ix_ac_pull_snapshot_row_docno",
+            "tenant_id", "company_id", text("lower(trim(payload_json ->> 'DocNo'))"),
+        ).ddl_if(dialect="postgresql"),
     )
 
     tenant_id = Column(String, primary_key=True)
@@ -825,6 +832,11 @@ class AcDocFeedLedger(AutocountBase):
             "ix_ac_doc_feed_ledger_window", "tenant_id", "company_id", "feed", "book",
             "doc_date",
         ),
+        # sprint-5/17 doc finder (see ``ix_ac_pull_snapshot_row_docno``).
+        Index(
+            "ix_ac_doc_feed_ledger_docno",
+            "tenant_id", "company_id", "feed", text("lower(trim(doc_no))"),
+        ).ddl_if(dialect="postgresql"),
     )
 
     tenant_id = Column(String, primary_key=True)
