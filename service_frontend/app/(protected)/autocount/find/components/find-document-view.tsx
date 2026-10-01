@@ -125,9 +125,9 @@ export function FindDocumentView({ lookupOptions }: FindDocumentViewProps) {
               <p className="max-w-2xl text-sm text-muted-foreground">
                 Searched snapshots, the document feed
                 {result.searched.lastModifiedFrom
-                  ? `, modified-on ${formatVendorDay(result.searched.lastModifiedFrom)} – ${formatVendorDay(result.searched.lastModifiedTo)}`
+                  ? `, modified-on ${formatVendorDay(result.searched.lastModifiedFrom)} to ${formatVendorDay(result.searched.lastModifiedTo)}`
                   : ''}
-                {` and DocDate ${formatVendorDay(result.searched.docDateFrom)} – ${formatVendorDay(result.searched.docDateTo)}`} (
+                {` and DocDate ${formatVendorDay(result.searched.docDateFrom)} to ${formatVendorDay(result.searched.docDateTo)}`} (
                 {stepsDone(steps)} AutoCount reads).
               </p>
               {lastInput && (

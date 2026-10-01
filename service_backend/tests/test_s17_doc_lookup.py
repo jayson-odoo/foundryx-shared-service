@@ -828,3 +828,128 @@ def test_job_lookup_is_tenant_scoped(client, headers, db, monkeypatch):
 
     other_type = JobService(db).create(type="autocount_doc_feed_run", tenant_id=DEFAULT_TENANT_ID)
     assert job(client, headers, other_type.id).status_code == 404
+
+
+# ── review + security round 1 ────────────────────────────────────────────────
+
+
+def test_step_dedupe_one_read_per_door_and_day(client, headers, db, monkeypatch):
+    """Review M2 - a hint / around day that equals a scan day is read ONCE."""
+    company, _ = env(db)
+    seed_snapshot(db, company, doc_date=day(3), modified=iso_dt(day(-1)))
+    stub = DoorStub().install(monkeypatch)
+
+    result = run_lookup(client, headers, company, aroundDay=day(2).isoformat())["result"]
+    steps = [(s["door"], s["day"]) for s in result["steps"]]
+    assert len(steps) == len(set(steps))
+    assert len(stub.reads) == len(set(stub.reads)) == len(steps)
+    # the hint day (+3) and the around days (-1..+5) are planned first ...
+    assert steps[0] == ("by_doc_date", day(3).isoformat())
+    # ... so the forward scan never re-reads them
+    forward = [d for door, d in steps[8:] if door == "by_doc_date"]
+    assert day(3).isoformat() not in forward
+
+
+def test_stop_during_the_hit_read_is_not_overwritten(client, headers, db, monkeypatch):
+    """Review 4 / security 5 - a stop committed while the HIT step is being
+    read keeps the job aborted (the final status is re-read before finish)."""
+    from app.models.background_job import JOB_ABORTED, BackgroundJob
+
+    company, _ = env(db)
+    rec = do_rec(doc_date=day(-5), modified=iso_dt(today(), "08:00:00.000"))
+    stub = DoorStub({(DO_BY_MOD, yyyymmdd(today())): [rec]}).install(monkeypatch)
+    original = stub.handler
+
+    def handler(request):
+        db.query(BackgroundJob).filter(BackgroundJob.type == "autocount_doc_lookup").update(
+            {"status": JOB_ABORTED}
+        )
+        db.commit()
+        return original(request)
+
+    stub.handler = handler
+    body = run_lookup(client, headers, company)
+    assert body["status"] == "aborted"
+
+
+def test_in_flight_409_names_the_running_job(client, headers, db, monkeypatch):
+    """Review 3 - the 409 carries the blocking job id so the page can stop it."""
+    from app.jobs.service import JobService
+
+    company, _ = env(db)
+    DoorStub().install(monkeypatch)
+    monkeypatch.setattr(JobService, "enqueue", lambda self, job_id: None)
+    first = start(client, headers, company).json()["jobId"]
+    other = start(client, headers, company, "PS202610-0005")
+    assert other.status_code == 409
+    assert other.json()["detail"]["jobId"] == first
+
+
+def test_running_lookups_capped_per_tenant(client, headers, db, monkeypatch):
+    """Security 1 - at most MAX_RUNNING_LOOKUPS_PER_TENANT searches at once."""
+    from app.jobs.service import JobService
+    from modules.autocount.doc_lookup.service import MAX_RUNNING_LOOKUPS_PER_TENANT
+
+    DoorStub().install(monkeypatch)
+    monkeypatch.setattr(JobService, "enqueue", lambda self, job_id: None)
+    for i in range(MAX_RUNNING_LOOKUPS_PER_TENANT):
+        company, _ = make_company(db, code=f"C{i}", database_name=f"AED_{i}")
+        add_feed(db, company, _)
+        assert start(client, headers, company).status_code == 202
+    extra, conn = make_company(db, code="CX", database_name="AED_X")
+    add_feed(db, extra, conn)
+    response = start(client, headers, extra)
+    assert response.status_code == 429
+    assert response.json()["detail"]["code"] == "TOO_MANY_LOOKUPS"
+
+
+def test_grn_needs_sync_read(client, db, monkeypatch):
+    """Security 1 - GRN data is not part of the pull.read audience: a GRN
+    lookup needs autocount.sync.read; the types list hides what you can't use."""
+    company, _ = env(db, feeds=("delivery_orders", "goods_receive_notes"))
+    DoorStub().install(monkeypatch)
+    limited_user(db, ["autocount.pull.read"], email="s17-do-only@example.com")
+    h = auth_headers(client, "s17-do-only@example.com", "limited1234")
+
+    keys = [t["key"] for t in client.get(f"{BASE}/types", headers=h).json()["data"]]
+    assert keys == ["delivery_order"]
+    refused = start(client, h, company, "GRN-0001")
+    assert refused.status_code == 403
+    assert refused.json()["detail"]["code"] == "DOC_TYPE_FORBIDDEN"
+    assert client.get(
+        f"{BASE}/stored", params={"companyId": company.id, "docNo": "GRN-0001"}, headers=h,
+    ).status_code == 403
+    assert start(client, h, company, DOC_NO).status_code == 202
+
+
+def test_step_errors_never_carry_the_host(client, headers, db, monkeypatch):
+    """Security 2 - a transport failure is stored as a fixed sentence, never
+    the client message that embeds the connection's base URL."""
+    company, _ = env(db)
+    DoorStub({(DO_BY_MOD, yyyymmdd(today())): httpx.ConnectError("boom")}).install(monkeypatch)
+    result = run_lookup(client, headers, company, "PS202610-0099")["result"]
+    errored = [s for s in result["steps"] if s["status"] == "error"]
+    assert errored
+    for step in errored:
+        assert "hapi" not in step["error"] and "http" not in step["error"].lower()
+
+
+@pytest.mark.parametrize("around", ["0001-01-01", "9999-12-31", "2000-01-01"])
+def test_around_day_is_bounded(client, headers, db, monkeypatch, around):
+    """Security 4 - an extreme aroundDay is a 422, never a crashed job."""
+    company, _ = env(db)
+    DoorStub().install(monkeypatch)
+    response = start(client, headers, company, aroundDay=around)
+    assert response.status_code == 422
+    assert "aroundDay" in response.text
+
+
+def test_registry_snapshot_types_must_use_docno():
+    """Review 6 - snapshot-backed stored search (and its index) key on DocNo."""
+    from modules.autocount.doc_lookup.registry import AcDocType, DocTypeRegistryError, register_doc_type
+
+    with pytest.raises(DocTypeRegistryError):
+        register_doc_type(AcDocType(
+            key="bad_snapshot_type", label="x", feed="delivery_orders", by_doc_date_path="/x",
+            doc_no_field="InvNo", snapshot_entity_type="delivery_orders",
+        ))

@@ -79,7 +79,7 @@ export function SnapshotsGrid({ snapshots, currentDocDate }: SnapshotsGridProps)
       id: 'range',
       header: 'Range',
       cell: ({ row }) =>
-        `${formatVendorDay(row.original.fromDay)} – ${formatVendorDay(row.original.toDay)}${
+        `${formatVendorDay(row.original.fromDay)} to ${formatVendorDay(row.original.toDay)}${
           row.original.byNumber ? ' · by number' : ''
         }`,
     },
