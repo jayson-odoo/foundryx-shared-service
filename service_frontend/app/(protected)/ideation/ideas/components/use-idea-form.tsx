@@ -191,6 +191,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             label: 'Delete',
             icon: FileText,
             tone: 'destructive',
+            ...(mode === 'operator' ? { permission: 'ideation.triage.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             deferred: { actionKey: 'ideation_ideas.delete', entityType: 'ideation_idea' },
           },
@@ -247,6 +248,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             label: 'Delete',
             icon: FileText,
             tone: 'destructive',
+            ...(mode === 'operator' ? { permission: 'ideation.triage.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             // Grace-window deferred action - no confirm, no `run`. ResourceForm's
             // own onCommitted already carries the record's ctx/i/from back to
