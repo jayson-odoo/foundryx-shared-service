@@ -501,7 +501,12 @@ def _stub_dns_in_autocount_http_tests(request, monkeypatch):
 # and the fired job's real `HttpApiClient` made a real, ~multi-minute call
 # to `hapi.sorento.cc.cd`, hanging the run. Same class of incident this
 # fixture's own docstring already names for `s10_`/`s11_`.
-_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_|s11_|s13_|s14_)")
+#
+# sprint-5/19 - `s19_` added for the same reason: `test_s19_doc_feed_schedule
+# .py`'s beat tests let `sweep_doc_feeds` claim + fire a real doc-feed job
+# (eager), whose vendor read reached a real transport - ~45 s per test on CI,
+# enough to starve a timing-window test on the same xdist worker.
+_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_|s11_|s13_|s14_|s19_)")
 
 
 class LiveNetworkAttempted(RuntimeError):

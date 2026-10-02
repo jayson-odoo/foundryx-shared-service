@@ -2390,6 +2390,8 @@ function mutateDocFeed(
   eligible: DocFeedEligibleConnection[],
 ): void {
   const state = docFeedsFor(companyId)[feed];
+  const previous = state.schedule;
+  const wasArmed = state.mode !== 'off';
   if (input.schedule) state.schedule = { ...input.schedule };
   if (input.mode === 'off') {
     state.mode = 'off';
@@ -2413,9 +2415,34 @@ function mutateDocFeed(
   state.connectionId = input.connectionId;
   state.book = conn?.book ?? 'mock';
   state.mode = input.mode;
+  // Mirrors `DocFeedService.update` (sprint-5/19 R4): arming from off sets
+  // the poll due now; on an armed feed only the CHANGED half re-arms.
   const now = Date.now();
-  state.nextPollAt = new Date(now + state.schedule.incrementalMinutes * 60_000).toISOString();
-  state.nextSweepAt = new Date(now + (state.schedule.reconcileHours ?? 24) * 3_600_000).toISOString();
+  const s = state.schedule;
+  const pollAt = () => new Date(now + s.incrementalMinutes * 60_000).toISOString();
+  const sweepAt = () => {
+    if (s.reconcileMode === 'interval') {
+      return new Date(now + (s.reconcileHours ?? 24) * 3_600_000).toISOString();
+    }
+    const [h, mi] = (s.reconcileAt ?? '02:00').split(':').map(Number);
+    const target = new Date(now);
+    target.setUTCHours(h, mi, 0, 0);
+    if (target.getTime() <= now) target.setUTCDate(target.getUTCDate() + 1);
+    return target.toISOString();
+  };
+  if (!wasArmed) {
+    state.nextPollAt = new Date(now).toISOString();
+    state.nextSweepAt = sweepAt();
+    return;
+  }
+  if (previous.incrementalMinutes !== s.incrementalMinutes) state.nextPollAt = pollAt();
+  if (
+    previous.reconcileMode !== s.reconcileMode ||
+    previous.reconcileHours !== s.reconcileHours ||
+    previous.reconcileAt !== s.reconcileAt
+  ) {
+    state.nextSweepAt = sweepAt();
+  }
 }
 
 /** One retryable + one failed issue, upserted by DocKey (D9: re-running a

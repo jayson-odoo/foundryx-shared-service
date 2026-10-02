@@ -24,7 +24,12 @@ import type {
   DocFeedSchedule,
   DocFeedUpdateInput,
 } from '@/types/autocount';
-import { DEFAULT_DOC_FEED_SCHEDULE, DOC_FEED_POLL_HAS_WATERMARK } from '@/lib/autocount-etl';
+import { ApiError } from '@/lib/api-client';
+import {
+  DEFAULT_DOC_FEED_SCHEDULE,
+  DOC_FEED_POLL_HAS_WATERMARK,
+  readFieldErrors,
+} from '@/lib/autocount-etl';
 import { docFeedGateWarning, docFeedLabel } from '../../components/autocount-meta';
 import {
   ScheduleCadenceCards,
@@ -47,6 +52,7 @@ export interface DocFeedConfigDialogProps {
   };
   eligibleConnections: DocFeedEligibleConnection[];
   onClose: () => void;
+  /** Rejects on a failed save; a 422's `fieldErrors` land on the cards. */
   onSave: (input: DocFeedUpdateInput) => Promise<void>;
 }
 
@@ -75,6 +81,7 @@ export function DocFeedConfigDialog({
   const stored = current.schedule ?? DEFAULT_DOC_FEED_SCHEDULE;
   const [schedule, setSchedule] = useState<DocFeedSchedule>(stored);
   const [saving, setSaving] = useState(false);
+  const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setConnectionId(current.connectionId);
@@ -113,7 +120,12 @@ export function DocFeedConfigDialog({
   async function submit() {
     setSaving(true);
     try {
+      setServerErrors({});
       await onSave({ connectionId, mode, schedule });
+    } catch (error) {
+      // The caller already toasted it; keep the dialog open with the
+      // server's per-field verdict next to the field (Entities parity).
+      setServerErrors(error instanceof ApiError ? readFieldErrors(error.detail) : {});
     } finally {
       setSaving(false);
     }
@@ -180,8 +192,12 @@ export function DocFeedConfigDialog({
             <ScheduleCadenceCards
               editing
               value={schedule}
-              onChange={(patch) => setSchedule((prev) => ({ ...prev, ...patch }))}
+              onChange={(patch) => {
+                setServerErrors({});
+                setSchedule((prev) => ({ ...prev, ...patch }));
+              }}
               hasWatermark={DOC_FEED_POLL_HAS_WATERMARK}
+              fieldErrors={serverErrors}
               nextIncrementalAt={armed ? (current.nextPollAt ?? null) : null}
               nextReconcileAt={armed ? (current.nextSweepAt ?? null) : null}
               incrementalTitle="Poll"

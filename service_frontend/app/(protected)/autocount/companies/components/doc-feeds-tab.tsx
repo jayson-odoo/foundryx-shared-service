@@ -119,6 +119,8 @@ export function DocFeedsTab({ companyId }: { companyId: string }) {
         await refreshAll();
       } catch (error) {
         toast.error(errorMessage(error, 'That could not be saved.'));
+        // Rethrown so the dialog stays open and shows any per-field 422.
+        throw error;
       }
     },
     [companyId, refreshAll],

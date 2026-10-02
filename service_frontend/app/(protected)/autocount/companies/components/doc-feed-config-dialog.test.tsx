@@ -147,4 +147,25 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
       schedule: { incrementalMinutes: 15, reconcileMode: 'interval', reconcileHours: 6, reconcileAt: null },
     });
   });
+
+  it('shows a server 422 fieldError on the cadence card and keeps the dialog open', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    const onSave = vi.fn().mockRejectedValue(
+      new ApiError('Enter the daily reconcile time as HH:MM.', 422, null, {
+        fieldErrors: { reconcileHours: 'Server says no.' },
+      }),
+    );
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{ connectionId: 'conn-1', mode: 'push', contractGate: null }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('doc-feed-config-save'));
+    expect(await screen.findByTestId('doc-feed-schedule-reconcile-hours-error')).toHaveTextContent('Server says no.');
+  });
 });

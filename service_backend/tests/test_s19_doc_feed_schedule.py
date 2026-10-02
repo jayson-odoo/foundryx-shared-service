@@ -1,8 +1,8 @@
 """sprint-5/19 - per-feed Document feed schedule (AC-19-01..09).
 
-Red-first: the `schedule` wire field, `ac_doc_feed.schedule_config`, and the
-beat honouring it do not exist yet. Same rules as the Entities ETL schedule
-(`etl_service.py` floors + `next_run_times`), with the no-watermark floor.
+Same rules as the Entities ETL schedule (`etl_service.py` floors +
+`next_run_times`); the poll runs on the with-watermark floor (1 minute, owner
+ruling Q1 on PR #110 - it reads `byLastModified`).
 """
 from __future__ import annotations
 
@@ -86,6 +86,22 @@ def test_null_schedule_beat_keeps_todays_60min_and_24h(session_factory):
     sweep_doc_feeds(db, now=NOW)
     db.refresh(feed)
     assert feed.next_poll_at == NOW + timedelta(minutes=60)
+
+
+def test_null_schedule_beat_rearms_the_sweep_24_hours_out(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = AcDocFeed(
+        tenant_id=co.tenant_id, company_id=co.id, feed="delivery_orders",
+        connection_id=ac_conn.id, book="db1", mode="push",
+        next_poll_at=NOW + timedelta(hours=1), next_sweep_at=NOW - timedelta(minutes=1),
+    )
+    db.add(feed)
+    db.commit()
+    assert feed.schedule_config is None
+    sweep_doc_feeds(db, now=NOW)
+    db.refresh(feed)
+    assert feed.next_sweep_at == NOW + timedelta(hours=24)
 
 
 # ── Group B - edit + validation ──────────────────────────────────────────────
