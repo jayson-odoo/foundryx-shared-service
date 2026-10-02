@@ -102,3 +102,22 @@ Round 2 notes:
 - F1 and F2 are closed; F3 (Edit/primary wrap at 375) and F4 (public footer reads "Foundryx") are unchanged.
 
 Round 2 counts: PASS 11, FAIL 0. Still DEFERRED: merged-child hide, embed routes in the browser, AC-19-35 security review.
+
+## Round 3 (HEAD 53c6a87f, frontend built from a refreshed scratch copy, evidence in `19-evidence/round3/`)
+
+| Check | Result | Evidence |
+|---|---|---|
+| Viewer (view + upvote only): no Edit, no `Move to`/Restore primary, 1280px and 375px (AC-19-46/49) | PASS | `01-viewer-idea-1280.png`, `06-viewer-idea-375.png` |
+| Viewer on an archived idea: no Edit, no Restore, no composer | PASS | `04-viewer-archived-1280.png`, `05-viewer-archived-375.png` |
+| Viewer: no composer, Reply, Edit or Delete on a thread | PASS | `01`, `03-viewer-voted-1280.png` |
+| Viewer: vote box still works | PASS | vote POST 200 at 1280 (`03`) and a toggle at 375 (`07-viewer-vote-375.png`); DB row confirmed |
+| Viewer: "..." menu has no Archive/Restore | PASS, with a polish finding | the menu opens with zero items (`02-viewer-menu-1280.png`); see F5 |
+| Demo (triage): Edit + `Move to` present; menu = Promote to BR, Archive, Delete | PASS | `08-demo-idea-1280.png`, `09-demo-menu-1280.png`; 375px `12-demo-idea-375.png`, `13-demo-menu-375.png` |
+| Demo on an archived idea: Edit + Restore | PASS | `14-demo-archived-375.png` |
+| Regression: comment + reply as demo, public page still loads the thread | PASS | `10-demo-comment-reply-1280.png` (reply has the top-level `parent_id` in psql), `11-public-thread-1280.png` (both new comments rendered, no errors) |
+| No horizontal scroll at 375px | PASS | viewer idea, viewer archived, demo menu |
+
+Round 3 counts: PASS 9, FAIL 0, one polish finding.
+
+- F5: a user with no idea actions still gets the "..." gear button, which opens an empty menu (`02-viewer-menu-1280.png`). Suggest hiding the trigger when the menu has no items.
+- Harness note: mid-run the daemon stopped delivering real mouse input (no pointer/click events reached the page, even after closing and reopening the session). For the remaining steps I fired the same DOM events from script (a click, or a pointerdown/up/click sequence for Radix triggers). Text entry used the normal fill. The vote, comment, reply and menu results above are real app behaviour (backend rows and POSTs confirmed), but the clicks were not physical mouse input.
