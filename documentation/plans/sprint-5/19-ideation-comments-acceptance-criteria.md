@@ -61,6 +61,8 @@ Product calls P1-P3 filed to the owner with recommendations; built on the recomm
 - **AC-19-41** [FE] The idea page primary actions (`Move to <X>`, `Restore`, `Unmerge`) show `toast.error(<message>)` when the call fails (403/409/network), never an unhandled rejection (review should-fix 4).
 - **AC-19-42** [T] `documentation/engineering/ideation-build-handoff.md` documents the linked-ideas line as `(+<up>)` (review should-fix 3).
 - **AC-19-43** [FE] Ideas list: the Votes column is the FIRST data column, left of Idea (mock v2 section 4), narrow (fits the sm box), so it is visible without horizontal scrolling at 1280px and 375px (browser pass F1/F2). The comment delete `AlertDialog` carries an `AlertDialogDescription` (no Radix a11y warning).
+- **AC-19-44** [BE] Comment bodies containing a lone UTF-16 surrogate (U+D800..U+DFFF) = 422 on operator, embed and public, never a 500; the public 422 does not burn throttle budget (security re-check R1).
+- **AC-19-45** [BE] The EMBED comment list applies the same public name projection as AC-19-32 (email/phone-shaped names -> `Portal user` / `Team member`); `isMine/canEdit/canDelete` unchanged. Operator lists keep the stored name (security re-check R2; product call filed, recommendation a).
 - Accepted risk (security review L1): the public throttle checks before the insert and records after, so a parallel burst on one token can exceed 5 by the burst size once per window; bounded by the window and the per-IP bucket. Recorded, not fixed.
 - Accepted risk (security review M2, P1 a): anyone holding the link posts as the submitter's first name with a `Submitter` badge; the token is the capability by owner ruling.
 
