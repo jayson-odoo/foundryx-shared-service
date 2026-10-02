@@ -27,13 +27,19 @@ import difflib
 import re
 from typing import List, Optional, Tuple
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
+from app.models.status import Status
+
 from ..db import IDEATION_SCHEMA
 from ..models import Idea
-from .statuses import initial_idea_status_id
+from .ownership import SubmitterIdentity, owned_filter
+from .statuses import IDEA_ENTITY, initial_idea_status_id
+
+# Own-similar lookup returns at most this many matches (SS-IDEATION-OWN).
+OWN_SIMILAR_LIMIT = 3
 
 # pg_trgm trigram-overlap score in [0, 1]; 0.3 is the pg_trgm default and a
 # sensible floor for "clearly the same idea, differently worded".
@@ -73,6 +79,63 @@ class DedupService:
         if self._is_postgres():
             return self._find_duplicate_pg(tenant_id, product_id, needle, exclude_id)
         return self._find_duplicate_fallback(tenant_id, product_id, needle, exclude_id)
+
+    def find_similar_own(
+        self,
+        tenant_id: str,
+        product_id: str,
+        text_: str,
+        ident: SubmitterIdentity,
+        limit: int = OWN_SIMILAR_LIMIT,
+    ) -> List[Tuple[str, float]]:
+        """The submitter's OWN live ideas in ``(tenant, product)`` similar to
+        ``text_`` - ``[(idea_id, score)]`` best first, at most ``limit``, at/above
+        the same threshold as :meth:`find_duplicate` (SS-IDEATION-OWN).
+
+        Ownership = :func:`ownership.owned_filter` (CRM user id or submitter
+        phone - never name; an empty identity matches nothing). "Live" = not a
+        draft (``is_initial``) and not archived/terminal (``is_archived``) -
+        decided by the status FLAGS, never by tenant-editable keys."""
+        needle = _normalize(text_)
+        if not needle or ident.is_empty:
+            return []
+        dead_ids = [
+            sid
+            for (sid,) in self.db.query(Status.id)
+            .filter(
+                Status.entity_type == IDEA_ENTITY,
+                (Status.is_initial.is_(True)) | (Status.is_archived.is_(True)),
+            )
+            .all()
+        ]
+        base = self.db.query(Idea).filter(
+            Idea.tenant_id == tenant_id, Idea.product_id == product_id
+        )
+        if dead_ids:
+            base = base.filter(~Idea.status_id.in_(dead_ids))
+        base = owned_filter(self.db, base, tenant_id, ident)
+
+        if self._is_postgres():
+            score = func.similarity(func.lower(Idea.problem), needle)
+            rows = (
+                base.with_entities(Idea.id, score.label("sim"))
+                .filter(score >= PG_SIMILARITY_THRESHOLD)
+                .order_by(score.desc(), Idea.id.asc())
+                .limit(limit)
+                .all()
+            )
+            return [(r[0], float(r[1])) for r in rows]
+
+        matcher = difflib.SequenceMatcher()
+        matcher.set_seq2(needle)
+        scored: List[Tuple[str, float]] = []
+        for cand_id, problem in base.with_entities(Idea.id, Idea.problem).all():
+            matcher.set_seq1(_normalize(problem or ""))
+            ratio = matcher.ratio()
+            if ratio >= FALLBACK_SIMILARITY_THRESHOLD:
+                scored.append((cand_id, ratio))
+        scored.sort(key=lambda t: (-t[1], t[0]))
+        return scored[:limit]
 
     # ── dialect detection ─────────────────────────────────────────────────────
     def _is_postgres(self) -> bool:

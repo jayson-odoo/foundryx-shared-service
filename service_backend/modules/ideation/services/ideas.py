@@ -17,6 +17,7 @@ from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaAttachment, IdeaVote
 from ..schemas import BoardColumnOut, BoardOut, IdeaAttachmentOut, IdeaOut
+from .ownership import SubmitterIdentity, owned_filter, owned_ids
 
 # Idea lifecycle keys whose statuses are "archived" (terminal off-ramps + closed).
 # The active board shows non-archived ideas; the archived filter shows the rest.
@@ -53,6 +54,7 @@ class IdeaReadService:
         contacts: Dict[str, Contact],
         my_votes: Optional[Dict[str, str]] = None,
         attachments: Optional[Dict[str, List[IdeaAttachmentOut]]] = None,
+        mine: Optional[set] = None,
     ) -> IdeaOut:
         product = products.get(idea.product_id)
         status = statuses.get(idea.status_id)
@@ -64,6 +66,7 @@ class IdeaReadService:
         idea_attachments = (attachments or {}).get(idea.id, [])
         return IdeaOut(
             id=idea.id,
+            number=idea.number,
             productId=idea.product_id,
             productName=product.name if product else "Unknown product",
             status=status.key if status else "draft",
@@ -79,6 +82,7 @@ class IdeaReadService:
             myVote=my_vote if my_vote in ("up", "down") else None,
             priority=idea.priority or 0,
             attachments=idea_attachments,
+            isMine=idea.id in (mine or set()),
             createdAt=idea.created_at,
         )
 
@@ -123,18 +127,40 @@ class IdeaReadService:
         return out
 
     def serialize_many(
-        self, ideas: List[Idea], voter_id: Optional[str] = None
+        self,
+        ideas: List[Idea],
+        voter_id: Optional[str] = None,
+        viewer: Optional[SubmitterIdentity] = None,
     ) -> List[IdeaOut]:
         products, statuses, contacts = self._resolve_maps(ideas)
         my_votes = self._my_votes(ideas, voter_id)
         attachments = self._attachments_by_idea(ideas)
+        mine = self._mine(ideas, viewer)
         return [
-            self._serialize(i, products, statuses, contacts, my_votes, attachments)
+            self._serialize(i, products, statuses, contacts, my_votes, attachments, mine)
             for i in ideas
         ]
 
-    def serialize_one(self, idea: Idea, voter_id: Optional[str] = None) -> IdeaOut:
-        return self.serialize_many([idea], voter_id)[0]
+    def serialize_one(
+        self,
+        idea: Idea,
+        voter_id: Optional[str] = None,
+        viewer: Optional[SubmitterIdentity] = None,
+    ) -> IdeaOut:
+        return self.serialize_many([idea], voter_id, viewer)[0]
+
+    def _mine(self, ideas: List[Idea], viewer: Optional[SubmitterIdentity]) -> set:
+        """Ids of ``ideas`` the viewer submitted (one query per tenant, no N+1).
+        No viewer (operator surface) = nothing is "mine"."""
+        if viewer is None or not ideas:
+            return set()
+        out: set = set()
+        by_tenant: Dict[str, List[str]] = {}
+        for i in ideas:
+            by_tenant.setdefault(i.tenant_id, []).append(i.id)
+        for tenant_id, ids in by_tenant.items():
+            out |= owned_ids(self.db, tenant_id, ids, viewer)
+        return out
 
     def _resolve_maps(self, ideas: List[Idea]):
         """Batch-load the cross-schema references for a set of ideas (no N+1)."""
@@ -163,6 +189,8 @@ class IdeaReadService:
         filter: str = "active",
         product_id: Optional[str] = None,
         voter_id: Optional[str] = None,
+        viewer: Optional[SubmitterIdentity] = None,
+        mine: bool = False,
     ) -> List[IdeaOut]:
         """Ideas for a tenant, newest first. ``search`` matches problem/raw_text
         (case-insensitive); ``filter`` = ``active`` (non-archived statuses) |
@@ -170,10 +198,14 @@ class IdeaReadService:
         single product - the canonical ideation scope (an idea belongs to a
         product, which belongs to a tenant). ``None`` = every product in the
         tenant (today's behaviour, unchanged). Always tenant-scoped first: the
-        product filter never widens visibility across tenants."""
+        product filter never widens visibility across tenants. ``mine=True``
+        narrows to the ``viewer``'s own ideas (no viewer identity = empty, never
+        "all"); ``viewer`` also drives each idea's ``isMine`` flag."""
         q = self.db.query(Idea).filter(Idea.tenant_id == tenant_id)
         if product_id:
             q = q.filter(Idea.product_id == product_id)
+        if mine:
+            q = owned_filter(self.db, q, tenant_id, viewer or SubmitterIdentity())
         if search:
             like = f"%{search.strip()}%"
             q = q.filter(Idea.problem.ilike(like) | Idea.raw_text.ilike(like))
@@ -193,13 +225,14 @@ class IdeaReadService:
                 q = q.filter(Idea.status_id.in_(archived_ids)) if archived_ids else q.filter(False)
 
         ideas = q.order_by(Idea.created_at.desc(), Idea.id.desc()).all()
-        return self.serialize_many(ideas, voter_id)
+        return self.serialize_many(ideas, voter_id, viewer)
 
     def board(
         self,
         tenant_id: str,
         voter_id: Optional[str] = None,
         product_id: Optional[str] = None,
+        viewer: Optional[SubmitterIdentity] = None,
     ) -> BoardOut:
         """The triage board (AC-A-33): ideas grouped into the board lifecycle
         columns in order, cards within a column ordered by priority ascending.
@@ -224,7 +257,7 @@ class IdeaReadService:
             q.order_by(Idea.priority.asc(), Idea.created_at.desc(), Idea.id.desc())
             .all()
         )
-        serialized = self.serialize_many(ideas, voter_id)
+        serialized = self.serialize_many(ideas, voter_id, viewer)
         grouped: Dict[str, List[IdeaOut]] = {k: [] for k, _ in BOARD_COLUMNS}
         for out in serialized:
             grouped.setdefault(out.status, []).append(out)
@@ -235,7 +268,13 @@ class IdeaReadService:
             ]
         )
 
-    def get(self, tenant_id: str, idea_id: str, voter_id: Optional[str] = None) -> IdeaOut:
+    def get(
+        self,
+        tenant_id: str,
+        idea_id: str,
+        voter_id: Optional[str] = None,
+        viewer: Optional[SubmitterIdentity] = None,
+    ) -> IdeaOut:
         idea = (
             self.db.query(Idea)
             .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
@@ -243,4 +282,4 @@ class IdeaReadService:
         )
         if idea is None:
             raise HTTPException(404, "Idea not found.")
-        return self.serialize_one(idea, voter_id)
+        return self.serialize_one(idea, voter_id, viewer)

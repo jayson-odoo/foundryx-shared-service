@@ -141,6 +141,17 @@ class Idea(IdeationBase):
     # the operator's name is stored directly here. The read serializer prefers
     # this when set, else derives the name from the linked contact (D-A4).
     submitter_name = Column(String, nullable=True)
+    # The submitter's CRM (host, e.g. sorento) user id - the ownership link for
+    # ``isMine`` / ``mine=true`` / own-similar (SS-IDEATION-OWN). Set by the
+    # one-shot chatbot create and the embed create (assertion ``sub``). Ownership
+    # is this OR the submitter contact's phone - NEVER the display name.
+    submitter_crm_user_id = Column(String, nullable=True, index=True)
+    # Human idea number from the core numbering engine (``idea_no``, default
+    # ``IDEA-0001``, per tenant). Assigned only when the idea becomes real
+    # (promotion / operator / embed / one-shot create) - drafts stay NULL so an
+    # abandoned draft never burns a number. Not UNIQUE: a tenant may re-seed the
+    # counter in Settings > Numbering; the id stays the identity.
+    number = Column(String, nullable=True, index=True)
     captured_json = Column(JSON, nullable=True)
     # Denormalized vote tallies, recomputed from ``idea_votes`` on every vote
     # (the source of truth is one row per voter). ``downvotes`` mirrors the FE

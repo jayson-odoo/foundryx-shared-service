@@ -77,6 +77,14 @@ class EmbedTokenPrincipal:
     product_id: Optional[str] = None
     sub: Optional[str] = None
     scope: str = "ideation"
+    # The viewing CRM user's phone (optional assertion claim) - a second
+    # ownership link for ``isMine`` (ideas sent from WhatsApp carry the phone).
+    phone: Optional[str] = None
+    name: Optional[str] = None
+    # Optional ``ideas_manage`` assertion claim. ``False`` = the viewer may only
+    # edit/move/delete/reorder their OWN ideas; ``True`` or absent (``None``) =
+    # unrestricted (legacy behaviour for hosts that do not send the claim).
+    ideas_manage: Optional[bool] = None
 
 
 def _now() -> datetime:
@@ -303,6 +311,15 @@ def verify_and_mint(
             "idea_id": idea_id,
             "email": claims.get("email"),
             "name": claims.get("name"),
+            # SS-IDEATION-OWN: the viewer's phone (ownership link) + the opt-in
+            # manage gate. Only a real bool is honoured for ``ideas_manage`` so a
+            # malformed claim can never be read as a grant or a lockout.
+            "phone": claims.get("phone") if isinstance(claims.get("phone"), str) else None,
+            "ideas_manage": (
+                claims.get("ideas_manage")
+                if isinstance(claims.get("ideas_manage"), bool)
+                else None
+            ),
             "scope": "ideation",
         },
         expires_minutes=EMBED_TOKEN_TTL_MINUTES,
@@ -344,4 +361,11 @@ def resolve_embed_token(db: Session, token: str) -> EmbedTokenPrincipal:
         product_id=payload.get("product_id"),
         sub=payload.get("sub"),
         scope=payload.get("scope") or "ideation",
+        phone=payload.get("phone") if isinstance(payload.get("phone"), str) else None,
+        name=payload.get("name") if isinstance(payload.get("name"), str) else None,
+        ideas_manage=(
+            payload.get("ideas_manage")
+            if isinstance(payload.get("ideas_manage"), bool)
+            else None
+        ),
     )

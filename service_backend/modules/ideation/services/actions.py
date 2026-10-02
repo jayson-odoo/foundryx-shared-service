@@ -22,6 +22,8 @@ from app.services.status_machine import (
 from ..models import Idea, IdeaVote
 from ..schemas import IdeaOut
 from .ideas import IdeaReadService
+from .numbering import ensure_idea_number
+from .ownership import SubmitterIdentity
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
 
 
@@ -62,6 +64,9 @@ class IdeaActionService:
         raw_text: str = "",
         source: str = "manual",
         actor: Optional[User] = None,
+        submitter_crm_user_id: Optional[str] = None,
+        submitter_name: Optional[str] = None,
+        viewer: Optional[SubmitterIdentity] = None,
     ) -> IdeaOut:
         """Operator-authored create (no draft/collect/confirm gate - an operator
         typing an idea IS deliberate). Validates the product, seeds the idea at the
@@ -98,17 +103,22 @@ class IdeaActionService:
             raw_text=raw_text,
             source=(source or "manual").strip() or "manual",
             submitter_contact_id=None,
-            submitter_name=(actor.name if actor else None),
+            submitter_name=(
+                (submitter_name or "").strip() or (actor.name if actor else None)
+            ),
+            submitter_crm_user_id=(submitter_crm_user_id or "").strip() or None,
             captured_json=captured,
         )
         self.db.add(idea)
         self.db.flush()
+        # Rides the caller's transaction - committed by the transition below.
+        ensure_idea_number(self.db, idea)
         captured_id = idea_status_id(self.db, "captured", tenant_id)
         status_machine.transition(
             self.db, IDEA_ENTITY, idea, captured_id, actor=actor, tenant_id=tenant_id
         )
         self.db.refresh(idea)
-        return self._reader.serialize_one(idea, actor.id if actor else None)
+        return self._reader.serialize_one(idea, actor.id if actor else None, viewer)
 
     def update_operator(
         self,

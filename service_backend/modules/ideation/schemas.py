@@ -30,6 +30,8 @@ class IdeaOut(ApiModel):
     surfaced for the FE contract but Phase A tracks upvotes only (D10)."""
 
     id: str
+    # Human idea number (``IDEA-0001``) - null while the idea is still a draft.
+    number: Optional[str] = None
     productId: str
     productName: str
     status: str
@@ -45,6 +47,10 @@ class IdeaOut(ApiModel):
     myVote: Optional[Literal["up", "down"]] = None
     priority: int
     attachments: List[IdeaAttachmentOut] = []
+    # Whether the VIEWING CRM user submitted this idea (embed surfaces only -
+    # matched by CRM user id or submitter phone, never by name). Always false on
+    # the operator surface, which has no CRM viewer identity.
+    isMine: bool = False
     createdAt: datetime
 
 
@@ -338,3 +344,35 @@ class CreateIdeaIn(ApiModel):
     fields: Optional[Dict[str, Any]] = None
     remove: Optional[List[str]] = None
     confirm: bool = False
+
+
+class OneShotIdeaIn(ApiModel):
+    """One-shot chatbot create (SS-IDEATION-OWN) - **snake_case**, server-to-server
+    like ``CreateIdeaIn``. The host has already collected + confirmed the fields,
+    so this creates a REAL idea (``captured``) in one call and returns its id +
+    number. ``submitter_crm_user_id`` is REQUIRED (only CRM users submit via the
+    chatbot; it is the ownership link for ``isMine``/own-similar);
+    ``submitter_phone`` (E.164) additionally links the WhatsApp contact copy."""
+
+    product_id: str
+    problem: str
+    proposed_solution: Optional[str] = None
+    impact: Optional[str] = None
+    department: Optional[str] = None
+    submitter_crm_user_id: Optional[str] = None
+    submitter_phone: Optional[str] = None
+    submitter_name: Optional[str] = None
+    raw_transcript: Optional[str] = None
+    attachments: Optional[List[CreateIdeaAttachmentIn]] = None
+    source: Optional[str] = None
+
+
+class SimilarOwnIn(ApiModel):
+    """Own-similar lookup (SS-IDEATION-OWN) - **snake_case**. ``text`` is the new
+    idea's problem text; identity = ``submitter_crm_user_id`` and/or
+    ``submitter_phone`` (at least one real one - never matched by name)."""
+
+    product_id: str
+    text: str = ""
+    submitter_crm_user_id: Optional[str] = None
+    submitter_phone: Optional[str] = None

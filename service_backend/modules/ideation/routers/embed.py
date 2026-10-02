@@ -48,6 +48,7 @@ from ..services.embed import (
     verify_and_mint,
 )
 from ..services.ideas import IdeaReadService
+from ..services.ownership import SubmitterIdentity, owned_ids
 
 router = APIRouter()
 
@@ -165,6 +166,34 @@ def _embed_voter_id(principal: EmbedTokenPrincipal) -> str:
     return f"embed:{principal.connection_id}"
 
 
+def _viewer(principal: EmbedTokenPrincipal) -> SubmitterIdentity:
+    """The viewing CRM user's ownership identity (SS-IDEATION-OWN): the assertion
+    ``sub`` (CRM user id) + the optional ``phone`` claim. Never the name."""
+    return SubmitterIdentity(crm_user_id=principal.sub, phone=principal.phone)
+
+
+def _mark_mine(db: Session, principal: EmbedTokenPrincipal, outs: List[IdeaOut]) -> List[IdeaOut]:
+    """Stamp ``isMine`` on write responses (the shared action service serializes
+    without a viewer). One ownership query for the whole batch."""
+    mine = owned_ids(db, principal.tenant_id, [o.id for o in outs], _viewer(principal))
+    return [o.model_copy(update={"isMine": o.id in mine}) for o in outs]
+
+
+def _assert_can_manage(
+    db: Session, principal: EmbedTokenPrincipal, idea_ids: List[str]
+) -> None:
+    """Owner rule (SS-IDEATION-OWN): when the host sent ``ideas_manage=false`` the
+    viewer may only edit / move / delete / reorder their OWN ideas - anything
+    else is 403. ``ideas_manage`` true or absent keeps today's behaviour."""
+    if principal.ideas_manage is not False:
+        return
+    mine = owned_ids(db, principal.tenant_id, idea_ids, _viewer(principal))
+    if any(i not in mine for i in idea_ids):
+        raise ApiError(
+            403, "not_owner", "You can only change ideas you submitted."
+        )
+
+
 def _assert_in_scope(
     db: Session, principal: EmbedTokenPrincipal, idea_id: str
 ) -> IdeaOut:
@@ -173,7 +202,12 @@ def _assert_in_scope(
     (``principal.product_id`` set) an idea in the same tenant but a DIFFERENT
     product is denied (404) - never mutated, never leaked (AC-CAP-11). When the
     connection is tenant-only (no product), tenant scope is the whole guard."""
-    idea = IdeaReadService(db).get(principal.tenant_id, idea_id, voter_id=None)
+    idea = IdeaReadService(db).get(
+        principal.tenant_id,
+        idea_id,
+        voter_id=_embed_voter_id(principal),
+        viewer=_viewer(principal),
+    )
     if principal.product_id and idea.productId != principal.product_id:
         raise ApiError(404, "not_found", "Idea not found.")
     return idea
@@ -183,6 +217,7 @@ def _assert_in_scope(
 def embed_list_ideas(
     search: Optional[str] = None,
     filter: str = "active",
+    mine: bool = False,
     principal: EmbedTokenPrincipal = Depends(require_embed_principal),
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
@@ -190,13 +225,17 @@ def embed_list_ideas(
     ``IdeaReadService`` - the tenant AND product come from the TOKEN, so a token
     for tenant A / product X can never read tenant B or another product
     (AC-E-8/12). ``product_id=None`` (unscoped connection) falls back to
-    tenant-only (today's behaviour)."""
+    tenant-only (today's behaviour). ``mine=true`` narrows to the viewing CRM
+    user's own ideas (CRM user id or phone claim - never name; no identity =
+    empty list). Every idea carries ``isMine`` for the viewer."""
     return IdeaReadService(db).list(
         principal.tenant_id,
         search=search,
         filter=filter,
         product_id=principal.product_id,
         voter_id=_embed_voter_id(principal),
+        viewer=_viewer(principal),
+        mine=mine,
     )
 
 
@@ -212,6 +251,7 @@ def embed_get_board(
         principal.tenant_id,
         voter_id=_embed_voter_id(principal),
         product_id=principal.product_id,
+        viewer=_viewer(principal),
     )
 
 
@@ -232,14 +272,15 @@ def embed_reorder_ideas(
     voter_id = _embed_voter_id(principal)
     for idea_id in body.orderedIds:
         _assert_in_scope(db, principal, idea_id)
+    _assert_can_manage(db, principal, list(body.orderedIds))
     ordered = IdeaActionService(db).reorder(
         principal.tenant_id, body.orderedIds, voter_id=voter_id
     )
     # Only surface the connection's product in the response (the service returns
     # every tenant idea by priority - filter so an unscoped column never leaks).
     if principal.product_id:
-        return [o for o in ordered if o.productId == principal.product_id]
-    return ordered
+        ordered = [o for o in ordered if o.productId == principal.product_id]
+    return _mark_mine(db, principal, ordered)
 
 
 @router.post("/ideas", response_model=IdeaOut, status_code=status.HTTP_201_CREATED)
@@ -267,6 +308,10 @@ def embed_create_idea(
         raw_text=body.rawText,
         source=(body.source or "embed"),
         actor=None,
+        # The viewing CRM user is the submitter (ownership link for isMine).
+        submitter_crm_user_id=principal.sub,
+        submitter_name=principal.name,
+        viewer=_viewer(principal),
     )
 
 
@@ -293,7 +338,8 @@ def embed_update_idea(
     the idea's product is NOT reassignable via the embed (``productId`` in the
     body is ignored) so an idea can never be moved out of the connection's scope."""
     _assert_in_scope(db, principal, idea_id)
-    return IdeaActionService(db).update_operator(
+    _assert_can_manage(db, principal, [idea_id])
+    out = IdeaActionService(db).update_operator(
         principal.tenant_id,
         idea_id,
         product_id=None,  # embed never reassigns the product (scope integrity)
@@ -304,6 +350,7 @@ def embed_update_idea(
         raw_text=body.rawText,
         voter_id=_embed_voter_id(principal),
     )
+    return _mark_mine(db, principal, [out])[0]
 
 
 @router.post("/ideas/{idea_id}/vote", response_model=IdeaOut)
@@ -316,9 +363,10 @@ def embed_vote_idea(
     """Toggle the connection's vote on an idea (one synthetic voter per
     connection). Scoped to tenant+product (404 otherwise)."""
     _assert_in_scope(db, principal, idea_id)
-    return IdeaActionService(db).vote(
+    out = IdeaActionService(db).vote(
         principal.tenant_id, idea_id, _embed_voter_id(principal), body.dir
     )
+    return _mark_mine(db, principal, [out])[0]
 
 
 @router.post("/ideas/{idea_id}/status", response_model=IdeaOut)
@@ -332,13 +380,15 @@ def embed_set_idea_status(
     moves refused, 409). Scoped to tenant+product (404 otherwise). ``actor=None``
     - there is no operator user in the iframe."""
     _assert_in_scope(db, principal, idea_id)
-    return IdeaActionService(db).set_status(
+    _assert_can_manage(db, principal, [idea_id])
+    out = IdeaActionService(db).set_status(
         principal.tenant_id,
         idea_id,
         body.status,
         actor=None,
         voter_id=_embed_voter_id(principal),
     )
+    return _mark_mine(db, principal, [out])[0]
 
 
 @router.delete("/ideas/{idea_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -351,5 +401,6 @@ def embed_delete_idea(
     tenant+product - a delete targeting another product is denied (404) before
     any row is touched."""
     _assert_in_scope(db, principal, idea_id)
+    _assert_can_manage(db, principal, [idea_id])
     IdeaActionService(db).delete(principal.tenant_id, idea_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

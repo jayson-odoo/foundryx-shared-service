@@ -106,6 +106,12 @@ def register_engine_entities() -> None:
 
     register_idea_to_br_grill()
 
+    # Human idea number (SS-IDEATION-OWN) - the ``idea_no`` sequence on the core
+    # numbering engine, module-tagged so it is visible only while ideation is on.
+    from .services.numbering import register_idea_numbering
+
+    register_idea_numbering()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""

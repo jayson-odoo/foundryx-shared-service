@@ -69,4 +69,8 @@ def ideation_on_complete_sink(
         status_machine.transition(
             db, IDEA_ENTITY, idea, captured_id, actor=None, tenant_id=tenant_id, commit=False
         )
+    # The idea is real now - give it its human number (once; idempotent).
+    from .numbering import ensure_idea_number
+
+    ensure_idea_number(db, idea)
     return mint_idea_link(db, idea)

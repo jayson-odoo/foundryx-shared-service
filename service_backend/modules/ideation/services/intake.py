@@ -15,17 +15,21 @@ State machine (deterministic):
 - ``complete`` - ``missing == []`` AND ``confirm == true``; the ``on_complete_sink``
   moves ``draft -> captured`` (once, idempotent) and mints the link (AC-A-20).
 """
+from datetime import timezone
 from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.models.catalog import Product
+from app.models.status import Status
 from app.services import status_machine
 from modules.omnichannel.models import Contact, Workspace
 
 from ..models import Idea, IdeaAttachment, IdeaVote
 from .dedup import DedupService
+from .numbering import ensure_idea_number
+from .ownership import SubmitterIdentity, phone_variants
 from .intake_definitions import (
     IDEATION_FIELD_LABELS,
     IDEATION_INTAKE_KEY,
@@ -33,6 +37,8 @@ from .intake_definitions import (
 )
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
+
+_ONE_SHOT_FIELDS = ("proposed_solution", "impact", "department")
 
 
 class IntakeService:
@@ -164,7 +170,174 @@ class IntakeService:
             "missing": missing,
             "reply_text": _reply_complete(link),
             "link": link,
+            "number": idea.number,
         }
+
+    # ── one-shot create (SS-IDEATION-OWN) ─────────────────────────────────────
+    def create_one_shot(
+        self,
+        tenant_id: str,
+        *,
+        product_id: str,
+        problem: str,
+        submitter_crm_user_id: Optional[str],
+        proposed_solution: Optional[str] = None,
+        impact: Optional[str] = None,
+        department: Optional[str] = None,
+        submitter_phone: Optional[str] = None,
+        submitter_name: Optional[str] = None,
+        raw_transcript: Optional[str] = None,
+        attachments: Optional[List[Dict[str, object]]] = None,
+        source: Optional[str] = None,
+    ) -> dict:
+        """Create a REAL idea in one call - the chatbot has already collected and
+        confirmed the fields host-side, so there is no draft/collect/confirm loop
+        here (that flow stays on ``create_idea``). The idea lands at ``captured``
+        via the status engine, gets its number, and the sender is linked by CRM
+        user id (required - only CRM users may submit via the chatbot) and, when
+        given, by phone (find-or-create contact copy). No cross-submitter dedup:
+        the host runs :meth:`similar_own` first and lets the sender decide.
+        Returns ``{idea_id, number, status, link}``."""
+        crm_user_id = (submitter_crm_user_id or "").strip()
+        if not crm_user_id:
+            raise ApiError(
+                422, "submitter_required", "submitter_crm_user_id is required."
+            )
+        problem = (problem or "").strip()
+        if not problem:
+            raise ApiError(422, "problem_required", "problem is required.")
+        self._product_or_404(tenant_id, product_id)
+        contact_id = self._resolve_submitter_phone(tenant_id, submitter_phone)
+
+        captured: Dict[str, object] = {"problem": problem}
+        values = {
+            "proposed_solution": proposed_solution,
+            "impact": impact,
+            "department": department,
+        }
+        for key in _ONE_SHOT_FIELDS:
+            value = (values[key] or "").strip()
+            if value:
+                captured[key] = value
+        transcript = (raw_transcript or "").strip()
+        idea = Idea(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            status_id=initial_idea_status_id(self.db, tenant_id),
+            intake_definition_key=IDEATION_INTAKE_KEY,
+            problem=problem,
+            raw_text=transcript or problem,
+            source=(source or "").strip() or "whatsapp",
+            submitter_contact_id=contact_id,
+            submitter_crm_user_id=crm_user_id,
+            submitter_name=(submitter_name or "").strip() or None,
+            captured_json=captured,
+        )
+        sync_idea_columns_from_captured(idea)
+        self.db.add(idea)
+        self.db.flush()
+        self._persist_attachments(tenant_id, idea, attachments)
+
+        captured_id = idea_status_id(self.db, "captured", tenant_id)
+        status_machine.transition(
+            self.db, IDEA_ENTITY, idea, captured_id, actor=None,
+            tenant_id=tenant_id, commit=False,
+        )
+        ensure_idea_number(self.db, idea)
+        link = mint_idea_link(self.db, idea)
+        self.db.commit()
+        return {
+            "idea_id": idea.id,
+            "number": idea.number,
+            "status": "captured",
+            "link": link,
+        }
+
+    def similar_own(
+        self,
+        tenant_id: str,
+        *,
+        product_id: str,
+        text_: str,
+        submitter_crm_user_id: Optional[str] = None,
+        submitter_phone: Optional[str] = None,
+    ) -> dict:
+        """The sender's OWN live ideas similar to ``text_`` (top 3). Identity =
+        CRM user id and/or phone - at least one must be real (422 otherwise, so
+        a missing identity can never fall back to name or to "everyone")."""
+        ident = SubmitterIdentity(
+            crm_user_id=submitter_crm_user_id, phone=submitter_phone
+        )
+        if ident.is_empty:
+            raise ApiError(
+                422,
+                "submitter_required",
+                "submitter_crm_user_id or a valid submitter_phone is required.",
+            )
+        self._product_or_404(tenant_id, product_id)
+        hits = self._dedup.find_similar_own(tenant_id, product_id, text_, ident)
+        if not hits:
+            return {"matches": []}
+        ideas = {
+            i.id: i
+            for i in self.db.query(Idea)
+            .filter(Idea.tenant_id == tenant_id, Idea.id.in_([h[0] for h in hits]))
+            .all()
+        }
+        status_keys = {
+            s.id: s.key
+            for s in self.db.query(Status)
+            .filter(Status.id.in_({i.status_id for i in ideas.values()}))
+            .all()
+        }
+        matches = []
+        for idea_id, score in hits:
+            idea = ideas.get(idea_id)
+            if idea is None:  # pragma: no cover - same-tenant by construction
+                continue
+            matches.append(
+                {
+                    "idea_id": idea.id,
+                    "number": idea.number,
+                    "problem": idea.problem,
+                    "status": status_keys.get(idea.status_id, ""),
+                    "similarity": round(score, 3),
+                    "created_at": _iso_z(idea.created_at),
+                    "link": mint_idea_link(self.db, idea),
+                }
+            )
+        return {"matches": matches}
+
+    def _product_or_404(self, tenant_id: str, product_id: str) -> Product:
+        product = (
+            self.db.query(Product)
+            .filter(Product.id == product_id, Product.tenant_id == tenant_id)
+            .first()
+        )
+        if product is None:
+            raise ApiError(404, "unknown_product", "product_id does not resolve to a product for this workspace.")
+        return product
+
+    def _resolve_submitter_phone(
+        self, tenant_id: str, phone: Optional[str]
+    ) -> Optional[str]:
+        """Phone → this tenant's contact copy (matched across ``+``/digit-only
+        spellings; created as ``+<digits>`` when absent). ``None`` when no phone
+        was supplied; 422 when one was supplied but is not a real number."""
+        if phone is None or not phone.strip():
+            return None
+        variants = phone_variants(phone)
+        if not variants:
+            raise ApiError(422, "invalid_phone", "submitter_phone is not a valid phone number.")
+        existing = (
+            self.db.query(Contact)
+            .filter(Contact.tenant_id == tenant_id, Contact.phone.in_(variants))
+            .order_by(Contact.id.asc())
+            .first()
+        )
+        if existing is not None:
+            return existing.id
+        return self._resolve_submitter(tenant_id, variants[0])
 
     # ── internals ─────────────────────────────────────────────────────────────
     def _is_draft(self, idea: Idea) -> bool:
@@ -409,7 +582,17 @@ class IntakeService:
             "missing": missing,
             "reply_text": _reply_complete(link),
             "link": link,
+            "number": idea.number,
         }
+
+
+def _iso_z(dt) -> Optional[str]:
+    """Aware-UTC datetime → ISO-8601 with a ``Z`` suffix (wire convention)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 # ── deterministic reply_text templates (no LLM, D20) ──────────────────────────
