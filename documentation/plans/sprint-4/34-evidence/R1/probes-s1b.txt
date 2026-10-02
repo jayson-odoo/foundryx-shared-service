@@ -1,0 +1,7 @@
+=== S1(b) POST /messages {hp:1} ===
+{"error":{"code":"invalid_request","message":"Request body is not valid.","details":{"fieldErrors":{"hp":"Input should be a valid string"}}}}
+HTTP_STATUS:422
+
+=== S1(c) POST /messages {text:[]} ===
+{"error":{"code":"invalid_request","message":"Request body is not valid.","details":{"fieldErrors":{"text":"Input should be a valid string"}}}}
+HTTP_STATUS:422

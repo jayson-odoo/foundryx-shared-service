@@ -16,7 +16,6 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
-    // Playwright specs live in e2e/ and run with their own runner.
-    exclude: ['e2e/**', 'node_modules/**', '.next/**'],
+    exclude: ['node_modules/**', '.next/**'],
   },
 });

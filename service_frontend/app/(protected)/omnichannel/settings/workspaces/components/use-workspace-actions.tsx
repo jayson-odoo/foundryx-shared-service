@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Pencil, RotateCcw, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { workspaceService } from '@/services/workspace-service';
 import type { Workspace } from '@/types/omnichannel';
@@ -36,17 +36,10 @@ export function useWorkspaceActions(): ResourceAction<Workspace>[] {
         permission: 'workspaces.manage',
         surfaces: { row: true, bulk: true, form: true },
         isVisible: (rows) => rows.length > 0 && rows.every((r) => !r.isDefault && !r.isTrashed),
-        confirm: {
-          title: 'Move to trash?',
-          description:
-            'The selected workspace(s) will be moved to the trash. Channels and contacts in them become inaccessible until restored.',
-          confirmLabel: 'Trash',
-        },
-        run: async (rows, rt) => {
-          await workspaceService.trash(ids(rows));
-          toast.success(`Moved ${rows.length} workspace(s) to trash.`);
-          rt.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `workspaces.trash`
+        // handler commits it server-side).
+        deferred: { actionKey: 'workspaces.trash', entityType: 'workspace' },
       },
       {
         id: 'restore',

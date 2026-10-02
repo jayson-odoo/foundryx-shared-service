@@ -553,7 +553,7 @@ export function TransitionDrawer({
               )}
             </div>
             <Button onClick={() => void save()} disabled={saving}>
-              {transition ? 'Save' : 'Create transition'}
+              {transition ? 'Save transition' : 'Create transition'}
             </Button>
           </div>
         )}

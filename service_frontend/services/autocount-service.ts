@@ -1,37 +1,67 @@
 /**
  * AutoCount ESB service (sprint-4/13, slice 1) - the boundary the
  * `/autocount/*` surfaces talk to via hooks. The interface IS the backend
- * contract: `modules/autocount/routers/{companies,sync}.py`.
+ * contract: `modules/autocount/routers/{companies,sync,pull}.py`.
  *
- * The shipped binding is `.real` - the backend is live. A `.mock` sibling
- * exists ONLY as frontend-first scaffolding for the dry-run review states
- * (previewable / not-previewable / failure) and the Vitest suite; flip the
- * export at the bottom to `mockAutocountService` to build against it, back to
- * `.real` to ship (the house service-trio pattern).
+ * The shipped binding is the BARE `.real` service - the whole surface,
+ * including the human-invoked pull surface (delivery mode, pull API keys,
+ * snapshots - sprint-5/10 S6 phase 2 swap), is backed by FastAPI end to end.
+ * A `.mock` sibling also exists as frontend-first scaffolding for the dry-run
+ * review states (previewable / not-previewable / failure) and the Vitest
+ * suite (the house service-trio pattern).
  *
  * Permission gates (module CSV, granted to tenant Admin by `AppStoreService`
- * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`.
+ * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`,
+ * `autocount.pull.read/manage`.
  */
 import type {
+  AutocountApiConnection,
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountDeliveryMode,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
+  AutocountEtlRepushResult,
+  AutocountEtlRunStart,
+  AutocountEtlTask,
+  AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
+  AutocountMappingPreset,
+  AutocountMappingResetPreview,
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
+  AutocountPreviewJob,
+  AutocountPreviewJobStart,
+  AutocountPreviewJobStartInput,
   AutocountPreviewResult,
+  AutocountPullApiKey,
+  AutocountPullApiKeyCreateInput,
+  AutocountPullApiKeyIssued,
+  AutocountPullSnapshot,
+  AutocountPullSnapshotRowsPage,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
+  AutocountSqlConnection,
+  AutocountSqlPreview,
+  AutocountSqlSchema,
   AutocountStagedList,
   AutocountStagedQuery,
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  DocFeedBackfill,
+  DocFeedBackfillStartInput,
+  DocFeedIssue,
+  DocFeedItem,
+  DocFeedKey,
+  DocFeedRun,
+  DocFeedRunInput,
+  DocFeedsView,
+  DocFeedUpdateInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import { realAutocountService } from './autocount-service.real';
@@ -41,6 +71,18 @@ export interface AutocountListQuery {
   pageSize?: number;
 }
 
+/** `GET .../doc-feeds/{companyId}/runs` query (D17). */
+export interface DocFeedRunsQuery extends AutocountListQuery {
+  feed?: DocFeedKey;
+}
+
+/** `GET .../doc-feeds/{companyId}/issues` query (D17). */
+export interface DocFeedIssuesQuery extends AutocountListQuery {
+  feed?: DocFeedKey;
+  kind?: 'retryable' | 'failed';
+  search?: string;
+}
+
 export interface AutocountService {
   /** Paginated companies (`GET /autocount/companies`). */
   listCompanies(query?: AutocountListQuery): Promise<ListResult<AutocountCompany>>;
@@ -48,15 +90,23 @@ export interface AutocountService {
   getCompany(id: string): Promise<AutocountCompanyDetail>;
   /**
    * Register a company by DISCOVERING it from its connection
-   * (`POST /autocount/companies`). The backend signs in and reads the company
-   * name back - there is deliberately no company field to supply.
+   * (`POST /autocount/companies`) - there is deliberately no company field to
+   * supply. The backend branches on the connection's PROVIDER (plan sprint-5/01,
+   * AC-01-01): an `autocount` connection signs in and reads the company name
+   * back; a `sql_database` connection derives the identity from its
+   * `config.database`, verified by a live probe. 409 names the company already
+   * holding the database/connection; 422 `{fieldErrors: {connectionId}}` is a
+   * probe mismatch / connect failure. Every `CompanyItem` carries the derived
+   * `sourceKind` + (detail only) `documentPrerequisites` - LIVE since S2
+   * (`modules/autocount/schemas.py CompanyItem`; the mock's "DB-only company
+   * fixtures" block is the same contract, kept as the Vitest double).
    */
   createCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany>;
   /**
    * Adjust one entity's sync configuration
    * (`PATCH /autocount/companies/{id}/entities/{entityType}`). Narrow by
-   * design - the initial lookback window only, and changing it re-fetches
-   * nothing.
+   * design - the initial lookback window, and (plan 22 S2) the `sourceImpl`
+   * switch between the API path and the DB task.
    */
   updateEntityConfig(
     companyId: string,
@@ -110,7 +160,9 @@ export interface AutocountService {
   /**
    * Point a company at a push target
    * (`PATCH /autocount/companies/{id}/sink-target`). `logging` clears the
-   * target; `sorento` requires a `sinkConnectionId`.
+   * target; `sorento` requires a `sinkConnectionId` AND (plan 22 S2, Appendix
+   * A6) a `sorentoCompanyCode` - the company anchor Sorento demands on every
+   * call; blank with `sorento` = 422 `{fieldErrors: {sorentoCompanyCode}}`.
    */
   updateSinkTarget(
     companyId: string,
@@ -148,15 +200,478 @@ export interface AutocountService {
   /**
    * Run the REAL MappingEngine over a MOCK AutoCount record
    * (`POST .../mapping/simulate`, AC-16-30) → the projected Sorento record +
-   * per-field results. `rows` (optional) previews UNSAVED draft edits. Writes
-   * NOTHING - pure transform preview, distinct from the slice-14 Sorento dry-run.
+   * per-field results. `rows` (optional) previews UNSAVED draft edits (now
+   * scope-tagged, sprint-5/02). `lines` (sprint-5/02, AC-02-22) - a document
+   * entity's fetched line records for the picked header (the caller fetches
+   * them itself via `previewSqlQuery`/`useLineFetcher`, bound to the header's
+   * `:doc_key` - the backend does the equivalent through
+   * `SqlDbSource._read_lines`). Writes NOTHING - pure transform preview,
+   * distinct from the slice-14 Sorento dry-run.
    */
   simulateMapping(
     companyId: string,
     entityType: string,
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
+    lines?: Array<Record<string, unknown>>,
   ): Promise<AutocountSimulateResult>;
+
+  // ── direct-DB ETL (plan 22, slice S1 - AC-22-04..07/11) ────────────────────
+  //
+  // BACKEND CONTRACT (LIVE - `modules/autocount/routers/sql.py`,
+  // `.../companies.py`, `.../schemas.py`):
+  //
+  //   GET  /autocount/sql/connections
+  //        → AutocountSqlConnection[]  (tenant's `sql_database` connections
+  //          ONLY - resolved tenant+provider scoped, never bare get-by-id).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET  /autocount/sql/connections/{connectionId}/schema[?refresh=true]
+  //        → AutocountSqlSchema  (schemas → tables → columns via dialect-
+  //          agnostic introspection; CACHED per connection server-side,
+  //          `refresh=true` busts the cache - AC-22-05). A connection that is
+  //          not the tenant's / not `sql_database` = 404. A connect failure =
+  //          502 with a SANITIZED message (no credentials, no DSN, no raw
+  //          driver stack - AC-22-30).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   POST /autocount/sql/preview  {connectionId, query}
+  //        → AutocountSqlPreview  (≤ 100 rows, dialect-appropriate wrapping,
+  //          column names + types - AC-22-06). Non-SELECT / multi-statement =
+  //          422 BEFORE touching the source (AC-22-03); a failing query = 400
+  //          with the DB error sanitized; a bounded per-query timeout applies.
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET  /autocount/companies/{id}/entities/{entityType}/etl-task
+  //        → AutocountEtlTask  (anchored on `ac_entity_config.source_config`;
+  //          a never-configured entity returns a DRAFT task with defaults, not
+  //          a 404 - the editor is the create surface).
+  //        Gated `autocount.companies.read`.
+  //
+  //   PUT  /autocount/companies/{id}/entities/{entityType}/etl-task
+  //        {sourceConfig} → AutocountEtlTask  (draft save - replaces the
+  //          source config). Validation (AC-22-11): provided key/watermark/
+  //          compared columns must exist in a fresh preview's result columns
+  //          and the watermark must be orderable → 422 {fieldErrors}; empty
+  //          keyColumns is allowed while `etlStatus === 'draft'` (activation,
+  //          S2, is the hard gate). `connectionId` is re-validated against the
+  //          tenant on every use.
+  //        Gated `autocount.companies.manage`.
+
+  /** The tenant's SQL-database connections the task editor may pick from. */
+  listSqlConnections(): Promise<AutocountSqlConnection[]>;
+  /** Cached schema tree for one connection; `refresh` busts the cache. */
+  getSqlSchema(
+    connectionId: string,
+    opts?: { refresh?: boolean },
+  ): Promise<AutocountSqlSchema>;
+  /**
+   * Run a candidate SELECT against the source, capped at 100 rows.
+   *
+   * `opts.bindDocKey` (plan 22 S5) - previewing a document's `lineQuery`
+   * (which carries a `:doc_key` bound param): `true` binds `opts.docKey`
+   * (a harmless sample, or `null`/omitted for a NULL bind - just enough to
+   * let the query execute for column discovery). Omitted/`false` runs the
+   * query exactly as before.
+   */
+  previewSqlQuery(
+    connectionId: string,
+    query: string,
+    opts?: { bindDocKey?: boolean; docKey?: string | null },
+  ): Promise<AutocountSqlPreview>;
+  /** One entity's DB extraction task (draft defaults when unconfigured). */
+  getEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** Draft-save the task's source config (422 {fieldErrors} on bad columns). */
+  updateEtlTask(
+    companyId: string,
+    entityType: string,
+    input: AutocountEtlTaskUpdate,
+  ): Promise<AutocountEtlTask>;
+
+  // ── direct-DB ETL (plan 22, slice S2 - AC-22-08..11/17/18/19, Appendix A6) ──
+  //
+  // BACKEND CONTRACT (LIVE - `modules/autocount/routers/companies.py`,
+  // `.../schemas.py`). Additions to EXISTING routes first:
+  //
+  //   PATCH /autocount/companies/{id}/entities/{entityType}
+  //        body gains `sourceImpl: 'autocount_read' | 'sql_db'` (AC-22-08).
+  //        Switching keeps the task's `source_config` (a configured query is
+  //        never discarded); switching an ACTIVE task to `autocount_read`
+  //        pauses it (never left auto-pushing under a source that no longer
+  //        runs it). Unknown value = 422.
+  //
+  //   PATCH /autocount/companies/{id}/sink-target
+  //        body gains `sorentoCompanyCode` (→ `ac_company.sorento_company_code`,
+  //        new column, backfill NULL). REQUIRED with `sinkImpl='sorento'`
+  //        (422 `{fieldErrors: {sorentoCompanyCode}}`); stored trimmed; nulled
+  //        with `logging`. `CompanyItem` echoes it as `sorentoCompanyCode`.
+  //        `SorentoSink` sends it as the top-level `companyCode` on EVERY call.
+  //
+  //   GET/PUT .../etl-task  →  AutocountEtlTask gains (all read-only on the wire):
+  //        `resultColumns[]` (the validation preview's column names, stored
+  //        at PUT), `lastPreviewAt` (stamped by a completed dry run, CLEARED
+  //        by every PUT), `lastRunAt`, `lastRunError`, `lastRunErrorCode`
+  //        (the task-level error of the latest run - anchor 422s land here,
+  //        never per record).
+  //
+  //   GET/PUT .../etl-task (plan 22 S3, AC-22-12..17) → AutocountEtlTask ALSO
+  //        carries `nextIncrementalAt`/`nextReconcileAt` (read-only, recomputed
+  //        by every PUT/activate/resume - `EtlService.next_run_times` computes
+  //        + stores them server-side, `EtlTaskResponse` carries them on the
+  //        wire). The schedule fields themselves (`incrementalMinutes`/
+  //        `reconcileMode`/`reconcileHours`/`reconcileAt`) round-trip through
+  //        the existing PUT + its 422 fieldErrors.
+  //
+  //   GET  /autocount/companies/{id}/runs  →  AutocountSyncRun gains the §2.7
+  //        cost columns `mode`, `rowsScanned`, `addedCount`, `updatedCount`,
+  //        `deletedCount`, `durationMs`, `skipReason` (API-path runs report
+  //        `mode='manual'`, zero deletes). `jobId` becomes nullable (skipped).
+  //
+  // New routes (all under /autocount/companies/{id}/entities/{entityType}/etl-task):
+  //
+  //   POST .../preview  - sprint-5/11 S4 replaced this synchronous shape
+  //        with the `autocount_source_preview` job's own `startPreviewJob`/
+  //        `getPreviewJob` surface below (`scope: 'full'`); no method here
+  //        calls it directly anymore (review round 2, item 6).
+  //
+  //   POST .../activate
+  //        → AutocountEtlTask  (`draft|paused` → `active`, `activatedAt`
+  //          stamped, next-run times armed). 409 unless `lastPreviewAt` is set
+  //          (AC-22-18 - the gate is server-side too) or the company has no
+  //          Sorento company code.
+  //        Gated `autocount.companies.manage`.
+  //
+  //   POST .../pause    → AutocountEtlTask  (`active` → `paused`; sweep stops
+  //          dispatching, in-flight runs finish; 409 unless active).
+  //   POST .../resume   → AutocountEtlTask  (`paused` → `active`, NO
+  //          re-preview needed - AC-22-19; 409 unless paused).
+  //        Both gated `autocount.companies.manage`.
+  //
+  //   POST .../run
+  //        → AutocountEtlRunStart  (enqueue ONE `autocount_sync` job with
+  //          `mode='manual'` - the same pipeline the sweep uses; eager inline
+  //          in dev so `task` comes back refreshed). 409 unless `active`, or
+  //          while a run for this (company, entity) is still executing.
+  //        Gated `autocount.sync.run`.
+  //
+  //   GET  .../runs?page=&page_size=
+  //        → ListResult<AutocountSyncRun>  (this entity's history, newest
+  //          first, page_size ≤ 200; skipped ticks included with `skipReason`).
+  //        Gated `autocount.sync.read`.
+
+  /** The activate-once gate: draft/paused → active (409 without a preview). */
+  activateEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** active → paused (in-flight runs finish). */
+  pauseEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** paused → active, no re-activation ceremony. */
+  resumeEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
+  /** Enqueue a manual run now (active tasks only). */
+  runEtlTaskNow(companyId: string, entityType: string): Promise<AutocountEtlRunStart>;
+  /** This entity's run history, newest first. */
+  listEtlRuns(
+    companyId: string,
+    entityType: string,
+    query?: AutocountListQuery,
+  ): Promise<ListResult<AutocountSyncRun>>;
+
+  // ── "Re-push all" (plan sprint-5/07, AC-07-13..24) ─────────────────────────
+  //
+  // BACKEND CONTRACT (LIVE - `modules/autocount/routers/companies.py`,
+  // `.../schemas.py`):
+  //
+  //   POST /autocount/companies/{companyId}/entities/{entityType}/etl-task/repush
+  //        → 200 AutocountEtlRepushResult {clearedCount, nextReconcileAt, status}
+  //          - clears EVERY tracked row (`ac_row_hash`) for this (tenant,
+  //          company, entityType) ONLY; `ac_doc_fingerprint`/the watermark are
+  //          untouched. An `active` task gets `next_reconcile_at = now(utc)`
+  //          (the next sweep claims a reconcile - `nextReconcileAt` echoes
+  //          it); a `paused` task's stays `null` (nothing scheduled until
+  //          resumed) - AC-07-14/15.
+  //        → 409 (nothing deleted), body `{detail, message}` where `detail`
+  //          is a PLAIN STRING for a draft task ("Activate the task first -
+  //          a draft has nothing to re-push.") or a non-database task
+  //          ("Re-push applies to database tasks only."), and the OBJECT
+  //          `{message, runningRunId}` when a run for this (company, entity)
+  //          is already in flight (AC-07-16) - the surface links to that run
+  //          instead of the generic inline error.
+  //        → 403 without `autocount.companies.manage`; 404 for another
+  //          tenant's company (never resolved unscoped).
+  //   Gated `autocount.companies.manage` (the same "configure the task"
+  //   bucket as pause/activate/refetch-history - no new permission key).
+
+  /**
+   * Clear change tracking so the next reconcile re-pushes every document of
+   * this (database) task. See the contract above.
+   */
+  repushEtlTask(companyId: string, entityType: string): Promise<AutocountEtlRepushResult>;
+
+  // ── document mapping (sprint-5/02, S1 - AC-02-01..09/16..22) ───────────────
+  //
+  // BACKEND CONTRACT (LIVE - `modules/autocount/routers/sync.py`,
+  // `.../schemas.py`). Additions to EXISTING routes first:
+  //
+  //   GET .../mapping  →  AutocountMappingView gains `lineSorentoFields` +
+  //        `lineAcFields` (AC-02-02) - both empty for a master/GRN entity, so
+  //        the Mapping tab renders a single section unchanged. Header
+  //        `sorentoFields` gains the header fallback fields (AC-02-14).
+  //
+  //   PUT .../mapping  {rows}  →  AutocountMappingView - each row carries
+  //        `scope: 'header' | 'line'` (default 'header', AC-02-01); a header
+  //        re-map never deletes a line row and vice versa. Line rows are
+  //        guarded exactly like header rows PLUS the ref-pairing +
+  //        required-field rules (AC-02-03): `product_ref` only via
+  //        `ref_product`, `warehouse_ref` only via `ref_warehouse`, and
+  //        `source_ref`/`product_ref`/`qty_ordered` required the moment any
+  //        line row is saved.
+  //
+  //   POST .../mapping/simulate  {record, rows, lines?}  →  AutocountSimulateResult
+  //        gains `status` (AC-02-08/22) - the header's computed status AFTER
+  //        the aggregates pass. `lines` (new, optional) - the picked header's
+  //        fetched line records (the FE fetches them itself via
+  //        `previewSqlQuery`/`useLineFetcher` bound to `:doc_key`, mirroring
+  //        `SqlDbSource._read_lines` server-side); omitted = master/GRN
+  //        behavior unchanged (`lineFields: []`).
+  //
+  //   GET .../mapping/functions  →  the formula catalog gains `startswith`,
+  //        `coalesce` (AC-02-09) and the five `lines.*` aggregate variables
+  //        for document entities (AC-02-07).
+  //
+  // New route:
+  //
+  //   GET /autocount/presets/{entityType}  →  AutocountMappingPreset | null
+  //        (AC-02-16/17) - the AutoCount SQL-pack preset for one document
+  //        entity, with `{database}` substituted for the company's
+  //        `databaseName`. Null/absent for a non-document entity or one with
+  //        no preset (foolproof-UI: "Use preset" is not offered then).
+  //        Gated `autocount.companies.manage`.
+
+  /** The AutoCount SQL-pack preset(s) for a document entity, database-substituted. */
+  listMappingPresets(
+    companyId: string,
+    entityType: string,
+  ): Promise<AutocountMappingPreset[]>;
+
+  // ── mapping preset reset (sprint-5/12, Group B) - AC-12-10..24 ──────────────
+  //
+  // BACKEND CONTRACT - LIVE since S2 (`modules/autocount/routers/companies.py`
+  // `reset_entity_mapping_to_preset`, `services/company_service.py`
+  // `reset_mapping_to_preset`, `presets.resolve_preset_rows`/`plan_rows`):
+  //
+  //   POST /autocount/companies/{companyId}/entities/{entityType}/mapping/reset-preset
+  //        {dryRun: boolean} -> AutocountMappingResetPreview (dryRun=true) |
+  //        AutocountMappingView (dryRun=false), gated `autocount.companies.
+  //        manage`. `dryRun=true` computes the diff and writes NOTHING
+  //        (AC-12-12, statement count pinned server-side). `dryRun=false`
+  //        replaces the entity's HEADER rows in one transaction (line rows
+  //        and `source_config`/lookups untouched, AC-12-13/14) and returns
+  //        the fresh mapping view. An entity with no registered preset for
+  //        its resolved source type 422s `{"detail": "No preset is
+  //        registered for this entity."}` (AC-12-10) - unreachable through
+  //        the ActionMenu (gated on `hasPreset`), reachable only as a
+  //        defensive race the hook still surfaces inline.
+  //
+  //   GET .../mapping -> AutocountMappingView carries `hasPreset` (AC-12-21),
+  //        resolved server-side by the SAME rule as the reset (AC-12-11,
+  //        D5) - the UI never infers it from the entity type.
+  //
+  // The S1 PHASE 1 MOCK overlay (`withPhase1MappingResetMock`) is RETIRED -
+  // `autocount-service.ts` binds `realAutocountService` bare. The mock's own
+  // `resetMappingToPreset` survives inside `mockAutocountService` as the
+  // Vitest double only.
+
+  /**
+   * Preview or apply a whole-mapping reset to the entity's registered
+   * preset (R2, D4 - a whole-mapping replace, not a merge). `dryRun: true`
+   * returns the diff and writes nothing; `dryRun: false` replaces the
+   * header rows and returns the fresh view. Narrow the union with
+   * `isMappingResetPreview` (`types/autocount.ts`).
+   */
+  resetMappingToPreset(
+    companyId: string,
+    entityType: string,
+    input: { dryRun: boolean },
+  ): Promise<AutocountMappingResetPreview | AutocountMappingView>;
+
+  // ── open REST API source (sprint-5/08, S1 - AC-08-06/09/14/15) ─────────────
+  //
+  // Wire contract (kept as documentation post-S5; the backend now implements
+  // this byte for byte - `modules/autocount/routers/{http,companies}.py`,
+  // `.../schemas.py`).
+  //
+  //   GET /autocount/http/connections
+  //        → AutocountApiConnection[] {id, name, baseUrl, auth}  - EVERY
+  //          `autocount` connection of the tenant (both auths), tenant-scoped,
+  //          gated `autocount.read` (AC-08-15). Feeds BOTH the connect-company
+  //          picker (badging + the ref-prefix reveal, AC-08-09) and the task
+  //          Source tab's connection picker (badging + impl derivation,
+  //          AC-08-19) - ONE endpoint, not two.
+  //
+  //   POST /autocount/companies  {connectionId, name?, refPrefix?}
+  //        → AutocountCompany - gains `refPrefix` (AC-08-06/07): REQUIRED
+  //          (422 `{fieldErrors: {refPrefix}}`) when `connectionId` names an
+  //          open (`auth: 'none'`) connection; trimmed, upper-cased,
+  //          `^[A-Z0-9_]{2,32}$` server-side (`REF_PREFIX_RE` mirrors it
+  //          client-side for the disabled-until-valid gate only - the 422 is
+  //          still authoritative). Ignored (422 "not applicable") for a
+  //          vendor/SQL connection. `AutocountCompany.sourceKind` gains
+  //          `'http'` for an open company.
+  //
+  //   POST /autocount/http/preview  - sprint-5/11 S4 replaced this
+  //        synchronous shape with the `autocount_source_preview` job's own
+  //        `startPreviewJob`/`getPreviewJob` surface below (`scope:
+  //        'sample'`); no method here calls it directly anymore (review
+  //        round 2, item 6).
+  //
+  //   `AutocountEtlTask` (existing `/etl-task` routes) gains `sourceImpl`
+  //        ('sql_db'|'autocount_http') and, when 'autocount_http', the task's
+  //        `sourceConfig` carries `path`/`keyFields`/`watermarkField`/
+  //        `comparedFields`/`distinctOf` ALONGSIDE the (unused, defaulted)
+  //        SQL fields - ONE envelope, not a discriminated union on the wire,
+  //        so Mapping/Schedule/Review & Activate/Runs keep reading the SAME
+  //        `AutocountEtlTask.sourceConfig` shape unchanged (AC-08-19).
+  //        CONFIRMED against the real backend (S5): `EtlSourceConfigIn`
+  //        (`modules/autocount/schemas.py`) is that same flat envelope; the
+  //        `sourceImpl` that picks which half of it is live is sent as a
+  //        TOP-LEVEL sibling of `sourceConfig` on `PUT .../etl-task`
+  //        (`EtlTaskUpdate.sourceImpl`, review round 1 B1 - it is NOT nested
+  //        inside `sourceConfig` on the wire, only in this FE's local draft
+  //        state).
+
+  /** Every `autocount` connection of the tenant, badged by auth. */
+  listApiConnections(): Promise<AutocountApiConnection[]>;
+  /**
+   * `POST /autocount/http/preview-columns {connectionId, path}` (AC-10-05) -
+   * the lookup editor's own probe: page-1 column NAMES only, against ANY
+   * endpoint on the task's connection, reusing the same path-safety rule the
+   * main path already enforces.
+   */
+  previewColumns(connectionId: string, path: string): Promise<string[]>;
+
+  // ── human-invoked pull (sprint-5/10) - AC-10-11/27..38/48 ───────────────────
+  //
+  // BACKEND CONTRACT (LIVE since S3/S4/S6 - `modules/autocount/routers/
+  // pull.py` + `schemas.py`; `mockAutocountService` in `autocount-service.
+  // mock.ts` mirrors it as the Vitest fixture double, never a runtime
+  // overlay):
+  //
+  //   PUT /autocount/companies/{id}/entities/{entityType}/delivery-mode
+  //        {deliveryMode} -> AutocountEntityConfig  (AC-10-11). `pull`
+  //        requires the company's `sorentoCompanyCode` AND the entity to be
+  //        pull-capable (422 naming the field otherwise).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET/POST /autocount/pull/keys -> AutocountPullApiKey[] /
+  //        AutocountPullApiKeyIssued (plaintext shown once, AC-10-28).
+  //   POST /autocount/pull/keys/{id}/revoke -> AutocountPullApiKey (the
+  //        server-side target of the deferred-action commit; the operator
+  //        UI itself never calls this directly - Revoke is the CORE
+  //        deferred-action grace window, AC-10-38).
+  //        Gated `autocount.pull.manage`.
+  //
+  //   GET /autocount/pull/snapshots -> ListResult<AutocountPullSnapshot>
+  //        (tenant-scoped, newest first). GET .../snapshots/{id} -> the
+  //        header. GET .../snapshots/{id}/rows?page=&pageSize= -> one page.
+  //        POST /autocount/pull/snapshots {companyId, entityType} ->
+  //        AutocountPullSnapshot (`requestedVia: 'operator'`; re-attaches to
+  //        an in-flight build for the same triple, AC-10-26/88).
+  //        Gated `autocount.pull.read` (reads) / `autocount.pull.manage`
+  //        (build).
+
+  /** The entity's push/pull choice (AC-10-11). */
+  setDeliveryMode(
+    companyId: string,
+    entityType: string,
+    deliveryMode: AutocountDeliveryMode,
+  ): Promise<AutocountEntityConfig>;
+  /** Every pull API key of the tenant (AC-10-37). */
+  listPullKeys(): Promise<AutocountPullApiKey[]>;
+  /** Issue a key - the plaintext is returned ONCE (AC-10-28). */
+  issuePullKey(input: AutocountPullApiKeyCreateInput): Promise<AutocountPullApiKeyIssued>;
+  /** The revoke ROUTE (AC-10-37) - the operator UI reaches this through the
+   * deferred-action grace window instead (AC-10-38), never directly. */
+  revokePullKey(id: string): Promise<AutocountPullApiKey>;
+  /** Snapshots of the tenant, newest first (AC-10-37). */
+  listPullSnapshots(
+    query?: AutocountListQuery & { companyId?: string; entityType?: string },
+  ): Promise<ListResult<AutocountPullSnapshot>>;
+  /** One snapshot's header (AC-10-32). */
+  getPullSnapshot(id: string): Promise<AutocountPullSnapshot>;
+  /** One page of a snapshot's rows (AC-10-33). */
+  getPullSnapshotRows(
+    id: string,
+    page?: number,
+    pageSize?: number,
+  ): Promise<AutocountPullSnapshotRowsPage>;
+  /** Build a snapshot as the operator (`requestedVia: 'operator'`, AC-10-37). */
+  buildPullSnapshot(companyId: string, entityType: string): Promise<AutocountPullSnapshot>;
+
+  // ── preview job (sprint-5/11, Group B) - AC-11-20..31 ───────────────────────
+  //
+  // BACKEND CONTRACT (S4 must match this EXACTLY - `autocount-service.mock.ts`
+  // is the spec until then, house PHASE 1 MOCK pattern):
+  //
+  //   POST /autocount/http/preview  (sample) / POST .../etl-task/preview (full)
+  //        -> AutocountPreviewJobStart {jobId, status} - 202, no extraction
+  //           happens in the request (AC-11-22).
+  //   GET  /autocount/previews/{jobId} -> AutocountPreviewJob - polled while
+  //        `queued`/`running`; progress rides the SAME `{stage, pagesDone,
+  //        pagesTotal}` shape as a pull-snapshot build.
+  //   POST /autocount/previews/{jobId}/cancel -> AutocountPreviewJob - a
+  //        no-op 200 against an already-terminal job (AC-11-24).
+  //   Gated `autocount.sync.run`; tenant-scoped, cross-tenant = 404.
+
+  /** Start a preview job. Never awaits the walk (AC-11-22). */
+  startPreviewJob(input: AutocountPreviewJobStartInput): Promise<AutocountPreviewJobStart>;
+  /** Poll one job (AC-11-22/27). */
+  getPreviewJob(jobId: string): Promise<AutocountPreviewJob>;
+  /** Cooperative cancel - a no-op 200 against a terminal job (AC-11-24). */
+  cancelPreviewJob(jobId: string): Promise<AutocountPreviewJob>;
+
+  // ── document feeds (sprint-5/14, D17) - AC-14-90..95 ───────────────────────
+  //
+  // BACKEND CONTRACT (live: `modules/autocount/routers/doc_feeds.py`, bound
+  // by `autocount-service.real.ts`; see plan section 3.2):
+  //
+  //   GET  /autocount/doc-feeds/{companyId}          -> DocFeedsView
+  //   PUT  /autocount/doc-feeds/{companyId}/{feed}    -> DocFeedItem / 422
+  //   POST /autocount/doc-feeds/{companyId}/{feed}/run                 -> 202 {jobId}
+  //   POST /autocount/doc-feeds/{companyId}/{feed}/backfill            -> 202
+  //   POST /autocount/doc-feeds/{companyId}/{feed}/backfill/stop|resume|discard
+  //        -> DocFeedBackfill
+  //   GET  /autocount/doc-feeds/{companyId}/runs?feed=&page=&pageSize= -> ListResult<DocFeedRun>
+  //   GET  /autocount/doc-feeds/{companyId}/issues?feed=&kind=&search=&page=&pageSize=
+  //        -> ListResult<DocFeedIssue>
+  //   Gated `autocount.companies.read/manage`, `autocount.sync.read/run`;
+  //   tenant-scoped, cross-tenant = 404.
+
+  /** `view()` - three feeds always, a never-configured one reading `off`. */
+  getDocFeeds(companyId: string): Promise<DocFeedsView>;
+  /** Configure a feed's connection + mode (D2). */
+  updateDocFeed(companyId: string, feed: DocFeedKey, input: DocFeedUpdateInput): Promise<DocFeedItem>;
+  /** Run now / Run sweep now - never awaits the walk (eager dev runs it
+   * inline, D9). */
+  runDocFeed(companyId: string, feed: DocFeedKey, input: DocFeedRunInput): Promise<{ jobId: string }>;
+  /** Start a backfill (D13). */
+  startDocFeedBackfill(
+    companyId: string,
+    feed: DocFeedKey,
+    input: DocFeedBackfillStartInput,
+  ): Promise<DocFeedBackfill>;
+  stopDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill>;
+  resumeDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill>;
+  discardDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill>;
+  /** Newest first (AC-14-94). */
+  listDocFeedRuns(companyId: string, query?: DocFeedRunsQuery): Promise<ListResult<DocFeedRun>>;
+  listDocFeedIssues(companyId: string, query?: DocFeedIssuesQuery): Promise<ListResult<DocFeedIssue>>;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// EVERY surface is backed by FastAPI end to end. sprint-5/14 S5 retires the
+// scoped PHASE 1 MOCK overlay that stood in for
+// the nine document-feed methods through S1..S4: `getDocFeeds`/
+// `updateDocFeed`/`runDocFeed`/`start|stop|resume|discardDocFeedBackfill`/
+// `listDocFeedRuns`/`listDocFeedIssues` now post to the real
+// `/autocount/doc-feeds/*` router. `mockAutocountService` stays importable
+// by the Vitest suite directly (the house service-trio pattern).
+// ═══════════════════════════════════════════════════════════════════════════
 export const autocountService: AutocountService = realAutocountService;

@@ -3,10 +3,8 @@
 Covers (red-first):
 
 - One-shot intake create ``POST /ideation/intake/ideas`` returns the idea id AND
-  its human number (core numbering engine, ``IDEA-0001``…, per tenant). The sender
-  must be a linked CRM user (``submitter_crm_user_id`` required).
-- Numbers are only consumed by REAL ideas: a draft has none; promotion
-  (draft → captured), operator create and one-shot create each assign one.
+  its ``idea_number`` (``IDEA-0001``…, minted by the same completion sink the
+  turn flow uses). The sender must be a CRM user (``submitter_crm_user_id``).
 - Own-similar lookup ``POST /ideation/intake/ideas/similar-own``: ideas of the SAME
   submitter only (phone or CRM user id, NEVER name), live ideas only, top 3,
   pg_trgm / difflib similarity at the existing dedup threshold.
@@ -14,7 +12,6 @@ Covers (red-first):
   computed for the viewing CRM user (assertion ``sub`` + optional ``phone`` claim).
 - Optional ``ideas_manage`` assertion claim: when explicitly ``false`` the embed
   refuses edits/status/delete/reorder on ideas that are not the viewer's own.
-- The number backfill for ideas that existed before the column.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -24,7 +21,6 @@ from jose import jwt
 from app.config import settings
 from app.models import DEFAULT_TENANT_ID
 from tests.test_ideation_create_idea import (
-    _create_idea,
     _key_auth,
     _make_contact,
     _mint_key,
@@ -93,6 +89,7 @@ def _one_shot(client, key, product_id, **over):
     body = {
         "product_id": product_id,
         "problem": "Let CS export orders to Excel",
+        "title": "Excel export",
         "proposed_solution": "Export button on the orders list",
         "impact": "Saves 30 minutes a day",
         "department": "Customer Service",
@@ -165,16 +162,18 @@ def test_one_shot_create_returns_id_and_number(ctx):
     res = _one_shot(client, key, product_id)
     assert res.status_code == 201, res.text
     body = res.json()
+    assert set(body) == {"idea_id", "idea_number", "status", "title", "link"}
     assert body["idea_id"]
-    assert body["number"] == "IDEA-0001"
+    assert body["idea_number"] == "IDEA-0001"
     assert body["status"] == "captured"
-    assert "link" in body
+    assert body["title"] == "Excel export"
+    assert body["link"]  # public status link (status_token minted by the sink)
 
     res2 = _one_shot(client, key, product_id, problem="Bulk-print delivery orders")
-    assert res2.json()["number"] == "IDEA-0002"
+    assert res2.json()["idea_number"] == "IDEA-0002"
 
     detail = client.get(f"/ideation/ideas/{body['idea_id']}", headers=h).json()
-    assert detail["number"] == "IDEA-0001"
+    assert detail["ideaNumber"] == "IDEA-0001"
     assert detail["status"] == "captured"
     assert detail["submitterName"] == "Jayson Tan"
     assert detail["proposedSolution"] == "Export button on the orders list"
@@ -212,6 +211,16 @@ def test_one_shot_create_rejects_blank_problem(ctx):
     assert res.json()["error"]["code"] == "problem_required"
 
 
+def test_one_shot_create_rejects_long_title_and_junk_phone(ctx):
+    client, _h, product_id, key = ctx
+    res = _one_shot(client, key, product_id, title="one two three four five six seven eight nine")
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "title_too_long"
+    res = _one_shot(client, key, product_id, submitter_phone="12")
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "invalid_phone"
+
+
 def test_one_shot_create_unknown_product_and_auth(ctx):
     client, _h, _product_id, key = ctx
     assert _one_shot(client, key, "nope").status_code == 404
@@ -233,49 +242,6 @@ def test_one_shot_create_persists_attachments(ctx):
     assert [a["url"] for a in detail["attachments"]] == ["https://r2.example/a.png"]
 
 
-# ── 2. numbers only for real ideas ───────────────────────────────────────────
-def test_draft_has_no_number_and_promotion_assigns_one(ctx):
-    client, h, product_id, key = ctx
-    contact_id = _make_contact(client._factory, phone=PHONE)
-    turn = _create_idea(
-        client,
-        key,
-        contact_id,
-        product_id,
-        fields={
-            "proposed_solution": "Export button",
-            "impact": "Saves time",
-            "department": "CS",
-        },
-    ).json()
-    draft_id = turn["draft_id"]
-
-    from modules.ideation.models import Idea
-
-    db = client._factory()
-    try:
-        assert db.query(Idea).filter(Idea.id == draft_id).one().number is None
-    finally:
-        db.close()
-
-    done = _create_idea(client, key, contact_id, product_id, draft_id=draft_id, confirm=True)
-    assert done.json()["status"] == "complete"
-    assert done.json()["number"] == "IDEA-0001"
-    detail = client.get(f"/ideation/ideas/{draft_id}", headers=h).json()
-    assert detail["number"] == "IDEA-0001"
-
-
-def test_operator_create_assigns_number(ctx):
-    client, h, product_id, _key = ctx
-    res = client.post(
-        "/ideation/ideas",
-        headers=h,
-        json={"productId": product_id, "problem": "Dark mode"},
-    )
-    assert res.status_code == 201, res.text
-    assert res.json()["number"] == "IDEA-0001"
-
-
 # ── 3. own-similar lookup ────────────────────────────────────────────────────
 def test_similar_own_matches_same_phone_only(ctx):
     client, _h, product_id, key = ctx
@@ -293,8 +259,12 @@ def test_similar_own_matches_same_phone_only(ctx):
     matches = res.json()["matches"]
     assert [m["idea_id"] for m in matches] == [own_id]
     m = matches[0]
-    assert set(m) >= {"idea_id", "number", "problem", "status", "similarity", "created_at"}
+    assert set(m) == {
+        "idea_id", "idea_number", "title", "problem", "status",
+        "status_label", "similarity", "created_at", "link",
+    }
     assert m["status"] == "captured"
+    assert m["created_at"].endswith("Z")
 
 
 def test_similar_own_phone_format_tolerant(ctx):
@@ -365,7 +335,7 @@ def test_similar_own_live_only_top_three(ctx):
         )
         for i, suffix in enumerate(["now", "today", "please", "asap"])
     ]
-    for key_ in ("draft", "rejected", "duplicate", "closed"):
+    for key_ in ("draft", "rejected", "duplicate", "archived"):
         _insert_idea(
             client._factory,
             product_id,
@@ -455,7 +425,6 @@ def test_embed_create_stamps_crm_user(ctx):
     assert res.status_code == 201, res.text
     body = res.json()
     assert body["isMine"] is True
-    assert body["number"] == "IDEA-0001"
     other = _embed_h(client, sub="crm-8")
     assert client.get(f"/embed/ideas/{body['id']}", headers=other).json()["isMine"] is False
 
@@ -489,31 +458,3 @@ def test_embed_manage_claim_true_or_absent_keeps_legacy_access(ctx):
         res = client.patch(f"/embed/ideas/{others}", headers=h, json={"impact": "ok"})
         assert res.status_code == 200, res.text
         assert res.json()["isMine"] is False
-
-
-# ── 5. backfill for pre-existing ideas ───────────────────────────────────────
-def test_backfill_numbers_existing_ideas_in_created_order(ctx):
-    client, h, product_id, key = ctx
-    base = datetime.now(timezone.utc) - timedelta(days=3)
-    second = _insert_idea(client._factory, product_id, problem="second", created_at=base + timedelta(hours=2))
-    first = _insert_idea(client._factory, product_id, problem="first", created_at=base)
-    draft = _insert_idea(client._factory, product_id, problem="draft", status_key="draft")
-
-    from modules.ideation.models import Idea
-    from modules.ideation.services.numbering import backfill_idea_numbers
-
-    db = client._factory()
-    try:
-        assert backfill_idea_numbers(db) == 2
-        db.commit()
-        nums = {i.id: i.number for i in db.query(Idea).all()}
-        assert nums[first] == "IDEA-0001"
-        assert nums[second] == "IDEA-0002"
-        assert nums[draft] is None
-        # idempotent
-        assert backfill_idea_numbers(db) == 0
-    finally:
-        db.close()
-
-    # the counter continues after the backfilled numbers
-    assert _one_shot(client, key, product_id).json()["number"] == "IDEA-0003"

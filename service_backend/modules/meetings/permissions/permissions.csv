@@ -1,0 +1,4 @@
+resource,resource_label,action,action_label,description
+meetings,Meetings,view,View,See your own meetings and manage your calendar opt-in
+meetings,Meetings,manage,Manage,Manage every meeting in the tenant, including other users' minutes
+meetings.settings,Meetings Settings,manage,Manage,Configure the meetings connections and tenant-wide meeting settings

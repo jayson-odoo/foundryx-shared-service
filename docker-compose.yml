@@ -30,6 +30,15 @@ x-backend-env: &backend-env
   # correct scheme/host for generated links & secure cookies.
   TRUST_PROXY_HEADERS: "true"
   FORWARDED_ALLOW_IPS: "*"
+  # Container-start bootstrap controls (start.sh; issue #89). This anchor is an
+  # allow-list, so without these lines the documented SKIP_MIGRATIONS=1 bypass
+  # and the lock-timeout/retry tuning never reached the container. Defaults =
+  # start.sh / bootstrap_db defaults. SKIP_MIGRATIONS=1 is the ONLY bypass and
+  # never disables the module schema drift guard.
+  SKIP_MIGRATIONS: ${SKIP_MIGRATIONS:-0}
+  BOOTSTRAP_LOCK_TIMEOUT: ${BOOTSTRAP_LOCK_TIMEOUT:-20s}
+  BOOTSTRAP_ATTEMPTS: ${BOOTSTRAP_ATTEMPTS:-4}
+  BOOTSTRAP_RETRY_DELAY: ${BOOTSTRAP_RETRY_DELAY:-8}
   FRONTEND_URL: ${FRONTEND_URL:?set in .env}
   CORS_ORIGINS: ${CORS_ORIGINS:?set in .env}
   # External backend base INCLUDING the /be path prefix - backend self-built
@@ -49,6 +58,18 @@ x-backend-env: &backend-env
   PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
   PLATFORM_SMTP_FROM_EMAIL: ${PLATFORM_SMTP_FROM_EMAIL:-}
   PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-Foundryx EMS}
+  # AutoCount ESB -> Sorento sink (module autocount). This block is an explicit
+  # allow-list with no env_file, so a setting missing here NEVER reaches the
+  # container (batch-size lane review, 2026-09-06). Defaults match app/config.py.
+  # Settings is an import-time singleton: a change needs the containers
+  # RECREATED (`docker compose up -d`), a `restart` keeps the old environment.
+  AUTOCOUNT_SINK_BATCH_SIZE: ${AUTOCOUNT_SINK_BATCH_SIZE:-200}
+  AUTOCOUNT_SINK_TIMEOUT_SECONDS: ${AUTOCOUNT_SINK_TIMEOUT_SECONDS:-300}
+  # Ceiling 4; Sorento accepted 2 after measuring #710 (4 async ingest workers
+  # at ~14s per 200 row batch), but the deployed default stays 1 - raise push
+  # concurrency per tenant from that Sorento connection's own Push concurrency
+  # field instead (feat/sink-concurrency-ui), not by editing this default.
+  AUTOCOUNT_SINK_CONCURRENCY: ${AUTOCOUNT_SINK_CONCURRENCY:-1}
 
 x-backend-base: &backend-base
   image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:backend-${IMAGE_TAG:-latest}
@@ -61,6 +82,13 @@ x-backend-base: &backend-base
     redis:
       condition: service_started
   restart: unless-stopped
+  # `host.docker.internal` -> the compose network gateway (the HOST). Backend +
+  # workers dial host-side relays through it (e.g. the socat relay that carries
+  # the Sorento AutoCount SQL connection over the host's ZeroTier link - see
+  # documentation/ops/sorento-sql-relay.md). A NAME, so the integration config
+  # never embeds a Docker-assigned IP.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   # NOTE: the `backend` network alias is added ONLY on the API colors below, not
   # here - otherwise the workers/beat would also answer to `backend:8001` and the
   # frontend's BACKEND_API_URL could resolve to a process with no HTTP server.
@@ -98,6 +126,10 @@ services:
     image: redis:7-alpine
     container_name: foundryx_ss_redis
     command: redis-server --appendonly yes
+    # Loopback-only, for the SSH-tunneled pilot stt/bots workers (Mac Mini) -
+    # see DEPLOY.md; never expose publicly.
+    ports:
+      - "127.0.0.1:6379:6379"
     volumes:
       - foundryx_ss_redis:/data
     restart: unless-stopped
@@ -131,11 +163,58 @@ services:
   worker_workflow:
     <<: *backend-base
     container_name: foundryx_ss_worker_workflow
-    environment: *backend-env
+    environment:
+      <<: *backend-env
+      # sprint-5/11 S1 (AC-11-85) - worker-only Postgres session bounds via
+      # app/database.py's `worker_connect_args()`; NEVER added to the shared
+      # `x-backend-env` anchor (backend_blue/backend_green must stay
+      # unbounded, today's API behaviour, per AC-11-85). SHIP INERT (0 = no
+      # timeout, review round 1): S0 could not complete the slowest-statement
+      # measurement of a full SRT build on the shared dev Postgres (see
+      # 11-evidence/s0-baseline/README.md (c)), so R10's numbers are NOT yet
+      # confirmed - guessing a live ceiling here risks killing a legitimate
+      # long-running statement. Enable only after that measurement lands, and
+      # then keep idle-in-transaction >= 3x AUTOCOUNT_SINK_TIMEOUT_SECONDS
+      # (default 300s): sync_service.auto_push holds an open transaction
+      # across the sink POST, so idle-in-transaction must outlive it.
+      # Recommended hot values once enabling: statement >= 600, idle >= 900.
+      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-0}
+      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-0}
+      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-0}
     command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "workflow", "--loglevel", "info"]
     healthcheck:
       disable: true
+    networks:
+      - foundryx_ss_network
 
+  # AutoCount ETL / meetings-transcode-class long jobs (sprint-5/11 S1,
+  # AC-11-80) - `jobs.run` routes here exclusively (task_routes in
+  # app/workflow_engine/worker.py), never onto `worker_workflow`'s shared
+  # `workflow` queue, so a single hung build can no longer starve every beat
+  # tick on the platform (the 2026-09-20/21 incident). `-c 2` (R9): this
+  # work is I/O-bound (vendor HTTP, Sorento HTTP, Postgres), so two prefork
+  # children use a single vCPU well; drop to `-c 1` if the host is
+  # memory-tight rather than CPU-bound. `worker_workflow` keeps the task
+  # registered too (lossless rollout - a message already queued on
+  # `workflow` at deploy time still executes there).
+  worker_jobs:
+    <<: *backend-base
+    container_name: foundryx_ss_worker_jobs
+    environment:
+      <<: *backend-env
+      # Inert defaults (0 = no timeout) - see worker_workflow's comment above;
+      # measured before enabling (AC-11-85), and idle-in-transaction must stay
+      # >= 3x AUTOCOUNT_SINK_TIMEOUT_SECONDS once it is turned on.
+      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-0}
+      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-0}
+      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-0}
+    command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "jobs", "-c", "2", "--loglevel", "info"]
+    healthcheck:
+      disable: true
+    networks:
+      - foundryx_ss_network
+
+  # ---------------- (Code runner removed - workflow Code action not deployed) --
   worker_omni:
     <<: *backend-base
     container_name: foundryx_ss_worker_omni
@@ -143,6 +222,24 @@ services:
     command: ["celery", "-A", "modules.omnichannel.worker", "worker", "-Q", "omni", "--loglevel", "info"]
     healthcheck:
       disable: true
+
+  # The bot fleet (sprint-5 S2). NOT part of *backend-base: it is the only
+  # service that needs the Docker socket, and the pilot runs it on a separate
+  # host entirely (the Mac Mini) rather than here. Left commented until the bot
+  # image is published and a host is chosen - a worker with no reachable Docker
+  # refuses to boot by design (AC-S2-14), so enabling it early breaks a deploy.
+  #
+  # worker_bots:
+  #   <<: *backend-base
+  #   container_name: foundryx_ss_worker_bots
+  #   environment:
+  #     <<: *backend-env
+  #     MEETINGS_BOT_IMAGE: ${MEETINGS_BOT_IMAGE:-jayson1004/foundryx-shared-service:bot-latest}
+  #   command: ["celery", "-A", "modules.meetings.worker", "worker", "-Q", "bots", "-c", "2", "--loglevel", "info"]
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   healthcheck:
+  #     disable: true
 
   beat:
     <<: *backend-base
@@ -232,3 +329,12 @@ volumes:
 networks:
   foundryx_ss_network:
     driver: bridge
+    # PINNED so a `docker compose down` / network recreate yields the SAME
+    # gateway (172.21.0.1). Host-side services bind to that gateway (the
+    # Sorento SQL relay) and its firewall rule is keyed on this subnet - a
+    # Docker-chosen pool address would silently move both. Matches the subnet
+    # prod was already given by the default pool (verified 2026-09-04).
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1

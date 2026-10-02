@@ -31,6 +31,7 @@ export default function Page() {
   const welcomeName = branding.appName || branding.tenantName;
 
   const form = useForm<SigninSchemaType>({
+    mode: 'onTouched',
     resolver: zodResolver(getSigninSchema()),
     defaultValues: {
       email: '',

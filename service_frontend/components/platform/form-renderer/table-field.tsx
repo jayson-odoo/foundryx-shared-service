@@ -13,6 +13,7 @@
 import { Plus, Trash2 } from 'lucide-react';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Input } from '@/components/ui/input';
 import { evaluateExpression } from '@/lib/computed-expr';
 import { cn } from '@/lib/utils';
@@ -159,7 +160,7 @@ export function TableField({
                     <button
                       type="button"
                       aria-label={`Remove row ${rowIndex + 1}`}
-                      className="text-muted-foreground hover:text-destructive"
+                      className={cn(PRESSED_CLASS, 'text-muted-foreground hover:text-destructive')}
                       onClick={() => onChange(rows.filter((_, i) => i !== rowIndex))}
                     >
                       <Trash2 className="size-4" />

@@ -121,9 +121,27 @@ def test_provider_registers_as_an_erp_provider(client):
 
 def test_provider_fields_have_no_appsecret_and_no_company(client):
     """Verified live: there is no AppSecret, and the company is DISCOVERED from
-    the login response - offering either field would ask for something unusable."""
+    the login response - offering either field would ask for something unusable.
+
+    sprint-5/08 (AC-08-01): the ``auth`` select now LEADS the field list (it
+    decides whether the three credential fields even show); see
+    ``tests/test_autocount_http_provider.py`` for the ``showWhen`` pin.
+
+    sprint-5/10 S6 (AC-10-85): the open REST wrapper's two host-latency
+    knobs close the list (``pageSize``/``requestTimeoutSeconds``, both
+    ``showWhen`` auth = none) - pinned in full by
+    ``tests/test_s10_s6_connection_sizing.py``.
+
+    sprint-5/11 S6 (AC-11-01): ``maxConcurrentPages`` (the connection's own
+    opt-in bounded-concurrency ceiling, also ``showWhen`` auth = none) closes
+    the list one field further - pinned in full by
+    ``tests/test_s11_s6_concurrency_config.py``.
+    """
     keys = [f["key"] for f in AutoCountProvider().fields()]
-    assert keys == ["baseUrl", "appId", "userId", "password"]
+    assert keys == [
+        "auth", "baseUrl", "appId", "userId", "password",
+        "pageSize", "requestTimeoutSeconds", "maxConcurrentPages",
+    ]
 
     fields = {f["key"]: f for f in AutoCountProvider().fields()}
     assert fields["appId"]["secret"] is True
@@ -492,7 +510,7 @@ def test_test_rejects_a_missing_or_non_http_base_url():
     assert provider.test({}, {}).ok is False
     result = provider.test({"baseUrl": "autocount.example.com"}, {})
     assert result.ok is False
-    assert "http://" in result.message
+    assert "https://" in result.message
 
 
 # ── the Sorento consumer provider (plan 14 Task A, AC-14-15) ──────────────
@@ -514,7 +532,12 @@ def test_sorento_provider_fields_are_base_url_and_a_secret_key():
 
     fields = SorentoProvider().fields()
     keys = [f["key"] for f in fields]
-    assert keys == ["baseUrl", "apiKey"]
+    # ``sorentoContractVersion`` sits directly after the base URL (contract-
+    # version lane; its own shape is pinned in
+    # test_autocount_sorento_contract_version_field.py); later fields
+    # (apiKey, sinkConcurrency, ...) may follow in any order.
+    assert keys[:2] == ["baseUrl", "sorentoContractVersion"], keys
+    assert "apiKey" in keys
     by_key = {f["key"]: f for f in fields}
     assert by_key["apiKey"]["secret"] is True
     assert by_key["baseUrl"].get("secret") is not True

@@ -1,10 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
+import { Badge } from '@/components/ui/badge';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { ApiError } from '@/lib/api-client';
 import { businessRequirementService } from '@/services/business-requirement-service';
@@ -15,7 +17,7 @@ import { BrDetailsTab } from './br-details-tab';
 import { BrGrillTab } from './br-grill-tab';
 import { BrIdeasTab } from './br-ideas-tab';
 import { BrVersionsTab } from './br-versions-tab';
-import { BrPlaceholderTab } from './br-placeholder-tab';
+import { BrTraceTab } from './br-trace-tab';
 import { useBrActions } from './use-br-actions';
 
 interface Detail422 {
@@ -34,6 +36,11 @@ export interface UseBrFormResult {
   config: ResourceFormConfig<BusinessRequirementDetail> | null;
   isLoading: boolean;
   notFound: boolean;
+  /** The loaded BR + its refresh callback - `BrFormView` feeds them to
+   * `useBrBuild` (the header's Send to build action) and merges the result into
+   * the config. */
+  br: BusinessRequirementDetail | null;
+  onBrChanged: (updated: BusinessRequirementDetail) => void;
 }
 
 function answersEqual(a: FormAnswers, b: FormAnswers): boolean {
@@ -42,8 +49,8 @@ function answersEqual(a: FormAnswers, b: FormAnswers): boolean {
 
 /**
  * BR detail form config (tabbed ResourceForm). Tabs: Details · Grill · Ideas ·
- * Trace · Versions - but in S2 only Details/Ideas/Versions carry content (Grill =
- * S3, Trace = S4 render empty placeholders). The Details tab renders answers
+ * Trace · Versions. The Trace tab is the crew's build timeline (Send to build);
+ * the header's primary action + note are merged in by `BrFormView`. The Details tab renders answers
  * through the form-engine renderer against the BR's STAMPED template doc.
  */
 export function useBrForm(
@@ -51,7 +58,6 @@ export function useBrForm(
   initialEditing: boolean,
   initialTab?: string,
 ): UseBrFormResult {
-  const router = useRouter();
   const [br, setBr] = useState<BusinessRequirementDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -157,10 +163,55 @@ export function useBrForm(
 
   // Graph-driven lifecycle + promote actions (AC-BI-34). The promote edge is
   // gated by the separate .promote permission; a refused promote surfaces inline.
+  // Trace tab refresh (on open + window focus; no polling).
+  const reloadBuild = useCallback(() => {
+    businessRequirementService
+      .getBuild(brId)
+      .then((fresh) => setBr((prev) => (prev ? { ...prev, build: fresh } : prev)))
+      .catch(() => undefined);
+  }, [brId]);
+
   const lifecycleActions = useBrActions(br, {
     onChanged: onBrChanged,
     onFieldErrors: setServerFieldErrors,
   });
+
+  // Review fix S6 (issue #90 W3): the pager must re-run the SAME lane the
+  // user was actually browsing on the list they came from - carried as an
+  // `includeTest` URL param alongside `ctx`/`i`/`from` (`brFormHref`,
+  // `use-br-list-config.tsx`'s `rowHref`), not re-derived from whichever
+  // record happens to be open. Keying off `br?.isTest` alone was wrong: a
+  // REAL BR opened from the "Show test requirements" list would silently
+  // narrow the pager to a real-only lane, different from the mixed lane the
+  // user was actually paging through. Only fall back to the loaded record's
+  // own flag when there is no list context at all (a bookmarked/direct link,
+  // or the promote-to-BR redirect) - AC-90-313's original scenario.
+  const searchParams = useSearchParams();
+  const includeTestParam = searchParams.get('includeTest');
+  const pagerIncludeTest =
+    includeTestParam !== null ? includeTestParam === '1' : (br?.isTest ?? false);
+
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    async (query: ListQuery, index: number) => {
+      const all = await businessRequirementService.list({
+        filter: query.statusView === 'trashed' ? 'archived' : 'active',
+        search: query.search,
+        includeTest: pagerIncludeTest,
+      });
+      const row = all[index];
+      return { recordId: row?.id ?? null, total: all.length };
+    },
+    [pagerIncludeTest],
+  );
+  // Carries `includeTest` forward too (review round 3 fix) - without it, one
+  // Next/Prev step from a test-inclusive list dropped the param, so the
+  // SECOND step's pager silently narrowed back to the real-only lane.
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) =>
+      brFormHref(recordId, { ctx, index, includeTest: pagerIncludeTest }),
+    [pagerIncludeTest],
+  );
 
   const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {
     if (!br) return null;
@@ -173,16 +224,13 @@ export function useBrForm(
         icon: Trash2,
         tone: 'destructive',
         surfaces: { form: true },
-        confirm: {
-          title: 'Delete business requirement',
-          description:
-            'This permanently removes the BR and its idea links. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async () => {
-          await businessRequirementService.remove(brId);
-          toast.success('Business requirement deleted.');
-          router.push(BR_PATH);
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run`. ResourceForm's own onCommitted already
+        // carries the record's ctx/i/from back to the list (AC-DLA-30),
+        // matching what this `run` used to do by hand.
+        deferred: {
+          actionKey: 'ideation_business_requirements.delete',
+          entityType: 'ideation_business_requirement',
         },
       },
     ];
@@ -194,7 +242,16 @@ export function useBrForm(
       ],
       backHref: BR_PATH,
       title: br.title || 'Untitled BR',
-      subtitle: `${br.statusLabel} · ${br.productName}`,
+      subtitle: br.isTest ? (
+        <span className="inline-flex items-center gap-2">
+          <Badge variant="secondary" appearance="light" size="sm">
+            TEST
+          </Badge>
+          {`${br.statusLabel} · ${br.productName}`}
+        </span>
+      ) : (
+        `${br.statusLabel} · ${br.productName}`
+      ),
       tabs: [
         {
           id: 'details',
@@ -239,7 +296,9 @@ export function useBrForm(
           id: 'trace',
           label: 'Trace',
           icon: GitBranch,
-          render: () => <BrPlaceholderTab label="Available after grilling." />,
+          render: () => (
+            <BrTraceTab brId={brId} build={br.build ?? null} reload={reloadBuild} />
+          ),
         },
         {
           id: 'versions',
@@ -257,17 +316,7 @@ export function useBrForm(
       isDirty,
       onSave,
       onCancel,
-      recordNav: {
-        fetchAt: async (query, index) => {
-          const all = await businessRequirementService.list({
-            filter: query.statusView === 'trashed' ? 'archived' : 'active',
-            search: query.search,
-          });
-          const row = all[index];
-          return { recordId: row?.id ?? null, total: all.length };
-        },
-        buildHref: (recordId, ctx, index) => brFormHref(recordId, { ctx, index }),
-      },
+      recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     answers,
@@ -283,9 +332,11 @@ export function useBrForm(
     onGrillGenerated,
     onIdeasChanged,
     onSave,
-    router,
     serverFieldErrors,
+    fetchRecordAt,
+    buildRecordHref,
+    reloadBuild,
   ]);
 
-  return { config, isLoading, notFound };
+  return { config, isLoading, notFound, br, onBrChanged };
 }

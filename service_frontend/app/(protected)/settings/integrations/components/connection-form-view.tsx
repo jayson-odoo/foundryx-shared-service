@@ -12,11 +12,21 @@ import { integrationsListPath } from './paths';
 export interface ConnectionFormViewProps {
   connectionId?: string;
   initialEditing: boolean;
+  /** Preselect this provider when creating (module settings deep-links). */
+  initialProvider?: string;
 }
 
 /** Loads + renders a connection form (create when connectionId is absent). */
-export function ConnectionFormView({ connectionId, initialEditing }: ConnectionFormViewProps) {
-  const { config, form, isLoading, notFound } = useConnectionForm(connectionId, initialEditing);
+export function ConnectionFormView({
+  connectionId,
+  initialEditing,
+  initialProvider,
+}: ConnectionFormViewProps) {
+  const { config, form, isLoading, notFound } = useConnectionForm(
+    connectionId,
+    initialEditing,
+    initialProvider,
+  );
 
   if (isLoading) {
     return (

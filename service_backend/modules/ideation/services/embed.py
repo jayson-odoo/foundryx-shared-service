@@ -76,6 +76,9 @@ class EmbedTokenPrincipal:
     idea_id: Optional[str] = None
     product_id: Optional[str] = None
     sub: Optional[str] = None
+    # The host user's email claim (from the assertion) - resolves the shared-service
+    # user for embed promote-to-BR (plan sprint-5/15, AC-15-21).
+    email: Optional[str] = None
     scope: str = "ideation"
     # The viewing CRM user's phone (optional assertion claim) - a second
     # ownership link for ``isMine`` (ideas sent from WhatsApp carry the phone).
@@ -360,6 +363,7 @@ def resolve_embed_token(db: Session, token: str) -> EmbedTokenPrincipal:
         idea_id=payload.get("idea_id"),
         product_id=payload.get("product_id"),
         sub=payload.get("sub"),
+        email=payload.get("email"),
         scope=payload.get("scope") or "ideation",
         phone=payload.get("phone") if isinstance(payload.get("phone"), str) else None,
         name=payload.get("name") if isinstance(payload.get("name"), str) else None,

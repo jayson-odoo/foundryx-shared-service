@@ -93,7 +93,7 @@ export function AppsDropdownMenu({ trigger }: { trigger: ReactNode }) {
         </div>
         <div className="grid p-5 border-t border-t-border">
           <Button asChild variant="outline" size="sm">
-            <Link href="/account/api-keys">Go to Apps</Link>
+            <Link href="/app-store">Go to Apps</Link>
           </Button>
         </div>
       </DropdownMenuContent>

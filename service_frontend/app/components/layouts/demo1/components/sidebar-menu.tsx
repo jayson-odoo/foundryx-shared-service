@@ -9,8 +9,11 @@ import { MenuConfig, MenuItem } from '@/config/types';
 import { useInstalledModules } from '@/hooks/use-app-store';
 import { useTerminology } from '@/hooks/use-terminology';
 import { useCan } from '@/hooks/use-can';
+import { usePrefetchOnce } from '@/hooks/use-prefetch-once';
 import { filterMenu } from '@/lib/menu-filter';
+import { collectMenuPaths, matchesMenuPath } from '@/lib/menu-path-match';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   AccordionMenu,
   AccordionMenuClassNames,
@@ -28,6 +31,7 @@ export function SidebarMenu() {
   const { data: session } = useSession();
   const { can } = useCan();
   const { labelPlural } = useTerminology();
+  const prefetchOnce = usePrefetchOnce();
   // Relabelable entries (F10): a `termKey` resolves the plural via terminology;
   // the static title is the never-blank fallback.
   const menuLabel = (item: MenuItem): string | undefined =>
@@ -53,24 +57,38 @@ export function SidebarMenu() {
     [can, installed.isActive, installed.ready, showPlatform],
   );
 
-  // Memoize matchPath to prevent unnecessary re-renders
+  // AC-DLA-72 - "current" is segment-boundary + most-specific-wins against
+  // the VISIBLE menu (`lib/menu-path-match.ts`, ported from Sorento): a
+  // naive `startsWith` lit `/scm` up on `/scm-archive`, and a section's own
+  // landing page stayed lit beside its active child (both are prefixes of
+  // every page under them). Recomputed only when the visible menu or route
+  // changes - `AccordionMenu` calls `matchPath` once per rendered item.
+  const menuPaths = useMemo(() => collectMenuPaths(visibleMenu), [visibleMenu]);
   const matchPath = useCallback(
-    (path: string): boolean =>
-      path === pathname || (path.length > 1 && pathname.startsWith(path)),
-    [pathname],
+    (path: string): boolean => matchesMenuPath(path, pathname, menuPaths),
+    [pathname, menuPaths],
   );
 
-  // Global classNames for consistent styling
+  // Global classNames for consistent styling. `PRESSED_CLASS` (AC-DLA-72)
+  // on both `item` and `subTrigger` - an item answers on pointer-down like
+  // every other control; the `hover:bg-transparent` override that used to
+  // sit here is gone so items pick up the shared `hover:bg-accent
+  // hover:text-primary` instead of no hover feedback at all.
   const classNames: AccordionMenuClassNames = {
     root: 'lg:ps-1 space-y-3',
     group: 'gap-px',
     label:
       'uppercase text-xs font-medium text-muted-foreground/70 pt-2.25 pb-px',
     separator: '',
-    item: 'h-8 hover:bg-transparent text-accent-foreground hover:text-primary data-[selected=true]:text-primary data-[selected=true]:bg-muted data-[selected=true]:font-medium',
+    item: cn(
+      PRESSED_CLASS,
+      'h-8 text-accent-foreground hover:bg-accent hover:text-primary data-[selected=true]:text-primary data-[selected=true]:bg-muted data-[selected=true]:font-medium',
+    ),
     sub: '',
-    subTrigger:
-      'h-8 hover:bg-transparent text-accent-foreground hover:text-primary data-[selected=true]:text-primary data-[selected=true]:bg-muted data-[selected=true]:font-medium',
+    subTrigger: cn(
+      PRESSED_CLASS,
+      'h-8 text-accent-foreground hover:bg-accent hover:text-primary data-[selected=true]:text-primary data-[selected=true]:bg-muted data-[selected=true]:font-medium',
+    ),
     subContent: 'py-0',
     indicator: '',
   };
@@ -116,6 +134,8 @@ export function SidebarMenu() {
         >
           <Link
             href={item.path || '#'}
+            prefetch={false}
+            onPointerEnter={() => item.path && prefetchOnce(item.path)}
             className="flex items-center grow gap-2"
           >
             {item.icon && <item.icon data-slot="accordion-menu-icon" />}
@@ -171,7 +191,7 @@ export function SidebarMenu() {
           key={index}
           value={item.path || `child-${level}-${index}`}
         >
-          <AccordionMenuSubTrigger className="text-[13px]">
+          <AccordionMenuSubTrigger className="text-2sm">
             {item.collapse ? (
               <span className="text-muted-foreground">
                 <span className="hidden [[data-state=open]>span>&]:inline">
@@ -209,9 +229,15 @@ export function SidebarMenu() {
         <AccordionMenuItem
           key={index}
           value={item.path || ''}
-          className="text-[13px]"
+          className="text-2sm"
         >
-          <Link href={item.path || '#'}>{menuLabel(item)}</Link>
+          <Link
+            href={item.path || '#'}
+            prefetch={false}
+            onPointerEnter={() => item.path && prefetchOnce(item.path)}
+          >
+            {menuLabel(item)}
+          </Link>
         </AccordionMenuItem>
       );
     }
@@ -226,7 +252,7 @@ export function SidebarMenu() {
       <AccordionMenuItem
         key={index}
         value={`disabled-child-${level}-${index}`}
-        className="text-[13px]"
+        className="text-2sm"
       >
         <span data-slot="accordion-menu-title">{menuLabel(item)}</span>
         {item.disabled && (
@@ -243,7 +269,14 @@ export function SidebarMenu() {
   };
 
   return (
-    <div className="kt-scrollable-y-hover flex grow shrink-0 py-5 px-5 lg:max-h-[calc(100vh-5.5rem)]">
+    // Bounded by the flex-1 min-h-0 wrapper in sidebar.tsx (itself inside the fixed
+    // sidebar box, whose own height already shrinks when the impersonation banner is
+    // expanded) via h-full/max-h-full - NOT a 100vh calc, which stayed a page-relative
+    // guess and never accounted for --shell-top-offset. At the old calc(100vh-5.5rem)
+    // with the banner expanded (B=45px), the box was short by B, so the last ~7px of
+    // the final nav item (after its own py-5) was unreachable at max scroll (T1 fix
+    // round 2).
+    <div className="kt-scrollable-y-hover flex grow shrink-0 py-5 px-5 lg:h-full lg:max-h-full">
       <AccordionMenu
         selectedValue={pathname}
         matchPath={matchPath}

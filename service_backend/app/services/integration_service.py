@@ -67,6 +67,30 @@ def _decrypt_or_none(ciphertext: str) -> Optional[Dict[str, str]]:
         return None
 
 
+def _validate_provider_config(provider: IntegrationProvider, config: Dict) -> None:
+    """S5 (sprint-5/08 review round 1) - a save-time schema check BEYOND
+    `required`, for a provider that opts in. `validate_config`, when a
+    provider defines one (duck-typed - not every provider needs a format
+    rule beyond `required`), returns an error message or `None`; a
+    non-`None` result is a plain 422 naming no field in particular (the
+    error string itself names what is wrong, e.g. "the base URL must start
+    with http:// or https://").
+
+    Kept GENERIC here rather than special-cased per provider: today only
+    `modules.autocount.provider.AutoCountProvider` defines one (`baseUrl`'s
+    scheme, previously checked only at Test time, so a bad scheme could sit
+    in storage indefinitely waiting for someone to click Test), but any
+    future provider gets the same save-time gate for free by defining the
+    same method.
+    """
+    validate = getattr(provider, "validate_config", None)
+    if validate is None:
+        return
+    error = validate(config)
+    if error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, error)
+
+
 def _provider_out(p: IntegrationProvider) -> ProviderOut:
     return ProviderOut(
         provider=p.provider,
@@ -232,7 +256,14 @@ class IntegrationService:
         # RELAXED for ``llm`` too (Bi-D21 / AC-BI-03b) - agents resolve by
         # connection_id, so Anthropic + OpenAI + Gemini coexist. The exempt set
         # is shared with the DB index so the 409 and the constraint agree.
-        if provider.type in EXEMPT_FROM_ONE_PER_TYPE:
+        # ``erp`` is exempt from the per-PROVIDER rule as well: the
+        # ``uq_connection_tenant_provider`` index (app/models/connection.py)
+        # carries ``type != 'erp'`` in its predicate because one AutoCount
+        # company = one ``autocount``/``sql_database`` connection (sprint-4/13
+        # D16/D17, plan 22). Mirror the index exactly - no 409 for erp.
+        if provider.type == "erp":
+            pass
+        elif provider.type in EXEMPT_FROM_ONE_PER_TYPE:
             dup = self.repo.get_by_provider(tenant_id, provider.provider)
             if dup is not None:
                 raise HTTPException(
@@ -248,6 +279,7 @@ class IntegrationService:
                     f'A {existing.type} connection ("{existing.name}") already exists '
                     "for this workspace - disconnect it first.",
                 )
+        _validate_provider_config(provider, dict(req.config))
         connection = Connection(
             tenant_id=tenant_id,
             provider=provider.provider,
@@ -288,7 +320,11 @@ class IntegrationService:
             # MERGE, don't replace - config is a partial PATCH field (its
             # sibling `credentials` merges too); wholesale replace would let a
             # partial body silently wipe omitted keys.
-            connection.config_json = {**(connection.config_json or {}), **req.config}
+            merged_config = {**(connection.config_json or {}), **req.config}
+            provider = get_provider(connection.provider)
+            if provider is not None:
+                _validate_provider_config(provider, merged_config)
+            connection.config_json = merged_config
         if req.rateLimitPerMinute is not None:
             connection.rate_limit_per_minute = req.rateLimitPerMinute
         # Write-only secrets: omitted/empty keys keep the stored values.
@@ -354,11 +390,32 @@ class IntegrationService:
         provider = get_provider(connection.provider)
         if provider is None:  # provider unregistered (module uninstalled)
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provider is not available.")
+        # A provider may legitimately offer NO test (the meetings notetaker
+        # account: verifying it means a real interactive sign-in). Refuse rather
+        # than run something weaker and stamp the connection ACTIVE on the
+        # strength of it - the row stays UNVERIFIED, which is the truth.
+        if not getattr(provider, "test_label", ""):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "This connection has no test.",
+            )
         credentials = _decrypt_or_none(connection.credentials_json)
         if credentials is None:
             # Key rotation made the stored secret unreadable - surface a clean,
             # actionable failure instead of a 500.
             result = TestResult(ok=False, message=_STALE_CIPHERTEXT_MSG)
+        elif getattr(provider, "test_needs_context", False):
+            # A provider whose test has to READ the tenant's own rows opts in
+            # with this attribute (meetings' shared-calendar mode probes each
+            # opted-in user's calendar). Handing the session over beats making
+            # the provider open one of its own, which no test could then steer.
+            result = provider.test(
+                connection.config_json or {},
+                credentials,
+                target,
+                db=self.db,
+                tenant_id=tenant_id,
+            )
         else:
             result = provider.test(connection.config_json or {}, credentials, target)
         checked_at = _now()

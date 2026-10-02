@@ -35,8 +35,8 @@ const PROVENANCE: AutocountMappingRow[] = [
 
 function rows(): MappingEditableRow[] {
   return [
-    { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' },
-    { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name' },
+    { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true },
+    { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name', isEnabled: true },
   ];
 }
 
@@ -66,7 +66,7 @@ describe('unmappedRequiredFields', () => {
   it('is empty when every required field is mapped', () => {
     const full = [
       ...rows(),
-      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active' },
+      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active', isEnabled: true },
     ];
     expect(unmappedRequiredFields(full, SORENTO)).toEqual([]);
   });
@@ -118,11 +118,11 @@ describe('MappingTable edit mode', () => {
 
   it('disables Add field once every accepted target is used', () => {
     const full = [
-      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' },
-      { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name' },
-      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active' },
-      { sourcePath: 'EmailAddress', transform: 'string', formula: null, sorentoField: 'email' },
-      { sourcePath: 'Mobile', transform: 'string', formula: null, sorentoField: 'phone_number' },
+      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true },
+      { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name', isEnabled: true },
+      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active', isEnabled: true },
+      { sourcePath: 'EmailAddress', transform: 'string', formula: null, sorentoField: 'email', isEnabled: true },
+      { sourcePath: 'Mobile', transform: 'string', formula: null, sorentoField: 'phone_number', isEnabled: true },
     ];
     renderTable(true, { rows: full });
     expect(screen.getByRole('button', { name: /add field/i })).toBeDisabled();
@@ -144,6 +144,93 @@ describe('MappingTable edit mode', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /build formula for row/i })[1]);
     expect(onBuildRow).toHaveBeenCalledWith(1);
   });
+
+  it('never offers formula mode for a list-transform row (sprint-5/06 review nit, foolproof-UI)', () => {
+    const listRow: MappingEditableRow = {
+      sourcePath: 'FromSODocList', transform: 'string_list', formula: null, sorentoField: 'from_so_numbers',
+      isEnabled: true,
+    };
+    renderTable(true, { rows: [...rows(), listRow] });
+    // 3 rows total; only the 2 non-list rows offer a "Build formula" button.
+    expect(screen.getAllByRole('button', { name: /build formula for row/i }).length).toBe(2);
+    expect(screen.queryByRole('button', { name: /build formula for row 3/i })).toBeNull();
+  });
+});
+
+describe('MappingTable transform picker - ref-preset filtering (S5 review BLOCKER 2)', () => {
+  it('offers ONLY the matching ref preset for a *_ref field row', () => {
+    renderTable(true, {
+      rows: [{ sourcePath: 'CustomerCode', transform: 'ref_customer', formula: null, sorentoField: 'customer_ref', isEnabled: true }],
+      sorentoFields: [{ field: 'customer_ref', required: false }],
+    });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Transform for row 1' }));
+    const items = within(screen.getByRole('listbox')).getAllByRole('option').map((o) => o.textContent);
+    expect(items).toEqual(['Customer ref']);
+  });
+
+  it('never offers a ref preset for a non-ref field row', () => {
+    renderTable(true);
+    // row 1 targets `code` (not a ref field).
+    fireEvent.click(screen.getByRole('combobox', { name: 'Transform for row 1' }));
+    const items = within(screen.getByRole('listbox')).getAllByRole('option').map((o) => o.textContent);
+    expect(items.some((t) => (t ?? '').toLowerCase().includes('ref'))).toBe(false);
+  });
+});
+
+describe('MappingTable status seed formula (S5 review SHOULD-FIX 4c - a VALUE, not on-screen copy)', () => {
+  const DOC_SORENTO: AutocountSorentoField[] = [
+    { field: 'status', required: true },
+    { field: 'so_number', required: true },
+  ];
+
+  it('pre-fills the boolean seed when the target is status on a document entity and the source column is boolean', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, {
+      rows: [{ sourcePath: 'IsCancelled', transform: 'string', formula: null, sorentoField: '', isEnabled: true }],
+      sorentoFields: DOC_SORENTO,
+      entityType: 'sales_order',
+      columnTypes: { IsCancelled: 'boolean' },
+      onChangeRow,
+    });
+    const trigger = screen.getByRole('combobox', { name: 'Sorento field for row 1' });
+    fireEvent.click(trigger);
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('Status *'));
+    expect(onChangeRow).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({
+        sorentoField: 'status',
+        formula: 'if(value == true, "cancelled", "open")',
+      }),
+    );
+  });
+
+  it('never overwrites a formula the operator already set', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, {
+      rows: [{ sourcePath: 'IsCancelled', transform: 'string', formula: 'value', sorentoField: '', isEnabled: true }],
+      sorentoFields: DOC_SORENTO,
+      entityType: 'sales_order',
+      columnTypes: { IsCancelled: 'boolean' },
+      onChangeRow,
+    });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Sorento field for row 1' }));
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('Status *'));
+    expect(onChangeRow).toHaveBeenCalledWith(0, { sorentoField: 'status' });
+  });
+
+  it('leaves the formula empty when the source column is not boolean-typed', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, {
+      rows: [{ sourcePath: 'StatusText', transform: 'string', formula: null, sorentoField: '', isEnabled: true }],
+      sorentoFields: DOC_SORENTO,
+      entityType: 'sales_order',
+      columnTypes: { StatusText: 'string' },
+      onChangeRow,
+    });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Sorento field for row 1' }));
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('Status *'));
+    expect(onChangeRow).toHaveBeenCalledWith(0, { sorentoField: 'status' });
+  });
 });
 
 describe('MappingTable formula display (AC-16-10)', () => {
@@ -155,6 +242,7 @@ describe('MappingTable formula display (AC-16-10)', () => {
           transform: 't_f_bool',
           formula: 'if(value == "T", true, false)',
           sorentoField: 'is_active',
+          isEnabled: true,
         },
       ],
     });
@@ -164,8 +252,240 @@ describe('MappingTable formula display (AC-16-10)', () => {
 
   it('keeps a passthrough row simple - preset label, no formula clutter', () => {
     renderTable(false, {
-      rows: [{ sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' }],
+      rows: [{ sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true }],
     });
     expect(screen.getByText('Text')).toBeInTheDocument();
   });
 });
+
+describe('column source mode (plan 22 S2, AC-22-09)', () => {
+  it('offers ONLY the result columns - no free-typed path, no custom item', () => {
+    renderTable(true, { sourceMode: 'column', acFields: ['AccNo', 'CompanyName'] });
+    expect(screen.getByText('Source column')).toBeInTheDocument();
+    const picker = screen.getByRole('combobox', { name: 'Source column for row 1' });
+    fireEvent.click(picker);
+    fireEvent.change(screen.getByPlaceholderText('Search columns'), {
+      target: { value: 'Data.0.Nope' },
+    });
+    expect(screen.queryByText(/Use "Data\.0\.Nope"/)).not.toBeInTheDocument();
+  });
+
+  it('is disabled until the task has result columns to offer', () => {
+    renderTable(true, { sourceMode: 'column', acFields: [] });
+    expect(screen.getByRole('combobox', { name: 'Source column for row 1' })).toBeDisabled();
+  });
+
+  it('keeps the API path mode unchanged by default', () => {
+    renderTable(true);
+    expect(screen.getByText('AutoCount field')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 1' })).toBeInTheDocument();
+  });
+});
+
+// sprint-5/02 (AC-02-16/21) - a preset-seeded row whose column vanished.
+describe('column mode - disabled/seeded rows (sprint-5/02, AC-02-21)', () => {
+  function rowsWithStaleSource(): import('./mapping-table').MappingEditableRow[] {
+    return [
+      { sourcePath: 'GoneColumn', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true },
+      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'name', isEnabled: true },
+    ];
+  }
+
+  it('greys a row whose source is not in acFields, with a "not in query" badge', () => {
+    render(
+      <MappingTable
+        editing
+        rows={rowsWithStaleSource()}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo']}
+        sourceMode="column"
+        onChangeRow={vi.fn()}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Column not in query')).toBeInTheDocument();
+    // The trigger still shows the stale value, not the placeholder.
+    expect(screen.getByRole('combobox', { name: 'Source column for row 1' })).toHaveTextContent(
+      'GoneColumn',
+    );
+  });
+
+  it('never flags a legitimately-blank new row', () => {
+    render(
+      <MappingTable
+        editing
+        rows={[{ sourcePath: '', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true }]}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo']}
+        sourceMode="column"
+        onChangeRow={vi.fn()}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Column not in query')).not.toBeInTheDocument();
+  });
+
+  it('picking a valid column from a disabled row is offered (no dead options)', () => {
+    const onChangeRow = vi.fn();
+    render(
+      <MappingTable
+        editing
+        rows={rowsWithStaleSource()}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo', 'CompanyName']}
+        sourceMode="column"
+        onChangeRow={onChangeRow}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Source column for row 1' }));
+    fireEvent.click(screen.getByRole('option', { name: 'CompanyName' }));
+    expect(onChangeRow).toHaveBeenCalledWith(0, expect.objectContaining({ sourcePath: 'CompanyName' }));
+  });
+
+  it('a row already on a real column never shows the badge', () => {
+    render(
+      <MappingTable
+        editing={false}
+        rows={[{ sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true }]}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo', 'CompanyName']}
+        sourceMode="column"
+        onChangeRow={vi.fn()}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Column not in query')).not.toBeInTheDocument();
+  });
+});
+
+describe('AC-DLA-56 (T7): migrated off the raw <table> onto DataGrid', () => {
+  it('renders as a DataGrid (table role + column headers), not a bare <table>', () => {
+    renderTable(true);
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'AutoCount field' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Transform' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Sorento field' })).toBeInTheDocument();
+    // 2 data rows + the header row.
+    expect(screen.getAllByRole('row')).toHaveLength(3);
+  });
+
+  it('shows the "no rows" message via the DataGrid empty state', () => {
+    renderTable(true, { rows: [] });
+    expect(screen.getByText('No deliverable fields mapped yet.')).toBeInTheDocument();
+  });
+});
+
+// sprint-5/12 (AC-12-25) - the per-row Enabled switch + a visible disabled
+// state. Before this the table never rendered `isEnabled` at all, so a row a
+// preset withholds (`uom_code`, AC-10-74 - its column IS previewed) looked
+// like an ordinary delivered row.
+describe('Enabled column (sprint-5/12, AC-12-25)', () => {
+  function withEnabled(isEnabled: boolean): MappingEditableRow[] {
+    return [
+      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code', isEnabled },
+    ];
+  }
+
+  it('a disabled row whose column IS present still reads Disabled', () => {
+    // The `uom_code` shape exactly: `AccNo` is in `acFields`, so the stale
+    // badge must NOT show - only the Disabled one.
+    renderTable(false, { rows: withEnabled(false) });
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+    expect(screen.queryByText('Column not in query')).not.toBeInTheDocument();
+  });
+
+  it('an enabled row carries no Disabled badge', () => {
+    renderTable(false, { rows: withEnabled(true) });
+    expect(screen.queryByText('Disabled')).not.toBeInTheDocument();
+  });
+
+  it('the switch is hidden outside edit mode and labelled by its Sorento field inside it', () => {
+    const { unmount } = renderTable(false, { rows: withEnabled(true) });
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    unmount();
+
+    renderTable(true, { rows: withEnabled(true) });
+    expect(screen.getByRole('switch', { name: 'Send Code to Sorento' })).toBeInTheDocument();
+  });
+
+  it('toggling the switch patches ONLY isEnabled on that row', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, { rows: withEnabled(false), onChangeRow });
+    fireEvent.click(screen.getByRole('switch', { name: 'Send Code to Sorento' }));
+    expect(onChangeRow).toHaveBeenCalledWith(0, { isEnabled: true });
+  });
+
+  it('switching a row off patches isEnabled false (the AC-10-74 re-withhold path)', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, { rows: withEnabled(true), onChangeRow });
+    fireEvent.click(screen.getByRole('switch', { name: 'Send Code to Sorento' }));
+    expect(onChangeRow).toHaveBeenCalledWith(0, { isEnabled: false });
+  });
+
+  it('a row that is BOTH stale and disabled shows both badges', () => {
+    render(
+      <MappingTable
+        editing
+        rows={[{ sourcePath: 'GoneColumn', transform: 'string', formula: null, sorentoField: 'code', isEnabled: false }]}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo']}
+        sourceMode="column"
+        onChangeRow={vi.fn()}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+    expect(screen.getByText('Column not in query')).toBeInTheDocument();
+  });
+});
+
+describe('MappingTable locked branch identity rows (sprint-5/14 section 11, round 3)', () => {
+  const BRANCH_SORENTO: AutocountSorentoField[] = [
+    { field: 'acc_no', required: true },
+    { field: 'code', required: true },
+    { field: 'name', required: false },
+  ];
+  const branchRows = (): MappingEditableRow[] => [
+    { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'acc_no', isEnabled: true },
+    { sourcePath: 'BranchCode', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true },
+    { sourcePath: 'BranchName', transform: 'string', formula: null, sorentoField: 'name', isEnabled: true },
+  ];
+
+  it('locks the AccNo and BranchCode rows (disabled pickers, no formula or remove) and leaves Name free', () => {
+    renderTable(true, { entityType: 'branch', rows: branchRows(), sorentoFields: BRANCH_SORENTO, acFields: ['AccNo', 'BranchCode', 'BranchName'] });
+    expect(screen.getAllByText('Locked')).toHaveLength(2);
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 1' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 2' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 3' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Build formula for row 1' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Build formula for row 3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove row 2' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Remove row 3' })).toBeEnabled();
+    // The Sorento field picker is locked too (retargeting would unlock the row).
+    expect(screen.getByRole('combobox', { name: 'Sorento field for row 1' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Sorento field for row 2' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Sorento field for row 3' })).toBeEnabled();
+  });
+
+  it('control: another entity with a code row is never locked', () => {
+    renderTable(true, { entityType: 'brand' });
+    expect(screen.queryByText('Locked')).not.toBeInTheDocument();
+  });
+});
+

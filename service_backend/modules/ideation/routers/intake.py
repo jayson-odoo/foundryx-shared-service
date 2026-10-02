@@ -25,10 +25,11 @@ def create_idea(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Deterministic conversational-intake turn (§5.1). Returns exactly
-    ``{draft_id, status, captured, missing, reply_text, link?, duplicate_of?}``
-    (no LLM). ``product_id`` is validated for the key's tenant; ``confirm`` is the
-    only path to ``complete`` (D-CONFIRM)."""
+    """Deterministic conversational-intake turn (§5.1, S1). Returns the full
+    ten-key envelope - ``status, draft_id, reply_text, missing, next_field,
+    title, captured, duplicate_candidate, idea_number, link`` (no LLM).
+    ``product_id`` is validated for the key's tenant; ``confirm`` is the only
+    path to ``complete`` (D-CONFIRM)."""
     return IntakeService(db).create_idea(
         api_ws.tenant_id,
         product_id=body.product_id,
@@ -42,6 +43,12 @@ def create_idea(
         fields=body.fields,
         remove=body.remove,
         confirm=body.confirm,
+        is_test=body.is_test,
+        title=body.title,
+        skip=body.skip,
+        cancel=body.cancel,
+        duplicate_choice=body.duplicate_choice,
+        submitter_tier=body.submitter_tier,
     )
 
 
@@ -53,23 +60,25 @@ def create_idea_one_shot(
 ) -> dict:
     """One-shot chatbot create (SS-IDEATION-OWN). The host has already collected
     and confirmed the idea - this creates it straight into ``captured`` and
-    returns ``{idea_id, number, status, link}``. ``submitter_crm_user_id`` is
-    required (422 ``submitter_required``); blank ``problem`` = 422
-    ``problem_required``; unknown product = 404 ``unknown_product``. The
-    draft/collect/confirm flow (``/create-idea``) is unchanged."""
+    returns ``{idea_id, idea_number, status, title, link}``. Errors (uniform
+    envelope): 422 ``submitter_required`` (no ``submitter_crm_user_id``), 422
+    ``problem_required``, 422 ``title_too_long``, 422 ``invalid_phone``, 404
+    ``unknown_product``. ``/create-idea`` (the turn flow) is unchanged."""
     return IntakeService(db).create_one_shot(
         api_ws.tenant_id,
         product_id=body.product_id,
         problem=body.problem,
+        title=body.title,
         proposed_solution=body.proposed_solution,
         impact=body.impact,
         department=body.department,
         submitter_crm_user_id=body.submitter_crm_user_id,
         submitter_phone=body.submitter_phone,
         submitter_name=body.submitter_name,
+        submitter_tier=body.submitter_tier,
         raw_transcript=body.raw_transcript,
         attachments=[a.model_dump() for a in body.attachments] if body.attachments else None,
-        source=body.source,
+        is_test=body.is_test,
     )
 
 
@@ -80,13 +89,16 @@ def similar_own_ideas(
     db: Session = Depends(get_db),
 ) -> dict:
     """The sender's OWN live ideas similar to ``text`` (SS-IDEATION-OWN): same
-    submitter only (CRM user id or phone - never name), live only (no drafts, no
-    archived/terminal), same product, top 3, existing pg_trgm threshold. Returns
-    ``{matches:[{idea_id, number, problem, status, similarity, created_at, link}]}``."""
+    submitter only (CRM user id or phone - never name), live only (no draft /
+    rejected / duplicate / archived / merged-away), same product + test lane,
+    top 3, the existing pg_trgm threshold. Returns ``{matches:[{idea_id,
+    idea_number, title, problem, status, status_label, similarity, created_at,
+    link}]}``. 422 ``submitter_required`` when no usable identity is given."""
     return IntakeService(db).similar_own(
         api_ws.tenant_id,
         product_id=body.product_id,
         text_=body.text,
         submitter_crm_user_id=body.submitter_crm_user_id,
         submitter_phone=body.submitter_phone,
+        is_test=body.is_test,
     )

@@ -275,3 +275,76 @@ def test_platform_storage_seed_refuses_without_fernet_key(session_factory, monke
     )
     assert "FERNET_KEY" in capsys.readouterr().out
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Review round 1, finding B2a - `LocalDiskStorage` read paths (`fetch`/
+# `resolve`/`delete`) used to join a caller-supplied key straight onto
+# `media_root` with NO traversal guard at all (only WRITE-time `_safe()` on
+# a `key_hint` guarded anything). A client-controlled key
+# (`contactsCsvKey`, an `ImportJob.file_storage_key`, ...) reaching one of
+# these unguarded was an arbitrary-file read off the host filesystem.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_local_disk_fetch_rejects_directory_traversal(tmp_path):
+    from app.services.storage import LocalDiskStorage
+
+    root = tmp_path / "media"
+    root.mkdir()
+    secret_path = tmp_path / "outside-secret.txt"
+    secret_path.write_text("host secret")
+
+    storage = LocalDiskStorage(root=str(root))
+    with pytest.raises(FileNotFoundError):
+        storage.fetch("../outside-secret.txt")
+
+
+def test_local_disk_fetch_rejects_absolute_path(tmp_path):
+    from app.services.storage import LocalDiskStorage
+
+    root = tmp_path / "media"
+    root.mkdir()
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("nope")
+
+    storage = LocalDiskStorage(root=str(root))
+    with pytest.raises(FileNotFoundError):
+        storage.fetch(str(outside))
+
+
+def test_local_disk_resolve_rejects_traversal_and_home_and_nul(tmp_path):
+    from app.services.storage import LocalDiskStorage
+
+    root = tmp_path / "media"
+    root.mkdir()
+    storage = LocalDiskStorage(root=str(root))
+    for bad_key in ("../../etc/hosts", "~/.ssh/id_rsa", "a\x00b"):
+        with pytest.raises(FileNotFoundError):
+            storage.resolve(bad_key)
+
+
+def test_local_disk_fetch_still_serves_a_legitimate_nested_key(tmp_path):
+    """The guard must not collateral-damage the normal multi-segment keys
+    `save()` itself mints (e.g. `omnichannel/migration/uploads/<uuid>/
+    contacts.csv-<rand>.csv`)."""
+    from app.services.storage import LocalDiskStorage
+
+    root = tmp_path / "media"
+    root.mkdir()
+    storage = LocalDiskStorage(root=str(root))
+    key = storage.save("omnichannel/migration/uploads/abc/contacts.csv", b"a,b\n1,2\n", "text/csv")
+    content, _mime = storage.fetch(key)
+    assert content == b"a,b\n1,2\n"
+
+
+def test_local_disk_delete_rejects_traversal(tmp_path):
+    from app.services.storage import LocalDiskStorage
+
+    root = tmp_path / "media"
+    root.mkdir()
+    outside = tmp_path / "do-not-delete.txt"
+    outside.write_text("still here")
+    storage = LocalDiskStorage(root=str(root))
+    storage.delete(str(outside))  # a rejected key is a silent no-op, never a crash
+    assert outside.is_file()

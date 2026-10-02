@@ -9,6 +9,12 @@ export interface FormTab {
   icon?: LucideIcon;
   /** Render tab content; `editing` flips fields read ↔ editable (global edit). */
   render: (ctx: { editing: boolean }) => ReactNode;
+  /**
+   * Shown but not selectable - a tab whose surface is not yet available on
+   * this record (e.g. a task's Schedule before its query exists). Keeps the
+   * full structure visible without offering a dead-end (foolproof-UI).
+   */
+  disabled?: boolean;
 }
 
 export interface BreadcrumbStep {
@@ -23,12 +29,47 @@ export interface RecordNavConfig {
   buildHref: (recordId: string, ctx: string, index: number) => string;
 }
 
+/**
+ * A page-specific call to action (D12): renders as ONE plain primary button in
+ * the record-actions slot where Edit sits. While it is set the shell moves Edit
+ * into the "..." menu as its first item. `href` renders it as an external link
+ * (new tab) instead of a button; `reason` is the muted line under the row when
+ * the CTA is disabled.
+ */
+export interface FormPrimaryAction {
+  id: string;
+  label: string;
+  icon?: LucideIcon;
+  disabled?: boolean;
+  reason?: ReactNode;
+  onRun?: () => void | Promise<void>;
+  href?: string;
+}
+
+/** Structured actions note: plain text plus one external link (e.g. the issue). */
+export interface FormActionsNote {
+  text: string;
+  href?: string;
+  linkLabel?: string;
+}
+
 export interface ResourceFormConfig<T> {
   breadcrumb: BreadcrumbStep[];
   /** Where the breadcrumb "back" + Back button return to (the list). */
   backHref: string;
   backLabel?: string;
   title: string;
+  /**
+   * Override for the "Save <noun>"/"Create <noun>" primary-button noun
+   * (AC-DLA-35 fix round 1). Without it, `ResourceForm` derives the noun from
+   * the SIDEBAR ancestor for the current route - correct for a page whose
+   * URL sits directly under its own list entry, but a form embedded on a
+   * FOREIGN parent's route (the AutoCount task editor lives under a company
+   * detail page, the mapping editor under a connection's own route) resolved
+   * to that ancestor's noun instead ("Save company"). Set this when the
+   * form's route isn't its own list's route.
+   */
+  entityNoun?: string;
   /** Sub-identifier under the title. Accepts a node so it can carry a link
    * (e.g. a clickable trace id) - a bare string is still valid (string ⊂ node). */
   subtitle?: ReactNode;
@@ -42,11 +83,23 @@ export interface ResourceFormConfig<T> {
   /** The record, wrapped for action runtime ([] when creating). */
   actionRows: T[];
   /**
+   * A `deferred` form action's park/current/cancel entity id (T5 fix round
+   * 2, S2) - defaults to `row.id`, which a record with no `id` field (e.g.
+   * `StoreModule`, keyed by `name`) doesn't have.
+   */
+  getEntityId?: (row: T) => string;
+  /**
    * Refresh the loaded record after a mutating form-surface action (e.g. a
    * Test that flips status). Without it, `runtime.reload` is a no-op on the
    * form (plan 06 - the connection Health card went stale otherwise).
    */
   onReload?: () => void;
+
+  /** Page CTA taking Edit's slot (Edit moves into the "..." menu). Omit for the
+   * plain Edit primary. */
+  primaryAction?: FormPrimaryAction;
+  /** Muted line under the record-actions row; wins over `primaryAction.reason`. */
+  actionsNote?: ReactNode | FormActionsNote;
 
   /** Whether the Edit toggle is offered (false for create/new). */
   editable: boolean;
@@ -58,6 +111,13 @@ export interface ResourceFormConfig<T> {
   isDirty: boolean;
   /** Commit edits. Return false to stay in edit mode (validation failed). */
   onSave: () => Promise<boolean> | boolean;
+  /**
+   * Withhold the Save/Create button while a REQUIRED pick is still missing
+   * (foolproof-UI: a create form whose only input is a picker must not offer a
+   * Create that is guaranteed to fail). Distinct from `isDirty`, which gates
+   * the unsaved-changes guard, not the button.
+   */
+  saveDisabled?: boolean;
   /** Revert edits (RHF reset). */
   onCancel: () => void;
 

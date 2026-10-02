@@ -49,6 +49,7 @@ export const COLOR_NAME_HEX: Record<string, string> = {
   orange: '#F97316',
   blue: '#3B82F6',
   cyan: '#06B6D4',
+  indigo: '#6366F1',
   violet: '#8B5CF6',
   red: '#EF4444',
   gray: '#6B7280',

@@ -22,6 +22,54 @@ import { delay, runQuery, type QueryAdapter } from './mock-query';
 const DEFAULT_TENANT = 'default';
 const EPOCH = Date.parse('2026-06-01T09:00:00Z');
 
+/**
+ * PHASE 1 MOCK (plan 22 S1, AC-22-01/04): the generic SQL-database provider
+ * descriptor EXACTLY as the backend `SqlDatabaseProvider.fields()` must emit
+ * it (`modules/autocount/sql_provider.py`, provider `sql_database`, type
+ * `erp`). The connections form renders it from the registry - zero
+ * provider-specific form code. `port.defaultsFrom` drives the per-dialect
+ * default (1433 / 5432 / 3306). `password` is Fernet write-only (blank = keep).
+ */
+export const SQL_DATABASE_PROVIDER: IntegrationProvider = {
+  provider: 'sql_database',
+  type: 'erp',
+  title: 'SQL Database',
+  description:
+    'Read directly from an accounting database over a read-only login. Microsoft SQL Server, PostgreSQL or MySQL.',
+  icon: 'database',
+  testLabel: 'Test connection',
+  testTarget: null,
+  fields: [
+    {
+      key: 'dbType',
+      label: 'Database type',
+      type: 'select',
+      required: true,
+      defaultValue: 'mssql',
+      options: [
+        { value: 'mssql', label: 'Microsoft SQL Server' },
+        { value: 'postgresql', label: 'PostgreSQL' },
+        { value: 'mysql', label: 'MySQL' },
+      ],
+    },
+    { key: 'host', label: 'Host', type: 'text', required: true, placeholder: 'db.yourcompany.com' },
+    {
+      key: 'port',
+      label: 'Port',
+      type: 'number',
+      required: true,
+      defaultValue: '1433',
+      defaultsFrom: {
+        field: 'dbType',
+        values: { mssql: '1433', postgresql: '5432', mysql: '3306' },
+      },
+    },
+    { key: 'database', label: 'Database', type: 'text', required: true, placeholder: 'AED_Company_2024' },
+    { key: 'username', label: 'Username', type: 'text', required: true, placeholder: 'readonly_user' },
+    { key: 'password', label: 'Password', type: 'password', required: true, secret: true },
+  ],
+};
+
 /** Provider catalog - SMTP (plan 09) + the storage pair (plan 06 D2/D3):
  *  TWO cards, one S3-compatible adapter underneath. R2 derives its endpoint
  *  from the Account ID; the S3 card's optional endpoint covers MinIO/Wasabi. */
@@ -112,6 +160,7 @@ const PROVIDERS: IntegrationProvider[] = [
       },
     ],
   },
+  SQL_DATABASE_PROVIDER,
 ];
 
 let connections: Connection[] = [];

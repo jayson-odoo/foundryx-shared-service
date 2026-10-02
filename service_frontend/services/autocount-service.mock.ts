@@ -14,32 +14,104 @@
  *   - `*logging*` / `*nopreview*`  → not previewable (logging sink)
  *   - `*fail*`                     → the dry run failed (throws HTTP 502)
  *   - anything else                → a realistic previewable payload
+ *
+ * PHASE 1 MOCK (plan sprint-5/01 S1) - DB-only company onboarding is built
+ * against this mock FIRST; the S2 backend swaps it out. The contract it
+ * encodes lives in the "DB-only company fixtures" section below.
  */
 import { ApiError } from '@/lib/api-client';
+import { simulateCombine } from '@/lib/autocount-combine';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
+import {
+  DEFAULT_DOC_FEED_SCHEDULE,
+  DEFAULT_STATUS_FORMULA,
+  HTTP_PRESETS,
+  MIN_RECONCILE_HOURS,
+  REF_PREFIX_RE,
+  RECONCILE_TIME_RE,
+  incrementalFloorMinutes,
+  isDocumentEntity,
+  readFieldErrors,
+  readTaskError,
+} from '@/lib/autocount-etl';
 import type {
+  AutocountApiConnection,
   AutocountApprovalResult,
+  AutocountCombineConfig,
   AutocountCompany,
+  AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountDocumentPrerequisite,
+  AutocountDeliveryMode,
   AutocountEntityConfig,
+  AutocountEntityConfigUpdate,
+  AutocountEtlPreviewResult,
+  AutocountEtlRunStart,
+  AutocountEtlSourceConfig,
+  AutocountEtlTask,
+  AutocountEtlTaskError,
+  AutocountEtlTaskUpdate,
+  AutocountPreview,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
+  AutocountMappingPreset,
+  AutocountMappingResetPreview,
+  AutocountMappingRow,
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
+  AutocountPreviewJob,
+  AutocountPreviewJobResult,
+  AutocountPreviewJobScope,
+  AutocountPreviewJobStart,
+  AutocountPreviewJobStartInput,
   AutocountPreviewResult,
+  AutocountPullApiKey,
+  AutocountPullApiKeyCreateInput,
+  AutocountPullApiKeyIssued,
+  AutocountPullSnapshot,
+  AutocountPullSnapshotRowsPage,
   AutocountSimulateFieldResult,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
+  AutocountSorentoField,
+  AutocountSourceImpl,
+  AutocountSqlConnection,
+  AutocountSqlPreview,
+  AutocountSqlSchema,
+  AutocountSqlTable,
   AutocountStagedList,
   AutocountStagedQuery,
   AutocountStagedRecord,
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  DocFeedBackfill,
+  DocFeedBackfillStartInput,
+  DocFeedContractGate,
+  DocFeedEligibleConnection,
+  DocFeedIssue,
+  DocFeedItem,
+  DocFeedSchedule,
+  DocFeedKey,
+  DocFeedLastRun,
+  DocFeedMode,
+  DocFeedRun,
+  DocFeedRunInput,
+  DocFeedRunKind,
+  DocFeedRunSummary,
+  DocFeedsView,
+  DocFeedUpdateInput,
+  HttpPreview,
+  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import type { AutocountService } from './autocount-service';
+import type {
+  AutocountListQuery,
+  AutocountService,
+  DocFeedIssuesQuery,
+  DocFeedRunsQuery,
+} from './autocount-service';
 
 function mockCompany(overrides: Partial<AutocountCompany> = {}): AutocountCompany {
   return {
@@ -51,15 +123,21 @@ function mockCompany(overrides: Partial<AutocountCompany> = {}): AutocountCompan
     isActive: true,
     sinkImpl: 'logging',
     sinkConnectionId: null,
+    sorentoCompanyCode: null,
     createdAt: '2026-07-01T00:00:00Z',
+    sourceKind: 'api',
+    documentPrerequisites: [],
     ...overrides,
   };
 }
 
 function previewablePayload(jobId: string): AutocountPreviewResult {
+  return { jobId, preview: previewableBlock() };
+}
+
+/** The realistic previewable dry-run block (batch review AND the S2 task gate). */
+function previewableBlock(): AutocountPreview {
   return {
-    jobId,
-    preview: {
       previewable: true,
       sink: 'sorento',
       summary: { total: 172, created: 134, updated: 38, failed: 0, retryable: 0 },
@@ -105,7 +183,6 @@ function previewablePayload(jobId: string): AutocountPreviewResult {
           errors: {},
         },
       ],
-    },
   };
 }
 
@@ -180,23 +257,2487 @@ function mockStagedRecords(): AutocountStagedRecord[] {
   return [...changed, ...noChange];
 }
 
-const NOT_IMPLEMENTED = 'Not implemented in the AutoCount mock.';
+// ── direct-DB ETL fixtures (plan 22 S1 - PHASE 1 MOCK is the backend spec) ───
 
-export const mockAutocountService: AutocountService = {
-  listCompanies(): Promise<ListResult<AutocountCompany>> {
-    return Promise.resolve({ data: [mockCompany()], total: 1, page: 0 });
+/** Small pause so loading states are real (visible spinners, no flash). */
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Detach a stored fixture from what the caller mutates. */
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/**
+ * The tenant's `sql_database` connections. A healthy MSSQL source (bound to
+ * the seeded DB company below), a second healthy one a DB company can be
+ * CREATED from, one whose database is already an API company's (the 409 path),
+ * and a PostgreSQL one whose every connect FAILS - so the editor's connection-
+ * error state AND the create form's 422 are reachable by a real click, no
+ * backend needed.
+ */
+const SQL_CONNECTIONS: AutocountSqlConnection[] = [
+  {
+    id: 'conn-sql-1',
+    name: 'AutoCount SQL Server',
+    dialect: 'mssql',
+    database: 'AED_Sorento_2024',
+  },
+  {
+    id: 'conn-sql-2',
+    name: 'AutoCount SQL Server (branch)',
+    dialect: 'mssql',
+    database: 'AED_BRANCH',
+  },
+  {
+    id: 'conn-sql-vsoft',
+    name: 'AutoCount SQL Server (VSoft)',
+    dialect: 'mssql',
+    database: 'AED_VSOFT',
+  },
+  {
+    id: 'conn-sql-down',
+    name: 'Reporting PostgreSQL',
+    dialect: 'postgresql',
+    database: 'reporting',
+  },
+];
+
+/** AutoCount-shaped table catalog (name → columns) - the schema tree, the
+ * editor autocomplete and the preview generator all read from this one map. */
+const SQL_TABLES: AutocountSqlTable[] = [
+  {
+    name: 'Debtor',
+    columns: [
+      { name: 'AccNo', type: 'varchar(12)' },
+      { name: 'CompanyName', type: 'nvarchar(100)' },
+      { name: 'Phone1', type: 'nvarchar(25)' },
+      { name: 'EmailAddress', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'Creditor',
+    columns: [
+      { name: 'AccNo', type: 'varchar(12)' },
+      { name: 'CompanyName', type: 'nvarchar(100)' },
+      { name: 'Phone1', type: 'nvarchar(25)' },
+      { name: 'EmailAddress', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'Stock',
+    columns: [
+      { name: 'ItemCode', type: 'varchar(30)' },
+      { name: 'Description', type: 'nvarchar(100)' },
+      { name: 'ItemGroup', type: 'varchar(12)' },
+      { name: 'BaseUOM', type: 'varchar(10)' },
+      { name: 'IsActive', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'StockGroup',
+    columns: [
+      { name: 'ItemGroup', type: 'varchar(12)' },
+      { name: 'Description', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+    ],
+  },
+  {
+    name: 'ItemUOM',
+    columns: [
+      { name: 'ItemCode', type: 'varchar(30)' },
+      { name: 'UOM', type: 'varchar(10)' },
+      { name: 'Rate', type: 'decimal(18,6)' },
+    ],
+  },
+  {
+    // Zero rows on purpose - the preview's EMPTY state by a real click.
+    name: 'Location',
+    columns: [
+      { name: 'Location', type: 'varchar(12)' },
+      { name: 'Description', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+    ],
+  },
+  {
+    name: 'SalesAgent',
+    columns: [
+      { name: 'SalesAgent', type: 'varchar(12)' },
+      { name: 'Description', type: 'nvarchar(60)' },
+      { name: 'IsActive', type: 'char(1)' },
+    ],
+  },
+  {
+    name: 'SO',
+    columns: [
+      { name: 'DocKey', type: 'bigint' },
+      { name: 'DocNo', type: 'varchar(20)' },
+      { name: 'DebtorCode', type: 'varchar(12)' },
+      { name: 'Agent', type: 'varchar(12)' },
+      { name: 'DocDate', type: 'datetime' },
+      { name: 'Cancelled', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'SODtl',
+    columns: [
+      { name: 'DtlKey', type: 'bigint' },
+      { name: 'DocKey', type: 'bigint' },
+      { name: 'ItemCode', type: 'varchar(30)' },
+      { name: 'Qty', type: 'decimal(18,4)' },
+      { name: 'UnitPrice', type: 'decimal(18,4)' },
+      { name: 'Location', type: 'varchar(12)' },
+    ],
+  },
+  {
+    name: 'PO',
+    columns: [
+      { name: 'DocKey', type: 'bigint' },
+      { name: 'DocNo', type: 'varchar(20)' },
+      { name: 'CreditorCode', type: 'varchar(12)' },
+      { name: 'DocDate', type: 'datetime' },
+      { name: 'Cancelled', type: 'char(1)' },
+      { name: 'LastModified', type: 'datetime' },
+    ],
+  },
+  {
+    name: 'PODtl',
+    columns: [
+      { name: 'DtlKey', type: 'bigint' },
+      { name: 'DocKey', type: 'bigint' },
+      { name: 'ItemCode', type: 'varchar(30)' },
+      { name: 'Qty', type: 'decimal(18,4)' },
+      { name: 'UnitPrice', type: 'decimal(18,4)' },
+    ],
+  },
+];
+
+/** How many source rows each table "has" (>100 exercises the cap indicator). */
+const SQL_TABLE_ROWS: Record<string, number> = {
+  Debtor: 172,
+  Creditor: 12,
+  Stock: 486,
+  StockGroup: 6,
+  ItemUOM: 4,
+  Location: 0,
+  SalesAgent: 5,
+  SO: 31,
+  SODtl: 118,
+  PO: 9,
+  PODtl: 27,
+};
+
+function mockSqlSchema(connection: AutocountSqlConnection): AutocountSqlSchema {
+  return {
+    connectionId: connection.id,
+    dialect: connection.dialect,
+    database: connection.database,
+    schemas: [{ name: 'dbo', tables: SQL_TABLES }],
+    introspectedAt: '2026-08-30T06:00:00Z',
+  };
+}
+
+/** Deterministic sample value per column (name-driven, stable per row). */
+function sampleValue(column: string, type: string, row: number): unknown {
+  const names = [
+    'Aneka Elektrik Deras',
+    'Bintang Cool Air Sdn Bhd',
+    'Ceria Aircond Services',
+    'Delima Hardware Trading',
+    'Emas Jaya Enterprise',
+  ];
+  if (/char|text/i.test(type)) {
+    if (column === 'AccNo') return `3000/${String.fromCharCode(65 + (row % 26))}${String(row).padStart(2, '0')}`;
+    if (column === 'CompanyName' || column === 'Description') return names[row % names.length];
+    if (column === 'Phone1') return `03-55${String(1000 + row).slice(1)} ${String(2200 + row).slice(1)}`;
+    if (column === 'EmailAddress') return row % 7 === 3 ? null : `acc${row}@example.my`;
+    if (column === 'IsActive' || column === 'Cancelled') return row % 9 === 5 ? 'F' : 'T';
+    if (column === 'ItemCode') return `ITM-${String(row).padStart(4, '0')}`;
+    if (column === 'ItemGroup') return ['AIRCOND', 'PARTS', 'SERVICE'][row % 3];
+    if (column === 'BaseUOM' || column === 'UOM') return ['UNIT', 'BOX', 'SET'][row % 3];
+    if (column === 'Location') return ['HQ', 'PENANG'][row % 2];
+    if (column === 'SalesAgent') return `AG${String(1 + (row % 5)).padStart(2, '0')}`;
+    if (column === 'DocNo') return `SO-${String(2600 + row)}`;
+    if (column === 'DebtorCode' || column === 'CreditorCode') return `3000/A${String(row % 20).padStart(2, '0')}`;
+    if (column === 'Agent') return `AG${String(1 + (row % 5)).padStart(2, '0')}`;
+    return `Value ${row}`;
+  }
+  if (/bigint|int/i.test(type)) return 1000 + row;
+  if (/decimal|numeric|float/i.test(type)) return Number((row * 12.5 + 9.9).toFixed(2));
+  if (/date|time/i.test(type)) {
+    const day = String(1 + (row % 28)).padStart(2, '0');
+    return `2026-08-${day} ${String(8 + (row % 10)).padStart(2, '0')}:14:0${row % 10}`;
+  }
+  return null;
+}
+
+/**
+ * The mock's stand-in for the server-side SELECT-only guard + preview run.
+ * Mirrors the real behaviour classes exactly: 422 before the source for a
+ * non-SELECT, 400 sanitized for a bad object, capped rows for a big table.
+ */
+function runMockPreview(query: string): AutocountSqlPreview {
+  const text = query.trim().replace(/;\s*$/, '');
+  if (!text) {
+    throw new ApiError('Only a single SELECT statement can be previewed.', 422);
+  }
+  const first = text.split(/\s+/, 1)[0]?.toUpperCase();
+  if ((first !== 'SELECT' && first !== 'WITH') || text.includes(';')) {
+    throw new ApiError('Only a single SELECT statement can be previewed.', 422);
+  }
+  const match = /\bFROM\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?/i.exec(text);
+  const tableName = match?.[1];
+  const table = SQL_TABLES.find(
+    (t) => t.name.toLowerCase() === tableName?.toLowerCase(),
+  );
+  if (!table) {
+    // The sanitized shape of a real driver error - no DSN, no stack.
+    throw new ApiError(`Invalid object name '${tableName ?? '?'}'.`, 400);
+  }
+  const total = SQL_TABLE_ROWS[table.name] ?? 0;
+  const rowCount = Math.min(total, 100);
+  const rows = Array.from({ length: rowCount }, (_, i) => {
+    const record: Record<string, unknown> = {};
+    for (const col of table.columns) {
+      record[col.name] = sampleValue(col.name, col.type, i);
+    }
+    return record;
+  });
+  return {
+    columns: table.columns.map((c) => ({ name: c.name, type: c.type })),
+    rows,
+    rowCount,
+    truncated: total > 100,
+    durationMs: 180 + rowCount * 3,
+  };
+}
+
+/**
+ * Draft defaults for a never-configured entity (documents get a from-date).
+ * `connectionId` is genuinely OPTIONAL (`null` = "nothing picked yet") - a
+ * SQL connection default here was a latent bug (sprint-5/08 fix): a
+ * non-`db` company's blank task silently inherited an ARBITRARY SQL
+ * connection id, which `baseline`'s `saved.connectionId ?? lockId` then
+ * treated as "already picked", so an http/api company's lock never actually
+ * reached `config.connectionId` (the locked DISPLAY read the lock directly
+ * and looked correct; Test/Save silently used the wrong connection).
+ */
+function defaultEtlConfig(
+  entityType: string,
+  connectionId: string | null = null,
+): AutocountEtlSourceConfig {
+  return {
+    connectionId,
+    query: '',
+    lineQuery: isDocumentEntity(entityType) ? '' : null,
+    keyColumns: [],
+    watermarkColumn: null,
+    comparedColumns: [],
+    fromDate: isDocumentEntity(entityType) ? '2026-08-30' : null,
+    docDateColumn: null,
+    filterFormula: null,
+    incrementalMinutes: 5,
+    reconcileMode: 'dailyAt',
+    reconcileHours: null,
+    reconcileAt: '02:00',
+  };
+}
+
+/** In-memory task store so draft saves round-trip within the session. */
+const etlTasks = new Map<string, AutocountEtlTask>();
+
+/** A never-configured entity's DRAFT task. On a DB company the draft's
+ * connection is the company connection (the server fills it, AC-01-09). */
+function blankTask(companyId: string, entityType: string): AutocountEtlTask {
+  const company = mockCompanyState(companyId);
+  return {
+    companyId,
+    entityType,
+    etlStatus: 'draft',
+    activatedAt: null,
+    sourceConfig: defaultEtlConfig(
+      entityType,
+      company.sourceKind === 'db' ? company.connectionId : null,
+    ),
+    resultColumns: [],
+    lastPreviewAt: null,
+    lastPreviewFailedCount: null,
+    lastRunAt: null,
+    lastRunError: null,
+    lastRunErrorCode: null,
+    nextIncrementalAt: null,
+    nextReconcileAt: null,
+  };
+}
+
+function etlTaskFor(companyId: string, entityType: string): AutocountEtlTask {
+  if (companyId === DB_COMPANY_ID) ensureDbCompanySeed();
+  const key = `${companyId}:${entityType}`;
+  const existing = etlTasks.get(key);
+  if (existing) return existing;
+  const task = blankTask(companyId, entityType);
+  etlTasks.set(key, task);
+  return task;
+}
+
+// ── plan 22 S2 fixtures (PHASE 1 MOCK is the backend spec) ───────────────────
+//
+// Every S2 state is reachable by a real click, selected from data the operator
+// already controls:
+//   company delivery `logging`            → preview "nothing to preview"
+//   sorento + blank company code          → preview 422 COMPANY_ANCHOR_REQUIRED
+//   sorento + code `UNKNOWN`              → preview 422 UNKNOWN_COMPANY
+//   sorento + code starting `AMBIG`       → preview 422 COMPANY_ANCHOR_AMBIGUOUS
+//   sorento + code `DOWN`                 → preview 502 (consumer unreachable)
+//   sorento + any other code              → previewable payload → Activate
+//   Run now after changing the code to `UNKNOWN` → a FAILED run + task-level
+//   `lastRunError` (the anchor error on a scheduled run, never per record).
+
+/** What ONE session's task lifecycle stores beyond the S1 draft config. */
+interface EtlTaskOverlay {
+  etlStatus: AutocountEtlTask['etlStatus'];
+  activatedAt: string | null;
+  resultColumns: string[];
+  lastPreviewAt: string | null;
+  lastPreviewFailedCount: number | null;
+  lastRunAt: string | null;
+  lastRunError: string | null;
+  lastRunErrorCode: string | null;
+  /** sprint-5/11 (AC-11-23/27) - the id of this task's in-flight preview
+   * job, if any. Mirrors `ac_entity_config.preview_job_id`. */
+  previewJobId: string | null;
+}
+
+const etlOverlays = new Map<string, EtlTaskOverlay>();
+const companyCodes = new Map<string, string | null>();
+/** Pure-mock only: the persisted sink target per company (the overlay reads
+ * the REAL company's sink instead). */
+const mockSinks = new Map<string, Pick<AutocountCompany, 'sinkImpl' | 'sinkConnectionId'>>();
+const sourceImpls = new Map<string, AutocountSourceImpl>();
+/** Result columns of every preview run this session, by normalized query. */
+const previewColumnsByQuery = new Map<string, string[]>();
+const etlRuns = new Map<string, AutocountSyncRun[]>();
+/**
+ * Test seam (plan sprint-5/07, AC-07-20) - the ONLY way to reach the "a run
+ * is in flight" 409 with no backend: set a run id here and the next
+ * `repushEtlTask` call throws it instead of clearing anything. Cleared by
+ * `resetEtlMockState`.
+ */
+let mockRepushInFlightRunId: string | null = null;
+
+export function setMockRepushInFlight(runId: string | null): void {
+  mockRepushInFlightRunId = runId;
+}
+
+// ── human-invoked pull (sprint-5/10) - mirrors the LIVE backend contract
+// (`modules/autocount/routers/pull.py`), as the Vitest fixture double ───────
+
+/**
+ * A never-touched `stock_balance` task's DEFAULT delivery mode (sprint-5/13
+ * D18 - the PUSH GATE itself is `pushGateFor` below, driven by the company's
+ * simulated consumer contract, never this literal). This is only the
+ * session's initial value, the same role `EtlTaskOverlay`'s own defaults
+ * play - a small local literal rather than an app-level import (services
+ * stay app-agnostic).
+ */
+const DEFAULT_PULL_ENTITY_TYPES = new Set(['stock_balance']);
+
+/** Mirrors `autocount-meta.ts`'s `AC_PULL_CAPABLE_ENTITY_TYPES` - which
+ * entities may be pulled AT ALL (unrelated to the push gate above; a small
+ * local literal rather than an app-level import, services stay
+ * app-agnostic). */
+const PULL_CAPABLE_ENTITY_TYPES = new Set(['product', 'stock_balance']);
+
+const deliveryModes = new Map<string, AutocountDeliveryMode>();
+
+function deliveryModeFor(companyId: string, entityType: string): AutocountDeliveryMode {
+  const stored = deliveryModes.get(taskKey(companyId, entityType));
+  if (stored) return stored;
+  return DEFAULT_PULL_ENTITY_TYPES.has(entityType) ? 'pull' : 'push';
+}
+
+/**
+ * sprint-5/13 (AC-13-30, D18) - `stock_balance`'s push gate, PHASE 1 MOCK
+ * standing in for the backend's `EtlService._task_view` computation. Test
+ * seam `setMockPushGate` below wins when set (deterministic Vitest states,
+ * `AC-13-44` needs all three: open / contract / no_snapshot); with no
+ * override the gate follows the SAME "sentinel company code" convention
+ * `brandContractGateFor` uses for `brand` (`BRANDS23`) - a company on the
+ * Sorento sink whose code is `STOCK25` reads as a consumer that advertises
+ * contract 2.5, everything else reads as the shut, contract-too-low state a
+ * real, never-configured company would show. `null` for every entity but
+ * `stock_balance` (always `null` there, mirroring the backend).
+ */
+const STOCK_PUSH_GATE_REQUIRED_VERSION = 2.5;
+const STOCK_PUSH_GATE_CODE_SENTINEL = 'STOCK25';
+
+type MockPushGateState = 'open' | 'contract' | 'no_snapshot';
+
+const pushGateOverrides = new Map<string, MockPushGateState>();
+
+/** Test seam (mirrors `setMockRepushInFlight`) - force company `companyId`'s
+ * `stock_balance` push gate to one of the three states with no backend, or
+ * clear the override (`null`) to fall back to the sentinel-code default.
+ * Cleared by `resetEtlMockState`. */
+export function setMockPushGate(companyId: string, state: MockPushGateState | null): void {
+  if (state === null) pushGateOverrides.delete(companyId);
+  else pushGateOverrides.set(companyId, state);
+}
+
+/** The sentinel-code state for a (sinkImpl, sorentoCompanyCode) pair - used
+ * by the pure mock's `pushGateFor` (fixture company) below; sprint-5/13 S3
+ * retires the real backend's need for this convention (the real service
+ * reads `pushGate` straight off the wire). */
+function stockPushGateState(
+  company: Pick<AutocountCompany, 'sinkImpl' | 'sorentoCompanyCode'>,
+): MockPushGateState {
+  if (company.sinkImpl !== 'sorento') return 'contract';
+  const code = (company.sorentoCompanyCode ?? '').trim().toUpperCase();
+  return code === STOCK_PUSH_GATE_CODE_SENTINEL ? 'open' : 'contract';
+}
+
+function gateFromState(state: MockPushGateState): AutocountEtlTask['pushGate'] {
+  if (state === 'open') return null;
+  if (state === 'no_snapshot') return { reason: 'no_snapshot' };
+  return { version: 2.4, requiredVersion: STOCK_PUSH_GATE_REQUIRED_VERSION };
+}
+
+function pushGateFor(task: Pick<AutocountEtlTask, 'companyId' | 'entityType'>): AutocountEtlTask['pushGate'] {
+  if (task.entityType !== 'stock_balance') return null;
+  const override = pushGateOverrides.get(task.companyId);
+  const state = override ?? stockPushGateState(applyCompanyOverlay(mockCompanyState(task.companyId)));
+  return gateFromState(state);
+}
+
+function taskKey(companyId: string, entityType: string): string {
+  return `${companyId}:${entityType}`;
+}
+
+function normalizeQuery(query: string): string {
+  return query.trim().replace(/\s+/g, ' ').replace(/;$/, '').toLowerCase();
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function overlayFor(companyId: string, entityType: string): EtlTaskOverlay {
+  const key = taskKey(companyId, entityType);
+  const existing = etlOverlays.get(key);
+  if (existing) return existing;
+  const fresh: EtlTaskOverlay = {
+    etlStatus: 'draft',
+    activatedAt: null,
+    resultColumns: [],
+    lastPreviewAt: null,
+    lastPreviewFailedCount: null,
+    lastRunAt: null,
+    lastRunError: null,
+    lastRunErrorCode: null,
+    previewJobId: null,
+  };
+  etlOverlays.set(key, fresh);
+  return fresh;
+}
+
+/**
+ * Mirrors `EtlService.next_run_times` exactly - minutes floor by watermark
+ * presence for the incremental leg; `interval` mode = now + N hours;
+ * `dailyAt` = the next occurrence of HH:MM, treated as UTC (there is no
+ * tenant-level timezone setting to re-resolve against - only a per-user
+ * preference, which has no natural owner for an unattended scheduled task;
+ * BL-SS-034 tracks adding one). Mock-only + test-only: the real backend now
+ * puts `nextIncrementalAt`/`nextReconcileAt` on the wire (plan 22 S3), so
+ * this stands in only for `mockAutocountService`.
+ */
+export function computeMockNextRunTimes(
+  sourceConfig: AutocountEtlSourceConfig,
+  now: Date = new Date(),
+): { nextIncrementalAt: string; nextReconcileAt: string } {
+  const floor = incrementalFloorMinutes(Boolean(sourceConfig.watermarkColumn));
+  const minutes = Math.max(sourceConfig.incrementalMinutes || 0, floor);
+  const nextIncrementalAt = new Date(now.getTime() + minutes * 60_000).toISOString();
+
+  let nextReconcileAt: string;
+  if (sourceConfig.reconcileMode === 'interval') {
+    const hours = Math.max(sourceConfig.reconcileHours ?? MIN_RECONCILE_HOURS, MIN_RECONCILE_HOURS);
+    nextReconcileAt = new Date(now.getTime() + hours * 3_600_000).toISOString();
+  } else {
+    const at =
+      sourceConfig.reconcileAt && RECONCILE_TIME_RE.test(sourceConfig.reconcileAt)
+        ? sourceConfig.reconcileAt
+        : '02:00';
+    const [hour, minute] = at.split(':').map(Number);
+    const target = new Date(now);
+    target.setUTCHours(hour, minute, 0, 0);
+    if (target.getTime() <= now.getTime()) target.setUTCDate(target.getUTCDate() + 1);
+    nextReconcileAt = target.toISOString();
+  }
+  return { nextIncrementalAt, nextReconcileAt };
+}
+
+/**
+ * The next-run pair a task carries while active (plan 22 S3, PHASE 1 MOCK -
+ * `computeMockNextRunTimes` above stands in for the not-yet-wired backend
+ * fields). Null the instant the task is not active - a paused or draft task
+ * shows no next runs.
+ */
+function nextRunsFor(etlStatus: AutocountEtlTask['etlStatus'], sourceConfig: AutocountEtlSourceConfig) {
+  if (etlStatus !== 'active') return { nextIncrementalAt: null, nextReconcileAt: null };
+  return computeMockNextRunTimes(sourceConfig);
+}
+
+/**
+ * AC-08-33/AC-08-20 S5 - the Review & Activate banner's mock source of
+ * truth: a `brand` task on a Sorento-sink company reads GATED (contract 2.2)
+ * by default, the SAME real-world state the backend probe reports today.
+ * The operator flips it OPEN by setting the Sorento company code to
+ * `BRANDS23` (2.3, the consumer now advertises brands) - the SAME
+ * "pick a company-code sentinel" convention `anchorError`/the `DOWN` code
+ * already use above, never a hidden toggle with no on-screen control.
+ */
+function brandContractGateFor(task: AutocountEtlTask): AutocountEtlTask['brandContractGate'] {
+  if (task.entityType !== 'brand') return null;
+  const company = applyCompanyOverlay(mockCompanyState(task.companyId));
+  if (company.sinkImpl !== 'sorento') return null;
+  if ((company.sorentoCompanyCode ?? '').trim().toUpperCase() === 'BRANDS23') return null;
+  return { version: 2.2, requiredVersion: 2.3 };
+}
+
+/** `groupBy + carry + measures[].alias` (sprint-5/10 review round 4 SF-4,
+ * AC-10-82) - the combined, post-group schema a combine-carrying task's own
+ * rows carry. Mirrors the backend's `EtlTaskResponse.combineOutputColumns`
+ * (`schemas.py`) exactly; `[]` when no combine step is configured. */
+function combineOutputColumnsFor(combine: AutocountCombineConfig | null | undefined): string[] {
+  if (!combine) return [];
+  return [...combine.groupBy, ...combine.carry, ...combine.measures.map((m) => m.alias)];
+}
+
+/** Lay the session's lifecycle state over a (real or mock) task. */
+function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
+  const o = overlayFor(task.companyId, task.entityType);
+  const impl = sourceImpls.get(taskKey(task.companyId, task.entityType));
+  return {
+    ...task,
+    ...o,
+    sourceConfig: task.sourceConfig,
+    // sprint-5/08 D13 - present on every task (defaults 'sql_db'); an
+    // entity-level 'autocount_read' override never touches the TASK's own
+    // impl (there is no task on that path at all).
+    sourceImpl: impl === 'autocount_http' ? 'autocount_http' : 'sql_db',
+    brandContractGate: brandContractGateFor(task),
+    pushGate: pushGateFor(task),
+    deliveryMode: deliveryModeFor(task.companyId, task.entityType),
+    combineOutputColumns: combineOutputColumnsFor(task.sourceConfig.combine),
+    ...nextRunsFor(o.etlStatus, task.sourceConfig),
+  };
+}
+
+/** `httpPreview` result columns this session, by (connection, path, distinctOf). */
+const httpPreviewColumnsByKey = new Map<string, string[]>();
+
+function httpPreviewKey(connectionId: string, path: string, distinctOf?: string[] | null): string {
+  return `${connectionId}|${path}|${(distinctOf ?? []).join(',')}`;
+}
+
+/** The columns a saved query/endpoint yields - from the session's preview of
+ * it, else the saved picks (so an existing task still lists something to
+ * map). `impl` selects the SQL-query cache or the HTTP-path cache - the two
+ * never collide on the same task (sprint-5/08). */
+function resultColumnsFor(
+  cfg: AutocountEtlSourceConfig,
+  impl: 'sql_db' | 'autocount_http' = 'sql_db',
+): string[] {
+  if (impl === 'autocount_http') {
+    const seen = httpPreviewColumnsByKey.get(
+      httpPreviewKey(cfg.connectionId ?? '', cfg.path ?? '', cfg.distinctOf),
+    );
+    if (seen) return [...seen];
+    const picks = [
+      ...(cfg.keyFields ?? []),
+      ...(cfg.watermarkField ? [cfg.watermarkField] : []),
+      ...(cfg.comparedFields ?? []),
+    ];
+    return Array.from(new Set(picks));
+  }
+  const seen = previewColumnsByQuery.get(normalizeQuery(cfg.query));
+  if (seen) return [...seen];
+  const picks = [...cfg.keyColumns, ...(cfg.watermarkColumn ? [cfg.watermarkColumn] : []), ...cfg.comparedColumns];
+  return Array.from(new Set(picks));
+}
+
+/**
+ * A config save supersedes any earlier preview (the gate must re-run,
+ * AC-22-11/AC-08-13). `implOrSourceChanged` (AC-08-28) additionally drops an
+ * ACTIVE task back to `draft` when the impl, connection or (HTTP) path just
+ * changed - never on an unrelated field edit.
+ */
+function noteTaskSaved(
+  companyId: string,
+  entityType: string,
+  cfg: AutocountEtlSourceConfig,
+  impl: 'sql_db' | 'autocount_http' = 'sql_db',
+  implOrSourceChanged = false,
+): void {
+  const o = overlayFor(companyId, entityType);
+  o.resultColumns = resultColumnsFor(cfg, impl);
+  o.lastPreviewAt = null;
+  o.lastPreviewFailedCount = null;
+  if (implOrSourceChanged && o.etlStatus === 'active') o.etlStatus = 'draft';
+}
+
+/**
+ * The pure mock's company: a `*legacy*` id models a row that delivered to
+ * Sorento BEFORE the company code existed (backfilled NULL) - the only way a
+ * sorento sink with a blank code can exist, since the save guard refuses it.
+ */
+function mockCompanyState(id: string): AutocountCompany {
+  const legacy = id.includes('legacy');
+  const sink = mockSinks.get(id);
+  const created = createdCompanies.get(id);
+  const createdOpen = createdOpenCompanies.get(id);
+  let base: AutocountCompany;
+  if (id === DB_COMPANY_ID) base = mockDbCompany();
+  else if (id === HTTP_COMPANY_ID) base = mockHttpCompany();
+  else if (createdOpen) base = { ...createdOpen };
+  else if (created) base = { ...created };
+  else {
+    base = mockCompany({
+      id,
+      sinkImpl: legacy ? 'sorento' : 'logging',
+      sinkConnectionId: legacy ? 'conn-9' : null,
+    });
+  }
+  return sink ? { ...base, sinkImpl: sink.sinkImpl, sinkConnectionId: sink.sinkConnectionId } : base;
+}
+
+function applyCompanyOverlay(company: AutocountCompany): AutocountCompany {
+  return {
+    ...company,
+    sorentoCompanyCode: companyCodes.has(company.id)
+      ? companyCodes.get(company.id) ?? null
+      : company.sorentoCompanyCode ?? null,
+  };
+}
+
+function applyEntityOverlay(companyId: string, entity: AutocountEntityConfig): AutocountEntityConfig {
+  const impl = sourceImpls.get(taskKey(companyId, entity.entityType));
+  return {
+    ...entity,
+    ...(impl ? { sourceImpl: impl } : {}),
+    deliveryMode: deliveryModeFor(companyId, entity.entityType),
+  };
+}
+
+function applyDetailOverlay(detail: AutocountCompanyDetail): AutocountCompanyDetail {
+  return {
+    company: applyCompanyOverlay(detail.company),
+    entities: detail.entities.map((e) => applyEntityOverlay(detail.company.id, e)),
+  };
+}
+
+/** The sink-target save-time guard the backend must mirror (Appendix A6). */
+function guardSinkTarget(input: AutocountSinkTargetInput): void {
+  if (input.sinkImpl !== 'sorento') return;
+  if (!input.sinkConnectionId) {
+    throw new ApiError('Choose a Sorento connection.', 422, null, {
+      fieldErrors: { sinkConnectionId: 'Choose a Sorento connection.' },
+    });
+  }
+  if (!(input.sorentoCompanyCode ?? '').trim()) {
+    throw new ApiError('Sorento company code is required.', 422, null, {
+      fieldErrors: { sorentoCompanyCode: 'Sorento company code is required.' },
+    });
+  }
+}
+
+function noteSinkTarget(companyId: string, input: AutocountSinkTargetInput): void {
+  companyCodes.set(
+    companyId,
+    input.sinkImpl === 'sorento' ? (input.sorentoCompanyCode ?? '').trim() : null,
+  );
+}
+
+/** Switching source: never discards the query; an active task is paused. */
+function noteSourceImpl(companyId: string, entityType: string, impl: AutocountSourceImpl): void {
+  sourceImpls.set(taskKey(companyId, entityType), impl);
+  if (impl === 'autocount_read') {
+    const o = overlayFor(companyId, entityType);
+    if (o.etlStatus === 'active') o.etlStatus = 'paused';
+  }
+}
+
+/** The anchor verdict Sorento would return for a company code (A6 codes). */
+function anchorError(code: string | null): { code: string; message: string } | null {
+  const c = (code ?? '').trim();
+  if (!c) {
+    return {
+      code: 'COMPANY_ANCHOR_REQUIRED',
+      message: 'A company anchor is required: set the Sorento company code on this company.',
+    };
+  }
+  if (c.toUpperCase() === 'UNKNOWN') {
+    return { code: 'UNKNOWN_COMPANY', message: `No Sorento company matches code '${c}'.` };
+  }
+  if (c.toUpperCase().startsWith('AMBIG')) {
+    return {
+      code: 'COMPANY_ANCHOR_AMBIGUOUS',
+      message: `Code '${c}' matches more than one Sorento company.`,
+    };
+  }
+  return null;
+}
+
+/** The mock's dry-run: the same behaviour classes the real endpoint must reproduce. */
+async function mockPreviewEtlTask(
+  company: AutocountCompany,
+  task: AutocountEtlTask,
+): Promise<AutocountEtlPreviewResult> {
+  await pause(350);
+  const impl = sourceImpls.get(taskKey(task.companyId, task.entityType));
+  const configured =
+    impl === 'autocount_http'
+      ? Boolean(task.sourceConfig.path?.trim()) && (task.sourceConfig.keyFields?.length ?? 0) > 0
+      : Boolean(task.sourceConfig.query.trim()) && task.sourceConfig.keyColumns.length > 0;
+  if (!configured) {
+    throw new ApiError('Save a query with key columns before previewing.', 409);
+  }
+  const o = overlayFor(task.companyId, task.entityType);
+  if (company.sinkImpl !== 'sorento') {
+    return {
+      task: applyTaskOverlay(task),
+      preview: {
+        previewable: false,
+        sink: 'logging',
+        reason: 'No consumer is configured for this company, so there is nothing to preview.',
+      },
+    };
+  }
+  const anchor = anchorError(company.sorentoCompanyCode);
+  if (anchor) {
+    throw new ApiError(anchor.message, 422, null, anchor);
+  }
+  if ((company.sorentoCompanyCode ?? '').trim().toUpperCase() === 'DOWN') {
+    throw new ApiError(
+      'The dry run against the consumer failed. Nothing was written - resolve the consumer error first.',
+      502,
+    );
+  }
+  o.lastPreviewAt = nowIso();
+  // The mock never models a genuinely-failed prediction (only the anchor/
+  // consumer-down error classes above) - 0, never left null, so the
+  // activation gate (S5 review SHOULD-FIX 4b) reads a completed preview
+  // that reported nothing to fix.
+  o.lastPreviewFailedCount = 0;
+  return { task: applyTaskOverlay(task), preview: previewableBlock() };
+}
+
+function mockRun(over: Partial<AutocountSyncRun> & { id: string; entityType: string }): AutocountSyncRun {
+  return {
+    jobId: `job-${over.id}`,
+    windowFrom: null,
+    windowTo: null,
+    fetchedCount: 0,
+    stagedCount: 0,
+    failedCount: 0,
+    pushedCount: 0,
+    outcome: 'SUCCESS',
+    error: null,
+    truncated: false,
+    watermarkAdvancedTo: null,
+    startedAt: '2026-08-30T06:32:00Z',
+    finishedAt: '2026-08-30T06:32:00Z',
+    mode: 'incremental',
+    rowsScanned: 0,
+    addedCount: 0,
+    updatedCount: 0,
+    deletedCount: 0,
+    durationMs: 200,
+    skipReason: null,
+    ...over,
+  };
+}
+
+/** The realistic history an activated task accrues (mockup §06): a delivered
+ * incremental, a no-change tick, an overlap-skipped tick, a reconcile with a
+ * delete, a delete-guard fail-safe, and the initial manual load. Newest first. */
+function seedRunHistory(companyId: string, entityType: string, activatedAt: string): void {
+  const base = Date.parse(activatedAt);
+  const at = (offsetMs: number) => new Date(base + offsetMs).toISOString();
+  const rows: AutocountSyncRun[] = [
+    mockRun({
+      id: `${entityType}-r6`, entityType, mode: 'incremental', rowsScanned: 2, updatedCount: 2,
+      fetchedCount: 2, stagedCount: 2, pushedCount: 2, durationMs: 400,
+      startedAt: at(5 * 60_000), finishedAt: at(5 * 60_000 + 400),
+    }),
+    mockRun({
+      id: `${entityType}-r5`, entityType, mode: 'incremental', durationMs: 200,
+      startedAt: at(4 * 60_000), finishedAt: at(4 * 60_000 + 200),
+    }),
+    mockRun({
+      id: `${entityType}-r4`, entityType, mode: 'skipped', jobId: null, outcome: 'SKIPPED',
+      durationMs: null, skipReason: 'The previous run was still executing.',
+      startedAt: at(3 * 60_000), finishedAt: at(3 * 60_000),
+    }),
+    mockRun({
+      id: `${entityType}-r3`, entityType, mode: 'reconcile', rowsScanned: 172, addedCount: 1,
+      updatedCount: 3, deletedCount: 1, fetchedCount: 172, stagedCount: 5, pushedCount: 5,
+      durationMs: 6100, startedAt: at(2 * 60_000), finishedAt: at(2 * 60_000 + 6100),
+    }),
+    mockRun({
+      id: `${entityType}-r2`, entityType, mode: 'reconcile', rowsScanned: 171, deletedCount: 38,
+      fetchedCount: 171, outcome: 'FAILED', durationMs: 1900,
+      error: 'Delete guard: 38 delete intents exceed 20% of 172 known rows. Nothing was pushed.',
+      startedAt: at(60_000), finishedAt: at(60_000 + 1900),
+    }),
+    mockRun({
+      id: `${entityType}-r1`, entityType, mode: 'manual', rowsScanned: 172, addedCount: 134,
+      updatedCount: 38, fetchedCount: 172, stagedCount: 172, pushedCount: 172, durationMs: 8200,
+      startedAt: at(0), finishedAt: at(8200),
+    }),
+  ];
+  etlRuns.set(taskKey(companyId, entityType), rows);
+}
+
+function mockActivate(company: AutocountCompany, task: AutocountEtlTask): AutocountEtlTask {
+  const o = overlayFor(task.companyId, task.entityType);
+  if (o.etlStatus === 'active') throw new ApiError('This task is already active.', 409);
+  if (!o.lastPreviewAt) {
+    throw new ApiError('Run a successful preview before activating.', 409);
+  }
+  if (company.sinkImpl !== 'sorento' || !(company.sorentoCompanyCode ?? '').trim()) {
+    throw new ApiError('Set a Sorento company code on the company before activating.', 409);
+  }
+  const wasPaused = o.etlStatus === 'paused';
+  o.etlStatus = 'active';
+  o.activatedAt = nowIso();
+  if (!wasPaused) seedRunHistory(task.companyId, task.entityType, o.activatedAt);
+  return applyTaskOverlay(task);
+}
+
+function mockPause(task: AutocountEtlTask): AutocountEtlTask {
+  const o = overlayFor(task.companyId, task.entityType);
+  if (o.etlStatus !== 'active') throw new ApiError('Only an active task can be paused.', 409);
+  o.etlStatus = 'paused';
+  return applyTaskOverlay(task);
+}
+
+function mockResume(task: AutocountEtlTask): AutocountEtlTask {
+  const o = overlayFor(task.companyId, task.entityType);
+  if (o.etlStatus !== 'paused') throw new ApiError('Only a paused task can be resumed.', 409);
+  o.etlStatus = 'active';
+  return applyTaskOverlay(task);
+}
+
+function mockRunNow(company: AutocountCompany, task: AutocountEtlTask): AutocountEtlRunStart {
+  const o = overlayFor(task.companyId, task.entityType);
+  if (o.etlStatus !== 'active') throw new ApiError('Only an active task can be run.', 409);
+  const key = taskKey(task.companyId, task.entityType);
+  const history = etlRuns.get(key) ?? [];
+  const id = `${task.entityType}-m${history.length + 1}`;
+  const started = nowIso();
+  const anchor = anchorError(company.sorentoCompanyCode);
+  const run = anchor
+    ? mockRun({
+        id, entityType: task.entityType, mode: 'manual', rowsScanned: 172, fetchedCount: 172,
+        stagedCount: 172, outcome: 'FAILED', error: `${anchor.code}: ${anchor.message}`,
+        durationMs: 900, startedAt: started, finishedAt: started,
+      })
+    : mockRun({
+        id, entityType: task.entityType, mode: 'manual', rowsScanned: 172, updatedCount: 3,
+        fetchedCount: 172, stagedCount: 3, pushedCount: 3, durationMs: 1400,
+        startedAt: started, finishedAt: started,
+      });
+  etlRuns.set(key, [run, ...history]);
+  o.lastRunAt = started;
+  o.lastRunError = anchor ? anchor.message : null;
+  o.lastRunErrorCode = anchor ? anchor.code : null;
+  return { runId: run.id, jobId: run.jobId ?? `job-${run.id}`, status: 'done', task: applyTaskOverlay(task) };
+}
+
+function mockListEtlRuns(
+  companyId: string,
+  entityType: string,
+  query: AutocountListQuery = {},
+): ListResult<AutocountSyncRun> {
+  const all = etlRuns.get(taskKey(companyId, entityType)) ?? [];
+  const page = query.page ?? 0;
+  const pageSize = query.pageSize ?? 25;
+  return {
+    data: all.slice(page * pageSize, page * pageSize + pageSize).map((r) => ({ ...r })),
+    total: all.length,
+    page,
+  };
+}
+
+// ── DB-only company fixtures (plan sprint-5/01 S1 - PHASE 1 MOCK is the backend spec) ──
+//
+// BACKEND CONTRACT (S2 must match this EXACTLY - the hook + views are built on it):
+//
+//   POST /autocount/companies {connectionId, name?}   (gated autocount.companies.manage)
+//     connection provider `autocount`    → the existing API flow, unchanged (AC-01-01).
+//     connection provider `sql_database` → a DB company (AC-01-01..06): database_name =
+//       config.database (trimmed) verified by the dialect's live current-database probe;
+//       company_name best-effort from `dbo.Profile` (blank on any failure, never an
+//       error); NO ac_entity_config / ac_field_mapping seeds; activity `discover company`.
+//       409 when the connection is already bound OR the database already has a company
+//           of EITHER kind: "'<database>' is already connected as company '<label>'."
+//       422 {fieldErrors: {connectionId}} on a probe mismatch ("This login lands on
+//           '<probe>', but the connection names '<config>'.") or a connect/auth failure
+//           (the SANITIZED runtime message - never credentials, never a DSN).
+//     any other provider, or another tenant's connection → uniform 404
+//           "That connection was not found."
+//
+//   GET /autocount/companies · GET /autocount/companies/{id}     (AC-01-07, AC-01-11)
+//     CompanyItem += `sourceKind: 'api' | 'db'` - DERIVED from the connection's provider
+//       (the list resolves connections in ONE batched tenant-scoped query; a deleted
+//       connection reports 'api' and never 500s) and `documentPrerequisites:
+//       [{entityType, missing[], inactive[]}]` for each configured document entity
+//       (`sales_order` needs customer+product, `purchase_order` supplier+product;
+//       missing = no config row, inactive = row with etl_status != 'active' or disabled).
+//       The detail populates it; the LIST returns [].
+//
+//   PUT .../entities/{entityType}/etl-task · POST .../etl-task/preview on a DB company
+//     an OMITTED source_config.connectionId is FILLED with company.connection_id; a
+//       DIFFERENT one is 422 {fieldErrors: {connectionId: "A database company reads only
+//       from its own connection."}} (AC-01-09). API companies keep the free picker.
+//     the first save for `customer` / `supplier` births the row `sql_db` like the other
+//       seven (AC-01-10); `goods_received_note` is 422 "not available on a database
+//       company".
+//
+//   PATCH .../entities/{entityType} {sourceImpl: 'autocount_read'} and every vendor-client
+//     path on a DB company → 409/422 "This company is connected by database; the AutoCount
+//     API is not available." (AC-01-08) - never ConnectionNotFound, never a 500.
+//
+// Click-reachable states (no backend):
+//   conn-sql-1      bound to the seeded, in-use DB company `company-db` (excluded from the
+//                   create picker - offering it would guarantee the 409)
+//   conn-sql-2      unbound + healthy → Create succeeds → the new company's Overview
+//   conn-sql-vsoft  unbound, database AED_VSOFT = the API company's → 409 inline
+//   conn-sql-down   unbound + unreachable → 422 on connectionId inline
+//   company-db      Entities: customer + sales_order ACTIVE, product + purchase_order DRAFT,
+//                   no supplier → the prerequisite card shows one inactive-only line and
+//                   one missing+inactive line; a freshly created DB company has no entities
+//                   (AC-01-05) → no card, Add entity offers all nine.
+
+// ── open REST API source fixtures (sprint-5/08, S1 - PHASE 1 MOCK is the backend spec) ──
+//
+// BACKEND CONTRACT (S2/S3 must match this EXACTLY - the mock IS the spec).
+// See the full contract block atop `autocount-service.ts`.
+//
+// Click-reachable states (no backend):
+//   conn-api-sorento  open (no-auth), unbound → the Sorento DB company's
+//                     Source-tab API branch can point HTTP tasks at it
+//                     (AC-08-36); also pickable on the connect form.
+//   conn-api-mocha    open (no-auth), bound to the seeded `company-http`
+//                     (Mocha) - excluded from the connect picker.
+//   conn-api-vendor   basic-auth, unbound - the "Basic auth" badge + the
+//                     ref-prefix field NOT shown when picked.
+//   /itembypage       paged, 11,826 total (12 pages of 1000) - `product`.
+//   /debtorbypage     paged, 4,224 total (5 pages of 1000) - `customer`.
+//   /location         list, 2 rows - `warehouse` (small on purpose).
+//   /ItemGroup        list, 60 rows - `product_category`.
+//   /ItemBrand        list, 12 rows - `brand`.
+//   /branchbypage     paged, 4 rows (2 fixture pages) - `branch`.
+//   /itembypage + distinctOf ["BaseUOM","SalesUOM","PurchaseUOM"] - `unit_of_measure`.
+//   /bogus            422 on `path` ("Not found").
+//   any connectionId not in HTTP_API_CONNECTIONS, or a basic-auth one → 422 on `connectionId`.
+
+const HTTP_API_CONNECTIONS: AutocountApiConnection[] = [
+  {
+    id: 'conn-api-sorento',
+    name: 'Sorento REST',
+    baseUrl: 'https://hapi.sorento.cc.cd/api/db1',
+    auth: 'none',
+  },
+  {
+    id: 'conn-api-mocha',
+    name: 'Mocha REST',
+    baseUrl: 'https://hapi.sorento.cc.cd/api/db2',
+    auth: 'none',
+  },
+  {
+    id: 'conn-api-vendor',
+    name: 'AutoCount Vendor API',
+    baseUrl: 'https://api.autocountcloud.com',
+    auth: 'basic',
+  },
+];
+
+function httpConnectionFor(id: string): AutocountApiConnection | undefined {
+  return HTTP_API_CONNECTIONS.find((c) => c.id === id);
+}
+
+function isoStamp(daysAgo: number): string {
+  return new Date(Date.now() - daysAgo * 86_400_000).toISOString().replace(/\.\d+Z$/, '');
+}
+
+const ITEM_GROUPS = ['AIRCOND', 'PARTS', 'SERVICE', 'HARDWARE', 'ELECTRICAL'];
+const ITEM_BRANDS = ['DAIKIN', 'PANASONIC', 'MITSUBISHI', 'YORK', 'CARRIER', 'LG'];
+const UOMS = ['UNIT', 'BOX', 'SET', 'PCS'];
+
+/** ~30 realistic `/itembypage` rows - the `product` preset's preview sample. */
+function itemRows(count = 30): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_, i) => ({
+    ItemCode: `SRT-${String(i + 1).padStart(3, '0')}`,
+    Description: `Item ${i + 1}`,
+    Desc2: i % 4 === 0 ? '' : `Variant ${i}`,
+    ItemGroup: ITEM_GROUPS[i % ITEM_GROUPS.length],
+    ItemBrand: ITEM_BRANDS[i % ITEM_BRANDS.length],
+    BaseUOM: UOMS[i % UOMS.length],
+    SalesUOM: UOMS[(i + 1) % UOMS.length],
+    PurchaseUOM: UOMS[(i + 2) % UOMS.length],
+    LastModified: isoStamp(i),
+    IsActive: i % 11 === 5 ? 'F' : 'T',
+    Discontinued: i % 17 === 3 ? 'T' : 'F',
+  }));
+}
+
+function debtorRows(count = 30): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_, i) => ({
+    AccNo: `300-${String(i + 1).padStart(4, '0')}`,
+    CompanyName: `Customer ${i + 1} Sdn Bhd`,
+    Phone1: `03-77${String(1000 + i).slice(1)}`,
+    IsActive: i % 13 === 6 ? 'F' : 'T',
+    LastModified: isoStamp(i),
+  }));
+}
+
+const LOCATION_ROWS: Array<Record<string, unknown>> = [
+  { Location: 'HQ', Description: 'Head Office', Address1: 'Jalan Utama', IsActive: 'T' },
+  { Location: 'PENANG', Description: 'Penang Branch', Address1: 'Jalan Timah', IsActive: 'T' },
+];
+
+const ITEM_GROUP_ROWS: Array<Record<string, unknown>> = Array.from({ length: 60 }, (_, i) => ({
+  ItemGroup: `GRP${String(i + 1).padStart(2, '0')}`,
+  Description: `${ITEM_GROUPS[i % ITEM_GROUPS.length]} ${Math.floor(i / ITEM_GROUPS.length) + 1}`,
+}));
+
+const ITEM_BRAND_ROWS: Array<Record<string, unknown>> = ITEM_BRANDS.map((b) => ({
+  ItemBrand: b,
+  Description: '',
+}));
+
+const BRANCH_ROWS: Array<Record<string, unknown>> = [
+  { BranchCode: 'HQ', BranchName: 'Head Office', AccNo: '300-R009' },
+  { BranchCode: 'PJ', BranchName: 'Petaling Jaya Branch', AccNo: '300-R014' },
+  { BranchCode: 'HQ', BranchName: 'Head Office (no AccNo)', AccNo: '' },
+  { BranchCode: '', BranchName: 'No branch code', AccNo: '300-R777' },
+];
+
+/** One path's full fixture: envelope shape + the rows behind it. */
+interface HttpPathFixture {
+  envelope: 'paged' | 'list';
+  totalCount?: number;
+  rows: Array<Record<string, unknown>>;
+}
+
+const HTTP_PATH_FIXTURES: Record<string, HttpPathFixture> = {
+  '/itembypage': { envelope: 'paged', totalCount: 11826, rows: itemRows() },
+  '/debtorbypage': { envelope: 'paged', totalCount: 4224, rows: debtorRows() },
+  '/location': { envelope: 'list', rows: LOCATION_ROWS },
+  '/ItemGroup': { envelope: 'list', rows: ITEM_GROUP_ROWS },
+  '/ItemBrand': { envelope: 'list', rows: ITEM_BRAND_ROWS },
+  // sprint-5/14 section 11 - the paged `branchbypage` rows (the committed vendor
+  // fixtures branch-page-1.json + branch-page-2.json, walk order): one row has a
+  // blank AccNo and one a blank BranchCode, as the live endpoint's edge cases.
+  '/branchbypage': { envelope: 'paged', totalCount: 4, rows: BRANCH_ROWS },
+};
+
+/** Distinct, trimmed, non-blank, first-seen-order projection (mirrors the
+ * backend's `distinctOf` extraction, AC-08-22). */
+function distinctValues(rows: Array<Record<string, unknown>>, fields: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    for (const field of fields) {
+      const raw = row[field];
+      const value = typeof raw === 'string' ? raw.trim() : raw == null ? '' : String(raw);
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+/** The mock's `POST /autocount/http/preview` - the behaviour classes the
+ * real endpoint must reproduce (AC-08-14). */
+async function mockPreviewHttp(input: HttpPreviewInput): Promise<HttpPreview> {
+  await pause(600);
+  const connection = httpConnectionFor(input.connectionId);
+  if (!connection || connection.auth !== 'none') {
+    throw new ApiError('Choose an open (no-auth) AutoCount connection.', 422, null, {
+      fieldErrors: { connectionId: 'Choose an open (no-auth) AutoCount connection.' },
+    });
+  }
+  const path = input.path.trim();
+  if (!path.startsWith('/') || path.includes('..') || path.includes('?')) {
+    throw new ApiError('Enter a valid endpoint path.', 422, null, {
+      fieldErrors: { path: 'Enter a valid endpoint path.' },
+    });
+  }
+  const fixture = HTTP_PATH_FIXTURES[path];
+  if (!fixture) {
+    throw new ApiError(`'${path}' was not found.`, 422, null, {
+      fieldErrors: { path: `'${path}' was not found.` },
+    });
+  }
+  const rows50 = fixture.rows.slice(0, 50);
+  if (input.distinctOf && input.distinctOf.length > 0) {
+    const values = distinctValues(fixture.rows, input.distinctOf).slice(0, 50);
+    return {
+      envelope: fixture.envelope,
+      totalCount: fixture.envelope === 'paged' ? fixture.totalCount : undefined,
+      columns: [{ name: 'value', sample: values[0] ?? null }],
+      // Mirrors the backend's own `distinctOf` projection, whose raw set IS
+      // the single synthesised `value` column.
+      rawColumns: ['value'],
+      rows: values.map((value) => ({ value })),
+      durationMs: 180,
+    };
+  }
+  const columnNames = Object.keys(rows50[0] ?? {});
+  return {
+    envelope: fixture.envelope,
+    totalCount: fixture.envelope === 'paged' ? fixture.totalCount : undefined,
+    columns: columnNames.map((name) => ({ name, sample: rows50[0]?.[name] ?? null })),
+    // confirm round 2 (B1) - the fixture's own RAW columns, the mock's
+    // mirror of `HttpPreviewResult.raw_columns`: this mock never merges
+    // lookup aliases into its rows, so raw and merged coincide HERE, but the
+    // field is reported separately all the same so the Lookups editor's
+    // collision check is exercised against the same shape the real backend
+    // sends.
+    rawColumns: columnNames,
+    rows: rows50,
+    durationMs: 220,
+  };
+}
+
+/** The seeded open (Mocha) company - no database at all (D3/D4). */
+const HTTP_COMPANY_ID = 'company-http';
+const HTTP_COMPANY_CONNECTION = HTTP_API_CONNECTIONS[1]; // Mocha REST
+
+function mockHttpCompany(): AutocountCompany {
+  return mockCompany({
+    id: HTTP_COMPANY_ID,
+    connectionId: HTTP_COMPANY_CONNECTION.id,
+    databaseName: 'MOCHA',
+    companyName: 'Mocha Sdn Bhd',
+    name: 'Mocha',
+    sourceKind: 'http',
+    createdAt: '2026-09-10T00:00:00Z',
+  });
+}
+
+/** Open companies registered this session (created from a No-auth connection). */
+const createdOpenCompanies = new Map<string, AutocountCompany>();
+
+const DB_COMPANY_ID = 'company-db';
+const DB_COMPANY_CONNECTION = SQL_CONNECTIONS[0];
+
+/** The seeded DB company - in use for a while, so its Entities tab has state. */
+function mockDbCompany(): AutocountCompany {
+  return mockCompany({
+    id: DB_COMPANY_ID,
+    connectionId: DB_COMPANY_CONNECTION.id,
+    databaseName: DB_COMPANY_CONNECTION.database,
+    companyName: 'Sorento Trading Sdn Bhd',
+    name: 'Sorento Trading',
+    sourceKind: 'db',
+    createdAt: '2026-08-30T00:00:00Z',
+  });
+}
+
+/** DB companies registered this session (created from a `sql_database` connection). */
+const createdCompanies = new Map<string, AutocountCompany>();
+
+/** Best-effort `dbo.Profile` company names per connection (absent = unreadable → blank). */
+const PROFILE_NAMES: Record<string, string> = {
+  'conn-sql-2': 'Sorento Trading (Branch) Sdn Bhd',
+};
+
+/** Mirrors the backend's DOCUMENT_PREREQUISITES (plan §2.2). */
+const DOCUMENT_PREREQUISITES: Record<string, string[]> = {
+  sales_order: ['customer', 'product'],
+  purchase_order: ['supplier', 'product'],
+  shipping_order: ['supplier', 'product', 'warehouse'],
+};
+
+/** Display order of a DB company's rows - the ten `sql_db` entities in dependency order. */
+const DB_ENTITY_ORDER = [
+  'customer',
+  'supplier',
+  'product_category',
+  'unit_of_measure',
+  'warehouse',
+  'product',
+  'sales_agent',
+  'sales_order',
+  'purchase_order',
+  'shipping_order',
+];
+
+/** The pure function the backend's `document_prerequisites(company)` must mirror. */
+export function computeDocumentPrerequisites(
+  entities: AutocountEntityConfig[],
+): AutocountDocumentPrerequisite[] {
+  const byType = new Map(entities.map((e) => [e.entityType, e]));
+  return entities
+    .filter((e) => e.entityType in DOCUMENT_PREREQUISITES)
+    .map((doc) => {
+      const masters = DOCUMENT_PREREQUISITES[doc.entityType];
+      return {
+        entityType: doc.entityType,
+        missing: masters.filter((m) => !byType.has(m)),
+        inactive: masters.filter((m) => {
+          const row = byType.get(m);
+          return row !== undefined && (row.etlStatus !== 'active' || !row.enabled);
+        }),
+      };
+    });
+}
+
+/** The in-use DB company's saved tasks: two active, two still draft. */
+const DB_SEED_TASKS: {
+  entityType: string;
+  status: EtlTaskOverlay['etlStatus'];
+  config: Partial<AutocountEtlSourceConfig>;
+}[] = [
+  {
+    entityType: 'customer',
+    status: 'active',
+    config: {
+      query: 'SELECT AccNo, CompanyName, Phone1, EmailAddress, IsActive, LastModified FROM dbo.Debtor',
+      keyColumns: ['AccNo'],
+      watermarkColumn: 'LastModified',
+    },
+  },
+  {
+    entityType: 'product',
+    status: 'draft',
+    config: {
+      query: 'SELECT ItemCode, Description, ItemGroup, BaseUOM, IsActive, LastModified FROM dbo.Stock',
+      keyColumns: ['ItemCode'],
+      watermarkColumn: 'LastModified',
+    },
+  },
+  {
+    entityType: 'sales_order',
+    status: 'active',
+    config: {
+      query: 'SELECT DocKey, DocNo, DebtorCode, Agent, DocDate, Cancelled, LastModified FROM dbo.SO',
+      lineQuery:
+        'SELECT DtlKey, DocKey, ItemCode, Qty, UnitPrice, Location FROM dbo.SODtl WHERE DocKey = :doc_key',
+      keyColumns: ['DocKey'],
+      watermarkColumn: 'LastModified',
+      fromDate: '2026-01-01',
+      docDateColumn: 'DocDate',
+    },
+  },
+  {
+    entityType: 'purchase_order',
+    status: 'draft',
+    config: {
+      query: 'SELECT DocKey, DocNo, CreditorCode, DocDate, Cancelled, LastModified FROM dbo.PO',
+      lineQuery: 'SELECT DtlKey, DocKey, ItemCode, Qty, UnitPrice FROM dbo.PODtl WHERE DocKey = :doc_key',
+      keyColumns: ['DocKey'],
+      watermarkColumn: 'LastModified',
+      fromDate: '2026-01-01',
+      docDateColumn: 'DocDate',
+    },
+  },
+];
+
+let dbSeeded = false;
+
+/** Lazily materialize the seeded DB company's tasks (re-applied after a reset). */
+function ensureDbCompanySeed(): void {
+  if (dbSeeded) return;
+  dbSeeded = true;
+  for (const seed of DB_SEED_TASKS) {
+    const key = taskKey(DB_COMPANY_ID, seed.entityType);
+    if (!etlTasks.has(key)) {
+      etlTasks.set(key, {
+        ...blankTask(DB_COMPANY_ID, seed.entityType),
+        sourceConfig: {
+          ...defaultEtlConfig(seed.entityType, DB_COMPANY_CONNECTION.id),
+          ...seed.config,
+        },
+      });
+    }
+    const o = overlayFor(DB_COMPANY_ID, seed.entityType);
+    o.etlStatus = seed.status;
+    o.resultColumns = resultColumnsFor(etlTasks.get(key)!.sourceConfig);
+    if (seed.status === 'active') {
+      o.activatedAt = '2026-08-30T06:00:00Z';
+      o.lastPreviewAt = '2026-08-30T05:55:00Z';
+      o.lastPreviewFailedCount = 0;
+    }
+  }
+}
+
+/** The API company's seeded rows (`SEEDED_ENTITIES` - the plan-13 path, unchanged). */
+function apiSeedEntities(companyId: string): AutocountEntityConfig[] {
+  return [
+    {
+      id: `${companyId}-customer`,
+      entityType: 'customer',
+      syncMode: 'SCHEDULED_REVIEW',
+      sourceImpl: 'autocount_read',
+      recordCap: 200,
+      initialLookbackDays: 30,
+      enabled: true,
+      lastSuccessAt: null,
+      lastAttemptAt: null,
+      watermarkAt: null,
+      consecutiveFailures: 0,
+      lastError: null,
+      etlStatus: 'draft',
+    },
+  ];
+}
+
+/**
+ * Rows born on the DB source: a task exists AND has a SAVED query (opening the
+ * editor alone births nothing - `update_task` "a row that exists ONLY for the
+ * DB path is born on the DB source", plan 22 S4).
+ */
+function bornEntities(companyId: string): AutocountEntityConfig[] {
+  const rows: AutocountEntityConfig[] = [];
+  for (const [key, task] of Array.from(etlTasks.entries())) {
+    if (!key.startsWith(`${companyId}:`)) continue;
+    // A row is born the moment EITHER task grammar has a saved source
+    // (sprint-5/08 D13 - an `autocount_http` task never has a `query`, only
+    // `path`; the SQL branch is unaffected, still gated on `query`).
+    const configured = task.sourceConfig.query.trim() || task.sourceConfig.path?.trim();
+    if (!configured) continue;
+    const o = overlayFor(companyId, task.entityType);
+    const impl = sourceImpls.get(key) === 'autocount_http' ? 'autocount_http' : 'sql_db';
+    rows.push({
+      id: `${companyId}-${task.entityType}`,
+      entityType: task.entityType,
+      syncMode: 'AUTO',
+      sourceImpl: impl,
+      recordCap: 200,
+      initialLookbackDays: 30,
+      enabled: true,
+      lastSuccessAt: o.lastRunAt && !o.lastRunError ? o.lastRunAt : null,
+      lastAttemptAt: o.lastRunAt,
+      watermarkAt: null,
+      consecutiveFailures: o.lastRunError ? 1 : 0,
+      lastError: o.lastRunError,
+      etlStatus: o.etlStatus,
+    });
+  }
+  const order = (t: string) => {
+    const i = DB_ENTITY_ORDER.indexOf(t);
+    return i === -1 ? DB_ENTITY_ORDER.length : i;
+  };
+  return rows.sort((a, b) => order(a.entityType) - order(b.entityType));
+}
+
+/** A company's entity rows: API seeds (API company only, AC-01-05) + born DB rows.
+ * An open (http) company seeds nothing either - D13 mirrors the DB branch. */
+function companyEntities(company: AutocountCompany): AutocountEntityConfig[] {
+  if (company.id === DB_COMPANY_ID) ensureDbCompanySeed();
+  const base =
+    company.sourceKind === 'db' || company.sourceKind === 'http'
+      ? []
+      : apiSeedEntities(company.id);
+  const seen = new Set(base.map((e) => e.entityType));
+  return [...base, ...bornEntities(company.id).filter((e) => !seen.has(e.entityType))];
+}
+
+/** Every company the tenant holds: the API one, the seeded DB one, the seeded
+ * open (Mocha) one, the session's creates of either kind. */
+function allCompanies(): AutocountCompany[] {
+  return [
+    mockCompanyState('company-1'),
+    mockCompanyState(DB_COMPANY_ID),
+    mockCompanyState(HTTP_COMPANY_ID),
+    ...Array.from(createdCompanies.keys()).map(mockCompanyState),
+    ...Array.from(createdOpenCompanies.keys()).map(mockCompanyState),
+  ].map(applyCompanyOverlay);
+}
+
+/** The create dispatcher the backend's `CompanyService.create` must mirror
+ * (sprint-5/08 D1/D6 adds the THIRD branch: an open/no-auth `autocount`
+ * connection). */
+async function mockCreateCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany> {
+  await pause(300);
+  const sql = SQL_CONNECTIONS.find((c) => c.id === input.connectionId);
+  const openApi = httpConnectionFor(input.connectionId);
+  if (openApi?.auth === 'none') {
+    return mockCreateOpenCompany(input, openApi);
+  }
+  // Not a `sql_database` connection → the API path (the plan-13 scaffolding,
+  // this also covers a basic-auth `autocount` connection).
+  if (!sql) return mockCompany({ connectionId: input.connectionId });
+  const companies = allCompanies();
+  const bound = companies.find((c) => c.connectionId === sql.id);
+  if (bound) {
+    throw new ApiError(`'${sql.database}' is already connected as company '${bound.name}'.`, 409);
+  }
+  if (sql.id === 'conn-sql-down') {
+    // The probe could not even connect - the SANITIZED runtime message, on the field.
+    const message = 'Could not connect to the database: connection refused.';
+    throw new ApiError(message, 422, null, { fieldErrors: { connectionId: message } });
+  }
+  const holder = companies.find((c) => c.databaseName === sql.database);
+  if (holder) {
+    throw new ApiError(`'${sql.database}' is already connected as company '${holder.name}'.`, 409);
+  }
+  const companyName = PROFILE_NAMES[sql.id] ?? '';
+  const company = mockCompany({
+    id: `company-db-${createdCompanies.size + 1}`,
+    connectionId: sql.id,
+    databaseName: sql.database,
+    companyName,
+    name: input.name?.trim() || companyName || sql.database,
+    sourceKind: 'db',
+    createdAt: nowIso(),
+  });
+  createdCompanies.set(company.id, company);
+  return { ...company };
+}
+
+/** The open-company branch (AC-08-06/07): reachability probe (mocked as
+ * always-ok for a known connection), `ref_prefix` required/validated/unique,
+ * `database_name = ref_prefix`, NO entity seeding. */
+async function mockCreateOpenCompany(
+  input: AutocountCompanyCreateInput,
+  connection: AutocountApiConnection,
+): Promise<AutocountCompany> {
+  const companies = allCompanies();
+  const bound = companies.find((c) => c.connectionId === connection.id);
+  if (bound) {
+    throw new ApiError(`'${connection.name}' is already connected as company '${bound.name}'.`, 409);
+  }
+  const prefix = (input.refPrefix ?? '').trim().toUpperCase();
+  if (!prefix) {
+    throw new ApiError('Reference prefix is required.', 422, null, {
+      fieldErrors: { refPrefix: 'Reference prefix is required.' },
+    });
+  }
+  if (!REF_PREFIX_RE.test(prefix)) {
+    throw new ApiError('Use letters, digits and underscore only (2-32 characters).', 422, null, {
+      fieldErrors: {
+        refPrefix: 'Use letters, digits and underscore only (2-32 characters).',
+      },
+    });
+  }
+  const holder = companies.find((c) => c.databaseName === prefix);
+  if (holder) {
+    throw new ApiError(`'${prefix}' is already used by company '${holder.name}'.`, 409, null, {
+      fieldErrors: { refPrefix: `'${prefix}' is already used by company '${holder.name}'.` },
+    });
+  }
+  const company = mockCompany({
+    id: `company-http-${createdOpenCompanies.size + 1}`,
+    connectionId: connection.id,
+    databaseName: prefix,
+    companyName: '',
+    name: input.name?.trim() || connection.name,
+    sourceKind: 'http',
+    createdAt: nowIso(),
+  });
+  createdOpenCompanies.set(company.id, company);
+  return { ...company };
+}
+
+// ── pull keys + snapshots fixtures (AC-10-48 - every state reachable, no
+// backend). Company ids are the SAME fixture ids `mockCompanyState` resolves
+// (`company-1` is the default `mockCompany()` id), so the Keys list's
+// company pills and the Issue-key dialog's company picker read real names.
+
+let pullKeys: AutocountPullApiKey[] = [
+  {
+    id: 'pull-key-active',
+    name: 'Sorento production',
+    companyIds: ['company-1'],
+    keyPrefix: 'fxa_live_a1b2c3d4',
+    createdAt: '2026-09-10T08:00:00Z',
+    lastUsedAt: '2026-09-19T22:05:11Z',
+    revokedAt: null,
+  },
+  {
+    id: 'pull-key-revoked',
+    name: 'Old staging key',
+    companyIds: ['company-1'],
+    keyPrefix: 'fxa_live_9f8e7d6c',
+    createdAt: '2026-08-01T08:00:00Z',
+    lastUsedAt: '2026-08-15T10:00:00Z',
+    revokedAt: '2026-08-20T00:00:00Z',
+  },
+];
+
+function productSnapshotHeader(
+  overrides: Partial<AutocountPullSnapshot> = {},
+): AutocountPullSnapshot {
+  return {
+    id: 'snap-product-ready',
+    entityType: 'product',
+    companyId: 'company-1',
+    companyCode: 'SRT',
+    status: 'ready',
+    requestedVia: 'operator',
+    createdAt: '2026-09-19T21:40:00Z',
+    extractedAt: '2026-09-19T22:05:11Z',
+    expiresAt: '2026-09-20T22:05:11Z',
+    recordCount: 11830,
+    complete: true,
+    contentHash: '57f0462741425519df34d21ecbf4602f94ccd810bd5933a841ed1ecce8580a5f',
+    sourcePageSize: 1000,
+    zeroListPriceCount: 5129,
+    negativeListPriceCount: 121,
+    enrichMissCount: 1,
+    excludedCount: 10,
+    excludedRows: [
+      {
+        source_ref: 'AED_SORENTO:SRT-77',
+        code: 'SRT-77',
+        reason: 'mapping_failed',
+        message: 'name: this field is required',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function stockSnapshotHeader(overrides: Partial<AutocountPullSnapshot> = {}): AutocountPullSnapshot {
+  return {
+    id: 'snap-stock-ready',
+    entityType: 'stock_balance',
+    companyId: 'company-1',
+    companyCode: 'SRT',
+    status: 'ready',
+    requestedVia: 'operator',
+    createdAt: '2026-09-19T22:20:00Z',
+    extractedAt: '2026-09-19T22:41:37Z',
+    expiresAt: '2026-09-20T22:41:37Z',
+    recordCount: 12133,
+    complete: true,
+    contentHash: '3a8d5693f4e86fc1ee64d7e971d0d2efe2dfd783b8752a7f448db3dcf5118d2a',
+    sourcePageSize: 1000,
+    zeroPairs: 56422,
+    negativePairs: 42,
+    fractionalPairs: 0,
+    excludedNonzeroCount: 0,
+    excludedCount: 5,
+    excludedRows: [
+      {
+        item_code: 'SRT-99',
+        location_code: 'HQ',
+        uom: 'ctn',
+        qty: 0,
+        reason: 'uom_rate_unresolved',
+      },
+    ],
+    negativePairList: [
+      { item_code: 'SRT-01', location_code: 'MBS', qty: -3 },
+      { item_code: 'AC-EXP-006', location_code: 'HQ', qty: -2437 },
+    ],
+    ...overrides,
+  };
+}
+
+/** Every AC-10-48 snapshot state, seeded once (and re-seeded by
+ * `resetEtlMockState`). Mutated in place by `buildPullSnapshot` so a
+ * session's own build is reachable too. */
+function seedPullSnapshots(): AutocountPullSnapshot[] {
+  return [
+    productSnapshotHeader(),
+    stockSnapshotHeader(),
+    {
+      id: 'snap-product-building',
+      entityType: 'product',
+      companyId: 'company-1',
+      companyCode: 'MCH',
+      status: 'building',
+      requestedVia: 'gateway',
+      createdAt: nowIso(),
+      extractedAt: null,
+      expiresAt: null,
+      recordCount: 0,
+      complete: false,
+      contentHash: null,
+      sourcePageSize: null,
+      progress: { pagesDone: 2, pagesTotal: 4, stage: 'lookup:uom' },
+      error: null,
+      excludedCount: 0,
+      excludedRows: [],
+    },
+    {
+      id: 'snap-product-failed',
+      entityType: 'product',
+      companyId: 'company-1',
+      companyCode: 'MCH',
+      status: 'failed',
+      requestedVia: 'operator',
+      createdAt: '2026-09-18T09:00:00Z',
+      extractedAt: null,
+      expiresAt: null,
+      recordCount: 0,
+      complete: false,
+      contentHash: null,
+      sourcePageSize: null,
+      error: { code: 'SOURCE_PAGE_FAILED', message: 'Source page 3 of 4 failed after retries (timeout).' },
+      excludedCount: 0,
+      excludedRows: [],
+    },
+    productSnapshotHeader({
+      id: 'snap-product-expired',
+      createdAt: '2026-09-10T08:00:00Z',
+      extractedAt: '2026-09-10T08:20:00Z',
+      expiresAt: '2026-09-11T08:20:00Z',
+      recordCount: 11812,
+    }),
+  ];
+}
+
+let pullSnapshots: AutocountPullSnapshot[] = seedPullSnapshots();
+
+const pullSnapshotRows: Record<string, Array<Record<string, unknown>>> = {
+  'snap-product-ready': [
+    {
+      source_ref: 'AED_SORENTO:ACC-SRT8001',
+      code: 'ACC-SRT8001',
+      name: '****SORENTO BATHTUB WASTE (WITH FOOT PRINT LOGO) ACC-SRT8001',
+      description: '****SORENTO BATHTUB WASTE (WITH FOOT PRINT LOGO) ACC-SRT8001',
+      category_code: 'SRTPART',
+      brand_code: 'SORENTO',
+      list_price: '150.0',
+      is_active: true,
+    },
+    {
+      source_ref: 'AED_SORENTO:AP4842',
+      code: 'AP4842',
+      name: 'CABANA KITCHEN SINK (480x420x160MM) SINGLE BOWL-AP4842',
+      description: 'CABANA KITCHEN SINK (480x420x160MM) SINGLE BOWL-AP4842',
+      category_code: 'PROJECT',
+      brand_code: 'CABANA',
+      list_price: '0.0',
+      is_active: true,
+    },
+  ],
+  'snap-stock-ready': [
+    {
+      source_ref: 'AED_SORENTO:1/2" ULTRA CIRCULAR|BRW-BB',
+      item_code: '1/2" ULTRA CIRCULAR',
+      item_description: '15MM X 500MM ULTRAGAL PIPE 1/2"',
+      location_code: 'BRW-BB',
+      uom_code: 'PC',
+      qty: 672,
+    },
+    {
+      source_ref: 'AED_SORENTO:32MM TAIL PIECE COUPLING|BRW',
+      item_code: '32MM TAIL PIECE COUPLING',
+      item_description: '32MM TAIL PIECE COUPLING (CHROME) FOR BOTTLE TRAP',
+      location_code: 'BRW',
+      uom_code: 'UNIT',
+      qty: 1216,
+    },
+  ],
+  'snap-product-expired': [],
+};
+
+function pullKeyOf(id: string): AutocountPullApiKey {
+  const found = pullKeys.find((k) => k.id === id);
+  if (!found) throw new ApiError('Key not found.', 404);
+  return found;
+}
+
+let pullKeySeq = 0;
+
+// ── preview job (sprint-5/11, Group B) - the Vitest fixture engine ──────────
+//
+// `mockAutocountService`'s own methods resolve against THIS file's fixtures
+// (deterministic, session-local), wrapped in the queued -> running (staged
+// progress) -> done/failed/cancelled shape - one job kind, one progress/
+// claim/cancel mechanism (D5). The real backend (S4) is what
+// `autocountService` actually binds to; this engine only serves the Vitest
+// suite's own mock-mode tests.
+
+interface PreviewJobOutcome {
+  result?: AutocountPreviewJobResult;
+  error?: string;
+  taskError?: AutocountEtlTaskError | null;
+  fieldErrors?: Record<string, string>;
+}
+
+interface PreviewJobStore {
+  jobs: Map<string, AutocountPreviewJob>;
+  cancelled: Set<string>;
+  /** One in-flight job id per `${companyId}:${entityType}` (AC-11-23). */
+  claims: Map<string, string>;
+  seq: number;
+}
+
+function newPreviewJobStore(): PreviewJobStore {
+  return { jobs: new Map(), cancelled: new Set(), claims: new Map(), seq: 0 };
+}
+
+function previewJobTaskKey(input: AutocountPreviewJobStartInput): string {
+  return `${input.companyId}:${input.entityType}`;
+}
+
+/** The ordered stage plan (AC-11-27's stage vocabulary). A `sample` job
+ * mirrors its own lookups/combine; a `full` job walks the fixed dry-run
+ * pipeline. */
+function previewJobStages(input: AutocountPreviewJobStartInput): string[] {
+  if (input.scope === 'full') return ['source', 'mapping', 'dry_run', 'storing'];
+  const stages = ['source'];
+  for (const l of input.scope === 'sample' ? (input.lookups ?? []) : []) {
+    stages.push(`lookup:${l.as || l.path}`);
+  }
+  if (input.scope === 'sample' && input.combine) stages.push('combine');
+  return stages;
+}
+
+/** A page count an operator can read as real (never guessed past what the
+ * scope's own walk would report) - `sample` is one page, `full` mirrors the
+ * plan's own SRT baseline (12 pages). */
+function previewJobPagesTotal(input: AutocountPreviewJobStartInput): number {
+  return input.scope === 'full' ? 12 : 1;
+}
+
+/** One tick's latency - short and deterministic (no fake timers needed) so a
+ * Vitest suite settles in well under a second, matching this file's other
+ * `pause()` conventions. */
+function previewJobTick(): Promise<void> {
+  return pause(60);
+}
+
+async function runPreviewJob(
+  store: PreviewJobStore,
+  jobId: string,
+  input: AutocountPreviewJobStartInput,
+  resolve: (input: AutocountPreviewJobStartInput) => Promise<PreviewJobOutcome>,
+  onClaimChange?: (jobId: string | null) => void,
+): Promise<void> {
+  const isCancelled = () => store.cancelled.has(jobId);
+  const setJob = (patch: Partial<AutocountPreviewJob>) => {
+    const current = store.jobs.get(jobId);
+    if (!current) return;
+    store.jobs.set(jobId, { ...current, ...patch });
+  };
+  const release = () => {
+    const tKey = previewJobTaskKey(input);
+    if (store.claims.get(tKey) === jobId) {
+      store.claims.delete(tKey);
+      onClaimChange?.(null);
+    }
+  };
+  const stages = previewJobStages(input);
+  const pagesTotal = previewJobPagesTotal(input);
+
+  await previewJobTick();
+  if (isCancelled()) {
+    setJob({ status: 'cancelled' });
+    release();
+    return;
+  }
+  setJob({ status: 'running', progress: { stage: stages[0], pagesDone: 0, pagesTotal } });
+
+  for (let i = 1; i < stages.length; i += 1) {
+    await previewJobTick();
+    if (isCancelled()) {
+      setJob({ status: 'cancelled' });
+      release();
+      return;
+    }
+    setJob({ progress: { stage: stages[i], pagesDone: i, pagesTotal } });
+  }
+
+  const outcome = await resolve(input);
+  if (isCancelled()) {
+    setJob({ status: 'cancelled' });
+    release();
+    return;
+  }
+  if (outcome.result) {
+    setJob({
+      status: 'done',
+      result: outcome.result,
+      progress: { stage: 'storing', pagesDone: pagesTotal, pagesTotal },
+    });
+  } else if (outcome.taskError) {
+    setJob({ status: 'failed', taskError: outcome.taskError, error: outcome.taskError.message });
+  } else {
+    setJob({
+      status: 'failed',
+      error: outcome.error ?? 'The preview could not be completed.',
+      fieldErrors: outcome.fieldErrors,
+    });
+  }
+  release();
+}
+
+function startPreviewJobIn(
+  store: PreviewJobStore,
+  input: AutocountPreviewJobStartInput,
+  resolve: (input: AutocountPreviewJobStartInput) => Promise<PreviewJobOutcome>,
+  onClaimChange?: (jobId: string | null) => void,
+): Promise<AutocountPreviewJobStart> {
+  const tKey = previewJobTaskKey(input);
+  const existingId = store.claims.get(tKey);
+  if (existingId) {
+    const existing = store.jobs.get(existingId);
+    // AC-11-23 - re-attach: two concurrent starts for the SAME task share the
+    // winner's job id rather than racing two walks.
+    if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+      return Promise.resolve({ jobId: existing.id, status: existing.status });
+    }
+    store.claims.delete(tKey);
+  }
+  store.seq += 1;
+  const jobId = `preview-job-${store.seq}`;
+  const job: AutocountPreviewJob = {
+    id: jobId,
+    scope: input.scope,
+    status: 'queued',
+    progress: null,
+    result: null,
+    error: null,
+    taskError: null,
+    createdAt: new Date().toISOString(),
+  };
+  store.jobs.set(jobId, job);
+  store.claims.set(tKey, jobId);
+  onClaimChange?.(jobId);
+  void runPreviewJob(store, jobId, input, resolve, onClaimChange);
+  return Promise.resolve({ jobId, status: 'queued' });
+}
+
+function getPreviewJobIn(store: PreviewJobStore, jobId: string): Promise<AutocountPreviewJob> {
+  const job = store.jobs.get(jobId);
+  if (!job) return Promise.reject(new ApiError('Preview job not found.', 404));
+  return Promise.resolve({ ...job });
+}
+
+function cancelPreviewJobIn(store: PreviewJobStore, jobId: string): Promise<AutocountPreviewJob> {
+  const job = store.jobs.get(jobId);
+  if (!job) return Promise.reject(new ApiError('Preview job not found.', 404));
+  // AC-11-24 - a cancel against an already-terminal job is a no-op 200
+  // carrying the terminal status, never a 409 the UI has to explain.
+  if (job.status === 'queued' || job.status === 'running') {
+    store.cancelled.add(jobId);
+  }
+  return Promise.resolve({ ...job });
+}
+
+/** Test seam (mirrors `setMockRepushInFlight`) - force the NEXT job STARTED
+ * for this scope to fail, reaching AC-11-25's failure state with no
+ * backend. One-shot: cleared the moment it fires, and by
+ * `resetEtlMockState`. */
+const previewJobForcedFailure = new Set<AutocountPreviewJobScope>();
+export function setMockPreviewJobOutcome(
+  scope: AutocountPreviewJobScope,
+  outcome: 'failed' | null,
+): void {
+  if (outcome === 'failed') previewJobForcedFailure.add(scope);
+  else previewJobForcedFailure.delete(scope);
+}
+
+async function mockPreviewJobResolve(input: AutocountPreviewJobStartInput): Promise<PreviewJobOutcome> {
+  if (previewJobForcedFailure.has(input.scope)) {
+    previewJobForcedFailure.delete(input.scope);
+    return {
+      error:
+        input.scope === 'sample'
+          ? 'Source page 2 of 4 failed after retries (timeout).'
+          : 'The dry run against the consumer failed. Nothing was written - resolve the consumer error first.',
+    };
+  }
+  if (input.scope === 'sample') {
+    try {
+      const preview = await mockAutocountService.previewHttp({
+        connectionId: input.connectionId,
+        path: input.path,
+        distinctOf: input.distinctOf,
+        companyId: input.companyId,
+        entityType: input.entityType,
+        lookups: input.lookups,
+        combine: input.combine,
+      });
+      return { result: { scope: 'sample', preview } };
+    } catch (e) {
+      return {
+        error: e instanceof ApiError ? e.message : 'The preview could not be run.',
+        fieldErrors: e instanceof ApiError ? readFieldErrors(e.detail) : undefined,
+      };
+    }
+  }
+  try {
+    const [detail, task] = await Promise.all([
+      mockAutocountService.getCompany(input.companyId),
+      mockAutocountService.getEtlTask(input.companyId, input.entityType),
+    ]);
+    const preview = await mockPreviewEtlTask(detail.company, task);
+    return { result: { scope: 'full', task: preview.task, preview: preview.preview } };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const taskError = readTaskError(e.detail);
+      if (taskError) return { taskError };
+      return { error: e.message };
+    }
+    return { error: 'The dry run could not be completed.' };
+  }
+}
+
+const mockPreviewJobStore = newPreviewJobStore();
+
+function mockPreviewJobClaimChange(input: AutocountPreviewJobStartInput) {
+  return (jobId: string | null) => {
+    overlayFor(input.companyId, input.entityType).previewJobId = jobId;
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Document feeds (sprint-5/14, D17) - PHASE 1 MOCK for the WHOLE surface
+// (S2..S4 build the real `doc-feeds` router, plan section 3.2); this is the
+// spec `mockAutocountService` (the Vitest fixture double) follows; the real
+// `doc-feeds` router is bound in `autocount-service.ts`. State lives in module-scope maps, same as
+// every other PHASE 1 MOCK session store in this file - `resetEtlMockState`
+// clears it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
+
+/** D4 - the consumer contract version every doc feed gate checks against. */
+const DOC_FEED_GATE_REQUIRED_VERSION = 2.7;
+/** Plan section 0 (V9) - book `db1` = Sorento, company code `SRT`. The ONE
+ * sentinel code the mock treats as an open contract, mirroring the ETL push
+ * gate's own `STOCK_PUSH_GATE_CODE_SENTINEL` convention (a company with any
+ * other Sorento code, or no Sorento sink at all, reads as shut). */
+const DOC_FEED_GATE_OPEN_CODE = 'SRT';
+
+interface MockDocFeedState {
+  connectionId: string | null;
+  book: string | null;
+  mode: DocFeedMode;
+  schedule: DocFeedSchedule;
+  nextPollAt: string | null;
+  nextSweepAt: string | null;
+  cursorDay: string | null;
+  lastRun: DocFeedLastRun | null;
+  backfill: DocFeedBackfill | null;
+}
+
+function defaultDocFeedState(): MockDocFeedState {
+  return {
+    connectionId: null,
+    book: null,
+    mode: 'off',
+    schedule: { ...DEFAULT_DOC_FEED_SCHEDULE },
+    nextPollAt: null,
+    nextSweepAt: null,
+    cursorDay: null,
+    lastRun: null,
+    backfill: null,
+  };
+}
+
+const docFeeds = new Map<string, Record<DocFeedKey, MockDocFeedState>>();
+const docFeedRuns = new Map<string, DocFeedRun[]>();
+const docFeedIssues = new Map<string, DocFeedIssue[]>();
+const docFeedGateOverrides = new Map<string, DocFeedContractGate | null>();
+let docFeedRunSeq = 0;
+let docFeedBackfillSeq = 0;
+
+function docFeedsFor(companyId: string): Record<DocFeedKey, MockDocFeedState> {
+  let existing = docFeeds.get(companyId);
+  if (!existing) {
+    existing = {
+      delivery_orders: defaultDocFeedState(),
+      goods_receive_notes: defaultDocFeedState(),
+    };
+    docFeeds.set(companyId, existing);
+  }
+  return existing;
+}
+
+/** Test seam (mirrors `setMockPushGate`) - force a company's doc-feed
+ * contract gate open (`null`) or shut (a specific gate) with no backend;
+ * omitting the override falls back to the sentinel-code default below.
+ * Cleared by `resetEtlMockState`. */
+export function setMockDocFeedGate(companyId: string, gate: DocFeedContractGate | null): void {
+  docFeedGateOverrides.set(companyId, gate);
+}
+
+function docFeedGateFor(
+  company: Pick<AutocountCompany, 'id' | 'sinkImpl' | 'sorentoCompanyCode'>,
+): DocFeedContractGate | null {
+  if (docFeedGateOverrides.has(company.id)) return docFeedGateOverrides.get(company.id) ?? null;
+  if (company.sinkImpl !== 'sorento') {
+    return { version: null, requiredVersion: DOC_FEED_GATE_REQUIRED_VERSION, reason: 'config_error' };
+  }
+  const code = (company.sorentoCompanyCode ?? '').trim().toUpperCase();
+  if (!code) {
+    return { version: null, requiredVersion: DOC_FEED_GATE_REQUIRED_VERSION, reason: 'config_error' };
+  }
+  if (code === DOC_FEED_GATE_OPEN_CODE) return null;
+  return { version: 2.6, requiredVersion: DOC_FEED_GATE_REQUIRED_VERSION };
+}
+
+/** The last non-empty path segment of a base URL, if it reads as a book
+ * (CRM rule 13.2: `^[A-Za-z0-9_-]{1,20}$`) - else `null` (not eligible). */
+function bookFromBaseUrl(baseUrl: string): string | null {
+  try {
+    const segments = new URL(baseUrl).pathname.split('/').filter(Boolean);
+    const last = segments[segments.length - 1];
+    return last && /^[A-Za-z0-9_-]{1,20}$/.test(last) ? last : null;
+  } catch {
+    return null;
+  }
+}
+
+/** D2 - open-auth connections whose base URL derives a book, out of any
+ * list of `{name, baseUrl, auth}` connections (the pure mock's fixture
+ * `HTTP_API_CONNECTIONS`). */
+function eligibleFromApiConnections(
+  connections: Array<Pick<AutocountApiConnection, 'id' | 'name' | 'baseUrl' | 'auth'>>,
+): DocFeedEligibleConnection[] {
+  return connections
+    .filter((c) => c.auth === 'none')
+    .map((c) => ({ id: c.id, name: c.name, book: bookFromBaseUrl(c.baseUrl) }))
+    .filter((c): c is DocFeedEligibleConnection => Boolean(c.book));
+}
+
+/** The pure mock's own fixture list (`autocount-service.mock.doc-feeds.
+ * test.ts`, and the browser-evidence mock overlay before a real company
+ * exists). */
+function eligibleDocFeedConnections(): DocFeedEligibleConnection[] {
+  return eligibleFromApiConnections(HTTP_API_CONNECTIONS);
+}
+
+function todayKey(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addDaysKey(dateKey: string, delta: number): string {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return dt.toISOString().slice(0, 10);
+}
+
+function daysBetweenKeys(fromKey: string, toKey: string): number {
+  const [fy, fm, fd] = fromKey.split('-').map(Number);
+  const [ty, tm, td] = toKey.split('-').map(Number);
+  const from = Date.UTC(fy, fm - 1, fd);
+  const to = Date.UTC(ty, tm - 1, td);
+  return Math.max(1, Math.round((to - from) / 86_400_000) + 1);
+}
+
+/** Demo-only progress ticker (no real timers): each time the feed's view is
+ * read, a running backfill advances a chunk, so the poll cadence
+ * (`useAutocountDocFeeds`) shows real movement without a backend. */
+function tickMockBackfill(backfill: DocFeedBackfill): void {
+  if (backfill.status !== 'running') return;
+  const chunk = Math.max(1, Math.round(backfill.daysTotal / 6));
+  backfill.daysDone = Math.min(backfill.daysTotal, backfill.daysDone + chunk);
+  if (backfill.daysDone >= backfill.daysTotal) {
+    backfill.status = 'done';
+    backfill.nextDay = addDaysKey(backfill.toDay, 1);
+  } else {
+    backfill.nextDay = addDaysKey(backfill.fromDay, backfill.daysDone);
+  }
+}
+
+function docFeedItemFor(
+  companyId: string,
+  feed: DocFeedKey,
+  gate: DocFeedContractGate | null,
+): DocFeedItem {
+  const state = docFeedsFor(companyId)[feed];
+  if (state.backfill) tickMockBackfill(state.backfill);
+  const issues = (docFeedIssues.get(companyId) ?? []).filter((i) => i.feed === feed);
+  return {
+    feed,
+    book: state.book,
+    connectionId: state.connectionId,
+    mode: state.mode,
+    schedule: { ...state.schedule },
+    nextPollAt: state.nextPollAt,
+    nextSweepAt: state.nextSweepAt,
+    cursorDay: state.cursorDay,
+    fullBackfillDoneAt: null,
+    contractGate: gate,
+    retryableCount: issues.filter((i) => i.kind === 'retryable').length,
+    failedCount: issues.filter((i) => i.kind === 'failed').length,
+    lastRun: state.lastRun,
+    backfill: state.backfill ? { ...state.backfill } : null,
+  };
+}
+
+/** The save-time shape guard (D2): `off` clears the connection; anything
+ * else needs one of the ELIGIBLE connections (never a client-supplied id
+ * trusted blind). Takes the caller's own eligible list (the pure mock's
+ * fixture `HTTP_API_CONNECTIONS`). */
+function mutateDocFeed(
+  companyId: string,
+  feed: DocFeedKey,
+  input: DocFeedUpdateInput,
+  eligible: DocFeedEligibleConnection[],
+): void {
+  const state = docFeedsFor(companyId)[feed];
+  const previous = state.schedule;
+  const wasArmed = state.mode !== 'off';
+  if (input.schedule) state.schedule = { ...input.schedule };
+  if (input.mode === 'off') {
+    state.mode = 'off';
+    state.connectionId = null;
+    state.book = null;
+    state.nextPollAt = null;
+    state.nextSweepAt = null;
+    return;
+  }
+  if (!input.connectionId) {
+    throw new ApiError('Choose a connection.', 422, null, {
+      fieldErrors: { connectionId: 'Choose a connection.' },
+    });
+  }
+  // The eligible list wins when the id matches one; a Vitest-only sentinel
+  // id (`autocount-service.mock.doc-feeds.test.ts`'s `conn-mock-1`) still
+  // configures, with a placeholder book - the config DIALOG itself only
+  // ever offers eligible ids (foolproof-UI), so this path is test scaffolding
+  // only, never reachable from the real UI.
+  const conn = eligible.find((c) => c.id === input.connectionId);
+  state.connectionId = input.connectionId;
+  state.book = conn?.book ?? 'mock';
+  state.mode = input.mode;
+  // Mirrors `DocFeedService.update` (sprint-5/19 R4): arming from off sets
+  // the poll due now; on an armed feed only the CHANGED half re-arms.
+  const now = Date.now();
+  const s = state.schedule;
+  const pollAt = () => new Date(now + s.incrementalMinutes * 60_000).toISOString();
+  const sweepAt = () => {
+    if (s.reconcileMode === 'interval') {
+      return new Date(now + (s.reconcileHours ?? 24) * 3_600_000).toISOString();
+    }
+    const [h, mi] = (s.reconcileAt ?? '02:00').split(':').map(Number);
+    const target = new Date(now);
+    target.setUTCHours(h, mi, 0, 0);
+    if (target.getTime() <= now) target.setUTCDate(target.getUTCDate() + 1);
+    return target.toISOString();
+  };
+  if (!wasArmed) {
+    state.nextPollAt = new Date(now).toISOString();
+    state.nextSweepAt = sweepAt();
+    return;
+  }
+  if (previous.incrementalMinutes !== s.incrementalMinutes) state.nextPollAt = pollAt();
+  if (
+    previous.reconcileMode !== s.reconcileMode ||
+    previous.reconcileHours !== s.reconcileHours ||
+    previous.reconcileAt !== s.reconcileAt
+  ) {
+    state.nextSweepAt = sweepAt();
+  }
+}
+
+/** One retryable + one failed issue, upserted by DocKey (D9: re-running a
+ * poll supersedes rather than duplicates) - just enough to exercise the
+ * issues list and the feed's Waiting/Failed counters with no backend. */
+function upsertMockDocFeedIssues(companyId: string, feed: DocFeedKey): void {
+  const state = docFeedsFor(companyId)[feed];
+  const issues = docFeedIssues.get(companyId) ?? [];
+  const now = new Date().toISOString();
+  const upsert = (issue: DocFeedIssue) => {
+    const idx = issues.findIndex((i) => i.feed === issue.feed && i.docKey === issue.docKey);
+    if (idx >= 0) issues[idx] = issue;
+    else issues.push(issue);
+  };
+  const book = state.book ?? 'db1';
+  const prefix = feed === 'goods_receive_notes' ? 'GRN' : 'DO';
+  upsert({
+    id: `${feed}:${book}:900001`,
+    feed,
+    book,
+    docKey: 900001,
+    kind: 'retryable',
+    docNo: `${prefix}-900001`,
+    docDate: todayKey(),
+    sourceModifiedAt: now,
+    errors: { itemCode: 'Not found in the consumer yet.' },
+    warnings: null,
+    attempts: 1,
+    firstAt: now,
+    lastAt: now,
+  });
+  upsert({
+    id: `${feed}:${book}:900002`,
+    feed,
+    book,
+    docKey: 900002,
+    kind: 'failed',
+    docNo: `${prefix}-900002`,
+    docDate: todayKey(),
+    sourceModifiedAt: now,
+    errors: { docDate: 'Outside the accepted window.' },
+    warnings: null,
+    attempts: 1,
+    firstAt: now,
+    lastAt: now,
+  });
+  docFeedIssues.set(companyId, issues);
+}
+
+async function mockRunDocFeed(
+  companyId: string,
+  feed: DocFeedKey,
+  input: DocFeedRunInput,
+): Promise<{ jobId: string }> {
+  const state = docFeedsFor(companyId)[feed];
+  if (state.mode === 'off') {
+    throw new ApiError('Turn this feed on before running it.', 422, null, {
+      fieldErrors: { mode: 'Turn this feed on before running it.' },
+    });
+  }
+  const dryRun = state.mode === 'dry_run';
+  const kind: DocFeedRunKind = input.kind;
+  const dayTo = todayKey();
+  const dayFrom =
+    kind === 'sweep' ? addDaysKey(dayTo, -44) : (state.cursorDay ?? addDaysKey(dayTo, -1));
+  const now = new Date().toISOString();
+  const summary: DocFeedRunSummary =
+    kind === 'sweep'
+      ? { candidates: 0 }
+      : { created: dryRun ? 0 : 3, updated: dryRun ? 0 : 1, unchanged: 2, retryable: 1, failed: 1 };
+  const run: DocFeedRun = {
+    id: `doc-feed-run-${++docFeedRunSeq}`,
+    feed,
+    kind,
+    dryRun,
+    dayFrom,
+    dayTo,
+    requests: kind === 'sweep' ? 45 : 2,
+    fetchedCount: 8,
+    summary,
+    outcome: 'SUCCESS',
+    error: null,
+    errorCode: null,
+    startedAt: now,
+    finishedAt: now,
+    durationMs: 420,
+  };
+  const runs = docFeedRuns.get(companyId) ?? [];
+  runs.unshift(run);
+  docFeedRuns.set(companyId, runs);
+
+  if (kind === 'poll') {
+    if (!dryRun) {
+      state.cursorDay = dayTo;
+      upsertMockDocFeedIssues(companyId, feed);
+    }
+  }
+  state.lastRun = {
+    id: run.id,
+    kind: run.kind,
+    dryRun: run.dryRun,
+    outcome: run.outcome,
+    finishedAt: run.finishedAt,
+    error: run.error,
+  };
+  return { jobId: `job-${run.id}` };
+}
+
+async function mockStartDocFeedBackfill(
+  companyId: string,
+  feed: DocFeedKey,
+  input: DocFeedBackfillStartInput,
+): Promise<DocFeedBackfill> {
+  const state = docFeedsFor(companyId)[feed];
+  if (state.mode !== 'push') {
+    throw new ApiError('Turn Push on before a live backfill.', 422, null, {
+      fieldErrors: { mode: 'Turn Push on before a live backfill.' },
+    });
+  }
+  if (state.backfill && state.backfill.status !== 'done' && state.backfill.status !== 'stopped') {
+    throw new ApiError('A backfill is already running.', 409, null, { code: 'BACKFILL_OPEN' });
+  }
+  const toDay = input.toDay ?? todayKey();
+  const fromDay = input.fromDay ?? '2023-01-01';
+  const backfill: DocFeedBackfill = {
+    id: `doc-feed-backfill-${++docFeedBackfillSeq}`,
+    status: 'running',
+    dryRun: input.dryRun,
+    fromDay,
+    toDay,
+    nextDay: fromDay,
+    daysTotal: daysBetweenKeys(fromDay, toDay),
+    daysDone: 0,
+    error: null,
+  };
+  state.backfill = backfill;
+  return { ...backfill };
+}
+
+function requireMockBackfill(companyId: string, feed: DocFeedKey): DocFeedBackfill {
+  const backfill = docFeedsFor(companyId)[feed].backfill;
+  if (!backfill) throw new ApiError('No backfill to act on.', 404, null, {});
+  return backfill;
+}
+
+async function mockStopDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+  const backfill = requireMockBackfill(companyId, feed);
+  backfill.status = 'stopped';
+  return { ...backfill };
+}
+
+async function mockResumeDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+  const backfill = requireMockBackfill(companyId, feed);
+  backfill.status = 'running';
+  return { ...backfill };
+}
+
+async function mockDiscardDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+  const backfill = requireMockBackfill(companyId, feed);
+  backfill.status = 'done';
+  return { ...backfill };
+}
+
+function docFeedListPage<T>(rows: T[], query: { page?: number; pageSize?: number } = {}): ListResult<T> {
+  const page = query.page ?? 0;
+  const pageSize = query.pageSize ?? 25;
+  const start = page * pageSize;
+  return { data: rows.slice(start, start + pageSize), total: rows.length, page };
+}
+
+async function mockListDocFeedRuns(
+  companyId: string,
+  query: DocFeedRunsQuery = {},
+): Promise<ListResult<DocFeedRun>> {
+  let rows = docFeedRuns.get(companyId) ?? [];
+  if (query.feed) rows = rows.filter((r) => r.feed === query.feed);
+  return docFeedListPage(rows, query);
+}
+
+async function mockListDocFeedIssues(
+  companyId: string,
+  query: DocFeedIssuesQuery = {},
+): Promise<ListResult<DocFeedIssue>> {
+  let rows = docFeedIssues.get(companyId) ?? [];
+  if (query.feed) rows = rows.filter((r) => r.feed === query.feed);
+  if (query.kind) rows = rows.filter((r) => r.kind === query.kind);
+  if (query.search) {
+    const q = query.search.trim().toLowerCase();
+    rows = rows.filter((r) => (r.docNo ?? '').toLowerCase().includes(q));
+  }
+  return docFeedListPage(rows, query);
+}
+
+/** Test seam: forget every S2 session state (the Vitest suite isolates cases). */
+export function resetEtlMockState(): void {
+  etlOverlays.clear();
+  companyCodes.clear();
+  mockSinks.clear();
+  sourceImpls.clear();
+  previewColumnsByQuery.clear();
+  httpPreviewColumnsByKey.clear();
+  etlRuns.clear();
+  etlTasks.clear();
+  docFeeds.clear();
+  docFeedRuns.clear();
+  docFeedIssues.clear();
+  docFeedGateOverrides.clear();
+  docFeedRunSeq = 0;
+  docFeedBackfillSeq = 0;
+  createdCompanies.clear();
+  createdOpenCompanies.clear();
+  dbSeeded = false;
+  mockRepushInFlightRunId = null;
+  deliveryModes.clear();
+  pushGateOverrides.clear();
+  pullKeys = [
+    {
+      id: 'pull-key-active',
+      name: 'Sorento production',
+      companyIds: ['company-1'],
+      keyPrefix: 'fxa_live_a1b2c3d4',
+      createdAt: '2026-09-10T08:00:00Z',
+      lastUsedAt: '2026-09-19T22:05:11Z',
+      revokedAt: null,
+    },
+    {
+      id: 'pull-key-revoked',
+      name: 'Old staging key',
+      companyIds: ['company-1'],
+      keyPrefix: 'fxa_live_9f8e7d6c',
+      createdAt: '2026-08-01T08:00:00Z',
+      lastUsedAt: '2026-08-15T10:00:00Z',
+      revokedAt: '2026-08-20T00:00:00Z',
+    },
+  ];
+  pullSnapshots = seedPullSnapshots();
+  pullKeySeq = 0;
+  mockPreviewJobStore.jobs.clear();
+  mockPreviewJobStore.cancelled.clear();
+  mockPreviewJobStore.claims.clear();
+  mockPreviewJobStore.seq = 0;
+  previewJobForcedFailure.clear();
+}
+
+/**
+ * sprint-5/11 review round 2 (item 6) - `previewEtlTask`/`previewHttp` were
+ * removed from `AutocountService`/`realAutocountService` (dead on the real
+ * backend contract since S4's job-based preview surface), but the mock
+ * KEEPS its own internals: `mockPreviewJobResolve` (the Vitest fixture
+ * engine behind `startPreviewJob`/`getPreviewJob`) still resolves against
+ * them, and several mock-focused test files still call them directly. A
+ * mock-only type extension, never leaked onto the shared interface.
+ */
+interface MockOnlyPreviewMethods {
+  previewEtlTask(companyId: string, entityType: string): Promise<AutocountEtlPreviewResult>;
+  previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
+}
+
+export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
+  listCompanies(query: AutocountListQuery = {}): Promise<ListResult<AutocountCompany>> {
+    const all = allCompanies();
+    return Promise.resolve({ data: all, total: all.length, page: query.page ?? 0 });
   },
 
   getCompany(id: string): Promise<AutocountCompanyDetail> {
-    return Promise.resolve({ company: mockCompany({ id }), entities: [] });
+    const company = mockCompanyState(id);
+    const entities = companyEntities(company).map((e) => applyEntityOverlay(id, e));
+    return Promise.resolve(
+      applyDetailOverlay({
+        company: { ...company, documentPrerequisites: computeDocumentPrerequisites(entities) },
+        entities,
+      }),
+    );
   },
 
-  createCompany(): Promise<AutocountCompany> {
-    return Promise.resolve(mockCompany());
+  createCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany> {
+    return mockCreateCompany(input);
   },
 
-  updateEntityConfig(): Promise<AutocountEntityConfig> {
-    return Promise.reject(new Error(NOT_IMPLEMENTED));
+  async updateEntityConfig(
+    companyId: string,
+    entityType: string,
+    input: AutocountEntityConfigUpdate,
+  ): Promise<AutocountEntityConfig> {
+    if (input.sourceImpl && input.sourceImpl !== 'autocount_read' && input.sourceImpl !== 'sql_db') {
+      throw new ApiError('Unknown source.', 422);
+    }
+    if (input.sourceImpl) noteSourceImpl(companyId, entityType, input.sourceImpl);
+    const detail = await this.getCompany(companyId);
+    const entity = detail.entities.find((e) => e.entityType === entityType);
+    if (!entity) throw new ApiError('Entity not found.', 404);
+    return {
+      ...entity,
+      initialLookbackDays: input.initialLookbackDays ?? entity.initialLookbackDays,
+    };
   },
 
   syncNow(): Promise<AutocountSyncJob> {
@@ -308,6 +2849,7 @@ export const mockAutocountService: AutocountService = {
       watermarkAt: null, // the reset - the first-run window is live again
       consecutiveFailures: 0,
       lastError: null,
+      etlStatus: 'draft',
     });
   },
 
@@ -346,31 +2888,42 @@ export const mockAutocountService: AutocountService = {
     companyId: string,
     input: AutocountSinkTargetInput,
   ): Promise<AutocountCompany> {
-    return Promise.resolve(
-      mockCompany({
-        id: companyId,
-        sinkImpl: input.sinkImpl,
-        sinkConnectionId: input.sinkImpl === 'sorento' ? input.sinkConnectionId ?? null : null,
-      }),
-    );
+    guardSinkTarget(input);
+    noteSinkTarget(companyId, input);
+    mockSinks.set(companyId, {
+      sinkImpl: input.sinkImpl,
+      sinkConnectionId: input.sinkImpl === 'sorento' ? input.sinkConnectionId ?? null : null,
+    });
+    return Promise.resolve(applyCompanyOverlay(mockCompanyState(companyId)));
   },
 
-  getMapping(_companyId: string, entityType: string): Promise<AutocountMappingView> {
-    return Promise.resolve(mockMappingView(entityType));
+  getMapping(companyId: string, entityType: string): Promise<AutocountMappingView> {
+    return Promise.resolve(mockMappingView(entityType, sourceImpls.get(taskKey(companyId, entityType))));
   },
 
   updateMapping(
-    _companyId: string,
+    companyId: string,
     entityType: string,
     input: AutocountMappingUpdate,
   ): Promise<AutocountMappingView> {
+    const view = mockMappingView(entityType, sourceImpls.get(taskKey(companyId, entityType)));
+    const headerRows = input.rows.filter((r) => (r.scope ?? 'header') === 'header');
+    // Mirrors the real service's backward-compat fold (security re-review
+    // should-fix, sprint-5/02 review round): the dedicated `lineRows` field
+    // wins when present (even `[]`); a caller still folding scope='line'
+    // items into `rows` (the pre-existing shape) is honoured the same way
+    // for one release.
+    const lineRows =
+      input.lineRows !== undefined
+        ? input.lineRows
+        : input.rows.filter((r) => r.scope === 'line');
+
     // A required Sorento target left unmapped is the real failure the editor
     // guards; a target outside the accepted set is a 422 server-side. The mock
     // rejects an unknown target so the surfaced-error path is testable.
-    const view = mockMappingView(entityType);
-    const accepted = new Set(view.sorentoFields.map((f) => f.field));
-    for (const row of input.rows) {
-      if (!accepted.has(row.sorentoField)) {
+    const acceptedHeader = new Set(view.sorentoFields.map((f) => f.field));
+    for (const row of headerRows) {
+      if (!acceptedHeader.has(row.sorentoField)) {
         return Promise.reject(
           new ApiError(
             `'${row.sorentoField}' is not a Sorento field accepted for ${entityType}.`,
@@ -379,18 +2932,58 @@ export const mockAutocountService: AutocountService = {
         );
       }
     }
-    return Promise.resolve({
-      ...view,
-      rows: input.rows.map((row) => ({
+
+    // Line rows (sprint-5/02, AC-02-03): only accepted line targets, ref
+    // pairing locked, and source_ref/product_ref/qty_ordered required the
+    // moment any line row is saved.
+    if (lineRows.length > 0) {
+      const acceptedLine = new Set(view.lineSorentoFields.map((f) => f.field));
+      for (const row of lineRows) {
+        if (!acceptedLine.has(row.sorentoField)) {
+          return Promise.reject(
+            new ApiError(
+              `'${row.sorentoField}' is not a line field accepted for ${entityType}.`,
+              422,
+            ),
+          );
+        }
+        if (row.sorentoField === 'product_ref' && row.transform !== 'ref_product') {
+          return Promise.reject(new ApiError("'product_ref' must use the Product ref transform.", 422));
+        }
+        if (row.sorentoField === 'warehouse_ref' && row.transform !== 'ref_warehouse') {
+          return Promise.reject(new ApiError("'warehouse_ref' must use the Warehouse ref transform.", 422));
+        }
+      }
+      const mappedTargets = new Set(lineRows.map((r) => r.sorentoField));
+      for (const required of ['source_ref', 'product_ref', 'qty_ordered']) {
+        if (!mappedTargets.has(required)) {
+          return Promise.reject(
+            new ApiError(`Line mapping is missing the required field '${required}'.`, 422),
+          );
+        }
+      }
+    }
+
+    const toRows = (rows: AutocountMappingWriteRow[], scope: 'header' | 'line', fields: typeof view.sorentoFields) =>
+      rows.map((row) => ({
         sourcePath: row.sourcePath,
         transform: row.transform,
         formula: row.formula?.trim() ? row.formula.trim() : null,
         sorentoField: row.sorentoField,
         canonicalField: row.sorentoField,
-        scope: 'header',
-        isRequired: view.sorentoFields.find((f) => f.field === row.sorentoField)?.required ?? false,
-        isEnabled: true,
-      })),
+        scope,
+        isRequired: fields.find((f) => f.field === row.sorentoField)?.required ?? false,
+        // B1 (final review round) - echo the saved isEnabled instead of
+        // hardcoding true, so the mock round-trips a disabled row like real.
+        isEnabled: row.isEnabled ?? true,
+      }));
+
+    return Promise.resolve({
+      ...view,
+      rows: [
+        ...toRows(headerRows, 'header', view.sorentoFields),
+        ...toRows(lineRows, 'line', view.lineSorentoFields),
+      ],
     });
   },
 
@@ -405,42 +2998,98 @@ export const mockAutocountService: AutocountService = {
   },
 
   simulateMapping(
-    _companyId: string,
+    companyId: string,
     entityType: string,
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
+    lines?: Array<Record<string, unknown>>,
   ): Promise<AutocountSimulateResult> {
     // A light stand-in for the real MappingEngine: evaluate each draft (or saved)
     // deliverable row's formula/passthrough over the flat mock record so the
     // record-in → record-out preview + per-field errors are tunable with no
     // backend. The real engine is authoritative; this only drives the UI states.
-    const view = mockMappingView(entityType);
-    const source = rows
-      ? rows.map((r) => ({
-          sourcePath: r.sourcePath,
-          formula: r.formula ?? null,
-          canonicalField: r.sorentoField,
-        }))
-      : view.rows
-          .filter((r) => r.sorentoField)
-          .map((r) => ({
-            sourcePath: r.sourcePath,
-            formula: r.formula,
-            canonicalField: r.sorentoField as string,
-          }));
+    const view = mockMappingView(entityType, sourceImpls.get(taskKey(companyId, entityType)));
+    type RowSpec = { sourcePath: string; formula: string | null; canonicalField: string };
+    const toSpec = (r: {
+      sourcePath: string;
+      formula?: string | null;
+      sorentoField: string | null;
+    }): RowSpec => ({
+      sourcePath: r.sourcePath,
+      formula: r.formula ?? null,
+      canonicalField: r.sorentoField as string,
+    });
+    const headerSource: RowSpec[] = rows
+      ? rows.filter((r) => (r.scope ?? 'header') === 'header').map(toSpec)
+      : view.rows.filter((r) => r.scope === 'header' && r.sorentoField).map(toSpec);
+    const lineSource: RowSpec[] = rows
+      ? rows.filter((r) => r.scope === 'line').map(toSpec)
+      : view.rows.filter((r) => r.scope === 'line' && r.sorentoField).map(toSpec);
 
+    // Lines pass FIRST (AC-02-07) - both the mapped line canonical rows AND
+    // the per-field results, then the five aggregates they feed into the
+    // header pass.
+    const lineFields: AutocountSimulateFieldResult[][] = [];
+    const lineCanonical: Record<string, unknown>[] = [];
+    for (const lineRecord of lines ?? []) {
+      const fields: AutocountSimulateFieldResult[] = [];
+      const out: Record<string, unknown> = {};
+      for (const r of lineSource) {
+        const raw = lineRecord[r.sourcePath];
+        const present = raw !== undefined;
+        const formula = r.formula?.trim() ? r.formula.trim() : 'value';
+        const evaluated = present ? evalFormula(formula, raw) : { ok: true, output: null, error: null };
+        if (evaluated.ok && present) out[r.canonicalField] = evaluated.output;
+        fields.push({
+          scope: 'line',
+          sourcePath: r.sourcePath,
+          canonicalField: r.canonicalField,
+          present,
+          ok: evaluated.ok,
+          value: evaluated.output,
+          error: evaluated.error,
+        });
+      }
+      lineFields.push(fields);
+      lineCanonical.push(out);
+    }
+
+    const asNumber = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const sum = (values: number[]): number => values.reduce((a, b) => a + b, 0);
+    const fulfilledField = fulfilledFieldFor(entityType);
+    const outstandingPerLine = lineCanonical.map((l) =>
+      Math.max(0, asNumber(l.qty_ordered) - asNumber(l[fulfilledField])),
+    );
+    const aggregateFacts: Record<string, unknown> = {
+      'lines.count': lineCanonical.length,
+      'lines.open_count': outstandingPerLine.filter((v) => v > 0).length,
+      'lines.ordered_sum': sum(lineCanonical.map((l) => asNumber(l.qty_ordered))),
+      'lines.fulfilled_sum': sum(lineCanonical.map((l) => asNumber(l[fulfilledField]))),
+      'lines.outstanding_sum': sum(outstandingPerLine),
+    };
+
+    // Header runs AFTER lines - every header row's formula can reference its
+    // own row value (`value`) AND any raw header column / `lines.*`
+    // aggregate BY NAME (sprint-5/02, AC-02-07/20).
+    const headerFacts: Record<string, unknown> = { ...record, ...aggregateFacts };
     const headerFields: AutocountSimulateFieldResult[] = [];
     const out: Record<string, unknown> = {};
     let ok = true;
-    for (const r of source) {
+    let status: string | null = null;
+    for (const r of headerSource) {
       const raw = record[r.sourcePath];
       const present = raw !== undefined;
       const formula = r.formula?.trim() ? r.formula.trim() : 'value';
       const evaluated = present
-        ? evalFormula(formula, raw)
+        ? evalFormula(formula, raw, headerFacts)
         : { ok: true, output: null, error: null };
       if (!evaluated.ok) ok = false;
-      if (evaluated.ok && present) out[r.canonicalField] = evaluated.output;
+      if (evaluated.ok && present) {
+        out[r.canonicalField] = evaluated.output;
+        if (r.canonicalField === 'status' && typeof evaluated.output === 'string') {
+          status = evaluated.output;
+        }
+      }
       headerFields.push({
         scope: 'header',
         sourcePath: r.sourcePath,
@@ -451,6 +3100,9 @@ export const mockAutocountService: AutocountService = {
         error: evaluated.error,
       });
     }
+    if (lineSource.length > 0) {
+      out.lines = lineCanonical;
+    }
 
     return Promise.resolve({
       ok,
@@ -458,16 +3110,609 @@ export const mockAutocountService: AutocountService = {
       docNo: (record.DocNo as string | undefined) ?? null,
       record: ok ? out : null,
       headerFields,
-      lineFields: [],
+      lineFields,
+      status,
       errors: ok
         ? []
         : headerFields.filter((f) => !f.ok).map((f) => ({ field: f.canonicalField, message: f.error })),
     });
   },
+
+  listMappingPresets(companyId: string, entityType: string): Promise<AutocountMappingPreset[]> {
+    const company = mockCompanyState(companyId);
+    return Promise.resolve(mockMappingPresets(company.databaseName, entityType));
+  },
+
+  // sprint-5/12 (Group B, AC-12-10..24) - the Vitest double: fixture-backed,
+  // deterministic (no dependency on the overlay/real backend). Diffs/writes
+  // against THIS mock's own `mockMappingView`/`updateMapping`, exactly like
+  // every other mock method.
+  async resetMappingToPreset(
+    companyId: string,
+    entityType: string,
+    input: { dryRun: boolean },
+  ): Promise<AutocountMappingResetPreview | AutocountMappingView> {
+    const preset = MAPPING_RESET_PRESETS[entityType];
+    if (!preset) throw new ApiError('No preset is registered for this entity.', 422);
+    const view = mockMappingView(entityType, sourceImpls.get(taskKey(companyId, entityType)));
+    if (input.dryRun) {
+      return computeMappingResetDiff(preset, view.rows, view.acFields);
+    }
+    const rows = mappingResetWriteRows(preset, view.acFields);
+    // AC-12-13 / ruling R7 - a reset replaces HEADER rows only; a document's
+    // line rows are carried through untouched (the backend never reads them).
+    const lineRows = view.rows
+      .filter((r) => r.scope === 'line' && r.sorentoField)
+      .map((r) => ({
+        sourcePath: r.sourcePath,
+        transform: r.transform,
+        sorentoField: r.sorentoField as string,
+        formula: r.formula,
+        scope: 'line' as const,
+        isEnabled: r.isEnabled,
+      }));
+    return this.updateMapping(companyId, entityType, { rows, lineRows });
+  },
+
+  // ── direct-DB ETL (plan 22 S1) ─────────────────────────────────────────────
+
+  async listSqlConnections(): Promise<AutocountSqlConnection[]> {
+    await pause(150);
+    return SQL_CONNECTIONS.map((c) => ({ ...c }));
+  },
+
+  async getSqlSchema(connectionId: string): Promise<AutocountSqlSchema> {
+    await pause(350);
+    const connection = SQL_CONNECTIONS.find((c) => c.id === connectionId);
+    if (!connection) throw new ApiError('Connection not found.', 404);
+    if (connection.id === 'conn-sql-down') {
+      // The sanitized failure shape (AC-22-02/30): no host, no credentials.
+      throw new ApiError(
+        'Could not connect to the database: connection refused.',
+        502,
+      );
+    }
+    return mockSqlSchema(connection);
+  },
+
+  // `opts` (bindDocKey/docKey) is part of the interface (plan 22 S5) but the
+  // mock's table-name-regex preview needs no real parameter binding to
+  // return realistic columns for a `:doc_key`-carrying line query.
+  async previewSqlQuery(connectionId: string, query: string): Promise<AutocountSqlPreview> {
+    await pause(450);
+    const connection = SQL_CONNECTIONS.find((c) => c.id === connectionId);
+    if (!connection) throw new ApiError('Connection not found.', 404);
+    if (connection.id === 'conn-sql-down') {
+      throw new ApiError(
+        'Could not connect to the database: connection refused.',
+        502,
+      );
+    }
+    const preview = runMockPreview(query);
+    previewColumnsByQuery.set(normalizeQuery(query), preview.columns.map((c) => c.name));
+    return preview;
+  },
+
+  async getEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask> {
+    await pause(200);
+    return cloneJson(applyTaskOverlay(etlTaskFor(companyId, entityType)));
+  },
+
+  async updateEtlTask(
+    companyId: string,
+    entityType: string,
+    input: AutocountEtlTaskUpdate,
+  ): Promise<AutocountEtlTask> {
+    await pause(250);
+    const current = etlTaskFor(companyId, entityType);
+    let cfg = input.sourceConfig;
+    const key = taskKey(companyId, entityType);
+    const previousImpl: 'sql_db' | 'autocount_http' =
+      sourceImpls.get(key) === 'autocount_http' ? 'autocount_http' : 'sql_db';
+    const newImpl = input.sourceImpl ?? previousImpl;
+    const company = mockCompanyState(companyId);
+    // A DB company reads ONLY from its own connection for a `sql_db` task
+    // (AC-01-09/10); an `autocount_http` task on a DB company may reference
+    // ANY open connection of the tenant (AC-08-13 narrows the lock to
+    // `sql_db` only). The API-only GRN envelope has no database path at all.
+    if (company.sourceKind === 'db' && newImpl === 'sql_db') {
+      if (entityType === 'goods_received_note') {
+        throw new ApiError('Goods received notes are not available on a database company.', 422);
+      }
+      if (!cfg.connectionId) cfg = { ...cfg, connectionId: company.connectionId };
+      else if (cfg.connectionId !== company.connectionId) {
+        const message = 'A database company reads only from its own connection.';
+        throw new ApiError(message, 422, null, { fieldErrors: { connectionId: message } });
+      }
+    }
+    if (newImpl === 'autocount_http') {
+      const conn = httpConnectionFor(cfg.connectionId ?? '');
+      if (!conn || conn.auth !== 'none') {
+        const message = 'Choose an open (no-auth) AutoCount connection.';
+        throw new ApiError(message, 422, null, { fieldErrors: { connectionId: message } });
+      }
+      if (!cfg.path?.trim()) {
+        const message = 'Enter an endpoint path.';
+        throw new ApiError(message, 422, null, { fieldErrors: { path: message } });
+      }
+    }
+    // Mirrors the save-time guard (AC-22-11/S5, line key/product columns
+    // moved OFF this guard and onto the mapping save path in sprint-5/02
+    // AC-02-03/05): documents need a from-date, a watermark column
+    // (line-change detection - AutoCount stamps a header's LastModified on
+    // any line edit), and a date-floor column. HTTP entities are never
+    // documents (AC_HTTP_ENTITY_TYPES), so this never fires for one.
+    if (isDocumentEntity(entityType)) {
+      const fieldErrors: Record<string, string> = {};
+      if (!cfg.fromDate) fieldErrors.fromDate = 'From date is required for documents.';
+      if (!cfg.watermarkColumn) {
+        fieldErrors.watermarkColumn = 'A watermark column is required for documents.';
+      }
+      if (!cfg.docDateColumn) fieldErrors.docDateColumn = "Choose the document's date column.";
+      if (Object.keys(fieldErrors).length > 0) {
+        throw new ApiError('The task could not be saved. Fix the highlighted fields.', 422, null, {
+          fieldErrors,
+        });
+      }
+    }
+    // AC-08-28 - changing the task's impl (either direction), connection or
+    // (for HTTP) path sets an ACTIVE task back to draft (must Test +
+    // re-activate); `ac_row_hash`-equivalent tracking (the mock has none to
+    // clear) is untouched so the first reconcile after a switch reports
+    // updates rather than phantom deletes when the key is unchanged.
+    const implOrSourceChanged =
+      newImpl !== previousImpl ||
+      cfg.connectionId !== current.sourceConfig.connectionId ||
+      (newImpl === 'autocount_http' && cfg.path !== current.sourceConfig.path);
+    const next: AutocountEtlTask = {
+      ...current,
+      sourceConfig: cloneJson(cfg),
+    };
+    etlTasks.set(key, next);
+    if (input.sourceImpl) noteSourceImpl(companyId, entityType, input.sourceImpl);
+    noteTaskSaved(companyId, entityType, cfg, newImpl, implOrSourceChanged);
+    return cloneJson(applyTaskOverlay(next));
+  },
+
+  // ── direct-DB ETL (plan 22 S2) ─────────────────────────────────────────────
+
+  async previewEtlTask(companyId, entityType) {
+    const [detail, task] = await Promise.all([
+      this.getCompany(companyId),
+      this.getEtlTask(companyId, entityType),
+    ]);
+    return mockPreviewEtlTask(detail.company, task);
+  },
+
+  async activateEtlTask(companyId, entityType) {
+    await pause(200);
+    const [detail, task] = await Promise.all([
+      this.getCompany(companyId),
+      this.getEtlTask(companyId, entityType),
+    ]);
+    return mockActivate(detail.company, task);
+  },
+
+  async pauseEtlTask(companyId, entityType) {
+    await pause(250);
+    return mockPause(await this.getEtlTask(companyId, entityType));
+  },
+
+  async resumeEtlTask(companyId, entityType) {
+    await pause(250);
+    return mockResume(await this.getEtlTask(companyId, entityType));
+  },
+
+  async runEtlTaskNow(companyId, entityType) {
+    await pause(500);
+    const [detail, task] = await Promise.all([
+      this.getCompany(companyId),
+      this.getEtlTask(companyId, entityType),
+    ]);
+    return mockRunNow(detail.company, task);
+  },
+
+  async listEtlRuns(companyId, entityType, query) {
+    await pause(200);
+    return mockListEtlRuns(companyId, entityType, query);
+  },
+
+  // ── "Re-push all" (plan sprint-5/07, AC-07-20) - PHASE 1 MOCK is the spec
+  // for the S2b backend, per `setMockRepushInFlight` above. ─────────────────
+  async repushEtlTask(companyId, entityType) {
+    await pause(300);
+    if (mockRepushInFlightRunId) {
+      const runId = mockRepushInFlightRunId;
+      throw new ApiError('A run is already in progress for this task.', 409, null, {
+        message: 'A run is already in progress for this task.',
+        runningRunId: runId,
+      });
+    }
+    const task = await this.getEtlTask(companyId, entityType);
+    if (task.etlStatus === 'draft') {
+      throw new ApiError('Activate the task first - a draft has nothing to re-push.', 409);
+    }
+    const impl = sourceImpls.get(taskKey(companyId, entityType)) ?? 'sql_db';
+    if (impl !== 'sql_db') {
+      throw new ApiError('Re-push applies to database tasks only.', 409);
+    }
+    return {
+      clearedCount: 148068,
+      nextReconcileAt:
+        task.etlStatus === 'active' ? new Date(Date.now() + 60_000).toISOString() : null,
+      status: task.etlStatus,
+    };
+  },
+
+  // ── open REST API source (sprint-5/08, S1) ──────────────────────────────
+
+  async listApiConnections(): Promise<AutocountApiConnection[]> {
+    // EVERY `autocount` connection, bound or not (AC-08-15) - the connect
+    // form's picker excludes already-bound ones ITSELF (the same "taken" set
+    // `useAutocountSourceConnections` already builds from `listCompanies()`);
+    // the task Source tab needs the bound ones too, to badge/label a locked
+    // company connection or a DB company's free cross-tenant pick.
+    await pause(150);
+    return HTTP_API_CONNECTIONS.map((c) => ({ ...c }));
+  },
+
+  async previewHttp(input: HttpPreviewInput): Promise<HttpPreview> {
+    const preview = await mockPreviewHttp(input);
+    httpPreviewColumnsByKey.set(
+      httpPreviewKey(input.connectionId, input.path, input.distinctOf),
+      // PRE-combine, unchanged (mirrors the backend's own `resultColumns`) -
+      // `combinedPreview` below may replace `rows`/`columns` on the RESPONSE,
+      // never on what this cache (or `resultColumns` just below) remembers.
+      preview.columns.map((c) => c.name),
+    );
+    // sprint-5/10 S5b-FE (AC-10-82) - PHASE 1 MOCK combine funnel: when the
+    // request carries a `combine` block, run it (`simulateCombine`, the
+    // former Combine editor's own client-side engine, now mock-only) over
+    // this session's sample rows and fold its six funnel counts + combined
+    // rows/columns into the response, mirroring the real backend's additive
+    // `HttpPreviewResponse` fields (`schemas.py`). A task with NO combine is
+    // completely unaffected (`combined` stays `null`).
+    const combined = input.combine ? simulateCombine(preview.rows, input.combine) : null;
+    const combinedColumnNames = combined ? combineOutputColumnsFor(input.combine) : [];
+    // sprint-5/10 S5b-FE review round 1 (AC-10-82/AC-10-40) - mirrors the
+    // backend's `preview_http`: captured BEFORE `columns` is overwritten
+    // below with the COMBINED shape, so a caller never has to fall back to
+    // the (possibly absent, possibly SAVED-not-draft) echoed `task` to
+    // recover the pre-combine set. Raw + lookup aliases (`preview.columns`,
+    // already lookup-merged by `mockPreviewHttp`) plus the combine's OWN
+    // `computed` alias names, in declared order, de-duplicated.
+    const preCombineColumns: string[] = combined
+      ? (() => {
+          const names = preview.columns.map((c) => c.name);
+          for (const step of input.combine?.computed ?? []) {
+            if (step.alias && !names.includes(step.alias)) names.push(step.alias);
+          }
+          return names;
+        })()
+      : [];
+    const combinedPreview: HttpPreview = combined
+      ? {
+          ...preview,
+          columns: combinedColumnNames.map((name) => ({
+            name,
+            sample: combined.rows[0]?.[name] ?? null,
+          })),
+          rows: combined.rows,
+          rowsIn: combined.rowsIn,
+          excludedCount: combined.excludedCount,
+          groups: combined.groups,
+          droppedByRule: Object.fromEntries(
+            Object.entries(combined.dropped).map(([name, stat]) => [name, stat.count]),
+          ),
+          rowsOut: combined.rowsOut,
+          roundedCount: combined.roundedCount,
+          preCombineColumns,
+        }
+      : preview;
+    // Mirrors the real backend's `preview_http` (sprint-5/08 review round
+    // 7): a clean Test that names both `companyId`/`entityType` ALSO stamps
+    // `resultColumns`/`lastPreviewAt` on the task and echoes it back, so the
+    // editor's `apply()` path is exercised the same way against the mock.
+    //
+    // Round 8 nit: the backend only stamps/echoes when an `ac_entity_config`
+    // row already exists (`self.configs.get(...)` is not `None`) - a
+    // never-configured entity's task stays `null`. `etlTaskFor` would happily
+    // auto-create a blank draft here, which the OLD code then echoed back as
+    // if it were a real, already-anchored task; gate on `etlTasks` already
+    // holding a row for the pair so a truly never-touched entity gets the
+    // bare preview, matching the backend.
+    if (input.companyId && input.entityType && etlTasks.has(taskKey(input.companyId, input.entityType))) {
+      const o = overlayFor(input.companyId, input.entityType);
+      o.resultColumns = preview.columns.map((c) => c.name);
+      o.lastPreviewAt = nowIso();
+      return {
+        ...combinedPreview,
+        task: cloneJson(applyTaskOverlay(etlTaskFor(input.companyId, input.entityType))),
+      };
+    }
+    return combinedPreview;
+  },
+
+  async previewColumns(connectionId: string, path: string): Promise<string[]> {
+    await pause(200);
+    const cached = httpPreviewColumnsByKey.get(httpPreviewKey(connectionId, path));
+    if (cached) return [...cached];
+    // A lookup endpoint nobody has Tested yet through the main preview -
+    // return a plausible column set so the editor's remote-column pickers
+    // are never permanently empty for the mock's own preset endpoints.
+    if (path === '/itemuombypage') return ['ItemCode', 'UOM', 'Rate', 'Price'];
+    if (path === '/itembypage') return ['ItemCode', 'Description', 'Desc2', 'BaseUOM', 'ItemGroup', 'ItemBrand'];
+    return [];
+  },
+
+  // ── human-invoked pull (sprint-5/10) - mirrors the LIVE backend contract ──
+
+  async setDeliveryMode(
+    companyId: string,
+    entityType: string,
+    deliveryMode: AutocountDeliveryMode,
+  ): Promise<AutocountEntityConfig> {
+    await pause(200);
+    if (deliveryMode === 'pull') {
+      const company = applyCompanyOverlay(mockCompanyState(companyId));
+      if (!(company.sorentoCompanyCode ?? '').trim()) {
+        throw new ApiError('Set a Sorento company code before enabling pull.', 422, null, {
+          fieldErrors: { deliveryMode: 'Set a Sorento company code before enabling pull.' },
+        });
+      }
+      if (!PULL_CAPABLE_ENTITY_TYPES.has(entityType)) {
+        throw new ApiError(`${entityType} cannot be pulled yet.`, 422, null, {
+          fieldErrors: { deliveryMode: `${entityType} cannot be pulled yet.` },
+        });
+      }
+    } else {
+      // sprint-5/13 (AC-13-31) - the SAME gate the Schedule tab reads from
+      // `pushGate`, re-checked here at save time (never trust the client
+      // alone); refuses on EITHER shut reason, contract first.
+      const gate = pushGateFor({ companyId, entityType });
+      if (gate) {
+        const message =
+          gate.reason === 'no_snapshot'
+            ? 'Push needs a stock snapshot from the last 24 hours.'
+            : `Consumer contract ${gate.version ?? 'unknown'} - ${entityType} push needs ${gate.requiredVersion ?? STOCK_PUSH_GATE_REQUIRED_VERSION}.`;
+        throw new ApiError(message, 422, null, { fieldErrors: { deliveryMode: message } });
+      }
+    }
+    deliveryModes.set(taskKey(companyId, entityType), deliveryMode);
+    const detail = await this.getCompany(companyId);
+    const entity = detail.entities.find((e) => e.entityType === entityType);
+    if (entity) return entity;
+    return {
+      id: `entity-${entityType}`,
+      entityType,
+      syncMode: 'MANUAL',
+      sourceImpl: 'autocount_http',
+      recordCap: 5000,
+      initialLookbackDays: 30,
+      enabled: true,
+      lastSuccessAt: null,
+      lastAttemptAt: null,
+      watermarkAt: null,
+      consecutiveFailures: 0,
+      lastError: null,
+      etlStatus: 'draft',
+      deliveryMode,
+    };
+  },
+
+  async listPullKeys(): Promise<AutocountPullApiKey[]> {
+    await pause(200);
+    return pullKeys.map((k) => ({ ...k }));
+  },
+
+  async issuePullKey(input: AutocountPullApiKeyCreateInput): Promise<AutocountPullApiKeyIssued> {
+    await pause(300);
+    const name = input.name.trim();
+    if (!name) {
+      throw new ApiError('Name the key.', 422, null, { fieldErrors: { name: 'Name the key.' } });
+    }
+    if (!input.companyIds || input.companyIds.length === 0) {
+      throw new ApiError('Pick at least one company.', 422, null, {
+        fieldErrors: { companyIds: 'Pick at least one company.' },
+      });
+    }
+    pullKeySeq += 1;
+    const key: AutocountPullApiKey = {
+      id: `pull-key-${pullKeySeq}`,
+      name,
+      companyIds: [...input.companyIds],
+      keyPrefix: `fxa_live_${Math.random().toString(36).slice(2, 10)}`,
+      createdAt: nowIso(),
+      lastUsedAt: null,
+      revokedAt: null,
+    };
+    pullKeys = [key, ...pullKeys];
+    return { key: { ...key }, plaintext: `fxa_live_${Math.random().toString(36).slice(2, 34)}` };
+  },
+
+  async revokePullKey(id: string): Promise<AutocountPullApiKey> {
+    await pause(200);
+    const key = pullKeyOf(id);
+    key.revokedAt = nowIso();
+    return { ...key };
+  },
+
+  async listPullSnapshots(
+    query: AutocountListQuery & { companyId?: string; entityType?: string } = {},
+  ): Promise<ListResult<AutocountPullSnapshot>> {
+    await pause(200);
+    let matched = [...pullSnapshots];
+    if (query.companyId) matched = matched.filter((s) => s.companyId === query.companyId);
+    if (query.entityType) matched = matched.filter((s) => s.entityType === query.entityType);
+    matched.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+    const page = query.page ?? 0;
+    const pageSize = query.pageSize ?? 25;
+    const start = page * pageSize;
+    return {
+      data: matched.slice(start, start + pageSize).map((s) => ({ ...s })),
+      total: matched.length,
+      page,
+    };
+  },
+
+  async getPullSnapshot(id: string): Promise<AutocountPullSnapshot> {
+    await pause(150);
+    const found = pullSnapshots.find((s) => s.id === id);
+    if (!found) throw new ApiError('Snapshot not found.', 404);
+    return { ...found };
+  },
+
+  async getPullSnapshotRows(
+    id: string,
+    page = 0,
+    pageSize = 1000,
+  ): Promise<AutocountPullSnapshotRowsPage> {
+    await pause(150);
+    const snapshot = pullSnapshots.find((s) => s.id === id);
+    if (!snapshot) throw new ApiError('Snapshot not found.', 404);
+    const rows = pullSnapshotRows[id] ?? [];
+    const start = page * pageSize;
+    return {
+      snapshotId: id,
+      page: page + 1,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(Math.max(rows.length, 1) / pageSize)),
+      recordCount: snapshot.recordCount,
+      rows: rows.slice(start, start + pageSize),
+    };
+  },
+
+  async buildPullSnapshot(companyId: string, entityType: string): Promise<AutocountPullSnapshot> {
+    await pause(300);
+    const inFlight = pullSnapshots.find(
+      (s) => s.companyId === companyId && s.entityType === entityType && s.status === 'building',
+    );
+    if (inFlight) return { ...inFlight };
+    const detail = await this.getCompany(companyId);
+    // A book that has flipped to automatic push refuses a NEW build (the
+    // operator UI's own picker already excludes this pairing,
+    // `BuildSnapshotDialog`; this is the server-shaped guard for a call that
+    // reaches here anyway, mirroring `PullService.request_build`'s
+    // `PullPushActiveError`). A PLAIN STRING `detail` - the structured
+    // `{code, companyCode, entity}` error ladder (AC-10-31) is the PUBLIC
+    // GATEWAY's contract only (`pull_gateway_service.py`'s `PullGatewayError`);
+    // this operator route (`routers/pull.py`) raises a bare `HTTPException`,
+    // and the dialog only ever reads `ApiError.message` regardless.
+    const entity = detail.entities.find((e) => e.entityType === entityType);
+    if (entity && (entity.deliveryMode ?? 'push') === 'push' && entity.etlStatus === 'active') {
+      const message = 'This book/entity has flipped to automatic push and can no longer be pulled.';
+      throw new ApiError(message, 409, null, message);
+    }
+    const company = detail.company;
+    const id = `snap-${entityType}-${Date.now()}`;
+    const building: AutocountPullSnapshot = {
+      id,
+      entityType,
+      companyId,
+      companyCode: company.sorentoCompanyCode ?? '',
+      status: 'building',
+      requestedVia: 'operator',
+      createdAt: nowIso(),
+      extractedAt: null,
+      expiresAt: null,
+      recordCount: 0,
+      complete: false,
+      contentHash: null,
+      sourcePageSize: null,
+      progress: { pagesDone: 0, pagesTotal: entityType === 'stock_balance' ? 69 : 12, stage: 'source' },
+      error: null,
+      excludedCount: 0,
+      excludedRows: [],
+    };
+    pullSnapshots = [building, ...pullSnapshots];
+    return { ...building };
+  },
+
+  // ── preview job (sprint-5/11, Group B) - PHASE 1 MOCK is the backend spec ──
+
+  startPreviewJob(input: AutocountPreviewJobStartInput): Promise<AutocountPreviewJobStart> {
+    return startPreviewJobIn(
+      mockPreviewJobStore,
+      input,
+      mockPreviewJobResolve,
+      mockPreviewJobClaimChange(input),
+    );
+  },
+
+  getPreviewJob(jobId: string): Promise<AutocountPreviewJob> {
+    return getPreviewJobIn(mockPreviewJobStore, jobId);
+  },
+
+  cancelPreviewJob(jobId: string): Promise<AutocountPreviewJob> {
+    return cancelPreviewJobIn(mockPreviewJobStore, jobId);
+  },
+
+  // ── document feeds (sprint-5/14, D17) - PHASE 1 MOCK is the backend spec ──
+
+  async getDocFeeds(companyId: string): Promise<DocFeedsView> {
+    const company = applyCompanyOverlay(mockCompanyState(companyId));
+    const gate = docFeedGateFor(company);
+    return {
+      feeds: DOC_FEED_KEYS.map((feed) => docFeedItemFor(companyId, feed, gate)),
+      eligibleConnections: eligibleDocFeedConnections(),
+    };
+  },
+
+  async updateDocFeed(
+    companyId: string,
+    feed: DocFeedKey,
+    input: DocFeedUpdateInput,
+  ): Promise<DocFeedItem> {
+    mutateDocFeed(companyId, feed, input, eligibleDocFeedConnections());
+    const gate = docFeedGateFor(applyCompanyOverlay(mockCompanyState(companyId)));
+    return docFeedItemFor(companyId, feed, gate);
+  },
+
+  async runDocFeed(
+    companyId: string,
+    feed: DocFeedKey,
+    input: DocFeedRunInput,
+  ): Promise<{ jobId: string }> {
+    return mockRunDocFeed(companyId, feed, input);
+  },
+
+  async startDocFeedBackfill(
+    companyId: string,
+    feed: DocFeedKey,
+    input: DocFeedBackfillStartInput,
+  ): Promise<DocFeedBackfill> {
+    return mockStartDocFeedBackfill(companyId, feed, input);
+  },
+
+  async stopDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+    return mockStopDocFeedBackfill(companyId, feed);
+  },
+
+  async resumeDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+    return mockResumeDocFeedBackfill(companyId, feed);
+  },
+
+  async discardDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+    return mockDiscardDocFeedBackfill(companyId, feed);
+  },
+
+  async listDocFeedRuns(
+    companyId: string,
+    query: DocFeedRunsQuery = {},
+  ): Promise<ListResult<DocFeedRun>> {
+    return mockListDocFeedRuns(companyId, query);
+  },
+
+  async listDocFeedIssues(
+    companyId: string,
+    query: DocFeedIssuesQuery = {},
+  ): Promise<ListResult<DocFeedIssue>> {
+    return mockListDocFeedIssues(companyId, query);
+  },
 };
 
 /** A realistic supplier/customer mapping view for the editor's tunable states. */
-function mockMappingView(entityType: string): AutocountMappingView {
+function masterMappingView(entityType: string): AutocountMappingView {
   return {
     entityType,
     rows: [
@@ -541,5 +3786,594 @@ function mockMappingView(entityType: string): AutocountMappingView {
       'Data.0.AutoKey',
       'Data.0.LastModified',
     ],
+    lineSorentoFields: [],
+    lineAcFields: [],
+    // The legacy vendor-login path (autocount_read) has no registered
+    // preset (sprint-5/12) - only the open-API masters do.
+    hasPreset: false,
   };
 }
+
+// ── document mapping (sprint-5/02, S1 - AC-02-01/02/16/17) - PHASE 1 MOCK ────
+//
+// One canonical field spec drives BOTH the "current mapping" fixture
+// (`documentMappingView`) and the "Use preset" insert (`listMappingPresets`
+// via `documentPreset`) - a single source of truth so the two can never
+// silently drift, matching `MappingEngine.project_document`'s eventual (S2)
+// backend contract.
+
+interface DocFieldSpec {
+  sourcePath: string;
+  sorentoField: string;
+  transform: string;
+  formula?: string | null;
+  required?: boolean;
+}
+
+interface DocumentPresetSpec {
+  label: string;
+  headerQuery: string;
+  lineQuery: string;
+  keyColumns: string[];
+  watermarkColumn: string;
+  docDateColumn: string;
+  fromDate: string;
+  filterFormula: string | null;
+  header: DocFieldSpec[];
+  line: DocFieldSpec[];
+  /**
+   * The LINE catalog's accepted targets (sprint-5/06, AC-06-10) - defaults to
+   * `line`'s own mapped fields when absent (every prior preset's catalog IS
+   * exactly its mapped rows). PO/SPO diverge: four `from_so_external_*` input
+   * fields are catalog-OFFERED but never preset-mapped (operator additions
+   * only, AC-06-24), so their preset needs a target list wider than `line`.
+   */
+  lineTargets?: AutocountSorentoField[];
+}
+
+const SO_PRESET: DocumentPresetSpec = {
+  label: 'AutoCount SO',
+  headerQuery:
+    'SELECT DocKey, DocNo, DebtorAutoKey, DebtorCode, DebtorName, SalesAgent, DocDate, ' +
+    'RequestedDeliveryDate, Note, Cancelled, LastModified FROM {database}.dbo.SO_Header',
+  lineQuery:
+    'SELECT DtlKey, ItemAutoKey, ItemCode, Description, LocationAutoKey, Location, Qty, ' +
+    'TransferedQty, UnitPrice, DiscountAmt, SubTotal, UOM, DeliveryDate, Seq ' +
+    'FROM {database}.dbo.SO_Dtl WHERE DocKey = :doc_key',
+  keyColumns: ['DocKey'],
+  watermarkColumn: 'LastModified',
+  docDateColumn: 'DocDate',
+  fromDate: '',
+  filterFormula: null,
+  header: [
+    { sourcePath: 'DocNo', sorentoField: 'so_number', transform: 'string', required: true },
+    { sourcePath: 'DebtorAutoKey', sorentoField: 'customer_ref', transform: 'ref_customer', required: true },
+    { sourcePath: 'SalesAgent', sorentoField: 'sales_agent_ref', transform: 'ref_sales_agent' },
+    { sourcePath: 'DocDate', sorentoField: 'doc_date', transform: 'date' },
+    { sourcePath: 'RequestedDeliveryDate', sorentoField: 'requested_delivery_date', transform: 'date' },
+    { sourcePath: 'Note', sorentoField: 'internal_note', transform: 'string' },
+    { sourcePath: 'Cancelled', sorentoField: 'status', transform: 'string', formula: DEFAULT_STATUS_FORMULA },
+    { sourcePath: 'DebtorCode', sorentoField: 'customer_code', transform: 'string' },
+    { sourcePath: 'DebtorName', sorentoField: 'customer_name', transform: 'string' },
+    { sourcePath: 'SalesAgent', sorentoField: 'agent_code', transform: 'string' },
+  ],
+  line: [
+    { sourcePath: 'DtlKey', sorentoField: 'source_ref', transform: 'string', required: true },
+    { sourcePath: 'ItemAutoKey', sorentoField: 'product_ref', transform: 'ref_product', required: true },
+    { sourcePath: 'LocationAutoKey', sorentoField: 'warehouse_ref', transform: 'ref_warehouse' },
+    { sourcePath: 'Qty', sorentoField: 'qty_ordered', transform: 'decimal', required: true },
+    { sourcePath: 'TransferedQty', sorentoField: 'qty_delivered', transform: 'decimal' },
+    { sourcePath: 'UnitPrice', sorentoField: 'unit_price', transform: 'decimal' },
+    { sourcePath: 'DiscountAmt', sorentoField: 'discount', transform: 'decimal' },
+    { sourcePath: 'SubTotal', sorentoField: 'line_total', transform: 'decimal' },
+    { sourcePath: 'UOM', sorentoField: 'uom', transform: 'string' },
+    { sourcePath: 'DeliveryDate', sorentoField: 'required_date', transform: 'date' },
+    { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string' },
+    { sourcePath: 'Description', sorentoField: 'product_name', transform: 'string' },
+    { sourcePath: 'Location', sorentoField: 'warehouse_code', transform: 'string' },
+    { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'int' },
+  ],
+};
+
+/**
+ * The four `from_so_external_*` INPUT fields (never sent on the wire, UAC
+ * Definitions) - the ICB (inter-company) case only, the ONE part of the
+ * linkage catalog that never gets a preset row (review round nit: the other
+ * six input/wire targets are now pre-mapped below, mirroring the backend
+ * preset's own `PO_PRESET.line`/`SPO_PRESET.line`). Catalog-only: none of
+ * these mint themselves without an operator explicitly mapping `db`, so none
+ * is pre-mapped here - an operator adds the row (AC-06-24).
+ */
+const LINE_LINKAGE_CATALOG_ONLY_TARGETS: AutocountSorentoField[] = [
+  { field: 'from_so_external_db', required: false },
+  { field: 'from_so_external_doc_key', required: false },
+  { field: 'from_so_external_doc_no', required: false },
+  { field: 'from_so_external_line_key', required: false },
+];
+
+/** PO/SPO share the supplier-side shape (unit_cost/qty_received/currency);
+ *  the family split is the filter formula + entity, not the field list. */
+function purchaseFamilyPreset(entityType: 'purchase_order' | 'shipping_order'): DocumentPresetSpec {
+  const isSpo = entityType === 'shipping_order';
+  const line: DocFieldSpec[] = [
+    { sourcePath: 'DtlKey', sorentoField: 'source_ref', transform: 'string', required: true },
+    { sourcePath: 'ItemAutoKey', sorentoField: 'product_ref', transform: 'ref_product', required: true },
+    { sourcePath: 'LocationAutoKey', sorentoField: 'warehouse_ref', transform: 'ref_warehouse' },
+    { sourcePath: 'Qty', sorentoField: 'qty_ordered', transform: 'decimal', required: true },
+    { sourcePath: 'ReceivedQty', sorentoField: 'qty_received', transform: 'decimal' },
+    { sourcePath: 'UnitPrice', sorentoField: 'unit_cost', transform: 'decimal' },
+    { sourcePath: 'UOM', sorentoField: 'uom', transform: 'string' },
+    { sourcePath: 'ExpectedDate', sorentoField: 'expected_date', transform: 'date' },
+    { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string' },
+    { sourcePath: 'Description', sorentoField: 'product_name', transform: 'string' },
+    { sourcePath: 'Location', sorentoField: 'warehouse_code', transform: 'string' },
+    // sprint-5/06 (AC-06-14, review round nit) - the six line-linkage preset
+    // rows, mirroring the backend preset (`PO_PRESET.line`/`SPO_PRESET.line`,
+    // `modules/autocount/presets.py`) byte-for-byte: `from_so_numbers` already
+    // existed here (plan 22 S5, placeholder `string` transform before AC-06-01
+    // made it `string_list`); the other five are new.
+    { sourcePath: 'FromSODocKey', sorentoField: 'from_so_doc_key', transform: 'int' },
+    { sourcePath: 'FromSODtlKey', sorentoField: 'from_so_line_key', transform: 'int' },
+    { sourcePath: 'FromSODocList', sorentoField: 'from_so_numbers', transform: 'string_list' },
+    { sourcePath: 'FromPODocKey', sorentoField: 'from_po_doc_key', transform: 'int' },
+    { sourcePath: 'FromPODtlKey', sorentoField: 'from_po_line_key', transform: 'int' },
+    { sourcePath: 'FromPODocNo', sorentoField: 'from_po_number', transform: 'string' },
+    { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'int' },
+  ];
+  return {
+    label: isSpo ? 'AutoCount SPO' : 'AutoCount PO',
+    headerQuery:
+      'SELECT DocKey, DocNo, CreditorAutoKey, CreditorCode, CreditorName, PurchaseAgent, DocDate, ' +
+      'ExpectedDate, UDF_Currency, CurrencyCode, Cancelled, LastModified FROM {database}.dbo.PO_Header',
+    lineQuery:
+      'SELECT DtlKey, ItemAutoKey, ItemCode, Description, LocationAutoKey, Location, Qty, ' +
+      'ReceivedQty, UnitPrice, UOM, ExpectedDate, FromSODocList, Seq ' +
+      'FROM {database}.dbo.PO_Dtl WHERE DocKey = :doc_key',
+    keyColumns: ['DocKey'],
+    watermarkColumn: 'LastModified',
+    docDateColumn: 'DocDate',
+    fromDate: '',
+    filterFormula: isSpo
+      ? 'startswith(upper(trim(DocNo)), "SPO-")'
+      : 'not(startswith(upper(trim(DocNo)), "SPO-"))',
+    header: [
+      {
+        sourcePath: 'DocNo',
+        sorentoField: isSpo ? 'spo_number' : 'po_number',
+        transform: 'string',
+        required: true,
+      },
+      { sourcePath: 'CreditorAutoKey', sorentoField: 'supplier_ref', transform: 'ref_supplier', required: true },
+      { sourcePath: 'DocDate', sorentoField: isSpo ? 'issue_date' : 'doc_date', transform: 'date' },
+      { sourcePath: 'ExpectedDate', sorentoField: 'expected_date', transform: 'date' },
+      {
+        sourcePath: 'UDF_Currency',
+        sorentoField: 'currency',
+        transform: 'string',
+        formula: 'coalesce(UDF_Currency, CurrencyCode, "CNY")',
+      },
+      { sourcePath: 'Cancelled', sorentoField: 'status', transform: 'string', formula: DEFAULT_STATUS_FORMULA },
+      { sourcePath: 'CreditorCode', sorentoField: 'supplier_code', transform: 'string' },
+      { sourcePath: 'CreditorName', sorentoField: 'supplier_name', transform: 'string' },
+      { sourcePath: 'PurchaseAgent', sorentoField: 'agent_code', transform: 'string' },
+    ],
+    line,
+    // sprint-5/06 (AC-06-10) - the LINE catalog offers the eight input
+    // fields + `from_so_numbers` + `from_po_number` (ten total); the four
+    // `from_so_external_*` names never get a preset row (AC-06-24), so the
+    // catalog is wider than `line` here - every prior preset's catalog
+    // stayed exactly its mapped rows (the `lineTargets` default below).
+    lineTargets: [
+      ...line.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
+      ...LINE_LINKAGE_CATALOG_ONLY_TARGETS,
+    ],
+  };
+}
+
+const DOCUMENT_PRESETS: Record<string, DocumentPresetSpec> = {
+  sales_order: SO_PRESET,
+  purchase_order: purchaseFamilyPreset('purchase_order'),
+  shipping_order: purchaseFamilyPreset('shipping_order'),
+};
+
+/** The entity's fulfilled-quantity line field (AC-02-07) - `qty_delivered`
+ *  for a sales order, `qty_received` for a purchase/shipping order. */
+function fulfilledFieldFor(entityType: string): string {
+  return entityType === 'sales_order' ? 'qty_delivered' : 'qty_received';
+}
+
+/** A document's "current mapping" fixture - every preset field, already
+ *  mapped and enabled (a realistic ALREADY-CONFIGURED task). */
+function documentMappingView(entityType: string): AutocountMappingView {
+  const spec = DOCUMENT_PRESETS[entityType];
+  const toRows = (fields: DocFieldSpec[], scope: 'header' | 'line') =>
+    fields.map((f) => ({
+      sourcePath: f.sourcePath,
+      transform: f.transform,
+      formula: f.formula ?? null,
+      sorentoField: f.sorentoField,
+      canonicalField: f.sorentoField,
+      scope,
+      isRequired: Boolean(f.required),
+      isEnabled: true,
+    }));
+  return {
+    entityType,
+    rows: [...toRows(spec.header, 'header'), ...toRows(spec.line, 'line')],
+    sorentoFields: spec.header.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
+    acFields: spec.header.map((f) => f.sourcePath),
+    lineSorentoFields:
+      spec.lineTargets ?? spec.line.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
+    lineAcFields: spec.line.map((f) => f.sourcePath),
+    // sprint-5/12 ruling R7 (AC-12-27) - a DOCUMENT entity has a preset too:
+    // S2's real resolver (`presets.resolve_preset_rows`) falls through to
+    // `DOCUMENT_PRESETS[entityType].header`. Review round 2 (should-fix 3):
+    // derived from the SAME table the mock's own `resetMappingToPreset`
+    // reads, so the view and the reset double can never disagree - the
+    // earlier hardcoded `true` opened the dialog straight into a 422 the
+    // real backend never produces.
+    hasPreset: mappingResetHasPreset(entityType),
+  };
+}
+
+/**
+ * An open REST API master's mapping view (sprint-5/08, AC-08-16/21) - seeded
+ * straight from `HTTP_PRESETS[entityType].mapping`, the SAME table the
+ * Source tab's preset pre-fill reads (one source of truth, never a second
+ * copy). No document family here (AC_HTTP_ENTITY_TYPES has none), so every
+ * row is header-scope and there are no line fields.
+ */
+function httpMasterMappingView(entityType: string): AutocountMappingView {
+  const preset = HTTP_PRESETS[entityType];
+  const rows = preset.mapping.map((m) => ({
+    sourcePath: m.sourcePath,
+    transform: m.transform,
+    formula: null,
+    sorentoField: m.canonicalField,
+    canonicalField: m.canonicalField,
+    scope: 'header' as const,
+    isRequired: Boolean(m.required),
+    isEnabled: true,
+  }));
+  // sprint-5/12 - `sorentoFields` (the accepted-target catalog) is UNIONED
+  // with the mapping-reset preset's own fields when one is registered: this
+  // file's `HTTP_PRESETS` (`lib/autocount-etl.ts`) is flagged there as a
+  // stale drift-risk mirror (still the pre-AC-10-73/74 `product` shape,
+  // missing `list_price`) - the picker/save-gate catalog must still offer
+  // every field a reset could write, or the mock's OWN `updateMapping`
+  // would reject its own reset apply.
+  const resetFields = (MAPPING_RESET_PRESETS[entityType]?.rows ?? []).map((r) => ({
+    field: r.canonicalField,
+    required: r.required,
+  }));
+  const sorentoFields = [...rows.map((r) => ({ field: r.canonicalField, required: r.isRequired }))];
+  for (const f of resetFields) {
+    if (!sorentoFields.some((s) => s.field === f.field)) sorentoFields.push(f);
+  }
+  return {
+    entityType,
+    rows,
+    sorentoFields,
+    acFields: Array.from(new Set(preset.mapping.map((m) => m.sourcePath))),
+    lineSorentoFields: [],
+    lineAcFields: [],
+    hasPreset: mappingResetHasPreset(entityType),
+  };
+}
+
+/**
+ * `customer` is the ONE entity type both the legacy vendor-login path
+ * (`autocount_read`, `masterMappingView` - AccNo/CompanyName/IsActive/
+ * EmailAddress, unchanged since plan 15) AND the open REST API path
+ * (`autocount_http`, AC-08-16) can configure - dispatch on the RESOLVED
+ * impl for that one collision; every other `HTTP_PRESETS` entity has no
+ * vendor-path meaning at all, so it always reads its HTTP preset.
+ */
+function mockMappingView(entityType: string, impl?: string): AutocountMappingView {
+  if (isDocumentEntity(entityType) && DOCUMENT_PRESETS[entityType]) {
+    return documentMappingView(entityType);
+  }
+  if (HTTP_PRESETS[entityType] && (impl === 'autocount_http' || entityType !== 'customer')) {
+    return httpMasterMappingView(entityType);
+  }
+  return masterMappingView(entityType);
+}
+
+/** `GET /autocount/presets/{entityType}` (S3 backend) - the mock returns the
+ *  ONE preset for this document entity, `{database}` already substituted. */
+function mockMappingPresets(databaseName: string, entityType: string): AutocountMappingPreset[] {
+  const spec = DOCUMENT_PRESETS[entityType];
+  if (!spec) return [];
+  return [
+    {
+      entityType,
+      label: spec.label,
+      headerQuery: spec.headerQuery.replace('{database}', databaseName),
+      lineQuery: spec.lineQuery.replace('{database}', databaseName),
+      keyColumns: spec.keyColumns,
+      watermarkColumn: spec.watermarkColumn,
+      docDateColumn: spec.docDateColumn,
+      fromDate: spec.fromDate || null,
+      filterFormula: spec.filterFormula,
+    },
+  ];
+}
+
+// sprint-5/02 S3 closed the PHASE 1 MOCK entirely: `simulateMapping`'s
+// `lines=` overload and `listMappingPresets` (`GET /autocount/presets/
+// {entityType}`) are both real server-side now (`modules/autocount/
+// routers/sync.py`, `presets.py`), same as `getMapping`/`updateMapping`
+// since S2. `mockMappingPresets`/`documentMappingView`/`mockMappingView`
+// above remain as the Vitest fixture data (`mockAutocountService`) the
+// builder's frontend-first tests exercise directly. sprint-5/12 S1's scoped
+// overlay (`withPhase1MappingResetMock`) is GONE - S2 landed the real
+// `POST .../mapping/reset-preset` route and `autocount-service.ts` binds
+// `realAutocountService` bare.
+
+// ── mapping preset reset (sprint-5/12, Group B - AC-12-10..24) ───────────────
+//
+// `MAPPING_RESET_PRESETS` is a FRESH, ACCURATE mirror of the backend's real
+// `modules/autocount/presets.py::HTTP_PRESETS` (the AC-10-73/74 `description`
+// join formula, the withheld-but-visible `uom_code`, the `BaseUOMPrice ->
+// list_price` row) - deliberately NOT the same table as this file's own
+// `HTTP_PRESETS` import (`lib/autocount-etl.ts`), which is flagged there as
+// PHASE 1 MOCK ONLY drift risk and still carries the OLD `Desc2 ->
+// description` row sprint-5/10 replaced server-side. Reusing that stale
+// table here would re-encode, in the very feature meant to fix it, the exact
+// production drift this plan exists to correct (see the plan's "Why", §1).
+// Since S2 this table drives the VITEST DOUBLE only
+// (`mockAutocountService.resetMappingToPreset`) - the live UI reads the real
+// `presets.resolve_preset_rows`, so nothing a user sees can drift with it.
+//
+// Document entities (sprint-5/12 review round 2, should-fix 3): the backend
+// resolver falls through to `DOCUMENT_PRESETS[entity].header` for a non-HTTP
+// task, so this table carries the SAME fall-through - the document entries
+// below are DERIVED from this file's own `DOCUMENT_PRESETS` header packs
+// (header scope only, never a line row), one source of truth, and
+// `documentMappingView.hasPreset` reads this table back. Before this, the
+// view said `hasPreset: true` while the reset 422'd "No preset is
+// registered" - a state the real backend never produces.
+//
+// Two owner rulings, 2026-09-22, mirrored here:
+//   - BL-SS-260: NO `Discontinued -> is_discontinued` row. Sorento derives
+//     "discontinued" from the `****` prefix of the description TEXT (plan 10
+//     D22); the field is absent from `CanonicalProduct.SINK_FIELDS` and is
+//     never sent.
+//   - `required` is now the MAPPING CATALOG's answer (code/name/is_active for
+//     a master, item_code/location_code/qty for stock balance), matching
+//     `presets.planned_is_required` - not the preset row's own flag.
+
+interface MappingResetPresetRow {
+  sourcePath: string;
+  canonicalField: string;
+  transform: string;
+  formula: string | null;
+  required: boolean;
+  /** The preset's OWN enabled flag (AC-10-74's withheld `uom_code`) - ANDed
+   *  with column presence exactly like the backend's `_seed_rows`. */
+  enabled: boolean;
+}
+
+interface MappingResetPreset {
+  label: string;
+  rows: MappingResetPresetRow[];
+}
+
+/** A document preset's HEADER pack as the reset double reads it - mirrors
+ *  `resolve_preset_rows` returning `(preset.label, preset.header)`; line
+ *  rows are never part of a reset (ruling R7, AC-12-27). */
+function documentResetPreset(spec: DocumentPresetSpec): MappingResetPreset {
+  return {
+    label: spec.label,
+    rows: spec.header.map((f) => ({
+      sourcePath: f.sourcePath,
+      canonicalField: f.sorentoField,
+      transform: f.transform,
+      formula: f.formula ?? null,
+      required: Boolean(f.required),
+      enabled: true,
+    })),
+  };
+}
+
+const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
+  ...Object.fromEntries(
+    Object.entries(DOCUMENT_PRESETS).map(([entityType, spec]) => [
+      entityType,
+      documentResetPreset(spec),
+    ]),
+  ),
+  product: {
+    label: 'Item (open REST API)',
+    rows: [
+      { sourcePath: 'ItemCode', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
+      // AC-10-73 - the RAW join (`.strip()` on the ends only; an inner
+      // double space is never collapsed).
+      {
+        sourcePath: 'Description',
+        canonicalField: 'description',
+        transform: 'string',
+        formula: 'trim(if(default(Desc2, "") != "", concat(Description, " ", Desc2), Description))',
+        required: false,
+        enabled: true,
+      },
+      { sourcePath: 'ItemGroup', canonicalField: 'category_code', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'ItemBrand', canonicalField: 'brand_code', transform: 'string', formula: null, required: false, enabled: true },
+      // AC-10-74 - withheld during the check period: seeded PRESENT but
+      // disabled so the operator can see and re-enable it deliberately.
+      { sourcePath: 'BaseUOM', canonicalField: 'uom_code', transform: 'string', formula: null, required: false, enabled: false },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
+      // The pre-filled `uom` lookup's own alias, clamped to 0 on a negative
+      // vendor sentinel price.
+      {
+        sourcePath: 'BaseUOMPrice',
+        canonicalField: 'list_price',
+        transform: 'string',
+        formula: 'if(number(value) <= 0, 0, number(value))',
+        required: false,
+        enabled: true,
+      },
+    ],
+  },
+  customer: {
+    label: 'Debtor (open REST API)',
+    rows: [
+      { sourcePath: 'AccNo', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'CompanyName', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Phone1', canonicalField: 'phone_number', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
+    ],
+  },
+  warehouse: {
+    label: 'Location (open REST API)',
+    rows: [
+      { sourcePath: 'Location', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Address1', canonicalField: 'location', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
+    ],
+  },
+  product_category: {
+    label: 'Item group (open REST API)',
+    rows: [
+      { sourcePath: 'ItemGroup', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Desc2', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  brand: {
+    label: 'Item brand (open REST API)',
+    rows: [
+      { sourcePath: 'ItemBrand', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'ItemBrand', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  branch: {
+    label: 'Branches (open REST API)',
+    rows: [
+      { sourcePath: 'AccNo', canonicalField: 'acc_no', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'BranchCode', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'BranchName', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  unit_of_measure: {
+    label: 'Item UOM (open REST API, distinct)',
+    rows: [
+      { sourcePath: 'value', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'value', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
+    ],
+  },
+  stock_balance: {
+    label: 'Stock balance (open REST API)',
+    rows: [
+      { sourcePath: 'item_code', canonicalField: 'item_code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'location_code', canonicalField: 'location_code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'ItemDescription', canonicalField: 'item_description', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'ItemBaseUOM', canonicalField: 'uom_code', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'qty', canonicalField: 'qty', transform: 'int', formula: null, required: true, enabled: true },
+    ],
+  },
+};
+
+// The two DISTINCT causes a preset row lands disabled (UAC amendment
+// 2026-09-22, AC-12-12/15) - never one string for both: the dialog must not
+// claim a column is missing when the preset is simply withholding the row.
+// Mirrors the backend's own `presets.DISABLED_REASON_*` constants.
+const MAPPING_RESET_REASON_MISSING_COLUMN = 'column not returned by the source';
+const MAPPING_RESET_REASON_WITHHELD = 'withheld by the preset';
+
+/** The reason a preset row lands disabled, or `undefined` when it does not.
+ *  The preset's OWN withholding wins when BOTH causes apply: adding the
+ *  missing lookup would not enable the row, so naming the column would send
+ *  the operator down a dead end. */
+function mappingResetDisabledReason(
+  presetEnabled: boolean,
+  columnPresent: boolean,
+): string | undefined {
+  if (!presetEnabled) return MAPPING_RESET_REASON_WITHHELD;
+  if (!columnPresent) return MAPPING_RESET_REASON_MISSING_COLUMN;
+  return undefined;
+}
+
+function mappingResetHasPreset(entityType: string): boolean {
+  return entityType in MAPPING_RESET_PRESETS;
+}
+
+/**
+ * Pure diff (AC-12-12): the preset's rows against the entity's CURRENT
+ * header rows, by `canonicalField`. Exported so every AC-12-20 state
+ * (added/changed/unchanged/removed/disabled/empty) is directly unit-tested
+ * with hand-built inputs, no service round trip needed.
+ */
+export function computeMappingResetDiff(
+  preset: MappingResetPreset,
+  currentRows: AutocountMappingRow[],
+  availableColumns: string[],
+): AutocountMappingResetPreview {
+  const columnsKnown = availableColumns.length > 0;
+  const columnSet = new Set(availableColumns);
+  const currentByField = new Map(
+    currentRows.filter((r) => r.scope === 'header' && r.sorentoField).map((r) => [r.canonicalField, r]),
+  );
+  const presetFields = new Set(preset.rows.map((r) => r.canonicalField));
+
+  const rows = preset.rows.map((p) => {
+    const columnPresent = !columnsKnown || columnSet.has(p.sourcePath);
+    const enabled = p.enabled && columnPresent;
+    const reason = mappingResetDisabledReason(p.enabled, columnPresent);
+    const current = currentByField.get(p.canonicalField);
+    const change: 'added' | 'changed' | 'unchanged' = !current
+      ? 'added'
+      : current.sourcePath === p.sourcePath &&
+          current.transform === p.transform &&
+          (current.formula ?? null) === p.formula &&
+          current.isEnabled === enabled &&
+          current.isRequired === p.required
+        ? 'unchanged'
+        : 'changed';
+    return {
+      canonicalField: p.canonicalField,
+      sourcePath: p.sourcePath,
+      transform: p.transform,
+      formula: p.formula,
+      enabled,
+      isRequired: p.required,
+      change,
+      ...(reason ? { disabledReason: reason } : {}),
+    };
+  });
+
+  const removed = currentRows
+    .filter((r) => r.scope === 'header' && r.sorentoField && !presetFields.has(r.canonicalField))
+    .map((r) => ({
+      canonicalField: r.canonicalField,
+      sourcePath: r.sourcePath,
+      transform: r.transform,
+      formula: r.formula,
+    }));
+
+  return { label: preset.label, rows, removed };
+}
+
+/** The write rows a reset APPLY would submit (AC-12-13) - `enabled` folded
+ *  the same way the dry run computed it, so apply and preview can never
+ *  disagree. */
+function mappingResetWriteRows(
+  preset: MappingResetPreset,
+  availableColumns: string[],
+): AutocountMappingWriteRow[] {
+  const columnsKnown = availableColumns.length > 0;
+  const columnSet = new Set(availableColumns);
+  return preset.rows.map((p) => ({
+    sourcePath: p.sourcePath,
+    transform: p.transform,
+    sorentoField: p.canonicalField,
+    formula: p.formula,
+    scope: 'header' as const,
+    isEnabled: p.enabled && (!columnsKnown || columnSet.has(p.sourcePath)),
+  }));
+}
+
+

@@ -202,6 +202,11 @@ def _connection(db, tenant_id: str = DEFAULT_TENANT_ID, name: str = "AutoCount")
     return conn
 
 
+# The fixture company's initial lookback (see ``_company``). Wide enough that
+# this suite's fixed-date payloads never fall out of the first-run window.
+LOOKBACK_DAYS = 3650
+
+
 def _company(
     db,
     transports,
@@ -209,10 +214,22 @@ def _company(
     tenant_id: str = DEFAULT_TENANT_ID,
     database_name: str = "AED_VSOFT",
     reads: Optional[List[Any]] = None,
+    lookback_days: Optional[int] = LOOKBACK_DAYS,
 ) -> AcCompany:
     conn = _connection(db, tenant_id, name=f"AutoCount {database_name}")
     transports[conn.id] = MockTransport(reads or [], database_name=database_name)
-    return CompanyService(db).create_from_connection(tenant_id, conn.id)
+    company = CompanyService(db).create_from_connection(tenant_id, conn.id)
+    # This suite's fixture payloads carry FIXED calendar stamps (``2026/07/…``),
+    # while the seeded GRN lookback is a rolling 30 days from *today*. Once the
+    # wall clock walked past those dates every windowed run started failing the
+    # window assertion - a calendar rot, not a code regression. Widen the
+    # lookback for the fixture company so the window always contains them; a
+    # test that cares about the window's WIDTH sets its own value.
+    if lookback_days is not None:
+        for config in CompanyService(db).entity_configs(tenant_id, company.id):
+            config.initial_lookback_days = lookback_days
+        db.commit()
+    return company
 
 
 def _queue(db, transports, company: AcCompany, records: List[Any]) -> None:
@@ -574,7 +591,9 @@ def test_watermarks_are_per_company(db, transports):
 # ── the fetch seam ────────────────────────────────────────────────────────────
 
 
-def _source(reads, *, record_cap: int = 200) -> AutoCountReadSource:
+def _source(
+    reads, *, record_cap: int = 200, lookback_days: int = LOOKBACK_DAYS
+) -> AutoCountReadSource:
     client = AutoCountClient(
         base_url="https://ac.example.com",
         app_id="app-1",
@@ -583,7 +602,12 @@ def _source(reads, *, record_cap: int = 200) -> AutoCountReadSource:
         transport=MockTransport(reads),
     )
     return AutoCountReadSource(
-        client, entity_type=ENTITY_GOODS_RECEIVED_NOTE, record_cap=record_cap
+        client,
+        entity_type=ENTITY_GOODS_RECEIVED_NOTE,
+        record_cap=record_cap,
+        # Same calendar-rot guard as ``_company``: the payload stamps are fixed
+        # dates, so the window must not be a rolling 30 days from today.
+        lookback_days=lookback_days,
     )
 
 
@@ -602,7 +626,8 @@ def test_the_fetch_sends_last_modified_from_and_to(db):
 def test_a_missing_watermark_uses_a_bounded_lookback_never_everything(db):
     """An unbounded first fetch is guaranteed to hit the cap on a real customer;
     the full initial load is a separate supervised problem (D20)."""
-    source = _source([[]])
+    # The PRODUCT default (30 days) is the subject here, not the fixture width.
+    source = _source([[]], lookback_days=30)
     start, end = source.window(Watermark())
     assert timedelta(days=29) < (end - start) < timedelta(days=31)
 
@@ -777,6 +802,26 @@ def test_a_vendor_error_is_not_flagged_as_a_truncation(db, transports):
     job = _run_sync(db, company)
     run = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job.id)
     assert run.outcome == RUN_FAILED and run.truncated is False
+
+
+def test_b1_regression_vendor_api_source_run_is_never_marked_truncated(db, transports):
+    """plan 13 review round 2 B1 regression test - the vendor GRN API
+    source (``AutoCountReadSource``) reports ``reported_total`` for an
+    UNRELATED, non-paged reason (a per-row ``RecordCount`` marker, almost
+    always absent) and never sets ``envelope_kind`` at all - so applying
+    ``extract_is_complete``'s own envelope/reported-total rule
+    UNCONDITIONALLY to this source's result (the regression this test
+    pins) read every ordinary, successful sync as UNVERIFIED and stamped
+    ``run.truncated = True`` on every single one of them. A clean run
+    with no truncation signal from the vendor must stay `truncated =
+    False` - `FetchResult.walk_verified` (declared, `None` for this
+    source = "not applicable") is what fixes it."""
+    company = _company(db, transports, reads=[[_grn("1"), _grn("2")]])
+    job = _run_sync(db, company)
+    assert job.status == JOB_NEEDS_REVIEW
+    run = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert run.outcome != RUN_FAILED
+    assert run.truncated is False
 
 
 def test_the_watermark_holds_when_the_fetch_fails(db, transports):
@@ -1154,12 +1199,19 @@ def test_a_handler_crash_never_propagates_to_the_caller(db, transports, monkeypa
 
 
 def test_every_module_table_carries_tenant_and_company(db):
-    """AC-13-41, structurally. ``ac_company``'s own id IS the company id."""
+    """AC-13-41, structurally. ``ac_company``'s own id IS the company id.
+
+    ``ac_pull_api_key`` (sprint-5/10 S4, AC-10-27) is the second deliberate
+    exception: a pull gateway key is scoped to an explicit SET of companies
+    (``company_ids``, a JSON list validated tenant-side at issue time and
+    re-checked at every gateway call), never a single owning company - the
+    same reason ``ac_company`` itself is exempted, one level up."""
     from modules.autocount.db import AutocountBase
 
+    single_company_exempt = {"ac_company", "ac_pull_api_key"}
     for table in AutocountBase.metadata.sorted_tables:
         assert "tenant_id" in table.c, table.name
-        if table.name != "ac_company":
+        if table.name not in single_company_exempt:
             assert "company_id" in table.c, table.name
 
 
@@ -1272,6 +1324,75 @@ def test_an_unknown_company_is_a_clean_404_not_a_500(client):
     assert "not found" in response.json()["detail"].lower()
 
 
+# ── mapping presets (sprint-5/02 S3, AC-02-16 "Use preset") ───────────────────
+
+
+def test_mapping_presets_are_database_substituted_for_a_document_entity(
+    client, session_factory, transports
+):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP").id
+    setup.close()
+
+    response = client.get(
+        "/autocount/presets/sales_order?companyId=" + company_id, headers=_auth(client)
+    )
+    assert response.status_code == 200
+    presets = response.json()
+    assert len(presets) == 1
+    preset = presets[0]
+    assert preset["entityType"] == "sales_order"
+    assert "AED_PRESET_HTTP" in preset["headerQuery"]
+    assert "AED_PRESET_HTTP" in preset["lineQuery"]
+    assert preset["keyColumns"] == ["DocKey"]
+    assert preset["filterFormula"] is None
+
+
+def test_mapping_presets_is_empty_for_an_entity_with_no_preset_at_all(
+    client, session_factory, transports
+):
+    """S7 (sprint-5/08 review round 1) - `customer` is no longer a valid
+    "has no preset" example: it is one of the six HTTP entities
+    (`presets.HTTP_PRESETS`) and now correctly answers non-empty (see
+    `test_get_mapping_presets_route_returns_http_preset_not_empty` in
+    `test_autocount_http_task_config.py`). `supplier` has neither a
+    document nor an HTTP preset registered, so it is the genuine "nothing
+    to offer" case this test exists to pin."""
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP2").id
+    setup.close()
+
+    response = client.get(
+        "/autocount/presets/supplier?companyId=" + company_id, headers=_auth(client)
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_mapping_presets_404s_an_unknown_company(client):
+    response = client.get(
+        "/autocount/presets/sales_order?companyId=nope", headers=_auth(client)
+    )
+    assert response.status_code == 404
+
+
+def test_the_spo_preset_filters_the_opposite_way_from_po(client, session_factory, transports):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP3").id
+    setup.close()
+    headers = _auth(client)
+
+    po = client.get(
+        "/autocount/presets/purchase_order?companyId=" + company_id, headers=headers
+    ).json()[0]
+    spo = client.get(
+        "/autocount/presets/shipping_order?companyId=" + company_id, headers=headers
+    ).json()[0]
+    assert po["filterFormula"] == 'not(startswith(upper(trim(DocNo)), "SPO-"))'
+    assert spo["filterFormula"] == 'startswith(upper(trim(DocNo)), "SPO-")'
+    assert spo["entityType"] == "shipping_order"
+
+
 def test_approving_an_unknown_job_is_a_clean_404(client):
     response = client.post("/autocount/jobs/nope/approve", headers=_auth(client))
     assert response.status_code == 404
@@ -1281,7 +1402,10 @@ def test_the_entity_wire_carries_the_delta_state(client, session_factory, transp
     """The Entities tab needs the watermark half on the wire, camelCase and
     Z-suffixed like everything else."""
     setup = session_factory()
-    company_id = _company(setup, transports, database_name="AED_STATE").id
+    # ``lookback_days=None`` keeps the SEEDED default - this test pins it.
+    company_id = _company(
+        setup, transports, database_name="AED_STATE", lookback_days=None
+    ).id
     setup.close()
 
     body = client.get(
@@ -1881,7 +2005,9 @@ def test_entity_states_carry_the_watermark_so_a_zero_sync_is_explicable(
     """``last_success_at``/``last_modified_at``/``consecutive_failures``/
     ``last_error`` were recorded by every run and shown to nobody - which is
     exactly why a legitimate zero-record sync read as silence."""
-    company = _company(db, transports, reads=[[_grn("1")]])
+    # ``lookback_days=None`` keeps the SEEDED default - this test pins it, then
+    # widens it before the sync so the fixture's fixed date stays in window.
+    company = _company(db, transports, reads=[[_grn("1")]], lookback_days=None)
 
     # Before any sync: configured, but never run.
     fresh = _grn_state(db, company)
@@ -1892,6 +2018,10 @@ def test_entity_states_carry_the_watermark_so_a_zero_sync_is_explicable(
     # The first-run trap is visible rather than implicit.
     assert fresh.initial_lookback_days == 30
 
+    _config_for(db, company, ENTITY_GOODS_RECEIVED_NOTE).initial_lookback_days = (
+        LOOKBACK_DAYS
+    )
+    db.commit()
     _run_sync(db, company)
     synced = _grn_state(db, company)
     assert synced.last_success_at is not None
@@ -2501,7 +2631,10 @@ def test_the_canonical_supplier_claims_only_what_sorento_persists():
     """AC-14-13. Sorento ACCEPTS seven address fields on ``CanonicalSupplier``
     and ``_supplier_columns`` writes none of them, so sending them would have us
     report a sync that did not happen."""
-    payload = CanonicalSupplier(source_ref="AED:1", code="400-A", name="A").sink_payload()
+    payload = CanonicalSupplier(
+        source_ref="AED:1", source_doc_no="400-A", code="400-A", name="A",
+        email="a@example.my", is_active=True,
+    ).sink_payload()
     assert set(payload) == {
         "source_ref",
         "source_doc_no",
@@ -2510,6 +2643,11 @@ def test_the_canonical_supplier_claims_only_what_sorento_persists():
         "email",
         "is_active",
     }
+    # Sorento 2.1: a None-valued key is OMITTED (null = clear, absent = leave
+    # alone), so a supplier with nothing but the required fields sends only
+    # those - never "email": null.
+    sparse = CanonicalSupplier(source_ref="AED:1", code="400-A", name="A").sink_payload()
+    assert set(sparse) == {"source_ref", "code", "name"}
 
 
 def test_no_payment_terms_field_exists_on_either_master():
@@ -2581,7 +2719,10 @@ def test_a_debtor_row_maps_to_a_canonical_customer_with_its_extra_fields():
     assert record.source_ref == "AED_VSOFT:9"
     assert record.phone_number == "+60123456789"
     assert record.tax_id == "IG12345678900"
-    assert record.credit_limit == Decimal("25000.00000000")
+    # Sorento contract 2.1 (sprint-5/04): ``credit_limit`` is gone from the
+    # seed, the accepted targets AND the model - a dead attribute must not
+    # creep back as a place for a stale mapping row to land.
+    assert not hasattr(record, "credit_limit")
 
 
 def test_a_master_record_has_no_lines_attribute_to_half_fill():
@@ -2659,7 +2800,8 @@ def test_once_a_watermark_exists_a_full_entity_deltas_exactly_as_before():
 def test_a_windowed_entity_is_unchanged_by_the_new_policy():
     """The GRN path must not move: a document stream IS naturally time-bounded
     and its lookback is correct."""
-    source = _source([[_grn()]])
+    # The PRODUCT default (30 days) is the subject here, not the fixture width.
+    source = _source([[_grn()]], lookback_days=30)
     assert source.initial_load == INITIAL_LOAD_WINDOWED
     start, end = source.window(Watermark())
     assert start is not None
@@ -3023,6 +3165,8 @@ from modules.autocount.backfill import (  # noqa: E402
 from modules.autocount.models import (  # noqa: E402
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
+    STAGED_PUSHED,
+    AcRowHash,
 )
 from modules.autocount.services import (  # noqa: E402
     AutocountServiceError,
@@ -3053,10 +3197,16 @@ def _sorento_connection(
     return conn
 
 
-def _point_at_sorento(db, company, conn) -> None:
+# Every Sorento call is company-anchored since plan 22 (Appendix A6), so the
+# fixture supplies a code - a blank one is now a per-field 422 by design.
+SORENTO_COMPANY_CODE = "SRT"
+
+
+def _point_at_sorento(db, company, conn, *, company_code=SORENTO_COMPANY_CODE) -> None:
     CompanyService(db).set_sink_target(
         company.tenant_id, company.id,
         sink_impl=SINK_IMPL_SORENTO, sink_connection_id=conn.id,
+        sorento_company_code=company_code,
     )
     db.refresh(company)
 
@@ -3118,8 +3268,16 @@ def sorento_sink(monkeypatch):
 
     rec = _SorentoRecorder()
 
-    def fake(config, credentials, *, entity_type, transport=None):
-        return real(config, credentials, entity_type=entity_type, transport=rec._transport)
+    def fake(config, credentials, *, entity_type, company_code=None, transport=None):
+        return real(
+            config,
+            credentials,
+            entity_type=entity_type,
+            # Carried through so the recorder sees the real anchored body -
+            # swallowing it here would hide a sink that stopped sending it.
+            company_code=company_code,
+            transport=rec._transport,
+        )
 
     monkeypatch.setattr(company_module, "sorento_sink_from_connection", fake)
     return rec
@@ -3227,6 +3385,7 @@ def test_set_sink_target_rejects_a_foreign_connection(db, transports):
         CompanyService(db).set_sink_target(
             DEFAULT_TENANT_ID, company.id,
             sink_impl=SINK_IMPL_SORENTO, sink_connection_id=foreign.id,
+            sorento_company_code=SORENTO_COMPANY_CODE,
         )
 
 
@@ -3241,6 +3400,73 @@ def test_switching_back_to_logging_clears_the_connection(db, transports):
     db.refresh(company)
     assert company.sink_impl == SINK_IMPL_LOGGING
     assert company.sink_connection_id is None
+
+
+# ── database_name is locked once ref-namespace state exists (S4 review B1.d) ──
+#
+# A demo/live-verify convenience edit that renames ``database_name`` out from
+# under a company already holding reconcile state or delivered rows mints a
+# DIFFERENT ref namespace on the very next run - the sink sees brand-new refs
+# (a duplicate "created" wave) and reconcile, seeing the OLD refs vanish,
+# stages them as deletes. This is exactly the incident the plan 22 S4 review
+# found live on "V Soft Trading" - closed here so it can never happen from
+# code again (the prior mutation was a raw, un-guarded DB edit outside any
+# code path).
+
+
+def test_update_database_name_rejects_a_company_with_row_hash_state(db, transports):
+    company = _company(db, transports)
+    db.add(
+        AcRowHash(
+            tenant_id=company.tenant_id,
+            company_id=company.id,
+            entity_type=ENTITY_CUSTOMER,
+            source_ref="AED_VSOFT:1",
+            row_hash="h1",
+            last_seen_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).update_database_name(
+            DEFAULT_TENANT_ID, company.id, "RENAMED_DB"
+        )
+    db.refresh(company)
+    assert company.database_name == "AED_VSOFT"
+
+
+def test_update_database_name_rejects_a_company_with_a_pushed_row(db, transports):
+    company = _company(db, transports)
+    job = _staged_supplier_job(db, company)
+    row = db.query(AcStagedRecord).filter(AcStagedRecord.job_id == job.id).first()
+    row.status = STAGED_PUSHED
+    db.commit()
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).update_database_name(
+            DEFAULT_TENANT_ID, company.id, "RENAMED_DB"
+        )
+    db.refresh(company)
+    assert company.database_name == "AED_VSOFT"
+
+
+def test_update_database_name_allows_a_fresh_company(db, transports):
+    """No row_hash, no PUSHED row - nothing downstream has minted a ref under
+    the old name yet, so a rename (e.g. fixing a typo before the first sync)
+    stays safe and allowed."""
+    company = _company(db, transports)
+    updated = CompanyService(db).update_database_name(
+        DEFAULT_TENANT_ID, company.id, "RENAMED_DB"
+    )
+    assert updated.database_name == "RENAMED_DB"
+
+
+def test_update_database_name_rejects_a_duplicate_within_the_tenant(db, transports):
+    company = _company(db, transports)
+    other = _company(db, transports, database_name="OTHER_DB")
+    with pytest.raises(AutocountServiceError):
+        CompanyService(db).update_database_name(
+            DEFAULT_TENANT_ID, company.id, other.database_name
+        )
 
 
 # ── dry-run preview (Task D, AC-14-20/21) ─────────────────────────────────────
@@ -3319,7 +3545,11 @@ def test_preview_of_a_non_deliverable_entity_explains_it_is_not_ingested(
     assert result["sink"] == SINK_IMPL_LOGGING
     reason = result["reason"].lower()
     assert "does not yet ingest" in reason
-    assert "suppliers and customers" in reason
+    # S6 merge-gate review NIT 7 - the supported-entity list is DERIVED from
+    # ``_ENTITY_PATH`` (never hardcoded again), so it names every current
+    # entry, masters and documents alike, not just the original two masters.
+    assert "supplier" in reason and "customer" in reason
+    assert "sales order" in reason and "purchase order" in reason
     assert "no consumer is configured" not in reason
 
 
@@ -3679,7 +3909,10 @@ def test_mapping_view_customer_offers_the_extra_master_fields(db, transports):
     company = _company(db, transports)
     view = CompanyService(db).mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER)
     accepted = {f.field for f in view.sorento_fields}
-    assert {"phone_number", "credit_limit", "tax_id"} <= accepted
+    assert {"phone_number", "tax_id"} <= accepted
+    # Sorento 2.1 rejects customers.credit_limit (extra="forbid") - it must
+    # not be offered as a mapping target either.
+    assert "credit_limit" not in accepted
 
 
 def test_mapping_view_unknown_entity_is_a_clean_not_found(db, transports):
@@ -3703,6 +3936,52 @@ def test_replace_mapping_round_trips(db, transports):
     assert by_field["email"].source_path == "Email"
     # The system watermark row was PRESERVED, not wiped by the replace.
     assert any(r.canonical_field == "last_modified" for r in view.rows)
+
+
+def test_replace_mapping_sweeps_a_stale_unknown_canonical_field_row(db, transports):
+    """S4 review S4: a row whose ``canonical_field`` is neither an accepted
+    Sorento target nor the preserved ``last_modified`` provenance field is a
+    STALE leftover (e.g. a catalogue field that no longer exists) - a save
+    must sweep it, not leave it lingering forever invisible to the editor."""
+    company = _company(db, transports)
+    stale = AcFieldMapping(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_SUPPLIER, scope=SCOPE_HEADER,
+        source_path="SomeOldColumn", canonical_field="retired_field",
+        transform="string", is_required=False, is_enabled=True, sort_order=99,
+    )
+    db.add(stale)
+    db.commit()
+
+    rows = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="name"),
+        MappingWriteRow(source_path="IsActive", transform="t_f_bool", sorento_field="is_active"),
+    ]
+    view = CompanyService(db).replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows
+    )
+    assert not any(r.canonical_field == "retired_field" for r in view.rows)
+    # The legitimate provenance row still survives the sweep.
+    assert any(r.canonical_field == "last_modified" for r in view.rows)
+
+
+def test_replace_mapping_never_sweeps_grn_which_has_no_accepted_fields(db, transports):
+    """GRN's Sorento-accepted set is deliberately EMPTY (no ingest path yet) -
+    the sweep must be skipped entirely for it, or every one of GRN's default
+    mapping rows (doc_no, supplier_code, …) would be wiped as "unknown"."""
+    company = _company(db, transports)
+    before = CompanyService(db).mapping_view(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE
+    )
+    assert len(before.rows) > 0
+
+    view = CompanyService(db).replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE, []
+    )
+    assert {r.canonical_field for r in view.rows} == {
+        r.canonical_field for r in before.rows
+    }
 
 
 def test_replace_mapping_rejects_a_non_accepted_field(db, transports):
@@ -3759,6 +4038,148 @@ def test_replace_mapping_survives_a_reseed(db, transports):
     view = svc.mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER)
     by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
     assert by_field["email"].source_path == "Email"  # not reverted to EmailAddress
+
+
+# ── replace_mapping: ref_* transform <-> field pairing (S5 review BLOCKER 2) ──
+
+
+def _document_entity_config(db, company: AcCompany, entity_type: str) -> None:
+    """A document task's ``AcEntityConfig`` is never part of ``_company``'s
+    seeded set (GRN/Supplier/Customer only, plan 22 §Scope) - so a mapping
+    test targeting SO/PO needs its own row, mirroring
+    ``test_autocount_masters_fanout._product_company``."""
+    from modules.autocount.models import AcEntityConfig
+
+    db.add(
+        AcEntityConfig(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=entity_type,
+            source_impl="sql_db",
+        )
+    )
+    db.commit()
+
+
+def test_replace_mapping_accepts_a_ref_transform_on_its_matching_field(db, transports):
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="CustomerCode", transform="ref_customer", sorento_field="customer_ref"),
+        MappingWriteRow(source_path="AgentCode", transform="ref_sales_agent", sorento_field="sales_agent_ref"),
+        MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+        MappingWriteRow(source_path="Status", transform="string", sorento_field="status"),
+    ]
+    view = CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
+    assert by_field["customer_ref"].transform == "ref_customer"
+    assert by_field["sales_agent_ref"].transform == "ref_sales_agent"
+
+
+def test_replace_mapping_rejects_a_ref_transform_on_the_wrong_field(db, transports):
+    """A ``ref_*`` transform must only be usable on the ONE field it mints a
+    reference for - smuggled onto an unrelated field it would mint an
+    identity string for the wrong entity type entirely."""
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="DocNo", transform="ref_customer", sorento_field="so_number"),
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    assert "so_number" in str(exc.value)
+
+
+def test_replace_mapping_rejects_a_ref_field_mapped_without_its_ref_transform(db, transports):
+    """A ``*_ref`` field saved with a plain transform would send the bare
+    AutoCount code as the "reference" - Sorento cannot resolve it, and the
+    row would retry forever with no error naming why (S5 review BLOCKER 2)."""
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="CustomerCode", transform="string", sorento_field="customer_ref"),
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    assert "customer_ref" in str(exc.value)
+
+
+def test_replace_mapping_rejects_a_supplier_ref_without_ref_supplier(db, transports):
+    from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_PURCHASE_ORDER)
+    rows = [
+        MappingWriteRow(source_path="SupplierCode", transform="string", sorento_field="supplier_ref"),
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, rows)
+    assert "supplier_ref" in str(exc.value)
+
+
+def test_replace_mapping_accepts_supplier_ref_with_ref_supplier(db, transports):
+    from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_PURCHASE_ORDER)
+    rows = [
+        MappingWriteRow(source_path="SupplierCode", transform="ref_supplier", sorento_field="supplier_ref"),
+        # PO's required fields (S5 review SHOULD-FIX 4a checks coverage now).
+        MappingWriteRow(source_path="DocNo", transform="string", sorento_field="po_number"),
+        MappingWriteRow(source_path="Status", transform="string", sorento_field="status"),
+    ]
+    view = CompanyService(db).replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, rows
+    )
+    by_field = {r.sorento_field: r for r in view.rows if r.sorento_field}
+    assert by_field["supplier_ref"].transform == "ref_supplier"
+
+
+# ── replace_mapping: a required field left unmapped (S5 review SHOULD-FIX 4a) ─
+
+
+def test_replace_mapping_rejects_a_master_missing_a_required_field(db, transports):
+    """A supplier/customer's required set is {code, name, is_active} - a save
+    that starts mapping but never covers all three must not slip through."""
+    company = _company(db, transports)
+    rows = [
+        MappingWriteRow(source_path="AccNo", transform="string", sorento_field="code"),
+        MappingWriteRow(source_path="CompanyName", transform="string", sorento_field="name"),
+        # is_active deliberately left unmapped.
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, rows)
+    assert "is_active" in str(exc.value)
+
+
+def test_replace_mapping_rejects_a_document_missing_its_required_status(db, transports):
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+        # status deliberately left unmapped.
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    assert "status" in str(exc.value)
+
+
+def test_replace_mapping_wiping_to_zero_rows_is_never_blocked_by_the_required_check(db, transports):
+    """A save that starts EMPTY (an intentional wipe, or GRN's permanently-
+    empty accepted set) is a separate, already-legitimate action - the
+    required-coverage gate only engages once the operator has started
+    mapping (S5 review SHOULD-FIX 4a: "run the check only when the saved row
+    set is non-empty")."""
+    company = _company(db, transports)
+    view = CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, [])
+    # Nothing raised; the deliverable rows were simply cleared.
+    assert not any(r.sorento_field for r in view.rows)
 
 
 # ── re-fetch history (AC-15-30) ───────────────────────────────────────────────
@@ -4008,22 +4429,30 @@ def test_a_formula_output_is_coerced_to_the_target_type():
 
 
 def test_a_formula_decimal_output_reaches_a_decimal_field():
-    """A number-producing formula lands as a Decimal on the customer credit
-    limit (coerce_output routes it through t_decimal)."""
+    """A number-producing formula lands as a Decimal on a decimal canonical
+    field (coerce_output routes it through t_decimal). The product's
+    ``list_price`` is the decimal master field that still exists - the
+    customer's ``credit_limit`` left the model under Sorento contract 2.1."""
     from decimal import Decimal
 
+    from modules.autocount.canonical.masters import ENTITY_PRODUCT, CanonicalProduct
+
     rows = [
-        _MappingRow("AccNo", "code", "string", SCOPE_HEADER, is_required=True),
-        _MappingRow("CompanyName", "name", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("Code", "code", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("Description", "name", "string", SCOPE_HEADER, is_required=True),
         _MappingRow(
-            "CreditLimit", "credit_limit", "string", SCOPE_HEADER,
+            "Price", "list_price", "string", SCOPE_HEADER,
             formula="number(value)",
         ),
     ]
-    engine = MappingEngine(rows, entity_type=ENTITY_CUSTOMER, database_name="AED_VSOFT")
-    mapped = engine.map_document(_customer(CreditLimit="30000.0"))
-    assert mapped.ok
-    assert mapped.record.credit_limit == Decimal("30000")
+    engine = MappingEngine(rows, entity_type=ENTITY_PRODUCT, database_name="AED_VSOFT")
+    mapped = engine.map_document(
+        {"Code": "P-001", "Description": "Widget", "Price": "30000.0", "Data": [{"AutoKey": 7}]}
+    )
+    assert mapped.ok, mapped.errors
+    assert isinstance(mapped.record, CanonicalProduct)
+    assert isinstance(mapped.record.list_price, Decimal)
+    assert mapped.record.list_price == Decimal("30000")
 
 
 def test_a_runtime_formula_error_names_the_field():
@@ -4219,3 +4648,73 @@ def test_the_formula_migration_adds_a_nullable_text_column():
     module.upgrade()
     assert "formula" in added
     assert added["formula"].nullable is True
+
+
+# ── Round 5 - the sink's HTTP timeout must come from settings ──────────────
+
+
+def test_the_sinks_http_timeout_comes_from_settings_not_a_hardcoded_30(
+    db, transports, sorento_sink, monkeypatch
+):
+    """``modules.autocount.sinks_sorento.SorentoSink`` hard-codes
+    ``timeout: float = 30.0`` - an operator whose Sorento endpoint is
+    slower than 30s (or who wants a SHORTER timeout to fail fast) has no
+    way to retune it without a code change. ``settings.
+    autocount_sink_timeout_seconds`` must exist (default 300s, floored at
+    30s exactly like ``autocount_page_size``'s own floor) and the sink the
+    REAL factory (``sorento_sink_from_connection``, resolved through
+    ``CompanyService``, exactly the path an approve/auto-push goes
+    through) builds must use it - never the hard-coded literal.
+
+    A read timeout must still surface as the existing batch-level
+    ``PushFailed`` ("The push failed before the consumer resolved it") -
+    a regression guard, not new behaviour: the generic ``except Exception``
+    in ``SyncService.push_batch`` already catches any raise from the sink,
+    ``httpx.ReadTimeout`` included.
+    """
+    from pydantic import ValidationError
+
+    from app.config import Settings
+    from app.config import settings as live_settings
+    from modules.autocount.services.sync_service import PushFailed
+
+    # ── the setting exists, defaults to 300s, and floors at 30s ──────────
+    monkeypatch.delenv("AUTOCOUNT_SINK_TIMEOUT_SECONDS", raising=False)
+    assert Settings().autocount_sink_timeout_seconds == 300
+
+    monkeypatch.setenv("AUTOCOUNT_SINK_TIMEOUT_SECONDS", "29")
+    with pytest.raises(ValidationError):
+        Settings()
+    monkeypatch.delenv("AUTOCOUNT_SINK_TIMEOUT_SECONDS", raising=False)
+
+    # ── the REAL factory's sink follows the LIVE setting, not 30.0 ───────
+    monkeypatch.setattr(
+        live_settings, "autocount_sink_timeout_seconds", 123, raising=False
+    )
+
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1",))
+    sorento_sink.responder = _created
+
+    SyncService(db).approve(DEFAULT_TENANT_ID, job.id, actor_user_id="u1")
+
+    assert sorento_sink.requests, "the approve call must have reached the sink"
+    observed = sorento_sink.requests[-1].extensions.get("timeout") or {}
+    assert observed.get("read") == 123, (
+        f"expected the request's read timeout to follow "
+        f"settings.autocount_sink_timeout_seconds=123 (the LIVE "
+        f"sorento_sink_from_connection factory, no explicit timeout= "
+        f"passed) - got {observed!r}"
+    )
+
+    # ── a read timeout is STILL a clean, re-approvable PushFailed ────────
+    job2 = _staged_supplier_job(db, company, refs=("AED_VSOFT:9",))
+
+    def _timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    sorento_sink.responder = _timeout
+    with pytest.raises(PushFailed) as exc_info:
+        SyncService(db).approve(DEFAULT_TENANT_ID, job2.id)
+    assert "The push failed before the consumer resolved it" in str(exc_info.value)

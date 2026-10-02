@@ -64,6 +64,7 @@ export function useStorageMigration(active: boolean): UseStorageMigrationResult 
   const form = useForm<ConnectionFormValues>({
     resolver: zodResolver(connectionFormSchema),
     defaultValues: BLANK,
+    mode: 'onTouched',
   });
 
   const providerKey = form.watch('provider');

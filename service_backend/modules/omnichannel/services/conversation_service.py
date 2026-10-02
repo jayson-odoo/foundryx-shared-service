@@ -5,15 +5,28 @@ status keys + user display names, maintains the read marker, and applies the
 PATCH operations (assign / lifecycle / priority).
 """
 import logging
+import uuid
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.models.status import Status as CoreStatus
 from app.models.user import User
-from ..models import Channel, Contact, ConversationMessage, Status
+from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
-from ..schemas import MessageItem, ReplyRefItem, ThreadItem
-from . import realtime, statuses
+from ..schemas import (
+    ContactLifecycleSummary,
+    ContactTagRefItem,
+    MessageItem,
+    ReplyRefItem,
+    ThreadItem,
+    VisitorProfile,
+)
+from . import event_service, realtime, statuses, team_assignment_service, team_directory
+from .contact_tag_service import ContactTagService
+from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
+from .lifecycle_service import fireable_moves as _lifecycle_fireable_moves
+from .lifecycle_service import move as _lifecycle_move
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +35,55 @@ class ThreadNotFound(Exception):
     pass
 
 
+class InvalidThreadFilter(Exception):
+    """A thread-list filter combination the router can't reject by pattern
+    alone (round-3 codex triage B10/B11) - 422, never a silently-wrong
+    result set."""
+
+
 class InvalidPatch(Exception):
-    def __init__(self, message: str):
+    def __init__(self, message: str, field: Optional[str] = None):
         super().__init__(message)
         self.message = message
+        # AC-TEM-19/25 - when set, the router renders `422
+        # {fieldErrors: {field: message}}` instead of a bare string detail.
+        self.field = field
+
+
+class ThreadAlreadyClosed(Exception):
+    """The thread targeted by `close_thread` is already CLOSED (review round
+    1, finding 13) - the supplied reason/note would otherwise be silently
+    dropped by a no-op `patch_thread` call. Reopen first to change a reason."""
+
+    pass
 
 
 VALID_THREAD_STATUS = {"OPEN", "SNOOZED", "CLOSED"}
 VALID_PRIORITY = {"LOW", "MEDIUM", "HIGH", "URGENT"}
+
+# The workflow-engine `WorkflowEntity.entity_type` a contact registers as
+# (`modules/omnichannel/workflow_nodes.py`) - the shortcut routes below always
+# fire against THIS entity type, never a client-supplied one.
+SHORTCUT_ENTITY_TYPE = "omnichannel_contact"
+
+
+def _visitor_profile(identity) -> Optional[VisitorProfile]:
+    """Plan 34 review round 1 (B3) - project the identity's UNVERIFIED
+    pre-chat blob onto the wire model, or `None` when there is nothing to
+    show. Fail-closed on shape: a non-dict blob, or a value that is not a
+    string, yields nothing rather than a raw column read (this is
+    visitor-authored data on an anonymous surface). Never a lookup key."""
+    raw = getattr(identity, "visitor_profile_json", None) if identity is not None else None
+    if not isinstance(raw, dict):
+        return None
+    fields = {
+        key: raw[key]
+        for key in ("name", "email", "phone")
+        if isinstance(raw.get(key), str) and raw[key].strip()
+    }
+    if not fields:
+        return None
+    return VisitorProfile(**fields)
 
 
 def contact_display_name(c: Contact) -> str:
@@ -43,7 +97,7 @@ class ConversationService:
         self.repo = ContactRepository(db)
 
     # ── Lookups ──────────────────────────────────────────────────────────────
-    def _status_keys(self, tenant_id: str) -> Dict[str, str]:
+    def status_keys(self, tenant_id: str) -> Dict[str, str]:
         rows = (
             self.db.query(Status)
             .filter(Status.tenant_id == tenant_id, Status.scope == "THREAD")
@@ -80,6 +134,49 @@ class ConversationService:
             return {}
         return ExternalAgentService(self.db).names(ids, tenant_id)
 
+    def _lifecycle_map(
+        self, contacts: List[Contact], tenant_id: str
+    ) -> Dict[Tuple[str, str], ContactLifecycleSummary]:
+        """Batched `(workspace_id, lifecycle_status_id) -> ContactLifecycleSummary`,
+        resolved tenant + entity-type + WORKSPACE (scope_id) scoped in ONE query
+        (AC-CDM-19; the polymorphic stored-id rule - never resolve a stored
+        status id unscoped). The lifecycle machine is scoped per workspace
+        (`Status.scope_id == workspace_id`), so a status id that happens to
+        exist for another workspace of the same tenant must NOT resolve -
+        keying by `(scope_id, status_id)` enforces that."""
+        pairs = {
+            (c.workspace_id, c.lifecycle_status_id)
+            for c in contacts
+            if c.lifecycle_status_id
+        }
+        if not pairs:
+            return {}
+        status_ids = {sid for _, sid in pairs}
+        rows = (
+            self.db.query(CoreStatus)
+            .filter(
+                CoreStatus.id.in_(status_ids),
+                CoreStatus.tenant_id == tenant_id,
+                CoreStatus.entity_type == LIFECYCLE_ENTITY_TYPE,
+            )
+            .all()
+        )
+        by_id = {s.id: s for s in rows}
+        result: Dict[Tuple[str, str], ContactLifecycleSummary] = {}
+        for workspace_id, status_id in pairs:
+            s = by_id.get(status_id)
+            if s is None or s.scope_id != workspace_id:
+                continue
+            result[(workspace_id, status_id)] = ContactLifecycleSummary(
+                statusId=s.id,
+                key=s.key,
+                label=s.label,
+                color=s.color,
+                isWon=bool(s.is_terminal),
+                isLost=bool(s.is_archived),
+            )
+        return result
+
     def _channel_types(self, channel_ids: List[str], tenant_id: str) -> Dict[str, str]:
         """Tenant-scoped for the same reason as `_user_names` (lower impact -
         leaks only a channel_type - but the same stored-id resolution rule)."""
@@ -93,6 +190,23 @@ class ConversationService:
         )
         return {c.id: c.channel_type for c in rows}
 
+    def _field_registry(self, contacts: List[Contact], tenant_id: str) -> Dict[str, set]:
+        """`workspace_id -> {registered ContactField.key}` - ONE grouped query
+        for every DISTINCT workspace on the page (review round 2, finding F;
+        was one query PER workspace) - the guide (~716) and AC-CDM promise
+        registered keys only on the wire. Used to intersect
+        `custom_fields_json`'s raw blob so a legacy/unregistered key (a field
+        deleted from the registry after some contacts still carry stale JSON)
+        never surfaces on any read path (list/detail/gateway/webhook -
+        review round 1, finding 5)."""
+        from .contact_field_service import ContactFieldService
+
+        workspace_ids = {c.workspace_id for c in contacts if c.workspace_id}
+        if not workspace_ids:
+            return {}
+        grouped = ContactFieldService(self.db).list_for_workspaces(list(workspace_ids), tenant_id)
+        return {ws_id: {f.key for f in fields} for ws_id, fields in grouped.items()}
+
     # ── Mapping ──────────────────────────────────────────────────────────────
     def _thread_items(self, contacts: List[Contact], tenant_id: str) -> List[ThreadItem]:
         if not contacts:
@@ -100,13 +214,29 @@ class ConversationService:
         ids = [c.id for c in contacts]
         previews = self.repo.previews_for(ids, tenant_id)
         unread = self.repo.unread_counts_for(contacts, tenant_id)
-        status_keys = self._status_keys(tenant_id)
+        status_keys = self.status_keys(tenant_id)
         names = self._user_names([c.assigned_user_id for c in contacts], tenant_id)
         agents = self._external_agents(
             [c.assigned_external_agent_id for c in contacts], tenant_id
         )
         channel_types = self._channel_types(
             [previews[c.id].channel_id for c in contacts if c.id in previews], tenant_id
+        )
+        # Plan 32 / A7a (D-A7-5) - the per-identity messaging window, batched
+        # for the whole page by (contact_id, channel_id) pair.
+        identity_pairs = [
+            (c.id, previews[c.id].channel_id)
+            for c in contacts
+            if c.id in previews and previews[c.id].channel_id
+        ]
+        identity_windows = self.repo.identity_windows_for(identity_pairs, tenant_id)
+        tag_refs = ContactTagService(self.db).refs_for_contacts(ids, tenant_id)
+        lifecycle_map = self._lifecycle_map(contacts, tenant_id)
+        field_registry = self._field_registry(contacts, tenant_id)
+        # AC-TEM-29 - ONE batched `teams.list@1` call per page render (never
+        # N `resolve` calls); a stale/deleted/foreign team id renders `None`.
+        team_names = team_directory.names(
+            self.db, tenant_id, [c.assigned_team_id for c in contacts]
         )
 
         items: List[ThreadItem] = []
@@ -122,27 +252,57 @@ class ConversationService:
             else:
                 assigned_name = names.get(c.assigned_user_id) if c.assigned_user_id else None
                 assigned_avatar = None
+            # A legacy row can carry a non-object JSON blob (the old whole-
+            # object `customFields: null` path stored a JSON `null` scalar
+            # before `custom_fields_json` was `none_as_null=True` - review
+            # round 2, finding B) - never `.items()` a non-dict.
+            cf_blob = c.custom_fields_json if isinstance(c.custom_fields_json, dict) else {}
+            identity = (
+                identity_windows.get((c.id, channel_id)) if channel_id else None
+            )
             items.append(
                 ThreadItem(
                     id=c.id,
                     tenantId=c.tenant_id,
                     workspaceId=c.workspace_id,
                     name=contact_display_name(c),
+                    firstName=c.first_name,
+                    lastName=c.last_name,
                     phone=c.phone,
+                    email=c.email,
+                    language=c.language,
+                    countryCode=c.country_code,
                     avatarUrl=c.avatar_url,
                     assignedUserId=c.assigned_user_id,
                     assignedUserName=assigned_name,
                     assignedExternalAgentId=c.assigned_external_agent_id,
                     assignedAvatarUrl=assigned_avatar,
+                    assignedTeamId=c.assigned_team_id,
+                    assignedTeamName=team_names.get(c.assigned_team_id) if c.assigned_team_id else None,
                     status=status_keys.get(c.status_id, "OPEN"),
                     priority=c.priority or "MEDIUM",
                     channelId=channel_id,
                     channelType=channel_types.get(channel_id, "WHATSAPP"),
                     cswExpiresAt=c.csw_expires_at,
+                    windowExpiresAt=identity.window_expires_at if identity else None,
+                    humanAgentExpiresAt=identity.human_agent_expires_at if identity else None,
+                    visitorLastSeenAt=identity.last_seen_at if identity else None,
+                    visitorProfile=_visitor_profile(identity),
                     lastIncomingMessageAt=c.last_incoming_message_at,
                     lastMessageAt=c.last_message_at,
                     lastMessagePreview=preview.body if preview else None,
                     unreadCount=unread.get(c.id, 0),
+                    customFields={
+                        k: v
+                        for k, v in cf_blob.items()
+                        if k in field_registry.get(c.workspace_id, set())
+                    },
+                    tags=[ContactTagRefItem(**t) for t in tag_refs.get(c.id, [])],
+                    lifecycle=(
+                        lifecycle_map.get((c.workspace_id, c.lifecycle_status_id))
+                        if c.lifecycle_status_id
+                        else None
+                    ),
                     createdAt=c.created_at,
                 )
             )
@@ -163,6 +323,9 @@ class ConversationService:
             [m.id for m in messages],
             tenant_id,
         )
+        # Plan 32 / A7a (AC-CHN-56) - same batched, tenant-scoped resolution
+        # `_thread_items` uses for `ThreadItem.channelType`.
+        channel_types = self._channel_types([m.channel_id for m in messages], tenant_id)
         items: List[MessageItem] = []
         for m in messages:
             meta = m.metadata_json or {}
@@ -176,12 +339,21 @@ class ConversationService:
             else:
                 sender_name = names.get(m.sender_id) if m.sender_id else None
                 sender_avatar = None
+            # `{"mediaUnavailable": True}` is an internal placeholder written
+            # by `inbound_service` when a Messenger/Instagram CDN fetch
+            # expired before it could be stored (D-A7-12) - it is NOT a
+            # structured payload, so it is promoted to the typed top-level
+            # flag and never forwarded as `payload` (plan 32 / A7a S6).
+            raw_payload = m.payload_json if isinstance(m.payload_json, dict) else None
+            media_unavailable = bool(raw_payload and raw_payload.get("mediaUnavailable"))
+            payload = None if media_unavailable else raw_payload
             items.append(
                 MessageItem(
                     reactions=reactions_by_msg.get(m.id, []),
                     id=m.id,
                     contactId=m.contact_id,
                     channelId=m.channel_id,
+                    channelType=channel_types.get(m.channel_id),
                     senderType=m.sender_type,
                     senderId=m.sender_id,
                     senderName=sender_name,
@@ -194,7 +366,8 @@ class ConversationService:
                     mediaFilename=m.media_filename,
                     mediaSize=m.media_size,
                     voice=(m.message_type == "VOICE"),
-                    payload=m.payload_json,
+                    payload=payload,
+                    mediaUnavailable=media_unavailable,
                     externalMessageId=m.external_message_id,
                     deliveryStatus=m.delivery_status,
                     errorCode=m.error_code,
@@ -209,6 +382,54 @@ class ConversationService:
     def list_threads(self, tenant_id: str, **filters) -> Tuple[List[ThreadItem], int]:
         rows, total = self.repo.list_threads(tenant_id, **filters)
         return self._thread_items(rows, tenant_id), total
+
+    def assert_explicit_filters_valid(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: Optional[str],
+        tag_ids: Optional[List[str]],
+        channel_ids: Optional[List[str]],
+    ) -> None:
+        """B11 (round-3 codex triage) - a tag/channel id foreign to this
+        tenant (or, when a workspace is scoped, foreign to that workspace)
+        422s instead of silently narrowing the EXISTS predicate to zero
+        matching rows with no signal to the caller that the id itself was
+        bogus. Validate EXPLICIT (this-request) query params only -
+        deliberately NOT run against a saved view's EXPANDED filter
+        (`InboxViewService.expand`): a view's ids are already validated
+        against the workspace at save/update time
+        (`InboxViewService._validate_filter_ids`); if a tag/channel is later
+        hard-deleted, the view should keep degrading gracefully (the repo's
+        EXISTS predicate just narrows to fewer/zero matches) rather than the
+        WHOLE saved view starting to 422 forever the moment one referenced id
+        goes stale. A fresh, explicitly-supplied bogus id in THIS request has
+        no such excuse - reject it loudly instead of silently returning an
+        empty/unfiltered set. (The companion `assignee="user"` check - B10 -
+        runs in the router on the MERGED effective pair instead, since either
+        half of that pair may independently come from the view.)"""
+        if tag_ids:
+            self._assert_ids_in_scope(ContactTag, tag_ids, tenant_id, workspace_id, "tagIds")
+        if channel_ids:
+            self._assert_ids_in_scope(Channel, channel_ids, tenant_id, workspace_id, "channelIds")
+
+    def _assert_ids_in_scope(
+        self, model, ids: List[str], tenant_id: str, workspace_id: Optional[str], field: str
+    ) -> None:
+        query = self.db.query(model.id).filter(model.tenant_id == tenant_id, model.id.in_(ids))
+        if workspace_id:
+            query = query.filter(model.workspace_id == workspace_id)
+        found = {row[0] for row in query.all()}
+        if found != set(ids):
+            raise InvalidThreadFilter(f"{field} contains an unknown id.")
+
+    def assert_contact_exists(self, contact_id: str, tenant_id: str) -> None:
+        """Tenant-scoped existence-only gate (round-3 codex triage B13) - for
+        callers that need the uniform 404 but not a full `ThreadItem` (e.g.
+        `list_events`), so a router never reaches through `.repo` directly
+        (router = HTTP + Pydantic only)."""
+        if self.repo.get_by_id(contact_id, tenant_id) is None:
+            raise ThreadNotFound()
 
     def get_thread(self, contact_id: str, tenant_id: str) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
@@ -226,29 +447,175 @@ class ConversationService:
         self.db.commit()
         return self.message_items(msgs)
 
-    # ── Patch (assign / lifecycle / priority) ───────────────────────────────
+    # ── Lifecycle (plan 25 S2) ───────────────────────────────────────────────
+    def move_lifecycle(
+        self,
+        contact_id: str,
+        tenant_id: str,
+        to_status_id: str,
+        actor: Optional[User] = None,
+        *,
+        attributed_actor_id: Optional[str] = None,
+    ) -> ThreadItem:
+        """Move a contact's lifecycle stage (AC-CDM-17). Raises
+        `LifecycleStageNotFound` / the `status_machine` errors on failure - the
+        router maps them to 404/403/409; nothing is written on any of them
+        (the executor validates before it ever calls `setattr`).
+
+        B19 - `actor` authorizes (EFFECTIVE user under impersonation);
+        `attributed_actor_id` (the REAL admin) is who the written
+        `lifecycle_changed` event attributes to - see `lifecycle_service.move`'s
+        docstring for the full split."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+        _lifecycle_move(self.db, c, to_status_id, actor=actor, attributed_actor_id=attributed_actor_id)
+        self.db.commit()
+        self.db.refresh(c)
+        item = self.thread_item(c)
+        self._publish_contact_updated(c, item, tenant_id)
+        return item
+
+    def _publish_contact_updated(self, c: Contact, item: ThreadItem, tenant_id: str) -> None:
+        """ONE fan-out for every `contact.updated` producer - realtime WS/pubsub
+        for the internal inbox AND the consumer-webhook event the guide (`## 6`)
+        promises on "any lifecycle change". `move_lifecycle` and `patch_thread`
+        both call this (review round 1, finding 1) so an internal lifecycle move
+        (no profile fields touched) still fans out to consumer webhooks, not
+        just realtime. Fully isolated - the caller already committed, forwarding
+        must never fail the request."""
+        realtime.publish(
+            c.workspace_id,
+            {"type": "contact.updated", "thread": item.model_dump(mode="json")},
+        )
+        # Endpoints are per-channel, so forward on the contact's current
+        # channel (its latest message's); skip if the contact has never
+        # messaged on a channel yet.
+        if not item.channelId:
+            return
+        try:
+            from .webhook_delivery import enqueue_event
+
+            channel = (
+                self.db.query(Channel)
+                .filter(Channel.id == item.channelId, Channel.tenant_id == tenant_id)
+                .first()
+            )
+            if channel is not None:
+                # `{contactId}:{...}` per the guide (§7) - the suffix used to be
+                # a second-granular epoch int (`int(updated_at.timestamp())`),
+                # which collides when two `contact.updated` events for the SAME
+                # contact fire within one wall-clock second (e.g. a fast
+                # workflow doing two PATCHes back to back) - a de-duping
+                # consumer would drop the second event as a "replay" of the
+                # first (review round 2, finding M). Append a short random
+                # segment so every event gets its OWN id regardless of clock
+                # granularity; the id is generated ONCE per event and then
+                # reused for every retry attempt of that same delivery row, so
+                # retry-dedup semantics are unaffected.
+                event_suffix = uuid.uuid4().hex[:8]
+                enqueue_event(
+                    self.db,
+                    channel,
+                    "contact.updated",
+                    f"{c.id}:{int(c.updated_at.timestamp())}:{event_suffix}",
+                    {"contact": item.model_dump(mode="json")},
+                )
+        except Exception:  # noqa: BLE001 - forwarding never breaks the caller
+            logger.exception("contact.updated webhook fan-out failed for %s", c.id)
+
+    def lifecycle_moves(
+        self, contact_id: str, tenant_id: str, actor: Optional[User] = None
+    ) -> list:
+        """Fireable outgoing edges for this contact right now (AC-CDM-18)."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+        return _lifecycle_fireable_moves(self.db, c, actor=actor)
+
+    def _validated_native_user_id(self, user_id: str, tenant_id: str) -> str:
+        """Tenant-scoped existence gate for an explicit native `assignedUserId`
+        (used by every branch of the team/user assignment logic below) - 422
+        `{fieldErrors: {assignedUserId: ...}}` on a foreign/unknown id."""
+        user = (
+            self.db.query(User)
+            .filter(User.id == user_id, User.tenant_id == tenant_id)
+            .first()
+        )
+        if user is None:
+            raise InvalidPatch("Assignee not found in this tenant.", field="assignedUserId")
+        return user_id
+
+    # ── Patch (assign / lifecycle / priority / profile) ─────────────────────
     def patch_thread(
         self,
         contact_id: str,
         tenant_id: str,
         *,
         assigned_user_id: Optional[str] = ...,
+        assigned_team_id: Optional[str] = ...,
+        strategy_override: Optional[str] = None,
         status: Optional[str] = None,
         priority: Optional[str] = None,
         first_name: Optional[str] = ...,
         last_name: Optional[str] = ...,
+        phone: Optional[str] = ...,
+        email: Optional[str] = ...,
+        language: Optional[str] = ...,
+        country_code: Optional[str] = ...,
         custom_fields: Optional[dict] = ...,
+        tag_ids: Optional[list] = ...,
+        lifecycle_status_id: Optional[str] = ...,
+        close_reason_id: Optional[str] = None,
+        note: Optional[str] = None,
+        actor: Optional[User] = None,
+        actor_id: Optional[str] = None,
+        actor_external_agent_id: Optional[str] = None,
         external_connection_id: Optional[str] = None,
+        assigned_via_override: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        workflow_run_id: Optional[str] = None,
+        # Plan 30 (roadmap A9), AC-RPT-27: the assignment log derives `source`
+        # from `payload_json.source` rather than inferring it - the public
+        # gateway (the only current caller with no acting user) passes "api";
+        # every other caller keeps the default "agent". A future
+        # `omnichannel.assign_contact` workflow action would pass "workflow".
+        assignment_source: str = "agent",
     ) -> ThreadItem:
+        """`assigned_via_override` (plan sprint-4/31 S2) - lets a caller stamp
+        the assigned/unassigned event's `assigneeKind` explicitly (workflow
+        actions pass ``"workflow"`` so `event_service._emit_workflow_event`
+        reports `trigger.assignedVia == "workflow"`, matching the UI's own
+        "manual"/"external" values) instead of the default user/external_agent
+        inference. Kept as its own kwarg (not folded into `actor`) because the
+        actor for an automated assign is `None` - there is no user to infer
+        "manual" from."""
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
             raise ThreadNotFound()
 
-        if assigned_user_id is not ...:
+        if assigned_user_id is not ... or assigned_team_id is not ...:
+            prev_user_id = c.assigned_user_id
+            prev_external_agent_id = c.assigned_external_agent_id
+            prev_team_id = c.assigned_team_id
+            # `assigned_via_override` (plan 28 S3) lets the workflow-engine
+            # action stamp `"workflow"` instead of the natural manual/
+            # team_strategy inference below - the ONLY other caller of this
+            # override is `omnichannel_assign_conversation`, never a client
+            # request (the router never accepts an `assignedVia` field).
+            assigned_via = assigned_via_override or "manual"
+
             if external_connection_id is not None:
                 # Embed principal: the assignee id is an EXTERNAL agent id - it
                 # must belong to the token's connection (a token can only assign
                 # to its own consumer's agents; cross-consumer is impossible).
+                # Teams are a native-only surface (D-A8-13) - the router already
+                # 403s an embed token that sends `assignedTeamId` before this
+                # call is ever reached; this is defense-in-depth only.
+                if assigned_team_id is not ...:
+                    raise InvalidPatch(
+                        "Teams are not available for this token.", field="assignedTeamId"
+                    )
                 if assigned_user_id is not None:
                     from .external_agent_service import ExternalAgentService
 
@@ -260,65 +627,324 @@ class ConversationService:
                 # Federated + native assignees are mutually exclusive.
                 c.assigned_external_agent_id = assigned_user_id
                 c.assigned_user_id = None
+
+                # `assigned`/`unassigned` events (plan 27 A3, AC-IVE-06) - a
+                # re-send of the SAME assignee writes nothing. Teams never
+                # touch the embed path, so `assigneeKind` stays the original
+                # user/external_agent vocabulary here.
+                prev_assignee = prev_user_id or prev_external_agent_id
+                new_assignee = c.assigned_user_id or c.assigned_external_agent_id
+                if new_assignee != prev_assignee:
+                    if new_assignee:
+                        kind = "user" if c.assigned_user_id else "external_agent"
+                        event_service.record(
+                            self.db, c, "assigned",
+                            actor=actor, actor_id=actor_id,
+                            external_agent_id=actor_external_agent_id,
+                            from_value=prev_assignee, to_value=new_assignee,
+                            payload={"assigneeKind": kind, "source": assignment_source},
+                        )
+                    else:
+                        event_service.record(
+                            self.db, c, "unassigned",
+                            actor=actor, actor_id=actor_id,
+                            external_agent_id=actor_external_agent_id,
+                            from_value=prev_assignee,
+                            payload={"source": assignment_source},
+                        )
             else:
-                if assigned_user_id is not None:
-                    user = (
-                        self.db.query(User)
-                        .filter(User.id == assigned_user_id, User.tenant_id == tenant_id)
-                        .first()
-                    )
-                    if user is None:
-                        raise InvalidPatch("Assignee not found in this tenant.")
-                c.assigned_user_id = assigned_user_id
+                # Native path - the four assignee combinations (§5.2,
+                # AC-TEM-19..27). `team_sent`/`user_sent` distinguish "this
+                # key was omitted" (leave that side alone) from an explicit
+                # value (including explicit `null`, which clears that side
+                # only) via the `...` sentinel already used everywhere else
+                # in this method.
+                team_sent = assigned_team_id is not ...
+                user_sent = assigned_user_id is not ...
+                new_user_id = prev_user_id
+                new_team_id = prev_team_id
+
+                if team_sent and assigned_team_id is None:
+                    # `assignedTeamId: null` clears the team; the user side
+                    # only changes if EXPLICITLY sent too.
+                    new_team_id = None
+                    if user_sent:
+                        new_user_id = (
+                            None
+                            if assigned_user_id is None
+                            else self._validated_native_user_id(assigned_user_id, tenant_id)
+                        )
+                elif team_sent:  # assigned_team_id is a real id
+                    if not team_directory.validate_assignable(self.db, tenant_id, assigned_team_id):
+                        raise InvalidPatch(
+                            "Team not found or inactive.", field="assignedTeamId"
+                        )
+                    new_team_id = assigned_team_id
+                    if user_sent:
+                        if assigned_user_id is None:
+                            # `<id>` + `null` - team assigned, user cleared
+                            # (Team Unassigned).
+                            new_user_id = None
+                        else:
+                            # `<id>` + `<user>` - the explicit user wins over
+                            # the strategy IFF they are a member of THAT team.
+                            roster = team_directory.members(self.db, tenant_id, assigned_team_id) or []
+                            if assigned_user_id not in {m["userId"] for m in roster}:
+                                raise InvalidPatch(
+                                    "User is not a member of this team.",
+                                    field="assignedUserId",
+                                )
+                            new_user_id = self._validated_native_user_id(assigned_user_id, tenant_id)
+                    else:
+                        # `<id>` alone - pick by the team's persisted strategy
+                        # (or `strategy_override` - the workflow action's
+                        # per-run strategy override, §5.5). An empty roster is
+                        # a SUCCESS (D-A8-11): team assigned, user stays NULL
+                        # (Team Unassigned).
+                        new_user_id = team_assignment_service.assign(
+                            self.db, c, assigned_team_id, strategy_override=strategy_override
+                        )
+                        if assigned_via_override is None:
+                            assigned_via = "team_strategy"
+                else:
+                    # Team omitted - `user_sent` is guaranteed True here (the
+                    # outer `if` requires at least one of the two sent).
+                    if assigned_user_id is None:
+                        # `null` alone - clear the user, keep the team.
+                        new_user_id = None
+                    else:
+                        new_user_id = self._validated_native_user_id(assigned_user_id, tenant_id)
+                        # Assigning a user who is NOT a member of the
+                        # CURRENTLY assigned team clears the team (D-A8-12).
+                        if prev_team_id:
+                            roster = team_directory.members(self.db, tenant_id, prev_team_id) or []
+                            if new_user_id not in {m["userId"] for m in roster}:
+                                new_team_id = None
+
+                c.assigned_user_id = new_user_id
+                c.assigned_team_id = new_team_id
                 c.assigned_external_agent_id = None
+
+                # `assigned`/`unassigned` events (plan 27 A3, AC-IVE-06; plan
+                # 28 S2, AC-TEM-31) - a re-send of the SAME team AND the SAME
+                # assignee writes nothing. "assigned" fires whenever the
+                # thread ends up owned by a user and/or a team; "unassigned"
+                # only when it ends up owned by NEITHER.
+                if (new_user_id, new_team_id) != (prev_user_id, prev_team_id):
+                    user_changed = new_user_id != prev_user_id
+                    team_changed = new_team_id != prev_team_id
+                    change = "both" if (user_changed and team_changed) else (
+                        "team" if team_changed else "user"
+                    )
+                    team_name = (
+                        team_directory.resolve(self.db, tenant_id, new_team_id) or {}
+                    ).get("name") if new_team_id else None
+                    # Plan 30 (A9, AC-RPT-27) reads `payload.source` for the
+                    # assignment log: a workflow-driven assign (plan 28 S3)
+                    # is "workflow", otherwise the caller's `assignment_source`
+                    # ("api" from the public gateway, default "agent").
+                    payload = {
+                        "teamId": new_team_id,
+                        "teamName": team_name,
+                        "assignedVia": assigned_via,
+                        "change": change,
+                        "source": "workflow" if assigned_via == "workflow" else assignment_source,
+                    }
+                    if assigned_via == "workflow":
+                        # AC-TEM-31/D-A8 attribution: a workflow run assigns
+                        # with actor=None (it is not a human's act) - the
+                        # feed instead identifies the RUN so the UI can render
+                        # "assigned by workflow <name>" (S4/S5 render this;
+                        # this layer only carries the ids).
+                        if workflow_id:
+                            payload["workflowId"] = workflow_id
+                        if workflow_run_id:
+                            payload["runId"] = workflow_run_id
+                    if new_user_id or new_team_id:
+                        if new_user_id:
+                            payload["assigneeKind"] = "user"
+                        event_service.record(
+                            self.db, c, "assigned",
+                            actor=actor, actor_id=actor_id,
+                            external_agent_id=actor_external_agent_id,
+                            from_value=prev_user_id, to_value=new_user_id,
+                            payload=payload,
+                        )
+                    else:
+                        event_service.record(
+                            self.db, c, "unassigned",
+                            actor=actor, actor_id=actor_id,
+                            external_agent_id=actor_external_agent_id,
+                            from_value=prev_user_id,
+                            payload=payload,
+                        )
 
         if status is not None:
             if status not in VALID_THREAD_STATUS:
                 raise InvalidPatch(f"Invalid thread status: {status}")
-            c.status_id = statuses.status_id_for(self.db, tenant_id, "THREAD", status)
+            new_status_id = statuses.status_id_for(self.db, tenant_id, "THREAD", status)
+            if new_status_id != c.status_id:
+                # `closed`/`reopened`/`snoozed`/`unsnoozed` (plan 27 A3,
+                # AC-IVE-05) - resolve the PREVIOUS key before overwriting so
+                # OPEN<-CLOSED (reopened) and OPEN<-SNOOZED (unsnoozed) stay
+                # distinguishable; a PATCH that re-sends the current status
+                # never reaches here (`new_status_id == c.status_id` above).
+                prev_status_id = c.status_id
+                prev_key = self.status_keys(tenant_id).get(prev_status_id)
+                event_type: Optional[str] = None
+                if status == "CLOSED":
+                    event_type = "closed"
+                elif status == "SNOOZED":
+                    event_type = "snoozed"
+                elif status == "OPEN":
+                    if prev_key == "CLOSED":
+                        event_type = "reopened"
+                    elif prev_key == "SNOOZED":
+                        event_type = "unsnoozed"
+                c.status_id = new_status_id
+                if event_type:
+                    # `close_thread` (plan 27 A3, S2) reuses THIS write - it
+                    # calls `patch_thread(status="CLOSED", close_reason_id=,
+                    # note=)` rather than duplicating the closed-event insert;
+                    # `close_reason_id`/`note` are only ever non-None here when
+                    # `event_type == "closed"` (a plain status PATCH never
+                    # sets them).
+                    event_service.record(
+                        self.db, c, event_type,
+                        actor=actor, actor_id=actor_id,
+                        external_agent_id=actor_external_agent_id,
+                        from_value=prev_status_id, to_value=new_status_id,
+                        close_reason_id=close_reason_id if event_type == "closed" else None,
+                        note=note if event_type == "closed" else None,
+                    )
 
         if priority is not None:
             if priority not in VALID_PRIORITY:
                 raise InvalidPatch(f"Invalid priority: {priority}")
             c.priority = priority
 
+        # System fields + typed custom fields + tags (plan 25) route through the
+        # ONE contact-profile seam so validation (AC-CDM-06/07/10) applies on
+        # every write path (this method is called by both the internal PATCH
+        # and the gateway PATCH) and the `omnichannel_contact` `updated` entity
+        # event carries a real `changes` diff (AC-CDM-23).
+        profile_kwargs: dict = {}
         if first_name is not ...:
-            c.first_name = first_name
+            profile_kwargs["first_name"] = first_name
         if last_name is not ...:
-            c.last_name = last_name
+            profile_kwargs["last_name"] = last_name
+        if phone is not ...:
+            profile_kwargs["phone"] = phone
+        if email is not ...:
+            profile_kwargs["email"] = email
+        if language is not ...:
+            profile_kwargs["language"] = language
+        if country_code is not ...:
+            profile_kwargs["country_code"] = country_code
         if custom_fields is not ...:
-            c.custom_fields_json = custom_fields
+            profile_kwargs["custom_fields"] = custom_fields
+        if tag_ids is not ...:
+            profile_kwargs["tag_ids"] = tag_ids
+        if profile_kwargs:
+            from .contact_profile_service import ContactProfileService
+
+            ContactProfileService(self.db).patch(
+                c, actor=actor, actor_id=actor_id, **profile_kwargs
+            )
+
+        # A lifecycle move (plan 25 S3, gateway PATCH `lifecycle:`) rides the
+        # SAME unit of work as the profile patch above - `_lifecycle_move`
+        # validates the edge graph and raises BEFORE writing anything
+        # (`status_machine.transition` never `setattr`s until every check
+        # passes), so a bad target/no-edge/forbidden move rolls back any
+        # profile/tag changes already applied in this same call, and nothing
+        # is committed until BOTH have succeeded.
+        if lifecycle_status_id is not ...:
+            _lifecycle_move(self.db, c, lifecycle_status_id, actor=actor)
 
         self.db.commit()
         self.db.refresh(c)
         item = self.thread_item(c)
         # Other agents' inboxes update live (assignment moves threads between
-        # buckets; snooze/close changes the row chip).
-        realtime.publish(
-            c.workspace_id,
-            {"type": "contact.updated", "thread": item.model_dump(mode="json")},
-        )
-        # Fan out to consumer webhooks (Slice 4). Endpoints are per-channel, so
-        # forward on the contact's current channel (its latest message's); skip
-        # if the contact has never messaged on a channel yet. Fully isolated -
-        # the PATCH already committed, forwarding must never 500 the response.
-        if item.channelId:
-            try:
-                from .webhook_delivery import enqueue_event
-
-                channel = (
-                    self.db.query(Channel)
-                    .filter(Channel.id == item.channelId, Channel.tenant_id == tenant_id)
-                    .first()
-                )
-                if channel is not None:
-                    enqueue_event(
-                        self.db,
-                        channel,
-                        "contact.updated",
-                        f"{c.id}:{int(c.updated_at.timestamp())}",
-                        {"contact": item.model_dump(mode="json")},
-                    )
-            except Exception:  # noqa: BLE001 - forwarding never breaks the PATCH
-                logger.exception("contact.updated webhook fan-out failed for %s", c.id)
+        # buckets; snooze/close changes the row chip) AND fan out to consumer
+        # webhooks (Slice 4) - the ONE shared publisher (finding 1).
+        self._publish_contact_updated(c, item, tenant_id)
         return item
+
+    # ── Close with reason (plan 27 A3, S2) ──────────────────────────────────
+    def close_thread(
+        self,
+        contact_id: str,
+        tenant_id: str,
+        *,
+        close_reason_id: str,
+        note: Optional[str] = None,
+        actor: Optional[User] = None,
+        actor_id: Optional[str] = None,
+        actor_external_agent_id: Optional[str] = None,
+    ) -> ThreadItem:
+        """`POST /{id}/close` (AC-IVE-28/29). Validates the reason BEFORE
+        touching the thread (nothing is written on a bad reason), then
+        delegates entirely to `patch_thread`'s existing `closed` write - this
+        never duplicates that event insert, it just carries the reason + note
+        through to it. Reopening afterwards keeps the full history (D-A3-3).
+
+        Review round 1, finding 13: an ALREADY-CLOSED thread raises
+        `ThreadAlreadyClosed` (409) rather than silently accepting - and
+        dropping - the supplied reason/note (`patch_thread`'s `closed` write
+        is a no-op when the status doesn't change). Reopen then close again
+        to change a reason."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+        if self.status_keys(tenant_id).get(c.status_id) == "CLOSED":
+            raise ThreadAlreadyClosed()
+
+        from .close_reason_service import CloseReasonService
+
+        # Raises CloseReasonNotFound (missing/foreign workspace or tenant) or
+        # CloseReasonInactive - both propagate to the router untouched; the
+        # thread stays open on either.
+        reason = CloseReasonService(self.db).get_active(close_reason_id, c.workspace_id, tenant_id)
+
+        return self.patch_thread(
+            contact_id,
+            tenant_id,
+            status="CLOSED",
+            close_reason_id=reason.id,
+            note=(note or "").strip() or None,
+            actor=actor,
+            actor_id=actor_id,
+            actor_external_agent_id=actor_external_agent_id,
+        )
+
+    # ── Shortcuts (plan 27 A3, S3 - D-A3-5/D-A3-10) ────────────────────────
+    def list_shortcuts(self, contact_id: str, tenant_id: str) -> List[Dict[str, str]]:
+        """Published `entity.shortcut` workflows bound to `omnichannel_contact`
+        (AC-IVE-36) - a thin tenant-scoped contact check + a delegate to the
+        GENERIC core `WorkflowService.list_shortcuts` (never re-implemented
+        here)."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+
+        from app.services.workflow_service import WorkflowService
+
+        return WorkflowService(self.db).list_shortcuts(tenant_id, SHORTCUT_ENTITY_TYPE)
+
+    def run_shortcut(self, contact_id: str, tenant_id: str, workflow_id: str, actor: Optional[User]):
+        """Fire a shortcut against this contact (AC-IVE-37/38) - resolves the
+        contact tenant-scoped, then delegates entirely to the core
+        `WorkflowService.run_shortcut` (the SAME `create_run_for_event` path
+        the CRUD event bus uses, D-A3-10). Raises `ThreadNotFound` /
+        `ShortcutNotFound` / `ShortcutCodeNotAuthorized` (core) - the router
+        maps all of them to the documented status codes."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+
+        from app.services.workflow_service import WorkflowService
+
+        return WorkflowService(self.db).run_shortcut(
+            tenant_id, workflow_id, SHORTCUT_ENTITY_TYPE, c, actor
+        )

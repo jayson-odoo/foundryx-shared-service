@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
+import { isDocumentEntity } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountFormulaTestResult,
+  AutocountMappingPreset,
   AutocountMappingView,
   AutocountMappingWriteRow,
   AutocountSimulateResult,
@@ -18,11 +20,15 @@ export interface UseAutocountMappingResult {
   saveError: string | null;
   isSaving: boolean;
   /**
-   * Persist the deliverable rows (`PUT .../mapping`). Returns true on success;
-   * on a server guard rejection (422) it returns false and populates
+   * Persist the deliverable rows (`PUT .../mapping`). `lineRows` is the wire
+   * signal a header-only save needs (security re-review should-fix,
+   * sprint-5/02 review round) - omit it entirely to leave a document
+   * entity's line rows untouched, pass `[]` to explicitly wipe them, pass
+   * the current line draft to replace it. Returns true on success; on a
+   * server guard rejection (422) it returns false and populates
    * `saveError` - the shell stays in edit mode so the operator can fix it.
    */
-  save: (rows: AutocountMappingWriteRow[]) => Promise<boolean>;
+  save: (rows: AutocountMappingWriteRow[], lineRows?: AutocountMappingWriteRow[]) => Promise<boolean>;
   /**
    * Server-authoritative single-formula eval (AC-16-21) - the parity check the
    * builder's Testing tab calls on demand. Never throws for a bad formula/value
@@ -38,6 +44,14 @@ export interface UseAutocountMappingResult {
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
   ) => Promise<AutocountSimulateResult>;
+  /**
+   * Adopt a view the SERVER just returned, with no refetch (sprint-5/12,
+   * AC-12-23): "Reset to preset" answers the fresh mapping in its apply
+   * response, so re-requesting the same rows would only add a round trip and
+   * a window where the table still shows the pre-reset shape. Same setter
+   * `save` already uses for its own response - not a second state path.
+   */
+  applyView: (view: AutocountMappingView) => void;
   reload: () => void;
 }
 
@@ -57,6 +71,11 @@ export function useAutocountMapping(
   const [reloadKey, setReloadKey] = useState(0);
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+
+  const applyView = useCallback((next: AutocountMappingView) => {
+    setView(next);
+    setNotFound(false);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,11 +99,11 @@ export function useAutocountMapping(
   }, [companyId, entityType, reloadKey]);
 
   const save = useCallback(
-    async (rows: AutocountMappingWriteRow[]): Promise<boolean> => {
+    async (rows: AutocountMappingWriteRow[], lineRows?: AutocountMappingWriteRow[]): Promise<boolean> => {
       setIsSaving(true);
       setSaveError(null);
       try {
-        const next = await autocountService.updateMapping(companyId, entityType, { rows });
+        const next = await autocountService.updateMapping(companyId, entityType, { rows, lineRows });
         setView(next);
         return true;
       } catch (error) {
@@ -122,6 +141,51 @@ export function useAutocountMapping(
     save,
     testFormula,
     simulate,
+    applyView,
     reload,
   };
+}
+
+export interface UseAutocountMappingPresetsResult {
+  presets: AutocountMappingPreset[];
+  isLoading: boolean;
+}
+
+/**
+ * The AutoCount SQL-pack preset(s) for a document entity's Query tab "Use
+ * preset" picker (sprint-5/02, AC-02-16/17). A master/GRN entity never
+ * fetches - always `[]`, so the picker is simply absent (foolproof-UI).
+ */
+export function useAutocountMappingPresets(
+  companyId: string,
+  entityType: string,
+): UseAutocountMappingPresetsResult {
+  const [presets, setPresets] = useState<AutocountMappingPreset[]>([]);
+  const [isLoading, setIsLoading] = useState(isDocumentEntity(entityType));
+
+  useEffect(() => {
+    if (!isDocumentEntity(entityType)) {
+      setPresets([]);
+      setIsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setIsLoading(true);
+    autocountService
+      .listMappingPresets(companyId, entityType)
+      .then((list) => {
+        if (!cancelled) setPresets(list);
+      })
+      .catch(() => {
+        if (!cancelled) setPresets([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, entityType]);
+
+  return { presets, isLoading };
 }

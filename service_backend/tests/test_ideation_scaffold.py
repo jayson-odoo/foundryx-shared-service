@@ -21,6 +21,7 @@ IDEATION_PERMISSION_KEYS = {
     "ideation.business_requirements.read",
     "ideation.business_requirements.manage",
     "ideation.business_requirements.promote",
+    "ideation.business_requirements.send_to_build",
 }
 
 

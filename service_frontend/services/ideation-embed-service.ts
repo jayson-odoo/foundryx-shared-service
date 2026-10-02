@@ -13,14 +13,15 @@
  *
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.
  */
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, apiFetchBlob } from '@/lib/api-client';
 import type {
+  Board,
   Idea,
+  IdeaAttachment,
   IdeaClusterSuggestions,
-  IdeaStatus,
   Product,
 } from '@/types/ideation';
-import type { IdeaCreateInput, IdeaService } from './ideation-service';
+import type { IdeaCreateInput, IdeaExtendedOps, IdeaService } from './ideation-service';
 
 export interface EmbedTokenScope {
   tenant_id: string;
@@ -38,9 +39,10 @@ let lastScope: EmbedTokenScope | null = null;
 
 const embedIdea = (id: string) => `/embed/ideas/${encodeURIComponent(id)}`;
 
-export const ideationEmbedService: IdeaService & {
-  validateToken(token: string): Promise<EmbedTokenScope>;
-} = {
+export const ideationEmbedService: IdeaService &
+  IdeaExtendedOps & {
+    validateToken(token: string): Promise<EmbedTokenScope>;
+  } = {
   /** Verify the embed token → its tenant + product scope (render-vs-expired gate). */
   async validateToken(token: string): Promise<EmbedTokenScope> {
     const scope = await apiFetch<EmbedTokenScope>('/embed/validate', {
@@ -86,9 +88,14 @@ export const ideationEmbedService: IdeaService & {
     return Array.from(seen.values());
   },
 
-  /** Product-scoped ideas for the token, newest first (backend enforces scope). */
-  listIdeas(): Promise<Idea[]> {
-    return apiFetch<Idea[]>('/embed/ideas');
+  /** Product-scoped ideas for the token (backend enforces scope). `filter`
+   * (AC-94-60) - `/embed/ideas` accepts the same `active|archived|all` scope
+   * as the operator route (no `includeTest` there - the embed session never
+   * carries a test lane); the list and the record pager pass `'all'` so
+   * Archived is fed, split client side by `statusIsArchived`. */
+  listIdeas(opts?: { filter?: 'active' | 'archived' | 'all' }): Promise<Idea[]> {
+    const q = opts?.filter ? `?filter=${encodeURIComponent(opts.filter)}` : '';
+    return apiFetch<Idea[]>(`/embed/ideas${q}`);
   },
 
   /** One idea by id, scoped to the token's tenant + product (404 outside it). */
@@ -112,12 +119,10 @@ export const ideationEmbedService: IdeaService & {
   },
 
   /** Edit the mutable fields. Product is NOT reassignable via the embed; a
-   * changed `status` rides the dedicated status route (server-authoritative). */
-  async updateIdea(
-    id: string,
-    input: Partial<IdeaCreateInput> & { status?: IdeaStatus },
-  ): Promise<Idea> {
-    const { status, attachments, productId, ...fields } = input;
+   * save never moves status any more (AC-94-34 - the form dropped its Status
+   * control entirely, owner Q5). */
+  async updateIdea(id: string, input: Partial<IdeaCreateInput>): Promise<Idea> {
+    const { attachments, productId, ...fields } = input;
     void attachments;
     void productId; // embed never reassigns the product (scope integrity)
     const patch: Record<string, unknown> = {};
@@ -126,20 +131,17 @@ export const ideationEmbedService: IdeaService & {
     if (fields.impact !== undefined) patch.impact = fields.impact;
     if (fields.department !== undefined) patch.department = fields.department;
     if (fields.rawText !== undefined) patch.rawText = fields.rawText;
-    const updated =
-      Object.keys(patch).length > 0
-        ? await apiFetch<Idea>(embedIdea(id), { method: 'PATCH', body: JSON.stringify(patch) })
-        : await apiFetch<Idea>(embedIdea(id));
-    if (status !== undefined && status !== updated.status) {
-      return ideationEmbedService.setStatus(id, status);
-    }
-    return updated;
+    return Object.keys(patch).length > 0
+      ? apiFetch<Idea>(embedIdea(id), { method: 'PATCH', body: JSON.stringify(patch) })
+      : apiFetch<Idea>(embedIdea(id));
   },
 
-  setStatus(id: string, status: IdeaStatus): Promise<Idea> {
+  // `toStatusId` (AC-94-53) - the backend's `StatusIn` schema accepts EXACTLY
+  // ONE of `status` (legacy key) or `toStatusId` (this call's shape).
+  setStatus(id: string, toStatusId: string): Promise<Idea> {
     return apiFetch<Idea>(`${embedIdea(id)}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ toStatusId }),
     });
   },
 
@@ -166,5 +168,48 @@ export const ideationEmbedService: IdeaService & {
 
   async remove(id: string): Promise<void> {
     await apiFetch<void>(embedIdea(id), { method: 'DELETE' });
+  },
+
+  // Merge / unmerge parity (AC-94-16) - every id the backend resolves stays
+  // scoped to the token's tenant AND product, same as every other embed route.
+  merge(survivorId: string, ideaIds: string[]): Promise<Idea> {
+    return apiFetch<Idea>('/embed/ideas/merge', {
+      method: 'POST',
+      body: JSON.stringify({ survivorId, ideaIds }),
+    });
+  },
+
+  unmerge(id: string): Promise<Idea[]> {
+    return apiFetch<Idea[]>(`${embedIdea(id)}/unmerge`, { method: 'POST' });
+  },
+
+  listMerged(id: string): Promise<Idea[]> {
+    return apiFetch<Idea[]>(`${embedIdea(id)}/merged`);
+  },
+
+  uploadAttachment(id: string, file: File): Promise<IdeaAttachment> {
+    const body = new FormData();
+    body.append('file', file);
+    return apiFetch<IdeaAttachment>(`${embedIdea(id)}/attachments`, { method: 'POST', body });
+  },
+
+  /** An action response (vote/update) may carry the operator-prefixed path;
+   * the embed token only works on `/embed/*`, so map it. */
+  fetchAttachment(contentPath: string): Promise<Blob> {
+    return apiFetchBlob(contentPath.replace(/^\/ideation\/ideas\//, '/embed/ideas/'));
+  },
+
+  /** Promote ideas to a draft BR (AC-15-20) - the backend resolves the host user
+   * from the token email and enforces `ideation.business_requirements.manage`. */
+  promoteToBr(ideaIds: string[], title?: string) {
+    return apiFetch<{ id: string; title: string; brNumber?: string | null }>('/embed/ideas/promote', {
+      method: 'POST',
+      body: JSON.stringify({ ideaIds, ...(title ? { title } : {}) }),
+    });
+  },
+
+  getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board> {
+    const q = opts?.includeTest ? '?includeTest=true' : '';
+    return apiFetch<Board>(`/embed/board${q}`);
   },
 };

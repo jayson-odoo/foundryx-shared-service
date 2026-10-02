@@ -89,7 +89,13 @@ function UploadRow({
             <Button variant="ghost" size="sm" onClick={() => onRetry(item.id)}>
               <RotateCw className="size-3.5" /> Retry
             </Button>
-            <Button variant="ghost" size="icon" className="size-7" onClick={() => onRemove(item.id)}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              aria-label={`Dismiss ${item.name}`}
+              onClick={() => onRemove(item.id)}
+            >
               <X className="size-3.5" />
             </Button>
           </div>

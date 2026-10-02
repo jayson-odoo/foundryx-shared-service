@@ -101,7 +101,7 @@ export function QuickReplyDialog({ item, onClose, onCreate, onUpdate }: QuickRep
             Cancel
           </Button>
           <Button onClick={() => void handleSave()} disabled={!valid || saving}>
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Saving…' : editing ? 'Save quick reply' : 'Create quick reply'}
           </Button>
         </DialogFooter>
       </DialogContent>

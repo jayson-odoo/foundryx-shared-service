@@ -29,7 +29,13 @@ from app.schemas.workflow import (
     WorkflowVersionListResponse,
 )
 from app.services.filter_translator import FilterError
-from app.services.workflow_service import WorkflowError, WorkflowNotFound, WorkflowService
+from app.services.workflow_service import (
+    CodeRunnerRequired,
+    WorkflowError,
+    WorkflowNotFound,
+    WorkflowPermissionError,
+    WorkflowService,
+)
 from app.workflow_engine import WorkflowValidationError
 from app.workflow_engine.registry import TriggerTestDataError
 
@@ -116,10 +122,11 @@ def workflow_metadata(
     db: Session = Depends(get_db),
 ) -> dict:
     """Triggerable entities + statuses + record fields for the editor pickers."""
-    can_read_ai_agents = "ai_agents.read" in effective_permission_keys(current_user)
+    keys = effective_permission_keys(current_user)
     return WorkflowService(db).metadata(
         current_user.tenant_id,
-        include_ai_agents=can_read_ai_agents,
+        include_ai_agents="ai_agents.read" in keys,
+        include_teams="teams.read" in keys,
     )
 
 
@@ -197,13 +204,17 @@ def create_workflow(
     db: Session = Depends(get_db),
 ) -> WorkflowDetailOut:
     service = WorkflowService(db)
-    wf = service.create(
-        current_user.tenant_id,
-        name=body.name,
-        description=body.description,
-        draft=body.draftDefinition,
-        actor_id=current_user.id,
-    )
+    try:
+        wf = service.create(
+            current_user.tenant_id,
+            name=body.name,
+            description=body.description,
+            draft=body.draftDefinition,
+            actor_id=current_user.id,
+            actor=current_user,
+        )
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     return service.to_detail(wf)
 
 
@@ -222,9 +233,12 @@ def update_workflow(
             name=body.name,
             description=body.description,
             draft=body.draftDefinition,
+            actor=current_user,
         )
     except WorkflowNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     return service.to_detail(wf)
 
 
@@ -248,6 +262,10 @@ def _action(workflow_id: str, current_user: User, db: Session, fn) -> WorkflowDe
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
     except WorkflowValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "; ".join(exc.issues))
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    except CodeRunnerRequired as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     except WorkflowError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return service.to_detail(wf)
@@ -265,7 +283,7 @@ def set_active(workflow_id: str, body: WorkflowActiveRequest, current_user: User
 
 @router.post("/{workflow_id}/publish", response_model=WorkflowDetailOut)
 def publish_workflow(workflow_id: str, current_user: User = Depends(require_permission("workflows.manage")), db: Session = Depends(get_db)) -> WorkflowDetailOut:
-    return _action(workflow_id, current_user, db, lambda s: s.publish(workflow_id, current_user.tenant_id, current_user.id))
+    return _action(workflow_id, current_user, db, lambda s: s.publish(workflow_id, current_user.tenant_id, current_user.id, actor=current_user))
 
 
 @router.post("/{workflow_id}/unpublish", response_model=WorkflowDetailOut)
@@ -317,6 +335,10 @@ def run_workflow(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow not found.")
     except TriggerTestDataError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    except WorkflowError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return WorkflowRunItemOut.from_row(run, current_user.name or current_user.email)
 
 
@@ -384,7 +406,10 @@ def debug_execute(
             target_node_id=body.targetNodeId,
             scratch=body.scratch,
             stale_node_ids=body.staleNodeIds,
+            actor=current_user,
         )
     except WorkflowNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow or run not found.")
+    except WorkflowPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     return WorkflowDebugResultOut(nodes=nodes)

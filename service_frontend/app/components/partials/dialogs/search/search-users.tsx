@@ -63,7 +63,7 @@ export function SearchUsers({
                     <BadgeDot /> {item.label}
                   </Badge>
 
-                  <Button variant="ghost" mode="icon">
+                  <Button variant="ghost" mode="icon" aria-label={`More options for ${item.name}`}>
                     <EllipsisVertical />
                   </Button>
                 </div>

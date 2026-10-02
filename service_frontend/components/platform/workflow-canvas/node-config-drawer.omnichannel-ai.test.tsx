@@ -28,6 +28,39 @@ const BASE_METADATA: WorkflowMetadata = {
 };
 
 describe('NodeConfigDrawer - omnichannel + AI Agent field paths', () => {
+  it('filters Clarification output to transient Text outputs when state exists', async () => {
+    const user = userEvent.setup();
+    const node = {
+      ...createNode('ai_agent.run', { x: 0, y: 0 }),
+      id: 'ai',
+      config: {
+        ...createNode('ai_agent.run', { x: 0, y: 0 }).config,
+        outputParams: [
+          { key: 'task', type: 'string' as const, stateful: true },
+          { key: 'reply', type: 'string' as const, stateful: false },
+          { key: 'decision', type: 'enum' as const, enumValues: ['ready', 'wait'], stateful: false },
+        ],
+      },
+    };
+    const doc: WorkflowDefinition = { schemaVersion: 2, nodes: [node], edges: [] };
+    render(<NodeConfigDrawer node={node} doc={doc} editing templateOptions={[]} metadata={BASE_METADATA} onConfigChange={vi.fn()} onDelete={vi.fn()} />);
+    const picker = screen.getByLabelText('Clarification output');
+    await user.click(picker);
+    expect(screen.getByText('reply')).toBeInTheDocument();
+    expect(screen.queryByText('task')).not.toBeInTheDocument();
+    expect(screen.queryByText('decision')).not.toBeInTheDocument();
+  });
+
+  it('renders the Code drawer and runner prerequisite warning', () => {
+    const { doc } = docWith('code.run');
+    const node = doc.nodes[0];
+    render(<NodeConfigDrawer node={node} doc={doc} editing templateOptions={[]} metadata={{ ...BASE_METADATA, codeRunnerAvailable: false }} onConfigChange={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByTestId('code-editor')).toBeInTheDocument();
+    expect(screen.getByTestId('code-inputs-editor')).toBeInTheDocument();
+    expect(screen.getByTestId('code-capabilities')).toBeInTheDocument();
+    expect(screen.getByTestId('code-runner-warning')).toBeInTheDocument();
+  });
+
   it('renders the channel picker for omnichannel.message_received, "All channels" first', async () => {
     const user = userEvent.setup();
     const { doc, nodeId } = docWith('omnichannel.message_received');
@@ -70,6 +103,51 @@ describe('NodeConfigDrawer - omnichannel + AI Agent field paths', () => {
     await user.click(screen.getByLabelText('Channel'));
     await user.click(screen.getByText('Support line'));
     expect(onConfigChange).toHaveBeenCalledWith(node.id, { channelId: 'chn-1' });
+  });
+
+  // Plan 32 / A7a S6 (AC-CHN-58) - the independent channel-TYPE filter.
+  it('renders the channel-type picker for omnichannel.message_received, "All types" first', async () => {
+    const user = userEvent.setup();
+    const { doc } = docWith('omnichannel.message_received');
+    const node = doc.nodes[0];
+    render(
+      <NodeConfigDrawer
+        node={node}
+        doc={doc}
+        editing
+        templateOptions={[]}
+        metadata={BASE_METADATA}
+        onConfigChange={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByLabelText('Channel type');
+    expect(trigger).toHaveTextContent('All types');
+    await user.click(trigger);
+    expect(screen.getByText('WhatsApp')).toBeInTheDocument();
+    expect(screen.getByText('Messenger')).toBeInTheDocument();
+    expect(screen.getByText('Instagram')).toBeInTheDocument();
+  });
+
+  it('selecting a channel type writes it; "All types" writes null', async () => {
+    const user = userEvent.setup();
+    const { doc } = docWith('omnichannel.message_received');
+    const node = doc.nodes[0];
+    const onConfigChange = vi.fn();
+    render(
+      <NodeConfigDrawer
+        node={node}
+        doc={doc}
+        editing
+        templateOptions={[]}
+        metadata={BASE_METADATA}
+        onConfigChange={onConfigChange}
+        onDelete={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByLabelText('Channel type'));
+    await user.click(screen.getByText('Messenger'));
+    expect(onConfigChange).toHaveBeenCalledWith(node.id, { channelType: 'FACEBOOK' });
   });
 
   it('renders the AI agent picker + the output-parameter editor for ai_agent.run', async () => {

@@ -28,7 +28,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 export function ModuleDetail({ name }: { name: string }) {
   const { update } = useSession();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const [module, setModule] = useState<StoreModule | null>(null);
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
@@ -107,6 +107,9 @@ export function ModuleDetail({ name }: { name: string }) {
       ],
       actions: buildModuleActions(undefined, update),
       actionRows: [module],
+      // T5 fix round 2, S2: `StoreModule` has no `.id` - Deactivate's
+      // `deferred` park/current/cancel needs an explicit entity id.
+      getEntityId: (m) => m.name,
       onReload: () => void load(),
       editable: false,
       isDirty: false,

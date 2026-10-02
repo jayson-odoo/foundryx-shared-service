@@ -73,6 +73,42 @@ def _safe(key_hint: str) -> str:
     return "".join(c if c.isalnum() or c in "-_/" else "-" for c in key_hint)
 
 
+def _safe_read_path(root: Path, key: str) -> Path:
+    """Resolve a client-supplied storage `key` under `root`, rejecting
+    directory traversal (review round 1, finding B2a). `_safe()` above only
+    ever guards a WRITE-time `key_hint` (it mints a fresh uuid-suffixed
+    filename, so a hostile hint can only mangle its OWN prefix); every READ
+    path (`fetch`/`resolve`) used to join a caller-supplied key straight onto
+    `root` with NO guard at all - a `contactsCsvKey` of `"../../../../etc/
+    hosts"` was a real arbitrary-file read (plan 33 review). Rejects `..`,
+    an absolute path, a home-dir reference and an embedded NUL outright,
+    then verifies the RESOLVED path still sits under `root` (belt-and-
+    suspenders against a symlink or a platform-specific separator trick the
+    substring checks alone might miss). Raises `FileNotFoundError` - the
+    SAME exception a genuinely-missing key raises - so a caller (and an
+    attacker probing the behaviour) can never distinguish "unsafe" from
+    "missing".
+
+    The `".."` check (review round 2 note) is a bare SUBSTRING match, not a
+    path-segment match - it rejects the whole key the moment `".."` appears
+    ANYWHERE in it, including inside an otherwise-innocent segment (a stored
+    key of `"report..final.csv"` or `"v1..2/export.csv"` never validates,
+    even though neither is a traversal attempt). This is deliberate
+    over-blocking, not a bug: every key this module mints itself is `_safe()`-
+    sanitized (`-`/`_`/`/`/alnum only, never a literal `.`), so a legitimate
+    stored key can never contain `".."` in the first place - only a hostile
+    or hand-typed key would, and refusing the whole key outright is strictly
+    safer than trying to parse "is this occurrence actually a `..` path
+    segment" case by case."""
+    if not key or "\x00" in key or ".." in key or key.startswith("~") or Path(key).is_absolute():
+        raise FileNotFoundError(key)
+    resolved_root = root.resolve()
+    candidate = (root / key).resolve()
+    if not candidate.is_relative_to(resolved_root):
+        raise FileNotFoundError(key)
+    return root / key
+
+
 class LocalDiskStorage:
     """Dev adapter - writes under media_root."""
 
@@ -102,17 +138,17 @@ class LocalDiskStorage:
         path.write_bytes(content)
 
     def resolve(self, key: str) -> Tuple[str, str]:
-        return ("path", str(self.root / key))
+        return ("path", str(_safe_read_path(self.root, key)))
 
     def fetch(self, key: str) -> Tuple[bytes, Optional[str]]:
-        path = self.root / key
+        path = _safe_read_path(self.root, key)
         if not path.is_file():
             raise FileNotFoundError(key)
         return path.read_bytes(), mimetypes.guess_type(str(path))[0]
 
     def delete(self, key: str) -> None:
         try:
-            (self.root / key).unlink()
+            _safe_read_path(self.root, key).unlink()
         except FileNotFoundError:
             pass
 

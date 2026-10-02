@@ -153,7 +153,7 @@ def test_template_prefilled_with_effective_values(client):
     assert res.status_code == 200
     template = res.json()
     assert template["light"]["primary"] == "#0050ff"          # override reflected
-    assert template["light"]["success"] == "#1f9d54"          # default prefilled
+    assert template["light"]["success"] == "#1b8648"          # default prefilled
     assert "grey-500" in template["dark"]
 
 

@@ -103,3 +103,8 @@ sorento user opens /ideas/{id}
   actually run OR a manual `CREATE TABLE`/seed (see the deploy lesson: stamp-path can skip module
   migrations; verify on prod, like pg_trgm + idea statuses this session).
 - Additive + dormant-safe (AC-E-13): nothing else changes until configured.
+
+## Security addendum, PR #100
+
+- The assertion `email` claim carries the authority for embed promote-to-BR: the token's email is resolved to a shared-service user (same tenant, active, tenant allowed to sign in) and that user's `ideation.business_requirements.manage` decides the promote. The host MUST put only the verified, logged-in user's email in the claim.
+- Because a connection's signing secret can mint any email claim, embed-connection create, patch and rotate require `ideation.business_requirements.manage` in addition to `ideation.triage.manage`. List and delete keep the triage gate. No new permission key, so no grant sweep.

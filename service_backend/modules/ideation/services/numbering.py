@@ -1,111 +1,77 @@
-"""Idea numbering (SS-IDEATION-OWN) - the human ``IDEA-0001`` reference.
-
-Rides the CORE numbering engine (``app/numbering`` + ``NumberingService``): the
-``idea_no`` sequence is registered module-tagged (``ideation``) so it shows in
-Settings > Numbering only while ideation is active, and a tenant may override the
-prefix/format there. Gapless + per tenant; the increment rides the caller's
-transaction (a rolled-back create does not burn a number).
-
-Only REAL ideas get a number - :func:`ensure_idea_number` is called when an idea
-leaves draft (intake promotion), and on every direct create (operator, embed,
-one-shot chatbot). Drafts stay NULL so an abandoned draft never consumes one.
+"""Idea numbering (S1, AC-1111/1112) - a Postgres sequence with a SQLite
+(tests) fallback. Mirrors ``app/repositories/numbering_repository.py``'s
+SAVEPOINT retry pattern (``get_or_create_counter_for_update``): the caller
+mints a candidate, flushes inside a nested transaction, and retries on a
+unique-violation rather than pre-checking (race-safe on Postgres; a no-op
+retry loop on the single-connection SQLite test engine).
 """
-from datetime import date
+import re
+import secrets
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.numbering import NumberCounter
-from app.models.status import Status
-from app.numbering.registry import (
-    RESET_NEVER,
-    NumberSequenceDef,
-    register_number_sequence,
-)
-from app.services.numbering_service import NumberingService, format_number
-
 from ..models import Idea
-from .statuses import IDEA_ENTITY
 
-IDEA_NUMBER_DOC_TYPE = "idea_no"
-IDEA_NUMBER_PREFIX = "IDEA-"
-IDEA_NUMBER_FORMAT = "{prefix}{NNNN}"
-
-IDEA_NUMBER_SEQUENCE = NumberSequenceDef(
-    key=IDEA_NUMBER_DOC_TYPE,
-    label="Idea number",
-    module="ideation",
-    default_prefix=IDEA_NUMBER_PREFIX,
-    default_format=IDEA_NUMBER_FORMAT,
-    default_reset=RESET_NEVER,
-)
+_NUMBER_RE = re.compile(r"^IDEA-(\d+)$")
 
 
-def register_idea_numbering() -> None:
-    """Boot-time registration (idempotent - re-registering overwrites)."""
-    register_number_sequence(IDEA_NUMBER_SEQUENCE)
+def _is_postgres(db: Session) -> bool:
+    bind = db.get_bind()
+    return bool(bind is not None and bind.dialect.name == "postgresql")
 
 
-def ensure_idea_number(db: Session, idea: Idea) -> str:
-    """Assign the idea its number once (idempotent). Flushes, never commits."""
-    if idea.number:
-        return idea.number
-    register_idea_numbering()  # cheap; guarantees the def even off the boot path
-    idea.number = NumberingService(db).next_number(idea.tenant_id, IDEA_NUMBER_DOC_TYPE)
-    db.flush()
-    return idea.number
+def _next_number_pg(db: Session) -> int:
+    from ..db import IDEATION_SCHEMA
+
+    return db.execute(
+        text(f'SELECT nextval(\'"{IDEATION_SCHEMA}".ideas_idea_number_seq\')')
+    ).scalar()
 
 
-def backfill_idea_numbers(db: Session) -> int:
-    """Number every pre-existing NON-draft idea that has no number yet, per tenant
-    in ``created_at`` order (ties by id), and advance each tenant's ``idea_no``
-    counter past them so new ideas continue the sequence. Drafts (any
-    ``is_initial`` idea status) stay NULL - they get a number on promotion.
+def _next_number_fallback(db: Session) -> int:
+    """Non-Postgres (SQLite tests): max existing numeric suffix + 1. Not
+    concurrency-safe by itself - the caller (``mint_idea_identity``) retries
+    under a SAVEPOINT on a unique-violation."""
+    best = 0
+    for (value,) in db.query(Idea.idea_number).filter(Idea.idea_number.isnot(None)):
+        m = _NUMBER_RE.match(value or "")
+        if m:
+            best = max(best, int(m.group(1)))
+    return best + 1
 
-    Idempotent (already-numbered ideas are skipped). Flushes, never commits - the
-    caller (the module migration) owns the transaction. Uses the registered
-    default format: the sequence is new, so no tenant override can exist yet.
-    Returns the number of ideas numbered."""
-    initial_ids = [
-        sid
-        for (sid,) in db.query(Status.id)
-        .filter(Status.entity_type == IDEA_ENTITY, Status.is_initial.is_(True))
-        .all()
-    ]
-    q = db.query(Idea).filter(Idea.number.is_(None))
-    if initial_ids:
-        q = q.filter(~Idea.status_id.in_(initial_ids))
-    pending = q.order_by(Idea.tenant_id, Idea.created_at.asc(), Idea.id.asc()).all()
 
-    by_tenant: dict = {}
-    for idea in pending:
-        by_tenant.setdefault(idea.tenant_id, []).append(idea)
+def next_idea_number(db: Session) -> str:
+    """Format ``IDEA-<n, zero-padded to at least 4 digits>`` - grows past
+    9999 without wrapping or truncating (``IDEA-10000``)."""
+    n = _next_number_pg(db) if _is_postgres(db) else _next_number_fallback(db)
+    return f"IDEA-{n:04d}"
 
-    for tenant_id, ideas in by_tenant.items():
-        counter = (
-            db.query(NumberCounter)
-            .filter(
-                NumberCounter.tenant_id == tenant_id,
-                NumberCounter.doc_type == IDEA_NUMBER_DOC_TYPE,
-                NumberCounter.period_key == "",
-            )
-            .first()
-        )
-        if counter is None:
-            counter = NumberCounter(
-                tenant_id=tenant_id,
-                doc_type=IDEA_NUMBER_DOC_TYPE,
-                period_key="",
-                next_val=1,
-            )
-            db.add(counter)
-            db.flush()
-        seq = counter.next_val or 1
-        for idea in ideas:
-            # The default format has no date token; the create date keeps it
-            # correct should the default ever gain one.
-            at = idea.created_at.date() if idea.created_at else date.today()
-            idea.number = format_number(IDEA_NUMBER_FORMAT, IDEA_NUMBER_PREFIX, seq, at)
-            seq += 1
-        counter.next_val = seq
-    db.flush()
-    return len(pending)
+
+def mint_idea_identity(db: Session, idea: Idea) -> None:
+    """Idempotently mint ``idea.idea_number`` + ``idea.status_token`` together
+    (both unique, both minted exactly once). A no-op when both are already
+    set (idempotent re-fire of the completion sink, AC-A-16/20)."""
+    need_number = not idea.idea_number
+    need_token = not idea.status_token
+    if not need_number and not need_token:
+        return
+    for _ in range(5):
+        if need_number:
+            idea.idea_number = next_idea_number(db)
+        if need_token:
+            idea.status_token = secrets.token_urlsafe(24)
+        try:
+            with db.begin_nested():
+                db.flush()
+            return
+        except IntegrityError:
+            if need_number:
+                idea.idea_number = None
+            if need_token:
+                idea.status_token = None
+            continue
+    raise RuntimeError(  # pragma: no cover - defensive; a real collision storm
+        "Could not mint a unique idea_number/status_token after 5 attempts."
+    )

@@ -1,0 +1,6 @@
+{
+  "code": "INVALID_API_KEY",
+  "message": "Missing, malformed, unknown or revoked key.",
+  "companyCode": "SRT",
+  "entity": "products"
+}

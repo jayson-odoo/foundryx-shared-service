@@ -33,24 +33,40 @@ from ..schemas import (
     TemplateItem,
 )
 from ..security import decrypt_credentials
+from . import channel_addressing, event_service, messaging_policy, realtime
 from .conversation_service import ConversationService, ThreadNotFound
 from .media_pipeline import MediaRejected, sniff_and_validate
 from .media_settings_service import MediaSettingsService
+# `CSW_CLOSED_MESSAGE` moved to `messaging_policy` (plan 32 / A7a, D-A7-5 - it
+# is now one row of ONE per-channel-type window policy) - re-exported here
+# verbatim so `public_gateway_service.py`'s existing `from .message_service
+# import CSW_CLOSED_MESSAGE` (and any test importing it this way) needs no
+# change; the WhatsApp string itself is byte-identical (AC-CHN-23).
+from .messaging_policy import CSW_CLOSED_MESSAGE  # noqa: F401
 from .send_runner import (
     SANDBOX_ONLY_KEY,
     WORKFLOW_TEST_METADATA_KEY,
     TransientSendError,
     run_send,
 )
-from . import realtime
 
 
 class SendRejected(Exception):
-    """Backend CSW / validation rejection (422 - the composer shows the reason)."""
+    """Backend CSW / validation rejection (422 - the composer shows the reason).
 
-    def __init__(self, message: str):
+    ``code`` (plan 32 / A7a, S6, additive) carries the typed
+    `messaging_policy.PolicyRejected.code` verbatim when this wraps a window/
+    capability rejection - `None` for every other (validation-shaped)
+    rejection, unchanged from before this slice. Callers that only read
+    `.message` (the composer, every pre-existing except-block) are
+    unaffected; the public gateway is the one caller that now branches on
+    `.code` to keep `csw_window_closed` byte-identical while giving
+    Messenger/Instagram their OWN distinct codes (AC-CHN-55)."""
+
+    def __init__(self, message: str, *, code: Optional[str] = None):
         super().__init__(message)
         self.message = message
+        self.code = code
 
 
 class QuickReplyNotFound(Exception):
@@ -61,25 +77,11 @@ class ShortcutConflict(Exception):
     """Another quick reply in this workspace already uses the shortcut (→ 409)."""
 
 
-CSW_CLOSED_MESSAGE = (
-    "The 24-hour window has closed - send an approved template to re-engage."
-)
-
 # All agents react as the ONE business number (Meta stores one reaction per
 # direction) - a single reactor identity keeps our mirror matching Meta.
 AGENT_REACTOR = "agent"
 # A WhatsApp reaction is a single emoji (possibly a ZWJ sequence); cap defensively.
 MAX_EMOJI_LEN = 32
-
-
-def _window_open(contact: Contact, now: Optional[datetime] = None) -> bool:
-    if contact.csw_expires_at is None:
-        return False
-    now = now or datetime.now(timezone.utc)
-    expires = contact.csw_expires_at
-    if expires.tzinfo is None:  # SQLite returns naive datetimes
-        expires = expires.replace(tzinfo=timezone.utc)
-    return expires > now
 
 
 def template_body_text(components: Optional[List[Dict[str, Any]]]) -> str:
@@ -120,23 +122,89 @@ class MessageService:
             return None, external_agent_id
         return actor_user_id, None
 
+    def _mark_agent_message(
+        self,
+        contact: Contact,
+        now: datetime,
+        *,
+        actor_user_id: Optional[str],
+        external_agent_id: Optional[str],
+        is_agent_reply: bool = True,
+    ) -> None:
+        """Maintains `last_message_at` (every send) + `last_agent_message_at`
+        (plan 27 A3, AC-IVE-11/12 - the ONE outbound seam) and writes ONE
+        `first_agent_reply` event per open cycle (AC-IVE-07). Replaces the
+        three bare `contact.last_message_at = now` assignments (send_message /
+        send_media / `_structured_row`) - NEVER called by `add_internal_note`
+        (a SYSTEM note is never a reply).
+
+        `is_agent_reply=False` (plan 29 D-A4-15, review round 1 B2) - a
+        broadcast send routes through this SAME path on purpose (no second
+        outbound path), but a broadcast is NOT a reply in a conversation: it
+        must write NO `conversation_events` row (AC-BRD-43) AND must NOT
+        advance `last_agent_message_at` - `unreplied` is defined as
+        `last_agent_message_at < last_incoming_message_at` (plan 27
+        AC-IVE-11/12), so advancing it here would silently mark every
+        contact "replied" and empty the agent team's Unreplied inbox view on
+        every broadcast blast. Only `last_message_at` advances (the message
+        really is in the thread - real contact activity, just not a reply).
+
+        B20 (round-3 codex triage) - the SELECT (`is_first_reply_pending`)
+        then INSERT (`event_service.record`) is a check-then-write race: two
+        concurrent sends for the SAME contact can both see "pending" before
+        either commits, writing TWO `first_agent_reply` events for one open
+        cycle. Lock the contact row first (Postgres `FOR UPDATE`; a no-op
+        query on SQLite, where the test suite's single-threaded session can't
+        exercise the race anyway) so a concurrent sender blocks until this
+        transaction commits, then re-checks against the now-committed state."""
+        if self.db.bind is not None and self.db.bind.dialect.name == "postgresql":
+            self.db.query(Contact.id).filter(
+                Contact.id == contact.id, Contact.tenant_id == contact.tenant_id
+            ).with_for_update().first()
+        contact.last_message_at = now
+        if is_agent_reply:
+            contact.last_agent_message_at = now
+        if is_agent_reply and event_service.is_first_reply_pending(self.db, contact):
+            payload = None
+            if contact.last_incoming_message_at is not None:
+                incoming = contact.last_incoming_message_at
+                if incoming.tzinfo is None:  # SQLite returns naive datetimes
+                    incoming = incoming.replace(tzinfo=timezone.utc)
+                payload = {"responseSeconds": int((now - incoming).total_seconds())}
+            event_service.record(
+                self.db, contact, "first_agent_reply",
+                actor_id=actor_user_id, external_agent_id=external_agent_id,
+                payload=payload,
+            )
+
     # ── Channel resolution ───────────────────────────────────────────────────
     def _channel_for_contact(
         self, contact: Contact, channel_id_override: Optional[str] = None
     ) -> Channel:
         """The channel this thread lives on: the identity's channel, else the
-        workspace's first active channel."""
+        workspace's first active channel (plan 32 / A7a, D-A7-18: "first" here
+        means WhatsApp-preferred, matching the gateway's own implicit choice -
+        see below).
+
+        ``channel_id_override`` skips straight to that channel, but WhatsApp
+        addresses by PHONE, never by a stored identity row (D-A7-3) - a
+        business-initiated (never-messaged-in) WhatsApp contact has no
+        `ContactChannelIdentity` at all, so `is_attached_to_channel` is only
+        meaningful for Messenger/Instagram overrides."""
         if channel_id_override:
             selected = self.channels.get_active_by_id(
                 channel_id_override, contact.tenant_id
             )
-            if (
-                selected is None
-                or selected.workspace_id != contact.workspace_id
-                or not self.repo.is_attached_to_channel(
+            attached = (
+                selected is not None
+                and selected.channel_type == "WHATSAPP"
+            ) or (
+                selected is not None
+                and self.repo.is_attached_to_channel(
                     contact.id, channel_id_override, contact.tenant_id
                 )
-            ):
+            )
+            if selected is None or selected.workspace_id != contact.workspace_id or not attached:
                 raise SendRejected("Selected channel is unavailable for this contact.")
             return selected
         via_identity = (
@@ -154,6 +222,26 @@ class MessageService:
         )
         if via_identity is not None:
             return via_identity
+        # No identity anywhere yet (a business-initiated first send, most
+        # commonly WhatsApp) - prefer an active WHATSAPP channel over the
+        # arbitrary "first row" tie-break, mirroring `PublicGatewayService.
+        # _workspace_channel`'s implicit choice (D-A7-18) so this fallback
+        # never silently re-points an existing WhatsApp-only integration the
+        # moment a tenant connects a second channel type.
+        whatsapp = (
+            self.db.query(Channel)
+            .filter(
+                Channel.tenant_id == contact.tenant_id,
+                Channel.workspace_id == contact.workspace_id,
+                Channel.channel_type == "WHATSAPP",
+                Channel.is_active.is_(True),
+                Channel.is_trashed.is_(False),
+            )
+            .order_by(Channel.created_at.asc())
+            .first()
+        )
+        if whatsapp is not None:
+            return whatsapp
         channel = (
             self.db.query(Channel)
             .filter(
@@ -245,7 +333,26 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         channel_id_override: Optional[str] = None,
         sandbox_only: bool = False,
+        metadata_extra: Optional[Dict[str, Any]] = None,
+        actor_is_human: bool = False,
     ) -> MessageItem:
+        """``metadata_extra`` (plan 29 D-A4-19, additive) is merged into the
+        stored ``metadata_json`` next to the ``WORKFLOW_TEST_METADATA_KEY``
+        branch - broadcasts stamp ``{"broadcast": {"id", "recipientId"}}`` so a
+        crash between this commit and the recipient-row update can be
+        adopted-by-marker later, and the inbox can label a broadcast bubble
+        (BL-SS-091). Every existing caller omits it (no behaviour change).
+
+        ``actor_is_human`` (plan 32 / A7a, D-A7-6) tells `messaging_policy.
+        authorize` whether a REAL human agent (native or federated) is
+        sending, for the Messenger/Instagram `HUMAN_AGENT` 7-day extension -
+        it is set by the CALLER from its own authentication context, never
+        inferred from ``actor_user_id``'s truthiness (the public gateway
+        stamps a non-empty ``apikey:<id>`` there for attribution, which is
+        NOT a human actor). Defaults to `False` (automation) - the fail-safe
+        direction: a caller that forgets to set it can never send an
+        automated message past the 24h window under a compliance-restricted
+        tag."""
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
@@ -254,12 +361,23 @@ class MessageService:
         if sandbox_only:
             metadata = dict(metadata or {})
             metadata[WORKFLOW_TEST_METADATA_KEY] = {SANDBOX_ONLY_KEY: True}
+        if metadata_extra:
+            metadata = dict(metadata or {})
+            metadata.update(metadata_extra)
 
         message_type = (payload.messageType or "TEXT").upper()
         payload_json: Optional[Dict[str, Any]] = None
         media_key = media_mime = media_filename = None
         media_size: Optional[int] = None
+        meta_send: Optional[Dict[str, Any]] = None
         if message_type == "TEMPLATE":
+            try:
+                decision = messaging_policy.authorize(
+                    self.db, contact, channel, kind="TEMPLATE", actor_is_human=actor_is_human
+                )
+            except messaging_policy.PolicyRejected as exc:
+                raise SendRejected(exc.message, code=exc.code) from exc
+            meta_send = messaging_policy.send_metadata(decision)
             tpl = (
                 self.db.query(WhatsappTemplate)
                 .filter(
@@ -336,12 +454,22 @@ class MessageService:
             payload_json = {"template": template_payload}
         else:
             message_type = "TEXT"
-            # Backend-enforced CSW (decision 14): free-form only inside 24h.
-            if not _window_open(contact):
-                raise SendRejected(CSW_CLOSED_MESSAGE)
+            # Backend-enforced window (decision 14; generalized plan 32 D-A7-5):
+            # free-form only inside the channel type's window.
+            try:
+                decision = messaging_policy.authorize(
+                    self.db, contact, channel, kind="TEXT", actor_is_human=actor_is_human
+                )
+            except messaging_policy.PolicyRejected as exc:
+                raise SendRejected(exc.message, code=exc.code) from exc
+            meta_send = messaging_policy.send_metadata(decision)
             if not (payload.body or "").strip():
                 raise SendRejected("Message body is required.")
             body = (payload.body or "").strip()
+
+        if meta_send:
+            metadata = dict(metadata or {})
+            metadata["metaSend"] = meta_send
 
         now = datetime.now(timezone.utc)
         sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
@@ -364,7 +492,10 @@ class MessageService:
             created_at=now,  # µs precision - keeps rapid messages ordered
         )
         self.db.add(row)
-        contact.last_message_at = now
+        self._mark_agent_message(
+            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id,
+            is_agent_reply=not (metadata_extra and metadata_extra.get("broadcast")),
+        )
         self.db.commit()
         self.db.refresh(row)
         return self._enqueue_and_finalize(row, contact)
@@ -383,26 +514,40 @@ class MessageService:
         reply_to_message_id: Optional[str] = None,
         workspace_id_override: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         """Sniff-gate + cap-check + store an outbound media blob, create a QUEUED
         row and dispatch the async upload-by-id send (AC-12-02/03/10). Raises
-        ``SendRejected`` on CSW/validation, ``MediaRejected`` on sniff/cap."""
+        ``SendRejected`` on window/validation, ``MediaRejected`` on sniff/cap.
+        ``actor_is_human`` - see `send_message`. ``channel_id_override`` (plan
+        32 / A7a S6) - the gateway's explicit/preferred channel selection;
+        `None` keeps the pre-existing identity-channel-first resolution."""
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
-        channel = self._channel_for_contact(contact)
+        channel = self._channel_for_contact(contact, channel_id_override)
         kind = (kind or "").upper()
         if kind not in MEDIA_MESSAGE_TYPES:
             raise SendRejected(f"Unsupported media kind '{kind}'.")
-        # Media is free-form → 24h CSW applies (AC-12-25).
-        if not _window_open(contact):
-            raise SendRejected(CSW_CLOSED_MESSAGE)
+        # Media is free-form → the channel type's window applies (AC-12-25;
+        # generalized plan 32 D-A7-5).
+        try:
+            decision = messaging_policy.authorize(
+                self.db, contact, channel, kind=kind, actor_is_human=actor_is_human
+            )
+        except messaging_policy.PolicyRejected as exc:
+            raise SendRejected(exc.message, code=exc.code) from exc
 
         max_bytes = MediaSettingsService(self.db).max_bytes_for(
             tenant_id, contact.workspace_id, kind
         )
         sniffed = sniff_and_validate(kind, content, filename=filename, max_bytes=max_bytes)
         metadata, _ = self._reply_metadata(contact, tenant_id, reply_to_message_id)
+        meta_send = messaging_policy.send_metadata(decision)
+        if meta_send:
+            metadata = dict(metadata or {})
+            metadata["metaSend"] = meta_send
 
         from app.services.storage import storage_for_tenant
 
@@ -430,7 +575,9 @@ class MessageService:
             created_at=now,
         )
         self.db.add(row)
-        contact.last_message_at = now
+        self._mark_agent_message(
+            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
+        )
         self.db.commit()
         self.db.refresh(row)
         return self._enqueue_and_finalize(row, contact)
@@ -451,15 +598,31 @@ class MessageService:
         media_filename: Optional[str] = None,
         media_size: Optional[int] = None,
         external_agent_id: Optional[str] = None,
+        sub_kind: Optional[str] = None,
+        actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
-        channel = self._channel_for_contact(contact)
-        # Interactive/location/contacts are free-form → 24h CSW applies (AC-12-25).
-        if not _window_open(contact):
-            raise SendRejected(CSW_CLOSED_MESSAGE)
+        channel = self._channel_for_contact(contact, channel_id_override)
+        # Interactive/location/contacts are free-form → the channel type's
+        # window applies (AC-12-25; generalized plan 32 D-A7-5). `sub_kind` is
+        # the interactive definition's own kind (buttons/list/cta_url/
+        # location_request) - only `buttons` is sendable on Messenger/
+        # Instagram (D-A7-13).
+        try:
+            decision = messaging_policy.authorize(
+                self.db, contact, channel, kind=message_type,
+                actor_is_human=actor_is_human, sub_kind=sub_kind,
+            )
+        except messaging_policy.PolicyRejected as exc:
+            raise SendRejected(exc.message, code=exc.code) from exc
         metadata, _ = self._reply_metadata(contact, tenant_id, reply_to_message_id)
+        meta_send = messaging_policy.send_metadata(decision)
+        if meta_send:
+            metadata = dict(metadata or {})
+            metadata["metaSend"] = meta_send
         now = datetime.now(timezone.utc)
         sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
         row = ConversationMessage(
@@ -481,7 +644,9 @@ class MessageService:
             created_at=now,
         )
         self.db.add(row)
-        contact.last_message_at = now
+        self._mark_agent_message(
+            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
+        )
         self.db.commit()
         self.db.refresh(row)
         return self._enqueue_and_finalize(row, contact)
@@ -497,6 +662,8 @@ class MessageService:
         header_filename: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, header_media_kind, validate_interactive
 
@@ -514,10 +681,13 @@ class MessageService:
             contact = self.repo.get_by_id(contact_id, tenant_id)
             if contact is None:
                 raise ThreadNotFound()
-            # Reject on a closed 24h window BEFORE sniffing/storing the header blob -
-            # else a closed-window send orphans a persisted blob (never sent).
-            if not _window_open(contact):
-                raise SendRejected(CSW_CLOSED_MESSAGE)
+            channel = self._channel_for_contact(contact, channel_id_override)
+            # Cheap pre-flight peek BEFORE sniffing/storing the header blob -
+            # else a closed-window send orphans a persisted blob (never
+            # sent). `_structured_row` below still runs the AUTHORITATIVE
+            # `authorize` call (capability + human/automation nuance).
+            if not messaging_policy.window_open(self.db, contact, channel):
+                raise SendRejected(messaging_policy.closed_window_message(channel.channel_type))
             max_bytes = MediaSettingsService(self.db).max_bytes_for(
                 tenant_id, contact.workspace_id, hkind.upper()
             )
@@ -545,6 +715,9 @@ class MessageService:
             media_filename=header_filename if hkind else None,
             media_size=media_size,
             external_agent_id=external_agent_id,
+            sub_kind=defn.get("kind"),
+            actor_is_human=actor_is_human,
+            channel_id_override=channel_id_override,
         )
 
     def send_location(
@@ -556,6 +729,8 @@ class MessageService:
         defn: Dict[str, Any],
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, validate_location
 
@@ -573,6 +748,8 @@ class MessageService:
             payload_json=payload,
             reply_to_message_id=reply_to_message_id,
             external_agent_id=external_agent_id,
+            actor_is_human=actor_is_human,
+            channel_id_override=channel_id_override,
         )
 
     def send_contacts(
@@ -584,6 +761,8 @@ class MessageService:
         defn: Dict[str, Any],
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, validate_contacts
 
@@ -601,6 +780,8 @@ class MessageService:
             payload_json=payload,
             reply_to_message_id=reply_to_message_id,
             external_agent_id=external_agent_id,
+            actor_is_human=actor_is_human,
+            channel_id_override=channel_id_override,
         )
 
     # ── Reactions (plan 12 Slice 3 - AC-12-19/20/21) ────────────────────────
@@ -612,6 +793,7 @@ class MessageService:
         *,
         emoji: Optional[str],
         expected_contact_id: Optional[str] = None,
+        actor_is_human: bool = False,
     ) -> Dict[str, Any]:
         """An agent reacts to a message by our DURABLE id (never a raw wamid).
         Sends the reaction to Meta, upserts our row (empty emoji removes), and
@@ -627,9 +809,15 @@ class MessageService:
         if contact is None:
             raise ThreadNotFound()
         channel = self._channel_for_contact(contact)
-        # Reactions are free-form → the 24h window applies (Meta rule, AC-12-25).
-        if not _window_open(contact):
-            raise SendRejected(CSW_CLOSED_MESSAGE)
+        # Reactions are free-form → the channel type's window applies (Meta
+        # rule, AC-12-25); outbound reactions are WhatsApp-only (capability
+        # table, plan §5.5) - `authorize` refuses them elsewhere.
+        try:
+            messaging_policy.authorize(
+                self.db, contact, channel, kind="REACTION", actor_is_human=actor_is_human
+            )
+        except messaging_policy.PolicyRejected as exc:
+            raise SendRejected(exc.message, code=exc.code) from exc
         if not target.external_message_id:
             raise SendRejected("This message hasn't been delivered yet - can't react to it.")
 
@@ -648,11 +836,13 @@ class MessageService:
         try:
             adapter.send(
                 credentials,
-                channel.phone_number_id or "",
-                "".join(ch for ch in (contact.phone or "") if ch.isdigit()),
+                channel_addressing.sender_ref(channel),
+                channel_addressing.recipient_ref(self.db, channel, contact),
                 reaction={"message_id": target.external_message_id, "emoji": clean},
             )
         except SendError as exc:
+            raise SendRejected(str(exc)) from exc
+        except channel_addressing.NoChannelIdentity as exc:
             raise SendRejected(str(exc)) from exc
 
         # Meta stores ONE reaction per direction - every agent reacts as the same
@@ -712,6 +902,17 @@ class MessageService:
             created_at=datetime.now(timezone.utc),  # µs precision ordering
         )
         self.db.add(row)
+        self.db.flush()
+        # `comment_added` event (plan 27 A3, AC-IVE-09) - SAME unit of work as
+        # the note; `payload.messageId` links the event to the note bubble so
+        # the merged Activities feed can dedupe (never a duplicate line next
+        # to the note - AC-IVE-34). The gateway `add_comment` delegates to
+        # THIS method, so both paths are covered by the one call site.
+        event_service.record(
+            self.db, contact, "comment_added",
+            actor_id=actor_user_id, external_agent_id=external_agent_id,
+            payload={"messageId": row.id},
+        )
         self.db.commit()
         self.db.refresh(row)
         item = self.conversations.message_items([row])[0]

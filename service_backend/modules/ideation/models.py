@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Sequence,
     String,
     Text,
     UniqueConstraint,
@@ -30,7 +31,23 @@ from app.models.status import Status
 from app.models.utc_datetime import UTCDateTime
 from modules.omnichannel.models import Contact
 
-from .db import IdeationBase
+from .db import IDEATION_SCHEMA, IdeationBase
+
+# The idea_number sequence (S1, AC-1111/1112) - registered on THIS module's own
+# metadata (not just declared in migration 0010) so `bootstrap.
+# create_schema_and_tables`'s `IdeationBase.metadata.create_all(engine)` - which
+# runs on EVERY boot, including a brand-new Postgres install - actually
+# provisions it. The per-module Alembic step (`run_module_migrations`) stamps
+# head with NO DDL on the legacy/adopt path when the tables already exist
+# (`app/module_platform/migrations.py`), so relying on the migration alone
+# would leave a fresh install's sequence missing forever and every confirm
+# turn 500ing. Migration 0010 keeps its own `CREATE SEQUENCE IF NOT EXISTS`
+# for an already-deployed database that predates this column. A no-op on the
+# SQLite test engine (SQLite does not support sequences; `create_all` skips
+# them for dialects where `supports_sequences` is False).
+IDEA_NUMBER_SEQUENCE = Sequence(
+    "ideas_idea_number_seq", schema=IDEATION_SCHEMA, metadata=IdeationBase.metadata
+)
 
 # Normal cross-schema FK target = core ``public.products.id``. Reference the core
 # COLUMN OBJECT (not a string) so it resolves across the two MetaData objects: a
@@ -54,10 +71,12 @@ def _uuid() -> str:
 class ProductDelivery(IdeationBase):
     """Software-product delivery config (AC-A-06). 1:1 with a ``public.products``
     row (``product_id`` UNIQUE). ``product_domain_base`` is a validated absolute
-    origin (e.g. ``https://fe-sorento.foundryx.my``) stored verbatim and used to
-    mint product-domain idea links (``{product_domain_base}/ideas/{idea_id}``,
-    AC-A-38). Only software products get a row; a product without one has no
-    delivery origin yet."""
+    origin (e.g. ``https://fe-sorento.foundryx.my``) stored verbatim - the
+    embed adapter's allowed-origins/iframe-host setting. It no longer mints
+    the public idea-status link (S5 review round 2): that link lives on the
+    shared-service frontend (``settings.frontend_url``), not the product's
+    own domain - see ``services/sinks.py::mint_idea_link``. Only software
+    products get a row; a product without one has no delivery origin yet."""
 
     __tablename__ = "product_delivery"
 
@@ -66,6 +85,8 @@ class ProductDelivery(IdeationBase):
     # Normal cross-schema FK into core public.products (referenced UNqualified).
     product_id = Column(String, ForeignKey(_PRODUCT_FK), nullable=False, index=True)
     product_domain_base = Column(String, nullable=True)
+    # ``owner/repo`` the BR "Send to build" hand-off files its issue in.
+    build_repo = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -121,6 +142,11 @@ class Idea(IdeationBase):
     # Cross-schema FK into core public.statuses (the status engine's row).
     status_id = Column(String, ForeignKey(_STATUS_FK), nullable=False, index=True)
     intake_definition_key = Column(String, nullable=False, default="ideation")
+    # A short (1-8 word) headline the submitter can name the idea (S1,
+    # AC-1105) - distinct from ``problem`` (the full statement). Nullable: a
+    # pre-lane idea and any draft that never sends one have none; the read/
+    # board/detail surfaces fall back to ``problem`` when this is null.
+    title = Column(Text, nullable=True)
     problem = Column(Text, nullable=False)
     # First-class segregated intake fields (mirror the captured_json answer keys -
     # problem / proposed_solution / impact / department). Nullable: they fill in as
@@ -141,24 +167,49 @@ class Idea(IdeationBase):
     # the operator's name is stored directly here. The read serializer prefers
     # this when set, else derives the name from the linked contact (D-A4).
     submitter_name = Column(String, nullable=True)
+    # The submitter's tier (e.g. ``dealer``), stored verbatim, stripped (S1,
+    # AC-1115). Nullable - not every intake caller sends one.
+    submitter_tier = Column(String, nullable=True)
     # The submitter's CRM (host, e.g. sorento) user id - the ownership link for
-    # ``isMine`` / ``mine=true`` / own-similar (SS-IDEATION-OWN). Set by the
-    # one-shot chatbot create and the embed create (assertion ``sub``). Ownership
-    # is this OR the submitter contact's phone - NEVER the display name.
+    # ``isMine`` / embed ``mine=true`` / own-similar (SS-IDEATION-OWN). Set by
+    # the one-shot chatbot create and the embed create (assertion ``sub``).
+    # Ownership is this OR the submitter contact's phone - NEVER the name.
     submitter_crm_user_id = Column(String, nullable=True, index=True)
-    # Human idea number from the core numbering engine (``idea_no``, default
-    # ``IDEA-0001``, per tenant). Assigned only when the idea becomes real
-    # (promotion / operator / embed / one-shot create) - drafts stay NULL so an
-    # abandoned draft never burns a number. Not UNIQUE: a tenant may re-seed the
-    # counter in Settings > Numbering; the id stays the identity.
-    number = Column(String, nullable=True, index=True)
     captured_json = Column(JSON, nullable=True)
+    # The formatted sequential idea number (``IDEA-0001``, S1/S5) - minted
+    # once by the completion sink, never re-minted. NULL until captured.
+    idea_number = Column(String, nullable=True, unique=True)
+    # The public status-page credential (S5) - ``secrets.token_urlsafe(24)``,
+    # minted once alongside ``idea_number``. The token itself IS the
+    # capability; ``GET /public/ideas/{token}`` looks it up with no tenant
+    # scoping (AC-1601/1603). NULL until captured.
+    status_token = Column(String, nullable=True, unique=True)
+    # Turn-algorithm bookkeeping (S1) - ``{skipped: [...], declined_candidates:
+    # [...], pending_candidate: id|None, voted_for: id|None}``. Never holds
+    # answers (those stay in ``captured_json``).
+    intake_state = Column(JSON(none_as_null=True), nullable=True)
     # Denormalized vote tallies, recomputed from ``idea_votes`` on every vote
     # (the source of truth is one row per voter). ``downvotes`` mirrors the FE
     # Idea shape; Phase A still centres on upvotes (D10).
     upvotes = Column(Integer, nullable=False, default=0)
     downvotes = Column(Integer, nullable=False, default=0)
     priority = Column(Integer, nullable=False, default=0)
+    # A console/``--say`` test turn (owner ruling 24 Sep 2026, issue #1179): the
+    # ideate lane calls the REAL intake tool on a test turn instead of a fixed
+    # placeholder, and marks the row here so it can be verified without ever
+    # reaching a real operator surface. False for every real capture. Dedup
+    # matching, list/board reads and BR promotion all key off this flag (see
+    # ``DedupService.find_duplicate`` / ``IdeaReadService`` / ``_link_ideas``) -
+    # a test idea never contaminates the real pipeline in either direction.
+    is_test = Column(Boolean, nullable=False, default=False)
+    # Merge/unmerge (issue #94, plan section 3.1, D1): a plain indexed column,
+    # NO FK - a FK on this hot, pre-existing table would take a lock that hangs
+    # a blue/green deploy behind any live connection touching ``ideas`` (the
+    # same BL-030 lesson as ``idea_business_requirements.idea_id``, 0008). Set
+    # = this idea was merged into the row at that id (never itself a merge
+    # target - service-enforced, AC-94-05); ``merged_at`` stamps when.
+    merged_into_id = Column(String, nullable=True, index=True)
+    merged_at = Column(UTCDateTime(), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -187,6 +238,9 @@ class IdeaVote(IdeationBase):
     idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
     voter_id = Column(String, nullable=False, index=True)
     dir = Column(String, nullable=False)  # 'up' | 'down'
+    # Merge/unmerge (D4): NULL = cast on this idea; set = this vote row MOVED
+    # here from the merged member idea at that id (unmerge moves it back).
+    origin_idea_id = Column(String, nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -224,6 +278,12 @@ class IdeaAttachment(IdeationBase):
     url = Column(Text, nullable=False)  # durable sorento-stored URL (R2/S3)
     filename = Column(String, nullable=True)
     caption = Column(Text, nullable=True)
+    # Operator/embed uploads (plan sprint-5/15): the bytes live in tenant storage
+    # under ``storage_key`` (registered as a manifest storage location); a
+    # WhatsApp capture leaves all three NULL and keeps its durable ``url``.
+    storage_key = Column(String, nullable=True)
+    mime = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -384,6 +444,20 @@ class BusinessRequirement(IdeationBase):
     template_version = Column(Integer, nullable=False)
     title = Column(String, nullable=False, default="")
     answers_json = Column(JSON(none_as_null=True), nullable=True)
+    # A test idea (is_test) may promote to a TEST BR (issue #90 W3, owner
+    # ruling 26 Sep 2026): mirrors ``Idea.is_test``. Server-derived only (never
+    # client input) - all-test ideas promote to True, a manual create or an
+    # all-real promote is False, a mixed set is refused 422 before this is
+    # ever set. Excluded from the default list (a real BR list never shows a
+    # test row); NOT excluded from the status-engine integrity hooks
+    # (``br_count_records``/``br_migrate_records``) - a status holding test
+    # BRs must still be blocked from deletion. DISCLOSURE: this flag ONLY
+    # gates list/count visibility and the promote/link lane - a status move
+    # on a test BR still goes through the SAME status_machine.transition as
+    # a real one, so it still fires real same-transaction notifications and
+    # any entity.status_changed workflow trigger (see
+    # BusinessRequirementService.set_status).
+    is_test = Column(Boolean, nullable=False, default=False)
     created_by = Column(String, nullable=True, index=True)
     updated_by = Column(String, nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
@@ -426,3 +500,122 @@ class IdeaBusinessRequirement(IdeationBase):
             name="uq_idea_business_requirement",
         ),
     )
+
+
+# ── Requester status-update event feed (issue #94, plan section 7) ───────────
+
+
+class IdeaStatusEvent(IdeationBase):
+    """One notifiable recipient of an idea status move / merge / unmerge
+    (plan section 7.1, S4). Written by the ideation event-bus subscriber
+    (``services/status_events.py``); read by the CRM's workspace-key feed
+    (``GET /ideation/intake/status-events``) which sends the WhatsApp
+    template. Test ideas write ``is_test=True`` rows (double guard: excluded
+    from the feed by default, and the CRM contract says never send to a
+    requester when ``is_test``).
+
+    ``seq`` is the feed CURSOR - a Postgres ``SERIAL`` primary key, ascending
+    in insert (== commit) order; ``id`` is the payload's stable ``event_id``
+    the CRM dedupes on (at-least-once delivery)."""
+
+    __tablename__ = "idea_status_events"
+
+    seq = Column(Integer, primary_key=True)
+    id = Column(String, nullable=False, unique=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)  # status_changed | merged | unmerged
+    is_test = Column(Boolean, nullable=False, default=False)
+    payload_json = Column(JSON(none_as_null=True), nullable=True)
+    # Review round 2 #B - ONE clock, the database's: `services/status_events.
+    # py::_write_event` sets this explicitly to `clock_timestamp()`
+    # (Postgres - the real wall clock at INSERT time, unlike `now()` which is
+    # FIXED for the whole transaction) or `now()` (SQLite, no
+    # `clock_timestamp()`) per row, and refreshes the row to read the
+    # DB-computed value back - never a Python `datetime.now()` value on
+    # either side of the settle-window comparison. `server_default=func.now()`
+    # stays as a defense-in-depth fallback for a hypothetical raw-SQL insert
+    # that skips the ORM (never done here).
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_idea_status_events_tenant_seq", "tenant_id", "seq"),
+    )
+
+
+class BrBuild(IdeationBase):
+    """One Send-to-build hand-off per BR (``business_requirement_id`` UNIQUE, the
+    idempotency anchor: the loser of two concurrent sends hits the unique
+    violation). ``state``: ``creating | sent | delivered | failed``. Refs to
+    core / the BR are plain indexed columns (BL-030), no DB FK."""
+
+    __tablename__ = "br_builds"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    business_requirement_id = Column(String, nullable=False)
+    repo = Column(String, nullable=False)
+    state = Column(String, nullable=False, default="creating")
+    issue_number = Column(Integer, nullable=True)
+    issue_url = Column(Text, nullable=True)
+    issue_node_id = Column(String, nullable=True)
+    sent_by = Column(String, nullable=True)
+    sent_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("business_requirement_id", name="uq_br_builds_br"),
+    )
+
+
+class BrBuildEvent(IdeationBase):
+    """One Trace entry of a BR's build (``sent`` by a human, ``crew`` progress via
+    the write-back key, ``system``). Append-only. ``seq`` is the ordering cursor;
+    ``created_at`` is the database clock."""
+
+    __tablename__ = "br_build_events"
+
+    seq = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, nullable=False, unique=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    business_requirement_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)  # sent | crew | system
+    stage = Column(String(40), nullable=False)
+    message = Column(Text, nullable=False)
+    pr_url = Column(Text, nullable=True)
+    handtest_url = Column(Text, nullable=True)
+    status = Column(String, nullable=True)
+    actor_user_id = Column(String, nullable=True)
+    key_id = Column(String, nullable=True)
+    status_moved = Column(Boolean, nullable=False, default=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_br_build_events_tenant_br_seq",
+            "tenant_id",
+            "business_requirement_id",
+            "seq",
+        ),
+    )
+
+
+class BrBuildKey(IdeationBase):
+    """One issued build write-back key (``fxb_live_<32>``): plaintext returned
+    ONCE, only sha256 + an 8-char indexed lookup prefix stored. A deliberate
+    mirror of ``AcPullApiKey`` (cross-module table reads are forbidden)."""
+
+    __tablename__ = "br_build_keys"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False, default="")
+    key_prefix = Column(String, nullable=False, index=True)
+    key_hash = Column(String, nullable=False)
+    last_used_at = Column(UTCDateTime(), nullable=True)
+    revoked_at = Column(UTCDateTime(), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

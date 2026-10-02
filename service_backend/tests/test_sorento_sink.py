@@ -79,7 +79,10 @@ def test_only_sink_fields_cross_the_wire():
     sink.write_batch([_supplier()], request_id="t")
 
     sent = json.loads(rec.requests[0].content)["records"][0]
-    assert set(sent) == {"source_ref", "source_doc_no", "code", "name", "email", "is_active"}
+    # Sorento 2.1: null = clear, absent = leave alone - so the None-valued
+    # ``email`` is OMITTED from the body, not sent as ``"email": null``.
+    assert set(sent) == {"source_ref", "source_doc_no", "code", "name", "is_active"}
+    assert "email" not in sent
     assert "source_system" not in sent
     assert "entity_type" not in sent
     assert "last_modified" not in sent
@@ -89,10 +92,16 @@ def test_customer_projection_carries_its_extra_fields():
     rec = _Recorder(_ok_records)
     sink = SorentoSink(base_url="http://x", api_key="sk_test",
                        entity_type="customer", transport=rec.transport())
-    sink.write_batch([_customer()], request_id="t")
+    customer = _customer()
+    customer.phone_number = "012-3456789"
+    sink.write_batch([customer], request_id="t")
 
     sent = json.loads(rec.requests[0].content)["records"][0]
-    assert {"phone_number", "credit_limit", "tax_id"} <= set(sent)
+    assert {"phone_number", "tax_id"} <= set(sent)
+    # Sorento 2.1 rejects customers.credit_limit with a field-named 422
+    # (extra="forbid"; 27/27 SIM customers failed live) - a pushed customer
+    # body must never carry the key, populated or not.
+    assert "credit_limit" not in sent
 
 
 # ── auth (AC-14-15) ──────────────────────────────────────────────────────────
@@ -152,6 +161,40 @@ def test_failed_record_is_not_delivered_and_names_the_error():
     assert result.delivered is False
     assert result.ok is False
     assert "Field required" in result.message
+
+
+def test_an_unrecognised_outcome_word_reads_retryable_never_failed():
+    """S2 review SHOULD-FIX 9: a NOVEL/blank outcome word (Sorento adds a
+    value we don't know about yet, or omits the field) must read the SAME
+    safe way as no verdict at all - quarantine (permanent) is reserved for
+    the EXPLICIT ``"failed"`` word (D13). Reading an unknown word as failed
+    would permanently quarantine a record over a future Sorento vocabulary
+    change we haven't even shipped support for."""
+    def responder(request):
+        ref = json.loads(request.content)["records"][0]["source_ref"]
+        return httpx.Response(200, json={
+            "summary": {"total": 1, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+            "records": [{"source_ref": ref, "outcome": "processing", "entity_id": None}]})
+    rec = _Recorder(responder)
+    sink = SorentoSink(base_url="http://x", api_key="k",
+                       entity_type="supplier", transport=rec.transport())
+    [result] = sink.write_batch([_supplier()], request_id="t")
+    assert result.delivered is False
+    assert result.ok is False
+    assert result.outcome == "retryable"
+
+
+def test_a_blank_outcome_word_reads_retryable_never_failed():
+    def responder(request):
+        ref = json.loads(request.content)["records"][0]["source_ref"]
+        return httpx.Response(200, json={
+            "summary": {"total": 1, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+            "records": [{"source_ref": ref, "outcome": "", "entity_id": None}]})
+    rec = _Recorder(responder)
+    sink = SorentoSink(base_url="http://x", api_key="k",
+                       entity_type="supplier", transport=rec.transport())
+    [result] = sink.write_batch([_supplier()], request_id="t")
+    assert result.outcome == "retryable"
 
 
 def test_retryable_is_a_loud_failure_not_a_silent_requeue():

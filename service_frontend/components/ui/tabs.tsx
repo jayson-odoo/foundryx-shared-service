@@ -4,89 +4,108 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Tabs as TabsPrimitive } from 'radix-ui';
+import { useHorizontalOverflow } from '@/hooks/use-horizontal-overflow';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 
 // Variants for TabsList
-const tabsListVariants = cva('flex items-center shrink-0', {
-  variants: {
-    variant: {
-      default: 'bg-accent p-1',
-      button: '',
-      line: 'border-b border-border',
+const tabsListVariants = cva(
+  // The list owns its scroller (AC-DLA-12): without one, a long strip widens
+  // the page instead of scrolling. The scrollbar is hidden because it would
+  // sit on top of the tab labels; a sibling always-mounted fade overlay (see
+  // `TabsList` below, same solution as the DataGrid scroller, AC-DLA-14 fix
+  // round 1) marks the right edge instead of a toggled `mask-image`, which
+  // switches abruptly with no transition.
+  'flex items-center shrink-0 min-w-0 max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+  {
+    variants: {
+      variant: {
+        default: 'bg-accent p-1',
+        button: '',
+        line: 'border-b border-border',
+      },
+      shape: {
+        default: '',
+        pill: '',
+      },
+      size: {
+        lg: 'gap-2.5',
+        md: 'gap-2',
+        sm: 'gap-1.5',
+        xs: 'gap-1',
+      },
     },
-    shape: {
-      default: '',
-      pill: '',
-    },
-    size: {
-      lg: 'gap-2.5',
-      md: 'gap-2',
-      sm: 'gap-1.5',
-      xs: 'gap-1',
-    },
-  },
-  compoundVariants: [
-    { variant: 'default', size: 'lg', className: 'p-1.5 gap-2.5' },
-    { variant: 'default', size: 'md', className: 'p-1 gap-2' },
-    { variant: 'default', size: 'sm', className: 'p-1 gap-1.5' },
-    { variant: 'default', size: 'xs', className: 'p-1 gap-1' },
+    compoundVariants: [
+      { variant: 'default', size: 'lg', className: 'p-1.5 gap-2.5' },
+      { variant: 'default', size: 'md', className: 'p-1 gap-2' },
+      { variant: 'default', size: 'sm', className: 'p-1 gap-1.5' },
+      { variant: 'default', size: 'xs', className: 'p-1 gap-1' },
 
-    {
-      variant: 'default',
-      shape: 'default',
-      size: 'lg',
-      className: 'rounded-lg',
-    },
-    {
-      variant: 'default',
-      shape: 'default',
+      {
+        variant: 'default',
+        shape: 'default',
+        size: 'lg',
+        className: 'rounded-lg',
+      },
+      {
+        variant: 'default',
+        shape: 'default',
+        size: 'md',
+        className: 'rounded-lg',
+      },
+      {
+        variant: 'default',
+        shape: 'default',
+        size: 'sm',
+        className: 'rounded-md',
+      },
+      {
+        variant: 'default',
+        shape: 'default',
+        size: 'xs',
+        className: 'rounded-md',
+      },
+
+      { variant: 'line', size: 'lg', className: 'gap-9' },
+      { variant: 'line', size: 'md', className: 'gap-8' },
+      { variant: 'line', size: 'sm', className: 'gap-4' },
+      { variant: 'line', size: 'xs', className: 'gap-4' },
+
+      {
+        variant: 'default',
+        shape: 'pill',
+        className: 'rounded-full [&_[role=tab]]:rounded-full',
+      },
+      {
+        variant: 'button',
+        shape: 'pill',
+        className: 'rounded-full [&_[role=tab]]:rounded-full',
+      },
+    ],
+    defaultVariants: {
+      // AC-DLA-12: every tab strip is an underline unless a caller pins
+      // `variant="default"` (the segmented two/three-option keepers - see
+      // `components/ui/tabs.inventory.test.ts`).
+      variant: 'line',
       size: 'md',
-      className: 'rounded-lg',
     },
-    {
-      variant: 'default',
-      shape: 'default',
-      size: 'sm',
-      className: 'rounded-md',
-    },
-    {
-      variant: 'default',
-      shape: 'default',
-      size: 'xs',
-      className: 'rounded-md',
-    },
-
-    { variant: 'line', size: 'lg', className: 'gap-9' },
-    { variant: 'line', size: 'md', className: 'gap-8' },
-    { variant: 'line', size: 'sm', className: 'gap-4' },
-    { variant: 'line', size: 'xs', className: 'gap-4' },
-
-    {
-      variant: 'default',
-      shape: 'pill',
-      className: 'rounded-full [&_[role=tab]]:rounded-full',
-    },
-    {
-      variant: 'button',
-      shape: 'pill',
-      className: 'rounded-full [&_[role=tab]]:rounded-full',
-    },
-  ],
-  defaultVariants: {
-    variant: 'default',
-    size: 'md',
   },
-});
+);
 
 // Variants for TabsTrigger
 const tabsTriggerVariants = cva(
-  'shrink-0 cursor-pointer whitespace-nowrap inline-flex justify-center items-center font-medium ring-offset-background transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:shrink-0 [&_svg]:text-muted-foreground [&:hover_svg]:text-primary [&[data-state=active]_svg]:text-primary',
+  // Inset focus ring, zero offset (fix round 1): the trigger sits inside
+  // TabsList's own `overflow-x-auto` scroller, which clips anything an
+  // OUTER ring/offset would draw past the trigger's own box - an inset ring
+  // needs no room outside it.
+  PRESSED_CLASS +
+    ' shrink-0 cursor-pointer whitespace-nowrap inline-flex justify-center items-center font-medium focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 disabled:pointer-events-none disabled:opacity-50 data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:shrink-0 [&_svg]:text-muted-foreground [&:hover_svg]:text-primary [&[data-state=active]_svg]:text-primary',
   {
     variants: {
       variant: {
         default:
           'text-muted-foreground data-[state=active]:bg-background hover:text-foreground data-[state=active]:text-foreground data-[state=active]:shadow-xs data-[state=active]:shadow-black/5',
         button:
-          'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-lg text-accent-foreground hover:text-foreground data-[state=active]:bg-accent data-[state=active]:text-foreground',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 rounded-lg text-accent-foreground hover:text-foreground data-[state=active]:bg-accent data-[state=active]:text-foreground',
         line: 'border-b-2 text-muted-foreground border-transparent data-[state=active]:border-primary hover:text-primary data-[state=active]:text-primary data-[state=active]:border-primary data-[state=active]:text-primary',
       },
       size: {
@@ -113,7 +132,7 @@ const tabsTriggerVariants = cva(
       { variant: 'line', size: 'xs', className: 'py-1.5' },
     ],
     defaultVariants: {
-      variant: 'default',
+      variant: 'line',
       size: 'md',
     },
   },
@@ -140,7 +159,7 @@ type TabsContextType = {
   size?: 'lg' | 'sm' | 'xs' | 'md';
 };
 const TabsContext = React.createContext<TabsContextType>({
-  variant: 'default',
+  variant: 'line',
   size: 'md',
 });
 
@@ -151,18 +170,45 @@ function Tabs({ className, ...props }: React.ComponentProps<typeof TabsPrimitive
 
 function TabsList({
   className,
-  variant = 'default',
+  variant = 'line',
   shape = 'default',
   size = 'md',
+  ref: callerRef,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.List> & VariantProps<typeof tabsListVariants>) {
+  const { ref: scrollerRef, isFading } = useHorizontalOverflow<HTMLDivElement>();
+
+  // The list needs its own ref to measure the overflow, but it is not
+  // entitled to the caller's - placing ours after {...props} silently drops
+  // one.
+  const mergedRef = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollerRef.current = node;
+      if (typeof callerRef === 'function') callerRef(node);
+      else if (callerRef) (callerRef as React.RefObject<HTMLDivElement | null>).current = node;
+    },
+    [scrollerRef, callerRef],
+  );
+
   return (
-    <TabsContext.Provider value={{ variant: variant || 'default', size: size || 'md' }}>
-      <TabsPrimitive.List
-        data-slot="tabs-list"
-        className={cn(tabsListVariants({ variant, shape, size }), className)}
-        {...props}
-      />
+    <TabsContext.Provider value={{ variant: variant || 'line', size: size || 'md' }}>
+      <div className="relative min-w-0 max-w-full">
+        <TabsPrimitive.List
+          data-slot="tabs-list"
+          className={cn(tabsListVariants({ variant, shape, size }), className)}
+          {...props}
+          ref={mergedRef}
+        />
+        {/* Always mounted (AC-DLA-14 fix round 1), same solution as the
+            DataGrid's right-edge fade - opacity only, never mount/unmount or
+            mask-image toggling. */}
+        <div
+          aria-hidden="true"
+          data-slot="tabs-fade"
+          data-fade={isFading}
+          className="pointer-events-none absolute inset-y-0 end-0 w-6 bg-gradient-to-l from-background to-transparent opacity-0 transition-opacity duration-(--duration-fast) ease-(--ease-standard) data-[fade=true]:opacity-100"
+        />
+      </div>
     </TabsContext.Provider>
   );
 }

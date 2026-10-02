@@ -34,6 +34,10 @@ from app.services.status_machine import (
 )
 
 BR_PROMOTE_PERMISSION = "ideation.business_requirements.promote"
+BR_SEND_PERMISSION = "ideation.business_requirements.send_to_build"
+# Edge ids reserved by the Send-to-build hand-off (code contracts).
+BR_BUILD_BACK_EDGE_ID = "br-tr-build-back"
+BR_BUILD_DELIVERED_EDGE_ID = "br-tr-build-delivered"
 
 # Warm-start title cap (AC-BI-32b) - a derived title truncates on a word
 # boundary so a promoted BR never carries a runaway problem string as its name.
@@ -59,6 +63,42 @@ def _field_labels(doc: Dict) -> Dict[str, str]:
     form = FormDocument.model_validate(doc)
     return {f.key: (f.label or f.key) for f in form.input_fields() if f.key}
 
+def is_blank_answer(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
+
+
+def missing_labels(doc: Dict, answers: Dict, required_only: bool) -> List[str]:
+    """Labels (document order, de-duplicated) of the stamped template's input
+    fields whose answer is blank. ``required_only`` = the Promote rule (the form
+    engine's own required check); otherwise EVERY input field must be filled
+    (the Send-to-build rule)."""
+    answers = answers or {}
+    if required_only:
+        _clean, errors = validate_submission(doc, answers, enforce_required=True)
+        labels = _field_labels(doc)
+        keys = list(errors)
+        found = [labels.get(k, k) for k in keys]
+    else:
+        from app.form_engine.validation import visible_input_fields
+
+        found = [
+            (fld.label or fld.key)
+            for fld in visible_input_fields(doc, answers)
+            if is_blank_answer(answers.get(fld.key))
+        ]
+    out: List[str] = []
+    for label in found:
+        if label not in out:
+            out.append(label)
+    return out
+
+
 from ..models import (
     BusinessRequirement,
     Idea,
@@ -80,6 +120,7 @@ from .ideas import IdeaReadService
 from .statuses import (
     BR_ENTITY,
     BR_PROMOTE_EDGE_ID,
+    BR_SEND_EDGE_PREFIX,
     br_status_id,
     initial_br_status_id,
 )
@@ -168,6 +209,7 @@ class BusinessRequirementService:
             templateVersion=br.template_version,
             title=br.title or "",
             ideaCount=idea_counts.get(br.id, 0),
+            isTest=bool(br.is_test),
             createdAt=br.created_at,
             updatedAt=br.updated_at,
         )
@@ -223,10 +265,16 @@ class BusinessRequirementService:
         search: Optional[str] = None,
         filter: str = "active",
         product_id: Optional[str] = None,
+        include_test: bool = False,
     ) -> List[BusinessRequirementOut]:
+        """``include_test`` (issue #90 W3): a test idea (``is_test``) may
+        promote to a TEST BR - excluded here by default so it never shows on
+        a real BR list, same convention as ``IdeaReadService.list``."""
         q = self.db.query(BusinessRequirement).filter(
             BusinessRequirement.tenant_id == tenant_id
         )
+        if not include_test:
+            q = q.filter(BusinessRequirement.is_test.is_(False))
         if product_id:
             q = q.filter(BusinessRequirement.product_id == product_id)
         if search:
@@ -264,10 +312,13 @@ class BusinessRequirementService:
         doc = get_stamped_doc(
             self.db, br.template_key, br.template_version, br.tenant_id
         )
+        from .build_handoff import BuildHandoffService
+
         return BusinessRequirementDetailOut(
             **base.model_dump(),
             answers=dict(br.answers_json or {}),
             templateDoc=doc or {},
+            build=BuildHandoffService(self.db).detail_build(tenant_id, br),
         )
 
     def linked_ideas(self, tenant_id: str, br_id: str) -> List:
@@ -288,7 +339,7 @@ class BusinessRequirementService:
             .order_by(Idea.created_at.desc(), Idea.id.desc())
             .all()
         )
-        return self._reader.serialize_many(ideas)
+        return self._reader.serialize_many(ideas, tenant_id=tenant_id)
 
     def linked_business_requirements(
         self, tenant_id: str, idea_id: str
@@ -373,11 +424,21 @@ class BusinessRequirementService:
         version = active_version_number(template, self.db) if template else None
         if template is None or version is None:
             raise HTTPException(
-                422, "No active Business Requirement template is configured."
+                422,
+                detail={
+                    "code": "br_template_unavailable",
+                    "message": "No active Business Requirement template is configured.",
+                },
             )
         initial_id = initial_br_status_id(self.db, tenant_id)
         if initial_id is None:
             raise HTTPException(422, "Business Requirement statuses are not seeded.")
+
+        # Issue #90 W3: the lane (test/real) is ALWAYS server-derived from the
+        # promoted ideas themselves - never client input (a client-sent
+        # ``isTest`` is ignored; ``BusinessRequirementCreateIn`` has no such
+        # field). A manual create (no idea_ids) is always real.
+        is_test = self._derive_lane(tenant_id, idea_ids) if idea_ids else False
 
         # Warm start (AC-BI-32b): a promote (idea_ids present) ABSORBS the idea -
         # derive a real title + pre-fill problem_statement so the BR opens titled
@@ -401,6 +462,7 @@ class BusinessRequirementService:
             template_version=version,
             title=resolved_title,
             answers_json=None,
+            is_test=is_test,
             created_by=actor.id if actor else None,
             updated_by=actor.id if actor else None,
         )
@@ -441,6 +503,27 @@ class BusinessRequirementService:
         self.db.refresh(br)
         return self.get(tenant_id, br.id)
 
+    def _derive_lane(self, tenant_id: str, idea_ids: List[str]) -> bool:
+        """Issue #90 W3: the lane (test/real) of a promote, derived from the
+        ideas themselves - tenant-scoped, never client input. All-test ->
+        True; all-real -> False; a mix is refused before anything is created
+        (never silently picks a lane). Ideas that do not resolve are ignored
+        here - :meth:`_link_ideas` raises its own 422 for those."""
+        ordered = [i for i in dict.fromkeys(idea_ids) if i]
+        if not ordered:
+            return False
+        rows = (
+            self.db.query(Idea.is_test)
+            .filter(Idea.id.in_(ordered), Idea.tenant_id == tenant_id)
+            .all()
+        )
+        flags = {bool(r[0]) for r in rows}
+        if len(flags) > 1:
+            raise HTTPException(
+                422, "Test and real ideas cannot be promoted together."
+            )
+        return flags.pop() if flags else False
+
     def _absorb_ideas(self, tenant_id: str, idea_ids: List[str]) -> Tuple[str, str]:
         """Derive ``(title, problem_statement)`` from the ideas a promote absorbs
         (AC-BI-32b). Tenant-scoped. Title = the representative idea's problem
@@ -473,7 +556,11 @@ class BusinessRequirementService:
     ) -> None:
         """Link ideas to a BR (AC-BI-17). Each idea must be in the caller's
         tenant AND on the SAME product as the BR (cross-tenant / cross-product =
-        422 - the polymorphic-target rule). Idempotent per pair (unique)."""
+        422 - the polymorphic-target rule). Issue #90 W3: the lane invariant is
+        bidirectional - a test idea can only ever sit on a TEST BR and a real
+        idea only ever on a REAL BR (``bool(idea.is_test) != bool(br.is_test)``
+        -> 422), in the one place both the create (warm-start promote) and the
+        explicit link endpoint funnel through. Idempotent per pair (unique)."""
         wanted = [i for i in dict.fromkeys(idea_ids) if i]
         if not wanted:
             return
@@ -496,6 +583,25 @@ class BusinessRequirementService:
                     422,
                     "One or more ideas do not exist for this workspace.",
                 )
+            if idea.merged_into_id:
+                # AC-94-09: a merged child is frozen - it feeds a BR only
+                # through its survivor.
+                survivor = (
+                    self.db.query(Idea)
+                    .filter(Idea.id == idea.merged_into_id, Idea.tenant_id == tenant_id)
+                    .first()
+                )
+                label = (survivor.idea_number if survivor else None) or idea.merged_into_id
+                raise HTTPException(
+                    422, f"This idea was merged into {label} and cannot be linked directly."
+                )
+            if bool(idea.is_test) != bool(br.is_test):
+                message = (
+                    "A test idea cannot be linked to a real Business Requirement."
+                    if idea.is_test
+                    else "A real idea cannot be linked to a test Business Requirement."
+                )
+                raise HTTPException(422, message)
             if idea.product_id != br.product_id:
                 raise HTTPException(
                     422,
@@ -545,6 +651,18 @@ class BusinessRequirementService:
         edge = StatusTransitionRepository(self.db).find_edge(
             br.status_id, target_id, tier
         )
+        # The Send-to-build edges belong to the Send endpoint alone.
+        if edge is not None and edge.id.startswith(BR_SEND_EDGE_PREFIX):
+            raise HTTPException(409, "Use Send to build")
+        # Delivered is reserved for the crew write-back (merged/released).
+        if edge is not None and edge.id == BR_BUILD_DELIVERED_EDGE_ID:
+            raise HTTPException(409, "Delivered is set by the build crew")
+        if edge is not None and edge.id == BR_BUILD_BACK_EDGE_ID:
+            held = effective_permission_keys(actor) if actor else set()
+            if BR_SEND_PERMISSION not in held:
+                raise HTTPException(
+                    403, "You are not allowed to send a requirement back from build."
+                )
         if edge is None or edge.id != BR_PROMOTE_EDGE_ID:
             return
         held = effective_permission_keys(actor) if actor else set()
@@ -557,11 +675,13 @@ class BusinessRequirementService:
         # partial, but promote requires every required field present.
         self._enforce_promote_completeness(br)
 
-    def _enforce_promote_completeness(self, br: BusinessRequirement) -> None:
+    def missing_required(
+        self, br: BusinessRequirement
+    ) -> Tuple[Dict[str, str], List[str]]:
         """Re-validate the BR's ``answers_json`` against its STAMPED template with
-        ``required`` ENFORCED (AC-BI-34). A promote with missing required fields is
-        refused with a friendly, specific message naming the blank field LABELS
-        (AC-BI-34b) plus the per-field ``fieldErrors`` map (inline highlight)."""
+        ``required`` ENFORCED. Returns ``(per-field errors, missing field LABELS
+        in document order)`` - the ONE completeness check Promote and Send to
+        build share."""
         doc = get_stamped_doc(
             self.db, br.template_key, br.template_version, br.tenant_id
         )
@@ -572,8 +692,6 @@ class BusinessRequirementService:
         _clean, errors = validate_submission(
             doc, br.answers_json or {}, enforce_required=True
         )
-        if not errors:
-            return
         labels = _field_labels(doc)
         # Preserve document order + de-dup for the human-facing list.
         missing: List[str] = []
@@ -581,6 +699,15 @@ class BusinessRequirementService:
             label = labels.get(key, key)
             if label not in missing:
                 missing.append(label)
+        return errors, missing
+
+    def _enforce_promote_completeness(self, br: BusinessRequirement) -> None:
+        """A promote with missing required fields is refused with a friendly,
+        specific message naming the blank field LABELS (AC-BI-34/34b) plus the
+        per-field ``fieldErrors`` map (inline highlight)."""
+        errors, missing = self.missing_required(br)
+        if not errors:
+            return
         raise HTTPException(
             422,
             detail={
@@ -609,7 +736,18 @@ class BusinessRequirementService:
         stays gated by ``.manage`` (the router). The gate resolves the ACTUAL
         edge fired (by id, a code contract) - not the target status key - so a
         tenant renaming a status can't slip the gate, and the sibling
-        ``grilling → ready`` edge is NOT promote-gated."""
+        ``grilling → ready`` edge is NOT promote-gated.
+
+        DISCLOSURE (issue #90 W3): a TEST BR (``is_test``) rides this SAME
+        ``status_machine.transition`` call as a real one - it is not special-
+        cased here. That means a status move on a test BR still fires the
+        engine's same-transaction notifications and any ``entity.status_
+        changed`` workflow trigger, exactly as a real BR's move would. W3
+        only ever excludes a test BR from the default LIST/count surfaces
+        (:meth:`list`) and the promote/link lane check - it was never scoped
+        to also suppress notifications/workflows on a test row. An operator
+        testing the flow end to end should expect real emails/workflow runs
+        to fire off a test BR's transitions."""
         br = self._br_or_404(tenant_id, br_id)
         target_id = br_status_id(self.db, status_key, tenant_id)
         if target_id is None:
