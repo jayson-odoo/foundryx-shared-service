@@ -7,6 +7,12 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+// sprint-5/19 - the shared cadence cards format "Next ..." badges through the
+// session-bound datetime hook (house mock, same as `schedule-tab.test.tsx`).
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({ formatDateTime: (iso: string) => iso }),
+}));
+
 function eligibleConnection(over: Record<string, unknown> = {}) {
   return { id: 'conn-1', name: 'db1 open API', book: 'db1', ...over };
 }
@@ -26,7 +32,7 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
     // The connection picker is a SearchSelect (house convention, see
     // `search-select.test.tsx`) - its options render once opened, same as
     // every other SearchSelect in the codebase.
-    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.click(screen.getByRole('combobox', { name: 'Connection' }));
     expect(screen.getByText(/db1 open api/i)).toBeInTheDocument();
   });
 

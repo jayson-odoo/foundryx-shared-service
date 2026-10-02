@@ -23,6 +23,7 @@ import { ApiError } from '@/lib/api-client';
 import { simulateCombine } from '@/lib/autocount-combine';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
 import {
+  DEFAULT_DOC_FEED_SCHEDULE,
   DEFAULT_STATUS_FORMULA,
   HTTP_PRESETS,
   MIN_RECONCILE_HOURS,
@@ -91,6 +92,7 @@ import type {
   DocFeedEligibleConnection,
   DocFeedIssue,
   DocFeedItem,
+  DocFeedSchedule,
   DocFeedKey,
   DocFeedLastRun,
   DocFeedMode,
@@ -2222,6 +2224,9 @@ interface MockDocFeedState {
   connectionId: string | null;
   book: string | null;
   mode: DocFeedMode;
+  schedule: DocFeedSchedule;
+  nextPollAt: string | null;
+  nextSweepAt: string | null;
   cursorDay: string | null;
   lastRun: DocFeedLastRun | null;
   backfill: DocFeedBackfill | null;
@@ -2232,6 +2237,9 @@ function defaultDocFeedState(): MockDocFeedState {
     connectionId: null,
     book: null,
     mode: 'off',
+    schedule: { ...DEFAULT_DOC_FEED_SCHEDULE },
+    nextPollAt: null,
+    nextSweepAt: null,
     cursorDay: null,
     lastRun: null,
     backfill: null,
@@ -2358,6 +2366,9 @@ function docFeedItemFor(
     book: state.book,
     connectionId: state.connectionId,
     mode: state.mode,
+    schedule: { ...state.schedule },
+    nextPollAt: state.nextPollAt,
+    nextSweepAt: state.nextSweepAt,
     cursorDay: state.cursorDay,
     fullBackfillDoneAt: null,
     contractGate: gate,
@@ -2379,10 +2390,13 @@ function mutateDocFeed(
   eligible: DocFeedEligibleConnection[],
 ): void {
   const state = docFeedsFor(companyId)[feed];
+  if (input.schedule) state.schedule = { ...input.schedule };
   if (input.mode === 'off') {
     state.mode = 'off';
     state.connectionId = null;
     state.book = null;
+    state.nextPollAt = null;
+    state.nextSweepAt = null;
     return;
   }
   if (!input.connectionId) {
@@ -2399,6 +2413,9 @@ function mutateDocFeed(
   state.connectionId = input.connectionId;
   state.book = conn?.book ?? 'mock';
   state.mode = input.mode;
+  const now = Date.now();
+  state.nextPollAt = new Date(now + state.schedule.incrementalMinutes * 60_000).toISOString();
+  state.nextSweepAt = new Date(now + (state.schedule.reconcileHours ?? 24) * 3_600_000).toISOString();
 }
 
 /** One retryable + one failed issue, upserted by DocKey (D9: re-running a

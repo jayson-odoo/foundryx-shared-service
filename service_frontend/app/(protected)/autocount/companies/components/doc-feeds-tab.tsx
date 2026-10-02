@@ -155,6 +155,9 @@ export function DocFeedsTab({ companyId }: { companyId: string }) {
             connectionId: configuringItem.connectionId,
             mode: configuringItem.mode,
             contractGate: configuringItem.contractGate,
+            schedule: configuringItem.schedule,
+            nextPollAt: configuringItem.nextPollAt,
+            nextSweepAt: configuringItem.nextSweepAt,
           }}
           eligibleConnections={eligibleConnections}
           onClose={() => setConfiguring(null)}

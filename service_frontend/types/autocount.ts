@@ -1645,6 +1645,18 @@ export interface DocFeedBackfill {
   error: string | null;
 }
 
+/** A cadence - the Entities task schedule shape (`AutocountEtlSourceConfig`'s
+ * four schedule keys), shared with the Document feeds (sprint-5/19): the
+ * incremental is a feed's poll, the reconcile its deletion sweep. */
+export type AutocountScheduleCadence = Pick<
+  AutocountEtlSourceConfig,
+  'incrementalMinutes' | 'reconcileMode' | 'reconcileHours' | 'reconcileAt'
+>;
+
+/** A Document feed's schedule (sprint-5/19, AC-19-03) - always resolved by
+ * the backend (an unedited feed answers the poll-60-min / sweep-24-h default). */
+export type DocFeedSchedule = AutocountScheduleCadence;
+
 /** `GET /autocount/doc-feeds/{companyId}` - one row per feed. A never-
  * configured feed still renders (`mode: 'off'`, D2's "a missing row renders
  * as off"). */
@@ -1653,6 +1665,10 @@ export interface DocFeedItem {
   book: string | null;
   connectionId: string | null;
   mode: DocFeedMode;
+  schedule: DocFeedSchedule;
+  /** Armed due times (ISO Z); null while the feed is Off. */
+  nextPollAt: string | null;
+  nextSweepAt: string | null;
   cursorDay: string | null; // YYYY-MM-DD
   /** Set once the full-history live backfill has completed (ISO Z). */
   fullBackfillDoneAt: string | null;
@@ -1680,6 +1696,8 @@ export interface DocFeedsView {
 export interface DocFeedUpdateInput {
   connectionId: string | null;
   mode: DocFeedMode;
+  /** Omitted = the stored schedule is kept (sprint-5/19). */
+  schedule?: DocFeedSchedule;
 }
 
 /** `POST /autocount/doc-feeds/{companyId}/{feed}/run` body - Run now / Run

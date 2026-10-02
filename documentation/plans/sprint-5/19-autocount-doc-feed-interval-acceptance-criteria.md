@@ -28,7 +28,7 @@ Tags: `[BE]` backend pytest, `[FE]` vitest, `[T]` tester / hand-test proof.
 - **AC-19-04 [BE]** `PUT /autocount/doc-feeds/{company}/{feed}` accepts an optional `schedule`
   `{incrementalMinutes, reconcileMode, reconcileHours?, reconcileAt?}`; omitted = stored schedule
   kept. Gate stays `autocount.companies.manage` (a user without it gets 403).
-- **AC-19-05 [BE]** Validation mirrors the Entities no-watermark rules, as a 422 house
+- **AC-19-05 [BE]** Validation mirrors the Entities with-watermark rules, as a 422 house
   `detail.fieldErrors` map: `incrementalMinutes` missing/non-integer/< 1 rejected; `reconcileMode`
   outside `interval|dailyAt` rejected; `interval` needs `reconcileHours >= 1`; `dailyAt` needs
   `reconcileAt` `HH:MM` (UTC). A rejected PUT changes nothing (mode/connection included).
