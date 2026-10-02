@@ -193,7 +193,8 @@ def test_ac_19_38_inactive_ideation_module_is_uniform_404(setup):
 
 # ── AC-19-40 (BE): replying into a thread whose top-level is deleted ──────────
 def test_ac_19_40_reply_to_live_reply_of_deleted_top_level_attaches_to_top_level(setup):
-    """Fails today: parent resolution rejects the deleted top-level (404)."""
+    """Regression pin (passed on first run): replying to a LIVE reply whose
+    top-level parent is soft-deleted attaches to that top-level (201)."""
     from modules.ideation.models import IdeaComment
 
     s = setup
@@ -221,3 +222,19 @@ def test_ac_19_40_deleted_top_level_without_live_replies_is_not_a_parent(setup):
     top = _post(c, s["h"], iid, "top").json()["id"]
     assert c.delete(_url(iid, top), headers=s["h"]).status_code == 204
     assert _post(c, s["h"], iid, "orphan", parent_id=top).status_code == 404
+
+
+def test_ac_19_40_reply_directly_to_deleted_top_level_with_live_reply_is_accepted(setup):
+    """Accept direction: a deleted top-level that still has a live reply stays a
+    valid parent (it renders as a placeholder), so posting with parentId = that
+    deleted top-level id is 201 and attaches to it. Goes red if deleted parents
+    are always refused."""
+    s = setup
+    c = s["client"]
+    iid = _seed(s, _tok("d"))
+    top = _post(c, s["h"], iid, "top").json()["id"]
+    assert _post(c, s["h"], iid, "live reply", parent_id=top).status_code == 201
+    assert c.delete(_url(iid, top), headers=s["h"]).status_code == 204
+    res = _post(c, s["h"], iid, "another reply", parent_id=top)
+    assert res.status_code == 201, res.text
+    assert res.json()["parentId"] == top
