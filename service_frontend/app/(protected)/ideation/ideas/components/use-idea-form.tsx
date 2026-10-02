@@ -218,6 +218,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             id: 'archive',
             label: 'Archive',
             icon: Archive,
+            ...(mode === 'operator' ? { permission: 'ideation.triage.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             isVisible: (rows) => rows.every((r) => !r.statusIsArchived),
             // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
@@ -230,6 +231,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             id: 'restore',
             label: 'Restore',
             icon: ArchiveRestore,
+            ...(mode === 'operator' ? { permission: 'ideation.triage.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             isVisible: (rows) => rows.every((r) => r.statusIsArchived),
             isDisabled: (rows) => rows.some((r) => !r.transitions?.length),
