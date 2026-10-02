@@ -597,3 +597,36 @@ describe('useIdeaForm - primary action failures toast, never reject (AC-19-41)',
     expect(toastMock.error).toHaveBeenCalledWith('Cannot unmerge.');
   });
 });
+
+// ── Plan 19 fix round 2 (AC-19-46) - Edit + status primary need ideation.triage.manage ──
+
+describe('useIdeaForm - triage.manage gates Edit and the status primary (AC-19-46)', () => {
+  const restore = { id: 'tr-restore', label: 'Restore', toStatusId: 'st-captured', toStatusLabel: 'New' };
+  const cases: [string, Idea][] = [
+    ['a New idea with an advance edge', stageIdea()],
+    ['an archived idea', stageIdea({ statusIsArchived: true, transitions: [restore], advanceTransitionId: null })],
+    ['a merged child', stageIdea({ id: 'child-1', mergedIntoId: 'survivor-1' })],
+  ];
+
+  it.each(cases)('operator WITHOUT triage.manage: no primaryAction for %s; editPermission is set', async (_n, idea) => {
+    sessionPerms.list = ['ideation.ideas.view', 'ideation.ideas.upvote'];
+    const { result } = await loaded(idea);
+    expect(result.current.config?.primaryAction).toBeUndefined();
+    expect(result.current.config?.editPermission).toBe('ideation.triage.manage');
+  });
+
+  it.each(cases)('operator WITH triage.manage: primaryAction present for %s', async (_n, idea) => {
+    sessionPerms.list = ['ideation.ideas.view', 'ideation.triage.manage'];
+    const { result } = await loaded(idea);
+    expect(result.current.config?.primaryAction).toBeDefined();
+    expect(result.current.config?.editPermission).toBe('ideation.triage.manage');
+  });
+
+  it('embed mode keeps the primary regardless of operator permissions', async () => {
+    sessionPerms.list = [];
+    const idea = stageIdea();
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(idea) });
+    const { result } = await loaded(idea, service, embedWrapper);
+    expect(result.current.config?.primaryAction?.label).toBe('Move to Triaged');
+  });
+});
