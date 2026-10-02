@@ -260,8 +260,12 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     // not repeated in the "..." menu.
     const advanceEdge = idea?.transitions?.find((t) => t.id === idea.advanceTransitionId);
     const restoreEdge = idea?.statusIsArchived ? idea.transitions?.[0] : undefined;
+    // Status moves and Edit need `ideation.triage.manage` on the operator surface
+    // (AC-19-46). The embed has no session to gate against (its token is the
+    // boundary), so it is never gated here.
+    const canTriage = mode === 'embed' || can('ideation.triage.manage');
     let primaryAction: FormPrimaryAction | undefined;
-    if (!creating && idea) {
+    if (!creating && idea && canTriage) {
       if (isMergedChild) {
         primaryAction = {
           id: 'unmerge',
@@ -485,6 +489,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       actions: menuActions,
       primaryAction,
       editPlacement: 'beside-primary',
+      ...(mode === 'operator' ? { editPermission: 'ideation.triage.manage' } : {}),
       actionRows: idea ? [idea] : [],
       editable: !creating,
       initialEditing: creating ? true : initialEditing,
