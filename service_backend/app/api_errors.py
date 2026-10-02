@@ -44,6 +44,18 @@ class ApiError(Exception):
         return {"error": err}
 
 
+def _encodable(value: Any) -> Any:
+    """Scrub lone UTF-16 surrogates from echoed validation input: they cannot be
+    UTF-8 encoded, so the 422 response itself would otherwise 500 (AC-19-44)."""
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, list):
+        return [_encodable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _encodable(v) for k, v in value.items()}
+    return value
+
+
 def install_api_error_handler(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _handle_api_error(_: Request, exc: ApiError) -> JSONResponse:  # noqa: ANN202
@@ -66,10 +78,10 @@ def install_api_error_handler(app: FastAPI) -> None:
                     422,
                     "invalid_request",
                     "Request validation failed.",
-                    jsonable_encoder(exc.errors()),
+                    _encodable(jsonable_encoder(exc.errors())),
                 ).to_body(),
             )
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"detail": jsonable_encoder(exc.errors())},
+            content={"detail": _encodable(jsonable_encoder(exc.errors()))},
         )

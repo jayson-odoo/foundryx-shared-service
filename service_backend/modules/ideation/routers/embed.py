@@ -540,7 +540,9 @@ def embed_list_comments(
     db: Session = Depends(get_db),
 ) -> List[IdeaCommentOut]:
     _assert_in_scope(db, principal, idea_id)
-    return IdeaCommentService(db).list(principal.tenant_id, idea_id, _embed_viewer(principal))
+    return IdeaCommentService(db).list(
+        principal.tenant_id, idea_id, _embed_viewer(principal), project_names=True
+    )
 
 
 @router.post(

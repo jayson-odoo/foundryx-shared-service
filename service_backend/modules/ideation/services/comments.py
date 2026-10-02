@@ -123,19 +123,28 @@ class IdeaCommentService:
 
     # ---- reads -------------------------------------------------------------
 
-    def list(self, tenant_id: str, idea_id: str, viewer: CommentViewer) -> List[IdeaCommentOut]:
+    def list(
+        self, tenant_id: str, idea_id: str, viewer: CommentViewer, *, project_names: bool = False
+    ) -> List[IdeaCommentOut]:
         self._idea_or_404(tenant_id, idea_id)
-        return self._list_for(tenant_id, idea_id, viewer)
+        rows = self._list_for(tenant_id, idea_id, viewer)
+        return self._project_names(rows) if project_names else rows
 
     def list_public(self, idea: Idea) -> List[IdeaCommentOut]:
         """The thread of THIS idea (a resolved public-token idea) for an anonymous
         reader - never a survivor's thread, flags always false."""
+        return self._project_names(self._list_for(idea.tenant_id, idea.id, PUBLIC_VIEWER))
+
+    @staticmethod
+    def _project_names(rows: List[IdeaCommentOut]) -> List[IdeaCommentOut]:
+        """AC-19-32/45: a stored author name shown outside the operator surface
+        passes only when it is not phone/email shaped; else a neutral label."""
         from .public_status import PublicIdeaStatusService
 
         project = PublicIdeaStatusService.public_display_name
         fallback = {AUTHOR_USER: "Team member", AUTHOR_EMBED: "Portal user", AUTHOR_PUBLIC: "Submitter"}
         out: List[IdeaCommentOut] = []
-        for c in self._list_for(idea.tenant_id, idea.id, PUBLIC_VIEWER):
+        for c in rows:
             if c.authorName is not None:
                 name = project(c.authorName, fallback.get(c.authorKind, "Team member"))
                 c = c.model_copy(update={"authorName": name})

@@ -188,8 +188,9 @@ class IdeaCommentOut(ApiModel):
     editedAt: Optional[datetime] = None
 
 
-# NUL and the other C0 controls, except newline and tab (AC-19-36).
-_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f]")
+# NUL and the other C0 controls, except newline and tab (AC-19-36), and lone
+# UTF-16 surrogates (AC-19-44: they cannot be encoded, which would 500).
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\ud800-\udfff]")
 
 
 def _clean_comment_body(value: str, limit: int) -> str:
