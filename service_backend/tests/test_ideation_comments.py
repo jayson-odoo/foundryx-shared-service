@@ -5,6 +5,8 @@ Operator routes: ``/ideation/ideas/{id}/comments`` (GET/POST) and
 ``/embed/ideas/...``. New permission ``ideation.ideas.comment`` swept to every
 ``ideation.ideas.upvote`` holder. Every test seeds its own idea / users.
 """
+import uuid
+
 import pytest
 from sqlalchemy import text
 
@@ -181,7 +183,7 @@ def test_ac_19_04_parent_from_other_idea_or_tenant_404(op):
     res = _post(c, h, op["idea"], "cross", parent_id=foreign_parent)
     assert res.status_code == 404, res.text
     assert _listed(c, h, op["idea"]) == []  # nothing attached
-    assert _post(c, h, op["idea"], "x", parent_id="nope").status_code == 404
+    assert _post(c, h, op["idea"], "x", parent_id=str(uuid.uuid4())).status_code == 404
 
 
 # ── AC-19-05 ──────────────────────────────────────────────────────────────────
