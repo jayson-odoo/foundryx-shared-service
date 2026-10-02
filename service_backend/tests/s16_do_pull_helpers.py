@@ -40,7 +40,9 @@ from .s14_doc_feed_helpers import (
 
 GATEWAY_PREFIX = "/api/v1/autocount"
 DO_DOOR = "/deliveryorderbydocdate"
+GRN_DOOR = "/goodsreceivenotebydocdate"
 ENTITY_DO = "delivery_orders"
+ENTITY_GRN = "goods_receive_notes"
 BASE_PATH_PREFIX = "/api/db1"
 
 _PUBLIC_DNS_STUB_IP = "8.8.8.8"
@@ -140,8 +142,11 @@ class VendorStub:
     requested `DocDate` day with a list (200 JSON), an `httpx.Response`, a
     `JsonRoute`, or an Exception instance (raised inside the transport)."""
 
-    def __init__(self, day_fn: Optional[Callable[[date], Any]] = None) -> None:
+    def __init__(
+        self, day_fn: Optional[Callable[[date], Any]] = None, *, door: str = DO_DOOR,
+    ) -> None:
         self.day_fn = day_fn or (lambda _day: [])
+        self.door = door
         self.requests: List[httpx.Request] = []
         self.paths: List[str] = []
         self.days: List[date] = []
@@ -152,10 +157,10 @@ class VendorStub:
         rel = path[len(BASE_PATH_PREFIX):] if path.startswith(BASE_PATH_PREFIX) else path
         self.requests.append(request)
         self.paths.append(rel)
-        if rel != DO_DOOR:
+        if rel != self.door:
             self.unrouted.append(rel)
             raise AssertionError(
-                f"s16 vendor stub: only {DO_DOOR} is routed, got {request.method} {request.url}"
+                f"s16 vendor stub: only {self.door} is routed, got {request.method} {request.url}"
             )
         day = datetime.strptime(request.url.params["DocDate"], "%Y%m%d").date()
         self.days.append(day)
@@ -246,17 +251,21 @@ def build_env(
     db, monkeypatch, *, day_fn: Optional[Callable[[date], Any]] = None,
     code: str = "SRT", mode: str = "off", with_feed: bool = True,
     wired_sink: bool = False, feed_columns: Optional[Dict[str, Any]] = None,
-    database_name: str = "AED_SORENTO",
+    database_name: str = "AED_SORENTO", feed: str = ENTITY_DO,
 ) -> SimpleNamespace:
     """company + connection + DO feed row + a key scoped to the company + the
     installed vendor stub."""
     company, conn = make_company(
         db, code=code, wired_sink=wired_sink, database_name=database_name,
     )
-    feed = add_feed(db, company, conn, mode=mode, **(feed_columns or {})) if with_feed else None
+    feed_row = (
+        add_feed(db, company, conn, feed=feed, mode=mode, **(feed_columns or {}))
+        if with_feed else None
+    )
     key = issue_key(db, [company.id])
-    stub = VendorStub(day_fn).install(monkeypatch)
-    return SimpleNamespace(company=company, conn=conn, feed=feed, key=key, stub=stub)
+    door = GRN_DOOR if feed == ENTITY_GRN else DO_DOOR
+    stub = VendorStub(day_fn, door=door).install(monkeypatch)
+    return SimpleNamespace(company=company, conn=conn, feed=feed_row, key=key, stub=stub)
 
 
 # ── HTTP helpers ─────────────────────────────────────────────────────────────
