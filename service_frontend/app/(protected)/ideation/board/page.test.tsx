@@ -155,6 +155,20 @@ describe('IdeationBoardPage', () => {
     expect(screen.getByText(/dealer/i)).toBeInTheDocument();
   });
 
+  // ── AC-19-17 (plan 19) - the card uses the same sm vote box; score = upvotes ──
+  it('the card renders the sm upvote box with the upvote count only (no down count, no net score)', () => {
+    useIdeas.mockReturnValue({ ...base, ideas: [anIdea({ upvotes: 3, downvotes: 1 })] });
+    render(<BoardPage />);
+    const up = screen.getByRole('button', { name: /upvote/i });
+    expect(up).toHaveTextContent('3');
+    const box = up.closest('[data-variant="box"]');
+    expect(box).not.toBeNull();
+    expect(box?.getAttribute('data-size')).toBe('sm');
+    expect(screen.queryByRole('button', { name: /downvote/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('2')).not.toBeInTheDocument(); // the old net score 3 - 1
+    expect(screen.queryByText('1')).not.toBeInTheDocument(); // the old downvote count
+  });
+
   // ── AC-94-58 (issue #94, ideation round 2) ──────────────────────────────────
 
   it('columns from API - a tenant rename shows up with zero code change (never a hardcoded frontend column list)', () => {

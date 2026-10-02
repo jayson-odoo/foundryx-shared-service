@@ -103,6 +103,52 @@ describe('realIdeationService', () => {
     });
   });
 
+  it('vote only ever sends dir "up" (AC-19-12/15)', async () => {
+    apiFetch.mockResolvedValue(anIdea({ upvotes: 4, myVote: 'up' }));
+    await svc.vote('idea-1', 'up');
+    const body = JSON.parse((apiFetch.mock.calls[0][1] as { body: string }).body);
+    expect(body).toEqual({ dir: 'up' });
+  });
+
+  // ── Plan 19 (AC-19-25) - comments ────────────────────────────────────────────
+  it('listComments GETs /ideation/ideas/<id>/comments (encoded) and returns the array', async () => {
+    const rows = [{ id: 'c1', ideaId: 'a/b', body: 'x' }];
+    apiFetch.mockResolvedValue(rows);
+    await expect(svc.listComments!('a/b')).resolves.toEqual(rows);
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/a%2Fb/comments');
+  });
+
+  it('addComment POSTs {body, parentId} to the comments collection', async () => {
+    apiFetch.mockResolvedValue({ id: 'c2' });
+    await svc.addComment!('idea-1', 'hello', 'c1');
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1/comments', {
+      method: 'POST',
+      body: JSON.stringify({ body: 'hello', parentId: 'c1' }),
+    });
+  });
+
+  it('addComment without a parent sends no parentId key', async () => {
+    apiFetch.mockResolvedValue({ id: 'c2' });
+    await svc.addComment!('idea-1', 'hello');
+    const sent = JSON.parse((apiFetch.mock.calls[0][1] as { body: string }).body);
+    expect(sent).toEqual({ body: 'hello' });
+  });
+
+  it('editComment PATCHes {body} to the comment', async () => {
+    apiFetch.mockResolvedValue({ id: 'c1' });
+    await svc.editComment!('idea-1', 'c1', 'edited');
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1/comments/c1', {
+      method: 'PATCH',
+      body: JSON.stringify({ body: 'edited' }),
+    });
+  });
+
+  it('deleteComment DELETEs the comment and resolves void', async () => {
+    apiFetch.mockResolvedValue(undefined);
+    await expect(svc.deleteComment!('idea-1', 'c1')).resolves.toBeUndefined();
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1/comments/c1', { method: 'DELETE' });
+  });
+
   it('reorderPriority PUTs the ordered ids', async () => {
     apiFetch.mockResolvedValue([anIdea()]);
     await svc.reorderPriority(['idea-2', 'idea-1']);

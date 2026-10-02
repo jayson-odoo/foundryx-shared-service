@@ -34,6 +34,14 @@ vi.mock('@/lib/impersonation-store', () => ({
   useImpersonationSession: () => null,
 }));
 
+const toastMock = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+  warning: vi.fn(),
+}));
+vi.mock('@/lib/toast', () => ({ toast: toastMock }));
+
 const anIdea = (over: Partial<Idea> = {}): Idea => ({
   id: 'idea-1',
   productId: 'prod-1',
@@ -93,7 +101,7 @@ function wrapper(service: IdeaService) {
 }
 
 describe('useIdeaForm - a merged child offers only Unmerge and Delete (AC-94-26)', () => {
-  it('drops Promote/Advance/Archive/Restore/Merge when the loaded idea is a merged child', async () => {
+  it('drops Promote/Advance/Archive/Restore/Merge when the loaded idea is a merged child (Unmerge is the primary)', async () => {
     const child = anIdea({
       id: 'child-1',
       mergedIntoId: 'survivor-1',
@@ -103,8 +111,11 @@ describe('useIdeaForm - a merged child offers only Unmerge and Delete (AC-94-26)
     const { result } = renderHook(() => useIdeaForm('child-1', false), { wrapper: wrapper(service) });
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Plan 19 (AC-19-19): Unmerge is now the PRIMARY action, so it is removed from
+    // the "..." menu (no duplicate); Delete stays.
     const ids = (result.current.config?.actions ?? []).map((a) => a.id).sort();
-    expect(ids).toEqual(['delete', 'unmerge']);
+    expect(ids).toEqual(['delete']);
+    expect(result.current.config?.primaryAction?.label).toBe('Unmerge');
   });
 });
 
@@ -314,5 +325,187 @@ describe('useIdeaForm - embed promote (AC-15-24)', () => {
     });
     expect(promoteToBr).toHaveBeenCalledWith(['idea-1'], undefined);
     expect(push).not.toHaveBeenCalled();
+  });
+});
+
+
+// ── Plan 19 (AC-19-16/19/20) - header vote box + next-state primary action ──────
+
+const triaged = { id: 'tr-triage', label: 'Triage', toStatusId: 'st-triaged', toStatusLabel: 'Triaged' };
+const linked = { id: 'tr-link', label: 'Link', toStatusId: 'st-linked', toStatusLabel: 'Linked to BR' };
+
+function stageIdea(over: Partial<Idea> = {}): Idea {
+  return anIdea({
+    status: 'captured',
+    statusId: 'st-captured',
+    statusLabel: 'New',
+    statusIsArchived: false,
+    transitions: [triaged],
+    advanceTransitionId: 'tr-triage',
+    ...over,
+  } as Partial<Idea>);
+}
+
+async function loaded(
+  idea: Idea,
+  service: IdeaService = fakeService({ getIdea: vi.fn().mockResolvedValue(idea) }),
+  w: (s: IdeaService) => ({ children }: { children: React.ReactNode }) => ReactElement = wrapper,
+) {
+  const hook = renderHook(() => useIdeaForm(idea.id, false), { wrapper: w(service) });
+  await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+  return { ...hook, service };
+}
+
+describe('useIdeaForm - next-state primary action (AC-19-19)', () => {
+  it('uses editPlacement beside-primary on the idea page', async () => {
+    const { result } = await loaded(stageIdea());
+    expect(result.current.config?.editPlacement).toBe('beside-primary');
+  });
+
+  it('label comes from the transition target: Draft -> "Move to New"', async () => {
+    const draftToNew = { id: 'tr-new', label: 'Submit', toStatusId: 'st-new', toStatusLabel: 'New' };
+    const { result } = await loaded(
+      stageIdea({ status: 'draft', statusLabel: 'Draft', transitions: [draftToNew], advanceTransitionId: 'tr-new' }),
+    );
+    expect(result.current.config?.primaryAction?.label).toBe('Move to New');
+  });
+
+  it('New -> "Move to Triaged"', async () => {
+    const { result } = await loaded(stageIdea());
+    expect(result.current.config?.primaryAction?.label).toBe('Move to Triaged');
+  });
+
+  it('a tenant-relabelled target shows the tenant label ("Move to Discussed")', async () => {
+    const relabelled = { ...triaged, toStatusLabel: 'Discussed' };
+    const { result } = await loaded(stageIdea({ transitions: [relabelled] }));
+    expect(result.current.config?.primaryAction?.label).toBe('Move to Discussed');
+  });
+
+  it('no advance transition (closed/terminal) -> no primary action; Edit stays the primary', async () => {
+    const { result } = await loaded(stageIdea({ transitions: [], advanceTransitionId: null }));
+    expect(result.current.config?.primaryAction).toBeUndefined();
+  });
+
+  it('an archived idea with a restore transition -> "Restore"', async () => {
+    const restore = { id: 'tr-restore', label: 'Restore', toStatusId: 'st-captured', toStatusLabel: 'New' };
+    const { result } = await loaded(
+      stageIdea({ statusIsArchived: true, transitions: [restore], advanceTransitionId: null }),
+    );
+    expect(result.current.config?.primaryAction?.label).toBe('Restore');
+  });
+
+  it('an archived idea with NO restore transition -> no primary action', async () => {
+    const { result } = await loaded(
+      stageIdea({ statusIsArchived: true, transitions: [], advanceTransitionId: null }),
+    );
+    expect(result.current.config?.primaryAction).toBeUndefined();
+  });
+
+  it('a merged child -> "Unmerge", and clicking it calls service.unmerge(id)', async () => {
+    const child = stageIdea({ id: 'child-1', mergedIntoId: 'survivor-1' });
+    const unmerge = vi.fn().mockResolvedValue([anIdea({ id: 'child-1' })]);
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(child), unmerge });
+    const { result } = await loaded(child, service);
+    expect(result.current.config?.primaryAction?.label).toBe('Unmerge');
+    await act(async () => {
+      await result.current.config!.primaryAction!.onRun?.();
+    });
+    expect(unmerge).toHaveBeenCalledWith('child-1');
+  });
+
+  it('the chosen move is removed from the menu; Promote, Archive, Delete stay', async () => {
+    const { result } = await loaded(stageIdea());
+    const ids = (result.current.config?.actions ?? []).map((a) => a.id);
+    expect(ids).not.toContain('advance');
+    expect(ids).toEqual(expect.arrayContaining(['promote-br', 'archive', 'delete']));
+  });
+
+  it('Restore is not duplicated in the menu when it is the primary', async () => {
+    const restore = { id: 'tr-restore', label: 'Restore', toStatusId: 'st-captured', toStatusLabel: 'New' };
+    const { result } = await loaded(
+      stageIdea({ statusIsArchived: true, transitions: [restore], advanceTransitionId: null }),
+    );
+    expect((result.current.config?.actions ?? []).map((a) => a.id)).not.toContain('restore');
+  });
+
+  it('embed mode gets the same next-state primary action', async () => {
+    const idea = stageIdea();
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(idea) });
+    const { result } = await loaded(idea, service, embedWrapper);
+    expect(result.current.config?.primaryAction?.label).toBe('Move to Triaged');
+    expect(result.current.config?.editPlacement).toBe('beside-primary');
+  });
+});
+
+describe('useIdeaForm - clicking the primary move (AC-19-20)', () => {
+  it('fires setStatus(id, toStatusId), refreshes the idea, toasts "Moved to <label>." and the next primary follows', async () => {
+    toastMock.success.mockClear();
+    const moved = stageIdea({
+      status: 'triaged',
+      statusId: 'st-triaged',
+      statusLabel: 'Triaged',
+      transitions: [linked],
+      advanceTransitionId: 'tr-link',
+    });
+    const setStatus = vi.fn().mockResolvedValue(moved);
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(stageIdea()), setStatus });
+    const { result } = await loaded(stageIdea(), service);
+
+    expect(result.current.config?.primaryAction?.label).toBe('Move to Triaged');
+    await act(async () => {
+      await result.current.config!.primaryAction!.onRun?.();
+    });
+    expect(setStatus).toHaveBeenCalledWith('idea-1', 'st-triaged');
+    expect(toastMock.success).toHaveBeenCalledWith('Moved to Triaged.');
+    await waitFor(() =>
+      expect(result.current.config?.primaryAction?.label).toBe('Move to Linked to BR'),
+    );
+  });
+
+  it('Restore fires setStatus(id, restore target) and toasts', async () => {
+    toastMock.success.mockClear();
+    const restore = { id: 'tr-restore', label: 'Restore', toStatusId: 'st-captured', toStatusLabel: 'New' };
+    const archived = stageIdea({ statusIsArchived: true, transitions: [restore], advanceTransitionId: null });
+    const setStatus = vi.fn().mockResolvedValue(stageIdea());
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(archived), setStatus });
+    const { result } = await loaded(archived, service);
+    await act(async () => {
+      await result.current.config!.primaryAction!.onRun?.();
+    });
+    expect(setStatus).toHaveBeenCalledWith('idea-1', 'st-captured');
+    expect(toastMock.success).toHaveBeenCalled();
+  });
+});
+
+describe('useIdeaForm - header vote box in the avatar slot (AC-19-16)', () => {
+  it('the avatar is the md vote box (not the lightbulb) and shows the upvote count', async () => {
+    const { result } = await loaded(stageIdea({ upvotes: 4 }));
+    const { container } = render(<>{result.current.config!.avatar}</>);
+    const box = container.querySelector('[data-variant="box"]');
+    expect(box).not.toBeNull();
+    expect(box?.getAttribute('data-size')).toBe('md');
+    expect(screen.getByRole('button', { name: /upvote/i })).toHaveTextContent('4');
+    expect(screen.queryByRole('button', { name: /downvote/i })).not.toBeInTheDocument();
+  });
+
+  it('clicking it calls service.vote(id, "up") and the box reflects the new tally', async () => {
+    const voted = stageIdea({ upvotes: 5, myVote: 'up' });
+    const vote = vi.fn().mockResolvedValue(voted);
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(stageIdea({ upvotes: 4 })), vote });
+    const { result } = await loaded(stageIdea({ upvotes: 4 }), service);
+    const { rerender } = render(<>{result.current.config!.avatar}</>);
+    await act(async () => {
+      screen.getByRole('button', { name: /upvote/i }).click();
+    });
+    expect(vote).toHaveBeenCalledWith('idea-1', 'up');
+    await waitFor(() => expect(result.current.config?.avatar).toBeDefined());
+    rerender(<>{result.current.config!.avatar}</>);
+    expect(screen.getByRole('button', { name: /cancel upvote/i })).toHaveTextContent('5');
+  });
+
+  it('is disabled on a merged child', async () => {
+    const { result } = await loaded(stageIdea({ mergedIntoId: 'survivor-1' }));
+    render(<>{result.current.config!.avatar}</>);
+    expect(screen.getByRole('button', { name: /upvote/i })).toBeDisabled();
   });
 });

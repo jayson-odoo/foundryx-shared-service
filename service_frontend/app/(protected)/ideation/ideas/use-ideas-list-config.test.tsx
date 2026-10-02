@@ -395,15 +395,15 @@ describe('useIdeasListConfig - plan 15 list shape', () => {
     expect(csv.split('\n')[0]).toContain('Submitted');
   });
 
-  it('the fetcher applies the default net-vote order and the filter (AC-15-08/01)', async () => {
+  it('the fetcher applies the default UPVOTES-desc order and the filter (AC-15-08/01, AC-19-17)', async () => {
     const ideas = [
-      anIdea({ id: 'net1', upvotes: 5, downvotes: 4 }),
       anIdea({ id: 'net2', upvotes: 2, downvotes: 0, status: 'discussed' }),
+      anIdea({ id: 'net1', upvotes: 5, downvotes: 4 }),
     ];
     const cfg = config(ideas);
     const base = { page: 0, pageSize: 10, search: '', statusView: 'active' } as never;
     const { data } = await cfg.fetcher(base);
-    expect(data.map((r) => r.id)).toEqual(['net2', 'net1']);
+    expect(data.map((r) => r.id)).toEqual(['net1', 'net2']);
     const filtered = await cfg.fetcher({
       page: 0,
       pageSize: 10,
@@ -425,5 +425,43 @@ describe('useIdeasListConfig - embed promote (AC-15-24)', () => {
     expect(embedPromote.permission).toBeUndefined();
     const opPromote = config([anIdea()]).actions.find((a) => a.id === 'promote-br')!;
     expect(opPromote.permission).toBe('ideation.business_requirements.manage');
+  });
+});
+
+// ── Plan 19 (AC-19-17) - upvotes-only Votes column + CSV ───────────────────────
+
+describe('useIdeasListConfig - upvote-only Votes (AC-19-17)', () => {
+  it('the Votes column renders the sm vote box with the upvote count and no down control', () => {
+    const cfg = config([anIdea()]);
+    const column = cfg.columns.find((c) => c.id === 'votes')!;
+    const cell = column.cell as (ctx: unknown) => React.ReactNode;
+    const { container } = render(<>{cell({ row: { original: anIdea({ upvotes: 7, downvotes: 3 }) } })}</>);
+    const box = container.querySelector('[data-variant="box"]');
+    expect(box).not.toBeNull();
+    expect(box?.getAttribute('data-size')).toBe('sm');
+    expect(screen.getByRole('button', { name: /upvote/i })).toHaveTextContent('7');
+    expect(screen.queryByRole('button', { name: /downvote/i })).not.toBeInTheDocument();
+    cleanup();
+  });
+
+  it('the Votes column value (sort accessor) is the upvote count, not net', () => {
+    const cfg = config([anIdea()]);
+    const column = cfg.columns.find((c) => c.id === 'votes') as unknown as {
+      accessorFn: (i: Idea) => number;
+    };
+    expect(column.accessorFn(anIdea({ upvotes: 7, downvotes: 3 }))).toBe(7);
+  });
+
+  it('the CSV has ONE Votes column (upvotes) and no Up / Down columns', async () => {
+    const cfg = config([anIdea({ upvotes: 7, downvotes: 3 })]);
+    const csv = await cfg.exporter!({ page: 0, pageSize: 10, search: '', statusView: 'active' } as never, []);
+    const [header, row] = csv.split('\n');
+    const cols = header.split(',').map((c) => c.replace(/"/g, ''));
+    expect(cols).toContain('Votes');
+    expect(cols).not.toContain('Up');
+    expect(cols).not.toContain('Down');
+    const rowCols = row.split(',').map((c) => c.replace(/"/g, ''));
+    expect(rowCols[cols.indexOf('Votes')]).toBe('7');
+    expect(rowCols).not.toContain('3');
   });
 });

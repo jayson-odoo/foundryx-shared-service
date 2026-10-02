@@ -424,7 +424,8 @@ def test_ac_stb_10_linked_ideas_with_votes(ideation_client, monkeypatch):
     assert res.status_code == 200, res.text
     body, _ = _body_of_send(ideation_client, monkeypatch, s)
     section = body.split("## Linked ideas", 1)[1].split("\n## ", 1)[0]
-    assert re.search(r"^- IDEA-0042 .*\(\+3 / -1\)$", section, flags=re.M), section
+    # Plan 19 (AC-19-14): upvotes only, no "/ -N" downvote half.
+    assert re.search(r"^- IDEA-0042 .*\(\+3\)$", section, flags=re.M), section
 
 
 def test_ac_stb_10_links_section_and_markers_last(ideation_client, monkeypatch):

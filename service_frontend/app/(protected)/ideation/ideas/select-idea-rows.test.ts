@@ -45,28 +45,37 @@ const group = (
   rules: [{ kind: 'condition', field, operator, value }],
 });
 
-describe('selectIdeaRows - default order (AC-15-08)', () => {
-  it('ranks by NET votes desc: up5/down4 (net 1) sits BELOW up2/down0 (net 2)', () => {
+describe('selectIdeaRows - default order (AC-15-08, amended by AC-19-17)', () => {
+  it('ranks by UPVOTES desc, ignoring any stale downvotes (up5/down4 above up2/down0)', () => {
     const rows = selectIdeaRows(
       [
-        anIdea({ id: 'net1', upvotes: 5, downvotes: 4 }),
-        anIdea({ id: 'net2', upvotes: 2, downvotes: 0 }),
+        anIdea({ id: 'up2', upvotes: 2, downvotes: 0 }),
+        anIdea({ id: 'up5', upvotes: 5, downvotes: 4 }),
       ],
       q(),
     );
-    expect(ids(rows)).toEqual(['net2', 'net1']);
+    expect(ids(rows)).toEqual(['up5', 'up2']);
   });
 
-  it('breaks a net tie by upvotes desc, then createdAt desc', () => {
+  it('breaks an upvote tie by createdAt desc (newest first)', () => {
     const rows = selectIdeaRows(
       [
-        anIdea({ id: 'lowUp', upvotes: 1, downvotes: 0, createdAt: '2026-07-20T00:00:00Z' }),
-        anIdea({ id: 'hiUpOld', upvotes: 3, downvotes: 2, createdAt: '2026-07-01T00:00:00Z' }),
-        anIdea({ id: 'hiUpNew', upvotes: 3, downvotes: 2, createdAt: '2026-07-10T00:00:00Z' }),
+        anIdea({ id: 'low', upvotes: 1, createdAt: '2026-07-20T00:00:00Z' }),
+        anIdea({ id: 'tieOld', upvotes: 3, downvotes: 9, createdAt: '2026-07-01T00:00:00Z' }),
+        anIdea({ id: 'tieNew', upvotes: 3, downvotes: 0, createdAt: '2026-07-10T00:00:00Z' }),
       ],
       q(),
     );
-    expect(ids(rows)).toEqual(['hiUpNew', 'hiUpOld', 'lowUp']);
+    expect(ids(rows)).toEqual(['tieNew', 'tieOld', 'low']);
+  });
+
+  it('the Votes column sort is by upvotes too, ties by createdAt desc', () => {
+    const ideas = [
+      anIdea({ id: 'a', upvotes: 1, downvotes: 0, createdAt: '2026-07-01T00:00:00Z' }),
+      anIdea({ id: 'b', upvotes: 6, downvotes: 6, createdAt: '2026-07-02T00:00:00Z' }),
+      anIdea({ id: 'c', upvotes: 6, downvotes: 0, createdAt: '2026-07-03T00:00:00Z' }),
+    ];
+    expect(ids(selectIdeaRows(ideas, q({ sort: { id: 'votes', desc: true } })))).toEqual(['c', 'b', 'a']);
   });
 });
 

@@ -1,5 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { IdeaComment } from '@/types/ideation';
 import PublicIdeaStatusPage from './page';
 
 /**
@@ -16,6 +18,21 @@ vi.mock('next/navigation', () => ({ useParams: () => useParams() }));
 const usePublicIdeaStatus = vi.hoisted(() => vi.fn());
 vi.mock('@/hooks/use-public-idea-status', () => ({
   usePublicIdeaStatus: (token: string) => usePublicIdeaStatus(token),
+}));
+
+// Plan 19 section F: the thread is read through the public comments hook
+// (mocked at the hook boundary, like the status hook above).
+const usePublicIdeaComments = vi.hoisted(() => vi.fn());
+vi.mock('@/hooks/use-public-idea-comments', () => ({
+  usePublicIdeaComments: (token: string) => usePublicIdeaComments(token),
+}));
+
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({
+    formatDate: (v: string) => v.slice(0, 10),
+    formatDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
+    formatTime: (v: string) => v.slice(11, 16),
+  }),
 }));
 
 const useTenantBranding = vi.hoisted(() => vi.fn());
@@ -58,7 +75,17 @@ const richView = {
   ],
 };
 
+const emptyComments = () => ({
+  threads: [],
+  count: 0,
+  loading: false,
+  error: null,
+  add: vi.fn().mockResolvedValue(undefined),
+});
+
 beforeEach(() => {
+  usePublicIdeaComments.mockReset();
+  usePublicIdeaComments.mockReturnValue(emptyComments());
   useParams.mockReset();
   usePublicIdeaStatus.mockReset();
   useTenantBranding.mockReset();
@@ -245,5 +272,174 @@ describe('PublicIdeaStatusPage - not-found (regression, unchanged)', () => {
     render(<PublicIdeaStatusPage />);
     expect(screen.getAllByText('IDEA-0182').length).toBe(1);
     expect(screen.queryByText('Idea IDEA-0182')).not.toBeInTheDocument();
+  });
+});
+
+
+// ── Plan 19 section F (AC-19-33/34) - public comments ───────────────────────────
+
+const pc = (over: Partial<IdeaComment>): IdeaComment => ({
+  id: 'c1',
+  ideaId: 'idea-1',
+  parentId: null,
+  authorName: 'Jayson',
+  authorKind: 'public',
+  body: 'Thanks for looking at this',
+  isDeleted: false,
+  isMine: false,
+  canEdit: false,
+  canDelete: false,
+  createdAt: '2026-10-01T08:00:00Z',
+  editedAt: null,
+  ...over,
+});
+
+function withComments(
+  threads: { root: IdeaComment; replies: IdeaComment[] }[],
+  over: Record<string, unknown> = {},
+) {
+  const value = { ...emptyComments(), threads, count: threads.reduce((n, t) => n + 1 + t.replies.length, 0), ...over };
+  usePublicIdeaComments.mockReturnValue(value);
+  return value as ReturnType<typeof emptyComments>;
+}
+
+describe('PublicIdeaStatusPage - comments thread (AC-19-33)', () => {
+  beforeEach(() => {
+    usePublicIdeaStatus.mockReturnValue({ loading: false, notFound: false, view: richView });
+  });
+
+  it('reads the thread by the URL token', () => {
+    render(<PublicIdeaStatusPage />);
+    expect(usePublicIdeaComments).toHaveBeenCalledWith('tok_abc123def456');
+  });
+
+  it('shows "Comments <n>" with the thread oldest first, replies indented, plain text', () => {
+    withComments([
+      {
+        root: pc({ id: 'c1' }),
+        replies: [pc({ id: 'r1', parentId: 'c1', authorKind: 'user', authorName: 'Staff Sam', body: '<b>on it</b>' })],
+      },
+      { root: pc({ id: 'c2', body: 'second thread', createdAt: '2026-10-02T08:00:00Z' }), replies: [] },
+    ]);
+    const { container } = render(<PublicIdeaStatusPage />);
+    expect(screen.getByRole('heading', { name: /^Comments/ })).toBeInTheDocument();
+    expect(screen.getByTestId('comments-count')).toHaveTextContent('3');
+    const threads = screen.getAllByTestId('comment-thread');
+    expect(threads).toHaveLength(2);
+    expect(within(threads[0]).getByText('Thanks for looking at this')).toBeInTheDocument();
+    const reply = within(threads[0]).getByTestId('comment-reply');
+    expect(within(reply).getByText('Staff Sam')).toBeInTheDocument();
+    expect(within(reply).getByText('<b>on it</b>')).toBeInTheDocument();
+    expect(container.querySelector('b')).toBeNull();
+  });
+
+  it('public comments show a "Submitter" badge after the name; staff ones do not (AC-19-34)', () => {
+    withComments([
+      { root: pc({ id: 'c1' }), replies: [pc({ id: 'r1', parentId: 'c1', authorKind: 'user', authorName: 'Staff Sam', body: 'hi' })] },
+    ]);
+    render(<PublicIdeaStatusPage />);
+    const [t] = screen.getAllByTestId('comment-thread');
+    expect(within(t).getAllByText('Submitter')).toHaveLength(1);
+  });
+
+  it('a deleted comment with replies shows "Comment deleted"', () => {
+    withComments([
+      {
+        root: pc({ id: 'c1', isDeleted: true, body: null, authorName: null }),
+        replies: [pc({ id: 'r1', parentId: 'c1', body: 'reply stays' })],
+      },
+    ]);
+    render(<PublicIdeaStatusPage />);
+    expect(screen.getByText('Comment deleted')).toBeInTheDocument();
+  });
+
+  it('empty thread reads "No comments."', () => {
+    render(<PublicIdeaStatusPage />);
+    expect(screen.getByText('No comments.')).toBeInTheDocument();
+  });
+
+  it('loading state for the thread', () => {
+    withComments([], { loading: true });
+    render(<PublicIdeaStatusPage />);
+    expect(screen.getByTestId('comments-loading')).toBeInTheDocument();
+  });
+
+  it('the thread never renders when the idea is not found', () => {
+    usePublicIdeaStatus.mockReturnValue({ loading: false, notFound: true, view: null });
+    render(<PublicIdeaStatusPage />);
+    expect(screen.queryByRole('heading', { name: /^Comments/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('PublicIdeaStatusPage - posting (AC-19-33)', () => {
+  beforeEach(() => {
+    usePublicIdeaStatus.mockReturnValue({ loading: false, notFound: false, view: richView });
+  });
+
+  it('Comment is disabled while empty, then posts the text and clears the box', async () => {
+    const user = userEvent.setup();
+    const v = withComments([]);
+    render(<PublicIdeaStatusPage />);
+    const btn = screen.getByRole('button', { name: 'Comment' });
+    expect(btn).toBeDisabled();
+    await user.type(screen.getByRole('textbox'), 'My follow up');
+    expect(btn).toBeEnabled();
+    await user.click(btn);
+    expect(v.add).toHaveBeenCalledTimes(1);
+    expect(String(v.add.mock.calls[0][0]).trim()).toBe('My follow up');
+    expect(v.add.mock.calls[0][1] ?? null).toBeNull();
+    expect(screen.getByRole('textbox')).toHaveValue('');
+  });
+
+  it('the public composer has no author-name input (the name comes from the submitter)', () => {
+    withComments([]);
+    render(<PublicIdeaStatusPage />);
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
+  });
+
+  it('per-thread Reply opens an inline composer and posts add(body, rootId)', async () => {
+    const user = userEvent.setup();
+    const v = withComments([{ root: pc({ id: 'c1' }), replies: [] }]);
+    render(<PublicIdeaStatusPage />);
+    const t = screen.getByTestId('comment-thread');
+    await user.click(within(t).getByRole('button', { name: 'Reply' }));
+    const composer = within(t).getByTestId('reply-composer');
+    await user.type(within(composer).getByRole('textbox'), 'thanks');
+    await user.click(within(composer).getByRole('button', { name: 'Reply' }));
+    expect(v.add).toHaveBeenCalledWith('thanks', 'c1');
+  });
+
+  it('replying to a reply posts to the top-level parent', async () => {
+    const user = userEvent.setup();
+    const v = withComments([
+      { root: pc({ id: 'c1' }), replies: [pc({ id: 'r1', parentId: 'c1', authorKind: 'user', authorName: 'Staff Sam', body: 'hi' })] },
+    ]);
+    render(<PublicIdeaStatusPage />);
+    await user.click(within(screen.getByTestId('comment-reply')).getByRole('button', { name: 'Reply' }));
+    const composer = screen.getByTestId('reply-composer');
+    await user.type(within(composer).getByRole('textbox'), 'nested');
+    await user.click(within(composer).getByRole('button', { name: 'Reply' }));
+    expect(v.add).toHaveBeenCalledWith('nested', 'c1');
+  });
+
+  it('offers no Edit or Delete anywhere (visitors cannot edit or delete)', () => {
+    withComments([{ root: pc({ id: 'c1', isMine: true, canEdit: true, canDelete: true }), replies: [] }]);
+    render(<PublicIdeaStatusPage />);
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
+  it('a merged child shows the thread but hides the composer and Reply', () => {
+    usePublicIdeaStatus.mockReturnValue({
+      loading: false,
+      notFound: false,
+      view: { ...richView, mergedInto: { ideaNumber: 'IDEA-0012', title: 'Faster quotation' } },
+    });
+    withComments([{ root: pc({ id: 'c1' }), replies: [] }]);
+    render(<PublicIdeaStatusPage />);
+    expect(screen.getByText('Thanks for looking at this')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Comment' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reply' })).not.toBeInTheDocument();
   });
 });
