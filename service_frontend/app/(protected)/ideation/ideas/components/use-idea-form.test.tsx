@@ -633,5 +633,29 @@ describe('useIdeaForm - triage.manage gates Edit and the status primary (AC-19-4
     const service = fakeService({ getIdea: vi.fn().mockResolvedValue(idea) });
     const { result } = await loaded(idea, service, embedWrapper);
     expect(result.current.config?.primaryAction?.label).toBe('Move to Triaged');
+    // Embed: the token is the boundary, so no operator permission gate on Edit (AC-19-49).
+    expect(result.current.config?.editPermission).toBeUndefined();
+  });
+});
+
+describe('useIdeaForm - menu Archive/Restore are gated like Edit (AC-19-49)', () => {
+  const permOf = (r: { current: ReturnType<typeof useIdeaForm> }, id: string) => {
+    const a = r.current.config?.actions.find((x) => x.id === id);
+    expect(a, `${id} action present`).toBeDefined();
+    return (a as { permission?: string }).permission;
+  };
+
+  it('operator: archive and restore carry permission ideation.triage.manage', async () => {
+    const { result } = await loaded(stageIdea());
+    expect(permOf(result, 'archive')).toBe('ideation.triage.manage');
+    expect(permOf(result, 'restore')).toBe('ideation.triage.manage');
+  });
+
+  it('embed: archive and restore carry no permission', async () => {
+    const idea = stageIdea();
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(idea) });
+    const { result } = await loaded(idea, service, embedWrapper);
+    expect(permOf(result, 'archive')).toBeUndefined();
+    expect(permOf(result, 'restore')).toBeUndefined();
   });
 });
