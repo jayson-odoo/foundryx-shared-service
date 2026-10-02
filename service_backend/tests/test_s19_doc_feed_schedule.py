@@ -20,6 +20,20 @@ NOW = datetime(2026, 9, 29, 10, 0, 0, tzinfo=timezone.utc)
 DEFAULT = {"incrementalMinutes": 60, "reconcileMode": "interval", "reconcileHours": 24, "reconcileAt": None}
 
 
+@pytest.fixture(autouse=True)
+def _open_contract_gate(monkeypatch):
+    """The mode gate probes the Sorento contract; these tests are about the
+    schedule, not the gate (AC-14-04), so the gate is held open."""
+    from modules.autocount import sinks_sorento
+
+    monkeypatch.setattr(
+        sinks_sorento.SorentoSink, "fetch_contract_detail",
+        lambda self: sinks_sorento.SorentoContractInfo(
+            version=2.7, entities=["delivery_orders", "goods_receive_notes"]
+        ),
+    )
+
+
 def _url(co, feed="delivery_orders"):
     return f"/autocount/doc-feeds/{co.id}/{feed}"
 

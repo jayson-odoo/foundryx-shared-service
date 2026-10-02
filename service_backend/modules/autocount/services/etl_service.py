@@ -468,6 +468,58 @@ def _clean_int(value: Any) -> Optional[int]:
     return None
 
 
+def validate_schedule(
+    raw: Dict[str, Any], *, has_watermark: bool, watermark_noun: str = "column"
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """The ONE schedule rule set (AC-22-12): incremental floor (1 min with a
+    watermark, ``MIN_INCREMENTAL_MINUTES_NO_WATERMARK`` without), reconcile
+    ``interval`` (>= ``MIN_RECONCILE_HOURS``) or ``dailyAt`` (``HH:MM`` UTC).
+
+    Shared by the SQL task, the HTTP task and the document feeds (sprint-5/19)
+    so a cadence is validated identically wherever it is configured. Returns
+    the cleaned ``{incrementalMinutes, reconcileMode, reconcileHours,
+    reconcileAt}`` plus a ``fieldErrors`` map.
+    """
+    errors: Dict[str, str] = {}
+    minutes = _clean_int(raw.get("incrementalMinutes"))
+    floor = MIN_INCREMENTAL_MINUTES if has_watermark else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
+    if minutes is None:
+        errors["incrementalMinutes"] = "Enter the incremental interval in minutes."
+        minutes = DEFAULT_INCREMENTAL_MINUTES
+    elif minutes < floor:
+        errors["incrementalMinutes"] = (
+            f"At least {floor} minute{'s' if floor != 1 else ''}"
+            + (f" without a watermark {watermark_noun}." if not has_watermark else ".")
+        )
+
+    mode = str(raw.get("reconcileMode") or "").strip()
+    hours: Optional[int] = None
+    at: Optional[str] = None
+    if mode not in RECONCILE_MODES:
+        errors["reconcileMode"] = "Choose how to reconcile: every N hours or daily at a time."
+        mode = RECONCILE_MODE_DAILY_AT
+    elif mode == RECONCILE_MODE_INTERVAL:
+        hours = _clean_int(raw.get("reconcileHours"))
+        if hours is None:
+            errors["reconcileHours"] = "Enter the reconcile interval in hours."
+        elif hours < MIN_RECONCILE_HOURS:
+            errors["reconcileHours"] = f"At least {MIN_RECONCILE_HOURS} hour."
+    else:
+        at = str(raw.get("reconcileAt") or "").strip() or None
+        if at is None or not _TIME_RE.match(at):
+            errors["reconcileAt"] = "Enter the daily reconcile time as HH:MM."
+
+    return (
+        {
+            "incrementalMinutes": minutes,
+            "reconcileMode": mode,
+            "reconcileHours": hours,
+            "reconcileAt": at,
+        },
+        errors,
+    )
+
+
 # A document task's row-hash population (`ac_row_hash`) is a diff baseline
 # for the *exact* set of headers `query`+`fromDate`+`filterFormula` can ever
 # return. Narrowing any of these (or `keyColumns`, which changes what a hash
@@ -662,33 +714,12 @@ def validate_source_config(
             )
 
     # ── schedule floors (AC-22-12) ───────────────────────────────────────────
-    minutes = _clean_int(raw.get("incrementalMinutes"))
-    floor = MIN_INCREMENTAL_MINUTES if watermark else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
-    if minutes is None:
-        errors["incrementalMinutes"] = "Enter the incremental interval in minutes."
-        minutes = DEFAULT_INCREMENTAL_MINUTES
-    elif minutes < floor:
-        errors["incrementalMinutes"] = (
-            f"At least {floor} minute{'s' if floor != 1 else ''}"
-            + (" without a watermark column." if not watermark else ".")
-        )
-
-    mode = str(raw.get("reconcileMode") or "").strip()
-    hours: Optional[int] = None
-    at: Optional[str] = None
-    if mode not in RECONCILE_MODES:
-        errors["reconcileMode"] = "Choose how to reconcile: every N hours or daily at a time."
-        mode = RECONCILE_MODE_DAILY_AT
-    elif mode == RECONCILE_MODE_INTERVAL:
-        hours = _clean_int(raw.get("reconcileHours"))
-        if hours is None:
-            errors["reconcileHours"] = "Enter the reconcile interval in hours."
-        elif hours < MIN_RECONCILE_HOURS:
-            errors["reconcileHours"] = f"At least {MIN_RECONCILE_HOURS} hour."
-    else:
-        at = str(raw.get("reconcileAt") or "").strip() or None
-        if at is None or not _TIME_RE.match(at):
-            errors["reconcileAt"] = "Enter the daily reconcile time as HH:MM."
+    schedule, schedule_errors = validate_schedule(raw, has_watermark=bool(watermark))
+    errors.update(schedule_errors)
+    minutes = schedule["incrementalMinutes"]
+    mode = schedule["reconcileMode"]
+    hours = schedule["reconcileHours"]
+    at = schedule["reconcileAt"]
 
     clean = {
         "connectionId": connection_id,
@@ -1739,35 +1770,14 @@ class EtlService:
         )
 
         # ── schedule floors (AC-22-12, reused verbatim) ──────────────────────
-        minutes = _clean_int(raw.get("incrementalMinutes"))
-        floor = (
-            MIN_INCREMENTAL_MINUTES if watermark_field else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
+        schedule, schedule_errors = validate_schedule(
+            raw, has_watermark=bool(watermark_field), watermark_noun="field"
         )
-        if minutes is None:
-            errors["incrementalMinutes"] = "Enter the incremental interval in minutes."
-            minutes = DEFAULT_INCREMENTAL_MINUTES
-        elif minutes < floor:
-            errors["incrementalMinutes"] = (
-                f"At least {floor} minute{'s' if floor != 1 else ''}"
-                + (" without a watermark field." if not watermark_field else ".")
-            )
-
-        mode = str(raw.get("reconcileMode") or "").strip()
-        hours: Optional[int] = None
-        at: Optional[str] = None
-        if mode not in RECONCILE_MODES:
-            errors["reconcileMode"] = "Choose how to reconcile: every N hours or daily at a time."
-            mode = RECONCILE_MODE_DAILY_AT
-        elif mode == RECONCILE_MODE_INTERVAL:
-            hours = _clean_int(raw.get("reconcileHours"))
-            if hours is None:
-                errors["reconcileHours"] = "Enter the reconcile interval in hours."
-            elif hours < MIN_RECONCILE_HOURS:
-                errors["reconcileHours"] = f"At least {MIN_RECONCILE_HOURS} hour."
-        else:
-            at = str(raw.get("reconcileAt") or "").strip() or None
-            if at is None or not _TIME_RE.match(at):
-                errors["reconcileAt"] = "Enter the daily reconcile time as HH:MM."
+        errors.update(schedule_errors)
+        minutes = schedule["incrementalMinutes"]
+        mode = schedule["reconcileMode"]
+        hours = schedule["reconcileHours"]
+        at = schedule["reconcileAt"]
 
         clean = {
             "connectionId": connection_id,

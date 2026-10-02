@@ -96,6 +96,7 @@ def put_doc_feed(
             clear_connection=(
                 "connectionId" in body.model_fields_set and body.connectionId is None
             ),
+            schedule=body.schedule.model_dump() if body.schedule is not None else None,
         )
     except CompanyNotFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")

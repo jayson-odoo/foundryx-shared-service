@@ -1235,11 +1235,37 @@ class DocFeedContractGateOut(BaseModel):
     reason: Optional[str] = None
 
 
+class DocFeedScheduleOut(BaseModel):
+    """sprint-5/19 - the feed's cadence, Entities' schedule shape: the poll
+    is `incrementalMinutes`, the deletion sweep is `reconcile*`."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    incrementalMinutes: int
+    reconcileMode: str
+    reconcileHours: Optional[int] = None
+    reconcileAt: Optional[str] = None
+
+
+class DocFeedScheduleIn(BaseModel):
+    """Loose on purpose: the service validates with the SAME rule set as the
+    ETL schedule (`etl_service.validate_schedule`) and answers the house
+    per-field 422, so a bad value never surfaces as Pydantic's own shape."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    incrementalMinutes: Optional[Any] = None
+    reconcileMode: Optional[Any] = None
+    reconcileHours: Optional[Any] = None
+    reconcileAt: Optional[Any] = None
+
+
 class DocFeedItemOut(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     feed: str
     mode: str
+    schedule: DocFeedScheduleOut
     connectionId: Optional[str] = None
     book: Optional[str] = None
     cursorDay: Optional[date] = None
@@ -1276,6 +1302,8 @@ class DocFeedUpdateIn(BaseModel):
 
     connectionId: Optional[str] = None
     mode: str
+    # sprint-5/19 - omitted = the stored schedule is kept.
+    schedule: Optional[DocFeedScheduleIn] = None
 
 
 class DocFeedRunStartIn(BaseModel):
