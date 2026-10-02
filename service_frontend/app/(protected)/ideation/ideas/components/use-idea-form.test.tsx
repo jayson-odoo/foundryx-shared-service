@@ -659,3 +659,43 @@ describe('useIdeaForm - menu Archive/Restore are gated like Edit (AC-19-49)', ()
     expect(permOf(result, 'restore')).toBeUndefined();
   });
 });
+
+// ── Plan 19 AC-19-50 - Delete is gated on triage.manage (no ungated gear item) ──
+
+describe('useIdeaForm - Delete is gated on ideation.triage.manage (AC-19-50)', () => {
+  const permOf = (r: { current: ReturnType<typeof useIdeaForm> }, id: string) => {
+    const a = r.current.config?.actions.find((x) => x.id === id);
+    expect(a, `${id} action present`).toBeDefined();
+    return (a as { permission?: string }).permission;
+  };
+
+  it('operator, live idea: delete carries permission ideation.triage.manage', async () => {
+    const { result } = await loaded(stageIdea());
+    expect(permOf(result, 'delete')).toBe('ideation.triage.manage');
+  });
+
+  it('operator, merged child: delete carries permission ideation.triage.manage', async () => {
+    const { result } = await loaded(stageIdea({ id: 'child-1', mergedIntoId: 'survivor-1' }));
+    expect(permOf(result, 'delete')).toBe('ideation.triage.manage');
+  });
+
+  it('embed: delete carries no permission', async () => {
+    const idea = stageIdea();
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(idea) });
+    const { result } = await loaded(idea, service, embedWrapper);
+    expect(permOf(result, 'delete')).toBeUndefined();
+  });
+
+  it('operator without triage.manage: nothing is offered in the gear', async () => {
+    sessionPerms.list = ['ideation.ideas.view', 'ideation.ideas.upvote'];
+    const idea = stageIdea();
+    const { result } = await loaded(idea);
+    const offered = (result.current.config?.actions ?? []).filter((a) => {
+      if (!a.surfaces.form) return false;
+      if (a.permission && !sessionPerms.list.includes(a.permission)) return false;
+      if (a.isVisible && !a.isVisible([idea])) return false;
+      return true;
+    });
+    expect(offered.map((a) => a.id)).toEqual([]);
+  });
+});
