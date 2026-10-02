@@ -56,6 +56,10 @@ Product calls P1-P3 filed to the owner with recommendations; built on the recomm
 - **AC-19-36** [BE] Comment bodies (operator, embed, public) containing NUL or other C0 control characters except newline and tab = 422 (security review L2).
 - **AC-19-37** [BE] Operator comment DELETE requires `ideation.ideas.view` (no 404/403 existence probe for users without view), then the author/moderator check (security review L3).
 - **AC-19-38** [BE] Public status page GET and the public comment routes return the uniform 404 when the idea's tenant does not have the Ideation module active (security review L4).
+- **AC-19-39** [FE] The operator idea page composer gate is tested where production evaluates it (`useIdeaForm` -> DetailsTab): operator without `ideation.ideas.comment` sees no composer and no Reply; with it, or in embed mode, both show (review blocker 1).
+- **AC-19-40** [FE+BE] Replying inside a thread whose top-level comment is deleted (placeholder with live replies) succeeds: Reply posts the clicked comment's own id as `parentId` and the backend normalises it to the (deleted) top-level parent, which stays a valid parent while it has live replies (review should-fix 2).
+- **AC-19-41** [FE] The idea page primary actions (`Move to <X>`, `Restore`, `Unmerge`) show `toast.error(<message>)` when the call fails (403/409/network), never an unhandled rejection (review should-fix 4).
+- **AC-19-42** [T] `documentation/engineering/ideation-build-handoff.md` documents the linked-ideas line as `(+<up>)` (review should-fix 3).
 - Accepted risk (security review L1): the public throttle checks before the insert and records after, so a parallel burst on one token can exceed 5 by the burst size once per window; bounded by the window and the per-IP bucket. Recorded, not fixed.
 - Accepted risk (security review M2, P1 a): anyone holding the link posts as the submitter's first name with a `Submitter` badge; the token is the capability by owner ruling.
 
