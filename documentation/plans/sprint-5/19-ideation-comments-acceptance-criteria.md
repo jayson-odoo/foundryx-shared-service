@@ -60,6 +60,7 @@ Product calls P1-P3 filed to the owner with recommendations; built on the recomm
 - **AC-19-40** [FE+BE] Replying inside a thread whose top-level comment is deleted (placeholder with live replies) succeeds: Reply posts the clicked comment's own id as `parentId` and the backend normalises it to the (deleted) top-level parent, which stays a valid parent while it has live replies (review should-fix 2).
 - **AC-19-41** [FE] The idea page primary actions (`Move to <X>`, `Restore`, `Unmerge`) show `toast.error(<message>)` when the call fails (403/409/network), never an unhandled rejection (review should-fix 4).
 - **AC-19-42** [T] `documentation/engineering/ideation-build-handoff.md` documents the linked-ideas line as `(+<up>)` (review should-fix 3).
+- **AC-19-43** [FE] Ideas list: the Votes column is the FIRST data column, left of Idea (mock v2 section 4), narrow (fits the sm box), so it is visible without horizontal scrolling at 1280px and 375px (browser pass F1/F2). The comment delete `AlertDialog` carries an `AlertDialogDescription` (no Radix a11y warning).
 - Accepted risk (security review L1): the public throttle checks before the insert and records after, so a parallel burst on one token can exceed 5 by the burst size once per window; bounded by the window and the per-IP bucket. Recorded, not fixed.
 - Accepted risk (security review M2, P1 a): anyone holding the link posts as the submitter's first name with a `Submitter` badge; the token is the capability by owner ruling.
 
