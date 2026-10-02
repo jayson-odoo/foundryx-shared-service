@@ -10,7 +10,7 @@
 import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { Form } from '@/components/ui/form';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { Idea, IdeaClusterSuggestions, Product } from '@/types/ideation';
 import type { IdeaService } from '@/services/ideation-service';
@@ -24,9 +24,14 @@ vi.mock('next/navigation', () => ({
   useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
+const DEFAULT_PERMS = ['ideation.business_requirements.read', 'ideation.triage.manage'];
 const sessionPerms = vi.hoisted(() => ({
   list: ['ideation.business_requirements.read', 'ideation.triage.manage'] as string[],
 }));
+// Tests that narrow the session must not leak into the next test.
+beforeEach(() => {
+  sessionPerms.list = [...DEFAULT_PERMS];
+});
 vi.mock('next-auth/react', () => ({
   useSession: () => ({
     data: { user: { permissions: sessionPerms.list } },
