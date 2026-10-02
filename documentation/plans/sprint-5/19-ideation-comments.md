@@ -2,7 +2,7 @@
 
 UAC: `19-ideation-comments-acceptance-criteria.md`. Mock (approved v2): `documentation/mockups/IDEATION-COMMENTS/index.html`. Lane IDEATION-COMMENTS, branch `crew/ideation-comments`, size M.
 
-Rulings (owner card, 2 Oct, all recommendation (a)): Q1 oldest-first, one reply level; Q2 new `ideation.ideas.comment` swept to `ideation.ideas.upvote` holders; Q3 author edits/deletes own, `ideation.triage.manage` deletes any; Q4 keep `down` rows, ignore in tallies; Q5 no comments on the public status page. Embed/iframe polish belongs to lane IDEATION-IN-CRM; this lane keeps the components embeddable (runtime paths + service only).
+Rulings (owner card, 2 Oct, all recommendation (a)): Q1 oldest-first, one reply level; Q2 new `ideation.ideas.comment` swept to `ideation.ideas.upvote` holders; Q3 author edits/deletes own, `ideation.triage.manage` deletes any; Q4 keep `down` rows, ignore in tallies; Q5 (c, owner override): the public status page shows the thread and visitors read AND post; P1-P3 per UAC section F (recommendations until the owner overrides). Embed/iframe polish belongs to lane IDEATION-IN-CRM; this lane keeps the components embeddable (runtime paths + service only).
 
 ## 1. Backend (`service_backend/modules/ideation/`)
 
@@ -14,6 +14,8 @@ Rulings (owner card, 2 Oct, all recommendation (a)): Q1 oldest-first, one reply 
 6. `routers/ideas.py`: 4 operator routes (AC-19-02..06). `can_moderate` = `ideation.triage.manage` in the caller's effective permission keys.
 7. `routers/embed.py`: 4 embed routes (AC-19-10), author id = `_embed_voter_id(principal)`, name = `principal.email or "Portal user"`, `can_moderate=False`.
 8. Upvote only: `VoteBody.dir` accepts only `up` (422 on `down`) for operator + embed (AC-19-12); `actions._recount` counts `up` only and sets `downvotes = 0`; `ideas._serialize` returns `downvotes=0`, `myVote` `up|None` (AC-19-13); `build_handoff.py` / `issue_body.py` upvotes only (AC-19-14).
+
+9. Public comments (UAC F): `routers/public_ideas.py` gains `GET|POST /{token}/comments` (HTTP only); `services/public_status.py` exposes a `resolve_idea(token)` returning the Idea (same 404 rules) used by `IdeaCommentService.list_public/create_public`; throttle via `app/services/throttle.py` new scope constants in `app/models/auth_throttle.py` (`idea_comment_token`, `idea_comment_ip`) + config limits (5/15 min token, 20/15 min IP). Token keyed by sha256 of the token, never the raw token.
 
 ## 2. Frontend (`service_frontend/`)
 
@@ -30,6 +32,8 @@ Rulings (owner card, 2 Oct, all recommendation (a)): Q1 oldest-first, one reply 
 Backend `service_backend/tests/test_ideation_comments.py`: AC-19-02 list order + shape; 03 create + 422 empty/5001; 04 reply-to-reply normalised + cross-idea parent 404; 05 edit own ok, other 403, edited_at set; 06 delete own, triage deletes other's, plain user 403, deleted-with-replies placeholder, deleted-without-replies omitted; 07 flags per caller; 08 merged child 409; 09 idea delete removes comments; 10 embed CRUD + author name from email + cross-scope 404 + operator/embed token cross 401; 11 sweep grants comment to upvote holders, idempotent; cross-tenant 404 on GET. `test_ideation_votes_upvote_only.py`: 12 down 422 (operator + embed), down row switched by upvote; 13 tallies ignore down, myVote null for down voter; 14 issue body no `/ -`.
 
 Frontend (vitest): `vote-cell.test.tsx` (no down button, box variant pressed/disabled); `resource-form.edit-placement.test.tsx` (beside-primary order + not in menu; default unchanged); `use-idea-form.test.tsx` (primary per state: draft/new/relabelled/closed/archived/merged; move not duplicated in menu; click calls setStatus); `idea-comments.test.tsx` (render order, reply indent, reply-to-reply posts parent, edit/delete visibility, delete confirm, deleted placeholder, composer hidden without perm / merged, plain text not HTML); `use-ideas-list-config.test.tsx` + `select-idea-rows.test.ts` (upvotes sort, CSV Votes column); `ideation-service.real.test.ts` (comment endpoints + paths).
+
+Public (tester adds to the red commit): `test_ideation_public_comments.py` AC-19-28..32 (404 shapes incl. draft + malformed, headers, merged child own thread only, name from submitter ignoring client name, 422 2001 chars, cross-idea parent 404, 429 after 5 per token and after 20 per IP with Retry-After, no PATCH/DELETE route, triage delete of a public comment, authorId absent); FE `app/(public)/public/ideas/[token]/page.test.tsx` additions (thread render, post, reply, 429 toast, merged hides composer) + `public-idea-status-service.test.ts`.
 
 ## 4. Deferred
 
