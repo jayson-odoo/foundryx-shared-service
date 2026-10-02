@@ -103,6 +103,7 @@ class TenantSettingsOut(ApiModel):
     # Deferred-actions grace windows (sprint-4/23, T5, AC-DLA-42).
     deferredDestructiveSeconds: int
     deferredReversibleSeconds: int
+    publicLinkBaseUrl: Optional[str] = None
 
 
 class TenantSettingsPatch(ApiModel):
@@ -110,6 +111,8 @@ class TenantSettingsPatch(ApiModel):
     priceDecimals: Optional[int] = None
     deferredDestructiveSeconds: Optional[int] = None
     deferredReversibleSeconds: Optional[int] = None
+    # "" or null clears (= feature default origin). Omitted = unchanged.
+    publicLinkBaseUrl: Optional[str] = None
 
 
 class ListResponse(ApiModel):

@@ -28,5 +28,9 @@ class TenantSettings(Base):
     # NULL = the defaults above. Existing tenants need no backfill (AC-DLA-37).
     deferred_destructive_seconds = Column(Integer, nullable=True)
     deferred_reversible_seconds = Column(Integer, nullable=True)
+    # Origin (+ optional path) for PUBLIC links minted for this tenant's
+    # end-users (e.g. idea tracking links on a CRM customer portal). NULL = each
+    # feature's own default origin. May carry ``{token}``/``{ideaId}`` placeholders.
+    public_link_base_url = Column(String, nullable=True)
     created_at = Column(UTCDateTime, server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime, server_default=func.now(), onupdate=func.now())

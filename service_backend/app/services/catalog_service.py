@@ -7,6 +7,8 @@ Effective currency = product override else the tenant default.
 """
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -93,6 +95,7 @@ class TenantSettingsService:
                 if row and row.deferred_reversible_seconds is not None
                 else DEFAULT_DEFERRED_REVERSIBLE_SECONDS
             ),
+            "publicLinkBaseUrl": row.public_link_base_url if row else None,
         }
 
     def set(self, tenant_id: str, data: dict) -> dict:
@@ -120,8 +123,59 @@ class TenantSettingsService:
             if secs < 1 or secs > 60:
                 raise HTTPException(422, "Reversible countdown must be between 1 and 60 seconds.")
             row.deferred_reversible_seconds = secs
+        if "publicLinkBaseUrl" in data:
+            row.public_link_base_url = validate_public_link_base(data["publicLinkBaseUrl"])
         self.db.commit()
         return self.get(tenant_id)
+
+
+_LINK_BASE_ERROR = (
+    "Public link base URL must be an absolute http(s) URL (no credentials, spaces or #fragment)."
+)
+
+
+def validate_public_link_base(value: Optional[str]) -> Optional[str]:
+    """Normalize a tenant ``public_link_base_url``: blank/None clears it (NULL =
+    each feature's default origin). Otherwise it is either an absolute http(s)
+    origin/path (links become ``{base}/public/ideas/{token}``; a trailing ``/`` is
+    stripped) or a template carrying ``{token}`` (the status-token capability the
+    public page is looked up by; ``{ideaId}`` may ride along) in its path/query.
+    Rejected: credentials, fragments, whitespace/control chars, a bad port, a
+    placeholder in the host, a template without ``{token}``, and a query without
+    a template (``/public/ideas/{token}`` would land inside the query string)."""
+    if value is None or not str(value).strip():
+        return None
+    url = str(value).strip()
+    # urlsplit silently drops embedded \t/\n, so check the raw value first.
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise HTTPException(422, _LINK_BASE_ERROR)
+    parts = urlsplit(url)
+    try:
+        parts.port  # noqa: B018 - parsed lazily; raises on a non-numeric port
+    except ValueError:
+        raise HTTPException(422, _LINK_BASE_ERROR)
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or "#" in url
+        or "{" in parts.netloc
+        or "}" in parts.netloc
+    ):
+        raise HTTPException(422, _LINK_BASE_ERROR)
+    is_template = "{token}" in url or "{ideaId}" in url
+    if is_template and "{token}" not in url:
+        raise HTTPException(422, "A public link template must include {token}.")
+    if parts.query and not is_template:
+        raise HTTPException(422, "A public link base URL with a query must place {token}.")
+    return url if is_template else url.rstrip("/")
+
+
+def tenant_public_link_base(db: Session, tenant_id: str) -> Optional[str]:
+    """The tenant's public-link origin, or None (= the feature's own default)."""
+    row = db.get(TenantSettings, tenant_id)
+    return row.public_link_base_url if row and row.public_link_base_url else None
 
 
 def tenant_default_currency(db: Session, tenant_id: str) -> str:

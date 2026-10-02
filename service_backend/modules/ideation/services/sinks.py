@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.services import status_machine
+from app.services.catalog_service import tenant_public_link_base
 
 from ..models import Idea
 from .ideas import next_capture_priority
@@ -42,22 +43,39 @@ def sync_idea_columns_from_captured(idea: Idea) -> None:
             setattr(idea, key, value.strip())
 
 
+# Placeholders a tenant ``public_link_base_url`` may carry when its portal path
+# is not ``/public/ideas/{token}`` - e.g. the Sorento CRM customer portal
+# ``https://<crm>/portal/ideas/{token}`` (IDEATION-IN-CRM, sorento #1438).
+TOKEN_PLACEHOLDER = "{token}"
+IDEA_ID_PLACEHOLDER = "{ideaId}"
+LINK_PLACEHOLDERS = (TOKEN_PLACEHOLDER, IDEA_ID_PLACEHOLDER)
+
+
 def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
-    """The public idea-status-page link ``{settings.frontend_url}/public/ideas/
-    {status_token}`` (S5, AC-1114/1118 - retires the old SSO
-    ``/ideas/{idea_id}`` shape). The page lives on the SHARED-SERVICE
-    frontend, not the product's own delivery origin (``ProductDelivery.
-    product_domain_base`` is the PRODUCT's domain - e.g. sorento - which does
-    not serve this route; ``settings.frontend_url`` is the same origin the
-    email ceremony links already use, ``app/config.py``). ``None`` only when
-    the idea has no ``status_token`` yet (review round 1, should-fix #6: this
-    is a pure READ - it never mints; a caller that needs one minted calls
-    ``numbering.mint_idea_identity`` first, same as the sink does. A pre-lane
-    captured row with no token is backfilled once by migration 0010, not
-    re-minted on every read)."""
+    """The public idea-status-page link ``{base}/public/ideas/{status_token}``.
+
+    ``base`` is the tenant ``public_link_base_url`` (core tenant settings,
+    SS-PUBLIC-LINK-BASE - e.g. the Sorento CRM customer portal) when set, else
+    ``settings.frontend_url`` (the shared-service frontend, S5, AC-1114/1118).
+    A tenant base carrying ``{token}`` (and/or ``{ideaId}``) is a template
+    instead: the placeholders are substituted in place, nothing appended. Links
+    already sent on the shared-service domain keep working: that route is
+    untouched, only newly minted links pick up the setting.
+
+    ``None`` only when the idea has no ``status_token`` yet (review round 1,
+    should-fix #6: this is a pure READ - it never mints; a caller that needs one
+    minted calls ``numbering.mint_idea_identity`` first, same as the sink does.
+    A pre-lane captured row with no token is backfilled once by migration 0010,
+    not re-minted on every read)."""
     if not idea.status_token:
         return None
-    return f"{settings.frontend_url.rstrip('/')}/public/ideas/{idea.status_token}"
+    tenant_base = tenant_public_link_base(db, idea.tenant_id)
+    if tenant_base and any(p in tenant_base for p in LINK_PLACEHOLDERS):
+        return tenant_base.replace(TOKEN_PLACEHOLDER, idea.status_token).replace(
+            IDEA_ID_PLACEHOLDER, str(idea.id)
+        )
+    base = (tenant_base or settings.frontend_url).rstrip("/")
+    return f"{base}/public/ideas/{idea.status_token}"
 
 
 def ideation_on_complete_sink(
