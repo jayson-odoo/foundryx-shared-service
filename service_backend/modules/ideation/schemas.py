@@ -178,11 +178,6 @@ class IdeaCommentOut(ApiModel):
     id: str
     ideaId: str
     parentId: Optional[str] = None
-
-    @field_validator("parentId")
-    @classmethod
-    def _parent(cls, v: Optional[str]) -> Optional[str]:
-        return _clean_parent_id(v)
     authorName: Optional[str] = None
     authorKind: str
     body: Optional[str] = None
