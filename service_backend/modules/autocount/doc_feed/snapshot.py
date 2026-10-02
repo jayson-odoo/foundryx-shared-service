@@ -1,8 +1,10 @@
-"""Plan 16 (BL-SS-286) - the ``delivery_orders`` pull-gateway snapshot build.
+"""Plan 16 (BL-SS-286) - the doc-feed pull-gateway snapshot build
+(``delivery_orders``, and its GRN mirror ``goods_receive_notes``).
 
-A frozen, immutable snapshot of AutoCount delivery-order documents for a MYT
-doc-date range (and / or one DO number), read through the SAME vendor door the
-DO doc feed uses (``DocFeedVendor.day_by_doc_date``). It is a READ for the
+A frozen, immutable snapshot of AutoCount documents of ONE feed for a MYT
+doc-date range (and / or one document number), read through the SAME vendor
+door that feed uses (``DocFeedVendor.day_by_doc_date``). The feed is the
+snapshot's own ``entity_type`` (``feed_row.feed``). It is a READ for the
 CRM's own review + confirm flow: it never builds a sink, never probes the CRM
 contract, never writes a feed run / ledger / issue row and never touches the
 feed row's cursor or ``last_*`` columns.
@@ -33,7 +35,7 @@ from ..models import (
     AcSyncRun,
 )
 from ..repositories import PullSnapshotRepository
-from .constants import FEED_DELIVERY_ORDERS
+from .constants import FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES
 from .records import dedupe_latest, doc_date, doc_key, source_ref
 from .runner import RunRefusal, resolve_vendor
 from .vendor import DocFeedVendorError
@@ -44,6 +46,12 @@ MAX_SNAPSHOT_DOCUMENTS = 10_000
 MAX_SNAPSHOT_DOCUMENT_BYTES = 1024 * 1024
 ROW_INSERT_HEARTBEAT_INTERVAL = 200
 TOO_LARGE_MESSAGE = "Delivery order exceeds 1 MB and cannot be stored in a snapshot."
+TOO_LARGE_MESSAGES = {
+    FEED_DELIVERY_ORDERS: TOO_LARGE_MESSAGE,
+    FEED_GOODS_RECEIVE_NOTES: (
+        "Goods received note exceeds 1 MB and cannot be stored in a snapshot."
+    ),
+}
 MISSING_DOC_KEY_MESSAGE = (
     "DocKey is missing or not an integer; the record cannot be identified."
 )
@@ -69,7 +77,7 @@ def _days_in_range(from_day: date, to_day: date) -> List[date]:
     return [from_day + timedelta(days=i) for i in range((to_day - from_day).days + 1)]
 
 
-def build_delivery_orders_snapshot(
+def build_doc_feed_snapshot(
     db,
     job,
     snapshot: AcPullSnapshot,
@@ -83,6 +91,7 @@ def build_delivery_orders_snapshot(
 ) -> None:
     """Build the snapshot. ``fail_snapshot(message, code)`` stamps the
     snapshot failed (pinned codes only) AND finishes the job FAILED."""
+    feed = feed_row.feed
     from ..services.pull_service import (
         AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS,
         SnapshotService,
@@ -112,7 +121,7 @@ def build_delivery_orders_snapshot(
             service.beat_progress(job.id, done=done, total=total, stage=stage)
         except Exception:  # noqa: BLE001 - advisory, must never fail the run
             logger.warning(
-                "autocount DO snapshot: beat_progress for job %s failed", job.id, exc_info=True
+                "autocount doc-feed snapshot: beat_progress for job %s failed", job.id, exc_info=True
             )
         current = snap_repo.get(tenant_id, snapshot_id)
         if current is None or current.status != PULL_SNAPSHOT_STATUS_BUILDING:
@@ -154,7 +163,7 @@ def build_delivery_orders_snapshot(
     try:
         try:
             for index, day in enumerate(days, start=1):
-                fetched.extend(resolved.vendor.day_by_doc_date(FEED_DELIVERY_ORDERS, day))
+                fetched.extend(resolved.vendor.day_by_doc_date(feed, day))
                 beat_and_check("source", index, len(days))
                 if len(fetched) > MAX_SNAPSHOT_DOCUMENTS:
                     raw_over_limit = True
@@ -209,10 +218,10 @@ def build_delivery_orders_snapshot(
             code = record.get("DocNo")
             excluded_rows.append(
                 {
-                    "source_ref": source_ref(FEED_DELIVERY_ORDERS, book, record),
+                    "source_ref": source_ref(feed, book, record),
                     "code": code if isinstance(code, str) and code else None,
                     "reason": "too_large",
-                    "message": TOO_LARGE_MESSAGE,
+                    "message": TOO_LARGE_MESSAGES[feed],
                 }
             )
         else:
@@ -237,7 +246,7 @@ def build_delivery_orders_snapshot(
             snapshot_service.insert_row(
                 tenant_id, snapshot, index,
                 company_id=company.id,
-                source_ref=source_ref(FEED_DELIVERY_ORDERS, book, record),
+                source_ref=source_ref(feed, book, record),
                 payload=record,
             )
         metadata: Dict[str, Any] = {

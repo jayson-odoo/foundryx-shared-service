@@ -106,3 +106,33 @@ Contract of record: `16-autocount-do-pull-snapshot-contract.md`. Products / stoc
 - AC-16-60 `documentation/engineering/autocount-doc-feeds.md` gains a section pointing at the
   contract; `documentation/backlogs/backlog.md` BL-SS-286 is marked Done with the plan link;
   `CLAUDE.md`'s engine index row for AutoCount doc feeds mentions the DO pull snapshot.
+
+## `goods_receive_notes` mirror (2026-10-02, lane GRN-PULL-SS, contract section 8)
+
+Tests: `service_backend/tests/test_s16_grn_pull_snapshot.py`. Ids AC-16-77..79, 81 and 83 are
+unused on purpose (left free for later GRN-only additions).
+
+- AC-16-70 [BE] `entity: "goods_receive_notes"` maps to the internal `goods_receive_notes`
+  feed key; a range build answers 202 with the same echo as AC-16-01; `docNo` alone defaults to
+  the 31 MYT days ending today; the AC-16-04 scope 422s apply unchanged (incl. no scope at all).
+- AC-16-71 [BE] The build reads `/goodsreceivenotebydocdate` once per day (never the DO door);
+  a failing day = `SOURCE_PAGE_FAILED`; over 10,000 documents = `ROW_LIMIT`; the GRN feed
+  row's `cursor_day` / `last_poll_*` / `mode` are untouched.
+- AC-16-72 [BE] Rows are the raw vendor GRN dicts verbatim with `Details` intact, ordered
+  `DocDate` / `DocKey`; the stored `source_ref` is `{book}:GRN:{DocKey}`; the ready header carries
+  `book`, `contentHash`, `daysRead`, `fetchedCount`, `lineCount`, `excludedRows`
+  (`missing_doc_key`); a too-large GRN is excluded with the GRN wording.
+- AC-16-73 [BE] 409 `PULL_NOT_ENABLED` when the company has only a DO feed (the gate is the
+  GRN feed row); the GRN feed's `mode` never gates.
+- AC-16-74 [BE] Same-scope re-attach and different-scope 409 `BUILD_IN_FLIGHT` as AC-16-09/10;
+  a DO build in flight never blocks a GRN build for the same company.
+- AC-16-75 [BE] The build audit row carries `entity_type = goods_receive_notes`.
+- AC-16-76 [BE] `UNKNOWN_ENTITY` lists `delivery_orders, goods_receive_notes, products,
+  stock_balances`.
+- AC-16-80 [BE] The operator build route refuses `goods_receive_notes` with a 422 and makes no
+  vendor call.
+- AC-16-82 [BE] An operator holding `autocount.pull.read` + `autocount.sync.read` lists, shows
+  and pages a GRN snapshot.
+- AC-16-84 [BE] An operator with `autocount.pull.read` alone gets no GRN snapshots in the list,
+  and the header and rows read exactly like an unknown id (404). DO snapshots stay visible to
+  `autocount.pull.read` alone.

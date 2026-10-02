@@ -1413,6 +1413,7 @@ class PullSnapshotRepository:
         *,
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
+        exclude_entity_types: Sequence[str] = (),
         page: int = 0,
         page_size: int = 25,
     ) -> Tuple[List[AcPullSnapshot], int]:
@@ -1421,6 +1422,8 @@ class PullSnapshotRepository:
             q = q.filter(AcPullSnapshot.company_id == company_id)
         if entity_type:
             q = q.filter(AcPullSnapshot.entity_type == entity_type)
+        if exclude_entity_types:
+            q = q.filter(AcPullSnapshot.entity_type.notin_(list(exclude_entity_types)))
         total = q.count()
         rows = (
             q.order_by(AcPullSnapshot.created_at.desc(), AcPullSnapshot.id.desc())
