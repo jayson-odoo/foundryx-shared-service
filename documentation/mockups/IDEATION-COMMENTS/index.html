@@ -194,6 +194,10 @@ table.map code{font-size:11.5px;color:var(--pri-acc)}
 .vc.on{background:var(--pri-soft);color:var(--pri-act);font-weight:500}
 .phone .fr{grid-template-columns:1fr;gap:2px}
 .phone .rep{margin-left:20px}
+.vbox.lb{width:44px;height:48px;font-size:14px}
+.vbox.lb svg.i{width:16px;height:16px}
+.lst .r{grid-template-columns:60px 1fr 140px 110px}
+.ver{display:inline-block;font:600 11px Inter,system-ui,sans-serif;background:var(--g800);color:#fff;border-radius:4px;padding:1px 6px;margin-left:6px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -217,13 +221,13 @@ table.map code{font-size:11.5px;color:var(--pri-acc)}
 </defs></svg>
 
 <div class="doc">
-<h1>Idea page: upvote box, comments, next-state action</h1>
-<p class="intro">Static mockup for review (lane IDEATION-COMMENTS). Real idea from dev data: "I want a mobile app so field staff can log deliveries offline" (Sorento CRM, New, 2 upvotes, submitted by WAWA over WhatsApp, 20 Jul 2026). No comments exist in dev data yet: the comment texts below are SAMPLE text written by real dev users (Demo User, Admin User, Event Manager). Built from existing shell pieces only; the element map is section 6.</p>
+<h1>Idea page: upvote box, comments, next-state action <span class="ver">v2</span></h1>
+<p class="intro">v2 (2 Oct): list vote count now uses the idea page vote box (section 4). Embed/iframe items moved to lane IDEATION-IN-CRM; components here stay embeddable (no hard-coded domain). Static mockup for review (lane IDEATION-COMMENTS). Real idea from dev data: "I want a mobile app so field staff can log deliveries offline" (Sorento CRM, New, 2 upvotes, submitted by WAWA over WhatsApp, 20 Jul 2026). No comments exist in dev data yet: the comment texts below are SAMPLE text written by real dev users (Demo User, Admin User, Event Manager). Built from existing shell pieces only; the element map is section 6.</p>
 <nav class="nav">
   <a href="#page">1 Idea page 1280px</a>
   <a href="#states">2 Action states</a>
   <a href="#reply">3 Reply + own comment</a>
-  <a href="#list">4 Ideas list votes</a>
+  <a href="#list">4 Ideas list votes (v2)</a>
   <a href="#phone">5 375px</a>
   <a href="#map">6 Element map</a>
 </nav>
@@ -285,13 +289,13 @@ table.map code{font-size:11.5px;color:var(--pri-acc)}
 <h2>2. Header action states</h2>
 <p class="why">The primary button is always the next status by the tenant's status order and label (same rule the menu's "Move to ..." uses today). When there is no next move, Edit becomes the primary again, exactly as now.</p>
 <div class="col">
-  <div class="frame"><div class="cap"><b>A</b> Draft (voted: box filled orange)</div><div class="body"><div class="rc"><div class="rc-head">
-    <div class="idrow"><div class="vbox on"><svg class="i"><use href="#chev-u"/></svg>1</div><div class="ident"><h2 class="hd">I wish the CRM could remind me before a DO SLA breaches</h2><div class="sub"><span class="badge b-grey">Draft</span></div></div></div>
+  <div class="frame"><div class="cap"><b>A</b> Draft (1 old down vote, now reads 0)</div><div class="body"><div class="rc"><div class="rc-head">
+    <div class="idrow"><div class="vbox"><svg class="i"><use href="#chev-u"/></svg>0</div><div class="ident"><h2 class="hd">I wish the CRM could remind me before a DO SLA breaches</h2><div class="sub"><span class="badge b-grey">Draft</span></div></div></div>
     <div class="acts"><div class="r1"><span class="ib"><svg class="i s"><use href="#more"/></svg></span><span class="btn outline"><svg class="i"><use href="#pencil"/></svg>Edit</span><span class="btn primary"><svg class="i"><use href="#arrow-right"/></svg>Move to New</span></div></div>
   </div></div></div></div>
 
-  <div class="frame"><div class="cap"><b>B</b> Tenant relabelled Triaged as "Discussed" (dev tenant ir2)</div><div class="body"><div class="rc"><div class="rc-head">
-    <div class="idrow"><div class="vbox"><svg class="i"><use href="#chev-u"/></svg>2</div><div class="ident"><h2 class="hd">Let CS bulk-export orders to Excel with column presets</h2><div class="sub"><span class="badge b-info">New</span></div></div></div>
+  <div class="frame"><div class="cap"><b>B</b> Tenant relabelled Triaged as "Discussed" (dev tenant ir2); viewer has upvoted (orange box)</div><div class="body"><div class="rc"><div class="rc-head">
+    <div class="idrow"><div class="vbox on"><svg class="i"><use href="#chev-u"/></svg>2</div><div class="ident"><h2 class="hd">Let CS bulk-export orders to Excel with column presets</h2><div class="sub"><span class="badge b-info">New</span></div></div></div>
     <div class="acts"><div class="r1"><span class="ib"><svg class="i s"><use href="#more"/></svg></span><span class="btn outline"><svg class="i"><use href="#pencil"/></svg>Edit</span><span class="btn primary"><svg class="i"><use href="#arrow-right"/></svg>Move to Discussed</span></div></div>
   </div></div></div></div>
 
@@ -330,14 +334,16 @@ table.map code{font-size:11.5px;color:var(--pri-acc)}
 
 <!-- 4 -->
 <section id="list">
-<h2>4. Ideas list: Votes column is upvotes only</h2>
+<h2>4. Ideas list: the same vote box on every row <span class="callout">v2: owner asked to make the list count more apparent</span></h2>
+<p class="why">Each row leads with the same bordered vote box as the idea page (chevron over the count, orange fill when you voted), one size smaller so rows stay compact. Clicking the box votes without opening the idea. Upvotes only; sort and CSV use upvotes.</p>
 <div class="lst">
   <div class="r hd"><span>Votes</span><span>Idea</span><span>Product</span><span>Status</span></div>
-  <div class="r"><span class="vc on"><svg class="i s"><use href="#chev-u"/></svg>2</span><span>I want a mobile app so field staff can log deliveries offline</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
-  <div class="r"><span class="vc"><svg class="i s"><use href="#chev-u"/></svg>2</span><span>Let CS bulk-export orders to Excel with column presets</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
-  <div class="r"><span class="vc"><svg class="i s"><use href="#chev-u"/></svg>0</span><span>Remind me before a DO SLA breaches</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
+  <div class="r"><span class="vbox lb"><svg class="i"><use href="#chev-u"/></svg>2</span><span>I want a mobile app so field staff can log deliveries offline</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
+  <div class="r"><span class="vbox lb on"><svg class="i"><use href="#chev-u"/></svg>2</span><span>Let CS bulk-export orders to Excel with column presets</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
+  <div class="r"><span class="vbox lb on"><svg class="i"><use href="#chev-u"/></svg>1</span><span>test</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
+  <div class="r"><span class="vbox lb"><svg class="i"><use href="#chev-u"/></svg>0</span><span>Remind me before a DO SLA breaches</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
 </div>
-<p class="note">Same VoteCell everywhere (list, triage board, idea page) minus the down arrow; sort and CSV use upvotes. "Remind me before a DO SLA breaches" had 1 down vote: it now reads 0.</p>
+<p class="note">Viewed as Demo User: orange boxes are the two ideas Demo User really upvoted in dev (idea_votes). "Remind me before a DO SLA breaches" had 1 down vote and now reads 0; "test" had 1 up + 1 down and now reads 1. The triage board card uses the same box (section 6). At 375px the list's card view puts the box at the card's left edge, same as the idea page header.</p>
 </section>
 
 <!-- 5 -->
@@ -380,7 +386,7 @@ table.map code{font-size:11.5px;color:var(--pri-acc)}
 <tr><td>Composer</td><td><code>components/ui/textarea.tsx</code> + <code>components/ui/button.tsx</code></td><td>new <code>idea-comments.tsx</code> beside DetailsTab, data via a new <code>hooks/use-idea-comments.ts</code> + <code>services/ideation-service.*</code> (embed-safe: paths from <code>useIdeationRuntime</code>, no hard-coded domain)</td></tr>
 <tr><td>Comment time</td><td><code>lib/datetime.ts</code> <code>formatDateTime</code> via <code>useDatetime()</code></td><td>none</td></tr>
 <tr><td>Delete own comment</td><td><code>components/ui/alert-dialog.tsx</code> confirm</td><td>plain delete after confirm (no grace window; comments are small)</td></tr>
-<tr><td>List Votes column + triage board card</td><td><code>use-ideas-list-config.tsx:251</code>, <code>board/triage-board.tsx:87,119</code></td><td>upvotes only</td></tr>
+<tr><td>List Votes column + triage board card (v2: vote box)</td><td>same VoteCell <code>variant="box"</code> as the idea page, rendered in <code>use-ideas-list-config.tsx:251</code> and <code>board/triage-board.tsx:87,119</code></td><td>box size <code>sm</code> in list/board, <code>md</code> in header; upvotes only</td></tr>
 </table>
 </section>
 </div>
