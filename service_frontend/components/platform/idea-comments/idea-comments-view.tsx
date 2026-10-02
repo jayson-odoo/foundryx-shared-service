@@ -39,10 +39,6 @@ export interface IdeaCommentsViewProps {
 const linkButton =
   'inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground';
 
-// AC-19-23 pins the inline editor's buttons as "Cancel" / "Save": the noun is the
-// comment being edited right above, so the label stays this short.
-const EDIT_SAVE_LABEL = 'Save';
-
 function CommentBody({ text }: { text: string }) {
   // Plain text only: a React text node, whitespace preserved. Never HTML.
   return <p className="whitespace-pre-wrap break-words text-sm">{text}</p>;
@@ -197,7 +193,7 @@ function CommentEditor({
           onClick={() => void save()}
           disabled={saving || !draft.trim()}
         >
-          {EDIT_SAVE_LABEL}
+          Save comment
         </Button>
       </div>
     </div>
