@@ -175,6 +175,12 @@ def test_general_settings_accepts_crm_portal_template(ideation_client):
         "https://crm.sorento.my/#frag",
         "https://user:pw@crm.sorento.my",
         "https://crm.sorento.my/portal?src=wa",
+        "https://crm.sorento.my:abc/portal",
+        "https://crm.sorento.my/a\nb",
+        "https://crm.sorento.my/a\tb",
+        "https://crm.sorento.my/a b",
+        "https://{token}.crm.sorento.my/x",
+        "https://crm.sorento.my/portal/ideas/{ideaId}",
     ],
 )
 def test_general_settings_rejects_bad_link_base(ideation_client, bad):

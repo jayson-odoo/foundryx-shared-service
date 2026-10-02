@@ -129,31 +129,47 @@ class TenantSettingsService:
         return self.get(tenant_id)
 
 
+_LINK_BASE_ERROR = (
+    "Public link base URL must be an absolute http(s) URL (no credentials, spaces or #fragment)."
+)
+
+
 def validate_public_link_base(value: Optional[str]) -> Optional[str]:
     """Normalize a tenant ``public_link_base_url``: blank/None clears it (NULL =
-    each feature's default origin); otherwise it must be an absolute http(s) URL
-    with a host, no credentials and no fragment (a path, query and a
-    ``{token}``/``{ideaId}`` placeholder are allowed). Trailing ``/`` is stripped so link
-    minting (``{base}/public/ideas/{token}``) stays clean."""
+    each feature's default origin). Otherwise it is either an absolute http(s)
+    origin/path (links become ``{base}/public/ideas/{token}``; a trailing ``/`` is
+    stripped) or a template carrying ``{token}`` (the status-token capability the
+    public page is looked up by; ``{ideaId}`` may ride along) in its path/query.
+    Rejected: credentials, fragments, whitespace/control chars, a bad port, a
+    placeholder in the host, a template without ``{token}``, and a query without
+    a template (``/public/ideas/{token}`` would land inside the query string)."""
     if value is None or not str(value).strip():
         return None
     url = str(value).strip()
+    # urlsplit silently drops embedded \t/\n, so check the raw value first.
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise HTTPException(422, _LINK_BASE_ERROR)
     parts = urlsplit(url)
+    try:
+        parts.port  # noqa: B018 - parsed lazily; raises on a non-numeric port
+    except ValueError:
+        raise HTTPException(422, _LINK_BASE_ERROR)
     if (
         parts.scheme not in ("http", "https")
         or not parts.hostname
         or parts.username is not None
         or parts.password is not None
-        or parts.fragment
         or "#" in url
+        or "{" in parts.netloc
+        or "}" in parts.netloc
     ):
-        raise HTTPException(
-            422, "Public link base URL must be an absolute http(s) URL (no credentials or #fragment)."
-        )
-    if parts.query and "{token}" not in url and "{ideaId}" not in url:
-        # ``{base}/public/ideas/{token}`` would land inside the query string.
+        raise HTTPException(422, _LINK_BASE_ERROR)
+    is_template = "{token}" in url or "{ideaId}" in url
+    if is_template and "{token}" not in url:
+        raise HTTPException(422, "A public link template must include {token}.")
+    if parts.query and not is_template:
         raise HTTPException(422, "A public link base URL with a query must place {token}.")
-    return url if parts.query else url.rstrip("/")
+    return url if is_template else url.rstrip("/")
 
 
 def tenant_public_link_base(db: Session, tenant_id: str) -> Optional[str]:
