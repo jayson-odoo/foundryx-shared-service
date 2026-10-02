@@ -98,6 +98,10 @@ export interface ResourceFormConfig<T> {
   /** Page CTA taking Edit's slot (Edit moves into the "..." menu). Omit for the
    * plain Edit primary. */
   primaryAction?: FormPrimaryAction;
+  /** Where Edit sits when a `primaryAction` exists (plan 19, AC-19-18): `'menu'`
+   * (default) = first item of the "..." menu; `'beside-primary'` = an outline
+   * button immediately left of the primary, not in the menu. */
+  editPlacement?: 'menu' | 'beside-primary';
   /** Muted line under the record-actions row; wins over `primaryAction.reason`. */
   actionsNote?: ReactNode | FormActionsNote;
 

@@ -16,7 +16,7 @@ import {
   Split,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
-import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { FormPrimaryAction, ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useCan } from '@/hooks/use-can';
@@ -29,6 +29,7 @@ import { DetailsTab, AttachmentsTab } from './idea-form-fields';
 import { statusRegistryFor } from './status-registry';
 import { IdeaBrsTab } from './idea-brs-tab';
 import { IdeaMergedTab } from './idea-merged-tab';
+import { VoteCell } from './vote-cell';
 import { ideaFormPath, buildIdeaFormQuery } from './paths';
 import { ideaFormSchema, type IdeaFormValues } from './idea-schema';
 
@@ -166,21 +167,16 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     // A merged child is frozen (AC-94-09/26) - the gear offers only Unmerge
     // (split it back out) and Delete. Every lifecycle action lives on the
     // survivor instead.
+    const unmergeIdea = async (target: Idea) => {
+      if (!ideationService.unmerge) return;
+      const [restored] = await ideationService.unmerge(target.id);
+      setIdea(restored);
+      form.reset(toFormValues(restored));
+      toast.success('Idea unmerged.');
+    };
+
     const actions: ResourceAction<Idea>[] = isMergedChild
       ? [
-          {
-            id: 'unmerge',
-            label: 'Unmerge',
-            icon: Split,
-            surfaces: { row: false, form: true, bulk: false },
-            run: async (rows) => {
-              if (!ideationService.unmerge || !rows[0]) return;
-              const [restored] = await ideationService.unmerge(rows[0].id);
-              setIdea(restored);
-              form.reset(toFormValues(restored));
-              toast.success('Idea unmerged.');
-            },
-          },
           {
             id: 'delete',
             label: 'Delete',
@@ -207,25 +203,6 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               // problem_statement (AC-BI-32b); the operator lands on the new
               // BR's Grill tab, the embed toasts and stays.
               await promoteIdeasToBr(rows, router, { runtime });
-            },
-          },
-          {
-            id: 'advance',
-            // Label auto-derived from the fireable transition target
-            // (status_engine, AC-94-57/52) - e.g. "Move to Triaged".
-            label: (rows) => {
-              const target = rows[0]?.transitions?.find((t) => t.id === rows[0]?.advanceTransitionId);
-              return target ? `Move to ${target.toStatusLabel}` : 'Advance to next stage';
-            },
-            icon: ArrowRight,
-            surfaces: { row: false, form: true, bulk: false },
-            isVisible: (rows) => rows.every((r) => !r.statusIsArchived),
-            isDisabled: (rows) => rows.some((r) => !r.advanceTransitionId),
-            run: async (rows) => {
-              const target = rows[0]?.transitions?.find((t) => t.id === rows[0]?.advanceTransitionId);
-              if (!target) return;
-              await applyStatus(rows[0].id, target.toStatusId);
-              toast.success(`Moved to ${target.toStatusLabel}.`);
             },
           },
           {
@@ -267,6 +244,49 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           },
         ];
 
+    // The page CTA (plan 19, AC-19-19) is the one move that is next, derived
+    // from the idea's own fireable transitions and tenant labels - never a
+    // hardcoded status key. A merged child offers Unmerge; an archived idea its
+    // restore edge; otherwise the engine's advance edge. The chosen move is
+    // not repeated in the "..." menu.
+    const advanceEdge = idea?.transitions?.find((t) => t.id === idea.advanceTransitionId);
+    const restoreEdge = idea?.statusIsArchived ? idea.transitions?.[0] : undefined;
+    let primaryAction: FormPrimaryAction | undefined;
+    if (!creating && idea) {
+      if (isMergedChild) {
+        primaryAction = {
+          id: 'unmerge',
+          label: 'Unmerge',
+          icon: Split,
+          disabled: !ideationService.unmerge,
+          onRun: () => unmergeIdea(idea),
+        };
+      } else if (idea.statusIsArchived) {
+        if (restoreEdge) {
+          primaryAction = {
+            id: 'restore',
+            label: 'Restore',
+            icon: ArchiveRestore,
+            onRun: async () => {
+              await applyStatus(idea.id, restoreEdge.toStatusId);
+              toast.success('Idea restored.');
+            },
+          };
+        }
+      } else if (advanceEdge) {
+        primaryAction = {
+          id: 'advance',
+          label: `Move to ${advanceEdge.toStatusLabel}`,
+          icon: ArrowRight,
+          onRun: async () => {
+            await applyStatus(idea.id, advanceEdge.toStatusId);
+            toast.success(`Moved to ${advanceEdge.toStatusLabel}.`);
+          },
+        };
+      }
+    }
+    const menuActions = actions.filter((a) => !(primaryAction?.id === 'restore' && a.id === 'restore'));
+
     const onSave = async (): Promise<boolean> => {
       let ok = false;
       await form.handleSubmit(async (values) => {
@@ -305,7 +325,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       else form.reset(toFormValues(idea));
     };
 
-    const onVote = async (target: Idea, dir: 'up' | 'down') => {
+    const onVote = async (target: Idea, dir: 'up') => {
       try {
         const updated = await ideationService.vote(target.id, dir);
         setIdea(updated);
@@ -366,11 +386,21 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
         : idea
           ? <StatusBadge status={idea.status} registry={statusRegistryFor(idea)} />
           : undefined,
-      avatar: (
-        <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">
-          <Lightbulb className="size-5 text-primary" />
-        </span>
-      ),
+      // The vote box takes the avatar slot left of the title (AC-19-16).
+      avatar:
+        !creating && idea ? (
+          <VoteCell
+            idea={idea}
+            onVote={onVote}
+            variant="box"
+            size="md"
+            disabled={isMergedChild}
+          />
+        ) : (
+          <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">
+            <Lightbulb className="size-5 text-primary" />
+          </span>
+        ),
       tabs: [
         {
           id: 'details',
@@ -383,7 +413,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               creating={creating}
               idea={idea}
               products={products}
-              onVote={onVote}
+              canComment={mode === 'embed' || can('ideation.ideas.comment')}
             />
           ),
         },
@@ -441,7 +471,9 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             ]
           : []),
       ],
-      actions,
+      actions: menuActions,
+      primaryAction,
+      editPlacement: 'beside-primary',
       actionRows: idea ? [idea] : [],
       editable: !creating,
       initialEditing: creating ? true : initialEditing,

@@ -19,6 +19,7 @@ import type {
   Idea,
   IdeaAttachment,
   IdeaClusterSuggestions,
+  IdeaComment,
   Product,
 } from '@/types/ideation';
 import type { IdeaCreateInput, IdeaExtendedOps, IdeaService } from './ideation-service';
@@ -145,10 +146,35 @@ export const ideationEmbedService: IdeaService &
     });
   },
 
-  vote(id: string, dir: 'up' | 'down'): Promise<Idea> {
+  vote(id: string, dir: 'up'): Promise<Idea> {
     return apiFetch<Idea>(`${embedIdea(id)}/vote`, {
       method: 'POST',
       body: JSON.stringify({ dir }),
+    });
+  },
+
+  // Comments (plan 19, AC-19-25) - embed token routes, no operator prefix.
+  listComments(ideaId: string): Promise<IdeaComment[]> {
+    return apiFetch<IdeaComment[]>(`${embedIdea(ideaId)}/comments`);
+  },
+
+  addComment(ideaId: string, body: string, parentId?: string): Promise<IdeaComment> {
+    return apiFetch<IdeaComment>(`${embedIdea(ideaId)}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(parentId ? { body, parentId } : { body }),
+    });
+  },
+
+  editComment(ideaId: string, commentId: string, body: string): Promise<IdeaComment> {
+    return apiFetch<IdeaComment>(`${embedIdea(ideaId)}/comments/${encodeURIComponent(commentId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    });
+  },
+
+  async deleteComment(ideaId: string, commentId: string): Promise<void> {
+    await apiFetch<void>(`${embedIdea(ideaId)}/comments/${encodeURIComponent(commentId)}`, {
+      method: 'DELETE',
     });
   },
 

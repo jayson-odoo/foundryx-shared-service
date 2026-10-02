@@ -50,7 +50,7 @@ export function useIdeasListConfig(
   ideas: Idea[],
   handlers: {
     onCreate: () => void;
-    onVote: (idea: Idea, dir: 'up' | 'down') => void;
+    onVote: (idea: Idea, dir: 'up') => void;
     onAdvance: (idea: Idea) => Promise<void>;
     onRestore: (idea: Idea) => Promise<void>;
     /** No longer called by this config (fix round 1, T5, item 15 - Delete is
@@ -248,8 +248,14 @@ export function useIdeasListConfig(
       col('status', 'Status', (i) => i.statusLabel ?? i.status, ({ row }) => (
         <StatusBadge status={row.original.status} registry={statusRegistryFor(row.original)} />
       ), 120),
-      col('votes', 'Votes', (i) => (i.upvotes ?? 0) - (i.downvotes ?? 0), ({ row }) => (
-        <VoteCell idea={row.original} onVote={onVote} />
+      col('votes', 'Votes', (i) => i.upvotes ?? 0, ({ row }) => (
+        <VoteCell
+          idea={row.original}
+          onVote={onVote}
+          variant="box"
+          size="sm"
+          disabled={Boolean(row.original.mergedIntoId)}
+        />
       ), 130),
       col('submitted', 'Submitted', (i) => i.createdAt, ({ row }) => (
         <span className="text-muted-foreground">{formatDate(row.original.createdAt)}</span>
@@ -285,7 +291,7 @@ export function useIdeasListConfig(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Idea', 'Submitter', 'Channel', 'Product', 'Status', 'Up', 'Down', 'Submitted'],
+        ['Idea', 'Submitter', 'Channel', 'Product', 'Status', 'Votes', 'Submitted'],
         data.map((r) => [
           r.problem,
           r.submitterName,
@@ -293,7 +299,6 @@ export function useIdeasListConfig(
           r.productName,
           r.statusLabel ?? r.status,
           String(r.upvotes),
-          String(r.downvotes),
           formatDate(r.createdAt),
         ]),
       );

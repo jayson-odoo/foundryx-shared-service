@@ -7,7 +7,14 @@
  *
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.
  */
-import type { Board, Idea, IdeaAttachment, IdeaClusterSuggestions, Product } from '@/types/ideation';
+import type {
+  Board,
+  Idea,
+  IdeaAttachment,
+  IdeaClusterSuggestions,
+  IdeaComment,
+  Product,
+} from '@/types/ideation';
 import { realIdeationService } from './ideation-service.real';
 
 /** Manual capture payload (the WhatsApp path fills the same fields via the tool). */
@@ -49,9 +56,9 @@ export interface IdeaService {
    * status row id (AC-94-53); the legacy lifecycle KEY form still works for
    * the deferred Archive handler. */
   setStatus(id: string, toStatusId: string): Promise<Idea>;
-  /** Toggle the current user's vote (one per user): click same dir again to clear;
-   * click the other dir to switch. Adjusts up/down counts accordingly. */
-  vote(id: string, dir: 'up' | 'down'): Promise<Idea>;
+  /** Toggle the current user's upvote (one per user): calling again clears it.
+   * Upvote only since plan 19 - `dir` is typed `'up'`. */
+  vote(id: string, dir: 'up'): Promise<Idea>;
   /** Re-rank ideas by the given id order (drag-to-reorder priority). */
   reorderPriority(orderedIds: string[]): Promise<Idea[]>;
   /** Suggested idea clusters (trigram + LLM grouping, degrades to ungrouped).
@@ -71,6 +78,13 @@ export interface IdeaService {
   /** The triage board - statuses grouped into columns with their cards
    * (AC-94-54/58), never a hardcoded FE column list. */
   getBoard?(opts?: { includeTest?: boolean; productId?: string }): Promise<Board>;
+  /** The idea's comments, flat, oldest first (plan 19, AC-19-25). Optional so a
+   * partial test double stays valid. */
+  listComments?(ideaId: string): Promise<IdeaComment[]>;
+  /** Post a comment; `parentId` makes it a reply (normalised server side). */
+  addComment?(ideaId: string, body: string, parentId?: string): Promise<IdeaComment>;
+  editComment?(ideaId: string, commentId: string, body: string): Promise<IdeaComment>;
+  deleteComment?(ideaId: string, commentId: string): Promise<void>;
   /** Upload one file onto an idea (multipart) - plan sprint-5/15. */
   uploadAttachment?(id: string, file: File): Promise<IdeaAttachment>;
   /** Fetch an uploaded attachment's bytes (auth-gated route) as a Blob. */

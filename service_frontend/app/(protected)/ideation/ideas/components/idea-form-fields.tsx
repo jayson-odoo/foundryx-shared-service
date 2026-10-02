@@ -24,7 +24,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { AttachmentDrop } from './attachment-drop';
 import { IdeaAttachmentPreviewDialog } from './idea-attachment-preview-dialog';
-import { VoteCell } from './vote-cell';
+import { IdeaComments } from './idea-comments';
 import {
   IDEA_SOURCE_LABEL,
   type Idea,
@@ -40,13 +40,35 @@ export interface DetailsTabProps {
   creating: boolean;
   idea: Idea | null;
   products: Product[];
-  /** Wired by the caller so the form's vote control calls through the SAME
-   * hook/service path as the list (issue #94, ideation round 2, AC-94-35).
-   * Omitted on a harness that never exercises voting. */
-  onVote?: (idea: Idea, dir: 'up' | 'down') => void;
+  /** Whether the viewer may comment - resolved by the form hook (it already
+   * reads the session). Omitted = read-only thread. */
+  canComment?: boolean;
 }
 
-export function DetailsTab({ form, editing, creating, idea, products, onVote }: DetailsTabProps) {
+/** The Details tab: the fields card, then (view mode, existing idea only) the
+ * Comments section under it (plan 19, AC-19-21). The vote box lives in the
+ * header avatar slot, not here (AC-19-16). */
+export function DetailsTab(props: DetailsTabProps) {
+  const { editing, creating, idea } = props;
+  return (
+    <div className="flex flex-col gap-5">
+      <DetailsFields {...props} />
+      {!editing && !creating && idea && (
+        <Card>
+          <CardContent className="pb-4 pt-0">
+            <IdeaComments
+              ideaId={idea.id}
+              mergedChild={Boolean(idea.mergedIntoId)}
+              canComment={props.canComment ?? false}
+            />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function DetailsFields({ form, editing, creating, idea, products }: DetailsTabProps) {
   const productOptions = products.map((p) => ({ label: p.name, value: p.id }));
   // Runtime-aware href (BLOCKER 1, issue #94 review round 1) - the CRM embed
   // iframe has no operator session, so the "Merged into" link must resolve
@@ -184,18 +206,6 @@ export function DetailsTab({ form, editing, creating, idea, products, onVote }: 
             <Badge variant="outline" appearance="light">
               {IDEA_SOURCE_LABEL[idea.source]}
             </Badge>
-          ) : (
-            '-'
-          )}
-        </FormRow>
-
-        <FormRow label="Votes">
-          {idea ? (
-            <VoteCell
-              idea={idea}
-              onVote={(i, dir) => onVote?.(i, dir)}
-              disabled={Boolean(idea.mergedIntoId)}
-            />
           ) : (
             '-'
           )}

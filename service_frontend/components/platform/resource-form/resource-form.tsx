@@ -213,8 +213,12 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
 
   // With a page CTA in Edit's slot, Edit becomes the "..." menu's first item.
   const primaryAction = config.primaryAction;
+  // `editPlacement: 'beside-primary'` (plan 19, AC-19-18) renders Edit as an
+  // outline button left of the CTA instead, so it is not in the menu.
+  const editBesidePrimary =
+    config.editPlacement === 'beside-primary' && Boolean(primaryAction) && config.editable && canEdit;
   const editMenuAction: ResourceAction<T> | null =
-    primaryAction && config.editable && canEdit
+    primaryAction && config.editable && canEdit && !editBesidePrimary
       ? {
           id: 'form-edit',
           label: 'Edit',
@@ -301,24 +305,32 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
       </Button>
     </>
   ) : primaryAction ? (
-    primaryAction.href ? (
-      <Button variant="outline" size="sm" asChild>
-        <a href={primaryAction.href} target="_blank" rel="noopener noreferrer">
+    <>
+      {editBesidePrimary && (
+        <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+          <Pencil />
+          Edit
+        </Button>
+      )}
+      {primaryAction.href ? (
+        <Button variant="outline" size="sm" asChild>
+          <a href={primaryAction.href} target="_blank" rel="noopener noreferrer">
+            {primaryAction.icon && <primaryAction.icon />}
+            {primaryAction.label}
+          </a>
+        </Button>
+      ) : (
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={primaryAction.disabled}
+          onClick={() => void primaryAction.onRun?.()}
+        >
           {primaryAction.icon && <primaryAction.icon />}
           {primaryAction.label}
-        </a>
-      </Button>
-    ) : (
-      <Button
-        variant="primary"
-        size="sm"
-        disabled={primaryAction.disabled}
-        onClick={() => void primaryAction.onRun?.()}
-      >
-        {primaryAction.icon && <primaryAction.icon />}
-        {primaryAction.label}
-      </Button>
-    )
+        </Button>
+      )}
+    </>
   ) : (
     config.editable &&
     canEdit && (

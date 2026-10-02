@@ -18,6 +18,7 @@ import type {
   BoardColumn,
   Idea,
   IdeaClusterSuggestions,
+  IdeaComment,
   IdeaRef,
   IdeaTransition,
   Product,
@@ -87,6 +88,7 @@ interface MockIdeaRecord {
 }
 
 let records: MockIdeaRecord[] = [];
+let comments: IdeaComment[] = [];
 
 function seed() {
   records = [];
@@ -95,10 +97,10 @@ function seed() {
   // test that captures several) never collides with a seeded row.
   const rows: Array<Partial<Idea> & { problem: string; productId: string; statusKey: string }> = [
     { id: 'idea-seed-1', productId: 'prod-crm', problem: 'Export orders to Excel', statusKey: 'captured', upvotes: 5, downvotes: 0, submitterName: 'Aisha Rahman', source: 'whatsapp' },
-    { id: 'idea-seed-2', productId: 'prod-crm', problem: 'Bulk approve quotations', statusKey: 'triaged', upvotes: 3, downvotes: 1, submitterName: 'Wei Ming', source: 'whatsapp' },
+    { id: 'idea-seed-2', productId: 'prod-crm', problem: 'Bulk approve quotations', statusKey: 'triaged', upvotes: 3, downvotes: 0, submitterName: 'Wei Ming', source: 'whatsapp' },
     { id: 'idea-seed-3', productId: 'prod-pos', problem: 'Faster barcode scanning at checkout', statusKey: 'linked', upvotes: 8, downvotes: 0, submitterName: 'Farah Aziz', source: 'voice' },
     { id: 'idea-seed-4', productId: 'prod-pos', problem: 'Offline receipt printing', statusKey: 'building', upvotes: 2, downvotes: 0, submitterName: 'Operator', source: 'manual' },
-    { id: 'idea-seed-5', productId: 'prod-crm', problem: 'Show promo price in red on price tags', statusKey: 'delivered', upvotes: 6, downvotes: 1, submitterName: 'Aisha Rahman', source: 'whatsapp' },
+    { id: 'idea-seed-5', productId: 'prod-crm', problem: 'Show promo price in red on price tags', statusKey: 'delivered', upvotes: 6, downvotes: 0, submitterName: 'Aisha Rahman', source: 'whatsapp' },
     { id: 'idea-seed-6', productId: 'prod-crm', problem: 'Duplicate customer records cleanup', statusKey: 'archived', upvotes: 1, downvotes: 0, submitterName: 'Wei Ming', source: 'whatsapp' },
   ];
   rows.forEach((r, i) => {
@@ -322,21 +324,83 @@ export const mockIdeationService: IdeaService & IdeaExtendedOps = {
     return mockIdeationService.getIdea(id);
   },
 
-  async vote(id: string, dir: 'up' | 'down'): Promise<Idea> {
+  async vote(id: string, dir: 'up'): Promise<Idea> {
     const rec = requireRecord(id);
     if (rec.idea.mergedIntoId) {
       const survivor = findRecord(rec.idea.mergedIntoId);
       throw new Error(`Merged into ${survivor?.idea.ideaNumber ?? 'another idea'}.`);
     }
-    if (rec.idea.myVote === dir) {
-      rec.idea[dir === 'up' ? 'upvotes' : 'downvotes'] -= 1;
+    // Upvote only (plan 19): toggling the same vote clears it.
+    void dir;
+    if (rec.idea.myVote === 'up') {
+      rec.idea.upvotes -= 1;
       rec.idea.myVote = null;
     } else {
-      if (rec.idea.myVote) rec.idea[rec.idea.myVote === 'up' ? 'upvotes' : 'downvotes'] -= 1;
-      rec.idea[dir === 'up' ? 'upvotes' : 'downvotes'] += 1;
-      rec.idea.myVote = dir;
+      rec.idea.upvotes += 1;
+      rec.idea.myVote = 'up';
     }
     return mockIdeationService.getIdea(id);
+  },
+
+  // Comments (plan 19, AC-19-25): flat, oldest first; one reply level; soft
+  // delete with the placeholder / omission rule of the backend.
+  async listComments(ideaId: string): Promise<IdeaComment[]> {
+    requireRecord(ideaId);
+    const rows = comments.filter((c) => c.ideaId === ideaId);
+    const parentsWithLiveReplies = new Set(
+      rows.filter((c) => !c.isDeleted && c.parentId).map((c) => c.parentId as string),
+    );
+    return rows
+      .filter((c) => !c.isDeleted || (c.parentId === null && parentsWithLiveReplies.has(c.id)))
+      .map((c) => ({ ...c }));
+  },
+
+  async addComment(ideaId: string, body: string, parentId?: string): Promise<IdeaComment> {
+    const rec = requireRecord(ideaId);
+    if (rec.idea.mergedIntoId) throw new Error('This idea was merged into another idea.');
+    const text = body.trim();
+    if (!text) throw new Error('Comment cannot be empty.');
+    let topId: string | null = null;
+    if (parentId) {
+      const parent = comments.find((c) => c.id === parentId && c.ideaId === ideaId && !c.isDeleted);
+      if (!parent) throw new Error('Comment not found.');
+      topId = parent.parentId ?? parent.id;
+    }
+    const comment: IdeaComment = {
+      id: nextId('comment'),
+      ideaId,
+      parentId: topId,
+      authorName: 'Operator',
+      authorKind: 'user',
+      body: text,
+      isDeleted: false,
+      isMine: true,
+      canEdit: true,
+      canDelete: true,
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+    };
+    comments.push(comment);
+    return { ...comment };
+  },
+
+  async editComment(ideaId: string, commentId: string, body: string): Promise<IdeaComment> {
+    const comment = comments.find((c) => c.id === commentId && c.ideaId === ideaId && !c.isDeleted);
+    if (!comment) throw new Error('Comment not found.');
+    comment.body = body.trim();
+    comment.editedAt = new Date().toISOString();
+    return { ...comment };
+  },
+
+  async deleteComment(ideaId: string, commentId: string): Promise<void> {
+    const comment = comments.find((c) => c.id === commentId && c.ideaId === ideaId && !c.isDeleted);
+    if (!comment) throw new Error('Comment not found.');
+    comment.isDeleted = true;
+    comment.body = null;
+    comment.authorName = null;
+    comment.canEdit = false;
+    comment.canDelete = false;
+    comment.isMine = false;
   },
 
   async reorderPriority(orderedIds: string[]): Promise<Idea[]> {
@@ -367,6 +431,7 @@ export const mockIdeationService: IdeaService & IdeaExtendedOps = {
       await mockIdeationService.unmerge(id);
     }
     records = records.filter((r) => r.idea.id !== rec.idea.id);
+    comments = comments.filter((c) => c.ideaId !== rec.idea.id);
   },
 
   async merge(survivorId: string, ideaIds: string[]): Promise<Idea> {
