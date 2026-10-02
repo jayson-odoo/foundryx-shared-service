@@ -7,6 +7,7 @@ field names byte-for-byte (input schema below; the output is a plain dict
 built in ``services/intake.py`` - it ALWAYS carries the full ten-key
 envelope, null where not applicable (AC-1116), never an omitted key)."""
 import re
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
@@ -177,6 +178,11 @@ class IdeaCommentOut(ApiModel):
     id: str
     ideaId: str
     parentId: Optional[str] = None
+
+    @field_validator("parentId")
+    @classmethod
+    def _parent(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_parent_id(v)
     authorName: Optional[str] = None
     authorKind: str
     body: Optional[str] = None
@@ -191,6 +197,17 @@ class IdeaCommentOut(ApiModel):
 # NUL and the other C0 controls, except newline and tab (AC-19-36), and lone
 # UTF-16 surrogates (AC-19-44: they cannot be encoded, which would 500).
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\ud800-\udfff]")
+
+
+def _clean_parent_id(value: Optional[str]) -> Optional[str]:
+    """AC-19-47: a parent id is a UUID string (comment ids are uuid4) - anything
+    else is a 422 before any lookup or throttle."""
+    if value is None:
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("parentId must be a comment id.")
 
 
 def _clean_comment_body(value: str, limit: int) -> str:
@@ -209,6 +226,11 @@ class IdeaCommentCreate(ApiModel):
 
     body: str
     parentId: Optional[str] = None
+
+    @field_validator("parentId")
+    @classmethod
+    def _parent(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_parent_id(v)
 
     @field_validator("body")
     @classmethod
@@ -232,6 +254,11 @@ class PublicIdeaCommentCreate(ApiModel):
 
     body: str
     parentId: Optional[str] = None
+
+    @field_validator("parentId")
+    @classmethod
+    def _parent(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_parent_id(v)
 
     @field_validator("body")
     @classmethod

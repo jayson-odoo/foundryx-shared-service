@@ -52,7 +52,7 @@ def _encodable(value: Any) -> Any:
     if isinstance(value, list):
         return [_encodable(v) for v in value]
     if isinstance(value, dict):
-        return {k: _encodable(v) for k, v in value.items()}
+        return {_encodable(k): _encodable(v) for k, v in value.items()}
     return value
 
 
