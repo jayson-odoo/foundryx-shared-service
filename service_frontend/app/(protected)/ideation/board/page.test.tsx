@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoardColumn, Idea } from '@/types/ideation';
 import type { UseIdeas } from '@/hooks/use-ideas';
@@ -165,8 +165,11 @@ describe('IdeationBoardPage', () => {
     expect(box).not.toBeNull();
     expect(box?.getAttribute('data-size')).toBe('sm');
     expect(screen.queryByRole('button', { name: /downvote/i })).not.toBeInTheDocument();
-    expect(screen.queryByText('2')).not.toBeInTheDocument(); // the old net score 3 - 1
-    expect(screen.queryByText('1')).not.toBeInTheDocument(); // the old downvote count
+    // Scoped to the card: the column count Badge also renders digits.
+    const card = box?.closest('.rounded-lg') as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(within(card).queryByText('2')).not.toBeInTheDocument(); // the old net score 3 - 1
+    expect(within(card).queryByText('1')).not.toBeInTheDocument(); // the old downvote count
   });
 
   // ── AC-94-58 (issue #94, ideation round 2) ──────────────────────────────────

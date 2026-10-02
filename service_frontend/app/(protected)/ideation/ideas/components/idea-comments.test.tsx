@@ -328,7 +328,7 @@ describe('IdeaComments - edit and delete (AC-19-23)', () => {
     const again = within(t).getByDisplayValue('First comment');
     await user.clear(again);
     await user.type(again, 'Edited text');
-    await user.click(within(t).getByRole('button', { name: 'Save' }));
+    await user.click(within(t).getByRole('button', { name: 'Save comment' }));
     expect(v.edit).toHaveBeenCalledWith('c1', 'Edited text');
   });
 
