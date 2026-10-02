@@ -51,6 +51,9 @@ from ..schemas import (
     BoardOut,
     BusinessRequirementDetailOut,
     IdeaAttachmentOut,
+    IdeaCommentCreate,
+    IdeaCommentEdit,
+    IdeaCommentOut,
     IdeaOut,
     IdeaUpdateIn,
     MergeIn,
@@ -61,6 +64,7 @@ from ..schemas import (
 from ..services.actions import IdeaActionService
 from ..services.attachments import IdeaAttachmentService
 from ..services.business_requirements import BusinessRequirementService
+from ..services.comments import AUTHOR_EMBED, CommentViewer, IdeaCommentService
 from ..services.embed import (
     EmbedTokenPrincipal,
     IdeationEmbedError,
@@ -518,4 +522,77 @@ def embed_delete_idea(
     any row is touched."""
     _assert_in_scope(db, principal, idea_id)
     IdeaActionService(db).delete(principal.tenant_id, idea_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── comments (plan 19, AC-19-10) ──────────────────────────────────────────────
+
+
+def _embed_viewer(principal: EmbedTokenPrincipal) -> CommentViewer:
+    """Embed users act as themselves only: no triage override on the iframe."""
+    return CommentViewer(kind=AUTHOR_EMBED, id=_embed_voter_id(principal), can_moderate=False)
+
+
+@router.get("/ideas/{idea_id}/comments", response_model=List[IdeaCommentOut])
+def embed_list_comments(
+    idea_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> List[IdeaCommentOut]:
+    _assert_in_scope(db, principal, idea_id)
+    return IdeaCommentService(db).list(principal.tenant_id, idea_id, _embed_viewer(principal))
+
+
+@router.post(
+    "/ideas/{idea_id}/comments", response_model=IdeaCommentOut, status_code=status.HTTP_201_CREATED
+)
+def embed_create_comment(
+    idea_id: str,
+    body: IdeaCommentCreate,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> IdeaCommentOut:
+    _assert_in_scope(db, principal, idea_id)
+    viewer = _embed_viewer(principal)
+    return IdeaCommentService(db).create(
+        principal.tenant_id,
+        idea_id,
+        body=body.body,
+        parent_id=body.parentId,
+        author_kind=AUTHOR_EMBED,
+        author_id=viewer.id or "",
+        author_name=(principal.email or "").strip() or "Portal user",
+        viewer=viewer,
+    )
+
+
+@router.patch("/ideas/{idea_id}/comments/{comment_id}", response_model=IdeaCommentOut)
+def embed_edit_comment(
+    idea_id: str,
+    comment_id: str,
+    body: IdeaCommentEdit,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> IdeaCommentOut:
+    _assert_in_scope(db, principal, idea_id)
+    return IdeaCommentService(db).edit(
+        principal.tenant_id, idea_id, comment_id, body=body.body, viewer=_embed_viewer(principal)
+    )
+
+
+@router.delete("/ideas/{idea_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def embed_delete_comment(
+    idea_id: str,
+    comment_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> Response:
+    _assert_in_scope(db, principal, idea_id)
+    IdeaCommentService(db).delete(
+        principal.tenant_id,
+        idea_id,
+        comment_id,
+        viewer=_embed_viewer(principal),
+        can_comment=True,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

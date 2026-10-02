@@ -12,12 +12,15 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.documents import _serve_blob
 from app.database import get_db
-from app.dependencies import require_permission
+from app.dependencies import effective_permission_keys, get_current_user, require_permission
 from app.models.user import User
 
 from ..schemas import (
     BoardOut,
     IdeaAttachmentOut,
+    IdeaCommentCreate,
+    IdeaCommentEdit,
+    IdeaCommentOut,
     BusinessRequirementOut,
     ClusterSuggestionsOut,
     IdeaCreateIn,
@@ -32,10 +35,23 @@ from ..services.actions import IdeaActionService
 from ..services.attachments import IdeaAttachmentService
 from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
+from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
 
 router = APIRouter()
+
+COMMENT_PERMISSION = "ideation.ideas.comment"
+TRIAGE_PERMISSION = "ideation.triage.manage"
+
+
+def _viewer(user: User) -> CommentViewer:
+    """The calling operator as a comment viewer; ``can_moderate`` = triage manage."""
+    return CommentViewer(
+        kind=AUTHOR_USER,
+        id=user.id,
+        can_moderate=TRIAGE_PERMISSION in effective_permission_keys(user),
+    )
 
 # Attachment upload read cap (25 MB); one extra byte tells "at the cap" from "over".
 ATTACHMENT_CAP_BYTES = 25 * 1024 * 1024
@@ -319,4 +335,71 @@ def delete_idea(
 ) -> Response:
     """Hard-delete an idea (and its vote rows). 404 if not found in the tenant."""
     IdeaActionService(db).delete(current_user.tenant_id, idea_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── comments (plan 19) ────────────────────────────────────────────────────────
+
+
+@router.get("/{idea_id}/comments", response_model=List[IdeaCommentOut])
+def list_idea_comments(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> List[IdeaCommentOut]:
+    """The idea's comments, oldest first (flat; replies carry ``parentId``)."""
+    return IdeaCommentService(db).list(current_user.tenant_id, idea_id, _viewer(current_user))
+
+
+@router.post(
+    "/{idea_id}/comments", response_model=IdeaCommentOut, status_code=status.HTTP_201_CREATED
+)
+def create_idea_comment(
+    idea_id: str,
+    body: IdeaCommentCreate,
+    current_user: User = Depends(require_permission(COMMENT_PERMISSION)),
+    db: Session = Depends(get_db),
+) -> IdeaCommentOut:
+    return IdeaCommentService(db).create(
+        current_user.tenant_id,
+        idea_id,
+        body=body.body,
+        parent_id=body.parentId,
+        author_kind=AUTHOR_USER,
+        author_id=current_user.id,
+        author_name=(current_user.name or "").strip() or current_user.email,
+        viewer=_viewer(current_user),
+    )
+
+
+@router.patch("/{idea_id}/comments/{comment_id}", response_model=IdeaCommentOut)
+def edit_idea_comment(
+    idea_id: str,
+    comment_id: str,
+    body: IdeaCommentEdit,
+    current_user: User = Depends(require_permission(COMMENT_PERMISSION)),
+    db: Session = Depends(get_db),
+) -> IdeaCommentOut:
+    return IdeaCommentService(db).edit(
+        current_user.tenant_id, idea_id, comment_id, body=body.body, viewer=_viewer(current_user)
+    )
+
+
+@router.delete("/{idea_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_idea_comment(
+    idea_id: str,
+    comment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Author (holding ``ideation.ideas.comment``) or any ``ideation.triage.manage``
+    holder; anyone else 403."""
+    held = effective_permission_keys(current_user)
+    IdeaCommentService(db).delete(
+        current_user.tenant_id,
+        idea_id,
+        comment_id,
+        viewer=_viewer(current_user),
+        can_comment=COMMENT_PERMISSION in held,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

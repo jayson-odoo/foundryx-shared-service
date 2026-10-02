@@ -85,6 +85,33 @@ class PublicIdeaStatusService:
         self.db = db
 
     def resolve(self, token: str) -> Optional[PublicIdeaStatusOut]:
+        loaded = self._load(token)
+        if loaded is None:
+            return None
+        idea, display_idea, merged_into, status_row = loaded
+
+        return PublicIdeaStatusOut(
+            title=idea.title,
+            status=status_row.label,
+            ideaNumber=idea.idea_number,
+            statusColor=status_row.color,
+            productName=self._product_name(idea),
+            problem=idea.problem,
+            proposedSolution=idea.proposed_solution,
+            impact=idea.impact,
+            department=idea.department,
+            submitterFirstName=self._first_name(idea),
+            submittedAt=idea.created_at,
+            upvotes=display_idea.upvotes,
+            nextStep=self._next_step(status_row),
+            timeline=self._timeline(display_idea, status_row),
+            mergedInto=merged_into,
+        )
+
+    def _load(self, token: str):
+        """Shared token resolution for the status page AND its comments: returns
+        ``(idea, display_idea, merged_into, status_row)`` or ``None`` for every
+        non-servable case (the uniform 404 rules)."""
         if not _TOKEN_RE.fullmatch(token or ""):
             return None
 
@@ -142,24 +169,22 @@ class PublicIdeaStatusService:
         # timeline's own exclusion of the initial step.
         if status_row is None or status_row.is_initial:
             return None
+        return idea, display_idea, merged_into, status_row
 
-        return PublicIdeaStatusOut(
-            title=idea.title,
-            status=status_row.label,
-            ideaNumber=idea.idea_number,
-            statusColor=status_row.color,
-            productName=self._product_name(idea),
-            problem=idea.problem,
-            proposedSolution=idea.proposed_solution,
-            impact=idea.impact,
-            department=idea.department,
-            submitterFirstName=self._first_name(idea),
-            submittedAt=idea.created_at,
-            upvotes=display_idea.upvotes,
-            nextStep=self._next_step(status_row),
-            timeline=self._timeline(display_idea, status_row),
-            mergedInto=merged_into,
-        )
+    def resolve_idea(self, token: str) -> Optional[Idea]:
+        """The idea a public token addresses (the CHILD for a merged child, never
+        the survivor) under exactly the status page's 404 rules, or ``None``."""
+        loaded = self._load(token)
+        return loaded[0] if loaded is not None else None
+
+    def comment_author_name(self, idea: Idea) -> str:
+        """Display name stamped on a public comment: the idea's own submitter
+        name, never client input. A phone/email-shaped value is never published
+        (same guard as the page's first name) - falls back to ``Submitter``."""
+        raw = unicodedata.normalize("NFKC", (idea.submitter_name or "").strip())
+        if not raw or _looks_like_a_phone_or_email(raw):
+            return "Submitter"
+        return raw
 
     # ---- detail lookups (each scoped by the idea row's OWN tenant_id) ------
 

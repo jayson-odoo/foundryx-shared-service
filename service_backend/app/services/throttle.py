@@ -30,6 +30,8 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_EMAIL,
     THROTTLE_SCOPE_EMBED,
     THROTTLE_SCOPE_FORM_PUBLIC,
+    THROTTLE_SCOPE_IDEA_COMMENT_IP,
+    THROTTLE_SCOPE_IDEA_COMMENT_TOKEN,
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_PORTAL,
     THROTTLE_SCOPE_PULL,
@@ -101,6 +103,18 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_build_max_fails,
             timedelta(minutes=settings.throttle_build_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_COMMENT_TOKEN:
+        return (
+            settings.throttle_idea_comment_token_max,
+            timedelta(minutes=settings.throttle_idea_comment_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_COMMENT_IP:
+        return (
+            settings.throttle_idea_comment_ip_max,
+            timedelta(minutes=settings.throttle_idea_comment_window_minutes),
             None,
         )
     if scope == THROTTLE_SCOPE_PULL_KEY:
@@ -372,3 +386,17 @@ class ThrottleService:
 
     def record_build_failure(self, *, ip: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_BUILD, ip)
+
+    # ---- Ideation public status-page comments (own buckets, plan 19 AC-19-30) ----
+
+    def enforce_idea_comment(self, *, ip: str, token_key: str) -> None:
+        """``token_key`` = sha256 hex of the status token (never the raw token)."""
+        retry = self.store.check(THROTTLE_SCOPE_IDEA_COMMENT_TOKEN, token_key)
+        if retry is None:
+            retry = self.store.check(THROTTLE_SCOPE_IDEA_COMMENT_IP, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_idea_comment(self, *, ip: str, token_key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_COMMENT_TOKEN, token_key)
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_COMMENT_IP, ip)

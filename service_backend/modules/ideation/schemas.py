@@ -9,7 +9,7 @@ envelope, null where not applicable (AC-1116), never an omitted key)."""
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -92,7 +92,7 @@ class IdeaOut(ApiModel):
     submitterTier: Optional[str] = None
     upvotes: int
     downvotes: int = 0
-    myVote: Optional[Literal["up", "down"]] = None
+    myVote: Optional[Literal["up"]] = None
     priority: int
     # 1-based position in the caller's rank lane (issue #94, plan section 5) -
     # ``None`` for an archived idea or a merged child (not ranked).
@@ -161,10 +161,74 @@ class DeliveryConfigIn(ApiModel):
 
 
 class VoteIn(ApiModel):
-    """Toggle the caller's vote on an idea (one per voter). Re-sending the same
-    ``dir`` cancels it; the other ``dir`` switches it."""
+    """Toggle the caller's upvote on an idea (one per voter). Re-sending ``up``
+    cancels it. Plan 19: upvote only - ``down`` is a 422."""
 
-    dir: Literal["up", "down"]
+    dir: Literal["up"]
+
+
+class IdeaCommentOut(ApiModel):
+    """One idea comment (plan 19). Flat list; the FE groups replies under their
+    top-level parent. ``authorId`` is deliberately NOT on the wire. A deleted
+    comment with live replies is a placeholder (``isDeleted`` true, ``body`` and
+    ``authorName`` null)."""
+
+    id: str
+    ideaId: str
+    parentId: Optional[str] = None
+    authorName: Optional[str] = None
+    authorKind: str
+    body: Optional[str] = None
+    isDeleted: bool = False
+    isMine: bool = False
+    canEdit: bool = False
+    canDelete: bool = False
+    createdAt: datetime
+    editedAt: Optional[datetime] = None
+
+
+def _clean_comment_body(value: str, limit: int) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise ValueError("Comment cannot be empty.")
+    if len(cleaned) > limit:
+        raise ValueError(f"Comment is too long (max {limit} characters).")
+    return cleaned
+
+
+class IdeaCommentCreate(ApiModel):
+    """Operator / embed comment create: body stripped, 1..5000 chars."""
+
+    body: str
+    parentId: Optional[str] = None
+
+    @field_validator("body")
+    @classmethod
+    def _body(cls, v: str) -> str:
+        return _clean_comment_body(v, 5000)
+
+
+class IdeaCommentEdit(ApiModel):
+    body: str
+
+    @field_validator("body")
+    @classmethod
+    def _body(cls, v: str) -> str:
+        return _clean_comment_body(v, 5000)
+
+
+class PublicIdeaCommentCreate(ApiModel):
+    """Status-page visitor comment: body stripped, 1..2000 chars. Any other
+    client-sent field (name, author) is ignored - the author is derived server
+    side from the idea's submitter."""
+
+    body: str
+    parentId: Optional[str] = None
+
+    @field_validator("body")
+    @classmethod
+    def _body(cls, v: str) -> str:
+        return _clean_comment_body(v, 2000)
 
 
 class ReorderIn(ApiModel):
