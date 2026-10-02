@@ -18,6 +18,7 @@ from ..doc_feed.constants import BACKFILL_FROM_DEFAULT
 from ..models import (
     DELIVERY_MODE_PUSH,
     DOC_FEED_DELIVERY_ORDERS,
+    DOC_FEED_GOODS_RECEIVE_NOTES,
     ETL_STATUS_ACTIVE,
     PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_FAILED,
@@ -56,8 +57,19 @@ ENTITY_WIRE_TO_INTERNAL: Dict[str, str] = {
     "stock_balances": "stock_balance",
     # plan 16 - internal key == wire key (the doc-feed key).
     "delivery_orders": DOC_FEED_DELIVERY_ORDERS,
+    # plan 16 follow-on - the GRN mirror of the DO snapshot.
+    "goods_receive_notes": DOC_FEED_GOODS_RECEIVE_NOTES,
 }
 ENTITY_INTERNAL_TO_WIRE: Dict[str, str] = {v: k for k, v in ENTITY_WIRE_TO_INTERNAL.items()}
+
+# plan 16 - the entities built from a document feed's by-DocDate door: scoped
+# by fromDay/toDay/docNo, gated by that feed's own row, never by an entity
+# config. The internal key IS the doc-feed key.
+DOC_FEED_SNAPSHOT_ENTITIES = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES)
+
+
+def is_doc_feed_entity(internal_entity: Optional[str]) -> bool:
+    return internal_entity in DOC_FEED_SNAPSHOT_ENTITIES
 
 _PULL_NOT_ENABLED_MESSAGE = (
     "This book/entity was never enabled for pull, or is not active."
@@ -107,9 +119,9 @@ def gateway_failed_message(error_code: Optional[str]) -> str:
     return GATEWAY_FAILED_MESSAGES.get(error_code or "", GATEWAY_FAILED_FALLBACK_MESSAGE)
 
 
-# ── plan 16: the `delivery_orders` scope (contract section 2) ──────────────
+# ── plan 16: the doc-feed snapshot scope (contract section 2) ──────────────
 
-DO_SCOPE_KEYS = ("fromDay", "toDay", "docNo")
+DOC_SCOPE_KEYS = ("fromDay", "toDay", "docNo")
 DO_MAX_RANGE_DAYS = 31
 DO_MAX_DOC_NO_LEN = 64
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -129,8 +141,9 @@ def _parse_day(value: Any, field: str) -> date:
         raise _invalid(f"{field} must be a real calendar date in YYYY-MM-DD form.")
 
 
-def parse_do_scope(raw_body: Any, *, today_myt: date) -> Dict[str, Optional[str]]:
-    """Validate + normalise the `delivery_orders` build scope. Returns
+def parse_doc_scope(raw_body: Any, *, today_myt: date) -> Dict[str, Optional[str]]:
+    """Validate + normalise a doc-feed (`delivery_orders` /
+    `goods_receive_notes`) build scope. Returns
     ``{"fromDay","toDay","docNo"}`` (ISO strings; ``docNo`` trimmed, ``None``
     when absent) or raises ``PullGatewayError(422, INVALID_REQUEST)`` naming
     the field. Messages never echo the client's value."""
@@ -214,8 +227,8 @@ def gateway_snapshot_header(snapshot: AcPullSnapshot) -> Dict[str, Any]:
         "status": snapshot.status,
     }
     metadata = snapshot.metadata_json or {}
-    is_do = snapshot.entity_type == DOC_FEED_DELIVERY_ORDERS
-    if is_do:
+    is_doc_feed = is_doc_feed_entity(snapshot.entity_type)
+    if is_doc_feed:
         header.update(
             {
                 "fromDay": metadata.get("fromDay"),
@@ -237,7 +250,7 @@ def gateway_snapshot_header(snapshot: AcPullSnapshot) -> Dict[str, Any]:
                 "excludedRows": metadata.get("excludedRows", []),
             }
         )
-        if is_do:
+        if is_doc_feed:
             header.update(
                 {
                     "daysRead": metadata.get("daysRead"),
@@ -337,13 +350,13 @@ class PullGatewayService:
                 company_id=company.id,
             )
 
-        if internal_entity == DOC_FEED_DELIVERY_ORDERS:
-            # plan 16 D5 - the gate is a delivery_orders feed row WITH a
+        if is_doc_feed_entity(internal_entity):
+            # plan 16 D5 - the gate is THIS entity's doc-feed row WITH a
             # connection (tenant AND company scoped); the feed's mode gates
             # the hourly push, never this read; no entity config, no
             # PUSH_ACTIVE.
             feed = DocFeedRepository(self.db).get(
-                key_row.tenant_id, company.id, DOC_FEED_DELIVERY_ORDERS
+                key_row.tenant_id, company.id, internal_entity
             )
             feed_conn = (
                 ConnectionRepository(self.db).get_for_provider(

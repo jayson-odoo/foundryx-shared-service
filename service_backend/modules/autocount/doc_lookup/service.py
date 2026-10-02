@@ -77,7 +77,7 @@ def _invalid(message: str) -> DocLookupError:
 
 def normalize_doc_no(raw: Any) -> str:
     """Trimmed number, 1..64 chars, no control characters. Messages name the
-    field and never echo the value (the gateway's own ``parse_do_scope`` rule)."""
+    field and never echo the value (the gateway's own ``parse_doc_scope`` rule)."""
     if not isinstance(raw, str):
         raise _invalid("docNo must be a string.")
     if _CONTROL_CHARS_RE.search(raw):

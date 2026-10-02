@@ -86,7 +86,7 @@ from .mapping import (
 )
 from .models import (
     DELIVERY_MODE_PULL,
-    DOC_FEED_DELIVERY_ORDERS,
+    DOC_FEED_DOCUMENT_KEYS,
     ETL_STATUS_ACTIVE,
     PULL_SNAPSHOT_STATUS_BUILDING,
     RUN_ABORTED,
@@ -2803,11 +2803,13 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
     snapshot_service = SnapshotService(db)
     snapshot = snap_repo.get(tenant_id, snapshot_id)
     company = CompanyRepository(db).get(tenant_id, company_id)
-    # plan 16 - a delivery_orders snapshot reads the DO doc feed's vendor door;
-    # it has no ``ac_entity_config`` row (never consulted).
-    is_do_snapshot = entity_type == DOC_FEED_DELIVERY_ORDERS
+    # plan 16 - a delivery_orders / goods_receive_notes snapshot reads that doc
+    # feed's own vendor door; it has no ``ac_entity_config`` row (never consulted).
+    is_doc_feed_snapshot = entity_type in DOC_FEED_DOCUMENT_KEYS
     config = (
-        None if is_do_snapshot else EntityConfigRepository(db).get(tenant_id, company_id, entity_type)
+        None
+        if is_doc_feed_snapshot
+        else EntityConfigRepository(db).get(tenant_id, company_id, entity_type)
     )
 
     def _fail_snapshot(message: str, error_code: str) -> None:
@@ -2829,29 +2831,29 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
                 )
         service.finish(job, status=JOB_FAILED, error=message)
 
-    if is_do_snapshot:
+    if is_doc_feed_snapshot:
         from .repositories.doc_feed_repository import DocFeedRepository
 
-        feed_row = DocFeedRepository(db).get(tenant_id, company_id, DOC_FEED_DELIVERY_ORDERS)
+        feed_row = DocFeedRepository(db).get(tenant_id, company_id, entity_type)
         if snapshot is None or company is None or feed_row is None:
             _fail_snapshot(
-                "The delivery-orders feed this build was requested for no longer exists.",
+                "The document feed this build was requested for no longer exists.",
                 ERROR_CODE_SOURCE_PAGE_FAILED,
             )
             return
-        do_run = SyncRunRepository(db).add(
+        doc_run = SyncRunRepository(db).add(
             AcSyncRun(
                 tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
                 job_id=job.id, mode=RUN_MODE_SNAPSHOT,
             )
         )
         db.commit()
-        from .doc_feed.snapshot import build_delivery_orders_snapshot
+        from .doc_feed.snapshot import build_doc_feed_snapshot
 
-        build_delivery_orders_snapshot(
+        build_doc_feed_snapshot(
             db, job, snapshot, company, feed_row,
             {key: payload.get(key) for key in ("fromDay", "toDay", "docNo")},
-            run=do_run, started=started, fail_snapshot=_fail_snapshot,
+            run=doc_run, started=started, fail_snapshot=_fail_snapshot,
         )
         return
 

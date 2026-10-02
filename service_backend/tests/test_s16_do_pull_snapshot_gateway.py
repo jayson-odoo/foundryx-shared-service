@@ -323,14 +323,15 @@ def test_ac_16_05_control_products_without_scope_keys_behaves_exactly_as_before(
 # ── AC-16-06 ─────────────────────────────────────────────────────────────────
 
 
-def test_ac_16_06_unknown_entity_message_lists_the_three_wire_entities(client, db, monkeypatch):
+def test_ac_16_06_unknown_entity_message_lists_every_wire_entity(client, db, monkeypatch):
     env = build_env(db, monkeypatch)
 
     response = post_build(client, env.key, entity="widgets")
 
     _assert_flat_error(response, status=422, code="UNKNOWN_ENTITY", entity="widgets")
+    # AC-16-76 added goods_receive_notes to the list.
     assert response.json()["message"] == (
-        "entity must be one of: delivery_orders, products, stock_balances."
+        "entity must be one of: delivery_orders, goods_receive_notes, products, stock_balances."
     )
 
 

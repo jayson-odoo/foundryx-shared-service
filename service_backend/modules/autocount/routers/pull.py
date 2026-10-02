@@ -20,9 +20,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_actor_user_id, require_permission
+from app.dependencies import effective_permission_keys, get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..models import DOC_FEED_DOCUMENT_KEYS
 from ..schemas import (
     PullApiKeyCreateInput,
     PullApiKeyIssuedOut,
@@ -166,6 +167,7 @@ def list_pull_snapshots(
         entity_type=entity_type,
         page=page,
         page_size=page_size,
+        permissions=effective_permission_keys(current_user),
     )
     return PullSnapshotListResponse(
         data=[_snapshot_out(service, current_user.tenant_id, row) for row in rows],
@@ -184,7 +186,10 @@ def get_pull_snapshot(
 ) -> PullSnapshotOut:
     service = PullService(db)
     try:
-        snapshot = service.get_snapshot(current_user.tenant_id, snapshot_id)
+        snapshot = service.get_snapshot(
+            current_user.tenant_id, snapshot_id,
+            permissions=effective_permission_keys(current_user),
+        )
     except AutocountServiceError as exc:
         _raise(exc)
     return _snapshot_out(service, current_user.tenant_id, snapshot)
@@ -202,7 +207,8 @@ def get_pull_snapshot_rows(
     empty ``rows`` array with the same header echo, never a 404."""
     try:
         snapshot, rows, total = PullService(db).snapshot_rows_page(
-            current_user.tenant_id, snapshot_id, page=page, page_size=page_size
+            current_user.tenant_id, snapshot_id, page=page, page_size=page_size,
+            permissions=effective_permission_keys(current_user),
         )
     except AutocountServiceError as exc:
         _raise(exc)
@@ -234,14 +240,16 @@ def build_pull_snapshot(
 ) -> PullSnapshotOut:
     """Build a snapshot AS THE OPERATOR (``requested_via='operator'``) - the
     SAME ``PullService.request_build`` the public gateway (S4) calls."""
-    if body.entityType == "delivery_orders":
-        # plan 16 D11 - the operator wire carries no scope; the delivery
-        # orders snapshot is built through the public gateway only.
+    if body.entityType in DOC_FEED_DOCUMENT_KEYS:
+        # plan 16 D11 - the operator wire carries no scope; a document
+        # (delivery orders / goods received notes) snapshot is built through
+        # the public gateway only.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "Delivery orders snapshots are built through the public pull "
-                "gateway (they need a day range or a document number)."
+                "Document snapshots (delivery orders, goods received notes) are "
+                "built through the public pull gateway (they need a day range or "
+                "a document number)."
             ),
         )
     service = PullService(db)

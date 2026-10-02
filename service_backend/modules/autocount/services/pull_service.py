@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import AbstractSet, Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -341,6 +341,29 @@ class PullSnapshotNotFound(AutocountServiceError):
     - uniform (AC-10-30: possession of an id is not authorisation)."""
 
 
+# Operator (session) reads: a snapshot of one of these entities additionally
+# needs this permission on top of the route's ``autocount.pull.read``. GRN
+# carries supplier + cost data, which this module only ever shows to
+# ``autocount.sync.read`` (the doc finder's own GRN rule,
+# ``doc_lookup/registry.py``). The public gateway is key-scoped and passes no
+# permission set, so it is never filtered here.
+SNAPSHOT_ENTITY_READ_PERMISSION: Dict[str, str] = {
+    "goods_receive_notes": "autocount.sync.read",
+}
+
+
+def hidden_snapshot_entities(permissions: Optional[AbstractSet[str]]) -> Tuple[str, ...]:
+    """The entity types a caller holding ``permissions`` may not see; none
+    when ``permissions`` is ``None`` (a key-scoped gateway call)."""
+    if permissions is None:
+        return ()
+    return tuple(
+        entity
+        for entity, needed in SNAPSHOT_ENTITY_READ_PERMISSION.items()
+        if needed not in permissions
+    )
+
+
 _SCOPE_KEYS = ("fromDay", "toDay", "docNo")
 # stored with the scope at creation so a `building` / `failed` header can echo
 # it, but never part of scope equality (the book is the feed's, not the caller's).
@@ -509,7 +532,12 @@ class PullService:
     # ── reads (operator routes now; the S4 public gateway reuses these) ─────
 
     def get_snapshot(
-        self, tenant_id: str, snapshot_id: str, *, company_id: Optional[str] = None
+        self,
+        tenant_id: str,
+        snapshot_id: str,
+        *,
+        company_id: Optional[str] = None,
+        permissions: Optional[AbstractSet[str]] = None,
     ) -> AcPullSnapshot:
         """Tenant-scoped (and, when given, additionally COMPANY-scoped - the
         gateway's own call) lookup. Unknown id and cross-scope id read
@@ -519,7 +547,8 @@ class PullService:
             if company_id is not None
             else self.repo.get(tenant_id, snapshot_id)
         )
-        if snapshot is None:
+        if snapshot is None or snapshot.entity_type in hidden_snapshot_entities(permissions):
+            # A snapshot the caller may not read reads exactly like an unknown id.
             raise PullSnapshotNotFound("That snapshot was not found.")
         return snapshot
 
@@ -546,11 +575,13 @@ class PullService:
         entity_type: Optional[str] = None,
         page: int = 0,
         page_size: int = 25,
+        permissions: Optional[AbstractSet[str]] = None,
     ) -> Tuple[List[AcPullSnapshot], int]:
         return self.repo.list(
             tenant_id,
             company_id=company_id,
             entity_type=entity_type,
+            exclude_entity_types=hidden_snapshot_entities(permissions),
             page=page,
             page_size=page_size,
         )
@@ -563,10 +594,13 @@ class PullService:
         company_id: Optional[str] = None,
         page: int,
         page_size: int,
+        permissions: Optional[AbstractSet[str]] = None,
     ) -> Tuple[AcPullSnapshot, List[AcPullSnapshotRow], int]:
         """``page`` is 1-based (AC-10-33); ``pageSize`` clamps to
         ``MAX_PULL_PAGE_SIZE`` rather than erroring."""
-        snapshot = self.get_snapshot(tenant_id, snapshot_id, company_id=company_id)
+        snapshot = self.get_snapshot(
+            tenant_id, snapshot_id, company_id=company_id, permissions=permissions
+        )
         clamped_size = min(max(page_size, 1), MAX_PULL_PAGE_SIZE)
         rows, total = self.repo.rows_page(
             tenant_id, snapshot.id, page=max(page, 1), page_size=clamped_size
