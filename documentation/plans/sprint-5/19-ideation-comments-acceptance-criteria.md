@@ -37,7 +37,7 @@ Surfaces: the OPERATOR idea page `app/(protected)/ideation/ideas/[id]` and the E
 
 - **AC-19-21** [FE] Under the Details tab content (view mode, existing idea only; not on create) a `Comments <n>` section shows a composer (Textarea + `Comment` button disabled while empty/whitespace) above the comment list, oldest first; each comment = `UserAvatar` initials + author name + `formatDateTime(createdAt)` (via `useDatetime`) + `edited` marker when `editedAt` + body (plain text, whitespace preserved; never HTML-rendered).
 - **AC-19-22** [FE] Replies render indented under their top-level comment. `Reply` opens an inline composer under that thread (Cancel / Reply); posting a reply to a reply posts to the top-level parent.
-- **AC-19-23** [FE] `Edit` / `Delete` links show only when `canEdit` / `canDelete`. Edit swaps the body for a Textarea (Cancel / Save). Delete asks for confirmation (`AlertDialog`) then deletes. A deleted comment with replies shows `Comment deleted`.
+- **AC-19-23** [FE] `Edit` / `Delete` links show only when `canEdit` / `canDelete`. Edit swaps the body for a Textarea (Cancel / Save comment; verb + noun per the primary-button inventory rule). Delete asks for confirmation (`AlertDialog`) then deletes. A deleted comment with replies shows `Comment deleted`.
 - **AC-19-24** [FE] The composer is hidden when the user cannot comment (operator without `ideation.ideas.comment`; any merged child). Empty list = `No comments.`.
 - **AC-19-25** [FE] Data flows component -> `hooks/use-idea-comments.ts` -> `IdeaService` (`listComments`, `addComment`, `editComment`, `deleteComment`, optional on the interface) in `ideation-service.real.ts`, `ideation-embed-service.ts` and `ideation-service.mock.ts`; the component never fetches.
 
