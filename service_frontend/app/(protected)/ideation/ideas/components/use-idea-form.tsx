@@ -167,6 +167,15 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     // A merged child is frozen (AC-94-09/26) - the gear offers only Unmerge
     // (split it back out) and Delete. Every lifecycle action lives on the
     // survivor instead.
+    // A failed primary move toasts its message instead of rejecting (AC-19-41).
+    const guarded = async (run: () => Promise<void>, fallback: string) => {
+      try {
+        await run();
+      } catch (e) {
+        toast.error(e instanceof Error && e.message ? e.message : fallback);
+      }
+    };
+
     const unmergeIdea = async (target: Idea) => {
       if (!ideationService.unmerge) return;
       const [restored] = await ideationService.unmerge(target.id);
@@ -259,7 +268,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           label: 'Unmerge',
           icon: Split,
           disabled: !ideationService.unmerge,
-          onRun: () => unmergeIdea(idea),
+          onRun: () => guarded(() => unmergeIdea(idea), 'Could not unmerge the idea.'),
         };
       } else if (idea.statusIsArchived) {
         if (restoreEdge) {
@@ -267,10 +276,11 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             id: 'restore',
             label: 'Restore',
             icon: ArchiveRestore,
-            onRun: async () => {
-              await applyStatus(idea.id, restoreEdge.toStatusId);
-              toast.success('Idea restored.');
-            },
+            onRun: () =>
+              guarded(async () => {
+                await applyStatus(idea.id, restoreEdge.toStatusId);
+                toast.success('Idea restored.');
+              }, 'Could not restore the idea.'),
           };
         }
       } else if (advanceEdge) {
@@ -278,10 +288,11 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           id: 'advance',
           label: `Move to ${advanceEdge.toStatusLabel}`,
           icon: ArrowRight,
-          onRun: async () => {
-            await applyStatus(idea.id, advanceEdge.toStatusId);
-            toast.success(`Moved to ${advanceEdge.toStatusLabel}.`);
-          },
+          onRun: () =>
+            guarded(async () => {
+              await applyStatus(idea.id, advanceEdge.toStatusId);
+              toast.success(`Moved to ${advanceEdge.toStatusLabel}.`);
+            }, 'Could not move the idea.'),
         };
       }
     }

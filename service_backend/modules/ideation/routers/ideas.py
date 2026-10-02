@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.documents import _serve_blob
 from app.database import get_db
-from app.dependencies import effective_permission_keys, get_current_user, require_permission
+from app.dependencies import effective_permission_keys, require_permission
 from app.models.user import User
 
 from ..schemas import (
@@ -389,10 +389,10 @@ def edit_idea_comment(
 def delete_idea_comment(
     idea_id: str,
     comment_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
     db: Session = Depends(get_db),
 ) -> Response:
-    """Author (holding ``ideation.ideas.comment``) or any ``ideation.triage.manage``
+    """Needs view first (no existence probe). Author (holding ``ideation.ideas.comment``) or any ``ideation.triage.manage``
     holder; anyone else 403."""
     held = effective_permission_keys(current_user)
     IdeaCommentService(db).delete(

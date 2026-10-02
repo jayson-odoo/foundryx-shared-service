@@ -126,6 +126,20 @@ class PublicIdeaStatusService:
         if tenant is None or not tenant.signin_allowed:
             return None
 
+        # AC-19-38: a tenant whose Ideation module is installed but not active
+        # (disabled / suspended) serves nothing public. Core tables are only
+        # read, never altered.
+        from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
+
+        module_state = (
+            self.db.query(TenantModule.status)
+            .join(Module, Module.id == TenantModule.module_id)
+            .filter(TenantModule.tenant_id == idea.tenant_id, Module.name == "ideation")
+            .first()
+        )
+        if module_state is not None and module_state[0] != MODULE_STATUS_ACTIVE:
+            return None
+
         # AC-94-13 (issue #94, plan section 3.4): a merged child's status,
         # colour, next-step, timeline and upvotes come from the SURVIVOR -
         # scoped by the CHILD's own tenant_id (polymorphic-stored-id rule),
@@ -178,12 +192,18 @@ class PublicIdeaStatusService:
         return loaded[0] if loaded is not None else None
 
     def comment_author_name(self, idea: Idea) -> str:
-        """Display name stamped on a public comment: the idea's own submitter
-        name, never client input. A phone/email-shaped value is never published
-        (same guard as the page's first name) - falls back to ``Submitter``."""
-        raw = unicodedata.normalize("NFKC", (idea.submitter_name or "").strip())
+        """Display name stamped on a public comment (AC-19-29): the status page's
+        own first-name projection of the submitter, never client input; falls
+        back to ``Submitter`` when it yields nothing."""
+        return self._first_name(idea) or "Submitter"
+
+    @staticmethod
+    def public_display_name(name: Optional[str], fallback: str) -> str:
+        """AC-19-32: a stored staff / embed author name as shown on the public
+        list - passes only a name that is not phone/email shaped."""
+        raw = unicodedata.normalize("NFKC", (name or "").strip())
         if not raw or _looks_like_a_phone_or_email(raw):
-            return "Submitter"
+            return fallback
         return raw
 
     # ---- detail lookups (each scoped by the idea row's OWN tenant_id) ------

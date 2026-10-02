@@ -213,6 +213,15 @@ export function useIdeasListConfig(
         enableHiding: false,
         enableResizing: false,
       },
+      col('votes', 'Votes', (i) => i.upvotes ?? 0, ({ row }) => (
+        <VoteCell
+          idea={row.original}
+          onVote={onVote}
+          variant="box"
+          size="sm"
+          disabled={Boolean(row.original.mergedIntoId)}
+        />
+      ), 80),
       col('problem', 'Idea', (i) => i.title ?? i.problem, ({ row }) => (
         <div className="flex items-start gap-1.5">
           <div className="min-w-0 flex-1">
@@ -248,15 +257,6 @@ export function useIdeasListConfig(
       col('status', 'Status', (i) => i.statusLabel ?? i.status, ({ row }) => (
         <StatusBadge status={row.original.status} registry={statusRegistryFor(row.original)} />
       ), 120),
-      col('votes', 'Votes', (i) => i.upvotes ?? 0, ({ row }) => (
-        <VoteCell
-          idea={row.original}
-          onVote={onVote}
-          variant="box"
-          size="sm"
-          disabled={Boolean(row.original.mergedIntoId)}
-        />
-      ), 130),
       col('submitted', 'Submitted', (i) => i.createdAt, ({ row }) => (
         <span className="text-muted-foreground">{formatDate(row.original.createdAt)}</span>
       ), 130),

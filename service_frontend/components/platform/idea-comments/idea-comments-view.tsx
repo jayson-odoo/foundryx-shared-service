@@ -10,6 +10,7 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
+  AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
@@ -287,18 +288,31 @@ export function IdeaCommentsView({
   onRemove,
   visibleToSubmitter = false,
 }: IdeaCommentsViewProps) {
-  const [replyTo, setReplyTo] = useState<string | null>(null);
+  // Which thread has the inline composer open, and the comment id it posts under.
+  const [reply, setReply] = useState<{
+    rootId: string;
+    parentId: string;
+  } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  const rowFor = (comment: IdeaComment, rootId: string, topLevel: boolean) => (
+  const rowFor = (
+    comment: IdeaComment,
+    rootId: string,
+    rootDeleted: boolean,
+    topLevel: boolean,
+  ) => (
     <CommentRow
       key={comment.id}
       comment={comment}
       topLevel={topLevel}
       canComment={canComment}
       editing={editingId === comment.id}
-      onReply={() => setReplyTo(rootId)}
+      // Under a live top-level the reply goes to it; under a deleted one the
+      // clicked comment's own id (the backend normalises it, AC-19-40).
+      onReply={() =>
+        setReply({ rootId, parentId: rootDeleted ? comment.id : rootId })
+      }
       onStartEdit={() => setEditingId(comment.id)}
       onCancelEdit={() => setEditingId(null)}
       onSaveEdit={async (body) => {
@@ -352,30 +366,35 @@ export function IdeaCommentsView({
               data-testid="comment-thread"
               className="flex flex-col gap-3"
             >
-              {rowFor(thread.root, thread.root.id, true)}
+              {rowFor(thread.root, thread.root.id, thread.root.isDeleted, true)}
               {thread.replies.length > 0 && (
                 <div
                   className={cn(
                     'flex flex-col gap-3 border-s ps-4 ms-4 sm:ms-5',
                   )}
                 >
-                  {thread.replies.map((reply) => (
-                    <div key={reply.id} data-testid="comment-reply">
-                      {rowFor(reply, thread.root.id, false)}
+                  {thread.replies.map((replyRow) => (
+                    <div key={replyRow.id} data-testid="comment-reply">
+                      {rowFor(
+                        replyRow,
+                        thread.root.id,
+                        thread.root.isDeleted,
+                        false,
+                      )}
                     </div>
                   ))}
                 </div>
               )}
-              {canComment && replyTo === thread.root.id && (
+              {canComment && reply?.rootId === thread.root.id && (
                 <div className="ms-4 ps-4 sm:ms-5">
                   <Composer
                     testId="reply-composer"
                     submitLabel="Reply"
                     autoFocus
-                    onCancel={() => setReplyTo(null)}
+                    onCancel={() => setReply(null)}
                     onSubmit={async (body) => {
-                      await onAdd(body, thread.root.id);
-                      setReplyTo(null);
+                      await onAdd(body, reply.parentId);
+                      setReply(null);
                     }}
                   />
                 </div>
@@ -392,6 +411,9 @@ export function IdeaCommentsView({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this comment?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This comment will be removed.
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>

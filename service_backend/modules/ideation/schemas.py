@@ -6,6 +6,7 @@ server-to-server contract with the sorento brain and uses **snake_case**
 field names byte-for-byte (input schema below; the output is a plain dict
 built in ``services/intake.py`` - it ALWAYS carries the full ten-key
 envelope, null where not applicable (AC-1116), never an omitted key)."""
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
@@ -187,7 +188,13 @@ class IdeaCommentOut(ApiModel):
     editedAt: Optional[datetime] = None
 
 
+# NUL and the other C0 controls, except newline and tab (AC-19-36).
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f]")
+
+
 def _clean_comment_body(value: str, limit: int) -> str:
+    if _CONTROL_CHARS.search(value or ""):
+        raise ValueError("Comment contains unsupported characters.")
     cleaned = (value or "").strip()
     if not cleaned:
         raise ValueError("Comment cannot be empty.")

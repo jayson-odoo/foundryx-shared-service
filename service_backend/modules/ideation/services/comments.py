@@ -130,7 +130,17 @@ class IdeaCommentService:
     def list_public(self, idea: Idea) -> List[IdeaCommentOut]:
         """The thread of THIS idea (a resolved public-token idea) for an anonymous
         reader - never a survivor's thread, flags always false."""
-        return self._list_for(idea.tenant_id, idea.id, PUBLIC_VIEWER)
+        from .public_status import PublicIdeaStatusService
+
+        project = PublicIdeaStatusService.public_display_name
+        fallback = {AUTHOR_USER: "Team member", AUTHOR_EMBED: "Portal user", AUTHOR_PUBLIC: "Submitter"}
+        out: List[IdeaCommentOut] = []
+        for c in self._list_for(idea.tenant_id, idea.id, PUBLIC_VIEWER):
+            if c.authorName is not None:
+                name = project(c.authorName, fallback.get(c.authorKind, "Team member"))
+                c = c.model_copy(update={"authorName": name})
+            out.append(c)
+        return out
 
     def _list_for(self, tenant_id: str, idea_id: str, viewer: CommentViewer) -> List[IdeaCommentOut]:
         rows = (
@@ -163,12 +173,27 @@ class IdeaCommentService:
                 IdeaComment.id == parent_id,
                 IdeaComment.idea_id == idea_id,
                 IdeaComment.tenant_id == tenant_id,
-                IdeaComment.deleted_at.is_(None),
             )
             .first()
         )
         if parent is None:
             raise HTTPException(404, "Comment not found.")
+        if parent.deleted_at is not None:
+            # A deleted top-level stays a valid parent only while it has live
+            # replies (it is then shown as a placeholder); AC-19-40.
+            has_live_reply = (
+                self.db.query(IdeaComment.id)
+                .filter(
+                    IdeaComment.parent_id == parent.id,
+                    IdeaComment.idea_id == idea_id,
+                    IdeaComment.tenant_id == tenant_id,
+                    IdeaComment.deleted_at.is_(None),
+                )
+                .first()
+                is not None
+            )
+            if parent.parent_id is not None or not has_live_reply:
+                raise HTTPException(404, "Comment not found.")
         return parent.parent_id or parent.id
 
     def _insert(
