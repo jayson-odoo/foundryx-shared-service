@@ -76,3 +76,29 @@ Counts: PASS 24, FAIL 0 outright (1 partial FAIL: 19-17 list vote at 375), COVER
 - 19-30 429 toast and 19-33 merged-child hide: need 6 rapid posts / a merged child seeded; covered by suites.
 - 19-24 composer hidden without permission, 19-08/09/10/11/12-14: suite-proven; a role without `ideation.ideas.comment` and an embed connection are needed for a browser run.
 - 19-35 awaits security-reviewer.
+
+## Round 2 (HEAD f8216a64, fresh build baked to :8017, evidence in `19-evidence/round2/`)
+
+The frontend was built from a scratch copy of the worktree because another process (`next dev -p 3110`) shares this worktree's `.next`. Servers stopped, own session closed.
+
+| AC | Result | Evidence |
+|---|---|---|
+| 19-43 Votes first column, visible without scroll, 1280px | PASS | `round2/01-list-1280.png`; vote click toggles without navigating (`02-list-unvote-1280.png`) |
+| 19-43 same at 375px (closes F1/F2) | PASS | `round2/03-list-375.png`, `04-list-unvote-375.png`; no horizontal page scroll |
+| 19-43 delete dialog description, no Radix warning | PASS | `round2/12-delete-dialog-description-1280.png` ("This comment will be removed."); console after opening the dialog: 0 description warnings |
+| 19-40 reply under a deleted top comment, operator | PASS | `round2/05-deleted-root-reply-1280.png`; psql: new reply `parent_id` = the deleted top-level |
+| 19-40 same, public page | PASS | `round2/06-public-deleted-root-reply-1280.png` |
+| 19-29 public author is the submitter first name | PASS | submitter "Wawa Tan" posts as "Wawa" (`06`, DB `author_name=Wawa`) |
+| 19-32 no email on the public page | PASS | nameless staff author (blank user name, stored as the email) shows "Team member"; embed author stored as an email shows "Portal user"; page text and `/comments` JSON contain no "@" (`round2/07-public-no-emails-1280.png`) |
+| 19-41 failing Move shows an error toast | PASS | stale page after the status was changed via API: toast "No transition from 'Triaged' to 'Triaged'." (`round2/09-move-failure-toast-1280.png`, backend 409) |
+| 19-19 Restore primary on an archived idea | PASS | `round2/10-archived-restore-primary-1280.png`, then click gives "Idea restored." and `Move to Triaged` returns (`11-restored-1280.png`) |
+| 19-24 composer hidden without `ideation.ideas.comment` | PASS | user with view + upvote only: thread readable, no composer/Reply/Edit/Delete (`round2/13-no-comment-permission-1280.png`) |
+| 19-30 / 19-33 429 toast after repeated public posts | PASS | toast "Too many comments. Try again later." on the 5th post (`round2/08-public-429-toast-1280.png`); backend log shows 429s |
+
+Round 2 notes:
+- The embed comment was inserted by SQL (no embed connection in the rig); the embed route itself stays suite-only.
+- The view-only user needed `products.read` to open the Ideas list ("Missing permission: products.read"), and its row click did not navigate, so the idea page was opened by URL for that one check. Pre-existing gating, not this lane.
+- Same user still sees Edit and `Move to ...` on the idea page; they were not exercised (no triage perm). Worth a look by the reviewer.
+- F1 and F2 are closed; F3 (Edit/primary wrap at 375) and F4 (public footer reads "Foundryx") are unchanged.
+
+Round 2 counts: PASS 11, FAIL 0. Still DEFERRED: merged-child hide, embed routes in the browser, AC-19-35 security review.
