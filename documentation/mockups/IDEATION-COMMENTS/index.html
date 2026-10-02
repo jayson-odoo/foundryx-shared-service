@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Idea page comments (mockup)</title>
+<style>
+/* Tokens mirrored from the shared-service brand token file (light theme) */
+:root{
+  --g50:#f7f6f4;--g100:#ecebe7;--g200:#d9d6cf;--g300:#bfb8b0;--g400:#918a80;--g500:#6b6660;--g600:#4b4642;--g700:#2f2c27;--g800:#1e1a17;--g900:#0f0f0d;
+  --page:#fbfaf8;--white:#fff;
+  --pri:#ff5a00;--pri-act:#e14b00;--pri-soft:#fff2e9;--pri-acc:#8f3000;
+  --ok:#1b8648;--ok-soft:#e3f5e9;--ok-acc:#115c31;
+  --bad:#d93420;--bad-soft:#fce5df;--bad-acc:#8a1f13;
+  --info:#0f6ef6;--info-soft:#e3efff;--info-acc:#14499c;
+  --warn:#9b6d0f;--warn-soft:#fcf0db;--warn-acc:#5b3e04;
+  --vio:#6d3fd6;--vio-soft:#efe8fd;
+  --r:8px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--g800);font:14px/1.45 Inter,ui-sans-serif,system-ui,sans-serif}
+h1,h2,h3,.hd{font-family:Poppins,Inter,ui-sans-serif,system-ui,sans-serif}
+a{color:inherit}
+svg.i{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+svg.i.s{width:14px;height:14px}
+.doc{max-width:1360px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:0 0 4px}
+.intro{color:var(--g500);font-size:13px;margin:0 0 12px}
+.nav{position:sticky;top:0;z-index:20;background:var(--page);padding:8px 0 10px;border-bottom:1px solid var(--g100);margin-bottom:16px;display:flex;flex-wrap:wrap;gap:6px}
+.nav a{font-size:12px;text-decoration:none;border:1px solid var(--g100);background:#fff;border-radius:999px;padding:3px 10px;color:var(--g500)}
+.nav a:hover{color:var(--pri);border-color:var(--pri)}
+section{margin:0 0 40px}
+section>h2{font-size:16px;margin:0 0 4px}
+section>.why{font-size:12.5px;color:var(--g500);margin:0 0 12px;max-width:820px}
+.row{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
+.col{display:flex;flex-direction:column;gap:20px}
+.note{font-size:12px;color:var(--g500);border-left:2px solid var(--g200);padding:2px 0 2px 10px;margin:8px 0 0;max-width:820px}
+.nb{display:inline-block;min-width:18px;height:18px;border-radius:9px;background:var(--g800);color:#fff;font-size:11px;line-height:18px;text-align:center;margin-right:6px}
+
+/* frames */
+.frame{width:1000px;max-width:100%;background:#fff;border:1px solid var(--g100);border-radius:12px;overflow:hidden}
+.frame .cap,.desk .cap,.phone .cap{font-size:11px;color:var(--g500);padding:6px 12px;border-bottom:1px solid var(--g100);background:var(--g50);font-weight:600}
+.frame .cap b,.phone .cap b{color:var(--g800)}
+.frame .body{padding:16px 20px;background:#fff}
+.desk{width:1280px;max-width:100%;background:#fff;border:1px solid var(--g100);border-radius:12px;overflow:hidden}
+.desk .screen{display:flex;background:#fff;min-height:640px}
+.side{width:250px;flex:none;border-right:1px solid var(--g100);padding:16px 12px;font-size:13px;background:var(--g50)}
+.side .brand{font:600 16px Poppins,Inter,system-ui,sans-serif;padding:0 8px 16px;color:var(--g800)}
+.side .grp{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--g500);padding:8px 8px 6px}
+.side .it{padding:6px 8px 6px 20px;border-radius:6px;color:var(--g600);display:flex;align-items:center;gap:8px}
+.side .it.on{background:var(--pri-soft);color:var(--pri);font-weight:500}
+.main{flex:1;min-width:0;padding:16px 24px;background:#fff}
+.dim{position:relative;height:520px;background:rgba(15,15,13,.5);display:grid;place-items:center;padding:16px}
+.phone{width:375px;flex:none;background:#fff;border:1px solid var(--g100);border-radius:16px;overflow:hidden}
+.phone .screen{background:#fff;padding:12px;height:760px;overflow:hidden}
+
+/* toolbar + record card */
+.tb{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.crumb{font-size:13px;color:var(--g500);display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.crumb b{color:var(--g800);font-weight:500}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:6px;font:500 13px Inter,ui-sans-serif,system-ui,sans-serif;border:1px solid transparent;background:#fff;color:var(--g800);white-space:nowrap;text-decoration:none}
+.btn.outline{border-color:var(--g200)}
+.btn.primary{background:var(--pri);color:#fff}
+.btn.accent{color:var(--pri);border-color:var(--pri)}
+.btn.dis{opacity:.5;cursor:not-allowed}
+.btn.link{border-radius:999px;border-color:var(--g200);padding:0 12px 0 8px;font-weight:500}
+.gh{width:18px;height:18px;border-radius:50%;background:var(--g800);color:#fff;display:grid;place-items:center;font-size:10px;font-weight:700}
+.ib{width:28px;height:28px;border:1px solid var(--g200);border-radius:6px;display:grid;place-items:center;background:#fff;color:var(--g600)}
+.rc{border:1px solid var(--g100);border-radius:var(--r);background:#fff}
+.rc-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:16px 16px 12px;flex-wrap:wrap}
+.ident{min-width:0;flex:1 1 260px}
+.ident h2{font-size:20px;font-weight:600;margin:0;line-height:1.25}
+.ident .sub{font-size:14px;color:var(--g500);margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.acts{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.acts .r1{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.pager{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--g500);font-variant-numeric:tabular-nums;margin-right:4px}
+.reason{font-size:13px;color:var(--g500);display:flex;align-items:center;gap:6px;text-align:right;justify-content:flex-end}
+.reason a{color:var(--g800);text-decoration:underline}
+.tabs{display:flex;gap:4px;border-top:1px solid var(--g100);padding:0 12px;overflow-x:auto}
+.tab{display:flex;align-items:center;gap:6px;padding:10px 12px;font-size:13px;color:var(--g500);border-bottom:2px solid transparent;white-space:nowrap;margin-bottom:-1px}
+.tab.on{color:var(--pri);border-bottom-color:var(--pri);font-weight:500}
+.badge{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;font:600 11px Inter,ui-sans-serif,system-ui,sans-serif;white-space:nowrap}
+.b-info{background:var(--info-soft);color:var(--info-acc)}
+.b-vio{background:var(--vio-soft);color:#4a2a9a}
+.b-ok{background:var(--ok-soft);color:var(--ok-acc)}
+.b-warn{background:var(--warn-soft);color:var(--warn-acc)}
+.b-pri{background:var(--pri-soft);color:var(--pri-acc)}
+.b-grey{background:var(--g100);color:var(--g600)}
+.sp{display:inline-flex;position:relative}
+.sp .menu{position:absolute;top:32px;right:0;width:192px;background:#fff;border:1px solid var(--g100);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.08);padding:4px;z-index:2;display:flex;flex-direction:column;text-align:left}
+.sp .mi{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:6px;font-size:13px;color:var(--g800)}
+.sp .mi.del{color:var(--bad)}
+.sp .dv{height:1px;background:var(--g100);margin:4px 0}
+.tbody{padding:16px}
+.empty{padding:64px 0;text-align:center;font-size:14px;color:var(--g500)}
+
+/* trace */
+.card{border:1px solid var(--g100);border-radius:var(--r);background:#fff}
+.sum{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-bottom:16px}
+.sum .c{padding:12px 16px;border-right:1px solid var(--g100);min-width:0}
+.sum .c:last-child{border-right:0}
+.sum .k{font-size:12px;color:var(--g500);margin-bottom:6px}
+.sum .v{font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px}
+.lnk{color:var(--pri-act);text-decoration:none;display:inline-flex;align-items:center;gap:4px;font-weight:500}
+.lnk:hover{text-decoration:underline}
+.tl{position:relative;padding:4px 0}
+.ev{display:grid;grid-template-columns:120px 20px 1fr;gap:0 8px;position:relative;padding-bottom:16px}
+.ev:last-child{padding-bottom:0}
+.ev .t{font-size:12px;color:var(--g500);font-variant-numeric:tabular-nums;text-align:right;padding-top:2px}
+.ev .rail{position:relative;display:flex;justify-content:center}
+.ev .rail:before{content:"";position:absolute;top:14px;bottom:-16px;width:1px;background:var(--g200)}
+.ev:last-child .rail:before{display:none}
+.ev .dot{width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid var(--pri);margin-top:5px;position:relative;z-index:1}
+.ev.done .dot{border-color:var(--ok);background:var(--ok)}
+.ev .m{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.ev .m .x{color:var(--g500)}
+.ev.ghost{opacity:.55}
+.ghostlbl{font-size:11px;color:var(--g500);margin:12px 0 8px 148px;font-weight:600}
+
+/* dialogs */
+.dlg{background:#fff;border-radius:12px;box-shadow:0 20px 50px rgba(15,15,13,.3);width:480px;max-width:100%;padding:20px}
+.dlg h3{margin:0 0 8px;font-size:18px;font-weight:600}
+.dlg p{margin:0 0 12px;font-size:14px;color:var(--g600)}
+.dlg .ft{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+.kv{border:1px solid var(--g100);border-radius:var(--r);background:var(--g50);display:grid;grid-template-columns:auto 1fr;font-size:13px}
+.kv div{padding:8px 12px;border-bottom:1px solid var(--g100)}
+.kv div:nth-last-child(-n+2){border-bottom:0}
+.kv .k{color:var(--g500)}
+.kv .v{font-weight:500;text-align:right}
+.fld{margin-bottom:12px}
+.fld label{display:block;font-size:12px;font-weight:500;color:var(--g600);margin-bottom:4px}
+.inp{height:34px;border:1px solid var(--g200);border-radius:6px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;background:#fff;font-size:13px}
+.inp.new{border-color:var(--pri);box-shadow:0 0 0 3px var(--pri-soft)}
+.sec{font:600 13px Poppins,Inter,system-ui,sans-serif;margin:16px 0 8px;padding-top:12px;border-top:1px solid var(--g100)}
+
+/* phone specifics */
+.phone .rc-head{padding:12px}
+.phone .acts{align-items:flex-start;width:100%}
+.phone .acts .r1{justify-content:flex-start}
+.phone .reason{text-align:left;justify-content:flex-start}
+.phone .sum{grid-template-columns:1fr 1fr}
+.phone .sum .c{border-bottom:1px solid var(--g100)}
+.phone .sum .c:nth-child(2n){border-right:0}
+.phone .sum .c:nth-last-child(-n+2){border-bottom:0}
+.phone .ev{grid-template-columns:20px 1fr}
+.phone .ev .t{grid-column:2;grid-row:1;text-align:left;padding-top:0;margin-bottom:2px}
+.phone .ev .rail{grid-column:1;grid-row:1 / span 2}
+.phone .ev .m{grid-column:2;grid-row:2}
+.phone .tbody{padding:12px}
+.phone .tabs{scrollbar-width:none}
+</style>
+<style>
+/* idea-comments mock additions */
+.vbox{width:52px;height:56px;flex:none;border:1px solid var(--g200);border-radius:8px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;color:var(--g700);font:600 15px Inter,ui-sans-serif,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.vbox svg.i{width:18px;height:18px}
+.vbox.on{border-color:var(--pri);background:var(--pri-soft);color:var(--pri-act)}
+.vbox.dis{opacity:.5}
+.idrow{display:flex;gap:12px;align-items:flex-start;min-width:0;flex:1 1 300px}
+.fr{display:grid;grid-template-columns:180px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid var(--g100);font-size:13px}
+.fr:last-child{border-bottom:0}
+.fr .k{color:var(--g500)}
+.chip{display:inline-flex;align-items:center;height:20px;padding:0 8px;border:1px solid var(--g200);border-radius:999px;font-size:11px;font-weight:500;color:var(--g600)}
+.cm{margin-top:20px;border-top:1px solid var(--g100);padding-top:16px}
+.cm h3{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+.cm h3 .n{font:500 12px Inter,system-ui,sans-serif;color:var(--g500)}
+.comp{display:flex;gap:10px;align-items:flex-start;margin-bottom:16px}
+.ta{flex:1;min-height:64px;border:1px solid var(--g200);border-radius:6px;padding:8px 10px;font-size:13px;color:var(--g400);background:#fff}
+.ta.focus{border-color:var(--pri);box-shadow:0 0 0 3px var(--pri-soft);color:var(--g800)}
+.comp .ft{display:flex;justify-content:flex-end;margin-top:8px;gap:8px}
+.av{width:32px;height:32px;flex:none;border-radius:50%;display:grid;place-items:center;font:600 12px Inter,system-ui,sans-serif;color:#fff}
+.av.sm{width:26px;height:26px;font-size:11px}
+.a1{background:#0f6ef6}.a2{background:#6d3fd6}.a3{background:#1b8648}.a4{background:#9b6d0f}
+.c{display:flex;gap:10px;padding:10px 0}
+.c .b{min-width:0;flex:1}
+.c .h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:13px}
+.c .h b{font-weight:600}
+.c .h .t{font-size:12px;color:var(--g500)}
+.c .x{font-size:13px;color:var(--g700);margin-top:2px;white-space:pre-wrap;word-break:break-word}
+.c .ops{display:flex;gap:12px;margin-top:4px;font-size:12px;color:var(--g500)}
+.c .ops span{display:inline-flex;align-items:center;gap:4px}
+.rep{margin-left:42px;border-left:2px solid var(--g100);padding-left:12px}
+.del .x{color:var(--g400);font-style:italic}
+.tag{font-size:11px;color:var(--g400)}
+.callout{font-size:12px;border:1px dashed var(--pri);background:var(--pri-soft);color:var(--pri-acc);border-radius:6px;padding:2px 8px;display:inline-block;margin-left:6px}
+table.map{border-collapse:collapse;width:100%;max-width:1280px;font-size:12.5px;background:#fff}
+table.map th,table.map td{border:1px solid var(--g100);padding:6px 10px;text-align:left;vertical-align:top}
+table.map th{background:var(--g50);font-weight:600}
+table.map code{font-size:11.5px;color:var(--pri-acc)}
+.lst{border:1px solid var(--g100);border-radius:var(--r);overflow:hidden;background:#fff;max-width:1000px}
+.lst .r{display:grid;grid-template-columns:70px 1fr 140px 110px;gap:12px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--g100);font-size:13px}
+.lst .r:last-child{border-bottom:0}
+.lst .r.hd{background:var(--g50);font-size:12px;color:var(--g500);font-weight:600}
+.vc{display:inline-flex;align-items:center;gap:2px;border-radius:6px;padding:2px 6px;color:var(--g500)}
+.vc.on{background:var(--pri-soft);color:var(--pri-act);font-weight:500}
+.phone .fr{grid-template-columns:1fr;gap:2px}
+.phone .rep{margin-left:20px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="arrow-left" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+<symbol id="arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+<symbol id="chev-l" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+<symbol id="chev-r" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+<symbol id="chev-u" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></symbol>
+<symbol id="more" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></symbol>
+<symbol id="pencil" viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></symbol>
+<symbol id="rocket" viewBox="0 0 24 24"><path d="M12 15l-3-3a22 22 0 0 1 2-4A13 13 0 0 1 22 2c0 3-1 8-6 11a22 22 0 0 1-4 2zM9 12H4s1-3 2-4c2-1 5 0 5 0M12 15v5s3-1 4-2c1-2 0-5 0-5"/></symbol>
+<symbol id="archive" viewBox="0 0 24 24"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></symbol>
+<symbol id="restore" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></symbol>
+<symbol id="trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></symbol>
+<symbol id="bulb" viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5a6 6 0 0 0-12 0c0 1.3.5 2.6 1.5 3.5.8.8 1.3 1.5 1.5 2.5M9 18h6M10 22h4"/></symbol>
+<symbol id="file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6"/></symbol>
+<symbol id="clip" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 3h6v4H9z"/></symbol>
+<symbol id="reply" viewBox="0 0 24 24"><path d="M9 17l-5-5 5-5M20 18v-2a4 4 0 0 0-4-4H4"/></symbol>
+<symbol id="split" viewBox="0 0 24 24"><path d="M16 3h5v5M8 3H3v5M12 22v-8.3a4 4 0 0 0-1.2-2.8L3 3M15 9l6-6"/></symbol>
+</defs></svg>
+
+<div class="doc">
+<h1>Idea page: upvote box, comments, next-state action</h1>
+<p class="intro">Static mockup for review (lane IDEATION-COMMENTS). Real idea from dev data: "I want a mobile app so field staff can log deliveries offline" (Sorento CRM, New, 2 upvotes, submitted by WAWA over WhatsApp, 20 Jul 2026). No comments exist in dev data yet: the comment texts below are SAMPLE text written by real dev users (Demo User, Admin User, Event Manager). Built from existing shell pieces only; the element map is section 6.</p>
+<nav class="nav">
+  <a href="#page">1 Idea page 1280px</a>
+  <a href="#states">2 Action states</a>
+  <a href="#reply">3 Reply + own comment</a>
+  <a href="#list">4 Ideas list votes</a>
+  <a href="#phone">5 375px</a>
+  <a href="#map">6 Element map</a>
+</nav>
+
+<!-- 1 -->
+<section id="page">
+<h2>1. Idea page (status New), "..." menu open</h2>
+<p class="why">Vote box sits left of the title (takes the lightbulb avatar's place). Primary button = the next status move; Edit = outline button to its left. Promote to BR, Archive and Delete stay in the "..." menu. Comments sit under the Details fields, oldest first, one reply level. Down vote is gone.</p>
+<div class="desk"><div class="cap"><b>Desktop 1280px</b> &middot; operator, Demo User, has not voted yet</div>
+<div class="screen">
+  <div class="side"><div class="brand">Workspace</div><div class="grp">Ideation</div><div class="it on">Ideas</div><div class="it">Triage board</div><div class="it">Business requirements</div></div>
+  <div class="main">
+    <div class="tb"><div class="crumb">Home <svg class="i s"><use href="#chev-r"/></svg> Ideation <svg class="i s"><use href="#chev-r"/></svg> Ideas <svg class="i s"><use href="#chev-r"/></svg> <b>I want a mobile app so field staff can log deliveries offline</b></div><span class="btn outline"><svg class="i"><use href="#arrow-left"/></svg>Back</span></div>
+    <div class="rc">
+      <div class="rc-head">
+        <div class="idrow">
+          <div class="vbox" title="Upvote"><svg class="i"><use href="#chev-u"/></svg>2</div>
+          <div class="ident"><h2 class="hd">I want a mobile app so field staff can log deliveries offline</h2><div class="sub"><span class="badge b-info">New</span></div></div>
+        </div>
+        <div class="acts"><div class="r1">
+          <div class="pager"><span class="ib"><svg class="i s"><use href="#chev-l"/></svg></span>1 / 9<span class="ib"><svg class="i s"><use href="#chev-r"/></svg></span></div>
+          <span class="sp"><span class="ib"><svg class="i s"><use href="#more"/></svg></span>
+            <span class="menu"><span class="mi"><svg class="i s"><use href="#rocket"/></svg>Promote to BR</span><span class="mi"><svg class="i s"><use href="#archive"/></svg>Archive</span><span class="dv"></span><span class="mi del"><svg class="i s"><use href="#trash"/></svg>Delete</span></span>
+          </span>
+          <span class="btn outline"><svg class="i"><use href="#pencil"/></svg>Edit</span>
+          <span class="btn primary"><svg class="i"><use href="#arrow-right"/></svg>Move to Triaged</span>
+        </div></div>
+      </div>
+      <div class="tabs"><span class="tab on"><svg class="i s"><use href="#bulb"/></svg>Details</span><span class="tab"><svg class="i s"><use href="#file"/></svg>Attachments</span><span class="tab"><svg class="i s"><use href="#clip"/></svg>Business Requirements</span></div>
+      <div class="tbody">
+        <div class="fr"><span class="k">Problem statement</span><span>I want a mobile app so field staff can log deliveries offline</span></div>
+        <div class="fr"><span class="k">Proposed solution</span><span>a mobile app so field staff can log deliveries offline</span></div>
+        <div class="fr"><span class="k">Impact</span><span>it saves 2 hours a day</span></div>
+        <div class="fr"><span class="k">Department</span><span>operations</span></div>
+        <div class="fr"><span class="k">Product</span><span>Sorento CRM</span></div>
+        <div class="fr"><span class="k">Submitter</span><span>WAWA</span></div>
+        <div class="fr"><span class="k">Channel</span><span><span class="chip">WhatsApp</span></span></div>
+        <div class="fr"><span class="k">Captured</span><span>20 Jul 2026, 2:19 PM</span></div>
+
+        <div class="cm">
+          <h3 class="hd">Comments <span class="n">3</span></h3>
+          <div class="comp"><span class="av a1">DU</span><div style="flex:1"><div class="ta">Write a comment</div><div class="ft"><span class="btn primary dis">Comment</span></div></div></div>
+
+          <div class="c"><span class="av a2">AU</span><div class="b"><div class="h"><b>Admin User</b><span class="t">21 Jul 2026, 9:05 AM</span></div><div class="x">Drivers lose signal in the Shah Alam warehouse basement. Offline capture with sync on reconnect would cover it.</div><div class="ops"><span><svg class="i s"><use href="#reply"/></svg>Reply</span></div></div></div>
+          <div class="rep">
+            <div class="c"><span class="av sm a3">EM</span><div class="b"><div class="h"><b>Event Manager</b><span class="t">21 Jul 2026, 11:40 AM</span></div><div class="x">Same for the event crew at venues. Proof-of-delivery photo would help too.</div><div class="ops"><span><svg class="i s"><use href="#reply"/></svg>Reply</span></div></div></div>
+          </div>
+          <div class="c"><span class="av a1">DU</span><div class="b"><div class="h"><b>Demo User</b><span class="t">22 Jul 2026, 4:12 PM</span><span class="tag">edited</span></div><div class="x">Asked WAWA on WhatsApp: about 30 field staff, Android phones.</div><div class="ops"><span><svg class="i s"><use href="#reply"/></svg>Reply</span><span><svg class="i s"><use href="#pencil"/></svg>Edit</span><span><svg class="i s"><use href="#trash"/></svg>Delete</span></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></div>
+<p class="note">Edit/Delete links show only on your own comment; a user with Idea Triage can also delete anyone's comment (Q3 recommendation). Relative order is oldest first (Q1 recommendation). The "Votes" row in Details is removed; the vote box in the header is the only vote control on this page.</p>
+</section>
+
+<!-- 2 -->
+<section id="states">
+<h2>2. Header action states</h2>
+<p class="why">The primary button is always the next status by the tenant's status order and label (same rule the menu's "Move to ..." uses today). When there is no next move, Edit becomes the primary again, exactly as now.</p>
+<div class="col">
+  <div class="frame"><div class="cap"><b>A</b> Draft (voted: box filled orange)</div><div class="body"><div class="rc"><div class="rc-head">
+    <div class="idrow"><div class="vbox on"><svg class="i"><use href="#chev-u"/></svg>1</div><div class="ident"><h2 class="hd">I wish the CRM could remind me before a DO SLA breaches</h2><div class="sub"><span class="badge b-grey">Draft</span></div></div></div>
+    <div class="acts"><div class="r1"><span class="ib"><svg class="i s"><use href="#more"/></svg></span><span class="btn outline"><svg class="i"><use href="#pencil"/></svg>Edit</span><span class="btn primary"><svg class="i"><use href="#arrow-right"/></svg>Move to New</span></div></div>
+  </div></div></div></div>
+
+  <div class="frame"><div class="cap"><b>B</b> Tenant relabelled Triaged as "Discussed" (dev tenant ir2)</div><div class="body"><div class="rc"><div class="rc-head">
+    <div class="idrow"><div class="vbox"><svg class="i"><use href="#chev-u"/></svg>2</div><div class="ident"><h2 class="hd">Let CS bulk-export orders to Excel with column presets</h2><div class="sub"><span class="badge b-info">New</span></div></div></div>
+    <div class="acts"><div class="r1"><span class="ib"><svg class="i s"><use href="#more"/></svg></span><span class="btn outline"><svg class="i"><use href="#pencil"/></svg>Edit</span><span class="btn primary"><svg class="i"><use href="#arrow-right"/></svg>Move to Discussed</span></div></div>
+  </div></div></div></div>
+
+  <div class="frame"><div class="cap"><b>C</b> Closed (no next move): Edit is the primary, as today</div><div class="body"><div class="rc"><div class="rc-head">
+    <div class="idrow"><div class="vbox"><svg class="i"><use href="#chev-u"/></svg>0</div><div class="ident"><h2 class="hd">E2E Idea 20260928-1349 Bravo - problem statement</h2><div class="sub"><span class="badge b-grey">Closed</span></div></div></div>
+    <div class="acts"><div class="r1"><span class="ib"><svg class="i s"><use href="#more"/></svg></span><span class="btn primary"><svg class="i"><use href="#pencil"/></svg>Edit</span></div></div>
+  </div></div></div></div>
+
+  <div class="frame"><div class="cap"><b>D</b> Archived (dev has no archived idea; this Draft idea shown as if archived): primary = Restore, Edit to its left</div><div class="body"><div class="rc"><div class="rc-head">
+    <div class="idrow"><div class="vbox"><svg class="i"><use href="#chev-u"/></svg>0</div><div class="ident"><h2 class="hd">a brand new test idea about export scheduling</h2><div class="sub"><span class="badge b-grey">Archived</span></div></div></div>
+    <div class="acts"><div class="r1"><span class="ib"><svg class="i s"><use href="#more"/></svg></span><span class="btn outline"><svg class="i"><use href="#pencil"/></svg>Edit</span><span class="btn primary"><svg class="i"><use href="#restore"/></svg>Restore</span></div></div>
+  </div></div></div></div>
+
+  <div class="frame"><div class="cap"><b>E</b> Merged into another idea: votes and comments frozen</div><div class="body"><div class="rc"><div class="rc-head">
+    <div class="idrow"><div class="vbox dis"><svg class="i"><use href="#chev-u"/></svg>0</div><div class="ident"><h2 class="hd">Remind me before a DO SLA breaches</h2><div class="sub"><span class="badge b-info">New</span></div></div></div>
+    <div class="acts"><div class="r1"><span class="ib"><svg class="i s"><use href="#more"/></svg></span><span class="btn primary"><svg class="i"><use href="#split"/></svg>Unmerge</span></div></div>
+  </div><div class="tbody"><div class="cm" style="margin-top:0"><h3 class="hd">Comments <span class="n">0</span></h3><p class="empty" style="padding:16px 0">No comments.</p></div></div></div></div></div>
+</div>
+<p class="note">E: a merged child keeps no Edit today (gear has Unmerge + Delete, use-idea-form.tsx); proposed Unmerge as its primary. The composer is hidden, not disabled, on a merged child.</p>
+</section>
+
+<!-- 3 -->
+<section id="reply">
+<h2>3. Replying, and a deleted comment that has replies</h2>
+<div class="frame"><div class="cap"><b>Reply composer open</b> under the first comment</div><div class="body">
+  <div class="c"><span class="av a2">AU</span><div class="b"><div class="h"><b>Admin User</b><span class="t">21 Jul 2026, 9:05 AM</span></div><div class="x">Drivers lose signal in the Shah Alam warehouse basement. Offline capture with sync on reconnect would cover it.</div><div class="ops"><span><svg class="i s"><use href="#reply"/></svg>Reply</span></div></div></div>
+  <div class="rep">
+    <div class="c"><span class="av sm a3">EM</span><div class="b"><div class="h"><b>Event Manager</b><span class="t">21 Jul 2026, 11:40 AM</span></div><div class="x">Same for the event crew at venues. Proof-of-delivery photo would help too.</div></div></div>
+    <div class="comp" style="margin:8px 0 0"><span class="av sm a1">DU</span><div style="flex:1"><div class="ta focus">Agreed, adding photo capture to the BR scope.</div><div class="ft"><span class="btn outline">Cancel</span><span class="btn primary">Reply</span></div></div></div>
+  </div>
+  <div class="c del"><span class="av" style="background:var(--g200)"></span><div class="b"><div class="x">Comment deleted</div></div></div>
+  <div class="rep"><div class="c"><span class="av sm a1">DU</span><div class="b"><div class="h"><b>Demo User</b><span class="t">23 Jul 2026, 10:02 AM</span></div><div class="x">Thanks, noted.</div></div></div></div>
+</div></div>
+<p class="note">A reply to a reply attaches to the same top-level comment (one level, canny-style). A deleted comment with no replies disappears entirely.</p>
+</section>
+
+<!-- 4 -->
+<section id="list">
+<h2>4. Ideas list: Votes column is upvotes only</h2>
+<div class="lst">
+  <div class="r hd"><span>Votes</span><span>Idea</span><span>Product</span><span>Status</span></div>
+  <div class="r"><span class="vc on"><svg class="i s"><use href="#chev-u"/></svg>2</span><span>I want a mobile app so field staff can log deliveries offline</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
+  <div class="r"><span class="vc"><svg class="i s"><use href="#chev-u"/></svg>2</span><span>Let CS bulk-export orders to Excel with column presets</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
+  <div class="r"><span class="vc"><svg class="i s"><use href="#chev-u"/></svg>0</span><span>Remind me before a DO SLA breaches</span><span>Sorento CRM</span><span><span class="badge b-info">New</span></span></div>
+</div>
+<p class="note">Same VoteCell everywhere (list, triage board, idea page) minus the down arrow; sort and CSV use upvotes. "Remind me before a DO SLA breaches" had 1 down vote: it now reads 0.</p>
+</section>
+
+<!-- 5 -->
+<section id="phone">
+<h2>5. 375px</h2>
+<div class="row">
+<div class="phone"><div class="cap"><b>375px</b> idea page</div><div class="screen">
+  <div class="tb"><div class="crumb">Ideas <svg class="i s"><use href="#chev-r"/></svg> <b>I want a mobile app...</b></div><span class="ib"><svg class="i s"><use href="#arrow-left"/></svg></span></div>
+  <div class="rc"><div class="rc-head">
+    <div class="idrow"><div class="vbox"><svg class="i"><use href="#chev-u"/></svg>2</div><div class="ident"><h2 class="hd" style="font-size:17px">I want a mobile app so field staff can log deliveries offline</h2><div class="sub"><span class="badge b-info">New</span></div></div></div>
+    <div class="acts"><div class="r1"><span class="ib"><svg class="i s"><use href="#more"/></svg></span><span class="btn outline"><svg class="i"><use href="#pencil"/></svg>Edit</span><span class="btn primary"><svg class="i"><use href="#arrow-right"/></svg>Move to Triaged</span></div></div>
+  </div>
+  <div class="tabs"><span class="tab on">Details</span><span class="tab">Attachments</span><span class="tab">Business Requirements</span></div>
+  <div class="tbody">
+    <div class="fr"><span class="k">Impact</span><span>it saves 2 hours a day</span></div>
+    <div class="fr"><span class="k">Department</span><span>operations</span></div>
+    <div class="cm"><h3 class="hd">Comments <span class="n">3</span></h3>
+      <div class="comp"><span class="av sm a1">DU</span><div style="flex:1"><div class="ta" style="min-height:48px">Write a comment</div></div></div>
+      <div class="c"><span class="av sm a2">AU</span><div class="b"><div class="h"><b>Admin User</b><span class="t">21 Jul 2026, 9:05 AM</span></div><div class="x">Drivers lose signal in the Shah Alam warehouse basement. Offline capture with sync on reconnect would cover it.</div><div class="ops"><span><svg class="i s"><use href="#reply"/></svg>Reply</span></div></div></div>
+      <div class="rep"><div class="c"><span class="av sm a3">EM</span><div class="b"><div class="h"><b>Event Manager</b><span class="t">21 Jul, 11:40 AM</span></div><div class="x">Same for the event crew at venues.</div></div></div></div>
+    </div>
+  </div></div>
+</div></div>
+</div>
+</section>
+
+<!-- 6 -->
+<section id="map">
+<h2>6. Element map (each element to the existing component it reuses)</h2>
+<table class="map">
+<tr><th>Element</th><th>Reuses</th><th>Change</th></tr>
+<tr><td>Page frame, breadcrumb, Back</td><td><code>service_frontend/components/platform/resource-form/resource-form.tsx</code> + <code>components/platform/page-header/page-header.tsx</code></td><td>none</td></tr>
+<tr><td>Vote box left of title</td><td>ResourceForm <code>config.avatar</code> slot; vote logic from <code>app/(protected)/ideation/ideas/components/vote-cell.tsx</code></td><td>VoteCell gets a <code>variant="box"</code>; down button removed from both variants</td></tr>
+<tr><td>Status under title</td><td><code>components/platform/status-badge/status-badge.tsx</code></td><td>none</td></tr>
+<tr><td>Primary "Move to &lt;next&gt;" / Restore / Unmerge</td><td>ResourceForm <code>primaryAction</code> (<code>resource-form/types.ts:100</code>), label from existing <code>advanceTransitionId</code> (<code>use-idea-form.tsx</code> "advance" action)</td><td>advance/restore/unmerge move out of the menu into <code>primaryAction</code></td></tr>
+<tr><td>Edit outline button left of primary</td><td>ResourceForm Edit button (<code>resource-form.tsx:214-226</code> today folds Edit into the menu when a primaryAction exists)</td><td>new opt-in <code>editPlacement: 'beside-primary'</code>; BR page keeps today's behaviour</td></tr>
+<tr><td>"..." menu</td><td><code>components/platform/resource-actions/action-menu.tsx</code></td><td>none (fewer items)</td></tr>
+<tr><td>Detail rows</td><td><code>components/platform/resource-form/form-row.tsx</code> via <code>idea-form-fields.tsx</code> DetailsTab</td><td>"Votes" row removed</td></tr>
+<tr><td>Comment avatar</td><td><code>components/platform/user-avatar.tsx</code></td><td>none</td></tr>
+<tr><td>Composer</td><td><code>components/ui/textarea.tsx</code> + <code>components/ui/button.tsx</code></td><td>new <code>idea-comments.tsx</code> beside DetailsTab, data via a new <code>hooks/use-idea-comments.ts</code> + <code>services/ideation-service.*</code> (embed-safe: paths from <code>useIdeationRuntime</code>, no hard-coded domain)</td></tr>
+<tr><td>Comment time</td><td><code>lib/datetime.ts</code> <code>formatDateTime</code> via <code>useDatetime()</code></td><td>none</td></tr>
+<tr><td>Delete own comment</td><td><code>components/ui/alert-dialog.tsx</code> confirm</td><td>plain delete after confirm (no grace window; comments are small)</td></tr>
+<tr><td>List Votes column + triage board card</td><td><code>use-ideas-list-config.tsx:251</code>, <code>board/triage-board.tsx:87,119</code></td><td>upvotes only</td></tr>
+</table>
+</section>
+</div>
+</body>
+</html>
