@@ -1,6 +1,6 @@
-"""The doc-feed beat sweep (D14, AC-14-33). Poll hourly (documents), sweep
-daily; a feed with an unfinished job is skipped, not
-re-armed, so the NEXT beat minute picks it up (no lost tick).
+"""The doc-feed beat sweep (D14, AC-14-33). Poll and sweep on
+the feed's own schedule (sprint-5/19; default hourly / daily); a feed with an
+unfinished job is skipped, not re-armed, so the NEXT beat minute picks it up (no lost tick).
 
 **No extraction happens here** - this selects, claims (a guarded UPDATE, so
 two beats never both enqueue the same feed) and enqueues the SAME
@@ -9,7 +9,7 @@ two beats never both enqueue the same feed) and enqueues the SAME
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from sqlalchemy import and_, or_
@@ -26,11 +26,13 @@ from .constants import (
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
 )
+from .schedule import next_poll_at, next_sweep_at, resolve_schedule
 
 logger = logging.getLogger("foundryx.autocount")
 
-POLL_INTERVAL = timedelta(minutes=60)
-SWEEP_INTERVAL = timedelta(hours=24)
+# sprint-5/19 - the cadence is per feed now (`ac_doc_feed.schedule_config`,
+# resolved by `doc_feed/schedule.py`); NULL = poll 60 min / sweep 24 h, the
+# values that used to be hard-coded here.
 
 
 def sweep_doc_feeds(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:
@@ -86,6 +88,7 @@ def _sweep_one_feed(db: Session, feed: AcDocFeed, *, now: datetime) -> str:
     ) is not None:
         return "skipped"
 
+    schedule = resolve_schedule(feed.schedule_config)
     if due_poll:
         kind = RUN_KIND_POLL
         claimed = (
@@ -95,7 +98,10 @@ def _sweep_one_feed(db: Session, feed: AcDocFeed, *, now: datetime) -> str:
                 AcDocFeed.next_poll_at.isnot(None),
                 AcDocFeed.next_poll_at <= now,
             )
-            .update({AcDocFeed.next_poll_at: now + POLL_INTERVAL}, synchronize_session=False)
+            .update(
+                {AcDocFeed.next_poll_at: next_poll_at(schedule, now)},
+                synchronize_session=False,
+            )
         )
     else:
         kind = RUN_KIND_SWEEP
@@ -106,7 +112,10 @@ def _sweep_one_feed(db: Session, feed: AcDocFeed, *, now: datetime) -> str:
                 AcDocFeed.next_sweep_at.isnot(None),
                 AcDocFeed.next_sweep_at <= now,
             )
-            .update({AcDocFeed.next_sweep_at: now + SWEEP_INTERVAL}, synchronize_session=False)
+            .update(
+                {AcDocFeed.next_sweep_at: next_sweep_at(schedule, now)},
+                synchronize_session=False,
+            )
         )
     if not claimed:
         db.rollback()

@@ -4,7 +4,7 @@ history for the DO/GRN HTTP source.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
@@ -23,6 +23,14 @@ from ..doc_feed.constants import (
     DOCUMENT_FEEDS,
 )
 from ..doc_feed.jobs import run_doc_feed_backfill_job, run_doc_feed_job
+from ..doc_feed.schedule import (
+    next_poll_at,
+    next_sweep_at,
+    poll_changed,
+    resolve_schedule,
+    sweep_changed,
+    validate_doc_feed_schedule,
+)
 from ..http_source.book import derive_book
 from ..models import (
     DOC_FEED_BACKFILL_RUNNING,
@@ -52,6 +60,7 @@ from ..schemas import (
     DocFeedItemOut,
     DocFeedRunListOut,
     DocFeedRunOut,
+    DocFeedScheduleOut,
     DocFeedsViewOut,
     EligibleConnectionOut,
 )
@@ -150,6 +159,7 @@ class DocFeedService:
         return DocFeedItemOut(
             feed=feed,
             mode=row.mode if row else DOC_FEED_MODE_OFF,
+            schedule=DocFeedScheduleOut(**resolve_schedule(row.schedule_config if row else None)),
             connectionId=row.connection_id if row else None,
             book=row.book if row else None,
             cursorDay=row.cursor_day if row else None,
@@ -171,12 +181,21 @@ class DocFeedService:
     def update(
         self, tenant_id: str, company_id: str, feed: str,
         *, connection_id: Optional[str], mode: str, clear_connection: bool = False,
+        schedule: Optional[Dict[str, Any]] = None,
     ) -> DocFeedItemOut:
         company = self._company(tenant_id, company_id)
         if feed not in ALL_FEEDS:
             raise DocFeedValidationError("feed", "Unknown feed.")
         if mode not in DOC_FEED_MODES:
             raise DocFeedValidationError("mode", "Unknown mode.")
+        # sprint-5/19 - validated BEFORE any write, with the Entities rule set
+        # (a rejected schedule leaves mode/connection untouched too).
+        clean_schedule: Optional[Dict[str, Any]] = None
+        if schedule is not None:
+            clean_schedule, schedule_errors = validate_doc_feed_schedule(schedule)
+            if schedule_errors:
+                field, message = next(iter(schedule_errors.items()))
+                raise DocFeedValidationError(field, message)
 
         row = self.feeds.get_or_create(tenant_id, company_id, feed)
 
@@ -212,6 +231,10 @@ class DocFeedService:
             row.book = None
 
         was_armed = row.mode not in (DOC_FEED_MODE_OFF, None)
+        previous_schedule = resolve_schedule(row.schedule_config)
+        if clean_schedule is not None:
+            row.schedule_config = clean_schedule
+        effective = resolve_schedule(row.schedule_config)
         row.mode = mode
         now = datetime.now(timezone.utc)
         if mode == DOC_FEED_MODE_OFF:
@@ -220,7 +243,14 @@ class DocFeedService:
         elif not was_armed:
             row.next_poll_at = now
             if feed in DOCUMENT_FEEDS:
-                row.next_sweep_at = now + timedelta(hours=24)
+                row.next_sweep_at = next_sweep_at(effective, now)
+        else:
+            # sprint-5/19 (R4) - only the CHANGED half re-arms, from now; the
+            # other keeps its due time (editing the poll never delays a sweep).
+            if poll_changed(previous_schedule, effective):
+                row.next_poll_at = next_poll_at(effective, now)
+            if feed in DOCUMENT_FEEDS and sweep_changed(previous_schedule, effective):
+                row.next_sweep_at = next_sweep_at(effective, now)
 
         self.db.commit()
         self.db.refresh(row)

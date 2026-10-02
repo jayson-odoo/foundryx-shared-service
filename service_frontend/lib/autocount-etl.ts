@@ -15,6 +15,7 @@ import type {
   AutocountPushGate,
   AutocountSqlPreview,
   AutocountSqlSchema,
+  DocFeedSchedule,
   HttpPreview,
 } from '@/types/autocount';
 
@@ -415,6 +416,19 @@ export function validateReconcileAt(value: string | null | undefined): string | 
   }
   return null;
 }
+
+/** A Document feed's default schedule (sprint-5/19) - the pre-19 hard-coded
+ * cadence, mirrored from `doc_feed/schedule.py DEFAULT_DOC_FEED_SCHEDULE`. */
+export const DEFAULT_DOC_FEED_SCHEDULE: DocFeedSchedule = {
+  incrementalMinutes: 60,
+  reconcileMode: 'interval',
+  reconcileHours: 24,
+  reconcileAt: null,
+};
+
+/** The poll reads `byLastModified` (a LastModified watermark), so it runs on
+ * the with-watermark floor - 1 minute, owner ruling Q1 on PR #110. */
+export const DOC_FEED_POLL_HAS_WATERMARK = true;
 
 /** The reconcile-mode picker's ONLY two options (foolproof-UI). */
 export const RECONCILE_MODE_OPTIONS: { label: string; value: AutocountEtlSourceConfig['reconcileMode'] }[] = [

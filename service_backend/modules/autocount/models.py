@@ -806,6 +806,11 @@ class AcDocFeed(AutocountBase):
     connection_id = Column(String, nullable=True)  # core connections.id
     book = Column(String(20), nullable=True)
     mode = Column(String, nullable=False, default=DOC_FEED_MODE_OFF, server_default="off")
+    # sprint-5/19 - the feed's cadence, the SAME keys as an ETL task's
+    # `source_config` schedule (`incrementalMinutes` = poll, `reconcile*` =
+    # deletion sweep). NULL = `doc_feed/schedule.py DEFAULT_DOC_FEED_SCHEDULE`
+    # (poll 60 min, sweep every 24 h - the pre-19 hard-coded cadence).
+    schedule_config = Column(_JSON, nullable=True)
 
     cursor_day = Column(Date, nullable=True)
     next_poll_at = Column(UTCDateTime(), nullable=True)

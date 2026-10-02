@@ -625,6 +625,10 @@ def test_put_etl_task_422_matrix_names_the_field(client, session_factory):
     )
     # no watermark -> 5 minute floor (plan 13, AC-13-20: 15 -> 5)
     assert "incrementalMinutes" in errors(_config(incrementalMinutes=4))
+    # sprint-5/19 - the shared `validate_schedule` keeps the SQL wording.
+    assert errors(_config(incrementalMinutes=4))["incrementalMinutes"] == (
+        "At least 5 minutes without a watermark column."
+    )
     assert "reconcileMode" in errors(_config(reconcileMode="weekly"))
     assert "reconcileHours" in errors(_config(reconcileMode="interval", reconcileHours=None))
     assert "reconcileHours" in errors(_config(reconcileMode="interval", reconcileHours=0))

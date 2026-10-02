@@ -7,6 +7,12 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+// sprint-5/19 - the shared cadence cards format "Next ..." badges through the
+// session-bound datetime hook (house mock, same as `schedule-tab.test.tsx`).
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({ formatDateTime: (iso: string) => iso }),
+}));
+
 function eligibleConnection(over: Record<string, unknown> = {}) {
   return { id: 'conn-1', name: 'db1 open API', book: 'db1', ...over };
 }
@@ -26,7 +32,7 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
     // The connection picker is a SearchSelect (house convention, see
     // `search-select.test.tsx`) - its options render once opened, same as
     // every other SearchSelect in the codebase.
-    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.click(screen.getByRole('combobox', { name: 'Connection' }));
     expect(screen.getByText(/db1 open api/i)).toBeInTheDocument();
   });
 
@@ -77,5 +83,89 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
     await userEvent.click(screen.getByText(/dry run/i));
     await userEvent.click(screen.getByTestId('doc-feed-config-save'));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'conn-1', mode: 'dry_run' }));
+  });
+
+  // ── sprint-5/19 - per-feed schedule (AC-19-11) ──────────────────────────────
+
+  it('renders the Entities cadence cards as Poll + Deletion sweep, prefilled with the defaults', async () => {
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{ connectionId: 'conn-1', mode: 'push', contractGate: null }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Poll')).toBeInTheDocument();
+    expect(screen.getByText('Deletion sweep')).toBeInTheDocument();
+    expect(screen.getByTestId('doc-feed-schedule-incremental-minutes')).toHaveValue(60);
+    expect(screen.getByTestId('doc-feed-schedule-reconcile-hours')).toHaveValue(24);
+  });
+
+  it('blocks Save below the 1-minute poll floor (the Entities floor, owner Q1)', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{ connectionId: 'conn-1', mode: 'push', contractGate: null }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    const minutes = screen.getByTestId('doc-feed-schedule-incremental-minutes');
+    fireEvent.change(minutes, { target: { value: '0' } });
+    expect(screen.getByTestId('doc-feed-schedule-incremental-error')).toHaveTextContent('At least 1 minute.');
+    expect(screen.getByTestId('doc-feed-config-save')).toBeDisabled();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('saves the edited schedule with the connection and mode', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="goods_receive_notes"
+        current={{
+          connectionId: 'conn-1', mode: 'push', contractGate: null,
+          schedule: { incrementalMinutes: 30, reconcileMode: 'interval', reconcileHours: 6, reconcileAt: null },
+        }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    expect(screen.getByTestId('doc-feed-schedule-incremental-minutes')).toHaveValue(30);
+    fireEvent.change(screen.getByTestId('doc-feed-schedule-incremental-minutes'), { target: { value: '15' } });
+    await userEvent.click(screen.getByTestId('doc-feed-config-save'));
+    expect(onSave).toHaveBeenCalledWith({
+      connectionId: 'conn-1',
+      mode: 'push',
+      schedule: { incrementalMinutes: 15, reconcileMode: 'interval', reconcileHours: 6, reconcileAt: null },
+    });
+  });
+
+  it('shows a server 422 fieldError on the cadence card and keeps the dialog open', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    const onSave = vi.fn().mockRejectedValue(
+      new ApiError('Enter the daily reconcile time as HH:MM.', 422, null, {
+        fieldErrors: { reconcileHours: 'Server says no.' },
+      }),
+    );
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{ connectionId: 'conn-1', mode: 'push', contractGate: null }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('doc-feed-config-save'));
+    expect(await screen.findByTestId('doc-feed-schedule-reconcile-hours-error')).toHaveTextContent('Server says no.');
   });
 });

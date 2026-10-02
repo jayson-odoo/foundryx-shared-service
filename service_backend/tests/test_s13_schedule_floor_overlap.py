@@ -85,6 +85,8 @@ def test_saving_incremental_minutes_4_still_422s_today(db):
         )
     message = exc_info.value.field_errors.get("incrementalMinutes", "")
     assert "5" in message, message
+    # sprint-5/19 - the shared `validate_schedule` keeps the HTTP wording.
+    assert message == "At least 5 minutes without a watermark field.", message
 
 
 def test_saving_incremental_minutes_5_is_refused_until_the_floor_drops(db):
