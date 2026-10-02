@@ -191,4 +191,5 @@ auth) of a GRN snapshot also need `autocount.sync.read`
 (`pull_service.SNAPSHOT_ENTITY_READ_PERMISSION`). Without it, the list hides GRN snapshots and
 the header and rows read as an unknown id. Supplier and cost data never widens to
 `autocount.pull.read` alone, the same rule as the doc finder's GRN type. The gateway itself is
-key + company scoped, like DO. Contract: section 8 of the plan 16 contract.
+key + company scoped, like DO, so `autocount.pull.manage` (who can issue a key) can still read
+GRN through it (accepted with option (a); a per-key entity allowlist is the fix if needed). Contract: section 8 of the plan 16 contract.

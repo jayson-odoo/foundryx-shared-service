@@ -284,4 +284,3 @@ def build_doc_feed_snapshot(
         job, status=JOB_DONE,
         result={"snapshotId": snapshot.id, "recordCount": len(documents), "complete": True},
     )
-

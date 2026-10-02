@@ -396,9 +396,10 @@ def test_ac_16_84_pull_read_alone_never_sees_a_grn_snapshot(client, db, monkeypa
     rows = client.get(f"/autocount/pull/snapshots/{snapshot_id}/rows", headers=headers)
     assert show.status_code == rows.status_code == unknown.status_code == 404
     assert show.json() == unknown.json(), "a hidden GRN reads exactly like an unknown id"
+    assert rows.json() == unknown.json()
 
 
-def test_ac_16_84_pull_read_plus_sync_read_sees_the_grn(client, db, monkeypatch):
+def test_ac_16_82_pull_read_plus_sync_read_sees_the_grn(client, db, monkeypatch):
     env, snapshot_id = _ready_grn(client, db, monkeypatch)
     limited_user(
         db, ["autocount.pull.read", "autocount.sync.read"], email="s16-grn-both@example.com",

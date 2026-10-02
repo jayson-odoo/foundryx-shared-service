@@ -224,3 +224,7 @@ Only these differ:
   `autocount.pull.read`; without it the snapshot is hidden from the list and reads as an
   unknown id (404). The operator build route refuses `goods_receive_notes` with a 422, as it
   does `delivery_orders`.
+- **Known limit (accepted with option (a), 2026-10-02):** keys carry no entity scope, so a user
+  holding `autocount.pull.manage` (who can issue a key) can read a GRN snapshot through the
+  gateway even without `autocount.sync.read`. The `sync.read` gate protects read-only operators
+  only. A per-key entity allowlist is the fix if this ever matters.

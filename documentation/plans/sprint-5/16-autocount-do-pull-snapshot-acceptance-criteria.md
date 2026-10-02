@@ -109,7 +109,8 @@ Contract of record: `16-autocount-do-pull-snapshot-contract.md`. Products / stoc
 
 ## `goods_receive_notes` mirror (2026-10-02, lane GRN-PULL-SS, contract section 8)
 
-Tests: `service_backend/tests/test_s16_grn_pull_snapshot.py`.
+Tests: `service_backend/tests/test_s16_grn_pull_snapshot.py`. Ids AC-16-77..79, 81 and 83 are
+unused on purpose (left free for later GRN-only additions).
 
 - AC-16-70 [BE] `entity: "goods_receive_notes"` maps to the internal `goods_receive_notes`
   feed key; a range build answers 202 with the same echo as AC-16-01; `docNo` alone defaults to

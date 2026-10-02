@@ -71,6 +71,7 @@ DOC_FEED_SNAPSHOT_ENTITIES = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_N
 def is_doc_feed_entity(internal_entity: Optional[str]) -> bool:
     return internal_entity in DOC_FEED_SNAPSHOT_ENTITIES
 
+
 _PULL_NOT_ENABLED_MESSAGE = (
     "This book/entity was never enabled for pull, or is not active."
 )
