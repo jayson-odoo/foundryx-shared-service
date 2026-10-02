@@ -22,5 +22,9 @@ class TenantSettings(Base):
     tenant_id = Column(String, primary_key=True)
     default_currency = Column(String, nullable=True)  # ISO-4217; NULL = app default
     price_decimals = Column(Integer, nullable=True)  # money display DP; NULL = app default
+    # Origin (+ optional path) for PUBLIC links minted for this tenant's
+    # end-users (e.g. idea tracking links on a CRM customer portal). NULL = each
+    # feature's own default origin. May carry an ``{ideaId}`` placeholder.
+    public_link_base_url = Column(String, nullable=True)
     created_at = Column(UTCDateTime, server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime, server_default=func.now(), onupdate=func.now())

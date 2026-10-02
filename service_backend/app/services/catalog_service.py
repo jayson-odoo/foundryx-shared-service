@@ -7,6 +7,8 @@ Effective currency = product override else the tenant default.
 """
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -77,6 +79,7 @@ class TenantSettingsService:
             "priceDecimals": (
                 row.price_decimals if row and row.price_decimals is not None else DEFAULT_PRICE_DECIMALS
             ),
+            "publicLinkBaseUrl": row.public_link_base_url if row else None,
         }
 
     def set(self, tenant_id: str, data: dict) -> dict:
@@ -94,8 +97,43 @@ class TenantSettingsService:
             if dp < 0 or dp > 6:
                 raise HTTPException(422, "Decimal places must be between 0 and 6.")
             row.price_decimals = dp
+        if "publicLinkBaseUrl" in data:
+            row.public_link_base_url = validate_public_link_base(data["publicLinkBaseUrl"])
         self.db.commit()
         return self.get(tenant_id)
+
+
+def validate_public_link_base(value: Optional[str]) -> Optional[str]:
+    """Normalize a tenant ``public_link_base_url``: blank/None clears it (NULL =
+    each feature's default origin); otherwise it must be an absolute http(s) URL
+    with a host, no credentials and no fragment (a path, query and an
+    ``{ideaId}`` placeholder are allowed). Trailing ``/`` is stripped so link
+    minting (``{base}/ideas/{id}``) stays clean."""
+    if value is None or not str(value).strip():
+        return None
+    url = str(value).strip()
+    parts = urlsplit(url)
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.fragment
+        or "#" in url
+    ):
+        raise HTTPException(
+            422, "Public link base URL must be an absolute http(s) URL (no credentials or #fragment)."
+        )
+    if parts.query and "{ideaId}" not in url:
+        # ``{base}/ideas/{id}`` would land inside the query string.
+        raise HTTPException(422, "A public link base URL with a query must place {ideaId}.")
+    return url if parts.query else url.rstrip("/")
+
+
+def tenant_public_link_base(db: Session, tenant_id: str) -> Optional[str]:
+    """The tenant's public-link origin, or None (= the feature's own default)."""
+    row = db.get(TenantSettings, tenant_id)
+    return row.public_link_base_url if row and row.public_link_base_url else None
 
 
 def tenant_default_currency(db: Session, tenant_id: str) -> str:

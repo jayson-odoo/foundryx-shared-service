@@ -11,6 +11,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.services import status_machine
+from app.services.catalog_service import tenant_public_link_base
 
 from ..models import Idea, ProductDelivery
 from .statuses import IDEA_ENTITY, idea_status_id
@@ -37,10 +38,25 @@ def sync_idea_columns_from_captured(idea: Idea) -> None:
             setattr(idea, key, value.strip())
 
 
+# Placeholder a tenant ``public_link_base_url`` may carry when its portal path
+# does not end in ``/ideas/{id}``.
+IDEA_ID_PLACEHOLDER = "{ideaId}"
+
+
 def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
-    """The product-domain deep link ``{product_domain_base}/ideas/{idea_id}``
-    (AC-A-38 / §5.3). ``None`` when the product has no delivery origin configured
-    yet (a Maintainer sets ``product_domain_base`` on the software product)."""
+    """The public idea tracking link.
+
+    A tenant ``public_link_base_url`` (core tenant settings, SS-PUBLIC-LINK-BASE)
+    wins: ``{base}/ideas/{idea_id}``, or the base with ``{ideaId}`` substituted
+    when it carries the placeholder (e.g. the Sorento CRM customer portal).
+    Otherwise the product-domain deep link ``{product_domain_base}/ideas/{idea_id}``
+    (AC-A-38 / §5.3). ``None`` when neither is configured. Links minted earlier
+    stay valid: the old route is untouched, only new links pick up the setting."""
+    tenant_base = tenant_public_link_base(db, idea.tenant_id)
+    if tenant_base:
+        if IDEA_ID_PLACEHOLDER in tenant_base:
+            return tenant_base.replace(IDEA_ID_PLACEHOLDER, str(idea.id))
+        return f"{tenant_base.rstrip('/')}/ideas/{idea.id}"
     row = (
         db.query(ProductDelivery)
         .filter(

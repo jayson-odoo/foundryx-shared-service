@@ -164,6 +164,7 @@ def test_general_settings_set_and_clear_link_base(ideation_client):
         "https://",
         "https://crm.sorento.my/#frag",
         "https://user:pw@crm.sorento.my",
+        "https://crm.sorento.my/portal?src=wa",
     ],
 )
 def test_general_settings_rejects_bad_link_base(ideation_client, bad):

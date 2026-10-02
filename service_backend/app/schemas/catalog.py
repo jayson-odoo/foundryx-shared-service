@@ -100,11 +100,14 @@ class ProductPatch(ApiModel):
 class TenantSettingsOut(ApiModel):
     defaultCurrency: str
     priceDecimals: int
+    publicLinkBaseUrl: Optional[str] = None
 
 
 class TenantSettingsPatch(ApiModel):
     defaultCurrency: Optional[str] = None
     priceDecimals: Optional[int] = None
+    # "" or null clears (= feature default origin). Omitted = unchanged.
+    publicLinkBaseUrl: Optional[str] = None
 
 
 class ListResponse(ApiModel):
