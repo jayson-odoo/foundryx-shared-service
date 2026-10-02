@@ -97,7 +97,10 @@ def test_ac_19_32_public_list_never_contains_an_email(setup):
     assert op["from portal"]["authorName"] == "a@sorento.my"
     assert op["staff no name"]["authorName"] == "nameless@example.com"
     em = {r["body"]: r for r in _listed(c, emb, iid, prefix="/embed")}
-    assert em["from portal"]["authorName"] == "a@sorento.my"
+    # AC-19-45 (round 2): the EMBED list also projects email-shaped names.
+    assert em["from portal"]["authorName"] == "Portal user"
+    assert em["staff no name"]["authorName"] == "Team member"
+    assert em["staff named"]["authorName"] == "Test User"
 
 
 # ── AC-19-36: control characters ──────────────────────────────────────────────
