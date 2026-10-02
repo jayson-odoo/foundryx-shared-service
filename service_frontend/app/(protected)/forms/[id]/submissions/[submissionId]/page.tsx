@@ -105,9 +105,9 @@ function SubmissionDetail({ formId, submissionId }: { formId: string; submission
               </Link>
             </Button>
             <div>
-              <h1 className="font-heading text-lg font-semibold text-foreground">
+              <h2 className="font-heading text-lg font-semibold text-foreground">
                 {submission.userName ?? 'Anonymous'}
-              </h1>
+              </h2>
               <p className="text-xs text-muted-foreground">
                 v{submission.versionNumber}
                 {submission.submittedAt && <> · {formatDateTime(submission.submittedAt)}</>}

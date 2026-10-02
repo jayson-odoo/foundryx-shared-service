@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Folder, History, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useDatetime } from '@/hooks/use-datetime';
 import { documentService } from '@/services/document-service';
 import type { FileRow, FileVersionRow, FolderRow } from '@/types/documents';
@@ -93,7 +94,10 @@ export function DetailsPanel({ target, onClose }: DetailsPanelProps) {
                   <History className="size-3.5" /> Version history
                 </div>
                 {versions === null ? (
-                  <p className="text-xs text-muted-foreground">Loading…</p>
+                  <div className="space-y-1.5">
+                    <Skeleton className="h-8 w-full" />
+                    <Skeleton className="h-8 w-full" />
+                  </div>
                 ) : (
                   <ul className="space-y-2">
                     {versions.map((v) => (

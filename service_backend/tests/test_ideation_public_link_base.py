@@ -1,8 +1,8 @@
 """SS-PUBLIC-LINK-BASE - per-tenant ``public_link_base_url`` for public idea links.
 
 Public idea tracking links must be mintable on a tenant-chosen origin (the Sorento
-CRM customer portal) instead of the product delivery origin. The tenant setting is
-nullable: NULL keeps today's behaviour (``{product_domain_base}/ideas/{id}``), so
+CRM customer portal) instead of the shared-service domain. The tenant setting is
+nullable: NULL keeps today's behaviour (``{frontend_url}/public/ideas/{token}``), so
 nothing changes for a tenant until it is filled in. Links already sent stay valid
 because the old route is untouched - only NEW links pick up the setting.
 
@@ -19,6 +19,7 @@ from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 
 PRODUCT_ID = "prod-link-base"
 IDEA_ID = "idea-123"
+TOKEN = "tok-abc"
 
 
 @pytest.fixture
@@ -51,17 +52,12 @@ def _auth(client) -> dict:
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
 
 
-def _idea(tenant_id=DEFAULT_TENANT_ID):
+def _idea(tenant_id=DEFAULT_TENANT_ID, token=TOKEN):
     from modules.ideation.models import Idea
 
-    return Idea(id=IDEA_ID, tenant_id=tenant_id, product_id=PRODUCT_ID, problem="x")
-
-
-def _set_delivery(db, base, tenant_id=DEFAULT_TENANT_ID):
-    from modules.ideation.models import ProductDelivery
-
-    db.add(ProductDelivery(tenant_id=tenant_id, product_id=PRODUCT_ID, product_domain_base=base))
-    db.commit()
+    return Idea(
+        id=IDEA_ID, tenant_id=tenant_id, product_id=PRODUCT_ID, problem="x", status_token=token
+    )
 
 
 def _set_link_base(db, base, tenant_id=DEFAULT_TENANT_ID):
@@ -73,55 +69,61 @@ def _set_link_base(db, base, tenant_id=DEFAULT_TENANT_ID):
     db.commit()
 
 
+def _ss_base() -> str:
+    from app.config import settings
+
+    return settings.frontend_url.rstrip("/")
+
+
 # ── mint_idea_link ────────────────────────────────────────────────────────────
 
 
-def test_null_setting_keeps_product_domain_link(db):
+def test_null_setting_keeps_shared_service_link(db):
+    """NULL = today's shared-service status page, unchanged."""
     from modules.ideation.services.sinks import mint_idea_link
 
-    _set_delivery(db, "https://fe-sorento.foundryx.my")
-    assert mint_idea_link(db, _idea()) == f"https://fe-sorento.foundryx.my/ideas/{IDEA_ID}"
+    assert mint_idea_link(db, _idea()) == f"{_ss_base()}/public/ideas/{TOKEN}"
 
 
-def test_null_setting_and_no_delivery_is_none(db):
+def test_no_status_token_is_none_even_with_tenant_base(db):
     from modules.ideation.services.sinks import mint_idea_link
 
-    assert mint_idea_link(db, _idea()) is None
+    _set_link_base(db, "https://crm.sorento.my/portal/ideas/{token}")
+    assert mint_idea_link(db, _idea(token=None)) is None
 
 
-def test_tenant_link_base_overrides_product_domain(db):
-    from modules.ideation.services.sinks import mint_idea_link
-
-    _set_delivery(db, "https://ss.foundryx.my")
-    _set_link_base(db, "https://crm.sorento.my/portal")
-    assert mint_idea_link(db, _idea()) == f"https://crm.sorento.my/portal/ideas/{IDEA_ID}"
-
-
-def test_tenant_link_base_works_without_product_delivery(db):
+def test_tenant_base_as_origin_replaces_shared_service_domain(db):
     from modules.ideation.services.sinks import mint_idea_link
 
     _set_link_base(db, "https://crm.sorento.my/")
-    assert mint_idea_link(db, _idea()) == f"https://crm.sorento.my/ideas/{IDEA_ID}"
+    assert mint_idea_link(db, _idea()) == f"https://crm.sorento.my/public/ideas/{TOKEN}"
 
 
-def test_tenant_link_base_idea_id_placeholder(db):
-    """A portal whose path does not end in ``/ideas/{id}`` places the id itself."""
+def test_tenant_base_crm_portal_token_template(db):
+    """The Sorento value (IDEATION-IN-CRM, sorento #1438): the CRM portal path
+    carries the status token, substituted in place, nothing appended."""
     from modules.ideation.services.sinks import mint_idea_link
 
-    _set_link_base(db, "https://crm.sorento.my/my/idea-tracking/{ideaId}?src=wa")
+    _set_link_base(db, "https://crm.sorento.my/portal/ideas/{token}")
+    assert mint_idea_link(db, _idea()) == f"https://crm.sorento.my/portal/ideas/{TOKEN}"
+
+
+def test_tenant_base_idea_id_placeholder(db):
+    from modules.ideation.services.sinks import mint_idea_link
+
+    _set_link_base(db, "https://crm.sorento.my/t/{token}?idea={ideaId}")
     assert (
         mint_idea_link(db, _idea())
-        == f"https://crm.sorento.my/my/idea-tracking/{IDEA_ID}?src=wa"
+        == f"https://crm.sorento.my/t/{TOKEN}?idea={IDEA_ID}"
     )
 
 
-def test_tenant_link_base_is_tenant_scoped(db):
+def test_tenant_base_is_tenant_scoped(db):
     """Another tenant's setting never leaks into this tenant's links."""
     from modules.ideation.services.sinks import mint_idea_link
 
-    _set_delivery(db, "https://fe-sorento.foundryx.my")
-    _set_link_base(db, "https://crm.other.my", tenant_id="other-tenant")
-    assert mint_idea_link(db, _idea()) == f"https://fe-sorento.foundryx.my/ideas/{IDEA_ID}"
+    _set_link_base(db, "https://crm.other.my/portal/ideas/{token}", tenant_id="other-tenant")
+    assert mint_idea_link(db, _idea()) == f"{_ss_base()}/public/ideas/{TOKEN}"
 
 
 # ── settings API (/settings/general) ─────────────────────────────────────────
@@ -153,6 +155,14 @@ def test_general_settings_set_and_clear_link_base(ideation_client):
     )
     res = ideation_client.put("/settings/general", headers=h, json={"publicLinkBaseUrl": None})
     assert res.json()["publicLinkBaseUrl"] is None
+
+
+def test_general_settings_accepts_crm_portal_template(ideation_client):
+    h = _auth(ideation_client)
+    value = "https://crm.sorento.my/portal/ideas/{token}"
+    res = ideation_client.put("/settings/general", headers=h, json={"publicLinkBaseUrl": value})
+    assert res.status_code == 200, res.text
+    assert res.json()["publicLinkBaseUrl"] == value
 
 
 @pytest.mark.parametrize(

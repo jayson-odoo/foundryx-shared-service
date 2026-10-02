@@ -14,7 +14,7 @@ against the schema, computes completion, and echoes templated text.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from app.form_engine.schemas import FormDocument
 
@@ -50,8 +50,8 @@ def get_intake_definition(key: str) -> Optional[IntakeDefinition]:
 
 IDEATION_INTAKE_KEY = "ideation"
 
-# Human-readable labels for each captured field - used verbatim in the
-# deterministic reply_text templates (no LLM). Kept in sync with the schema below.
+# Human-readable labels for each captured field - used verbatim in the form
+# document (below). Kept in sync with the schema below.
 IDEATION_FIELD_LABELS: Dict[str, str] = {
     "problem": "Problem statement",
     "proposed_solution": "Proposed solution",
@@ -59,14 +59,43 @@ IDEATION_FIELD_LABELS: Dict[str, str] = {
     "department": "Department",
 }
 
+# The point-form recap labels used in the deterministic reply_text templates
+# (S1 R10/R16) - distinct from IDEATION_FIELD_LABELS (the form-document field
+# labels): shorter, WhatsApp-recap wording. Order matters for the recap lines
+# (problem, proposed_solution, impact, department - only keys present).
+IDEATION_RECAP_LABELS: Dict[str, str] = {
+    "problem": "Problem",
+    "proposed_solution": "Solution",
+    "impact": "Impact",
+    "department": "Department",
+}
+
+# The order optional fields are asked in a collecting turn (S1, R15) -
+# ``department`` is NEVER nominated as ``next_field`` (it stays an optional,
+# operator-only column that the conversational intake never asks for).
+OPTIONAL_ASK_ORDER: Tuple[str, ...] = ("proposed_solution", "impact")
+
+
+def next_field(captured: Dict[str, object], skipped: Iterable[str]) -> Optional[str]:
+    """The next optional field to ask for (S1): the first key in
+    ``OPTIONAL_ASK_ORDER`` that is neither answered (in ``captured``) nor
+    skipped, else ``None``. ``department`` can never be returned - it is not
+    in ``OPTIONAL_ASK_ORDER``."""
+    skipped_set = set(skipped or [])
+    for key in OPTIONAL_ASK_ORDER:
+        if key not in captured and key not in skipped_set:
+            return key
+    return None
+
 
 def _ideation_target_schema() -> FormDocument:
     """The Idea-capture form document (Page -> Section -> Field), a valid
-    ``validate_form_doc`` document (AC-A-14). All fields are required - they
-    are the intake's captured/missing surface. NB: no ``module`` (business
-    submitters don't know modules) and no ``who`` (the submitter identity already
-    answers that); the required set is problem / proposed_solution / impact /
-    department."""
+    ``validate_form_doc`` document (AC-A-14 / AC-1101). Only ``problem`` is
+    required - the intake's captured/missing surface; ``proposed_solution`` /
+    ``impact`` / ``department`` are optional (S1 R15) but stay in the document
+    so an operator-authored idea can still capture them directly. NB: no
+    ``module`` (business submitters don't know modules) and no ``who`` (the
+    submitter identity already answers that)."""
     return FormDocument.model_validate(
         {
             "schemaVersion": 1,
@@ -91,21 +120,21 @@ def _ideation_target_schema() -> FormDocument:
                                     "type": "textarea",
                                     "key": "proposed_solution",
                                     "label": IDEATION_FIELD_LABELS["proposed_solution"],
-                                    "required": True,
+                                    "required": False,
                                 },
                                 {
                                     "id": "f-impact",
                                     "type": "textarea",
                                     "key": "impact",
                                     "label": IDEATION_FIELD_LABELS["impact"],
-                                    "required": True,
+                                    "required": False,
                                 },
                                 {
                                     "id": "f-department",
                                     "type": "text",
                                     "key": "department",
                                     "label": IDEATION_FIELD_LABELS["department"],
-                                    "required": True,
+                                    "required": False,
                                 },
                             ],
                         }

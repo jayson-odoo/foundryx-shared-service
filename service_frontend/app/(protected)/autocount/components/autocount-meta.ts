@@ -2,9 +2,21 @@ import type { StatusRegistry } from '@/components/platform/status-badge';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
 import { PRESETS, TRANSFORM_PRESET } from '@/lib/autocount-formula';
 import type {
+  AutocountDeliveryMode,
+  AutocountEtlStatus,
   AutocountJobStatus,
+  AutocountPullSnapshotStatus,
+  AutocountRunMode,
   AutocountRunOutcome,
+  AutocountSourceKind,
   AutocountStagedStatus,
+  DocFeedBackfillStatus,
+  DocFeedContractGate,
+  DocFeedIssueKind,
+  DocFeedKey,
+  DocFeedMode,
+  DocFeedRunKind,
+  DocFeedRunOutcome,
 } from '@/types/autocount';
 
 // ── permission keys (module CSV: modules/autocount/permissions/permissions.csv)
@@ -12,11 +24,15 @@ export const AC_COMPANIES_READ = 'autocount.companies.read';
 export const AC_COMPANIES_MANAGE = 'autocount.companies.manage';
 export const AC_SYNC_READ = 'autocount.sync.read';
 export const AC_SYNC_RUN = 'autocount.sync.run';
+// sprint-5/10 (AC-10-36) - the pull gateway's operator-side permissions.
+export const AC_PULL_READ = 'autocount.pull.read';
+export const AC_PULL_MANAGE = 'autocount.pull.manage';
 
 // ── routes ───────────────────────────────────────────────────────────────────
 export const AC_COMPANIES_PATH = '/autocount/companies';
 export const AC_COMPANY_NEW_PATH = '/autocount/companies/new';
 export const AC_REVIEW_PATH = '/autocount/review';
+export const AC_PULL_PATH = '/autocount/pull';
 
 export function acCompanyHref(id: string): string {
   return `${AC_COMPANIES_PATH}/${id}`;
@@ -27,10 +43,278 @@ export function acReviewHref(jobId: string, from?: string): string {
   return `${AC_REVIEW_PATH}/${jobId}${suffix}`;
 }
 
+/** The snapshot detail surface (AC-10-49). */
+export function acPullSnapshotHref(id: string): string {
+  return `${AC_PULL_PATH}/snapshots/${id}`;
+}
+
 /** The per-(company, entity) field-mapping editor (AC-15-40). */
 export function acMappingHref(companyId: string, entityType: string): string {
   return `${AC_COMPANIES_PATH}/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`;
 }
+
+/** The task editor's tabs (plan 22 §3) - `?tab=` deep-links one. */
+export type AcTaskTab = 'query' | 'mapping' | 'schedule' | 'activate' | 'runs';
+
+/** The per-(company, entity) Database-mode task editor (plan 22, AC-22-07). */
+export function acTaskHref(companyId: string, entityType: string, tab?: AcTaskTab): string {
+  const base = `${AC_COMPANIES_PATH}/${companyId}/entities/${encodeURIComponent(entityType)}`;
+  return tab && tab !== 'query' ? `${base}?tab=${tab}` : base;
+}
+
+// ── entity source (plan 22 S2, AC-22-08; sprint-5/08 D13 - the Source TAB) ───
+
+/**
+ * Source-impl display label (the Entities list's Source column, AC-08-18).
+ * The picker for CHOOSING a source moved to the task's Source tab (D13); the
+ * `change-source` dialog and `AC_SOURCE_IMPL_OPTIONS` it used are gone.
+ */
+const SOURCE_IMPL_LABELS: Record<string, string> = {
+  autocount_read: 'AutoCount API',
+  sql_db: 'Database',
+  autocount_http: 'Open API',
+};
+
+export function sourceImplLabel(impl: string): string {
+  return SOURCE_IMPL_LABELS[impl] ?? humanizeFieldKey(impl);
+}
+
+/**
+ * The entities backed by a confirmed, observed AutoCount API payload (mirrors
+ * the backend's own `SEEDED_ENTITIES` guard, `services/company_service.py`) -
+ * the ONLY entities the Source tab may derive `autocount_read` (Basic-auth
+ * API) for. Every other entity offers Basic-auth connections filtered out of
+ * the picker entirely (foolproof-UI: only offer valid options - sprint-5/08
+ * AC-08-19 simplification, see `source-tab.tsx`).
+ *
+ * PARITY-PINNED (S4 review S2): `tests/test_autocount_entity_parity.py`
+ * reads this literal straight out of this file and fails if it drifts from
+ * `SEEDED_ENTITIES` - edit both sides together.
+ */
+export const AC_API_CAPABLE_ENTITY_TYPES: string[] = ['goods_received_note', 'supplier', 'customer'];
+
+/**
+ * The masters plan 22 S4 (AC-22-23) added, in DEPENDENCY order - categories
+ * and units of measure before products (a product referencing an unsynced
+ * category/UOM lands `retryable` until the dependency lands). This is the
+ * Entities tab's "Add entity" picker's ONLY candidate list: every one of
+ * these is DB-source only, so the task editor is where its config is born.
+ * Documents (plan 22 S5) ride the same picker - lines are part of the
+ * document task (header query + line query), never a separate entity.
+ */
+export const AC_NEW_MASTER_ENTITY_TYPES: string[] = [
+  'product_category',
+  'unit_of_measure',
+  'warehouse',
+  'product',
+  'sales_agent',
+  'sales_order',
+  'purchase_order',
+];
+
+// ── company source kind (plan sprint-5/01; `http` added sprint-5/08) ─────────
+
+/** The two ways to CONNECT a company - the connect-form Source toggle's ONLY
+ * options (sprint-5/08 review R2: an open/no-auth `autocount` connection is
+ * still picked under "API", never a third toggle segment). */
+export const AC_SOURCE_KIND_OPTIONS: { value: 'api' | 'db'; label: string }[] = [
+  { value: 'api', label: 'AutoCount API' },
+  { value: 'db', label: 'SQL database' },
+];
+
+const SOURCE_KIND_LABELS: Record<string, string> = {
+  db: 'Database',
+  // sprint-5/08 AC-08-10 - the company detail Integration row distinguishes
+  // the two `api` auth modes; callers needing that distinction pass the
+  // connection's auth alongside (see `company-detail-view.tsx`).
+  api: 'API (basic auth)',
+  http: 'API (no auth)',
+};
+
+export function sourceKindLabel(kind: string): string {
+  return SOURCE_KIND_LABELS[kind] ?? humanizeFieldKey(kind);
+}
+
+/**
+ * Every entity the open REST API (sprint-5/08) can extract - the six masters
+ * with a confirmed `hapi.sorento.cc.cd` payload (UAC Definitions), plus
+ * `stock_balance` (sprint-5/10 S5b, AC-10-40) - a reduced (item, location)
+ * balance, pull-only by default (its push gate is decided by the backend's
+ * `pushGate` on the task, sprint-5/13 D18 - never a hardcoded entity list
+ * here). An `http` company's
+ * "Add entity" picker offers exactly this set; a `db`/`api` company's task
+ * Source tab offers it too when toggled to API + a no-auth connection.
+ *
+ * PARITY-PINNED: `tests/test_autocount_entity_parity.py` pins this literal
+ * against the backend's `HTTP_ENTITY_TYPES` / `HTTP_PRESETS` keys - edit
+ * both sides together.
+ */
+export const AC_HTTP_ENTITY_TYPES: string[] = [
+  'product',
+  'customer',
+  'warehouse',
+  'product_category',
+  'brand',
+  'unit_of_measure',
+  'stock_balance',
+  // sprint-5/14 section 11 (D23) - the paged `branchbypage` address records, a
+  // regular HTTP master with no `sql_db` variant.
+  'branch',
+];
+
+/**
+ * Every entity a DATABASE company can extract (AC-01-17) - the nine `sql_db`
+ * entities in dependency order: the two API-seeded masters (`customer`,
+ * `supplier`) are born on the DB source here exactly like the plan 22 S4
+ * fan-out (a DB company seeds nothing, AC-01-05), then categories/UOM before
+ * products, then documents. `goods_received_note` is deliberately ABSENT: it
+ * has no Sorento path and an API-only envelope, so offering it would be a
+ * guaranteed 422 (foolproof-UI: only valid options).
+ *
+ * PARITY-PINNED (S2): `tests/test_autocount_entity_parity.py` reads this
+ * literal and fails if it drifts from `ENTITY_PROFILES` minus GRN. Ten with
+ * `shipping_order` (sprint-5/02, AC-02-10) - a sql_db-only entity (no
+ * confirmed vendor API payload, so it is DB-only exactly like the other
+ * documents), listed last as the newest addition.
+ */
+export const AC_SQL_DB_ENTITY_TYPES: string[] = [
+  'customer',
+  'supplier',
+  'product_category',
+  'unit_of_measure',
+  'warehouse',
+  'product',
+  'sales_agent',
+  'sales_order',
+  'purchase_order',
+  'shipping_order',
+  // sprint-5/08 (AC-08-31) - `brand` is DB-extractable too, not just the
+  // open REST API's `HTTP_ENTITY_TYPES` set.
+  'brand',
+];
+
+/**
+ * The open REST API entities with NO `sql_db` variant (today:
+ * `stock_balance` - sprint-5/10 S5b, AC-10-39/D4 - and `branch`, sprint-5/14 section 11) - derived from the two
+ * catalogues above, never hand-listed twice (`test_autocount_entity_parity.py`
+ * already pins `AC_SQL_DB_ENTITY_TYPES` as `ETL_ENTITY_TYPES` minus GRN minus
+ * `stock_balance`, so this difference IS that literal).
+ *
+ * Backend note (fix/autocount-add-http-only-entity-on-db-company): the DB
+ * task route (`EtlService.update_task`) already accepts an
+ * `sourceImpl: "autocount_http"` task on ANY company kind - `_update_http_task`
+ * runs BEFORE the "DB company reads only its own connection" rule
+ * (`etl_service.py`, AC-08-13). A DB company's Add-entity picker used to omit
+ * every one of these regardless, a foolproof-UI gap: they already work, they
+ * were just never offered.
+ */
+export const AC_HTTP_ONLY_ENTITY_TYPES: string[] = AC_HTTP_ENTITY_TYPES.filter(
+  (entityType) => !AC_SQL_DB_ENTITY_TYPES.includes(entityType),
+);
+
+/**
+ * Mapping rows the server refuses to change (sprint-5/14 section 11, round 3):
+ * the branch identity pair is fixed to its vendor columns as plain text, since
+ * the CRM derives its verdict `source_ref` from the mapped values. PARITY:
+ * `LOCKED_MAPPING_SOURCES` in `canonical/masters.py`.
+ */
+export const AC_LOCKED_MAPPING_SOURCES: Record<string, Record<string, string>> = {
+  branch: { acc_no: 'AccNo', code: 'BranchCode' },
+};
+
+export function isLockedMappingField(entityType: string, sorentoField: string): boolean {
+  return Boolean(AC_LOCKED_MAPPING_SOURCES[entityType]?.[sorentoField]);
+}
+
+export function isHttpOnlyEntity(entityType: string): boolean {
+  return AC_HTTP_ONLY_ENTITY_TYPES.includes(entityType);
+}
+
+/**
+ * The Add-entity picker's candidate list for a company of the given kind
+ * (sprint-5/08 AC-08-18): a `db` company offers every `sql_db` entity PLUS
+ * the HTTP-only entities (AC-08-18 extension above - legal server-side, so
+ * foolproof-UI offers it), an `http` (open) company offers exactly the
+ * confirmed HTTP masters, an `api` (vendor/basic-auth) company keeps the
+ * plan 22 S4 masters fan-out (its three vendor-seeded entities -
+ * GRN/supplier/customer - already exist with no "Add" step).
+ */
+export function entitiesForSourceKind(kind: AutocountSourceKind): string[] {
+  if (kind === 'db') return [...AC_SQL_DB_ENTITY_TYPES, ...AC_HTTP_ONLY_ENTITY_TYPES];
+  if (kind === 'http') return AC_HTTP_ENTITY_TYPES;
+  return AC_NEW_MASTER_ENTITY_TYPES;
+}
+
+// ── human-invoked pull (sprint-5/10) ──────────────────────────────────────────
+
+/**
+ * Entities a consumer can pull today (AC-10-15) - the Schedule tab's Delivery
+ * toggle renders for these WHEN the task's own `pushGate` is `null` (open);
+ * every other entity keeps `push` with no Delivery UI at all (foolproof-UI:
+ * only offer valid options). `stock_balance`'s Push option additionally
+ * needs the backend's push gate OPEN (sprint-5/13, D18) - whether the toggle
+ * or a read-only badge renders is decided EXCLUSIVELY by `task.pushGate`,
+ * never by an entity list here (`isPullOnly`/`AC_PULL_ONLY_ENTITY_TYPES`
+ * were removed sprint-5/13 - AC-10-15's "opens with no code change" was
+ * false while the frontend still hardcoded this).
+ *
+ * PARITY-PINNED (S3+): mirrors the backend's `PULL_CAPABLE_ENTITY_TYPES`
+ * (`modules/autocount/services/etl_service.py`) once that lands.
+ */
+export const AC_PULL_CAPABLE_ENTITY_TYPES: string[] = ['product', 'stock_balance'];
+
+export function isPullCapable(entityType: string): boolean {
+  return AC_PULL_CAPABLE_ENTITY_TYPES.includes(entityType);
+}
+
+const DELIVERY_MODE_LABELS: Record<AutocountDeliveryMode, string> = {
+  push: 'Push',
+  pull: 'Pull on request',
+};
+
+export function deliveryModeLabel(mode: AutocountDeliveryMode | string): string {
+  return DELIVERY_MODE_LABELS[mode as AutocountDeliveryMode] ?? humanizeFieldKey(mode);
+}
+
+/** The entities list's Delivery column (AC-10-17). */
+export const AC_DELIVERY_MODE_REGISTRY: StatusRegistry<AutocountDeliveryMode> = {
+  push: { label: 'Push', tone: 'secondary' },
+  pull: { label: 'Pull on request', tone: 'info' },
+};
+
+/** `entity` on the wire (`products`/`stock_balances`) <-> this side's
+ * internal singular keys - ONE map, both directions derive from it. */
+const PULL_ENTITY_WIRE: Record<string, string> = {
+  product: 'products',
+  stock_balance: 'stock_balances',
+};
+const PULL_ENTITY_INTERNAL: Record<string, string> = Object.fromEntries(
+  Object.entries(PULL_ENTITY_WIRE).map(([internal, wire]) => [wire, internal]),
+);
+
+export function pullEntityToWire(entityType: string): string {
+  return PULL_ENTITY_WIRE[entityType] ?? entityType;
+}
+
+export function pullEntityFromWire(wireEntity: string): string {
+  return PULL_ENTITY_INTERNAL[wireEntity] ?? wireEntity;
+}
+
+export const AC_PULL_SNAPSHOT_STATUS_REGISTRY: StatusRegistry<AutocountPullSnapshotStatus> = {
+  building: { label: 'Building', tone: 'info' },
+  ready: { label: 'Ready', tone: 'success' },
+  failed: { label: 'Failed', tone: 'destructive' },
+};
+
+/** A pull API key's status is DERIVED from `revokedAt` (never a stored
+ * enum) - the Keys segment's status column reads it through this registry
+ * like every other status pill (AC-10-38, review round 1 item 3). */
+export type AutocountPullKeyStatus = 'active' | 'revoked';
+
+export const AC_PULL_KEY_STATUS_REGISTRY: StatusRegistry<AutocountPullKeyStatus> = {
+  active: { label: 'Active', tone: 'success' },
+  revoked: { label: 'Revoked', tone: 'secondary' },
+};
 
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──
 
@@ -48,6 +332,12 @@ export const AC_TRANSFORMS: { value: string; label: string }[] = [
   { value: 'date', label: 'Date' },
   { value: 'datetime', label: 'Date & time' },
   { value: 'slash_datetime', label: 'Slash date/time' },
+  // sprint-5/06 (AC-06-01/21) - splits a comma list into deduped, trimmed
+  // strings (`from_so_numbers`). Produces a LIST, not a scalar `FormulaValue`
+  // (`lib/autocount-formula.ts` TRANSFORM_OUTPUT_SHAPE) - a formula row can
+  // never target the field this feeds; the save-time 422 (AC-06-11) surfaces
+  // as that row's own field error, same as every other rejected combination.
+  { value: 'string_list', label: 'Comma-separated list' },
 ];
 
 export function transformLabel(transform: string): string {
@@ -67,15 +357,62 @@ export const AC_PRESET_TRANSFORM: Record<string, string> = {
   decimal: 'decimal',
   integer: 'int',
   date: 'slash_datetime',
+  // Plan 22 S5 - a document header ref field's named server-side transform
+  // (see `lib/autocount-formula.ts` PRESETS for why this is a transform, not
+  // a formula).
+  ref_customer: 'ref_customer',
+  ref_supplier: 'ref_supplier',
+  ref_product: 'ref_product',
+  ref_warehouse: 'ref_warehouse',
+  ref_sales_agent: 'ref_sales_agent',
   custom: 'string',
 };
 
-/** The 6 presets offered in the Transform cell (Text/Boolean/Decimal/Integer/
- *  Date/Custom) - the picker's option list, from the canonical `PRESETS`. */
+/** The full preset catalog (Text/Boolean/Decimal/Integer/Date/the 5 ref
+ *  presets/Custom), from the canonical `PRESETS` - NOT what any one row's
+ *  Transform cell offers (see `presetOptionsForField`, S5 review BLOCKER 2
+ *  FE half: a picker must offer ONLY valid options). */
 export const AC_PRESET_OPTIONS: { value: string; label: string }[] = PRESETS.map((p) => ({
   value: p.key,
   label: p.label,
 }));
+
+/**
+ * Sorento field → the ONE ref preset valid for it (mirrors the backend's
+ * `mapping.FIELD_REF_TRANSFORMS`, S5 review BLOCKER 2). `product_ref`/
+ * `warehouse_ref` are deliberately absent - those line fields are
+ * code-generated (`document_line_rows`), never an operator-authored row.
+ */
+export const AC_FIELD_REF_PRESET: Record<string, string> = {
+  customer_ref: 'ref_customer',
+  supplier_ref: 'ref_supplier',
+  sales_agent_ref: 'ref_sales_agent',
+};
+
+// ALL 5 ref presets (not just the 3 pairable to a field) - `ref_product`/
+// `ref_warehouse` have no entry in `AC_FIELD_REF_PRESET` at all (their
+// fields are never operator-mapped), but they must be excluded from every
+// OTHER field's options exactly the same as the 3 that do.
+const AC_REF_PRESET_KEYS = new Set(
+  AC_PRESET_OPTIONS.filter((o) => o.value.startsWith('ref_')).map((o) => o.value),
+);
+
+/**
+ * The Transform-preset options valid for a mapping row's CHOSEN Sorento
+ * field (S5 review BLOCKER 2, FE half - foolproof-UI: only offer valid
+ * options, the picker must never let an operator select a combination the
+ * server rejects). A `*_ref` field offers ONLY its own matching ref preset;
+ * every other field never sees a ref preset at all - the backend enforces
+ * both directions (`company_service.replace_mapping`), this keeps the UI
+ * from ever presenting the choice that would fail.
+ */
+export function presetOptionsForField(sorentoField: string): { value: string; label: string }[] {
+  const refPreset = AC_FIELD_REF_PRESET[sorentoField];
+  if (refPreset) {
+    return AC_PRESET_OPTIONS.filter((o) => o.value === refPreset);
+  }
+  return AC_PRESET_OPTIONS.filter((o) => !AC_REF_PRESET_KEYS.has(o.value));
+}
 
 /** The canonical formula for a preset (the Build dialog pre-fills from it). */
 export function presetFormula(key: string): string {
@@ -135,6 +472,15 @@ export const AC_RUN_OUTCOME_REGISTRY: StatusRegistry<AutocountRunOutcome> = {
   SUCCESS: { label: 'Success', tone: 'success' },
   FAILED: { label: 'Failed', tone: 'destructive' },
   ABORTED: { label: 'Aborted', tone: 'warning' },
+  SKIPPED: { label: 'Skipped', tone: 'secondary' },
+};
+
+/** How a run started (plan 22 §2.7) - the Runs tab's mode badge (AC-22-17). */
+export const AC_RUN_MODE_REGISTRY: StatusRegistry<AutocountRunMode> = {
+  manual: { label: 'Manual', tone: 'primary' },
+  incremental: { label: 'Incremental', tone: 'success' },
+  reconcile: { label: 'Reconcile', tone: 'info' },
+  skipped: { label: 'Skipped', tone: 'warning' },
 };
 
 export const AC_JOB_STATUS_REGISTRY: StatusRegistry<AutocountJobStatus> = {
@@ -146,9 +492,78 @@ export const AC_JOB_STATUS_REGISTRY: StatusRegistry<AutocountJobStatus> = {
   aborted: { label: 'Aborted', tone: 'secondary' },
 };
 
+/** DB extraction task lifecycle (plan 22 §2.4 `etl_status`). */
+export const AC_ETL_STATUS_REGISTRY: StatusRegistry<AutocountEtlStatus> = {
+  draft: { label: 'Draft', tone: 'secondary' },
+  active: { label: 'Active', tone: 'success' },
+  paused: { label: 'Paused', tone: 'warning' },
+};
+
 export const AC_STAGED_STATUS_REGISTRY: StatusRegistry<AutocountStagedStatus> = {
   STAGED: { label: 'Awaiting approval', tone: 'warning' },
   FAILED: { label: 'Failed', tone: 'destructive' },
   PUSHED: { label: 'Pushed', tone: 'success' },
   DISCARDED: { label: 'Discarded', tone: 'secondary' },
 };
+
+// ── document feeds (sprint-5/14, D17) - AC-14-90..95 ─────────────────────────
+
+/** The tab's fixed row order (D2 - two feeds, always, a missing row reads
+ * `off`; branches became the `branch` entity, plan 14 section 11). */
+export const AC_DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
+
+/** Canonical feed key -> display label - derived the SAME way `entityLabel`
+ * humanizes every other code constant (never a tenant-editable lookup). */
+export function docFeedLabel(feed: DocFeedKey | string): string {
+  return humanizeFieldKey(feed);
+}
+
+export const AC_DOC_FEED_MODE_REGISTRY: StatusRegistry<DocFeedMode> = {
+  off: { label: 'Off', tone: 'secondary' },
+  dry_run: { label: 'Dry run', tone: 'info' },
+  push: { label: 'Push', tone: 'success' },
+};
+
+/** S7 (review round 1) - the backfill column's Done/Stopped pill through
+ * the shared `StatusBadge` roster, not a hand-rolled `<Badge>`. `running`/
+ * `stopping` are listed too (the registry documents every value the wire
+ * can carry) even though the list's own cell renders those two through
+ * `JobProgress` instead. */
+export const AC_DOC_FEED_BACKFILL_STATUS_REGISTRY: StatusRegistry<DocFeedBackfillStatus> = {
+  running: { label: 'Running', tone: 'info' },
+  stopping: { label: 'Stopping', tone: 'warning' },
+  stopped: { label: 'Stopped', tone: 'warning' },
+  done: { label: 'Done', tone: 'success' },
+};
+
+/** S7 (review round 1) - the doc-feed run history's own outcome registry
+ * (a `RUNNING` sentinel for a still-open run, `outcome === null`) - kept
+ * SEPARATE from the plan-22 `AC_RUN_OUTCOME_REGISTRY` (no `SKIPPED` value
+ * here, and that registry has no room for a run still in flight). */
+export const AC_DOC_FEED_RUN_OUTCOME_REGISTRY: StatusRegistry<DocFeedRunOutcome | 'RUNNING'> = {
+  SUCCESS: { label: 'Success', tone: 'success' },
+  FAILED: { label: 'Failed', tone: 'destructive' },
+  ABORTED: { label: 'Aborted', tone: 'warning' },
+  RUNNING: { label: 'Running', tone: 'info' },
+};
+
+/** Runs list "Kind" column (poll / sweep / backfill). */
+export function docFeedRunKindLabel(kind: DocFeedRunKind | string): string {
+  return humanizeFieldKey(kind);
+}
+
+export const AC_DOC_FEED_ISSUE_KIND_REGISTRY: StatusRegistry<DocFeedIssueKind> = {
+  retryable: { label: 'Waiting', tone: 'warning' },
+  failed: { label: 'Failed', tone: 'destructive' },
+};
+
+/** The Configure dialog's shut-gate warning (AC-14-91: "names the
+ * consumer's version and 2.7") - mirrors `pushGateWarning`'s two-reason
+ * shape (`lib/autocount-etl.ts`), stated as what IS true, never a how-to. */
+export function docFeedGateWarning(gate: DocFeedContractGate): string {
+  if (gate.reason === 'config_error') {
+    return 'This company has no ready Sorento push target yet.';
+  }
+  const version = gate.version ?? 'unknown';
+  return `Consumer contract ${version} - this feed needs ${gate.requiredVersion}.`;
+}

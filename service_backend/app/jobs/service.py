@@ -8,14 +8,17 @@ and continues.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
+from celery.exceptions import SoftTimeLimitExceeded
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.jobs.registry import handler_for
+from app.jobs.registry import handler_for, types_that_heartbeat
 from app.jobs.repository import BackgroundJobRepository
 from app.models.background_job import (
     JOB_FAILED,
@@ -58,13 +61,23 @@ class JobService:
         return job
 
     def enqueue(self, job_id: str) -> None:
-        """Eager (dev/test) runs INLINE on this session; else Celery ``.delay``."""
+        """Eager (dev/test) runs INLINE on this session; else Celery, routed
+        onto the handler's declared queue when it has one (sprint-5:
+        ``meetings.transcribe`` -> ``stt``, mirroring how ``enqueue_bot_run``
+        targets the dedicated ``bots`` queue), the worker's default queue
+        otherwise."""
         if settings.celery_task_always_eager:
             run_job(self.db, job_id)
             return
+        from app.jobs.registry import queue_for_type
         from app.jobs.worker import run_job_task
 
-        run_job_task.delay(job_id)
+        job = self.repo.get_unscoped(job_id)
+        queue = queue_for_type(job.type) if job is not None else None
+        if queue:
+            run_job_task.apply_async(args=[job_id], queue=queue)
+        else:
+            run_job_task.delay(job_id)
 
     def create_and_enqueue(
         self,
@@ -151,6 +164,283 @@ class JobService:
             job.finished_at = datetime.now(timezone.utc)
         self.db.commit()
 
+    # ── liveness (fix/job-lease-orphan-sweep) ────────────────────────────────
+
+    ORPHANED_ERROR = (
+        "Interrupted: the worker stopped (deploy or crash) before this run "
+        "finished; the next run re-offers its staged rows"
+    )
+
+    # sprint-5/11 S1 (AC-11-83) - the cooperative SoftTimeLimitExceeded
+    # sentence. Deliberately NOT the generic "Job crashed: ..." phrasing:
+    # this path is a clean, expected stop at a configured bound, not a crash.
+    SOFT_TIME_LIMIT_ERROR = (
+        "Stopped: this run exceeded its soft time limit; the next run "
+        "re-offers its staged rows"
+    )
+
+    # sprint-5/11 S2 (AC-11-50, incident 2026-09-21) - a PENDING job whose
+    # Celery message was lost never reaches a worker at all, so it has no
+    # heartbeat/started_at to judge liveness by; this is a DIFFERENT
+    # incident from ORPHANED_ERROR (a worker that started the job then
+    # died) and must not share its sentence. Not "Job crashed: ..." either -
+    # this is a clean, expected recovery at a configured bound.
+    UNDISPATCHED_ERROR = (
+        "Interrupted: the worker never picked this job up (the queued "
+        "message was lost)."
+    )
+
+    def heartbeat(self, job_id: str, *, now: Optional[datetime] = None) -> bool:
+        """Stamp ``heartbeat_at`` on a RUNNING job in its OWN short transaction.
+
+        Same shape as ``workflow_engine.serialization.touch_run_heartbeat``:
+        one UPDATE on a connection taken straight from the session's bind,
+        never the run's session - the run holds uncommitted state (a watermark
+        advance, staged rows) that must stay uncommitted until the run decides.
+        On Postgres the row is skipped rather than waited on. Returns True when
+        a row was stamped. Callers treat it as best-effort (a failed heartbeat
+        is logged, never allowed to fail the run).
+        """
+        table = BackgroundJob.__table__
+        bind = self.db.get_bind()
+        target = select(table.c.id).where(
+            table.c.id == job_id, table.c.status == JOB_RUNNING
+        )
+        if bind.dialect.name == "postgresql":
+            target = target.with_for_update(skip_locked=True)
+        stmt = (
+            update(table)
+            .where(table.c.id == target.scalar_subquery())
+            .values(heartbeat_at=now or datetime.now(timezone.utc))
+        )
+        with bind.begin() as conn:
+            return conn.execute(stmt).rowcount > 0
+
+    def beat_progress(
+        self,
+        job_id: str,
+        *,
+        done: int,
+        total: Optional[int],
+        stage: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """sprint-5/11 S5 (AC-11-40) - the ONE progress-write helper both the
+        pull-snapshot build (``sync.py``'s ``_beat_and_check``) and the
+        preview job's own per-page checkpoint share: ``heartbeat_at``,
+        ``progress_done`` and (when the stage actually CHANGED)
+        ``cursor_json['stage']`` are written in exactly ONE UPDATE against
+        ``background_jobs`` - mirrors ``heartbeat()``'s own shape (RUNNING-
+        scoped, Postgres SKIP LOCKED, a connection off the session's own
+        bind rather than the run's session). A read (the ``cursor_json``
+        SELECT just below, needed to preserve any OTHER key a caller already
+        stored there) is a SEPARATE statement on the SAME connection/
+        transaction, not a SECOND UPDATE - that is the actual contract this
+        helper holds (never "zero extra statements"; the plan's own "one
+        UPDATE" pin is about the WRITE, not every read a caller might need
+        first). ``progress_total`` lands in the SAME statement only when
+        ``total`` is given - ``None`` leaves whatever total a previous beat
+        already established untouched (a bare-array endpoint's page count,
+        or a later stage with no page count of its own, must never zero it
+        out).
+
+        sprint-5/11 review round 2 (item 6) - the ``cursor_json`` SELECT now
+        runs on the SAME connection/transaction as the UPDATE (``with bind.
+        begin() as conn``), not a second one off ``self.db``; and the
+        rewrite itself is SKIPPED when the stage has not actually changed
+        (a multi-page walk beats several times per stage - only the FIRST
+        beat of a given stage needs to touch ``cursor_json`` at all).
+        Returns True when a RUNNING row was stamped, the SAME best-effort
+        contract ``heartbeat()`` offers.
+
+        sprint-5/11 S6 review round 1 (nit) - the ``cursor_json`` SELECT
+        above reads the COMMITTED value on this UPDATE's own bind-level
+        connection (``bind.begin()``), never ``self.db`` - so it can only
+        ever see a stage a PRIOR beat already committed, not an uncommitted
+        ``cursor_json`` write the calling run's own session may be holding
+        open right now. No handler mixes an explicit ``set_cursor`` call
+        with ``beat_progress`` on the same run for exactly this reason: the
+        two would race on which write actually lands in ``cursor_json``,
+        and this method's own merge (read-then-write on ONLY the ``stage``
+        key) would silently clobber whatever else ``set_cursor`` had just
+        written but not yet committed.
+        """
+        table = BackgroundJob.__table__
+        bind = self.db.get_bind()
+        target = select(table.c.id).where(
+            table.c.id == job_id, table.c.status == JOB_RUNNING
+        )
+        if bind.dialect.name == "postgresql":
+            target = target.with_for_update(skip_locked=True)
+        with bind.begin() as conn:
+            current_cursor = conn.execute(
+                select(table.c.cursor_json).where(table.c.id == job_id)
+            ).scalar()
+            cursor = dict(current_cursor) if isinstance(current_cursor, dict) else {}
+            values: dict = {
+                "heartbeat_at": now or datetime.now(timezone.utc),
+                "progress_done": done,
+            }
+            if total is not None:
+                values["progress_total"] = total
+            if cursor.get("stage") != stage:
+                cursor["stage"] = stage
+                values["cursor_json"] = cursor
+            stmt = update(table).where(table.c.id == target.scalar_subquery()).values(**values)
+            return conn.execute(stmt).rowcount > 0
+
+    def fresh_status(self, job_id: str) -> Optional[str]:
+        """The job's status re-read FRESH from the DB (a scalar query, so a
+        stale in-memory ``job`` object is bypassed) - for the heartbeat
+        fences: a 0-row beat on a row that is still RUNNING is Postgres
+        ``SKIP LOCKED``, not a lost lease."""
+        return (
+            self.db.query(BackgroundJob.status).filter(BackgroundJob.id == job_id).scalar()
+        )
+
+    def is_running(self, job_id: str) -> bool:
+        return self.fresh_status(job_id) == JOB_RUNNING
+
+    def fail_orphaned_running_jobs(
+        self,
+        *,
+        older_than: Optional[timedelta] = None,
+        now: Optional[datetime] = None,
+        job_id: Optional[str] = None,
+    ) -> int:
+        """Fail every RUNNING job whose worker is gone. Returns how many.
+
+        "Gone" = ``coalesce(heartbeat_at, started_at, created_at)`` older than
+        ``older_than`` (default ``settings.background_job_orphan_after_minutes``).
+        A deploy's 30s drain or a crash leaves ``running`` behind - the status
+        is not rolled back on death - and every scheduler tick then skips the
+        task for a run that will never finish (prod 2026-09-07, PO sync).
+
+        Each orphan is marked ``failed`` with ``ORPHANED_ERROR`` and a
+        ``finished_at``; then every on-disk module's ``on_job_orphaned(db,
+        job, now=)`` hook (discovered like ``install_tenant``, through
+        ``modules.<name>.bootstrap``, whether or not the module is installed
+        for that tenant) may close its OWN bookkeeping for that job - core
+        never imports a module. The module decides by ``job.type``
+        (autocount closes the open ``ac_sync_run`` row; staged rows are left
+        alone so the next run re-offers them). A hook failure is logged and
+        never blocks the sweep. Idempotent: a job already failed is not
+        matched again. ``job_id`` narrows the sweep to one job (the scheduler
+        sweeps exactly the stale in-flight job it would otherwise skip for).
+        """
+        current = now or datetime.now(timezone.utc)
+        threshold = older_than or timedelta(
+            minutes=settings.background_job_orphan_after_minutes
+        )
+        cutoff = current - threshold
+        # Only a type that DECLARED it beats can be judged by a stale beat
+        # (``JobHandlerDef.heartbeats``) - a long job of a silent type (a
+        # 45-minute meetings transcription) must never be swept.
+        beating_types = types_that_heartbeat()
+        if not beating_types:
+            # S15 (review round 2): a sweep that runs before `load_modules`
+            # registers any `heartbeats` job type finds nothing to judge and
+            # silently no-ops - which looks identical to "nothing is stuck"
+            # from the caller's side. Self-report so a mis-ordered startup
+            # sweep (or a module that forgot to declare `heartbeats=True`)
+            # is visible in the logs rather than inferred from a stuck job.
+            logger.warning(
+                "fail_orphaned_running_jobs: no job type declares heartbeats - "
+                "sweep is a no-op (modules not loaded yet?)"
+            )
+            return 0
+        query = self.db.query(BackgroundJob).filter(
+            BackgroundJob.status == JOB_RUNNING,
+            BackgroundJob.type.in_(beating_types),
+            func.coalesce(
+                BackgroundJob.heartbeat_at,
+                BackgroundJob.started_at,
+                BackgroundJob.created_at,
+            )
+            < cutoff,
+        )
+        if job_id is not None:
+            query = query.filter(BackgroundJob.id == job_id)
+        orphans = query.all()
+        if not orphans:
+            return 0
+        hooks = list(_orphan_hooks())
+        for job in orphans:
+            job.status = JOB_FAILED
+            job.error = self.ORPHANED_ERROR
+            job.finished_at = current
+            logger.error(
+                "background job %s (%s, tenant %s) orphaned: no heartbeat since %s; failed",
+                job.id, job.type, job.tenant_id,
+                (job.heartbeat_at or job.started_at or job.created_at),
+            )
+            close_module_bookkeeping(self.db, job, now=current, hooks=hooks)
+        self.db.commit()
+        return len(orphans)
+
+    def fail_undispatched_pending_jobs(
+        self,
+        *,
+        older_than: Optional[timedelta] = None,
+        now: Optional[datetime] = None,
+        job_id: Optional[str] = None,
+    ) -> int:
+        """Fail every PENDING job whose Celery message was never delivered.
+        Returns how many.
+
+        "Never delivered" = ``status == pending`` AND ``started_at IS NULL``
+        AND ``created_at`` older than ``older_than`` (default
+        ``settings.background_job_undispatched_after_minutes``). UNLIKE
+        ``fail_orphaned_running_jobs`` this is NOT restricted to
+        ``heartbeats=True`` types - a lost message is type-agnostic
+        (AC-11-50): the job never started, so it never had a chance to
+        declare liveness at all.
+
+        Each undispatched job is marked ``failed`` with
+        ``UNDISPATCHED_ERROR`` and a ``finished_at``, then fanned out
+        through the SAME ``close_module_bookkeeping`` helper the running
+        sweep and the soft-time-limit path already share (S1), so a module's
+        open bookkeeping (e.g. an ``ac_sync_run`` row) closes the same way
+        regardless of which sweep caught the job.
+
+        Never re-enqueues anything (D12/D13, R6): re-dispatch collides with
+        ``run_job``'s RUNNING crash-resume branch if the original lost
+        message is somehow delivered late after a re-enqueue - two workers
+        could execute the same job and double-push. Failing costs one
+        minute; the next tick enqueues a FRESH job. Idempotent: a job
+        already failed is not matched again. ``job_id`` narrows the sweep to
+        one job (the scheduler sweeps exactly the stale in-flight job it
+        would otherwise skip for).
+        """
+        current = now or datetime.now(timezone.utc)
+        threshold = older_than or timedelta(
+            minutes=settings.background_job_undispatched_after_minutes
+        )
+        cutoff = current - threshold
+        query = self.db.query(BackgroundJob).filter(
+            BackgroundJob.status == JOB_PENDING,
+            BackgroundJob.started_at.is_(None),
+            BackgroundJob.created_at < cutoff,
+        )
+        if job_id is not None:
+            query = query.filter(BackgroundJob.id == job_id)
+        undispatched = query.all()
+        if not undispatched:
+            return 0
+        hooks = list(_orphan_hooks())
+        for job in undispatched:
+            job.status = JOB_FAILED
+            job.error = self.UNDISPATCHED_ERROR
+            job.finished_at = current
+            logger.error(
+                "background job %s (%s, tenant %s) undispatched: queued since %s "
+                "with no worker pickup; failed",
+                job.id, job.type, job.tenant_id, job.created_at,
+            )
+            close_module_bookkeeping(self.db, job, now=current, hooks=hooks)
+        self.db.commit()
+        return len(undispatched)
+
     # ── retention ─────────────────────────────────────────────────────────────
 
     def prune(self, *, now: Optional[datetime] = None) -> int:
@@ -159,6 +449,53 @@ class JobService:
         deleted = self.repo.prune_terminal(older_than=cutoff)
         self.db.commit()
         return deleted
+
+
+def close_module_bookkeeping(
+    db: Session,
+    job: BackgroundJob,
+    *,
+    now: Optional[datetime] = None,
+    hooks: Optional[Iterable[tuple]] = None,
+) -> None:
+    """Fan out every installed module's ``on_job_orphaned(db, job[, now=])``
+    hook for ONE already-terminal job (sprint-5/11 S1, plan sec 2.6). The
+    SAME per-hook-SAVEPOINT shape ``fail_orphaned_running_jobs`` used inline
+    before this extraction, now shared by three closers - the orphan sweep,
+    the (S2) undispatched-pending sweep, and the ``SoftTimeLimitExceeded``
+    path in ``run_job`` (AC-11-83) - so they can never drift apart.
+
+    The CALLER must already have set ``job.status``/``.error``/
+    ``.finished_at`` before this runs - it only closes each module's OWN
+    bookkeeping for the job (autocount closes an open ``ac_sync_run`` row;
+    staged rows are left alone so the next run re-offers them). A hook
+    failure is logged and never blocks its siblings or the caller's commit.
+
+    ``hooks`` (review round 1 nit): ``_orphan_hooks()`` walks every on-disk
+    manifest via ``discover_manifests()`` - cheap for the single-job callers
+    (this path, the time-limit branches) but wasteful when a caller loops
+    over many jobs in one sweep. A looping caller computes the list ONCE and
+    passes it here; the default (``None``) still resolves it fresh, so a
+    single-job call site needs no change.
+    """
+    current = now or datetime.now(timezone.utc)
+    for module_name, hook in (hooks if hooks is not None else _orphan_hooks()):
+        # A SAVEPOINT per hook: a failing hook rolls back only its own
+        # writes, so on Postgres it cannot leave the session in the aborted
+        # state that would poison the caller's own commit.
+        try:
+            with db.begin_nested():
+                # ``now=`` only when the hook takes it (the caller's clock,
+                # so run and job timestamps agree); the minimal contract
+                # stays ``hook(db, job)``.
+                if "now" in inspect.signature(hook).parameters:
+                    hook(db, job, now=current)
+                else:
+                    hook(db, job)
+        except Exception:  # noqa: BLE001 - one module must not block the caller
+            logger.exception(
+                "module '%s' on_job_orphaned failed for job %s", module_name, job.id
+            )
 
 
 def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
@@ -192,15 +529,75 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
 
     try:
         handler_def.handler(db, job)
+    except SoftTimeLimitExceeded:
+        # sprint-5/11 S1 (AC-11-83) - a wedged handler is cut off by Celery's
+        # cooperative soft-limit signal. This is caught BEFORE the generic
+        # `except Exception` below (SoftTimeLimitExceeded IS an Exception
+        # subclass, so the generic branch would otherwise swallow it with
+        # the wrong "Job crashed: " phrasing and, critically, WITHOUT closing
+        # any module bookkeeping - exactly the open-`ac_sync_run` symptom
+        # this whole plan exists to fix). Never re-raised: a worker that let
+        # this propagate would crash the ForkPoolWorker instead of failing
+        # the job cleanly.
+        logger.error("background job %s (type=%s) hit its soft time limit", job_id, job.type)
+        db.rollback()
+        job = repo.get_unscoped(job_id)
+        if job is not None and job.status not in JOB_TERMINAL_STATUSES:
+            service.finish(
+                job, status=JOB_FAILED, error=JobService.SOFT_TIME_LIMIT_ERROR
+            )
+            close_module_bookkeeping(db, job, now=job.finished_at)
+            db.commit()
     except Exception as exc:  # noqa: BLE001 - full isolation, never propagate
         logger.exception("background job %s (type=%s) crashed", job_id, job.type)
         db.rollback()
         job = repo.get_unscoped(job_id)
         if job is not None and job.status not in JOB_TERMINAL_STATUSES:
+            # sprint-5/11 review round 1 (S3) - a plain handler crash left the
+            # SAME open module bookkeeping (e.g. `ac_sync_run`) the orphan
+            # sweep and the soft-time-limit path both close; mirror that
+            # shape here so a generic crash never leaves a run "in progress"
+            # forever.
             service.finish(job, status=JOB_FAILED, error=f"Job crashed: {exc}")
+            close_module_bookkeeping(db, job, now=job.finished_at)
+            db.commit()
     return repo.get_unscoped(job_id)
 
 
 def prune_jobs(db: Session, *, now: Optional[datetime] = None) -> int:
     """Beat housekeeping - delete terminal jobs past the retention window."""
     return JobService(db).prune(now=now)
+
+
+def _orphan_hooks() -> Iterable[tuple]:
+    """``(module_name, hook)`` for every on-disk module whose bootstrap
+    exposes ``on_job_orphaned`` - the same discovery ``AppStoreService`` uses
+    for ``install_tenant``; imported lazily so the jobs core stays free of the
+    module loader at import time."""
+    from app.module_loader import discover_manifests
+    from app.services.app_store_service import module_hooks
+
+    for manifest in discover_manifests():
+        name = manifest["module_name"]
+        hooks = module_hooks(name)
+        hook = getattr(hooks, "on_job_orphaned", None) if hooks else None
+        if callable(hook):
+            yield name, hook
+
+
+def sweep_orphaned_jobs(db: Session) -> int:
+    """Startup entry point: fail every orphaned RUNNING job (see
+    ``JobService.fail_orphaned_running_jobs``) with the configured threshold
+    passed explicitly. Returns the count."""
+    return JobService(db).fail_orphaned_running_jobs(
+        older_than=timedelta(minutes=settings.background_job_orphan_after_minutes)
+    )
+
+
+def sweep_undispatched_pending_jobs(db: Session) -> int:
+    """Entry point: fail every stale PENDING job whose message was never
+    delivered (see ``JobService.fail_undispatched_pending_jobs``) with the
+    configured threshold passed explicitly. Returns the count."""
+    return JobService(db).fail_undispatched_pending_jobs(
+        older_than=timedelta(minutes=settings.background_job_undispatched_after_minutes)
+    )

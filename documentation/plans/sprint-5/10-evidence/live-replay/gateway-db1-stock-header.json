@@ -1,0 +1,46 @@
+{
+  "snapshotId": "428cf3fb-6233-4b91-9f15-e96756044d85",
+  "entity": "stock_balances",
+  "companyCode": "SRT",
+  "status": "ready",
+  "extractedAt": "2026-09-20T10:04:54.813684Z",
+  "expiresAt": "2026-09-21T10:04:54.813684Z",
+  "recordCount": 12133,
+  "complete": true,
+  "contentHash": "9732032fe75b327873c4d7e98c08c17d90ab7628267b944c4bd37acb4142c2f6",
+  "sourcePageSize": 1000,
+  "excludedCount": 0,
+  "excludedRows": [],
+  "zeroPairs": 56422,
+  "negativePairs": 42,
+  "fractionalPairs": 0,
+  "excludedNonzeroCount": 0,
+  "negativePairList": [
+    {
+      "item_code": "**NEW",
+      "location_code": "BRW",
+      "qty": -75
+    },
+    {
+      "item_code": "**NEW",
+      "location_code": "BRW-AM",
+      "qty": -1
+    },
+    {
+      "item_code": "**NEW",
+      "location_code": "BRW-IB",
+      "qty": -1
+    },
+    {
+      "item_code": "**NEW",
+      "location_code": "BRW-IR",
+      "qty": -8
+    },
+    {
+      "item_code": "**NEW",
+      "location_code": "MWH-IR",
+      "qty": -1
+    }
+  ],
+  "negativePairList_count": 42
+}

@@ -150,7 +150,7 @@ export function NumberEditDialog({
             Cancel
           </Button>
           <Button onClick={() => void handleSave()} disabled={!valid || saving}>
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Saving…' : 'Save numbering'}
           </Button>
         </DialogFooter>
       </DialogContent>

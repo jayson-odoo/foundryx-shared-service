@@ -29,6 +29,30 @@ THROTTLE_SCOPE_PORTAL = "portal"
 # bucket so embed assertion-exchange spam never locks the staff login bucket and
 # vice versa. Window-throttle (no permanent lock).
 THROTTLE_SCOPE_EMBED = "embed_session"
+# Omnichannel web chat public visitor API (plan sprint-4/34 / A7b S2,
+# AC-WEB-30, D-A7B-22) - own bucket, shared by TWO independent key namespaces
+# within it (`ip:<ip>`, `v:<visitorId>` - see `throttle.py`'s
+# `enforce_webchat`/`record_webchat`), never the login/form/doc-share/portal/
+# embed bucket. Window-throttle (no permanent lock).
+THROTTLE_SCOPE_WEBCHAT = "webchat"
+# AutoCount pull gateway (sprint-5/10 S4, AC-10-35) - own per-IP bucket for
+# the PUBLIC `/api/v1/autocount/*` gateway so a bad-key spray never locks the
+# staff login bucket and vice versa. Window-throttle like IP (no permanent
+# lock) - a legitimate integration client retrying a stale key must self-heal.
+THROTTLE_SCOPE_PULL = "pull"
+# AutoCount pull gateway - PER-KEY request budget (sprint-5/10 S4 security
+# round 1, MEDIUM 4). AC-10-35 itself only asks for the per-IP `pull` scope
+# above (a failure-only counter); this is ADDITIVE, settings-driven, generous
+# defaults - a valid-but-narrowly-scoped key could otherwise probe unlimited
+# out-of-scope ids (403/404/409, never a 401) at zero throttle cost, since
+# THROTTLE_SCOPE_PULL only ever counts 401s. Counted on every authenticated
+# call regardless of outcome (mirrors `record_webchat`'s IP bucket - "not a
+# failed credential attempt", same reused counter mechanism).
+THROTTLE_SCOPE_PULL_KEY = "pull_key"
+# Ideation BR build write-back gateway per IP (plan ideation-br-send-to-build,
+# AC-STB-16) - own bucket, the pull-gateway pattern: only a 401 (missing/
+# malformed/unknown/revoked key) records a failure.
+THROTTLE_SCOPE_BUILD = "build"
 
 
 class AuthThrottle(Base):

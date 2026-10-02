@@ -1,8 +1,16 @@
 """Configuration settings for the FastAPI application."""
 from typing import List, Union
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Sorento's per-request ingest ceiling (`MAX_BATCH` on their side): the hard
+# upper bound for `autocount_sink_batch_size`. Lives here (not in the module)
+# because the validator below needs it and core config must not import from
+# `modules/`; `modules/autocount/sinks_sorento.py` re-exports it under the
+# same name.
+SORENTO_MAX_BATCH = 1000
 
 
 class Settings(BaseSettings):
@@ -61,6 +69,42 @@ class Settings(BaseSettings):
     # Window-throttle like IP (no permanent lock).
     throttle_embed_max_fails: int = 30
     throttle_embed_window_minutes: int = 15
+    # Web chat visitor session/message endpoints (plan sprint-4/34 / A7b S2,
+    # AC-WEB-30, D-A7B-22) - own bucket, TWO independent key namespaces
+    # (`ip:<ip>`, `v:<visitorId>`) so a single busy office IP and a single
+    # abusive visitor id are rate-limited independently. Window-throttle like
+    # IP (no permanent lock - a public chat widget must self-heal).
+    #
+    # The IP ceiling is deliberately HIGH (review round 1, S7). Unlike every
+    # other bucket here, a "fail" is not a failed credential attempt: it is
+    # one ordinary page view of the customer's website (the loader starts a
+    # session on load) or one visitor message. The whole budget is shared by
+    # an entire egress IP - one NAT'd office, one school, one CGNAT range -
+    # and on 429 the loader renders nothing at all, so the customer sees the
+    # widget "randomly disappear" with no signal on the page. The per-visitor
+    # namespace (`v:<visitorId>`, unchanged) is the actual abuse control; the
+    # IP ceiling is the crude backstop against a single host minting fresh
+    # visitor ids. A session start that presents an ALREADY-VALID token for
+    # the channel (a page reload by a visitor who has been here before) does
+    # not spend an IP token at all - see `routers/webchat_public.py`.
+    throttle_webchat_max_fails: int = 600
+    throttle_webchat_window_minutes: int = 5
+    # AutoCount pull gateway per IP (sprint-5/10 S4, AC-10-35) - own bucket,
+    # mirrors throttle_embed_*. A 401 (missing/malformed/unknown/revoked key)
+    # records one failure; every other outcome (403/404/409/429/2xx) never
+    # touches it - the gateway's own business gates (one `building` snapshot
+    # per triple, the 60s build cooldown) bound volume structurally.
+    throttle_pull_max_fails: int = 30
+    throttle_pull_window_minutes: int = 15
+    # Per-KEY request budget (sprint-5/10 S4 security round 1, MEDIUM 4) -
+    # generous defaults: Appendix A7 suggests a consumer polls a snapshot
+    # every 5s, so 600 requests / 5 minutes is comfortably above legitimate
+    # traffic for one key while still bounding an out-of-scope probing spree.
+    throttle_pull_key_max_requests: int = 600
+    # Ideation build write-back per IP (AC-STB-16): failures (401s) only.
+    throttle_build_max_fails: int = 5
+    throttle_build_window_minutes: int = 15
+    throttle_pull_key_window_minutes: int = 5
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10
     # Form upload caps (D12). Per-file hard ceiling (DoS guard - capped reads
@@ -76,13 +120,18 @@ class Settings(BaseSettings):
     # Frontend origin - used to build invite / set-password / reset links.
     frontend_url: str = "http://localhost:3001"
 
-    # CORS - Next.js auto-bumps ports (3000 -> 3001 ...), cover a few.
+    # CORS - Next.js auto-bumps ports (3000 -> 3001 ...); parallel worktree
+    # builds (sprint-4/23 T3/T5) run their own frontend on 3001..3005, each
+    # talking to its own backend port - cover the whole local range so a
+    # sibling worktree's :3001/3002/... build isn't silently CORS-blocked.
     cors_origins: str = (
-        "http://localhost:3000,http://localhost:3001,http://localhost:3002"
+        "http://localhost:3000,http://localhost:3001,http://localhost:3002,"
+        "http://localhost:3003,http://localhost:3004,http://localhost:3005"
     )
     # Tenants live on subdomains (plan 07 §6) - allow <slug>.localhost in dev
-    # and <slug>.<prod-domain> in prod (override in env).
-    cors_origin_regex: str = r"http://[a-z0-9-]+\.localhost:300[0-2]"
+    # (any of the local frontend ports) and <slug>.<prod-domain> in prod
+    # (override in env).
+    cors_origin_regex: str = r"http://[a-z0-9-]+\.localhost:300[0-5]"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -127,6 +176,23 @@ class Settings(BaseSettings):
     # prunes workflow_runs (+ cascade workflow_run_nodes) older than this window
     # so run history can't grow unbounded. Mirrors the email-outbox prune.
     workflow_run_retention_days: int = 30
+    # Keyed workflow serialization. Redis leases are renewed while a run is
+    # active; the beat backstop wakes durable Pending scopes older than the
+    # recovery age without changing their state.
+    workflow_serialized_lease_seconds: int = 120
+    workflow_serialized_recovery_age_seconds: int = 60
+    # Workflow Redis action (S3): every workflow-data key carries a TTL so a
+    # tenant's workflows can never grow platform Redis without bound. A blank
+    # TTL on `set` (and keys created by increment / list push) gets the
+    # default; an explicit TTL above the maximum is rejected at publish/run.
+    workflow_redis_default_ttl_seconds: int = 7 * 24 * 3600
+    workflow_redis_max_ttl_seconds: int = 30 * 24 * 3600
+    # External Code runner (sprint-4/19 S4, D20). Unset = the Code action is
+    # unavailable (editor warning, publish blocked). Builder Python NEVER runs
+    # in this process - see code_runner/ and app/workflow_engine/code_runner.py.
+    code_runner_url: str = ""
+    code_runner_token: str = ""
+    code_runner_timeout_seconds: float = 15.0
 
     # ── Import engine (plan sprint-3/09, F8) ────────────────────────────────
     # Global per-tenant cap defaults (import_settings row overrides). Enforced
@@ -141,6 +207,73 @@ class Settings(BaseSettings):
     # TERMINAL jobs (done/failed/aborted) older than this window; running,
     # pending and needs_review jobs are never pruned.
     background_job_retention_days: int = 30
+    # A RUNNING job whose worker has not heart-beaten (or, for a legacy /
+    # pre-first-checkpoint row, has not started) for this long is treated as
+    # orphaned - failed by ``JobService.fail_orphaned_running_jobs`` at app
+    # startup and by the autocount scheduler when the in-flight job it would
+    # skip for is this stale (prod incident 2026-09-07: a deploy's 30s drain
+    # killed a 4-minute PO run and nothing released it). Well above any
+    # legitimate gap between checkpoints (one page or one push batch); the
+    # floor is 5 so a slow-but-alive page can never be reaped mid-flight.
+    background_job_orphan_after_minutes: int = 15
+    # Run the orphan sweep in the API process lifespan. Off for a process
+    # that must never touch job state at boot (a one-off script, a rig).
+    background_job_orphan_sweep_on_startup: bool = True
+    # A PENDING job (``started_at`` NULL) older than this is a LOST message,
+    # never a backlogged queue - the Celery message itself never reached a
+    # worker (sprint-5/11 S2, incident 2026-09-21: a deploy restarted the
+    # worker mid-``pending``, the message was lost, and the job sat for 8+
+    # hours until an operator reset it by hand in SQL). Failed, never
+    # re-dispatched (R6/D12/D13) - the next tick enqueues a FRESH job. Well
+    # above any legitimate queueing wait. The field's OWN validator floor is
+    # 15 (higher than the RUNNING-orphan floor of 5: a busy queue can
+    # legitimately sit PENDING far longer than a heartbeat gap) - but the
+    # cross-field validator below raises the EFFECTIVE minimum further: it
+    # must exceed ``background_job_soft_time_limit_seconds / 60`` (121 at
+    # the 7200s/150min defaults), and 15 only survives at all if
+    # ``background_job_soft_time_limit_seconds`` is lowered to well under an
+    # hour. 15 stays as the field's absolute floor (a config with a tiny
+    # soft time limit is a legitimate thing to want); it is not, by itself,
+    # a value this setting can land on at the shipped defaults.
+    #
+    # 150, not 60 (owner-approved amendment 2026-09-21, review round 1): the
+    # window must exceed `background_job_soft_time_limit_seconds` (default
+    # 7200s = 120 minutes) - see the cross-field validator below - so a
+    # message that IS queued (not lost) but sitting behind a legitimately
+    # long-running build on a busy `-c 2` worker_jobs is never mistaken for
+    # undispatched and failed out from under it.
+    background_job_undispatched_after_minutes: int = 150
+    # ── Worker starvation fix (sprint-5/11 S1, incident 2026-09-20/21) ──────
+    # `jobs.run`'s own declared soft/hard Celery time limit (AC-11-82, R10):
+    # generous, sized above the longest legitimate build measured in this
+    # plan (a 25+ minute Mocha snapshot) so it can never fire on a real run -
+    # it exists only to fail a WEDGED job cleanly instead of holding the
+    # `jobs` worker's slot forever. The hard limit is soft + 300s, derived in
+    # code (app/jobs/worker.py), never a second independent setting.
+    background_job_soft_time_limit_seconds: int = 7200
+    # Review round 1 - the workflow app's own two "unbounded" tasks
+    # (`workflows.run_workflow`, `workflows.wake_serialized`) had NO declared
+    # limit of their own, so they silently inherited the app-level tick-family
+    # bound (`task_soft_time_limit=300`) - wrong for a run that legitimately
+    # executes many nodes, and wrong for a serialized drain that legitimately
+    # processes several queued runs in one wakeup. 30 minutes, well above any
+    # normal run/drain; the hard limit is soft + 300s, derived in code
+    # (`app/workflow_engine/worker.py`), mirroring `jobs.run`'s own pattern.
+    workflow_run_soft_time_limit_seconds: int = 1800
+    # Worker-process-only Postgres session bounds, settings-driven (AC-11-85).
+    # 0 = unset on every axis (the default, and the API's PERMANENT profile -
+    # never wired through the API's own engine construction). Wired through
+    # `app/database.py::worker_connect_args()` into the compose `worker_
+    # workflow` / `worker_jobs` services' `connect_args` ONLY. Seconds here;
+    # Postgres' GUCs want milliseconds (converted in `worker_connect_args`).
+    # R10 recommends 120s / 30s / 300s once confirmed against the measured
+    # slowest statement of a full SRT build - S0 could not complete that
+    # measurement on the shared dev Postgres (see 11-evidence/s0-baseline/
+    # README.md (c)); the compose defaults below carry R10's recommended
+    # values as a starting point, not a confirmed measurement.
+    worker_db_statement_timeout_seconds: int = 0
+    worker_db_lock_timeout_seconds: int = 0
+    worker_db_idle_in_transaction_session_timeout_seconds: int = 0
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like
@@ -209,6 +342,11 @@ class Settings(BaseSettings):
     # mediaUrl is an ABSOLUTE, HMAC-signed, time-limited link that opens in a raw
     # browser click (no Authorization header). TTL below (seconds).
     media_signed_url_ttl_seconds: int = 3600
+    # Conservative fallback pacing for a broadcast send chunk (plan 29 S2,
+    # D-A4-12) when the channel carries no `broadcast_rate_per_second` of its
+    # own - Meta's per-number quality-rating throttling makes a slow default
+    # safer than a fast one.
+    omnichannel_broadcast_rate_per_second: int = 10
     # Meta webhook verify-token for the GET handshake (set the same value in
     # the Meta app's webhook config).
     meta_webhook_verify_token: str = "foundryx-omnichannel-verify"
@@ -228,6 +366,40 @@ class Settings(BaseSettings):
     platform_storage_secret_access_key: str = ""
     platform_storage_cdn_base_url: str = ""
 
+    # ── Meetings bot fleet (sprint-5 S2) ───────────────────────────────────
+    # The image one bot container runs. Empty = the pilot image built locally
+    # from modules/meetings/bot; a deploy pins a published tag here.
+    meetings_bot_image: str = ""
+
+    # ── Meetings STT (sprint-5 S3) ───────────────────────────────────────────
+    # Platform setting, not per-tenant (R5) - one pilot host runs one model.
+    # "deepgram" is a recognised NAME with no driver until the first real mlx
+    # outage or the prod move names the trigger (M12) - get_provider() fails
+    # loudly rather than silently falling back to mlx_local.
+    meetings_stt_provider: str = "mlx_local"
+    # The dedicated STT venv's python (built by scripts/setup_stt_venv.sh) -
+    # NOT the backend's own venv; mlx-whisper needs its own deps on Metal.
+    meetings_stt_python: str = "~/foundryx-stt/venv/bin/python"
+    # Non-turbo (S3 code-switch fix, R3 amended, 2026-09-01): under the
+    # chunked per-chunk detection eval, the turbo model missed the Chinese
+    # chunk entirely (detected en) and produced worse code-switch output;
+    # the non-turbo model correctly detected zh 0.565 / ms 0.523 on the same
+    # chunks. Detection cadence (once vs per-chunk) is the RUNNER's property,
+    # not the model's - this setting is only about which model transcribes.
+    meetings_stt_model: str = "mlx-community/whisper-large-v3-mlx"
+    meetings_stt_timeout_s: int = 3600
+    # Chunk length (seconds) the runner segments audio into before detecting
+    # language PER CHUNK - what actually fixes code-switched meetings.
+    meetings_stt_chunk_s: int = 30
+    # Allowlist the per-chunk language detector is constrained to. A quiet or
+    # silent chunk misdetects as es/pt/etc without this; the pilot's meetings
+    # are only ever en/ms/zh.
+    meetings_stt_languages: str = "en,ms,zh"
+    # A fixed absolute path, not `tempfile.gettempdir()` - the flock (R1) that
+    # serializes transcription only works if every process opens the SAME
+    # file; TMPDIR differs per-user/per-shell and is not guaranteed stable.
+    meetings_stt_lock_path: str = "/tmp/foundryx-meetings-stt.lock"
+
     # ── Payment gateways (sprint-4/07 Cluster F slice 3) ───────────────────
     # Webhook anti-replay: reject events whose timestamp is older than this
     # tolerance window (seconds). Stripe's own SDK uses 300s; mirror it.
@@ -235,6 +407,213 @@ class Settings(BaseSettings):
     # Abandoned-checkout reaper: a Pending gateway payment with no webhook older
     # than this is swept to Expired (frees the buyer to re-pay, AC-07-33).
     payment_checkout_ttl_minutes: int = 60
+
+    # ── AutoCount bulk document load (plan sprint-5/03) ─────────────────────
+    # Paged extraction: `sync.py`'s run loop reads these AT CALL TIME (never
+    # cached at import time), so an operator can retune a running deployment
+    # without a restart and a test can monkeypatch the shared singleton. A
+    # page is `AUTOCOUNT_PAGE_SIZE` header rows in one statement; a run stops
+    # starting new pages once `AUTOCOUNT_RUN_TIME_BUDGET_SECONDS` has elapsed
+    # and finishes the page in flight (AC-03-06). Refused BELOW the floor at
+    # startup - never silently clamped, which would look like a working
+    # config while quietly extracting the whole 306k-header table per page.
+    autocount_page_size: int = 2000
+    autocount_run_time_budget_seconds: int = 600
+    # The Sorento sink's own HTTP client timeout (round 5) - a 1,000-record
+    # document batch with lines can genuinely take Sorento longer than the
+    # OLD hard-coded 30s to ingest, which recorded a push FAILURE while
+    # Sorento was still processing it (the batch itself was fine). Read at
+    # CALL time by `sorento_sink_from_connection` (never cached at import
+    # time), same "retune a running deployment without a restart" contract
+    # as `autocount_page_size`. Floored at 30s - the sink's own CONNECT
+    # timeout stays short regardless (a dead endpoint should fail fast);
+    # this setting only widens the read/write/pool budget.
+    autocount_sink_timeout_seconds: int = 300
+    # A page's changed-header LINE fetch, one connection each, sequential
+    # (S5, plan sprint-5/03 performance round) - a live pass over ZeroTier
+    # (~25ms RTT) spent ~60s per page on 2,000 sequential line queries.
+    # Read at CALL time by `SqlDbSource._attach_lines` (never cached), same
+    # "retune without a restart" contract as `autocount_page_size`. Bounded
+    # 1..8 - `workers=1` is the exact old sequential loop (no thread pool at
+    # all); the source engine's own pool (`pool_size`, `runtime.py`) is
+    # bumped to fit the configured worker count plus the page's own header
+    # connection, so a high worker count can never starve the pool.
+    autocount_line_fetch_workers: int = 4
+    # The sink's chunked push, up to N POSTs in flight (S5b, same performance
+    # round). Concurrency 1 is byte-identical to the original fully
+    # sequential loop (same request order, one POST at a time) - the only
+    # thing concurrency changes.
+    #
+    # `fix/push-marks-per-chunk` (2026-09-07) replaced the ORIGINAL
+    # all-or-nothing contract with a per-chunk one: `write_batch`/
+    # `delete_batch` call `on_chunk` as each chunk resolves, and the caller
+    # (`SyncService`) marks + COMMITS that chunk immediately, so ONE failed
+    # chunk costs only that chunk - every sibling chunk's already-delivered
+    # verdict is durable and never re-offered. A raised setting therefore
+    # widens the blast radius of a single bad chunk hardly at all (still one
+    # chunk's rows, just possibly N of them retrying at once) rather than
+    # the old "one failure discards the whole batch" risk.
+    #
+    # The default stays 1 EVERYWHERE (this application default AND
+    # `docker-compose.yml`'s deployed `AUTOCOUNT_SINK_CONCURRENCY`) - a user
+    # ruling after Sorento accepted 2 as an achievable ceiling following
+    # their #710 capacity measurement: the platform-wide default is left
+    # alone and `feat/sink-concurrency-ui`'s per-connection "Push
+    # concurrency" field (`SorentoSink._resolve_concurrency`) is the ONE
+    # lever an operator raises, per tenant, from that Sorento connection's
+    # own edit form. Bounded 1..4 at every level.
+    autocount_sink_concurrency: int = 1
+    # Records per Sorento ingest POST (2026-09-06 prod incident: a 1,000-record
+    # purchase_order batch with per-record supplier back-create ran past
+    # Sorento production nginx's 60s proxy timeout and came back 504; Sorento
+    # asked for 200 per document ingest and a configurable size). Read at
+    # CALL time by `sorento_sink_from_connection` (same "retune without a
+    # restart" contract as `autocount_sink_timeout_seconds`), so it applies to
+    # the next push. Bounded 1..`SORENTO_MAX_BATCH` - the ceiling is Sorento's
+    # own per-request limit and cannot be raised from here.
+    autocount_sink_batch_size: int = 200
+    # Bounded retry for a TRANSIENT Sorento 5xx (502/503/504 - prod finding
+    # 2026-09-07: their own nginx answers a bare 502 on roughly 1 in 25 chunk
+    # POSTs, upstream momentarily unreachable, never reaching their app). A
+    # plain 500 (still a guard-rail error until the companion Sorento fix
+    # lands) or a 4xx is NEVER retried - only a 502/503/504 is. Read at CALL
+    # time by `SorentoSink._post_with_retry`. Bounded 1..5.
+    #
+    #     !!  THE BACKOFF BETWEEN ATTEMPTS IS SHORT (1s/2s/4s...) - THE
+    #         DOMINANT WORST CASE PER CHUNK IS THE 429 WAIT INSIDE EACH
+    #         ATTEMPT, NOT THIS BACKOFF (S5, review round 2).  !!
+    # Each retry ATTEMPT is one `_call`, which internally loops on its own
+    # 429 handling up to `max_rate_limit_waits` times (default 2) at up to
+    # `_retry_after_seconds`'s 60s cap - so ONE attempt can itself take up to
+    # `max_rate_limit_waits * 60s` before it ever reaches the transient-5xx
+    # check this setting governs. Worst case for a whole chunk is therefore
+    # roughly `autocount_sink_retry_attempts * (max_rate_limit_waits * 60s)`
+    # plus the (small) backoff between attempts - at the defaults, up to
+    # ~6 minutes, not "a few seconds". A run's own time budget
+    # (`autocount_run_time_budget_seconds`) is what actually bounds a stuck
+    # chunk from running away with a whole tick; this setting only bounds
+    # how many TIMES a transient fault is retried, never how long any one
+    # attempt can take.
+    autocount_sink_retry_attempts: int = 3
+    # feat/line-fingerprint-sweep - how often an INCREMENTAL run also runs a
+    # document task's fingerprint query (never the initial load, never
+    # reconcile - a reconcile already re-hashes every header). Read at CALL
+    # time (same "retune without a restart" contract as the settings above);
+    # the gate is `now - AcWatermark.last_fingerprint_sweep_at >= this
+    # interval` (missing/NULL = due). Default 15 minutes: cheap enough to run
+    # often (one GROUP BY over the line table, bounded by the task's own
+    # `from_date`), not so often it competes with the incremental's own
+    # cadence for a task with a shorter `incrementalMinutes`. Floor 1 - zero
+    # would mean "every tick", which defeats the point of a separate
+    # interval from the incremental cadence.
+    autocount_fingerprint_sweep_minutes: int = 15
+
+    @field_validator("background_job_orphan_after_minutes")
+    @classmethod
+    def _background_job_orphan_after_floor(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError(
+                "background_job_orphan_after_minutes must be at least 5 minutes."
+            )
+        return v
+
+    @field_validator("background_job_undispatched_after_minutes")
+    @classmethod
+    def _background_job_undispatched_after_floor(cls, v: int) -> int:
+        if v < 15:
+            raise ValueError(
+                "background_job_undispatched_after_minutes must be at least 15 minutes."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _background_job_undispatched_after_exceeds_soft_time_limit(self) -> "Settings":
+        # Review round 1 (S1): a queued-but-not-lost message sitting behind a
+        # legitimate long `jobs.run` build (bounded by
+        # `background_job_soft_time_limit_seconds`) on a busy worker must
+        # never be failed out by the undispatched sweep as if its message
+        # were lost. The window has to outlive the longest a job is allowed
+        # to legitimately run before its OWN slot frees up.
+        window_seconds = self.background_job_undispatched_after_minutes * 60
+        if window_seconds <= self.background_job_soft_time_limit_seconds:
+            raise ValueError(
+                "background_job_undispatched_after_minutes "
+                f"({self.background_job_undispatched_after_minutes} min = "
+                f"{window_seconds}s) must exceed background_job_soft_time_limit_seconds "
+                f"({self.background_job_soft_time_limit_seconds}s) - otherwise a queued "
+                "message sitting behind a legitimately long jobs.run build can be "
+                "mistaken for a lost message and failed out from under it."
+            )
+        return self
+
+    @field_validator("autocount_page_size")
+    @classmethod
+    def _autocount_page_size_floor(cls, v: int) -> int:
+        if v < 100:
+            raise ValueError(
+                "autocount_page_size must be at least 100 rows."
+            )
+        return v
+
+    @field_validator("autocount_run_time_budget_seconds")
+    @classmethod
+    def _autocount_run_time_budget_floor(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError(
+                "autocount_run_time_budget_seconds must be at least 30 seconds."
+            )
+        return v
+
+    @field_validator("autocount_sink_timeout_seconds")
+    @classmethod
+    def _autocount_sink_timeout_floor(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError(
+                "autocount_sink_timeout_seconds must be at least 30 seconds."
+            )
+        return v
+
+    @field_validator("autocount_line_fetch_workers")
+    @classmethod
+    def _autocount_line_fetch_workers_bounds(cls, v: int) -> int:
+        if v < 1 or v > 8:
+            raise ValueError(
+                "autocount_line_fetch_workers must be between 1 and 8."
+            )
+        return v
+
+    @field_validator("autocount_sink_concurrency")
+    @classmethod
+    def _autocount_sink_concurrency_bounds(cls, v: int) -> int:
+        if v < 1 or v > 4:
+            raise ValueError(
+                "autocount_sink_concurrency must be between 1 and 4."
+            )
+        return v
+
+    @field_validator("autocount_sink_batch_size")
+    @classmethod
+    def _autocount_sink_batch_size_bounds(cls, v: int) -> int:
+        if v < 1 or v > SORENTO_MAX_BATCH:
+            raise ValueError(
+                f"autocount_sink_batch_size must be between 1 and {SORENTO_MAX_BATCH} "
+                f"(Sorento's per-request ingest ceiling)."
+            )
+        return v
+
+    @field_validator("autocount_sink_retry_attempts")
+    @classmethod
+    def _autocount_sink_retry_attempts_bounds(cls, v: int) -> int:
+        if v < 1 or v > 5:
+            raise ValueError("autocount_sink_retry_attempts must be between 1 and 5.")
+        return v
+
+    @field_validator("autocount_fingerprint_sweep_minutes")
+    @classmethod
+    def _autocount_fingerprint_sweep_minutes_floor(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("autocount_fingerprint_sweep_minutes must be at least 1 minute.")
+        return v
 
 
 settings = Settings()

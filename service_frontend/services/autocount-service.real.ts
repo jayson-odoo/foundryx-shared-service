@@ -5,26 +5,56 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type {
+  AutocountApiConnection,
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountDeliveryMode,
   AutocountEntityConfig,
+  AutocountEtlSourceConfig,
+  AutocountEtlRepushResult,
+  AutocountEtlRunStart,
+  AutocountEtlTask,
+  AutocountEtlTaskUpdate,
   AutocountFormulaTestResult,
   AutocountJobListQuery,
+  AutocountMappingPreset,
+  AutocountMappingResetPreview,
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
+  AutocountPreviewJob,
+  AutocountPreviewJobStart,
+  AutocountPreviewJobStartInput,
   AutocountPreviewResult,
+  AutocountPullApiKey,
+  AutocountPullApiKeyCreateInput,
+  AutocountPullApiKeyIssued,
+  AutocountPullSnapshot,
+  AutocountPullSnapshotRowsPage,
   AutocountSimulateResult,
+  AutocountSqlConnection,
+  AutocountSqlPreview,
+  AutocountSqlSchema,
   AutocountStagedList,
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  DocFeedBackfill,
+  DocFeedIssue,
+  DocFeedItem,
+  DocFeedRun,
+  DocFeedsView,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import type { AutocountStagedQuery } from '@/types/autocount';
-import type { AutocountListQuery, AutocountService } from './autocount-service';
+import type {
+  AutocountListQuery,
+  AutocountService,
+  DocFeedIssuesQuery,
+  DocFeedRunsQuery,
+} from './autocount-service';
 
 function pageParams(query: AutocountListQuery = {}): URLSearchParams {
   const p = new URLSearchParams();
@@ -43,7 +73,95 @@ function stagedParams(query: AutocountStagedQuery = {}): URLSearchParams {
   return p;
 }
 
+// sprint-5/08 review round 1 (S5 live-verify DEFECT found against the real
+// backend, NOT patched around) - `default_http_source_config()`
+// (`modules/autocount/services/etl_service.py`) DELIBERATELY never merges
+// the SQL-shape keys (AC-08-30: "never a stray SQL key round-trips onto an
+// HTTP task's wire config"), so a REAL saved `autocount_http` task's
+// `sourceConfig` omits `query`/`lineQuery`/`keyColumns`/`watermarkColumn`/
+// `comparedColumns`/`fromDate`/`docDateColumn`/`filterFormula` entirely.
+// Every FE consumer (`task-editor-view.tsx`'s baseline dirty-check,
+// `SourceTab`'s `canTest`, ...) was written against the `AutocountEtlTask`
+// TYPE contract, which declares those fields non-optional (the mock always
+// filled them) - `seeded.query.trim()` crashed with "Cannot read properties
+// of undefined" live-verifying AC-08-21 (Add entity -> Test -> Save on a
+// fresh HTTP task). Normalized HERE, at the wire boundary, rather than
+// `?.`-guarding every read site across the component tree - applied to
+// EVERY endpoint that returns or embeds an `AutocountEtlTask` (`getEtlTask`,
+// `updateEtlTask`, `activateEtlTask`, `pauseEtlTask`, `resumeEtlTask`,
+// `runEtlTaskNow`, `previewEtlTask` - round 5 fix extended it past the first
+// two, see `autocount-service.real.test.ts`).
+const SQL_SHAPE_DEFAULTS: Pick<
+  AutocountEtlSourceConfig,
+  | 'query'
+  | 'lineQuery'
+  | 'keyColumns'
+  | 'watermarkColumn'
+  | 'comparedColumns'
+  | 'fromDate'
+  | 'docDateColumn'
+  | 'filterFormula'
+> = {
+  query: '',
+  lineQuery: null,
+  keyColumns: [],
+  watermarkColumn: null,
+  comparedColumns: [],
+  fromDate: null,
+  docDateColumn: null,
+  filterFormula: null,
+};
+
+// Every route that returns (or echoes) an `AutocountEtlTask` pipes it through
+// this ONE normalizer - a saved HTTP task's wire `sourceConfig` carries only
+// its OWN keys (AC-08-30), so the SQL-shape fields the editor's single
+// `AutocountEtlSourceConfig` type still declares (`query`/`keyColumns`/...)
+// would otherwise be `undefined`, not the shape's own defaults.
+function normalizeEtlTask(task: AutocountEtlTask): AutocountEtlTask {
+  return { ...task, sourceConfig: { ...SQL_SHAPE_DEFAULTS, ...task.sourceConfig } };
+}
+
+// sprint-5/11 S7-lite P0 (real-worker smoke, evidence
+// `documentation/plans/sprint-5/11-evidence/s7-lite/README.md`) - the SAME
+// AC-08-30 gap as `normalizeEtlTask` above, one hop further: a preview job's
+// `done` result echoes the task via the backend's OWN `_task_echo`/
+// `_task_response` builder (`modules/autocount/preview_job.py`), which
+// deliberately carries the SAME raw, un-normalized `sourceConfig` - and it
+// does so at TWO different nests depending on scope:
+// - `full` scope: `result.task` directly (`AutocountPreviewJobFullResult`).
+// - `sample` scope: `result.preview.task` (`HttpPreview.task?`, AC-11-26) -
+//   the ORIGINAL fix (round 1) only handled the `full` branch and returned
+//   early on any other scope, so a `sample`-scope done job's echoed task
+//   reached `SourceTab.onHttpPreviewSuccess` -> `TaskEditorView.apply()`
+//   un-normalized, crashing the DB-branch column pickers
+//   (`keyColumnOptions`/`watermarkOptions`/`comparedOptions` etc., all
+//   unguarded reads of `config.keyColumns`/`comparedColumns`/
+//   `watermarkColumn`) - `11-evidence/s7-lite/recheck/05-test-crash-1280.png`.
+// `getPreviewJob`/`cancelPreviewJob` (both wire-typed `AutocountPreviewJob`)
+// need this; `startPreviewJob` does NOT - its 202 body is
+// `PreviewJobStartOut` (`modules/autocount/schemas.py`), `{jobId, status}`
+// only, never a `result` at all, so there is nothing to normalize there.
+function normalizePreviewJob(job: AutocountPreviewJob): AutocountPreviewJob {
+  if (!job.result) return job;
+  if (job.result.scope === 'full') {
+    return { ...job, result: { ...job.result, task: normalizeEtlTask(job.result.task) } };
+  }
+  // `sample` scope - `preview.task` is optional (only present when the
+  // save-gate stamped it, AC-11-26); leave a task-less preview untouched.
+  if (!job.result.preview.task) return job;
+  return {
+    ...job,
+    result: {
+      ...job.result,
+      preview: { ...job.result.preview, task: normalizeEtlTask(job.result.preview.task) },
+    },
+  };
+}
+
 export const realAutocountService: AutocountService = {
+  // Companies: `sourceKind` (list + detail) and `documentPrerequisites`
+  // (detail; the list sends `[]`) ride the backend JSON through untouched
+  // (plan sprint-5/01 AC-01-07/11 - `CompanyItem` in `modules/autocount/schemas.py`).
   listCompanies(query = {}) {
     return apiFetch<ListResult<AutocountCompany>>(
       `/autocount/companies?${pageParams(query).toString()}`,
@@ -57,7 +175,15 @@ export const realAutocountService: AutocountService = {
   createCompany(input: AutocountCompanyCreateInput) {
     return apiFetch<AutocountCompany>('/autocount/companies', {
       method: 'POST',
-      body: JSON.stringify({ connectionId: input.connectionId, name: input.name ?? '' }),
+      body: JSON.stringify({
+        connectionId: input.connectionId,
+        name: input.name ?? '',
+        // Only sent when set - an open (no-auth) connection requires it
+        // server-side (sprint-5/08 AC-08-06/07); any other connection kind
+        // ignores/422s it, so a vendor/SQL create never carries the key at
+        // all rather than an empty string.
+        ...(input.refPrefix ? { refPrefix: input.refPrefix } : {}),
+      }),
     });
   },
 
@@ -133,6 +259,7 @@ export const realAutocountService: AutocountService = {
         body: JSON.stringify({
           sinkImpl: input.sinkImpl,
           sinkConnectionId: input.sinkConnectionId ?? null,
+          sorentoCompanyCode: input.sorentoCompanyCode?.trim() || null,
         }),
       },
     );
@@ -149,8 +276,27 @@ export const realAutocountService: AutocountService = {
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`,
       {
         method: 'PUT',
-        body: JSON.stringify({ rows: input.rows.map(writeRow) }),
+        // `lineRows` omitted (never sent as `undefined`, JSON.stringify
+        // drops it) leaves line scope untouched server-side; an explicit
+        // `[]` wipes it - the caller (use-mapping-draft) decides which by
+        // whether it passes `lineRows` at all (security re-review
+        // should-fix, sprint-5/02 review round).
+        body: JSON.stringify({
+          rows: input.rows.map(writeRow),
+          ...(input.lineRows ? { lineRows: input.lineRows.map(writeRow) } : {}),
+        }),
       },
+    );
+  },
+
+  // sprint-5/12 - the live reset route (see the contract block atop
+  // `autocount-service.ts`). `dryRun: true` answers `AutocountMappingReset
+  // Preview`, `dryRun: false` the fresh `AutocountMappingView` - narrow with
+  // `isMappingResetPreview`.
+  resetMappingToPreset(companyId, entityType, input: { dryRun: boolean }) {
+    return apiFetch<AutocountMappingResetPreview | AutocountMappingView>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping/reset-preset`,
+      { method: 'POST', body: JSON.stringify({ dryRun: input.dryRun }) },
     );
   },
 
@@ -161,18 +307,293 @@ export const realAutocountService: AutocountService = {
     );
   },
 
-  simulateMapping(companyId, entityType, record, rows) {
-    const body: { record: Record<string, unknown>; rows?: ReturnType<typeof writeRow>[] } = {
-      record,
-    };
+  simulateMapping(companyId, entityType, record, rows, lines) {
+    const body: {
+      record: Record<string, unknown>;
+      rows?: ReturnType<typeof writeRow>[];
+      lines?: Array<Record<string, unknown>>;
+    } = { record };
     // Only send `rows` when previewing DRAFT edits; omit to simulate saved rows.
     if (rows) body.rows = rows.map(writeRow);
+    // Document entities only (sprint-5/02, AC-02-22) - the picked header's
+    // fetched line records.
+    if (lines) body.lines = lines;
     return apiFetch<AutocountSimulateResult>(
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping/simulate`,
       { method: 'POST', body: JSON.stringify(body) },
     );
   },
+
+  listMappingPresets(companyId, entityType) {
+    // sprint-5/02 S3 - the mapping editor's "Use preset" action, backed by
+    // GET /autocount/presets/{entityType}?companyId= (mounted bare via the
+    // `sync` router - see the backend endpoint's own docstring). Real since
+    // the S3 mock overlay (withPhase1DocumentMappingMock) was removed.
+    return apiFetch<AutocountMappingPreset[]>(
+      `/autocount/presets/${encodeURIComponent(entityType)}?companyId=${encodeURIComponent(companyId)}`,
+    );
+  },
+
+  // ── direct-DB ETL (plan 22 S1) - endpoints per the contract documented on
+  // `AutocountService`.
+
+  listSqlConnections() {
+    return apiFetch<AutocountSqlConnection[]>('/autocount/sql/connections');
+  },
+
+  getSqlSchema(connectionId, opts) {
+    const suffix = opts?.refresh ? '?refresh=true' : '';
+    return apiFetch<AutocountSqlSchema>(
+      `/autocount/sql/connections/${encodeURIComponent(connectionId)}/schema${suffix}`,
+    );
+  },
+
+  previewSqlQuery(connectionId, query, opts) {
+    return apiFetch<AutocountSqlPreview>('/autocount/sql/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        connectionId,
+        query,
+        bindDocKey: opts?.bindDocKey ?? false,
+        docKey: opts?.docKey ?? null,
+      }),
+    });
+  },
+
+  getEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/etl-task`,
+    ).then(normalizeEtlTask);
+  },
+
+  updateEtlTask(companyId, entityType, input: AutocountEtlTaskUpdate) {
+    return apiFetch<AutocountEtlTask>(
+      `${etlTaskPath(companyId, entityType)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          sourceConfig: input.sourceConfig,
+          ...(input.sourceImpl ? { sourceImpl: input.sourceImpl } : {}),
+        }),
+      },
+    ).then(normalizeEtlTask);
+  },
+
+  // ── direct-DB ETL (plan 22 S2) - endpoints per the contract documented on
+  // `AutocountService`.
+  //
+  // `previewEtlTask` removed (sprint-5/11 review round 2, item 6) - dead
+  // since S4 replaced the synchronous `.../preview` route with the
+  // `autocount_source_preview` job's own `startPreviewJob`/`getPreviewJob`
+  // surface below.
+
+  activateEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/activate`, {
+      method: 'POST',
+    }).then(normalizeEtlTask);
+  },
+
+  pauseEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/pause`, {
+      method: 'POST',
+    }).then(normalizeEtlTask);
+  },
+
+  resumeEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/resume`, {
+      method: 'POST',
+    }).then(normalizeEtlTask);
+  },
+
+  runEtlTaskNow(companyId, entityType) {
+    return apiFetch<AutocountEtlRunStart>(`${etlTaskPath(companyId, entityType)}/run`, {
+      method: 'POST',
+    }).then((started) => ({ ...started, task: normalizeEtlTask(started.task) }));
+  },
+
+  listEtlRuns(companyId, entityType, query = {}) {
+    return apiFetch<ListResult<AutocountSyncRun>>(
+      `${etlTaskPath(companyId, entityType)}/runs?${pageParams(query).toString()}`,
+    );
+  },
+
+  // plan sprint-5/07, AC-07-13..19 - contract documented on `AutocountService`.
+  repushEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlRepushResult>(`${etlTaskPath(companyId, entityType)}/repush`, {
+      method: 'POST',
+    });
+  },
+
+  // sprint-5/08 (S2 backend) - contract documented on `AutocountService`.
+  listApiConnections() {
+    return apiFetch<AutocountApiConnection[]>('/autocount/http/connections');
+  },
+
+  // `previewHttp` removed (sprint-5/11 review round 2, item 6) - dead since
+  // S4 replaced the synchronous `/autocount/http/preview` route with the
+  // `autocount_source_preview` job's own `startPreviewJob`/`getPreviewJob`
+  // surface below.
+
+  previewColumns(connectionId, path) {
+    return apiFetch<{ columns: string[] }>('/autocount/http/preview-columns', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId, path }),
+    }).then((result) => result.columns);
+  },
+
+  // ── human-invoked pull (sprint-5/10) - contract documented on
+  // `AutocountService`. Live since S3/S4 (backend), bound here since S6
+  // (phase 2 swap) - `autocount-service.mock.ts`'s `mockAutocountService`
+  // mirrors the same shapes as the Vitest fixture double.
+
+  setDeliveryMode(companyId, entityType, deliveryMode: AutocountDeliveryMode) {
+    return apiFetch<AutocountEntityConfig>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/delivery-mode`,
+      { method: 'PUT', body: JSON.stringify({ deliveryMode }) },
+    );
+  },
+
+  listPullKeys() {
+    return apiFetch<AutocountPullApiKey[]>('/autocount/pull/keys');
+  },
+
+  issuePullKey(input: AutocountPullApiKeyCreateInput) {
+    return apiFetch<AutocountPullApiKeyIssued>('/autocount/pull/keys', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  revokePullKey(id) {
+    return apiFetch<AutocountPullApiKey>(`/autocount/pull/keys/${id}/revoke`, {
+      method: 'POST',
+    });
+  },
+
+  listPullSnapshots(query = {}) {
+    const p = pageParams(query);
+    if (query.companyId) p.set('companyId', query.companyId);
+    if (query.entityType) p.set('entityType', query.entityType);
+    return apiFetch<ListResult<AutocountPullSnapshot>>(
+      `/autocount/pull/snapshots?${p.toString()}`,
+    );
+  },
+
+  getPullSnapshot(id) {
+    return apiFetch<AutocountPullSnapshot>(`/autocount/pull/snapshots/${id}`);
+  },
+
+  getPullSnapshotRows(id, page = 0, pageSize = 1000) {
+    const p = new URLSearchParams();
+    p.set('page', String(page + 1)); // the gateway's own pages are 1-based
+    p.set('pageSize', String(pageSize));
+    return apiFetch<AutocountPullSnapshotRowsPage>(
+      `/autocount/pull/snapshots/${id}/rows?${p.toString()}`,
+    );
+  },
+
+  buildPullSnapshot(companyId, entityType) {
+    return apiFetch<AutocountPullSnapshot>('/autocount/pull/snapshots', {
+      method: 'POST',
+      body: JSON.stringify({ companyId, entityType }),
+    });
+  },
+
+  // ── preview job (sprint-5/11, Group B) - contract documented on
+  // `AutocountService`. LIVE since S4: the real `autocount_source_preview`
+  // job + `/autocount/previews/*` routes back every call below;
+  // `useHttpPreview`/`useEtlTaskPreview` (the Source tab's Test and Review &
+  // Activate's Run preview) poll through this surface, no phase-1 overlay.
+
+  startPreviewJob(input: AutocountPreviewJobStartInput) {
+    // No `normalizePreviewJob` here (S7-lite fix) - the 202 body is
+    // `PreviewJobStartOut` (`{jobId, status}`), never a `result`/`task`.
+    const path = input.scope === 'sample' ? '/autocount/http/preview' : `${etlTaskPath(input.companyId, input.entityType)}/preview`;
+    return apiFetch<AutocountPreviewJobStart>(path, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  getPreviewJob(jobId) {
+    return apiFetch<AutocountPreviewJob>(`/autocount/previews/${jobId}`).then(normalizePreviewJob);
+  },
+
+  cancelPreviewJob(jobId) {
+    return apiFetch<AutocountPreviewJob>(`/autocount/previews/${jobId}/cancel`, {
+      method: 'POST',
+    }).then(normalizePreviewJob);
+  },
+
+  // ── document feeds (sprint-5/14, D17) - real S5 wiring ────────────────────
+  // Bound directly by `autocount-service.ts` (the S1 mock overlay is retired).
+
+  getDocFeeds(companyId) {
+    return apiFetch<DocFeedsView>(`/autocount/doc-feeds/${companyId}`);
+  },
+
+  updateDocFeed(companyId, feed, input) {
+    return apiFetch<DocFeedItem>(`/autocount/doc-feeds/${companyId}/${feed}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  },
+
+  runDocFeed(companyId, feed, input) {
+    return apiFetch<{ jobId: string }>(`/autocount/doc-feeds/${companyId}/${feed}/run`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  startDocFeedBackfill(companyId, feed, input) {
+    return apiFetch<DocFeedBackfill>(`/autocount/doc-feeds/${companyId}/${feed}/backfill`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  stopDocFeedBackfill(companyId, feed) {
+    return apiFetch<DocFeedBackfill>(`/autocount/doc-feeds/${companyId}/${feed}/backfill/stop`, {
+      method: 'POST',
+    });
+  },
+
+  resumeDocFeedBackfill(companyId, feed) {
+    return apiFetch<DocFeedBackfill>(`/autocount/doc-feeds/${companyId}/${feed}/backfill/resume`, {
+      method: 'POST',
+    });
+  },
+
+  discardDocFeedBackfill(companyId, feed) {
+    return apiFetch<DocFeedBackfill>(`/autocount/doc-feeds/${companyId}/${feed}/backfill/discard`, {
+      method: 'POST',
+    });
+  },
+
+  listDocFeedRuns(companyId, query: DocFeedRunsQuery = {}) {
+    const p = pageParams(query);
+    if (query.feed) p.set('feed', query.feed);
+    return apiFetch<ListResult<DocFeedRun>>(
+      `/autocount/doc-feeds/${companyId}/runs?${p.toString()}`,
+    );
+  },
+
+  listDocFeedIssues(companyId, query: DocFeedIssuesQuery = {}) {
+    const p = pageParams(query);
+    if (query.feed) p.set('feed', query.feed);
+    if (query.kind) p.set('kind', query.kind);
+    if (query.search) p.set('search', query.search);
+    return apiFetch<ListResult<DocFeedIssue>>(
+      `/autocount/doc-feeds/${companyId}/issues?${p.toString()}`,
+    );
+  },
 };
+
+/** The per-(company, entity) task resource root. */
+function etlTaskPath(companyId: string, entityType: string): string {
+  return `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/etl-task`;
+}
 
 /** The wire shape of one mapping row on write (a blank formula → null). */
 function writeRow(row: AutocountMappingWriteRow) {
@@ -182,5 +603,11 @@ function writeRow(row: AutocountMappingWriteRow) {
     transform: row.transform,
     sorentoField: row.sorentoField,
     formula: formula ? formula : null,
+    // Default 'header' server-side too (sprint-5/02, AC-02-01) - a
+    // master/GRN save never sends anything else.
+    scope: row.scope ?? 'header',
+    // B1 (final review round) - must round-trip or a backfill-disabled
+    // off-preview row is silently re-enabled server-side on save.
+    isEnabled: row.isEnabled,
   };
 }

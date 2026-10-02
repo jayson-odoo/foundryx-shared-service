@@ -1,0 +1,6 @@
+{
+  "code": "SNAPSHOT_EXPIRED",
+  "message": "This snapshot has expired. Build a fresh one.",
+  "companyCode": "SRT",
+  "entity": "stock_balances"
+}

@@ -17,6 +17,7 @@ import type {
   WorkflowVersionSummary,
 } from '@/types/workflows';
 import { realWorkflowService } from './workflow-service.real';
+import { mockWorkflowService } from './workflow-service.mock';
 
 export interface WorkflowService {
   list(query: ListQuery): Promise<ListResult<WorkflowListItem>>;
@@ -77,5 +78,10 @@ export interface WorkflowSettings {
   isDefault: boolean;
 }
 
-// Phase B: bound to the real api-client implementation (was mockWorkflowService).
-export const workflowService: WorkflowService = realWorkflowService;
+// Phase 1 demo/prototype switch. Production remains real by default; setting
+// NEXT_PUBLIC_WORKFLOW_MOCK=true makes the same workflow routes app-reachable
+// without changing components or service consumers.
+export const workflowService: WorkflowService =
+  process.env.NEXT_PUBLIC_WORKFLOW_MOCK === 'true'
+    ? mockWorkflowService
+    : realWorkflowService;

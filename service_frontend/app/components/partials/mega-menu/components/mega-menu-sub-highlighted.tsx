@@ -9,7 +9,7 @@ import { useMenu } from '@/hooks/use-menu';
 import { Badge } from '@/components/ui/badge';
 import { NavigationMenuLink } from '@/components/ui/navigation-menu';
 
-const MegaMenuSubHighlighted = (items: MenuConfig) => {
+const MegaMenuSubHighlighted = (items: MenuConfig, menuPaths?: readonly string[]) => {
   const pathname = usePathname();
   const { isActive } = useMenu(pathname);
 
@@ -19,7 +19,7 @@ const MegaMenuSubHighlighted = (items: MenuConfig) => {
         <NavigationMenuLink key={index} asChild>
           <Link
             key={index}
-            {...(isActive(item.path) && { 'data-active': true })}
+            {...(isActive(item.path, menuPaths) && { 'data-active': true })}
             href={item.path || ''}
             className={cn(
               'border border-transparent hover:border-border hover:bg-background',

@@ -19,6 +19,24 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
     } else {
       bodyClass.remove('sidebar-collapse');
     }
+
+    // T3 fix round 1 finding 9: `layout-initialized` (the class that turns
+    // the sidebar width transition ON) is scheduled from THIS effect now,
+    // one frame after `sidebar-collapse` is applied right above - not from
+    // the mount effect below. `SettingsProvider` hydrates
+    // `sidebarCollapse` from localStorage in an effect of ITS OWN that
+    // fires AFTER this component's mount effect has already run (a second
+    // render, once localStorage is read) - so a returning collapsed-sidebar
+    // user previously got `layout-initialized` (enabling the transition)
+    // BEFORE the hydrated `sidebar-collapse` class ever landed, then
+    // watched the wrapper visibly slide into the collapsed width once it
+    // did. Tying the class to THIS effect means it always trails the
+    // specific settings-driven class change it exists to guard, on every
+    // settings update, not just the first one.
+    const raf = requestAnimationFrame(() => {
+      bodyClass.add('layout-initialized');
+    });
+    return () => cancelAnimationFrame(raf);
   }, [settings]); // Runs only on settings update
 
   useEffect(() => {
@@ -34,23 +52,30 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
     bodyClass.add('sidebar-fixed');
     bodyClass.add('header-fixed');
 
-    const timer = setTimeout(() => {
-      bodyClass.add('layout-initialized');
-    }, 1000); // 1000 milliseconds
-
-    // Remove the class when the component is unmounted
+    // `layout-initialized` itself is scheduled from the `[settings]` effect
+    // above (T3 fix round 1 finding 9) - this effect only owns mount/unmount
+    // of the shell's structural classes now.
     return () => {
       bodyClass.remove('demo1');
       bodyClass.remove('sidebar-fixed');
       bodyClass.remove('sidebar-collapse');
       bodyClass.remove('header-fixed');
       bodyClass.remove('layout-initialized');
-      clearTimeout(timer);
     };
   }, []); // Runs only once on mount
 
   return (
     <>
+      {/* AC-DLA-59: a keyboard user's first Tab stop jumps straight past the
+          sidebar/header chrome to the page content - visually hidden until
+          focused. */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:start-2 focus:top-2 focus:z-(--z-modal) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        Skip to content
+      </a>
+
       {!isMobile && <Sidebar />}
 
       {/* min-w-0: the wrapper is a flex item of the horizontal body flex -
@@ -61,7 +86,9 @@ export function Demo1Layout({ children }: { children: ReactNode }) {
       <div className="wrapper flex min-w-0 grow flex-col">
         <Header />
 
-        <main className="grow pt-5" role="content">
+        {/* `<main>` already carries the implicit ARIA "main" role - the old
+            non-standard content-role attribute here was dropped (AC-DLA-59). */}
+        <main id="main" className="grow pt-5">
           {children}
         </main>
 

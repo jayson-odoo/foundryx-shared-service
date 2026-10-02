@@ -130,6 +130,7 @@ def main() -> None:
     db = SessionLocal()
     try:
         sweep_tenant_admin_grants(db)
+        db.commit()
     finally:
         db.close()
 
@@ -154,7 +155,10 @@ def main() -> None:
     if settings.environment == "development":
         from app.models.tenant import DEFAULT_TENANT_ID
         from modules.omnichannel.bootstrap import seed_demo_conversations
-        from modules.omnichannel.services.seed_demo_workflow import seed_demo_ai_workflow
+        from modules.omnichannel.services.seed_demo_workflow import (
+            seed_demo_ai_workflow,
+            seed_demo_progress_workflow,
+        )
 
         db = SessionLocal()
         try:
@@ -162,8 +166,18 @@ def main() -> None:
             print("omnichannel: demo conversations seeded")
             seed_demo_ai_workflow(db, DEFAULT_TENANT_ID)
             print("omnichannel: demo AI workflow seeded")
+            seed_demo_progress_workflow(db, DEFAULT_TENANT_ID)
+            print("omnichannel: demo progress-update workflow seeded")
         finally:
             db.close()
+
+    # Never report success over a stale module schema (issue #89): the same
+    # guard the API runs at start, so "bootstrap complete" implies every
+    # installed module is at its code head. No-op on non-Postgres.
+    from app.database import engine as _engine
+    from app.module_platform.drift_guard import check_module_schema_drift
+
+    check_module_schema_drift(_engine)
 
     print("bootstrap complete: migrated + seeded + modules")
 

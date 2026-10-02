@@ -737,6 +737,40 @@ def test_no_connection_anywhere_reports_missing_prerequisite(session_factory):
     db.close()
 
 
+def test_connectionless_agent_stubs_only_in_development(session_factory, monkeypatch):
+    """Review should-fix: the zero-config stub is a DEV convenience. In prod a
+    connection-less agent (with no LLM connection anywhere) must fail loudly,
+    never answer tenants with canned text."""
+    from app.ai.client import LLMError, resolve_for_agent
+    from app.config import settings
+
+    db = session_factory()
+    agent = _make_agent(db, None)  # no connection, and none exists on the tenant
+
+    monkeypatch.setattr(settings, "environment", "development")
+    assert resolve_for_agent(db, DEFAULT_TENANT_ID, agent).is_stub is True
+
+    for env in ("production", "staging"):
+        monkeypatch.setattr(settings, "environment", env)
+        with pytest.raises(LLMError, match="No AI connection is configured"):
+            resolve_for_agent(db, DEFAULT_TENANT_ID, agent)
+    db.close()
+
+
+def test_agent_with_dev_credentials_still_stubs_in_production(session_factory, monkeypatch):
+    """The `dev`-cred path is unchanged - a real connection carrying dev creds
+    routes to the stub in every environment (the omnichannel _is_dev shape)."""
+    from app.ai.client import resolve_for_agent
+    from app.config import settings
+
+    db = session_factory()
+    conn = _make_connection(db, dev=True)
+    agent = _make_agent(db, conn)
+    monkeypatch.setattr(settings, "environment", "production")
+    assert resolve_for_agent(db, DEFAULT_TENANT_ID, agent).is_stub is True
+    db.close()
+
+
 def test_prerequisite_endpoint_reports_absence(client):
     """AC-BI-11 - the UI must be able to warn BEFORE anything runs."""
     headers = _login(client)

@@ -1,0 +1,18 @@
+->  jobs_s41@Tehs-Mac-mini.local: OK
+    * autocount.etl_sweep
+    * autocount.prune_pull_snapshots
+    * jobs.run
+    * jobs.sweep_orphaned
+    * meetings.bot_dispatch_due
+    * meetings.calendar_sync_due
+    * omnichannel.broadcasts_due
+    * omnichannel.wait_sweep
+    * ops.ping
+    * pending_actions.commit_due
+    * status.reevaluate_time_based
+    * webhooks.retry_due
+    * workflows.run_due
+    * workflows.run_workflow
+    * workflows.wake_serialized
+
+1 node online.

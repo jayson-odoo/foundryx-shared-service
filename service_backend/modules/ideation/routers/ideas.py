@@ -7,30 +7,38 @@ status / delete (``ideation.triage.manage``). Status moves ride the core status
 engine (server-authoritative - illegal moves refused)."""
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.api.v1.documents import _serve_blob
 from app.database import get_db
 from app.dependencies import require_permission
 from app.models.user import User
 
 from ..schemas import (
     BoardOut,
+    IdeaAttachmentOut,
     BusinessRequirementOut,
     ClusterSuggestionsOut,
     IdeaCreateIn,
     IdeaOut,
     IdeaUpdateIn,
+    MergeIn,
     ReorderIn,
     StatusIn,
     VoteIn,
 )
 from ..services.actions import IdeaActionService
+from ..services.attachments import IdeaAttachmentService
 from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
 from ..services.ideas import IdeaReadService
+from ..services.merge import IdeaMergeService
 
 router = APIRouter()
+
+# Attachment upload read cap (25 MB); one extra byte tells "at the cap" from "over".
+ATTACHMENT_CAP_BYTES = 25 * 1024 * 1024
 
 
 @router.get("", response_model=List[IdeaOut])
@@ -38,6 +46,7 @@ def list_ideas(
     search: Optional[str] = Query(None),
     filter: str = Query("active", pattern="^(active|archived|all)$"),
     product_id: Optional[str] = Query(None, alias="productId"),
+    include_test: bool = Query(False, alias="includeTest"),
     current_user: User = Depends(require_permission("ideation.ideas.view")),
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
@@ -45,13 +54,17 @@ def list_ideas(
     text; ``filter`` selects active (default) / archived / all; optional
     ``productId`` scopes to a single product (the canonical ideation scope -
     omitted = every product in the tenant). ``myVote`` is resolved for the
-    calling user. Always tenant-scoped: the product filter never crosses tenants."""
+    calling user. Always tenant-scoped: the product filter never crosses tenants.
+    ``includeTest`` (issue #1179) opts into console/``--say`` test ideas, off by
+    default."""
     return IdeaReadService(db).list(
         current_user.tenant_id,
         search=search,
         filter=filter,
         product_id=product_id,
         voter_id=current_user.id,
+        include_test=include_test,
+        actor=current_user,
     )
 
 
@@ -84,6 +97,7 @@ def create_idea(
 @router.get("/board", response_model=BoardOut)
 def get_board(
     product_id: Optional[str] = Query(None, alias="productId"),
+    include_test: bool = Query(False, alias="includeTest"),
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> BoardOut:
@@ -92,9 +106,14 @@ def get_board(
     scopes to a single product (omitted = every product in the tenant). Triager
     surface - gated by ``ideation.triage.manage`` (403 without it, AC-A-37).
     Dragging a card across columns / within a column uses POST ``/{id}/status`` +
-    PUT ``/reorder``."""
+    PUT ``/reorder``. ``includeTest`` (issue #1179) opts into console/``--say``
+    test ideas, off the board by default."""
     return IdeaReadService(db).board(
-        current_user.tenant_id, voter_id=current_user.id, product_id=product_id
+        current_user.tenant_id,
+        voter_id=current_user.id,
+        product_id=product_id,
+        include_test=include_test,
+        actor=current_user,
     )
 
 
@@ -106,7 +125,25 @@ def reorder_ideas(
 ) -> List[IdeaOut]:
     """Set manual priority from the given id order (index = priority, top first)."""
     return IdeaActionService(db).reorder(
-        current_user.tenant_id, body.orderedIds, voter_id=current_user.id
+        current_user.tenant_id,
+        body.orderedIds,
+        voter_id=current_user.id,
+        actor=current_user,
+    )
+
+
+@router.post("/merge", response_model=IdeaOut)
+def merge_ideas(
+    body: MergeIn,
+    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    db: Session = Depends(get_db),
+) -> IdeaOut:
+    """Collapse ``ideaIds`` onto ``survivorId`` (issue #94, AC-94-01). All-or-
+    nothing - a rejected selection (mixed product/lane, archived, already
+    merged, fewer than 2, an id outside the tenant) writes nothing (422/404).
+    Reuses ``ideation.triage.manage`` (D7, no new permission)."""
+    return IdeaMergeService(db).merge(
+        current_user.tenant_id, body.survivorId, body.ideaIds, actor=current_user
     )
 
 
@@ -135,8 +172,45 @@ def get_idea(
     """One idea by id - every section present (attachments empty-state), submitter
     human-readable (never a raw UUID). 404 if not found in the tenant."""
     return IdeaReadService(db).get(
-        current_user.tenant_id, idea_id, voter_id=current_user.id
+        current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
     )
+
+
+@router.post(
+    "/{idea_id}/attachments",
+    response_model=IdeaAttachmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_idea_attachment(
+    idea_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    db: Session = Depends(get_db),
+) -> IdeaAttachmentOut:
+    """Upload a file onto an idea (sniff-first, 25 MB cap). 404 outside the
+    tenant, 413 over the cap, 415 on an unverifiable type."""
+    service = IdeaAttachmentService(db)
+    service.ensure_idea(current_user.tenant_id, idea_id)
+    content = await file.read(ATTACHMENT_CAP_BYTES + 1)
+    if len(content) > ATTACHMENT_CAP_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
+    return service.upload(
+        current_user.tenant_id, idea_id, file.filename or "", content
+    )
+
+
+@router.get("/{idea_id}/attachments/{attachment_id}/content")
+def get_idea_attachment_content(
+    idea_id: str,
+    attachment_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+):
+    """Serve an uploaded attachment CSP-sandboxed + nosniff (tenant-scoped)."""
+    key, mime, filename = IdeaAttachmentService(db).content(
+        current_user.tenant_id, idea_id, attachment_id
+    )
+    return _serve_blob(db, current_user.tenant_id, key, mime, filename, "inline")
 
 
 @router.get("/{idea_id}/business-requirements", response_model=List[BusinessRequirementOut])
@@ -179,6 +253,30 @@ def update_idea(
     )
 
 
+@router.get("/{idea_id}/merged", response_model=List[IdeaOut])
+def list_merged_ideas(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> List[IdeaOut]:
+    """The ideas merged into this one (AC-94-03), oldest merge first - the
+    "Merged from" tab's data source."""
+    return IdeaReadService(db).merged_children(
+        current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
+    )
+
+
+@router.post("/{idea_id}/unmerge", response_model=List[IdeaOut])
+def unmerge_idea(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    db: Session = Depends(get_db),
+) -> List[IdeaOut]:
+    """Restore a merged child (AC-94-07), or dissolve a survivor's whole
+    group (AC-94-08); 422 for an idea that is neither."""
+    return IdeaMergeService(db).unmerge(current_user.tenant_id, idea_id, actor=current_user)
+
+
 @router.post("/{idea_id}/vote", response_model=IdeaOut)
 def vote_idea(
     idea_id: str,
@@ -200,14 +298,16 @@ def set_idea_status(
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
-    """Move the idea to a lifecycle status by key (advance / archive / restore).
-    Server-authoritative - illegal moves are refused (409)."""
+    """Move the idea to a lifecycle status - by KEY (advance / archive / restore,
+    kept for the deferred Archive handler) or by status-engine ``toStatusId``
+    (issue #94). Server-authoritative - illegal moves are refused (409)."""
     return IdeaActionService(db).set_status(
         current_user.tenant_id,
         idea_id,
         body.status,
         actor=current_user,
         voter_id=current_user.id,
+        to_status_id=body.toStatusId,
     )
 
 

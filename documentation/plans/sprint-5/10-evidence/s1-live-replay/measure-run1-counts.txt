@@ -1,0 +1,13 @@
+total staged rows: 11840
+ref_prefix AED_SORENTO: 11840 / bad: 0 (sample: [])
+list_price present (enrich matched): 11840
+enrich miss (list_price absent): 0
+delivered list_price == 0 (post-clamp, includes negatives): 5129
+price as JSON string: 11840, price NOT string: 0
+payloads carrying uom_code key: 0
+payloads carrying cost_price key: 0
+payloads carrying remark key: 0
+payloads carrying is_discontinued key: 0
+description with internal double space: 2768
+negative source BaseUOMPrice (raw < 0): 121
+of those, delivered list_price == 0 (clamped, confirmed): 121

@@ -38,11 +38,14 @@ export function useQuickRepliesListConfig(
   handlers: {
     onCreate: () => void;
     onEdit: (item: QuickReply) => void;
+    /** No longer called by this config (fix round 1, T5, item 15 - Delete is
+     * `deferred`, the registered `quick_replies.delete` handler commits it).
+     * Kept in the signature so the caller needs no change. */
     onDelete: (item: QuickReply) => Promise<void>;
   },
 ): ResourceListConfig<QuickReply> {
   const pathname = usePathname();
-  const { onCreate, onEdit, onDelete } = handlers;
+  const { onCreate, onEdit } = handlers;
 
   return useMemo<ResourceListConfig<QuickReply>>(() => {
     const actions: ResourceAction<QuickReply>[] = [
@@ -61,14 +64,11 @@ export function useQuickRepliesListConfig(
         tone: 'destructive',
         surfaces: { row: true, form: false, bulk: false },
         permission: 'workspaces.manage',
-        confirm: {
-          title: 'Delete quick reply?',
-          description: 'Agents will no longer be able to insert this canned response.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows) => {
-          await onDelete(rows[0]);
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `quick_replies.delete`
+        // handler commits it server-side - it resolves the owning workspace
+        // from the quick-reply row itself, so `entityId` stays its bare id).
+        deferred: { actionKey: 'quick_replies.delete', entityType: 'quick_reply' },
       },
     ];
 
@@ -165,5 +165,5 @@ export function useQuickRepliesListConfig(
       ],
       actions,
     };
-  }, [items, onCreate, onEdit, onDelete, pathname]);
+  }, [items, onCreate, onEdit, pathname]);
 }

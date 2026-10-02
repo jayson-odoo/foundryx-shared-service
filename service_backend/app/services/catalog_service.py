@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 
 from app.catalog.kinds import is_valid_kind, kind_label
 from app.models.catalog import Product, ProductCategory
-from app.models.tenant_settings import DEFAULT_CURRENCY, DEFAULT_PRICE_DECIMALS, TenantSettings
+from app.models.tenant_settings import (
+    DEFAULT_CURRENCY,
+    DEFAULT_DEFERRED_DESTRUCTIVE_SECONDS,
+    DEFAULT_DEFERRED_REVERSIBLE_SECONDS,
+    DEFAULT_PRICE_DECIMALS,
+    TenantSettings,
+)
 from app.module_platform import reference_counts
 
 PRODUCT_ENTITY = "product"
@@ -79,6 +85,16 @@ class TenantSettingsService:
             "priceDecimals": (
                 row.price_decimals if row and row.price_decimals is not None else DEFAULT_PRICE_DECIMALS
             ),
+            "deferredDestructiveSeconds": (
+                row.deferred_destructive_seconds
+                if row and row.deferred_destructive_seconds is not None
+                else DEFAULT_DEFERRED_DESTRUCTIVE_SECONDS
+            ),
+            "deferredReversibleSeconds": (
+                row.deferred_reversible_seconds
+                if row and row.deferred_reversible_seconds is not None
+                else DEFAULT_DEFERRED_REVERSIBLE_SECONDS
+            ),
             "publicLinkBaseUrl": row.public_link_base_url if row else None,
         }
 
@@ -97,6 +113,16 @@ class TenantSettingsService:
             if dp < 0 or dp > 6:
                 raise HTTPException(422, "Decimal places must be between 0 and 6.")
             row.price_decimals = dp
+        if "deferredDestructiveSeconds" in data and data["deferredDestructiveSeconds"] is not None:
+            secs = int(data["deferredDestructiveSeconds"])
+            if secs < 1 or secs > 60:
+                raise HTTPException(422, "Delete countdown must be between 1 and 60 seconds.")
+            row.deferred_destructive_seconds = secs
+        if "deferredReversibleSeconds" in data and data["deferredReversibleSeconds"] is not None:
+            secs = int(data["deferredReversibleSeconds"])
+            if secs < 1 or secs > 60:
+                raise HTTPException(422, "Reversible countdown must be between 1 and 60 seconds.")
+            row.deferred_reversible_seconds = secs
         if "publicLinkBaseUrl" in data:
             row.public_link_base_url = validate_public_link_base(data["publicLinkBaseUrl"])
         self.db.commit()
@@ -106,9 +132,9 @@ class TenantSettingsService:
 def validate_public_link_base(value: Optional[str]) -> Optional[str]:
     """Normalize a tenant ``public_link_base_url``: blank/None clears it (NULL =
     each feature's default origin); otherwise it must be an absolute http(s) URL
-    with a host, no credentials and no fragment (a path, query and an
-    ``{ideaId}`` placeholder are allowed). Trailing ``/`` is stripped so link
-    minting (``{base}/ideas/{id}``) stays clean."""
+    with a host, no credentials and no fragment (a path, query and a
+    ``{token}``/``{ideaId}`` placeholder are allowed). Trailing ``/`` is stripped so link
+    minting (``{base}/public/ideas/{token}``) stays clean."""
     if value is None or not str(value).strip():
         return None
     url = str(value).strip()
@@ -124,9 +150,9 @@ def validate_public_link_base(value: Optional[str]) -> Optional[str]:
         raise HTTPException(
             422, "Public link base URL must be an absolute http(s) URL (no credentials or #fragment)."
         )
-    if parts.query and "{ideaId}" not in url:
-        # ``{base}/ideas/{id}`` would land inside the query string.
-        raise HTTPException(422, "A public link base URL with a query must place {ideaId}.")
+    if parts.query and "{token}" not in url and "{ideaId}" not in url:
+        # ``{base}/public/ideas/{token}`` would land inside the query string.
+        raise HTTPException(422, "A public link base URL with a query must place {token}.")
     return url if parts.query else url.rstrip("/")
 
 

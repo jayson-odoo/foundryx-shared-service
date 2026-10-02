@@ -1,0 +1,17 @@
+{
+    "snapshotId": "76892b73-fc3e-4b75-be65-b3cf4b87d78e",
+    "entity": "products",
+    "companyCode": "MCH",
+    "status": "ready",
+    "extractedAt": "2026-09-20T14:09:41.338615Z",
+    "expiresAt": "2026-09-21T14:09:41.338615Z",
+    "recordCount": 3445,
+    "complete": true,
+    "contentHash": "559c77f93dcbf0d6d2003b15b5c665eed3570a0ab93573a384aa5b88e10ba069",
+    "sourcePageSize": 150,
+    "excludedCount": 0,
+    "excludedRows": [],
+    "zeroListPriceCount": 333,
+    "negativeListPriceCount": 0,
+    "enrichMissCount": 0
+}

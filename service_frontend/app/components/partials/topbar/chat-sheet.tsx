@@ -106,7 +106,11 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
   return (
     <Sheet>
       <SheetTrigger asChild>{trigger}</SheetTrigger>
-      <SheetContent className="p-0 gap-0 sm:w-[450px] sm:max-w-none inset-5 start-auto h-auto rounded-lg p-0 sm:max-w-none [&_[data-slot=sheet-close]]:top-4.5 [&_[data-slot=sheet-close]]:end-5">
+      {/* AC-DLA-52/55 fix round 1 item 5: top/bottom insets only (never a
+          uniform inset shorthand) leave the shared side variant's end-0 in
+          charge of the horizontal edge; max-h caps off the DYNAMIC viewport
+          so mobile Safari's toolbar never eats the bottom of the sheet. */}
+      <SheetContent className="p-0 gap-0 sm:w-[450px] sm:max-w-none top-5 bottom-5 h-auto max-h-[calc(100dvh-2.5rem)] start-auto rounded-lg p-0 sm:max-w-none [&_[data-slot=sheet-close]]:top-4.5 [&_[data-slot=sheet-close]]:end-5">
         <SheetHeader>
           <div className="flex items-center justify-between p-3 border-b border-border">
             <SheetTitle>Chat</SheetTitle>
@@ -148,7 +152,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                 />
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" mode="icon" size="sm">
+                    <Button variant="ghost" mode="icon" size="sm" aria-label="More options">
                       <MoreVertical className="size-4!" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -158,7 +162,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                     align="end"
                   >
                     <DropdownMenuItem asChild>
-                      <Link href="/account/members/teams">
+                      <Link href="/user-management/users">
                         <Users /> Invite Users
                       </Link>
                     </DropdownMenuItem>
@@ -170,18 +174,18 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                       <DropdownMenuPortal>
                         <DropdownMenuSubContent className="w-44">
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Shield />
                               Find Members
                             </Link>
                           </DropdownMenuItem>
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Calendar /> Meetings
                             </Link>
                           </DropdownMenuItem>
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Shield /> Group Settings
                             </Link>
                           </DropdownMenuItem>
@@ -189,7 +193,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                       </DropdownMenuPortal>
                     </DropdownMenuSub>
                     <DropdownMenuItem asChild>
-                      <Link href="/account/security/privacy-settings">
+                      <Link href="/account">
                         <Shield /> Group Settings
                       </Link>
                     </DropdownMenuItem>
@@ -310,7 +314,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
               className="w-full ps-12 pe-24 py-4 h-auto"
             />
             <div className="absolute end-7 top-1/2 -translate-y-1/2 flex gap-2">
-              <Button size="sm" variant="ghost" mode="icon">
+              <Button size="sm" variant="ghost" mode="icon" aria-label="Attach a file">
                 <Upload className="size-4!" />
               </Button>
               <Button size="sm" variant="mono">

@@ -1,0 +1,5 @@
+{
+  "message": "Rate limit exceeded for this integration key.",
+  "detail": null,
+  "code": "RATE_LIMITED"
+}

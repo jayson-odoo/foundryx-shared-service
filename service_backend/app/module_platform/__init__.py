@@ -26,6 +26,15 @@ from app.module_platform.dependencies import (
     check_requires,
     resolve_install_order,
 )
+from app.module_platform.public_cors import (
+    DuplicatePublicCorsPrefix,
+    OriginResolver,
+    PublicCorsPrefix,
+    match_public_cors_prefix,
+    public_cors_prefixes,
+    register_public_cors_prefix,
+    reset_public_cors_prefixes,
+)
 from app.module_platform.reference_guards import (
     is_referenced,
     reference_counts,
@@ -44,6 +53,13 @@ __all__ = [
     "register_capability",
     "reset_capabilities",
     "resolve_capability",
+    "DuplicatePublicCorsPrefix",
+    "OriginResolver",
+    "PublicCorsPrefix",
+    "match_public_cors_prefix",
+    "public_cors_prefixes",
+    "register_public_cors_prefix",
+    "reset_public_cors_prefixes",
     "DependencyError",
     "check_dependents",
     "check_requires",

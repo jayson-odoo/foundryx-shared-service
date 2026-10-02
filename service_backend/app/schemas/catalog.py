@@ -100,12 +100,17 @@ class ProductPatch(ApiModel):
 class TenantSettingsOut(ApiModel):
     defaultCurrency: str
     priceDecimals: int
+    # Deferred-actions grace windows (sprint-4/23, T5, AC-DLA-42).
+    deferredDestructiveSeconds: int
+    deferredReversibleSeconds: int
     publicLinkBaseUrl: Optional[str] = None
 
 
 class TenantSettingsPatch(ApiModel):
     defaultCurrency: Optional[str] = None
     priceDecimals: Optional[int] = None
+    deferredDestructiveSeconds: Optional[int] = None
+    deferredReversibleSeconds: Optional[int] = None
     # "" or null clears (= feature default origin). Omitted = unchanged.
     publicLinkBaseUrl: Optional[str] = None
 

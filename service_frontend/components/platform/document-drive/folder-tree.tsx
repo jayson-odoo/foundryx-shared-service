@@ -21,6 +21,8 @@ import {
 } from '@/components/ui/context-menu';
 import { documentService } from '@/services/document-service';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { Skeleton } from '@/components/ui/skeleton';
 import type { FolderRow } from '@/types/documents';
 
 /** Folder-level actions surfaced by right-clicking a tree node (sprint-3/04b). */
@@ -62,6 +64,7 @@ export function FolderTree({
         ref={root.setNodeRef}
         onClick={() => onNavigate(null)}
         className={cn(
+          PRESSED_CLASS,
           'flex w-full items-center gap-2 rounded-md px-2 py-1.5 font-medium',
           view === 'drive' && currentFolderId === null
             ? 'bg-primary/10 text-primary'
@@ -85,6 +88,7 @@ export function FolderTree({
           data-tree-shared
           onClick={onOpenShared}
           className={cn(
+            PRESSED_CLASS,
             'flex w-full items-center gap-2 rounded-md px-2 py-1.5 font-medium',
             view === 'shared' ? 'bg-primary/10 text-primary' : 'hover:bg-muted',
           )}
@@ -96,6 +100,7 @@ export function FolderTree({
           data-tree-trash
           onClick={onOpenTrash}
           className={cn(
+            PRESSED_CLASS,
             'flex w-full items-center gap-2 rounded-md px-2 py-1.5',
             view === 'trash' ? 'bg-primary/10 text-primary' : 'hover:bg-muted',
           )}
@@ -135,7 +140,10 @@ function TreeLevel({
 
   if (folders === null) {
     return depth === 0 ? (
-      <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
+      <div className="space-y-1 px-2 py-1">
+        <Skeleton className="h-4 w-3/4" />
+        <Skeleton className="h-4 w-1/2" />
+      </div>
     ) : null;
   }
 
@@ -193,6 +201,7 @@ function TreeNode({
               aria-label={open ? 'Collapse' : 'Expand'}
               onClick={() => setOpen((v) => !v)}
               className={cn(
+                PRESSED_CLASS,
                 'flex size-5 shrink-0 items-center justify-center rounded',
                 !hasChildren && 'invisible',
               )}
@@ -203,7 +212,7 @@ function TreeNode({
               type="button"
               data-tree-folder={folder.name}
               onClick={() => onNavigate(folder.id)}
-              className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left"
+              className={cn(PRESSED_CLASS, 'flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left')}
             >
               {active || open ? (
                 <FolderOpen className="size-4 shrink-0 text-primary" />

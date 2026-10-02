@@ -1,16 +1,35 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { KeyRound, MessageCircle, Settings as SettingsIcon, Users as UsersIcon } from 'lucide-react';
-import { toast } from 'sonner';
+import {
+  CircleSlash,
+  Clock3,
+  FormInput,
+  GitBranch,
+  KeyRound,
+  MessageCircle,
+  Settings as SettingsIcon,
+  Shuffle,
+  Tag,
+  Users as UsersIcon,
+} from 'lucide-react';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { LayoutController } from '@/components/platform/status-engine';
+import type { ListQuery } from '@/types/resource';
 import { workspaceService } from '@/services/workspace-service';
 import type { Workspace } from '@/types/omnichannel';
 import { SettingsTab, ChannelsTab, MembersTab } from './workspace-form-fields';
 import { ApiKeysTab } from './workspace-api-keys-tab';
+import { WorkspaceLifecycleTab } from './workspace-lifecycle-tab';
+import { WorkspaceContactFieldsTab } from './workspace-contact-fields-tab';
+import { WorkspaceTagsTab } from './workspace-tags-tab';
+import { WorkspaceCloseReasonsTab } from './workspace-close-reasons-tab';
+import { WorkspaceBusinessHoursTab, type BusinessHoursController } from './workspace-business-hours-tab';
+import { WorkspaceTeamSettingsTab } from './workspace-team-settings-tab';
 import { useWorkspaceActions } from './use-workspace-actions';
 import { useCan } from '@/hooks/use-can';
 import { workspaceFormHref, workspaceFormPath, workspacesListPath } from './paths';
@@ -40,8 +59,19 @@ export function useWorkspaceForm(
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // Plan 25 - the Lifecycle tab's canvas layout draft plugs into this form's
+  // Save/Cancel exactly like the form engine's Flow tab (BL-064 pattern).
+  const [lifecycleDirty, setLifecycleDirty] = useState(false);
+  const lifecycleLayoutController = useRef<LayoutController | null>(null);
+  // Plan 31 S6 (AC-WFP-63) - the Business hours tab saves through its OWN
+  // endpoint (not the workspace PATCH), so it needs its own controller; its
+  // `save` is awaited (unlike the lifecycle layout's fire-and-forget) so a
+  // 422 keeps the form in edit mode instead of toasting a false success.
+  const [businessHoursDirty, setBusinessHoursDirty] = useState(false);
+  const businessHoursController = useRef<BusinessHoursController | null>(null);
 
   const form = useForm<WorkspaceFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(workspaceFormSchema),
     defaultValues: toFormValues(null),
   });
@@ -71,6 +101,20 @@ export function useWorkspaceForm(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, creating]);
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      workspaceService.getAt(query, index).then((r) => ({
+        recordId: r.workspace?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => workspaceFormHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<Workspace> | null>(() => {
     if (isLoading || notFound) return null;
 
@@ -95,12 +139,22 @@ export function useWorkspaceForm(
         }
         ok = true;
       })();
+      // The Lifecycle tab's layout draft commits with the same Save (BL-064).
+      if (ok) lifecycleLayoutController.current?.save();
+      // Business hours saves through its own endpoint and can 422 (an
+      // overlapping/degenerate window) - awaited so a rejection keeps the
+      // form in edit mode instead of a false "Workspace updated" exit.
+      if (ok && businessHoursController.current) {
+        ok = await businessHoursController.current.save();
+      }
       return ok;
     };
 
     const onCancel = () => {
       if (creating) router.push(workspacesListPath);
       else form.reset(toFormValues(workspace));
+      lifecycleLayoutController.current?.discard();
+      businessHoursController.current?.discard();
     };
 
     const tabs = [
@@ -123,6 +177,86 @@ export function useWorkspaceForm(
         label: 'Members',
         icon: UsersIcon,
         render: () => <MembersTab workspaceId={workspace?.id ?? null} creating={creating} />,
+      },
+      // F6 (plan-25 round-3 codex triage): Lifecycle is a STATUS-ENGINE
+      // surface (its canvas reads via `statuses.read` and edits via
+      // `statuses.manage`, same as every other `EntityFlow` embed) - gated
+      // SEPARATELY from the conversations/contacts-scoped tabs below, never
+      // bundled with `conversations.read`/`contacts.read` (a user holding
+      // ONLY those never held a status-engine permission at all). Edit mode
+      // is gated on `statuses.manage` INDEPENDENTLY of the form's own Edit
+      // toggle (`workspaces.manage`) - the two permissions are unrelated;
+      // toggling the workspace form into edit mode must never itself grant
+      // canvas-edit rights on the status engine.
+      ...(!creating && can('statuses.read')
+        ? [
+            {
+              id: 'lifecycle',
+              label: 'Lifecycle',
+              icon: GitBranch,
+              render: ({ editing }: { editing: boolean }) =>
+                workspace ? (
+                  <WorkspaceLifecycleTab
+                    workspaceId={workspace.id}
+                    workspaceName={workspace.name}
+                    editing={editing && can('statuses.manage')}
+                    onDirtyChange={setLifecycleDirty}
+                    layoutController={lifecycleLayoutController}
+                  />
+                ) : null,
+            },
+          ]
+        : []),
+      // Plan 25 - hidden while creating (AC-CDM-29): these hang off a real
+      // workspace id (per-workspace registries). Gated by permission (F15) -
+      // the backend GETs are `conversations.read` OR `contacts.read`; a user
+      // with neither never sees a tab that would just 403 (foolproof-UI,
+      // UX-only - the API is the real gate).
+      ...(!creating && (can('conversations.read') || can('contacts.read'))
+        ? [
+            {
+              id: 'contact-fields',
+              label: 'Contact fields',
+              icon: FormInput,
+              render: () => <WorkspaceContactFieldsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+            {
+              id: 'tags',
+              label: 'Tags',
+              icon: Tag,
+              render: () => <WorkspaceTagsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+            {
+              id: 'close-reasons',
+              label: 'Close reasons',
+              icon: CircleSlash,
+              render: () => <WorkspaceCloseReasonsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+            {
+              id: 'team-assignment',
+              label: 'Team assignment',
+              icon: Shuffle,
+              render: () => <WorkspaceTeamSettingsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+          ]
+        : []),
+      // Plan 31 S6 (AC-WFP-63) - gated the same as the page itself
+      // (`workspaces.read`, already required to reach this form); edits
+      // additionally need `workspaces.manage`, independent of the form's
+      // global Edit toggle (same pattern as the Lifecycle tab above).
+      {
+        id: 'business-hours',
+        label: 'Business hours',
+        icon: Clock3,
+        render: ({ editing }: { editing: boolean }) => (
+          <WorkspaceBusinessHoursTab
+            workspaceId={workspace?.id ?? null}
+            creating={creating}
+            editing={editing && can('workspaces.manage')}
+            onDirtyChange={setBusinessHoursDirty}
+            controller={businessHoursController}
+          />
+        ),
       },
       ...(can('api_keys.read')
         ? [
@@ -154,21 +288,29 @@ export function useWorkspaceForm(
       editable: !creating,
       editPermission: 'workspaces.manage',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: form.formState.isDirty || lifecycleDirty || businessHoursDirty,
       onSave,
       onCancel,
       recordNav: creating
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              workspaceService.getAt(query, index).then((r) => ({
-                recordId: r.workspace?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => workspaceFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
-  }, [isLoading, notFound, creating, workspace, actions, form, initialEditing, workspaceId, router, can]);
+  }, [
+    isLoading,
+    notFound,
+    creating,
+    workspace,
+    actions,
+    form,
+    initialEditing,
+    workspaceId,
+    router,
+    can,
+    lifecycleDirty,
+    businessHoursDirty,
+    fetchRecordAt,
+    buildRecordHref,
+  ]);
 
   return { config, form, isLoading, notFound };
 }

@@ -8,136 +8,24 @@ yet) the adapter returns stub credentials so the flow runs end-to-end without a
 real Meta app. Tests inject a fake ``client`` to assert behaviour deterministically.
 """
 import logging
-import time
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
 from app.config import settings
 from .base import CodeExchangeError, ConnectionStatus, SendError
+# Shared Meta Graph plumbing (plan 32 / A7a, D-A7-1/D-A7-9): GraphCall/
+# GraphRecorder/_meta_error_detail/MetaGraphMixin moved OUT to meta_graph.py
+# verbatim; re-imported here so every existing import site of these names off
+# ``whatsapp_cloud`` (``services/activity.py`` imports GraphCall/GraphRecorder
+# directly from this module) keeps working with zero churn (AC-CHN-15).
+from .meta_graph import GraphCall, GraphRecorder, MetaGraphMixin, _meta_error_detail  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class GraphCall:
-    """Telemetry for ONE outbound Meta/Graph call - what the adapter reports to
-    an (optional) recorder so the Developers → Logs console gets an
-    ``outbound_meta`` row (sprint-4/12 Slice 2, AC-DLC-14). The adapter stays
-    free of any DB knowledge: it only describes the call; the recorder (owned by
-    the service layer) persists it, attributing tenant + reading the inbound
-    trace id off the contextvar."""
-
-    operation: str  # graph:send | graph:template_submit | graph:sync
-    status: str  # "success" | "error"
-    status_code: Optional[int]
-    latency_ms: int
-    error_code: Optional[str]
-    error_message: Optional[str]
-    external_ref: Optional[str]  # wamid on a successful send
-
-
-# A recorder is a failure-isolated sink; it must never raise back into the send.
-GraphRecorder = Callable[[GraphCall], None]
-
-
-def _meta_error_detail(resp: "httpx.Response") -> str:
-    """Assemble the most specific message Meta gives. ``error.message`` alone is
-    often the generic title ("Invalid parameter"); the real reason lives in
-    ``error_user_title``/``error_user_msg`` and ``error_data.details``. Surface
-    all of them so the operator sees WHY a template was rejected."""
-    try:
-        err = (resp.json() or {}).get("error", {}) or {}
-    except ValueError:
-        return f"Meta returned {resp.status_code}."
-    parts = []
-    for key in ("error_user_title", "error_user_msg"):
-        val = (err.get(key) or "").strip()
-        if val and val not in parts:
-            parts.append(val)
-    details = ((err.get("error_data") or {}).get("details") or "").strip()
-    if details and details not in parts:
-        parts.append(details)
-    if not parts:
-        msg = (err.get("message") or "").strip()
-        parts.append(msg or f"Meta returned {resp.status_code}.")
-    return " - ".join(parts)
-
-
-class WhatsAppCloudAdapter:
+class WhatsAppCloudAdapter(MetaGraphMixin):
     channel_type = "WHATSAPP"
-
-    def __init__(
-        self,
-        client: Optional[httpx.Client] = None,
-        recorder: Optional[GraphRecorder] = None,
-    ):
-        self._client = client
-        self._recorder = recorder
-        # Last Meta HTTP status seen inside a wrapped call (one logical exchange
-        # per ``_graph_call``) so the recorder can stamp the real status code on
-        # BOTH success and error rows. Reset per call.
-        self._last_http_status: Optional[int] = None
-        self._base = f"https://graph.facebook.com/{settings.meta_graph_version}"
-
-    def _graph_call(
-        self,
-        operation: str,
-        fn: Callable[[], Any],
-        *,
-        extract_ref: Optional[Callable[[Any], Optional[str]]] = None,
-    ) -> Any:
-        """Time + record ONE Graph call (AC-DLC-14). With no recorder this is a
-        transparent pass-through (existing behaviour, tests unaffected). The
-        record is fully failure-isolated - a logging failure can NEVER break the
-        send."""
-        if self._recorder is None:
-            return fn()
-        self._last_http_status = None
-        started = time.monotonic()
-        status = "success"
-        error_code: Optional[str] = None
-        error_message: Optional[str] = None
-        external_ref: Optional[str] = None
-        try:
-            result = fn()
-            if extract_ref is not None:
-                external_ref = extract_ref(result)
-            return result
-        except SendError as exc:
-            status = "error"
-            error_code = "SendError"
-            error_message = str(exc)
-            raise
-        except Exception as exc:  # noqa: BLE001 - report + re-raise unchanged.
-            status = "error"
-            error_code = type(exc).__name__
-            error_message = str(exc)
-            raise
-        finally:
-            latency_ms = int((time.monotonic() - started) * 1000)
-            try:
-                self._recorder(
-                    GraphCall(
-                        operation=operation,
-                        status=status,
-                        status_code=self._last_http_status,
-                        latency_ms=latency_ms,
-                        error_code=error_code,
-                        error_message=error_message,
-                        external_ref=external_ref,
-                    )
-                )
-            except Exception:  # noqa: BLE001 - recording must never break the send.
-                logger.exception("outbound-meta activity record failed (%s)", operation)
-
-    @property
-    def _configured(self) -> bool:
-        return bool(settings.meta_app_id and settings.meta_app_secret)
-
-    def _http(self) -> httpx.Client:
-        return self._client or httpx.Client(timeout=10.0)
 
     def exchange_code(self, code: str, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
         if not self._configured:
@@ -339,11 +227,20 @@ class WhatsAppCloudAdapter:
         contacts: Optional[list] = None,
         reaction: Optional[Dict[str, Any]] = None,
         context_message_id: Optional[str] = None,
+        structured: Optional[Dict[str, Any]] = None,  # noqa: ARG002 - plan 32/A7a, unused (byte-identical WhatsApp path)
+        messaging_type: Optional[str] = None,  # noqa: ARG002 - plan 32/A7a, unused (WhatsApp re-engages by template, not a Meta send param)
+        tag: Optional[str] = None,  # noqa: ARG002 - plan 32/A7a, unused (no message tags on this product)
     ) -> Dict[str, Any]:
         """Send a text/template/media/interactive/location/contacts message.
         Returns {"external_message_id": wamid}. Instrumented once via
         ``_graph_call`` so every send yields an ``outbound_meta`` activity row
-        (AC-DLC-14) carrying the inbound trace id + the resulting wamid."""
+        (AC-DLC-14) carrying the inbound trace id + the resulting wamid.
+
+        ``structured``/``messaging_type``/``tag`` (plan 32 / A7a) are accepted
+        for the uniform `ChannelAdapter.send` signature and deliberately
+        IGNORED here - passing them through to ``_send_impl`` unchanged (never
+        touched below) keeps this adapter's observable behaviour byte-
+        identical (AC-CHN-23)."""
         return self._graph_call(
             "graph:send",
             lambda: self._send_impl(
@@ -905,9 +802,12 @@ def get_adapter(
     client: Optional[httpx.Client] = None,
     recorder: Optional[GraphRecorder] = None,
 ):
-    """Resolve a channel adapter by type (WhatsApp only for MVP). An optional
-    ``recorder`` (owned by the service layer) turns on outbound-Meta activity
-    logging - see ``build_meta_recorder`` (sprint-4/12 Slice 2)."""
-    if channel_type == "WHATSAPP":
-        return WhatsAppCloudAdapter(client=client, recorder=recorder)
-    raise ValueError(f"Unsupported channel type: {channel_type}")
+    """Thin re-export (plan 32 / A7a, D-A7-9) - the real registry lives in
+    ``adapters/__init__.py`` (``WHATSAPP``/``FACEBOOK``/``INSTAGRAM``). Kept
+    here so the eight existing ``from ..adapters.whatsapp_cloud import
+    get_adapter`` call sites need zero churn (import sweep = BL-SS-115).
+    Imported lazily - ``adapters/__init__.py`` imports THIS module at its own
+    top level, so a module-level import here would be circular."""
+    from . import get_adapter as _get_adapter
+
+    return _get_adapter(channel_type, client=client, recorder=recorder)

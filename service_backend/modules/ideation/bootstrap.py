@@ -24,6 +24,9 @@ from .db import IDEATION_SCHEMA, IdeationBase
 MODULE_NAME = "ideation"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
 
+PROMOTE_PERMISSION = "ideation.business_requirements.promote"
+SEND_TO_BUILD_PERMISSION = "ideation.business_requirements.send_to_build"
+
 
 def register_capabilities() -> None:
     """Boot-time capability registration (plan sprint-3/10 D5). Idempotent.
@@ -48,10 +51,14 @@ def register_engine_entities() -> None:
     status ROWS + transition graph are seeded as platform defaults in ``install``
     (they need a db session); this only registers the code-side entity.
 
-    Still placeholders for later slices: the ``ideation`` IntakeDefinition and the
-    idea-attachment storage-locations declaration."""
+    The idea-attachment upload key (``idea_attachments.storage_key``) is declared
+    in ``manifest.json`` ``storage_locations`` and registered below, so it rides
+    the generic storage A->B migration (plan sprint-5/15)."""
     from app.catalog.kinds import ProductKind, register_product_kind
     from app.status_engine.registry import StatusEntity, register_status_entity
+
+    from app.module_loader import discover_manifests
+    from app.storage_migration.core_locations import register_module_declared_locations
 
     from .adapters import registered_adapter_kinds
     from .services.statuses import (
@@ -62,6 +69,11 @@ def register_engine_entities() -> None:
         idea_count_records,
         idea_migrate_records,
     )
+
+    for manifest in discover_manifests():
+        if manifest["module_name"] == MODULE_NAME:
+            register_module_declared_locations(manifest)
+            break
 
     # Software is the ideation-owned kind - visible only while ideation is active.
     register_product_kind(ProductKind("software", "Software", MODULE_NAME, 3))
@@ -91,6 +103,10 @@ def register_engine_entities() -> None:
             migrate_records=br_migrate_records,
             record_label_attr="title",
             required_flags=["is_initial", "is_archived"],
+            # Platform-owned: the promote gate and the Send-to-build edges are
+            # edge-id contracts that only hold on the platform tier, so tenants
+            # never fork the BR status set (operators edit it).
+            platform_owned=True,
         )
     )
     # Conversational-Intake engine (D18, AC-A-13): register the single ``ideation``
@@ -106,13 +122,59 @@ def register_engine_entities() -> None:
 
     register_idea_to_br_grill()
 
+    # Deferred (grace-window) actions (sprint-4/23, T5 fix round 1, item 15):
+    # ideation's own confirm:-gated destructive actions register into the
+    # CORE grace-window engine here, the same way any other module extends a
+    # shared engine (status/rule/workflow) - never a fork.
+    from .deferred_actions import register_ideation_deferred_actions
+
+    register_ideation_deferred_actions()
+
+    # Requester status-update event feed (issue #94, plan section 7.1, S4):
+    # ONE subscriber on the CORE CRUD event bus catches every idea
+    # status_changed transition from all 7 call sites (and any future one)
+    # with no per-call-site code. Idempotent (`register_event_subscriber`
+    # dedupes by function identity).
+    from app.workflow_engine.entity_events import register_event_subscriber
+
+    from .services.status_events import bus_subscriber
+
+    register_event_subscriber(bus_subscriber)
+
+    # BR Send to build: the GitHub crew-intake provider joins the core
+    # connections registry (type ``scm``). Idempotent.
+    from app.integrations import register_provider
+
+    from .github_provider import GitHubProvider
+
+    register_provider(GitHubProvider())
+
 
 def create_schema_and_tables(engine: Engine) -> None:
-    """Create the module schema (Postgres) + all module tables. Idempotent."""
+    """Create the module schema (Postgres) + the ``pg_trgm`` extension + all
+    module tables. Idempotent.
+
+    Order matters on a FRESH Postgres database (review round 2, N2): this
+    runs on EVERY boot before the per-module Alembic step
+    (``run_module_migrations``), which then just STAMPS head with no DDL once
+    the module's tables already exist (the legacy-create_all-adopt path in
+    ``app/module_platform/migrations.py``) - so migration 0002's own
+    ``CREATE EXTENSION pg_trgm`` never fires on a brand-new install and every
+    dedup ``similarity()`` query 500s (the function does not exist). The
+    extension is created right after the schema, BEFORE ``create_all`` (same
+    spirit as the ``ideas_idea_number_seq`` fix in ``models.py``); the
+    trigram INDEX itself needs the ``ideas`` table to exist first, so it is
+    added via ``ensure_pg_trgm_index`` right after ``create_all``, same call."""
     if engine.dialect.name == "postgresql":
         with engine.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{IDEATION_SCHEMA}"'))
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
     IdeationBase.metadata.create_all(bind=engine)
+    if engine.dialect.name == "postgresql":
+        from .services.dedup import ensure_pg_trgm_index
+
+        with engine.begin() as conn:
+            ensure_pg_trgm_index(conn)
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -122,7 +184,14 @@ def install(engine: Engine, db: Session) -> None:
     ``install_tenant`` when a tenant actually installs the module.
     """
     create_schema_and_tables(engine)
-    PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    created_permissions = PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    # Existing tenants: every role holding `.promote` gets `.send_to_build` -
+    # ONE-SHOT, only when the permission row is created by this very sync (install
+    # runs at every boot; a later deliberate removal must be respected).
+    if SEND_TO_BUILD_PERMISSION in created_permissions:
+        sweep_send_to_build_grants(db)
+        # Commit right away: a later seed failure must not lose the one-shot grant.
+        db.commit()
     # Idea status set + transition graph as platform defaults (AC-A-10, D-A3).
     # Two-tier: every tenant uses these until it forks the set. Idempotent.
     from .services.br_templates import seed_br_template
@@ -138,6 +207,50 @@ def install(engine: Engine, db: Session) -> None:
     from .services.grill_seed import seed_grill_skill
 
     seed_grill_skill(db)
+
+
+def sweep_send_to_build_grants(db: Session) -> None:
+    """Grant ``send_to_build`` to every role (every tenant) that already holds
+    ``promote``. Idempotent: one ``role_permissions`` row per role, stamped with
+    the role's OWN tenant_id. No commit - the caller owns the transaction."""
+    from sqlalchemy import select
+
+    from app.models import Role
+    from app.models.permission import Permission, role_permissions
+
+    ids = {
+        key: pid
+        for key, pid in db.execute(
+            select(Permission.key, Permission.id).where(
+                Permission.key.in_([PROMOTE_PERMISSION, SEND_TO_BUILD_PERMISSION])
+            )
+        )
+    }
+    promote_id = ids.get(PROMOTE_PERMISSION)
+    send_id = ids.get(SEND_TO_BUILD_PERMISSION)
+    if promote_id is None or send_id is None:
+        return
+    holders = db.execute(
+        select(Role.id, Role.tenant_id)
+        .join(role_permissions, role_permissions.c.role_id == Role.id)
+        .where(role_permissions.c.permission_id == promote_id)
+    ).all()
+    already = {
+        r[0]
+        for r in db.execute(
+            select(role_permissions.c.role_id).where(
+                role_permissions.c.permission_id == send_id
+            )
+        )
+    }
+    rows = [
+        {"role_id": role_id, "permission_id": send_id, "tenant_id": tenant_id}
+        for role_id, tenant_id in holders
+        if role_id not in already
+    ]
+    if rows:
+        db.execute(role_permissions.insert(), rows)
+    db.flush()
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:

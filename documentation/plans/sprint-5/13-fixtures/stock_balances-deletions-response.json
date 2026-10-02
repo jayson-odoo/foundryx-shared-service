@@ -1,0 +1,35 @@
+{
+  "dry_run": false,
+  "summary": {
+    "total": 5,
+    "deleted": 2,
+    "deactivated": 0,
+    "not_found": 3,
+    "failed": 0
+  },
+  "records": [
+    {
+      "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+      "outcome": "deleted"
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-SRT1024|CON",
+      "outcome": "not_found",
+      "warnings": [
+        "warehouse_inactive"
+      ]
+    },
+    {
+      "source_ref": "AED_SORENTO:SRT-NOTSYNCED-9001|MWH",
+      "outcome": "not_found"
+    },
+    {
+      "source_ref": "AED_SORENTO:GHOST-ITEM|MWH",
+      "outcome": "not_found"
+    },
+    {
+      "source_ref": "AED_SORENTO:B2154-NL|MAINTANC",
+      "outcome": "deleted"
+    }
+  ]
+}

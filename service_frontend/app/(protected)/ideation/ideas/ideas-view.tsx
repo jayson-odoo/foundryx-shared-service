@@ -2,14 +2,17 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { useIdeas } from '@/hooks/use-ideas';
+import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import type { IdeaCreateInput } from '@/services/ideation-service';
-import { IDEA_NEXT_STATUS, type Idea } from '@/types/ideation';
+import type { Idea } from '@/types/ideation';
 import { useIdeasListConfig } from './use-ideas-list-config';
-import { IdeaClusterSuggestions } from './cluster-suggestions';
 import { IdeaCaptureDialog } from './idea-capture-dialog';
+import { MergeIdeasDialog } from './merge-ideas-dialog';
 import { promoteIdeasToBr } from './promote-to-br';
 
 /**
@@ -17,14 +20,29 @@ import { promoteIdeasToBr } from './promote-to-br';
  * operator page and the chrome-less host iframe (WS-C1 / AC-CAP-9/10). The
  * backend + URLs it talks to come from `useIdeationRuntime()` (operator default
  * or embed), so the component code is mode-agnostic: shared ResourceList with
- * opt-in row drag-reorder (row order = priority), per-user vote toggle, and the
+ * net-vote ordering, per-user vote toggle, and the
  * capture dialog for create.
  */
 export function IdeasView() {
   const router = useRouter();
-  const { ideas, products, loading, error, create, vote, setStatus, reorderPriority, remove } =
-    useIdeas();
+  const runtime = useIdeationRuntime();
+  const { mode } = runtime;
+  const {
+    ideas,
+    products,
+    loading,
+    error,
+    includeTest,
+    setIncludeTest,
+    create,
+    vote,
+    setStatus,
+    remove,
+    merge,
+    unmerge,
+  } = useIdeas();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [mergeRows, setMergeRows] = useState<Idea[] | null>(null);
 
   // Remount the ResourceList whenever the ideas change (mutation) so its
   // client-side fetcher re-pages over fresh data (quick-replies pattern).
@@ -48,26 +66,20 @@ export function IdeasView() {
         }
       },
       onAdvance: async (idea: Idea) => {
-        const next = IDEA_NEXT_STATUS[idea.status];
-        if (!next) return;
+        const target = idea.transitions?.find((t) => t.id === idea.advanceTransitionId);
+        if (!target) return;
         try {
-          await setStatus(idea.id, next);
-          toast.success(`Moved to ${next}.`);
+          await setStatus(idea.id, target.toStatusId);
+          toast.success(`Moved to ${target.toStatusLabel}.`);
         } catch (e) {
           toast.error(e instanceof Error ? e.message : 'Could not advance the idea.');
         }
       },
-      onArchive: async (idea: Idea) => {
-        try {
-          await setStatus(idea.id, 'archived');
-          toast.success('Idea archived.');
-        } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not archive the idea.');
-        }
-      },
       onRestore: async (idea: Idea) => {
+        const target = idea.transitions?.[0];
+        if (!target) return;
         try {
-          await setStatus(idea.id, 'captured');
+          await setStatus(idea.id, target.toStatusId);
           toast.success('Idea restored.');
         } catch (e) {
           toast.error(e instanceof Error ? e.message : 'Could not restore the idea.');
@@ -81,19 +93,22 @@ export function IdeasView() {
           toast.error(e instanceof Error ? e.message : 'Could not delete the idea.');
         }
       },
-      onReorder: async (orderedIds: string[]) => {
+      onPromote: (selected: Idea[]) => promoteIdeasToBr(selected, router, { runtime }),
+      onMerge: (selected: Idea[]) => setMergeRows(selected),
+      onUnmerge: async (id: string) => {
+        if (!unmerge) return;
         try {
-          await reorderPriority(orderedIds);
+          await unmerge(id);
+          toast.success('Idea unmerged.');
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not reorder.');
+          toast.error(e instanceof Error ? e.message : 'Could not unmerge the idea.');
         }
       },
-      onPromote: (selected: Idea[]) => promoteIdeasToBr(selected, router),
     }),
-    [vote, setStatus, remove, reorderPriority, router],
+    [vote, setStatus, remove, unmerge, router, runtime],
   );
 
-  const config = useIdeasListConfig(ideas, handlers);
+  const config = useIdeasListConfig(ideas, handlers, { includeTest });
 
   const handleCreate = async (input: IdeaCreateInput) => {
     await create(input);
@@ -109,15 +124,39 @@ export function IdeasView() {
 
   return (
     <Fragment>
-      <IdeaClusterSuggestions
-        onPromote={(cluster, meta) => promoteIdeasToBr(cluster, router, meta)}
-      />
-      <ResourceList key={version} config={config} />
+      {mode === 'operator' && (
+        <div className="mb-3 flex items-center justify-end gap-1.5">
+          <Switch
+            id="ideas-include-test"
+            checked={includeTest}
+            onCheckedChange={setIncludeTest}
+            data-testid="ideas-include-test"
+          />
+          <Label htmlFor="ideas-include-test" className="cursor-pointer text-sm">
+            Show test ideas
+          </Label>
+        </div>
+      )}
+      <ResourceList key={version} config={config} hideHeader restoreFromCtx />
       {dialogOpen && (
         <IdeaCaptureDialog
           products={products}
           onClose={() => setDialogOpen(false)}
           onCreate={handleCreate}
+        />
+      )}
+      {mergeRows && (
+        <MergeIdeasDialog
+          ideas={mergeRows}
+          onClose={() => setMergeRows(null)}
+          onMerge={async (survivorId) => {
+            if (!merge) return;
+            const survivor = await merge(
+              survivorId,
+              mergeRows.map((r) => r.id),
+            );
+            toast.success(`Merged into ${survivor.ideaNumber ?? survivor.title ?? survivor.problem}.`);
+          }}
         />
       )}
     </Fragment>

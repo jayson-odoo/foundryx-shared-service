@@ -1,0 +1,50 @@
+{
+  "TotalCount": 11826,
+  "Page": 1,
+  "PageSize": 2,
+  "TotalPages": 5913,
+  "Data": [
+    {
+      "ItemCode": "**NEW",
+      "Description": "**NEW STOCK",
+      "Desc2": "",
+      "ItemGroup": "MISC",
+      "ItemType": "MISC",
+      "ItemBrand": "OTHERS",
+      "ItemCategory": "",
+      "ItemClass": "",
+      "BaseUOM": "UNIT",
+      "SalesUOM": "UNIT",
+      "PurchaseUOM": "UNIT",
+      "CreatedUserID": "DATUN",
+      "CreatedTimeStamp": "2023-09-28T17:37:06.783",
+      "LastModifiedUserID": "ACCEXE",
+      "LastModified": "2026-07-21T14:21:21.86",
+      "StockControl": "F",
+      "IsActive": "T",
+      "BackOrderControl": "T",
+      "Discontinued": "F"
+    },
+    {
+      "ItemCode": "**REPAIR",
+      "Description": "**REPAIR",
+      "Desc2": "",
+      "ItemGroup": "MISC",
+      "ItemType": "MISC",
+      "ItemBrand": "OTHERS",
+      "ItemCategory": "",
+      "ItemClass": "",
+      "BaseUOM": "UNIT",
+      "SalesUOM": "UNIT",
+      "PurchaseUOM": "UNIT",
+      "CreatedUserID": "DATUN",
+      "CreatedTimeStamp": "2023-09-28T17:33:11.063",
+      "LastModifiedUserID": "ACCEXE",
+      "LastModified": "2026-07-03T16:43:34.867",
+      "StockControl": "F",
+      "IsActive": "T",
+      "BackOrderControl": "T",
+      "Discontinued": "F"
+    }
+  ]
+}

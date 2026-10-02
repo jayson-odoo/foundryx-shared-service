@@ -4,13 +4,17 @@
  * Form-builder palette (plan sprint-3/01 D7) - collapsed-by-default category
  * sections with counts + a search box (house node-palette pattern). Each entry
  * is BOTH click-to-add (appends to the selected/last section - the E2E path,
- * dnd-kit drags aren't Playwright-drivable) AND dnd-kit draggable onto a
- * section/gap in the canvas. No instructional copy (foolproof-UI mandate).
+ * dnd-kit drags aren't drivable via scripted browser automation) AND dnd-kit
+ * draggable onto a section/gap in the canvas. Not asserted in jsdom; the
+ * drag-onto-canvas behaviour needs a recorded agent-browser check in any
+ * slice that touches it. No instructional copy (foolproof-UI mandate).
  */
 import { useMemo, useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import type { FormFieldType } from '@/types/forms';
 import { FIELD_ICONS, PALETTE_CATEGORIES, fieldMeta } from './field-catalog';
 
@@ -36,11 +40,12 @@ function PaletteItem({
       type="button"
       data-testid={`palette-${type}`}
       onClick={() => !disabled && onAdd(type)}
-      className={`flex w-full items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5 text-left text-xs text-foreground transition-colors ${
-        disabled
-          ? 'cursor-not-allowed opacity-50'
-          : 'cursor-grab hover:border-primary hover:text-primary'
-      } ${isDragging ? 'opacity-40' : ''}`}
+      className={cn(
+        PRESSED_CLASS,
+        'flex w-full items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5 text-left text-xs text-foreground transition-colors',
+        disabled ? 'cursor-not-allowed opacity-50' : 'cursor-grab hover:border-primary hover:text-primary',
+        isDragging && 'opacity-40',
+      )}
       {...listeners}
       {...attributes}
     >
@@ -100,7 +105,7 @@ export function Palette({ disabled, onAdd }: PaletteProps) {
                 type="button"
                 data-testid={`palette-category-${category.id}`}
                 onClick={() => toggle(category.id)}
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                className={cn(PRESSED_CLASS, 'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground')}
               >
                 {open ? (
                   <ChevronDown className="size-3.5" />
@@ -108,7 +113,7 @@ export function Palette({ disabled, onAdd }: PaletteProps) {
                   <ChevronRight className="size-3.5" />
                 )}
                 <span className="flex-1 text-start">{category.label}</span>
-                <span className="text-[10px] font-normal">{category.types.length}</span>
+                <span className="text-2xs font-normal">{category.types.length}</span>
               </button>
               {open && (
                 <div className="flex flex-col gap-1 px-1 pb-1.5 pt-0.5">

@@ -6,6 +6,7 @@ are driven by AppStoreService when a tenant installs/updates/uninstalls.
 Permission GRANTS are not this module's concern - the store grants/revokes
 against the tenant's roles (plan 08 §5).
 """
+import logging
 from pathlib import Path
 
 from sqlalchemy import text
@@ -17,6 +18,8 @@ from app.services.permission_service import load_csv
 from .db import OMNI_SCHEMA, OmniBase
 from .models import Workspace
 from .services import statuses
+
+logger = logging.getLogger(__name__)
 
 MODULE_NAME = "omnichannel"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
@@ -48,6 +51,27 @@ def register_capabilities() -> None:
     )
 
 
+def register_public_cors() -> None:
+    """Boot-time public-CORS registration (plan 34 review round 1, S9).
+    Idempotent. The public web chat visitor API's allowed origins are
+    per-CHANNEL tenant data, so core's `CORSMiddleware` (which knows only the
+    `CORS_ORIGINS` env) cannot answer a customer website's preflight for it -
+    the module hands over its own prefix and resolver instead of core
+    hardcoding either. Both live in the service layer; this is the wiring."""
+    from app.module_platform import register_public_cors_prefix
+
+    from .services.webchat_visitor_service import (
+        WEBCHAT_PUBLIC_PREFIX,
+        preflight_origin_allowed,
+    )
+
+    register_public_cors_prefix(
+        WEBCHAT_PUBLIC_PREFIX,
+        provider_module=MODULE_NAME,
+        resolver=preflight_origin_allowed,
+    )
+
+
 def register_engine_entities() -> None:
     """Boot-time engine registration (plan 11 D9). Idempotent - called by
     ``register_module_boot`` whenever the module is loaded.
@@ -69,11 +93,104 @@ def register_engine_entities() -> None:
             register_module_declared_locations(manifest)
             break
 
+    # Plan 33 S5 (D-A6-25) - the respond.io migration's uploaded-CSV keys
+    # (`contactsCsvKey`/`snippetsCsvKey`) and the failure-export key
+    # (`failures.fileKey`) live inside CORE `background_jobs.payload_json` /
+    # `.result_json`, not a column of this module's own models, so they
+    # cannot ride `manifest.json`'s `"storage_locations"` block (that path
+    # only imports from `modules.omnichannel.models`). Registered directly
+    # here instead - the generic JSON walker finds any `conn:`-prefixed
+    # string in either column regardless of `background_jobs.type`, so this
+    # is harmless (and free coverage) for every OTHER job type too.
+    from app.models.background_job import BackgroundJob
+    from app.storage_migration.registry import StorageKeyLoc, register_storage_key_location
+
+    register_storage_key_location(
+        StorageKeyLoc(model=BackgroundJob, json_column="payload_json", tenant_column="tenant_id", module=MODULE_NAME)
+    )
+    register_storage_key_location(
+        StorageKeyLoc(model=BackgroundJob, json_column="result_json", tenant_column="tenant_id", module=MODULE_NAME)
+    )
+
     # Workflow-engine trigger + actions (plan sprint-4/17) - registers into the
     # core registry's dict-backed catalog; idempotent like the rest of this hook.
     from .workflow_nodes import register_omnichannel_workflow_nodes
 
     register_omnichannel_workflow_nodes()
+
+    # Contact lifecycle - the scoped status entity (plan 25 S2). Idempotent
+    # (re-registers on every bootstrap, same as the workflow nodes above).
+    from .services import lifecycle_service
+
+    lifecycle_service.register_lifecycle_entity()
+
+    # Deferred (grace-window) actions (sprint-4/23, T5 fix round 1, item 15):
+    # omnichannel's own confirm:-gated destructive actions register into the
+    # CORE grace-window engine here, the same way any other module extends a
+    # shared engine (status/rule/workflow) - never a fork.
+    from .deferred_actions import register_omnichannel_deferred_actions
+
+    register_omnichannel_deferred_actions()
+
+    # Contacts CSV importer (plan 26 S3, AC-CTM-34) - registered here like
+    # every other engine adoption in this hook, idempotent.
+    from .importers import register_contacts_importer
+
+    register_contacts_importer()
+
+    # Contacts export job handler (plan 26 S3, AC-CTM-39) - the API process
+    # creates + (eager dev/test) runs jobs inline; a real Celery worker needs
+    # this import too (mirrors the autocount-sync handler's own note) - see
+    # `app/jobs/worker.py`'s task, which only dispatches by registered type so
+    # ANY process that never imports this module leaves the job type unknown.
+    from .services.contact_export_service import register_contacts_export_handler
+
+    register_contacts_export_handler()
+
+    # Reference guard for core team delete (plan 28 S2, AC-TEM-16, D-A8-15) -
+    # the FIRST production consumer of `app/module_platform/reference_guards.
+    # py`. Core asks "is this team referenced?" before DELETE /teams/{id};
+    # this module answers with a tenant-scoped count of contacts holding that
+    # `assigned_team_id`, never touching core - it registers a CALLBACK core
+    # invokes, no cross-module import in the other direction.
+    from .services.team_directory import count_conversations_for_team
+
+    from app.module_platform import register_reference_guard
+
+    register_reference_guard("team", "conversations", count_conversations_for_team)
+
+    # Broadcast send job handler (plan 29 S2a, AC-BRD-50) - same reasoning as
+    # the contacts-export handler above: ANY process that never imports this
+    # module leaves `omnichannel.broadcast_send` an unknown job type.
+    from .services.broadcast_send_service import register_broadcast_send_handler
+
+    register_broadcast_send_handler()
+
+    # Report CSV export job handler (plan 30 S3, AC-RPT-33) - same reasoning
+    # as the contacts export handler above: any process (API or a real
+    # Celery worker) that dispatches this job type must have imported it.
+    from .services.report_export_service import register_report_export_handler
+
+    register_report_export_handler()
+
+    # respond.io migration connection provider (plan 33 S1, D-A6-2, AC-MIG-11)
+    # - registers into the CORE `app.integrations` registry (the same
+    # `register_provider` seam `modules/autocount/bootstrap.py` uses), so
+    # `GET /integrations/providers` and `POST /integrations/connections` see
+    # `provider="respondio"` the moment this module is loaded, on every
+    # process (idempotent, keyed dict - re-registering replaces in place).
+    from app.integrations import register_provider
+
+    from .respondio_provider import RespondIoProvider
+
+    register_provider(RespondIoProvider())
+
+    # respond.io migration job handler (plan 33 S2, AC-MIG-19) - same
+    # reasoning as the contacts-export handler above: ANY process (API or a
+    # real Celery worker) that dispatches this job type must have imported it.
+    from .services.migration_service import register_migration_job_handler
+
+    register_migration_job_handler()
 
 
 def create_schema_and_tables(engine: Engine) -> None:
@@ -167,6 +284,178 @@ def create_schema_and_tables(engine: Engine) -> None:
                         f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
                     )
                 )
+            # Contact data model (plan 25 S1) - idempotent add for existing
+            # deployments (per-module Alembic migration 0008 is the real fix
+            # for a Postgres-tracked deploy; this covers the create_all path).
+            _contact_cols = [
+                ("language", "VARCHAR"),
+                ("country_code", "VARCHAR"),
+                ("lifecycle_status_id", "VARCHAR"),
+                # Plan 27 A3 (D-A3-12) - the ONE outbound seam's denormalized
+                # column; `create_all` never ALTERs an existing table.
+                ("last_agent_message_at", "TIMESTAMPTZ"),
+            ]
+            for col, coltype in _contact_cols:
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                        f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                    )
+                )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_lifecycle_status_id "
+                    f'ON "{OMNI_SCHEMA}".contacts (lifecycle_status_id)'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_last_agent_message_at "
+                    f'ON "{OMNI_SCHEMA}".contacts (last_agent_message_at)'
+                )
+            )
+            # Round-robin assign cursor (plan sprint-4/31 S2, D-A5-15) -
+            # idempotent add for existing deployments (module Alembic 0014 is
+            # the real fix for a Postgres-tracked deploy; this covers the
+            # `create_all` path).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".workspaces '
+                    "ADD COLUMN IF NOT EXISTS round_robin_cursor VARCHAR"
+                )
+            )
+            # contact_fields.key / contact_tags.name → per-workspace UNIQUE
+            # (case-insensitive), plan 25 review round 1 finding 9 - the
+            # DB backstop for `_find_by_key`/`_find_by_name`'s race (two
+            # concurrent creates, e.g. via `resolve_or_create_by_name` on the
+            # public gateway, can both pass the SELECT before either INSERTs).
+            # Best-effort auto-heal any pre-existing duplicate FIRST (unlike
+            # phone_number_id, key/name is NOT NULL + user-visible, so losers
+            # are renamed with a short id-derived suffix, never nulled).
+            # Review round 2, finding E: renaming a losing field/tag key
+            # ORPHANS any contact values already stored under the old key
+            # (`custom_fields_json`/tag links aren't rewritten - a rewrite is
+            # out of scope, see the migration's note) - log every rename so an
+            # operator can find + reconcile them (tenant, workspace, old→new).
+            for row in conn.execute(
+                text(
+                    f"""
+                    SELECT id, tenant_id, workspace_id, key,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY workspace_id, lower(key)
+                               ORDER BY created_at, id
+                           ) AS rn
+                    FROM "{OMNI_SCHEMA}".contact_fields
+                    """
+                )
+            ).fetchall():
+                if row.rn > 1:
+                    new_key = f"{row.key[:30]}_{row.id[:8]}"
+                    logger.warning(
+                        "omnichannel contact_fields: renamed duplicate key "
+                        "%r -> %r (tenant=%s workspace=%s) - existing "
+                        "customFields values under the old key are NOT "
+                        "rewritten, reconcile manually",
+                        row.key, new_key, row.tenant_id, row.workspace_id,
+                    )
+            conn.execute(
+                text(
+                    f"""
+                    WITH ranked AS (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY workspace_id, lower(key)
+                                   ORDER BY created_at, id
+                               ) AS rn
+                        FROM "{OMNI_SCHEMA}".contact_fields
+                    )
+                    UPDATE "{OMNI_SCHEMA}".contact_fields cf
+                    SET key = substr(cf.key, 1, 30) || '_' || substr(cf.id, 1, 8)
+                    FROM ranked
+                    WHERE cf.id = ranked.id AND ranked.rn > 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_fields_workspace_key "
+                    f'ON "{OMNI_SCHEMA}".contact_fields (workspace_id, lower(key))'
+                )
+            )
+            for row in conn.execute(
+                text(
+                    f"""
+                    SELECT id, tenant_id, workspace_id, name,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY workspace_id, lower(name)
+                               ORDER BY created_at, id
+                           ) AS rn
+                    FROM "{OMNI_SCHEMA}".contact_tags
+                    """
+                )
+            ).fetchall():
+                if row.rn > 1:
+                    new_name = f"{row.name[:50]}_{row.id[:8]}"
+                    logger.warning(
+                        "omnichannel contact_tags: renamed duplicate name "
+                        "%r -> %r (tenant=%s workspace=%s) - tag links are "
+                        "untouched, reconcile manually if the old name mattered",
+                        row.name, new_name, row.tenant_id, row.workspace_id,
+                    )
+            conn.execute(
+                text(
+                    f"""
+                    WITH ranked AS (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY workspace_id, lower(name)
+                                   ORDER BY created_at, id
+                               ) AS rn
+                        FROM "{OMNI_SCHEMA}".contact_tags
+                    )
+                    UPDATE "{OMNI_SCHEMA}".contact_tags ct
+                    SET name = substr(ct.name, 1, 50) || '_' || substr(ct.id, 1, 8)
+                    FROM ranked
+                    WHERE ct.id = ranked.id AND ranked.rn > 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_tags_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".contact_tags (workspace_id, lower(name))'
+                )
+            )
+            # Contacts module (plan 26 S1) - `phone_digits` idempotent add +
+            # backfill + index, and the `contact_segments` per-workspace unique
+            # name index (the TABLE itself is new and already created by the
+            # `create_all` call above - only the functional index needs its own
+            # statement, same as contact_fields/contact_tags).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS phone_digits VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_phone_digits "
+                    f'ON "{OMNI_SCHEMA}".contacts (phone_digits)'
+                )
+            )
+            conn.execute(
+                text(
+                    f'UPDATE "{OMNI_SCHEMA}".contacts '
+                    "SET phone_digits = regexp_replace(phone, '[^0-9]', '', 'g') "
+                    "WHERE phone_digits IS NULL AND phone IS NOT NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_segments_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".contact_segments (workspace_id, lower(name))'
+                )
+            )
             # phone_number_id → service-wide UNIQUE (plan Slice 3, AC-01-20) for
             # O(1) inbound routing. Reconcile any existing duplicates FIRST (keep
             # the earliest by created_at,id; NULL the losers) then add a partial
@@ -192,6 +481,204 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "WHERE phone_number_id IS NOT NULL AND is_trashed = false"
                 )
             )
+            # Plan 27 A3 (S2, round-3 codex triage B7) - per-workspace
+            # case-insensitive name uniqueness for close_reasons/inbox_views.
+            # `create_all` (above) never emits these (neither model declares
+            # them as a SQLAlchemy `Index` - they're functional `lower(name)`
+            # indexes) and, on a fresh DB, `create_all` running BEFORE the
+            # per-module Alembic detection makes this module's tables look
+            # "already exist" - so 0009a's migration SQL never runs
+            # (`run_module_migrations` stamps head, no DDL). Mirror them here
+            # so a create_all-first fresh install still gets the DB backstop
+            # `close_reason_service`/`inbox_view_service` rely on for their
+            # check-then-insert race (B17/B18 fixes below).
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_close_reasons_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".close_reasons (workspace_id, lower(name))'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inbox_views_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".inbox_views (workspace_id, lower(name))'
+                )
+            )
+            # Team assignment (plan 28 S2, D-A8-3) - idempotent add for
+            # existing deployments (per-module Alembic migration 0011 is the
+            # real fix for a Postgres-tracked deploy; this covers the
+            # create_all path). `team_assignment_settings` itself is a NEW
+            # table so `create_all` above already created it - only its
+            # unique index needs its own statement (same as contact_segments).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS assigned_team_id VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_assigned_team_id "
+                    f'ON "{OMNI_SCHEMA}".contacts (assigned_team_id)'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_team_assignment_settings_ws_team "
+                    f'ON "{OMNI_SCHEMA}".team_assignment_settings (workspace_id, team_id)'
+                )
+            )
+            # Plan 29 (A4, D-A4-12) - `channels.broadcast_rate_per_second`.
+            # `broadcasts`/`broadcast_recipients` are brand-new tables already
+            # created by `create_all` above (per-module Alembic migration 0011
+            # is the real fix for a Postgres-tracked deploy; this covers the
+            # create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS broadcast_rate_per_second INTEGER"
+                )
+            )
+            # Business hours (plan sprint-4/31 S5, D-A5-13) - idempotent add
+            # for existing deployments (module Alembic 0016 is the real fix
+            # for a Postgres-tracked deploy; this covers the `create_all` path).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS business_hours_json JSON"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS business_timezone VARCHAR"
+                )
+            )
+            # Plan 33 S2 (respond.io migration, D-A6-3) - `migrated_from`
+            # descriptive markers. `migration_refs` itself is a brand-new
+            # table already created by `create_all` above (per-module Alembic
+            # migration 0018 is the real fix for a Postgres-tracked deploy;
+            # this covers the create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS migrated_from VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_migrated_from "
+                    f'ON "{OMNI_SCHEMA}".contacts (migrated_from)'
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".conversation_messages '
+                    "ADD COLUMN IF NOT EXISTS migrated_from VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_conv_messages_migrated_from "
+                    f'ON "{OMNI_SCHEMA}".conversation_messages (migrated_from)'
+                )
+            )
+            # Plan 32 S1 (A7a, D-A7-3/D-A7-5) - Messenger/Instagram routing
+            # columns + the per-identity window columns (module Alembic
+            # 0019_omni_meta_channels is the real fix for a Postgres-tracked
+            # deploy; this covers the create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS external_account_id VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS external_account_name VARCHAR"
+                )
+            )
+            # Only the partial UNIQUE index - mirrors migration 0019's fix
+            # (security review round 1 nit): a separate plain index here
+            # would carry a different name than the one `index=True`
+            # generates via `create_all` for the same column.
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_external_account_id "
+                    f'ON "{OMNI_SCHEMA}".channels (external_account_id) '
+                    "WHERE external_account_id IS NOT NULL AND is_trashed = false"
+                )
+            )
+            for col in ("window_expires_at", "human_agent_expires_at", "last_inbound_at"):
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                        f"ADD COLUMN IF NOT EXISTS {col} TIMESTAMPTZ"
+                    )
+                )
+            # AC-CHN-14 backfill mirror (the migration's own SQL sweep is
+            # Postgres-only and shares this exact statement) - idempotent,
+            # scoped to identities with no window stamped yet.
+            conn.execute(
+                text(
+                    f'UPDATE "{OMNI_SCHEMA}".contact_channel_identities i '
+                    "SET window_expires_at = c.csw_expires_at, "
+                    "    last_inbound_at = c.last_incoming_message_at "
+                    f'FROM "{OMNI_SCHEMA}".contacts c, "{OMNI_SCHEMA}".channels ch '
+                    "WHERE i.contact_id = c.id AND i.channel_id = ch.id "
+                    "  AND ch.channel_type = 'WHATSAPP' "
+                    "  AND i.window_expires_at IS NULL"
+                )
+            )
+            # Web chat widget (plan 34 / A7b S1, AC-WEB-16) - idempotent add
+            # for existing deployments (module Alembic 0021 is the real fix
+            # for a Postgres-tracked deploy; this covers the create_all path).
+            # No backfill: all four columns are new and empty-until-used.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_key VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_config_json JSON"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_token_epoch INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+            # Mirrors migration 0021's fix (same reasoning as
+            # `uq_channels_external_account_id` above): only the PARTIAL
+            # UNIQUE index is created here - a plain index would carry a
+            # different name than `Channel.widget_key`'s `index=True`
+            # generates via `create_all`.
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_widget_key "
+                    f'ON "{OMNI_SCHEMA}".channels (widget_key) '
+                    "WHERE widget_key IS NOT NULL AND is_trashed = false"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                    "ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
+                )
+            )
+            # Unverified visitor pre-chat profile (plan 34 review round 1, B3 -
+            # module Alembic 0022). New, empty-until-used, no backfill.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                    "ADD COLUMN IF NOT EXISTS visitor_profile_json JSON"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -205,7 +692,23 @@ def install(engine: Engine, db: Session) -> None:
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:
-    """Per-tenant seed: statuses + the default 'General' workspace. Idempotent."""
+    """Per-tenant seed: statuses + the default 'General' workspace (+ its
+    lifecycle graph, plan 25 S2, AC-CDM-14) + the plan 27 A3 conversation-
+    events backfill (AC-IVE-12). Idempotent.
+
+    Review round 1, finding 17: the pre-existing-workspace branch used to
+    early-return with NOTHING materialized - a tenant that already had a
+    default workspace (installed before plan 25 S2, or re-running install on
+    a tenant whose workspace predates the lifecycle graph) never got a
+    lifecycle graph or contact stamping. `lifecycle_service.backfill_tenant`
+    is idempotent + covers EVERY workspace (not just the default one) + stamps
+    every `lifecycle_status_id IS NULL` contact, so calling it unconditionally
+    before returning makes `install_tenant` self-healing on every call,
+    including this one. `event_service.backfill_tenant` is the same
+    self-healing shape for `conversation_events`/`last_agent_message_at` - a
+    no-op on a tenant with zero contacts (the fresh-workspace branch)."""
+    from .services import close_reason_service, event_service, lifecycle_service
+
     statuses.ensure_statuses(db, tenant_id)
     exists = (
         db.query(Workspace)
@@ -213,33 +716,178 @@ def install_tenant(db: Session, tenant_id: str) -> None:
         .first()
     )
     if exists:
+        lifecycle_service.backfill_tenant(db, tenant_id)
+        event_service.backfill_tenant(db, tenant_id)
+        close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
         return
-    db.add(
-        Workspace(
-            tenant_id=tenant_id,
-            name="General",
-            status_id=statuses.status_id_for(db, tenant_id, "WORKSPACE", "ACTIVE"),
-            is_default=True,
-            is_trashed=False,
-        )
+    ws = Workspace(
+        tenant_id=tenant_id,
+        name="General",
+        status_id=statuses.status_id_for(db, tenant_id, "WORKSPACE", "ACTIVE"),
+        is_default=True,
+        is_trashed=False,
     )
+    db.add(ws)
     db.flush()
+    lifecycle_service.materialize_for_workspace(db, ws)
+    # Plan 27 A3, S2 (AC-IVE-27): the seeded close reasons for a NEW workspace,
+    # same unit of work as its create.
+    close_reason_service.CloseReasonService(db).seed_for_workspace(ws.id, tenant_id)
+    event_service.backfill_tenant(db, tenant_id)
 
 
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """Per-tenant data migration between provisioned versions (plan 08 D3).
 
-    All of omnichannel is 0.1.0 today - nothing to backfill yet. New seeds /
-    backfills land here guarded by ``from_version`` comparisons.
+    0.1.0 -> 0.2.0: the plan 25 S1 columns/registries need no backfill (see the
+    S1 note this replaced - nullable columns + empty registries read back
+    correctly as-is). The plan 25 S2 lifecycle backfill (AC-CDM-15, D13) DOES
+    apply here: materialize the seed graph for every workspace that predates
+    this slice + stamp every ``lifecycle_status_id IS NULL`` contact with its
+    workspace's initial stage. ``backfill_tenant`` is idempotent (a workspace
+    that already has a graph, or a contact that already carries a stage, is
+    skipped) so re-running ``update`` (or a tenant already on 0.2.0 running it
+    again) is a safe no-op.
+
+    0.2.0 -> 0.3.0 (plan 27 A3, S1, AC-IVE-12): every contact with NO
+    `conversation_events` yet is backfilled (`opened`/`closed`/`assigned`) and
+    `last_agent_message_at` is filled from AGENT-message history -
+    `event_service.backfill_tenant` is idempotent the same way, so it is
+    called unconditionally (never gated on `from_version`, matching the
+    lifecycle backfill above) - safe to re-run for a tenant already on 0.3.0.
+
+    0.3.0 -> 0.3.1 (plan 27 A3, S2, AC-IVE-27): every workspace with NO close
+    reasons yet gets the four seeded defaults - `close_reason_service.
+    backfill_tenant` is idempotent the same way (a workspace already carrying
+    any reason is skipped), called unconditionally so it also self-heals a
+    tenant that somehow reaches this hook more than once.
+
+    ``AppStoreService.update()`` already re-grants this module's permission
+    catalog rows (incl. the plan 26 S1 ``segments.manage``/``contacts.import``/
+    ``contacts.export`` keys AND the plan 27 A3 ``close_reasons.manage``/
+    ``inbox_views.manage``/``conversations.shortcut`` keys, AC-IVE-41) to the
+    tenant's Admin role after this hook returns - no grant-sweep code needed
+    here.
+
+    0.2.0 -> 0.4.0 (plan 26 S1 + plan 27 A3 merged; nit 17 fix - no `0.3.0`
+    ever shipped on the plan-26 branch, so this hook must run BOTH lanes'
+    backfills unconditionally, idempotently, for a tenant landing on 0.4.0
+    from any earlier version):
+    - `phone_digits` (D-A2-9) - the Postgres-wide `regexp_replace` sweep in
+      `create_schema_and_tables` already runs on every boot, but that ALTER
+      path is dialect-gated (Postgres only) and idempotent-but-global;
+      re-running the portable per-tenant backfill here too is a cheap,
+      dialect-agnostic self-healing pass (matches the
+      `lifecycle_service.backfill_tenant` self-healing pattern above).
+    - `conversation_events`/`last_agent_message_at` (plan 27 A3 S1, AC-IVE-12)
+      and the seeded close reasons per workspace (plan 27 A3 S2, AC-IVE-27) -
+      both idempotent, called unconditionally so re-running `update` (or a
+      tenant already fully migrated) is a safe no-op.
+
+    0.4.0 -> 0.5.0 (plan 29 S1, AC-BRD-16): the NEW `BROADCAST` status scope
+    (`statuses.DEFAULT_STATUSES`) needs seeding for every tenant that
+    installed before this slice - `ensure_statuses` is idempotent (only
+    inserts scope/key pairs that don't already exist), so calling it here
+    unconditionally is a safe no-op for a tenant already carrying it.
+
+    0.5.0 -> 0.6.0 (plan 28 S2, AC-TEM-18): `contacts.assigned_team_id` is a
+    NEW nullable column and `team_assignment_settings` a NEW empty table -
+    both read back correctly as-is with zero backfill (a tenant landing here
+    simply has no thread assigned to a team yet, which is a valid state, not
+    a gap to repair).
+
+    0.6.0 -> 0.7.0 (plan sprint-4/31, S1-S5): adds `workflow_contact_fires`
+    (migration `0013_omni_workflow_fires`), `workspaces.round_robin_cursor`
+    (`0014_omni_round_robin_cursor`), `workflow_waits` (`0015_omni_workflow_
+    waits`) and `omnichannel_settings.business_hours_json`/`business_timezone`
+    (`0016_omni_business_hours`) - every one a brand-new, empty-until-written
+    table or a nullable column with no existing rows to backfill.
+
+    0.7.0 -> 0.8.0 (plan 33 S1, AC-MIG-50): the NEW `omnichannel_migration`
+    permission resource (`read`/`manage`) needs no data backfill - it gates a
+    brand-new feature with no existing rows to repair. `AppStoreService.
+    update()`'s `_grant_admin` (called right after this hook returns) is what
+    actually delivers the new keys to an already-provisioned tenant's Admin
+    role - the manifest version bump above is what makes that call fire at
+    all (`update()` refuses when `installed_version` already matches).
+
+    Still 0.8.0 (plan 33 S2, AC-MIG-18): `migration_refs` is a brand-new,
+    always-empty-until-a-migration-runs table (migration `0017_omni_migration_
+    refs`) and `contacts`/`conversation_messages.migrated_from` are new
+    nullable columns - both read back correctly as-is with zero backfill (no
+    tenant has ever run a migration before this column existed, so there is
+    nothing to repair). `uninstall_tenant`'s generic per-table `tenant_id`-
+    scoped delete loop already covers `migration_refs` for free (AC-MIG-54) -
+    it needs no dedicated cleanup line here.
+
+    0.8.0 -> 0.9.0 (plan 32 S1, A7a, AC-CHN-14): `channels.external_account_id`/
+    `_name` are new, empty-until-connected columns - no backfill. The three
+    `contact_channel_identities` window columns DO need one: every existing
+    WhatsApp identity is stamped from its contact's `csw_expires_at`/
+    `last_incoming_message_at` so no pre-existing open thread loses its window
+    once `messaging_policy` starts reading the identity column. The module
+    Alembic migration (`0019_omni_meta_channels`) already runs this same sweep
+    in Postgres SQL for a tracked deploy; `messaging_policy.
+    backfill_identity_windows` is the dialect-agnostic Python twin (mirrors
+    `ContactRepository.backfill_phone_digits`) - idempotent, safe to re-run.
+
+    0.9.0 -> 0.10.0 (plan 34 S1, A7b, AC-WEB-16): `channels.widget_key`/
+    `widget_config_json`/`widget_token_epoch` and `contact_channel_
+    identities.last_seen_at` are brand-new, empty-until-used columns - no
+    backfill (a tenant landing here simply has no WEBCHAT channel yet, a
+    valid state, not a gap to repair). No new permission keys either
+    (D-A7B-28) - `channels.read`/`channels.manage` already cover every new
+    route, so there is nothing for the post-hook grant sweep to deliver.
+    Review round 1 (B3) adds a fifth column in the same 0.10.0 release -
+    `contact_channel_identities.visitor_profile_json` (module Alembic
+    `0022_omni_webchat_profile`), also brand-new and empty-until-used, also
+    no backfill: no tenant has ever had a pre-chat submission before it
+    existed, so there is nothing to repair.
+
+    0.10.0 -> 0.10.1 (review round 2, N-new-4): no schema or column change at
+    all - the bump exists ONLY so a tenant already stamped `installed_version
+    "0.10.0"` (this branch has never shipped outside it) re-runs this hook
+    once, which is a no-op per tenant for the reason above. Recorded here so
+    "a schema change bumps the version" stays legible to the next reader: the
+    B3 column truly did arrive inside 0.10.0's own migration + `create_all`
+    mirror, this bump is pure discipline, not a missed migration.
     """
+    from .repositories.contact_repository import ContactRepository
+    from .services import close_reason_service, event_service, lifecycle_service, messaging_policy
+
+    statuses.ensure_statuses(db, tenant_id)
+    lifecycle_service.backfill_tenant(db, tenant_id)
+    event_service.backfill_tenant(db, tenant_id)
+    close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
+    ContactRepository(db).backfill_phone_digits(tenant_id)
+    messaging_policy.backfill_identity_windows(db, tenant_id)
+    db.flush()
 
 
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
-    """Wipe THIS tenant's rows from every module table (plan 08 §5).
+    """Wipe THIS tenant's rows from every module table (plan 08 §5), AND the
+    contact-lifecycle graphs this module wrote into the CORE ``statuses`` /
+    ``status_transitions`` tables (plan 25 S2, D12/AC-CDM-21) - the generic
+    per-table loop below only touches ``OmniBase`` (app_omnichannel) tables,
+    so the core rows need their own cleanup via the status engine's own
+    ``delete_scope`` helper (the sanctioned "module writes core status rows
+    through the engine's services" path - never a raw DELETE).
 
     The module schema and other tenants' rows are untouched - uninstall is
     per-tenant, never global. Reverse dependency order avoids FK violations.
     """
+    from app.status_engine.scoped import delete_scope
+
+    from .services import lifecycle_service, workflow_waits
+
+    # AC-WFP-54: a run this tenant parked on an omnichannel wait can never be
+    # resumed once the module is gone - cancel it through the CORE seam BEFORE
+    # the generic sweep below wipes the wait rows that point at it.
+    workflow_waits.cancel_parked_runs_for_tenant(db, tenant_id)
+
+    for ws in db.query(Workspace).filter(Workspace.tenant_id == tenant_id).all():
+        delete_scope(db, lifecycle_service.ENTITY_TYPE, tenant_id, ws.id)
+
     for table in reversed(OmniBase.metadata.sorted_tables):
         if "tenant_id" in table.c:
             db.execute(table.delete().where(table.c.tenant_id == tenant_id))
@@ -260,14 +908,45 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     "Demo WhatsApp" channel so outbound sends hit the adapter's stub, never the
     real Graph API. Idempotent (keys on the fixed contact ids). Called by the
     dev seed scripts only - never in prod bootstrap.
+
+    Pre-merge follow-up (plan 27): the fixed literal ids this function seeds
+    (``chn-demo``, ``cnt-001``..``005``, and - plan 32 S1/S3/S4 - ``chn-demo-fb``,
+    ``cnt-fb-001``/``002``, ``chn-demo-ig``, ``cnt-ig-001``/``002``) are shared
+    verbatim across every call site - the dev seed scripts only ever call this
+    with ``DEFAULT_TENANT_ID``.
+    A second tenant would collide on those SAME ids (unique-constraint or
+    silent cross-tenant reads via an unscoped lookup), so this is gated to the
+    default tenant rather than left to half-write cross-tenant rows the first
+    time someone calls it differently.
     """
     from datetime import datetime, timedelta, timezone
+
+    from app.models import DEFAULT_TENANT_ID
 
     from .models import Channel, Contact, ContactChannelIdentity, ConversationMessage, QuickReply, WhatsappTemplate
     from .security import encrypt_credentials
 
-    if db.query(Contact).filter(Contact.id == "cnt-001").first():
-        return
+    if tenant_id != DEFAULT_TENANT_ID:
+        raise ValueError(
+            "seed_demo_conversations: dev seed supports the default tenant only "
+            f"(got tenant_id={tenant_id!r})"
+        )
+
+    # B8 (round-3 codex triage): scope the idempotency check by tenant_id -
+    # `cnt-001` is a fixed literal id shared by every call site's dev seed
+    # data, so a bare id check finds ANOTHER tenant's already-seeded contact
+    # and wrongly skips seeding (and the backfill call below) for THIS
+    # tenant when more than one tenant runs the dev seed.
+    #
+    # Plan 32 S1 (A7a): this check used to `return` immediately, which meant
+    # a tenant that already ran this seed BEFORE this slice landed would
+    # NEVER get `chn-demo-fb` (the channel-creation blocks below are their
+    # own idempotent guards and must run regardless of the thread-seeding
+    # state) - so only the cnt-001..005 thread/template/quick-reply seeding
+    # below is gated on it, not the channels.
+    already_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-001", Contact.tenant_id == tenant_id).first()
+    )
 
     now = datetime.now(timezone.utc)
     ws = (
@@ -278,7 +957,7 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     if ws is None:
         return
 
-    channel = db.query(Channel).filter(Channel.id == "chn-demo").first()
+    channel = db.query(Channel).filter(Channel.id == "chn-demo", Channel.tenant_id == tenant_id).first()
     if channel is None:
         channel = Channel(
             id="chn-demo",
@@ -296,9 +975,335 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         db.add(channel)
         db.flush()
 
+    # Plan 32 S1 (A7a) - a dev-credentialed Messenger sandbox channel so a
+    # local/E2E run can POST Messenger-shaped webhook payloads at
+    # `chn-demo-fb` without a real Meta app (mirrors `chn-demo` above; no
+    # seeded threads yet - the webhook pipeline itself creates the contact).
+    fb_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-fb", Channel.tenant_id == tenant_id).first()
+    )
+    if fb_channel is None:
+        fb_channel = Channel(
+            id="chn-demo-fb",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="FACEBOOK",
+            name="Demo Messenger (sandbox)",
+            credentials_json=encrypt_credentials({"dev": True}),
+            external_account_id="pg-demo-1",
+            external_account_name="Foundryx Concierge (sandbox)",
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(fb_channel)
+        db.flush()
+
+    # Plan 32 S3 (A7a, AC-CHN-38) - two seeded Messenger threads so the E2E
+    # journey (inbox -> open a Messenger thread -> send) exists with no Meta
+    # app. Own idempotency gate (keyed on a fixed contact id, mirroring
+    # `already_seeded` above) so a tenant that ran this seed between S1 (bare
+    # `chn-demo-fb`, no threads) and S3 still gets them on the next call,
+    # without re-running the cnt-001..005 dataset.
+    fb_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-fb-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not fb_seeded:
+        from .services import lifecycle_service as _lifecycle_service
+
+        fb_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        fb_initial_lifecycle_id = _lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        fb_now = datetime.now(timezone.utc)
+        fb_threads = [
+            # (contact id, name, PSID, messages: (sender, body, minutes_ago))
+            ("cnt-fb-001", "Jordan Lee", "psid-demo-1", [
+                ("CONTACT", "Hey, do you still have the VIP package available?", 40),
+                ("AGENT", "Hi Jordan! Yes, a few slots are left - want the details?", 35),
+                ("CONTACT", "Yes please!", 30),
+            ]),
+            ("cnt-fb-002", "Alex Tan", "psid-demo-2", [
+                ("CONTACT", "Is the concierge desk open on weekends?", 15),
+            ]),
+        ]
+        for cid, name, psid, msgs in fb_threads:
+            first, _, last = name.partition(" ")
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first,
+                last_name=last or None,
+                status_id=fb_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=fb_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=fb_channel.id,
+                    external_user_id=psid,
+                    profile_name=name,
+                    # Open window (24h standard + 168h human-agent, D-A7-5) so
+                    # the seeded thread is sendable end to end (AC-CHN-38).
+                    window_expires_at=fb_now + timedelta(hours=24),
+                    human_agent_expires_at=fb_now + timedelta(hours=168),
+                    last_inbound_at=fb_now,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = fb_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=fb_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"m.demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = fb_now
+        db.flush()
+
+    # Plan 32 S4 (A7a) - a dev-credentialed Instagram sandbox channel whose
+    # `external_account_id` is `pg-702`'s linked Instagram professional
+    # account (`_DEV_PAGES` in `adapters/messenger.py`, `ig-702`/
+    # `foundryx.concierge`) - the SAME canned identity the connect wizard
+    # would offer for that page, so a manual dev run and the wizard agree.
+    ig_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-ig", Channel.tenant_id == tenant_id).first()
+    )
+    if ig_channel is None:
+        ig_channel = Channel(
+            id="chn-demo-ig",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="INSTAGRAM",
+            name="Demo Instagram (sandbox)",
+            credentials_json=encrypt_credentials({"dev": True}),
+            external_account_id="ig-702",
+            external_account_name="foundryx.concierge",
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(ig_channel)
+        db.flush()
+
+    # AC-CHN-38 - two seeded Instagram threads: one inside its 24h standard
+    # window, one whose standard AND human-agent windows have BOTH closed -
+    # so the E2E journey shows both composer states (open vs locked) with no
+    # Meta app. Own idempotency gate (keyed on a fixed contact id, mirroring
+    # `fb_seeded` above) so a tenant that ran this seed before S4 landed
+    # still gets the threads on its next call.
+    ig_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-ig-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not ig_seeded:
+        from .services import lifecycle_service as _ig_lifecycle_service
+
+        ig_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        ig_initial_lifecycle_id = _ig_lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        ig_now = datetime.now(timezone.utc)
+        ig_threads = [
+            # (contact id, name, IGSID, window still open?, messages: (sender, body, minutes_ago))
+            ("cnt-ig-001", "Maya Rivera", "igsid-demo-1", True, [
+                ("CONTACT", "Love the new collection! Is the tote still in stock?", 20),
+                ("AGENT", "Hi Maya! Yes, we have it in black and tan.", 15),
+            ]),
+            ("cnt-ig-002", "Priya Nair", "igsid-demo-2", False, [
+                ("CONTACT", "Do you ship internationally?", 60 * 24 * 9),
+            ]),
+        ]
+        for cid, name, igsid, window_open, msgs in ig_threads:
+            first, _, last = name.partition(" ")
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first,
+                last_name=last or None,
+                status_id=ig_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=ig_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            if window_open:
+                window_expires_at = ig_now + timedelta(hours=24)
+                human_agent_expires_at = ig_now + timedelta(hours=168)
+                last_inbound_at = ig_now
+            else:
+                # Both windows closed (AC-CHN-38 "expired") - the composer
+                # against this thread is locked for EVERY actor
+                # (`messaging_policy.authorize` raises `messaging_window_closed`).
+                window_expires_at = ig_now - timedelta(hours=200)
+                human_agent_expires_at = ig_now - timedelta(hours=1)
+                last_inbound_at = ig_now - timedelta(hours=200)
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=ig_channel.id,
+                    external_user_id=igsid,
+                    profile_name=name,
+                    window_expires_at=window_expires_at,
+                    human_agent_expires_at=human_agent_expires_at,
+                    last_inbound_at=last_inbound_at,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = ig_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=ig_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"m.demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = ig_now
+        db.flush()
+
+    # Plan 34 S5 (A7b, AC-WEB-57) - a WEBCHAT sandbox channel so the inbox,
+    # the reports and the E2E journeys have a web chat thread with no
+    # external dependency at all (D-A7B-29: web chat's own backend IS the
+    # "provider" - there is nothing to stub). Mirrors chn-demo-fb/chn-demo-ig
+    # above: its own idempotency guard, ensured regardless of the cnt-001..
+    # 005 `already_seeded` gate below. Allowed origins cover every port this
+    # lane's own frontend + the E2E's static host page run on.
+    web_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-web", Channel.tenant_id == tenant_id).first()
+    )
+    if web_channel is None:
+        web_channel = Channel(
+            id="chn-demo-web",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="WEBCHAT",
+            name="Demo web chat (sandbox)",
+            credentials_json=encrypt_credentials(
+                {"widgetSecret": "whsec_demo0000000000000000000000000000"}
+            ),
+            widget_key="wk_demo00000000000000000000000000",
+            widget_config_json={
+                "allowedOrigins": [
+                    "http://localhost:3001",
+                    "http://localhost:3012",
+                    "http://localhost:3013",
+                ],
+                "appearance": {
+                    "accentColor": "#FF5A00",
+                    "position": "right",
+                    "headerTitle": "Chat with us",
+                    "agentDisplayName": "Support",
+                },
+                "greeting": "Hi! How can we help you today?",
+                "offlineGreeting": "We're offline right now - leave a message and we'll reply.",
+                "preChat": {"askName": True, "askEmail": True, "askPhone": False},
+            },
+            widget_token_epoch=0,
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(web_channel)
+        db.flush()
+
+    # Two seeded visitor threads (AC-WEB-57's "two seeded visitor threads") -
+    # one anonymous, one with a pre-chat-style name/email already captured,
+    # so the inbox demonstrates both states with no external dependency. Own
+    # idempotency gate (keyed on a fixed contact id, mirroring fb_seeded/
+    # ig_seeded above).
+    web_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-web-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not web_seeded:
+        from .services import lifecycle_service as _web_lifecycle_service
+
+        web_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        web_initial_lifecycle_id = _web_lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        web_now = datetime.now(timezone.utc)
+        web_threads = [
+            # (contact id, first name, email, identity key, messages)
+            ("cnt-web-001", None, None, "visitor:vis_demo0000000000000000001", [
+                ("CONTACT", "Hi, do you offer a free trial?", 10),
+                ("AGENT", "Yes! 14 days, no card required.", 8),
+            ]),
+            ("cnt-web-002", "Jamie", "jamie@example.com", "visitor:vis_demo0000000000000000002", [
+                ("CONTACT", "What are your business hours?", 5),
+            ]),
+        ]
+        for cid, first_name, email, ext_id, msgs in web_threads:
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first_name,
+                email=email,
+                status_id=web_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=web_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=web_channel.id,
+                    external_user_id=ext_id,
+                    last_seen_at=web_now,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = web_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=web_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"web:demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = web_now
+        db.flush()
+
+    if already_seeded:
+        # Channels above are (re-)ensured; the cnt-001..005 thread/template/
+        # quick-reply dataset below is a one-time seed, already present.
+        db.commit()
+        return
+
     open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
     snoozed_id = statuses.status_id_for(db, tenant_id, "THREAD", "SNOOZED")
     closed_id = statuses.status_id_for(db, tenant_id, "THREAD", "CLOSED")
+
+    from .services import lifecycle_service
+
+    initial_lifecycle_id = lifecycle_service.initial_status_id(db, tenant_id, ws.id)
 
     def hours(n):
         return now - timedelta(hours=n)
@@ -337,6 +1342,7 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     for cid, (first, last), phone, status_id, priority, csw, msgs in threads:
         last_at = None
         last_in = None
+        digits = "".join(c for c in phone if c.isdigit())
         contact = Contact(
             id=cid,
             tenant_id=tenant_id,
@@ -344,13 +1350,14 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
             first_name=first,
             last_name=last,
             phone=phone,
+            phone_digits=digits,
             status_id=status_id,
             priority=priority,
             csw_expires_at=csw,
+            lifecycle_status_id=initial_lifecycle_id,
         )
         db.add(contact)
         db.flush()
-        digits = "".join(c for c in phone if c.isdigit())
         db.add(
             ContactChannelIdentity(
                 tenant_id=tenant_id,
@@ -404,4 +1411,13 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/hours", body="Our office hours are Mon-Fri 9am-6pm (MYT)."),
         QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/payment", body="You can pay via bank transfer or card - the link is in your invoice email."),
     ])
+    db.flush()
+
+    # Review round 1 (finding 3): the demo threads must carry the events the
+    # real inbox always writes (AC-IVE-03 names this seed for Unreplied/
+    # Longest-waiting evidence) - `backfill_tenant` is idempotent, so this is
+    # safe alongside any future real backfill of the same tenant.
+    from .services import event_service
+
+    event_service.backfill_tenant(db, tenant_id)
     db.commit()

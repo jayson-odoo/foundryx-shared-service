@@ -1,19 +1,24 @@
 """Intake ``on_complete_sink`` implementations (AC-A-16/20).
 
 The sink is the **ONLY** promotion path: on explicit confirm it transitions the
-draft Idea ``draft -> captured`` via the core status engine and mints the
-product-domain deep link. **Idempotent** - re-firing on an already-captured draft
-does not create a second Idea and does not double-advance the status; it just
-re-mints the (stable) link.
+draft Idea ``draft -> captured`` via the core status engine, mints the
+``idea_number`` + ``status_token`` (S1/S5, ``numbering.mint_idea_identity``),
+and returns the public status-page link. **Idempotent** - re-firing on an
+already-captured draft does not create a second Idea, does not double-advance
+the status, and does not re-mint the number/token; it just re-derives the
+(stable) link.
 """
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.services import status_machine
 from app.services.catalog_service import tenant_public_link_base
 
-from ..models import Idea, ProductDelivery
+from ..models import Idea
+from .ideas import next_capture_priority
+from .numbering import mint_idea_identity
 from .statuses import IDEA_ENTITY, idea_status_id
 
 # The captured_json answer keys that mirror first-class Idea columns. Kept in sync
@@ -38,51 +43,59 @@ def sync_idea_columns_from_captured(idea: Idea) -> None:
             setattr(idea, key, value.strip())
 
 
-# Placeholder a tenant ``public_link_base_url`` may carry when its portal path
-# does not end in ``/ideas/{id}``.
+# Placeholders a tenant ``public_link_base_url`` may carry when its portal path
+# is not ``/public/ideas/{token}`` - e.g. the Sorento CRM customer portal
+# ``https://<crm>/portal/ideas/{token}`` (IDEATION-IN-CRM, sorento #1438).
+TOKEN_PLACEHOLDER = "{token}"
 IDEA_ID_PLACEHOLDER = "{ideaId}"
+LINK_PLACEHOLDERS = (TOKEN_PLACEHOLDER, IDEA_ID_PLACEHOLDER)
 
 
 def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
-    """The public idea tracking link.
+    """The public idea-status-page link ``{base}/public/ideas/{status_token}``.
 
-    A tenant ``public_link_base_url`` (core tenant settings, SS-PUBLIC-LINK-BASE)
-    wins: ``{base}/ideas/{idea_id}``, or the base with ``{ideaId}`` substituted
-    when it carries the placeholder (e.g. the Sorento CRM customer portal).
-    Otherwise the product-domain deep link ``{product_domain_base}/ideas/{idea_id}``
-    (AC-A-38 / §5.3). ``None`` when neither is configured. Links minted earlier
-    stay valid: the old route is untouched, only new links pick up the setting."""
-    tenant_base = tenant_public_link_base(db, idea.tenant_id)
-    if tenant_base:
-        if IDEA_ID_PLACEHOLDER in tenant_base:
-            return tenant_base.replace(IDEA_ID_PLACEHOLDER, str(idea.id))
-        return f"{tenant_base.rstrip('/')}/ideas/{idea.id}"
-    row = (
-        db.query(ProductDelivery)
-        .filter(
-            ProductDelivery.tenant_id == idea.tenant_id,
-            ProductDelivery.product_id == idea.product_id,
-        )
-        .first()
-    )
-    base = (row.product_domain_base or "").rstrip("/") if row else ""
-    if not base:
+    ``base`` is the tenant ``public_link_base_url`` (core tenant settings,
+    SS-PUBLIC-LINK-BASE - e.g. the Sorento CRM customer portal) when set, else
+    ``settings.frontend_url`` (the shared-service frontend, S5, AC-1114/1118).
+    A tenant base carrying ``{token}`` (and/or ``{ideaId}``) is a template
+    instead: the placeholders are substituted in place, nothing appended. Links
+    already sent on the shared-service domain keep working: that route is
+    untouched, only newly minted links pick up the setting.
+
+    ``None`` only when the idea has no ``status_token`` yet (review round 1,
+    should-fix #6: this is a pure READ - it never mints; a caller that needs one
+    minted calls ``numbering.mint_idea_identity`` first, same as the sink does.
+    A pre-lane captured row with no token is backfilled once by migration 0010,
+    not re-minted on every read)."""
+    if not idea.status_token:
         return None
-    return f"{base}/ideas/{idea.id}"
+    tenant_base = tenant_public_link_base(db, idea.tenant_id)
+    if tenant_base and any(p in tenant_base for p in LINK_PLACEHOLDERS):
+        return tenant_base.replace(TOKEN_PLACEHOLDER, idea.status_token).replace(
+            IDEA_ID_PLACEHOLDER, str(idea.id)
+        )
+    base = (tenant_base or settings.frontend_url).rstrip("/")
+    return f"{base}/public/ideas/{idea.status_token}"
 
 
 def ideation_on_complete_sink(
     db: Session, idea: Idea, tenant_id: str
 ) -> Optional[str]:
-    """Promote the draft to ``captured`` (once) and return the minted link.
+    """Promote the draft to ``captured`` (once), mint ``idea_number`` +
+    ``status_token`` (idempotent), and return the public status link.
 
     Idempotent: if the Idea is already at ``captured`` (or past it), skip the
-    transition - a re-confirm is a no-op that still returns the link."""
+    transition and the number/token mint - a re-confirm is a no-op that still
+    returns the (stable) link."""
     # Promote the captured answers to first-class columns on completion (idempotent).
     sync_idea_columns_from_captured(idea)
     captured_id = idea_status_id(db, "captured", tenant_id)
     if captured_id is not None and idea.status_id != captured_id:
+        # New capture lands at the bottom of its lane (Q4) - stamped right at
+        # the first move into ``captured`` (plan section 5).
+        idea.priority = next_capture_priority(db, tenant_id, is_test=bool(idea.is_test))
         status_machine.transition(
             db, IDEA_ENTITY, idea, captured_id, actor=None, tenant_id=tenant_id, commit=False
         )
+    mint_idea_identity(db, idea)
     return mint_idea_link(db, idea)

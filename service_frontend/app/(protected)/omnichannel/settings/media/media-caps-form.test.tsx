@@ -76,7 +76,7 @@ describe('MediaCapsForm', () => {
     // Sticker ceiling is 500KB; typing 5 (MB) must clamp to the ceiling in bytes.
     const sticker = document.querySelector('#cap-stickerMaxBytes') as HTMLInputElement;
     fireEvent.change(sticker, { target: { value: '5' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save media settings' }));
     await waitFor(() => expect(svc.update).toHaveBeenCalled());
     const payload = svc.update.mock.calls[0][0];
     expect(payload.stickerMaxBytes).toBe(500 * 1024); // clamped
@@ -85,7 +85,7 @@ describe('MediaCapsForm', () => {
 
   it('disables Save until an input changes', async () => {
     render(<MediaCapsForm />);
-    const save = (await screen.findByRole('button', { name: 'Save' })) as HTMLButtonElement;
+    const save = (await screen.findByRole('button', { name: 'Save media settings' })) as HTMLButtonElement;
     expect(save).toBeDisabled();
     fireEvent.change(document.querySelector('#cap-videoMaxBytes') as HTMLInputElement, {
       target: { value: '8' },

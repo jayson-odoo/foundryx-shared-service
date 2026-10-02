@@ -6,7 +6,7 @@ tracking links on the Sorento CRM customer portal). NULL = today's behaviour
 until a tenant fills it in. Idempotent: ``ADD COLUMN IF NOT EXISTS`` on Postgres.
 
 Revision ID: ss_public_link_base
-Revises: ai_msg_summary_s3
+Revises: workflows_http_s31
 Create Date: 2026-10-02
 """
 from alembic import op
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 # <= 32 chars (alembic_version.version_num is VARCHAR(32)).
 revision = "ss_public_link_base"
-down_revision = "ai_msg_summary_s3"
+down_revision = "workflows_http_s31"
 branch_labels = None
 depends_on = None
 

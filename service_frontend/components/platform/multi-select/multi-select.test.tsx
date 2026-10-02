@@ -35,4 +35,27 @@ describe('MultiSelect', () => {
 
     expect(onChange).toHaveBeenCalledWith([]);
   });
+
+  it('post-approval N1: with onQueryChange set, cmdk does NOT client-filter the given options - a server page must render as-is', async () => {
+    const user = userEvent.setup();
+    const onQueryChange = vi.fn();
+    render(<MultiSelect options={options} value={[]} onChange={() => {}} onQueryChange={onQueryChange} />);
+
+    await user.click(screen.getByRole('combobox'));
+    await user.type(screen.getByPlaceholderText('Search…'), 'zzz-no-match');
+
+    expect(onQueryChange).toHaveBeenCalledWith('zzz-no-match');
+    expect(screen.getByText('Admin')).toBeInTheDocument();
+    expect(screen.getByText('Member')).toBeInTheDocument();
+  });
+
+  it('without onQueryChange, cmdk still client-filters as before (no regression)', async () => {
+    const user = userEvent.setup();
+    render(<MultiSelect options={options} value={[]} onChange={() => {}} />);
+
+    await user.click(screen.getByRole('combobox'));
+    await user.type(screen.getByPlaceholderText('Search…'), 'zzz-no-match');
+
+    expect(screen.queryByText('Admin')).not.toBeInTheDocument();
+  });
 });

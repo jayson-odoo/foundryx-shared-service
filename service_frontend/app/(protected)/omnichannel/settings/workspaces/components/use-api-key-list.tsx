@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { KeyRound, Ban } from 'lucide-react';
-import { toast } from 'sonner';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -84,26 +83,14 @@ export function useApiKeyList(
         permission: 'api_keys.manage',
         surfaces: { row: true },
         isVisible: (rows) => rows.length === 1 && rows[0]?.status === 'ACTIVE',
-        confirm: {
-          title: 'Revoke API key?',
-          description:
-            'Consumers using this key will stop authenticating immediately. This cannot be undone - mint a new key to restore access.',
-          confirmLabel: 'Revoke',
-        },
-        run: async (rows, rt) => {
-          const [k] = rows;
-          if (!k) return;
-          try {
-            await apiKeysService.revoke(workspaceId, k.id);
-            toast.success('API key revoked.');
-            rt.reload();
-          } catch {
-            toast.error('Could not revoke the key. Please retry.');
-          }
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `api_keys.revoke`
+        // handler commits it server-side - it resolves the owning workspace
+        // from the key row itself, so `entityId` stays the bare key id).
+        deferred: { actionKey: 'api_keys.revoke', entityType: 'api_key' },
       },
     ],
-    [workspaceId],
+    [],
   );
 
   const config = useMemo<ResourceListConfig<ApiKeyItem>>(() => {

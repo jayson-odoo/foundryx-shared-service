@@ -39,12 +39,43 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .base import CanonicalRecord
 
 ENTITY_SUPPLIER = "supplier"
 ENTITY_CUSTOMER = "customer"
+
+# Plan 22 S4 (AC-22-23) - masters fan-out. Every one of these is DB-source
+# ONLY (no confirmed AutoCount API payload backs them, unlike GRN/supplier/
+# customer - see ``services/company_service.py``'s ``SEEDED_ENTITIES`` guard),
+# and all five live in THIS leaf module for the same reason ``ENTITY_SALES_AGENT``
+# already did: it is the one place BOTH ``mapping.py`` (``ENTITY_PROFILES``,
+# ``UNQUALIFIED_REF_ENTITIES``) and ``services/etl_service.py`` (the entity
+# catalogue) import from without a cycle - ``mapping.py`` ->
+# ``services/etl_service.py`` would cycle back through
+# ``services/company_service.py`` -> ``mapping.py``.
+ENTITY_PRODUCT_CATEGORY = "product_category"
+ENTITY_UNIT_OF_MEASURE = "unit_of_measure"
+ENTITY_WAREHOUSE = "warehouse"
+ENTITY_PRODUCT = "product"
+# sprint-5/08 (AC-08-31) - the open REST API's ItemBrand lookup. Lives here
+# for the same no-import-cycle reason as its five siblings above.
+ENTITY_BRAND = "brand"
+# sprint-5/14 section 11 (D23) - the open REST API's `branchbypage` address
+# records, a regular HTTP master entity (formerly a doc feed). Lives here for
+# the same no-import-cycle reason as its siblings above.
+ENTITY_BRANCH = "branch"
+# Sales agent DID start as a plain flat DB-extract entity with no canonical
+# dataclass (S2/S3); S4 gives it one (``CanonicalSalesAgent`` below) now that
+# it actually pushes to Sorento (Appendix A6 §6/A8).
+ENTITY_SALES_AGENT = "sales_agent"
+# sprint-5/10 S5b (AC-10-39) - the human-invoked PULL-ONLY entity (D4/D5): a
+# reduced (item, location) balance row, never a Sorento PUSH target today
+# (no ``sinks_sorento._ENTITY_PATH`` entry - see ``CanonicalStockBalance``'s
+# own docstring for why it lives outside the ``CanonicalMaster`` hierarchy).
+# Lives here for the same no-import-cycle reason as its siblings above.
+ENTITY_STOCK_BALANCE = "stock_balance"
 
 # The vendor entity names in the URL grammar: POST /api/{Entity}/Get{Entity}.
 VENDOR_ENTITY_SUPPLIER = "Creditor"
@@ -69,11 +100,20 @@ class CanonicalMaster(CanonicalRecord):
 
     ``last_modified`` is carried for staging, diffing and the watermark - it is
     NOT a Sorento field and is excluded from ``sink_payload`` below.
+
+    ``code``/``name`` carry the SAME length bounds as Sorento's own
+    ``CanonicalProductCategory``/``CanonicalUnitOfMeasure``/…
+    (``sorento_crm/.../app/schemas/canonical_masters.py`` - copied verbatim,
+    plan 22 S4 review S3): a value that would 422 there must fail HERE, at
+    mapping/preview time (``mapping.map_document`` already turns a pydantic
+    ``ValidationError`` into a per-field ``mapped.errors`` entry - see the
+    ``record_model(**header)`` guard), not arrive as a surprise push-time
+    quarantine an operator has no field-level explanation for.
     """
 
     source_doc_no: Optional[str] = None
-    code: Optional[str] = None
-    name: Optional[str] = None
+    code: Optional[str] = Field(None, max_length=100)
+    name: Optional[str] = Field(None, max_length=255)
     email: Optional[str] = None
     is_active: Optional[bool] = None
 
@@ -90,9 +130,29 @@ class CanonicalMaster(CanonicalRecord):
     def sink_payload(self) -> Dict[str, Any]:
         """Exactly the keys Sorento defines - provenance and locally-useful
         fields (``source_system``, ``entity_type``, ``last_modified``,
-        ``extras``) stripped."""
+        ``extras``) stripped.
+
+        A ``None``-valued key is OMITTED, never sent as ``null`` (Sorento
+        contract 2.1, ``PLAN-autocount-cross-repo-contract.md`` section 10):
+        under 2.1's ``model_fields_set`` writer a MASTER's ``null`` means
+        "clear this field" and an absent key means "leave it alone", so
+        every product shipping ``"list_price": null`` and every customer
+        ``"credit_limit": null`` on every push WOULD clear whatever Sorento
+        holds the moment 2.1 answers the contract endpoint. On Sorento main
+        (1.x/2.0) omitting the key changes nothing: an absent key still reads
+        as None and the writer blind-SETs NULL either way, so this is
+        behaviour-neutral there and bites only under 2.1. A falsy but
+        NOT-None value (``0``, ``""``, ``False``) is a real value and stays.
+        Documents are OUT OF SCOPE for this rule - a document's own
+        ``sink_payload`` (``documents.py``) is untouched and keeps sending
+        ``status`` and friends as-is.
+        """
         data = self.model_dump(mode="json")
-        return {key: data[key] for key in self.SINK_FIELDS if key in data}
+        return {
+            key: data[key]
+            for key in self.SINK_FIELDS
+            if key in data and data[key] is not None
+        }
 
 
 class CanonicalSupplier(CanonicalMaster):
@@ -121,12 +181,23 @@ class CanonicalCustomer(CanonicalMaster):
 
     No ``country`` source exists on Debtor, and ``registration_number`` exists on
     Creditor but not Debtor - both omitted rather than invented.
+
+    ``credit_limit`` is GONE from this model (Sorento contract 2.1, D15): not a
+    sink field, not an accepted mapping target, not seeded - nothing could
+    populate it, so a dead attribute was removed rather than kept "for
+    staging". Sorento's ``CanonicalCustomer`` on ``feat/ingest-parity`` (ref
+    39ddd8c0a, their PR #699) sets ``extra="forbid"`` and does not declare it
+    - a field-named 422 the moment it crosses the wire. Proven against
+    Sorento's LOCAL ingest-parity lane (:8042, build b1c01aa2f), NOT Sorento
+    main: 27/27 SIM customers failed there. Sorento main still declares
+    ``credit_limit`` / ``payment_terms_*`` and treats null like absent, so
+    dropping the key is neutral there - which is why the removal is
+    unconditional (the ESB stops sending it BEFORE Sorento removes it).
     """
 
     entity_type: str = ENTITY_CUSTOMER
 
     phone_number: Optional[str] = None
-    credit_limit: Optional[Decimal] = None
     tax_id: Optional[str] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
@@ -136,10 +207,312 @@ class CanonicalCustomer(CanonicalMaster):
         "name",
         "email",
         "phone_number",
-        "credit_limit",
         "tax_id",
         "is_active",
     )
 
 
-MASTER_ENTITIES: List[str] = [ENTITY_SUPPLIER, ENTITY_CUSTOMER]
+class CanonicalProductCategory(CanonicalMaster):
+    """AutoCount stock category → Sorento ``product_categories`` (Appendix A6).
+
+    Products cannot be created without a category (``products.category_id`` is
+    NOT NULL on the consumer), so this must land before products or every
+    product reports ``retryable`` forever (AC-22-23's dependency order).
+    """
+
+    entity_type: str = ENTITY_PRODUCT_CATEGORY
+
+    description: Optional[str] = Field(None, max_length=255)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "description",
+        "is_active",
+    )
+
+
+class CanonicalBrand(CanonicalMaster):
+    """AutoCount ``ItemBrand`` -> Sorento ``brands`` (sprint-5/08, AC-08-31).
+
+    Sorento's DB widths are TIGHTER than the ``CanonicalMaster`` defaults
+    (100/255) - copied verbatim here rather than inherited, so a value that
+    would 422 on their side fails at mapping/preview time instead of arriving
+    as a push-time quarantine (the same rule ``CanonicalMaster``'s own
+    docstring states for every sibling in this file).
+    """
+
+    entity_type: str = ENTITY_BRAND
+
+    code: Optional[str] = Field(None, max_length=50)
+    name: Optional[str] = Field(None, max_length=150)
+    description: Optional[str] = Field(None, max_length=255)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "description",
+        "is_active",
+    )
+
+
+class CanonicalBranch(CanonicalMaster):
+    """AutoCount ``branchbypage`` row -> Sorento ``branches`` (sprint-5/14
+    section 11, D24; CRM contract 2.7 section 13.11).
+
+    The CRM door takes **each record as the raw ``branchbypage`` row** and
+    reads only ``AccNo``, ``BranchCode`` and ``BranchName`` from it (it stores
+    the whole row as its own ``source_record``). So this model carries the raw
+    row (``source_record``, set by the mapping engine, never a mapping target)
+    and ``sink_payload`` writes the three mapped values over a copy of it: no
+    canonical keys (``source_ref``, ``code``, ...) ever reach the wire, and a
+    tenant's mapping edits still apply.
+
+    ``acc_no`` and ``code`` are required (the pair is the row's identity; a
+    blank on either is a field error at mapping time, never a CRM 422).
+    """
+
+    entity_type: str = ENTITY_BRANCH
+
+    acc_no: str = Field(..., min_length=1, max_length=100)
+    code: str = Field(..., min_length=1, max_length=100)
+    source_record: Dict[str, Any] = Field(default_factory=dict)
+
+    # The MAPPABLE fields (the catalog's accepted set derives from this).
+    # ``source_ref`` is minted and ``source_record`` is filled by the engine,
+    # so neither is a mapping target.
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "acc_no",
+        "code",
+        "name",
+    )
+
+    def sink_payload(self) -> Dict[str, Any]:
+        payload = dict(self.source_record or {})
+        payload["AccNo"] = self.acc_no
+        payload["BranchCode"] = self.code
+        if self.name is not None:
+            payload["BranchName"] = self.name
+        return payload
+
+
+class CanonicalUnitOfMeasure(CanonicalMaster):
+    """AutoCount UOM → Sorento ``units_of_measure``. Likewise a product
+    dependency (``products.base_uom_id`` is NOT NULL)."""
+
+    entity_type: str = ENTITY_UNIT_OF_MEASURE
+
+    description: Optional[str] = Field(None, max_length=255)
+    # Canonical divisibility, 0..4 (Sorento's own default is 0 - an upstream
+    # master that never expressed precision counts in whole units).
+    decimal_places: int = Field(0, ge=0, le=4)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "decimal_places",
+        "description",
+        "is_active",
+    )
+
+
+class CanonicalWarehouse(CanonicalMaster):
+    """AutoCount location/warehouse → Sorento ``warehouses``."""
+
+    entity_type: str = ENTITY_WAREHOUSE
+
+    location: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "location",
+        "is_active",
+    )
+
+
+class CanonicalProduct(CanonicalMaster):
+    """AutoCount stock item → Sorento ``products`` (Appendix A6).
+
+    ``category_code``/``uom_code`` are Sorento's OWN ``product_categories.
+    category_code``/``units_of_measure.uom_code`` - resolved by CODE, never by
+    ESB integration ref (unlike a document line's ``product_ref``/
+    ``warehouse_ref``, which resolve by the pushed ``source_ref``). An
+    unresolvable code is a per-record ``retryable`` on Sorento's side, not a
+    422 here - the category/UOM may simply not have synced yet (AC-22-23), and
+    it drains automatically once it does.
+    """
+
+    entity_type: str = ENTITY_PRODUCT
+
+    description: Optional[str] = Field(None, max_length=255)
+    category_code: Optional[str] = None
+    uom_code: Optional[str] = None
+    brand_code: Optional[str] = None
+    list_price: Optional[Decimal] = Field(None, ge=0)
+    cost_price: Optional[Decimal] = Field(None, ge=0)
+    # sprint-5/08 (AC-08-16) - the open REST API's ``Discontinued`` flag.
+    # Captured for staging/visibility like ``last_modified``; NOT a Sorento
+    # field (absent from ``SINK_FIELDS`` - their ``products`` schema has no
+    # column for it) and not sent.
+    is_discontinued: Optional[bool] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "description",
+        "category_code",
+        "uom_code",
+        "brand_code",
+        "list_price",
+        "cost_price",
+        "is_active",
+    )
+
+
+class CanonicalStockBalance(CanonicalRecord):
+    """AutoCount stock balance -> Sorento ``stock_balances`` (sprint-5/10
+    S5b, AC-10-39). One row per (item, location), base UOM, whole units,
+    positive only - the reducer (``http_source/combine.py``'s
+    ``STOCK_BALANCE_HTTP_PRESET`` combine block) guarantees that shape
+    before mapping ever sees a row (AC-10-42).
+
+    **Deliberately NOT a ``CanonicalMaster`` subclass.** This entity is
+    PULL-ONLY (AC-10-15) - Sorento has no ingest path for it today
+    (``sinks_sorento._ENTITY_PATH`` carries no entry, and constructing a
+    ``SorentoSink`` for it raises) - and it carries none of
+    ``CanonicalMaster``'s push-oriented shape (``code``/``name``/
+    ``is_active``/``last_modified``/``extras``). Subclassing it would also
+    silently enrol this entity in the contract-2.1 master parity suite
+    (``test_autocount_contract_2_1_masters.py``, keyed off
+    ``CANONICAL_MODELS`` filtered to ``CanonicalMaster`` subclasses), whose
+    generic fixtures assume every master constructs from
+    ``{source_ref, code, name}`` alone - an assumption this entity's
+    required ``item_code``/``location_code``/``qty`` fields do not meet.
+    Deliberately excluded from ``MASTER_ENTITIES`` for the same reason.
+    """
+
+    entity_type: str = ENTITY_STOCK_BALANCE
+
+    item_code: str
+    item_description: Optional[str] = None
+    location_code: str
+    uom_code: Optional[str] = None
+    qty: int = Field(..., ge=0)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "item_code",
+        "item_description",
+        "location_code",
+        "uom_code",
+        "qty",
+    )
+
+    def sink_payload(self) -> Dict[str, Any]:
+        """Mirrors ``CanonicalMaster.sink_payload`` exactly (omit ``None``,
+        keep falsy non-``None`` values) - duplicated in full rather than
+        inherited, so this entity never gains ``CanonicalMaster``'s
+        push-shaped fields by accident (see the class docstring)."""
+        data = self.model_dump(mode="json")
+        return {
+            key: data[key]
+            for key in self.SINK_FIELDS
+            if key in data and data[key] is not None
+        }
+
+
+class CanonicalSalesAgent(CanonicalMaster):
+    """AutoCount sales agent → Sorento ``sales_agents`` (Appendix A6 §6/A8).
+
+    The only SHARED master (Sorento's row carries no ``company_id``): every
+    company's task resolves to the ONE row, via the unqualified
+    ``agent:{CODE}`` ref (``mapping.UNQUALIFIED_REF_ENTITIES``,
+    ``flat_source_ref``) - minted upper-cased and trimmed there, matching how
+    ``sales_agent_service`` stores and matches the code on Sorento's side.
+
+    No ``email``/``credit_limit``/``phone_number`` - Sorento's own
+    ``CanonicalSalesAgent`` carries none of those; only ``code``/
+    ``description``/``is_active``/``person_label``. ``name`` is inherited from
+    ``CanonicalMaster`` but is never sent (absent from ``SINK_FIELDS``) - the
+    agent has no name field on Sorento's side, only ``person_label``.
+
+    **A shared row is never deleted by one company's reconcile (plan 22 S4
+    review B2, Appendix A6 item 6).** Because the ref carries no company
+    qualifier, a company's extract missing a ref is not proof the agent is
+    gone globally - a sibling company may still use it. ``sync._stage_deletes``
+    therefore stages NO delete intent at all for this entity: it only drops
+    the reporting company's own ``ac_row_hash`` row for the missing ref (so a
+    later re-appearance stages as a fresh add, never a phantom update). An
+    agent that is genuinely retired must be removed in Sorento directly, out
+    of band - there is deliberately no path from a company's reconcile to a
+    shared agent's deletion.
+    """
+
+    entity_type: str = ENTITY_SALES_AGENT
+
+    description: Optional[str] = Field(None, max_length=255)
+    person_label: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "description",
+        "is_active",
+        "person_label",
+    )
+
+    @field_validator("code")
+    @classmethod
+    def _upper_trim_code(cls, value: Optional[str]) -> Optional[str]:
+        """Normalized HERE, not left to the operator's mapping transform
+        (S4 review NIT): the shared ref (``mapping.flat_source_ref``,
+        ``UNQUALIFIED_REF_ENTITIES``) upper-cases and trims the SAME source
+        column that maps to this field, matching how Sorento's
+        ``sales_agent_service`` stores and matches the code. A plain "string"
+        mapping row (no operator-chosen "upper" transform) would otherwise
+        leave the PAYLOAD's ``code`` disagreeing with the REF it is filed
+        under - normalizing on construction makes that disagreement
+        impossible regardless of which transform a mapping row uses.
+        """
+        if value is None:
+            return value
+        return value.strip().upper()
+
+
+MASTER_ENTITIES: List[str] = [
+    ENTITY_SUPPLIER,
+    ENTITY_CUSTOMER,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
+    ENTITY_PRODUCT,
+    ENTITY_SALES_AGENT,
+    ENTITY_BRAND,
+    ENTITY_BRANCH,
+]
+
+# sprint-5/14 section 11 (D27) - masters whose full-extract reconcile never
+# stages or pushes a delete (the CRM has no deletions door for them, and other
+# documents reference their rows): a vanished row is only COUNTED.
+NO_DELETION_ENTITY_TYPES = frozenset({ENTITY_BRANCH})
+
+# sprint-5/14 section 11 (round 3, S1) - the branch identity pair is LOCKED to
+# its vendor columns: the CRM derives its verdict `source_ref` from the BODY's
+# `AccNo` / `BranchCode` (the MAPPED values), while the ETL mints the ref it
+# matches verdicts by from the RAW row. A tenant repointing or formula-ing
+# either row would break every verdict match forever, so the mapping save
+# refuses it. {canonical field: the only source column it may read}.
+LOCKED_MAPPING_SOURCES = {ENTITY_BRANCH: {"acc_no": "AccNo", "code": "BranchCode"}}

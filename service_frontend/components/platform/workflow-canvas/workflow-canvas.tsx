@@ -10,7 +10,14 @@
  * React Flow node/edge state is local for smooth dragging and re-derived when
  * the doc changes structurally.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   DndContext,
   PointerSensor,
@@ -30,20 +37,40 @@ import {
   type NodeChange,
   type ReactFlowInstance,
 } from '@xyflow/react';
-import { ChevronLeft, ChevronRight, Redo2, RefreshCw, Search, Trash2, TriangleAlert, Undo2, Wand2 } from 'lucide-react';
-import { toast } from 'sonner';
-import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { FlowCanvas, layoutGraph, useHistory } from '@/components/platform/flow-canvas';
-import { ACTION_CATALOG, TRIGGER_CATALOG, catalogEntry } from '@/lib/workflow-catalog';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Redo2,
+  RefreshCw,
+  Search,
+  Trash2,
+  TriangleAlert,
+  Undo2,
+  Wand2,
+} from 'lucide-react';
+import { toast } from '@/lib/toast';
+import type {
+  WorkflowCatalogStatus,
+  WorkflowDefinition,
+  WorkflowMetadata,
+  WorkflowNodeConfig,
+  WorkflowRunNode,
+} from '@/types/workflows';
+import {
+  ACTION_CATALOG,
+  catalogEntry,
+  deniedNodePermissions,
+  isNodeTypeRegistered,
+  isPermissionDenied,
+  TRIGGER_CATALOG,
+} from '@/lib/workflow-catalog';
 import {
   addEdge as addDocEdge,
   addNode as addDocNode,
   createNode,
   hasTrigger,
   moveNode,
-  removeEdge as removeDocEdge,
+  removeEdges as removeDocEdges,
   removeNode as removeDocNode,
   replaceNodeType,
   setPositions,
@@ -52,12 +79,16 @@ import {
   validateDefinition,
   wouldCreateCycle,
 } from '@/lib/workflow-doc';
-import type {
-  WorkflowDefinition,
-  WorkflowMetadata,
-  WorkflowNodeConfig,
-  WorkflowRunNode,
-} from '@/types/workflows';
+import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
+import { Input } from '@/components/ui/input';
+import {
+  FlowCanvas,
+  layoutGraph,
+  useHistory,
+} from '@/components/platform/flow-canvas';
 import { NodeConfigDrawer, type TemplateOption } from './node-config-drawer';
 import { NodePalette } from './node-palette';
 import { WorkflowFlowNode, type WorkflowNodeData } from './workflow-node';
@@ -79,13 +110,29 @@ export interface WorkflowCanvasProps {
   templateOptions: TemplateOption[];
   /** Triggerable entities + statuses/fields the node drawers resolve (D6). */
   metadata: WorkflowMetadata;
+  canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
+  /** The workflow being edited (absent for a new/unsaved workflow) - excludes
+   * itself from the `workflow.trigger` picker and backs the self-trigger
+   * publish-parity check (plan 31 S3). */
+  currentWorkflowId?: string;
+  /** Load state of `GET /workflows/metadata` - drives the palette's skeleton /
+   * failure state (review round 2, R-2). */
+  catalogStatus?: WorkflowCatalogStatus;
   debug?: WorkflowDebugBundle | null;
 }
 
-/** Branch-port edge styling - green true / red false (D8 IF node). */
+/** Branch-port edge styling - green true / red false (D8 IF node), extended
+ * (plan 31 D-A5-14) with the same labelled-handle convention for Ask a
+ * question (answer/timeout) and Business hours (inside/outside). */
 const BRANCH_EDGE: Record<string, { label: string; stroke: string }> = {
   true: { label: 'True', stroke: '#16a34a' },
   false: { label: 'False', stroke: '#dc2626' },
+  answer: { label: 'Answer', stroke: '#2563eb' },
+  timeout: { label: 'Timeout', stroke: '#d97706' },
+  inside: { label: 'Inside hours', stroke: '#16a34a' },
+  outside: { label: 'Outside hours', stroke: '#64748b' },
 };
 
 function CanvasDropZone({ children }: { children: React.ReactNode }) {
@@ -97,13 +144,35 @@ function CanvasDropZone({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metadata, debug }: WorkflowCanvasProps) {
+export function WorkflowCanvas({
+  doc,
+  onChange,
+  editing,
+  templateOptions,
+  metadata,
+  debug,
+  canCode = true,
+  canHttp = true,
+  currentWorkflowId,
+  catalogStatus = 'ready',
+}: WorkflowCanvasProps) {
+  const deniedPermissions = useMemo(
+    () => deniedNodePermissions({ code: canCode, http: canHttp }),
+    [canCode, canHttp],
+  );
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    nodeId: string;
+  } | null>(null);
   const [menuView, setMenuView] = useState<'main' | 'replace'>('main');
   const [replaceQuery, setReplaceQuery] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
-  const [menuCoords, setMenuCoords] = useState<{ left: number; top: number } | null>(null);
+  const [menuCoords, setMenuCoords] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
 
   // Clamp the context menu into the viewport (flips up/left near an edge so the
   // popup never truncates - measured before paint, no flicker).
@@ -116,13 +185,17 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
     const pad = 8;
     let left = contextMenu.x;
     let top = contextMenu.y;
-    if (left + rect.width > window.innerWidth - pad) left = window.innerWidth - rect.width - pad;
-    if (top + rect.height > window.innerHeight - pad) top = window.innerHeight - rect.height - pad;
+    if (left + rect.width > window.innerWidth - pad)
+      left = window.innerWidth - rect.width - pad;
+    if (top + rect.height > window.innerHeight - pad)
+      top = window.innerHeight - rect.height - pad;
     setMenuCoords({ left: Math.max(pad, left), top: Math.max(pad, top) });
   }, [contextMenu, menuView]);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
-  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(
+    null,
+  );
 
   // ---- undo/redo over the whole draft doc (shared hook, closes BL-064) ----
   const { set: emit, undo, redo, canUndo, canRedo } = useHistory(doc, onChange);
@@ -131,7 +204,8 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
     if (!editing) return;
     const handler = (e: KeyboardEvent) => {
       const isUndoRedo =
-        (e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y');
+        (e.metaKey || e.ctrlKey) &&
+        (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y');
       if (!isUndoRedo) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, [contenteditable="true"]')) return;
@@ -204,9 +278,16 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
           sourceHandle: edge.sourcePort ?? 'out',
           type: 'smoothstep',
           label: branch?.label,
-          labelStyle: branch ? { fill: branch.stroke, fontSize: 11, fontWeight: 600 } : undefined,
+          labelStyle: branch
+            ? { fill: branch.stroke, fontSize: 11, fontWeight: 600 }
+            : undefined,
           labelBgStyle: branch ? { fill: 'var(--background)' } : undefined,
-          markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: branch?.stroke },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            width: 18,
+            height: 18,
+            color: branch?.stroke,
+          },
           style: { strokeWidth: 1.5, stroke: branch?.stroke },
           deletable: true,
         };
@@ -218,7 +299,9 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
 
   // Re-tint selection without rebuilding the whole graph.
   useEffect(() => {
-    setNodes((current) => current.map((n) => ({ ...n, selected: n.id === selectedNodeId })));
+    setNodes((current) =>
+      current.map((n) => ({ ...n, selected: n.id === selectedNodeId })),
+    );
   }, [selectedNodeId]);
 
   // Re-tint by debug run status as nodes (re-)execute, without a full rebuild.
@@ -226,17 +309,22 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
     setNodes((current) =>
       current.map((n) => ({
         ...n,
-        data: { ...(n.data as WorkflowNodeData), runStatus: debug?.data[n.id]?.status },
+        data: {
+          ...(n.data as WorkflowNodeData),
+          runStatus: debug?.data[n.id]?.status,
+        },
       })),
     );
   }, [debug]);
 
   const onNodesChange = useCallback(
-    (changes: NodeChange[]) => setNodes((current) => applyNodeChanges(changes, current)),
+    (changes: NodeChange[]) =>
+      setNodes((current) => applyNodeChanges(changes, current)),
     [],
   );
   const onEdgesChange = useCallback(
-    (changes: EdgeChange[]) => setEdges((current) => applyEdgeChanges(changes, current)),
+    (changes: EdgeChange[]) =>
+      setEdges((current) => applyEdgeChanges(changes, current)),
     [],
   );
 
@@ -261,6 +349,11 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
   const addNodeAt = useCallback(
     (type: string, position?: { x: number; y: number }) => {
       const entry = catalogEntry(type);
+      if (isPermissionDenied(entry, deniedPermissions)) return;
+      // Defense in depth (B-4): the palette already omits an unregistered
+      // type, but a stale drag payload or a future non-palette caller must
+      // not add a node the backend can't publish/run either.
+      if (!isNodeTypeRegistered(entry, metadata.registeredNodeTypes)) return;
       if (entry?.kind === 'trigger' && hasTrigger(doc)) {
         toast.error('A workflow can have only one trigger.');
         return;
@@ -284,21 +377,28 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
       emit(addDocNode(doc, node));
       setSelectedNodeId(node.id);
     },
-    [doc, emit],
+    [deniedPermissions, doc, emit, metadata.registeredNodeTypes],
   );
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
       if (event.over?.id !== 'workflow-canvas-drop') return;
-      const data = event.active.data.current as { source: 'palette'; nodeType: string } | undefined;
+      const data = event.active.data.current as
+        | { source: 'palette'; nodeType: string }
+        | undefined;
       if (data?.source !== 'palette') return;
       // Final dragged-item rect (viewport coords) → flow position.
       const rect = event.active.rect.current.translated;
       let position: { x: number; y: number } | undefined;
       if (rect && flowInstance) {
-        position = flowInstance.screenToFlowPosition({ x: rect.left, y: rect.top });
+        position = flowInstance.screenToFlowPosition({
+          x: rect.left,
+          y: rect.top,
+        });
       }
       addNodeAt(data.nodeType, position);
     },
@@ -307,10 +407,14 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
 
   const tidy = useCallback(() => {
     const arranged = layoutGraph(nodes, edges, { direction: 'TB' });
-    const positions = Object.fromEntries(arranged.map((n) => [n.id, n.position]));
+    const positions = Object.fromEntries(
+      arranged.map((n) => [n.id, n.position]),
+    );
     // Goes through emit → undoable (BL-064: Tidy never silently nukes a layout).
     emit(setPositions(doc, positions));
-    requestAnimationFrame(() => flowInstance?.fitView({ padding: 0.2, duration: 300 }));
+    requestAnimationFrame(() =>
+      flowInstance?.fitView({ padding: 0.2, duration: 300 }),
+    );
   }, [nodes, edges, doc, emit, flowInstance]);
 
   const selectedNode = useMemo(
@@ -318,11 +422,15 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
     [doc, selectedNodeId],
   );
 
-  const issues = useMemo(() => validateDefinition(doc), [doc]);
+  const issues = useMemo(
+    () => validateDefinition(doc, metadata, currentWorkflowId),
+    [doc, metadata, currentWorkflowId],
+  );
   const errors = issues.filter((i) => i.level === 'error');
 
   const handleConfigChange = useCallback(
-    (nodeId: string, patch: WorkflowNodeConfig) => emit(updateNodeConfig(doc, nodeId, patch)),
+    (nodeId: string, patch: WorkflowNodeConfig) =>
+      emit(updateNodeConfig(doc, nodeId, patch)),
     [doc, emit],
   );
 
@@ -335,8 +443,13 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
   );
 
   const handleReplace = useCallback(
-    (nodeId: string, newType: string) => emit(replaceNodeType(doc, nodeId, newType)),
-    [doc, emit],
+    (nodeId: string, newType: string) => {
+      const entry = catalogEntry(newType);
+      if (isPermissionDenied(entry, deniedPermissions)) return;
+      if (!isNodeTypeRegistered(entry, metadata.registeredNodeTypes)) return;
+      emit(replaceNodeType(doc, nodeId, newType));
+    },
+    [deniedPermissions, doc, emit, metadata.registeredNodeTypes],
   );
 
   const handleNodeContextMenu = useCallback(
@@ -351,120 +464,163 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
   );
 
   const contextNode = useMemo(
-    () => (contextMenu ? doc.nodes.find((n) => n.id === contextMenu.nodeId) ?? null : null),
+    () =>
+      contextMenu
+        ? (doc.nodes.find((n) => n.id === contextMenu.nodeId) ?? null)
+        : null,
     [contextMenu, doc],
   );
-  const contextReplaceOptions =
-    contextNode?.kind === 'trigger' ? TRIGGER_CATALOG : contextNode?.kind === 'action' ? ACTION_CATALOG : [];
+  const contextReplaceOptions = (
+    contextNode?.kind === 'trigger'
+      ? TRIGGER_CATALOG
+      : contextNode?.kind === 'action'
+        ? ACTION_CATALOG
+        : []
+  ).filter(
+    (entry) =>
+      !isPermissionDenied(entry, deniedPermissions) &&
+      isNodeTypeRegistered(entry, metadata.registeredNodeTypes),
+  );
 
   return (
     <DndContext sensors={sensors} onDragEnd={onDragEnd}>
       <div className="flex flex-col gap-2" data-testid="workflow-canvas">
         {editing && errors.length > 0 && (
-          <Alert variant="warning" appearance="light" data-testid="canvas-issues">
+          <Alert
+            variant="warning"
+            appearance="light"
+            data-testid="canvas-issues"
+          >
             <AlertIcon>
               <TriangleAlert />
             </AlertIcon>
             <AlertTitle>
-              {errors.length} issue{errors.length === 1 ? '' : 's'} to fix before publishing:{' '}
-              {errors[0].message}
+              {errors.length} issue{errors.length === 1 ? '' : 's'} to fix
+              before publishing: {errors[0].message}
             </AlertTitle>
           </Alert>
         )}
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
           <aside className="w-full shrink-0 overflow-y-auto rounded-lg border border-input bg-background p-3 lg:h-[calc(100vh-19rem)] lg:min-h-[480px] lg:w-56">
-          {editing ? (
-            <NodePalette hasTrigger={hasTrigger(doc)} disabled={!editing} onAdd={(t) => addNodeAt(t)} />
-          ) : (
-            <p className="px-1 py-6 text-center text-xs text-muted-foreground">
-              Enable Edit to add nodes.
-            </p>
-          )}
-        </aside>
+            {editing ? (
+              <NodePalette
+                hasTrigger={hasTrigger(doc)}
+                disabled={!editing}
+                canCode={canCode}
+                canHttp={canHttp}
+                registeredNodeTypes={metadata.registeredNodeTypes}
+                catalogStatus={catalogStatus}
+                onAdd={(t) => addNodeAt(t)}
+              />
+            ) : (
+              <p className="px-1 py-6 text-center text-xs text-muted-foreground">
+                Read-only workflow.
+              </p>
+            )}
+          </aside>
 
-        <CanvasDropZone>
-          {editing && (
-            <div className="absolute right-2 top-2 z-30 flex items-center gap-1 rounded-md border border-input bg-background p-0.5 shadow-sm">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                aria-label="Undo"
-                title="Undo (⌘Z)"
-                data-testid="canvas-undo"
-                disabled={!canUndo}
-                onClick={undo}
-              >
-                <Undo2 className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                aria-label="Redo"
-                title="Redo (⇧⌘Z)"
-                data-testid="canvas-redo"
-                disabled={!canRedo}
-                onClick={redo}
-              >
-                <Redo2 className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7"
-                data-testid="canvas-tidy"
-                onClick={tidy}
-              >
-                <Wand2 className="size-3.5" /> Tidy
-              </Button>
-            </div>
-          )}
+          <CanvasDropZone>
+            {editing && (
+              <div className="absolute right-2 top-2 z-30 flex items-center gap-1 rounded-md border border-input bg-background p-0.5 shadow-sm">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="Undo"
+                  title="Undo (⌘Z)"
+                  data-testid="canvas-undo"
+                  disabled={!canUndo}
+                  onClick={undo}
+                >
+                  <Undo2 className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="Redo"
+                  title="Redo (⇧⌘Z)"
+                  data-testid="canvas-redo"
+                  disabled={!canRedo}
+                  onClick={redo}
+                >
+                  <Redo2 className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7"
+                  data-testid="canvas-tidy"
+                  onClick={tidy}
+                >
+                  <Wand2 className="size-3.5" /> Tidy
+                </Button>
+              </div>
+            )}
 
-          <FlowCanvas
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={NODE_TYPES}
-            className="h-[calc(100vh-19rem)] min-h-[480px]"
-            readOnly={!editing}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={editing ? onConnect : undefined}
-            onNodeClick={(id) => setSelectedNodeId(id)}
-            onNodeContextMenu={handleNodeContextMenu}
-            onPaneClick={() => {
-              setSelectedNodeId(null);
-              setContextMenu(null);
-            }}
-            onNodeDragStop={(id, x, y) => {
-              if (!editing) return;
-              emit(moveNode(doc, id, { x, y }));
-            }}
-            onInit={setFlowInstance}
-            onEdgesDelete={
-              editing ? (deleted) => deleted.forEach((e) => emit(removeDocEdge(doc, e.id))) : undefined
-            }
-          />
-        </CanvasDropZone>
+            <FlowCanvas
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={NODE_TYPES}
+              className="h-[calc(100vh-19rem)] min-h-[480px]"
+              readOnly={!editing}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={editing ? onConnect : undefined}
+              onNodeClick={(id) => setSelectedNodeId(id)}
+              onNodeContextMenu={handleNodeContextMenu}
+              onPaneClick={() => {
+                setSelectedNodeId(null);
+                setContextMenu(null);
+              }}
+              onNodeDragStop={(id, x, y) => {
+                if (!editing) return;
+                emit(moveNode(doc, id, { x, y }));
+              }}
+              onInit={setFlowInstance}
+              onEdgesDelete={
+                editing
+                  ? (deleted) =>
+                      emit(
+                        removeDocEdges(
+                          doc,
+                          deleted.map((e) => e.id),
+                        ),
+                      )
+                  : undefined
+              }
+            />
+          </CanvasDropZone>
 
-        <aside className="w-full shrink-0 overflow-y-auto rounded-lg border border-input bg-background p-3 lg:h-[calc(100vh-19rem)] lg:min-h-[480px] lg:w-80">
-          <NodeConfigDrawer
-            node={selectedNode}
-            doc={doc}
-            editing={editing}
-            templateOptions={templateOptions}
-            metadata={metadata}
-            onConfigChange={handleConfigChange}
-            onDelete={handleDelete}
-            onReplaceNode={handleReplace}
-            runData={selectedNode && debug ? (debug.data[selectedNode.id] ?? null) : null}
-            onExecuteNode={debug ? () => selectedNode && debug.onExecuteNode(selectedNode.id) : undefined}
-            executeBusy={debug?.busy}
-          />
-        </aside>
+          <aside className="w-full shrink-0 overflow-y-auto rounded-lg border border-input bg-background p-3 lg:h-[calc(100vh-19rem)] lg:min-h-[480px] lg:w-80">
+            <NodeConfigDrawer
+              node={selectedNode}
+              doc={doc}
+              editing={editing}
+              templateOptions={templateOptions}
+              metadata={metadata}
+              onConfigChange={handleConfigChange}
+              onDelete={handleDelete}
+              onReplaceNode={handleReplace}
+              canCode={canCode}
+              canHttp={canHttp}
+              currentWorkflowId={currentWorkflowId}
+              runData={
+                selectedNode && debug
+                  ? (debug.data[selectedNode.id] ?? null)
+                  : null
+              }
+              onExecuteNode={
+                debug
+                  ? () => selectedNode && debug.onExecuteNode(selectedNode.id)
+                  : undefined
+              }
+              executeBusy={debug?.busy}
+            />
+          </aside>
         </div>
       </div>
 
@@ -481,7 +637,10 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
           <div
             ref={menuRef}
             className="fixed z-50 w-56 overflow-hidden rounded-md border border-border bg-popover py-1 shadow-md"
-            style={{ left: menuCoords?.left ?? contextMenu.x, top: menuCoords?.top ?? contextMenu.y }}
+            style={{
+              left: menuCoords?.left ?? contextMenu.x,
+              top: menuCoords?.top ?? contextMenu.y,
+            }}
             data-testid="node-context-menu"
           >
             {menuView === 'main' ? (
@@ -491,7 +650,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
                     <button
                       type="button"
                       data-testid="context-replace"
-                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-sm hover:bg-accent"
+                      className={cn(PRESSED_CLASS, 'flex w-full items-center justify-between px-2.5 py-1.5 text-left text-sm hover:bg-accent')}
                       onClick={() => setMenuView('replace')}
                     >
                       <span className="flex items-center gap-2">
@@ -505,7 +664,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
                 <button
                   type="button"
                   data-testid="context-delete"
-                  className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm text-destructive hover:bg-accent"
+                  className={cn(PRESSED_CLASS, 'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm text-destructive hover:bg-accent')}
                   onClick={() => {
                     handleDelete(contextNode.id);
                     setContextMenu(null);
@@ -518,7 +677,7 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
               <>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-xs font-semibold text-muted-foreground hover:bg-accent"
+                  className={cn(PRESSED_CLASS, 'flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-xs font-semibold text-muted-foreground hover:bg-accent')}
                   onClick={() => setMenuView('main')}
                 >
                   <ChevronLeft className="size-3.5" /> Replace with
@@ -537,12 +696,16 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
                 <div className="max-h-56 overflow-y-auto">
                   {contextReplaceOptions
                     .filter((e) => e.type !== contextNode.type)
-                    .filter((e) => e.label.toLowerCase().includes(replaceQuery.trim().toLowerCase()))
+                    .filter((e) =>
+                      e.label
+                        .toLowerCase()
+                        .includes(replaceQuery.trim().toLowerCase()),
+                    )
                     .map((entry) => (
                       <button
                         key={entry.type}
                         type="button"
-                        className="flex w-full items-center px-2.5 py-1.5 text-left text-sm hover:bg-accent"
+                        className={cn(PRESSED_CLASS, 'flex w-full items-center px-2.5 py-1.5 text-left text-sm hover:bg-accent')}
                         onClick={() => {
                           handleReplace(contextNode.id, entry.type);
                           setContextMenu(null);
@@ -553,9 +716,14 @@ export function WorkflowCanvas({ doc, onChange, editing, templateOptions, metada
                     ))}
                   {contextReplaceOptions
                     .filter((e) => e.type !== contextNode.type)
-                    .filter((e) => e.label.toLowerCase().includes(replaceQuery.trim().toLowerCase()))
-                    .length === 0 && (
-                    <p className="px-2.5 py-2 text-center text-xs text-muted-foreground">No matching types.</p>
+                    .filter((e) =>
+                      e.label
+                        .toLowerCase()
+                        .includes(replaceQuery.trim().toLowerCase()),
+                    ).length === 0 && (
+                    <p className="px-2.5 py-2 text-center text-xs text-muted-foreground">
+                      No matching types.
+                    </p>
                   )}
                 </div>
               </>

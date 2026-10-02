@@ -66,6 +66,11 @@ def _resume_handler(db, job):
 _COUNTING = JobHandlerDef(type="test_counting", handler=_counting_handler, label="Counting")
 _CRASHING = JobHandlerDef(type="test_crashing", handler=_crashing_handler, label="Crashing")
 _RESUME = JobHandlerDef(type="test_resume", handler=_resume_handler, label="Resume")
+# Declares a queue override (sprint-5 prod-enablement) - the fixture every
+# routing test below dispatches through, mirroring ``meetings.transcribe``.
+_QUEUED = JobHandlerDef(
+    type="test_queued", handler=_counting_handler, label="Queued", queue="stt"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +79,7 @@ def _register_handlers():
     register_job_handler(_COUNTING)
     register_job_handler(_CRASHING)
     register_job_handler(_RESUME)
+    register_job_handler(_QUEUED)
     yield
 
 
@@ -156,12 +162,91 @@ def test_duplicate_registration_is_loud():
         register_job_handler(other)  # same type, different object → loud
 
 
+def test_queue_for_type_reads_the_registered_override():
+    from app.jobs.registry import queue_for_type
+
+    assert queue_for_type("test_queued") == "stt"
+
+
+def test_queue_for_type_is_none_without_an_override_or_a_registration():
+    from app.jobs.registry import queue_for_type
+
+    assert queue_for_type("test_counting") is None  # registered, no override
+    assert queue_for_type("no_such_type") is None  # not registered at all
+
+
 def test_eager_enqueue_runs_inline(db):
     job = JobService(db).create_and_enqueue(type="test_counting", tenant_id=DEFAULT_TENANT_ID)
     db.refresh(job)
     assert job.status == JOB_DONE
     assert job.result_json == {"ran": True}
     assert _RUN_LOG == [job.id]
+
+
+# ── Queue routing (sprint-5 prod-enablement) ──────────────────────────────────
+# ``JobService.enqueue`` normally short-circuits to the eager inline path in
+# tests; these force the non-eager (prod-shaped) branch to pin WHERE a job
+# gets published, mirroring the "wrong worker looks healthy but never runs the
+# job" failure class the ``bots`` queue already guards against.
+
+
+def test_enqueue_routes_a_queued_type_onto_its_declared_queue(db, monkeypatch):
+    """A handler that declares ``queue=`` is dispatched with Celery's routing
+    kwarg via ``apply_async``, never the plain default-queue ``.delay``."""
+    from app.config import settings
+    from app.jobs import worker as worker_module
+
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
+    calls = []
+    monkeypatch.setattr(
+        worker_module.run_job_task,
+        "apply_async",
+        lambda args=None, queue=None, **kw: calls.append((args, queue)),
+    )
+    job = JobService(db).create(type="test_queued", tenant_id=DEFAULT_TENANT_ID)
+
+    JobService(db).enqueue(job.id)
+
+    assert calls == [([job.id], "stt")]
+
+
+def test_enqueue_uses_plain_delay_for_a_type_with_no_queue_override(db, monkeypatch):
+    """A type with no ``queue`` declared keeps riding the worker's default
+    queue via plain ``.delay`` - unchanged behavior for every existing type."""
+    from app.config import settings
+    from app.jobs import worker as worker_module
+
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
+    delayed = []
+    monkeypatch.setattr(
+        worker_module.run_job_task, "delay", lambda job_id: delayed.append(job_id)
+    )
+    job = JobService(db).create(type="test_counting", tenant_id=DEFAULT_TENANT_ID)
+
+    JobService(db).enqueue(job.id)
+
+    assert delayed == [job.id]
+
+
+def test_enqueue_falls_back_to_delay_for_an_unregistered_type(db, monkeypatch):
+    """A job row whose type has no registered handler at all - ``create()``
+    refuses to persist one, but a stray row (an older type retired from the
+    registry, say) must still enqueue rather than crash the caller."""
+    from app.config import settings
+    from app.jobs import worker as worker_module
+
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
+    delayed = []
+    monkeypatch.setattr(
+        worker_module.run_job_task, "delay", lambda job_id: delayed.append(job_id)
+    )
+    job = BackgroundJob(tenant_id=DEFAULT_TENANT_ID, type="no_such_type", status=JOB_PENDING)
+    db.add(job)
+    db.commit()
+
+    JobService(db).enqueue(job.id)
+
+    assert delayed == [job.id]
 
 
 def test_atomic_claim_admits_exactly_one(db):
