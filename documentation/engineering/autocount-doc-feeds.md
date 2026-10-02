@@ -178,3 +178,17 @@ Facts a maintainer needs:
 - **Lifecycle:** same-scope re-attach; a different scope while one is building = 409
   `BUILD_IN_FLIGHT`; the 60 s cooldown applies to the same scope only. The DO build body is
   `doc_feed/snapshot.py`, dispatched from `sync._run_pull_snapshot`.
+
+### 11.1 Goods-received-notes pull snapshot (GRN mirror, lane GRN-PULL-SS)
+
+`goods_receive_notes` is a fourth gateway `entity` built by the SAME code. The snapshot path is
+generic over the doc feed: `pull_gateway_service.DOC_FEED_SNAPSHOT_ENTITIES` +
+`is_doc_feed_entity`, `parse_doc_scope`, and `doc_feed/snapshot.build_doc_feed_snapshot`, which
+reads `feed_row.feed`. Do not add a second builder. The differences from DO: the gate is the
+company's `goods_receive_notes` feed row, the door is `/goodsreceivenotebydocdate`, and
+`source_ref` is `{book}:GRN:{DocKey}`. **Operator reads** (`/autocount/pull/snapshots*`, session
+auth) of a GRN snapshot also need `autocount.sync.read`
+(`pull_service.SNAPSHOT_ENTITY_READ_PERMISSION`). Without it, the list hides GRN snapshots and
+the header and rows read as an unknown id. Supplier and cost data never widens to
+`autocount.pull.read` alone, the same rule as the doc finder's GRN type. The gateway itself is
+key + company scoped, like DO. Contract: section 8 of the plan 16 contract.

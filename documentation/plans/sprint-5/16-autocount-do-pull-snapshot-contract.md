@@ -142,8 +142,8 @@ renamed, dropped or re-typed; `Details[]` included; unknown vendor keys included
   `UnitPrice`, `Discount` / `DiscountAmt`, `SubTotal`, `Qty` / `UOM`. A field the vendor does
   not return cannot be added here; raise it via crew report.
 - Owner ruling 2026-09-30: the DO feed stays pull-on-request (no `push` switch until the CRM
-  compare + approve flow is proven); `goods_receive_notes` gets the same snapshot as a follow-on
-  after DO, not in this lane.
+  compare + approve flow is proven). `goods_receive_notes` got the same snapshot as a follow-on
+  (section 8, 2026-10-02).
 - Identity: `source_ref` is NOT inside the row (the feed does not send it either); derive it as
   `{book}:DO:{DocKey}` with `book` from the header, the same derivation the CRM's DO ingest
   already uses (`13.3 / C2`). The stored row's `source_ref` column holds that string for the
@@ -183,3 +183,44 @@ renamed, dropped or re-typed; `Details[]` included; unknown vendor keys included
   optional scope fields; the review compares each row against `orders` / `order_lines` with
   the DO ingest's own rules, keyed by `DocKey` / `DtlKey`, `source_ref = {book}:DO:{DocKey}`.
 - Confirm applies via the existing DO ingest code path (no second writer).
+
+## 8. `goods_receive_notes` (GRN mirror, 2026-10-02, lane GRN-PULL-SS, for CRM lane GRN-PULL-CRM)
+
+A fourth `entity` on the same gateway. **Everything in sections 2-6 applies unchanged**: the
+same three routes, the same scope keys and rules (flat optional `fromDay` / `toDay` / `docNo`,
+at least one of `fromDay` / `docNo`, `docNo` alone = the 31 MYT days ending today), the same
+202 echo, the same header keys (`book`, `contentHash`, `daysRead`, `fetchedCount`, `lineCount`,
+`excludedRows`, ...), the same re-attach / `409 BUILD_IN_FLIGHT` / per-scope cooldown, the same
+10,000-document cap (`ROW_LIMIT`), the 1 MB per-document exclusion and the same failed codes.
+Only these differ:
+
+| | `delivery_orders` | `goods_receive_notes` |
+|---|---|---|
+| Wire `entity` | `delivery_orders` | `goods_receive_notes` |
+| Vendor door | `/deliveryorderbydocdate?DocDate=yyyyMMdd` | `/goodsreceivenotebydocdate?DocDate=yyyyMMdd` |
+| Gate (`409 PULL_NOT_ENABLED` when missing / no connection) | the company's `delivery_orders` feed row | the company's `goods_receive_notes` feed row |
+| `source_ref` (stored column; derive it the same way on the CRM side) | `{book}:DO:{DocKey}` | `{book}:GRN:{DocKey}` |
+| `too_large` message | "Delivery order exceeds 1 MB ..." | "Goods received note exceeds 1 MB and cannot be stored in a snapshot." |
+
+- **Scope with no keys:** `fromDay` or `docNo` is required (422 `INVALID_REQUEST`, "fromDay or
+  docNo is required."), exactly as for DO. There is no implicit "last 31 days" for a bare build:
+  send `docNo` alone for the 31-day window, or send `fromDay` / `toDay` (today minus 30 to
+  today).
+- **Rows:** the raw vendor GRN dict verbatim, with `Details[]` intact (header `Cancelled`,
+  `LastModified`, `CreditorCode` / `CreditorName`, `SupplierDONo`, totals; lines `DtlKey`,
+  `ItemCode`, `Qty`, `UOM`, `UnitPrice`, `Location`, `OurPONo`, and the vendor's
+  `FromDocType` / `FromDocNo` / `FromDocDtlKey` when it returns them). Nothing is renamed or
+  added. One row per `DocKey` (greatest `LastModified`), ordered `DocDate` asc then `DocKey` asc.
+- The GRN feed's `mode` never gates the read, and the build never touches the feed's cursor,
+  ledger, issue rows or the sink. The feed stays pull-on-request (no Push switch is involved).
+- `BUILD_IN_FLIGHT` is per (company, entity): a DO build in flight never blocks a GRN build,
+  and the reverse holds too.
+- `UNKNOWN_ENTITY`'s message now lists
+  `delivery_orders, goods_receive_notes, products, stock_balances`. A scope key on
+  `products` / `stock_balances` is still a 422 (the message names both document entities).
+- **Who may read it:** the gateway key is company-scoped exactly as for DO. No new key scope
+  exists; the enable switch is the operator configuring the company's GRN feed. On the
+  operator (session) routes, a GRN snapshot also needs `autocount.sync.read` on top of
+  `autocount.pull.read`; without it the snapshot is hidden from the list and reads as an
+  unknown id (404). The operator build route refuses `goods_receive_notes` with a 422, as it
+  does `delivery_orders`.
