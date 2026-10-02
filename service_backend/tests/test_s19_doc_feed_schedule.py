@@ -117,7 +117,7 @@ def test_put_without_schedule_keeps_the_stored_schedule(client, session_factory)
 @pytest.mark.parametrize(
     "schedule,field",
     [
-        ({"incrementalMinutes": 4, "reconcileMode": "interval", "reconcileHours": 24}, "incrementalMinutes"),
+        ({"incrementalMinutes": 0, "reconcileMode": "interval", "reconcileHours": 24}, "incrementalMinutes"),
         ({"incrementalMinutes": None, "reconcileMode": "interval", "reconcileHours": 24}, "incrementalMinutes"),
         ({"incrementalMinutes": 60, "reconcileMode": "weekly", "reconcileHours": 24}, "reconcileMode"),
         ({"incrementalMinutes": 60, "reconcileMode": "interval", "reconcileHours": 0}, "reconcileHours"),
@@ -145,7 +145,9 @@ def test_floor_values_are_accepted(client, session_factory):
     db = session_factory()
     headers = auth_headers(client)
     co, _ = _armed(client, db, headers)
-    schedule = {"incrementalMinutes": 5, "reconcileMode": "interval", "reconcileHours": 1, "reconcileAt": None}
+    # Owner Q1 (2 Oct): the poll floor is 1 minute, Entities' with-watermark
+    # floor (the poll reads `byLastModified`, a LastModified watermark).
+    schedule = {"incrementalMinutes": 1, "reconcileMode": "interval", "reconcileHours": 1, "reconcileAt": None}
     r = client.put(_url(co), json={"mode": "dry_run", "schedule": schedule}, headers=headers)
     assert r.status_code == 200, r.text
 
@@ -181,6 +183,15 @@ def test_beat_rearms_poll_from_stored_minutes(session_factory):
     sweep_doc_feeds(db, now=NOW)
     db.refresh(feed)
     assert feed.next_poll_at == NOW + timedelta(minutes=15)
+
+
+def test_beat_rearms_a_one_minute_poll_one_minute_out(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _due_feed(db, co, ac_conn, {"incrementalMinutes": 1, "reconcileMode": "interval", "reconcileHours": 24})
+    sweep_doc_feeds(db, now=NOW)
+    db.refresh(feed)
+    assert feed.next_poll_at == NOW + timedelta(minutes=1)
 
 
 def test_beat_rearms_sweep_interval_hours(session_factory):

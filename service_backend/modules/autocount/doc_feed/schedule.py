@@ -2,9 +2,10 @@
 
 A document feed's cadence uses the SAME shape, rules and maths as an ETL
 task's schedule on the Entities tab: the poll is the "incremental" (every N
-minutes, no-watermark floor - the poll re-reads ``min(cursor, yesterday)..
-today`` with no watermark), the deletion sweep is the "reconcile" (every N
-hours, or daily at ``HH:MM`` UTC). Validation is ``etl_service.
+minutes, floor 1 minute - Entities' with-watermark floor, owner ruling Q1 on
+PR #110; the poll reads the vendor's ``<doc>byLastModified`` endpoint, a
+LastModified watermark), the deletion sweep is the "reconcile" (every N hours
+>= 1, or daily at ``HH:MM`` UTC). Validation is ``etl_service.
 validate_schedule`` and next-run maths is ``EtlService.next_run_times`` -
 reused, never re-implemented.
 
@@ -25,6 +26,10 @@ from ..services.etl_service import (
 
 SCHEDULE_KEYS = ("incrementalMinutes", "reconcileMode", "reconcileHours", "reconcileAt")
 
+# `next_run_times` picks its incremental floor from `watermarkColumn`; the
+# poll is a LastModified read, so it runs on the with-watermark floor.
+_POLL_WATERMARK = {"watermarkColumn": "LastModified"}
+
 DEFAULT_DOC_FEED_SCHEDULE: Dict[str, Any] = {
     "incrementalMinutes": 60,
     "reconcileMode": RECONCILE_MODE_INTERVAL,
@@ -41,16 +46,16 @@ def resolve_schedule(stored: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def validate_doc_feed_schedule(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
-    """Entities' rule set with the no-watermark poll floor."""
-    return validate_schedule(raw, has_watermark=False)
+    """Entities' rule set with the with-watermark (1 minute) poll floor."""
+    return validate_schedule(raw, has_watermark=True)
 
 
 def next_poll_at(schedule: Dict[str, Any], now: datetime) -> datetime:
-    return EtlService.next_run_times(schedule, now=now)[0]
+    return EtlService.next_run_times({**schedule, **_POLL_WATERMARK}, now=now)[0]
 
 
 def next_sweep_at(schedule: Dict[str, Any], now: datetime) -> datetime:
-    return EtlService.next_run_times(schedule, now=now)[1]
+    return EtlService.next_run_times({**schedule, **_POLL_WATERMARK}, now=now)[1]
 
 
 def poll_changed(old: Dict[str, Any], new: Dict[str, Any]) -> bool:

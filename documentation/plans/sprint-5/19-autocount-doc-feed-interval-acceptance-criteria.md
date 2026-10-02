@@ -5,8 +5,10 @@ receive notes) runs, with the SAME mechanism the Entities tab uses for an ETL ta
 (`schedule-tab.tsx` Incremental + Reconcile cards, `etl_service.py` floors + `next_run_times`).
 Plan: [19-autocount-doc-feed-interval.md](19-autocount-doc-feed-interval.md).
 
-Behaviour card: PR #110 `crew-ask`. Floors below are the card's recommendations (Q1 (a), Q2 (a),
-Q3 (a), Q4 (a)) and are revised if the owner answers otherwise.
+Behaviour card: PR #110 `crew-ask`. Owner answers (2 Oct): **Q1 poll floor = 1 minute** (Entities'
+with-watermark floor - the poll reads `byLastModified`); Q2 sweep = Entities' reconcile (1 h floor,
+daily HH:MM or every N hours); Q3 (a) shared component in the Configure dialog, no list column.
+Q4 unanswered - the recommendation (a) "re-arm only the changed half" stands.
 
 Tags: `[BE]` backend pytest, `[FE]` vitest, `[T]` tester / hand-test proof.
 
@@ -27,7 +29,7 @@ Tags: `[BE]` backend pytest, `[FE]` vitest, `[T]` tester / hand-test proof.
   `{incrementalMinutes, reconcileMode, reconcileHours?, reconcileAt?}`; omitted = stored schedule
   kept. Gate stays `autocount.companies.manage` (a user without it gets 403).
 - **AC-19-05 [BE]** Validation mirrors the Entities no-watermark rules, as a 422 house
-  `detail.fieldErrors` map: `incrementalMinutes` missing/non-integer/< 5 rejected; `reconcileMode`
+  `detail.fieldErrors` map: `incrementalMinutes` missing/non-integer/< 1 rejected; `reconcileMode`
   outside `interval|dailyAt` rejected; `interval` needs `reconcileHours >= 1`; `dailyAt` needs
   `reconcileAt` `HH:MM` (UTC). A rejected PUT changes nothing (mode/connection included).
 - **AC-19-06 [BE]** The beat honours the stored schedule: a due poll re-arms `now + N min`; a due
@@ -48,7 +50,7 @@ Tags: `[BE]` backend pytest, `[FE]` vitest, `[T]` tester / hand-test proof.
 - **AC-19-10 [FE]** The Incremental + Reconcile cards are ONE shared component; the Entities
   Schedule tab renders it unchanged (existing `schedule-tab.test.tsx` stays green).
 - **AC-19-11 [FE]** The Doc feeds Configure dialog renders that component (titles "Poll" and
-  "Deletion sweep"), prefilled from `schedule`, with the same live validation (floor 5 min,
+  "Deletion sweep"), prefilled from `schedule`, with the same live validation (floor 1 min,
   1 h, HH:MM); Save is disabled while invalid and sends `schedule` in the PUT body.
 - **AC-19-12 [T]** Hand test: change the DO feed to poll every 15 min and sweep daily at 02:00
   UTC; reopen shows the saved values; `nextPollAt` moves to ~now+15 min; at 375 px and 1280 px
