@@ -69,7 +69,7 @@ from ..services.embed import (
 )
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
-from ..services.ownership import SubmitterIdentity, owned_ids
+from ..services.ownership import SubmitterIdentity, merged_child_ids, owned_ids
 
 router = APIRouter()
 
@@ -532,7 +532,10 @@ def embed_unmerge_idea(
     """Restore a merged child, or dissolve a survivor's whole group, from the
     iframe (AC-94-16). Scoped to tenant+product (404 otherwise)."""
     _assert_in_scope(db, principal, idea_id)
-    _assert_can_manage(db, principal, [idea_id])
+    # Unmerging a survivor dissolves the whole group, so a non-manager must own
+    # every idea in it (not just the survivor) - never undo others' triage.
+    children = merged_child_ids(db, principal.tenant_id, idea_id)
+    _assert_can_manage(db, principal, [idea_id, *children])
     return _mark_mine(db, principal, IdeaMergeService(db).unmerge(principal.tenant_id, idea_id))
 
 

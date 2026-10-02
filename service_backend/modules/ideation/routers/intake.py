@@ -63,7 +63,9 @@ def create_idea_one_shot(
     returns ``{idea_id, idea_number, status, title, link}``. Errors (uniform
     envelope): 422 ``submitter_required`` (no ``submitter_crm_user_id``), 422
     ``problem_required``, 422 ``title_too_long``, 422 ``invalid_phone``, 404
-    ``unknown_product``. ``/create-idea`` (the turn flow) is unchanged."""
+    ``unknown_product``, 422 ``no_workspace``, 409 ``intake_ref_conflict``.
+    A retry with the same ``intake_ref`` returns the same idea (idempotent).
+    ``/create-idea`` (the turn flow) is unchanged."""
     return IntakeService(db).create_one_shot(
         api_ws.tenant_id,
         product_id=body.product_id,
@@ -79,6 +81,7 @@ def create_idea_one_shot(
         raw_transcript=body.raw_transcript,
         attachments=[a.model_dump() for a in body.attachments] if body.attachments else None,
         is_test=body.is_test,
+        intake_ref=body.intake_ref,
     )
 
 

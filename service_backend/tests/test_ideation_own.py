@@ -148,6 +148,27 @@ def _insert_idea(
         db.close()
 
 
+def _contact(factory, phone, tenant_id=DEFAULT_TENANT_ID, digits=None):
+    """A contact row, optionally with ``phone_digits`` stamped (None = legacy)."""
+    from modules.omnichannel.models import Contact, Workspace
+
+    db = factory()
+    try:
+        ws = db.query(Workspace).filter(Workspace.tenant_id == DEFAULT_TENANT_ID).first()
+        c = Contact(
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            first_name="X",
+            phone=phone,
+            phone_digits=digits,
+        )
+        db.add(c)
+        db.commit()
+        return c.id
+    finally:
+        db.close()
+
+
 @pytest.fixture
 def ctx(ideation_client):
     h = _auth(ideation_client)
@@ -221,6 +242,51 @@ def test_one_shot_create_rejects_long_title_and_junk_phone(ctx):
     assert res.json()["error"]["code"] == "invalid_phone"
 
 
+def test_one_shot_create_is_idempotent_on_intake_ref(ctx):
+    client, _h, product_id, key = ctx
+    first = _one_shot(client, key, product_id, intake_ref="msg-1")
+    again = _one_shot(client, key, product_id, intake_ref="msg-1", problem="retry body")
+    assert first.status_code == 201 and again.status_code == 201
+    assert again.json() == first.json()
+    # the retry did not burn a number
+    assert _one_shot(client, key, product_id, intake_ref="msg-2").json()["idea_number"] == "IDEA-0002"
+    # the same key from a different submitter is refused, never replayed
+    clash = _one_shot(client, key, product_id, intake_ref="msg-1", submitter_crm_user_id="crm-2")
+    assert clash.status_code == 409
+    assert clash.json()["error"]["code"] == "intake_ref_conflict"
+
+
+def test_one_shot_create_matches_formatted_stored_phone(ctx):
+    client, _h, product_id, key = ctx
+    legacy = _contact(client._factory, "+60 12-345 6789")  # phone_digits not stamped
+    idea_id = _one_shot(client, key, product_id).json()["idea_id"]
+
+    from modules.ideation.models import Idea
+
+    db = client._factory()
+    try:
+        assert db.query(Idea).filter(Idea.id == idea_id).one().submitter_contact_id == legacy
+    finally:
+        db.close()
+
+
+def test_one_shot_create_new_contact_is_stamped(ctx):
+    client, _h, product_id, key = ctx
+    idea_id = _one_shot(client, key, product_id, submitter_phone="+60 19-999 8888").json()["idea_id"]
+
+    from modules.ideation.models import Idea
+    from modules.omnichannel.models import Contact
+
+    db = client._factory()
+    try:
+        cid = db.query(Idea).filter(Idea.id == idea_id).one().submitter_contact_id
+        contact = db.query(Contact).filter(Contact.id == cid).one()
+        assert contact.phone == "+60199998888"
+        assert contact.phone_digits == "60199998888"
+    finally:
+        db.close()
+
+
 def test_one_shot_create_unknown_product_and_auth(ctx):
     client, _h, _product_id, key = ctx
     assert _one_shot(client, key, "nope").status_code == 404
@@ -277,6 +343,37 @@ def test_similar_own_phone_format_tolerant(ctx):
     assert [m["idea_id"] for m in res.json()["matches"]] == [own_id]
 
 
+def test_similar_own_matches_stamped_digits(ctx):
+    client, _h, product_id, key = ctx
+    mine = _contact(client._factory, "+60 12 345 6789", digits="60123456789")
+    own_id = _insert_idea(
+        client._factory, product_id, problem="Export orders to Excel", contact_id=mine
+    )
+    res = _similar(client, key, product_id, "export orders to excel", submitter_phone="60123456789")
+    assert [m["idea_id"] for m in res.json()["matches"]] == [own_id]
+
+
+def test_similar_own_and_mine_never_cross_tenants(ctx):
+    client, _h, product_id, key = ctx
+    _seed_connection(client._factory, product_id=product_id)
+    foreign_contact = _contact(client._factory, PHONE, tenant_id="tenant-other", digits="60123456789")
+    _insert_idea(
+        client._factory,
+        product_id,
+        problem="Export orders to Excel",
+        crm_user_id="crm-1",
+        contact_id=foreign_contact,
+        tenant_id="tenant-other",
+    )
+    res = _similar(
+        client, key, product_id, "export orders to excel",
+        submitter_crm_user_id="crm-1", submitter_phone=PHONE,
+    )
+    assert res.json()["matches"] == []
+    h = _embed_h(client, sub="crm-1", phone=PHONE)
+    assert client.get("/embed/ideas?mine=true", headers=h).json() == []
+
+
 def test_similar_own_matches_crm_user_id(ctx):
     client, _h, product_id, key = ctx
     own_id = _insert_idea(
@@ -318,8 +415,9 @@ def test_similar_own_requires_an_identity(ctx):
     assert res.status_code == 422
     assert res.json()["error"]["code"] == "submitter_required"
     # a junk phone (too few digits) is not an identity either
-    res = _similar(client, key, product_id, "export orders to excel", submitter_phone="+")
-    assert res.status_code == 422
+    for junk in ("+", "0", "1234567"):  # fewer than 8 digits is not an identity
+        res = _similar(client, key, product_id, "export orders to excel", submitter_phone=junk)
+        assert res.status_code == 422, junk
 
 
 def test_similar_own_live_only_top_three(ctx):
@@ -394,6 +492,9 @@ def test_embed_is_mine_flags(ctx):
     assert flags == {by_crm: True, by_phone: True, others: False}
     assert client.get(f"/embed/ideas/{by_phone}", headers=h).json()["isMine"] is True
     assert client.get(f"/embed/ideas/{others}", headers=h).json()["isMine"] is False
+    board = client.get("/embed/board", headers=h).json()
+    board_flags = {i["id"]: i["isMine"] for c in board["columns"] for i in c["ideas"]}
+    assert board_flags == {by_crm: True, by_phone: True, others: False}
 
 
 def test_embed_mine_filter(ctx):
@@ -447,8 +548,43 @@ def test_embed_manage_claim_false_blocks_others_ideas(ctx):
         client.put("/embed/ideas/reorder", headers=h, json={"orderedIds": [by_crm, others]}).status_code
         == 403
     )
+    assert (
+        client.post(
+            "/embed/ideas/merge", headers=h, json={"survivorId": by_crm, "ideaIds": [by_crm, others]}
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/embed/ideas/{others}/attachments",
+            headers=h,
+            files={"file": ("a.png", b"\x89PNG\r\n\x1a\n" + b"0" * 16, "image/png")},
+        ).status_code
+        == 403
+    )
+    assert client.post(f"/embed/ideas/{others}/unmerge", headers=h).status_code == 403
     # voting on others' ideas stays open
     assert client.post(f"/embed/ideas/{others}/vote", headers=h, json={"dir": "up"}).status_code == 200
+
+
+def test_embed_manage_claim_false_unmerge_needs_whole_group(ctx):
+    client, by_crm, by_phone, others = _embed_fixture(ctx)
+    admin = _embed_h(client, sub="crm-admin")  # no claim = legacy manage access
+    merged = client.post(
+        "/embed/ideas/merge", headers=admin, json={"survivorId": by_crm, "ideaIds": [by_crm, others]}
+    )
+    assert merged.status_code == 200, merged.text
+    h = _embed_h(client, sub="crm-1", phone=PHONE, ideas_manage=False)
+    # by_crm is mine, but dissolving it would restore someone else's idea
+    assert client.post(f"/embed/ideas/{by_crm}/unmerge", headers=h).status_code == 403
+    # an all-mine group can be unmerged
+    assert client.post(f"/embed/ideas/{others}/unmerge", headers=admin).status_code == 200
+    merged = client.post(
+        "/embed/ideas/merge", headers=h, json={"survivorId": by_crm, "ideaIds": [by_crm, by_phone]}
+    )
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["isMine"] is True
+    assert client.post(f"/embed/ideas/{by_crm}/unmerge", headers=h).status_code == 200
 
 
 def test_embed_manage_claim_true_or_absent_keeps_legacy_access(ctx):

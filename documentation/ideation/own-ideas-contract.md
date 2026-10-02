@@ -16,12 +16,29 @@ An idea belongs to a submitter identified by EITHER
 - `ideas.submitter_crm_user_id` (new column, migration 0015) - the host CRM user
   id; set by the one-shot chatbot create and the embed create (assertion `sub`), or
 - the submitter contact's phone - `ideas.submitter_contact_id` -> an omnichannel
-  contact in the SAME tenant whose `phone` matches (compared as `+<digits>` and
-  `<digits>`, so `+60 12-345 6789` matches a stored `60123456789`).
+  contact in the SAME tenant whose phone has the same digits (omnichannel's
+  `digits_only` / `Contact.phone_digits`, so formatting on either side does not
+  matter: `+60 12-345 6789` matches `60123456789`).
 
-Never by display name. A blank CRM id or a phone with fewer than 6 digits is no
+Never by display name. A blank CRM id or a phone with fewer than 8 digits is no
 identity: it matches nothing, so `mine=true` without identity is an empty list,
 never "all". Code: `modules/ideation/services/ownership.py`.
+
+Trust assumptions (the host must honour these):
+
+- **One CRM user-id namespace per tenant.** `sub` / `submitter_crm_user_id` are
+  compared as-is. A tenant with two different host CRMs (or two embed
+  connections whose user ids collide) would see false `isMine`. Today: one
+  sorento per tenant.
+- **`phone` must be a verified number** (the user's WhatsApp number the CRM has
+  verified), never a profile field the user can edit freely - it grants
+  ownership of ideas that phone sent from WhatsApp.
+- **The workspace key is a tenant-level server credential.** It may assert any
+  submitter on one-shot create and similar-own, and sees ideas from every
+  workspace of its tenant (ideas and contacts are tenant-wide).
+- Embed ideas created before migration 0015 carry no CRM link, so an
+  `ideas_manage=false` viewer cannot edit those older embed ideas (WhatsApp
+  ideas stay owned through the phone link).
 
 ## Idea number
 
@@ -53,10 +70,19 @@ Request:
 | `raw_transcript` | string? | stored as `raw_text` (else `problem`) |
 | `attachments` | array? | same shape as `/create-idea` (`source_msg_id`, `type`, `url`, `filename?`, `caption?`) |
 | `is_test` | bool | default false |
+| `intake_ref` | string? | idempotency key (e.g. the confirming Respond.io message id) |
 
 Response: `{"idea_id", "idea_number", "status": "captured", "title", "link"}`
 (`link` = the public status link, null when no `status_token`).
 No cross-submitter dedup on this call: run the own-similar lookup first.
+
+Idempotency: a retry with the same `intake_ref` (same tenant, same
+`submitter_crm_user_id`) returns the idea already created, same body, no second
+idea and no second number. The same `intake_ref` from a different CRM user =
+409 `intake_ref_conflict`. Without `intake_ref` every call creates a new idea.
+
+Other errors: 422 `no_workspace` (a phone was given but the tenant has no
+omnichannel workspace to attach the contact copy to).
 
 ### 2. Own-similar - `POST /ideation/intake/ideas/similar-own` -> 200
 
@@ -88,7 +114,7 @@ Existing claims unchanged. New optional claims:
 | claim | type | effect |
 |---|---|---|
 | `phone` | string | second ownership link (WhatsApp-submitted ideas) |
-| `ideas_manage` | bool | `false` = the viewer may only edit / status-move / delete / reorder / merge / unmerge / attach their OWN ideas (others = 403 `not_owner`); voting stays open. `true` or absent = today's behaviour. Non-bool values are ignored. |
+| `ideas_manage` | bool | `false` = the viewer may only edit / status-move / delete / reorder / merge / unmerge / attach their OWN ideas (others = 403 `not_owner`; unmerging a survivor needs every idea in the group to be theirs); voting stays open. `true` or absent = today's behaviour. Non-bool values (e.g. the string `"false"`) are ignored = treated as absent, so send a JSON boolean. |
 
 ## Security notes
 
@@ -102,4 +128,5 @@ Existing claims unchanged. New optional claims:
 ## Tests
 
 `service_backend/tests/test_ideation_own.py` (red-first), Postgres path verified
-manually (migration 0014 -> 0015 + pg_trgm own-similar on a local Postgres 16).
+manually (migration `0015_ideation_own_ideas` upgrade from 0014 + pg_trgm
+own-similar + one-shot sequence mint on a local Postgres 16).

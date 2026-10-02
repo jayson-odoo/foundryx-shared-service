@@ -630,6 +630,9 @@ class OneShotIdeaIn(ApiModel):
     raw_transcript: Optional[str] = None
     attachments: Optional[List[CreateIdeaAttachmentIn]] = None
     is_test: bool = False
+    # Host idempotency key (e.g. the confirming Respond.io message id): a retry
+    # with the same key returns the idea already created, never a second one.
+    intake_ref: Optional[str] = None
 
 
 class SimilarOwnIn(ApiModel):
