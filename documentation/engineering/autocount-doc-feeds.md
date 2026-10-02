@@ -126,13 +126,29 @@ A run row carries a summary dict from creation; a failed run keeps the counters 
 ## 7. Scheduler and jobs
 
 A 60 s beat tick claims due feeds with a guarded UPDATE (two beats never both enqueue) and
-enqueues the SAME `autocount_doc_feed_run` job "Run now" uses: poll hourly, sweep
-daily; a busy feed is skipped, not re-armed. The predicate is `active_tenant_service_join`
+enqueues the SAME `autocount_doc_feed_run` job "Run now" uses; a busy feed is skipped, not
+re-armed.
+
+**Per-feed schedule (sprint-5/19).** `ac_doc_feed.schedule_config` (JSON, module Alembic 0026)
+holds the cadence in the Entities task-schedule shape: `incrementalMinutes` = the poll (floor
+1 minute, the with-watermark floor, since the poll reads `byLastModified`), `reconcileMode`
+`interval` (`reconcileHours` >= 1) | `dailyAt` (`reconcileAt` `HH:MM`, UTC) = the deletion sweep.
+NULL = poll every 60 minutes, sweep every 24 hours (the pre-19 hard-coded cadence).
+`doc_feed/schedule.py` reuses `etl_service.validate_schedule` and `EtlService.next_run_times`.
+The beat re-arms the claimed half from the feed's schedule. A PUT that carries `schedule` is
+validated before any write; on an armed feed only the CHANGED half re-arms from now (editing the
+poll never delays a sweep). An `off` feed stores it unarmed; arming from off sets
+`next_poll_at = now` and `next_sweep_at` from the stored rule. Edited in the Configure dialog
+with the same cadence cards as the Entities Schedule tab (`ScheduleCadenceCards`). The predicate is `active_tenant_service_join`
 (`modules/autocount/scheduler.py`). Job types `autocount_doc_feed_run` and
 `autocount_doc_feed_backfill` both heartbeat; the worker must import `modules.autocount.sync`
 (which imports the handlers) or every doc-feed job stays Pending.
 
 ## 8. Wire (frontend contract)
+
+A `DocFeedItem` carries `schedule` (`{incrementalMinutes, reconcileMode, reconcileHours,
+reconcileAt}`, always resolved, never null) and `nextPollAt` / `nextSweepAt`. The PUT body is
+`{connectionId?, mode, schedule?}`; omitting `schedule` keeps the stored one.
 
 Lists answer the house envelope `{data, total, page}` and take `page`, `page_size` (the same as
 `companies.py`). A `DocFeedIssue` row carries `id` (`<feed>:<book>:<docKey>`), `book`, `docKey`,
