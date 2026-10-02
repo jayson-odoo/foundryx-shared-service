@@ -465,3 +465,15 @@ describe('useIdeasListConfig - upvote-only Votes (AC-19-17)', () => {
     expect(rowCols).not.toContain('3');
   });
 });
+
+describe('useIdeasListConfig - Votes is the first data column (AC-19-43)', () => {
+  it('Votes sits before Idea (after any selection column) and is narrow', () => {
+    const cols = config([anIdea()]).columns;
+    const ids = cols.map((c) => String(c.id));
+    const first = ids.filter((id) => id !== 'select')[0];
+    expect(first).toBe('votes');
+    expect(ids.indexOf('votes')).toBeLessThan(ids.indexOf('problem'));
+    const votes = cols.find((c) => c.id === 'votes')!;
+    expect(votes.size).toBeLessThanOrEqual(120);
+  });
+});

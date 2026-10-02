@@ -443,3 +443,22 @@ describe('PublicIdeaStatusPage - posting (AC-19-33)', () => {
     expect(screen.queryByRole('button', { name: 'Reply' })).not.toBeInTheDocument();
   });
 });
+
+describe('PublicIdeaStatusPage - reply inside a deleted-root thread (AC-19-40)', () => {
+  it('Reply on a reply posts the clicked reply id as parentId', async () => {
+    const user = userEvent.setup();
+    usePublicIdeaStatus.mockReturnValue({ loading: false, notFound: false, view: richView });
+    const v = withComments([
+      {
+        root: pc({ id: 'c1', isDeleted: true, body: null, authorName: null }),
+        replies: [pc({ id: 'r1', parentId: 'c1', authorKind: 'user', authorName: 'Staff Sam', body: 'live' })],
+      },
+    ]);
+    render(<PublicIdeaStatusPage />);
+    await user.click(within(screen.getByTestId('comment-reply')).getByRole('button', { name: 'Reply' }));
+    const composer = screen.getByTestId('reply-composer');
+    await user.type(within(composer).getByRole('textbox'), 'answer');
+    await user.click(within(composer).getByRole('button', { name: 'Reply' }));
+    expect(v.add).toHaveBeenCalledWith('answer', 'r1');
+  });
+});

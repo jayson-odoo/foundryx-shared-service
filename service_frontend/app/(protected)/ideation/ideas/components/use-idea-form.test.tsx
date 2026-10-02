@@ -15,6 +15,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import type { Idea, IdeaClusterSuggestions, Product } from '@/types/ideation';
 import type { IdeaService } from '@/services/ideation-service';
 import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
+import { ApiError } from '@/lib/api-client';
 import { useIdeaForm } from './use-idea-form';
 import { selectIdeaRows } from '../select-idea-rows';
 
@@ -23,9 +24,12 @@ vi.mock('next/navigation', () => ({
   useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
+const sessionPerms = vi.hoisted(() => ({
+  list: ['ideation.business_requirements.read', 'ideation.triage.manage'] as string[],
+}));
 vi.mock('next-auth/react', () => ({
   useSession: () => ({
-    data: { user: { permissions: ['ideation.business_requirements.read', 'ideation.triage.manage'] } },
+    data: { user: { permissions: sessionPerms.list } },
     status: 'authenticated',
   }),
 }));
@@ -507,5 +511,89 @@ describe('useIdeaForm - header vote box in the avatar slot (AC-19-16)', () => {
     const { result } = await loaded(stageIdea({ mergedIntoId: 'survivor-1' }));
     render(<>{result.current.config!.avatar}</>);
     expect(screen.getByRole('button', { name: /upvote/i })).toBeDisabled();
+  });
+});
+
+
+// ── Plan 19 fix round 1 (AC-19-39 / AC-19-41) ──────────────────────────────────
+
+describe('useIdeaForm - comment composer gate on the PRODUCTION path (AC-19-39)', () => {
+  async function renderDetails(mode: 'operator' | 'embed', perms: string[]) {
+    sessionPerms.list = perms;
+    const service = fakeService({
+      getIdea: vi.fn().mockResolvedValue(stageIdea()),
+      listComments: vi.fn().mockResolvedValue([
+        {
+          id: 'c1', ideaId: 'idea-1', parentId: null, authorName: 'Alice', authorKind: 'user',
+          body: 'hello there', isDeleted: false, isMine: false, canEdit: false, canDelete: false,
+          createdAt: '2026-10-01T08:00:00Z', editedAt: null,
+        },
+      ]),
+    });
+    const w = mode === 'embed' ? embedWrapper(service) : wrapper(service);
+    const hook = renderHook(() => useIdeaForm('idea-1', false), { wrapper: w });
+    await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+    const Wrap = w;
+    render(
+      <Wrap>
+        <Form {...hook.result.current.form}>{tabOf(hook.result, 'details').render({ editing: false })}</Form>
+      </Wrap>,
+    );
+    await screen.findByText('hello there');
+  }
+
+  it('operator WITHOUT ideation.ideas.comment: no composer, no Reply', async () => {
+    await renderDetails('operator', ['ideation.ideas.view']);
+    expect(screen.queryByRole('button', { name: 'Comment' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reply' })).not.toBeInTheDocument();
+  });
+
+  it('operator WITH ideation.ideas.comment: composer and Reply show', async () => {
+    await renderDetails('operator', ['ideation.ideas.view', 'ideation.ideas.comment']);
+    expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reply' })).toBeInTheDocument();
+  });
+
+  it('embed mode shows the composer without any operator permission', async () => {
+    await renderDetails('embed', []);
+    expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument();
+  });
+});
+
+describe('useIdeaForm - primary action failures toast, never reject (AC-19-41)', () => {
+  it('Move to X: a 409 from setStatus shows toast.error(message) and onRun resolves', async () => {
+    toastMock.error.mockClear();
+    const setStatus = vi.fn().mockRejectedValue(new ApiError('Illegal transition.', 409, null, undefined));
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(stageIdea()), setStatus });
+    const { result } = await loaded(stageIdea(), service);
+    await act(async () => {
+      await expect(result.current.config!.primaryAction!.onRun?.()).resolves.not.toThrow();
+    });
+    expect(toastMock.error).toHaveBeenCalledWith('Illegal transition.');
+  });
+
+  it('Restore: a 409 toasts the message and does not reject', async () => {
+    toastMock.error.mockClear();
+    const restore = { id: 'tr-restore', label: 'Restore', toStatusId: 'st-captured', toStatusLabel: 'New' };
+    const archived = stageIdea({ statusIsArchived: true, transitions: [restore], advanceTransitionId: null });
+    const setStatus = vi.fn().mockRejectedValue(new ApiError('Not allowed.', 409, null, undefined));
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(archived), setStatus });
+    const { result } = await loaded(archived, service);
+    await act(async () => {
+      await result.current.config!.primaryAction!.onRun?.();
+    });
+    expect(toastMock.error).toHaveBeenCalledWith('Not allowed.');
+  });
+
+  it('Unmerge: a 409 toasts the message and does not reject', async () => {
+    toastMock.error.mockClear();
+    const child = stageIdea({ id: 'child-1', mergedIntoId: 'survivor-1' });
+    const unmerge = vi.fn().mockRejectedValue(new ApiError('Cannot unmerge.', 409, null, undefined));
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(child), unmerge });
+    const { result } = await loaded(child, service);
+    await act(async () => {
+      await result.current.config!.primaryAction!.onRun?.();
+    });
+    expect(toastMock.error).toHaveBeenCalledWith('Cannot unmerge.');
   });
 });

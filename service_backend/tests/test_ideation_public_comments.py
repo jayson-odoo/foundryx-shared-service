@@ -167,7 +167,7 @@ def test_ac_19_29_post_201_author_from_submitter_ignores_client_name(setup):
     assert res.status_code == 201, res.text
     body = res.json()
     assert body["body"] == "from visitor"
-    assert body["authorName"] == "Alice Tan"
+    assert body["authorName"] == "Alice"  # FIRST name only (AC-19-29, security M1/M2)
     assert body["authorKind"] == "public"
     db = s["factory"]()
     try:

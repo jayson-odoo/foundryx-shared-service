@@ -353,3 +353,34 @@ describe('IdeaComments - edit and delete (AC-19-23)', () => {
     expect(v.remove).not.toHaveBeenCalled();
   });
 });
+
+describe('IdeaComments - reply inside a thread whose root is deleted (AC-19-40)', () => {
+  it('Reply on a reply posts the CLICKED reply id as parentId (backend normalises it)', async () => {
+    const user = userEvent.setup();
+    const v = hookValue([
+      {
+        root: aComment({ id: 'c1', isDeleted: true, body: null, authorName: null }),
+        replies: [aComment({ id: 'r1', parentId: 'c1', body: 'live reply', authorName: 'Bob Lee' })],
+      },
+    ]);
+    render(<IdeaComments ideaId="idea-1" />);
+    await user.click(within(screen.getByTestId('comment-reply')).getByRole('button', { name: 'Reply' }));
+    const composer = screen.getByTestId('reply-composer');
+    await user.type(within(composer).getByRole('textbox'), 'answer');
+    await user.click(within(composer).getByRole('button', { name: 'Reply' }));
+    expect(v.add).toHaveBeenCalledWith('answer', 'r1');
+  });
+});
+
+describe('IdeaComments - delete dialog accessibility (AC-19-43)', () => {
+  it('the confirmation alertdialog has an accessible description', async () => {
+    const user = userEvent.setup();
+    hookValue([{ root: aComment({ id: 'c1', canDelete: true }), replies: [] }]);
+    render(<IdeaComments ideaId="idea-1" />);
+    await user.click(within(screen.getByTestId('comment-thread')).getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('alertdialog');
+    const id = dialog.getAttribute('aria-describedby');
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id as string)?.textContent?.trim()).toBeTruthy();
+  });
+});
