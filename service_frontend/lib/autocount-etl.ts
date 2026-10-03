@@ -699,6 +699,7 @@ export const HTTP_PRESETS: Record<string, HttpPreset> = {
       { sourcePath: 'AccNo', transform: 'string', canonicalField: 'code', required: true },
       { sourcePath: 'CompanyName', transform: 'string', canonicalField: 'name', required: true },
       { sourcePath: 'Phone1', transform: 'string', canonicalField: 'phone_number' },
+      { sourcePath: 'SalesAgent', transform: 'string', canonicalField: 'sales_agent_code' },
       { sourcePath: 'IsActive', transform: 't_f_bool', canonicalField: 'is_active', required: true },
     ],
   },
