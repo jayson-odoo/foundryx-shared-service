@@ -87,7 +87,7 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
 
   // ── sprint-5/19 - per-feed schedule (AC-19-11) ──────────────────────────────
 
-  it('renders the Entities cadence cards as Poll + Deletion sweep, prefilled with the defaults', async () => {
+  it('renders the Entities cadence cards as Poll + Re-check, prefilled with the defaults', async () => {
     const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
     render(
       <DocFeedConfigDialog
@@ -99,7 +99,7 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
       />,
     );
     expect(screen.getByText('Poll')).toBeInTheDocument();
-    expect(screen.getByText('Deletion sweep')).toBeInTheDocument();
+    expect(screen.getByText('Re-check')).toBeInTheDocument();
     expect(screen.getByTestId('doc-feed-schedule-incremental-minutes')).toHaveValue(60);
     expect(screen.getByTestId('doc-feed-schedule-reconcile-hours')).toHaveValue(24);
   });
@@ -145,6 +145,7 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
       connectionId: 'conn-1',
       mode: 'push',
       schedule: { incrementalMinutes: 15, reconcileMode: 'interval', reconcileHours: 6, reconcileAt: null },
+      window: { pollBasis: 'last_modified', pollLookbackDays: 1, recheckDays: 45 },
     });
   });
 
@@ -167,5 +168,90 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
     );
     await userEvent.click(screen.getByTestId('doc-feed-config-save'));
     expect(await screen.findByTestId('doc-feed-schedule-reconcile-hours-error')).toHaveTextContent('Server says no.');
+  });
+
+  // ── DOC-FEED-WINDOW - read window (poll basis / lookback / re-check days) ──
+
+  it('prefills the window with the defaults: LastModified, 1 day back, 45-day re-check', async () => {
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{ connectionId: 'conn-1', mode: 'push', contractGate: null }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('doc-feed-window-basis-last_modified')).toHaveAttribute('data-state', 'on');
+    expect(screen.getByTestId('doc-feed-window-lookback-days')).toHaveValue(1);
+    expect(screen.getByTestId('doc-feed-window-recheck-days')).toHaveValue(45);
+  });
+
+  it('saves an edited window with the rest of the feed', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{
+          connectionId: 'conn-1', mode: 'push', contractGate: null,
+          window: { pollBasis: 'last_modified', pollLookbackDays: 1, recheckDays: 45 },
+        }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('doc-feed-window-basis-doc_date'));
+    fireEvent.change(screen.getByTestId('doc-feed-window-lookback-days'), { target: { value: '3' } });
+    fireEvent.change(screen.getByTestId('doc-feed-window-recheck-days'), { target: { value: '150' } });
+    await userEvent.click(screen.getByTestId('doc-feed-config-save'));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        window: { pollBasis: 'doc_date', pollLookbackDays: 3, recheckDays: 150 },
+      }),
+    );
+  });
+
+  it.each([
+    ['doc-feed-window-lookback-days', '31', 'Between 0 and 30 days.'],
+    ['doc-feed-window-lookback-days', '', 'Between 0 and 30 days.'],
+    ['doc-feed-window-recheck-days', '0', 'Between 1 and 180 days.'],
+    ['doc-feed-window-recheck-days', '181', 'Between 1 and 180 days.'],
+  ])('blocks Save when %s is %s', async (testId, value, message) => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{ connectionId: 'conn-1', mode: 'push', contractGate: null }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.change(screen.getByTestId(testId), { target: { value } });
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(screen.getByTestId('doc-feed-config-save')).toBeDisabled();
+  });
+
+  it('shows a server 422 on the window field', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    const onSave = vi.fn().mockRejectedValue(
+      new ApiError('bad', 422, null, { fieldErrors: { recheckDays: 'Server says no.' } }),
+    );
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{ connectionId: 'conn-1', mode: 'push', contractGate: null }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('doc-feed-config-save'));
+    expect(await screen.findByText('Server says no.')).toBeInTheDocument();
   });
 });

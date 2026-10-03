@@ -141,4 +141,21 @@ describe('summary null (crew DOCFEED-NULL-SUMMARY)', () => {
     render(<>{column.cell({ row: { original: sweepRow } } as never)}</>);
     expect(screen.getByText('3 candidate(s), 1 deactivated, 0 not found')).toBeTruthy();
   });
+
+  it('a re-check row leads with re-checked / changed, then its deletion counters', async () => {
+    const column = await summaryColumn();
+    const recheckRow: DocFeedRun = {
+      ...sweepRow,
+      summary: { rechecked: 120, changed: 2, updated: 2, candidates: 1, deactivated: 1, notFound: 0 },
+    };
+    expect(column.accessorFn(recheckRow, 0)).toBe(
+      '120 re-checked, 2 changed, 1 candidate(s), 1 deactivated, 0 not found',
+    );
+  });
+
+  it('labels the sweep kind as Re-check', async () => {
+    const { docFeedRunKindLabel } = await import('../../components/autocount-meta');
+    expect(docFeedRunKindLabel('sweep')).toBe('Re-check');
+    expect(docFeedRunKindLabel('poll')).toBe('Poll');
+  });
 });
