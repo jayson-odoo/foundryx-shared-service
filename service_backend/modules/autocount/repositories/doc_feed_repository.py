@@ -127,6 +127,7 @@ class DocFeedLedgerRepository:
         tenant_id: str, company_id: str, feed: str, book: str, doc_key: int,
         *, doc_no: Optional[str], doc_date: Optional[date],
         source_modified_at: Optional[datetime], outcome: str, now: datetime,
+        content_digest: Optional[str] = None,
     ) -> None:
         """A ``created``/``updated`` verdict (D11) - always overwrites.
         S2 - a real ``INSERT .. ON CONFLICT DO UPDATE`` (never a get-then-
@@ -136,7 +137,7 @@ class DocFeedLedgerRepository:
             tenant_id=tenant_id, company_id=company_id, feed=feed, book=book,
             doc_key=doc_key, doc_no=doc_no, doc_date=doc_date,
             source_modified_at=source_modified_at, last_outcome=outcome,
-            pushed_at=now, vanished_at=None,
+            pushed_at=now, vanished_at=None, content_digest=content_digest,
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=self._PK,
@@ -147,6 +148,7 @@ class DocFeedLedgerRepository:
                 "last_outcome": stmt.excluded.last_outcome,
                 "pushed_at": stmt.excluded.pushed_at,
                 "vanished_at": stmt.excluded.vanished_at,
+                "content_digest": stmt.excluded.content_digest,
             },
         )
         self.db.execute(stmt)
@@ -171,6 +173,31 @@ class DocFeedLedgerRepository:
         )
         stmt = stmt.on_conflict_do_nothing(index_elements=self._PK)
         self.db.execute(stmt)
+
+    def digests_for(
+        self, tenant_id: str, company_id: str, feed: str, book: str, doc_keys: List[int],
+    ) -> Dict[int, Optional[str]]:
+        """DOC-FEED-WINDOW - ``{doc_key: content_digest}`` for the given keys
+        of (feed, book); a key with no ledger row is absent. Batched in
+        chunks so a 180-day re-check never builds one giant ``IN``."""
+        out: Dict[int, Optional[str]] = {}
+        keys = list(doc_keys)
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            rows = (
+                self.db.query(AcDocFeedLedger.doc_key, AcDocFeedLedger.content_digest)
+                .filter(
+                    AcDocFeedLedger.tenant_id == tenant_id,
+                    AcDocFeedLedger.company_id == company_id,
+                    AcDocFeedLedger.feed == feed,
+                    AcDocFeedLedger.book == book,
+                    AcDocFeedLedger.doc_key.in_(chunk),
+                )
+                .all()
+            )
+            for key, digest in rows:
+                out[int(key)] = digest
+        return out
 
     def window_rows(
         self, tenant_id: str, company_id: str, feed: str, book: str,

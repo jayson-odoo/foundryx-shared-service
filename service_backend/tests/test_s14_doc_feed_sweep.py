@@ -172,16 +172,25 @@ def test_the_delete_guard_trips_at_51_of_100_window_ledger_rows(session_factory)
         _ledger(db, feed, key, doc_date=WINDOW_FROM)
     db.commit()
 
-    posted = []
+    # DOC-FEED-WINDOW - the 49 still-present rows carry no content digest
+    # yet, so the folded re-check re-pushes them once (Q3) BEFORE the guard;
+    # only a DELETIONS post is forbidden here.
+    deletion_posts = []
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if b"doc_keys" in request.content:
+            deletion_posts.append(1)
+        return httpx.Response(200, json={})
+
     run_sweep(
         db, feed, dry_run=False, now=NOW,
         vendor_transport=_vendor_by_day({WINDOW_FROM.strftime("%Y%m%d"): seen_keys}),
-        sink_transport=httpx.MockTransport(_contract_first(lambda r: posted.append(1) or httpx.Response(200, json={}))),
+        sink_transport=httpx.MockTransport(_contract_first(sink)),
     )
     run = _latest_run(db, feed)
     assert run.outcome == "FAILED"
     assert run.error_code == "DELETE_GUARD"
-    assert not posted
+    assert not deletion_posts
 
 
 # ── deactivated/not_found set vanished_at; later push clears it (AC-14-54) ──
