@@ -22,7 +22,7 @@ first where any customer task pushes.
 Frozen ``sa.table`` backfill, never the live ORM model; does not commit -
 Alembic's own transaction owns that (0019/0025/0028 precedent).
 
-Revision ID: 0029_autocount_sales_agent   (25 chars <= 32)
+Revision ID: 0029_autocount_sales_agent   (26 chars <= 32)
 Revises: 0028_autocount_item_type
 Create Date: 2026-10-03
 """
