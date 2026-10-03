@@ -18,15 +18,15 @@ Idempotent ``IF NOT EXISTS`` DDL (same lesson as 0004/0009/0011/0013).
 Postgres-only; a no-op on the SQLite test engine (the suite creates the columns
 via ``IdeationBase.metadata.create_all``).
 
-Revision ID: 0015_ideation_own_ideas
-Revises: 0014_ideation_br_build
+Revision ID: 0016_ideation_own_ideas
+Revises: 0015_ideation_idea_comments
 Create Date: 2026-10-02
 """
 from alembic import op
 from sqlalchemy import text
 
-revision = "0015_ideation_own_ideas"
-down_revision = "0014_ideation_br_build"
+revision = "0016_ideation_own_ideas"
+down_revision = "0015_ideation_idea_comments"
 branch_labels = None
 depends_on = None
 

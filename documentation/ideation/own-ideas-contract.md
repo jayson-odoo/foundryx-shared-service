@@ -13,7 +13,7 @@ user link on chatbot creates, `isMine`, `mine=true`, and an opt-in
 
 An idea belongs to a submitter identified by EITHER
 
-- `ideas.submitter_crm_user_id` (new column, migration 0015) - the host CRM user
+- `ideas.submitter_crm_user_id` (new column, migration 0016) - the host CRM user
   id; set by the one-shot chatbot create and the embed create (assertion `sub`), or
 - the submitter contact's phone - `ideas.submitter_contact_id` -> an omnichannel
   contact in the SAME tenant whose phone has the same digits (omnichannel's
@@ -36,7 +36,7 @@ Trust assumptions (the host must honour these):
 - **The workspace key is a tenant-level server credential.** It may assert any
   submitter on one-shot create and similar-own, and sees ideas from every
   workspace of its tenant (ideas and contacts are tenant-wide).
-- Embed ideas created before migration 0015 carry no CRM link, so an
+- Embed ideas created before migration 0016 carry no CRM link, so an
   `ideas_manage=false` viewer cannot edit those older embed ideas (WhatsApp
   ideas stay owned through the phone link).
 
@@ -128,5 +128,5 @@ Existing claims unchanged. New optional claims:
 ## Tests
 
 `service_backend/tests/test_ideation_own.py` (red-first), Postgres path verified
-manually (migration `0015_ideation_own_ideas` upgrade from 0014 + pg_trgm
+manually (migration `0016_ideation_own_ideas` upgrade from 0015 + pg_trgm
 own-similar + one-shot sequence mint on a local Postgres 16).

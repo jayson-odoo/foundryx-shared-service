@@ -35,4 +35,4 @@ Tests: `service_backend/tests/test_ideation_own.py` (test name in brackets).
 - AC-OWN-25 [BE][T] `ideas_manage` true/absent keeps legacy access. [test_embed_manage_claim_true_or_absent_keeps_legacy_access]
 
 ## Migration
-- AC-OWN-30 [BE] Migration `0015_ideation_own_ideas` adds `submitter_crm_user_id` + `intake_ref` (+ unique per tenant) idempotently; single head; upgrade 0014 -> 0015 verified on Postgres.
+- AC-OWN-30 [BE] Migration `0016_ideation_own_ideas` adds `submitter_crm_user_id` + `intake_ref` (+ unique per tenant) idempotently; single head; upgrade 0015 -> 0016 verified on Postgres.
