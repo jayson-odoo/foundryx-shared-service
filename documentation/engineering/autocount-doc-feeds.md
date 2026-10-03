@@ -63,7 +63,9 @@ connection; an omitted key keeps it.
 ## 2. Cursor rule (poll)
 
 Per (book, entity) the cursor is the first MYT day still to re-read. A tick reads
-`min(cursor, yesterday) .. today` (MYT is fixed UTC+8, no DST), capped at **31 days per tick**
+`min(cursor, today - pollLookbackDays) .. today` (MYT is fixed UTC+8, no DST; lookback default 1 =
+yesterday), from the `byLastModified` door or, when the feed's `pollBasis` is `doc_date`, the
+`bydocdate` door (DOC-FEED-WINDOW, §4a), capped at **31 days per tick**
 (catch-up). The whole window is read BEFORE anything is pushed; any day failing = nothing pushed
 and nothing advanced. One copy per DocKey (greatest `LastModified`), pushed oldest first. The
 cursor advances **only on a fully successful live tick**; a dry run never advances it, never
@@ -80,13 +82,33 @@ unknown verdicts become a `retryable` issue row that keeps the **stored vendor r
 named error, since it cannot be re-sent); each live poll re-sends retryable rows the fresh read
 did not supersede (D9). `failed` is never re-sent and is cleared by a later delivery.
 
-## 4. Deletion sweep
+## 4. Re-check (content re-push + deletion sweep)
 
-Daily per document feed: read every day of the **45-day** doc-date window (all days must read),
+Daily per document feed (run kind `sweep`, shown as **Re-check**): read every day of the
+`recheckDays` doc-date window (default **45**; all days must read). **Content step first
+(DOC-FEED-WINDOW):** every document whose `content_digest` (sha256 of the canonical JSON of the
+whole record, header + `Details`, `records.content_digest`) differs from the ledger's - or whose
+ledger row has no digest yet, or has no ledger row - is pushed through the normal ingest path
+(same verdict/ledger/issue rules as the poll; summary `rechecked` = documents read, `changed` =
+documents pushed). A delivered verdict stores the record's digest on the ledger (poll and backfill
+do the same), so after the first re-check only real edits re-push. This catches a line edit that
+did not bump the header `LastModified` (unverified AutoCount behaviour, BL-SS-036): the CRM's
+stale guard is strict `incoming < stored`, so an equal `LastModified` with changed lines answers
+`updated`. A content-push sink error fails the run before any deletion. **Then deletions:**
 union the DocKeys, and every ledger row in the window with no vendor copy is a candidate. A
 candidate count over **max(50, 20% of the window's ledger rows)** refuses the sweep
 (`DELETE_GUARD`). Otherwise the candidates go to the CRM deletions endpoint; a `deactivated` /
 `not_found` verdict stamps `vanished_at`.
+
+## 4a. Read window settings (DOC-FEED-WINDOW)
+
+`ac_doc_feed.window_config` (JSON, module Alembic 0027; NULL = the defaults, i.e. the
+pre-window behaviour): `pollBasis` `last_modified` (default) | `doc_date`; `pollLookbackDays`
+0..30 (default 1); `recheckDays` 1..180 (default 45). Validated before any write
+(`doc_feed/window.py validate_doc_feed_window`, per-field 422); omitted on a PUT = kept; a window
+change never re-arms the schedule. Edited in the Configure dialog inside the same cadence cards
+(Poll card: Read by + Look back; Re-check card: Window). Load: `recheckDays` vendor GETs per
+re-check run, `pollLookbackDays + 1` per poll tick; never a write to AutoCount.
 
 ## 5. Backfill
 
