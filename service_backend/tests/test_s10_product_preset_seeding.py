@@ -94,7 +94,7 @@ def db(session_factory):
         session.close()
 
 
-def test_first_clean_save_seeds_eight_mapping_rows_for_product(db):
+def test_first_clean_save_seeds_nine_mapping_rows_for_product(db):
     company, conn = _open_company(db)
     EtlService(db).update_task(
         DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(connectionId=conn.id)
@@ -111,7 +111,9 @@ def test_first_clean_save_seeds_eight_mapping_rows_for_product(db):
     # D22), the field is absent from `CanonicalProduct.SINK_FIELDS` and is
     # never sent, so seeding a row for it only produced one the save gate
     # refuses on a PUT and every ordinary Save swept away.
-    assert len(rows) == 8, sorted(pairs)
+    # ITEM-TYPE-SS - 9: the `ItemType -> item_type_code` row joins.
+    assert len(rows) == 9, sorted(pairs)
+    assert ("ItemType", "item_type_code") in pairs
     assert ("BaseUOMPrice", "list_price") in pairs
     assert ("Description", "description") in pairs
     assert ("Desc2", "description") not in pairs

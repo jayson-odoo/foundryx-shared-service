@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 if TYPE_CHECKING:  # pragma: no cover - typing only, core never imported at runtime here
     from app.models.background_job import BackgroundJob
 
+from app.models.module import parse_version
 from app.repositories.permission_repository import PermissionRepository
 from app.services.permission_service import load_csv
 
@@ -194,6 +195,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_document_line_linkage,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
+        backfill_product_item_type,
         backfill_sales_order_ref,
         backfill_sales_order_transferable,
         backfill_shipping_order_container_number,
@@ -256,6 +258,14 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # NEW text carrying `h.Transferable AS Transferable`. Runs AFTER the `Ref`
     # backfill (0019 -> 0025 order). Module Alembic 0025 runs the same repair.
     backfill_sales_order_transferable(db, schema=schema)
+    # 0.13.0 -> 0.14.0 (ITEM-TYPE-SS, partner of sorento #1450): every
+    # existing `product` task gets an `ItemType -> item_type_code` row.
+    # Version-GATED, unlike its siblings above: a product HTTP task has no
+    # query text to mark it migrated, so an ungated pass would reseed a row
+    # an operator deliberately deleted on every later update. Module Alembic
+    # 0028 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 14, 0):
+        backfill_product_item_type(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

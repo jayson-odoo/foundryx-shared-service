@@ -450,7 +450,8 @@ def test_first_clean_save_seeds_http_preset_product(db):
     # D22) and the field is absent from `CanonicalProduct.SINK_FIELDS`, so a
     # seeded row for it was one the save gate refuses and every ordinary
     # Save swept away.
-    assert len(rows) == 8, [r.canonical_field for r in rows]
+    # ITEM-TYPE-SS - and 9 again: the `ItemType -> item_type_code` row.
+    assert len(rows) == 9, [r.canonical_field for r in rows]
     by_source = {r.source_path: r for r in rows}
     assert by_source["IsActive"].transform == "t_f_bool"
     assert "Discontinued" not in by_source
