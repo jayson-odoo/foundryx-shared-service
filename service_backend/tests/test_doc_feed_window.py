@@ -500,3 +500,169 @@ def test_run_rows_keep_the_sweep_kind(session_factory):
     run_sweep(db, feed, dry_run=False, now=NOW, vendor_transport=Vendor().client(), sink_transport=Crm().transport())
     db.expire_all()
     assert db.query(AcDocFeedRun).filter(AcDocFeedRun.feed_id == feed.id).one().kind == "sweep"
+
+
+# ── review round 1 ────────────────────────────────────────────────────────────
+
+
+def test_a_stale_ignored_recheck_records_the_digest_so_it_is_not_re_pushed_daily(session_factory):
+    """R1 - the CRM holds a newer copy: the read content is now 'shown to
+    the CRM', so the next re-check must not push it again."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    day = TODAY - timedelta(days=4)
+    doc = _doc(801, day, qty=2)
+    _ledger(db, feed, _doc(801, day, qty=1), digest=content_digest(_doc(801, day, qty=1)))
+    stale = Crm(outcome="unchanged", warnings=["stale_ignored"])
+    run = run_sweep(db, feed, dry_run=False, now=NOW,
+                    vendor_transport=Vendor(by_doc_date={day: [doc]}).client(),
+                    sink_transport=stale.transport())
+    assert run.summary_json["staleIgnored"] == 1
+    assert _ledger_row(db, feed, 801).content_digest == content_digest(doc)
+    again = Crm()
+    run_sweep(db, feed, dry_run=False, now=NOW + timedelta(days=1),
+              vendor_transport=Vendor(by_doc_date={day: [doc]}).client(),
+              sink_transport=again.transport())
+    assert again.ingested == []
+
+
+def test_a_stale_ignored_recheck_never_overwrites_the_ledger_outcome(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    day = TODAY - timedelta(days=4)
+    _ledger(db, feed, _doc(802, day, qty=1), digest=None)
+    run_sweep(db, feed, dry_run=False, now=NOW,
+              vendor_transport=Vendor(by_doc_date={day: [_doc(802, day, qty=3)]}).client(),
+              sink_transport=Crm(outcome="unchanged", warnings=["stale_ignored"]).transport())
+    row = _ledger_row(db, feed, 802)
+    assert row.last_outcome == "created"
+    assert row.doc_no == "DO-802"
+
+
+def test_an_unchanged_permanently_failed_document_is_not_re_sent(session_factory):
+    """R2 - `failed` is never re-sent (§3) unless its content changed."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    day = TODAY - timedelta(days=6)
+    doc = _doc(803, day)
+    first = Crm(outcome="failed")
+    run = run_sweep(db, feed, dry_run=False, now=NOW,
+                    vendor_transport=Vendor(by_doc_date={day: [doc]}).client(),
+                    sink_transport=first.transport())
+    assert first.ingested == [803]
+    assert run.summary_json["failed"] == 1
+    second = Crm(outcome="failed")
+    run2 = run_sweep(db, feed, dry_run=False, now=NOW + timedelta(hours=1),
+                     vendor_transport=Vendor(by_doc_date={day: [doc]}).client(),
+                     sink_transport=second.transport())
+    assert second.ingested == []
+    assert run2.summary_json["changed"] == 0
+    edited = _doc(803, day, qty=7)
+    third = Crm(outcome="updated")
+    run_sweep(db, feed, dry_run=False, now=NOW + timedelta(hours=2),
+              vendor_transport=Vendor(by_doc_date={day: [edited]}).client(),
+              sink_transport=third.transport())
+    assert third.ingested == [803]
+
+
+def test_a_waiting_document_is_left_to_the_poll_resend(session_factory):
+    """A retryable issue already holding THIS content is re-sent by the poll
+    (D9); the re-check does not double-send it."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    doc = _doc(804, TODAY)
+    run_sweep(db, feed, dry_run=False, now=NOW,
+              vendor_transport=Vendor(by_doc_date={TODAY: [doc]}).client(),
+              sink_transport=Crm(outcome="retryable").transport())
+    again = Crm()
+    run_sweep(db, feed, dry_run=False, now=NOW + timedelta(hours=1),
+              vendor_transport=Vendor(by_doc_date={TODAY: [doc]}).client(),
+              sink_transport=again.transport())
+    assert again.ingested == []
+
+
+def test_content_and_deletion_failures_are_counted_apart(session_factory):
+    """R3 - a deletions `failed` lands in `deleteFailed`, never the content
+    step's `failed`."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    day = TODAY - timedelta(days=1)
+    gone = _doc(806, day)
+    _ledger(db, feed, gone, digest=content_digest(gone))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        payload = json.loads(request.content.decode("utf-8"))
+        if "doc_keys" in payload:
+            return httpx.Response(200, json={
+                "summary": {"total": 1, "failed": 1},
+                "records": [{"source_ref": "db1:DO:806", "outcome": "failed", "errors": {"x": "y"}}],
+            })
+        recs = payload["records"]
+        return httpx.Response(200, json={
+            "summary": {"failed": len(recs)},
+            "records": [{"source_ref": f"db1:DO:{r['DocKey']}", "outcome": "failed"} for r in recs],
+        })
+
+    run = run_sweep(db, feed, dry_run=False, now=NOW,
+                    vendor_transport=Vendor(by_doc_date={day: [_doc(805, day)]}).client(),
+                    sink_transport=httpx.MockTransport(handler))
+    assert run.summary_json["failed"] == 1
+    assert run.summary_json["deleteFailed"] == 1
+    assert run.summary_json["deleteTotal"] == 1
+
+
+def test_recheck_counts_keyless_records(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    keyless = {**_doc(1, TODAY), "DocKey": None}
+    run = run_sweep(db, feed, dry_run=False, now=NOW,
+                    vendor_transport=Vendor(by_doc_date={TODAY: [keyless]}).client(),
+                    sink_transport=Crm().transport())
+    assert run.summary_json["skippedNoKey"] == 1
+
+
+def test_a_delete_guard_refusal_keeps_the_content_step_counters(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    day = TODAY - timedelta(days=2)
+    for key in range(900, 960):  # 60 vanished rows > max(50, 20%)
+        gone = _doc(key, day)
+        _ledger(db, feed, gone, digest=content_digest(gone))
+    crm = Crm(outcome="created")
+    run = run_sweep(db, feed, dry_run=False, now=NOW,
+                    vendor_transport=Vendor(by_doc_date={day: [_doc(990, day)]}).client(),
+                    sink_transport=crm.transport())
+    assert run.outcome == "FAILED"
+    assert run.error_code == "DELETE_GUARD"
+    assert crm.ingested == [990]
+    assert run.summary_json["created"] == 1
+    assert run.summary_json["changed"] == 1
+
+
+def test_a_backfill_delivery_stores_the_digest(session_factory):
+    from modules.autocount.doc_feed.runner import run_backfill
+    from modules.autocount.models import AcDocFeedBackfill
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    doc = _doc(807, TODAY)
+    bf = AcDocFeedBackfill(
+        tenant_id=co.tenant_id, company_id=co.id, feed_id=feed.id, feed="delivery_orders",
+        book="db1", dry_run=False, from_day=TODAY, to_day=TODAY, next_day=TODAY,
+        status="running", days_total=1, days_done=0, started_by="actor-1", started_at=NOW,
+    )
+    db.add(bf)
+    db.commit()
+    run_backfill(db, bf, now=NOW, vendor_transport=Vendor(by_doc_date={TODAY: [doc]}).client(),
+                 sink_transport=Crm("created").transport())
+    assert _ledger_row(db, feed, 807).content_digest == content_digest(doc)
