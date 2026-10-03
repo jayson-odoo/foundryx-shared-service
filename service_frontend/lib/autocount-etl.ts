@@ -15,7 +15,9 @@ import type {
   AutocountPushGate,
   AutocountSqlPreview,
   AutocountSqlSchema,
+  DocFeedPollBasis,
   DocFeedSchedule,
+  DocFeedWindow,
   HttpPreview,
 } from '@/types/autocount';
 
@@ -429,6 +431,35 @@ export const DEFAULT_DOC_FEED_SCHEDULE: DocFeedSchedule = {
 /** The poll reads `byLastModified` (a LastModified watermark), so it runs on
  * the with-watermark floor - 1 minute, owner ruling Q1 on PR #110. */
 export const DOC_FEED_POLL_HAS_WATERMARK = true;
+
+/** DOC-FEED-WINDOW - the read window an unedited feed resolves to, mirrored
+ * from `doc_feed/window.py DEFAULT_DOC_FEED_WINDOW`. */
+export const DEFAULT_DOC_FEED_WINDOW: DocFeedWindow = {
+  pollBasis: 'last_modified',
+  pollLookbackDays: 1,
+  recheckDays: 45,
+};
+
+export const DOC_FEED_POLL_BASIS_OPTIONS: { label: string; value: DocFeedPollBasis }[] = [
+  { label: 'LastModified', value: 'last_modified' },
+  { label: 'DocDate', value: 'doc_date' },
+];
+
+function wholeDaysError(value: number, min: number, max: number): string | null {
+  return Number.isInteger(value) && value >= min && value <= max
+    ? null
+    : `Between ${min} and ${max} days.`;
+}
+
+/** Live mirror of `validate_doc_feed_window` - the same messages. */
+export function docFeedWindowErrors(value: DocFeedWindow): Record<string, string> {
+  const errors: Record<string, string> = {};
+  const lookback = wholeDaysError(value.pollLookbackDays, 0, 30);
+  if (lookback) errors.pollLookbackDays = lookback;
+  const recheck = wholeDaysError(value.recheckDays, 1, 180);
+  if (recheck) errors.recheckDays = recheck;
+  return errors;
+}
 
 /** The reconcile-mode picker's ONLY two options (foolproof-UI). */
 export const RECONCILE_MODE_OPTIONS: { label: string; value: AutocountEtlSourceConfig['reconcileMode'] }[] = [

@@ -1657,6 +1657,17 @@ export type AutocountScheduleCadence = Pick<
  * the backend (an unedited feed answers the poll-60-min / sweep-24-h default). */
 export type DocFeedSchedule = AutocountScheduleCadence;
 
+/** DOC-FEED-WINDOW - which vendor door the poll reads. */
+export type DocFeedPollBasis = 'last_modified' | 'doc_date';
+
+/** DOC-FEED-WINDOW - a feed's read window, always resolved by the backend (an
+ * unedited feed answers LastModified / 1 day back / 45-day re-check). */
+export interface DocFeedWindow {
+  pollBasis: DocFeedPollBasis;
+  pollLookbackDays: number;
+  recheckDays: number;
+}
+
 /** `GET /autocount/doc-feeds/{companyId}` - one row per feed. A never-
  * configured feed still renders (`mode: 'off'`, D2's "a missing row renders
  * as off"). */
@@ -1666,6 +1677,7 @@ export interface DocFeedItem {
   connectionId: string | null;
   mode: DocFeedMode;
   schedule: DocFeedSchedule;
+  window: DocFeedWindow;
   /** Armed due times (ISO Z); null while the feed is Off. */
   nextPollAt: string | null;
   nextSweepAt: string | null;
@@ -1698,6 +1710,8 @@ export interface DocFeedUpdateInput {
   mode: DocFeedMode;
   /** Omitted = the stored schedule is kept (sprint-5/19). */
   schedule?: DocFeedSchedule;
+  /** Omitted = the stored window is kept (DOC-FEED-WINDOW). */
+  window?: DocFeedWindow;
 }
 
 /** `POST /autocount/doc-feeds/{companyId}/{feed}/run` body - Run now / Run
@@ -1720,6 +1734,12 @@ export interface DocFeedRunSummary {
   deactivated?: number;
   notFound?: number;
   candidates?: number;
+  /** DOC-FEED-WINDOW - re-check: documents read / documents re-pushed. */
+  rechecked?: number;
+  changed?: number;
+  /** The deletions endpoint's own counters (never added into `failed`). */
+  deleteFailed?: number;
+  deleteTotal?: number;
   warnings?: Record<string, number>;
   failedRefs?: Array<{ docKey?: number | null; sourceRef?: string | null; errors?: Record<string, unknown> }>;
 }

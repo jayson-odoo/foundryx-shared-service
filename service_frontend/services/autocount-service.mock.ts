@@ -24,6 +24,7 @@ import { simulateCombine } from '@/lib/autocount-combine';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
 import {
   DEFAULT_DOC_FEED_SCHEDULE,
+  DEFAULT_DOC_FEED_WINDOW,
   DEFAULT_STATUS_FORMULA,
   HTTP_PRESETS,
   MIN_RECONCILE_HOURS,
@@ -93,6 +94,7 @@ import type {
   DocFeedIssue,
   DocFeedItem,
   DocFeedSchedule,
+  DocFeedWindow,
   DocFeedKey,
   DocFeedLastRun,
   DocFeedMode,
@@ -2225,6 +2227,7 @@ interface MockDocFeedState {
   book: string | null;
   mode: DocFeedMode;
   schedule: DocFeedSchedule;
+  window: DocFeedWindow;
   nextPollAt: string | null;
   nextSweepAt: string | null;
   cursorDay: string | null;
@@ -2238,6 +2241,7 @@ function defaultDocFeedState(): MockDocFeedState {
     book: null,
     mode: 'off',
     schedule: { ...DEFAULT_DOC_FEED_SCHEDULE },
+    window: { ...DEFAULT_DOC_FEED_WINDOW },
     nextPollAt: null,
     nextSweepAt: null,
     cursorDay: null,
@@ -2367,6 +2371,7 @@ function docFeedItemFor(
     connectionId: state.connectionId,
     mode: state.mode,
     schedule: { ...state.schedule },
+    window: { ...state.window },
     nextPollAt: state.nextPollAt,
     nextSweepAt: state.nextSweepAt,
     cursorDay: state.cursorDay,
@@ -2393,6 +2398,7 @@ function mutateDocFeed(
   const previous = state.schedule;
   const wasArmed = state.mode !== 'off';
   if (input.schedule) state.schedule = { ...input.schedule };
+  if (input.window) state.window = { ...input.window };
   if (input.mode === 'off') {
     state.mode = 'off';
     state.connectionId = null;
@@ -2507,11 +2513,13 @@ async function mockRunDocFeed(
   const kind: DocFeedRunKind = input.kind;
   const dayTo = todayKey();
   const dayFrom =
-    kind === 'sweep' ? addDaysKey(dayTo, -44) : (state.cursorDay ?? addDaysKey(dayTo, -1));
+    kind === 'sweep'
+      ? addDaysKey(dayTo, -(state.window.recheckDays - 1))
+      : (state.cursorDay ?? addDaysKey(dayTo, -state.window.pollLookbackDays));
   const now = new Date().toISOString();
   const summary: DocFeedRunSummary =
     kind === 'sweep'
-      ? { candidates: 0 }
+      ? { rechecked: 8, changed: 1, updated: dryRun ? 0 : 1, candidates: 0 }
       : { created: dryRun ? 0 : 3, updated: dryRun ? 0 : 1, unchanged: 2, retryable: 1, failed: 1 };
   const run: DocFeedRun = {
     id: `doc-feed-run-${++docFeedRunSeq}`,
@@ -2520,7 +2528,7 @@ async function mockRunDocFeed(
     dryRun,
     dayFrom,
     dayTo,
-    requests: kind === 'sweep' ? 45 : 2,
+    requests: kind === 'sweep' ? state.window.recheckDays : state.window.pollLookbackDays + 1,
     fetchedCount: 8,
     summary,
     outcome: 'SUCCESS',

@@ -37,7 +37,16 @@ function summaryLabel(run: DocFeedRun): string {
   const s = run.summary;
   if (!s) return '-';
   if (run.kind === 'sweep') {
-    return `${s.candidates ?? 0} candidate(s), ${s.deactivated ?? 0} deactivated, ${s.notFound ?? 0} not found`;
+    const deletions = `${s.candidates ?? 0} candidate(s), ${s.deactivated ?? 0} deactivated, ${s.notFound ?? 0} not found`;
+    // DOC-FEED-WINDOW - a re-check run also counts what it re-read and
+    // re-pushed; a pre-window sweep row has neither key.
+    if (s.rechecked === undefined) return deletions;
+    const parts = [`${s.rechecked} re-checked`, `${s.changed ?? 0} changed`];
+    if (s.retryable) parts.push(`${s.retryable} waiting`);
+    if (s.failed) parts.push(`${s.failed} failed`);
+    if (s.staleIgnored) parts.push(`${s.staleIgnored} stale`);
+    const deleteFailed = s.deleteFailed ? `, ${s.deleteFailed} delete failed` : '';
+    return `${parts.join(', ')}, ${deletions}${deleteFailed}`;
   }
   const parts = [
     `${s.created ?? 0} created`,

@@ -278,10 +278,13 @@ def test_a_sweep_after_the_vendor_stops_returning_a_dockey_deactivates_only_it(s
         sink_transport=httpx.MockTransport(router.crm),
     )
 
-    assert len(router.posted) == 1
-    assert router.posted[0]["doc_keys"] == [920001]
-    assert router.posted[0]["doc_date_from"] == window_from.strftime("%Y-%m-%d")
-    assert router.posted[0]["doc_date_to"] == TODAY_MYT.strftime("%Y-%m-%d")
+    # DOC-FEED-WINDOW - 920002 has no content digest yet, so the folded
+    # re-check re-pushes it once (Q3); exactly ONE deletions post follows.
+    deletions = [p for p in router.posted if "doc_keys" in p]
+    assert len(deletions) == 1
+    assert deletions[0]["doc_keys"] == [920001]
+    assert deletions[0]["doc_date_from"] == window_from.strftime("%Y-%m-%d")
+    assert deletions[0]["doc_date_to"] == TODAY_MYT.strftime("%Y-%m-%d")
 
     row = db.query(AcDocFeedLedger).filter(AcDocFeedLedger.company_id == co.id, AcDocFeedLedger.doc_key == 920001).one()
     assert row.vanished_at is not None

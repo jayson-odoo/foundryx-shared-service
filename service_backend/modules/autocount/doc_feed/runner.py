@@ -61,10 +61,10 @@ from .constants import (
     RUN_KIND_BACKFILL,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
-    SWEEP_WINDOW_DAYS,
 )
 from .records import (
     RawVendorRecord,
+    content_digest,
     dedupe_latest,
     doc_date,
     doc_key,
@@ -73,13 +73,19 @@ from .records import (
     vendor_modified_at,
 )
 from .vendor import DocFeedVendor, DocFeedVendorError
+from .window import POLL_BASIS_DOC_DATE, resolve_window
 
 MAX_BACKFILL_RATE_LIMIT_WAITS = 10
 
 # N7 - the largest vendor document a issue row will store for re-send.
 MAX_STORED_RECORD_BYTES = 64 * 1024
 
-_DELETE_KEY_TRANSLATE = {"not_found": "notFound"}
+# DOC-FEED-WINDOW (review R3) - the re-check's content step owns `failed` /
+# `created` / ...; the deletions endpoint's own `failed` / `total` get their
+# own keys so the two steps never add into one counter.
+_DELETE_KEY_TRANSLATE = {
+    "not_found": "notFound", "failed": "deleteFailed", "total": "deleteTotal",
+}
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -394,13 +400,23 @@ def _apply_document_verdict(
                     doc_no=doc_no, doc_date=d_date, source_modified_at=modified_at,
                     outcome=outcome, now=now,
                 )
+                # DOC-FEED-WINDOW (review R1) - the CRM has SEEN this content
+                # (and kept its newer copy): record it, or every re-check
+                # would push it again.
+                ledger_repo.set_digest(
+                    feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
+                    content_digest=content_digest(raw),
+                )
         else:
             summary[outcome] = summary.get(outcome, 0) + 1
             if not dry_run:
+                # DOC-FEED-WINDOW - the CRM now holds exactly this record
+                # (created / updated / unchanged), so its digest is the
+                # re-check's new baseline.
                 ledger_repo.upsert_delivered(
                     feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
                     doc_no=doc_no, doc_date=d_date, source_modified_at=modified_at,
-                    outcome=outcome, now=now,
+                    outcome=outcome, now=now, content_digest=content_digest(raw),
                 )
         if not dry_run:
             issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
@@ -460,11 +476,20 @@ def run_poll(
         return _finish_failed(db, run, exc.code, exc.message)
 
     today = myt_date(now)
+    # DOC-FEED-WINDOW - the lookback (default 1 = yesterday..today) and the
+    # vendor door (default byLastModified) are per-feed settings.
+    window = resolve_window(feed_row.window_config)
+    lookback_from = today - timedelta(days=int(window["pollLookbackDays"]))
     if feed_row.cursor_day is None:
-        start = today - timedelta(days=1)
+        start = lookback_from
     else:
-        start = min(feed_row.cursor_day, today - timedelta(days=1))
+        start = min(feed_row.cursor_day, lookback_from)
     end = today
+    read_day = (
+        resolved.vendor.day_by_doc_date
+        if window["pollBasis"] == POLL_BASIS_DOC_DATE
+        else resolved.vendor.day_by_last_modified
+    )
     capped = (end - start).days > 30
     if capped:
         end = start + timedelta(days=30)
@@ -474,7 +499,7 @@ def run_poll(
     day = start
     try:
         while day <= end:
-            all_records.extend(resolved.vendor.day_by_last_modified(feed_row.feed, day))
+            all_records.extend(read_day(feed_row.feed, day))
             requests_count += 1
             _heartbeat(db, job_id)  # B2 - per vendor day
             day += timedelta(days=1)
@@ -571,6 +596,73 @@ def _parse_deletion_doc_key(ref: str) -> Optional[int]:
         return None
 
 
+def _recheck_push(
+    db, feed_row: AcDocFeed, resolved: _Resolved, fetched: List[Dict[str, Any]],
+    ledger_repo: DocFeedLedgerRepository, *, dry_run: bool, run: AcDocFeedRun,
+    now: datetime, job_id: Optional[str], summary: Dict[str, Any],
+    failed_refs: List[Dict[str, Any]],
+) -> Optional[BaseException]:
+    """DOC-FEED-WINDOW - push the documents of the re-check window whose
+    digest differs from the ledger's. Counts ``rechecked`` (documents read)
+    and ``changed`` (documents pushed); every verdict is applied exactly as
+    the poll applies it. Returns the sink error that stopped it, if any."""
+    summary["skippedNoKey"] += sum(1 for r in fetched if doc_key(r) is None)
+    deduped = dedupe_latest(fetched)
+    summary["rechecked"] = len(deduped)
+    keys = [doc_key(r) for r in deduped]
+    known = ledger_repo.digests_for(
+        feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book, keys,
+    )
+    # Review R2 - an open issue already holding THIS content is not re-sent:
+    # `failed` is never re-sent until the document changes (§3), and a
+    # `retryable` one is the poll's D9 re-send to make.
+    issue_records = DocFeedIssueRepository(db).records_for(
+        feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book, keys,
+    )
+
+    def needs_push(record: Dict[str, Any]) -> bool:
+        digest = content_digest(record)
+        if known.get(doc_key(record)) == digest:
+            return False
+        held = issue_records.get(doc_key(record))
+        return not (held and content_digest(held) == digest)
+
+    changed = [r for r in deduped if needs_push(r)]
+    summary["changed"] = len(changed)
+    if not changed:
+        return None
+
+    to_send = [
+        RawVendorRecord(
+            source_ref=source_ref(feed_row.feed, resolved.book, r),
+            entity_type=feed_row.feed, raw=r,
+        )
+        for r in push_order(changed)
+    ]
+    chunk_error: Optional[BaseException] = None
+
+    def on_chunk(chunk, results, error):
+        nonlocal chunk_error
+        if error is not None:
+            chunk_error = error
+            return
+        for record, result in zip(chunk, results):
+            _apply_document_verdict(
+                db, feed_row, resolved.book, record, result, dry_run=dry_run,
+                run_id=run.id, now=now, summary=summary, failed_refs=failed_refs,
+            )
+        db.commit()
+        _heartbeat(db, job_id)  # B2 - per committed chunk
+
+    try:
+        resolved.sink.write_batch(
+            to_send, request_id=f"{run.id}:recheck", dry_run=dry_run, on_chunk=on_chunk,
+        )
+    except Exception as exc:  # noqa: BLE001 - a raised sink error fails the run
+        chunk_error = exc
+    return chunk_error
+
+
 def run_sweep(
     db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime, job_id: Optional[str] = None,
     vendor_transport: Any = None, sink_transport: Any = None,
@@ -582,18 +674,23 @@ def run_sweep(
         return _finish_failed(db, run, exc.code, exc.message)
 
     today = myt_date(now)
-    window_from = today - timedelta(days=SWEEP_WINDOW_DAYS - 1)
+    # DOC-FEED-WINDOW - the DocDate window is the feed's own `recheckDays`
+    # (default 45, the former fixed sweep window).
+    window_days = int(resolve_window(feed_row.window_config)["recheckDays"])
+    window_from = today - timedelta(days=window_days - 1)
     seen: set = set()
+    fetched: List[Dict[str, Any]] = []
     requests_count = 0
     day = window_from
     try:
         while day <= today:
             for r in resolved.vendor.day_by_doc_date(feed_row.feed, day):
+                fetched.append(r)
                 key = doc_key(r)
                 if key is not None:
                     seen.add(key)
             requests_count += 1
-            _heartbeat(db, job_id)  # B2 - per vendor day (45 GETs)
+            _heartbeat(db, job_id)  # B2 - per vendor day (one GET per window day)
             day += timedelta(days=1)
     except DocFeedVendorError as exc:
         run.requests = requests_count
@@ -604,7 +701,36 @@ def run_sweep(
             resolved.vendor_client.close()
         return _finish_failed(db, run, exc.code, str(exc))
 
+    run.requests = requests_count
+    run.fetched_count = len(fetched)
+    run.day_from = window_from
+    run.day_to = today
+
     ledger_repo = DocFeedLedgerRepository(db)
+    summary = _new_summary()
+    failed_refs: List[Dict[str, Any]] = []
+
+    # ── re-check (DOC-FEED-WINDOW) - re-push every document whose content
+    # (header + lines) differs from what was last delivered: a line edit in
+    # AutoCount may not bump the header LastModified the poll keys on. A
+    # ledger row with no digest yet (or no ledger row at all) counts as
+    # changed - pushed once, the CRM's verdict is the authority.
+    pushed_error = _recheck_push(
+        db, feed_row, resolved, fetched, ledger_repo,
+        dry_run=dry_run, run=run, now=now, job_id=job_id,
+        summary=summary, failed_refs=failed_refs,
+    )
+    if pushed_error is not None:
+        summary["failedRefs"] = failed_refs[:20]
+        _record_vendor_activity(db, resolved.vendor_client, run)
+        if vendor_transport is None:
+            resolved.vendor_client.close()
+        return _finish_failed(
+            db, run, "SINK_ERROR", _sink_failure_text(pushed_error, resolved.sink),
+            summary=summary,
+        )
+
+    # ── deletions (D12, unchanged) ──
     window_rows = ledger_repo.window_rows(
         feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book,
         day_from=window_from, day_to=today,
@@ -614,10 +740,6 @@ def run_sweep(
     # locally hardcoded 50 / 0.2.
     threshold = max(DELETE_GUARD_MIN_ABSOLUTE, int(DELETE_GUARD_RATIO * len(window_rows)))
 
-    run.requests = requests_count
-    run.day_from = window_from
-    run.day_to = today
-
     if len(candidates) > threshold:
         _record_vendor_activity(db, resolved.vendor_client, run)
         if vendor_transport is None:
@@ -626,12 +748,10 @@ def run_sweep(
             db, run, "DELETE_GUARD",
             f"The sweep would deactivate {len(candidates)} of {len(window_rows)} "
             "ledger rows - over the safety guard, refusing.",
-            summary={**_new_summary(), "candidates": len(candidates), "deactivated": 0, "notFound": 0},
+            summary={**summary, "candidates": len(candidates), "deactivated": 0, "notFound": 0},
         )
 
-    summary = _new_summary()
     summary["candidates"] = len(candidates)
-    failed_refs: List[Dict[str, Any]] = []
 
     if candidates:
         keys = [row.doc_key for row in candidates]

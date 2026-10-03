@@ -46,7 +46,7 @@ export function DocFeedsTab({ companyId }: { companyId: string }) {
     async (feed: DocFeedKey, kind: 'poll' | 'sweep') => {
       try {
         await autocountService.runDocFeed(companyId, feed, { kind });
-        toast.success(kind === 'sweep' ? 'Sweep started.' : 'Run started.');
+        toast.success(kind === 'sweep' ? 'Re-check started.' : 'Run started.');
         await refreshAll();
       } catch (error) {
         toast.error(errorMessage(error, 'That run could not be started.'));
@@ -158,6 +158,7 @@ export function DocFeedsTab({ companyId }: { companyId: string }) {
             mode: configuringItem.mode,
             contractGate: configuringItem.contractGate,
             schedule: configuringItem.schedule,
+            window: configuringItem.window,
             nextPollAt: configuringItem.nextPollAt,
             nextSweepAt: configuringItem.nextSweepAt,
           }}
