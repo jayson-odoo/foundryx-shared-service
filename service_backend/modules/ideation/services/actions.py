@@ -78,6 +78,8 @@ class IdeaActionService:
         raw_text: str = "",
         source: str = "manual",
         actor: Optional[User] = None,
+        submitter_crm_user_id: Optional[str] = None,
+        submitter_name: Optional[str] = None,
     ) -> IdeaOut:
         """Operator-authored create (no draft/collect/confirm gate - an operator
         typing an idea IS deliberate). Validates the product, seeds the idea at the
@@ -114,7 +116,12 @@ class IdeaActionService:
             raw_text=raw_text,
             source=(source or "manual").strip() or "manual",
             submitter_contact_id=None,
-            submitter_name=(actor.name if actor else None),
+            # Embed create passes the viewing CRM user (SS-IDEATION-OWN);
+            # operator create keeps the operator's name.
+            submitter_name=(
+                (submitter_name or "").strip() or (actor.name if actor else None)
+            ),
+            submitter_crm_user_id=(submitter_crm_user_id or "").strip() or None,
             captured_json=captured,
         )
         self.db.add(idea)

@@ -34,6 +34,7 @@ from ..schemas import (
     IdeaOut,
     TransitionOut,
 )
+from .ownership import SubmitterIdentity, owned_filter
 from .statuses import IDEA_ENTITY
 
 
@@ -447,6 +448,7 @@ class IdeaReadService:
         voter_id: Optional[str] = None,
         include_test: bool = False,
         actor: Optional[User] = None,
+        owner: Optional[SubmitterIdentity] = None,
     ) -> List[IdeaOut]:
         """Ideas for a tenant, rank order (priority ascending, then newest
         first). ``search`` matches problem/raw_text (case-insensitive);
@@ -460,7 +462,11 @@ class IdeaReadService:
 
         ``include_test`` (issue #1179): a console/``--say`` test turn writes a
         real Idea row flagged ``is_test`` - excluded here by default so it never
-        shows on a real operator's list; pass ``True`` to see it too."""
+        shows on a real operator's list; pass ``True`` to see it too.
+
+        ``owner`` (SS-IDEATION-OWN, embed ``mine=true``): narrow to that
+        submitter's own ideas (CRM user id or phone - never name). An owner with
+        no usable identity narrows to NOTHING, never to "all"."""
         q = self.db.query(Idea).filter(
             Idea.tenant_id == tenant_id, Idea.merged_into_id.is_(None)
         )  # AC-94-02: survivors only, every filter mode
@@ -468,6 +474,8 @@ class IdeaReadService:
             q = q.filter(Idea.is_test.is_(False))
         if product_id:
             q = q.filter(Idea.product_id == product_id)
+        if owner is not None:
+            q = owned_filter(self.db, q, tenant_id, owner)
         if search:
             like = f"%{search.strip()}%"
             q = q.filter(Idea.problem.ilike(like) | Idea.raw_text.ilike(like))

@@ -170,6 +170,16 @@ class Idea(IdeationBase):
     # The submitter's tier (e.g. ``dealer``), stored verbatim, stripped (S1,
     # AC-1115). Nullable - not every intake caller sends one.
     submitter_tier = Column(String, nullable=True)
+    # The submitter's CRM (host, e.g. sorento) user id - the ownership link for
+    # ``isMine`` / embed ``mine=true`` / own-similar (SS-IDEATION-OWN). Set by
+    # the one-shot chatbot create and the embed create (assertion ``sub``).
+    # Ownership is this OR the submitter contact's phone - NEVER the name.
+    submitter_crm_user_id = Column(String, nullable=True, index=True)
+    # Host-supplied idempotency key of a one-shot chatbot create
+    # (SS-IDEATION-OWN): a retried ``POST /ideation/intake/ideas`` with the same
+    # key returns the SAME idea instead of minting a second one. Unique per
+    # tenant (``uq_ideas_tenant_intake_ref``); NULL for every other create path.
+    intake_ref = Column(String, nullable=True)
     captured_json = Column(JSON, nullable=True)
     # The formatted sequential idea number (``IDEA-0001``, S1/S5) - minted
     # once by the completion sink, never re-minted. NULL until captured.
@@ -209,6 +219,11 @@ class Idea(IdeationBase):
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+# One-shot create idempotency (SS-IDEATION-OWN): a host ``intake_ref`` maps to at
+# most one idea per tenant. NULLs are distinct, so every other path is unaffected.
+Index("uq_ideas_tenant_intake_ref", Idea.tenant_id, Idea.intake_ref, unique=True)
 
 
 # Same-schema FK target = the Idea above. Reference the column object (the table

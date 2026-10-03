@@ -35,6 +35,7 @@ Turn algorithm (deterministic):
 """
 from typing import Dict, List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
@@ -53,10 +54,13 @@ from .intake_definitions import (
     get_intake_definition,
     next_field as compute_next_field,
 )
+from .ownership import SubmitterIdentity, find_contacts_by_phone, phone_digits
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
+from .status_events import _iso_z
 
 _RECAP_ORDER = ("problem", "proposed_solution", "impact", "department")
+_ONE_SHOT_OPTIONAL = ("proposed_solution", "impact", "department")
 
 
 def _response(
@@ -163,13 +167,7 @@ class IntakeService:
 
         # product_id is validated against the tenant's catalog (binding-derivation
         # spoof-refusal is the respond.io slice; here we reject unknown/foreign).
-        product = (
-            self.db.query(Product)
-            .filter(Product.id == product_id, Product.tenant_id == tenant_id)
-            .first()
-        )
-        if product is None:
-            raise ApiError(404, "unknown_product", "product_id does not resolve to a product for this workspace.")
+        self._product_or_404(tenant_id, product_id)
 
         # Resolve the submitter to a shared-service contact id. Per §5.1/D21 the
         # caller passes a PHONE (E.164); shared-service matches it to its own
@@ -306,6 +304,224 @@ class IntakeService:
             idea_number=idea.idea_number,
             link=link,
         )
+
+    # ── one-shot create (SS-IDEATION-OWN) ─────────────────────────────────────
+    def create_one_shot(
+        self,
+        tenant_id: str,
+        *,
+        product_id: str,
+        problem: str,
+        submitter_crm_user_id: Optional[str],
+        title: Optional[str] = None,
+        proposed_solution: Optional[str] = None,
+        impact: Optional[str] = None,
+        department: Optional[str] = None,
+        submitter_phone: Optional[str] = None,
+        submitter_name: Optional[str] = None,
+        submitter_tier: Optional[str] = None,
+        raw_transcript: Optional[str] = None,
+        attachments: Optional[List[Dict[str, object]]] = None,
+        is_test: bool = False,
+        intake_ref: Optional[str] = None,
+    ) -> dict:
+        """Create a REAL idea in one call. The chatbot host has already
+        collected AND confirmed the fields, so there is no draft/collect/confirm
+        loop here (``create_idea`` keeps that flow, unchanged). The idea is built
+        as a draft then promoted by the SAME ``on_complete_sink`` the turn flow
+        uses (``draft -> captured``, bottom-of-lane priority, ``idea_number`` +
+        ``status_token`` mint, public link) - one promotion path, never two.
+
+        The sender must be a CRM user: ``submitter_crm_user_id`` is required
+        (422 ``submitter_required``) and is the ownership link for ``isMine`` /
+        own-similar. ``submitter_phone`` (optional) links the WhatsApp contact
+        copy (find-or-create, matched across ``+``/digit-only spellings). No
+        cross-submitter dedup: the host runs :meth:`similar_own` first and lets
+        the sender decide. Returns ``{idea_id, idea_number, status, title, link}``.
+
+        ``intake_ref`` (optional, host idempotency key): a retry with the same
+        key returns the idea it already created (same body) and changes
+        nothing - a chatbot timeout-retry never mints a second idea."""
+        definition = get_intake_definition(IDEATION_INTAKE_KEY)
+        if definition is None:  # pragma: no cover - registered at boot
+            raise ApiError(500, "intake_unavailable", "Intake definition not registered.")
+        crm_user_id = (submitter_crm_user_id or "").strip()
+        if not crm_user_id:
+            raise ApiError(422, "submitter_required", "submitter_crm_user_id is required.")
+        ref = (intake_ref or "").strip() or None
+        if ref is not None:
+            existing = self._idea_by_intake_ref(tenant_id, ref)
+            if existing is not None:
+                return self._replay(existing, crm_user_id)
+        problem = (problem or "").strip()
+        if not problem:
+            raise ApiError(422, "problem_required", "problem is required.")
+        clean_title = (title or "").strip() or None
+        if clean_title and len(clean_title.split()) > 8:
+            raise ApiError(422, "title_too_long", "Title must be 8 words or fewer.")
+        self._product_or_404(tenant_id, product_id)
+        contact_id = self._resolve_submitter_phone(tenant_id, submitter_phone)
+
+        values = {
+            "proposed_solution": proposed_solution,
+            "impact": impact,
+            "department": department,
+        }
+        captured: Dict[str, object] = {"problem": problem}
+        for key in _ONE_SHOT_OPTIONAL:
+            value = (values[key] or "").strip()
+            if value:
+                captured[key] = value
+        transcript = (raw_transcript or "").strip()
+        idea = Idea(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            status_id=initial_idea_status_id(self.db, tenant_id),
+            intake_definition_key=IDEATION_INTAKE_KEY,
+            title=clean_title,
+            problem=problem,
+            raw_text=transcript or problem,
+            source="whatsapp",
+            submitter_contact_id=contact_id,
+            submitter_crm_user_id=crm_user_id,
+            submitter_name=(submitter_name or "").strip() or None,
+            submitter_tier=(submitter_tier or "").strip() or None,
+            captured_json=captured,
+            is_test=bool(is_test),
+            intake_ref=ref,
+        )
+        self.db.add(idea)
+        try:
+            self.db.flush()
+        except IntegrityError:
+            # A concurrent retry with the same ``intake_ref`` won the insert -
+            # return the idea it created instead of a 500.
+            self.db.rollback()
+            existing = self._idea_by_intake_ref(tenant_id, ref) if ref else None
+            if existing is None:
+                raise
+            return self._replay(existing, crm_user_id)
+        self._persist_attachments(tenant_id, idea, attachments)
+        definition.on_complete_sink(self.db, idea, tenant_id)
+        self.db.commit()
+        return self._one_shot_response(idea)
+
+    def _idea_by_intake_ref(self, tenant_id: str, ref: str) -> Optional[Idea]:
+        return (
+            self.db.query(Idea)
+            .filter(Idea.tenant_id == tenant_id, Idea.intake_ref == ref)
+            .first()
+        )
+
+    def _replay(self, existing: Idea, crm_user_id: str) -> dict:
+        """Idempotent replay - only for the SAME submitter. A key reused by a
+        different CRM user is a host bug; 409 rather than hand them someone
+        else's idea."""
+        if existing.submitter_crm_user_id != crm_user_id:
+            raise ApiError(
+                409, "intake_ref_conflict", "intake_ref already used by a different submitter."
+            )
+        return self._one_shot_response(existing)
+
+    def _one_shot_response(self, idea: Idea) -> dict:
+        status = self.db.query(Status).filter(Status.id == idea.status_id).first()
+        return {
+            "idea_id": idea.id,
+            "idea_number": idea.idea_number,
+            "status": status.key if status else "",
+            "title": idea.title,
+            "link": mint_idea_link(self.db, idea),
+        }
+
+    def similar_own(
+        self,
+        tenant_id: str,
+        *,
+        product_id: str,
+        text_: str,
+        submitter_crm_user_id: Optional[str] = None,
+        submitter_phone: Optional[str] = None,
+        is_test: bool = False,
+    ) -> dict:
+        """The sender's OWN live ideas similar to ``text_`` (top 3, best first).
+        Identity = CRM user id and/or phone - at least one must be real (422
+        ``submitter_required`` otherwise), so a missing identity can never fall
+        back to name or widen to everyone. Read-only."""
+        ident = SubmitterIdentity(crm_user_id=submitter_crm_user_id, phone=submitter_phone)
+        if ident.is_empty:
+            raise ApiError(
+                422,
+                "submitter_required",
+                "submitter_crm_user_id or a valid submitter_phone is required.",
+            )
+        self._product_or_404(tenant_id, product_id)
+        hits = self._dedup.find_similar_own(
+            tenant_id, product_id, text_, ident, is_test=bool(is_test)
+        )
+        if not hits:
+            return {"matches": []}
+        ideas = {
+            i.id: i
+            for i in self.db.query(Idea)
+            .filter(Idea.tenant_id == tenant_id, Idea.id.in_([h[0] for h in hits]))
+            .all()
+        }
+        statuses = {
+            s.id: s
+            for s in self.db.query(Status)
+            .filter(Status.id.in_({i.status_id for i in ideas.values()}))
+            .all()
+        }
+        matches = []
+        for idea_id, score in hits:
+            idea = ideas.get(idea_id)
+            if idea is None:  # pragma: no cover - same tenant by construction
+                continue
+            st = statuses.get(idea.status_id)
+            matches.append(
+                {
+                    "idea_id": idea.id,
+                    "idea_number": idea.idea_number,
+                    "title": idea.title,
+                    "problem": idea.problem,
+                    "status": st.key if st else "",
+                    "status_label": st.label if st else "",
+                    "similarity": round(score, 3),
+                    "created_at": _iso_z(idea.created_at),
+                    "link": mint_idea_link(self.db, idea),
+                }
+            )
+        return {"matches": matches}
+
+    def _product_or_404(self, tenant_id: str, product_id: str) -> Product:
+        product = (
+            self.db.query(Product)
+            .filter(Product.id == product_id, Product.tenant_id == tenant_id)
+            .first()
+        )
+        if product is None:
+            raise ApiError(404, "unknown_product", "product_id does not resolve to a product for this workspace.")
+        return product
+
+    def _resolve_submitter_phone(self, tenant_id: str, phone: Optional[str]) -> Optional[str]:
+        """Phone -> this tenant's contact copy, matched on normalized digits
+        (``Contact.phone_digits``; created as ``+<digits>`` when absent). ``None`` when no phone
+        was supplied; 422 ``invalid_phone`` when one was supplied but is junk."""
+        if phone is None or not phone.strip():
+            return None
+        digits = phone_digits(phone)
+        if not digits:
+            raise ApiError(422, "invalid_phone", "submitter_phone is not a valid phone number.")
+        matches = find_contacts_by_phone(self.db, tenant_id, phone)
+        if matches:
+            return matches[0].id
+        contact_id = self._resolve_submitter(tenant_id, f"+{digits}")
+        # Stamp the normalized lookup key so later lookups hit the index.
+        contact = self.db.query(Contact).filter(Contact.id == contact_id).first()
+        if contact is not None and not contact.phone_digits:
+            contact.phone_digits = digits
+            self.db.flush()
+        return contact_id
 
     # ── internals ─────────────────────────────────────────────────────────────
     def _is_draft(self, idea: Idea) -> bool:

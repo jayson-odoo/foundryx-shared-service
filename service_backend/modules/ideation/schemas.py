@@ -108,6 +108,10 @@ class IdeaOut(ApiModel):
     # A console/``--say`` test turn (issue #1179) - false for every real capture.
     # Excluded from list/board by default (``includeTest`` opts in).
     isTest: bool = False
+    # Whether the VIEWING CRM user submitted this idea (SS-IDEATION-OWN). Stamped
+    # on embed responses only - matched by CRM user id or submitter phone, never
+    # by name. Always false on the operator surface (no CRM viewer identity).
+    isMine: bool = False
     # Merge/unmerge (issue #94, plan section 3.3). ``mergedIntoId``/``mergedInto``
     # are set ONLY on a merged child (never on a survivor); ``mergedCount`` is
     # the number of children merged into THIS idea (0 for a plain idea or a
@@ -697,3 +701,41 @@ class PublicIdeaStatusOut(ApiModel):
     nextStep: str
     timeline: List[PublicIdeaTimelineStepOut] = Field(default_factory=list)
     mergedInto: Optional[PublicMergedIntoOut] = None
+
+
+class OneShotIdeaIn(ApiModel):
+    """One-shot chatbot create (SS-IDEATION-OWN) - **snake_case**, server-to-server
+    like ``CreateIdeaIn``. The host has already collected AND confirmed the idea,
+    so this creates a REAL idea (``captured``) in one call and returns its id +
+    ``idea_number``. ``submitter_crm_user_id`` is REQUIRED (only CRM users submit
+    via the chatbot; it is the ownership link for ``isMine``/own-similar);
+    ``submitter_phone`` (E.164) additionally links the WhatsApp contact copy."""
+
+    product_id: str
+    problem: str
+    title: Optional[str] = None
+    proposed_solution: Optional[str] = None
+    impact: Optional[str] = None
+    department: Optional[str] = None
+    submitter_crm_user_id: Optional[str] = None
+    submitter_phone: Optional[str] = None
+    submitter_name: Optional[str] = None
+    submitter_tier: Optional[str] = None
+    raw_transcript: Optional[str] = None
+    attachments: Optional[List[CreateIdeaAttachmentIn]] = None
+    is_test: bool = False
+    # Host idempotency key (e.g. the confirming Respond.io message id): a retry
+    # with the same key returns the idea already created, never a second one.
+    intake_ref: Optional[str] = None
+
+
+class SimilarOwnIn(ApiModel):
+    """Own-similar lookup (SS-IDEATION-OWN) - **snake_case**. ``text`` is the new
+    idea's problem text; identity = ``submitter_crm_user_id`` and/or
+    ``submitter_phone`` (at least one real one - never matched by name)."""
+
+    product_id: str
+    text: str = ""
+    submitter_crm_user_id: Optional[str] = None
+    submitter_phone: Optional[str] = None
+    is_test: bool = False
