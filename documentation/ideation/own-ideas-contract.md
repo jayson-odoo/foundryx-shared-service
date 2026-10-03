@@ -18,7 +18,7 @@ An idea belongs to a submitter identified by EITHER
 - the submitter contact's phone - `ideas.submitter_contact_id` -> an omnichannel
   contact in the SAME tenant whose phone has the same digits (omnichannel's
   `digits_only` / `Contact.phone_digits`, so formatting on either side does not
-  matter: `+60 12-345 6789` matches `60123456789`).
+  matter: `+60 10-000 0001` matches `60100000001`).
 
 Never by display name. A blank CRM id or a phone with fewer than 8 digits is no
 identity: it matches nothing, so `mine=true` without identity is an empty list,

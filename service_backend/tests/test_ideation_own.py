@@ -34,8 +34,8 @@ from tests.test_ideation_embed import (  # noqa: F401 - fixture re-export
     ideation_client,
 )
 
-PHONE = "+60123456789"
-OTHER_PHONE = "+60198765432"
+PHONE = "+60100000001"
+OTHER_PHONE = "+60100000002"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -56,14 +56,14 @@ def _seed_connection(factory, product_id=None, tenant_id=DEFAULT_TENANT_ID):
         db.close()
 
 
-def _assertion(sub="crm-1", phone=None, ideas_manage=None, name="Alice"):
+def _assertion(sub="crm-1", phone=None, ideas_manage=None, name="CUSTOMER A"):
     now = datetime.now(timezone.utc)
     payload = {
         "typ": "assertion",
         "aud": AUD,
         "iss": "sorento",
         "sub": sub,
-        "email": "a@sorento.my",
+        "email": "test@example.com",
         "name": name,
         "connection_id": CONNECTION_ID,
         "iat": int(now.timestamp()),
@@ -95,7 +95,7 @@ def _one_shot(client, key, product_id, **over):
         "department": "Customer Service",
         "submitter_phone": PHONE,
         "submitter_crm_user_id": "crm-1",
-        "submitter_name": "Jayson Tan",
+        "submitter_name": "CUSTOMER A",
     }
     body.update(over)
     body = {k: v for k, v in body.items() if v is not None}
@@ -196,13 +196,13 @@ def test_one_shot_create_returns_id_and_number(ctx):
     detail = client.get(f"/ideation/ideas/{body['idea_id']}", headers=h).json()
     assert detail["ideaNumber"] == "IDEA-0001"
     assert detail["status"] == "captured"
-    assert detail["submitterName"] == "Jayson Tan"
+    assert detail["submitterName"] == "CUSTOMER A"
     assert detail["proposedSolution"] == "Export button on the orders list"
 
 
 def test_one_shot_create_links_submitter_contact_and_crm_user(ctx):
     client, _h, product_id, key = ctx
-    contact_id = _make_contact(client._factory, phone=PHONE)
+    contact_id = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone=PHONE)
     idea_id = _one_shot(client, key, product_id).json()["idea_id"]
 
     from modules.ideation.models import Idea
@@ -258,7 +258,7 @@ def test_one_shot_create_is_idempotent_on_intake_ref(ctx):
 
 def test_one_shot_create_matches_formatted_stored_phone(ctx):
     client, _h, product_id, key = ctx
-    legacy = _contact(client._factory, "+60 12-345 6789")  # phone_digits not stamped
+    legacy = _contact(client._factory, "+60 10-000 0001")  # phone_digits not stamped
     idea_id = _one_shot(client, key, product_id).json()["idea_id"]
 
     from modules.ideation.models import Idea
@@ -272,7 +272,7 @@ def test_one_shot_create_matches_formatted_stored_phone(ctx):
 
 def test_one_shot_create_new_contact_is_stamped(ctx):
     client, _h, product_id, key = ctx
-    idea_id = _one_shot(client, key, product_id, submitter_phone="+60 19-999 8888").json()["idea_id"]
+    idea_id = _one_shot(client, key, product_id, submitter_phone="+60 10-000 0003").json()["idea_id"]
 
     from modules.ideation.models import Idea
     from modules.omnichannel.models import Contact
@@ -281,8 +281,8 @@ def test_one_shot_create_new_contact_is_stamped(ctx):
     try:
         cid = db.query(Idea).filter(Idea.id == idea_id).one().submitter_contact_id
         contact = db.query(Contact).filter(Contact.id == cid).one()
-        assert contact.phone == "+60199998888"
-        assert contact.phone_digits == "60199998888"
+        assert contact.phone == "+60100000003"
+        assert contact.phone_digits == "60100000003"
     finally:
         db.close()
 
@@ -311,8 +311,8 @@ def test_one_shot_create_persists_attachments(ctx):
 # ── 3. own-similar lookup ────────────────────────────────────────────────────
 def test_similar_own_matches_same_phone_only(ctx):
     client, _h, product_id, key = ctx
-    mine = _make_contact(client._factory, phone=PHONE)
-    other = _make_contact(client._factory, first_name="Bob", phone=OTHER_PHONE)
+    mine = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone=PHONE)
+    other = _make_contact(client._factory, first_name="CUSTOMER", last_name="B", phone=OTHER_PHONE)
     own_id = _insert_idea(
         client._factory, product_id, problem="Export orders to Excel", contact_id=mine
     )
@@ -335,28 +335,28 @@ def test_similar_own_matches_same_phone_only(ctx):
 
 def test_similar_own_phone_format_tolerant(ctx):
     client, _h, product_id, key = ctx
-    mine = _make_contact(client._factory, phone="60123456789")
+    mine = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone="60100000001")
     own_id = _insert_idea(
         client._factory, product_id, problem="Export orders to Excel", contact_id=mine
     )
-    res = _similar(client, key, product_id, "export orders to excel", submitter_phone="+60 12-345 6789")
+    res = _similar(client, key, product_id, "export orders to excel", submitter_phone="+60 10-000 0001")
     assert [m["idea_id"] for m in res.json()["matches"]] == [own_id]
 
 
 def test_similar_own_matches_stamped_digits(ctx):
     client, _h, product_id, key = ctx
-    mine = _contact(client._factory, "+60 12 345 6789", digits="60123456789")
+    mine = _contact(client._factory, "+60 10 000 0001", digits="60100000001")
     own_id = _insert_idea(
         client._factory, product_id, problem="Export orders to Excel", contact_id=mine
     )
-    res = _similar(client, key, product_id, "export orders to excel", submitter_phone="60123456789")
+    res = _similar(client, key, product_id, "export orders to excel", submitter_phone="60100000001")
     assert [m["idea_id"] for m in res.json()["matches"]] == [own_id]
 
 
 def test_similar_own_and_mine_never_cross_tenants(ctx):
     client, _h, product_id, key = ctx
     _seed_connection(client._factory, product_id=product_id)
-    foreign_contact = _contact(client._factory, PHONE, tenant_id="tenant-other", digits="60123456789")
+    foreign_contact = _contact(client._factory, PHONE, tenant_id="tenant-other", digits="60100000001")
     _insert_idea(
         client._factory,
         product_id,
@@ -394,7 +394,7 @@ def test_similar_own_never_matches_by_name(ctx):
         client._factory,
         product_id,
         problem="Export orders to Excel",
-        submitter_name="Jayson Tan",
+        submitter_name="CUSTOMER A",
         crm_user_id="crm-9",
     )
     res = _similar(
@@ -403,7 +403,7 @@ def test_similar_own_never_matches_by_name(ctx):
         product_id,
         "export orders to excel",
         submitter_crm_user_id="crm-1",
-        submitter_name="Jayson Tan",
+        submitter_name="CUSTOMER A",
     )
     assert res.json()["matches"] == []
 
@@ -468,8 +468,8 @@ def test_similar_own_scoped_to_product_and_threshold(ctx):
 def _embed_fixture(ctx):
     client, _h, product_id, _key = ctx
     _seed_connection(client._factory, product_id=product_id)
-    mine_contact = _make_contact(client._factory, phone=PHONE)
-    other_contact = _make_contact(client._factory, first_name="Bob", phone=OTHER_PHONE)
+    mine_contact = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone=PHONE)
+    other_contact = _make_contact(client._factory, first_name="CUSTOMER", last_name="B", phone=OTHER_PHONE)
     by_crm = _insert_idea(client._factory, product_id, problem="A by crm", crm_user_id="crm-1")
     by_phone = _insert_idea(
         client._factory, product_id, problem="B by phone", contact_id=mine_contact
@@ -480,7 +480,7 @@ def _embed_fixture(ctx):
         problem="C other",
         contact_id=other_contact,
         crm_user_id="crm-2",
-        submitter_name="Alice",  # same name as the viewer - must NOT count
+        submitter_name="CUSTOMER A",  # same name as the viewer - must NOT count
     )
     return client, by_crm, by_phone, others
 
