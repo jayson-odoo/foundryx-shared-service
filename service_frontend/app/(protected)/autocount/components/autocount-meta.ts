@@ -549,6 +549,9 @@ export const AC_DOC_FEED_RUN_OUTCOME_REGISTRY: StatusRegistry<DocFeedRunOutcome 
 
 /** Runs list "Kind" column (poll / sweep / backfill). */
 export function docFeedRunKindLabel(kind: DocFeedRunKind | string): string {
+  // DOC-FEED-WINDOW - the sweep re-pushes changed documents AND deletes
+  // vanished ones; the run kind key stays `sweep`.
+  if (kind === 'sweep') return 'Re-check';
   return humanizeFieldKey(kind);
 }
 

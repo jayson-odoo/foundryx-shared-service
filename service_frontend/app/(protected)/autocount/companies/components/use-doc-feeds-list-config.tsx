@@ -82,7 +82,7 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
       },
       {
         id: 'run-sweep-now',
-        label: 'Run sweep now',
+        label: 'Run re-check now',
         surfaces: { row: true },
         permission: AC_SYNC_RUN,
         isVisible: (rows) => rows[0].mode !== 'off',

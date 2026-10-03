@@ -259,11 +259,11 @@ def test_ac_12_30_permissions_parity_no_new_key_added():
 def test_ac_12_32_no_new_autocount_migration_added():
     """No schema change FOR THIS PLAN (2.2); `hasPreset` is derived at read
     time. The ceiling here tracks whatever the LATEST plan to actually ship
-    an autocount migration left as its own baseline - DOC-FEED-INTERVAL
-    (sprint-5/19) is that latest lane, shipping
-    `0026_autocount_doc_feed_schedule` (one additive column) deliberately, so
-    the guard's ceiling moved to 26 with it, and ITEM-TYPE-SS ships the
-    data-only `0027_autocount_item_type` backfill, moving it to 27; a
+    an autocount migration left as its own baseline - DOC-FEED-WINDOW is
+    that latest lane, shipping `0027_autocount_doc_feed_window` (two additive
+    columns) deliberately, so the guard's ceiling moved to 27 with it, and
+    ITEM-TYPE-SS ships the data-only `0028_autocount_item_type` backfill,
+    moving it to 28; a
     reviewer/coder adding one beyond THAT for a schema-free slice still trips
     this guard rather than the drift going unnoticed."""
     versions_dir = (
@@ -275,8 +275,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
         match = re.match(r"^(\d+)_", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    assert highest <= 27, (
-        f"a new autocount migration (>0027) exists ({highest}) - AC-12-32 "
+    assert highest <= 28, (
+        f"a new autocount migration (>0028) exists ({highest}) - AC-12-32 "
         "says THIS plan ships no schema change (a later plan may legitimately "
-        "move this ceiling again, as DOC-FEED-INTERVAL just did from 25 to 26)"
+        "move this ceiling again, as ITEM-TYPE-SS just did from 27 to 28)"
     )

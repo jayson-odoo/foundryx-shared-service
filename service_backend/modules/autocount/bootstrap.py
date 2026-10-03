@@ -263,7 +263,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # Version-GATED, unlike its siblings above: a product HTTP task has no
     # query text to mark it migrated, so an ungated pass would reseed a row
     # an operator deliberately deleted on every later update. Module Alembic
-    # 0027 runs the same repair once on deploy.
+    # 0028 runs the same repair once on deploy.
     if parse_version(from_version) < (0, 14, 0):
         backfill_product_item_type(db, schema=schema, tenant_id=tenant_id)
 

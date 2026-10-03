@@ -17,7 +17,7 @@ Wire contract (what the CRM builds against):
 
 Existing tenants: every existing ``product`` task gets an
 ``ItemType -> item_type_code`` row via ``backfill_product_item_type``
-(module Alembic 0027 + ``update_tenant`` from < 0.14.0).
+(module Alembic 0028 + ``update_tenant`` from < 0.14.0).
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ VERSIONS_DIR = MODULE_ROOT / "alembic" / "versions"
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "autocount_http" / "item_page.json"
 
 HELPER_NAME = "backfill_product_item_type"
-PREVIOUS_REVISION = "0026_autocount_doc_feed_schedule"
+PREVIOUS_REVISION = "0027_autocount_doc_feed_window"
 
 
 def _backfill():
@@ -360,14 +360,14 @@ def test_backfill_is_a_no_op_on_a_schema_that_predates_its_tables():
         assert helper(conn, schema=None) == 0
 
 
-def test_revision_0027_chains_onto_0026_and_calls_the_helper():
-    candidates = sorted(VERSIONS_DIR.glob("0027_*.py"))
+def test_revision_0028_chains_onto_0027_and_calls_the_helper():
+    candidates = sorted(VERSIONS_DIR.glob("0028_*.py"))
     assert len(candidates) == 1, [p.name for p in candidates]
     path = candidates[0]
     text = path.read_text()
     revision = re.search(r'^revision[^=]*=\s*"([^"]+)"', text, re.M)
     assert revision and len(revision.group(1)) <= 32
-    spec = importlib.util.spec_from_file_location("_ac_rev_0027", path)
+    spec = importlib.util.spec_from_file_location("_ac_rev_0028", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert module.down_revision == PREVIOUS_REVISION

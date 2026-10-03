@@ -1897,7 +1897,7 @@ def backfill_product_item_type(
 
     No query text marks a product HTTP task "already migrated", so an
     operator who deletes the row would see it reseeded on every pass: module
-    Alembic 0027 runs it once, and ``update_tenant`` only when upgrading from
+    Alembic 0028 runs it once, and ``update_tenant`` only when upgrading from
     below 0.14.0 - and then for THAT tenant only (``tenant_id``): the
     version gate is per tenant, so an unscoped sweep would let one tenant's
     late update reseed a row another, already-updated tenant deleted.

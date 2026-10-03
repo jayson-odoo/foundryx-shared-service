@@ -19,8 +19,8 @@ task pushes.
 Frozen ``sa.table`` backfill, never the live ORM model; does not commit -
 Alembic's own transaction owns that (0019/0025 precedent).
 
-Revision ID: 0027_autocount_item_type   (24 chars <= 32)
-Revises: 0026_autocount_doc_feed_schedule
+Revision ID: 0028_autocount_item_type   (24 chars <= 32)
+Revises: 0027_autocount_doc_feed_window
 Create Date: 2026-10-03
 """
 from typing import Sequence, Union
@@ -29,8 +29,8 @@ from alembic import op
 
 from modules.autocount.backfill import backfill_product_item_type
 
-revision: str = "0027_autocount_item_type"
-down_revision: Union[str, Sequence[str], None] = "0026_autocount_doc_feed_schedule"
+revision: str = "0028_autocount_item_type"
+down_revision: Union[str, Sequence[str], None] = "0027_autocount_doc_feed_window"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

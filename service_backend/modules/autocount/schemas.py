@@ -1260,12 +1260,35 @@ class DocFeedScheduleIn(BaseModel):
     reconcileAt: Optional[Any] = None
 
 
+class DocFeedWindowOut(BaseModel):
+    """DOC-FEED-WINDOW - which vendor door the poll reads, how many days
+    back each tick reaches, and how many DocDate days the re-check reads."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    pollBasis: str
+    pollLookbackDays: int
+    recheckDays: int
+
+
+class DocFeedWindowIn(BaseModel):
+    """Loose on purpose (same reason as `DocFeedScheduleIn`): the service
+    validates and answers the house per-field 422."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    pollBasis: Optional[Any] = None
+    pollLookbackDays: Optional[Any] = None
+    recheckDays: Optional[Any] = None
+
+
 class DocFeedItemOut(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     feed: str
     mode: str
     schedule: DocFeedScheduleOut
+    window: DocFeedWindowOut
     connectionId: Optional[str] = None
     book: Optional[str] = None
     cursorDay: Optional[date] = None
@@ -1304,6 +1327,8 @@ class DocFeedUpdateIn(BaseModel):
     mode: str
     # sprint-5/19 - omitted = the stored schedule is kept.
     schedule: Optional[DocFeedScheduleIn] = None
+    # DOC-FEED-WINDOW - omitted = the stored window is kept.
+    window: Optional[DocFeedWindowIn] = None
 
 
 class DocFeedRunStartIn(BaseModel):
