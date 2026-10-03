@@ -42,6 +42,10 @@ export interface ScheduleCadenceCardsProps {
   className?: string;
   /** Extra cards rendered in the same grid (the Entities delete guard). */
   children?: ReactNode;
+  /** Extra fields inside the incremental / reconcile card, after the
+   * cadence fields (the Document feeds' read window, DOC-FEED-WINDOW). */
+  incrementalExtra?: ReactNode;
+  reconcileExtra?: ReactNode;
 }
 
 /** Live mirror of every cadence rule - the same messages the cards render.
@@ -82,6 +86,8 @@ export function ScheduleCadenceCards({
   idPrefix = 'etl',
   className = 'grid gap-4 md:grid-cols-3',
   children,
+  incrementalExtra,
+  reconcileExtra,
 }: ScheduleCadenceCardsProps) {
   const { formatDateTime } = useDatetime();
   const floor = incrementalFloorMinutes(hasWatermark);
@@ -150,6 +156,7 @@ export function ScheduleCadenceCards({
               </p>
             )}
           </div>
+          {incrementalExtra}
           {nextIncrementalAt && (
             <Badge
               variant="secondary"
@@ -263,6 +270,8 @@ export function ScheduleCadenceCards({
               )}
             </div>
           )}
+
+          {reconcileExtra}
 
           {nextReconcileAt && (
             <Badge

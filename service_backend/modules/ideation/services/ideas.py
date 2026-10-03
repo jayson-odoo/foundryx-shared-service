@@ -121,8 +121,8 @@ class IdeaReadService:
             submitterName=submitter,
             submitterTier=idea.submitter_tier,
             upvotes=idea.upvotes or 0,
-            downvotes=idea.downvotes or 0,
-            myVote=my_vote if my_vote in ("up", "down") else None,
+            downvotes=0,  # plan 19: upvote only; legacy 'down' rows are ignored
+            myVote="up" if my_vote == "up" else None,
             priority=idea.priority or 0,
             rank=rank,
             attachments=idea_attachments,

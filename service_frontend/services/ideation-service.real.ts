@@ -7,7 +7,8 @@
  * - listIdeas     → GET  /ideation/ideas?filter=&includeTest=  (bare IdeaOut[], server-ranked order)
  * - getIdea       → GET  /ideation/ideas/{id}
  * - setStatus     → POST /ideation/ideas/{id}/status  {toStatusId}
- * - vote          → POST /ideation/ideas/{id}/vote    {dir}
+ * - vote          → POST /ideation/ideas/{id}/vote    {dir: "up"}
+ * - comments      → GET|POST /ideation/ideas/{id}/comments, PATCH|DELETE .../comments/{commentId}
  * - reorderPriority → PUT /ideation/ideas/reorder     {orderedIds}
  * - remove        → DELETE /ideation/ideas/{id}       (204)
  * - uploadAttachment → POST /ideation/ideas/{id}/attachments   (multipart `file`)
@@ -38,6 +39,7 @@ import type {
   Idea,
   IdeaAttachment,
   IdeaClusterSuggestions,
+  IdeaComment,
   Product,
 } from '@/types/ideation';
 import type { IdeaCreateInput, IdeaExtendedOps, IdeaService } from './ideation-service';
@@ -131,10 +133,35 @@ export const realIdeationService: IdeaService & IdeaExtendedOps = {
     });
   },
 
-  vote(id: string, dir: 'up' | 'down'): Promise<Idea> {
+  vote(id: string, dir: 'up'): Promise<Idea> {
     return apiFetch<Idea>(`${idea(id)}/vote`, {
       method: 'POST',
       body: JSON.stringify({ dir }),
+    });
+  },
+
+  // Comments (plan 19, AC-19-25).
+  listComments(ideaId: string): Promise<IdeaComment[]> {
+    return apiFetch<IdeaComment[]>(`${idea(ideaId)}/comments`);
+  },
+
+  addComment(ideaId: string, body: string, parentId?: string): Promise<IdeaComment> {
+    return apiFetch<IdeaComment>(`${idea(ideaId)}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(parentId ? { body, parentId } : { body }),
+    });
+  },
+
+  editComment(ideaId: string, commentId: string, body: string): Promise<IdeaComment> {
+    return apiFetch<IdeaComment>(`${idea(ideaId)}/comments/${encodeURIComponent(commentId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    });
+  },
+
+  async deleteComment(ideaId: string, commentId: string): Promise<void> {
+    await apiFetch<void>(`${idea(ideaId)}/comments/${encodeURIComponent(commentId)}`, {
+      method: 'DELETE',
     });
   },
 

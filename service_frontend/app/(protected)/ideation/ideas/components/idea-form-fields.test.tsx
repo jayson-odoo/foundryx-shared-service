@@ -84,6 +84,36 @@ describe('DetailsTab - no Status control in any mode (AC-94-33)', () => {
   });
 });
 
+vi.mock('@/hooks/use-idea-comments', () => ({
+  useIdeaComments: () => ({
+    threads: [],
+    count: 0,
+    loading: false,
+    error: null,
+    add: vi.fn(),
+    edit: vi.fn(),
+    remove: vi.fn(),
+  }),
+}));
+
+describe('DetailsTab - Votes row moved to the header, Comments section (AC-19-16/21)', () => {
+  it('has no Votes row (the vote box lives in the header avatar slot)', () => {
+    render(<Harness idea={anIdea({ upvotes: 5 })} editing={false} />);
+    expect(screen.queryByText('Votes')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /upvote/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the Comments section in view mode for an existing idea', () => {
+    render(<Harness idea={anIdea()} editing={false} />);
+    expect(screen.getByRole('heading', { name: /^Comments/ })).toBeInTheDocument();
+  });
+
+  it('hides the Comments section while editing', () => {
+    render(<Harness idea={anIdea()} editing />);
+    expect(screen.queryByRole('heading', { name: /^Comments/ })).not.toBeInTheDocument();
+  });
+});
+
 function priorityRowValue(): HTMLElement {
   const label = screen.getByText('Priority');
   const row = label.parentElement as HTMLElement;

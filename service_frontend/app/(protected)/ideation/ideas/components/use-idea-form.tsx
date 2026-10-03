@@ -16,7 +16,7 @@ import {
   Split,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
-import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { FormPrimaryAction, ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useCan } from '@/hooks/use-can';
@@ -29,6 +29,7 @@ import { DetailsTab, AttachmentsTab } from './idea-form-fields';
 import { statusRegistryFor } from './status-registry';
 import { IdeaBrsTab } from './idea-brs-tab';
 import { IdeaMergedTab } from './idea-merged-tab';
+import { VoteCell } from './vote-cell';
 import { ideaFormPath, buildIdeaFormQuery } from './paths';
 import { ideaFormSchema, type IdeaFormValues } from './idea-schema';
 
@@ -166,26 +167,31 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     // A merged child is frozen (AC-94-09/26) - the gear offers only Unmerge
     // (split it back out) and Delete. Every lifecycle action lives on the
     // survivor instead.
+    // A failed primary move toasts its message instead of rejecting (AC-19-41).
+    const guarded = async (run: () => Promise<void>, fallback: string) => {
+      try {
+        await run();
+      } catch (e) {
+        toast.error(e instanceof Error && e.message ? e.message : fallback);
+      }
+    };
+
+    const unmergeIdea = async (target: Idea) => {
+      if (!ideationService.unmerge) return;
+      const [restored] = await ideationService.unmerge(target.id);
+      setIdea(restored);
+      form.reset(toFormValues(restored));
+      toast.success('Idea unmerged.');
+    };
+
     const actions: ResourceAction<Idea>[] = isMergedChild
       ? [
-          {
-            id: 'unmerge',
-            label: 'Unmerge',
-            icon: Split,
-            surfaces: { row: false, form: true, bulk: false },
-            run: async (rows) => {
-              if (!ideationService.unmerge || !rows[0]) return;
-              const [restored] = await ideationService.unmerge(rows[0].id);
-              setIdea(restored);
-              form.reset(toFormValues(restored));
-              toast.success('Idea unmerged.');
-            },
-          },
           {
             id: 'delete',
             label: 'Delete',
             icon: FileText,
             tone: 'destructive',
+            ...(mode === 'operator' ? { permission: 'ideation.triage.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             deferred: { actionKey: 'ideation_ideas.delete', entityType: 'ideation_idea' },
           },
@@ -210,28 +216,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             },
           },
           {
-            id: 'advance',
-            // Label auto-derived from the fireable transition target
-            // (status_engine, AC-94-57/52) - e.g. "Move to Triaged".
-            label: (rows) => {
-              const target = rows[0]?.transitions?.find((t) => t.id === rows[0]?.advanceTransitionId);
-              return target ? `Move to ${target.toStatusLabel}` : 'Advance to next stage';
-            },
-            icon: ArrowRight,
-            surfaces: { row: false, form: true, bulk: false },
-            isVisible: (rows) => rows.every((r) => !r.statusIsArchived),
-            isDisabled: (rows) => rows.some((r) => !r.advanceTransitionId),
-            run: async (rows) => {
-              const target = rows[0]?.transitions?.find((t) => t.id === rows[0]?.advanceTransitionId);
-              if (!target) return;
-              await applyStatus(rows[0].id, target.toStatusId);
-              toast.success(`Moved to ${target.toStatusLabel}.`);
-            },
-          },
-          {
             id: 'archive',
             label: 'Archive',
             icon: Archive,
+            ...(mode === 'operator' ? { permission: 'ideation.triage.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             isVisible: (rows) => rows.every((r) => !r.statusIsArchived),
             // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
@@ -244,6 +232,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             id: 'restore',
             label: 'Restore',
             icon: ArchiveRestore,
+            ...(mode === 'operator' ? { permission: 'ideation.triage.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             isVisible: (rows) => rows.every((r) => r.statusIsArchived),
             isDisabled: (rows) => rows.some((r) => !r.transitions?.length),
@@ -259,6 +248,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             label: 'Delete',
             icon: FileText,
             tone: 'destructive',
+            ...(mode === 'operator' ? { permission: 'ideation.triage.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             // Grace-window deferred action - no confirm, no `run`. ResourceForm's
             // own onCommitted already carries the record's ctx/i/from back to
@@ -266,6 +256,55 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             deferred: { actionKey: 'ideation_ideas.delete', entityType: 'ideation_idea' },
           },
         ];
+
+    // The page CTA (plan 19, AC-19-19) is the one move that is next, derived
+    // from the idea's own fireable transitions and tenant labels - never a
+    // hardcoded status key. A merged child offers Unmerge; an archived idea its
+    // restore edge; otherwise the engine's advance edge. The chosen move is
+    // not repeated in the "..." menu.
+    const advanceEdge = idea?.transitions?.find((t) => t.id === idea.advanceTransitionId);
+    const restoreEdge = idea?.statusIsArchived ? idea.transitions?.[0] : undefined;
+    // Status moves and Edit need `ideation.triage.manage` on the operator surface
+    // (AC-19-46). The embed has no session to gate against (its token is the
+    // boundary), so it is never gated here.
+    const canTriage = mode === 'embed' || can('ideation.triage.manage');
+    let primaryAction: FormPrimaryAction | undefined;
+    if (!creating && idea && canTriage) {
+      if (isMergedChild) {
+        primaryAction = {
+          id: 'unmerge',
+          label: 'Unmerge',
+          icon: Split,
+          disabled: !ideationService.unmerge,
+          onRun: () => guarded(() => unmergeIdea(idea), 'Could not unmerge the idea.'),
+        };
+      } else if (idea.statusIsArchived) {
+        if (restoreEdge) {
+          primaryAction = {
+            id: 'restore',
+            label: 'Restore',
+            icon: ArchiveRestore,
+            onRun: () =>
+              guarded(async () => {
+                await applyStatus(idea.id, restoreEdge.toStatusId);
+                toast.success('Idea restored.');
+              }, 'Could not restore the idea.'),
+          };
+        }
+      } else if (advanceEdge) {
+        primaryAction = {
+          id: 'advance',
+          label: `Move to ${advanceEdge.toStatusLabel}`,
+          icon: ArrowRight,
+          onRun: () =>
+            guarded(async () => {
+              await applyStatus(idea.id, advanceEdge.toStatusId);
+              toast.success(`Moved to ${advanceEdge.toStatusLabel}.`);
+            }, 'Could not move the idea.'),
+        };
+      }
+    }
+    const menuActions = actions.filter((a) => !(primaryAction?.id === 'restore' && a.id === 'restore'));
 
     const onSave = async (): Promise<boolean> => {
       let ok = false;
@@ -305,7 +344,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       else form.reset(toFormValues(idea));
     };
 
-    const onVote = async (target: Idea, dir: 'up' | 'down') => {
+    const onVote = async (target: Idea, dir: 'up') => {
       try {
         const updated = await ideationService.vote(target.id, dir);
         setIdea(updated);
@@ -366,11 +405,21 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
         : idea
           ? <StatusBadge status={idea.status} registry={statusRegistryFor(idea)} />
           : undefined,
-      avatar: (
-        <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">
-          <Lightbulb className="size-5 text-primary" />
-        </span>
-      ),
+      // The vote box takes the avatar slot left of the title (AC-19-16).
+      avatar:
+        !creating && idea ? (
+          <VoteCell
+            idea={idea}
+            onVote={onVote}
+            variant="box"
+            size="md"
+            disabled={isMergedChild}
+          />
+        ) : (
+          <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">
+            <Lightbulb className="size-5 text-primary" />
+          </span>
+        ),
       tabs: [
         {
           id: 'details',
@@ -383,7 +432,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               creating={creating}
               idea={idea}
               products={products}
-              onVote={onVote}
+              canComment={mode === 'embed' || can('ideation.ideas.comment')}
             />
           ),
         },
@@ -441,7 +490,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             ]
           : []),
       ],
-      actions,
+      actions: menuActions,
+      primaryAction,
+      editPlacement: 'beside-primary',
+      ...(mode === 'operator' ? { editPermission: 'ideation.triage.manage' } : {}),
       actionRows: idea ? [idea] : [],
       editable: !creating,
       initialEditing: creating ? true : initialEditing,

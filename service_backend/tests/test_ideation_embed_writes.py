@@ -306,18 +306,19 @@ def test_embed_vote_happy(scoped):
 
 def test_embed_votes_are_per_sorento_user(scoped):
     """Votes are per HOST (sorento) user, taken from the assertion ``sub`` - NOT one
-    shared vote per connection. One user upvotes, a DIFFERENT user downvotes the
-    same idea → 1 up + 1 down (distinct entries)."""
+    shared vote per connection. Two different users each upvote the same idea
+    -> 2 upvotes (distinct entries). Plan 19: a downvote is a 422 now."""
     client = scoped["client"]
     idea = scoped["in_scope"]
     r1 = client.post(f"/embed/ideas/{idea}/vote", headers=scoped["bearer"], json={"dir": "up"})
     assert r1.status_code == 200, r1.text
-    # A different sorento user (distinct assertion sub) votes the other way.
     other = _bearer(_mint(client, sub="user-2"))
-    r2 = client.post(f"/embed/ideas/{idea}/vote", headers=other, json={"dir": "down"})
+    r2 = client.post(f"/embed/ideas/{idea}/vote", headers=other, json={"dir": "up"})
     assert r2.status_code == 200, r2.text
     body = r2.json()
-    assert body["upvotes"] == 1 and body["downvotes"] == 1
+    assert body["upvotes"] == 2 and body["downvotes"] == 0
+    r3 = client.post(f"/embed/ideas/{idea}/vote", headers=other, json={"dir": "down"})
+    assert r3.status_code == 422, r3.text
 
 
 def test_embed_vote_cross_product_denied(scoped):

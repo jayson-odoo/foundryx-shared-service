@@ -53,6 +53,11 @@ THROTTLE_SCOPE_PULL_KEY = "pull_key"
 # AC-STB-16) - own bucket, the pull-gateway pattern: only a 401 (missing/
 # malformed/unknown/revoked key) records a failure.
 THROTTLE_SCOPE_BUILD = "build"
+# Ideation public status-page comments (plan 19, AC-19-30) - TWO own buckets, never
+# the login/form buckets: per token (key = sha256 of the token, never the raw
+# credential) and per client IP. Every successful post counts.
+THROTTLE_SCOPE_IDEA_COMMENT_TOKEN = "idea_comment_token"
+THROTTLE_SCOPE_IDEA_COMMENT_IP = "idea_comment_ip"
 
 
 class AuthThrottle(Base):

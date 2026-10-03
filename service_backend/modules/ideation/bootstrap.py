@@ -26,6 +26,8 @@ MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
 
 PROMOTE_PERMISSION = "ideation.business_requirements.promote"
 SEND_TO_BUILD_PERMISSION = "ideation.business_requirements.send_to_build"
+UPVOTE_PERMISSION = "ideation.ideas.upvote"
+COMMENT_PERMISSION = "ideation.ideas.comment"
 
 
 def register_capabilities() -> None:
@@ -192,6 +194,11 @@ def install(engine: Engine, db: Session) -> None:
         sweep_send_to_build_grants(db)
         # Commit right away: a later seed failure must not lose the one-shot grant.
         db.commit()
+    # Plan 19 (AC-19-11): every role holding `.upvote` gets `.comment` - the same
+    # one-shot, created-by-this-sync-only rule.
+    if COMMENT_PERMISSION in created_permissions:
+        _sweep_grant(db, UPVOTE_PERMISSION, COMMENT_PERMISSION)
+        db.commit()
     # Idea status set + transition graph as platform defaults (AC-A-10, D-A3).
     # Two-tier: every tenant uses these until it forks the set. Idempotent.
     from .services.br_templates import seed_br_template
@@ -211,7 +218,13 @@ def install(engine: Engine, db: Session) -> None:
 
 def sweep_send_to_build_grants(db: Session) -> None:
     """Grant ``send_to_build`` to every role (every tenant) that already holds
-    ``promote``. Idempotent: one ``role_permissions`` row per role, stamped with
+    ``promote``."""
+    _sweep_grant(db, PROMOTE_PERMISSION, SEND_TO_BUILD_PERMISSION)
+
+
+def _sweep_grant(db: Session, holder_key: str, new_key: str) -> None:
+    """Grant ``new_key`` to every role (every tenant) that already holds
+    ``holder_key``. Idempotent: one ``role_permissions`` row per role, stamped with
     the role's OWN tenant_id. No commit - the caller owns the transaction."""
     from sqlalchemy import select
 
@@ -222,29 +235,29 @@ def sweep_send_to_build_grants(db: Session) -> None:
         key: pid
         for key, pid in db.execute(
             select(Permission.key, Permission.id).where(
-                Permission.key.in_([PROMOTE_PERMISSION, SEND_TO_BUILD_PERMISSION])
+                Permission.key.in_([holder_key, new_key])
             )
         )
     }
-    promote_id = ids.get(PROMOTE_PERMISSION)
-    send_id = ids.get(SEND_TO_BUILD_PERMISSION)
-    if promote_id is None or send_id is None:
+    holder_id = ids.get(holder_key)
+    new_id = ids.get(new_key)
+    if holder_id is None or new_id is None:
         return
     holders = db.execute(
         select(Role.id, Role.tenant_id)
         .join(role_permissions, role_permissions.c.role_id == Role.id)
-        .where(role_permissions.c.permission_id == promote_id)
+        .where(role_permissions.c.permission_id == holder_id)
     ).all()
     already = {
         r[0]
         for r in db.execute(
             select(role_permissions.c.role_id).where(
-                role_permissions.c.permission_id == send_id
+                role_permissions.c.permission_id == new_id
             )
         )
     }
     rows = [
-        {"role_id": role_id, "permission_id": send_id, "tenant_id": tenant_id}
+        {"role_id": role_id, "permission_id": new_id, "tenant_id": tenant_id}
         for role_id, tenant_id in holders
         if role_id not in already
     ]

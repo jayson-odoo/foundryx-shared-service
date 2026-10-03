@@ -811,6 +811,9 @@ class AcDocFeed(AutocountBase):
     # deletion sweep). NULL = `doc_feed/schedule.py DEFAULT_DOC_FEED_SCHEDULE`
     # (poll 60 min, sweep every 24 h - the pre-19 hard-coded cadence).
     schedule_config = Column(_JSON, nullable=True)
+    # DOC-FEED-WINDOW - poll basis / poll lookback / re-check days. NULL =
+    # `doc_feed/window.py DEFAULT_DOC_FEED_WINDOW` (the pre-window behaviour).
+    window_config = Column(_JSON, nullable=True)
 
     cursor_day = Column(Date, nullable=True)
     next_poll_at = Column(UTCDateTime(), nullable=True)
@@ -856,6 +859,9 @@ class AcDocFeedLedger(AutocountBase):
     last_outcome = Column(String, nullable=True)
     pushed_at = Column(UTCDateTime(), nullable=True)
     vanished_at = Column(UTCDateTime(), nullable=True)
+    # DOC-FEED-WINDOW - sha256 of the last DELIVERED record (header + lines,
+    # `records.content_digest`); NULL = unknown, so the re-check re-pushes it.
+    content_digest = Column(String(64), nullable=True)
 
 
 class AcDocFeedIssue(AutocountBase):

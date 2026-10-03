@@ -648,7 +648,7 @@ export interface AutocountService {
   getDocFeeds(companyId: string): Promise<DocFeedsView>;
   /** Configure a feed's connection + mode (D2). */
   updateDocFeed(companyId: string, feed: DocFeedKey, input: DocFeedUpdateInput): Promise<DocFeedItem>;
-  /** Run now / Run sweep now - never awaits the walk (eager dev runs it
+  /** Run now / Run re-check now - never awaits the walk (eager dev runs it
    * inline, D9). */
   runDocFeed(companyId: string, feed: DocFeedKey, input: DocFeedRunInput): Promise<{ jobId: string }>;
   /** Start a backfill (D13). */

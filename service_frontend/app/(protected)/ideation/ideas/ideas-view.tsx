@@ -58,7 +58,7 @@ export function IdeasView() {
   const handlers = useMemo(
     () => ({
       onCreate: () => setDialogOpen(true),
-      onVote: async (idea: Idea, dir: 'up' | 'down') => {
+      onVote: async (idea: Idea, dir: 'up') => {
         try {
           await vote(idea.id, dir);
         } catch (e) {

@@ -261,6 +261,28 @@ class IdeaVote(IdeationBase):
     )
 
 
+class IdeaComment(IdeationBase):
+    """A comment on an Idea (plan 19). Flat storage, one reply level: ``parent_id``
+    always points at a TOP-LEVEL comment of the same idea (the service normalises
+    a reply-to-reply). ``author_kind`` is ``user`` (operator) | ``embed`` (portal
+    user) | ``public`` (status-page visitor); ``author_id`` is the acting
+    principal id and NEVER goes on the wire. Delete is soft (``deleted_at``)."""
+
+    __tablename__ = "idea_comments"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
+    parent_id = Column(String, ForeignKey("idea_comments.id"), nullable=True)
+    author_kind = Column(String, nullable=False)  # 'user' | 'embed' | 'public'
+    author_id = Column(String, nullable=False)
+    author_name = Column(String, nullable=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    edited_at = Column(UTCDateTime(), nullable=True)
+    deleted_at = Column(UTCDateTime(), nullable=True)
+
+
 class IdeaAttachment(IdeationBase):
     """A media attachment on an Idea - voice note / image / video / file captured
     over WhatsApp (§5.1 ``attachments[]``, DC-9). Written by the ``create_idea``

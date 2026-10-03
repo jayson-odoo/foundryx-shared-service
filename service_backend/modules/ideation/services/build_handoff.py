@@ -286,7 +286,6 @@ class BuildHandoffService:
                         "number": idea.idea_number or "",
                         "title": idea.title or idea.problem or "",
                         "up": idea.upvotes,
-                        "down": idea.downvotes,
                     }
                 )
         definition = get_grill_definition(GRILL_DEFINITION_KEY)

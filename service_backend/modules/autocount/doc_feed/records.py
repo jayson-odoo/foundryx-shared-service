@@ -9,6 +9,8 @@ newest", "what does the CRM call this record" - never reshape it.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +57,15 @@ def dedupe_latest(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ):
             by_key[key] = record
     return list(by_key.values())
+
+
+def content_digest(record: Dict[str, Any]) -> str:
+    """DOC-FEED-WINDOW - sha256 of the WHOLE vendor record (header and its
+    ``Details`` lines) as canonical JSON (sorted keys, so the vendor's own
+    key order never reads as a change). A line edit changes it even when
+    the header ``LastModified`` did not move."""
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def push_order(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

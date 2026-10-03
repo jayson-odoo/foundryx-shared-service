@@ -21,6 +21,7 @@ import { IdeaHero } from './components/idea-hero';
 import { IdeaStatusTimeline } from './components/idea-status-timeline';
 import { NextStepCallout } from './components/next-step-callout';
 import { IdeaDetailSections } from './components/idea-detail-sections';
+import { PublicIdeaComments } from './components/public-idea-comments';
 import { PublicIdeaFooter } from './components/public-idea-footer';
 
 const UNBRANDED: PublicBranding = {
@@ -111,6 +112,9 @@ export default function PublicIdeaStatusPage() {
               impact={view.impact}
               department={view.department}
             />
+          </div>
+          <div className="lg:col-start-1 lg:row-start-3">
+            <PublicIdeaComments token={token} mergedChild={Boolean(view.mergedInto)} />
           </div>
         </div>
       </main>

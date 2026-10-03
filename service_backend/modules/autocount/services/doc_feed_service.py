@@ -31,6 +31,7 @@ from ..doc_feed.schedule import (
     sweep_changed,
     validate_doc_feed_schedule,
 )
+from ..doc_feed.window import resolve_window, validate_doc_feed_window
 from ..http_source.book import derive_book
 from ..models import (
     DOC_FEED_BACKFILL_RUNNING,
@@ -62,6 +63,7 @@ from ..schemas import (
     DocFeedRunOut,
     DocFeedScheduleOut,
     DocFeedsViewOut,
+    DocFeedWindowOut,
     EligibleConnectionOut,
 )
 from .company_service import CompanyNotFound, CompanyService
@@ -160,6 +162,7 @@ class DocFeedService:
             feed=feed,
             mode=row.mode if row else DOC_FEED_MODE_OFF,
             schedule=DocFeedScheduleOut(**resolve_schedule(row.schedule_config if row else None)),
+            window=DocFeedWindowOut(**resolve_window(row.window_config if row else None)),
             connectionId=row.connection_id if row else None,
             book=row.book if row else None,
             cursorDay=row.cursor_day if row else None,
@@ -182,6 +185,7 @@ class DocFeedService:
         self, tenant_id: str, company_id: str, feed: str,
         *, connection_id: Optional[str], mode: str, clear_connection: bool = False,
         schedule: Optional[Dict[str, Any]] = None,
+        window: Optional[Dict[str, Any]] = None,
     ) -> DocFeedItemOut:
         company = self._company(tenant_id, company_id)
         if feed not in ALL_FEEDS:
@@ -195,6 +199,14 @@ class DocFeedService:
             clean_schedule, schedule_errors = validate_doc_feed_schedule(schedule)
             if schedule_errors:
                 field, message = next(iter(schedule_errors.items()))
+                raise DocFeedValidationError(field, message)
+        # DOC-FEED-WINDOW - same before-any-write rule. The window changes
+        # what a run reads, never when it runs, so nothing re-arms on it.
+        clean_window: Optional[Dict[str, Any]] = None
+        if window is not None:
+            clean_window, window_errors = validate_doc_feed_window(window)
+            if window_errors:
+                field, message = next(iter(window_errors.items()))
                 raise DocFeedValidationError(field, message)
 
         row = self.feeds.get_or_create(tenant_id, company_id, feed)
@@ -234,6 +246,8 @@ class DocFeedService:
         previous_schedule = resolve_schedule(row.schedule_config)
         if clean_schedule is not None:
             row.schedule_config = clean_schedule
+        if clean_window is not None:
+            row.window_config = clean_window
         effective = resolve_schedule(row.schedule_config)
         row.mode = mode
         now = datetime.now(timezone.utc)
