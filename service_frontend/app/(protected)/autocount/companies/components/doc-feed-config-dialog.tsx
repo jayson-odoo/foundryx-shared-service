@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { SearchSelect } from '@/components/platform/search-select';
@@ -23,11 +24,15 @@ import type {
   DocFeedMode,
   DocFeedSchedule,
   DocFeedUpdateInput,
+  DocFeedWindow,
 } from '@/types/autocount';
 import { ApiError } from '@/lib/api-client';
 import {
   DEFAULT_DOC_FEED_SCHEDULE,
+  DEFAULT_DOC_FEED_WINDOW,
+  DOC_FEED_POLL_BASIS_OPTIONS,
   DOC_FEED_POLL_HAS_WATERMARK,
+  docFeedWindowErrors,
   readFieldErrors,
 } from '@/lib/autocount-etl';
 import { docFeedGateWarning, docFeedLabel } from '../../components/autocount-meta';
@@ -47,6 +52,8 @@ export interface DocFeedConfigDialogProps {
     contractGate: DocFeedContractGate | null;
     /** Omitted = the default cadence (poll 60 min, sweep every 24 h). */
     schedule?: DocFeedSchedule;
+    /** Omitted = the default read window (LastModified, 1 day, 45-day re-check). */
+    window?: DocFeedWindow;
     nextPollAt?: string | null;
     nextSweepAt?: string | null;
   };
@@ -68,6 +75,11 @@ export interface DocFeedConfigDialogProps {
  * sprint-5/19 (AC-19-11) - the feed's schedule is edited with the SAME
  * cadence cards the Entities task editor's Schedule tab uses (poll =
  * incremental, deletion sweep = reconcile); Save is held while any is invalid.
+ *
+ * DOC-FEED-WINDOW - the read window rides inside the SAME two cards: the
+ * Poll card gains the vendor door (LastModified | DocDate) + lookback days,
+ * the reconcile card (now "Re-check": content re-push + deletions) its
+ * DocDate window in days.
  */
 export function DocFeedConfigDialog({
   feed,
@@ -80,6 +92,8 @@ export function DocFeedConfigDialog({
   const [mode, setMode] = useState<DocFeedMode>(current.mode);
   const stored = current.schedule ?? DEFAULT_DOC_FEED_SCHEDULE;
   const [schedule, setSchedule] = useState<DocFeedSchedule>(stored);
+  const storedWindow = current.window ?? DEFAULT_DOC_FEED_WINDOW;
+  const [readWindow, setReadWindow] = useState<DocFeedWindow>(storedWindow);
   const [saving, setSaving] = useState(false);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
 
@@ -103,8 +117,29 @@ export function DocFeedConfigDialog({
     stored.reconcileAt,
   ]);
 
+  useEffect(() => {
+    setReadWindow({
+      pollBasis: storedWindow.pollBasis,
+      pollLookbackDays: storedWindow.pollLookbackDays,
+      recheckDays: storedWindow.recheckDays,
+    });
+  }, [feed, storedWindow.pollBasis, storedWindow.pollLookbackDays, storedWindow.recheckDays]);
+
+  const windowClientErrors = docFeedWindowErrors(readWindow);
+  const windowError = (key: keyof DocFeedWindow): string | undefined =>
+    serverErrors[key] ?? windowClientErrors[key];
   const scheduleInvalid =
-    Object.keys(scheduleCadenceErrors(schedule, DOC_FEED_POLL_HAS_WATERMARK)).length > 0;
+    Object.keys(scheduleCadenceErrors(schedule, DOC_FEED_POLL_HAS_WATERMARK)).length > 0 ||
+    Object.keys(windowClientErrors).length > 0;
+
+  function patchWindow(patch: Partial<DocFeedWindow>) {
+    setServerErrors({});
+    setReadWindow((prev) => ({ ...prev, ...patch }));
+  }
+
+  function daysValue(raw: string): number {
+    return raw === '' ? NaN : Number(raw);
+  }
   const armed = current.mode !== 'off';
 
   const gate = current.contractGate;
@@ -121,7 +156,7 @@ export function DocFeedConfigDialog({
     setSaving(true);
     try {
       setServerErrors({});
-      await onSave({ connectionId, mode, schedule });
+      await onSave({ connectionId, mode, schedule, window: readWindow });
     } catch (error) {
       // The caller already toasted it; keep the dialog open with the
       // server's per-field verdict next to the field (Entities parity).
@@ -201,9 +236,59 @@ export function DocFeedConfigDialog({
               nextIncrementalAt={armed ? (current.nextPollAt ?? null) : null}
               nextReconcileAt={armed ? (current.nextSweepAt ?? null) : null}
               incrementalTitle="Poll"
-              reconcileTitle="Deletion sweep"
+              reconcileTitle="Re-check"
               idPrefix="doc-feed-schedule"
               className="grid gap-4 sm:grid-cols-2"
+              incrementalExtra={
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Read by</Label>
+                    <ToggleGroup
+                      type="single"
+                      size="sm"
+                      variant="outline"
+                      value={readWindow.pollBasis}
+                      onValueChange={(value) => {
+                        if (value === 'last_modified' || value === 'doc_date') {
+                          patchWindow({ pollBasis: value });
+                        }
+                      }}
+                      aria-label="Read by"
+                    >
+                      {DOC_FEED_POLL_BASIS_OPTIONS.map((option) => (
+                        <ToggleGroupItem
+                          key={option.value}
+                          value={option.value}
+                          className={MODE_SEGMENT_CLASS}
+                          data-testid={`doc-feed-window-basis-${option.value}`}
+                        >
+                          {option.label}
+                        </ToggleGroupItem>
+                      ))}
+                    </ToggleGroup>
+                  </div>
+                  <WindowDaysField
+                    id="doc-feed-window-lookback-days"
+                    label="Look back"
+                    min={0}
+                    max={30}
+                    value={readWindow.pollLookbackDays}
+                    error={windowError('pollLookbackDays')}
+                    onChange={(raw) => patchWindow({ pollLookbackDays: daysValue(raw) })}
+                  />
+                </>
+              }
+              reconcileExtra={
+                <WindowDaysField
+                  id="doc-feed-window-recheck-days"
+                  label="Window"
+                  min={1}
+                  max={180}
+                  value={readWindow.recheckDays}
+                  error={windowError('recheckDays')}
+                  onChange={(raw) => patchWindow({ recheckDays: daysValue(raw) })}
+                />
+              }
             />
           </div>
         </DialogBody>
@@ -222,5 +307,45 @@ export function DocFeedConfigDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+interface WindowDaysFieldProps {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  value: number;
+  error?: string;
+  onChange: (raw: string) => void;
+}
+
+/** One "N days" input of the read window - the cadence cards' own
+ * number-input + unit + inline error shape. */
+function WindowDaysField({ id, label, min, max, value, error, onChange }: WindowDaysFieldProps) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <div className="flex items-center gap-2">
+        <Input
+          id={id}
+          type="number"
+          min={min}
+          max={max}
+          step={1}
+          className="w-24"
+          value={Number.isFinite(value) ? value : ''}
+          onChange={(e) => onChange(e.target.value)}
+          aria-invalid={Boolean(error)}
+          data-testid={id}
+        />
+        <span className="text-sm text-muted-foreground">days</span>
+      </div>
+      {error && (
+        <p className="text-xs text-destructive" data-testid={`${id}-error`}>
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
