@@ -262,7 +262,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
     an autocount migration left as its own baseline - DOC-FEED-INTERVAL
     (sprint-5/19) is that latest lane, shipping
     `0026_autocount_doc_feed_schedule` (one additive column) deliberately, so
-    the guard's ceiling moves to 26 with it; a
+    the guard's ceiling moved to 26 with it, and ITEM-TYPE-SS ships the
+    data-only `0027_autocount_item_type` backfill, moving it to 27; a
     reviewer/coder adding one beyond THAT for a schema-free slice still trips
     this guard rather than the drift going unnoticed."""
     versions_dir = (
@@ -274,8 +275,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
         match = re.match(r"^(\d+)_", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    assert highest <= 26, (
-        f"a new autocount migration (>0026) exists ({highest}) - AC-12-32 "
+    assert highest <= 27, (
+        f"a new autocount migration (>0027) exists ({highest}) - AC-12-32 "
         "says THIS plan ships no schema change (a later plan may legitimately "
         "move this ceiling again, as DOC-FEED-INTERVAL just did from 25 to 26)"
     )

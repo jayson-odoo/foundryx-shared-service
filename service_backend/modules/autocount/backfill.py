@@ -35,10 +35,11 @@ from .canonical.documents import (
     ENTITY_SHIPPING_ORDER,
     is_document_entity,
 )
+from .canonical.masters import ENTITY_PRODUCT
 from .db import AUTOCOUNT_SCHEMA
 from .envelopes import ENVELOPE_STATUS_DICT
 from .mapping import DOCUMENT_LINE_FIXED_FIELDS, SCOPE_HEADER, SCOPE_LINE
-from .models import AcEntityConfig, AcFieldMapping
+from .models import SOURCE_IMPL_AUTOCOUNT_HTTP, AcEntityConfig, AcFieldMapping
 from .sources import INITIAL_LOAD_WINDOWED
 
 logger = logging.getLogger("foundryx.autocount")
@@ -1859,3 +1860,169 @@ def backfill_document_line_linkage(bind: Any, *, schema: Optional[str] = AUTOCOU
                 entity_type, config_id,
             )
     return touched
+
+
+# ── ITEM-TYPE-SS (partner of sorento #1450) ─────────────────────────────────
+
+_ITEM_TYPE_ENTITY_CONFIG_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "source_impl",
+    "source_config", "result_columns",
+}
+_ITEM_TYPE_COMPANY_COLUMNS = {"id", "tenant_id"}
+_ITEM_TYPE_FIELD_MAPPING_COLUMNS = _SALES_ORDER_REF_FIELD_MAPPING_COLUMNS
+# The preset's own path and source column, FROZEN here (never read off the
+# live preset) - a later preset edit must not change what this migration did.
+_ITEM_TYPE_HTTP_PATH = "/itembypage"
+_ITEM_TYPE_SOURCE_COLUMN = "ItemType"
+
+
+def backfill_product_item_type(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA) -> int:
+    """Give every EXISTING ``product`` task an ``ItemType -> item_type_code``
+    header row (``string``, not required, source-owned, next ``sort_order``)
+    when none exists in ANY state - the preset only seeds a task's FIRST
+    clean save, so without this the field never reaches tenants already
+    syncing products.
+
+    ENABLED when the source is known to carry the column: an
+    ``autocount_http`` task still on the preset's ``/itembypage`` path (every
+    row of that endpoint carries ``ItemType``), or any task whose cached
+    ``result_columns`` already list ``ItemType``. Otherwise DISABLED with one
+    WARNING naming the config id (an operator-authored SQL query or custom
+    path the backfill cannot vouch for).
+
+    No query text marks a product HTTP task "already migrated", so an
+    operator who deletes the row would see it reseeded on every pass: module
+    Alembic 0027 runs it once, and ``update_tenant`` only when upgrading from
+    below 0.14.0. Returns the number of rows created; 0 on a schema
+    predating these tables. Frozen ``sa.table`` only, company resolved WITH
+    the config's own ``tenant_id`` (polymorphic-target_id rule).
+    """
+    needed = {
+        "ac_entity_config": _ITEM_TYPE_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _ITEM_TYPE_COMPANY_COLUMNS,
+        "ac_field_mapping": _ITEM_TYPE_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_impl", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+
+    configs = connectable.execute(
+        sa.select(
+            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+            entity_config.c.source_impl, entity_config.c.source_config,
+            entity_config.c.result_columns,
+        ).where(entity_config.c.entity_type == ENTITY_PRODUCT)
+    ).fetchall()
+
+    created = 0
+    for config_id, tenant_id, company_id, source_impl, source_config, result_columns in configs:
+        company_ok = connectable.execute(
+            sa.select(company_table.c.id).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == tenant_id,
+            )
+        ).first() is not None
+        if not company_ok:
+            logger.warning(
+                "Product task %s's company could not be resolved under its own "
+                "tenant - the `ItemType` backfill skipped it.",
+                config_id,
+            )
+            continue
+
+        has_row = connectable.execute(
+            sa.select(field_mapping.c.id).where(
+                field_mapping.c.tenant_id == tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == ENTITY_PRODUCT,
+                field_mapping.c.scope == SCOPE_HEADER,
+                field_mapping.c.canonical_field == "item_type_code",
+            )
+        ).first() is not None
+        if has_row:
+            # An operator's own row (or one an earlier pass seeded) - never
+            # duplicated or modified, in ANY state.
+            continue
+
+        source_config = source_config or {}
+        enabled = (
+            _ITEM_TYPE_SOURCE_COLUMN in list(result_columns or [])
+            or (
+                source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+                and source_config.get("path") == _ITEM_TYPE_HTTP_PATH
+            )
+        )
+        sort_order = connectable.execute(
+            sa.select(sa.func.coalesce(sa.func.max(field_mapping.c.sort_order), -1) + 1)
+            .where(
+                field_mapping.c.tenant_id == tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == ENTITY_PRODUCT,
+                field_mapping.c.scope == SCOPE_HEADER,
+            )
+        ).scalar()
+        connectable.execute(
+            sa.insert(field_mapping).values(
+                id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                company_id=company_id,
+                entity_type=ENTITY_PRODUCT,
+                scope=SCOPE_HEADER,
+                source_path=_ITEM_TYPE_SOURCE_COLUMN,
+                canonical_field="item_type_code",
+                transform="string",
+                formula=None,
+                is_required=False,
+                is_enabled=enabled,
+                is_source_owned=True,
+                sort_order=sort_order,
+            )
+        )
+        created += 1
+        if not enabled:
+            logger.warning(
+                "Product task %s's source is not the AutoCount `/itembypage` "
+                "preset and does not list `ItemType` - the `ItemType -> "
+                "item_type_code` row was added DISABLED. Select `ItemType` in "
+                "the source and enable the row on the Mapping tab.",
+                config_id,
+            )
+    return created

@@ -635,7 +635,7 @@ def test_seed_then_save_then_dry_run_reports_no_change(client, db):
     company = _company(db, conn.id, database_name="MOCHA-REQ-PARITY")
     _product_config(
         db, company, conn.id,
-        result_columns=["ItemCode", "Description", "Desc2", "ItemGroup", "ItemBrand", "BaseUOM", "IsActive"],
+        result_columns=["ItemCode", "Description", "Desc2", "ItemGroup", "ItemType", "ItemBrand", "BaseUOM", "IsActive"],
         lookups=[dict(PRODUCT_HTTP_PRESET.lookups[0])],
     )
     # 1. the first-save seed, byte for byte what `EtlService.update_task` runs

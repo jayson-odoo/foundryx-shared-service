@@ -358,6 +358,10 @@ class CanonicalProduct(CanonicalMaster):
     category_code: Optional[str] = None
     uom_code: Optional[str] = None
     brand_code: Optional[str] = None
+    # ITEM-TYPE-SS (partner of sorento #1450) - AutoCount ``ItemType``
+    # (``MISC``/``PROJECT``/``WASTE``/...), sent as a plain CODE beside
+    # ``brand_code`` (closes BL-SS-201). Blank -> omitted, never ``null``.
+    item_type_code: Optional[str] = None
     list_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     # sprint-5/08 (AC-08-16) - the open REST API's ``Discontinued`` flag.
@@ -375,6 +379,7 @@ class CanonicalProduct(CanonicalMaster):
         "category_code",
         "uom_code",
         "brand_code",
+        "item_type_code",
         "list_price",
         "cost_price",
         "is_active",

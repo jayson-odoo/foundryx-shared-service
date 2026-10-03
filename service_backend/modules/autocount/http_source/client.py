@@ -146,7 +146,7 @@ def connection_sizing(config: Optional[Dict[str, Any]]) -> ConnectionSizing:
 # restates the module's own ``manifest.json`` version (there is no DB/tenant
 # context here to look up the per-tenant INSTALLED version via
 # ``app.dependencies.module_version``) - keep it in sync on every bump.
-USER_AGENT = "Foundryx-AutoCount-ESB/0.13.0"
+USER_AGENT = "Foundryx-AutoCount-ESB/0.14.0"
 
 
 class HttpTransportError(Exception):
