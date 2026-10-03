@@ -1280,6 +1280,7 @@ function isoStamp(daysAgo: number): string {
 }
 
 const ITEM_GROUPS = ['AIRCOND', 'PARTS', 'SERVICE', 'HARDWARE', 'ELECTRICAL'];
+const ITEM_TYPES = ['MISC', 'PROJECT', 'WASTE', 'KITCHEN SINK', 'OMEX'];
 const ITEM_BRANDS = ['DAIKIN', 'PANASONIC', 'MITSUBISHI', 'YORK', 'CARRIER', 'LG'];
 const UOMS = ['UNIT', 'BOX', 'SET', 'PCS'];
 
@@ -1290,6 +1291,7 @@ function itemRows(count = 30): Array<Record<string, unknown>> {
     Description: `Item ${i + 1}`,
     Desc2: i % 4 === 0 ? '' : `Variant ${i}`,
     ItemGroup: ITEM_GROUPS[i % ITEM_GROUPS.length],
+    ItemType: ITEM_TYPES[i % ITEM_TYPES.length],
     ItemBrand: ITEM_BRANDS[i % ITEM_BRANDS.length],
     BaseUOM: UOMS[i % UOMS.length],
     SalesUOM: UOMS[(i + 1) % UOMS.length],
@@ -3441,7 +3443,7 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
     // return a plausible column set so the editor's remote-column pickers
     // are never permanently empty for the mock's own preset endpoints.
     if (path === '/itemuombypage') return ['ItemCode', 'UOM', 'Rate', 'Price'];
-    if (path === '/itembypage') return ['ItemCode', 'Description', 'Desc2', 'BaseUOM', 'ItemGroup', 'ItemBrand'];
+    if (path === '/itembypage') return ['ItemCode', 'Description', 'Desc2', 'BaseUOM', 'ItemGroup', 'ItemType', 'ItemBrand'];
     return [];
   },
 
@@ -4200,6 +4202,8 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       },
       { sourcePath: 'ItemGroup', canonicalField: 'category_code', transform: 'string', formula: null, required: false, enabled: true },
       { sourcePath: 'ItemBrand', canonicalField: 'brand_code', transform: 'string', formula: null, required: false, enabled: true },
+      // ITEM-TYPE-SS - mirrors `PRODUCT_HTTP_PRESET`'s `ItemType -> item_type_code` row.
+      { sourcePath: 'ItemType', canonicalField: 'item_type_code', transform: 'string', formula: null, required: false, enabled: true },
       // AC-10-74 - withheld during the check period: seeded PRESENT but
       // disabled so the operator can see and re-enable it deliberately.
       { sourcePath: 'BaseUOM', canonicalField: 'uom_code', transform: 'string', formula: null, required: false, enabled: false },

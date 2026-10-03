@@ -380,6 +380,7 @@ describe('getMapping - HTTP preset rows (AC-08-16/21) vs the legacy vendor custo
       ['Desc2', 'description'],
       ['ItemGroup', 'category_code'],
       ['ItemBrand', 'brand_code'],
+      ['ItemType', 'item_type_code'],
       ['BaseUOM', 'uom_code'],
       ['IsActive', 'is_active'],
       ['Discontinued', 'is_discontinued'],
