@@ -85,6 +85,33 @@ class PublicIdeaStatusService:
         self.db = db
 
     def resolve(self, token: str) -> Optional[PublicIdeaStatusOut]:
+        loaded = self._load(token)
+        if loaded is None:
+            return None
+        idea, display_idea, merged_into, status_row = loaded
+
+        return PublicIdeaStatusOut(
+            title=idea.title,
+            status=status_row.label,
+            ideaNumber=idea.idea_number,
+            statusColor=status_row.color,
+            productName=self._product_name(idea),
+            problem=idea.problem,
+            proposedSolution=idea.proposed_solution,
+            impact=idea.impact,
+            department=idea.department,
+            submitterFirstName=self._first_name(idea),
+            submittedAt=idea.created_at,
+            upvotes=display_idea.upvotes,
+            nextStep=self._next_step(status_row),
+            timeline=self._timeline(display_idea, status_row),
+            mergedInto=merged_into,
+        )
+
+    def _load(self, token: str):
+        """Shared token resolution for the status page AND its comments: returns
+        ``(idea, display_idea, merged_into, status_row)`` or ``None`` for every
+        non-servable case (the uniform 404 rules)."""
         if not _TOKEN_RE.fullmatch(token or ""):
             return None
 
@@ -97,6 +124,20 @@ class PublicIdeaStatusService:
         # request (`Tenant.signin_allowed`, e.g. `FormService._resolve_public`).
         tenant = self.db.query(Tenant).filter(Tenant.id == idea.tenant_id).first()
         if tenant is None or not tenant.signin_allowed:
+            return None
+
+        # AC-19-38: a tenant whose Ideation module is installed but not active
+        # (disabled / suspended) serves nothing public. Core tables are only
+        # read, never altered.
+        from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
+
+        module_state = (
+            self.db.query(TenantModule.status)
+            .join(Module, Module.id == TenantModule.module_id)
+            .filter(TenantModule.tenant_id == idea.tenant_id, Module.name == "ideation")
+            .first()
+        )
+        if module_state is not None and module_state[0] != MODULE_STATUS_ACTIVE:
             return None
 
         # AC-94-13 (issue #94, plan section 3.4): a merged child's status,
@@ -142,24 +183,28 @@ class PublicIdeaStatusService:
         # timeline's own exclusion of the initial step.
         if status_row is None or status_row.is_initial:
             return None
+        return idea, display_idea, merged_into, status_row
 
-        return PublicIdeaStatusOut(
-            title=idea.title,
-            status=status_row.label,
-            ideaNumber=idea.idea_number,
-            statusColor=status_row.color,
-            productName=self._product_name(idea),
-            problem=idea.problem,
-            proposedSolution=idea.proposed_solution,
-            impact=idea.impact,
-            department=idea.department,
-            submitterFirstName=self._first_name(idea),
-            submittedAt=idea.created_at,
-            upvotes=display_idea.upvotes,
-            nextStep=self._next_step(status_row),
-            timeline=self._timeline(display_idea, status_row),
-            mergedInto=merged_into,
-        )
+    def resolve_idea(self, token: str) -> Optional[Idea]:
+        """The idea a public token addresses (the CHILD for a merged child, never
+        the survivor) under exactly the status page's 404 rules, or ``None``."""
+        loaded = self._load(token)
+        return loaded[0] if loaded is not None else None
+
+    def comment_author_name(self, idea: Idea) -> str:
+        """Display name stamped on a public comment (AC-19-29): the status page's
+        own first-name projection of the submitter, never client input; falls
+        back to ``Submitter`` when it yields nothing."""
+        return self._first_name(idea) or "Submitter"
+
+    @staticmethod
+    def public_display_name(name: Optional[str], fallback: str) -> str:
+        """AC-19-32: a stored staff / embed author name as shown on the public
+        list - passes only a name that is not phone/email shaped."""
+        raw = unicodedata.normalize("NFKC", (name or "").strip())
+        if not raw or _looks_like_a_phone_or_email(raw):
+            return fallback
+        return raw
 
     # ---- detail lookups (each scoped by the idea row's OWN tenant_id) ------
 

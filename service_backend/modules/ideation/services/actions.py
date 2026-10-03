@@ -184,11 +184,13 @@ class IdeaActionService:
         source of truth)."""
         rows = self.db.query(IdeaVote).filter(IdeaVote.idea_id == idea.id).all()
         idea.upvotes = sum(1 for r in rows if r.dir == "up")
-        idea.downvotes = sum(1 for r in rows if r.dir == "down")
+        # Plan 19: upvote only. Legacy 'down' rows are kept but ignored.
+        idea.downvotes = 0
 
     def vote(self, tenant_id: str, idea_id: str, voter_id: str, dir: str) -> IdeaOut:
-        """Toggle the caller's vote (one row per ``(idea, voter)``): same ``dir``
-        cancels, the other ``dir`` switches. Idempotent - recomputes tallies."""
+        """Toggle the caller's upvote (one row per ``(idea, voter)``): an existing
+        ``up`` cancels; a legacy ``down`` row is switched to ``up``. Idempotent -
+        recomputes tallies."""
         idea = self._idea_or_404(tenant_id, idea_id)
         self._refuse_if_merged_child(idea)
         existing = (
@@ -341,7 +343,7 @@ class IdeaActionService:
         )
 
     def delete(self, tenant_id: str, idea_id: str) -> None:
-        """Hard-delete the idea and its vote rows (no soft delete). AC-94-10:
+        """Hard-delete the idea and its vote + comment rows (no soft delete). AC-94-10:
         deleting a survivor restores its children FIRST (unmerge, votes moved
         back) so no child is left pointing at a row that no longer exists.
 
@@ -381,5 +383,9 @@ class IdeaActionService:
         self.db.query(IdeaVote).filter(IdeaVote.idea_id == idea_id).delete(
             synchronize_session=False
         )
+        # AC-19-09: comments go with the idea (replies first, then parents).
+        from .comments import IdeaCommentService
+
+        IdeaCommentService(self.db).purge_for_idea(tenant_id, idea_id)
         self.db.delete(idea)
         self.db.commit()

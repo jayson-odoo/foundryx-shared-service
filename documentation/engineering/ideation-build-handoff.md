@@ -40,7 +40,7 @@ Plan: `documentation/plans/ideation/PLAN-ideation-br-send-to-build.md`. UAC: `id
 Repository = the product's `build_repo`. Label `crew-intake` (created with colour `ff5a00` if missing). Title = the BR title. Body is Markdown:
 
 - one `## <field label>` section per input field of the STAMPED template, in template order (never hardcoded keys); a blank answer reads `(not provided)`;
-- `## Linked ideas`: `- <idea number> <title or problem> (+<up> / -<down>)`;
+- `## Linked ideas`: `- <idea number> <title or problem> (+<up>)`;
 - `## Grill transcript`: `**<role>:** <content>` per turn; omitted when the grill has no messages; truncated first (with a final `(transcript truncated)` line) so the whole body stays under 65000 characters;
 - `## Links`: `Business requirement: <frontend url>/ideation/business-requirements/<id>`;
 - the last two lines, always:

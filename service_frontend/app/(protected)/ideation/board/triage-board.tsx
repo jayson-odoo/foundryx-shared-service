@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from '@/lib/toast';
-import { ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
+import { GripVertical } from 'lucide-react';
 import {
   Kanban,
   KanbanBoard,
@@ -17,6 +17,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useIdeas } from '@/hooks/use-ideas';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
+import { VoteCell } from '@/app/(protected)/ideation/ideas/components/vote-cell';
 import { IDEA_SOURCE_LABEL, type BoardColumn, type Idea } from '@/types/ideation';
 
 type Columns = Record<string, Idea[]>;
@@ -83,48 +84,49 @@ export function canMoveTo(idea: Idea | undefined, targetStatusId: string): boole
   return Boolean(idea?.transitions?.some((t) => t.toStatusId === targetStatusId));
 }
 
-function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
-  const score = idea.upvotes - idea.downvotes;
+function IdeaCardBody({
+  idea,
+  onVote,
+  ghost,
+}: {
+  idea: Idea;
+  onVote: (idea: Idea, dir: 'up') => void;
+  ghost?: boolean;
+}) {
   return (
     <div
       className={
         'rounded-lg border bg-card p-3 ' + (ghost ? 'shadow-lg ring-2 ring-primary' : 'shadow-xs')
       }
     >
-      <div className="flex items-start gap-1.5">
-        <GripVertical className="mt-0.5 size-4 shrink-0 text-muted-foreground/60" />
-        <p className="text-sm font-medium leading-snug">{idea.title ?? idea.problem}</p>
+      <div className="flex items-start gap-2">
+        <VoteCell idea={idea} onVote={onVote} variant="box" size="sm" disabled={ghost} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-1.5">
+            <GripVertical className="mt-0.5 size-4 shrink-0 text-muted-foreground/60" />
+            <p className="text-sm font-medium leading-snug">{idea.title ?? idea.problem}</p>
+          </div>
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 ps-5">
+            <Badge variant="secondary" className="truncate">
+              {idea.productName}
+            </Badge>
+            {idea.isTest && (
+              <Badge variant="secondary" appearance="light" size="sm">
+                TEST
+              </Badge>
+            )}
+            {(idea.mergedCount ?? 0) > 0 && (
+              <Badge variant="outline" appearance="light" size="sm">
+                {idea.mergedCount} merged
+              </Badge>
+            )}
+          </div>
+          <p className="mt-2 ps-5 text-xs text-muted-foreground">
+            {idea.submitterName} · {IDEA_SOURCE_LABEL[idea.source]}
+            {idea.submitterTier && <> · {idea.submitterTier}</>}
+          </p>
+        </div>
       </div>
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 ps-5">
-        <Badge variant="secondary" className="truncate">
-          {idea.productName}
-        </Badge>
-        {idea.isTest && (
-          <Badge variant="secondary" appearance="light" size="sm">
-            TEST
-          </Badge>
-        )}
-        {(idea.mergedCount ?? 0) > 0 && (
-          <Badge variant="outline" appearance="light" size="sm">
-            {idea.mergedCount} merged
-          </Badge>
-        )}
-        <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-0.5">
-            <ChevronUp className="size-3.5 text-emerald-600" />
-            {idea.upvotes}
-          </span>
-          <span className="inline-flex items-center gap-0.5">
-            <ChevronDown className="size-3.5 text-rose-500" />
-            {idea.downvotes}
-          </span>
-          <span className="tabular-nums font-medium text-foreground">{score}</span>
-        </span>
-      </div>
-      <p className="mt-2 ps-5 text-xs text-muted-foreground">
-        {idea.submitterName} · {IDEA_SOURCE_LABEL[idea.source]}
-        {idea.submitterTier && <> · {idea.submitterTier}</>}
-      </p>
     </div>
   );
 }
@@ -141,7 +143,7 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
 export function TriageBoard() {
   // `withBoard` (AC-94-58) - the board is the ONLY caller that needs the
   // extra `getBoard` request; the list and the form never pay for it.
-  const { ideas, columns: apiColumns, loading, error, setStatus, reorderPriority, reload } = useIdeas({
+  const { ideas, columns: apiColumns, loading, error, setStatus, vote, reorderPriority, reload } = useIdeas({
     withBoard: true,
   });
   const { paths } = useIdeationRuntime();
@@ -205,6 +207,12 @@ export function TriageBoard() {
 
   const byId = new Map(ideas.map((i) => [i.id, i]));
 
+  const onVote = (target: Idea, dir: 'up') => {
+    void vote(target.id, dir).catch((err: unknown) => {
+      toast.error(err instanceof Error ? err.message : 'Could not save your vote.');
+    });
+  };
+
   if (error && ideas.length === 0) return <p className="text-sm text-destructive">{error}</p>;
   if (loading && ideas.length === 0)
     return <p className="text-sm text-muted-foreground">Loading board…</p>;
@@ -223,7 +231,7 @@ export function TriageBoard() {
                 <KanbanItem key={idea.id} value={idea.id}>
                   <KanbanItemHandle asChild>
                     <Link href={paths.formHref(idea.id)} draggable={false}>
-                      <IdeaCardBody idea={idea} />
+                      <IdeaCardBody idea={idea} onVote={onVote} />
                     </Link>
                   </KanbanItemHandle>
                 </KanbanItem>
@@ -238,7 +246,7 @@ export function TriageBoard() {
       <KanbanOverlay>
         {({ value }) => {
           const idea = byId.get(String(value));
-          return idea ? <IdeaCardBody idea={idea} ghost /> : null;
+          return idea ? <IdeaCardBody idea={idea} onVote={onVote} ghost /> : null;
         }}
       </KanbanOverlay>
     </Kanban>

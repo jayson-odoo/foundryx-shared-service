@@ -74,3 +74,39 @@ describe('publicIdeaStatusService', () => {
     expect(result?.ideaNumber).toBe('IDEA-0007');
   });
 });
+
+describe('publicIdeaStatusService - comments (plan 19, AC-19-33)', () => {
+  it('listComments GETs /public/ideas/<token>/comments via publicFetch (no bearer)', async () => {
+    publicFetch.mockResolvedValue([{ id: 'c1', body: 'hi' }]);
+    const rows = await publicIdeaStatusService.listComments('weird token/../x');
+    expect(publicFetch).toHaveBeenCalledWith(
+      `/public/ideas/${encodeURIComponent('weird token/../x')}/comments`,
+    );
+    expect(rows).toEqual([{ id: 'c1', body: 'hi' }]);
+  });
+
+  it('addComment POSTs {body, parentId} and never sends an author name', async () => {
+    publicFetch.mockResolvedValue({ id: 'c2' });
+    await publicIdeaStatusService.addComment('tok_abc123def456', 'hello', 'c1');
+    expect(publicFetch).toHaveBeenCalledWith('/public/ideas/tok_abc123def456/comments', {
+      method: 'POST',
+      body: JSON.stringify({ body: 'hello', parentId: 'c1' }),
+    });
+  });
+
+  it('addComment without a parent omits parentId', async () => {
+    publicFetch.mockResolvedValue({ id: 'c2' });
+    await publicIdeaStatusService.addComment('tok_abc123def456', 'hello');
+    const init = publicFetch.mock.calls[0][1] as { body: string };
+    expect(JSON.parse(init.body)).toEqual({ body: 'hello' });
+  });
+
+  it('rethrows a 429 so the hook can show the throttle toast', async () => {
+    let thrown: unknown;
+    publicFetch.mockImplementationOnce(() => {
+      thrown = new ApiError('Too many requests', 429, 60, undefined);
+      return Promise.reject(thrown);
+    });
+    await expect(publicIdeaStatusService.addComment('tok_abc123def456', 'x')).rejects.toBe(thrown);
+  });
+});

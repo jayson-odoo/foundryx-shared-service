@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoardColumn, Idea } from '@/types/ideation';
 import type { UseIdeas } from '@/hooks/use-ideas';
@@ -153,6 +153,23 @@ describe('IdeationBoardPage', () => {
     });
     render(<BoardPage />);
     expect(screen.getByText(/dealer/i)).toBeInTheDocument();
+  });
+
+  // ── AC-19-17 (plan 19) - the card uses the same sm vote box; score = upvotes ──
+  it('the card renders the sm upvote box with the upvote count only (no down count, no net score)', () => {
+    useIdeas.mockReturnValue({ ...base, ideas: [anIdea({ upvotes: 3, downvotes: 1 })] });
+    render(<BoardPage />);
+    const up = screen.getByRole('button', { name: /upvote/i });
+    expect(up).toHaveTextContent('3');
+    const box = up.closest('[data-variant="box"]');
+    expect(box).not.toBeNull();
+    expect(box?.getAttribute('data-size')).toBe('sm');
+    expect(screen.queryByRole('button', { name: /downvote/i })).not.toBeInTheDocument();
+    // Scoped to the card: the column count Badge also renders digits.
+    const card = box?.closest('.rounded-lg') as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(within(card).queryByText('2')).not.toBeInTheDocument(); // the old net score 3 - 1
+    expect(within(card).queryByText('1')).not.toBeInTheDocument(); // the old downvote count
   });
 
   // ── AC-94-58 (issue #94, ideation round 2) ──────────────────────────────────

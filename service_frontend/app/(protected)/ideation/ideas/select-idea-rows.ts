@@ -2,7 +2,7 @@ import type { Idea } from '@/types/ideation';
 import type { ListQuery } from '@/types/resource';
 import { evalGroup, type QueryAdapter } from '@/services/mock-query';
 
-const net = (i: Idea): number => (i.upvotes ?? 0) - (i.downvotes ?? 0);
+const votes = (i: Idea): number => i.upvotes ?? 0;
 const time = (iso: string): number => {
   const t = Date.parse(iso);
   return Number.isNaN(t) ? 0 : t;
@@ -22,7 +22,7 @@ const ADAPTER: QueryAdapter<Idea> = {
       case 'product':
         return i.productName;
       case 'votes':
-        return net(i);
+        return votes(i);
       case 'submitted':
         return i.createdAt;
       case 'problem':
@@ -39,7 +39,7 @@ const ADAPTER: QueryAdapter<Idea> = {
 function compareBy(id: string, a: Idea, b: Idea): number {
   switch (id) {
     case 'votes':
-      return net(a) - net(b);
+      return votes(a) - votes(b);
     case 'submitted':
       return time(a.createdAt) - time(b.createdAt);
     case 'problem':
@@ -57,9 +57,9 @@ function compareBy(id: string, a: Idea, b: Idea): number {
   }
 }
 
-/** Default order: net votes desc, then upvotes desc, then newest first. */
-function byNetVotes(a: Idea, b: Idea): number {
-  return net(b) - net(a) || (b.upvotes ?? 0) - (a.upvotes ?? 0) || time(b.createdAt) - time(a.createdAt);
+/** Default order: upvotes desc (plan 19, upvote only), then newest first. */
+function byVotes(a: Idea, b: Idea): number {
+  return votes(b) - votes(a) || time(b.createdAt) - time(a.createdAt);
 }
 
 /**
@@ -69,7 +69,7 @@ function byNetVotes(a: Idea, b: Idea): number {
  *
  * Active/Archived splits on the engine trait `statusIsArchived` (AC-94-60),
  * never a hardcoded status key. The shell's sort/filter are manual, so they are
- * applied here: no `sort` = net votes desc (AC-15-08); a chosen sort uses typed
+ * applied here: no `sort` = upvotes desc (AC-15-08); a chosen sort uses typed
  * comparators.
  */
 export function selectIdeaRows(
@@ -94,7 +94,7 @@ export function selectIdeaRows(
   const sort = query.sort;
   if (sort) {
     const dir = sort.desc ? -1 : 1;
-    return [...rows].sort((a, b) => dir * compareBy(sort.id, a, b) || byNetVotes(a, b));
+    return [...rows].sort((a, b) => dir * compareBy(sort.id, a, b) || byVotes(a, b));
   }
-  return [...rows].sort(byNetVotes);
+  return [...rows].sort(byVotes);
 }

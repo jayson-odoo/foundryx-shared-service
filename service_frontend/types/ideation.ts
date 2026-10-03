@@ -111,9 +111,10 @@ export interface Idea {
   /** The submitter's tier (e.g. `dealer`, S1) - null/absent when not set. */
   submitterTier?: string | null;
   upvotes: number;
+  /** Always 0 on the wire since plan 19 (upvote only); kept for compatibility. */
   downvotes: number;
-  /** The current user's vote on this idea (one per user, toggleable). */
-  myVote: 'up' | 'down' | null;
+  /** The current user's upvote on this idea (one per user, toggleable). */
+  myVote: 'up' | null;
   /** Manual priority rank (ascending = higher priority); drag-to-reorder sets it. */
   priority: number;
   attachments: IdeaAttachment[];
@@ -124,6 +125,29 @@ export interface Idea {
   /** A console/`--say` test turn (issue #1179) - false for every real capture.
    * Excluded from the list/board by default; `includeTest` opts in. */
   isTest: boolean;
+}
+
+/** One idea comment (plan 19). Flat wire shape - NO author id. A deleted comment
+ * with live replies is a placeholder (`isDeleted`, null `body`/`authorName`). */
+export interface IdeaComment {
+  id: string;
+  ideaId: string;
+  parentId: string | null;
+  authorName: string | null;
+  authorKind: 'user' | 'embed' | 'public';
+  body: string | null;
+  isDeleted: boolean;
+  isMine: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  createdAt: string; // ISO
+  editedAt: string | null;
+}
+
+/** A top-level comment with its replies (one level), oldest first. */
+export interface IdeaCommentThread {
+  root: IdeaComment;
+  replies: IdeaComment[];
 }
 
 /** One suggested idea cluster (AC-BI-30/31). A cluster is ALWAYS a suggestion -

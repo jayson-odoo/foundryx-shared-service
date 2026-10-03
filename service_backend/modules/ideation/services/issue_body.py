@@ -86,7 +86,7 @@ def render_issue_body(
             + " ".join(
                 t for t in (clean_text(i.get("number") or ""), clean_text(i.get("title") or "")) if t
             )
-            + f" (+{int(i.get('up') or 0)} / -{int(i.get('down') or 0)})"
+            + f" (+{int(i.get('up') or 0)})"
             for i in ideas
         ]
     else:

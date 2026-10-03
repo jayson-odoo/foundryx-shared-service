@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # Ideation build write-back per IP (AC-STB-16): failures (401s) only.
     throttle_build_max_fails: int = 5
     throttle_build_window_minutes: int = 15
+    # Ideation public status-page comments (plan 19, AC-19-30): posts per token
+    # and per client IP per window (every successful post counts).
+    throttle_idea_comment_token_max: int = 5
+    throttle_idea_comment_ip_max: int = 20
+    throttle_idea_comment_window_minutes: int = 15
     throttle_pull_key_window_minutes: int = 5
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10

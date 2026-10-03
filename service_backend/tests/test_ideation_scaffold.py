@@ -15,6 +15,7 @@ IDEATION_PERMISSION_KEYS = {
     "ideation.ideas.view",
     "ideation.ideas.submit",
     "ideation.ideas.upvote",
+    "ideation.ideas.comment",
     "ideation.triage.manage",
     "ideation.clusters.manage",
     "ideation.bindings.manage",

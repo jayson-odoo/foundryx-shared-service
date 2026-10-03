@@ -21,7 +21,7 @@ export interface UseIdeas {
   reload: () => Promise<void>;
   create: (input: IdeaCreateInput) => Promise<Idea>;
   setStatus: (id: string, toStatusId: string) => Promise<Idea>;
-  vote: (id: string, dir: 'up' | 'down') => Promise<Idea>;
+  vote: (id: string, dir: 'up') => Promise<Idea>;
   reorderPriority: (orderedIds: string[]) => Promise<void>;
   remove: (id: string) => Promise<void>;
   /** Collapse the given ideas onto `survivorId` (AC-94-21/22), then reload. */
@@ -95,7 +95,7 @@ export function useIdeas(opts?: { withBoard?: boolean }): UseIdeas {
   );
 
   const vote = useCallback(
-    async (id: string, dir: 'up' | 'down') => {
+    async (id: string, dir: 'up') => {
       const updated = await ideationService.vote(id, dir);
       await reload();
       return updated;
