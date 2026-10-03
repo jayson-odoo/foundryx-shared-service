@@ -414,3 +414,40 @@ def test_update_tenant_from_0_14_never_reseeds_a_row_an_operator_deleted(db):
     db.commit()
     db.expire_all()
     assert _rows(db, company.id) == []
+
+
+def test_scoped_backfill_touches_only_that_tenant(db):
+    """The `update_tenant` gate is PER TENANT, so its backfill must be too:
+    tenant A's late update must never reseed a row tenant B (already past
+    0.14.0) deliberately deleted."""
+    mine = _company(db, database="AED_IT_SCOPE_A")
+    other = _company(db, database="AED_IT_SCOPE_B", tenant_id="tenant-item-type-b")
+    _product_config(db, mine)
+    _product_config(db, other)
+
+    assert _backfill()(db, schema=None, tenant_id=DEFAULT_TENANT_ID) == 1
+    db.expire_all()
+    assert len(_rows(db, mine.id)) == 1
+    assert _rows(db, other.id) == []
+
+
+def test_update_tenant_never_reseeds_another_tenants_deleted_row(db):
+    from modules.autocount.bootstrap import update_tenant
+
+    mine = _company(db, database="AED_IT_UPD_A")
+    other = _company(db, database="AED_IT_UPD_B", tenant_id="tenant-item-type-del")
+    _product_config(db, mine)
+    _product_config(db, other)
+    # the deploy migration (unscoped) seeds both; tenant B deletes its row
+    _backfill()(db, schema=None)
+    db.commit()
+    rows = _rows(db, other.id)
+    assert len(rows) == 1 and rows[0].tenant_id == "tenant-item-type-del"
+    db.delete(rows[0])
+    db.commit()
+
+    update_tenant(db, DEFAULT_TENANT_ID, "0.13.0")
+    db.commit()
+    db.expire_all()
+    assert _rows(db, other.id) == []
+    assert len(_rows(db, mine.id)) == 1

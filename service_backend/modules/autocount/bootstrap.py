@@ -265,7 +265,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # an operator deliberately deleted on every later update. Module Alembic
     # 0027 runs the same repair once on deploy.
     if parse_version(from_version) < (0, 14, 0):
-        backfill_product_item_type(db, schema=schema)
+        backfill_product_item_type(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

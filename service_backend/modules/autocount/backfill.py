@@ -1876,7 +1876,12 @@ _ITEM_TYPE_HTTP_PATH = "/itembypage"
 _ITEM_TYPE_SOURCE_COLUMN = "ItemType"
 
 
-def backfill_product_item_type(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA) -> int:
+def backfill_product_item_type(
+    bind: Any,
+    *,
+    schema: Optional[str] = AUTOCOUNT_SCHEMA,
+    tenant_id: Optional[str] = None,
+) -> int:
     """Give every EXISTING ``product`` task an ``ItemType -> item_type_code``
     header row (``string``, not required, source-owned, next ``sort_order``)
     when none exists in ANY state - the preset only seeds a task's FIRST
@@ -1893,7 +1898,11 @@ def backfill_product_item_type(bind: Any, *, schema: Optional[str] = AUTOCOUNT_S
     No query text marks a product HTTP task "already migrated", so an
     operator who deletes the row would see it reseeded on every pass: module
     Alembic 0027 runs it once, and ``update_tenant`` only when upgrading from
-    below 0.14.0. Returns the number of rows created; 0 on a schema
+    below 0.14.0 - and then for THAT tenant only (``tenant_id``): the
+    version gate is per tenant, so an unscoped sweep would let one tenant's
+    late update reseed a row another, already-updated tenant deleted.
+    ``tenant_id=None`` (the migration) sweeps every tenant.
+    Returns the number of rows created; 0 on a schema
     predating these tables. Frozen ``sa.table`` only, company resolved WITH
     the config's own ``tenant_id`` (polymorphic-target_id rule).
     """
@@ -1944,20 +1953,21 @@ def backfill_product_item_type(bind: Any, *, schema: Optional[str] = AUTOCOUNT_S
 
     connectable = bind.connection() if hasattr(bind, "get_bind") else bind
 
-    configs = connectable.execute(
-        sa.select(
-            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
-            entity_config.c.source_impl, entity_config.c.source_config,
-            entity_config.c.result_columns,
-        ).where(entity_config.c.entity_type == ENTITY_PRODUCT)
-    ).fetchall()
+    config_query = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.source_impl, entity_config.c.source_config,
+        entity_config.c.result_columns,
+    ).where(entity_config.c.entity_type == ENTITY_PRODUCT)
+    if tenant_id is not None:
+        config_query = config_query.where(entity_config.c.tenant_id == tenant_id)
+    configs = connectable.execute(config_query).fetchall()
 
     created = 0
-    for config_id, tenant_id, company_id, source_impl, source_config, result_columns in configs:
+    for config_id, config_tenant_id, company_id, source_impl, source_config, result_columns in configs:
         company_ok = connectable.execute(
             sa.select(company_table.c.id).where(
                 company_table.c.id == company_id,
-                company_table.c.tenant_id == tenant_id,
+                company_table.c.tenant_id == config_tenant_id,
             )
         ).first() is not None
         if not company_ok:
@@ -1970,7 +1980,7 @@ def backfill_product_item_type(bind: Any, *, schema: Optional[str] = AUTOCOUNT_S
 
         has_row = connectable.execute(
             sa.select(field_mapping.c.id).where(
-                field_mapping.c.tenant_id == tenant_id,
+                field_mapping.c.tenant_id == config_tenant_id,
                 field_mapping.c.company_id == company_id,
                 field_mapping.c.entity_type == ENTITY_PRODUCT,
                 field_mapping.c.scope == SCOPE_HEADER,
@@ -1993,7 +2003,7 @@ def backfill_product_item_type(bind: Any, *, schema: Optional[str] = AUTOCOUNT_S
         sort_order = connectable.execute(
             sa.select(sa.func.coalesce(sa.func.max(field_mapping.c.sort_order), -1) + 1)
             .where(
-                field_mapping.c.tenant_id == tenant_id,
+                field_mapping.c.tenant_id == config_tenant_id,
                 field_mapping.c.company_id == company_id,
                 field_mapping.c.entity_type == ENTITY_PRODUCT,
                 field_mapping.c.scope == SCOPE_HEADER,
@@ -2002,7 +2012,7 @@ def backfill_product_item_type(bind: Any, *, schema: Optional[str] = AUTOCOUNT_S
         connectable.execute(
             sa.insert(field_mapping).values(
                 id=str(uuid.uuid4()),
-                tenant_id=tenant_id,
+                tenant_id=config_tenant_id,
                 company_id=company_id,
                 entity_type=ENTITY_PRODUCT,
                 scope=SCOPE_HEADER,
