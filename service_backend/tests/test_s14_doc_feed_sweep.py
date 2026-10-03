@@ -245,7 +245,9 @@ def test_a_per_key_failed_verdict_is_counted_and_the_ledger_row_untouched(sessio
 
     run_sweep(db, feed, dry_run=False, now=NOW, vendor_transport=_vendor_by_day({}), sink_transport=httpx.MockTransport(_contract_first(sink)))
     run = _latest_run(db, feed)
-    assert run.summary_json.get("failed", 0) >= 1
+    # DOC-FEED-WINDOW (review R3) - a deletions `failed` is its own counter
+    # now, so it never adds into the re-check content step's `failed`.
+    assert run.summary_json.get("deleteFailed", 0) >= 1
     row = db.query(AcDocFeedLedger).filter(AcDocFeedLedger.doc_key == 335, AcDocFeedLedger.company_id == co.id).one()
     assert row.vanished_at is None
 

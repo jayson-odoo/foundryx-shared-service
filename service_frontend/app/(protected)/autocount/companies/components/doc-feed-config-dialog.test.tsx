@@ -254,4 +254,23 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
     await userEvent.click(screen.getByTestId('doc-feed-config-save'));
     expect(await screen.findByText('Server says no.')).toBeInTheDocument();
   });
+
+  it('shows a server 422 on the poll basis', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    const onSave = vi.fn().mockRejectedValue(
+      new ApiError('bad', 422, null, { fieldErrors: { pollBasis: 'Choose LastModified or DocDate.' } }),
+    );
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{ connectionId: 'conn-1', mode: 'push', contractGate: null }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('doc-feed-config-save'));
+    expect(await screen.findByTestId('doc-feed-window-basis-error')).toHaveTextContent('Choose LastModified or DocDate.');
+  });
 });

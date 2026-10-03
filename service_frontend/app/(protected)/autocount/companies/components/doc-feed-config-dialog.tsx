@@ -266,6 +266,11 @@ export function DocFeedConfigDialog({
                         </ToggleGroupItem>
                       ))}
                     </ToggleGroup>
+                    {windowError('pollBasis') && (
+                      <p className="text-xs text-destructive" data-testid="doc-feed-window-basis-error">
+                        {windowError('pollBasis')}
+                      </p>
+                    )}
                   </div>
                   <WindowDaysField
                     id="doc-feed-window-lookback-days"

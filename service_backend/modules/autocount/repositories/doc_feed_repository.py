@@ -174,6 +174,26 @@ class DocFeedLedgerRepository:
         stmt = stmt.on_conflict_do_nothing(index_elements=self._PK)
         self.db.execute(stmt)
 
+    def set_digest(
+        self, tenant_id: str, company_id: str, feed: str, book: str, doc_key: int,
+        *, content_digest: str,
+    ) -> None:
+        """DOC-FEED-WINDOW - record the digest of content the CRM has now
+        SEEN without touching anything else on the row (a ``stale_ignored``
+        verdict: the CRM kept its newer copy, but this content must not be
+        re-pushed by every re-check)."""
+        (
+            self.db.query(AcDocFeedLedger)
+            .filter(
+                AcDocFeedLedger.tenant_id == tenant_id,
+                AcDocFeedLedger.company_id == company_id,
+                AcDocFeedLedger.feed == feed,
+                AcDocFeedLedger.book == book,
+                AcDocFeedLedger.doc_key == doc_key,
+            )
+            .update({AcDocFeedLedger.content_digest: content_digest}, synchronize_session=False)
+        )
+
     def digests_for(
         self, tenant_id: str, company_id: str, feed: str, book: str, doc_keys: List[int],
     ) -> Dict[int, Optional[str]]:
@@ -303,6 +323,30 @@ class DocFeedIssueRepository:
         if row is not None:
             self.db.delete(row)
             self.db.flush()
+
+    def records_for(
+        self, tenant_id: str, company_id: str, feed: str, book: str, doc_keys: List[int],
+    ) -> Dict[int, Any]:
+        """DOC-FEED-WINDOW - ``{doc_key: stored record_json}`` of the open
+        issue rows (either kind) among ``doc_keys``; chunked like
+        ``DocFeedLedgerRepository.digests_for``."""
+        out: Dict[int, Any] = {}
+        keys = list(doc_keys)
+        for i in range(0, len(keys), 500):
+            rows = (
+                self.db.query(AcDocFeedIssue.doc_key, AcDocFeedIssue.record_json)
+                .filter(
+                    AcDocFeedIssue.tenant_id == tenant_id,
+                    AcDocFeedIssue.company_id == company_id,
+                    AcDocFeedIssue.feed == feed,
+                    AcDocFeedIssue.book == book,
+                    AcDocFeedIssue.doc_key.in_(keys[i:i + 500]),
+                )
+                .all()
+            )
+            for key, record in rows:
+                out[int(key)] = record
+        return out
 
     def list_retryable(self, tenant_id: str, company_id: str, feed: str, book: str) -> List[AcDocFeedIssue]:
         return (

@@ -80,7 +80,12 @@ MAX_BACKFILL_RATE_LIMIT_WAITS = 10
 # N7 - the largest vendor document a issue row will store for re-send.
 MAX_STORED_RECORD_BYTES = 64 * 1024
 
-_DELETE_KEY_TRANSLATE = {"not_found": "notFound"}
+# DOC-FEED-WINDOW (review R3) - the re-check's content step owns `failed` /
+# `created` / ...; the deletions endpoint's own `failed` / `total` get their
+# own keys so the two steps never add into one counter.
+_DELETE_KEY_TRANSLATE = {
+    "not_found": "notFound", "failed": "deleteFailed", "total": "deleteTotal",
+}
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -395,6 +400,13 @@ def _apply_document_verdict(
                     doc_no=doc_no, doc_date=d_date, source_modified_at=modified_at,
                     outcome=outcome, now=now,
                 )
+                # DOC-FEED-WINDOW (review R1) - the CRM has SEEN this content
+                # (and kept its newer copy): record it, or every re-check
+                # would push it again.
+                ledger_repo.set_digest(
+                    feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
+                    content_digest=content_digest(raw),
+                )
         else:
             summary[outcome] = summary.get(outcome, 0) + 1
             if not dry_run:
@@ -594,13 +606,28 @@ def _recheck_push(
     digest differs from the ledger's. Counts ``rechecked`` (documents read)
     and ``changed`` (documents pushed); every verdict is applied exactly as
     the poll applies it. Returns the sink error that stopped it, if any."""
+    summary["skippedNoKey"] += sum(1 for r in fetched if doc_key(r) is None)
     deduped = dedupe_latest(fetched)
     summary["rechecked"] = len(deduped)
+    keys = [doc_key(r) for r in deduped]
     known = ledger_repo.digests_for(
-        feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book,
-        [doc_key(r) for r in deduped],
+        feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book, keys,
     )
-    changed = [r for r in deduped if known.get(doc_key(r)) != content_digest(r)]
+    # Review R2 - an open issue already holding THIS content is not re-sent:
+    # `failed` is never re-sent until the document changes (§3), and a
+    # `retryable` one is the poll's D9 re-send to make.
+    issue_records = DocFeedIssueRepository(db).records_for(
+        feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book, keys,
+    )
+
+    def needs_push(record: Dict[str, Any]) -> bool:
+        digest = content_digest(record)
+        if known.get(doc_key(record)) == digest:
+            return False
+        held = issue_records.get(doc_key(record))
+        return not (held and content_digest(held) == digest)
+
+    changed = [r for r in deduped if needs_push(r)]
     summary["changed"] = len(changed)
     if not changed:
         return None

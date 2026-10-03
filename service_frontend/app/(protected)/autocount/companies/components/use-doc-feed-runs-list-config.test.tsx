@@ -158,4 +158,15 @@ describe('summary null (crew DOCFEED-NULL-SUMMARY)', () => {
     expect(docFeedRunKindLabel('sweep')).toBe('Re-check');
     expect(docFeedRunKindLabel('poll')).toBe('Poll');
   });
+
+  it('a re-check row names deletion failures apart from content failures', async () => {
+    const column = await summaryColumn();
+    const row: DocFeedRun = {
+      ...sweepRow,
+      summary: { rechecked: 5, changed: 1, failed: 1, candidates: 1, deactivated: 0, notFound: 0, deleteFailed: 1 },
+    };
+    expect(column.accessorFn(row, 0)).toBe(
+      '5 re-checked, 1 changed, 1 failed, 1 candidate(s), 0 deactivated, 0 not found, 1 delete failed',
+    );
+  });
 });

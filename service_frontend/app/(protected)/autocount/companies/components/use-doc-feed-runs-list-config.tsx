@@ -45,7 +45,8 @@ function summaryLabel(run: DocFeedRun): string {
     if (s.retryable) parts.push(`${s.retryable} waiting`);
     if (s.failed) parts.push(`${s.failed} failed`);
     if (s.staleIgnored) parts.push(`${s.staleIgnored} stale`);
-    return `${parts.join(', ')}, ${deletions}`;
+    const deleteFailed = s.deleteFailed ? `, ${s.deleteFailed} delete failed` : '';
+    return `${parts.join(', ')}, ${deletions}${deleteFailed}`;
   }
   const parts = [
     `${s.created ?? 0} created`,

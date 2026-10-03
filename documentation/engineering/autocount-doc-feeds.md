@@ -94,7 +94,13 @@ documents pushed). A delivered verdict stores the record's digest on the ledger 
 do the same), so after the first re-check only real edits re-push. This catches a line edit that
 did not bump the header `LastModified` (unverified AutoCount behaviour, BL-SS-036): the CRM's
 stale guard is strict `incoming < stored`, so an equal `LastModified` with changed lines answers
-`updated`. A content-push sink error fails the run before any deletion. **Then deletions:**
+`updated`. A document whose open issue row already holds this exact content is skipped (`failed`
+is never re-sent until it changes; `retryable` is the poll's D9 re-send). A `stale_ignored`
+verdict records the digest without touching the rest of the ledger row (the CRM has seen it).
+Keyless records count as `skippedNoKey`. A content-push sink error fails the run before any
+deletion; a `DELETE_GUARD` refusal still FAILS the run, but the content pushes before it are
+committed and their counters kept. The deletions endpoint's own `failed`/`total` are stored as
+`deleteFailed`/`deleteTotal` (never added into the content step's `failed`). **Then deletions:**
 union the DocKeys, and every ledger row in the window with no vendor copy is a candidate. A
 candidate count over **max(50, 20% of the window's ledger rows)** refuses the sweep
 (`DELETE_GUARD`). Otherwise the candidates go to the CRM deletions endpoint; a `deactivated` /
@@ -108,7 +114,12 @@ pre-window behaviour): `pollBasis` `last_modified` (default) | `doc_date`; `poll
 (`doc_feed/window.py validate_doc_feed_window`, per-field 422); omitted on a PUT = kept; a window
 change never re-arms the schedule. Edited in the Configure dialog inside the same cadence cards
 (Poll card: Read by + Look back; Re-check card: Window). Load: `recheckDays` vendor GETs per
-re-check run, `pollLookbackDays + 1` per poll tick; never a write to AutoCount.
+re-check run, `pollLookbackDays + 1` per poll tick while the cursor is current (catch-up after an
+outage still reads up to 31 days); never a write to AutoCount. Lookback 0 is safe: the cursor is
+the previous tick's MYT day, so the first tick after midnight still re-reads the day before.
+**DocDate basis trade-off:** the poll only sees documents dated inside its window - an edit to an
+older document, or a document dated in the future, is picked up by the Re-check (or not at all
+beyond `recheckDays`).
 
 ## 5. Backfill
 

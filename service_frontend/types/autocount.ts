@@ -1737,6 +1737,9 @@ export interface DocFeedRunSummary {
   /** DOC-FEED-WINDOW - re-check: documents read / documents re-pushed. */
   rechecked?: number;
   changed?: number;
+  /** The deletions endpoint's own counters (never added into `failed`). */
+  deleteFailed?: number;
+  deleteTotal?: number;
   warnings?: Record<string, number>;
   failedRefs?: Array<{ docKey?: number | null; sourceRef?: string | null; errors?: Record<string, unknown> }>;
 }
