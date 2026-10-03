@@ -195,6 +195,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_document_line_linkage,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
+        backfill_customer_sales_agent,
         backfill_product_item_type,
         backfill_sales_order_ref,
         backfill_sales_order_transferable,
@@ -266,6 +267,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # 0028 runs the same repair once on deploy.
     if parse_version(from_version) < (0, 14, 0):
         backfill_product_item_type(db, schema=schema, tenant_id=tenant_id)
+    # 0.14.0 -> 0.15.0 (SS-DEBTOR-AGENT, partner of sorento
+    # CUSTOMER-SALES-AGENT): every existing `customer` task gets a
+    # `SalesAgent -> sales_agent_code` row. Version-GATED and tenant-scoped
+    # for the same reason as the ItemType pass above. Module Alembic 0029
+    # runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 15, 0):
+        backfill_customer_sales_agent(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

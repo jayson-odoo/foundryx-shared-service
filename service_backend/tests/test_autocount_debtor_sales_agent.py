@@ -217,7 +217,7 @@ def _company(db, *, database: str, tenant_id: str = DEFAULT_TENANT_ID) -> AcComp
 
 def _customer_config(db, company: AcCompany, *, source_impl: str = SOURCE_IMPL_AUTOCOUNT_HTTP,
                      path: str = "/debtorbypage", result_columns=None,
-                     tenant_id: str = None) -> AcEntityConfig:
+                     tenant_id: str = None, seed_rows: bool = True) -> AcEntityConfig:
     config = AcEntityConfig(
         tenant_id=tenant_id or company.tenant_id, company_id=company.id,
         entity_type=ENTITY_CUSTOMER, source_impl=source_impl,
@@ -230,6 +230,9 @@ def _customer_config(db, company: AcCompany, *, source_impl: str = SOURCE_IMPL_A
     db.add(config)
     db.commit()
     db.refresh(config)
+    if seed_rows:
+        # A real task already maps something (its default/preset seed).
+        _seed_existing_rows(db, company)
     return config
 
 
@@ -264,7 +267,6 @@ def _rows(db, company_id: str, field: str = "sales_agent_code"):
 def test_backfill_seeds_an_enabled_row_on_an_http_debtor_task(db):
     company = _company(db, database="AED_SA_HTTP")
     _customer_config(db, company)
-    _seed_existing_rows(db, company)
     db.expire_all()
 
     assert _backfill()(db, schema=None) == 1
@@ -318,9 +320,38 @@ def test_backfill_disables_on_a_custom_http_path(db):
     assert [r.is_enabled for r in _rows(db, company.id)] == [False]
 
 
+def test_backfill_skips_a_task_with_no_mapping_rows(db):
+    """A never-mapped task gets its WHOLE default/preset mapping (which
+    already carries the row) from the seed gated on an EMPTY mapping - a
+    lone backfilled row would block that seed forever."""
+    company = _company(db, database="AED_SA_EMPTY")
+    _customer_config(db, company, seed_rows=False)
+    assert _backfill()(db, schema=None) == 0
+    db.expire_all()
+    assert db.query(AcFieldMapping).filter(AcFieldMapping.company_id == company.id).count() == 0
+
+
+def test_update_tenant_still_seeds_the_full_default_on_an_unmapped_vendor_task(db):
+    from modules.autocount.bootstrap import update_tenant
+
+    company = _company(db, database="AED_SA_FULLSEED")
+    _customer_config(db, company, source_impl=SOURCE_IMPL_AUTOCOUNT_READ, seed_rows=False)
+    update_tenant(db, DEFAULT_TENANT_ID, "0.14.0")
+    db.commit()
+    db.expire_all()
+    fields = {
+        r.canonical_field for r in db.query(AcFieldMapping).filter(
+            AcFieldMapping.company_id == company.id,
+            AcFieldMapping.entity_type == ENTITY_CUSTOMER,
+        )
+    }
+    assert {r.canonical_field for r in DEFAULT_CUSTOMER_MAPPING} <= fields
+    assert len(_rows(db, company.id)) == 1
+
+
 def test_backfill_leaves_an_existing_row_alone_in_any_state(db):
     company = _company(db, database="AED_SA_OWN")
-    _customer_config(db, company)
+    _customer_config(db, company, seed_rows=False)
     db.add(AcFieldMapping(
         tenant_id=company.tenant_id, company_id=company.id, entity_type=ENTITY_CUSTOMER,
         scope=SCOPE_HEADER, source_path="Attention", canonical_field="sales_agent_code",
