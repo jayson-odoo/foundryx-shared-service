@@ -199,6 +199,12 @@ class CanonicalCustomer(CanonicalMaster):
 
     phone_number: Optional[str] = None
     tax_id: Optional[str] = None
+    # SS-DEBTOR-AGENT (partner of sorento CUSTOMER-SALES-AGENT) - AutoCount
+    # Debtor ``SalesAgent`` (Text, 12), sent VERBATIM as a CODE: a
+    # level-suffixed code (``"MR TEO III"``) stays as-is - grouping codes by
+    # person is the CRM's job. Blank -> omitted, never ``null``, so a blank
+    # never clears the CRM's per-ledger agent.
+    sales_agent_code: Optional[str] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
@@ -208,6 +214,7 @@ class CanonicalCustomer(CanonicalMaster):
         "email",
         "phone_number",
         "tax_id",
+        "sales_agent_code",
         "is_active",
     )
 

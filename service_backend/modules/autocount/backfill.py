@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import sqlalchemy as sa
 
@@ -35,11 +35,16 @@ from .canonical.documents import (
     ENTITY_SHIPPING_ORDER,
     is_document_entity,
 )
-from .canonical.masters import ENTITY_PRODUCT
+from .canonical.masters import ENTITY_CUSTOMER, ENTITY_PRODUCT
 from .db import AUTOCOUNT_SCHEMA
 from .envelopes import ENVELOPE_STATUS_DICT
 from .mapping import DOCUMENT_LINE_FIXED_FIELDS, SCOPE_HEADER, SCOPE_LINE
-from .models import SOURCE_IMPL_AUTOCOUNT_HTTP, AcEntityConfig, AcFieldMapping
+from .models import (
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
+    SOURCE_IMPL_AUTOCOUNT_READ,
+    AcEntityConfig,
+    AcFieldMapping,
+)
 from .sources import INITIAL_LOAD_WINDOWED
 
 logger = logging.getLogger("foundryx.autocount")
@@ -1906,6 +1911,47 @@ def backfill_product_item_type(
     predating these tables. Frozen ``sa.table`` only, company resolved WITH
     the config's own ``tenant_id`` (polymorphic-target_id rule).
     """
+    return _backfill_source_owned_header_row(
+        bind,
+        schema=schema,
+        tenant_id=tenant_id,
+        entity_type=ENTITY_PRODUCT,
+        source_column=_ITEM_TYPE_SOURCE_COLUMN,
+        canonical_field="item_type_code",
+        known_good=lambda source_impl, source_config: (
+            source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+            and source_config.get("path") == _ITEM_TYPE_HTTP_PATH
+        ),
+        task_label="Product",
+        known_good_label="the AutoCount `/itembypage` preset",
+    )
+
+
+def _backfill_source_owned_header_row(
+    bind: Any,
+    *,
+    schema: Optional[str],
+    tenant_id: Optional[str],
+    entity_type: str,
+    source_column: str,
+    canonical_field: str,
+    known_good: Callable[[Optional[str], Dict[str, Any]], bool],
+    task_label: str,
+    known_good_label: str,
+    skip_unmapped: bool = False,
+) -> int:
+    """Shared body of the "give every EXISTING ``entity_type`` task one
+    ``source_column -> canonical_field`` header row" backfills (ITEM-TYPE-SS,
+    SS-DEBTOR-AGENT). A row is created only when none exists for
+    ``canonical_field`` in ANY state; ENABLED when ``known_good`` vouches for
+    the source or its cached ``result_columns`` list ``source_column``,
+    otherwise DISABLED with one WARNING naming the config id.
+    ``skip_unmapped`` leaves a task with NO header rows at all untouched: its
+    first save / ``update_tenant`` seed fills the whole default or preset
+    mapping only while the mapping is completely empty, so a lone backfilled
+    row there would block that seed. ``tenant_id``
+    scopes the sweep (``None`` = every tenant). Returns rows created; 0 on a
+    schema predating these tables."""
     needed = {
         "ac_entity_config": _ITEM_TYPE_ENTITY_CONFIG_COLUMNS,
         "ac_company": _ITEM_TYPE_COMPANY_COLUMNS,
@@ -1957,7 +2003,7 @@ def backfill_product_item_type(
         entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
         entity_config.c.source_impl, entity_config.c.source_config,
         entity_config.c.result_columns,
-    ).where(entity_config.c.entity_type == ENTITY_PRODUCT)
+    ).where(entity_config.c.entity_type == entity_type)
     if tenant_id is not None:
         config_query = config_query.where(entity_config.c.tenant_id == tenant_id)
     configs = connectable.execute(config_query).fetchall()
@@ -1972,9 +2018,9 @@ def backfill_product_item_type(
         ).first() is not None
         if not company_ok:
             logger.warning(
-                "Product task %s's company could not be resolved under its own "
-                "tenant - the `ItemType` backfill skipped it.",
-                config_id,
+                "%s task %s's company could not be resolved under its own "
+                "tenant - the `%s` backfill skipped it.",
+                task_label, config_id, source_column,
             )
             continue
 
@@ -1982,9 +2028,9 @@ def backfill_product_item_type(
             sa.select(field_mapping.c.id).where(
                 field_mapping.c.tenant_id == config_tenant_id,
                 field_mapping.c.company_id == company_id,
-                field_mapping.c.entity_type == ENTITY_PRODUCT,
+                field_mapping.c.entity_type == entity_type,
                 field_mapping.c.scope == SCOPE_HEADER,
-                field_mapping.c.canonical_field == "item_type_code",
+                field_mapping.c.canonical_field == canonical_field,
             )
         ).first() is not None
         if has_row:
@@ -1992,20 +2038,27 @@ def backfill_product_item_type(
             # duplicated or modified, in ANY state.
             continue
 
+        if skip_unmapped and connectable.execute(
+            sa.select(field_mapping.c.id).where(
+                field_mapping.c.tenant_id == config_tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == entity_type,
+                field_mapping.c.scope == SCOPE_HEADER,
+            )
+        ).first() is None:
+            continue
+
         source_config = source_config or {}
         enabled = (
-            _ITEM_TYPE_SOURCE_COLUMN in list(result_columns or [])
-            or (
-                source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
-                and source_config.get("path") == _ITEM_TYPE_HTTP_PATH
-            )
+            source_column in list(result_columns or [])
+            or known_good(source_impl, source_config)
         )
         sort_order = connectable.execute(
             sa.select(sa.func.coalesce(sa.func.max(field_mapping.c.sort_order), -1) + 1)
             .where(
                 field_mapping.c.tenant_id == config_tenant_id,
                 field_mapping.c.company_id == company_id,
-                field_mapping.c.entity_type == ENTITY_PRODUCT,
+                field_mapping.c.entity_type == entity_type,
                 field_mapping.c.scope == SCOPE_HEADER,
             )
         ).scalar()
@@ -2014,10 +2067,10 @@ def backfill_product_item_type(
                 id=str(uuid.uuid4()),
                 tenant_id=config_tenant_id,
                 company_id=company_id,
-                entity_type=ENTITY_PRODUCT,
+                entity_type=entity_type,
                 scope=SCOPE_HEADER,
-                source_path=_ITEM_TYPE_SOURCE_COLUMN,
-                canonical_field="item_type_code",
+                source_path=source_column,
+                canonical_field=canonical_field,
                 transform="string",
                 formula=None,
                 is_required=False,
@@ -2029,10 +2082,65 @@ def backfill_product_item_type(
         created += 1
         if not enabled:
             logger.warning(
-                "Product task %s's source is not the AutoCount `/itembypage` "
-                "preset and does not list `ItemType` - the `ItemType -> "
-                "item_type_code` row was added DISABLED. Select `ItemType` in "
-                "the source and enable the row on the Mapping tab.",
-                config_id,
+                "%s task %s's source is not %s and does not list `%s` - the "
+                "`%s -> %s` row was added DISABLED. Select `%s` in the source "
+                "and enable the row on the Mapping tab.",
+                task_label, config_id, known_good_label, source_column,
+                source_column, canonical_field, source_column,
             )
     return created
+
+
+# ── SS-DEBTOR-AGENT (partner of sorento CUSTOMER-SALES-AGENT) ───────────────
+
+# FROZEN here like the ItemType pair above - a later preset edit must not
+# change what this migration did.
+_SALES_AGENT_HTTP_PATH = "/debtorbypage"
+_SALES_AGENT_SOURCE_COLUMN = "SalesAgent"
+
+
+def backfill_customer_sales_agent(
+    bind: Any,
+    *,
+    schema: Optional[str] = AUTOCOUNT_SCHEMA,
+    tenant_id: Optional[str] = None,
+) -> int:
+    """Give every EXISTING ``customer`` task a ``SalesAgent ->
+    sales_agent_code`` header row (``string``, not required, source-owned,
+    next ``sort_order``) when none exists in ANY state - the default mapping
+    and the HTTP preset only seed a task's FIRST save, so without this the
+    agent never reaches tenants already syncing customers.
+
+    ENABLED when the source is known to carry the column: the vendor
+    ``autocount_read`` Debtor API (every row carries ``SalesAgent``), an
+    ``autocount_http`` task still on the preset's ``/debtorbypage`` path, or
+    any task whose cached ``result_columns`` list ``SalesAgent``. Otherwise
+    DISABLED with one WARNING naming the config id. A task with NO mapping
+    rows is left alone - its default/preset seed (which already carries the
+    row) runs only while the mapping is empty, and a lone row would block it.
+
+    Version-gated exactly like ``backfill_product_item_type`` (module Alembic
+    0029 once, ``update_tenant`` only from below 0.15.0 and only for THAT
+    tenant) so an operator's deliberate delete is never reseeded.
+    """
+    return _backfill_source_owned_header_row(
+        bind,
+        schema=schema,
+        tenant_id=tenant_id,
+        entity_type=ENTITY_CUSTOMER,
+        source_column=_SALES_AGENT_SOURCE_COLUMN,
+        canonical_field="sales_agent_code",
+        known_good=lambda source_impl, source_config: (
+            source_impl == SOURCE_IMPL_AUTOCOUNT_READ
+            or (
+                source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+                and source_config.get("path") == _SALES_AGENT_HTTP_PATH
+            )
+        ),
+        task_label="Customer",
+        known_good_label="the AutoCount Debtor API or the `/debtorbypage` preset",
+        # `customer` is in BOTH `DEFAULT_MAPPINGS` (the `update_tenant` seed)
+        # and `HTTP_PRESETS` (the first-save seed), each gated on a
+        # completely EMPTY mapping - and both already carry the row.
+        skip_unmapped=True,
+    )

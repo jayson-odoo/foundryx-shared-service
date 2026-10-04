@@ -2673,6 +2673,9 @@ def test_every_field_we_send_is_one_sorento_defines():
         "source_ref", "source_doc_no", "code", "name", "email", "phone_number",
         "registration_number", "tax_id", "credit_limit", "payment_terms_days",
         "payment_terms_code", "country", "is_active",
+        # SS-DEBTOR-AGENT - declared by the partner sorento lane
+        # CUSTOMER-SALES-AGENT (`CanonicalCustomer.sales_agent_code`).
+        "sales_agent_code",
     }
     assert set(CanonicalSupplier.SINK_FIELDS) <= sorento_supplier
     assert set(CanonicalCustomer.SINK_FIELDS) <= sorento_customer

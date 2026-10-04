@@ -1304,11 +1304,15 @@ function itemRows(count = 30): Array<Record<string, unknown>> {
   }));
 }
 
+// SS-DEBTOR-AGENT - level-suffixed codes for one person, as AutoCount holds them.
+const SALES_AGENTS = ['AGENT A', 'AGENT A II', 'AGENT B', 'AGENT C III'];
+
 function debtorRows(count = 30): Array<Record<string, unknown>> {
   return Array.from({ length: count }, (_, i) => ({
     AccNo: `300-${String(i + 1).padStart(4, '0')}`,
     CompanyName: `Customer ${i + 1} Sdn Bhd`,
     Phone1: `03-77${String(1000 + i).slice(1)}`,
+    SalesAgent: i % 7 === 3 ? '' : SALES_AGENTS[i % SALES_AGENTS.length],
     IsActive: i % 13 === 6 ? 'F' : 'T',
     LastModified: isoStamp(i),
   }));
@@ -3785,6 +3789,8 @@ function masterMappingView(entityType: string): AutocountMappingView {
       { field: 'email', required: false },
       { field: 'phone_number', required: false },
       { field: 'tax_id', required: false },
+      // SS-DEBTOR-AGENT - customer-only (Creditor rows carry no sales agent).
+      ...(entityType === 'customer' ? [{ field: 'sales_agent_code', required: false }] : []),
     ],
     acFields: [
       'AccNo',
@@ -3793,6 +3799,7 @@ function masterMappingView(entityType: string): AutocountMappingView {
       'IsActive',
       'Mobile',
       'TIN',
+      ...(entityType === 'customer' ? ['SalesAgent'] : []),
       'Data.0.AutoKey',
       'Data.0.LastModified',
     ],
@@ -4234,6 +4241,8 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       { sourcePath: 'AccNo', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'CompanyName', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'Phone1', canonicalField: 'phone_number', transform: 'string', formula: null, required: false, enabled: true },
+      // SS-DEBTOR-AGENT - mirrors `CUSTOMER_HTTP_PRESET`'s `SalesAgent -> sales_agent_code` row.
+      { sourcePath: 'SalesAgent', canonicalField: 'sales_agent_code', transform: 'string', formula: null, required: false, enabled: true },
       { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
     ],
   },

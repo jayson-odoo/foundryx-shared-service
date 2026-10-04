@@ -410,7 +410,7 @@ describe('getMapping - HTTP preset rows (AC-08-16/21) vs the legacy vendor custo
       sourceConfig: { ...task.sourceConfig, connectionId: 'conn-api-mocha', path: '/debtorbypage', keyFields: ['AccNo'] },
     });
     const view = await service.getMapping('company-http', 'customer');
-    expect(view.rows.map((r) => r.canonicalField)).toEqual(['code', 'name', 'phone_number', 'is_active']);
+    expect(view.rows.map((r) => r.canonicalField)).toEqual(['code', 'name', 'phone_number', 'sales_agent_code', 'is_active']);
   });
 });
 

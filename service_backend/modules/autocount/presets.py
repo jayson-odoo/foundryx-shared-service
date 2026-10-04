@@ -885,6 +885,10 @@ CUSTOMER_HTTP_PRESET = HttpPreset(
         PresetField("AccNo", "code", "string", required=True),
         PresetField("CompanyName", "name", "string"),
         PresetField("Phone1", "phone_number", "string"),
+        # SS-DEBTOR-AGENT - every `/debtorbypage` row carries `SalesAgent`;
+        # existing tasks get this row from `backfill_customer_sales_agent`
+        # (module Alembic 0029).
+        PresetField("SalesAgent", "sales_agent_code", "string"),
         PresetField("IsActive", "is_active", "t_f_bool"),
     ),
 )
