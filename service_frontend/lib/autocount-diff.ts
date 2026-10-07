@@ -94,8 +94,15 @@ export function diffForDisplay(
   return { isNew: true, changes };
 }
 
+/** Keys whose humanized label gets an acronym wrong; exact-key overrides only. */
+const FIELD_LABEL_OVERRIDES: Record<string, string> = {
+  po_ref: 'PO ref',
+};
+
 /** `supplier_name` / `supplierName` → `Supplier name`. */
 export function humanizeFieldKey(key: string): string {
+  const override = FIELD_LABEL_OVERRIDES[key];
+  if (override) return override;
   const spaced = key
     .replace(/[_.]+/g, ' ')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
