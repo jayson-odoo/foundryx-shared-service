@@ -62,9 +62,14 @@ function presetLabel(row: MappingEditableRow): string {
   return AC_PRESET_OPTIONS.find((o) => o.value === key)?.label ?? key;
 }
 
+/** Sorento fields whose label the humanizer gets wrong (an acronym). */
+const SORENTO_FIELD_LABELS: Record<string, string> = {
+  po_ref: 'PO ref',
+};
+
 /** The Sorento field shown by its human label; the stored name stays the key. */
 export function sorentoFieldLabel(field: string): string {
-  return humanizeFieldKey(field);
+  return SORENTO_FIELD_LABELS[field] ?? humanizeFieldKey(field);
 }
 
 /**

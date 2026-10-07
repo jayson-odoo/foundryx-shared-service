@@ -116,12 +116,20 @@ Header mapping rows (operator-authored on the Mapping tab)
 | `status` | `status` (required) | `string` |
 | `Note` | `internal_note` | `string` |
 | `Ref` | `ref` | `string` |
+| `UDFNote` | `po_ref` | `string` |
 
 `Ref` (sprint-5/07, AC-07-01/02/06) - sales staff stamp the project name into
 AutoCount `SO.Ref` alongside agent stamps (`"THE MET KL"`, `"JF- 9/9 3.50"`);
 sent VERBATIM, no cleaning on the ESB side - Sorento's `label_from_ref`
 derives `sales_orders.project_label` from it and owns stripping the stamps.
 SO only: never map `ref` on PO/SPO (§3 below).
+
+`UDFNote` (SS-PO-REF, Sorento contract `po_ref`, sorento-crm #1528) - the
+customer's own PO number, max 255, contract v2+ only, omitted when blank. Its
+own field: `ref` keeps feeding the Project label. A per-company UDF, so the
+shared header query above does NOT select it (same rule as section 4b): the
+preset seeds the row disabled unless the task's own query returns a `UDFNote`
+column. SO only.
 
 ## 2. Sales Order - line query
 
