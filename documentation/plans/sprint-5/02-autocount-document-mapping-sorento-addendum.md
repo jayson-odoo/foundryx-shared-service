@@ -464,3 +464,16 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   `test_v2_payload_omits_container_number_when_empty_string` (`test_autocount_spo_container_
   number.py`) and the existing `test_v2_payload_omits_ref_when_empty` parametrization
   (`test_autocount_so_ref.py`, already covered `[None, ""]`).
+- 2026-10-08 (SS-PO-REF, partner of sorento-crm #1528): `CanonicalSalesOrder.po_ref:
+  Optional[str]` (max 255, same as Sorento's `CanonicalSalesOrder.po_ref`), the customer's own
+  PO number, sourced by default from AutoCount `UDFNote` (SO preset row `UDFNote -> po_ref`,
+  seeded disabled unless the task's own query returns a `UDFNote` column: a per-company UDF the
+  shared header query never selects, SQL pack section 4b). Its own field: `ref` keeps feeding
+  Sorento's Project label. SO only (PO/SPO declare no `po_ref`); v2+ only (`FALLBACK_FIELDS`);
+  omitted when empty (`OMIT_WHEN_EMPTY_FIELDS`, the `ref` rule). Sorento writes `po_ref`
+  whenever the key is sent ("blank clears"), but the ESB never sends a blank, so clearing
+  `UDFNote` in AutoCount leaves Sorento's stored PO ref in place (same trade-off as `ref`).
+  Deploy order: Sorento declares `po_ref` on its `extra="forbid"` model; #1528 merged and
+  deployed to prod 2026-10-08 06:12, before this ESB change. No backfill: a backfilled row
+  would land disabled on every preset-query task; the operator moves `UDFNote` from Ref to
+  PO ref on the Sales Order Mapping tab and re-pushes open SOs.

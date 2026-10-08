@@ -433,6 +433,12 @@ class CanonicalSalesOrder(CanonicalDocument):
     # only like `ref`; omitted when `None` (never an explicit `null`), but a
     # real `False` IS sent (`OMIT_WHEN_NONE_FIELDS`, not the EMPTY list).
     transferable: Optional[bool] = None
+    # SS-PO-REF (partner of sorento #1528) - the customer's own PO number,
+    # AutoCount `UDFNote` by default. Its own field: `ref` keeps feeding
+    # Sorento's Project label. SO only; v2+ only like `ref`; max 255 matches
+    # Sorento's `CanonicalSalesOrder.po_ref`; never sent blank
+    # (`OMIT_WHEN_EMPTY_FIELDS`).
+    po_ref: Optional[str] = Field(None, max_length=255)
     lines: List[CanonicalSalesOrderLine] = Field(default_factory=list)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
@@ -441,8 +447,9 @@ class CanonicalSalesOrder(CanonicalDocument):
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "customer_code", "customer_name", "agent_code", "ref", "transferable",
+        "po_ref",
     )
-    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("ref",)
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("ref", "po_ref")
     OMIT_WHEN_NONE_FIELDS: ClassVar[Tuple[str, ...]] = ("transferable",)
 
 

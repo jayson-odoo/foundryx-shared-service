@@ -6,6 +6,7 @@ import type {
 } from '@/types/autocount';
 import {
   MappingTable,
+  sorentoFieldLabel,
   unmappedRequiredFields,
   type MappingEditableRow,
 } from './mapping-table';
@@ -73,6 +74,28 @@ describe('unmappedRequiredFields', () => {
 
   it('never flags an optional field', () => {
     expect(unmappedRequiredFields([], [{ field: 'email', required: false }])).toEqual([]);
+  });
+});
+
+describe('sorentoFieldLabel (SS-PO-REF)', () => {
+  it('labels the SO po_ref target "PO ref", not the humanizer\'s "Po ref"', () => {
+    expect(sorentoFieldLabel('po_ref')).toBe('PO ref');
+  });
+
+  it('leaves every other key on the humanizer', () => {
+    expect(sorentoFieldLabel('ref')).toBe('Ref');
+    expect(sorentoFieldLabel('customer_code')).toBe('Customer code');
+  });
+
+  it('shows "PO ref" for a mapped po_ref row', () => {
+    renderTable(false, {
+      rows: [{ sourcePath: 'UDFNote', transform: 'string', formula: null, sorentoField: 'po_ref', isEnabled: true }],
+      provenanceRows: [],
+      sorentoFields: [{ field: 'po_ref', required: false }],
+      acFields: ['UDFNote'],
+    });
+    expect(screen.getByText('PO ref')).toBeInTheDocument();
+    expect(screen.queryByText('Po ref')).toBeNull();
   });
 });
 

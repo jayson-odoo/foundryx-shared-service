@@ -240,6 +240,10 @@ SO_PRESET = DocumentPreset(
         PresetField("Note", "internal_note", "string"),
         PresetField("Ref", "ref", "string"),
         PresetField("Transferable", "transferable", "bool"),
+        # SS-PO-REF - a per-company UDF the shared header query never selects
+        # (SQL pack section 4b): `plan_rows` seeds it DISABLED unless the
+        # task's own query returns a `UDFNote` column.
+        PresetField("UDFNote", "po_ref", "string"),
         PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
         PresetField("DebtorCode", "customer_code", "string"),
         PresetField("DebtorName", "customer_name", "string"),
