@@ -2,6 +2,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import { encodeListQuery } from '@/lib/list-context';
+const CTX = encodeListQuery({ page: 0, pageSize: 25, search: '', sort: undefined, filter: null, segment: 'active' });
 const canKeys: string[] = ['connector.read', 'connector.manage'];
 vi.mock('@/hooks/use-can', () => ({
   useCan: () => ({ can: (k: string) => canKeys.includes(k), ready: true, permissions: new Set(canKeys) }),
@@ -19,7 +21,7 @@ vi.mock('@/services/connector-service', () => ({
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
   usePathname: () => '/settings/claude-connector/g2',
-  useSearchParams: () => new URLSearchParams('ctx=x&i=1'),
+  useSearchParams: () => new URLSearchParams(`ctx=${CTX}&i=1`),
   useParams: () => ({ id: 'g2' }),
 }));
 vi.mock('@/hooks/use-datetime', () => ({

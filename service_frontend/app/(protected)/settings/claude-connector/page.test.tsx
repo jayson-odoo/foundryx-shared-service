@@ -14,6 +14,10 @@ vi.mock('@/components/platform/resource-list', () => ({
 }));
 vi.mock('./components/products-tab', () => ({ ProductsTab: () => <div data-testid="products-tab" /> }));
 vi.mock('@/providers/settings-provider', () => ({ useSettings: () => ({ settings: { container: 'fixed' } }) }));
+vi.mock('next-auth/react', () => ({ useSession: () => ({ data: null, status: 'unauthenticated' }), signOut: vi.fn() }));
+vi.mock('@/services/terminology-service', () => ({
+  terminologyService: { getTerminology: vi.fn().mockResolvedValue({}), list: vi.fn().mockResolvedValue([]) },
+}));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/settings/claude-connector',

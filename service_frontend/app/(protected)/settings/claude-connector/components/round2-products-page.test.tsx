@@ -23,6 +23,10 @@ vi.mock('./use-connector-grant-list-config', () => ({
   useConnectorGrantListConfig: () => ({ columns: [], actions: [], fetcher: vi.fn(), viewKey: 'x', getRowId: () => '' }),
 }));
 vi.mock('@/components/platform/resource-list', () => ({ ResourceList: () => <div data-testid="grants-list" /> }));
+vi.mock('next-auth/react', () => ({ useSession: () => ({ data: null, status: 'unauthenticated' }), signOut: vi.fn() }));
+vi.mock('@/services/terminology-service', () => ({
+  terminologyService: { getTerminology: vi.fn().mockResolvedValue({}), list: vi.fn().mockResolvedValue([]) },
+}));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/settings/claude-connector',

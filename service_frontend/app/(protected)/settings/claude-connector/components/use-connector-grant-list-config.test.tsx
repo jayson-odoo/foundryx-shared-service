@@ -29,6 +29,7 @@ const grant = (over: Partial<ConnectorGrant> = {}): ConnectorGrant => ({
   id: 'g1',
   status: 'active',
   product: 'acme',
+  productName: 'Acme',
   productUserId: '42',
   userName: 'Alice',
   clientName: 'Claude',
@@ -55,7 +56,12 @@ function cfg() {
 describe('useConnectorGrantListConfig (AC-19-60)', () => {
   it('exposes the spec columns in order', () => {
     const c = cfg();
-    const titles = c.columns.map((col) => (col.meta as { headerTitle?: string } | undefined)?.headerTitle);
+    const ids = c.columns.map((col) => (col as { id?: string }).id);
+    expect(ids[0]).toBe('select');
+    expect(ids[ids.length - 1]).toBe('actions');
+    const titles = c.columns
+      .filter((col) => !['select', 'actions'].includes((col as { id?: string }).id ?? ''))
+      .map((col) => (col.meta as { headerTitle?: string } | undefined)?.headerTitle);
     expect(titles).toEqual([
       'User', 'Product user id', 'Product', 'Client', 'Granted', 'Last used', 'Calls (30 d)', 'Status',
     ]);
@@ -120,7 +126,8 @@ describe('useConnectorGrantListConfig (AC-19-60)', () => {
     const c = cfg();
     render(<div>{c.cardRender!(grant())}</div>);
     expect(screen.getByText('Alice')).toBeTruthy();
-    expect(screen.getByText(/acme/)).toBeTruthy();
+    expect(screen.getByText(/Acme/)).toBeTruthy();
+    expect(screen.queryByText(/\bacme\b/)).toBeNull();
     expect(screen.getByText(/active/i)).toBeTruthy();
   });
 

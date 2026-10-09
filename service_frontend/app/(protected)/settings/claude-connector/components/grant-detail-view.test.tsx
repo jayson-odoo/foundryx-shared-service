@@ -45,7 +45,7 @@ beforeEach(() => {
 describe('GrantDetailView (AC-19-60)', () => {
   it('is read-only (no Edit toggle) with Details and Activity tabs', async () => {
     render(<GrantDetailView grantId="g1" />);
-    await screen.findByText('Alice');
+    await screen.findAllByText('Alice');
     expect(screen.getByRole('tab', { name: /details/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /activity/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^edit$/i })).toBeNull();
@@ -54,11 +54,11 @@ describe('GrantDetailView (AC-19-60)', () => {
 
   it('Activity tab lists tool, status code, rows, chars, ms and a truncated marker', async () => {
     render(<GrantDetailView grantId="g1" />);
-    await screen.findByText('Alice');
+    await screen.findAllByText('Alice');
     await userEvent.click(screen.getByRole('tab', { name: /activity/i }));
     await waitFor(() => expect(screen.getByText('stock_list')).toBeTruthy());
     expect(screen.getByText('orders_list')).toBeTruthy();
-    expect(screen.getAllByText('200').length).toBe(2);
+    expect(screen.getAllByText('ok').length).toBe(2);
     expect(screen.getByText('85')).toBeTruthy();
     expect(screen.getByText('410')).toBeTruthy();
     expect(screen.getAllByText(/truncated/i).length).toBe(1);
