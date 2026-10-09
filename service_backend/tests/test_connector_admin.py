@@ -42,6 +42,13 @@ def other_tenant_grant(connector_client):
         "name": "Gamma Co", "slug": OTHER_SLUG, "adminName": "G Admin",
         "adminEmail": "admin-gamma@example.com", "adminPassword": "ChangeMe1!"})
     assert res.status_code == 201, res.text
+    from app.services.app_store_service import AppStoreService
+    db = connector_client._factory()
+    try:
+        tid = db.execute(__import__("sqlalchemy").text("SELECT id FROM tenants WHERE slug = :s"), {"s": OTHER_SLUG}).scalar()
+        AppStoreService(db).install(tid, "connector")
+    finally:
+        db.close()
     env = make_env({
         "CONNECTOR_PRODUCTS": "acme,beta,gamma",
         "CONNECTOR_GAMMA_TENANT_SLUG": OTHER_SLUG,
@@ -63,8 +70,7 @@ def other_tenant_grant(connector_client):
 
     req = parse_qs(urlparse(res.headers["location"]).query)["req"][0]
     claims = _jwt.decode(req, "gamma-ss", algorithms=["HS256"], audience="gamma-connector-consent")
-    token = cs.assertion(claims["request_id"], sub="900", secret="gamma-p2s",
-                         connection_id="conn-gamma", iss="gamma")
+    token = cs.assertion(claims["request_id"], sub="900", product="gamma")
     out = cs.consent_return(connector_client, claims["request_id"], token, product="gamma")
     assert out.status_code == 302, out.text
     return [g for g in rows(connector_client._factory, "grants") if g["product_user_id"] == "900"][0]

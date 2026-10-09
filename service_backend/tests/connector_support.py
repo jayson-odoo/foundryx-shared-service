@@ -28,6 +28,22 @@ CONSENT_AUD = "acme-connector-consent"
 CALL_AUD = "acme-connector-api"
 ASSERT_ISS = "acme"
 
+# Per-product config used by the OAuth helpers (acme/beta from make_env; gamma is
+# added by the admin tests' other-tenant fixture).
+PRODUCT_CFG = {
+    "acme": {"consent_url": CONSENT_URL, "ss": SS_TO_PRODUCT, "p2s": PRODUCT_TO_SS,
+             "conn": CONNECTION_ID},
+    "beta": {"consent_url": "https://beta.test/connect/claude", "ss": "beta-ss-to-product-secret",
+             "p2s": "beta-product-to-ss-secret", "conn": "conn-beta"},
+    "gamma": {"consent_url": "https://gamma.test/connect/claude", "ss": "gamma-ss",
+              "p2s": "gamma-p2s", "conn": "conn-gamma"},
+}
+
+
+def _cfg(product: str) -> dict:
+    return PRODUCT_CFG[product]
+
+
 SECRETS = [SS_TO_PRODUCT, PRODUCT_TO_SS, "beta-ss-to-product-secret", "beta-product-to-ss-secret"]
 
 
@@ -140,18 +156,24 @@ def authorize(c, client_id, challenge, product="acme", state="st-1", redirect=RE
     return c.get(f"/mcp/{product}/oauth/authorize", params=params, follow_redirects=False)
 
 
-def consent_claims(res, secret=SS_TO_PRODUCT, audience=CONSENT_AUD) -> dict:
+def consent_claims(res, secret=None, audience=None, product="acme") -> dict:
     assert res.status_code == 302, res.text
     loc = res.headers["location"]
-    assert loc.startswith(CONSENT_URL + "?req="), loc
+    cfg = _cfg(product)
+    assert loc.startswith(cfg["consent_url"] + "?req="), loc
     req = parse_qs(urlparse(loc).query)["req"][0]
-    return jwt.decode(req, secret, algorithms=["HS256"], audience=audience)
+    return jwt.decode(req, secret or cfg["ss"], algorithms=["HS256"],
+                      audience=audience or f"{product}-connector-consent")
 
 
 def assertion(request_id, *, sub="42", name="Test User", email="t@example.com", jti=None,
-              iat=None, exp=None, secret=PRODUCT_TO_SS, connection_id=CONNECTION_ID,
-              iss=ASSERT_ISS, aud="foundryx-connector", typ="connector_assertion",
-              algorithm="HS256") -> str:
+              iat=None, exp=None, secret=None, connection_id=None,
+              iss=None, aud="foundryx-connector", typ="connector_assertion",
+              algorithm="HS256", product="acme") -> str:
+    cfg = _cfg(product)
+    secret = cfg["p2s"] if secret is None else secret
+    connection_id = cfg["conn"] if connection_id is None else connection_id
+    iss = product if iss is None else iss
     now = int(time.time())
     iat = now if iat is None else iat
     claims = {
@@ -197,12 +219,13 @@ def refresh(c, refresh_token, client_id, product="acme"):
 
 
 def get_code(c, *, client_id=None, product="acme", sub="42", name="Test User", seed="v",
-             state="st-1", iat=None, jti=None):
+             state="st-1", iat=None, jti=None, exp=None):
     """DCR (unless client_id given) -> authorize -> consent-return. Returns dict."""
     client_id = client_id or registered_client(c, product)
     verifier, challenge = pkce_pair(seed)
-    claims = consent_claims(authorize(c, client_id, challenge, product, state=state))
-    token = assertion(claims["request_id"], sub=sub, name=name, iat=iat, jti=jti)
+    claims = consent_claims(authorize(c, client_id, challenge, product, state=state), product=product)
+    token = assertion(claims["request_id"], sub=sub, name=name, iat=iat, exp=exp, jti=jti,
+                      product=product)
     res = consent_return(c, claims["request_id"], token, product=product)
     params = redirect_params(res)
     return {"client_id": client_id, "verifier": verifier, "code": params["code"],
@@ -210,10 +233,10 @@ def get_code(c, *, client_id=None, product="acme", sub="42", name="Test User", s
 
 
 def connect(c, *, product="acme", sub="42", name="Test User", client_id=None, seed="v",
-            iat=None) -> dict:
+            iat=None, exp=None) -> dict:
     """Full OAuth dance; returns {access, refresh, client_id, ...}."""
     g = get_code(c, client_id=client_id, product=product, sub=sub, name=name, seed=seed, iat=iat,
-                 jti=f"jti-{sub}-{time.time_ns()}")
+                 exp=exp, jti=f"jti-{sub}-{time.time_ns()}")
     res = token_exchange(c, g["code"], g["verifier"], g["client_id"], product)
     assert res.status_code == 200, res.text
     body = res.json()

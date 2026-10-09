@@ -25,6 +25,7 @@ from tests.connector_support import (
     grant_ids,
     is_tool_error,
     list_grants,
+    make_env,
     rows,
     rpc,
     sql,
@@ -199,8 +200,8 @@ def test_post_body_is_remaining_args_as_json(connector_client, conn, fake_produc
 
 
 def test_consented_at_claim_equals_grant_consented_at(connector_client, fake_product):
-    iat = int(time.time()) - 3600
-    t = connect(connector_client, sub="77", iat=iat)
+    iat = int(time.time()) - 60  # exp-iat must stay within the assertion max lifetime
+    t = connect(connector_client, sub="77", iat=iat, exp=iat + 120)
     call_tool(connector_client, t["access"], "stock_list", {})
     assert _payload_calls(fake_product)[0]["claims"]["consented_at"] == iat
 
@@ -461,3 +462,33 @@ def test_tools_call_throttled_per_grant(connector_client, conn, fake_product):
     assert 429 in statuses
     other = connect(connector_client, sub="99")  # a different grant is not throttled
     assert call_tool(connector_client, other["access"], "stock_list", {}).status_code == 200
+
+
+def test_product_whose_tenant_has_not_installed_module_404s(connector_client):
+    """Fail closed: the connector module must be ACTIVE for the product's owning
+    tenant, else /mcp/{p} and the well-known endpoints are a uniform 404."""
+    from app.models import DEFAULT_TENANT_ID
+    from modules.connector import registry
+
+    ph = admin_headers(connector_client, "platform@example.com", "platform1234", "platform")
+    res = connector_client.post("/platform/tenants", headers=ph, json={
+        "name": "Delta Co", "slug": "delta-co", "adminName": "D Admin",
+        "adminEmail": "admin-delta@example.com", "adminPassword": "ChangeMe1!"})
+    assert res.status_code == 201, res.text
+    registry.set_env_for_tests(make_env({
+        "CONNECTOR_PRODUCTS": "acme,beta,delta",
+        "CONNECTOR_DELTA_TENANT_SLUG": "delta-co",
+        "CONNECTOR_DELTA_CONNECTION_ID": "conn-delta",
+        "CONNECTOR_DELTA_CONSENT_URL": "https://delta.test/connect/claude",
+        "CONNECTOR_DELTA_API_BASE_URL": "https://delta.test",
+        "CONNECTOR_DELTA_SS_TO_PRODUCT_SECRET": "delta-ss",
+        "CONNECTOR_DELTA_PRODUCT_TO_SS_SECRET": "delta-p2s",
+    }))
+    assert DEFAULT_TENANT_ID  # default tenant has the module; delta does not
+    assert connector_client.post("/mcp/delta", json={"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 404
+    for path in (
+        "/.well-known/oauth-protected-resource/mcp/delta",
+        "/.well-known/oauth-authorization-server/mcp/delta",
+        "/mcp/delta/.well-known/oauth-authorization-server",
+    ):
+        assert connector_client.get(path).status_code == 404, path
