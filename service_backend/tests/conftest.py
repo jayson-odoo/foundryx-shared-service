@@ -173,6 +173,7 @@ def _session_factory_template():
     # the module schema onto it - keeps module tables isolated from core (the
     # module's `statuses` must not collide with the core `statuses`, plan 07).
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
+    from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
@@ -192,6 +193,7 @@ def _session_factory_template():
         AUTOCOUNT_SCHEMA: "omni",
         "app_ideation": "omni",
         MEETINGS_SCHEMA: "meetings",
+        CONNECTOR_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -201,11 +203,13 @@ def _session_factory_template():
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.exec_driver_sql("ATTACH ':memory:' AS connector")
         conn.commit()
     Base.metadata.create_all(bind=engine)
     OmniBase.metadata.create_all(bind=engine)
     AutocountBase.metadata.create_all(bind=engine)
     MeetingsBase.metadata.create_all(bind=engine)
+    ConnectorBase.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(
         bind=engine, autoflush=False, autocommit=False
     )
@@ -271,7 +275,7 @@ def _session_factory_template():
     AppStoreService(db).install(DEFAULT_TENANT_ID, "autocount")
     db.close()
 
-    blobs = _capture_sqlite_databases(engine, ("main", "omni", "meetings"))
+    blobs = _capture_sqlite_databases(engine, ("main", "omni", "meetings", "connector"))
     engine.dispose()
     return blobs, schema_translate_map
 
@@ -287,6 +291,7 @@ def session_factory(_session_factory_template):
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.exec_driver_sql("ATTACH ':memory:' AS connector")
         conn.commit()
     _restore_sqlite_databases(engine, blobs)
     TestingSessionLocal = sessionmaker(
@@ -323,6 +328,7 @@ def _ideation_session_factory_template():
     is bootstrapped + installed exactly like production.
     """
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
+    from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -336,6 +342,7 @@ def _ideation_session_factory_template():
         AUTOCOUNT_SCHEMA: "omni",
         IDEATION_SCHEMA: "ideation",
         MEETINGS_SCHEMA: "meetings",
+        CONNECTOR_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -346,12 +353,14 @@ def _ideation_session_factory_template():
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
         conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.exec_driver_sql("ATTACH ':memory:' AS connector")
         conn.commit()
     Base.metadata.create_all(bind=engine)
     OmniBase.metadata.create_all(bind=engine)
     AutocountBase.metadata.create_all(bind=engine)
     IdeationBase.metadata.create_all(bind=engine)
     MeetingsBase.metadata.create_all(bind=engine)
+    ConnectorBase.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     db = TestingSessionLocal()
@@ -398,7 +407,7 @@ def _ideation_session_factory_template():
     store.install(DEFAULT_TENANT_ID, "ideation")
     db.close()
 
-    blobs = _capture_sqlite_databases(engine, ("main", "omni", "ideation", "meetings"))
+    blobs = _capture_sqlite_databases(engine, ("main", "omni", "ideation", "meetings", "connector"))
     engine.dispose()
     return blobs, schema_translate_map
 
@@ -415,6 +424,7 @@ def ideation_session_factory(_ideation_session_factory_template):
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
         conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.exec_driver_sql("ATTACH ':memory:' AS connector")
         conn.commit()
     _restore_sqlite_databases(engine, blobs)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -586,6 +596,7 @@ def _meetings_session_factory_template():
     has (permission grants included).
     """
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
+    from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -598,6 +609,7 @@ def _meetings_session_factory_template():
         AUTOCOUNT_SCHEMA: "omni",
         IDEATION_SCHEMA: "ideation",
         MEETINGS_SCHEMA: "meetings",
+        CONNECTOR_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -608,12 +620,14 @@ def _meetings_session_factory_template():
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
         conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.exec_driver_sql("ATTACH ':memory:' AS connector")
         conn.commit()
     Base.metadata.create_all(bind=engine)
     OmniBase.metadata.create_all(bind=engine)
     AutocountBase.metadata.create_all(bind=engine)
     IdeationBase.metadata.create_all(bind=engine)
     MeetingsBase.metadata.create_all(bind=engine)
+    ConnectorBase.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     db = TestingSessionLocal()
@@ -656,7 +670,7 @@ def _meetings_session_factory_template():
     AppStoreService(db).install(DEFAULT_TENANT_ID, "meetings")
     db.close()
 
-    blobs = _capture_sqlite_databases(engine, ("main", "omni", "ideation", "meetings"))
+    blobs = _capture_sqlite_databases(engine, ("main", "omni", "ideation", "meetings", "connector"))
     engine.dispose()
     return blobs, schema_translate_map
 
@@ -673,6 +687,7 @@ def meetings_session_factory(_meetings_session_factory_template):
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
         conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.exec_driver_sql("ATTACH ':memory:' AS connector")
         conn.commit()
     _restore_sqlite_databases(engine, blobs)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)

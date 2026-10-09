@@ -1,0 +1,3 @@
+resource,resource_label,action,action_label,description
+connector,Claude connector,read,Read,"View connector grants, activity and products"
+connector,Claude connector,manage,Manage,Revoke connector grants and refresh product manifests
