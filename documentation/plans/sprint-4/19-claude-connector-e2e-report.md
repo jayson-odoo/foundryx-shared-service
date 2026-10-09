@@ -45,3 +45,37 @@ Also: unsigned GET sorento /api/v1/connector/manifest = 401.
 ## Teardown
 Both servers (pids recorded, started by me) stopped; sorento worktree removed. DBs kept: foundryx_service_ssconn,
 sorento_ssconn_e2e (Redis db 13 left). Nothing committed.
+
+## Run 2 (automated client)
+
+Script `service_backend/scripts/connector_e2e.py` (runbook `19-claude-connector-e2e-runbook.md`), 2026-10-10.
+SS code = af9f7458 (branch claude/ss-connector-module-23ogqg): the run used 51464768 plus the then-uncommitted
+tunnel-config edits, committed unchanged as af9f7458 (`git diff af9f7458 -- service_backend/modules` empty).
+Sorento origin/main 55f6e567e (#1547), detached worktree. Local copies only: SS :8031 (DB foundryx_service_ssconn),
+sorento API :8032 + web :3032 (DB sorento_ssconn_e2e), no tunnels, nothing pushed. CONSENT_MODE=browser (sorento
+frontend started from the worktree with `next dev`; real sign-in form and Allow click via agent-browser).
+
+| Step | Result |
+|---|---|
+| 1 401 + discovery | PASS |
+| 2 DCR | PASS |
+| 3 PKCE authorize -> product consent | PASS |
+| 4 consent bounce (browser, real sorento page) | PASS |
+| 5 token exchange | PASS |
+| 6 initialize + tools/list (39, read-only) | PASS |
+| 7 tools/call (3 reused crm_* + 4 chat tools) | PASS |
+| 8 output caps | PASS (120 000-char cap with marker); 1000-row cap not reachable on this data (the product caps at 1000), covered by unit tests |
+| 9 no phones / OTP masked | PASS (11 masked codes returned, none raw) |
+| 10 refresh rotation + replay -> grant revoked (refresh_reuse) | PASS |
+| 11 RFC 7009 revoke | PASS |
+| 12 access expiry, refresh still works | PASS |
+| 13 reconsent_required | PASS |
+| 14 connector_access_removed | PASS |
+| 15 fail-closed audit | PASS |
+| 16 audit rows both sides | PASS |
+
+Totals: pass 16, fail 0, deferred 0 (row cap sub-clause noted in step 8).
+
+Finding (not a failure): free message text returned by `chat_get_conversation` for a bot/staff delivery message carries
+third-party phone numbers typed into the message body ("Contact Number: ..."). The views exclude phone columns and the
+ruling allows raw text, so step 9 only fails on phone keys or phone values in structured fields.
