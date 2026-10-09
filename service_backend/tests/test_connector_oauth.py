@@ -615,3 +615,30 @@ def test_revoked_grant_never_reactivated(connector_client):
     assert sorted(g["status"] for g in grants) == ["active", "revoked"]
     assert rpc(c, first["access"], "ping").status_code == 401
     assert rpc(c, second["access"], "ping").status_code == 200
+
+
+# --- review round: throttles on the remaining public endpoints ----------------------------
+
+
+def _until_429(fire, n=300):
+    for _ in range(n):
+        r = fire()
+        if r.status_code == 429:
+            assert "retry-after" in r.headers
+            return True
+    return False
+
+
+def test_authorize_is_throttled_per_ip(connector_client):
+    cid = registered_client(connector_client)
+    _, ch = pkce_pair()
+    assert _until_429(lambda: authorize(connector_client, cid, ch))
+
+
+def test_consent_return_is_throttled_per_ip(connector_client):
+    assert _until_429(lambda: consent_return(connector_client, "no-such-request", "junk"))
+
+
+def test_revoke_is_throttled_per_ip(connector_client):
+    assert _until_429(lambda: connector_client.post(
+        "/mcp/acme/oauth/revoke", data={"token": "nope", "client_id": "nope"}))

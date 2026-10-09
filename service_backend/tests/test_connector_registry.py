@@ -118,3 +118,14 @@ def test_migration_revision_ids_fit_alembic_and_cover_every_table():
     for t in TABLES:
         assert f'"{t}"' in src or f"'{t}'" in src, t
     assert "app_connector" in src
+
+
+def test_identical_directional_secrets_mark_product_misconfigured():
+    from modules.connector import registry
+
+    env = make_env({"CONNECTOR_ACME_PRODUCT_TO_SS_SECRET": "same-secret",
+                    "CONNECTOR_ACME_SS_TO_PRODUCT_SECRET": "same-secret"})
+    registry.set_env_for_tests(env)
+    assert registry.load_products(env)["acme"].status == "misconfigured"
+    assert registry.get_product("acme") is None
+    assert registry.get_product("beta") is not None

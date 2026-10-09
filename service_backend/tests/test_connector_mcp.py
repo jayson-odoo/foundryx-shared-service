@@ -492,3 +492,82 @@ def test_product_whose_tenant_has_not_installed_module_404s(connector_client):
         "/mcp/delta/.well-known/oauth-authorization-server",
     ):
         assert connector_client.get(path).status_code == 404, path
+
+
+# --- review round: manifest path hardening, arg values, body caps --------------------------
+
+BAD_PATHS = ["@evil.example/x", ".evil.example/x", "//evil.example/x", "/a/../b", "/a?x=1",
+             "/a#f", "/a\\b", "x/no-leading-slash"]
+
+
+def _tool(name, path, method="GET", path_params=()):
+    props = {p: {"type": "string"} for p in path_params}
+    return {
+        "name": name, "title": name, "description": "d",
+        "input_schema": {"type": "object", "properties": props, "required": list(path_params),
+                         "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False},
+        "http": {"method": method, "path_template": path, "query_params": [],
+                 "path_params": list(path_params)},
+    }
+
+
+def _listed(connector_client, token):
+    res = rpc(connector_client, token, "tools/list")
+    return [t["name"] for t in res.json()["result"]["tools"]]
+
+
+@pytest.mark.parametrize("bad", BAD_PATHS)
+def test_unclean_path_template_tool_is_hidden_and_never_called(connector_client, fake_product, bad):
+    fake_product.manifest["tools"].append(_tool("bad_tool", bad))
+    t = connect(connector_client, sub="61")
+    assert "bad_tool" not in _listed(connector_client, t["access"])
+    assert "stock_list" in _listed(connector_client, t["access"])
+    res = call_tool(connector_client, t["access"], "bad_tool", {})
+    body = res.json()
+    assert "error" in body or body["result"].get("isError") is True
+    assert fake_product.calls == []
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "HEAD", "TRACE"])
+def test_non_get_post_method_tool_is_hidden(connector_client, fake_product, method):
+    fake_product.manifest["tools"].append(_tool("odd_method", "/api/v1/x/", method=method))
+    t = connect(connector_client, sub="62")
+    assert "odd_method" not in _listed(connector_client, t["access"])
+
+
+def test_tools_call_only_ever_reaches_the_api_host(connector_client, fake_product):
+    fake_product.manifest["tools"].append(_tool("bad_tool", "@evil.example/x"))
+    t = connect(connector_client, sub="63")
+    call_tool(connector_client, t["access"], "stock_list", {})
+    call_tool(connector_client, t["access"], "bad_tool", {})
+    assert fake_product.calls
+    for c in fake_product.calls:
+        from urllib.parse import urlsplit
+        assert urlsplit(c["url"]).hostname == "acme.test"
+        assert "evil" not in c["url"]
+
+
+@pytest.mark.parametrize("value", ["", ".", "..", "a\nb", "a\x00b", "a\rb"])
+def test_dangerous_path_param_values_are_invalid_params(connector_client, conn, fake_product, value):
+    res = call_tool(connector_client, conn["access"], "item_get", {"item_code": value})
+    body = res.json()
+    assert body["error"]["code"] == -32602
+    assert fake_product.calls == []
+
+
+def test_mcp_post_over_one_mb_is_refused(connector_client, conn, fake_product):
+    big = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+           "params": {"name": "stock_list", "arguments": {"search": "x" * (1_048_576 + 10)}}}
+    res = connector_client.post("/mcp/acme", json=big,
+                                headers={"Authorization": f"Bearer {conn['access']}"})
+    assert res.status_code == 413 or "error" in res.json()
+    assert fake_product.calls == []
+
+
+def test_product_response_over_8mb_is_a_tool_error(connector_client, conn, fake_product):
+    fake_product.responder = lambda req, c: httpx.Response(
+        200, content=b'{"rows":"' + b"x" * (8 * 1024 * 1024 + 10) + b'"}',
+        headers={"content-type": "application/json"})
+    res = call_tool(connector_client, conn["access"], "stock_list", {})
+    assert is_tool_error(res)
