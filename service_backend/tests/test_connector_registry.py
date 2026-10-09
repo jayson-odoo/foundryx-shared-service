@@ -129,3 +129,56 @@ def test_identical_directional_secrets_mark_product_misconfigured():
     assert registry.load_products(env)["acme"].status == "misconfigured"
     assert registry.get_product("acme") is None
     assert registry.get_product("beta") is not None
+
+
+# --- .env file support (crew/local copies keep CONNECTOR_* in service_backend/.env) --------
+
+_DOTENV_ACME = """\
+CONNECTOR_PRODUCTS=acme
+CONNECTOR_ACME_TENANT_SLUG=default
+CONNECTOR_ACME_CONNECTION_ID=conn-acme
+CONNECTOR_ACME_CONSENT_URL=https://acme.test/connect/claude
+CONNECTOR_ACME_API_BASE_URL=https://acme.test
+CONNECTOR_ACME_SS_TO_PRODUCT_SECRET=dotenv-ss-to-product
+CONNECTOR_ACME_PRODUCT_TO_SS_SECRET=dotenv-product-to-ss
+"""
+
+
+@pytest.fixture
+def dotenv_cwd(tmp_path, monkeypatch):
+    import os
+
+    from modules.connector import registry
+
+    registry.set_env_for_tests(None)  # no test override: exercise the real _env()
+    for k in [k for k in os.environ if k.startswith("CONNECTOR_")]:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.chdir(tmp_path)
+    yield tmp_path
+    registry.set_env_for_tests(None)
+
+
+def test_products_are_read_from_dotenv_when_os_environ_lacks_them(dotenv_cwd):
+    from modules.connector import registry
+
+    (dotenv_cwd / ".env").write_text(_DOTENV_ACME)
+    p = registry.get_product("acme")
+    assert p is not None
+    assert p.consent_url == "https://acme.test/connect/claude"
+    assert p.ss_to_product_secret == "dotenv-ss-to-product"
+
+
+def test_real_os_environ_wins_over_dotenv(dotenv_cwd, monkeypatch):
+    from modules.connector import registry
+
+    (dotenv_cwd / ".env").write_text(_DOTENV_ACME)
+    monkeypatch.setenv("CONNECTOR_ACME_API_BASE_URL", "https://override.test")
+    p = registry.get_product("acme")
+    assert p is not None and p.api_base_url == "https://override.test"
+
+
+def test_public_base_url_honours_dotenv(dotenv_cwd):
+    from modules.connector import registry
+
+    (dotenv_cwd / ".env").write_text("CONNECTOR_PUBLIC_BASE_URL=https://tunnel.example/\n")
+    assert registry.public_base_url() == "https://tunnel.example"
