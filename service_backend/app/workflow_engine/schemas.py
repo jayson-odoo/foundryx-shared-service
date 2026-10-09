@@ -6,16 +6,17 @@ The doc is the forever-contract graph (mirror of frontend ``types/workflows.ts``
 is the save/publish gate - same rules the editor surfaces live.
 """
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-WORKFLOW_SCHEMA_VERSION = 1
+WORKFLOW_SCHEMA_VERSION = 2
 
 # Conservative ASCII identifier grammar. Output keys are inserted into merge
 # paths as ``nodes.<id>.<key>`` and must remain one merge-token segment.
 AI_OUTPUT_PARAM_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-AI_OUTPUT_PARAM_TYPES = frozenset({"string", "number", "boolean"})
+AI_OUTPUT_PARAM_TYPES = frozenset({"string", "number", "boolean", "enum"})
+CORRELATION_KEY_RE = re.compile(r"^\{\{\s*[A-Za-z_][A-Za-z0-9_.]*\s*\}\}$")
 _AI_OUTPUT_PARAM_PREFIX = 'AI Agent: "Output parameters"'
 
 
@@ -55,6 +56,23 @@ def output_param_issues(value: Any) -> List[str]:
         param_type = row.get("type")
         if not isinstance(param_type, str) or param_type not in AI_OUTPUT_PARAM_TYPES:
             issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.")
+        if param_type == "enum":
+            values = row.get("enumValues")
+            if not isinstance(values, list) or len(values) < 2:
+                issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} enum parameters need at least two values.")
+            else:
+                seen_values: set[str] = set()
+                for value in values:
+                    if not isinstance(value, str) or not value.strip():
+                        issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} enum values cannot be blank.")
+                    elif value in seen_values:
+                        issues.append(f"{_AI_OUTPUT_PARAM_PREFIX} enum values must be unique.")
+                    else:
+                        seen_values.add(value)
+        elif "enumValues" in row:
+            issues.append(
+                f"{_AI_OUTPUT_PARAM_PREFIX} enum values are only valid for Enum parameters."
+            )
     return issues
 
 
@@ -77,10 +95,19 @@ class WorkflowEdgeModel(BaseModel):
     sourcePort: Optional[str] = "out"
 
 
+class WorkflowExecutionModel(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Literal["parallel", "serialized"] = "parallel"
+    correlationKey: str = ""
+
+
 class WorkflowDefinitionModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     schemaVersion: int = WORKFLOW_SCHEMA_VERSION
+    # v1 documents omit this object; omission retains the parallel behavior.
+    execution: Optional[WorkflowExecutionModel] = None
     nodes: List[WorkflowNodeModel] = Field(default_factory=list)
     edges: List[WorkflowEdgeModel] = Field(default_factory=list)
 
@@ -98,10 +125,17 @@ class WorkflowValidationError(Exception):
         self.issues = issues
 
 
-def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
+def definition_issues(
+    doc: WorkflowDefinitionModel, *, workflow_id: Optional[str] = None
+) -> List[str]:
     """The publish-blocking issues (mirror of the frontend validateDefinition).
-    Empty list = publishable. Catalog-driven required-config checks included."""
-    from app.workflow_engine.registry import get_action, get_trigger
+    Empty list = publishable. Catalog-driven required-config checks included.
+
+    ``workflow_id`` (plan sprint-4/31 S2, AC-WFP-33) - the workflow being
+    published, so a `workflow.trigger` node targeting ITSELF is refused here
+    rather than only at run time (the S0 frontend catalog does not yet
+    self-exclude the picker - S3 wires that; this is the real 422 gate)."""
+    from app.workflow_engine.registry import get_action, get_trigger, matches_show_when
 
     issues: List[str] = []
     triggers = [n for n in doc.nodes if n.kind == "trigger"]
@@ -111,6 +145,45 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
         issues.append("A workflow can have only one trigger.")
 
     trigger = triggers[0] if triggers else None
+    execution = doc.execution
+    correlation_key = (execution.correlationKey if execution else "").strip()
+    if execution and execution.mode == "serialized" and (
+        not correlation_key or CORRELATION_KEY_RE.fullmatch(correlation_key) is None
+    ):
+        issues.append("Serialized execution requires a valid Correlation key.")
+    stateful_agent = any(
+        node.type == "ai_agent.run"
+        and any(
+            isinstance(row, dict) and row.get("stateful") is True
+            for row in (node.config.get("outputParams") or [])
+        )
+        for node in doc.nodes
+    )
+    if stateful_agent and (
+        execution is None
+        or execution.mode != "serialized"
+        or not correlation_key
+        or CORRELATION_KEY_RE.fullmatch(correlation_key) is None
+    ):
+        issues.append(
+            "Stateful AI Agent outputs require serialized execution and a Correlation key."
+        )
+    # Registry-driven parking rule (plan sprint-4/31 S4, D-A5-7/AC-WFP-51):
+    # an action that PARKS the run keyed by a contact needs serialized
+    # execution, or two runs would race the single wait row. Message text is
+    # pinned in parity with the frontend `validateDefinition`.
+    parking_labels = []
+    for node in doc.nodes:
+        if node.kind != "action":
+            continue
+        action = get_action(node.type)
+        if action is not None and action.requires_serialized:
+            parking_labels.append(action.label)
+    if parking_labels and (
+        execution is None or execution.mode != "serialized" or not correlation_key
+    ):
+        for label in sorted(set(parking_labels)):
+            issues.append(f"{label} requires serialized execution and a Correlation key.")
     if trigger and any(e.target == trigger.id for e in doc.edges):
         issues.append("The trigger cannot have an incoming connection.")
 
@@ -137,13 +210,26 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
                 label = _node_label(n)
                 issues.append(f'"{label}" is not connected to the trigger.')
 
-    # Required config per node (catalog-driven).
+    # Required config per node (catalog-driven). An unregistered node type
+    # (plan sprint-4/31 S1 - S0 found publish silently accepted one) blocks
+    # publish outright rather than skipping its required-config checks -
+    # a node whose type no longer resolves in the trigger/action registry
+    # would otherwise publish successfully and fail at run time.
     for n in doc.nodes:
+        if n.kind == "if":
+            # The IF node is a structural kind the executor branches on
+            # directly (`node.kind == "if"`) - it is deliberately NEVER a
+            # catalog entry, so it is exempt from the unregistered-type gate
+            # below (a real trigger/action always resolves through the
+            # registry; "if" never will).
+            continue
         entry = get_trigger(n.type) if n.kind == "trigger" else get_action(n.type)
         if entry is None:
+            label = _node_label(n)
+            issues.append(f'"{label}" has an unrecognized node type ("{n.type}").')
             continue
         for field in entry.fields:
-            if field.show_when and n.config.get(field.show_when[0]) != field.show_when[1]:
+            if not matches_show_when(n.config, field, entry.fields):
                 continue  # hidden field - don't require it
             if field.required:
                 value = n.config.get(field.key)
@@ -154,7 +240,88 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
                         issues.extend(output_param_issues(value))
                 elif value is None or value == "" or value == []:
                     issues.append(f'{entry.label}: "{field.label}" is required.')
+        if n.type == "ai_agent.run":
+            params = n.config.get("outputParams")
+            if isinstance(params, list) and any(
+                isinstance(row, dict) and row.get("stateful") is True for row in params
+            ):
+                clarification_key = n.config.get("clarificationOutputKey")
+                if clarification_key is not None:
+                    clarification = next(
+                        (
+                            row
+                            for row in params
+                            if isinstance(row, dict) and row.get("key") == clarification_key
+                        ),
+                        None,
+                    )
+                    if not (
+                        isinstance(clarification, dict)
+                        and clarification.get("type") == "string"
+                        and clarification.get("stateful") is not True
+                    ):
+                        issues.append(
+                            'AI Agent: "Clarification output" must be a transient Text output.'
+                        )
+        if n.type == "ai_agent.read_state":
+            # Read Agent State must point at a stateful AI Agent that exists
+            # in the graph (parity with the frontend validateDefinition; the
+            # required-field check above already blocks an empty selection).
+            target_id = n.config.get("agentNodeId")
+            if isinstance(target_id, str) and target_id:
+                target = next((t for t in doc.nodes if t.id == target_id), None)
+                is_stateful_target = target is not None and target.type == "ai_agent.run" and any(
+                    isinstance(row, dict) and row.get("stateful") is True
+                    for row in (target.config.get("outputParams") or [])
+                )
+                if not is_stateful_target:
+                    issues.append(
+                        "Read Agent State must reference a stateful AI Agent in this workflow."
+                    )
+        if n.type == "redis.command":
+            from app.workflow_engine.actions.redis_actions import literal_config_issues
+
+            issues.extend(literal_config_issues(n.config))
+        if n.type == "code.run":
+            from app.workflow_engine.actions.code_actions import code_config_issues
+
+            issues.extend(code_config_issues(n.config))
+        if n.type == "workflow.trigger" and workflow_id:
+            target_id = n.config.get("workflowId")
+            if isinstance(target_id, str) and target_id == workflow_id:
+                # SAME string as the frontend `validateDefinition` (SF-4) and
+                # the runtime `workflow_trigger_actions.ActionError` - one
+                # message across publish-time, client-side and run-time.
+                issues.append("A workflow cannot trigger itself.")
     return issues
+
+
+def has_code_nodes(doc: Any) -> bool:
+    """True when a raw or parsed definition carries a ``code.run`` node."""
+    nodes = doc.nodes if isinstance(doc, WorkflowDefinitionModel) else (doc or {}).get("nodes") or []
+    for node in nodes:
+        node_type = node.type if isinstance(node, WorkflowNodeModel) else (node or {}).get("type")
+        if node_type == "code.run":
+            return True
+    return False
+
+
+def required_node_permissions(doc: Any) -> set:
+    """Every distinct ``ActionDef.permission`` a node in this doc requires
+    (plan sprint-4/31 S5, closes BL-SS-121 - the generalized form of the
+    ``workflows.code`` gate). ``workflows.code`` and ``workflows.http`` both
+    resolve through this one seam now; a future ActionDef declaring
+    ``permission`` needs NO change here."""
+    from app.workflow_engine.registry import get_action
+
+    nodes = doc.nodes if isinstance(doc, WorkflowDefinitionModel) else (doc or {}).get("nodes") or []
+    perms: set = set()
+    for node in nodes:
+        node_type = node.type if isinstance(node, WorkflowNodeModel) else (node or {}).get("type")
+        action = get_action(node_type) if node_type else None
+        if action is not None and action.permission:
+            perms.add(action.permission)
+    return perms
 
 
 def _node_label(node: WorkflowNodeModel) -> str:
@@ -169,10 +336,10 @@ def _node_label(node: WorkflowNodeModel) -> str:
     return entry.label if entry else node.type
 
 
-def validate_definition(raw: Any) -> WorkflowDefinitionModel:
+def validate_definition(raw: Any, *, workflow_id: Optional[str] = None) -> WorkflowDefinitionModel:
     """Full publish gate: shape + rules. Raises WorkflowValidationError."""
     doc = parse_definition(raw)
-    issues = definition_issues(doc)
+    issues = definition_issues(doc, workflow_id=workflow_id)
     if issues:
         raise WorkflowValidationError(issues)
     return doc

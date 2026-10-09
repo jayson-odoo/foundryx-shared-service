@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { useDataGrid } from '@/components/ui/data-grid';
 import {
   DataGridTableBase,
+  shouldShowSkeletonRows,
   DataGridTableBody,
   DataGridTableBodyRow,
   DataGridTableBodyRowCell,
@@ -45,7 +46,14 @@ function DataGridTableDndHeader<TData>({ header }: { header: Header<TData, unkno
 
   const style: CSSProperties = {
     opacity: isDragging ? 0.8 : 1,
-    position: 'relative',
+    // No `position` here (was a redundant hardcoded 'relative', duplicating
+    // the base `relative` utility class `DataGridTableHeadRowCell` already
+    // carries): an INLINE style always wins over ANY class regardless of a
+    // responsive variant's specificity, so it silently defeated the mobile
+    // pin's `max-sm:sticky` (AC-DLA-13) on every column-draggable list -
+    // which is every real list in the app (`resource-list.tsx` always sets
+    // `columnsMovable: true`). `transform`/`zIndex` do not need `position`
+    // to be non-static to work here.
     transform: CSS.Translate.toString(transform),
     transition,
     whiteSpace: 'nowrap',
@@ -89,7 +97,8 @@ function DataGridTableDndCell<TData>({ cell }: { cell: Cell<TData, unknown> }) {
 
   const style: CSSProperties = {
     opacity: isDragging ? 0.8 : 1,
-    position: 'relative',
+    // See DataGridTableDndHeader's comment - no hardcoded `position` here
+    // either, for the same mobile-pin reason.
     transform: CSS.Translate.toString(transform),
     transition,
     width: cell.column.getSize(),
@@ -123,7 +132,11 @@ function DataGridTableDnd<TData>({ handleDragEnd }: { handleDragEnd: (event: Dra
       onDragEnd={handleDragEnd}
       sensors={sensors}
     >
-      <div className="relative">
+      {/* min-w-0: this div is CardTable's direct grid item - without it a
+          grid item refuses to shrink below the table's intrinsic width
+          (default min-width: auto), so the grid never clips and the whole
+          PAGE scrolls sideways instead of just the grid scroller. */}
+      <div className="relative min-w-0">
         <DataGridTableBase>
           <DataGridTableHead>
             {table.getHeaderGroups().map((headerGroup: HeaderGroup<TData>, index) => {
@@ -142,7 +155,7 @@ function DataGridTableDnd<TData>({ handleDragEnd }: { handleDragEnd: (event: Dra
           {(props.tableLayout?.stripped || !props.tableLayout?.rowBorder) && <DataGridTableRowSpacer />}
 
           <DataGridTableBody>
-            {props.loadingMode === 'skeleton' && isLoading && pagination?.pageSize ? (
+            {shouldShowSkeletonRows(props, isLoading, table) && pagination?.pageSize ? (
               Array.from({ length: pagination.pageSize }).map((_, rowIndex) => (
                 <DataGridTableBodyRowSkeleton key={rowIndex}>
                   {table.getVisibleFlatColumns().map((column, colIndex) => {

@@ -52,7 +52,7 @@ def entity_update(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict
 
     entity, record = _resolve_record(db, tenant_id, config, ctx)
     assignments = config.get("assignments") or []
-    changes: Dict[str, Dict[str, Any]] = {}
+    pending: Dict[str, str] = {}
     for row in assignments:
         if not isinstance(row, dict):
             continue
@@ -62,7 +62,26 @@ def entity_update(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict
         attr = attr_for(str(row.get("field") or ""))
         if attr not in entity.writable:
             raise ActionError(f'Field "{attr}" is not writable on {entity.label}.')
-        new_value = render_field(row.get("value"), ctx)
+        pending[attr] = render_field(row.get("value"), ctx)
+
+    if not pending:
+        return {"recordId": getattr(record, "id", None)}
+
+    # B11 (plan-25 round-3 codex triage): an entity with its own validated
+    # write path (type coercion, normalization, realtime/webhook fan-out)
+    # routes through it INSTEAD OF the raw setattr loop below, so a workflow
+    # write can't silently skip every other writer's side effects.
+    if entity.apply_update is not None:
+        try:
+            entity.apply_update(db, record, pending, None)
+        except ActionError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface as a clean node failure
+            raise ActionError(str(exc)) from exc
+        return {"recordId": getattr(record, "id", None)}
+
+    changes: Dict[str, Dict[str, Any]] = {}
+    for attr, new_value in pending.items():
         old_value = getattr(record, attr, None)
         if str(old_value) != new_value:
             setattr(record, attr, new_value)

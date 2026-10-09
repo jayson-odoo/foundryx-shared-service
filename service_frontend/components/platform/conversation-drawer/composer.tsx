@@ -58,7 +58,10 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Textarea } from '@/components/ui/textarea';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { EMOJI_GROUPS } from '@/lib/emoji';
+import { CHANNEL_CAPABILITIES, type ChannelCapabilities } from '@/lib/channel-capabilities';
+import { cn } from '@/lib/utils';
 import {
   ContactsBuilderDialog,
   InteractiveBuilderDialog,
@@ -79,8 +82,32 @@ import type {
 } from '@/types/omnichannel';
 
 export interface ComposerProps {
-  /** CSW state, computed by the drawer from the thread (re-evaluated live). */
+  /** Standard messaging-window state, computed by the drawer from the thread
+   *  (re-evaluated live). */
   windowOpen: boolean;
+  /**
+   * Extended human-agent window open (Messenger/Instagram only, D-A7-6, plan
+   * 32 / A7a) - the composer stays enabled while this is true even though
+   * `windowOpen` is false. Ignored (and never true) for a channel type whose
+   * `capabilities.reengageMode !== 'human_agent'`.
+   */
+  humanAgentWindowOpen?: boolean;
+  /**
+   * Per-channel-type capability record gating which affordances render
+   * (plan 32 / A7a). Default = the WhatsApp record so every existing caller
+   * is unchanged (D-A7-10) - this is a UX mirror only, the backend enforces
+   * the same table server-side regardless of what the frontend sends.
+   */
+  capabilities?: ChannelCapabilities;
+  /**
+   * Neutral presence marker for a `reengageMode: 'none'` thread (web chat,
+   * plan 34 / A7b, D-A7B-19/AC-WEB-43) - stands in for the window marker,
+   * never locks anything. Pre-computed by the drawer (which already owns the
+   * `useDatetime`/`nowTick` clock) so this component stays free of a
+   * session/timezone dependency; `null` = never seen yet, `undefined`/absent
+   * for every other channel type. Wired to the real field since slice S3.
+   */
+  visitorPresence?: { online: boolean; label: string } | null;
   templates: WhatsAppTemplate[];
   quickReplies: QuickReply[];
   isSending: boolean;
@@ -321,6 +348,9 @@ function PendingThumb({ item }: { item: PendingFile }) {
 
 export function Composer({
   windowOpen,
+  humanAgentWindowOpen = false,
+  capabilities = CHANNEL_CAPABILITIES.WHATSAPP,
+  visitorPresence = null,
   templates,
   quickReplies,
   isSending,
@@ -352,11 +382,34 @@ export function Composer({
   const streamRef = useRef<MediaStream | null>(null);
 
   const isNote = mode === 'note';
-  const locked = !isNote && !windowOpen;
+  // Standard window open → full capabilities. Otherwise, a human-agent
+  // extension (Messenger/Instagram, D-A7-6) keeps the composer enabled with
+  // no capability change (Meta requires the HUMAN_AGENT tag, not a content
+  // restriction) - only past BOTH windows does the composer lock. A channel
+  // with NO messaging window at all (`reengageMode: 'none'` - web chat, plan
+  // 34 / A7b, D-A7B-18) never locks and never shows the window marker: there
+  // is no provider policy to encode, so a reply to a visitor who left is a
+  // message that will be delivered when they return, not a violation.
+  const hasWindow = capabilities.reengageMode !== 'none';
+  const extendedOpen = !windowOpen && humanAgentWindowOpen;
+  const locked = !isNote && hasWindow && !windowOpen && !extendedOpen;
+  // A neutral window marker shows whenever the standard window is closed,
+  // whether or not the composer itself is still usable (AC-CHN-08).
+  const showWindowMarker = !isNote && hasWindow && !windowOpen;
+  // The window-less presence marker (AC-WEB-43) - replaces the window marker
+  // 1:1 for a `reengageMode: 'none'` thread, never locks anything, and
+  // carries no instructional copy (just a status fact + a timestamp).
+  const showPresenceMarker = !isNote && !hasWindow;
   const canAttach = !isNote && !locked && !!onSendMedia;
-  // Structured types are free-form → only offered inside the open 24h window.
-  const canStructured =
-    !isNote && !locked && !!(onSendInteractive || onSendLocation || onSendContacts);
+  const availableAttachOptions = ATTACH_OPTIONS.filter((o) => capabilities.media[o.kind]);
+  const canRecordVoice = canAttach && capabilities.media.voice;
+  // Structured types are free-form → only offered inside an open window, and
+  // only for the kinds this channel type can carry (server-enforced too -
+  // this gating is UX only, D-A7-29).
+  const canInteractive = !isNote && !locked && capabilities.quickReplies && !!onSendInteractive;
+  const canLocation = !isNote && !locked && capabilities.location && !!onSendLocation;
+  const canContacts = !isNote && !locked && capabilities.contacts && !!onSendContacts;
+  const canStructured = canInteractive || canLocation || canContacts;
 
   // Revoke object URLs + stop the mic on unmount so previews/streams don't leak.
   useEffect(() => {
@@ -491,18 +544,41 @@ export function Composer({
         onChange={onFilesChosen}
         data-testid="attach-input"
       />
-      {locked && (
+      {showWindowMarker && (
         <div
           className="mb-2 flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
           data-testid="csw-banner"
         >
           <span className="flex items-center gap-2">
             <Lock className="size-4 shrink-0" />
-            The 24-hour window has closed - only an approved template can be sent.
+            {locked
+              ? capabilities.template
+                ? 'The 24-hour window has closed - only an approved template can be sent.'
+                : 'The messaging window has closed.'
+              : 'The standard messaging window has closed.'}
           </span>
-          <Button size="sm" variant="outline" onClick={() => setTemplateOpen(true)} data-testid="csw-pick-template">
-            Choose template
-          </Button>
+          {locked && capabilities.template && (
+            <Button size="sm" variant="outline" onClick={() => setTemplateOpen(true)} data-testid="csw-pick-template">
+              Choose template
+            </Button>
+          )}
+        </div>
+      )}
+      {showPresenceMarker && (
+        <div
+          className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"
+          data-testid="presence-marker"
+        >
+          <span
+            className={cn(
+              'size-1.5 rounded-full',
+              // Design tokens, not a raw Tailwind palette colour (review
+              // round 1, N5) - `--success` is the house 'live/healthy' ink.
+              visitorPresence?.online ? 'bg-success' : 'bg-muted-foreground/40',
+            )}
+            aria-hidden="true"
+          />
+          {visitorPresence?.label ?? 'Awaiting first message'}
         </div>
       )}
       {sendError && !locked && (
@@ -597,7 +673,7 @@ export function Composer({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
                 {canAttach &&
-                  ATTACH_OPTIONS.map(({ kind, label, Icon }) => (
+                  availableAttachOptions.map(({ kind, label, Icon }) => (
                     <DropdownMenuItem
                       key={kind}
                       onSelect={() => openPicker(kind)}
@@ -607,17 +683,17 @@ export function Composer({
                     </DropdownMenuItem>
                   ))}
                 {canAttach && canStructured && <DropdownMenuSeparator />}
-                {onSendInteractive && (
+                {canInteractive && (
                   <DropdownMenuItem onSelect={() => setStructured('interactive')} data-testid="attach-interactive">
                     <LayoutList className="size-4" /> Interactive
                   </DropdownMenuItem>
                 )}
-                {onSendLocation && (
+                {canLocation && (
                   <DropdownMenuItem onSelect={() => setStructured('location')} data-testid="attach-location">
                     <MapPin className="size-4" /> Location
                   </DropdownMenuItem>
                 )}
-                {onSendContacts && (
+                {canContacts && (
                   <DropdownMenuItem onSelect={() => setStructured('contacts')} data-testid="attach-contact">
                     <ContactIcon className="size-4" /> Contact
                   </DropdownMenuItem>
@@ -634,7 +710,7 @@ export function Composer({
                 <div className="max-h-64 space-y-2 overflow-y-auto">
                   {EMOJI_GROUPS.map((group) => (
                     <div key={group.label}>
-                      <div className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      <div className="px-1 pb-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
                         {group.label}
                       </div>
                       <div className="grid grid-cols-8 gap-0.5">
@@ -642,7 +718,7 @@ export function Composer({
                           <button
                             key={`${group.label}-${i}`}
                             type="button"
-                            className="rounded p-1 text-lg hover:bg-muted"
+                            className={cn(PRESSED_CLASS, 'rounded p-1 text-lg hover:bg-muted')}
                             onClick={() => setBody((prev) => prev + emoji)}
                             data-testid="emoji-item"
                           >
@@ -722,7 +798,7 @@ export function Composer({
           </Popover>
         )}
 
-        {canAttach && !recording && !hasPending && !body.trim() ? (
+        {canRecordVoice && !recording && !hasPending && !body.trim() ? (
           <Button
             variant="outline"
             size="icon"
@@ -754,7 +830,7 @@ export function Composer({
         isSending={isSending}
         onSendTemplate={onSendTemplate}
       />
-      {onSendInteractive && (
+      {canInteractive && onSendInteractive && (
         <InteractiveBuilderDialog
           open={structured === 'interactive'}
           onOpenChange={(o) => setStructured(o ? 'interactive' : null)}
@@ -762,7 +838,7 @@ export function Composer({
           onSubmit={onSendInteractive}
         />
       )}
-      {onSendLocation && (
+      {canLocation && onSendLocation && (
         <LocationBuilderDialog
           open={structured === 'location'}
           onOpenChange={(o) => setStructured(o ? 'location' : null)}
@@ -770,7 +846,7 @@ export function Composer({
           onSubmit={onSendLocation}
         />
       )}
-      {onSendContacts && (
+      {canContacts && onSendContacts && (
         <ContactsBuilderDialog
           open={structured === 'contacts'}
           onOpenChange={(o) => setStructured(o ? 'contacts' : null)}

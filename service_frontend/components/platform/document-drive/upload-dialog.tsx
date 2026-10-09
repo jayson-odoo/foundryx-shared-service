@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { SearchSelect } from '@/components/platform/search-select';
 import { documentService } from '@/services/document-service';
 import { cn } from '@/lib/utils';
@@ -88,6 +89,7 @@ export function UploadDialog({ open, folderId, onClose }: UploadDialogProps) {
               send(Array.from(e.dataTransfer.files));
             }}
             className={cn(
+              PRESSED_CLASS,
               'flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-6 py-10 text-center transition',
               dragOver ? 'border-primary bg-primary/5' : 'border-input hover:border-primary/50',
             )}

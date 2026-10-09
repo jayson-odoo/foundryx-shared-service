@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { LoaderCircleIcon, Sparkles } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -139,7 +139,7 @@ function ClusterCard({
               className="mt-0.5"
             />
             <span className="min-w-0 flex-1">
-              <ClampedText text={idea.problem} lines={2} />
+              <ClampedText text={idea.title ?? idea.problem} lines={2} />
             </span>
           </label>
         ))}

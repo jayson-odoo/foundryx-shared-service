@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 
 /**
  * Multi-origin chip input for the embed connection's parent-origin allow-list.
@@ -57,7 +59,7 @@ export function OriginsInput({
                 type="button"
                 aria-label={`Remove ${origin}`}
                 onClick={() => remove(origin)}
-                className="text-muted-foreground hover:text-foreground"
+                className={cn(PRESSED_CLASS, 'text-muted-foreground hover:text-foreground')}
               >
                 <X className="size-3" />
               </button>

@@ -1,0 +1,5 @@
+attempt=1 ts=2026-09-21T01:37:22Z status=200 bytes=659974 seconds=18.310802
+attempt=2 ts=2026-09-21T01:37:45Z status=200 bytes=659974 seconds=22.373271
+attempt=3 ts=2026-09-21T01:38:13Z status=200 bytes=659976 seconds=19.468709
+attempt=4 ts=2026-09-21T01:38:37Z status=200 bytes=659976 seconds=17.940829
+attempt=5 ts=2026-09-21T01:39:00Z status=200 bytes=659976 seconds=23.569567

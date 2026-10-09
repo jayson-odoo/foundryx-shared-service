@@ -48,4 +48,24 @@ describe('SearchSelect', () => {
     render(<SearchSelect options={OPTIONS} value="Data.0.X" onChange={vi.fn()} allowCustom />);
     expect(screen.getByRole('combobox')).toHaveTextContent('Data.0.X');
   });
+
+  it('post-approval N1: with onQueryChange set, cmdk does NOT client-filter the given options - a server page must render as-is', () => {
+    const onQueryChange = vi.fn();
+    render(<SearchSelect options={OPTIONS} value={null} onChange={vi.fn()} onQueryChange={onQueryChange} />);
+    fireEvent.click(screen.getByRole('combobox'));
+    // Typing something that matches NOTHING by substring must still show every
+    // option the caller passed - the server is the filter now, not cmdk.
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'zzz-no-match' } });
+    expect(onQueryChange).toHaveBeenCalledWith('zzz-no-match');
+    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByText('Archived')).toBeInTheDocument();
+    expect(screen.getByText('Pending Review')).toBeInTheDocument();
+  });
+
+  it('without onQueryChange, cmdk still client-filters as before (no regression)', () => {
+    render(<SearchSelect options={OPTIONS} value={null} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'zzz-no-match' } });
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+  });
 });

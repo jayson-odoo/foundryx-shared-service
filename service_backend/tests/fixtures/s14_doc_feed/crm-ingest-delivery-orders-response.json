@@ -1,0 +1,49 @@
+{
+  "dry_run": false,
+  "summary": {
+    "total": 8, "created": 1, "updated": 2, "failed": 1, "retryable": 2, "unchanged": 2
+  },
+  "records": [
+    {
+      "source_ref": "db1:DO:55121",
+      "outcome": "created",
+      "entity_id": "00000000-0000-0000-0000-000000000001"
+    },
+    {
+      "source_ref": "db1:DO:55120",
+      "outcome": "updated",
+      "entity_id": "00000000-0000-0000-0000-000000000002",
+      "warnings": ["adopted_by_doc_no", "branch_unresolved"]
+    },
+    {
+      "source_ref": "db1:DO:55200",
+      "outcome": "updated",
+      "entity_id": "00000000-0000-0000-0000-000000000003",
+      "warnings": ["so_line_unresolved", "sales_order_unresolved"]
+    },
+    {
+      "source_ref": "db1:DO:55201",
+      "outcome": "unchanged"
+    },
+    {
+      "source_ref": "db1:DO:55202",
+      "outcome": "unchanged",
+      "warnings": ["stale_ignored"]
+    },
+    {
+      "source_ref": "db1:DO:55203",
+      "outcome": "retryable",
+      "errors": {"Details.0.ItemCode": "unresolved item code"}
+    },
+    {
+      "source_ref": "db1:DO:55204",
+      "outcome": "retryable",
+      "errors": {"Details.0.Location": "unresolved warehouse"}
+    },
+    {
+      "source_ref": "db1:DO:55205",
+      "outcome": "failed",
+      "errors": {"DocNo": "already used by a different DocKey"}
+    }
+  ]
+}

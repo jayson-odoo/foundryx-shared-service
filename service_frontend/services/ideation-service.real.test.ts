@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Idea } from '@/types/ideation';
+import type { IdeaCreateInput } from './ideation-service';
 
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 
@@ -26,6 +27,7 @@ const anIdea = (over: Partial<Idea> = {}): Idea => ({
   priority: 1,
   attachments: [],
   createdAt: '2026-07-18T00:00:00Z',
+  isTest: false,
   ...over,
 });
 
@@ -59,18 +61,35 @@ describe('realIdeationService', () => {
     expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas');
   });
 
+  it('listIdeas({ includeTest: true }) appends the includeTest query param (issue #1179)', async () => {
+    apiFetch.mockResolvedValue([]);
+    await svc.listIdeas({ includeTest: true });
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas?includeTest=true');
+  });
+
+  it('listIdeas({ includeTest: false }) omits the query param', async () => {
+    apiFetch.mockResolvedValue([]);
+    await svc.listIdeas({ includeTest: false });
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas');
+  });
+
   it('getIdea encodes the id', async () => {
     apiFetch.mockResolvedValue(anIdea({ id: 'a/b' }));
     await svc.getIdea('a/b');
     expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/a%2Fb');
   });
 
-  it('setStatus POSTs the lifecycle key', async () => {
+  // AC-94-53 (issue #94, ideation round 2, backend S2 `f87e320d`): `StatusIn`
+  // takes EXACTLY ONE of `status` (the legacy key) or `toStatusId` (the
+  // status-engine target id) - REWRITTEN (not deleted, per the house
+  // convention for a superseded pinned test) from "POSTs the lifecycle key"
+  // now that `setStatus` always carries an engine target id.
+  it('setStatus POSTs the target status id', async () => {
     apiFetch.mockResolvedValue(anIdea({ status: 'triaged' }));
-    const out = await svc.setStatus('idea-1', 'triaged');
+    const out = await svc.setStatus('idea-1', 'idea-status-triaged');
     expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1/status', {
       method: 'POST',
-      body: JSON.stringify({ status: 'triaged' }),
+      body: JSON.stringify({ toStatusId: 'idea-status-triaged' }),
     });
     expect(out.status).toBe('triaged');
   });
@@ -82,6 +101,52 @@ describe('realIdeationService', () => {
       method: 'POST',
       body: JSON.stringify({ dir: 'up' }),
     });
+  });
+
+  it('vote only ever sends dir "up" (AC-19-12/15)', async () => {
+    apiFetch.mockResolvedValue(anIdea({ upvotes: 4, myVote: 'up' }));
+    await svc.vote('idea-1', 'up');
+    const body = JSON.parse((apiFetch.mock.calls[0][1] as { body: string }).body);
+    expect(body).toEqual({ dir: 'up' });
+  });
+
+  // ── Plan 19 (AC-19-25) - comments ────────────────────────────────────────────
+  it('listComments GETs /ideation/ideas/<id>/comments (encoded) and returns the array', async () => {
+    const rows = [{ id: 'c1', ideaId: 'a/b', body: 'x' }];
+    apiFetch.mockResolvedValue(rows);
+    await expect(svc.listComments!('a/b')).resolves.toEqual(rows);
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/a%2Fb/comments');
+  });
+
+  it('addComment POSTs {body, parentId} to the comments collection', async () => {
+    apiFetch.mockResolvedValue({ id: 'c2' });
+    await svc.addComment!('idea-1', 'hello', 'c1');
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1/comments', {
+      method: 'POST',
+      body: JSON.stringify({ body: 'hello', parentId: 'c1' }),
+    });
+  });
+
+  it('addComment without a parent sends no parentId key', async () => {
+    apiFetch.mockResolvedValue({ id: 'c2' });
+    await svc.addComment!('idea-1', 'hello');
+    const sent = JSON.parse((apiFetch.mock.calls[0][1] as { body: string }).body);
+    expect(sent).toEqual({ body: 'hello' });
+  });
+
+  it('editComment PATCHes {body} to the comment', async () => {
+    apiFetch.mockResolvedValue({ id: 'c1' });
+    await svc.editComment!('idea-1', 'c1', 'edited');
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1/comments/c1', {
+      method: 'PATCH',
+      body: JSON.stringify({ body: 'edited' }),
+    });
+  });
+
+  it('deleteComment DELETEs the comment and resolves void', async () => {
+    apiFetch.mockResolvedValue(undefined);
+    await expect(svc.deleteComment!('idea-1', 'c1')).resolves.toBeUndefined();
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1/comments/c1', { method: 'DELETE' });
   });
 
   it('reorderPriority PUTs the ordered ids', async () => {
@@ -154,30 +219,25 @@ describe('realIdeationService', () => {
     });
   });
 
-  it('updateIdea skips setStatus when the status is unchanged (no self-transition)', async () => {
+  // AC-94-34 (issue #94, ideation round 2): `updateIdea` becomes fields-ONLY -
+  // the two tests above this comment used to assert the OLD status-follow-up
+  // branch (`updateIdea` calling `setStatus` when its input carried a changed
+  // `status`); that branch is deliberately removed (plan section 4.1, D7 - a
+  // save never moves status; the form no longer even collects it). REWRITTEN,
+  // not deleted, per the house convention for a superseded pinned test.
+  //
+  // TEST-FIRST: today's `realIdeationService.updateIdea` still special-cases a
+  // `status` key on its input and fires a follow-up `POST /{id}/status` when it
+  // differs from the persisted value - this fails (2 calls, not 1) until the
+  // branch is removed.
+  it('updateIdea is fields only - never calls POST /status, even if the input still carries a status-shaped key (AC-94-34)', async () => {
     apiFetch.mockResolvedValue(anIdea({ status: 'captured', problem: 'y' }));
-    await svc.updateIdea('idea-1', { problem: 'y', status: 'captured' });
-    // Only the PATCH - no follow-up POST /status.
+    const legacyPayloadWithStatus = { problem: 'y', status: 'triaged' } as unknown as Partial<IdeaCreateInput>;
+    await svc.updateIdea('idea-1', legacyPayloadWithStatus);
     expect(apiFetch).toHaveBeenCalledTimes(1);
     expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1', {
       method: 'PATCH',
       body: JSON.stringify({ problem: 'y' }),
     });
-  });
-
-  it('updateIdea applies a changed status via POST /status after the field PATCH', async () => {
-    apiFetch
-      .mockResolvedValueOnce(anIdea({ status: 'captured', problem: 'y' })) // PATCH result
-      .mockResolvedValueOnce(anIdea({ status: 'triaged', problem: 'y' })); // setStatus result
-    const out = await svc.updateIdea('idea-1', { problem: 'y', status: 'triaged' });
-    expect(apiFetch).toHaveBeenNthCalledWith(1, '/ideation/ideas/idea-1', {
-      method: 'PATCH',
-      body: JSON.stringify({ problem: 'y' }),
-    });
-    expect(apiFetch).toHaveBeenNthCalledWith(2, '/ideation/ideas/idea-1/status', {
-      method: 'POST',
-      body: JSON.stringify({ status: 'triaged' }),
-    });
-    expect(out.status).toBe('triaged');
   });
 });

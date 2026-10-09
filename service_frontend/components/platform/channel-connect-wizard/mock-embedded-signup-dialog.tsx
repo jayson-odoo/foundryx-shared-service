@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowLeft, Facebook, Loader2, Phone, Plus } from 'lucide-react';
+import { ArrowLeft, Loader2, Phone, Plus } from 'lucide-react';
 import {
   Dialog,
   DialogBody,
@@ -23,25 +23,29 @@ export interface MockEmbeddedSignupDialogProps {
   open: boolean;
   /** True while the backend exchange/provision is in flight. */
   busy: boolean;
-  onAuthorize: (option: MockWabaOption) => void;
+  onAuthorizeWaba: (option: MockWabaOption) => void;
   onCancel: () => void;
 }
 
 /**
- * SIMULATED Meta Embedded Signup popup (Phase A only). Stands in for the real
- * Meta JS SDK so the prototype can demonstrate the "log in → pick (or register)
- * your WhatsApp number → authorize" experience and tune every state. In Phase B
- * this whole component is replaced by the real SDK launch (the wizard's state
- * machine and the backend exchange stay the same).
+ * SIMULATED WhatsApp Embedded Signup popup (dev / no Meta app configured).
+ * Stands in for the real Meta JS SDK dialog so the wizard demonstrates
+ * "log in -> pick your number -> authorize" without a Meta app.
  *
- * Note: in production the number is registered/selected *inside Meta's popup* -
- * never typed into a Foundryx form. The "register a number" mode here only
- * simulates that Meta step so the prototype is self-contained.
+ * Messenger/Instagram's simulated path (plan 32 / A7a) does NOT use this
+ * dialog - the dev-safe backend adapter returns the same canned sandbox
+ * pages through the REAL `/onboarding/meta/*` routes for any code, so the
+ * wizard reuses its own real page-selection step for those two types
+ * instead of a parallel mock data source (see `channel-connect-wizard.tsx`).
+ *
+ * Note: in production the number is selected *inside Meta's popup* - never
+ * typed into a Foundryx form. The "register a number" mode only simulates
+ * Meta's WhatsApp registration step so the prototype is self-contained.
  */
 export function MockEmbeddedSignupDialog({
   open,
   busy,
-  onAuthorize,
+  onAuthorizeWaba,
   onCancel,
 }: MockEmbeddedSignupDialogProps) {
   const [mode, setMode] = useState<'pick' | 'register'>('pick');
@@ -49,20 +53,20 @@ export function MockEmbeddedSignupDialog({
   const [businessName, setBusinessName] = useState('');
   const [phone, setPhone] = useState('');
 
-  const selected = MOCK_WABA_OPTIONS.find((o) => o.wabaId === selectedId);
+  const selectedWaba = MOCK_WABA_OPTIONS.find((o) => o.wabaId === selectedId);
   const phoneValid = isValidPhone(phone);
   const showPhoneError = phone.trim().length > 0 && !phoneValid;
   const registerValid = businessName.trim().length > 0 && phoneValid;
 
   function authorizePicked() {
-    if (selected) onAuthorize(selected);
+    if (selectedWaba) onAuthorizeWaba(selectedWaba);
   }
 
   function authorizeRegistered() {
     if (!registerValid) return;
     const normalized = normalizePhone(phone);
     const id = `new-${normalized.replace(/\D/g, '')}`;
-    onAuthorize({
+    onAuthorizeWaba({
       wabaId: `waba-${id}`,
       businessName: businessName.trim(),
       phoneNumberId: `pn-${id}`,
@@ -75,14 +79,12 @@ export function MockEmbeddedSignupDialog({
       <DialogContent className="w-full max-w-[460px]" showCloseButton={false}>
         <DialogHeader>
           <div className="flex items-center gap-2.5">
-            <span className="flex size-8 items-center justify-center rounded-md bg-[#1877F2] text-white">
-              <Facebook className="size-4.5" />
+            <span className="flex size-8 items-center justify-center rounded-md bg-[#25D366]/10 text-[#25D366]">
+              <Phone className="size-4.5" />
             </span>
             <div>
-              <DialogTitle>Connect with Facebook</DialogTitle>
-              <DialogDescription className="text-xs">
-                Simulated Meta Embedded Signup (prototype)
-              </DialogDescription>
+              <DialogTitle>Connect with WhatsApp</DialogTitle>
+              <DialogDescription className="text-xs">Simulated Meta authorization (sandbox)</DialogDescription>
             </div>
           </div>
         </DialogHeader>
@@ -134,7 +136,11 @@ export function MockEmbeddedSignupDialog({
               <Button variant="outline" onClick={onCancel} disabled={busy}>
                 Cancel
               </Button>
-              <Button onClick={authorizePicked} disabled={busy || !selected}>
+              <Button
+                onClick={authorizePicked}
+                disabled={busy || !selectedWaba}
+                data-testid="mock-meta-authorize"
+              >
                 {busy && <Loader2 className="size-4 animate-spin" />}
                 {busy ? 'Authorizing…' : 'Authorize'}
               </Button>

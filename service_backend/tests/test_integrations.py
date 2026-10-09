@@ -116,6 +116,103 @@ def test_duplicate_provider_conflicts(client):
     assert res.status_code == 409
 
 
+SQL_DATABASE_PAYLOAD = {
+    "provider": "sql_database",
+    "name": "AED 2024",
+    "config": {
+        "dbType": "mssql",
+        "host": "db.acme.com",
+        "port": "1433",
+        "database": "AED_2024",
+        "username": "readonly_user",
+    },
+    "credentials": {"password": "s3cret"},
+}
+
+
+def test_erp_provider_allows_several_connections_per_tenant(client):
+    """``uq_connection_tenant_provider`` carves ``type='erp'`` out of the
+    one-per-provider rule (plan 22: one SQL connection per AutoCount company
+    database) - the service's 409 must mirror the index, not pre-empt it."""
+    h = _demo_headers(client)
+    first = _create(client, h, SQL_DATABASE_PAYLOAD)
+    second = _create(
+        client,
+        h,
+        {
+            **SQL_DATABASE_PAYLOAD,
+            "name": "AED 2025",
+            "config": {**SQL_DATABASE_PAYLOAD["config"], "database": "AED_2025"},
+        },
+    )
+    assert first["id"] != second["id"]
+    assert first["type"] == second["type"] == "erp"
+    ids = [c["id"] for c in client.get("/integrations/connections", headers=h).json()["data"]]
+    assert first["id"] in ids and second["id"] in ids
+    # Update never changes provider/type, and names are not unique - renaming
+    # the second onto the first's name is a plain 200.
+    res = client.patch(
+        f"/integrations/connections/{second['id']}", json={"name": "AED 2024"}, headers=h
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "AED 2024"
+    # Non-erp providers keep the one-per-provider rule untouched.
+    _create(client, h)  # smtp
+    assert client.post("/integrations/connections", json=SMTP_PAYLOAD, headers=h).status_code == 409
+
+
+AUTOCOUNT_OPEN_PAYLOAD = {
+    "provider": "autocount",
+    "name": "Mocha REST",
+    "config": {"auth": "none", "baseUrl": "https://hapi.sorento.cc.cd/api/db2"},
+    "credentials": {},
+}
+
+
+def test_autocount_baseurl_scheme_rejected_at_save_not_only_at_test(client):
+    """S5 (sprint-5/08 review round 1) - `AutoCountProvider.test()` already
+    rejected a non-http(s) scheme, but ONLY when the operator clicked Test;
+    a bad scheme typed into the wizard and saved WITHOUT ever clicking Test
+    sat in storage unvalidated. `IntegrationService.create`/`update` now
+    call the provider's own `validate_config` (a generic, opt-in hook - see
+    `IntegrationProvider.fields` docstring) at save time too."""
+    h = _demo_headers(client)
+    bad = {
+        **AUTOCOUNT_OPEN_PAYLOAD,
+        "config": {**AUTOCOUNT_OPEN_PAYLOAD["config"], "baseUrl": "javascript:alert(1)"},
+    }
+    res = client.post("/integrations/connections", json=bad, headers=h)
+    assert res.status_code == 422, res.text
+    assert "http" in res.json()["detail"].lower()
+
+
+def test_autocount_baseurl_good_scheme_saves_clean(client):
+    h = _demo_headers(client)
+    created = _create(client, h, AUTOCOUNT_OPEN_PAYLOAD)
+    assert created["config"]["baseUrl"] == "https://hapi.sorento.cc.cd/api/db2"
+
+
+def test_autocount_baseurl_scheme_rejected_on_update_too(client):
+    h = _demo_headers(client)
+    created = _create(client, h, AUTOCOUNT_OPEN_PAYLOAD)
+    res = client.patch(
+        f"/integrations/connections/{created['id']}",
+        json={"config": {"baseUrl": "ftp://hapi.sorento.cc.cd/api/db2"}},
+        headers=h,
+    )
+    assert res.status_code == 422, res.text
+    assert "http" in res.json()["detail"].lower()
+
+
+def test_smtp_provider_has_no_validate_config_hook_unaffected(client):
+    """Every provider without a `validate_config` (SMTP, still - S5 must
+    change behaviour for NO existing provider) keeps saving whatever
+    `required` already accepted."""
+    h = _demo_headers(client)
+    created = _create(client, h)
+    assert created["provider"] == "smtp"
+
+
 def test_unknown_provider_rejected(client):
     h = _demo_headers(client)
     res = client.post(

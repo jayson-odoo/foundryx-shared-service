@@ -1,6 +1,6 @@
 {
   "module_name": "omnichannel",
-  "version": "0.1.0",
+  "version": "0.10.1",
   "author": "Foundryx",
   "title": "Omnichannel",
   "description": "WhatsApp Business messaging \u2014 connect numbers via Meta Embedded Signup, manage workspaces and channels.",
@@ -25,6 +25,11 @@
     {
       "model": "WhatsappTemplate",
       "column": "media_sample_key",
+      "tenantColumn": "tenant_id"
+    },
+    {
+      "model": "MigrationUpload",
+      "column": "storage_key",
       "tenantColumn": "tenant_id"
     }
   ],
@@ -73,6 +78,46 @@
       "prefix": "/omnichannel/workspaces"
     },
     {
+      "name": "contact_fields",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "contact_tags",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "lifecycle",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "contacts",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "contact_segments",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "broadcasts",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "close_reasons",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "inbox_views",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "team_settings",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "reports",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
       "name": "webhooks_subs",
       "prefix": "/omnichannel"
     },
@@ -94,6 +139,20 @@
     {
       "name": "ws",
       "prefix": "/omnichannel",
+      "public": true
+    },
+    {
+      "name": "migration",
+      "prefix": "/omnichannel/migration"
+    },
+    {
+      "name": "webchat_widget",
+      "prefix": "/omnichannel/widget",
+      "public": true
+    },
+    {
+      "name": "webchat_public",
+      "prefix": "/public/omnichannel/webchat",
       "public": true
     }
   ],

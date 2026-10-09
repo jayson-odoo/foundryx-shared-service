@@ -23,6 +23,9 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 export interface BrListHandlers {
   onCreate: () => void;
+  /** No longer called by this config (fix round 1, T5, item 15 - Delete is
+   * `deferred`, the registered handler commits it server-side). Kept in the
+   * signature so the caller needs no change. */
   onDelete: (br: BusinessRequirement) => Promise<void>;
 }
 
@@ -35,8 +38,13 @@ export interface BrListHandlers {
 export function useBrListConfig(
   brs: BusinessRequirement[],
   handlers: BrListHandlers,
+  /** The list's OWN "Show test requirements" toggle state (issue #90 W3,
+   * review fix S6) - stamped onto every row's href so the detail page's
+   * pager knows which lane the user was actually browsing, rather than
+   * re-deriving it from whichever record happens to be open. */
+  includeTest = false,
 ): ResourceListConfig<BusinessRequirement> {
-  const { onCreate, onDelete } = handlers;
+  const { onCreate } = handlers;
 
   return useMemo<ResourceListConfig<BusinessRequirement>>(() => {
     const actions: ResourceAction<BusinessRequirement>[] = [
@@ -46,14 +54,13 @@ export function useBrListConfig(
         icon: Trash2,
         tone: 'destructive',
         surfaces: { row: true, form: true, bulk: true },
-        confirm: {
-          title: 'Delete business requirement',
-          description:
-            'This permanently removes the BR and its idea links. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows) => {
-          for (const r of rows) await onDelete(r);
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered
+        // `ideation_business_requirements.delete` handler commits it
+        // server-side).
+        deferred: {
+          actionKey: 'ideation_business_requirements.delete',
+          entityType: 'ideation_business_requirement',
         },
       },
     ];
@@ -79,15 +86,26 @@ export function useBrListConfig(
       },
       {
         id: 'title',
+        meta: { headerTitle: 'Title' },
         header: () => 'Title',
         cell: ({ row }) => (
-          <ClampedText text={row.original.title || 'Untitled BR'} lines={2} />
+          <div className="flex items-start gap-1.5">
+            <div className="min-w-0 flex-1">
+              <ClampedText text={row.original.title || 'Untitled BR'} lines={2} />
+            </div>
+            {row.original.isTest && (
+              <Badge variant="secondary" appearance="light" size="sm" className="shrink-0">
+                TEST
+              </Badge>
+            )}
+          </div>
         ),
         size: 320,
         enableSorting: false,
       },
       {
         id: 'product',
+        meta: { headerTitle: 'Product' },
         header: () => 'Product',
         cell: ({ row }) => <Badge variant="secondary">{row.original.productName}</Badge>,
         size: 150,
@@ -95,6 +113,7 @@ export function useBrListConfig(
       },
       {
         id: 'status',
+        meta: { headerTitle: 'Status' },
         header: () => 'Status',
         cell: ({ row }) => (
           <Badge variant="outline" appearance="light">
@@ -106,6 +125,7 @@ export function useBrListConfig(
       },
       {
         id: 'ideas',
+        meta: { headerTitle: 'Ideas' },
         header: () => 'Ideas',
         cell: ({ row }) => (
           <span className="text-muted-foreground">{row.original.ideaCount}</span>
@@ -165,7 +185,7 @@ export function useBrListConfig(
     return {
       viewKey: 'ideation.business_requirements',
       getRowId: (row) => row.id,
-      rowHref: (row) => brFormHref(row.id),
+      rowHref: (row) => brFormHref(row.id, { includeTest }),
       fetcher,
       exporter,
       searchPlaceholder: 'Search business requirements…',
@@ -184,5 +204,5 @@ export function useBrListConfig(
       ],
       actions,
     };
-  }, [brs, onCreate, onDelete]);
+  }, [brs, onCreate, includeTest]);
 }

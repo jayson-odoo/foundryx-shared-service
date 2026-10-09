@@ -123,7 +123,17 @@ def resolve_for_agent(db: Session, tenant_id: str, agent: AiAgent) -> ResolvedCo
     if connection is None:
         # No usable connection on the agent - is anything configured at all?
         if any_llm_connection(db, tenant_id) is None:
-            return ResolvedConnection(None, {}, STUB_PROVIDER, is_stub=True)
+            from app.config import settings
+
+            # The zero-config stub is a DEVELOPMENT convenience only. In any
+            # other environment a connection-less agent must fail loudly
+            # rather than answer tenants with canned text (review should-fix).
+            if settings.environment == "development":
+                return ResolvedConnection(None, {}, STUB_PROVIDER, is_stub=True)
+            raise LLMError(
+                "No AI connection is configured for this workspace - add an LLM "
+                "connection under Settings > Integrations and pick it on the agent."
+            )
         raise LLMError(
             "This agent's AI connection is missing or was removed - pick another "
             "connection on the agent."

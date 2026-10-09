@@ -6,12 +6,6 @@
  * status-engine base path (used for row deep-links).
  */
 import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ResourceList } from '@/components/platform/resource-list';
@@ -30,15 +24,7 @@ export function RulesPage({ description, statusEngineBase }: RulesPageProps) {
     <RequirePermission permission="rules.read">
       <Fragment>
         <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>{description}</ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
-        <Container width="fluid">
-          <ResourceList config={config} />
+          <ResourceList config={{ ...config, pageDescription: description }} />
         </Container>
       </Fragment>
     </RequirePermission>

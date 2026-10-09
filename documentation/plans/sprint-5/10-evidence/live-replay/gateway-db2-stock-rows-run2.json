@@ -1,0 +1,33 @@
+{
+    "snapshotId": "fda6cf2b-c3f3-4918-979d-bf5eea7b3d8f",
+    "page": 1,
+    "pageSize": 3,
+    "totalPages": 1055,
+    "recordCount": 3165,
+    "rows": [
+        {
+            "source_ref": "MOCHA:2001|HQ",
+            "item_code": "2001",
+            "item_description": "MBS 2\" ROLLEX ROLLER REFILL (2001)",
+            "location_code": "HQ",
+            "uom_code": "UNIT",
+            "qty": 4670
+        },
+        {
+            "source_ref": "MOCHA:2002|HQ",
+            "item_code": "2002",
+            "item_description": "MBS 2\" TIGER ROLLER REFILL (2002)",
+            "location_code": "HQ",
+            "uom_code": "UNIT",
+            "qty": 15580
+        },
+        {
+            "source_ref": "MOCHA:2003|HQ",
+            "item_code": "2003",
+            "item_description": "MBS 2\" EPOXY ROLLER REFILL (2003)",
+            "location_code": "HQ",
+            "uom_code": "UNIT",
+            "qty": 3680
+        }
+    ]
+}

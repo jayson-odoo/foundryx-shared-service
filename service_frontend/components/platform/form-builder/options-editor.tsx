@@ -7,6 +7,8 @@
  */
 import { ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import type { FormChoiceItem } from '@/types/forms';
 
@@ -45,7 +47,7 @@ export function OptionsEditor({ items, onAdd, onUpdate, onRemove, onMove }: Opti
               aria-label="Move option up"
               disabled={index === 0}
               onClick={() => onMove(index, -1)}
-              className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+              className={cn(PRESSED_CLASS, 'text-muted-foreground hover:text-foreground disabled:opacity-30')}
             >
               <ChevronUp className="size-3.5" />
             </button>
@@ -54,7 +56,7 @@ export function OptionsEditor({ items, onAdd, onUpdate, onRemove, onMove }: Opti
               aria-label="Move option down"
               disabled={index === items.length - 1}
               onClick={() => onMove(index, 1)}
-              className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+              className={cn(PRESSED_CLASS, 'text-muted-foreground hover:text-foreground disabled:opacity-30')}
             >
               <ChevronDown className="size-3.5" />
             </button>

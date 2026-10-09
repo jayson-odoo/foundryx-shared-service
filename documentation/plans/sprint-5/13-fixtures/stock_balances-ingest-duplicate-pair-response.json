@@ -1,0 +1,22 @@
+{
+  "dry_run": false,
+  "summary": {
+    "total": 2,
+    "created": 1,
+    "updated": 1,
+    "failed": 0,
+    "retryable": 0
+  },
+  "records": [
+    {
+      "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+      "outcome": "created",
+      "entity_id": "00000000-0000-0000-0000-000000000099"
+    },
+    {
+      "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+      "outcome": "updated",
+      "entity_id": "00000000-0000-0000-0000-000000000099"
+    }
+  ]
+}

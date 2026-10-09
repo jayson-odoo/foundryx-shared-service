@@ -29,6 +29,15 @@
       "prefix": "/ideation/business-requirements"
     },
     {
+      "name": "build_keys",
+      "prefix": "/ideation/build-keys"
+    },
+    {
+      "name": "build_writeback",
+      "prefix": "/ideation/build",
+      "public": true
+    },
+    {
       "name": "intake",
       "prefix": "/ideation/intake",
       "public": true
@@ -44,9 +53,17 @@
       "public": true
     },
     {
+      "name": "public_ideas",
+      "prefix": "/public/ideas",
+      "public": true
+    },
+    {
       "name": "embed_admin",
       "prefix": "/ideation/embed-connections"
     }
   ],
-  "permissions_csv": "permissions/permissions.csv"
+  "permissions_csv": "permissions/permissions.csv",
+  "storage_locations": [
+    {"model": "IdeaAttachment", "column": "storage_key", "tenantColumn": "tenant_id"}
+  ]
 }

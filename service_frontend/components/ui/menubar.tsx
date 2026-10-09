@@ -4,6 +4,15 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { Check, ChevronRight, Circle } from 'lucide-react';
 import { Menubar as MenubarPrimitive } from 'radix-ui';
+import { AnimatePresence, motion } from 'motion/react';
+import { PRESSED_TRANSFORM_CLASS } from '@/components/ui/primitive-classes';
+import {
+  surfaceExitTransition,
+  surfaceTransition,
+  surfaceVariants,
+  useOpenState,
+  useReducedMotion,
+} from '@/lib/motion';
 
 function MenubarMenu({ ...props }: React.ComponentProps<typeof MenubarPrimitive.Menu>) {
   return <MenubarPrimitive.Menu data-slot="menubar-menu" {...props} />;
@@ -76,26 +85,57 @@ function MenubarSubTrigger({
   );
 }
 
-function MenubarSubContent({ className, ...props }: React.ComponentProps<typeof MenubarPrimitive.SubContent>) {
+function MenubarSubContent({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof MenubarPrimitive.SubContent>) {
+  const open = React.useContext(MenubarSubOpenContext);
+  const prefersReducedMotion = useReducedMotion();
+  const variants = surfaceVariants(prefersReducedMotion);
+  const transition = surfaceTransition(prefersReducedMotion, 'menu');
+  const exitTransition = surfaceExitTransition(prefersReducedMotion);
+
   return (
-    <MenubarPrimitive.SubContent
-      data-slot="menubar-sub-content"
-      className={cn(
-        'space-y-0.5 z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-2 text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
-        className,
+    <AnimatePresence>
+      {open && (
+        <MenubarPrimitive.SubContent forceMount data-slot="menubar-sub-content" className="z-(--z-modal)" {...props}>
+          <motion.div
+            className={cn(
+              'space-y-0.5 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-2 text-popover-foreground origin-(--radix-menubar-content-transform-origin)',
+              className,
+            )}
+            initial={variants.initial}
+            animate={variants.animate}
+            exit={{ ...variants.exit, transition: exitTransition }}
+            transition={transition}
+          >
+            {children}
+          </motion.div>
+        </MenubarPrimitive.SubContent>
       )}
-      {...props}
-    />
+    </AnimatePresence>
   );
 }
 
 function MenubarContent({
   className,
+  children,
   align = 'start',
   alignOffset = -4,
   sideOffset = 8,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Content>) {
+  // T3 fix round 1 finding 7: no exit here regardless, because Radix still
+  // owns Content's mount/unmount lifecycle (no `forceMount`, no
+  // `<AnimatePresence>` gate) - MenubarMenu takes a `value` this repo's
+  // Menubar wrapper does not derive an open signal from, and Menubar has no
+  // real product call site yet to justify the extra context plumbing. Given
+  // that, a ONE-SIDED spring entrance (390ms in, instant unmount out) was
+  // the wrong asymmetry - the honest simplification, matching
+  // `SelectContent` (see select.tsx), is a SYMMETRIC CSS opacity fade: both
+  // directions run the same `--duration-fast` tween via Radix's own
+  // `data-state`, no zoom.
   return (
     <MenubarPrimitive.Portal>
       <MenubarPrimitive.Content
@@ -103,12 +143,18 @@ function MenubarContent({
         align={align}
         alignOffset={alignOffset}
         sideOffset={sideOffset}
-        className={cn(
-          'space-y-0.5 z-50 min-w-[12rem] overflow-hidden rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md shadow-black/5 transition-shadow data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
-          className,
-        )}
+        className="z-(--z-modal) data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 duration-(--duration-fast) ease-(--ease-standard)"
         {...props}
-      />
+      >
+        <div
+          className={cn(
+            'space-y-0.5 min-w-[12rem] overflow-hidden rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md shadow-black/5 origin-(--radix-menubar-content-transform-origin)',
+            className,
+          )}
+        >
+          {children}
+        </div>
+      </MenubarPrimitive.Content>
     </MenubarPrimitive.Portal>
   );
 }
@@ -124,6 +170,7 @@ function MenubarItem({
     <MenubarPrimitive.Item
       data-slot="menubar-item"
       className={cn(
+        PRESSED_TRANSFORM_CLASS,
         'relative flex cursor-default select-none items-center rounded-md px-2 py-1.5 text-sm outline-hidden data-disabled:pointer-events-none data-disabled:opacity-50',
         'focus:bg-accent focus:text-accent-foreground',
         'data-[active=true]:bg-accent data-[active=true]:text-accent-foreground',
@@ -207,8 +254,24 @@ function MenubarSeparator({ className, ...props }: React.ComponentProps<typeof M
   );
 }
 
-function MenubarSub({ ...props }: React.ComponentProps<typeof MenubarPrimitive.Sub>) {
-  return <MenubarPrimitive.Sub data-slot="menubar-sub" {...props} />;
+// Mirrors the Sub's own open state so MenubarSubContent can gate its own
+// <AnimatePresence> - see the identical DialogOpenContext in dialog.tsx.
+// MenubarSub (unlike MenubarMenu above) does expose controlled
+// open/defaultOpen/onOpenChange, so useOpenState fits directly.
+const MenubarSubOpenContext = React.createContext(true);
+
+function MenubarSub({
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof MenubarPrimitive.Sub>) {
+  const [open, setOpen] = useOpenState(openProp, defaultOpen, onOpenChange);
+  return (
+    <MenubarSubOpenContext.Provider value={open}>
+      <MenubarPrimitive.Sub data-slot="menubar-sub" open={open} onOpenChange={setOpen} {...props} />
+    </MenubarSubOpenContext.Provider>
+  );
 }
 
 const MenubarShortcut = ({ className, ...props }: React.ComponentProps<'span'>) => {

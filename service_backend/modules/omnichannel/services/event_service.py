@@ -1,0 +1,551 @@
+"""Conversation events (plan 27 A3, S1) - the append-only audit trail over
+thread mutations. `record()` is the ONE seam every writer goes through
+(inbound auto-reopen/opened, the gateway contact-create, `patch_thread`'s
+status/assign branches, `lifecycle_service.move`, `MessageService._mark_agent_
+message`, `add_internal_note`) - it only `db.add()`s + `db.flush()`s, NEVER
+commits, so the event always rides the SAME unit of work as the mutation that
+caused it (AC-IVE-02): the caller's own commit persists both, and a rollback
+drops both.
+
+`to_items()` renders rows for the read route (`GET /{id}/events`), resolving
+every stored id (`actorUserId`, `actorExternalAgentId`, `fromValue`/`toValue`)
+TENANT-SCOPED - the polymorphic stored-id house rule (AC-IVE-10): an
+unresolvable/foreign id renders as an empty label, never another tenant's name.
+"""
+import logging
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from app.models.status import Status as CoreStatus
+from app.models.user import User
+
+from ..models import CloseReason, Contact, ConversationEvent, ConversationMessage
+from ..models import Status as ThreadStatus
+from ..schemas import ConversationEventItem
+
+logger = logging.getLogger(__name__)
+
+# The full event-type vocabulary (plan §Definitions) - kept here as the single
+# reference list; nothing in this module branches on membership except tests.
+EVENT_TYPES = (
+    "opened",
+    "closed",
+    "reopened",
+    "snoozed",
+    "unsnoozed",
+    "assigned",
+    "unassigned",
+    "first_agent_reply",
+    "lifecycle_changed",
+    "comment_added",
+)
+
+# The three event types that mark "an open cycle boundary" for the
+# first-agent-reply-once-per-cycle rule (AC-IVE-07).
+_CYCLE_MARKERS = ("opened", "reopened", "first_agent_reply")
+
+
+def record(
+    db: Session,
+    contact: Contact,
+    event_type: str,
+    *,
+    actor: Optional[User] = None,
+    actor_id: Optional[str] = None,
+    external_agent_id: Optional[str] = None,
+    from_value: Optional[str] = None,
+    to_value: Optional[str] = None,
+    close_reason_id: Optional[str] = None,
+    note: Optional[str] = None,
+    payload: Optional[dict] = None,
+    created_at: Optional[datetime] = None,
+    channel_id: Optional[str] = None,
+    suppress_workflow_event: bool = False,
+) -> ConversationEvent:
+    """Write one event row for `contact`. Adds to `db` and flushes (so the row
+    has an id + is visible to later queries in the SAME transaction) but never
+    commits - the caller's own unit of work owns the transaction.
+
+    `actor`/`actor_id` both resolve to a stored `actor_user_id` - validated
+    tenant-scoped BEFORE saving (AC-IVE-10): an id that does not belong to
+    `contact.tenant_id` is dropped (stored as NULL) rather than trusted, so a
+    forged/foreign id can never plant a cross-tenant name behind this row.
+
+    `created_at` (plan 33 S4, AC-MIG-42) - an explicit override for a
+    BACKFILLED event, which must carry the SOURCE timestamp, never `now()`.
+    Every live caller omits it and keeps getting the current instant; the
+    migration writer is the one caller that passes it.
+
+    `suppress_workflow_event` (plan 33 merge-with-sprint-4/31 fix, D-A6-8) -
+    `_emit_workflow_event` below is the plan sprint-4/31 seam that fires
+    `omnichannel_contact` `conversation_opened`/`_closed`/`_assigned`
+    workflow triggers for `opened`/`reopened`/`unsnoozed`/`closed`/
+    `assigned`/`unassigned` events; it did not exist when D-A6-8 (the
+    respond.io migration writer's hard "never fires a live seam" invariant)
+    was written, and the two share the exact same `record()` call. The
+    migration writer's derived-events backfill (`_backfill_contact_events`)
+    passes `suppress_workflow_event=True` on every call so a two-year
+    history import never queues 200k workflow runs; every OTHER caller
+    (live reopen/close/assign paths) omits it and keeps firing as before."""
+    resolved_actor_id: Optional[str] = None
+    if actor is not None:
+        resolved_actor_id = str(actor.id)
+    elif actor_id is not None:
+        resolved_actor_id = str(actor_id)
+    if resolved_actor_id is not None:
+        valid = (
+            db.query(User.id)
+            .filter(User.id == resolved_actor_id, User.tenant_id == contact.tenant_id)
+            .first()
+        )
+        if valid is None:
+            resolved_actor_id = None
+
+    row = ConversationEvent(
+        tenant_id=contact.tenant_id,
+        workspace_id=contact.workspace_id,
+        contact_id=contact.id,
+        event_type=event_type,
+        actor_user_id=resolved_actor_id,
+        actor_external_agent_id=external_agent_id,
+        from_value=from_value,
+        to_value=to_value,
+        close_reason_id=close_reason_id,
+        note=note,
+        payload_json=payload,
+        created_at=created_at or datetime.now(timezone.utc),
+    )
+    db.add(row)
+    db.flush()
+    if not suppress_workflow_event:
+        _emit_workflow_event(
+            db, contact, event_type,
+            actor=actor, actor_id=actor_id,
+            from_value=from_value, to_value=to_value,
+            close_reason_id=close_reason_id, note=note,
+            channel_id=channel_id, payload=payload,
+        )
+    return row
+
+
+# ── workflow trigger emissions (plan sprint-4/31, D-A5-1/D-A5-2, F4) ────────
+# The event-type allowlist that grows NEW workflow-trigger emissions off this
+# ONE seam. Every other event type this module writes (snoozed, comment_added,
+# first_agent_reply, lifecycle_changed) emits nothing here - lifecycle_changed
+# already rides `status_machine.transition`'s own `entity.status_changed`
+# emission (D-A5-3) and tags/fields ride `ContactProfileService.patch`'s own
+# `updated` emission - this function must never grow into a second general
+# entity-event bus.
+_OPENED_LIKE_EVENT_TYPES = {"opened", "reopened", "unsnoozed"}
+
+
+def _close_reason_label(db: Session, tenant_id: str, close_reason_id: Optional[str]) -> Optional[str]:
+    if not close_reason_id:
+        return None
+    row = (
+        db.query(CloseReason.name)
+        .filter(CloseReason.id == close_reason_id, CloseReason.tenant_id == tenant_id)
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _resolve_active_channel_id(db: Session, contact: Contact) -> Optional[str]:
+    """Plan 31 S3 review SF-1: `record()`'s callers (`patch_thread`'s manual
+    reopen/unsnooze, `omnichannel.open_conversation`) have no `channel_id` to
+    thread through - only the inbound webhook path does. Rather than make
+    every caller resolve it, fall back here to the contact's MOST RECENT
+    channel-bound message (tenant+contact scoped), so `trigger.channelId` and
+    the `omnichannel.conversation_opened` trigger's Channel filter work off
+    every "opened" path, not just inbound."""
+    row = (
+        db.query(ConversationMessage.channel_id)
+        .filter(
+            ConversationMessage.tenant_id == contact.tenant_id,
+            ConversationMessage.contact_id == contact.id,
+            ConversationMessage.channel_id.isnot(None),
+        )
+        .order_by(ConversationMessage.created_at.desc())
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _emit_workflow_event(
+    db: Session,
+    contact: Contact,
+    event_type: str,
+    *,
+    actor: Optional[User],
+    actor_id: Optional[str],
+    from_value: Optional[str],
+    to_value: Optional[str],
+    close_reason_id: Optional[str],
+    note: Optional[str],
+    channel_id: Optional[str],
+    payload: Optional[dict],
+) -> None:
+    """AC-WFP-08/09/10: buffers `omnichannel_contact` `conversation_opened` /
+    `_closed` / `_assigned` for the three (previously silent) conversation-
+    lifecycle event types. Buffered only (`emit_entity_event`), never
+    dispatched here - the caller's own commit drains it through the existing
+    after-commit hook (AC-WFP-17), so a slow/broken workflow can never break
+    the request that called `record()`."""
+    action: Optional[str] = None
+    extra: dict = {}
+    if event_type in _OPENED_LIKE_EVENT_TYPES:
+        action = "conversation_opened"
+        resolved_channel_id = (
+            channel_id if channel_id is not None else _resolve_active_channel_id(db, contact)
+        )
+        extra = {"isReopen": event_type != "opened", "channelId": resolved_channel_id}
+    elif event_type == "closed":
+        action = "conversation_closed"
+        extra = {
+            "closeReasonId": close_reason_id,
+            "closeReasonLabel": _close_reason_label(db, contact.tenant_id, close_reason_id),
+            "note": note,
+        }
+    elif event_type in ("assigned", "unassigned"):
+        action = "conversation_assigned"
+        p = payload or {}
+        if "assignedVia" in p:
+            # Native path (plan 28 S3/A8 team assignment, folded with plan
+            # 31/A5's `round_robin` mode at the merge): `patch_thread` already
+            # computed the authoritative value for this SAME payload dict
+            # ("manual" / "team_strategy" / whatever `assigned_via_override`
+            # stamped, e.g. "workflow") - trust it directly rather than
+            # re-inferring from `assigneeKind`, which the native path only
+            # ever sets to "user" (never "team"/"workflow"/"team_strategy"),
+            # so the old inference below silently collapsed every non-user
+            # native assign to "manual".
+            assigned_via = p["assignedVia"]
+        else:
+            # Embed path (external-agent assignment via a consumer API key) -
+            # its payload never carries `assignedVia`, only `assigneeKind`.
+            assignee_kind = p.get("assigneeKind")
+            assigned_via = "external" if assignee_kind == "external_agent" else "manual"
+        extra = {
+            "assigneeUserId": to_value if event_type == "assigned" else None,
+            "previousAssigneeUserId": from_value,
+            "assignedVia": assigned_via,
+        }
+    if action is None:
+        return
+    try:
+        from app.workflow_engine.entity_events import emit_entity_event
+
+        emit_entity_event(
+            db, "omnichannel_contact", action, contact,
+            tenant_id=contact.tenant_id, actor=actor, actor_id=actor_id, extra=extra,
+        )
+    except Exception:  # noqa: BLE001 - AC-WFP-17: never break the triggering request
+        logger.exception("workflow event buffering failed for %s on contact %s", action, contact.id)
+
+
+def is_first_reply_pending(db: Session, contact: Contact) -> bool:
+    """AC-IVE-07: pending iff the latest of (opened, reopened, first_agent_
+    reply) for this contact is NOT already `first_agent_reply` - including the
+    case where the contact has none of those three yet (no cycle marker at
+    all → the very first agent reply is always "pending")."""
+    latest = (
+        db.query(ConversationEvent)
+        .filter(
+            ConversationEvent.tenant_id == contact.tenant_id,
+            ConversationEvent.contact_id == contact.id,
+            ConversationEvent.event_type.in_(_CYCLE_MARKERS),
+        )
+        .order_by(ConversationEvent.created_at.desc(), ConversationEvent.id.desc())
+        .first()
+    )
+    if latest is None:
+        return True
+    return latest.event_type != "first_agent_reply"
+
+
+def list_for_contact(
+    db: Session,
+    contact_id: str,
+    tenant_id: str,
+    *,
+    page: int = 0,
+    page_size: int = 50,
+) -> Tuple[List[ConversationEvent], int]:
+    """Newest-first, paginated (AC-IVE-13)."""
+    q = db.query(ConversationEvent).filter(
+        ConversationEvent.tenant_id == tenant_id,
+        ConversationEvent.contact_id == contact_id,
+    )
+    total = q.count()
+    rows = (
+        q.order_by(ConversationEvent.created_at.desc(), ConversationEvent.id.desc())
+        .offset(page * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return rows, total
+
+
+def _label_map(db: Session, tenant_id: str, events: List[ConversationEvent]) -> Dict[str, str]:
+    """One batched, tenant-scoped id → label resolution covering every kind of
+    value a `from_value`/`to_value` can hold: a THREAD status id, a core
+    lifecycle status id, a native user id, or an external-agent id. ids are
+    UUIDs (collision-free across these concepts), so a single merged map is
+    safe and far simpler than branching per `event_type`.
+
+    B16 (round-3 codex triage) - the lifecycle branch additionally constrains
+    by `entity_type` + `scope_id` (workspace), mirroring `ConversationService.
+    _lifecycle_map`'s own precedent/comment: the lifecycle status machine is
+    SCOPED per workspace, so a status id that happens to belong to another
+    workspace of the SAME tenant (or a different scoped entity entirely) must
+    not resolve and render its label here (the polymorphic stored-id rule -
+    never resolve a stored id by bare tenant+id alone). All `events` passed in
+    are for ONE contact (`list_for_contact`'s caller), hence one workspace."""
+    from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
+
+    ids = set()
+    for e in events:
+        if e.from_value:
+            ids.add(e.from_value)
+        if e.to_value:
+            ids.add(e.to_value)
+    if not ids:
+        return {}
+    workspace_ids = {e.workspace_id for e in events if e.workspace_id}
+
+    labels: Dict[str, str] = {}
+    for s in (
+        db.query(ThreadStatus)
+        .filter(ThreadStatus.tenant_id == tenant_id, ThreadStatus.id.in_(ids))
+        .all()
+    ):
+        labels[s.id] = s.label
+    remaining = ids - set(labels)
+
+    if remaining and workspace_ids:
+        for s in (
+            db.query(CoreStatus)
+            .filter(
+                CoreStatus.tenant_id == tenant_id,
+                CoreStatus.entity_type == LIFECYCLE_ENTITY_TYPE,
+                CoreStatus.scope_id.in_(workspace_ids),
+                CoreStatus.id.in_(remaining),
+            )
+            .all()
+        ):
+            labels[s.id] = s.label
+        remaining = ids - set(labels)
+
+    if remaining:
+        for u in (
+            db.query(User).filter(User.tenant_id == tenant_id, User.id.in_(remaining)).all()
+        ):
+            labels[u.id] = u.name or u.email
+        remaining = ids - set(labels)
+
+    if remaining:
+        from .external_agent_service import ExternalAgentService
+
+        agents = ExternalAgentService(db).names(list(remaining), tenant_id)
+        for agent_id, agent in agents.items():
+            labels[agent_id] = agent.name
+
+    return labels
+
+
+def to_items(
+    db: Session, events: List[ConversationEvent], tenant_id: str
+) -> List[ConversationEventItem]:
+    """Map rows → the wire shape, resolving actor + from/to labels tenant-
+    scoped in ONE batched pass (AC-IVE-10, AC-IVE-13). `closeReasonName`
+    resolves the same way - a `close_reason_id` of another tenant/workspace
+    (should never happen, defense-in-depth) renders empty, never a foreign
+    reason's name (plan 27 A3, S2)."""
+    actor_user_ids = {e.actor_user_id for e in events if e.actor_user_id}
+    actor_names: Dict[str, str] = {}
+    if actor_user_ids:
+        for u in (
+            db.query(User)
+            .filter(User.tenant_id == tenant_id, User.id.in_(actor_user_ids))
+            .all()
+        ):
+            actor_names[u.id] = u.name or u.email
+
+    external_ids = {e.actor_external_agent_id for e in events if e.actor_external_agent_id}
+    agent_names: Dict[str, str] = {}
+    if external_ids:
+        from .external_agent_service import ExternalAgentService
+
+        for agent_id, agent in ExternalAgentService(db).names(list(external_ids), tenant_id).items():
+            agent_names[agent_id] = agent.name
+
+    value_labels = _label_map(db, tenant_id, events)
+
+    # B16 - close reasons are per-workspace (never a two-tier NULL-tenant
+    # row like statuses); scope by workspace too, not bare tenant+id, for the
+    # same reason as the lifecycle branch above.
+    workspace_ids = {e.workspace_id for e in events if e.workspace_id}
+    reason_ids = {e.close_reason_id for e in events if e.close_reason_id}
+    reason_names: Dict[str, str] = {}
+    if reason_ids and workspace_ids:
+        for r in (
+            db.query(CloseReason)
+            .filter(
+                CloseReason.tenant_id == tenant_id,
+                CloseReason.workspace_id.in_(workspace_ids),
+                CloseReason.id.in_(reason_ids),
+            )
+            .all()
+        ):
+            reason_names[r.id] = r.name
+
+    items: List[ConversationEventItem] = []
+    for e in events:
+        if e.actor_external_agent_id:
+            actor_name = agent_names.get(e.actor_external_agent_id)
+        elif e.actor_user_id:
+            actor_name = actor_names.get(e.actor_user_id)
+        else:
+            actor_name = None
+        items.append(
+            ConversationEventItem(
+                id=e.id,
+                eventType=e.event_type,
+                actorName=actor_name,
+                actorUserId=e.actor_user_id,
+                fromValue=e.from_value,
+                fromLabel=value_labels.get(e.from_value) if e.from_value else None,
+                toValue=e.to_value,
+                toLabel=value_labels.get(e.to_value) if e.to_value else None,
+                closeReasonId=e.close_reason_id,
+                closeReasonName=reason_names.get(e.close_reason_id) if e.close_reason_id else None,
+                note=e.note,
+                payload=e.payload_json,
+                createdAt=e.created_at,
+            )
+        )
+    return items
+
+
+def backfill_tenant(db: Session, tenant_id: str) -> Dict[str, int]:
+    """`install_tenant` (self-healing) + `update_tenant` backfill (AC-IVE-12):
+    every contact of this tenant that has NO events yet gets `opened` (at its
+    `created_at`), plus `closed`/`assigned` (at its `updated_at`) when its
+    CURRENT state already carries that fact - each carrying
+    `payload_json.backfilled = true`. Also fills `last_agent_message_at`
+    (AC-IVE-11) from each contact's own AGENT-message history. Idempotent: a
+    contact that already has an event, or already carries a non-null
+    `last_agent_message_at`, is left untouched - safe to call on every
+    install/update, including a tenant already fully backfilled.
+
+    Mirrors the Alembic migration's set-based SQL twin (§5.4) - this Python
+    function is what pytest actually exercises (module Alembic is a
+    Postgres-only no-op under the test suite); the migration is verified
+    separately on live Postgres.
+
+    Review round 1 (finding 4): batched to TWO queries over the whole
+    contact set (which contacts already have an event; the latest AGENT
+    message per contact missing `last_agent_message_at`) instead of one of
+    each per contact - a tenant with thousands of contacts was doing
+    thousands of round trips.
+    """
+    contacts = db.query(Contact).filter(Contact.tenant_id == tenant_id).all()
+    if not contacts:
+        return {"contactsBackfilled": 0, "eventsWritten": 0}
+
+    contact_ids = [c.id for c in contacts]
+
+    status_keys = {
+        s.id: s.key
+        for s in db.query(ThreadStatus)
+        .filter(ThreadStatus.tenant_id == tenant_id, ThreadStatus.scope == "THREAD")
+        .all()
+    }
+
+    # Batch 1: which contacts already have at least one event.
+    has_event_ids = {
+        r[0]
+        for r in db.query(ConversationEvent.contact_id)
+        .filter(
+            ConversationEvent.tenant_id == tenant_id,
+            ConversationEvent.contact_id.in_(contact_ids),
+        )
+        .distinct()
+        .all()
+    }
+
+    # Batch 2: latest AGENT message per contact, only for contacts that still
+    # need `last_agent_message_at` filled.
+    needs_last_agent_ids = [c.id for c in contacts if c.last_agent_message_at is None]
+    latest_agent_at: Dict[str, datetime] = {}
+    if needs_last_agent_ids:
+        latest_agent_at = {
+            r[0]: r[1]
+            for r in db.query(
+                ConversationMessage.contact_id, func.max(ConversationMessage.created_at)
+            )
+            .filter(
+                ConversationMessage.tenant_id == tenant_id,
+                ConversationMessage.contact_id.in_(needs_last_agent_ids),
+                ConversationMessage.sender_type == "AGENT",
+            )
+            .group_by(ConversationMessage.contact_id)
+            .all()
+        }
+
+    events_written = 0
+    contacts_touched = 0
+    for c in contacts:
+        if c.id not in has_event_ids:
+            db.add(
+                ConversationEvent(
+                    tenant_id=tenant_id,
+                    workspace_id=c.workspace_id,
+                    contact_id=c.id,
+                    event_type="opened",
+                    to_value=c.status_id,
+                    payload_json={"backfilled": True},
+                    created_at=c.created_at,
+                )
+            )
+            events_written += 1
+            if status_keys.get(c.status_id) == "CLOSED":
+                db.add(
+                    ConversationEvent(
+                        tenant_id=tenant_id,
+                        workspace_id=c.workspace_id,
+                        contact_id=c.id,
+                        event_type="closed",
+                        to_value=c.status_id,
+                        payload_json={"backfilled": True},
+                        created_at=c.updated_at,
+                    )
+                )
+                events_written += 1
+            assignee = c.assigned_user_id or c.assigned_external_agent_id
+            if assignee:
+                kind = "user" if c.assigned_user_id else "external_agent"
+                db.add(
+                    ConversationEvent(
+                        tenant_id=tenant_id,
+                        workspace_id=c.workspace_id,
+                        contact_id=c.id,
+                        event_type="assigned",
+                        to_value=assignee,
+                        payload_json={"backfilled": True, "assigneeKind": kind},
+                        created_at=c.updated_at,
+                    )
+                )
+                events_written += 1
+            contacts_touched += 1
+
+        if c.last_agent_message_at is None:
+            at = latest_agent_at.get(c.id)
+            if at is not None:
+                c.last_agent_message_at = at
+
+    db.flush()
+    return {"contactsBackfilled": contacts_touched, "eventsWritten": events_written}

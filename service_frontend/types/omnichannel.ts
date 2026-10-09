@@ -8,9 +8,18 @@
  */
 
 import type { UserStatus } from '@/types/user';
+import type { FilterGroup } from '@/types/resource';
+import type { BrandingTokens } from '@/types/branding';
 
-/** Channels the platform can connect. MVP builds WHATSAPP; others are later adapters. */
-export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'DOUYIN' | 'XIAOHONGSHU';
+/**
+ * Channels the platform can connect. Pruned to the four implemented adapters
+ * (plan 32 / A7a, D-A7-20; plan 34 / A7b adds `WEBCHAT`) - `DOUYIN` /
+ * `XIAOHONGSHU` had no adapter, no window policy and no capability record, so
+ * a picker offering them could be configured into a guaranteed runtime error
+ * (foolproof-UI). See `lib/channel-capabilities.ts` for the per-type
+ * capability/window record.
+ */
+export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'WEBCHAT';
 
 /** Connection lifecycle of a channel (maps to the static `statuses` table, CHANNEL scope). */
 export type ChannelStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'ERROR';
@@ -73,6 +82,22 @@ export interface Channel {
   lastVerifiedAt: string | null;
   /** Last WhatsApp Business Profile sync timestamp. */
   profileSyncedAt: string | null;
+  /**
+   * Routing key for a Messenger/Instagram channel (plan 32 / A7a) - the
+   * Facebook PAGE_ID for `FACEBOOK`, the Instagram professional account id
+   * for `INSTAGRAM`. Null on `WHATSAPP` (which uses `phoneNumberId` instead).
+   */
+  externalAccountId: string | null;
+  /** Display name for `externalAccountId` (the Page name / IG username). */
+  externalAccountName: string | null;
+  /**
+   * The 32-char opaque widget key for a `WEBCHAT` channel (plan 34 / A7b,
+   * D-A7B-25) - the only channel-identifying value that appears in a
+   * customer's public website source. Null on every other channel type. Not
+   * a secret (see `services/webchat-service.ts` for the widget SECRET, which
+   * never rides this object).
+   */
+  widgetKey: string | null;
   isTrashed: boolean;
   createdAt: string; // ISO
   updatedAt: string; // ISO
@@ -157,6 +182,48 @@ export interface MockWabaOption {
 }
 
 // ---------------------------------------------------------------------------
+// Plan 32 / A7a - Messenger + Instagram connect flow (`/onboarding/meta/*`).
+// ---------------------------------------------------------------------------
+
+/** A connectable Facebook Page (Messenger) or its linked Instagram
+ *  professional account (Instagram) - offered by the wizard's page-selection
+ *  step. A page already bound to a live channel is never offered. */
+export interface MetaPageOption {
+  id: string;
+  name: string;
+  connected: boolean;
+  /** Present only when connecting `INSTAGRAM` - the account linked to this page. */
+  igAccountId?: string;
+  igUsername?: string;
+}
+
+/** `POST /omnichannel/onboarding/meta/pages` input - exchanges the OAuth code
+ *  server-side; the token never reaches the browser (D-A7-15). */
+export interface ListMetaPagesInput {
+  channelType: Extract<ChannelType, 'FACEBOOK' | 'INSTAGRAM'>;
+  code: string;
+  redirectUri?: string;
+}
+
+/** `POST /omnichannel/onboarding/meta/pages` result - `sessionId` is the
+ *  opaque, short-lived, single-use handle the follow-up connect call spends. */
+export interface MetaPagesResult {
+  sessionId: string;
+  expiresAt: string; // ISO
+  pages: MetaPageOption[];
+}
+
+/** `POST /omnichannel/onboarding/meta/connect` input - finalizes the channel
+ *  for the page (or Instagram account) picked from `MetaPagesResult.pages`. */
+export interface MetaConnectInput {
+  sessionId: string;
+  workspaceId: string;
+  channelType: Extract<ChannelType, 'FACEBOOK' | 'INSTAGRAM'>;
+  pageId: string;
+  igAccountId?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Plan 05 - message processing (conversations, inbox, templates, quick replies)
 // ---------------------------------------------------------------------------
 
@@ -178,7 +245,13 @@ export type MessageType =
   | 'INTERACTIVE_REPLY'
   | 'LOCATION'
   | 'CONTACTS'
-  | 'REACTION';
+  | 'REACTION'
+  /** An inbound kind this build does not model as a first-class type
+   *  (Messenger's unmapped attachment kinds, Instagram's story reply/story
+   *  mention/media share/unsend/is_unsupported - plan 32 / A7a S4) - stored
+   *  as a placeholder, never dropped (AC-CHN-18/41). On the wire since S4;
+   *  added to the union in security review round 1 fix round (tsc gap). */
+  | 'UNSUPPORTED';
 
 /** The media-bearing kinds an agent can attach + send (plan 12 Slice 1). */
 export type MediaKind = 'image' | 'video' | 'audio' | 'voice' | 'document' | 'sticker';
@@ -194,6 +267,17 @@ export type ThreadStatus = 'OPEN' | 'SNOOZED' | 'CLOSED';
 export type ThreadPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
 
 /**
+ * What a web chat visitor typed into the pre-chat form - UNVERIFIED,
+ * visitor-declared, read-only (plan 34 / A7b, review round 1 B3). Stored on
+ * the channel identity, never on the contact's own `email`/`phone` columns.
+ */
+export interface VisitorProfile {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+}
+
+/**
  * A conversation thread = a contact + its thread metadata (mirrors backend
  * `contacts` - the contact IS the thread; messages hang off it).
  */
@@ -203,23 +287,83 @@ export interface ConversationThread {
   workspaceId: string;
   /** Display name resolved from first/last name, else the raw profile name. */
   name: string;
+  /** System fields (plan 25) - editable from the Contact panel Details tab. */
+  firstName: string | null;
+  lastName: string | null;
   phone: string | null;
+  email: string | null;
+  /** BCP-47 tag (e.g. "en", "zh-Hans"). */
+  language: string | null;
+  /** ISO-3166 alpha-2, upper-cased (e.g. "MY"). */
+  countryCode: string | null;
   avatarUrl: string | null;
   assignedUserId: string | null;
   assignedUserName: string | null;
+  /**
+   * Assigned CORE team (plan 28, roadmap A8) - a plain indexed id into
+   * `public.teams`, no cross-schema FK (mirrors `lifecycle_status_id`/
+   * BL-030), resolved tenant-scoped by the backend on every read.
+   * `assignedTeamName` is null for a foreign/stale/deleted id - never a
+   * guess.
+   */
+  assignedTeamId?: string | null;
+  assignedTeamName?: string | null;
   status: ThreadStatus;
   priority: ThreadPriority;
   /** Channel the latest message arrived on (drives the thread-list icon). */
   channelId: string | null;
   channelType: ChannelType;
-  /** 24h customer-service-window close time; null = never messaged in. */
+  /**
+   * 24h WhatsApp customer-service-window close time; null = never messaged
+   * in. A documented gateway field (guide 9.1/9.2) - keeps this EXACT
+   * meaning forever (D-A7-5, F4): it is a WhatsApp-only mirror, so it reads
+   * `null` on a Messenger/Instagram thread even though that thread has its
+   * own window (see `windowExpiresAt`).
+   */
   cswExpiresAt: string | null; // ISO
+  /**
+   * The messaging window for THIS thread's channel type (plan 32 / A7a) -
+   * generalizes `cswExpiresAt` to every channel type (`lib/channel-
+   * capabilities.ts` declares the window length per type). For a WHATSAPP
+   * thread this carries the SAME instant as `cswExpiresAt`.
+   */
+  windowExpiresAt: string | null; // ISO
+  /**
+   * The extended human-agent window close time (Messenger/Instagram only,
+   * D-A7-6) - null for a channel type with no human-agent extension
+   * (WhatsApp) or a thread that has never received a message.
+   */
+  humanAgentExpiresAt: string | null; // ISO
+  /**
+   * A web chat visitor's last socket-connect / session-start / message-post
+   * instant (plan 34 / A7b, D-A7B-19) - the presence fact that stands in for
+   * a messaging window on a `WEBCHAT` thread (which has none, D-A7B-18).
+   * Null for every other channel type and for a web chat visitor never seen.
+   * Wired to the real `ThreadItem.visitorLastSeenAt` field since slice S3.
+   */
+  visitorLastSeenAt?: string | null; // ISO
+  /**
+   * The UNVERIFIED name / email / phone a web chat visitor typed into the
+   * pre-chat form (plan 34 / A7b, review round 1 B3). Read-only everywhere:
+   * they are deliberately NOT the contact's own `email`/`phone`, which are
+   * inbound stitch keys an anonymous caller must not be able to set. Null on
+   * every other channel type, and on a web chat thread whose visitor was
+   * never asked (or never answered).
+   */
+  visitorProfile?: VisitorProfile | null;
   lastIncomingMessageAt: string | null; // ISO
   lastMessageAt: string | null; // ISO
   /** Last visible message body (thread-list preview; server-computed). */
   lastMessagePreview: string | null;
   /** Inbound messages since the agent last opened the thread. */
   unreadCount: number;
+  /** Registered custom-field values, keyed by `ContactField.key` (plan 25). */
+  customFields: Record<string, string | number | boolean | null>;
+  /** Tags attached to this contact (plan 25, AC-CDM-12). */
+  tags: ContactTagRef[];
+  /** Current lifecycle stage, or null before the module registers the entity
+   *  (pre-migration / entity not yet adopted). */
+  lifecycle: ContactLifecycleSummary | null;
   createdAt: string; // ISO
 }
 
@@ -236,6 +380,11 @@ export interface ConversationMessage {
   id: string;
   contactId: string;
   channelId: string | null;
+  /** The channel's type (plan 32 / A7a) - resolved the same way as
+   *  `ConversationThread.channelType`; null/absent for a legacy/internal
+   *  row with no channel (e.g. a comment). Optional so every pre-existing
+   *  mock/test fixture stays valid. */
+  channelType?: ChannelType | null;
   senderType: SenderType;
   senderId: string | null;
   /** Resolved display name for AGENT/SYSTEM authors (server-joined). */
@@ -257,6 +406,17 @@ export interface ConversationMessage {
     | LocationPayload
     | ContactsPayload
     | null;
+  /**
+   * True when this is a Messenger/Instagram inbound attachment whose short-
+   * lived CDN url expired before it could be fetched (plan 32 / A7a, D-A7-
+   * 12) - the message still landed, but there is no blob to render.
+   * `MessageMedia`/`MessageStructured` read this flag explicitly to render
+   * the SAME muted placeholder every missing-blob case renders, whether the
+   * row is a media type (IMAGE/VIDEO/...) or an UNSUPPORTED-typed row whose
+   * unmapped attachment kind also failed its fetch. False/absent on a
+   * message that was never media in the first place.
+   */
+  mediaUnavailable?: boolean;
   /** Emoji reaction chips on this message (plan 12 Slice 3). */
   reactions: MessageReaction[];
   externalMessageId: string | null;
@@ -416,13 +576,29 @@ export interface SendContactsInput {
   replyToMessageId?: string;
 }
 
-/** Inbox thread-list filters (left panel - not the Resource shell). */
+/** Sort order for the inbox list header (plan 27, AC-IVE-16). */
+export type ThreadSort = 'newest' | 'oldest' | 'unreplied_first' | 'longest_waiting';
+
+/** Inbox thread-list filters (left panel - not the Resource shell). Plan 27
+ *  adds the view-rail dimensions (`lifecycleStageIds`/`tagIds`/`channelIds`/
+ *  `unreplied`/`sort`/`viewId`) alongside the existing ones (AC-IVE-15). */
 export interface ThreadListQuery {
   workspaceId?: string;
   assignee?: 'all' | 'me' | 'unassigned';
   status?: ThreadStatus | 'ALL';
+  /** F2 (round-3 codex triage) - see `ConversationFilters.statusExplicit`. */
+  statusExplicit?: boolean;
   priority?: ThreadPriority | 'ALL';
   search?: string;
+  lifecycleStageIds?: string[];
+  tagIds?: string[];
+  channelIds?: string[];
+  unreplied?: boolean;
+  sort?: ThreadSort;
+  viewId?: string | null;
+  /** Team Inbox filter (plan 28, S2) - `GET /omnichannel/contacts` filters
+   *  server-side on `assigned_team_id`. */
+  teamId?: string | null;
 }
 
 /** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */
@@ -437,11 +613,948 @@ export type ConversationSocketEvent =
       reactorType: 'CONTACT' | 'AGENT';
       emoji: string;
       removed: boolean;
-    };
+    }
+  // Plan 29 (A4) S3 - published on every broadcast state/count change
+  // (created, scheduled, sending, each chunk's count advance, terminal);
+  // best-effort (a dead Redis never fails the send job, AC-BRD-45).
+  | { type: 'broadcast.updated'; broadcastId: string; status: BroadcastStatus; counts: BroadcastCounts };
 
 /** Result of an agent reaction (POST …/react). */
 export interface ReactionResult {
   targetMessageId: string;
   emoji: string;
   removed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 25 - contact data model (typed fields, tags, lifecycle on the status
+// engine). See documentation/plans/sprint-4/25-omnichannel-contact-data-model.md.
+// ---------------------------------------------------------------------------
+
+/** Custom contact-field value types (UAC Definitions - 8 total). */
+export type ContactFieldType =
+  | 'text'
+  | 'list'
+  | 'checkbox'
+  | 'email'
+  | 'number'
+  | 'url'
+  | 'date' // YYYY-MM-DD
+  | 'time'; // HH:MM
+
+/**
+ * `always` = rendered inline in the Contact panel Details tab (AC-CDM-35);
+ * `hidden` = registry-only (set via PATCH/workflow, never shown in the panel).
+ */
+export type ContactFieldVisibility = 'always' | 'hidden';
+
+/** Reserved system-field keys (UAC Definitions) - never a registrable custom
+ *  field key. Mirrors the backend reserved-key check (AC-CDM-02). */
+export const RESERVED_CONTACT_FIELD_KEYS: readonly string[] = [
+  'firstName',
+  'lastName',
+  'phone',
+  'email',
+  'language',
+  'countryCode',
+  'tags',
+  'lifecycle',
+  'profilePic',
+];
+
+/** A registered custom field (per workspace). Values live in
+ *  `ConversationThread.customFields[key]`. */
+export interface ContactField {
+  id: string;
+  workspaceId: string;
+  key: string;
+  label: string;
+  description: string | null;
+  type: ContactFieldType;
+  /** `list` type only - the selectable option strings. */
+  options: string[] | null;
+  visibility: ContactFieldVisibility;
+  sortOrder: number;
+  /** Contacts currently holding a non-null value for this field (delete
+   *  confirmation copy, AC-CDM-31). */
+  valuesCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateContactFieldInput {
+  key: string;
+  label: string;
+  description?: string | null;
+  type: ContactFieldType;
+  /** Required (>= 1) when `type === 'list'`. */
+  options?: string[];
+  visibility?: ContactFieldVisibility;
+}
+
+/** `key` and `type` are immutable after create (D6) - omit both from updates. */
+export interface UpdateContactFieldInput {
+  label?: string;
+  description?: string | null;
+  options?: string[];
+  visibility?: ContactFieldVisibility;
+  sortOrder?: number;
+}
+
+/** A tag (per workspace), attached to contacts via a replace-set PATCH. */
+export interface ContactTag {
+  id: string;
+  workspaceId: string;
+  name: string;
+  emoji: string | null;
+  color: string | null; // hex
+  description: string | null;
+  contactsCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateContactTagInput {
+  name: string;
+  emoji?: string | null;
+  color?: string | null;
+  description?: string | null;
+}
+
+export interface UpdateContactTagInput {
+  name?: string;
+  emoji?: string | null;
+  color?: string | null;
+  description?: string | null;
+}
+
+/** Compact tag ref carried on a thread/message item (AC-CDM-12). */
+export interface ContactTagRef {
+  id: string;
+  name: string;
+  emoji: string | null;
+  color: string | null;
+}
+
+/** The contact's current lifecycle stage, as carried on a `ThreadItem`
+ *  (AC-CDM-19) - `isWon` mirrors the status engine's `is_terminal`, `isLost`
+ *  mirrors `is_archived`. */
+export interface ContactLifecycleSummary {
+  statusId: string;
+  key: string;
+  label: string;
+  color: string | null;
+  isWon: boolean;
+  isLost: boolean;
+}
+
+/** One fireable outgoing edge from the contact's current stage (AC-CDM-18) -
+ *  the ONLY moves the "Move to" picker may offer (foolproof-UI). */
+export interface LifecycleMove {
+  edgeId: string;
+  toStatusId: string;
+  label: string;
+}
+
+/**
+ * Partial-merge contact PATCH (system fields + typed custom fields + tag
+ * replace-set). `customFields` value `null` clears that key; keys omitted from
+ * `customFields` are left unchanged (partial merge, NOT replace). `tagIds`
+ * REPLACES the contact's whole tag set (AC-CDM-06/07/10).
+ */
+export interface PatchContactInput {
+  firstName?: string | null;
+  lastName?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  language?: string | null;
+  countryCode?: string | null;
+  customFields?: Record<string, string | number | boolean | null>;
+  tagIds?: string[];
+  /** Assign (or clear, `null`) a CORE team on this thread (plan 28, roadmap
+   *  A8) - rides the same `PATCH /omnichannel/contacts/{id}` the rest of this
+   *  input does; native-only (403 for an embed/external-agent token). */
+  assignedTeamId?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 26 - Contacts module (list, segments, form, bulk, CSV import/export).
+// See documentation/plans/sprint-4/26-omnichannel-contacts-module.md. A2 adds
+// NO new contact entity - a "contact" is still the A1 `contacts` row (=
+// ConversationThread). ContactListItem is a SUBCLASS adding `channels[]`
+// (D-A2-11); the internal `/api/v1/omnichannel` gateway shapes are untouched.
+// ---------------------------------------------------------------------------
+
+/** One channel identity a contact has messaged through (`contact_channel_identities`,
+ *  D-A2-11) - the Channel column source, NEVER the last message's channel (a
+ *  manually created contact has no message and must not show a fabricated type). */
+export interface ContactChannelRef {
+  channelId: string;
+  channelType: ChannelType;
+  name: string;
+}
+
+/** A list row (plan 26 §5.1) - every `ConversationThread` (= A1 `ThreadItem`)
+ *  field PLUS the resolved channel identities. */
+export interface ContactListItem extends ConversationThread {
+  channels: ContactChannelRef[];
+}
+
+/** A saved, named filter tree on a workspace (D-A2-3) - stores the EXACT
+ *  `FilterGroup` shape the Resource shell's filter builder emits, applied in
+ *  SQL. Consumed as-is by A3 (inbox views) and A4 (broadcast audiences). */
+export interface ContactSegment {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string | null;
+  filter: FilterGroup;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+export interface CreateContactSegmentInput {
+  name: string;
+  description?: string | null;
+  filter: FilterGroup;
+}
+
+export interface UpdateContactSegmentInput {
+  name?: string;
+  description?: string | null;
+  filter?: FilterGroup;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 29 - Omnichannel Broadcasts v1 (roadmap A4). See
+// documentation/plans/sprint-4/29-omnichannel-broadcasts.md §5.2.
+// ---------------------------------------------------------------------------
+
+export type BroadcastStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'CANCELLED' | 'FAILED';
+
+/** How one WhatsApp template parameter slot is filled (D-A4-4 - structured,
+ *  never a merge-string micro-render; anti-SSTI by construction). */
+export type TemplateBinding =
+  | { source: 'static'; text: string }
+  | { source: 'contactField'; field: string; fallback: string };
+
+/** `TemplateBinding.field` whitelist (plan §5.2). */
+export const CONTACT_FIELD_BINDING_OPTIONS: { label: string; value: string }[] = [
+  { label: 'First name', value: 'firstName' },
+  { label: 'Last name', value: 'lastName' },
+  { label: 'Phone', value: 'phone' },
+  { label: 'Email', value: 'email' },
+  { label: 'Language', value: 'language' },
+  { label: 'Country code', value: 'countryCode' },
+  { label: 'Lifecycle stage', value: 'lifecycle' },
+];
+
+/** The audience CONFIGURATION - exactly one of a saved segment, an inline
+ *  filter, or an explicit contact-id list. Never a stored recipient list
+ *  until send time (D-A4-2). The three unused branches are `null` on the
+ *  real wire (`BroadcastAudienceOut` always emits all four keys), not an
+ *  absent key - `| null` here (and in `broadcast-schema.ts`'s zod shape)
+ *  matches that, so a real saved broadcast loaded back into the builder
+ *  validates instead of failing closed on "Expected string, received null"
+ *  (plan 29 S4 real-data wiring bug). */
+export interface BroadcastAudience {
+  kind: 'segment' | 'filter' | 'contacts';
+  segmentId?: string | null;
+  segmentName?: string | null;
+  filter?: FilterGroup | null;
+  contactIds?: string[] | null;
+}
+
+export interface BroadcastBindings {
+  header: TemplateBinding[];
+  body: TemplateBinding[];
+  buttons: TemplateBinding[];
+}
+
+export interface BroadcastCounts {
+  total: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  skipped: number;
+}
+
+export interface Broadcast {
+  id: string;
+  workspaceId: string;
+  name: string;
+  labels: string[];
+  channelId: string;
+  channelName: string;
+  audience: BroadcastAudience;
+  templateId: string;
+  templateName: string;
+  templateLanguage: string;
+  bindings: BroadcastBindings;
+  status: BroadcastStatus;
+  statusLabel: string;
+  scheduledAt: string | null; // ISO
+  startedAt: string | null; // ISO
+  finishedAt: string | null; // ISO
+  counts: BroadcastCounts;
+  jobId: string | null;
+  error: string | null;
+  createdByUserId: string | null;
+  createdByName: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+export interface CreateBroadcastInput {
+  name: string;
+  labels?: string[];
+  channelId: string;
+  audience: BroadcastAudience;
+  templateId: string;
+  bindings: BroadcastBindings;
+  scheduledAt?: string | null;
+}
+
+export type UpdateBroadcastInput = Partial<CreateBroadcastInput>;
+
+export type BroadcastRecipientState = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'skipped';
+
+export type BroadcastSkipReason =
+  | 'no_identity'
+  | 'duplicate'
+  | 'channel_inactive'
+  | 'cancelled'
+  | 'missing_variable';
+
+export interface BroadcastRecipient {
+  id: string;
+  contactId: string;
+  contactName: string;
+  phone: string | null;
+  state: BroadcastRecipientState;
+  skipReason?: BroadcastSkipReason;
+  errorCode?: string;
+  errorText?: string;
+  messageId?: string;
+  attemptedAt: string | null; // ISO
+}
+
+/** Create-form payload (D-A2-4) - `phone` is required + create-only; every
+ *  other field mirrors `PatchContactInput` plus the lifecycle/tags a brand
+ *  new contact needs up front. */
+export interface CreateContactInput {
+  firstName?: string | null;
+  lastName?: string | null;
+  phone: string;
+  email?: string | null;
+  language?: string | null;
+  countryCode?: string | null;
+  /** Defaults to the workspace's initial lifecycle stage when omitted. */
+  lifecycleStatusId?: string | null;
+  tagIds?: string[];
+  customFields?: Record<string, string | number | boolean | null>;
+}
+
+/** Per-record bulk-action outcome (D-A2-5) - never a bare "something went
+ *  wrong"; a failed id always carries its own reason. */
+export interface BulkResult {
+  ok: string[];
+  failed: { id: string; error: string }[];
+}
+
+export interface BulkAssignInput {
+  ids: string[];
+  assigneeUserId: string | null;
+}
+export interface BulkTagsInput {
+  ids: string[];
+  mode: 'add' | 'remove';
+  tagIds: string[];
+}
+export interface BulkLifecycleInput {
+  ids: string[];
+  toStatusId: string;
+}
+
+/** Export job request (D-A2-6a) - honours the EXACT query it was given
+ *  (an explicit `ids` selection wins over search/filter/segment/sort). */
+export interface ContactExportRequest {
+  columns: string[];
+  ids?: string[];
+  search?: string;
+  filter?: FilterGroup | null;
+  segment?: string | null;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
+}
+
+// ---------------------------------------------------------------------------
+// Plan 27 - inbox views, close reasons, conversation events, shortcuts. See
+// documentation/plans/sprint-4/27-omnichannel-inbox-views-events.md §5.1/§5.2.
+// ---------------------------------------------------------------------------
+
+/** Append-only conversation-event row (AC-IVE-01/13). Ten types (D-A3-1). */
+export type ConversationEventType =
+  | 'opened'
+  | 'closed'
+  | 'reopened'
+  | 'snoozed'
+  | 'unsnoozed'
+  | 'assigned'
+  | 'unassigned'
+  | 'first_agent_reply'
+  | 'lifecycle_changed'
+  | 'comment_added';
+
+/** One event on a thread's history, newest-first from `GET .../events`
+ *  (AC-IVE-13). `fromLabel`/`toLabel` are pre-resolved server-side (tenant-
+ *  scoped) so the feed never needs its own id -> label lookups. */
+export interface ConversationEvent {
+  id: string;
+  eventType: ConversationEventType;
+  actorName: string | null;
+  actorUserId: string | null;
+  fromValue: string | null;
+  fromLabel: string | null;
+  toValue: string | null;
+  toLabel: string | null;
+  closeReasonId: string | null;
+  closeReasonName: string | null;
+  note: string | null;
+  payload: Record<string, unknown> | null;
+  createdAt: string; // ISO
+}
+
+/** A per-workspace close reason (AC-IVE-25/26/27). */
+export interface CloseReason {
+  id: string;
+  workspaceId: string;
+  name: string;
+  sortOrder: number;
+  isActive: boolean;
+  /** Count of events referencing this reason - delete is blocked (409) while
+   *  this is > 0; the UI offers Deactivate instead (D-A3-13). */
+  usesCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateCloseReasonInput {
+  name: string;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+export interface UpdateCloseReasonInput {
+  name?: string;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+
+/** Close a thread with a required reason + optional note (AC-IVE-28/29). */
+export interface CloseThreadInput {
+  closeReasonId: string;
+  note?: string | null;
+}
+
+/**
+ * The typed, `extra="forbid"` saved-view filter (AC-IVE-18) - NOT a rule-engine
+ * tree (D-A3-2). `segmentId` is a reserved seam for A2 (plan 26), unused here.
+ */
+export interface InboxViewFilter {
+  statuses?: ThreadStatus[];
+  assignee?: 'all' | 'me' | 'unassigned' | 'user';
+  assigneeUserIds?: string[];
+  lifecycleStageIds?: string[];
+  tagIds?: string[];
+  channelIds?: string[];
+  priority?: ThreadPriority | 'ALL';
+  unreplied?: boolean;
+  sort?: ThreadSort;
+  segmentId?: string | null;
+  /** AC-TEM-46 (plan 28, roadmap A8) - a Team Inbox scope a saved view can
+   *  pin; validated tenant-scoped at save time. Views saved before this
+   *  slice have no `teamIds` key and keep working unchanged. */
+  teamIds?: string[];
+}
+
+/** A saved inbox view (AC-IVE-18/19). Own views need only `conversations.read`
+ *  to create/edit/delete; a SHARED view (or someone else's) additionally needs
+ *  `inbox_views.manage` (D-A3-11). */
+export interface InboxView {
+  id: string;
+  workspaceId: string;
+  name: string;
+  ownerUserId: string;
+  ownerName: string | null;
+  isShared: boolean;
+  filter: InboxViewFilter;
+  sortOrder: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateInboxViewInput {
+  name: string;
+  isShared: boolean;
+  filter: InboxViewFilter;
+}
+export interface UpdateInboxViewInput {
+  name?: string;
+  isShared?: boolean;
+  filter?: InboxViewFilter;
+  sortOrder?: number;
+}
+
+/**
+ * Business hours (plan 31 S6, D-A5-13/AC-WFP-55/63): a per-workspace weekly
+ * schedule + IANA timezone. A window whose `to` is lexically <= `from` is a
+ * valid OVERNIGHT window (ends the next day); `from === to` is rejected by
+ * the backend as a degenerate window.
+ */
+export const BUSINESS_HOURS_WEEKDAYS = [
+  'mon',
+  'tue',
+  'wed',
+  'thu',
+  'fri',
+  'sat',
+  'sun',
+] as const;
+export type BusinessHoursWeekday = (typeof BUSINESS_HOURS_WEEKDAYS)[number];
+
+export interface BusinessHoursWindow {
+  from: string; // HH:MM, 24h
+  to: string; // HH:MM, 24h
+}
+
+export type BusinessHoursWindows = Record<BusinessHoursWeekday, BusinessHoursWindow[]>;
+
+export interface BusinessHours {
+  workspaceId: string;
+  timezone: string | null;
+  windows: BusinessHoursWindows;
+}
+
+export interface UpdateBusinessHoursInput {
+  timezone: string;
+  windows: BusinessHoursWindows;
+}
+
+/** A published workflow the drawer's Shortcuts control may fire (AC-IVE-36). */
+export interface ShortcutItem {
+  workflowId: string;
+  name: string;
+}
+
+/** Response of firing a shortcut (AC-IVE-37). */
+export interface ShortcutRunResult {
+  runId: string;
+  status: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 28 (roadmap A8) - per-team assignment-pick strategy, one row per
+// (workspace, team). See `documentation/plans/sprint-4/28-teams-core-and-
+// omnichannel-assignment.md` §5.2 (AC-TEM-28).
+// ---------------------------------------------------------------------------
+
+export type TeamAssignmentStrategy = 'round_robin' | 'least_open';
+
+/** A team's assignment-pick strategy within one workspace - one row per
+ *  ACTIVE core team (review round 1, finding 4/5/6: the backend now returns
+ *  the full active-team roster merged with any configured settings, so this
+ *  is the ONLY source the tab needs - no separate `GET /teams` call). A
+ *  never-configured team defaults to `round_robin`/`isConfigured: false`/
+ *  `updatedAt: null`. */
+export interface TeamAssignmentSetting {
+  teamId: string;
+  teamName: string | null;
+  strategy: TeamAssignmentStrategy;
+  lastAssignedUserId: string | null;
+  updatedAt: string | null; // ISO, null when never configured
+  isConfigured: boolean;
+}
+// Plan 30 - Dashboard + Reports v1 (roadmap A9). See
+// documentation/plans/sprint-4/30-omnichannel-dashboard-reports.md §5.
+// No new fact tables - every shape below is an aggregate over
+// `conversation_events` + `conversation_messages` + `contacts` (D-A9-1).
+// ---------------------------------------------------------------------------
+
+export type ReportGranularity = 'hour' | 'day' | 'week' | 'month';
+
+export type ReportKey =
+  | 'conversations'
+  | 'responses'
+  | 'resolutions'
+  | 'messages'
+  | 'users'
+  | 'leaderboard'
+  | 'assignments';
+
+/**
+ * A bucket's `key` is already LOCAL (D-A9-11: `2026-03-01`, `2026-03-01T09`,
+ * `2026-W10`, `2026-03`) - the client formats the axis label from the key and
+ * NEVER re-applies a timezone. Only `startsAt`/`endsAt` are UTC instants.
+ */
+export interface ReportBucket {
+  key: string;
+  startsAt: string; // ISO Z
+  endsAt: string; // ISO Z
+}
+
+/** One named series, points aligned to `buckets` by index. */
+export interface ReportSeries {
+  key: string;
+  label: string;
+  points: number[];
+}
+
+/** Response-time / resolution-time reduction (Python-side, D-A9-9). */
+export interface DurationStats {
+  medianSeconds: number | null;
+  p90Seconds: number | null;
+  averageSeconds: number | null;
+  sampleCount: number;
+  /** How many datapoints were derived from messages rather than the
+   *  `first_agent_reply` event (D-A9-6) - carried for support, never
+   *  rendered as on-screen caveat copy (D10 of the plan's flagged list). */
+  derivedFromMessages?: number;
+}
+
+/** One lifecycle stage tile on the dashboard. */
+export interface DashboardLifecycleStage {
+  statusId: string;
+  key: string;
+  label: string;
+  color: string | null;
+  sortOrder: number;
+  count: number;
+  percent: number;
+}
+
+/** One row of the dashboard's "top agents" list. */
+export interface DashboardTopAgent {
+  userId: string;
+  name: string;
+  closedCount: number;
+  medianResponseSeconds: number | null;
+}
+
+export interface DashboardResponse {
+  timezone: string;
+  range: { from: string; to: string };
+  granularity: ReportGranularity;
+  buckets: ReportBucket[];
+  tiles: { open: number; assigned: number; unassigned: number; snoozed: number };
+  lifecycle: DashboardLifecycleStage[];
+  series: { opened: number[]; closed: number[] };
+  responseTotals: DurationStats;
+  resolutionTotals: DurationStats;
+  topAgents: DashboardTopAgent[];
+}
+
+/** The catalog entry `reports/meta` publishes for one report. */
+export interface ReportDescriptor {
+  key: ReportKey;
+  label: string;
+  supportsGroupBy: string[];
+  paginated: boolean;
+  exportable: boolean;
+}
+
+export interface ReportMeta {
+  reports: ReportDescriptor[];
+  granularities: ReportGranularity[];
+  dimensions: { team: { available: boolean } };
+}
+
+/** The query every dashboard/report call sends (D-A9-13: `teamId` stays out
+ *  until plan 28 lands - `reports/meta.dimensions.team.available` gates it). */
+export interface ReportFilters {
+  from: string; // YYYY-MM-DD, inclusive
+  to: string; // YYYY-MM-DD, inclusive
+  tz: string; // IANA, always `useDatetime().timeZone`
+  granularity?: ReportGranularity;
+  userId?: string | null;
+  channelId?: string | null;
+  groupBy?: string | null;
+}
+
+/** `reports/responses` distribution row (no `groupBy`). */
+export interface ResponseBucketRow {
+  bucket: string;
+  label: string;
+  count: number;
+  percent: number;
+}
+
+/** `reports/responses?groupBy=user` / `reports/resolutions?groupBy=user` row. */
+export interface DurationByUserRow {
+  userId: string;
+  name: string;
+  sampleCount: number;
+  medianSeconds: number | null;
+  p90Seconds: number | null;
+  averageSeconds: number | null;
+}
+
+/** `reports/resolutions` close-reason breakdown row (no `groupBy`). */
+export interface CloseReasonRow {
+  closeReasonId: string | null;
+  name: string | null;
+  count: number;
+  percent: number;
+}
+
+/** `reports/messages?groupBy=channel` row. */
+export interface MessageChannelRow {
+  channelId: string;
+  name: string;
+  channelType: ChannelType;
+  incoming: number;
+  outgoing: number;
+}
+
+/** `reports/users` (and the `reports/leaderboard` base) row. */
+export interface UserReportRow {
+  userId: string;
+  name: string;
+  teamName: string | null;
+  assignedCount: number;
+  closedCount: number;
+  uniqueContacts: number;
+  messagesSent: number;
+  commentsCount: number;
+  medianFirstResponseSeconds: number | null;
+  medianResolutionSeconds: number | null;
+}
+
+/** `reports/leaderboard` row - `reports/users` rows plus a dense rank. */
+export interface LeaderboardRow extends UserReportRow {
+  rank: number;
+}
+
+/** `reports/assignments` paginated log row. */
+export interface AssignmentLogRow {
+  id: string;
+  createdAt: string; // ISO Z
+  contactId: string;
+  contactName: string;
+  eventType: 'assigned' | 'unassigned';
+  previousAssigneeId: string | null;
+  previousAssigneeName: string | null;
+  assignedToId: string | null;
+  assignedToName: string | null;
+  source: 'workflow' | 'api' | 'agent';
+  actorUserId: string | null;
+  actorName: string | null;
+}
+
+export interface ConversationsReportTotals {
+  opened: number;
+  closed: number;
+  reopened: number;
+}
+export interface MessagesReportTotals {
+  incoming: number;
+  outgoing: number;
+}
+export interface UsersReportTotals {
+  userCount: number;
+}
+export interface AssignmentsReportTotals {
+  assigned: number;
+  unassigned: number;
+}
+
+/**
+ * The generic report envelope (plan §5.2). `TRow`/`TTotals` are supplied per
+ * report so every renderer works with a concrete shape - never `any`.
+ */
+export interface ReportResponse<TRow = object, TTotals = object> {
+  reportKey: ReportKey;
+  timezone: string;
+  range: { from: string; to: string };
+  granularity: ReportGranularity;
+  buckets: ReportBucket[];
+  series: ReportSeries[];
+  rows: TRow[];
+  totals: TTotals;
+  page?: number;
+  pageSize?: number;
+  total?: number;
+}
+
+/** `POST .../reports/{reportKey}/export` request body (mirrors the read
+ *  filters, D-A9-4). */
+export type ReportExportRequest = ReportFilters;
+
+// ---------------------------------------------------------------------------
+// Plan 34 / A7b - website chat channel (embeddable widget + visitor identity).
+// Admin-side types below; the visitor-side wire (`VisitorMessage`, the session
+// contract) is further down this section (S4). See documentation/plans/
+// sprint-4/34-omnichannel-channel-web-chat.md §5.1/§5.2 for the exact
+// contracts this mirrors.
+// ---------------------------------------------------------------------------
+
+/** `POST /omnichannel/onboarding/webchat/connect` input (AC-WEB-01/02). */
+export interface ConnectWebchatInput {
+  name: string;
+  workspaceId: string;
+  allowedOrigins: string[];
+}
+
+/** `POST /omnichannel/onboarding/webchat/connect` result - the 201 body IS a
+ *  `Channel`, plus the widget secret, revealed exactly once (AC-WEB-18). */
+export type ConnectWebchatResult = Channel & { widgetSecret: string };
+
+/** Launcher side + header/agent-name appearance (AC-WEB-04). */
+export interface WebchatAppearance {
+  /** Hex color, e.g. "#FF5A00". */
+  accentColor: string;
+  position: 'left' | 'right';
+  headerTitle: string;
+  agentDisplayName: string;
+}
+
+/** Fixed pre-chat capture toggles (D-A7B-23 - not a form-engine form). */
+export interface WebchatPreChatToggles {
+  askName: boolean;
+  askEmail: boolean;
+  askPhone: boolean;
+}
+
+/** `GET/PUT /omnichannel/channels/{id}/widget` (plan §5.1). Never carries the
+ *  widget secret - that is revealed exactly once, by `connect`/`rotateSecret`
+ *  only. */
+export interface WebchatConfig {
+  widgetKey: string;
+  allowedOrigins: string[];
+  /** Bumped by "sign out all visitors" - display only on the admin side. */
+  tokenEpoch: number;
+  appearance: WebchatAppearance;
+  greeting: string;
+  offlineGreeting: string;
+  preChat: WebchatPreChatToggles;
+  /** The exact install snippet the backend serves for this channel - the
+   *  Widget tab renders this string verbatim (AC-WEB-05), never rebuilding it
+   *  client-side. */
+  snippet: string;
+}
+
+/** `PUT /omnichannel/channels/{id}/widget` input - every field optional so a
+ *  partial save (e.g. rename only) never clobbers the rest (mirrors the
+ *  channel profile write-through PATCH shape). */
+export interface UpdateWebchatConfigInput {
+  allowedOrigins?: string[];
+  appearance?: Partial<WebchatAppearance>;
+  greeting?: string;
+  offlineGreeting?: string;
+  preChat?: Partial<WebchatPreChatToggles>;
+}
+
+/** `POST /omnichannel/channels/{id}/widget/rotate-secret` result - the new
+ *  secret, revealed exactly once (AC-WEB-06/19). */
+export interface RotateWidgetSecretResult {
+  widgetSecret: string;
+}
+
+/** `POST /omnichannel/channels/{id}/widget/sign-out-visitors` result - the
+ *  secret is UNCHANGED (D-A7B-6); only the epoch moves. */
+export interface SignOutVisitorsResult {
+  tokenEpoch: number;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 34 / A7b S4 - the visitor-side wire (the panel, `webchat-visitor-
+// service`). Mirrors plan §5.2 / `schemas.py`'s `VisitorMessage` /
+// `WebchatSessionResult` exactly - this is the ONLY shape a visitor's browser
+// ever receives, built exclusively by the backend's `webchat_projection.py`
+// (D-A7B-17, fail-closed allowlist).
+// ---------------------------------------------------------------------------
+
+/** A signed, short-TTL URL bound to one message id (D-A7B-20/AC-WEB-41) -
+ *  agent-to-visitor media only; a visitor's OWN messages never carry one. */
+export interface VisitorMedia {
+  url: string;
+  mimeType: string;
+  name: string | null;
+}
+
+/** A structured quick-reply button attached to an agent (or workflow) message. */
+export interface VisitorQuickReply {
+  id: string;
+  title: string;
+}
+
+/** The ONE shape a visitor ever sees for a message (D-A7B-17). No sender
+ *  identity beyond `agentName` - the CHANNEL's configured display name,
+ *  never a real user name or email. */
+export interface VisitorMessage {
+  id: string;
+  direction: 'in' | 'out';
+  text: string | null;
+  media: VisitorMedia | null;
+  quickReplies: VisitorQuickReply[] | null;
+  agentName: string | null;
+  createdAt: string;
+  status: 'sent' | 'delivered' | 'read' | 'failed' | null;
+}
+
+/** The `config` block of the session response - everything the panel needs
+ *  to render before a visitor sends a word. */
+export interface WebchatSessionConfig {
+  appearance: WebchatAppearance;
+  greeting: string;
+  offlineGreeting: string;
+  preChat: WebchatPreChatToggles;
+  agentDisplayName: string;
+  /** Never the raw tenant row name (white-label) - a tenant's own configured
+   *  branding `appName`, or `null` (render no tenant name at all). */
+  tenantName: string | null;
+  /** The curated `--foundryx-*` token diff (parity-pinned whitelist,
+   *  `lib/branding-tokens.ts`); `{}` for an unbranded tenant. */
+  brandTokens: Partial<BrandingTokens>;
+}
+
+/** `POST /public/omnichannel/webchat/{widgetKey}/session` 200 body. */
+export interface WebchatSessionResult {
+  token: string;
+  expiresAt: string;
+  visitorId: string;
+  /** Opens the EXISTING conversation WebSocket (`?workspaceId=&token=`). */
+  workspaceId: string;
+  config: WebchatSessionConfig;
+  online: boolean;
+  /** This visitor's history when the token already resolves a contact. */
+  messages: VisitorMessage[];
+}
+
+/** The fixed pre-chat capture VALUES (as opposed to `WebchatPreChatToggles`,
+ *  which fields are ASKED). Every field optional - only the toggled-on ones
+ *  are ever collected. */
+export interface WebchatPreChatValues {
+  name?: string;
+  email?: string;
+  phone?: string;
+}
+
+/** `POST /public/omnichannel/webchat/{widgetKey}/messages` body. `hp` is the
+ *  honeypot - a real visitor's browser never fills it in (AC-WEB-32). */
+export interface PostVisitorMessageInput {
+  text: string;
+  preChat?: WebchatPreChatValues;
+  hp?: string;
+}
+
+/** `GET /public/omnichannel/webchat/{widgetKey}/messages` 200 body - oldest
+ *  to newest, page-capped; also the poll-fallback shape (D-A7B-16). */
+export interface VisitorMessagesPage {
+  data: VisitorMessage[];
+  nextAfter: string | null;
+}
+
+/** The panel's own frame/postMessage discriminant for a WS frame relayed to
+ *  a visitor (S3's `{"type": "message.created", "message": VisitorMessage}` -
+ *  additive so a future frame type never breaks the panel's handler). */
+export interface VisitorSocketEvent {
+  type: 'message.created';
+  message: VisitorMessage;
 }

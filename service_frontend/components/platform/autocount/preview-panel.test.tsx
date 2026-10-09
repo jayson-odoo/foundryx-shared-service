@@ -107,3 +107,21 @@ describe('PreviewPanel (AC-14-20/22/26)', () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe('PreviewPanel task variant (plan 22 S2, AC-22-18)', () => {
+  it('promotes the overwrite count into the activation-gate strip', () => {
+    render(
+      <PreviewPanel preview={PREVIEWABLE} isLoading={false} error={null} hasRun variant="task" />,
+    );
+    expect(screen.getByTestId('preview-stat-extracted')).toHaveTextContent('172');
+    expect(screen.getByTestId('preview-stat-would create')).toHaveTextContent('134');
+    expect(screen.getByTestId('preview-stat-would update')).toHaveTextContent('38');
+    // ONE prediction changes live data in the fixture - the count is derived
+    // from the predictions, not a separate vendor number.
+    expect(screen.getByTestId('preview-stat-would overwrite')).toHaveTextContent('1');
+    expect(screen.getByTestId('preview-stat-would fail')).toHaveTextContent('0');
+    expect(screen.queryByTestId('preview-stat-total')).not.toBeInTheDocument();
+    // The overwrite cards are the same review surface.
+    expect(screen.getByTestId('preview-overwrite-AED_VSOFT:3')).toBeInTheDocument();
+  });
+});

@@ -4,35 +4,25 @@
  * Companion tabular view (sprint-2/01) - scan the statuses, drag-reorder the
  * display order (no manual sort numbers, D-UX), quick CSV export. The canvas
  * remains the graph editor; this is the list-shaped lens on the same data.
+ *
+ * AC-DLA-56 (T7): migrated off the raw `@/components/ui/table` primitive onto
+ * `DataGrid` + `DataGridTableDndRows` (the shared drag-reorder body,
+ * `components/platform/resource-list/resource-list.tsx`'s own `rowReorder`
+ * mode uses the same primitive) - sticky header + resizable + movable
+ * columns come free from `DataGrid`'s own defaults (AC-DLA-13), no override
+ * needed. Not on the full `ResourceList` shell: this is an in-memory,
+ * unpaginated, single-entity list with no search/filter of its own.
  */
-import { useEffect, useState } from 'react';
-import {
-  DndContext,
-  type DragEndEvent,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  arrayMove,
-  useSortable,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import { Download, GripVertical } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { useEffect, useMemo, useState } from 'react';
+import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
+import type { DragEndEvent } from '@dnd-kit/core';
+import { arrayMove } from '@dnd-kit/sortable';
+import { Download } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { Card, CardTable } from '@/components/ui/card';
+import { DataGrid } from '@/components/ui/data-grid';
+import { DataGridTableDndRowHandle, DataGridTableDndRows } from '@/components/ui/data-grid-table-dnd-rows';
 import { StatusBadge, colorToHex, colorToTone } from '@/components/platform/status-badge';
 import type { StatusNodeData } from '@/types/status-engine';
 
@@ -74,78 +64,6 @@ function exportCsv(statuses: StatusNodeData[], entityLabel: string) {
   URL.revokeObjectURL(link.href);
 }
 
-function SortableRow({
-  status,
-  canManage,
-  onClick,
-}: {
-  status: StatusNodeData;
-  canManage: boolean;
-  onClick: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: status.id,
-  });
-
-  return (
-    // Raw <tr> (TableRow doesn't forward refs) styled to match table-row.
-    <tr
-      ref={setNodeRef}
-      data-slot="table-row"
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn(
-        'border-b transition-colors [&:has(td):hover]:bg-muted/50',
-        isDragging ? 'relative z-10 bg-accent' : 'cursor-pointer',
-      )}
-      onClick={onClick}
-      data-testid={`status-row-${status.key}`}
-    >
-      <TableCell className="w-10">
-        {canManage && (
-          <button
-            type="button"
-            className="cursor-grab text-muted-foreground"
-            aria-label={`Reorder ${status.label}`}
-            onClick={(e) => e.stopPropagation()}
-            {...attributes}
-            {...listeners}
-          >
-            <GripVertical className="size-4" />
-          </button>
-        )}
-      </TableCell>
-      <TableCell>
-        <StatusBadge
-          status={status.key}
-          registry={{
-            [status.key]: {
-              label: status.label,
-              tone: colorToTone(status.color),
-              hex: colorToHex(status.color),
-            },
-          }}
-        />
-      </TableCell>
-      <TableCell className="text-muted-foreground">{status.key}</TableCell>
-      <TableCell>
-        <div className="flex flex-wrap gap-1">
-          {flagSummary(status).map((flag) => (
-            <Badge key={flag} variant="secondary" appearance="light" size="sm">
-              {flag}
-            </Badge>
-          ))}
-          {!status.isActive && (
-            <Badge variant="destructive" appearance="light" size="sm">
-              Inactive
-            </Badge>
-          )}
-        </div>
-      </TableCell>
-      <TableCell className="text-end tabular-nums">{status.recordCount}</TableCell>
-    </tr>
-  );
-}
-
 export function StatusTable({
   statuses,
   canManage,
@@ -156,7 +74,86 @@ export function StatusTable({
   const [rows, setRows] = useState(statuses);
   useEffect(() => setRows(statuses), [statuses]);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const columns = useMemo<ColumnDef<StatusNodeData>[]>(
+    () => [
+      {
+        id: 'drag',
+        header: () => null,
+        cell: ({ row }) =>
+          canManage ? (
+            <DataGridTableDndRowHandle
+              rowId={row.id}
+              ariaLabel={`Reorder ${row.original.label}`}
+            />
+          ) : null,
+        size: 44,
+        enableSorting: false,
+        enableResizing: false,
+        enableHiding: false,
+        meta: { reorderable: false, utility: true },
+      },
+      {
+        id: 'status',
+        header: 'Status',
+        cell: ({ row }) => {
+          const status = row.original;
+          return (
+            <StatusBadge
+              status={status.key}
+              registry={{
+                [status.key]: {
+                  label: status.label,
+                  tone: colorToTone(status.color),
+                  hex: colorToHex(status.color),
+                },
+              }}
+            />
+          );
+        },
+      },
+      {
+        id: 'key',
+        header: 'Key',
+        accessorKey: 'key',
+        cell: ({ row }) => <span className="text-muted-foreground">{row.original.key}</span>,
+      },
+      {
+        id: 'behavior',
+        header: 'Behavior',
+        cell: ({ row }) => {
+          const status = row.original;
+          return (
+            <div className="flex flex-wrap gap-1">
+              {flagSummary(status).map((flag) => (
+                <Badge key={flag} variant="secondary" appearance="light" size="sm">
+                  {flag}
+                </Badge>
+              ))}
+              {!status.isActive && (
+                <Badge variant="destructive" appearance="light" size="sm">
+                  Inactive
+                </Badge>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        id: 'records',
+        header: 'Records',
+        accessorKey: 'recordCount',
+        meta: { headerClassName: 'text-end', cellClassName: 'text-end tabular-nums' },
+      },
+    ],
+    [canManage],
+  );
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    getRowId: (row) => row.id,
+    getCoreRowModel: getCoreRowModel(),
+  });
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -169,42 +166,19 @@ export function StatusTable({
   };
 
   return (
-    <div className="flex flex-col gap-2.5">
-      <div className="flex items-center justify-end">
-        <Button variant="outline" size="sm" onClick={() => exportCsv(rows, entityLabel)}>
-          <Download className="size-3.5" /> Export CSV
-        </Button>
+    <DataGrid table={table} recordCount={rows.length} onRowClick={onRowClick}>
+      <div className="flex flex-col gap-2.5">
+        <div className="flex items-center justify-end">
+          <Button variant="outline" size="sm" onClick={() => exportCsv(rows, entityLabel)}>
+            <Download className="size-3.5" /> Export CSV
+          </Button>
+        </div>
+        <Card>
+          <CardTable>
+            <DataGridTableDndRows handleDragEnd={handleDragEnd} dataIds={rows.map((r) => r.id)} />
+          </CardTable>
+        </Card>
       </div>
-      <div className="rounded-xl border border-border">
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10" />
-                <TableHead>Status</TableHead>
-                <TableHead>Key</TableHead>
-                <TableHead>Behavior</TableHead>
-                <TableHead className="text-end">Records</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <SortableContext
-                items={rows.map((r) => r.id)}
-                strategy={verticalListSortingStrategy}
-              >
-                {rows.map((status) => (
-                  <SortableRow
-                    key={status.id}
-                    status={status}
-                    canManage={canManage}
-                    onClick={() => onRowClick(status)}
-                  />
-                ))}
-              </SortableContext>
-            </TableBody>
-          </Table>
-        </DndContext>
-      </div>
-    </div>
+    </DataGrid>
   );
 }

@@ -1,0 +1,69 @@
+# Cooldown / re-attach / gateway auth transcripts (curl, verbatim)
+
+## Re-attach while building (AC-10-88), operator route
+
+Product build for SRT started 2026-09-20T09:45:51Z (snapshot 504088ab-c9ad-4d73-9632-43b49484c3d1).
+While it was still `building`, the SAME build request was re-issued:
+
+    POST /autocount/pull/snapshots {"companyId":"<SRT>","entityType":"product"}
+    -> HTTP 202
+    {"id":"504088ab-c9ad-4d73-9632-43b49484c3d1","entityType":"product","companyId":"0e6f5c95-b099-4a1f-8de9-425b63f561b4",
+     "companyCode":"SRT","status":"building", ...}
+    (0.015s wall time)
+
+Same snapshotId returned instantly (no second extraction started) - matches AC-10-88.
+
+## Build cooldown, operator route (AC-10-26)
+
+SRT stock_balance finished (extractedAt 2026-09-20T10:04:54.813684Z). At 2026-09-20T10:05:38Z
+(44s later, inside the 60s window):
+
+    POST /autocount/pull/snapshots {"companyId":"<SRT>","entityType":"stock_balance"}
+    -> HTTP 429
+    {"detail":"A snapshot for this entity was built less than 60 seconds ago. Try again shortly."}
+    Retry-After: 16
+
+16s remaining matches 60 - 44 = 16 exactly.
+
+NOTE: the S6 brief text said "-> 409 with the A6 code" for this probe; the ACTUAL, code-defined
+status for both the operator route (`PullBuildCooldownError` -> `routers/pull.py`'s `_raise`) and
+the gateway (`PullGatewayError(429, "TOO_MANY_BUILDS", ...)`) is 429 Too Many Requests, not 409 -
+409 is reserved for `PUSH_ACTIVE`/`PULL_NOT_ENABLED`/`AMBIGUOUS_COMPANY`. Recorded as a brief-text
+correction, not an application defect (the code and the plan's own Appendix A6 agree on 429 for
+`TOO_MANY_BUILDS`).
+
+## Build cooldown, public gateway (AC-10-26, Appendix A6)
+
+Same SRT stock_balance triple, gateway route, immediately after the operator-route probe above:
+
+    POST /api/v1/autocount/snapshots {"companyCode":"SRT","entity":"stock_balances"}
+    X-API-Key: <the issued pull key>
+    -> HTTP 429
+    {"code":"TOO_MANY_BUILDS","message":"A build was requested for this book/entity less than 60 seconds ago.",
+     "companyCode":"SRT","entity":"stock_balances"}
+
+Matches Appendix A6's flat envelope exactly.
+
+## Gateway auth negative probes
+
+    GET /api/v1/autocount/snapshots/nonexistent-id   (valid key)
+    -> HTTP 404 {"code":"UNKNOWN_SNAPSHOT","message":"Unknown snapshot, or not yours.","companyCode":null,"entity":null}
+
+    GET /api/v1/autocount/snapshots/504088ab-...      (no X-API-Key header)
+    -> HTTP 401 {"code":"INVALID_API_KEY","message":"Missing, malformed, unknown or revoked key.","companyCode":null,"entity":null}
+
+    GET /api/v1/autocount/snapshots/504088ab-...      (X-API-Key: fxa_live_bogus)
+    -> HTTP 401 {"code":"INVALID_API_KEY","message":"Missing, malformed, unknown or revoked key.","companyCode":null,"entity":null}
+
+## Gateway-triggered BUILD (not just read) - SRT product, fresh extraction
+
+    2026-09-20T10:05:55Z
+    POST /api/v1/autocount/snapshots {"companyCode":"SRT","entity":"products"}
+    X-API-Key: <key>
+    -> (blocked for 8m47.86s - see README "Gateway event-loop-blocking defect")
+    HTTP 202
+    {"snapshotId":"c52df8df-6999-4097-825b-5e150e223692","status":"ready","entity":"products","companyCode":"SRT"}
+
+Note the response body's `status` is already `"ready"` on a `202 Accepted` - because, by the time
+the HTTP response is constructed, the entire synchronous build already completed inside the same
+request/coroutine. A conventional `202 Accepted -> poll for ready` client would not expect this.

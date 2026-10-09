@@ -69,7 +69,10 @@ function evalRule<T>(row: T, rule: FilterRule, adapter: QueryAdapter<T>): boolea
   return evalGroup(row, rule, adapter);
 }
 
-function evalGroup<T>(row: T, group: FilterGroup, adapter: QueryAdapter<T>): boolean {
+/** Exported for standalone (non-list) filter evaluation - e.g. the plan 29
+ *  Broadcasts audience preview evaluates a saved segment / inline filter
+ *  against the mock contact set without running a whole `runQuery`. */
+export function evalGroup<T>(row: T, group: FilterGroup, adapter: QueryAdapter<T>): boolean {
   if (!group.rules.length) return true;
   return group.combinator === 'and'
     ? group.rules.every((r) => evalRule(row, r, adapter))

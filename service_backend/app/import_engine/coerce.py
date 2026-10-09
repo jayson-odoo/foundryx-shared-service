@@ -9,6 +9,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional, Tuple
 
+from .sanitize import _DANGEROUS_PREFIXES
+
 Result = Tuple[Any, Optional[str]]
 
 _TRUE = {"true", "yes", "y", "1"}
@@ -19,10 +21,26 @@ def _empty(value: Any) -> bool:
     return value is None or (isinstance(value, str) and value.strip() == "")
 
 
+def _strip_formula_guard(s: str) -> str:
+    """Undo `sanitize.sanitize_cell`'s own `'` prefix (plan 26 review round 2,
+    nit 8) - our OWN generated exports/templates prepend `'` to any cell
+    starting with `= + - @` / tab / CR (formula-injection guard), and a CSV
+    genuinely stores that `'` as a literal character (unlike a native XLSX
+    cell's text-format flag) - so re-importing one of our own files must
+    strip exactly ONE leading `'` to round-trip the ORIGINAL value, house-
+    wide for every text column (not just contacts). Only strips when the
+    character right after the `'` is one of the guarded prefixes - a
+    genuine value that happens to start with an apostrophe (`'Ohana Co`)
+    is untouched."""
+    if len(s) >= 2 and s[0] == "'" and s[1] in _DANGEROUS_PREFIXES:
+        return s[1:]
+    return s
+
+
 def coerce_string(value: Any) -> Result:
     if _empty(value):
         return None, None
-    return (str(value).strip(), None)
+    return (_strip_formula_guard(str(value).strip()), None)
 
 
 def coerce_integer(value: Any) -> Result:

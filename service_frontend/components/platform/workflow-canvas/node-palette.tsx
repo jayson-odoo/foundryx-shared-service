@@ -6,17 +6,30 @@
  * the growing catalog stays compact) with a search box that filters across all
  * sections and auto-expands matches. Each item is a dnd-kit draggable AND a
  * click-to-add button - click is the E2E path (dnd-kit pointer sensors aren't
- * drivable by Playwright's dragTo - template-engine lesson); drag is the
- * nicety. A trigger is disabled once one exists (one trigger per workflow, D2).
+ * drivable by scripted mouse-event drag automation - template-engine
+ * lesson); drag is the nicety. Not asserted in jsdom; the drag/drop-onto-
+ * canvas behaviour needs a recorded agent-browser check in any slice that
+ * touches it. A trigger is disabled once one exists (one trigger per
+ * workflow, D2).
  */
 import { useMemo, useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';
-import { ChevronDown, Search, Zap } from 'lucide-react';
-import { ACTION_CATALOG, IF_CATALOG, TRIGGER_CATALOG } from '@/lib/workflow-catalog';
+import { ChevronDown, Search, TriangleAlert, Zap } from 'lucide-react';
+import {
+  ACTION_CATALOG,
+  IF_CATALOG,
+  TRIGGER_CATALOG,
+  deniedNodePermissions,
+  isNodeTypeRegistered,
+  isPermissionDenied,
+} from '@/lib/workflow-catalog';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Input } from '@/components/ui/input';
+import { ClampedText } from '@/components/platform/clamped-text';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useInstalledModules } from '@/hooks/use-app-store';
-import type { NodeCatalogEntry } from '@/types/workflows';
+import type { NodeCatalogEntry, WorkflowCatalogStatus } from '@/types/workflows';
 import { WORKFLOW_NODE_ICONS } from './workflow-icons';
 
 /** A `module`-tagged entry is visible only while that module is ACTIVE for the
@@ -52,6 +65,7 @@ function PaletteItem({ entry, disabled, onAdd }: PaletteItemProps) {
       disabled={disabled}
       onClick={() => !disabled && onAdd(entry.type)}
       className={cn(
+        PRESSED_CLASS,
         'flex w-full items-center gap-2.5 rounded-lg border border-input bg-background p-2.5 text-left transition-colors',
         disabled ? 'cursor-not-allowed opacity-50' : 'cursor-grab hover:border-primary',
         isDragging && 'opacity-40',
@@ -64,9 +78,7 @@ function PaletteItem({ entry, disabled, onAdd }: PaletteItemProps) {
       </span>
       <span className="min-w-0">
         <span className="block text-xs font-medium text-foreground">{entry.label}</span>
-        <span className="block truncate text-[11px] leading-tight text-muted-foreground">
-          {entry.description}
-        </span>
+        <ClampedText text={entry.description} lines={2} className="text-2xs leading-tight text-muted-foreground" />
       </span>
     </button>
   );
@@ -92,25 +104,90 @@ export interface NodePaletteProps {
   hasTrigger: boolean;
   disabled: boolean;
   onAdd: (type: string) => void;
+  /** Permission snapshot supplied by the page. Defaults true for isolated UI use. */
+  canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
+  /** Every trigger/action type the backend registry currently resolves
+   * (`GET /workflows/metadata`, plan 31 S3 review B-4) - a catalog entry
+   * absent here is OMITTED entirely (never shown-then-disabled). */
+  registeredNodeTypes?: string[];
+  /** Load state of that metadata call. `loading` shows a skeleton, `error`
+   * shows an inline retry-less failure state - never a silently empty
+   * palette (review round 2, R-2). Defaults to `ready` for isolated UI use. */
+  catalogStatus?: WorkflowCatalogStatus;
 }
 
-export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
+export function NodePalette({
+  hasTrigger,
+  disabled,
+  onAdd,
+  canCode = true,
+  canHttp = true,
+  registeredNodeTypes,
+  catalogStatus = 'ready',
+}: NodePaletteProps) {
   const [query, setQuery] = useState('');
   // Sections collapsed by default - the catalog is long; expand on click/search.
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const { isActive } = useInstalledModules();
-
-  const sections: PaletteSection[] = useMemo(
-    () => [
-      { title: 'Triggers', entries: visibleEntries(TRIGGER_CATALOG, isActive), itemsDisabled: hasTrigger },
-      { title: 'Logic', entries: IF_CATALOG },
-      { title: 'Actions', entries: visibleEntries(ACTION_CATALOG, isActive) },
-    ],
-    [hasTrigger, isActive],
+  const denied = useMemo(
+    () => deniedNodePermissions({ code: canCode, http: canHttp }),
+    [canCode, canHttp],
   );
+
+  // Logic = the IF node + any action catalogued under the "Logic" category
+  // (Wait, Business hours - D-A5-19) - flow-control actions live with the
+  // other branching/pausing primitive, not buried in the long Actions list.
+  const sections: PaletteSection[] = useMemo(() => {
+    const registered = <T extends NodeCatalogEntry>(entries: T[]) =>
+      entries.filter((e) => isNodeTypeRegistered(e, registeredNodeTypes));
+    const actions = registered(visibleEntries(ACTION_CATALOG, isActive));
+    return [
+      {
+        title: 'Triggers',
+        entries: registered(visibleEntries(TRIGGER_CATALOG, isActive)),
+        itemsDisabled: hasTrigger,
+      },
+      {
+        title: 'Logic',
+        entries: [...IF_CATALOG, ...actions.filter((e) => e.category === 'Logic')],
+      },
+      { title: 'Actions', entries: actions.filter((e) => e.category !== 'Logic') },
+    ];
+  }, [hasTrigger, isActive, registeredNodeTypes]);
 
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;
+
+  if (catalogStatus === 'loading') {
+    return (
+      <div className="flex flex-col gap-3" data-testid="node-palette-loading">
+        <Skeleton className="h-8 w-full" />
+        {[0, 1, 2].map((row) => (
+          <div key={row} className="flex flex-col gap-1.5">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (catalogStatus === 'error') {
+    return (
+      <div
+        className="flex flex-col items-center gap-2 px-1 py-6 text-center"
+        data-testid="node-palette-error"
+      >
+        <TriangleAlert className="size-5 text-muted-foreground" />
+        <p className="text-xs text-muted-foreground">
+          The node catalog could not be loaded.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-3" data-testid="node-palette">
@@ -136,7 +213,7 @@ export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
               type="button"
               data-testid={`palette-section-${section.title.toLowerCase()}`}
               onClick={() => setOpen((s) => ({ ...s, [section.title]: !s[section.title] }))}
-              className="flex items-center justify-between rounded-md px-0.5 py-1 text-left"
+              className={cn(PRESSED_CLASS, 'flex items-center justify-between rounded-md px-0.5 py-1 text-left')}
               aria-expanded={Boolean(expanded)}
             >
               <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -152,10 +229,14 @@ export function NodePalette({ hasTrigger, disabled, onAdd }: NodePaletteProps) {
             </button>
             {expanded &&
               entries.map((entry) => (
-                <PaletteItem
-                  key={entry.type}
-                  entry={entry}
-                  disabled={disabled || (section.itemsDisabled ?? false)}
+                  <PaletteItem
+                    key={entry.type}
+                    entry={entry}
+                    disabled={
+                      disabled ||
+                      (section.itemsDisabled ?? false) ||
+                      isPermissionDenied(entry, denied)
+                    }
                   onAdd={onAdd}
                 />
               ))}

@@ -11,6 +11,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, LoaderCircle, Play, TriangleAlert } from 'lucide-react';
+import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import {
   Dialog,
   DialogBody,
@@ -27,6 +28,9 @@ import {
   AlertIcon,
   AlertTitle,
 } from '@/components/ui/alert';
+import { SearchSelect } from '@/components/platform/search-select';
+import { DataGrid } from '@/components/ui/data-grid';
+import { DataGridTable } from '@/components/ui/data-grid-table';
 import { cn } from '@/lib/utils';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
 import type {
@@ -40,12 +44,29 @@ export interface MappingSimulatorProps {
   onOpenChange: (open: boolean) => void;
   /** The CURRENT draft deliverable rows - sent so unsaved edits preview. */
   rows: AutocountMappingWriteRow[];
-  /** Run the whole mapping over the mock record (writes nothing). */
+  /** Run the whole mapping over the mock record (writes nothing). `lines`
+   *  (sprint-5/02) - a document's fetched line records for the picked
+   *  header. */
   onSimulate: (
     record: Record<string, unknown>,
     rows: AutocountMappingWriteRow[],
+    lines?: Array<Record<string, unknown>>,
   ) => Promise<AutocountSimulateResult>;
   entityLabel?: string;
+  /**
+   * Document entities only (sprint-5/02, AC-02-22) - the header query's LAST
+   * `Test query` preview rows. Presence switches the dialog into document
+   * mode: pick a real header (never hand-type JSON) by its key columns,
+   * fetch its lines, then simulate header + lines + aggregates + status.
+   * Undefined/empty = the master-entity free-JSON record editor (unchanged).
+   */
+  headerPreviewRows?: Array<Record<string, unknown>>;
+  /** The header query's key columns - the picker's label + the value bound
+   *  as `:doc_key` when fetching lines. */
+  headerKeyColumns?: string[];
+  /** Fetch the picked header's lines (re-runs the line query bound to its
+   *  key). Required alongside `headerPreviewRows`. */
+  onFetchLines?: (docKey: string) => Promise<Array<Record<string, unknown>>>;
 }
 
 /** A flat starting skeleton from the top-level (non-dotted) source paths, so the
@@ -64,24 +85,29 @@ function renderValue(value: unknown): string {
   return String(value);
 }
 
-function FieldResultRow({ field }: { field: AutocountSimulateFieldResult }) {
-  return (
-    <tr className="border-b align-top last:border-0">
-      <td className="px-2 py-1.5">
-        <span className="font-medium">{humanizeFieldKey(field.canonicalField)}</span>
-      </td>
-      <td className="px-2 py-1.5">
-        <code className="text-xs text-muted-foreground">{field.sourcePath}</code>
-      </td>
-      <td className="px-2 py-1.5">
-        {field.ok ? (
-          <code className="text-xs">{renderValue(field.value)}</code>
-        ) : (
-          <span className="text-xs font-medium text-destructive">{field.error}</span>
-        )}
-      </td>
-    </tr>
-  );
+/** AC-DLA-56 (T7) - flat, keyed field-result rows (columns below), migrated
+ *  off the raw <table> onto DataGrid + DataGridTable. */
+interface FieldResultRow {
+  id: string;
+  field: AutocountSimulateFieldResult;
+}
+
+function fieldResultRows(result: AutocountSimulateResult): FieldResultRow[] {
+  return [
+    ...result.headerFields.map((f) => ({
+      id: `h-${f.canonicalField}-${f.sourcePath}`,
+      field: f,
+    })),
+    ...result.lineFields.flatMap((line, li) =>
+      line.map((f) => ({ id: `l-${li}-${f.canonicalField}-${f.sourcePath}`, field: f })),
+    ),
+  ];
+}
+
+/** A header preview row's picker label - its key column values joined. */
+function headerRowLabel(row: Record<string, unknown>, keyColumns: string[]): string {
+  const parts = keyColumns.map((k) => String(row[k] ?? ''));
+  return parts.filter(Boolean).join(' · ') || '(blank key)';
 }
 
 export function MappingSimulator({
@@ -90,25 +116,54 @@ export function MappingSimulator({
   rows,
   onSimulate,
   entityLabel,
+  headerPreviewRows,
+  headerKeyColumns = [],
+  onFetchLines,
 }: MappingSimulatorProps) {
+  const isDocumentMode = Boolean(headerPreviewRows && headerPreviewRows.length > 0 && onFetchLines);
   const [recordText, setRecordText] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState('');
   const [result, setResult] = useState<AutocountSimulateResult | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
-      setRecordText(buildSkeleton(rows));
+      setRecordText(isDocumentMode ? '' : buildSkeleton(rows));
+      setSelectedIndex('');
       setResult(null);
       setRunError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  const headerOptions = useMemo(
+    () =>
+      (headerPreviewRows ?? []).map((row, index) => ({
+        label: headerRowLabel(row, headerKeyColumns),
+        value: String(index),
+      })),
+    [headerPreviewRows, headerKeyColumns],
+  );
+
+  const selectedHeader = useMemo(() => {
+    if (!isDocumentMode || selectedIndex === '') return null;
+    return headerPreviewRows?.[Number(selectedIndex)] ?? null;
+  }, [headerPreviewRows, isDocumentMode, selectedIndex]);
+
+  useEffect(() => {
+    if (selectedHeader) setRecordText(JSON.stringify(selectedHeader, null, 2));
+  }, [selectedHeader]);
+
   const parsed = useMemo<
     { ok: true; record: Record<string, unknown> } | { ok: false; error: string }
   >(() => {
-    if (recordText.trim() === '') return { ok: false, error: 'Enter a mock AutoCount record.' };
+    if (recordText.trim() === '') {
+      return {
+        ok: false,
+        error: isDocumentMode ? 'Pick a header row.' : 'Enter a mock AutoCount record.',
+      };
+    }
     try {
       const value = JSON.parse(recordText);
       if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -118,14 +173,19 @@ export function MappingSimulator({
     } catch {
       return { ok: false, error: 'That is not valid JSON.' };
     }
-  }, [recordText]);
+  }, [isDocumentMode, recordText]);
 
   const run = async () => {
     if (!parsed.ok) return;
     setRunning(true);
     setRunError(null);
     try {
-      const res = await onSimulate(parsed.record, rows);
+      let lines: Array<Record<string, unknown>> | undefined;
+      if (isDocumentMode && onFetchLines) {
+        const docKey = headerKeyColumns.length > 0 ? String(parsed.record[headerKeyColumns[0]] ?? '') : '';
+        lines = await onFetchLines(docKey);
+      }
+      const res = await onSimulate(parsed.record, rows, lines);
       setResult(res);
     } catch {
       setRunError('The simulation could not be run.');
@@ -139,6 +199,43 @@ export function MappingSimulator({
   const failedFields = result
     ? [...result.headerFields, ...result.lineFields.flat()].filter((f) => !f.ok)
     : [];
+
+  const resultRows = useMemo(() => (result ? fieldResultRows(result) : []), [result]);
+  const resultColumns = useMemo<ColumnDef<FieldResultRow>[]>(
+    () => [
+      {
+        id: 'sorentoField',
+        header: 'Sorento field',
+        cell: ({ row }) => (
+          <span className="font-medium">{humanizeFieldKey(row.original.field.canonicalField)}</span>
+        ),
+      },
+      {
+        id: 'source',
+        header: 'Source',
+        cell: ({ row }) => (
+          <code className="text-xs text-muted-foreground">{row.original.field.sourcePath}</code>
+        ),
+      },
+      {
+        id: 'value',
+        header: 'Value',
+        cell: ({ row }) =>
+          row.original.field.ok ? (
+            <code className="text-xs">{renderValue(row.original.field.value)}</code>
+          ) : (
+            <span className="text-xs font-medium text-destructive">{row.original.field.error}</span>
+          ),
+      },
+    ],
+    [],
+  );
+  const resultTable = useReactTable({
+    data: resultRows,
+    columns: resultColumns,
+    getRowId: (r) => r.id,
+    getCoreRowModel: getCoreRowModel(),
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -156,9 +253,25 @@ export function MappingSimulator({
 
         <DialogBody className="flex flex-col gap-4">
           <p className="text-xs text-muted-foreground">
-            Transforms a mock record through the current mapping and writes nothing -
-            a preview of what a real sync would produce, not a Sorento push.
+            {isDocumentMode
+              ? 'Transforms a real header + its lines through the current mapping and writes nothing.'
+              : 'Transforms a mock record through the current mapping and writes nothing - ' +
+                'a preview of what a real sync would produce, not a Sorento push.'}
           </p>
+
+          {isDocumentMode && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Header</span>
+              <SearchSelect
+                options={headerOptions}
+                value={selectedIndex}
+                onChange={setSelectedIndex}
+                placeholder="Pick a header row"
+                searchPlaceholder="Search headers"
+                ariaLabel="Header row"
+              />
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="flex flex-col gap-2">
@@ -171,6 +284,7 @@ export function MappingSimulator({
                 aria-label="Mock AutoCount record"
                 value={recordText}
                 onChange={(e) => setRecordText(e.target.value)}
+                readOnly={isDocumentMode}
               />
               {!parsed.ok && recordText.trim() !== '' && (
                 <p className="text-xs text-destructive" data-testid="record-parse-error">
@@ -216,6 +330,14 @@ export function MappingSimulator({
 
           {result && (
             <div className="flex flex-col gap-3">
+              {result.status && (
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">Status</span>
+                  <Badge variant="primary" appearance="light" data-testid="simulate-status">
+                    {result.status}
+                  </Badge>
+                </div>
+              )}
               {failedFields.length > 0 && (
                 <Alert variant="destructive" appearance="light">
                   <AlertIcon>
@@ -230,29 +352,10 @@ export function MappingSimulator({
                 </Alert>
               )}
 
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[420px] text-sm" data-testid="field-results">
-                  <thead>
-                    <tr className="border-b text-start text-xs font-medium text-muted-foreground">
-                      <th className="px-2 py-1.5 text-start font-medium">Sorento field</th>
-                      <th className="px-2 py-1.5 text-start font-medium">Source</th>
-                      <th className="px-2 py-1.5 text-start font-medium">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.headerFields.map((f) => (
-                      <FieldResultRow key={`h-${f.canonicalField}-${f.sourcePath}`} field={f} />
-                    ))}
-                    {result.lineFields.map((line, li) =>
-                      line.map((f) => (
-                        <FieldResultRow
-                          key={`l-${li}-${f.canonicalField}-${f.sourcePath}`}
-                          field={f}
-                        />
-                      )),
-                    )}
-                  </tbody>
-                </table>
+              <div data-testid="field-results">
+                <DataGrid table={resultTable} recordCount={resultRows.length}>
+                  <DataGridTable />
+                </DataGrid>
               </div>
               <div
                 className={cn(

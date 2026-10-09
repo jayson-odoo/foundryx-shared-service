@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  Contact as ContactIcon,
   Inbox,
   Search,
   UserPlus,
@@ -32,11 +33,19 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useCan } from '@/hooks/use-can';
+import { useCloseReasons } from '@/hooks/use-close-reasons';
+import { useMediaQuery } from '@/hooks/use-media-query';
 import { useMessages } from '@/hooks/use-messages';
+import { useMyTeams } from '@/hooks/use-my-teams';
+import { useTeams } from '@/hooks/use-teams';
+import { useThreadEvents } from '@/hooks/use-thread-events';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
+import { channelCapabilities } from '@/lib/channel-capabilities';
 import type {
   ConversationMessage,
   QuickReply,
@@ -44,11 +53,22 @@ import type {
   WorkspaceMember,
 } from '@/types/omnichannel';
 
+import { ActivityFeed } from './activity-feed';
+import { CloseThreadDialog } from './close-thread-dialog';
 import { Composer } from './composer';
+import { ContactPanel } from './contact-panel';
 import { useDatetime } from '@/hooks/use-datetime';
+import { ApiError } from '@/lib/api-client';
 import { dateKey, parseUtc } from '@/lib/datetime';
+import { toast } from '@/lib/toast';
 import { MessageBubble } from './message-bubble';
+import { ShortcutMenu } from './shortcut-menu';
 import { THREAD_PRIORITY_REGISTRY, THREAD_STATUS_REGISTRY } from './thread-status';
+
+/** Contact panel open/closed persists per browser (plan 25, AC-CDM-34). */
+const CONTACT_PANEL_STORAGE_KEY = 'omnichannel:contact-panel-open';
+/** Right pane >= this width; a Sheet below it (plan 25 D14). */
+const CONTACT_PANEL_BREAKPOINT = '(min-width: 1280px)';
 
 export interface ConversationDrawerProps {
   contactId: string | null;
@@ -119,15 +139,91 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     addNote,
     assign,
     assignToMe,
+    assignTeam,
     setStatus,
+    closeThread,
+    patchContact,
+    moveLifecycle,
   } = useMessages(contactId);
+  const { events, reload: reloadEvents } = useThreadEvents(contactId);
+  const { reasons: closeReasons } = useCloseReasons(thread?.workspaceId ?? null);
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
 
-  const { timeZone, formatTime } = useDatetime();
+  // F8 (round-3 codex triage) - `setStatus` (`useMessages`) has no internal
+  // try/catch - it re-throws (matching `CloseThreadDialog`'s own `onClose`,
+  // which the dialog awaits inside ITS OWN try/catch). Reopen has no dialog
+  // wrapping it, so a bare `void setStatus('OPEN').then(reloadEvents)`
+  // dropped any rejection (a 409 the record raced into, a network blip) with
+  // zero user feedback - the button visibly does nothing, no toast, no retry
+  // cue.
+  const reopenThread = useCallback(async () => {
+    try {
+      await setStatus('OPEN');
+      await reloadEvents();
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Could not reopen this conversation.');
+    }
+  }, [setStatus, reloadEvents]);
+
+  const { timeZone, formatTime, formatDateTime } = useDatetime();
   const [tab, setTab] = useState<'messages' | 'activities'>('messages');
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [replyTo, setReplyTo] = useState<ConversationMessage | null>(null);
+  // Team Inbox (plan 28) - the assignee dropdown's Teams group. `GET /teams`
+  // is gated `teams.read`, which a plain Agent (`conversations.assign` only)
+  // doesn't hold - `useTeams` is only fetched for a `teams.read` holder;
+  // `useMyTeams` (no `teams.read` required) always resolves so ANY caller
+  // with `conversations.assign` can still assign to a team they belong to
+  // (review round 1, finding 4/5/6). Union + dedupe by id. Review round 2
+  // N1: only ACTIVE teams are offered - `PATCH {assignedTeamId}` 422s on an
+  // inactive team (`GET /teams` lists inactive teams and `/teams/mine` has
+  // no is_active filter, so both sources are filtered here).
+  const canReadAllTeams = useCan().can('teams.read');
+  const { teams: allTeams } = useTeams({ enabled: canReadAllTeams });
+  const { teams: myTeams } = useMyTeams();
+  const teams = useMemo(() => {
+    const byId = new Map<string, { id: string; name: string }>();
+    for (const t of [...allTeams, ...myTeams]) {
+      if (!t.isActive) continue;
+      if (!byId.has(t.id)) byId.set(t.id, { id: t.id, name: t.name });
+    }
+    return Array.from(byId.values());
+  }, [allTeams, myTeams]);
+  const handleAssignTeam = useCallback(
+    (teamId: string | null) => {
+      assignTeam(teamId).catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : 'Could not update the team assignment.');
+      });
+    },
+    [assignTeam],
+  );
+
+  // Contact panel (plan 25, AC-CDM-34) - open state persists per browser;
+  // >=1280px renders a right pane, below it a Sheet (D14). Never shown in
+  // compact/embed mode (the header - and this toggle - is hidden there).
+  const [contactPanelOpen, setContactPanelOpen] = useState(false);
+  const isDesktopPanel = useMediaQuery(CONTACT_PANEL_BREAKPOINT);
+  useEffect(() => {
+    try {
+      setContactPanelOpen(window.localStorage.getItem(CONTACT_PANEL_STORAGE_KEY) === '1');
+    } catch {
+      // localStorage unavailable (private browsing etc.) - default closed.
+    }
+  }, []);
+  const setPanelOpen = useCallback((next: boolean) => {
+    setContactPanelOpen(next);
+    try {
+      window.localStorage.setItem(CONTACT_PANEL_STORAGE_KEY, next ? '1' : '0');
+    } catch {
+      // localStorage unavailable - the toggle still works for this session
+    }
+  }, []);
+  const toggleContactPanel = useCallback(
+    () => setPanelOpen(!contactPanelOpen),
+    [contactPanelOpen, setPanelOpen],
+  );
 
   // In-thread search (WhatsApp chat search): term + active-match cursor.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -157,10 +253,32 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     const t = setInterval(() => setNowTick(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
-  const windowOpen = useMemo(
-    () => !!thread?.cswExpiresAt && Date.parse(thread.cswExpiresAt) > nowTick,
-    [thread?.cswExpiresAt, nowTick],
-  );
+  // Window state is derived through the capability record per channel type
+  // (plan 32 / A7a) instead of a hardcoded WhatsApp-only boolean. WhatsApp
+  // reads the SAME `cswExpiresAt` instant it always has (D-A7-5/R7 - byte-
+  // identical); every other type reads the generalized `windowExpiresAt`.
+  const capabilities = channelCapabilities(thread?.channelType ?? 'WHATSAPP');
+  const windowOpen = useMemo(() => {
+    const iso = thread?.channelType === 'WHATSAPP' ? thread?.cswExpiresAt : thread?.windowExpiresAt;
+    return !!iso && Date.parse(iso) > nowTick;
+  }, [thread?.channelType, thread?.cswExpiresAt, thread?.windowExpiresAt, nowTick]);
+  const humanAgentWindowOpen = useMemo(() => {
+    if (capabilities.reengageMode !== 'human_agent') return false;
+    const iso = thread?.humanAgentExpiresAt;
+    return !!iso && Date.parse(iso) > nowTick;
+  }, [capabilities.reengageMode, thread?.humanAgentExpiresAt, nowTick]);
+  // Web chat presence marker (plan 34 / A7b, D-A7B-19/AC-WEB-43) - the
+  // window-less channel type's stand-in for the window banner, computed here
+  // (not in the composer) so the composer stays free of a timezone/session
+  // dependency. `online` is a 2-minute recency heuristic - a UX mirror only,
+  // never an authorization fact (`reengageMode: 'none'` never locks anyway).
+  const visitorPresence = useMemo(() => {
+    if (capabilities.reengageMode !== 'none') return null;
+    const iso = thread?.visitorLastSeenAt;
+    if (!iso) return null;
+    const online = nowTick - Date.parse(iso) < 2 * 60_000;
+    return { online, label: online ? 'Online now' : `Last seen ${formatDateTime(iso)}` };
+  }, [capabilities.reengageMode, thread?.visitorLastSeenAt, nowTick, formatDateTime]);
 
   useEffect(() => {
     if (!thread?.channelId) return setTemplates([]);
@@ -173,12 +291,12 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     workspaceService.getMembers(thread.workspaceId).then(setMembers).catch(() => setMembers([]));
   }, [thread?.workspaceId]);
 
-  // Pin the thread to the latest message.
+  // Pin the thread to the latest message. Plan 27: the Activities tab renders
+  // <ActivityFeed> (notes + events merged) instead of this list - in-thread
+  // search stays a Messages-tab feature (the search button is hidden on
+  // Activities, so `visibleMessages` only needs to serve the Messages tab).
   const bottomRef = useRef<HTMLDivElement>(null);
-  const visibleMessages = useMemo(
-    () => (tab === 'activities' ? messages.filter((m) => m.senderType === 'SYSTEM') : messages),
-    [messages, tab],
-  );
+  const visibleMessages = messages;
 
   // In-thread search matches (newest → oldest, like WhatsApp's ↑ navigation).
   const activeSearch = searchOpen ? searchTerm.trim().toLowerCase() : '';
@@ -270,13 +388,17 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
               {thread.name}
             </span>
             <Badge variant="secondary" appearance="light" size="sm">
-              WhatsApp
+              <capabilities.icon className="size-3" />
+              {capabilities.label}
             </Badge>
           </div>
           <div className="text-xs text-muted-foreground">{thread.phone}</div>
         </div>
 
         <div className="ms-auto flex items-center gap-2">
+          {/* In-thread search stays a Messages-tab feature - the merged
+              Activities feed has no per-message body to search against. */}
+          {tab === 'messages' && (
           <Button
             variant="ghost"
             size="icon"
@@ -286,6 +408,17 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
           >
             <Search className="size-4" />
           </Button>
+          )}
+          <Button
+            variant={contactPanelOpen ? 'primary' : 'ghost'}
+            size="icon"
+            aria-label="Toggle contact panel"
+            aria-pressed={contactPanelOpen}
+            onClick={toggleContactPanel}
+            data-testid="contact-panel-toggle"
+          >
+            <ContactIcon className="size-4" />
+          </Button>
           <StatusBadge status={thread.priority} registry={THREAD_PRIORITY_REGISTRY} size="sm" />
           <StatusBadge status={thread.status} registry={THREAD_STATUS_REGISTRY} size="sm" />
 
@@ -294,7 +427,13 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" data-testid="assign-trigger">
                 <UserPlus className="size-4" />
-                {thread.assignedUserName ?? 'Unassigned'}
+                {thread.assignedTeamId ? (
+                  <span data-testid="assign-team-label">
+                    {thread.assignedTeamName ?? 'Team'} · {thread.assignedUserName ?? 'Unassigned'}
+                  </span>
+                ) : (
+                  (thread.assignedUserName ?? 'Unassigned')
+                )}
                 <ChevronDown className="size-3.5" />
               </Button>
             </DropdownMenuTrigger>
@@ -313,27 +452,62 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
               <DropdownMenuItem onClick={() => void assign(null)} data-testid="assign-clear">
                 Unassign
               </DropdownMenuItem>
+              {teams.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Teams</DropdownMenuLabel>
+                  {teams.map((t) => (
+                    <DropdownMenuItem
+                      key={t.id}
+                      onClick={() => handleAssignTeam(t.id)}
+                      data-testid={`assign-team-${t.id}`}
+                    >
+                      {t.name}
+                    </DropdownMenuItem>
+                  ))}
+                  {thread.assignedTeamId && (
+                    <DropdownMenuItem onClick={() => handleAssignTeam(null)} data-testid="assign-team-clear">
+                      Clear team
+                    </DropdownMenuItem>
+                  )}
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
 
-          {/* Lifecycle */}
+          {/* Status actions - Close opens the reason+note dialog (AC-IVE-30). */}
           {thread.status !== 'SNOOZED' && thread.status !== 'CLOSED' ? (
             <>
               <Button variant="outline" size="sm" onClick={() => void setStatus('SNOOZED')} data-testid="thread-snooze">
                 <Clock className="size-4" /> Snooze
               </Button>
-              <Button variant="outline" size="sm" onClick={() => void setStatus('CLOSED')} data-testid="thread-close">
+              <Button variant="outline" size="sm" onClick={() => setCloseDialogOpen(true)} data-testid="thread-close">
                 <CheckCircle2 className="size-4" /> Close
               </Button>
             </>
           ) : (
-            <Button variant="outline" size="sm" onClick={() => void setStatus('OPEN')} data-testid="thread-reopen">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void reopenThread()}
+              data-testid="thread-reopen"
+            >
               Reopen
             </Button>
           )}
+
+          {/* Shortcuts - fires a published entity.shortcut workflow (AC-IVE-39). */}
+          <ShortcutMenu contactId={contactId} />
         </div>
 
-        <Tabs value={tab} onValueChange={(v) => setTab(v as 'messages' | 'activities')} className="w-full">
+        <Tabs
+          value={tab}
+          onValueChange={(v) => {
+            setTab(v as 'messages' | 'activities');
+            if (v === 'activities') closeSearch();
+          }}
+          className="w-full"
+        >
           <TabsList>
             <TabsTrigger value="messages" data-testid="tab-messages">
               Messages
@@ -376,57 +550,76 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
       </div>
       )}
 
+      <CloseThreadDialog
+        open={closeDialogOpen}
+        onOpenChange={setCloseDialogOpen}
+        reasons={closeReasons}
+        onClose={(closeReasonId, note) =>
+          closeThread({ closeReasonId, note: note || undefined }).then(reloadEvents)
+        }
+      />
+
+      {/* Message column + the Contact panel's right pane (>=1280px) sit
+          side-by-side; below that width the panel opens as a Sheet instead. */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Thread */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2.5 p-4" data-testid="thread-window">
-          {visibleMessages.length === 0 && (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              {tab === 'activities' ? 'No internal notes yet.' : 'No messages yet.'}
-            </p>
-          )}
-          {visibleMessages.map((m, i) => (
-            <Fragment key={m.id}>
-              {/* Day separator pill whenever the calendar day changes. */}
-              {(i === 0 ||
-                dateKey(visibleMessages[i - 1].createdAt, { timeZone }) !==
-                  dateKey(m.createdAt, { timeZone })) && (
-                <div className="flex justify-center py-1">
-                  <span
-                    className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground shadow-xs"
-                    data-testid="day-pill"
-                  >
-                    {dayLabel(m.createdAt, new Date(), timeZone)}
-                  </span>
-                </div>
+          {tab === 'activities' ? (
+            <ActivityFeed
+              messages={messages}
+              events={events}
+              contactName={thread.name}
+              formatTime={formatTime}
+              timeZone={timeZone}
+            />
+          ) : (
+            <>
+              {visibleMessages.length === 0 && (
+                <p className="py-8 text-center text-sm text-muted-foreground">No messages yet.</p>
               )}
-              <div
-                ref={(el) => {
-                  if (el) messageRefs.current.set(m.id, el);
-                  else messageRefs.current.delete(m.id);
-                }}
-              >
-                <MessageBubble
-                  message={m}
-                  contactName={thread.name}
-                  formatTime={formatTime}
-                  highlight={activeSearch || undefined}
-                  isActiveMatch={m.id === activeMatchId || m.id === focusMsgId}
-                  onReply={
-                    tab === 'messages'
-                      ? (msg) => {
-                          setReplyTo(msg);
-                        }
-                      : undefined
-                  }
-                  onReact={
-                    tab === 'messages' && m.senderType !== 'SYSTEM' && windowOpen
-                      ? (msg, emoji) => void react(msg.id, emoji)
-                      : undefined
-                  }
-                />
-              </div>
-            </Fragment>
-          ))}
+              {visibleMessages.map((m, i) => (
+                <Fragment key={m.id}>
+                  {/* Day separator pill whenever the calendar day changes. */}
+                  {(i === 0 ||
+                    dateKey(visibleMessages[i - 1].createdAt, { timeZone }) !==
+                      dateKey(m.createdAt, { timeZone })) && (
+                    <div className="flex justify-center py-1">
+                      <span
+                        className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground shadow-xs"
+                        data-testid="day-pill"
+                      >
+                        {dayLabel(m.createdAt, new Date(), timeZone)}
+                      </span>
+                    </div>
+                  )}
+                  <div
+                    ref={(el) => {
+                      if (el) messageRefs.current.set(m.id, el);
+                      else messageRefs.current.delete(m.id);
+                    }}
+                  >
+                    <MessageBubble
+                      message={m}
+                      contactName={thread.name}
+                      formatTime={formatTime}
+                      highlight={activeSearch || undefined}
+                      isActiveMatch={m.id === activeMatchId || m.id === focusMsgId}
+                      onReply={(msg) => {
+                        setReplyTo(msg);
+                      }}
+                      onReact={
+                        m.senderType !== 'SYSTEM' && windowOpen && capabilities.outboundReaction
+                          ? (msg, emoji) => void react(msg.id, emoji)
+                          : undefined
+                      }
+                    />
+                  </div>
+                </Fragment>
+              ))}
+            </>
+          )}
           <div ref={bottomRef} />
         </div>
       </ScrollArea>
@@ -434,6 +627,9 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
       {/* Composer - note mode on the Activities tab */}
       <Composer
         windowOpen={windowOpen}
+        humanAgentWindowOpen={humanAgentWindowOpen}
+        capabilities={capabilities}
+        visitorPresence={visitorPresence}
         templates={templates}
         quickReplies={quickReplies}
         isSending={isSending}
@@ -449,6 +645,34 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
       />
+      </div>
+
+      {!compact && contactPanelOpen && isDesktopPanel && (
+        <div className="w-80 shrink-0 border-s" data-testid="contact-panel-pane">
+          <ContactPanel thread={thread} onPatchContact={patchContact} onMoveLifecycle={moveLifecycle} />
+        </div>
+      )}
+      </div>
+
+      {!compact && (
+        <Sheet
+          open={contactPanelOpen && !isDesktopPanel}
+          onOpenChange={(open) => setPanelOpen(open)}
+        >
+          <SheetContent
+            side="right"
+            className="w-full gap-0 p-0 sm:max-w-sm"
+            data-testid="contact-panel-sheet"
+          >
+            <SheetHeader className="border-b px-4 py-3">
+              <SheetTitle>Contact</SheetTitle>
+            </SheetHeader>
+            <div className="min-h-0 flex-1">
+              <ContactPanel thread={thread} onPatchContact={patchContact} onMoveLifecycle={moveLifecycle} />
+            </div>
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }

@@ -1,0 +1,139 @@
+   ▲ Next.js 15.3.4
+   - Local:        http://localhost:3011
+   - Network:      http://192.168.2.197:3011
+   - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 1550ms
+ ○ Compiling / ...
+ ✓ Compiled / in 8.9s (5035 modules)
+ GET / 200 in 9687ms
+ GET / 200 in 271ms
+ ○ Compiling /_not-found ...
+ ✓ Compiled /_not-found in 1547ms (4995 modules)
+ GET /media/app/mini-logo.svg 404 in 1771ms
+ GET / 200 in 349ms
+ GET /media/app/mini-logo.svg 404 in 31ms
+ ○ Compiling /api/auth/[...nextauth] ...
+ ✓ Compiled /api/auth/[...nextauth] in 814ms (5297 modules)
+ GET /api/auth/session 200 in 1339ms
+ ✓ Compiled /signin in 446ms (5323 modules)
+ GET /signin 200 in 519ms
+ GET /media/foundryx/foundryx-logo.png 404 in 106ms
+ GET /media/foundryx/auth-illustration.svg 404 in 107ms
+ GET /media/foundryx/foundryx-logo.png 404 in 91ms
+ GET /media/foundryx/auth-illustration.svg 404 in 89ms
+ GET /api/auth/providers 200 in 85ms
+ GET /api/auth/csrf 200 in 15ms
+ POST /api/auth/callback/credentials 200 in 391ms
+ GET /api/auth/session 200 in 15ms
+ GET / 200 in 61ms
+ GET /media/app/default-logo.svg 404 in 188ms
+ GET /media/app/default-logo-dark.svg 404 in 188ms
+ GET /media/app/mini-logo.svg 404 in 189ms
+ GET /media/brand-logos/youtube-2.svg 404 in 85ms
+ GET /media/brand-logos/linkedin-2.svg 404 in 88ms
+ GET /media/brand-logos/instagram-03.svg 404 in 84ms
+ GET /media/images/2600x1600/bg-3.png 404 in 61ms
+ GET /media/brand-logos/tiktok.svg 404 in 61ms
+ GET /media/brand-logos/zoom.svg 404 in 77ms
+ GET /media/images/2600x1600/2.png 404 in 67ms
+ GET /api/auth/session 200 in 75ms
+ GET /api/auth/session 200 in 20ms
+ GET /api/auth/session 200 in 40ms
+ GET /api/auth/session 200 in 39ms
+ GET /api/auth/session 200 in 38ms
+ GET /api/auth/session 200 in 45ms
+ GET /media/brand-logos/tiktok-dark.svg 404 in 38ms
+ GET /api/auth/session 200 in 82ms
+ GET /api/auth/session 200 in 74ms
+ GET /media/avatars/300-4.png 404 in 33ms
+ GET /api/auth/session 200 in 77ms
+ GET /api/auth/session 200 in 78ms
+ GET /media/avatars/300-2.png 404 in 44ms
+ GET /media/avatars/300-1.png 404 in 44ms
+ GET /media/avatars/300-6.png 404 in 51ms
+ GET /media/avatars/300-5.png 404 in 54ms
+ GET /media/avatars/300-22.png 404 in 56ms
+ GET /media/avatars/300-23.png 404 in 29ms
+ GET /media/avatars/300-10.png 404 in 24ms
+ GET /media/avatars/300-11.png 404 in 35ms
+ GET /media/avatars/300-12.png 404 in 45ms
+ GET /media/avatars/300-24.png 404 in 39ms
+ GET /media/avatars/300-25.png 404 in 32ms
+ ○ Compiling /autocount/companies/[id] ...
+ ✓ Compiled /autocount/companies/[id] in 1221ms (5463 modules)
+ GET /autocount/companies/228f0f18-1ca3-4ee8-874d-83789cf560f0 200 in 1980ms
+ GET /media/app/mini-logo.svg 404 in 26ms
+ GET /api/auth/session 200 in 33ms
+ GET /api/auth/session 200 in 29ms
+ GET /api/auth/session 200 in 46ms
+ GET /api/auth/session 200 in 48ms
+ GET /api/auth/session 200 in 78ms
+ GET /api/auth/session 200 in 80ms
+ GET /api/auth/session 200 in 81ms
+ GET /api/auth/session 200 in 67ms
+ GET /media/app/default-logo.svg 404 in 45ms
+ GET /media/app/mini-logo.svg 404 in 33ms
+ GET /api/auth/session 200 in 106ms
+ GET /api/auth/session 200 in 107ms
+ GET /api/auth/session 200 in 78ms
+ GET /api/auth/session 200 in 79ms
+ GET /media/app/default-logo-dark.svg 404 in 19ms
+ ○ Compiling /autocount/companies/[id]/entities/[entityType] ...
+ ✓ Compiled /autocount/companies/[id]/entities/[entityType] in 2.1s (5609 modules)
+ GET /media/app/mini-logo.svg 404 in 23ms
+ GET /autocount/companies/228f0f18-1ca3-4ee8-874d-83789cf560f0/entities/product 200 in 3153ms
+ GET /api/auth/session 200 in 73ms
+ GET /api/auth/session 200 in 28ms
+ GET /api/auth/session 200 in 38ms
+ GET /api/auth/session 200 in 49ms
+ GET /api/auth/session 200 in 50ms
+ GET /api/auth/session 200 in 52ms
+ GET /api/auth/session 200 in 54ms
+ GET /api/auth/session 200 in 71ms
+ GET /media/app/default-logo.svg 404 in 38ms
+ GET /api/auth/session 200 in 58ms
+ GET /api/auth/session 200 in 50ms
+ GET /api/auth/session 200 in 51ms
+ GET /api/auth/session 200 in 53ms
+ GET /api/auth/session 200 in 24ms
+ GET /api/auth/session 200 in 28ms
+ GET /api/auth/session 200 in 26ms
+ GET /api/auth/session 200 in 36ms
+ GET /api/auth/session 200 in 37ms
+ GET /api/auth/session 200 in 34ms
+ GET /media/app/mini-logo.svg 404 in 30ms
+ GET /api/auth/session 200 in 45ms
+ GET /api/auth/session 200 in 46ms
+ GET /media/app/default-logo-dark.svg 404 in 43ms
+ GET /media/app/mini-logo.svg 404 in 23ms
+ GET /autocount/companies/228f0f18-1ca3-4ee8-874d-83789cf560f0/entities/product 200 in 202ms
+ GET /api/auth/session 200 in 43ms
+ GET /api/auth/session 200 in 28ms
+ GET /api/auth/session 200 in 53ms
+ GET /api/auth/session 200 in 55ms
+ GET /api/auth/session 200 in 71ms
+ GET /api/auth/session 200 in 72ms
+ GET /api/auth/session 200 in 74ms
+ GET /api/auth/session 200 in 55ms
+ GET /media/app/default-logo.svg 404 in 83ms
+ GET /media/app/default-logo-dark.svg 404 in 84ms
+ GET /media/app/mini-logo.svg 404 in 84ms
+ GET /api/auth/session 200 in 114ms
+ GET /api/auth/session 200 in 112ms
+ GET /api/auth/session 200 in 18ms
+ GET /api/auth/session 200 in 26ms
+ GET /api/auth/session 200 in 27ms
+ GET /api/auth/session 200 in 28ms
+ GET /api/auth/session 200 in 29ms
+ GET /api/auth/session 200 in 30ms
+ GET /api/auth/session 200 in 23ms
+ GET /api/auth/session 200 in 18ms
+ GET /api/auth/session 200 in 25ms
+ GET /api/auth/session 200 in 26ms
+ GET /api/auth/session 200 in 13ms
+ GET /api/auth/session 200 in 33ms
+ GET /api/auth/session 200 in 13ms
+ GET /api/auth/session 200 in 12ms
+[?25h

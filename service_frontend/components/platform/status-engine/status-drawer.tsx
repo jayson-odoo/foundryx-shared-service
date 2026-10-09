@@ -7,6 +7,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
@@ -146,6 +147,7 @@ export function StatusDrawer({
                   disabled={readOnly}
                   onClick={() => setColor(swatch.hex)}
                   className={cn(
+                    PRESSED_CLASS,
                     'size-7 rounded-full border transition-shadow',
                     color.toLowerCase() === swatch.hex.toLowerCase()
                       ? 'border-primary ring-2 ring-primary/40'
@@ -265,7 +267,7 @@ export function StatusDrawer({
               )}
             </div>
             <Button onClick={() => void save()} disabled={saving}>
-              {status ? 'Save' : 'Create'}
+              {status ? 'Save status' : 'Create status'}
             </Button>
           </div>
         )}

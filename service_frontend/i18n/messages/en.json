@@ -20,7 +20,7 @@
     },
     "messages": {
       "welcome": "Welcome",
-      "loading": "Loading...",
+      "loading": "Please wait…",
       "error": "An error occurred",
       "success": "Operation completed successfully",
       "confirm": "Are you sure?"

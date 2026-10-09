@@ -143,6 +143,7 @@ describe('autocount service (real boundary)', () => {
     expect(JSON.parse(init.body as string)).toEqual({
       sinkImpl: 'sorento',
       sinkConnectionId: 'conn-9',
+      sorentoCompanyCode: null,
     });
   });
 
@@ -152,6 +153,7 @@ describe('autocount service (real boundary)', () => {
     expect(JSON.parse(apiFetch.mock.calls[0][1].body as string)).toEqual({
       sinkImpl: 'logging',
       sinkConnectionId: null,
+      sorentoCompanyCode: null,
     });
   });
 
@@ -167,9 +169,31 @@ describe('autocount service (real boundary)', () => {
     expect(path).toBe('/autocount/companies/c1/entities/supplier/mapping');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(init.body as string).rows).toEqual([
-      { sourcePath: 'IsActive', transform: 't_f_bool', sorentoField: 'is_active', formula: 'if(value == "T", true, false)' },
-      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null },
+      {
+        sourcePath: 'IsActive',
+        transform: 't_f_bool',
+        sorentoField: 'is_active',
+        formula: 'if(value == "T", true, false)',
+        scope: 'header',
+      },
+      { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null, scope: 'header' },
     ]);
+  });
+
+  it('sends isEnabled on save for both rows and lineRows (final review round B1) - a backfill-disabled off-preview row round-trips as disabled, not silently re-enabled', async () => {
+    apiFetch.mockResolvedValue({ entityType: 'sales_order', rows: [], sorentoFields: [], acFields: [] });
+    await realAutocountService.updateMapping('c1', 'sales_order', {
+      rows: [
+        { sourcePath: 'DocNo', transform: 'string', sorentoField: 'so_number', isEnabled: true },
+      ],
+      lineRows: [
+        { sourcePath: 'discount', transform: 'decimal', sorentoField: 'discount', scope: 'line', isEnabled: false },
+      ],
+    });
+    const [, init] = apiFetch.mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body.rows[0].isEnabled).toBe(true);
+    expect(body.lineRows[0].isEnabled).toBe(false);
   });
 
   it('tests a single formula server-side (AC-16-21)', async () => {
@@ -194,7 +218,9 @@ describe('autocount service (real boundary)', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({
       record: { AccNo: 'A1' },
-      rows: [{ sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null }],
+      rows: [
+        { sourcePath: 'AccNo', transform: 'string', sorentoField: 'code', formula: null, scope: 'header' },
+      ],
     });
   });
 
@@ -257,5 +283,70 @@ describe('autocount mock service (frontend-first scaffolding)', () => {
     const res = await mockAutocountService.refetchHistory('c1', 'goods_received_note');
     expect(res.watermarkAt).toBeNull();
     expect(res.entityType).toBe('goods_received_note');
+  });
+});
+
+describe('direct-DB ETL lifecycle (plan 22 S2 contract)', () => {
+  const root = '/autocount/companies/c1/entities/sales_order/etl-task';
+
+  it('sends the Sorento company code with the sink target (trimmed, null when blank)', async () => {
+    await realAutocountService.updateSinkTarget('c1', {
+      sinkImpl: 'sorento',
+      sinkConnectionId: 'conn-9',
+      sorentoCompanyCode: ' SRT ',
+    });
+    expect(JSON.parse(apiFetch.mock.calls[0][1].body)).toEqual({
+      sinkImpl: 'sorento',
+      sinkConnectionId: 'conn-9',
+      sorentoCompanyCode: 'SRT',
+    });
+    apiFetch.mockClear();
+    await realAutocountService.updateSinkTarget('c1', { sinkImpl: 'logging' });
+    expect(JSON.parse(apiFetch.mock.calls[0][1].body).sorentoCompanyCode).toBeNull();
+  });
+
+  it('PATCHes sourceImpl through the entity-config route', async () => {
+    await realAutocountService.updateEntityConfig('c1', 'customer', { sourceImpl: 'sql_db' });
+    expect(apiFetch).toHaveBeenCalledWith('/autocount/companies/c1/entities/customer', {
+      method: 'PATCH',
+      body: JSON.stringify({ sourceImpl: 'sql_db' }),
+    });
+  });
+
+  // sprint-5/11 review round 2 (item 6) - the `preview` leg dropped:
+  // `previewEtlTask` was removed from `AutocountService`/`realAutocountService`
+  // (dead since S4 replaced the synchronous `.../preview` route with the
+  // `autocount_source_preview` job's own `startPreviewJob`/`getPreviewJob`
+  // surface - this test's own bare-POST-no-body pin had not matched the
+  // real route's contract since then either).
+  it('POSTs activate / pause / resume / run under the task resource', async () => {
+    // Pre-existing gap surfaced while removing `previewEtlTask` above:
+    // `runEtlTaskNow` reads a NESTED `started.task` (unlike activate/pause/
+    // resume, which normalize the top-level response) - the file's own
+    // blanket `beforeEach` default (`{data:[],total:0,page:0}`, shaped for
+    // the OTHER tests in this file) has no `task` key, so `normalizeEtlTask
+    // (started.task)` crashed on `undefined`. A real task-shaped response
+    // only for the `/run` call, never touching the shared blanket default.
+    apiFetch.mockImplementation((path: string) =>
+      path.endsWith('/run')
+        ? Promise.resolve({ runId: 'run-1', jobId: 'job-1', status: 'done', task: {} })
+        : Promise.resolve({ data: [], total: 0, page: 0 }),
+    );
+    await realAutocountService.activateEtlTask('c1', 'sales_order');
+    await realAutocountService.pauseEtlTask('c1', 'sales_order');
+    await realAutocountService.resumeEtlTask('c1', 'sales_order');
+    await realAutocountService.runEtlTaskNow('c1', 'sales_order');
+    expect(apiFetch.mock.calls.map((c) => c[0])).toEqual([
+      `${root}/activate`,
+      `${root}/pause`,
+      `${root}/resume`,
+      `${root}/run`,
+    ]);
+    for (const call of apiFetch.mock.calls) expect(call[1]).toEqual({ method: 'POST' });
+  });
+
+  it('lists the task run history page-based with the capped page size', async () => {
+    await realAutocountService.listEtlRuns('c1', 'sales_order', { page: 1, pageSize: 500 });
+    expect(apiFetch.mock.calls[0][0]).toBe(`${root}/runs?page=1&page_size=200`);
   });
 });

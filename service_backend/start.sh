@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-export PATH=/home/appuser/.local/bin:$PATH
+export PATH="/home/appuser/.local/bin:$PATH"
 
 # Make the app root importable regardless of launch method. The API starts via
 # `python -m …` which puts the CWD (/app) on sys.path, so `import app` AND
@@ -33,7 +33,7 @@ echo "  db accepting connections"
 # DB bootstrap - blue/green orchestration owns schema upgrades via the API
 # container alone, so we never double-run migrations/seed from a worker.
 if [ $# -gt 0 ]; then
-  echo "Running override command: $@"
+  echo "Running override command: $*"
   exec "$@"
 fi
 
@@ -41,8 +41,12 @@ fi
 # `scripts.bootstrap_db` = ensure role/db → alembic upgrade head → seed →
 # bootstrap_modules. Idempotent + alembic advisory-locked, so a concurrent
 # blue/green start no-ops. Failure here aborts container start → healthcheck
-# fails → blue/green swap aborts → old color keeps serving. SKIP_MIGRATIONS=1
-# bypasses for manual expand-contract rollouts.
+# fails → blue/green swap aborts → old color keeps serving. A MODULE migration
+# or seed failure is fatal too (issue #89, prod 26 Sep 2026: it used to be
+# swallowed and this script printed "bootstrap complete" over a module schema 3
+# migrations behind its code). SKIP_MIGRATIONS=1 is the only bypass, for manual
+# expand-contract rollouts; the app's module schema drift guard still refuses
+# to start gunicorn when a module schema is BEHIND the code.
 if [ "${SKIP_MIGRATIONS:-0}" != "1" ]; then
   echo "Running DB bootstrap (migrations + seed + modules)..."
   # bootstrap_db sets a lock_timeout (see _apply_bootstrap_lock_timeout) so a
@@ -52,7 +56,9 @@ if [ "${SKIP_MIGRATIONS:-0}" != "1" ]; then
   # between attempts and the deploy still goes green. A PERSISTENT lock exhausts
   # the retries → container start aborts (the old color keeps serving) with a
   # NAMED lock_timeout error in the log - diagnosable, not a silent hang.
-  BOOTSTRAP_ATTEMPTS="${BOOTSTRAP_ATTEMPTS:-5}"
+  # 4 attempts so the worst case fits blue_green_deploy.sh's 240s health
+  # budget: 4 x (<=20s lock wait + bootstrap work) + 3 x 8s delay (DEPLOY.md).
+  BOOTSTRAP_ATTEMPTS="${BOOTSTRAP_ATTEMPTS:-4}"
   BOOTSTRAP_RETRY_DELAY="${BOOTSTRAP_RETRY_DELAY:-8}"
   n=1
   until python -m scripts.bootstrap_db; do

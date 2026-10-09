@@ -1,14 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Blocks, Building2, Palette } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { TenantDetail, TenantListItem } from '@/types/tenant-admin';
 import { tenantAdminService } from '@/services/tenant-admin-service';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { tenantFormHref, tenantFormPath, tenantsListPath } from './paths';
 import { BrandingTab, DetailsTab, ModulesTab } from './tenant-form-fields';
 import {
@@ -55,6 +56,7 @@ export function useTenantForm(
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<TenantFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(
       creating ? tenantProvisionSchema : tenantUpdateSchema,
     ),
@@ -86,6 +88,20 @@ export function useTenantForm(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, creating]);
+
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      tenantAdminService.getAt(query, index).then((r) => ({
+        recordId: r.tenant?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => tenantFormHref(recordId, { ctx, index }),
+    [],
+  );
 
   const config = useMemo<ResourceFormConfig<TenantListItem> | null>(() => {
     if (isLoading || notFound) return null;
@@ -186,15 +202,7 @@ export function useTenantForm(
       onCancel,
       recordNav: creating
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              tenantAdminService.getAt(query, index).then((r) => ({
-                recordId: r.tenant?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) =>
-              tenantFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     isLoading,
@@ -206,6 +214,8 @@ export function useTenantForm(
     initialEditing,
     tenantId,
     router,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, form, isLoading, notFound };

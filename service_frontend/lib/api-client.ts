@@ -153,7 +153,7 @@ async function apiFetchOnce<T>(
       detail = data.detail;
       // message stays a STRING - object details ride ApiError.detail.
       message =
-        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? message;
+        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? data.error?.message ?? message;
     } catch {
       // non-JSON error body (proxy HTML, network blip)
     }
@@ -203,7 +203,7 @@ export async function apiFetchBlob(path: string, init: RequestInit = {}): Promis
       const data = await res.json();
       detail = data.detail;
       message =
-        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? message;
+        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? data.error?.message ?? message;
     } catch {
       // non-JSON error body
     }
@@ -236,7 +236,7 @@ export async function publicFetch<T = unknown>(
       const data = await res.json();
       detail = data.detail;
       message =
-        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? message;
+        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? data.error?.message ?? message;
     } catch {
       // non-JSON error body
     }

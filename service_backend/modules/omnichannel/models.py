@@ -76,6 +76,10 @@ class Workspace(OmniBase):
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     is_default = Column(Boolean, nullable=False, default=False)
     is_trashed = Column(Boolean, nullable=False, default=False)
+    # plan sprint-4/31 S2 (D-A5-15) - the `omnichannel.assign_conversation`
+    # round-robin mode's cursor (last-assigned member's user id, or NULL). No
+    # separate pointer table - one workspace, one cursor.
+    round_robin_cursor = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -111,6 +115,14 @@ class Channel(OmniBase):
     # routing keys off it (O(1)). index=True mirrors that for the create_all path.
     phone_number_id = Column(String, nullable=True, index=True)
     display_phone_number = Column(String, nullable=True)
+    # Plan 32 (A7a, D-A7-3) - the Messenger/Instagram routing key (PAGE_ID / IG
+    # account id), byte-for-byte the `phone_number_id` design above: an
+    # unauthenticated webhook resolves the OWNING TENANT by this id GLOBALLY
+    # (never from the payload's tenant-editable content), so it carries its
+    # own service-wide PARTIAL UNIQUE index over live rows (migration 0017).
+    # index=True mirrors that for the create_all path.
+    external_account_id = Column(String, nullable=True, index=True)
+    external_account_name = Column(String, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     webhook_verify_token = Column(String, nullable=True)
@@ -128,11 +140,57 @@ class Channel(OmniBase):
     profile_website_2 = Column(String, nullable=True)
     profile_picture_url = Column(String, nullable=True)  # display-only (upload BL-108)
     profile_synced_at = Column(UTCDateTime(), nullable=True)
+    # Plan 29 (A4, D-A4-12) - a per-channel broadcast pacing tier; NULL falls
+    # back to the conservative global default (`settings.
+    # omnichannel_broadcast_rate_per_second`). Wired up by S2's chunk pacing;
+    # the column ships in S1 so the migration + create_all mirror land once.
+    broadcast_rate_per_second = Column(Integer, nullable=True)
+    # ── Web chat widget (plan 34 / A7b S1, D-A7B-10/D-A7B-25) ───────────────
+    # The 32-char opaque key a customer's public website snippet carries -
+    # the ONLY channel-identifying value that leaves the backend on a public
+    # surface. NULL on every other channel type. Carries its OWN service-wide
+    # PARTIAL UNIQUE index over live rows (migration 0021), byte-for-byte the
+    # `phone_number_id`/`external_account_id` design: an unauthenticated
+    # loader request resolves the owning tenant by this id GLOBALLY, never
+    # from client-supplied content. index=True mirrors that for create_all.
+    widget_key = Column(String, nullable=True, index=True)
+    # Appearance/greetings/pre-chat toggles/allowed origins - everything a
+    # widget needs EXCEPT the secret (which stays in `credentials_json`,
+    # Fernet-encrypted, matching every other channel type's credential
+    # storage). `JSON(none_as_null=True)` per the house rule.
+    widget_config_json = Column(JSON(none_as_null=True), nullable=True)
+    # Mass-revocation counter (D-A7B-5/D-A7B-6) - bumped ONLY by "sign out all
+    # visitors"; every issued visitor token embeds the epoch it was minted
+    # against and is refused once this no longer matches. Rotating the widget
+    # SECRET never touches this column, and vice versa.
+    widget_token_epoch = Column(Integer, nullable=False, default=0)
     is_trashed = Column(Boolean, nullable=False, default=False)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class MetaConnectSession(OmniBase):
+    """Plan 32 S3 (A7a, D-A7-15) - a short-lived, single-use, tenant-and-user-
+    bound handle for the Messenger/Instagram connect flow. ``POST
+    /meta/pages`` exchanges the OAuth code server-side and stores the
+    resulting user token HERE, Fernet-encrypted, so it never reaches the
+    browser; the opaque ``id`` is what the client actually receives. ``POST
+    /meta/connect`` decrypts it, re-derives the page list, provisions the
+    channel and stamps ``consumed_at`` (single use). 5-minute TTL
+    (``expires_at``); swept on every ``/meta/pages`` call."""
+
+    __tablename__ = "meta_connect_sessions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False)
+    channel_type = Column(String, nullable=False)  # FACEBOOK | INSTAGRAM
+    credentials_json = Column(Text, nullable=False)  # Fernet-encrypted user token
+    consumed_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    expires_at = Column(UTCDateTime(), nullable=False, index=True)
 
 
 class Contact(OmniBase):
@@ -147,22 +205,60 @@ class Contact(OmniBase):
     last_name = Column(String, nullable=True)
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True, index=True)
+    # Normalized digits-only mirror of `phone` (plan 26 S1, D-A2-9) - maintained
+    # on every write path that sets `phone` (see `phone.py digits_only`), backed
+    # by an index so the within-workspace phone stitch/lookup no longer scans
+    # every contact. Deliberately NO unique constraint - phone uniqueness per
+    # workspace is service-enforced (S2); a pre-existing tenant may already
+    # carry duplicates (a unique index would fail the backfill migration).
+    phone_digits = Column(String, nullable=True, index=True)
     avatar_url = Column(String, nullable=True)
-    custom_fields_json = Column(JSON, nullable=True)
+    # Descriptive marker only (plan 33 D-A6-3) - NEVER the idempotency key
+    # (that is `migration_refs`, below). Nullable/indexed; value e.g.
+    # "respondio". Set ONLY on a contact the migration itself CREATED - a
+    # pre-existing contact the migration MERGED into keeps its own history
+    # honest (it wasn't "migrated in", one of its rows was).
+    migrated_from = Column(String, nullable=True, index=True)
+    # `none_as_null=True` (house rule) - without it a Python `None` assignment
+    # stores a JSON `null` scalar instead of a SQL NULL, which then breaks
+    # `jsonb_each`/`jsonb_typeof` on Postgres reads (review round 2, finding
+    # B) and confuses `IS NOT NULL` filters the same way plan-02's rule-engine
+    # lesson describes.
+    custom_fields_json = Column(JSON(none_as_null=True), nullable=True)
     assigned_user_id = Column(String,nullable=True)
     # Federated (embed) assignee - set instead of ``assigned_user_id`` when the
     # thread is assigned by an external agent (plan 11H Slice 1). Plain indexed
     # str, no FK (mirrors ``assigned_user_id`` - external_agent lives in this
     # schema but the no-FK convention keeps the assignee columns symmetric).
     assigned_external_agent_id = Column(String, nullable=True, index=True)
+    # A CORE `public.teams` id (plan 28 S2, D-A8-3) - plain indexed String, NO
+    # cross-schema FK (the `lifecycle_status_id`/BL-030 pattern). Validated at
+    # save through the teams capability (`team_directory.validate_assignable`)
+    # and resolved tenant-scoped at read (`team_directory.names`); a foreign or
+    # unknown id must never resolve to another tenant's team.
+    assigned_team_id = Column(String, nullable=True, index=True)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     priority = Column(String, nullable=False, default="MEDIUM")
+    # ── Contact data model (plan 25 S1/S2) ──────────────────────────────────
+    # BCP-47 tag (e.g. "en", "zh-Hans"); ISO-3166 alpha-2 upper-cased.
+    language = Column(String, nullable=True)
+    country_code = Column(String, nullable=True)
+    # Plain indexed column pointing at a CORE `statuses` row - no cross-schema
+    # FK (BL-030 pattern, matches `assigned_external_agent_id` above). Set by
+    # S2 (the scoped `omnichannel_contact_lifecycle` status entity); stays NULL
+    # until that lands, and the wire `lifecycle` field stays null until then.
+    lifecycle_status_id = Column(String, nullable=True, index=True)
     csw_expires_at = Column(UTCDateTime(), nullable=True)
     last_incoming_message_at = Column(UTCDateTime(), nullable=True)
     last_message_at = Column(UTCDateTime(), nullable=True)
     # When an agent last opened the thread - unreadCount = inbound newer than
     # this (plan 05; added Phase B, idempotent ALTER in bootstrap.install).
     agent_last_read_at = Column(UTCDateTime(), nullable=True)
+    # Plan 27 A3 (D-A3-12): the ONE outbound seam (`MessageService._mark_agent_
+    # message`) stamps this on every AGENT send - text/media/structured, NEVER
+    # an internal note. Powers the Unreplied filter + Longest-waiting sort +
+    # first-agent-reply detection without a per-row correlated subquery.
+    last_agent_message_at = Column(UTCDateTime(), nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -178,10 +274,253 @@ class ContactChannelIdentity(OmniBase):
     channel_id = Column(String, ForeignKey("channels.id"), nullable=False, index=True)
     external_user_id = Column(String, nullable=False)
     profile_name = Column(String, nullable=True)
+    # Plan 32 (A7a, D-A7-5) - the per-identity messaging window (one contact
+    # can now be reachable on three channels with three independent windows,
+    # so the window instant moves off the single `contacts.csw_expires_at`
+    # column onto the identity it actually belongs to). `contacts.csw_
+    # expires_at` keeps being dual-written for WhatsApp only (F4) - these
+    # three columns are what every OTHER channel type reads.
+    window_expires_at = Column(UTCDateTime(), nullable=True)
+    human_agent_expires_at = Column(UTCDateTime(), nullable=True)
+    last_inbound_at = Column(UTCDateTime(), nullable=True)
+    # Plan 34 (A7b S1, D-A7B-19) - a presence marker ("visitor closed the tab
+    # 12 minutes ago"), NOT a window/authorization fact. Meaningless-and-NULL
+    # for every other channel type (no backfill). Stamped by S3's outbound/
+    # inbound seams; the column ships in S1 so the migration + create_all
+    # mirror land once, alongside the three sibling columns above.
+    last_seen_at = Column(UTCDateTime(), nullable=True)
+    # Plan 34 review round 1 (B3) - values a WEB CHAT visitor typed into the
+    # pre-chat form: `{"name"?, "email"?, "phone"?}`, all optional, all
+    # UNVERIFIED and all attacker-choosable (the widget key is public page
+    # source). They live HERE, on the identity, precisely so they are NOT the
+    # contact's `email`/`phone`/`phone_digits` - those are inbound STITCH KEYS
+    # (`InboundService._resolve_contact` -> `find_by_phone_in_workspace`), and
+    # letting an anonymous internet caller write one let an attacker fuse
+    # their own web chat thread onto a victim's future WhatsApp conversation.
+    # Read-only on the agent side (`ThreadItem.visitorProfile`); nothing in
+    # the codebase ever looks a contact UP by these values.
+    visitor_profile_json = Column(JSON(none_as_null=True), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         UniqueConstraint("channel_id", "external_user_id", name="uq_identity_channel_external"),
+    )
+
+
+class ContactField(OmniBase):
+    """A per-workspace registered custom field (plan 25 S1). Values live in
+    `Contact.custom_fields_json[key]`, validated against this row's `type` on
+    every write (`ContactFieldService`). `key` + `type` are immutable after
+    create (D6) - enforced in the service, not the DB. Uniqueness (per
+    workspace, case-insensitive) is also app-enforced (`func.lower` lookup) -
+    no DB constraint, so it stays portable across the SQLite test suite."""
+
+    __tablename__ = "contact_fields"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    key = Column(String, nullable=False)
+    label = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    type = Column(String, nullable=False)  # text|list|checkbox|email|number|url|date|time
+    options_json = Column(JSON(none_as_null=True), nullable=True)  # `list` type only
+    visibility = Column(String, nullable=False, default="always")  # always|hidden
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ContactTag(OmniBase):
+    """A per-workspace tag (plan 25 S1). Attached to contacts via
+    `ContactTagLink`. Name uniqueness (per workspace, case-insensitive) is
+    app-enforced, same reasoning as `ContactField.key`."""
+
+    __tablename__ = "contact_tags"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    emoji = Column(String, nullable=True)
+    color = Column(String, nullable=True)  # hex
+    description = Column(Text, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ContactTagLink(OmniBase):
+    """A contact <-> tag attachment (plan 25 S1). Replaced wholesale on every
+    `tagIds` PATCH (`ContactTagService.replace_links`) - never merged."""
+
+    __tablename__ = "contact_tag_links"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    contact_id = Column(String, ForeignKey("contacts.id"), nullable=False, index=True)
+    tag_id = Column(String, ForeignKey("contact_tags.id"), nullable=False, index=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("contact_id", "tag_id", name="uq_contact_tag_link"),
+    )
+
+
+class ContactSegment(OmniBase):
+    """A saved, named filter tree per workspace (plan 26 S1, D-A2-3). Stores
+    the EXACT `FilterGroup` shape the Resource shell's filter builder emits
+    (`filter_json`, `JSON(none_as_null=True)` per the house rule) - validated
+    at save by a dry-run `translate_filter` against
+    `services/contact_filters.py`'s whitelisted column map, and applied in SQL
+    through the SAME translator at list time (never evaluated in Python over
+    fetched rows). Name uniqueness (per workspace, case-insensitive) is a DB
+    functional unique index - this is a brand-new table, so (unlike
+    `contact_fields`/`contact_tags`) there is no pre-existing-duplicate
+    auto-heal to run first."""
+
+    __tablename__ = "contact_segments"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    filter_json = Column(JSON(none_as_null=True), nullable=True)
+    created_by_user_id = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class TeamAssignmentSetting(OmniBase):
+    """Per (workspace, CORE team id) assignment strategy (plan 28 S2, D-A8-3).
+
+    `team_id` is a plain indexed String holding a core `teams.id` - no
+    cross-schema FK, same convention as `Contact.assigned_team_id`. Row is
+    created lazily on first read/write (`team_assignment_service.
+    _get_or_create_settings`), default `strategy="round_robin"`.
+    `last_assigned_user_id` is the persisted round-robin cursor (D-A8-8) -
+    locked `FOR UPDATE` on Postgres for the duration of a pick (D-A8-9), a
+    no-op on the sqlite test path."""
+
+    __tablename__ = "team_assignment_settings"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    team_id = Column(String, nullable=False, index=True)
+    strategy = Column(String, nullable=False, default="round_robin")
+    last_assigned_user_id = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "team_id", name="uq_team_assignment_settings_ws_team"),
+    )
+
+
+class CloseReason(OmniBase):
+    """A per-workspace close reason (plan 27 A3, S2 - D-A3-3). Referenced by
+    `ConversationEvent.close_reason_id` on `closed` events, never stored on
+    the thread row (reopening keeps history). Name uniqueness (per workspace,
+    case-insensitive) is app-enforced, same convention as `ContactTag.name`/
+    `ContactField.key`. A reason referenced by any event cannot be deleted
+    (409 `close_reason_in_use`, D-A3-13) - `is_active=false` (Deactivate) is
+    the UI answer instead, so history keeps resolving its name forever."""
+
+    __tablename__ = "close_reasons"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class InboxView(OmniBase):
+    """A saved inbox view (plan 27 A3, S2 - D-A3-2). NOT a rule-engine tree -
+    `filter_json` is a typed `InboxViewFilter` (Pydantic `extra="forbid"`)
+    resolved server-side by `inbox_view_service.expand()`. `owner_user_id` is
+    always server-resolved (never client input); a personal view (`is_shared`
+    false) is editable by its owner with only `conversations.read` (D-A3-11) -
+    `inbox_views.manage` is required only for a SHARED view or someone else's.
+    `segment_id` is reserved for A2 (`contact_segments`, plan 26) - A2 is now
+    merged in, but resolving a saved view through a segment (D-A3-17) is not
+    yet implemented (`InboxViewService._validate_filter_ids` still 422s any
+    `segmentId`, AC-IVE-18); kept a bare column (no FK - the shipped 0009a
+    migration declared it plain) until that follow-up lands."""
+
+    __tablename__ = "inbox_views"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    owner_user_id = Column(String, nullable=False, index=True)
+    is_shared = Column(Boolean, nullable=False, default=False)
+    filter_json = Column(JSON(none_as_null=True), nullable=True)
+    segment_id = Column(String, nullable=True)  # reserved, unused (D-A3-17)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ConversationEvent(OmniBase):
+    """Append-only conversation-lifecycle audit trail (plan 27 A3, S1 - roadmap
+    D9 `omni_conversation_events`). Every writer inserts on the SAME session
+    and unit of work as the mutation that caused it (never a post-commit hook,
+    never its own commit) - `services/event_service.py record()` is the ONE
+    seam every caller goes through (AC-IVE-02).
+
+    ``event_type`` in {opened, closed, reopened, snoozed, unsnoozed, assigned,
+    unassigned, first_agent_reply, lifecycle_changed, comment_added}.
+    ``from_value``/``to_value`` are polymorphic per event type (a THREAD status
+    id, a core lifecycle status id, a user/external-agent id) - resolved to a
+    display label TENANT-SCOPED at read time (never an unscoped lookup, the
+    polymorphic stored-id house rule), never branched on in code.
+    ``close_reason_id`` FKs to ``close_reasons.id`` (plan 27 A3 slice S2 -
+    S1 reserved the column, always NULL until S2's `close_thread`).
+    """
+
+    __tablename__ = "conversation_events"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    contact_id = Column(String, ForeignKey("contacts.id"), nullable=False, index=True)
+    event_type = Column(String, nullable=False)
+    actor_user_id = Column(String, nullable=True)
+    actor_external_agent_id = Column(String, nullable=True)
+    from_value = Column(String, nullable=True)
+    to_value = Column(String, nullable=True)
+    # `close_reasons.id` - plan 27 A3 S2. Nullable (only `closed` events set
+    # it); the migration ALTERs this FK in for existing deployments.
+    close_reason_id = Column(String, ForeignKey("close_reasons.id"), nullable=True)
+    note = Column(Text, nullable=True)
+    payload_json = Column(JSON(none_as_null=True), nullable=True)
+    # Explicit (never server_default) - µs precision so rapid same-second
+    # writes (e.g. an assign immediately followed by a status change) still
+    # order correctly, matching every other append-only row in this module.
+    created_at = Column(UTCDateTime(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_conv_events_ws_created", "tenant_id", "workspace_id", "created_at"),
+        Index("ix_conv_events_contact_created", "tenant_id", "contact_id", "created_at"),
+        Index("ix_conv_events_type_created", "tenant_id", "event_type", "created_at"),
     )
 
 
@@ -219,6 +558,13 @@ class ConversationMessage(OmniBase):
     error_code = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
     metadata_json = Column(JSON, nullable=True)
+    # Descriptive marker only (plan 33 D-A6-3, S3+) - a migrated history row's
+    # `external_message_id` stays NULL (the GLOBAL wamid-dedupe unique, above,
+    # must never be overloaded with a source id); this column is what makes a
+    # migrated row self-describing without a join. Added in S2's migration
+    # alongside `contacts.migrated_from` (both land together, AC-MIG-18) even
+    # though S2 itself never writes a message row (S3 does).
+    migrated_from = Column(String, nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     @property
@@ -287,6 +633,121 @@ class WhatsappTemplate(OmniBase):
     last_synced_at = Column(UTCDateTime(), nullable=True)
     media_sample_key = Column(String, nullable=True)  # storage key for a draft media-header sample
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
+class Broadcast(OmniBase):
+    """A named, scheduled-or-immediate one-way send of ONE approved WhatsApp
+    template to a resolved audience on ONE channel (plan 29, roadmap A4).
+
+    The audience is stored as CONFIGURATION only (D-A4-2) - `audience_kind`
+    picks exactly one of `audience_segment_id` / `audience_filter_json` /
+    `audience_contact_ids_json`; it is snapshotted into `BroadcastRecipient`
+    rows only at SEND time (S2). Lifecycle rides the module's lightweight
+    `statuses` table under the NEW scope `BROADCAST` (D-A4-3), not the core
+    status engine - `status_id` is machine-driven, never tenant-edited.
+    Counts are denormalized (D-A4-11), recomputed set-based from a live
+    aggregate over `broadcast_recipients`. `job_id`/`created_by_user_id` are
+    plain indexed columns pointing at CORE rows (`background_jobs`, `users`) -
+    no cross-schema FK (the BL-030 pattern)."""
+
+    __tablename__ = "broadcasts"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    labels_json = Column(JSON(none_as_null=True), nullable=True)  # string[] (D-A4-21)
+
+    # Plain indexed column pointing at `channels.id` - no FK (BL-030). A
+    # channel hard-delete must not be blocked by a historical broadcast.
+    channel_id = Column(String, nullable=False, index=True)
+
+    # ── audience CONFIGURATION (D-A4-2) - exactly one branch is populated ──
+    audience_kind = Column(String, nullable=False)  # segment | filter | contacts
+    # Plain indexed column pointing at `contact_segments.id` - no FK (BL-030).
+    # A segment delete must not be blocked by a historical broadcast.
+    audience_segment_id = Column(String, nullable=True, index=True)
+    audience_filter_json = Column(JSON(none_as_null=True), nullable=True)
+    audience_contact_ids_json = Column(JSON(none_as_null=True), nullable=True)
+
+    # Plain indexed column pointing at `whatsapp_templates.id` - no FK
+    # (BL-030). A template delete must not be blocked by a historical
+    # broadcast; `template_name`/`template_language` below are denormalized
+    # for exactly this reason.
+    template_id = Column(String, nullable=False, index=True)
+    # Denormalized at save (the template row may change/disappear later; the
+    # list must not join it) - mirrors the `WorkspaceItem`/`ChannelItem`
+    # denormalization convention already used across this module.
+    template_name = Column(String, nullable=False)
+    template_language = Column(String, nullable=True)
+
+    # Structured {header:[], body:[], buttons:[]} TemplateBinding slots
+    # (D-A4-4) - never a merge-string; anti-SSTI by construction.
+    bindings_json = Column(JSON(none_as_null=True), nullable=True)
+
+    status_id = Column(String, ForeignKey("statuses.id"), nullable=False, index=True)
+    scheduled_at = Column(UTCDateTime(), nullable=True)
+    started_at = Column(UTCDateTime(), nullable=True)
+    finished_at = Column(UTCDateTime(), nullable=True)
+
+    total_count = Column(Integer, nullable=False, default=0)
+    sent_count = Column(Integer, nullable=False, default=0)
+    delivered_count = Column(Integer, nullable=False, default=0)
+    read_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+
+    job_id = Column(String, nullable=True)  # public.background_jobs.id (S2)
+    error = Column(Text, nullable=True)
+    created_by_user_id = Column(String, nullable=True)  # public.users.id, no FK
+
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_broadcasts_tenant_ws_status_scheduled",
+            "tenant_id", "workspace_id", "status_id", "scheduled_at",
+        ),
+    )
+
+
+class BroadcastRecipient(OmniBase):
+    """One audience member's send ledger row for a broadcast (plan 29, roadmap
+    A4) - materialized ONLY at SEND time (S2's snapshot phase, tested in
+    isolation in S1 via `services/broadcast_audience.snapshot_audience`).
+    `UNIQUE(broadcast_id, contact_id)` is the idempotency backstop S2's atomic
+    per-recipient claim relies on (a resumed/retried snapshot or send never
+    double-writes or double-sends). `message_id` is a plain indexed column
+    pointing at `conversation_messages.id` (no cross-schema FK, BL-030)."""
+
+    __tablename__ = "broadcast_recipients"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    broadcast_id = Column(String, ForeignKey("broadcasts.id"), nullable=False, index=True)
+    # Plain indexed column pointing at `contacts.id` - no FK (BL-030). A
+    # contact hard-delete must not be blocked by a historical broadcast.
+    contact_id = Column(String, nullable=False, index=True)
+    message_id = Column(String, nullable=True, index=True)
+
+    # queued | sent | delivered | read | failed | skipped
+    state = Column(String, nullable=False, default="queued")
+    # no_identity | duplicate | channel_inactive | cancelled | missing_variable
+    skip_reason = Column(String, nullable=True)
+    error_code = Column(String, nullable=True)
+    error_text = Column(Text, nullable=True)
+
+    attempts = Column(Integer, nullable=False, default=0)
+    attempted_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("broadcast_id", "contact_id", name="uq_broadcast_recipient"),
+        Index("ix_broadcast_recipients_tenant_broadcast_state", "tenant_id", "broadcast_id", "state"),
+    )
 
 
 class WorkspaceApiKey(OmniBase):
@@ -410,6 +871,12 @@ class OmnichannelSettings(OmniBase):
     audio_max_bytes = Column(Integer, nullable=True)
     document_max_bytes = Column(Integer, nullable=True)
     sticker_max_bytes = Column(Integer, nullable=True)
+    # Business hours (plan sprint-4/31 S5, D-A5-13/F6) - the SAME per-workspace
+    # + tenant-default (workspace_id NULL) row this table already uses for
+    # media caps; two new columns, not a new table (D-A5-13's "waste"
+    # rationale). Shape: `{"mon": [{"from": "09:00", "to": "18:00"}], ...}`.
+    business_hours_json = Column(JSON(none_as_null=True), nullable=True)
+    business_timezone = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -452,6 +919,153 @@ class ExternalAgent(OmniBase):
     __table_args__ = (
         UniqueConstraint("connection_id", "sub", name="uq_external_agent_conn_sub"),
     )
+
+
+class WorkflowContactFire(OmniBase):
+    """Trigger-once-per-contact claim (plan sprint-4/31, D-A5-4). One row per
+    (tenant, workflow, contact) that has ALREADY fired a
+    `triggerOncePerContact` trigger for that workflow - a later matching event
+    for the same pair creates NO run. The unique constraint is the race-free
+    claim: two concurrent events insert-race to a single winner (a losing
+    `IntegrityError` is caught by `workflow_fire_store.claim_fire`, never
+    surfaced as a request error, AC-WFP-15). Survives unpublish/republish
+    (never touched by either); wiped by `uninstall_tenant`'s generic per-table
+    tenant sweep and by the `workflow` `deleted` event subscriber below."""
+
+    __tablename__ = "workflow_contact_fires"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, nullable=False, index=True)
+    contact_id = Column(String, nullable=False, index=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "workflow_id", "contact_id", name="uq_workflow_contact_fire"
+        ),
+    )
+
+
+class MigrationRef(OmniBase):
+    """respond.io migration idempotency index (plan 33 S2, D-A6-3, §5.3).
+
+    ``(source external id) -> (Foundryx local id)`` per entity type. THE ONLY
+    idempotency key - a re-run skips every external id already present here
+    (``MigrationRefRepository.already_migrated``). Marker columns
+    (``contacts.migrated_from``, ``conversation_messages.migrated_from``) are
+    descriptive only, never consulted for skip-on-rerun logic.
+
+    ``entity_type`` in {contact, message, identity, tag, field, quick_reply,
+    user, channel, event} (plan §5.3) - S2 only ever writes "contact"; later
+    slices add the rest without a schema change.
+    """
+
+    __tablename__ = "migration_refs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    source = Column(String, nullable=False)  # "respondio" (S5 CSV mode reuses "respondio" too)
+    entity_type = Column(String, nullable=False)
+    external_id = Column(String, nullable=False)  # stringified vendor id
+    local_id = Column(String, nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "workspace_id", "source", "entity_type", "external_id",
+            name="uq_migration_refs_external",
+        ),
+        Index(
+            "ix_migration_refs_local",
+            "tenant_id", "workspace_id", "source", "entity_type", "local_id",
+        ),
+    )
+
+
+class WorkflowWait(OmniBase):
+    """A parked workflow run's module-side index (plan sprint-4/31 S4, §5.4).
+
+    Core owns the park itself (`workflow_runs.status='waiting'` +
+    `resume_state_json`); THIS row is the omnichannel-specific index from a
+    contact (or just a deadline) back to that parked run, plus the answer spec
+    and retry counters an Ask-a-question step needs.
+
+    `kind='question'` rows carry `contact_id`/`workspace_id` and are UNIQUE per
+    (tenant, contact) - D-A5-9, one open question per contact. `kind='delay'`
+    rows (a plain Wait step) carry NEITHER: they have no contact, so their NULL
+    `contact_id` never collides with the unique constraint and a plain Wait can
+    never block (or be resumed by) an unrelated question.
+
+    `run_id`/`workflow_id` are core `public` row ids held as plain columns
+    (BL-030 - no cross-schema FK) and are ALWAYS resolved tenant-scoped.
+    """
+
+    __tablename__ = "workflow_waits"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    contact_id = Column(String, ForeignKey("contacts.id"), nullable=True)
+    run_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, nullable=False, index=True)
+    node_id = Column(String, nullable=False)
+    kind = Column(String, nullable=False, default="question")
+    # {answerType, choices[], retryLimit, retryMessage, question} - rendered at
+    # park time (the run context is not available when an inbound answer lands).
+    answer_spec_json = Column(JSON(none_as_null=True), nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    deadline_at = Column(UTCDateTime(), nullable=False, index=True)
+    is_test = Column(Boolean, nullable=False, default=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "contact_id", name="uq_workflow_wait_contact"),
+        Index("ix_workflow_waits_due", "tenant_id", "deadline_at"),
+    )
+
+
+class MigrationUpload(OmniBase):
+    """Tenant-scoped upload receipt for a migration CSV (plan 33 review round
+    1, finding B2). `upload_csv` used to hand the client a raw, unvalidated
+    storage key back (`MigrationUploadResult.key`), and `MigrationJobCreate.
+    contactsCsvKey`/`snippetsCsvKey` accepted ANY client-supplied string,
+    fetched straight off `storage_for_tenant(...).fetch(key)` with no
+    ownership or shape check - a client-controlled key is a path-traversal /
+    cross-tenant-blob read (the house "tenant-authored storage keys are
+    sanitised" rule, and the polymorphic-stored-id class this codebase has
+    been bitten by twice already).
+
+    This row is the fix: `upload_csv` persists ITS OWN key here and returns
+    an OPAQUE `id`; `MigrationJobCreate` now carries `contactsUploadId`/
+    `snippetsUploadId` instead, resolved tenant-scoped (`MigrationService.
+    _require_upload`) at job-create time - a foreign or unknown id reads back
+    as a uniform 404, exactly like `_require_connection`/`_require_workspace`.
+    The RESOLVED `storage_key` is what actually lands in the job's
+    `payload_json` (`contactsCsvKey`/`snippetsCsvKey`, unchanged internal
+    names) - the phase-processing code (`_process_csv_contacts`,
+    `_process_quick_replies_csv`) never changes, only the client-facing
+    wire contract does.
+
+    `workspace_id` is nullable - the setup form lets an operator upload a
+    CSV before picking a target workspace (informational only; ownership is
+    tenant-scoped, never workspace-scoped, at resolve time)."""
+
+    __tablename__ = "migration_uploads"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    kind = Column(String, nullable=False)  # "contacts" | "snippets"
+    storage_key = Column(String, nullable=False)
+    row_count = Column(Integer, nullable=False, default=0)
+    headers_json = Column(JSON(none_as_null=True), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
 class EmbedJti(OmniBase):

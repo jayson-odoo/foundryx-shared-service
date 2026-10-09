@@ -46,6 +46,7 @@ function ChangePasswordForm() {
   const [confirmVisible, setConfirmVisible] = useState(false);
 
   const form = useForm<ChangePasswordSchemaType>({
+    mode: 'onTouched',
     resolver: zodResolver(getChangePasswordSchema()),
     defaultValues: { newPassword: '', confirmPassword: '' },
   });

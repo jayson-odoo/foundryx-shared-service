@@ -3,6 +3,7 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { ApiError } from '@/lib/api-client';
 import type { StatusGraph } from '@/types/status-engine';
 import type { BusinessRequirementDetail } from '@/types/business-requirement';
+import { buildInfo } from './br-build-fixtures';
 import { useBrActions } from './use-br-actions';
 
 const statusGraph = vi.fn();
@@ -68,6 +69,7 @@ const br = (over: Partial<BusinessRequirementDetail> = {}): BusinessRequirementD
   updatedAt: '2026-07-20T10:00:00Z',
   answers: {},
   templateDoc: { schemaVersion: 1, pages: [] },
+  build: buildInfo(),
   ...over,
 });
 

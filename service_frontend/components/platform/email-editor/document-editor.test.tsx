@@ -191,7 +191,13 @@ describe('EmailEditor document surface', () => {
     renderDoc({ renderDocHtml });
     fireEvent.click(screen.getByTestId('editor-mode-preview'));
     await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByText('Refresh preview'));
+    // The pane disables Refresh while a render is in flight; the first call
+    // being MADE is not the first render being DONE, so a click that lands in
+    // between is swallowed by the disabled button and the second call never
+    // happens. Wait for the control to be enabled before clicking it.
+    const refresh = screen.getByRole('button', { name: /refresh preview/i });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    fireEvent.click(refresh);
     await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(2));
   });
 });

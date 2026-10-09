@@ -1,0 +1,33 @@
+FROM connections 
+WHERE connections.id = %(pk_1)s
+FROM app_autocount.ac_company 
+WHERE app_autocount.ac_company.id = %(pk_1)s
+FROM app_autocount.ac_row_hash 
+WHERE app_autocount.ac_row_hash.tenant_id = %(tenant_id_1)s AND app_autocount.ac_row_hash.company_id = %(company_id_1)s AND app_autocount.ac_row_hash.entity_type = %(entity_type_1)s AND app_autocount.ac_row_hash.source_ref IN (%(source_ref_1_1)s, %(source_ref_1_2)s, %(source_ref_1_3)s, %(source_ref_1_4)s, %(source_ref_1_5)s, %(source_ref_1_6)s, %(source_ref_1_7)s, %(source_ref_1_8)s, %(source_ref_1_9)s, %(source_ref_1_10)s, %(source_ref_1_11)s, %(source_ref_1_12)s, %(source_ref_1_13)s, %(source_ref_1_14)s, %(source_ref_1_15)s, %(source_ref_1_16)s, %(source_ref_1_17)s, %(source_ref_1_18)s, %(source_ref_1_19)s, %(source_ref_1_20)s)
+Seeded 20 row hashes as if from a prior sql_db run.
+FROM connections 
+WHERE connections.id = %(pk_1)s
+FROM app_autocount.ac_entity_config 
+WHERE app_autocount.ac_entity_config.id = %(pk_1)s
+FROM connections 
+WHERE connections.tenant_id = %(tenant_id_1)s AND connections.id = %(id_1)s AND connections.provider = %(provider_1)s 
+ LIMIT %(param_1)s
+FROM app_autocount.ac_company 
+WHERE app_autocount.ac_company.id = %(pk_1)s
+FROM app_autocount.ac_row_hash 
+WHERE app_autocount.ac_row_hash.tenant_id = %(tenant_id_1)s AND app_autocount.ac_row_hash.company_id = %(company_id_1)s AND app_autocount.ac_row_hash.entity_type = %(entity_type_1)s
+FROM app_autocount.ac_row_hash 
+WHERE app_autocount.ac_row_hash.tenant_id = %(tenant_id_1)s AND app_autocount.ac_row_hash.company_id = %(company_id_1)s AND app_autocount.ac_row_hash.entity_type = %(entity_type_1)s AND app_autocount.ac_row_hash.source_ref IN (%(source_ref_1_1)s, %(source_ref_1_2)s, %(source_ref_1_3)s, %(source_ref_1_4)s, %(source_ref_1_5)s, %(source_ref_1_6)s, %(source_ref_1_7)s, %(source_ref_1_8)s, %(source_ref_1_9)s, %(source_ref_1_10)s, %(source_ref_1_11)s, %(source_ref_1_12)s, %(source_ref_1_13)s, %(source_ref_1_14)s, %(source_ref_1_15)s, %(source_ref_1_16)s, %(source_ref_1_17)s, %(source_ref_1_18)s, %(source_ref_1_19)s, %(source_ref_1_20)s)
+added_count=0
+updated_count=5
+delete_refs=[]
+rows_scanned=20
+AC-08-39: PASS - 0 added, 0 deleted, 5 updated (hash change only) on sql_db -> autocount_http switch
+FROM app_autocount.ac_company 
+WHERE app_autocount.ac_company.id = %(pk_1)s
+AC-08-27: PASS - ref = AC0839_20260912T004004Z:SRT-01 (company-qualified, same scheme as sql_db)
+FROM app_autocount.ac_company 
+WHERE app_autocount.ac_company.id = %(pk_1)s
+FROM connections 
+WHERE connections.id = %(pk_1)s
+Cleanup: removed the throwaway AC-08-39 connection/company/config/hashes.

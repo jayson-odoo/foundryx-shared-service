@@ -1,16 +1,10 @@
 'use client';
 
 import { Fragment, useCallback, useState } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
-import { ResourceList } from '@/components/platform/resource-list';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ChannelConnectWizard } from '@/components/platform/channel-connect-wizard';
+import { ResourceList } from '@/components/platform/resource-list';
 import { useChannelsListConfig } from './components/use-channels-list-config';
 
 export default function ChannelsPage() {
@@ -24,16 +18,6 @@ export default function ChannelsPage() {
   return (
     <RequirePermission permission="channels.read">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Connect and manage your WhatsApp Business numbers.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
         <Container width="fluid">
           <ResourceList key={reloadKey} config={config} />
         </Container>

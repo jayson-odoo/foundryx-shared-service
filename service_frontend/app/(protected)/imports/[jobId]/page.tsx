@@ -10,14 +10,6 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SearchSelect } from '@/components/platform/search-select';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { importService } from '@/services/import-service';
 import { registrationService } from '@/services/registration-service';
 import { emsService } from '@/services/ems-service';
@@ -26,6 +18,7 @@ import type { ImportConfig, ImportJob, ImportPreview } from '@/types/import';
 import type { Offering } from '@/types/registration';
 import type { Client } from '@/types/ems';
 import { ArrowRight, Download } from 'lucide-react';
+import { ImportErrorsTable } from './import-errors-table';
 
 const DONT_IMPORT = '__none__';
 const IN_FLIGHT = new Set(['pending', 'validating', 'importing']);
@@ -386,26 +379,7 @@ export default function ImportPage({ params }: { params: Promise<{ jobId: string
                       Showing first {errors.length} of {job!.invalidRows} - download the error file for all.
                     </p>
                   )}
-                  <div className="overflow-x-auto rounded-lg border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-20">Row</TableHead>
-                          <TableHead className="w-40">Column</TableHead>
-                          <TableHead>Problem</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {errors.map((e, i) => (
-                          <TableRow key={i}>
-                            <TableCell>{e.row}</TableCell>
-                            <TableCell className="font-mono text-xs">{e.column}</TableCell>
-                            <TableCell className="text-destructive">{e.message}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                  <ImportErrorsTable errors={errors} />
                 </div>
               )}
               {errors.length === 0 && job!.status === 'validated' && (

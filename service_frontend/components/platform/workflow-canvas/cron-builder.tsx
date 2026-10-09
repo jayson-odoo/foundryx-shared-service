@@ -157,7 +157,7 @@ export function CronBuilder({ cron, timezone, disabled = false, onChange }: Cron
       />
 
       <p className="text-xs text-muted-foreground" data-testid="cron-summary">
-        {describeCron(cron || '')} · <code className="text-[11px]">{cron || '-'}</code>
+        {describeCron(cron || '')} · <code className="text-2xs">{cron || '-'}</code>
       </p>
     </div>
   );

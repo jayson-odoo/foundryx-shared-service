@@ -40,7 +40,7 @@ export function ApiKeysTab({
 
   return (
     <div className="flex flex-col gap-3">
-      <ResourceList key={reloadKey} config={config} />
+      <ResourceList key={reloadKey} config={config} hideHeader />
       <MintApiKeyDialog
         workspaceId={workspaceId}
         open={dialogOpen}

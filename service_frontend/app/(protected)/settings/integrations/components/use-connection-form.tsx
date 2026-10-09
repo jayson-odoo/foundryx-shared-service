@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { Plug } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { integrationService } from '@/services/integration-service';
 import type { Connection, IntegrationProvider } from '@/types/integration';
 import { ConfigurationTab, HealthCard } from './connection-form-fields';
@@ -34,6 +35,7 @@ export interface UseConnectionFormResult {
 export function useConnectionForm(
   connectionId: string | undefined,
   initialEditing: boolean,
+  initialProvider?: string,
 ): UseConnectionFormResult {
   const router = useRouter();
   const actions = useConnectionActions();
@@ -45,6 +47,7 @@ export function useConnectionForm(
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<ConnectionFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(connectionFormSchema),
     defaultValues: BLANK,
   });
@@ -85,6 +88,17 @@ export function useConnectionForm(
     };
   }, [connectionId, creating, form]);
 
+  // Create with a provider already chosen (a module's settings page deep-links
+  // straight to its own connection kind, so the operator is never offered a
+  // provider that is wrong for the page they came from). Runs once, and only
+  // while the picker is still untouched.
+  useEffect(() => {
+    if (!creating || !initialProvider) return;
+    if (form.getValues('provider')) return;
+    const p = providers.find((x) => x.provider === initialProvider);
+    if (p) form.reset(defaultsForProvider(p));
+  }, [creating, initialProvider, providers, form]);
+
   // Prefill once BOTH the record and its provider schema are known.
   useEffect(() => {
     if (!connection) return;
@@ -115,7 +129,7 @@ export function useConnectionForm(
       return false;
     }
     try {
-      const input = toConnectionInput(values);
+      const input = toConnectionInput(values, provider);
       if (creating) {
         const created = await integrationService.create(input);
         toast.success(`${created.name} connected - run a test to verify it.`);
@@ -132,6 +146,20 @@ export function useConnectionForm(
       return false;
     }
   };
+
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      integrationService.getAt(query, index).then((r) => ({
+        recordId: r.connection?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => connectionFormHref(recordId, { ctx, index }),
+    [],
+  );
 
   const config = useMemo<ResourceFormConfig<Connection> | null>(() => {
     if (isLoading || notFound) return null;
@@ -202,18 +230,23 @@ export function useConnectionForm(
       },
       recordNav: creating
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              integrationService.getAt(query, index).then((r) => ({
-                recordId: r.connection?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) =>
-              connectionFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, notFound, creating, connection, providers, provider, actions, form, initialEditing, router]);
+  }, [
+    isLoading,
+    notFound,
+    creating,
+    connection,
+    providers,
+    provider,
+    actions,
+    form,
+    initialEditing,
+    router,
+    fetchRecordAt,
+    buildRecordHref,
+  ]);
 
   return { config, form, isLoading, notFound };
 }

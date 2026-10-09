@@ -167,3 +167,46 @@ describe('realtime emitter', () => {
     }
   });
 });
+
+describe('Messenger/Instagram seed threads (plan 32 / A7a, AC-CHN-10)', () => {
+  it('a channel list mixing all three types is exercisable with no backend', async () => {
+    const list = await svc.listThreads({ workspaceId: 'wsp-001' });
+    const types = new Set(list.map((t) => t.channelType));
+    expect(types.has('WHATSAPP')).toBe(true);
+    expect(types.has('FACEBOOK')).toBe(true);
+    expect(types.has('INSTAGRAM')).toBe(true);
+  });
+
+  it('seeds the three Messenger window states plus one Instagram thread', async () => {
+    const list = await svc.listThreads({ workspaceId: 'wsp-001' });
+    const byId = Object.fromEntries(list.map((t) => [t.id, t]));
+    const now = Date.now();
+
+    // Standard window OPEN.
+    expect(Date.parse(byId['cnt-fb-001'].windowExpiresAt!)).toBeGreaterThan(now);
+    // Standard window closed, human-agent window OPEN.
+    expect(Date.parse(byId['cnt-fb-002'].windowExpiresAt!)).toBeLessThan(now);
+    expect(Date.parse(byId['cnt-fb-002'].humanAgentExpiresAt!)).toBeGreaterThan(now);
+    // Both windows closed.
+    expect(Date.parse(byId['cnt-fb-003'].windowExpiresAt!)).toBeLessThan(now);
+    expect(Date.parse(byId['cnt-fb-003'].humanAgentExpiresAt!)).toBeLessThan(now);
+    // Instagram thread, standard window open.
+    expect(byId['cnt-ig-001'].channelType).toBe('INSTAGRAM');
+    expect(Date.parse(byId['cnt-ig-001'].windowExpiresAt!)).toBeGreaterThan(now);
+
+    // `cswExpiresAt` stays a documented WhatsApp-only mirror (D-A7-5, F4).
+    expect(byId['cnt-fb-001'].cswExpiresAt).toBeNull();
+    expect(byId['cnt-ig-001'].cswExpiresAt).toBeNull();
+  });
+
+  it('a free-form send succeeds inside the human-agent window (mock mirrors D-A7-6)', async () => {
+    const msg = await svc.sendMessage('cnt-fb-002', { messageType: 'TEXT', body: 'Still here!' });
+    expect(msg.body).toBe('Still here!');
+  });
+
+  it('a free-form send is rejected once both windows have closed', async () => {
+    await expect(svc.sendMessage('cnt-fb-003', { messageType: 'TEXT', body: 'Too late' })).rejects.toThrow(
+      /window has closed/,
+    );
+  });
+});

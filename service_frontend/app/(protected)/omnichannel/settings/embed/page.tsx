@@ -1,14 +1,8 @@
 'use client';
 
-import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 import { EmbedAccessPanel } from './embed-access-panel';
 
 /**
@@ -19,21 +13,10 @@ import { EmbedAccessPanel } from './embed-access-panel';
 export default function EmbedAccessPage() {
   return (
     <RequirePermission permission="workspaces.manage">
-      <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Embed the conversation UI as a token-authed iframe on your own pages.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
-        <Container width="fluid">
-          <EmbedAccessPanel />
-        </Container>
-      </Fragment>
+      <Container width="fluid">
+        <PageHeader description="Embed the conversation UI as a token-authed iframe on your own pages." />
+        <EmbedAccessPanel />
+      </Container>
     </RequirePermission>
   );
 }

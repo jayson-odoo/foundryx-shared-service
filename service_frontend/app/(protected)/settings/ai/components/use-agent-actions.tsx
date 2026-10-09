@@ -3,9 +3,7 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Pencil, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
 import type { ResourceAction } from '@/components/platform/resource-list';
-import { aiService } from '@/services/ai-service';
 import type { AiAgent } from '@/types/ai';
 import { agentPath } from './paths';
 
@@ -30,17 +28,9 @@ export function useAgentActions(): ResourceAction<AiAgent>[] {
         tone: 'destructive',
         surfaces: { row: true, bulk: true, form: true },
         permission: 'ai_agents.manage',
-        confirm: {
-          title: 'Delete agent?',
-          description:
-            'Runs already recorded keep their trace history. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, runtime) => {
-          for (const agent of rows) await aiService.removeAgent(agent.id);
-          toast.success(`Deleted ${rows.length} agent${rows.length === 1 ? '' : 's'}.`);
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `ai_agents.delete` handler commits it).
+        deferred: { actionKey: 'ai_agents.delete', entityType: 'ai_agent' },
       },
     ],
     [router],

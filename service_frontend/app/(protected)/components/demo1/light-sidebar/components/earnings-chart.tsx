@@ -132,7 +132,7 @@ const EarningsChart = () => {
             <div class="font-medium text-sm text-secondary-foreground">${monthName}, 2024 Sales</div>
             <div class="flex items-center gap-1.5">
               <div class="font-semibold text-base text-mono">${formattedNumber}</div>
-              <span class="rounded-full border border-green-200 font-medium dark:border-green-850 text-success-700 bg-green-100 dark:bg-green-950/30 text-[11px] leading-none px-1.25 py-1">+24%</span>
+              <span class="rounded-full border border-green-200 font-medium dark:border-green-850 text-success-700 bg-green-100 dark:bg-green-950/30 text-2xs leading-none px-1.25 py-1">+24%</span>
             </div>
           </div>
           `;

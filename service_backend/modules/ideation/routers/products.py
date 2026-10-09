@@ -19,10 +19,11 @@ router = APIRouter()
 
 def _out(product_id: str, row) -> DeliveryConfigOut:
     if row is None:
-        return DeliveryConfigOut(productId=product_id, productDomainBase=None)
+        return DeliveryConfigOut(productId=product_id, productDomainBase=None, buildRepo=None)
     return DeliveryConfigOut(
         productId=row.product_id,
         productDomainBase=row.product_domain_base,
+        buildRepo=row.build_repo,
         createdAt=row.created_at,
         updatedAt=row.updated_at,
     )
@@ -46,6 +47,9 @@ def set_delivery(
     db: Session = Depends(get_db),
 ) -> DeliveryConfigOut:
     row = DeliveryService(db).set(
-        current_user.tenant_id, product_id, body.productDomainBase
+        current_user.tenant_id,
+        product_id,
+        body.productDomainBase,
+        **({"build_repo": body.buildRepo} if "buildRepo" in body.model_fields_set else {}),
     )
     return _out(product_id, row)

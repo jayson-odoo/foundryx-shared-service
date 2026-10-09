@@ -1,0 +1,51 @@
+Corrections pass (HEAD 6c038d37) - see the dated README section below for narrative.
+
+=== Original probe 4 (both S1 passes) was testing the WRONG field ===
+
+The original probe 4 payload set the LOOKUP's own top-level "as" (its label/namespace, checked
+only against MAX_LOOKUPS/regex/forward-reference rules, never against raw source columns) to
+"Description", while leaving the FIELD alias (fields[0].as, the value actually merged onto the
+row and checked against raw columns by validate_lookups) as "BaseUOMPrice":
+  {"path": "/itemuombypage", "as": "Description", "on": [...], "fields": [{"remote": "Price", "as": "BaseUOMPrice"}]}
+This never exercised a genuine alias/raw-column collision at all, which is why it saved clean at
+both ce15df69 and 819a8ce1 - correctly so, not "200 by design" for the reason first written.
+
+=== Re-probe on CURRENT HEAD (6c038d37), same wrong shape (for the record) ===
+PUT .../etl-task, lookups=[{"path":"/itemuombypage","as":"Description","on":[...],"fields":[{"remote":"Price","as":"BaseUOMPrice"}]}]
+HTTP 200 (unchanged - correct, since "as" here is the lookup's own label, not a merged column)
+
+=== CORRECTED probe on CURRENT HEAD (6c038d37) - the field alias itself collides ===
+PUT .../etl-task, lookups=[{"path":"/itemuombypage","as":"uom2","on":[{"local":"ItemCode","remote":"ItemCode"}],"fields":[{"remote":"Price","as":"Description"}]}]
+HTTP 422
+{"detail":{"fieldErrors":{"lookups[0].fields[0].as":"'Description' is already a source column."}},"message":"The task could not be saved. Fix the highlighted fields."}
+
+Confirms round-2 fix 4c5ce70d closed the hole: at 819a8ce1 (before 4c5ce70d), the save-time
+tolerance (stored_raw_columns) was built from the INCOMING lookups being validated, so a
+brand-new lookup's own alias could strip itself out of its own collision check. At current HEAD
+(4c5ce70d applied), stored_raw_columns is built from the task's PREVIOUSLY SAVED lookups only,
+so a genuinely new field alias equal to a real stored raw column now 422s at SAVE time, naming
+lookups[0].fields[0].as exactly - never reaching preview or run with a poisoned config.
+
+Task restored to the clean ItemUOM lookup (as: "uom", fields: [{"remote":"Price","as":"BaseUOMPrice"}])
+immediately after, confirmed via GET before continuing.
+
+=== Never-pushed-refs query (re-run, confirms the Opus review's "FALSE: starvation" finding) ===
+
+SELECT push_count, count(*) AS ref_count FROM (
+  SELECT source_ref, count(*) FILTER (WHERE status='PUSHED') AS push_count
+  FROM app_autocount.ac_staged_record
+  WHERE company_id='0e6f5c95-b099-4a1f-8de9-425b63f561b4' AND entity_type='product'
+  GROUP BY source_ref
+) t GROUP BY push_count ORDER BY push_count;
+
+ push_count | ref_count
+------------+-----------
+          1 |      1840
+          2 |      6840
+          3 |      3160
+
+(matches the Opus review's "1x1,840 / 2x6,840 / 3x3,160" exactly.) A companion query for
+push_count = 0 returns 0 rows - zero never-pushed refs, confirming there is no starved head.
+
+physical rows: 31,840. distinct products: 11,840 (unchanged since the round-2 pass - no new
+runs were executed in this corrections pass).

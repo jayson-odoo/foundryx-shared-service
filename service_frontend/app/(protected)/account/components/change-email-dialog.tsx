@@ -60,6 +60,7 @@ export function ChangeEmailDialog({
   const [sent, setSent] = useState(false);
 
   const form = useForm<ChangeEmailSchemaType>({
+    mode: 'onTouched',
     resolver: zodResolver(getChangeEmailSchema()),
     defaultValues: { newEmail: '', password: '' },
   });

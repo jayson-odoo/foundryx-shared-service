@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AutoCount - Find document (mockup)</title>
+<style>
+/* Tokens mirrored from the shared-service brand token file (light theme) - same block as documentation/mockups/br-send-to-build */
+:root{
+  --g50:#f7f6f4;--g100:#ecebe7;--g200:#d9d6cf;--g300:#bfb8b0;--g400:#918a80;--g500:#6b6660;--g600:#4b4642;--g700:#2f2c27;--g800:#1e1a17;--g900:#0f0f0d;
+  --page:#fbfaf8;--white:#fff;
+  --pri:#ff5a00;--pri-act:#e14b00;--pri-soft:#fff2e9;--pri-acc:#8f3000;
+  --ok:#1b8648;--ok-soft:#e3f5e9;--ok-acc:#115c31;
+  --bad:#d93420;--bad-soft:#fce5df;--bad-acc:#8a1f13;
+  --info:#0f6ef6;--info-soft:#e3efff;--info-acc:#14499c;
+  --warn:#9b6d0f;--warn-soft:#fcf0db;--warn-acc:#5b3e04;
+  --r:8px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--g800);font:14px/1.45 Inter,ui-sans-serif,system-ui,sans-serif}
+h1,h2,h3,.hd{font-family:Poppins,Inter,ui-sans-serif,system-ui,sans-serif}
+a{color:inherit}
+svg.i{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+svg.i.s{width:14px;height:14px}
+.doc{max-width:1360px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:0 0 4px}
+.intro{color:var(--g500);font-size:13px;margin:0 0 12px;max-width:900px}
+.nav{position:sticky;top:0;z-index:20;background:var(--page);padding:8px 0 10px;border-bottom:1px solid var(--g100);margin-bottom:16px;display:flex;flex-wrap:wrap;gap:6px}
+.nav a{font-size:12px;text-decoration:none;border:1px solid var(--g100);background:#fff;border-radius:999px;padding:3px 10px;color:var(--g500)}
+.nav a:hover{color:var(--pri);border-color:var(--pri)}
+section{margin:0 0 40px}
+section>h2{font-size:16px;margin:0 0 4px}
+section>.why{font-size:12.5px;color:var(--g500);margin:0 0 12px;max-width:860px}
+.row{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
+.note{font-size:12px;color:var(--g500);border-left:2px solid var(--g200);padding:2px 0 2px 10px;margin:8px 0 0;max-width:860px}
+.nb{display:inline-block;min-width:18px;height:18px;border-radius:9px;background:var(--g800);color:#fff;font-size:11px;line-height:18px;text-align:center;margin-right:6px}
+
+/* frames */
+.desk{width:1280px;max-width:100%;background:#fff;border:1px solid var(--g100);border-radius:12px;overflow:hidden}
+.desk .cap,.frame .cap,.phone .cap{font-size:11px;color:var(--g500);padding:6px 12px;border-bottom:1px solid var(--g100);background:var(--g50);font-weight:600}
+.desk .screen{display:flex;background:#fff}
+.frame{width:1000px;max-width:100%;background:#fff;border:1px solid var(--g100);border-radius:12px;overflow:hidden}
+.frame .body{padding:16px 20px}
+.side{width:250px;flex:none;border-right:1px solid var(--g100);padding:16px 12px;font-size:13px;background:var(--g50)}
+.side .brand{font:600 16px Poppins,Inter,system-ui,sans-serif;padding:0 8px 16px}
+.side .grp{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--g500);padding:8px 8px 6px}
+.side .it{padding:6px 8px 6px 20px;border-radius:6px;color:var(--g600);display:flex;align-items:center;gap:8px}
+.side .it.on{background:var(--pri-soft);color:var(--pri);font-weight:500}
+.main{flex:1;min-width:0;padding:16px 24px;background:#fff}
+.phone{width:375px;max-width:100%;flex:none;background:#fff;border:1px solid var(--g100);border-radius:16px;overflow:hidden}
+.phone .screen{background:#fff;padding:12px}
+
+/* page parts */
+.tb{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.ttl{font:600 18px Poppins,Inter,system-ui,sans-serif}
+.crumb{font-size:13px;color:var(--g500);display:flex;align-items:center;gap:6px}
+.btn{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border-radius:6px;font:500 13px Inter,ui-sans-serif,system-ui,sans-serif;border:1px solid transparent;background:#fff;color:var(--g800);white-space:nowrap}
+.btn.outline{border-color:var(--g200)}
+.btn.primary{background:var(--pri);color:#fff}
+.btn.sm{height:28px;padding:0 10px;font-size:12px}
+.card{border:1px solid var(--g100);border-radius:var(--r);background:#fff;margin-bottom:16px}
+.card .ch{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid var(--g100);flex-wrap:wrap}
+.card .ch h3{margin:0;font-size:14px;font-weight:600}
+.card .cb{padding:16px}
+.form{display:grid;grid-template-columns:220px 200px 1fr 170px auto;gap:12px;align-items:end}
+.fld label{display:block;font-size:12px;font-weight:500;color:var(--g600);margin-bottom:4px}
+.inp{height:34px;border:1px solid var(--g200);border-radius:6px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;background:#fff;font-size:13px;min-width:0}
+.inp.foc{border-color:var(--pri);box-shadow:0 0 0 3px var(--pri-soft)}
+.inp .ph{color:var(--g400)}
+.badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:999px;font:600 11px Inter,ui-sans-serif,system-ui,sans-serif;white-space:nowrap}
+.b-ok{background:var(--ok-soft);color:var(--ok-acc)}
+.b-bad{background:var(--bad-soft);color:var(--bad-acc)}
+.b-warn{background:var(--warn-soft);color:var(--warn-acc)}
+.b-info{background:var(--info-soft);color:var(--info-acc)}
+.b-grey{background:var(--g100);color:var(--g600)}
+.alert{display:flex;gap:10px;align-items:flex-start;border-radius:var(--r);padding:12px 14px;margin-bottom:16px;font-size:13px}
+.alert.warn{background:var(--warn-soft);color:var(--warn-acc);border:1px solid #f1dcb2}
+.alert.info{background:var(--info-soft);color:var(--info-acc);border:1px solid #c8dcfb}
+.alert b{color:inherit}
+.alert .t{font-weight:600;margin-bottom:2px}
+.facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--g100);border-radius:var(--r);margin-bottom:16px}
+.facts .c{padding:12px 16px;border-right:1px solid var(--g100);border-bottom:1px solid var(--g100);min-width:0}
+.facts .c:nth-child(4n){border-right:0}
+.facts .c:nth-last-child(-n+4){border-bottom:0}
+.facts .k{font-size:12px;color:var(--g500);margin-bottom:4px}
+.facts .v{font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.strike{text-decoration:line-through;color:var(--g400);font-weight:400}
+.idh{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.idh h2{margin:0;font-size:20px;font-weight:600}
+.idh .sub{font-size:13px;color:var(--g500);margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--g100);margin-bottom:12px;overflow-x:auto}
+.tab{display:flex;align-items:center;gap:6px;padding:8px 12px;font-size:13px;color:var(--g500);border-bottom:2px solid transparent;white-space:nowrap;margin-bottom:-1px}
+.tab.on{color:var(--pri);border-bottom-color:var(--pri);font-weight:500}
+.cnt{font-size:11px;background:var(--g100);color:var(--g600);border-radius:999px;padding:0 6px}
+.scroll{overflow-x:auto}
+table.g{width:100%;border-collapse:collapse;font-size:13px}
+table.g th{font-size:12px;font-weight:500;color:var(--g500);text-align:left;padding:8px 12px;border-bottom:1px solid var(--g100);background:var(--g50);white-space:nowrap}
+table.g td{padding:8px 12px;border-bottom:1px solid var(--g100);white-space:nowrap;vertical-align:top}
+table.g tr:last-child td{border-bottom:0}
+table.g td.n{text-align:right;font-variant-numeric:tabular-nums}
+table.g tfoot td{font-weight:600;background:var(--g50)}
+.lnk{color:var(--pri-act);text-decoration:none;font-weight:500;display:inline-flex;gap:4px;align-items:center}
+.muted{color:var(--g500)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.kv{display:grid;grid-template-columns:200px 1fr;font-size:13px;border:1px solid var(--g100);border-radius:var(--r)}
+.kv div{padding:6px 12px;border-bottom:1px solid var(--g100);min-width:0;overflow-wrap:anywhere}
+.kv div:nth-last-child(-n+2){border-bottom:0}
+.kv .k{color:var(--g500);background:var(--g50)}
+.coll{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:10px 0;color:var(--g700)}
+/* progress */
+.bar{height:6px;background:var(--g100);border-radius:999px;overflow:hidden;margin:8px 0 12px}
+.bar i{display:block;height:100%;background:var(--pri);border-radius:999px}
+.steps{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
+.st{display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid var(--g100);border-radius:6px;padding:6px 8px;font-size:12px}
+.st .d{font-variant-numeric:tabular-nums}
+.st.hit{border-color:var(--ok);background:var(--ok-soft)}
+.st.run{border-color:var(--pri);background:var(--pri-soft)}
+.st.err{border-color:#f3c3b9;background:var(--bad-soft)}
+.st.wait{color:var(--g400)}
+.grp-h{font-size:12px;font-weight:600;color:var(--g600);margin:10px 0 6px}
+.empty{padding:40px 16px;text-align:center;color:var(--g500);font-size:14px}
+.empty b{display:block;color:var(--g800);font-size:15px;margin-bottom:6px}
+/* registry */
+table.reg td code{font-size:12px}
+/* phone */
+.phone .form{grid-template-columns:1fr}
+.phone .facts{grid-template-columns:1fr 1fr}
+.phone .facts .c{border-right:1px solid var(--g100)!important;border-bottom:1px solid var(--g100)!important}
+.phone .facts .c:nth-child(2n){border-right:0!important}
+.phone .facts .c:nth-last-child(-n+2){border-bottom:0!important}
+.phone .kv{grid-template-columns:120px 1fr}
+.phone .idh h2{font-size:18px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<defs>
+<symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></symbol>
+<symbol id="chev-r" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+<symbol id="chev-d" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+<symbol id="ext" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+<symbol id="alert" viewBox="0 0 24 24"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></symbol>
+<symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+<symbol id="file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6"/></symbol>
+<symbol id="list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+<symbol id="history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l4 2"/></symbol>
+<symbol id="radar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 12l6-6"/></symbol>
+<symbol id="stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+<symbol id="refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></symbol>
+<symbol id="cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+<symbol id="db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></symbol>
+</defs>
+</svg>
+
+<div class="doc">
+<h1>AutoCount - Find document</h1>
+<p class="intro">Static mockup for owner review (lane AC-DOC-FINDER). It uses only existing shell pieces: page toolbar, Card, SearchSelect, Input, Button, Alert, Badge, icon tabs, the DataGrid table look and the job-progress pattern. The data shows the real trigger case: PS202610-0004, re-dated by AIN from 01/10 to 05/10/2026. The page only reads; it never writes to AutoCount.</p>
+<nav class="nav">
+  <a href="#found">1 Found + re-dated (1280)</a>
+  <a href="#scanning">2 Searching</a>
+  <a href="#notfound">3 Not found</a>
+  <a href="#registry">4 Doc-type registry</a>
+  <a href="#phone">5 375px</a>
+</nav>
+
+<!-- 1 -->
+<section id="found">
+<h2>1. Found, and the DocDate moved</h2>
+<p class="why">Type the number and press Find. Snapshot history shows first (instant). The live AutoCount read then fills the current record. Here the stored snapshot says 01/10 but AutoCount now says 05/10, so the warning explains why the 01/10 pull missed it.</p>
+<div class="desk"><div class="cap">AutoCount › Find document - result (1280)</div>
+<div class="screen">
+  <aside class="side"><div class="brand">Sorento</div><div class="grp">AutoCount</div>
+    <div class="it"><svg class="i"><use href="#db"/></svg>Companies</div>
+    <div class="it"><svg class="i"><use href="#list"/></svg>Review</div>
+    <div class="it"><svg class="i"><use href="#refresh"/></svg>Pull</div>
+    <div class="it on"><svg class="i"><use href="#search"/></svg>Find document</div>
+  </aside>
+  <div class="main">
+    <div class="tb"><div><div class="crumb">AutoCount <svg class="i s"><use href="#chev-r"/></svg> Find document</div></div></div>
+
+    <div class="card"><div class="cb">
+      <div class="form">
+        <div class="fld"><label>Company *</label><div class="inp">SL Trading (db1)<svg class="i s"><use href="#chev-d"/></svg></div></div>
+        <div class="fld"><label>Document type</label><div class="inp">Delivery order<svg class="i s"><use href="#chev-d"/></svg></div></div>
+        <div class="fld"><label>Document number *</label><div class="inp foc">PS202610-0004</div></div>
+        <div class="fld"><label>Around date</label><div class="inp"><span class="ph">dd/mm/yyyy</span><svg class="i s"><use href="#cal"/></svg></div></div>
+        <span class="btn primary"><svg class="i"><use href="#search"/></svg>Find</span>
+      </div>
+    </div></div>
+
+    <div class="alert warn"><svg class="i"><use href="#alert"/></svg><div>
+      <div class="t">DocDate changed from 01/10/2026 to 05/10/2026</div>
+      Last modified by <b>AIN</b> on 01/10/2026 07:39. A pull for 01/10/2026 will no longer return this document; it is now on 05/10/2026.
+    </div></div>
+
+    <div class="card"><div class="cb">
+      <div class="idh">
+        <div><h2 class="hd">PS202610-0004</h2>
+          <div class="sub">Delivery order · DocKey 55731 · <span class="badge b-ok">Active</span> · Found by last-modified on 01/10/2026</div></div>
+        <span class="btn outline sm"><svg class="i s"><use href="#refresh"/></svg>Search again</span>
+      </div>
+      <div class="facts">
+        <div class="c"><div class="k">DocDate (now)</div><div class="v">05/10/2026 <span class="strike">01/10/2026</span></div></div>
+        <div class="c"><div class="k">Last modified</div><div class="v">01/10/2026 07:39</div></div>
+        <div class="c"><div class="k">Modified by</div><div class="v">AIN</div></div>
+        <div class="c"><div class="k">Cancelled</div><div class="v">No</div></div>
+        <div class="c"><div class="k">Debtor</div><div class="v">300-R009 · Anon Trading Sdn Bhd</div></div>
+        <div class="c"><div class="k">Ref</div><div class="v">Anon iP-001241</div></div>
+        <div class="c"><div class="k">Net total</div><div class="v">MYR 1,250.00</div></div>
+        <div class="c"><div class="k">Feed</div><div class="v"><span class="badge b-info">Pushed 01/10 06:05</span></div></div>
+      </div>
+
+      <div class="tabs"><span class="tab on"><svg class="i"><use href="#list"/></svg>Lines <span class="cnt">3</span></span><span class="tab"><svg class="i"><use href="#history"/></svg>Seen in snapshots <span class="cnt">2</span></span><span class="tab"><svg class="i"><use href="#radar"/></svg>Search steps <span class="cnt">2</span></span><span class="tab"><svg class="i"><use href="#file"/></svg>All fields</span></div>
+      <div class="scroll"><table class="g">
+        <thead><tr><th>#</th><th>Item code</th><th>Description</th><th>UOM</th><th class="n">Qty</th><th class="n">Unit price</th><th class="n">Sub total</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td class="mono">ACC-CB8001</td><td>Anon circular breaker</td><td>PCS</td><td class="n">10</td><td class="n">25.00</td><td class="n">250.00</td></tr>
+          <tr><td>2</td><td class="mono">ACC-SW2002</td><td>Anon wall switch 2-gang</td><td>PCS</td><td class="n">40</td><td class="n">12.50</td><td class="n">500.00</td></tr>
+          <tr><td>3</td><td class="mono">ACC-CL0300</td><td>Anon cable 2.5mm 100m</td><td>ROLL</td><td class="n">2</td><td class="n">250.00</td><td class="n">500.00</td></tr>
+        </tbody>
+        <tfoot><tr><td colspan="6">Total</td><td class="n">1,250.00</td></tr></tfoot>
+      </table></div>
+    </div></div>
+
+    <div class="card"><div class="ch"><h3>Seen in snapshots</h3><span class="muted" style="font-size:12px">Tab 2 shown open below</span></div>
+      <div class="scroll"><table class="g">
+        <thead><tr><th>Snapshot</th><th>Built</th><th>Range</th><th>DocDate then</th><th>Last modified then</th><th>Today's DocDate in range</th></tr></thead>
+        <tbody>
+          <tr><td><a class="lnk" href="#">c41e…9a2 <svg class="i s"><use href="#ext"/></svg></a></td><td>01/10/2026 06:10</td><td>01/10 to 01/10</td><td>01/10/2026</td><td>30/09/2026 18:02</td><td><span class="badge b-warn">No</span></td></tr>
+          <tr><td><a class="lnk" href="#">7b02…e51 <svg class="i s"><use href="#ext"/></svg></a></td><td>01/10/2026 06:58</td><td>02/09 to 01/10 · by number</td><td>01/10/2026</td><td>30/09/2026 18:02</td><td><span class="badge b-warn">No</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card"><div class="ch"><h3>Search steps</h3><span class="muted" style="font-size:12px">Tab 3 shown open below · stopped at first hit · 2 AutoCount reads</span></div>
+      <div class="cb">
+        <div class="steps">
+          <div class="st"><span>Snapshot date</span><span class="d">01/10</span><span class="badge b-grey">miss</span></div>
+          <div class="st hit"><span>Modified on</span><span class="d">01/10</span><span class="badge b-ok">found</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></div>
+<p class="note"><span class="nb">1</span>The company and document type are SearchSelects. The type list comes from the server registry (section 4), and a <span class="mono">PS…</span> number picks Delivery order automatically. "Around date" is optional and adds day ±3 as the first days to read.</p>
+<p class="note"><span class="nb">2</span>Header facts show the CURRENT AutoCount values. The old DocDate appears struck through only when a snapshot or the feed recorded a different one.</p>
+<p class="note"><span class="nb">3</span>The three tables are tabs on one card. They are drawn open here so all three can be reviewed. "All fields" lists every header field exactly as AutoCount returns it.</p>
+</section>
+
+<!-- 2 -->
+<section id="scanning">
+<h2>2. Searching AutoCount</h2>
+<p class="why">Shown when snapshots and the feed don't know the document, or while the current copy is still being fetched. The reads run in order (dates we already know, then modified-on going back 7 days, then DocDate going forward 14 days) and stop at the first hit. Stop is always available.</p>
+<div class="frame"><div class="cap">Find document - searching (card body)</div><div class="body">
+  <div class="alert info"><svg class="i"><use href="#db"/></svg><div><div class="t">Not in any stored snapshot</div>The feed never pushed it either.</div></div>
+  <div class="card"><div class="ch"><h3>Searching AutoCount · checked 6 of 23 days</h3><span class="btn outline sm"><svg class="i s"><use href="#stop"/></svg>Stop</span></div>
+    <div class="cb">
+      <div class="bar"><i style="width:27%"></i></div>
+      <div class="grp-h">Modified on (today back 7 days)</div>
+      <div class="steps">
+        <div class="st"><span>Wed</span><span class="d">01/10</span><span class="badge b-grey">miss</span></div>
+        <div class="st"><span>Tue</span><span class="d">30/09</span><span class="badge b-grey">miss</span></div>
+        <div class="st err"><span>Mon</span><span class="d">29/09</span><span class="badge b-bad">error</span></div>
+        <div class="st"><span>Sun</span><span class="d">28/09</span><span class="badge b-grey">miss</span></div>
+        <div class="st"><span>Sat</span><span class="d">27/09</span><span class="badge b-grey">miss</span></div>
+        <div class="st run"><span>Fri</span><span class="d">26/09</span><span class="badge b-warn">reading</span></div>
+        <div class="st wait"><span>Thu</span><span class="d">25/09</span><span></span></div>
+      </div>
+      <div class="grp-h">DocDate (today forward 14 days)</div>
+      <div class="steps">
+        <div class="st wait"><span>Thu</span><span class="d">02/10</span><span></span></div>
+        <div class="st wait"><span>Fri</span><span class="d">03/10</span><span></span></div>
+        <div class="st wait"><span>…</span><span class="d">15/10</span><span></span></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+<p class="note"><span class="nb">1</span>An error on one day (AutoCount timeout) doesn't stop the search. The error text is listed under the chips. A (door, day) pair is never read twice; modified-on and DocDate are different doors, so today is read once by each (8 + 15 = 23 reads).</p>
+</section>
+
+<!-- 3 -->
+<section id="notfound">
+<h2>3. Not found</h2>
+<p class="why">Every read came back without the number. The page says which windows were searched, and Around date lets you widen the search if you remember roughly when the document was dated.</p>
+<div class="frame"><div class="cap">Find document - not found (card body)</div><div class="body">
+  <div class="card"><div class="empty">
+    <b>PS202610-0099 was not found</b>
+    Searched snapshots, the delivery-order feed, modified-on 24/09 to 01/10/2026 and DocDate 01/10 to 15/10/2026 (23 AutoCount reads).
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;flex-wrap:wrap">
+      <div class="inp" style="width:170px"><span class="ph">Around date</span><svg class="i s"><use href="#cal"/></svg></div>
+      <span class="btn outline"><svg class="i"><use href="#search"/></svg>Search around date</span>
+    </div>
+  </div></div>
+</div></div>
+</section>
+
+<!-- 4 -->
+<section id="registry">
+<h2>4. Design: the doc-type registry (not a screen)</h2>
+<p class="why">Each AutoCount document type is one registry entry in code: its AutoCount paths, the number field and its date fields. The search code reads only the registry, so adding Invoice, Cash Sale, SO or RMA is one new entry (no other code changes) once its AutoCount path is confirmed on the host.</p>
+<div class="frame"><div class="cap">modules/autocount/doc_lookup/registry.py</div><div class="body scroll">
+  <table class="g reg">
+    <thead><tr><th>Key / label</th><th>By DocDate</th><th>By last modified</th><th>Number · date · modified fields</th><th>Prefixes</th><th>Stored history</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>delivery_order<br><span class="muted">Delivery order</span></td><td><code>/deliveryorderbydocdate</code></td><td><code>/deliveryorderbyLastModified</code></td><td><code>DocNo · DocDate · LastModified</code></td><td>PS, DO</td><td>snapshots + DO feed</td><td><span class="badge b-ok">v1</span></td></tr>
+      <tr><td>goods_receive_note<br><span class="muted">Goods received note</span></td><td><code>/goodsreceivenotebydocdate</code></td><td><code>/goodsreceivenotebyLastModified</code></td><td><code>DocNo · DocDate · LastModified</code></td><td>GRN, GR</td><td>GRN feed</td><td><span class="badge b-ok">v1</span></td></tr>
+      <tr><td>invoice<br><span class="muted">Invoice</span></td><td><code>/invoicebydocdate</code>?</td><td><code>/invoicebyLastModified</code>?</td><td><code>DocNo · DocDate · LastModified</code></td><td>IV, INV</td><td>-</td><td><span class="badge b-grey">path to confirm</span></td></tr>
+      <tr><td>cash_sale<br><span class="muted">Cash sale</span></td><td>?</td><td>?</td><td><code>DocNo · DocDate · LastModified</code></td><td>CS</td><td>-</td><td><span class="badge b-grey">path to confirm</span></td></tr>
+      <tr><td>sales_order<br><span class="muted">Sales order</span></td><td>?</td><td>?</td><td><code>DocNo · DocDate · LastModified</code></td><td>SO</td><td>-</td><td><span class="badge b-grey">path to confirm</span></td></tr>
+      <tr><td>rma<br><span class="muted">RMA</span></td><td>?</td><td>?</td><td><code>DocNo · DocDate · LastModified</code></td><td>RMA</td><td>-</td><td><span class="badge b-grey">path to confirm</span></td></tr>
+    </tbody>
+  </table>
+  <p class="note">Optional per entry: a direct by-number door, e.g. <span class="mono">POST /api/DeliveryOrder/GetDeliveryOrder {"DocNo":[…]}</span> (in the Postman collection, not yet verified on hapi.sorento.cc.cd). When it's enabled the search tries it first, which makes a lookup one read. It stays off until it's verified on the host.</p>
+</div></div>
+</section>
+
+<!-- 5 -->
+<section id="phone">
+<h2>5. Mobile (375px)</h2>
+<p class="why">The form stacks, the facts become two columns, and the tables scroll sideways inside their own card, so the page itself never scrolls sideways.</p>
+<div class="row">
+<div class="phone"><div class="cap">375 - result</div><div class="screen">
+  <div class="crumb" style="margin-bottom:12px">AutoCount <svg class="i s"><use href="#chev-r"/></svg> Find document</div>
+  <div class="card"><div class="cb">
+    <div class="form">
+      <div class="fld"><label>Company *</label><div class="inp">SL Trading (db1)<svg class="i s"><use href="#chev-d"/></svg></div></div>
+      <div class="fld"><label>Document type</label><div class="inp">Delivery order<svg class="i s"><use href="#chev-d"/></svg></div></div>
+      <div class="fld"><label>Document number *</label><div class="inp foc">PS202610-0004</div></div>
+      <span class="btn primary" style="justify-content:center"><svg class="i"><use href="#search"/></svg>Find</span>
+    </div>
+  </div></div>
+  <div class="alert warn"><svg class="i"><use href="#alert"/></svg><div><div class="t">DocDate changed 01/10 → 05/10/2026</div>By AIN on 01/10/2026 07:39. A pull for 01/10 no longer returns it.</div></div>
+  <div class="card"><div class="cb">
+    <div class="idh"><div><h2 class="hd">PS202610-0004</h2><div class="sub">Delivery order · <span class="badge b-ok">Active</span></div></div></div>
+    <div class="facts">
+      <div class="c"><div class="k">DocDate (now)</div><div class="v">05/10/2026</div></div>
+      <div class="c"><div class="k">Last modified</div><div class="v">01/10 07:39</div></div>
+      <div class="c"><div class="k">Modified by</div><div class="v">AIN</div></div>
+      <div class="c"><div class="k">Cancelled</div><div class="v">No</div></div>
+    </div>
+    <div class="tabs"><span class="tab on">Lines <span class="cnt">3</span></span><span class="tab">Snapshots <span class="cnt">2</span></span><span class="tab">Steps</span><span class="tab">All fields</span></div>
+    <div class="scroll"><table class="g">
+      <thead><tr><th>Item code</th><th class="n">Qty</th><th class="n">Sub total</th><th>Description</th></tr></thead>
+      <tbody><tr><td class="mono">ACC-CB8001</td><td class="n">10</td><td class="n">250.00</td><td>Anon circular breaker</td></tr>
+      <tr><td class="mono">ACC-SW2002</td><td class="n">40</td><td class="n">500.00</td><td>Anon wall switch 2-gang</td></tr></tbody>
+    </table></div>
+  </div></div>
+</div></div>
+</div>
+</section>
+</div>
+</body>
+</html>

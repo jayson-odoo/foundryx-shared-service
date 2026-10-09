@@ -1,13 +1,7 @@
 'use client';
 
-import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
+import { PageHeader } from '@/components/platform/page-header';
 import { TriageBoard } from './triage-board';
 
 /**
@@ -18,20 +12,9 @@ import { TriageBoard } from './triage-board';
  */
 export default function IdeationBoardPage() {
   return (
-    <Fragment>
-      <Container width="fluid">
-        <Toolbar>
-          <ToolbarHeading>
-            <ToolbarPageTitle />
-            <ToolbarDescription>
-              Drag across columns to change status, or within a column to reorder priority.
-            </ToolbarDescription>
-          </ToolbarHeading>
-        </Toolbar>
-      </Container>
-      <Container width="fluid">
-        <TriageBoard />
-      </Container>
-    </Fragment>
+    <Container width="fluid">
+      <PageHeader description="Drag across columns to change status, or within a column to reorder priority." />
+      <TriageBoard />
+    </Container>
   );
 }

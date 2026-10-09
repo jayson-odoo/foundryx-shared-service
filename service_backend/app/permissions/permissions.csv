@@ -9,6 +9,8 @@ roles,Roles & Permissions,read,Read,View roles
 roles,Roles & Permissions,create,Create,Create roles
 roles,Roles & Permissions,update,Update,Edit roles
 roles,Roles & Permissions,delete,Delete,Delete roles
+teams,Teams,read,Read,View teams
+teams,Teams,manage,Manage,Create / edit / delete teams
 events,Events,read,Read,View events
 events,Events,create,Create,Create events
 events,Events,update,Update,Edit events
@@ -63,6 +65,8 @@ emails,Email Log,manage,Manage email log,Can retry failed and cancel pending ema
 workflows,Workflows,read,View workflows,Can view workflows and their run logs
 workflows,Workflows,manage,Manage workflows,Can create / edit / publish / activate / delete workflows
 workflows,Workflows,run,Run workflows,Can manually run and test workflows
+workflows,Workflows,code,Author code,Can add and edit / publish / run workflow Code nodes (sandboxed Python)
+workflows,Workflows,http,Author HTTP request,Can add and edit / publish / run workflow HTTP request nodes
 forms,Forms,read,View forms,Can view forms and their definitions
 forms,Forms,manage,Manage forms,Can create / edit / publish / archive / delete forms
 submissions,Form Submissions,read,View submissions,Can view a form's submissions and answers

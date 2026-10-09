@@ -4,31 +4,103 @@
  * doc) so undo/redo can keep a history of snapshots, exactly like the email
  * editor's block-doc helpers.
  */
-import { catalogEntry, isTriggerType } from '@/lib/workflow-catalog';
 import type {
+  WorkflowAiOutputParam,
   WorkflowDefinition,
   WorkflowEdge,
-  WorkflowAiOutputParam,
+  WorkflowExecution,
   WorkflowNode,
   WorkflowNodeConfig,
   WorkflowNodeKind,
 } from '@/types/workflows';
+import { catalogEntry, isTriggerType } from '@/lib/workflow-catalog';
+import { pythonSyntaxIssues } from '@/lib/python-diagnostics';
 
-export const WORKFLOW_SCHEMA_VERSION = 1;
+export const WORKFLOW_SCHEMA_VERSION = 2;
 
 // Conservative ASCII identifier grammar. Output keys are inserted into merge
 // paths as `nodes.<id>.<key>` and must remain one merge-token segment.
 export const AI_OUTPUT_PARAM_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-export const AI_OUTPUT_PARAM_TYPES = ['string', 'number', 'boolean'] as const;
+export const AI_OUTPUT_PARAM_TYPES = [
+  'string',
+  'number',
+  'boolean',
+  'enum',
+] as const;
 const AI_OUTPUT_PARAM_PREFIX = 'AI Agent: "Output parameters"';
+export const CORRELATION_KEY_RE = /^\{\{\s*[A-Za-z_][A-Za-z0-9_.]*\s*\}\}$/;
+
+export function codeSourceIssues(source: string): string[] {
+  const issues: string[] = pythonSyntaxIssues(source);
+  const forbidden = /(^|\s)(import|from)\s|\b(exec|eval|__import__)\s*\(/;
+  const forbiddenLine = source
+    .split(/\r?\n/)
+    .findIndex((line) => forbidden.test(line));
+  if (forbiddenLine >= 0)
+    issues.push(`Unsupported syntax on line ${forbiddenLine + 1}.`);
+  const pairs: Array<[string, string]> = [
+    ['(', ')'],
+    ['[', ']'],
+    ['{', '}'],
+  ];
+  for (const [opening, closing] of pairs) {
+    if (
+      source.split('').filter((character) => character === opening).length !==
+      source.split('').filter((character) => character === closing).length
+    ) {
+      issues.push(`Unbalanced ${opening}${closing} delimiters.`);
+    }
+  }
+  if (source.trim()) {
+    const assignment = source.match(/\bresult\s*=\s*([^\r\n]*)/);
+    if (!assignment) {
+      issues.push('Code must assign a result dictionary.');
+    } else if (!assignment[1].trim()) {
+      issues.push('Result assignment must include a value.');
+    }
+  }
+  return issues;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Does `config[showWhen.field]` match a `showWhen` clause? Mirrors the
+ * backend `NodeField.show_when` (plan 31 §5.1) - `value` is one literal or a
+ * list of literals (the HTTP body field shows for BOTH `json` and `text`).
+ *
+ * `siblingFields` (plan 31 S3 review SF-2) resolves the CONTROLLING field's
+ * default when its key is absent from `config` entirely - an absent
+ * controlling key falls back to that field's first declared option, so a
+ * node saved before the controlling field existed (e.g. a plan-17
+ * `omnichannel.send_message` node with no `mode` key) keeps its dependent
+ * field (Message) visible instead of being silently hidden. Callers that
+ * omit `siblingFields` keep the old strict-equality behaviour (an absent key
+ * never matches) - every in-repo call site now passes the catalog entry's
+ * `fields`. */
+export function matchesShowWhen(
+  config: Record<string, unknown>,
+  showWhen: { field: string; value: string | string[] } | undefined,
+  siblingFields?: readonly { key: string; options?: { value: string; label: string }[] }[],
+): boolean {
+  if (!showWhen) return true;
+  let current = config[showWhen.field];
+  if (!(showWhen.field in config) && siblingFields) {
+    const controlling = siblingFields.find((f) => f.key === showWhen.field);
+    current = controlling?.options?.[0]?.value;
+  }
+  if (Array.isArray(showWhen.value)) {
+    return typeof current === 'string' && showWhen.value.includes(current);
+  }
+  return current === showWhen.value;
+}
+
 export function outputParamIssues(value: unknown): string[] {
   if (!Array.isArray(value)) {
-    return [`${AI_OUTPUT_PARAM_PREFIX} must be a non-empty list of parameter objects.`];
+    return [
+      `${AI_OUTPUT_PARAM_PREFIX} must be a non-empty list of parameter objects.`,
+    ];
   }
   if (!value.length) {
     return [`${AI_OUTPUT_PARAM_PREFIX} must contain at least one parameter.`];
@@ -38,16 +110,22 @@ export function outputParamIssues(value: unknown): string[] {
   const seen = new Set<string>();
   for (const row of value) {
     if (!isRecord(row)) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter that is not an object.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains a parameter that is not an object.`,
+      );
       continue;
     }
     const key = row.key;
     if (typeof key !== 'string' || !key.trim()) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter without a key.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains a parameter without a key.`,
+      );
       continue;
     }
     if (key !== key.trim()) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a key with surrounding whitespace.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains a key with surrounding whitespace.`,
+      );
       continue;
     }
     if (!AI_OUTPUT_PARAM_KEY_RE.test(key)) {
@@ -62,9 +140,40 @@ export function outputParamIssues(value: unknown): string[] {
     }
     if (
       typeof row.type !== 'string' ||
-      !AI_OUTPUT_PARAM_TYPES.includes(row.type as (typeof AI_OUTPUT_PARAM_TYPES)[number])
+      !AI_OUTPUT_PARAM_TYPES.includes(
+        row.type as (typeof AI_OUTPUT_PARAM_TYPES)[number],
+      )
     ) {
-      issues.push(`${AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.`);
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} contains a parameter with an invalid type.`,
+      );
+    }
+    if (row.type === 'enum') {
+      const values = row.enumValues;
+      if (!Array.isArray(values) || values.length < 2) {
+        issues.push(
+          `${AI_OUTPUT_PARAM_PREFIX} enum parameters need at least two values.`,
+        );
+      } else {
+        const enumSeen = new Set<string>();
+        for (const item of values) {
+          if (typeof item !== 'string' || !item.trim()) {
+            issues.push(
+              `${AI_OUTPUT_PARAM_PREFIX} enum values cannot be blank.`,
+            );
+          } else if (enumSeen.has(item)) {
+            issues.push(
+              `${AI_OUTPUT_PARAM_PREFIX} enum values must be unique.`,
+            );
+          } else {
+            enumSeen.add(item);
+          }
+        }
+      }
+    } else if (row.enumValues !== undefined) {
+      issues.push(
+        `${AI_OUTPUT_PARAM_PREFIX} enum values are only valid for Enum parameters.`,
+      );
     }
   }
   return issues;
@@ -83,7 +192,9 @@ export function validAiOutputParams(value: unknown): WorkflowAiOutputParam[] {
       key !== key.trim() ||
       !AI_OUTPUT_PARAM_KEY_RE.test(key) ||
       typeof type !== 'string' ||
-      !AI_OUTPUT_PARAM_TYPES.includes(type as (typeof AI_OUTPUT_PARAM_TYPES)[number]) ||
+      !AI_OUTPUT_PARAM_TYPES.includes(
+        type as (typeof AI_OUTPUT_PARAM_TYPES)[number],
+      ) ||
       seen.has(key)
     ) {
       continue;
@@ -92,8 +203,18 @@ export function validAiOutputParams(value: unknown): WorkflowAiOutputParam[] {
     valid.push({
       key,
       type: type as WorkflowAiOutputParam['type'],
-      ...(typeof row.description === 'string' ? { description: row.description } : {}),
+      ...(type === 'enum' && Array.isArray(row.enumValues)
+        ? {
+            enumValues: row.enumValues.filter(
+              (v): v is string => typeof v === 'string',
+            ),
+          }
+        : {}),
+      ...(typeof row.description === 'string'
+        ? { description: row.description }
+        : {}),
       ...(typeof row.required === 'boolean' ? { required: row.required } : {}),
+      ...(typeof row.stateful === 'boolean' ? { stateful: row.stateful } : {}),
     });
   }
   return valid;
@@ -105,17 +226,51 @@ export function newId(prefix: string): string {
 }
 
 export function createBlankDefinition(): WorkflowDefinition {
-  return { schemaVersion: WORKFLOW_SCHEMA_VERSION, nodes: [], edges: [] };
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    execution: { mode: 'parallel', correlationKey: '' },
+    nodes: [],
+    edges: [],
+  };
 }
+
+/** Read old drafts without mutating the source. Missing execution data keeps
+ * the v1 parallel behavior and omitted stateful flags remain transient. */
+export function migrateWorkflowDefinition(value: unknown): WorkflowDefinition {
+  if (!isRecord(value)) return createBlankDefinition();
+  const nodes = Array.isArray(value.nodes) ? value.nodes : [];
+  const edges = Array.isArray(value.edges) ? value.edges : [];
+  const execution = isRecord(value.execution)
+    ? {
+        mode: value.execution.mode === 'serialized' ? 'serialized' : 'parallel',
+        correlationKey:
+          typeof value.execution.correlationKey === 'string'
+            ? value.execution.correlationKey
+            : '',
+      }
+    : { mode: 'parallel', correlationKey: '' };
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    execution: execution as WorkflowExecution,
+    nodes: nodes as WorkflowDefinition['nodes'],
+    edges: edges as WorkflowDefinition['edges'],
+  };
+}
+
+/** Alias used by callers that want to make v1 compatibility explicit. */
+export const normalizeWorkflowDefinition = migrateWorkflowDefinition;
 
 /** Default config for a freshly-dropped node of `type`. */
 function defaultConfig(type: string): WorkflowNodeConfig {
   if (type === 'manual') return { inputs: [] };
   if (type === 'email.send') return { mode: 'template' };
   if (type === 'entity.field_changed') return { entityType: '', field: '' };
-  if (type === 'entity.status_changed') return { entityType: '', fromStatus: '', toStatus: '' };
-  if (type === 'entity.transition_status') return { entityType: '', recordId: '', toStatus: '' };
-  if (type === 'entity.update') return { entityType: '', recordId: '', assignments: [] };
+  if (type === 'entity.status_changed')
+    return { entityType: '', fromStatus: '', toStatus: '' };
+  if (type === 'entity.transition_status')
+    return { entityType: '', recordId: '', toStatus: '' };
+  if (type === 'entity.update')
+    return { entityType: '', recordId: '', assignments: [] };
   if (type.startsWith('entity.')) return { entityType: '' };
   if (type === 'form.submitted') return { formId: '' };
   if (type === 'schedule.cron') return { cron: '0 9 * * *', timezone: '' };
@@ -123,9 +278,77 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   // Omnichannel + AI Agent nodes (plan sprint-4/17).
   if (type === 'omnichannel.message_received') return { channelId: null };
   if (type === 'omnichannel.get_contact') return { contactId: '' };
-  if (type === 'omnichannel.send_message') return { contactId: '', message: '' };
+  if (type === 'omnichannel.send_message' || type === 'omnichannel.ask_question') {
+    const base: WorkflowNodeConfig = {
+      contactId: '',
+      mode: 'text',
+      message: '',
+    };
+    if (type === 'omnichannel.ask_question') {
+      return {
+        ...base,
+        answerType: 'text',
+        choices: [],
+        retryLimit: '1',
+        retryMessage: '',
+        timeoutValue: '1',
+        timeoutUnit: 'hours',
+      };
+    }
+    return base;
+  }
+  // Omnichannel conversation/contact triggers + simple steps (plan 31).
+  if (
+    type === 'omnichannel.conversation_opened' ||
+    type === 'omnichannel.conversation_closed' ||
+    type === 'omnichannel.conversation_assigned' ||
+    type === 'omnichannel.contact_tag_added' ||
+    type === 'omnichannel.contact_tag_removed' ||
+    type === 'omnichannel.lifecycle_changed' ||
+    type === 'omnichannel.broadcast_completed'
+  ) {
+    return { workspaceId: '' };
+  }
+  if (type === 'omnichannel.contact_field_changed')
+    return { workspaceId: '', fieldKey: '', newValue: '' };
+  if (type === 'omnichannel.assign_conversation')
+    return { contactId: '', workspaceId: '', mode: 'user', userId: '' };
+  if (type === 'omnichannel.add_tag' || type === 'omnichannel.remove_tag')
+    return { contactId: '', workspaceId: '', tagId: '' };
+  if (type === 'omnichannel.update_field')
+    return { contactId: '', workspaceId: '', fieldKey: '', value: '', clear: false };
+  if (type === 'omnichannel.update_lifecycle')
+    return { contactId: '', workspaceId: '', toStageId: '' };
+  if (type === 'omnichannel.open_conversation') return { contactId: '' };
+  if (type === 'omnichannel.close_conversation')
+    return { contactId: '', workspaceId: '', closeReasonId: '', note: '' };
+  if (type === 'omnichannel.add_comment') return { contactId: '', body: '' };
+  if (type === 'omnichannel.wait') return { waitValue: '5', waitUnit: 'minutes' };
+  if (type === 'omnichannel.business_hours') return { workspaceId: '' };
+  if (type === 'workflow.trigger')
+    return { workflowId: '', contactId: '', payload: '' };
+  if (type === 'http.request')
+    return {
+      method: 'GET',
+      url: '',
+      headers: [],
+      bodyMode: 'none',
+      body: '',
+      timeoutSeconds: '10',
+    };
   if (type === 'ai_agent.run')
     return { agentId: '', instructions: '', inputText: '', outputParams: [] };
+  if (type === 'ai_agent.clear_state') return { agentNodeId: '' };
+  if (type === 'ai_agent.read_state') return { agentNodeId: '' };
+  if (type === 'redis.command') return { operation: 'get', key: '' };
+  if (type === 'code.run') {
+    return {
+      language: 'python',
+      source: '',
+      inputs: [],
+      outputs: [],
+    };
+  }
   return {};
 }
 
@@ -134,7 +357,8 @@ export function createNode(
   position: { x: number; y: number },
 ): WorkflowNode {
   const entry = catalogEntry(type);
-  const kind: WorkflowNodeKind = entry?.kind ?? (isTriggerType(type) ? 'trigger' : 'action');
+  const kind: WorkflowNodeKind =
+    entry?.kind ?? (isTriggerType(type) ? 'trigger' : 'action');
   return {
     id: newId(kind === 'trigger' ? 'trg' : kind === 'action' ? 'act' : 'if'),
     kind,
@@ -151,7 +375,10 @@ export function hasTrigger(doc: WorkflowDefinition): boolean {
 /** A node's display name - the user-set `config.name`, else the catalog label.
  * Names disambiguate two same-type nodes (n8n behavior); refs stay id-based so
  * a rename never breaks an expression. */
-export function nodeDisplayName(node: WorkflowNode, fallbackLabel: string): string {
+export function nodeDisplayName(
+  node: WorkflowNode,
+  fallbackLabel: string,
+): string {
   const name = node.config?.name;
   return typeof name === 'string' && name.trim() ? name.trim() : fallbackLabel;
 }
@@ -160,7 +387,9 @@ export function nodeDisplayName(node: WorkflowNode, fallbackLabel: string): stri
  * every node is identifiable in the dynamic-content picker. */
 export function uniqueNodeName(doc: WorkflowDefinition, base: string): string {
   const used = new Set(
-    doc.nodes.map((n) => nodeDisplayName(n, catalogEntry(n.type)?.label ?? n.type)),
+    doc.nodes.map((n) =>
+      nodeDisplayName(n, catalogEntry(n.type)?.label ?? n.type),
+    ),
   );
   if (!used.has(base)) return base;
   let i = 2;
@@ -168,11 +397,17 @@ export function uniqueNodeName(doc: WorkflowDefinition, base: string): string {
   return `${base} ${i}`;
 }
 
-export function addNode(doc: WorkflowDefinition, node: WorkflowNode): WorkflowDefinition {
+export function addNode(
+  doc: WorkflowDefinition,
+  node: WorkflowNode,
+): WorkflowDefinition {
   return { ...doc, nodes: [...doc.nodes, node] };
 }
 
-export function removeNode(doc: WorkflowDefinition, nodeId: string): WorkflowDefinition {
+export function removeNode(
+  doc: WorkflowDefinition,
+  nodeId: string,
+): WorkflowDefinition {
   return {
     ...doc,
     nodes: doc.nodes.filter((n) => n.id !== nodeId),
@@ -203,12 +438,18 @@ export function replaceNodeType(
   newType: string,
 ): WorkflowDefinition {
   const entry = catalogEntry(newType);
-  const kind: WorkflowNodeKind = entry?.kind ?? (isTriggerType(newType) ? 'trigger' : 'action');
+  const kind: WorkflowNodeKind =
+    entry?.kind ?? (isTriggerType(newType) ? 'trigger' : 'action');
   return {
     ...doc,
     nodes: doc.nodes.map((n) =>
       n.id === nodeId
-        ? { ...n, type: newType, kind, config: { ...defaultConfig(newType), name: n.config.name } }
+        ? {
+            ...n,
+            type: newType,
+            kind,
+            config: { ...defaultConfig(newType), name: n.config.name },
+          }
         : n,
     ),
   };
@@ -231,7 +472,9 @@ export function setPositions(
 ): WorkflowDefinition {
   return {
     ...doc,
-    nodes: doc.nodes.map((n) => (positions[n.id] ? { ...n, position: positions[n.id] } : n)),
+    nodes: doc.nodes.map((n) =>
+      positions[n.id] ? { ...n, position: positions[n.id] } : n,
+    ),
   };
 }
 
@@ -263,25 +506,51 @@ export function addEdge(
   doc: WorkflowDefinition,
   edge: Omit<WorkflowEdge, 'id'>,
 ): WorkflowDefinition {
-  // One outgoing edge per (source, port) for the linear v1 - replace any
-  // existing edge on the same port (n8n reconnect behavior).
+  // A source port fans out to multiple targets (the executor already runs
+  // every out-edge). Stay idempotent for an exact duplicate connection
+  // (same source + port + target) so re-dragging an existing wire never
+  // creates a second identical edge.
   const port = edge.sourcePort ?? 'out';
-  const kept = doc.edges.filter(
-    (e) => !(e.source === edge.source && (e.sourcePort ?? 'out') === port),
+  const exists = doc.edges.some(
+    (e) =>
+      e.source === edge.source &&
+      (e.sourcePort ?? 'out') === port &&
+      e.target === edge.target,
   );
-  return { ...doc, edges: [...kept, { ...edge, id: newId('e'), sourcePort: port }] };
+  if (exists) return doc;
+  return {
+    ...doc,
+    edges: [...doc.edges, { ...edge, id: newId('e'), sourcePort: port }],
+  };
 }
 
-export function removeEdge(doc: WorkflowDefinition, edgeId: string): WorkflowDefinition {
+export function removeEdge(
+  doc: WorkflowDefinition,
+  edgeId: string,
+): WorkflowDefinition {
   return { ...doc, edges: doc.edges.filter((e) => e.id !== edgeId) };
+}
+
+/** Remove multiple edges in one pass (fixes the multi-select delete bug -
+ * calling `removeEdge` per id against the same captured doc drops only the
+ * last removal). Unknown ids are ignored. */
+export function removeEdges(
+  doc: WorkflowDefinition,
+  edgeIds: string[],
+): WorkflowDefinition {
+  const ids = new Set(edgeIds);
+  return { ...doc, edges: doc.edges.filter((e) => !ids.has(e.id)) };
 }
 
 /** Topological order from the trigger; nodes unreachable from it trail at the
  * end (the publish validator flags those - D17). */
 export function topoOrder(doc: WorkflowDefinition): WorkflowNode[] {
   const indegree = new Map<string, number>(doc.nodes.map((n) => [n.id, 0]));
-  for (const e of doc.edges) indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
-  const queue = doc.nodes.filter((n) => (indegree.get(n.id) ?? 0) === 0).map((n) => n.id);
+  for (const e of doc.edges)
+    indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
+  const queue = doc.nodes
+    .filter((n) => (indegree.get(n.id) ?? 0) === 0)
+    .map((n) => n.id);
   const adjacency = new Map<string, string[]>();
   for (const e of doc.edges) {
     adjacency.set(e.source, [...(adjacency.get(e.source) ?? []), e.target]);
@@ -312,16 +581,104 @@ export interface DefinitionIssue {
 }
 
 /** Mirror of the backend `validate_definition` (D17) - surfaced live in the
- * editor so publish failures are visible before the click. */
-export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
+ * editor so publish failures are visible before the click. `currentWorkflowId`
+ * (the workflow being edited, absent while still unsaved/new) backs the
+ * `workflow.trigger` self-trigger parity check (plan 31 S3) - the backend
+ * `workflow_trigger` action already refuses this at RUN time
+ * ("A workflow cannot trigger itself."); this mirrors the SAME message at
+ * publish time so the author sees it before running. */
+export function validateDefinition(
+  doc: WorkflowDefinition,
+  metadata?: { codeRunnerAvailable?: boolean },
+  currentWorkflowId?: string,
+): DefinitionIssue[] {
+  void metadata;
   const issues: DefinitionIssue[] = [];
   const triggers = doc.nodes.filter((n) => n.kind === 'trigger');
-  if (triggers.length === 0) issues.push({ level: 'error', message: 'Add a trigger to start the workflow.' });
-  if (triggers.length > 1) issues.push({ level: 'error', message: 'A workflow can have only one trigger.' });
+  if (triggers.length === 0)
+    issues.push({
+      level: 'error',
+      message: 'Add a trigger to start the workflow.',
+    });
+  if (triggers.length > 1)
+    issues.push({
+      level: 'error',
+      message: 'A workflow can have only one trigger.',
+    });
 
   const trigger = triggers[0];
+  const execution = doc.execution;
+  const statefulAgent = doc.nodes.some(
+    (node) =>
+      node.type === 'ai_agent.run' &&
+      validAiOutputParams(node.config.outputParams).some(
+        (param) => param.stateful,
+      ),
+  );
+  const correlationKey = execution?.correlationKey?.trim() ?? '';
+  if (
+    execution?.mode === 'serialized' &&
+    (!correlationKey || !CORRELATION_KEY_RE.test(correlationKey))
+  ) {
+    issues.push({
+      level: 'error',
+      message: 'Serialized execution requires a valid Correlation key.',
+    });
+  }
+  if (statefulAgent && (execution?.mode !== 'serialized' || !correlationKey)) {
+    issues.push({
+      level: 'error',
+      message:
+        'Stateful AI Agent outputs require serialized execution and a Correlation key.',
+    });
+  }
+  // Registry-driven parking rule (plan 31 S6, D-A5-7/AC-WFP-51/06,
+  // generalized off `ActionCatalogEntry.requiresSerialized` so a FUTURE
+  // parking action needs no second hardcoded check here): any action node
+  // that PARKS the run keyed by a contact needs serialized execution, or two
+  // runs answering the same contact would race the one wait row. Message
+  // text is pinned in parity with the backend `definition_issues`
+  // (`f"{label} requires serialized execution and a Correlation key."`) -
+  // see `lib/workflow-doc.serialized-parity.test.ts`.
+  if (execution?.mode !== 'serialized' || !correlationKey) {
+    const parkingLabels = new Set<string>();
+    for (const node of doc.nodes) {
+      if (node.kind !== 'action') continue;
+      const entry = catalogEntry(node.type);
+      if (entry?.kind === 'action' && entry.requiresSerialized) {
+        parkingLabels.add(entry.label);
+      }
+    }
+    for (const label of Array.from(parkingLabels).sort()) {
+      issues.push({
+        level: 'error',
+        message: `${label} requires serialized execution and a Correlation key.`,
+      });
+    }
+  }
+  // `workflow.trigger` self-trigger parity (plan 31 S3, AC-WFP-33/backend
+  // `ActionError("A workflow cannot trigger itself.")`) - the drawer already
+  // excludes the current workflow from the picker (foolproof-UI), but a
+  // config set before a rename/duplicate, or authored via the API, must still
+  // be caught before publish with the SAME message the run would fail with.
+  if (currentWorkflowId) {
+    for (const n of doc.nodes) {
+      if (n.type === 'workflow.trigger' && n.config.workflowId === currentWorkflowId) {
+        issues.push({
+          level: 'error',
+          message: 'A workflow cannot trigger itself.',
+          nodeId: n.id,
+        });
+      }
+    }
+  }
+
   if (trigger && doc.edges.some((e) => e.target === trigger.id)) {
-    issues.push({ level: 'error', message: 'The trigger cannot have an incoming connection.', nodeId: trigger.id });
+    issues.push({
+      level: 'error',
+      message: 'The trigger cannot have an incoming connection.',
+      nodeId: trigger.id,
+    });
   }
 
   // Unique node names - refs are id-based but a duplicate name is ambiguous in
@@ -336,7 +693,11 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
     const nm = nodeDisplayName(n, catalogEntry(n.type)?.label ?? n.type);
     if ((nameCount.get(nm) ?? 0) > 1) {
       if (!flagged.has(nm)) {
-        issues.push({ level: 'error', message: `Two nodes are named "${nm}" - names must be unique.`, nodeId: n.id });
+        issues.push({
+          level: 'error',
+          message: `Two nodes are named "${nm}" - names must be unique.`,
+          nodeId: n.id,
+        });
         flagged.add(nm);
       }
     }
@@ -357,7 +718,11 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
     }
     for (const n of doc.nodes) {
       if (!reachable.has(n.id)) {
-        issues.push({ level: 'error', message: 'Node is not connected to the trigger.', nodeId: n.id });
+        issues.push({
+          level: 'error',
+          message: 'Node is not connected to the trigger.',
+          nodeId: n.id,
+        });
       }
     }
   }
@@ -367,7 +732,7 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
     const entry = catalogEntry(n.type);
     if (!entry) continue;
     for (const field of entry.fields) {
-      if (field.showWhen && n.config[field.showWhen.field] !== field.showWhen.value) {
+      if (field.showWhen && !matchesShowWhen(n.config, field.showWhen, entry.fields)) {
         continue; // hidden field - don't require it
       }
       if (field.required) {
@@ -379,20 +744,136 @@ export function validateDefinition(doc: WorkflowDefinition): DefinitionIssue[] {
           (Array.isArray(value) && value.length === 0);
         if (field.type === 'outputSchema') {
           if (value === undefined || value === null || value === '') {
-            issues.push({ level: 'error', message: `${entry.label}: "${field.label}" is required.`, nodeId: n.id });
+            issues.push({
+              level: 'error',
+              message: `${entry.label}: "${field.label}" is required.`,
+              nodeId: n.id,
+            });
           } else {
             for (const message of outputParamIssues(value)) {
               issues.push({ level: 'error', message, nodeId: n.id });
             }
           }
         } else if (empty) {
-          issues.push({ level: 'error', message: `${entry.label}: "${field.label}" is required.`, nodeId: n.id });
+          issues.push({
+            level: 'error',
+            message: `${entry.label}: "${field.label}" is required.`,
+            nodeId: n.id,
+          });
         }
       }
     }
     // Connection-resolvability warning (warn-not-block, D17) needs real
     // connection data - added in Phase B.
+    if (n.type === 'code.run' && typeof n.config.source === 'string') {
+      for (const message of codeSourceIssues(n.config.source)) {
+        issues.push({
+          level: 'error',
+          message: `Code: ${message}`,
+          nodeId: n.id,
+        });
+      }
+    }
+    if (n.type === 'redis.command') {
+      for (const message of redisConfigIssues(n.config)) {
+        issues.push({ level: 'error', message, nodeId: n.id });
+      }
+    }
+    // Read Agent State must point at a stateful AI Agent that exists in the
+    // graph (parity with backend definition_issues; the required check above
+    // already blocks an empty selection).
+    if (n.type === 'ai_agent.read_state') {
+      const targetId = n.config.agentNodeId;
+      if (typeof targetId === 'string' && targetId) {
+        const target = doc.nodes.find((t) => t.id === targetId);
+        const ok =
+          target?.type === 'ai_agent.run' &&
+          validAiOutputParams(target.config.outputParams).some(
+            (param) => param.stateful,
+          );
+        if (!ok) {
+          issues.push({
+            level: 'error',
+            message:
+              'Read Agent State must reference a stateful AI Agent in this workflow.',
+            nodeId: n.id,
+          });
+        }
+      }
+    }
   }
 
+  return issues;
+}
+
+export const REDIS_OPERATIONS = [
+  'get',
+  'set',
+  'delete',
+  'increment',
+  'list_push',
+  'list_pop',
+  'list_length',
+] as const;
+const REDIS_LIST_ENDS = ['left', 'right'];
+const REDIS_RESERVED_KEY_PREFIXES = ['foundryx:'];
+const REDIS_MAX_KEY_LENGTH = 512;
+
+function isMerge(value: unknown): boolean {
+  return typeof value === 'string' && value.includes('{{');
+}
+
+/**
+ * Publish-time checks on LITERAL Redis config (merge expressions resolve at
+ * run time). Mirror of the backend `literal_config_issues` - keep in parity.
+ */
+export function redisConfigIssues(config: Record<string, unknown>): string[] {
+  const issues: string[] = [];
+  const op = config.operation;
+  if (typeof op !== 'string' || !(REDIS_OPERATIONS as readonly string[]).includes(op)) {
+    issues.push('Redis: "Operation" must be one of the supported commands.');
+    return issues;
+  }
+  const key = config.key;
+  if (typeof key === 'string' && key.trim() && !isMerge(key)) {
+    const trimmed = key.trim();
+    if (trimmed.length > REDIS_MAX_KEY_LENGTH) {
+      issues.push(`Redis: the key exceeds ${REDIS_MAX_KEY_LENGTH} characters.`);
+    } else if (/[\r\n\u0000]/.test(trimmed)) {
+      issues.push('Redis: the key contains an invalid character.');
+    } else if (
+      REDIS_RESERVED_KEY_PREFIXES.some((p) => trimmed.toLowerCase().startsWith(p))
+    ) {
+      issues.push('Redis: that key prefix is reserved.');
+    }
+  }
+  const end = config.end;
+  if (
+    (op === 'list_push' || op === 'list_pop') &&
+    end !== undefined &&
+    end !== null &&
+    end !== '' &&
+    !REDIS_LIST_ENDS.includes(String(end))
+  ) {
+    // A missing end defaults to Right at run time; only a wrong value fails.
+    issues.push('Redis: "List end" must be Left or Right.');
+  }
+  const ttl = config.ttlSeconds;
+  if (op === 'set' && typeof ttl === 'string' && ttl.trim() && !isMerge(ttl)) {
+    if (!/^\d+$/.test(ttl.trim()) || Number(ttl.trim()) < 1) {
+      issues.push('Redis: "TTL seconds" must be a positive whole number.');
+    }
+  }
+  const amount = config.amount;
+  if (
+    op === 'increment' &&
+    typeof amount === 'string' &&
+    amount.trim() &&
+    !isMerge(amount)
+  ) {
+    if (!/^-?\d+$/.test(amount.trim())) {
+      issues.push('Redis: "Amount" must be a whole number.');
+    }
+  }
   return issues;
 }

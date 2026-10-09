@@ -4,40 +4,77 @@ No DB query and no raw SQL lives here (code-review hard-fail). Every handler
 takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
+from typing import Any, Optional, Union
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import require_permission
+from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..http_client import get_http_transport
+from ..canonical.documents import is_document_entity
+from ..mapping import SCOPE_LINE
 from ..schemas import (
     CompanyCreate,
     CompanyDetailResponse,
     CompanyItem,
     CompanyListResponse,
     CompanySinkUpdate,
+    ContractGate,
+    DocumentPrerequisiteOut,
     EntityConfigItem,
     EntityConfigUpdate,
+    EntityDeliveryModeUpdate,
+    EtlRepushResponse,
+    EtlRunStartResponse,
+    BrandContractGate,
+    EtlTaskResponse,
+    EtlTaskUpdate,
     FormulaTestRequest,
     FormulaTestResponse,
+    MappingResetPreview,
+    MappingResetRemovedRow,
+    MappingResetRequest,
+    MappingResetRow,
     MappingRowOut,
     MappingUpdateRequest,
+    MappingUpdateRow,
     MappingViewResponse,
+    PreviewJobStartOut,
     SimulateRequest,
     SimulateResponse,
     SorentoFieldOut,
+    SyncRunItem,
+    SyncRunListResponse,
 )
 from ..services import (
     AutocountServiceError,
     CompanyAlreadyExists,
+    CompanyNotApiBacked,
     CompanyNotFound,
     CompanyService,
     ConnectionNotFound,
+    ConnectionValidationError,
     EntityConfigNotFound,
+    EtlAnchorError,
+    EtlService,
+    EtlStateError,
+    EtlTaskView,
+    EtlValidationError,
+    MappingResetPreviewView,
     MappingView,
     MappingWriteRow,
+    PreviewUnavailable,
+    SinkTargetValidationError,
+    document_prerequisites,
 )
+from ..services.preview_job_service import PreviewJobService
+from ..http_source.errors import HttpSourceError
+from ..sql_source.errors import SqlSourceError
+from .sql import raise_sql_error
 
 router = APIRouter()
 
@@ -47,11 +84,37 @@ def _raise(exc: AutocountServiceError) -> None:
     operator-safe (no stack traces, no credentials)."""
     if isinstance(exc, (CompanyNotFound, ConnectionNotFound, EntityConfigNotFound)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
-    if isinstance(exc, CompanyAlreadyExists):
+    if isinstance(exc, (CompanyAlreadyExists, CompanyNotApiBacked)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
     )
+
+
+def _field_errors(field_errors: dict, message: str) -> JSONResponse:
+    """ONE per-field 422 shape for every surface that has one.
+
+    ``detail`` carries the map (the frontend hooks read
+    ``ApiError.detail.fieldErrors``) and ``message`` is the human line the
+    api-client falls back to when ``detail`` is not a string.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": {"fieldErrors": field_errors}, "message": message},
+    )
+
+
+def _company_item(company, *, source_kind: str, prerequisites=()) -> CompanyItem:
+    """The row PLUS the derived wire fields (plan sprint-5/01 AC-01-07/11):
+    ``sourceKind`` comes from the service (the connection's provider - never
+    stored on the row) and ``documentPrerequisites`` from the detail's entity
+    states (the list sends ``[]``)."""
+    item = CompanyItem.model_validate(company)
+    item.sourceKind = source_kind
+    item.documentPrerequisites = [
+        DocumentPrerequisiteOut.model_validate(p) for p in prerequisites
+    ]
+    return item
 
 
 @router.get("", response_model=CompanyListResponse)
@@ -61,11 +124,14 @@ def list_companies(
     page: int = Query(0, ge=0),
     page_size: int = Query(25, ge=1, le=200),
 ) -> CompanyListResponse:
-    rows, total = CompanyService(db).list(
-        current_user.tenant_id, page=page, page_size=page_size
-    )
+    service = CompanyService(db)
+    rows, total = service.list(current_user.tenant_id, page=page, page_size=page_size)
+    # ONE batched, tenant-scoped connection query for the whole page (AC-01-07).
+    kinds = service.source_kind_map(current_user.tenant_id, rows)
     return CompanyListResponse(
-        data=[CompanyItem.model_validate(row) for row in rows], total=total, page=page
+        data=[_company_item(row, source_kind=kinds[row.id]) for row in rows],
+        total=total,
+        page=page,
     )
 
 
@@ -74,15 +140,35 @@ def create_company(
     body: CompanyCreate,
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
-) -> CompanyItem:
-    """Register an AutoCount company by DISCOVERING it from its connection."""
+    transport: Optional[Any] = Depends(get_http_transport),
+):
+    """Register an AutoCount company by DISCOVERING it from its connection -
+    the vendor login for an ``autocount`` connection, the connection's own
+    ``database`` (verified by a live probe) for a ``sql_database`` one (plan
+    sprint-5/01 AC-01-01). A probe mismatch / connect failure is a per-field
+    422 on ``connectionId`` (AC-01-02).
+
+    ``transport`` (sprint-5/08 review round 1, B4) is the SAME dependency
+    seam ``/autocount/http/preview`` uses - production leaves it ``None``
+    (a real network call for the open-company reachability probe), tests
+    override it so this route never reaches ``hapi.sorento.cc.cd``.
+    """
+    service = CompanyService(db)
     try:
-        company = CompanyService(db).create_from_connection(
-            current_user.tenant_id, body.connectionId, name=body.name
+        company = service.create(
+            current_user.tenant_id,
+            body.connectionId,
+            name=body.name,
+            ref_prefix=body.refPrefix,
+            transport=transport,
         )
+    except ConnectionValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
     except AutocountServiceError as exc:
         _raise(exc)
-    return CompanyItem.model_validate(company)
+    return _company_item(
+        company, source_kind=service.source_kind_for(current_user.tenant_id, company)
+    )
 
 
 @router.get("/{company_id}", response_model=CompanyDetailResponse)
@@ -100,7 +186,12 @@ def get_company(
     except AutocountServiceError as exc:
         _raise(exc)
     return CompanyDetailResponse(
-        company=CompanyItem.model_validate(company),
+        company=_company_item(
+            company,
+            source_kind=service.source_kind_for(current_user.tenant_id, company),
+            # Pure, over the states already loaded above - no extra query.
+            prerequisites=document_prerequisites(entities),
+        ),
         entities=[EntityConfigItem.model_validate(row) for row in entities],
     )
 
@@ -124,7 +215,12 @@ def set_sink_target(
             company_id,
             sink_impl=body.sinkImpl,
             sink_connection_id=body.sinkConnectionId,
+            # The per-company Sorento anchor (plan 22 Appendix A6) - required
+            # with the Sorento sink, cleared with ``logging``.
+            sorento_company_code=body.sorentoCompanyCode,
         )
+    except SinkTargetValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
     except AutocountServiceError as exc:
         _raise(exc)
     return CompanyItem.model_validate(company)
@@ -152,9 +248,40 @@ def update_entity_config(
             company_id,
             entity_type,
             initial_lookback_days=body.initialLookbackDays,
+            source_impl=body.sourceImpl,
         )
     except AutocountServiceError as exc:
         _raise(exc)
+    return EntityConfigItem.model_validate(state)
+
+
+@router.put(
+    "/{company_id}/entities/{entity_type}/delivery-mode",
+    response_model=EntityConfigItem,
+)
+def set_entity_delivery_mode(
+    company_id: str,
+    entity_type: str,
+    body: EntityDeliveryModeUpdate,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> EntityConfigItem:
+    """``push`` <-> ``pull`` (sprint-5/10, AC-10-11). Reuses
+    ``autocount.companies.manage`` - the same "configure the company"
+    authority ``update_entity_config`` above already uses, so no new
+    permission needs a grant sweep for existing tenants."""
+    try:
+        EtlService(db).set_delivery_mode(
+            current_user.tenant_id, company_id, entity_type, body.deliveryMode
+        )
+        states = CompanyService(db).entity_states(current_user.tenant_id, company_id)
+    except EtlValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    state = next((s for s in states if s.entity_type == entity_type), None)
+    if state is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
     return EntityConfigItem.model_validate(state)
 
 
@@ -189,6 +316,9 @@ def _mapping_response(view: MappingView) -> MappingViewResponse:
         rows=[MappingRowOut.model_validate(row) for row in view.rows],
         sorentoFields=[SorentoFieldOut.model_validate(f) for f in view.sorento_fields],
         acFields=list(view.ac_fields),
+        lineSorentoFields=[SorentoFieldOut.model_validate(f) for f in view.line_sorento_fields],
+        lineAcFields=list(view.line_ac_fields),
+        hasPreset=view.has_preset,
     )
 
 
@@ -236,24 +366,98 @@ def replace_entity_mapping(
     rows are preserved; the write is seed-if-absent-safe (``update_tenant`` never
     reverts an operator edit).
     """
+    #     !!  SECURITY RE-REVIEW SHOULD-FIX - `lineRows` IS THE ONLY SIGNAL
+    #         THAT DISTINGUISHES "UNTOUCHED" FROM "EXPLICITLY WIPED".  !!
+    # `is_document_entity(entity_type)` alone (the old S7 wiring) made EVERY
+    # header-only PUT on a document entity wipe its line rows, because an
+    # omitted line scope and an explicit empty submission both collapsed to
+    # the same "no line rows in this request" shape. `body.lineRows` being
+    # present (even `[]`) is the operator's Lines tab actually being part of
+    # THIS save; `None` means the request never touched line scope at all.
+    #
+    # Backward compat (one release, documented on `MappingUpdateRequest`): a
+    # caller still sending its line rows folded INSIDE `rows` (`scope:
+    # "line"` items, the pre-existing combined shape) is honoured exactly as
+    # before - those rows count as a submitted line scope too.
+    line_rows_in_body = [row for row in body.rows if row.scope == SCOPE_LINE]
+    line_rows_submitted = (
+        body.lineRows is not None or bool(line_rows_in_body)
+    ) and is_document_entity(entity_type)
+
+    def _to_write_row(row: MappingUpdateRow, *, force_scope: Optional[str] = None) -> MappingWriteRow:
+        return MappingWriteRow(
+            source_path=row.sourcePath,
+            transform=row.transform,
+            sorento_field=row.sorentoField,
+            formula=row.formula,
+            # A `lineRows` item is unambiguously LINE scope by ARRIVING in
+            # this array (nit, code-review round) - forcing it rather than
+            # trusting the item's own `scope` field is defense-in-depth,
+            # the same class of guard as the polymorphic-target_id rule: a
+            # payload's OWN self-description is never the sole authority
+            # for where it lands.
+            scope=force_scope or row.scope,
+            is_enabled=row.isEnabled,
+        )
+
+    combined_rows = [_to_write_row(row) for row in body.rows] + [
+        _to_write_row(row, force_scope=SCOPE_LINE) for row in (body.lineRows or [])
+    ]
     try:
         view = CompanyService(db).replace_mapping(
             current_user.tenant_id,
             company_id,
             entity_type,
-            [
-                MappingWriteRow(
-                    source_path=row.sourcePath,
-                    transform=row.transform,
-                    sorento_field=row.sorentoField,
-                    formula=row.formula,
-                )
-                for row in body.rows
-            ],
+            combined_rows,
+            line_rows_submitted=line_rows_submitted,
         )
     except AutocountServiceError as exc:
         _raise(exc)
     return _mapping_response(view)
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/mapping/reset-preset",
+    # Two shapes, one route, discriminated by the REQUEST (plan §2.2): a
+    # dry run answers the diff, an apply answers the fresh mapping view. A
+    # `Union` response_model would make FastAPI re-validate one against the
+    # other; the handler returns an already-built model instead.
+    response_model=None,
+)
+def reset_entity_mapping_to_preset(
+    company_id: str,
+    entity_type: str,
+    body: MappingResetRequest,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> Union[MappingResetPreview, MappingViewResponse]:
+    """Preview or apply a whole replacement of the entity's HEADER mapping
+    with its registered preset (sprint-5/12, AC-12-10..15).
+
+    ``dryRun: true`` (the default) computes the diff and writes NOTHING;
+    ``dryRun: false`` replaces the header rows in ONE transaction and returns
+    the fresh mapping view. Line-scope rows, provenance rows and every
+    ``ac_entity_config`` column are untouched. Reuses
+    ``autocount.companies.manage`` - the same "configure the company"
+    authority the rest of this editor rides, so no new permission needs a
+    grant sweep. An entity with no registered preset for its source type is a
+    422 naming that; another tenant's company is a uniform 404.
+    """
+    try:
+        result = CompanyService(db).reset_mapping_to_preset(
+            current_user.tenant_id, company_id, entity_type, dry_run=body.dryRun
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    if isinstance(result, MappingResetPreviewView):
+        return MappingResetPreview(
+            label=result.label,
+            rows=[MappingResetRow.model_validate(row) for row in result.rows],
+            removed=[
+                MappingResetRemovedRow.model_validate(row) for row in result.removed
+            ],
+        )
+    return _mapping_response(result)
 
 
 @router.get(
@@ -326,6 +530,7 @@ def simulate_mapping(
                     transform=row.transform,
                     sorento_field=row.sorentoField,
                     formula=row.formula,
+                    scope=row.scope,
                 )
                 for row in body.rows
             ]
@@ -333,8 +538,367 @@ def simulate_mapping(
             else None
         )
         result = CompanyService(db).simulate_mapping(
-            current_user.tenant_id, company_id, entity_type, body.record, draft
+            current_user.tenant_id, company_id, entity_type, body.record, draft,
+            lines=body.lines,
         )
     except AutocountServiceError as exc:
         _raise(exc)
     return SimulateResponse(**result)
+
+
+# ── direct-DB ETL task (plan 22 S1, AC-22-11) ─────────────────────────────────
+
+
+def _task_response(view: EtlTaskView) -> EtlTaskResponse:
+    return EtlTaskResponse(
+        companyId=view.company_id,
+        entityType=view.entity_type,
+        etlStatus=view.etl_status,
+        activatedAt=view.activated_at,
+        sourceImpl=view.source_impl,
+        sourceConfig=view.source_config,
+        resultColumns=view.result_columns,
+        lineResultColumns=view.line_result_columns,
+        lastPreviewAt=view.last_preview_at,
+        lastPreviewFailedCount=view.last_preview_failed_count,
+        lastRunAt=view.last_run_at,
+        lastRunError=view.last_run_error,
+        lastRunErrorCode=view.last_run_error_code,
+        nextIncrementalAt=view.next_incremental_at,
+        nextReconcileAt=view.next_reconcile_at,
+        initialLoad=view.initial_load,
+        brandContractGate=(
+            BrandContractGate(**view.brand_contract_gate)
+            if view.brand_contract_gate
+            else None
+        ),
+        contractGate=(
+            ContractGate(**view.contract_gate) if view.contract_gate else None
+        ),
+        # plan 13 (AC-13-30) review round 2 S8 fix - passed through
+        # VERBATIM (a loose dict, never a typed sub-model - see
+        # `EtlTaskResponse.pushGate`'s own comment for why).
+        pushGate=view.push_gate,
+        deliveryMode=view.delivery_mode,
+        combineOutputColumns=view.combine_output_columns,
+        previewJobId=view.preview_job_id,
+    )
+
+
+def _raise_task(exc: Exception):
+    """Task-lifecycle errors → HTTP, in the ONE place they are translated.
+
+    * ``EtlStateError``  → **409**. The request is well-formed; the TASK is
+      somewhere else (already active, never previewed, a run in flight). A 422
+      would tell the operator to fix their input, which is not the problem.
+    * ``EtlAnchorError`` → **422** with a structured ``detail`` carrying
+      Sorento's own code (Appendix A6) - the surface names the wiring that is
+      wrong instead of showing a bare delivery failure.
+    * ``PreviewUnavailable`` → **502**: the consumer, not us, failed.
+    * ``HttpSourceError`` → **422** (B-B, sprint-5/08 review round 2 blocker):
+      an open-API task's dry-run failure (transport, HTTP status, shape
+      change, row cap) - this is the SOURCE side of an HTTP preview, the
+      exact same authority ``SqlSourceError`` already has below.
+      ``exc.message`` already names the page and, when known, the status
+      (AC-08-23) - never a bare 500.
+    * Anything else (``SqlConnectError``/``SqlQueryError``/
+      ``SqlTaskNotConfigured`` - the SOURCE side of a preview, S2 review
+      SHOULD-FIX 4) falls through to the SAME translator ``routers/sql.py``
+      uses, so a preview that fails reading the source is never a bare 500.
+    """
+    if isinstance(exc, EtlStateError):
+        content = {"detail": exc.message, "message": exc.message}
+        if exc.running_run_id:
+            content["detail"] = {
+                "message": exc.message,
+                "runningRunId": exc.running_run_id,
+            }
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=content)
+    if isinstance(exc, EtlAnchorError):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "detail": {"code": exc.code, "message": exc.message},
+                "message": exc.message,
+            },
+        )
+    if isinstance(exc, HttpSourceError):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "detail": {"code": exc.code, "message": exc.message},
+                "message": exc.message,
+            },
+        )
+    if isinstance(exc, PreviewUnavailable):
+        # ``message`` already carries what the consumer said (HTTP status +
+        # bounded body snippet) or why it was unreachable - the operator
+        # reads exactly that as the 502 ``detail`` (prod 2026-09-06).
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        )
+    if isinstance(exc, AutocountServiceError):
+        _raise(exc)
+        return
+    raise_sql_error(exc)
+
+
+@router.get(
+    "/{company_id}/entities/{entity_type}/etl-task", response_model=EtlTaskResponse
+)
+def get_etl_task(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.companies.read")),
+    db: Session = Depends(get_db),
+) -> EtlTaskResponse:
+    """One entity's DB extraction task, anchored on ``ac_entity_config``. A
+    never-configured entity returns a DRAFT with defaults (the editor is the
+    create surface), not a 404."""
+    try:
+        view = EtlService(db).get_task(current_user.tenant_id, company_id, entity_type)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return _task_response(view)
+
+
+@router.put(
+    "/{company_id}/entities/{entity_type}/etl-task", response_model=EtlTaskResponse
+)
+def update_etl_task(
+    company_id: str,
+    entity_type: str,
+    body: EtlTaskUpdate,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+):
+    """Draft-save the task's source config (replaces it). Validation
+    (AC-22-11): picked columns must exist in a FRESH preview of the query, the
+    watermark must be orderable, documents need a from-date, interval floors
+    apply → ``422 {fieldErrors}``. ``connectionId`` is re-validated against
+    the tenant on every use. Reuses ``autocount.companies.manage``."""
+    try:
+        # sprint-5/08 review round 1 (B1) - the FE sends ``sourceImpl`` as a
+        # TOP-LEVEL sibling of ``sourceConfig``; prefer it, falling back to a
+        # nested ``sourceConfig.sourceImpl`` only if a caller ever sends that
+        # shape instead (never both silently disagreeing - the top-level one
+        # wins, matching what ``EtlService.update_task`` dispatches on).
+        raw = body.sourceConfig.model_dump()
+        raw["sourceImpl"] = body.sourceImpl or body.sourceConfig.sourceImpl
+        # review round 5 (R5-B) - ``model_dump()`` always emits every
+        # declared field (``combine`` included, defaulted to ``None`` when
+        # the wire omitted it) - so an explicit ``"combine": null`` and a
+        # genuinely omitted key are indistinguishable once flattened into a
+        # plain dict. Drop the key entirely when the client never sent it
+        # at all (``model_fields_set`` reflects the RAW JSON, not the
+        # default), so the service layer's own ``"combine" in raw`` check
+        # can tell "omitted - keep stored" from "explicit null - clear
+        # stored" (AC-10-80).
+        if "combine" not in body.sourceConfig.model_fields_set:
+            raw.pop("combine", None)
+        view = EtlService(db).update_task(
+            current_user.tenant_id,
+            company_id,
+            entity_type,
+            raw,
+        )
+    except EtlValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return _task_response(view)
+
+
+# ── task lifecycle (plan 22 S2, AC-22-18/19/20) ───────────────────────────────
+#
+# Permission split, using EXISTING keys only (a new key would silently 403 every
+# tenant provisioned before it, so none is minted):
+#   configure the task  → ``autocount.companies.manage``  (activate/pause/resume)
+#   make it move data   → ``autocount.sync.run``          (preview/run)
+#   read its history    → ``autocount.sync.read``
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/etl-task/preview",
+    response_model=PreviewJobStartOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def preview_etl_task(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.sync.run")),
+    db: Session = Depends(get_db),
+):
+    """sprint-5/11 (AC-11-21/22) - starts the ``full``-scope
+    ``autocount_source_preview`` job (Review & Activate's Run preview) and
+    returns 202 ``{jobId, status}``; no extraction happens in THIS request.
+    A never-configured task still refuses SYNCHRONOUSLY (today's
+    ``EtlStateError`` -> 409, unchanged) - no job is ever created for a task
+    that cannot run. Poll ``GET /autocount/previews/{jobId}`` for the landed
+    result - the SAME ``{task, preview}`` shape this route used to return.
+
+    Gated on ``sync.run`` rather than ``companies.manage``: it reaches the
+    source database and the consumer, which is the "make data move" authority
+    even though nothing is written.
+    """
+    try:
+        job_id, wire_status = PreviewJobService(db).start_full(
+            current_user.tenant_id, company_id=company_id, entity_type=entity_type,
+        )
+    except (AutocountServiceError, SqlSourceError, HttpSourceError) as exc:
+        return _raise_task(exc)
+    return PreviewJobStartOut(jobId=job_id, status=wire_status)
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/etl-task/activate",
+    response_model=EtlTaskResponse,
+)
+def activate_etl_task(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+):
+    """The activate-once gate (AC-22-18): draft|paused → active. 409 unless a
+    successful preview exists AND the company carries a Sorento company code."""
+    try:
+        view = EtlService(db).activate_task(current_user.tenant_id, company_id, entity_type)
+    except AutocountServiceError as exc:
+        return _raise_task(exc)
+    return _task_response(view)
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/etl-task/pause",
+    response_model=EtlTaskResponse,
+)
+def pause_etl_task(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+):
+    """active → paused: the sweep stops dispatching, in-flight runs finish."""
+    try:
+        view = EtlService(db).pause_task(current_user.tenant_id, company_id, entity_type)
+    except AutocountServiceError as exc:
+        return _raise_task(exc)
+    return _task_response(view)
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/etl-task/resume",
+    response_model=EtlTaskResponse,
+)
+def resume_etl_task(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+):
+    """paused → active with NO re-preview ceremony (AC-22-19)."""
+    try:
+        view = EtlService(db).resume_task(current_user.tenant_id, company_id, entity_type)
+    except AutocountServiceError as exc:
+        return _raise_task(exc)
+    return _task_response(view)
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/etl-task/repush",
+    response_model=EtlRepushResponse,
+)
+def repush_etl_task(
+    company_id: str,
+    entity_type: str,
+    # `autocount.companies.manage` - the "configure the task" bucket, same as
+    # pause/activate/refetch-history (AC-07-13). NOT `autocount.sync.run`:
+    # this clears change tracking, it does not itself move any data - the
+    # push happens on the reconcile the NEXT sweep tick claims.
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    # The REAL user under impersonation (writes/activity are never
+    # attributed to the target), same dependency `run_etl_task` uses.
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+):
+    """Clear this task's tracked rows so the next reconcile re-pushes every
+    document (plan sprint-5/07, AC-07-13..19). 409 unless the task is
+    `active`/`paused` on a database source with no run in flight (the
+    conflict carries the running run's id when one is, same shape
+    `run_task_now` uses)."""
+    try:
+        view = EtlService(db).repush_task(
+            current_user.tenant_id, company_id, entity_type, actor_user_id=actor_id,
+        )
+    except AutocountServiceError as exc:
+        return _raise_task(exc)
+    return EtlRepushResponse(
+        clearedCount=view.cleared_count,
+        nextReconcileAt=view.next_reconcile_at,
+        status=view.status,
+    )
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/etl-task/run",
+    response_model=EtlRunStartResponse,
+)
+def run_etl_task(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.sync.run")),
+    # The REAL user under impersonation (writes are never attributed to the
+    # target) - a dependency, so FastAPI supplies the request it needs.
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+):
+    """Enqueue ONE manual run - the SAME job the sweep enqueues (AC-22-13).
+    409 unless the task is active, or while a run is still in flight (the
+    conflict carries the running run's id so the surface can link to it)."""
+    try:
+        started = EtlService(db).run_task_now(
+            current_user.tenant_id,
+            company_id,
+            entity_type,
+            actor_user_id=actor_id,
+        )
+    except AutocountServiceError as exc:
+        return _raise_task(exc)
+    return EtlRunStartResponse(
+        runId=started["run_id"],
+        jobId=started["job_id"],
+        status=started["status"],
+        task=_task_response(started["task"]),
+    )
+
+
+@router.get(
+    "/{company_id}/entities/{entity_type}/etl-task/runs",
+    response_model=SyncRunListResponse,
+)
+def list_etl_runs(
+    company_id: str,
+    entity_type: str,
+    current_user: User = Depends(require_permission("autocount.sync.read")),
+    db: Session = Depends(get_db),
+    page: int = Query(0, ge=0),
+    page_size: int = Query(25, ge=1, le=200),
+) -> SyncRunListResponse:
+    """This entity's run history, newest first (AC-22-17). Paginated at the DB
+    level and capped at 200 - never an all-rows fetch."""
+    try:
+        rows, total = EtlService(db).list_task_runs(
+            current_user.tenant_id,
+            company_id,
+            entity_type,
+            page=page,
+            page_size=page_size,
+        )
+    except AutocountServiceError as exc:
+        return _raise_task(exc)
+    return SyncRunListResponse(
+        data=[SyncRunItem.model_validate(row) for row in rows],
+        total=total,
+        page=page,
+    )

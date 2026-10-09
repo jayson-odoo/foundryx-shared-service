@@ -2,20 +2,30 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { CalendarRange, RefreshCw, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import {
+  CalendarRange,
+  Database,
+  Globe,
+  RefreshCw,
+  RotateCcw,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { embeddedListConfig } from '@/components/platform/resource-list/embedded-list-config';
 import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
+import { StatusBadge } from '@/components/platform/status-badge';
 import { useDatetime } from '@/hooks/use-datetime';
-import type { AutocountEntityConfig } from '@/types/autocount';
+import type { AutocountDeliveryMode, AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
 import type { ListQuery, ListResult } from '@/types/resource';
 import {
   AC_COMPANIES_MANAGE,
+  AC_DELIVERY_MODE_REGISTRY,
   AC_SYNC_RUN,
   entityLabel,
+  sourceImplLabel,
   syncModeLabel,
 } from '../../components/autocount-meta';
 
@@ -67,25 +77,42 @@ export interface EntitiesListConfigOptions {
   entities: AutocountEntityConfig[];
   /** False when the company is inactive - a sync could not succeed. */
   companyActive: boolean;
+  /**
+   * How the company is connected (AC-01-18). A DB company has no vendor API,
+   * so the API-only actions (first-run window, source switch) are not offered
+   * at all - offering them would be a guaranteed 409/422.
+   */
+  sourceKind: AutocountSourceKind;
   onSync: (entityType: string) => void | Promise<void>;
   onEditLookback: (entity: AutocountEntityConfig) => void;
   /** Reset a superseded entity's watermark to re-open its first-run window. */
   onRefetch: (entity: AutocountEntityConfig) => void | Promise<void>;
   /** Open the entity's field-mapping editor (AC-15-40). */
   onConfigureMapping: (entity: AutocountEntityConfig) => void;
+  /**
+   * Open the entity's task editor at the Source tab (sprint-5/08 D13): the
+   * ONE place the API ⇄ Database choice is made now - the `change-source`
+   * dialog + action are gone.
+   */
+  onConfigureTask: (entity: AutocountEntityConfig) => void;
 }
 
 export function useAutocountEntitiesListConfig({
   entities,
   companyActive,
+  sourceKind,
   onSync,
   onEditLookback,
   onRefetch,
   onConfigureMapping,
+  onConfigureTask,
 }: EntitiesListConfigOptions): ResourceListConfig<AutocountEntityConfig> {
   const { formatDateTime } = useDatetime();
 
   return useMemo<ResourceListConfig<AutocountEntityConfig>>(() => {
+    // The first-run window is a vendor-API concept; a DB or open (http)
+    // company's entities never had one (AC-01-18, AC-08-10 - same predicate).
+    const apiBacked = sourceKind !== 'db' && sourceKind !== 'http';
     const actions: ResourceAction<AutocountEntityConfig>[] = [
       {
         id: 'sync-now',
@@ -111,7 +138,7 @@ export function useAutocountEntitiesListConfig({
         // is spent and editing it is a guaranteed no-op - offering a dialog that
         // cannot take effect is the dead-control violation (AC-15-30). The
         // superseded state is shown read-only in the "Synced up to" column.
-        isVisible: (rows) => !rows[0]?.watermarkAt,
+        isVisible: (rows) => apiBacked && !rows[0]?.watermarkAt,
         run: (rows) => {
           const row = rows[0];
           if (row) onEditLookback(row);
@@ -127,12 +154,10 @@ export function useAutocountEntitiesListConfig({
         // the window is a distinct, confirmed act that RESETS the watermark, not
         // a Days box that silently does nothing (AC-15-30).
         isVisible: (rows) => Boolean(rows[0]?.watermarkAt),
-        confirm: {
-          title: 'Re-fetch history?',
-          description:
-            'The next sync re-reads from the first-run window instead of the current sync position. Records already pushed may be re-staged for review.',
-          confirmLabel: 'Re-fetch',
-        },
+        // Fix round 1 item 15: a re-sync (the exact class the review names -
+        // "a resend, a retry, a re-sync needs no confirm at all") - it widens
+        // a read window, it doesn't delete or detach anything. Dropped
+        // `confirm` rather than moving to the grace-window engine.
         run: (rows) => {
           const row = rows[0];
           if (row) return onRefetch(row);
@@ -147,6 +172,25 @@ export function useAutocountEntitiesListConfig({
         run: (rows) => {
           const row = rows[0];
           if (row) onConfigureMapping(row);
+        },
+      },
+      {
+        // The task editor's Source tab (sprint-5/08 D13) is now the ONE place
+        // the API <-> Database choice is made - this ONE row action replaces
+        // both the old "Configure database query" (sql_db only) and the
+        // guarded "Change source" dialog, always reachable regardless of the
+        // row's current impl (this is also how a row stranded on
+        // `autocount_read` on a DB company gets fixed - fix/db-company-seed-
+        // source's regression, now solved by "one place" rather than a
+        // second action).
+        id: 'configure-task',
+        label: 'Configure source',
+        icon: Database,
+        surfaces: { row: true },
+        permission: AC_COMPANIES_MANAGE,
+        run: (rows) => {
+          const row = rows[0];
+          if (row) onConfigureTask(row);
         },
       },
     ];
@@ -168,6 +212,28 @@ export function useAutocountEntitiesListConfig({
           </div>
         ),
         size: 180,
+        enableSorting: false,
+      },
+      {
+        id: 'sourceImpl',
+        accessorFn: (row) => row.sourceImpl,
+        meta: { headerTitle: 'Source' },
+        header: ({ column }) => <DataGridColumnHeader title="Source" column={column} />,
+        cell: ({ row }) => {
+          // Both task-backed impls (SQL and the open REST API, sprint-5/08)
+          // read as "task" iconography; only the vendor-login path is Globe.
+          const taskBacked =
+            row.original.sourceImpl === 'sql_db' || row.original.sourceImpl === 'autocount_http';
+          return (
+            <div className="flex items-start">
+              <Badge variant={taskBacked ? 'primary' : 'secondary'} appearance="light" size="sm">
+                {taskBacked ? <Database className="size-3" /> : <Globe className="size-3" />}
+                {sourceImplLabel(row.original.sourceImpl)}
+              </Badge>
+            </div>
+          );
+        },
+        size: 140,
         enableSorting: false,
       },
       {
@@ -264,6 +330,24 @@ export function useAutocountEntitiesListConfig({
         enableSorting: false,
       },
       {
+        // sprint-5/10 (AC-10-17) - Push vs Pull on request, per entity.
+        id: 'deliveryMode',
+        accessorFn: (row) => row.deliveryMode ?? 'push',
+        meta: { headerTitle: 'Delivery' },
+        header: ({ column }) => <DataGridColumnHeader title="Delivery" column={column} />,
+        cell: ({ row }) => (
+          <div className="flex items-start">
+            <StatusBadge
+              status={(row.original.deliveryMode ?? 'push') as AutocountDeliveryMode}
+              registry={AC_DELIVERY_MODE_REGISTRY}
+              size="sm"
+            />
+          </div>
+        ),
+        size: 150,
+        enableSorting: false,
+      },
+      {
         id: 'health',
         accessorFn: (row) => row.consecutiveFailures,
         meta: { headerTitle: 'Health' },
@@ -344,8 +428,10 @@ export function useAutocountEntitiesListConfig({
     entities,
     formatDateTime,
     onConfigureMapping,
+    onConfigureTask,
     onEditLookback,
     onRefetch,
     onSync,
+    sourceKind,
   ]);
 }

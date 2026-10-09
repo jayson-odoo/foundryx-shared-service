@@ -86,6 +86,7 @@ def _insert_idea(
     source="whatsapp",
     priority=0,
     created_at=None,
+    is_test=False,
 ) -> str:
     from datetime import datetime, timedelta, timezone
 
@@ -108,6 +109,7 @@ def _insert_idea(
             source=source,
             priority=priority,
             created_at=created_at,
+            is_test=is_test,
         )
         db.add(idea)
         db.commit()
@@ -212,6 +214,29 @@ def test_board_excludes_archived_and_terminal(ideation_client):
     assert archived not in all_ids
     assert closed not in all_ids
     assert rejected not in all_ids
+
+
+def test_board_excludes_test_ideas_by_default_and_includes_on_request(ideation_client):
+    """issue #1179 - a console/``--say`` test idea (``is_test``) never appears on
+    the board by default; ``includeTest=true`` opts it back in."""
+    h = _auth(ideation_client)
+    pid = _create_software_product(ideation_client, h)
+    real = _insert_idea(ideation_client._factory, pid, problem="real idea", status_key="captured")
+    test_idea = _insert_idea(
+        ideation_client._factory, pid, problem="test idea", status_key="captured", is_test=True,
+    )
+
+    default_board = ideation_client.get("/ideation/ideas/board", headers=h).json()
+    default_ids = {i for ids in _columns(default_board).values() for i in ids}
+    assert real in default_ids
+    assert test_idea not in default_ids
+
+    with_test = ideation_client.get(
+        "/ideation/ideas/board", headers=h, params={"includeTest": "true"}
+    ).json()
+    with_test_ids = {i for ids in _columns(with_test).values() for i in ids}
+    assert real in with_test_ids
+    assert test_idea in with_test_ids
 
 
 def test_board_within_column_ordered_by_priority(ideation_client):

@@ -227,7 +227,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
         <div className="px-6 py-5 text-center" style={{ backgroundColor: bg }}>
           <p className="text-xs text-zinc-400">{text || 'Footer text - set it in Branding settings'}</p>
           {showSocials && brand.socials.length > 0 && (
-            <div className="mt-2 flex justify-center gap-2 text-[11px] text-zinc-500">
+            <div className="mt-2 flex justify-center gap-2 text-2xs text-zinc-500">
               {brand.socials.map((l) => (
                 <span key={l.platform}>{l.platform}</span>
               ))}
@@ -248,7 +248,7 @@ export function BlockView({ block, editing, brand, listFacts = [], onInlineChang
       return (
         <div className="flex py-2" style={{ justifyContent: justify }}>
           <div
-            className="flex flex-col items-center justify-center gap-1 rounded border border-dashed border-input bg-muted text-[10px] text-muted-foreground"
+            className="flex flex-col items-center justify-center gap-1 rounded border border-dashed border-input bg-muted text-2xs text-muted-foreground"
             style={{ width: block.size, height: block.size }}
           >
             <QrCode className="size-5" />
@@ -391,7 +391,7 @@ export function ConditionIndicator({ visible }: { visible: boolean }) {
   return (
     <span
       data-testid="condition-indicator"
-      className="absolute -top-2 end-6 z-10 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+      className="absolute -top-2 end-6 z-10 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-2xs font-medium text-amber-700"
     >
       <Filter className="size-2.5" />
       Conditional

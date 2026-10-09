@@ -1,0 +1,46 @@
+=== double-space description example ===
+{
+  "source_ref": "AED_SORENTO:A230",
+  "raw_description": "A230  32MM DIA ABS CP PUSH UP WASTE (75MM HEIGHT)",
+  "raw_desc2": "",
+  "delivered_payload": {
+    "source_ref": "AED_SORENTO:A230",
+    "code": "A230",
+    "name": "A230  32MM DIA ABS CP PUSH UP WASTE (75MM HEIGHT)",
+    "description": "A230  32MM DIA ABS CP PUSH UP WASTE (75MM HEIGHT)",
+    "category_code": "SRT-FT",
+    "brand_code": "OTHERS",
+    "list_price": "0.0",
+    "is_active": true
+  }
+}
+=== negative-clamped-to-zero example ===
+{
+  "source_ref": "AED_SORENTO:ACC-CB8009-YG",
+  "raw_BaseUOMPrice": -1.0,
+  "delivered_payload": {
+    "source_ref": "AED_SORENTO:ACC-CB8009-YG",
+    "code": "ACC-CB8009-YG",
+    "name": "CABANA HONEYCOMB KITCHEN SINK DRAINER  ONLY ACC-CB8009-YG",
+    "description": "CABANA HONEYCOMB KITCHEN SINK DRAINER  ONLY ACC-CB8009-YG",
+    "category_code": "SRTPART",
+    "brand_code": "CABANA",
+    "list_price": "0.0",
+    "is_active": true
+  }
+}
+=== raw-zero example ===
+{
+  "source_ref": "AED_SORENTO:**NEW",
+  "raw_BaseUOMPrice": 0.0,
+  "delivered_payload": {
+    "source_ref": "AED_SORENTO:**NEW",
+    "code": "**NEW",
+    "name": "**NEW STOCK",
+    "description": "**NEW STOCK",
+    "category_code": "MISC",
+    "brand_code": "OTHERS",
+    "list_price": "0.0",
+    "is_active": true
+  }
+}

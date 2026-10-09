@@ -306,18 +306,19 @@ def test_embed_vote_happy(scoped):
 
 def test_embed_votes_are_per_sorento_user(scoped):
     """Votes are per HOST (sorento) user, taken from the assertion ``sub`` - NOT one
-    shared vote per connection. One user upvotes, a DIFFERENT user downvotes the
-    same idea → 1 up + 1 down (distinct entries)."""
+    shared vote per connection. Two different users each upvote the same idea
+    -> 2 upvotes (distinct entries). Plan 19: a downvote is a 422 now."""
     client = scoped["client"]
     idea = scoped["in_scope"]
     r1 = client.post(f"/embed/ideas/{idea}/vote", headers=scoped["bearer"], json={"dir": "up"})
     assert r1.status_code == 200, r1.text
-    # A different sorento user (distinct assertion sub) votes the other way.
     other = _bearer(_mint(client, sub="user-2"))
-    r2 = client.post(f"/embed/ideas/{idea}/vote", headers=other, json={"dir": "down"})
+    r2 = client.post(f"/embed/ideas/{idea}/vote", headers=other, json={"dir": "up"})
     assert r2.status_code == 200, r2.text
     body = r2.json()
-    assert body["upvotes"] == 1 and body["downvotes"] == 1
+    assert body["upvotes"] == 2 and body["downvotes"] == 0
+    r3 = client.post(f"/embed/ideas/{idea}/vote", headers=other, json={"dir": "down"})
+    assert r3.status_code == 422, r3.text
 
 
 def test_embed_vote_cross_product_denied(scoped):
@@ -467,3 +468,73 @@ def test_embed_delete_expired_token(scoped):
         f"/embed/ideas/{scoped['in_scope']}", headers=EXPIRED_BEARER
     )
     assert res.status_code == 401
+
+
+# ── merge / unmerge parity (AC-94-16, plan section 3.3) ─────────────────────
+#
+# TEST-FIRST: none of `/embed/ideas/merge`, `/embed/ideas/{id}/unmerge` or
+# `/embed/ideas/{id}/merged` exist yet - expected to fail 404/405 until S3.
+
+
+def test_embed_merge_unmerge_scope(scoped):
+    client = scoped["client"]
+    factory = client._factory
+    in_scope_2 = _insert_idea(factory, scoped["product_id"], problem="second in scope")
+
+    # A cross-product member denies the WHOLE merge (404) - nothing merged.
+    cross = client.post(
+        "/embed/ideas/merge",
+        headers=scoped["bearer"],
+        json={
+            "survivorId": scoped["in_scope"],
+            "ideaIds": [scoped["in_scope"], scoped["other_product"]],
+        },
+    )
+    assert cross.status_code == 404, cross.text
+
+    # A cross-tenant member is denied the same way.
+    cross_tenant = client.post(
+        "/embed/ideas/merge",
+        headers=scoped["bearer"],
+        json={
+            "survivorId": scoped["in_scope"],
+            "ideaIds": [scoped["in_scope"], scoped["other_tenant"]],
+        },
+    )
+    assert cross_tenant.status_code == 404, cross_tenant.text
+
+    # Within-scope merge succeeds.
+    res = client.post(
+        "/embed/ideas/merge",
+        headers=scoped["bearer"],
+        json={"survivorId": scoped["in_scope"], "ideaIds": [scoped["in_scope"], in_scope_2]},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["mergedCount"] == 1
+
+    merged = client.get(f"/embed/ideas/{scoped['in_scope']}/merged", headers=scoped["bearer"])
+    assert merged.status_code == 200, merged.text
+    assert [r["id"] for r in merged.json()] == [in_scope_2]
+
+    # A cross-tenant target on `/merged` is denied too (404, never leaked).
+    other_tenant_merged = client.get(
+        f"/embed/ideas/{scoped['other_tenant']}/merged", headers=scoped["bearer"]
+    )
+    assert other_tenant_merged.status_code == 404
+
+    # Unmerge inside the scope restores the child.
+    unres = client.post(f"/embed/ideas/{in_scope_2}/unmerge", headers=scoped["bearer"])
+    assert unres.status_code == 200, unres.text
+    assert [r["id"] for r in unres.json()] == [in_scope_2]
+
+    # Expired/invalid token is 401 on every one of the three routes.
+    expired = client.post(
+        "/embed/ideas/merge",
+        headers=EXPIRED_BEARER,
+        json={"survivorId": scoped["in_scope"], "ideaIds": [scoped["in_scope"], in_scope_2]},
+    )
+    assert expired.status_code == 401
+    expired2 = client.post(f"/embed/ideas/{scoped['in_scope']}/unmerge", headers=EXPIRED_BEARER)
+    assert expired2.status_code == 401
+    expired3 = client.get(f"/embed/ideas/{scoped['in_scope']}/merged", headers=EXPIRED_BEARER)
+    assert expired3.status_code == 401

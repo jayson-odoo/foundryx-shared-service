@@ -78,7 +78,7 @@ export function StagedRecordsList({ jobId, noChangeCount }: StagedRecordsListPro
 
   return (
     <div className="flex flex-col gap-4">
-      <ResourceList config={changedConfig} />
+      <ResourceList config={changedConfig} hideHeader />
 
       {noChangeCount > 0 && (
         <div className="flex flex-col gap-3" data-testid="no-change-collapse">
@@ -97,7 +97,7 @@ export function StagedRecordsList({ jobId, noChangeCount }: StagedRecordsListPro
             )}
             {noChangeCount} record{noChangeCount === 1 ? '' : 's'} with no field changes
           </Button>
-          {showNoChange && <ResourceList config={noChangeConfig} />}
+          {showNoChange && <ResourceList config={noChangeConfig} hideHeader />}
         </div>
       )}
 

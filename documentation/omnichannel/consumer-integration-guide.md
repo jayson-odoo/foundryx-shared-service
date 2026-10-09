@@ -10,6 +10,11 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-09-09** | **Web chat widget section + `visitorProfile`** (plan 34 / A7b, review round 1). New **§12a** documents the visitor-facing widget end to end: the install snippet, allowed origins, the exact host-identity recipe `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))`, `window.fxChatIdentity` / `fxWebchat.identify()`, and what a visitor can and cannot do. The `webchat:` `to` row in §4.1 now points there instead of at §12 (the agent-facing embed, which uses a different secret and a different HMAC input). `ThreadItem`/`ContactObject` gain **`visitorProfile`** (§9.1/9.2) - the `{name?, email?, phone?}` a visitor typed into the pre-chat form, UNVERIFIED and deliberately NOT written onto the contact's own `phone`/`email` (those are matching keys); `null` on every channel type but `WEBCHAT`. Non-breaking - no existing field changed meaning. |
+> | **2026-09-08** | **Web chat channel** (plan 34 / A7b). `channelType` now also takes `WEBCHAT` on every contact/message shape (§9). Sending: `to` gains a `webchat:<value>` prefix (§4.1), following the identical `psid:`/`igsid:` rule - an EXISTING identity on the chosen channel only, never created. `ThreadItem`/`ContactObject` gain `visitorLastSeenAt` (§9.1/9.2) - a presence fact (the visitor's last session/message/socket-connect instant), `null` on every channel type but `WEBCHAT`. A web chat channel has **no messaging window at all** - `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null` for a web chat contact, and a send via this Gateway API is never refused for window reasons on that channel type. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never uses `webchat:` and never reads `visitorLastSeenAt` sees byte-identical behaviour. |
+> | **2026-09-07** | **Messenger + Instagram channels** (plan 32 / A7a). `channelType` now also takes `FACEBOOK`/`INSTAGRAM` on every contact/message shape (§9). Sending: `POST /messages` accepts an optional `channelId` selector (§4); the implicit channel choice (no `channelId`) now PREFERS an active `WHATSAPP` channel, so a workspace that connects a second channel type never re-points an existing integration's sends (§2). `to` gains three new prefixes - `psid:<id>` / `igsid:<id>` (resolve an EXISTING contact identity on the CHOSEN channel only, never create) and `id:<contactId>` (§4.1); a bare value or `phone:` is unchanged. Two new error codes (§10): `messaging_window_closed` (409, Messenger/Instagram's own re-engagement window closed - `csw_window_closed` keeps its exact WhatsApp-only meaning) and `channel_not_available_for_contact` (422, the resolved contact has no identity on the chosen channel). `ThreadItem`/`ContactObject` gain `windowExpiresAt`/`humanAgentExpiresAt` (§9.1/9.2) - the per-channel-type messaging window; `cswExpiresAt` keeps its documented WhatsApp-only meaning verbatim (reads `null` for a Messenger/Instagram contact). `MessageItem`/`MessageObject` gain `channelType` and `mediaUnavailable` (§9.1/9.2) - a Messenger/Instagram inbound attachment whose CDN link expired before Foundryx could fetch it; the message still lands, render a muted placeholder. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never sets `channelId` and never uses the new `to` prefixes sees byte-identical behaviour. |
+> | **2026-09-06** | **Team assignment** (plan 28). Both contact shapes gain `assignedTeamId`/`assignedTeamName` (a core Team, resolved tenant-scoped; `null` on a foreign/deleted team) - present on `GET /contacts`, `GET /contacts/{identifier}`, and the `contact` object inside `contact.updated` webhook deliveries. `PATCH /api/v1/omnichannel/contacts/{identifier}` accepts `assignedTeamId` **by id only** (never by name): alone it auto-picks a member by the team's strategy, with `assignedUserId` it sets both (the user must be a team member), `null` clears the team. Unknown/foreign/inactive team → `422 invalid_request`. `sender.teamId` on the rio message shape stays `null` (unrelated, message-level concept, out of scope). Non-breaking - existing fields are unchanged. |
+> | **2026-09-05** | **Contact data model: typed custom fields, tags, and a lifecycle stage** (plan 25). Both contact shapes gain `language`, `countryCode`, `customFields` (default) / `custom_fields` (rio), `tags`, and `lifecycle` - previously `null`/`[]` rio placeholders now carry real values. `PATCH /api/v1/omnichannel/contacts/{identifier}` accepts all four for writes: `tags` REPLACES the set by NAME (auto-creating unknown names in your workspace); `lifecycle` moves the contact by stage KEY or LABEL through the workspace's lifecycle graph (409 `lifecycle_move_not_allowed` with no edge). Non-breaking - existing fields are unchanged. |
 > | **2026-08-09 (b)** | **The documented shape is the DEFAULT again.** `/api/v1` read endpoints return `MessageItem`/`ThreadItem` in the envelopes this guide always described; the respond.io shape moved behind **`?format=rio`** (§6b). If you built to this guide before 2026-07-11, **you need no change at all** - your original code is correct again. Same release: self-serve **webhook registration on `/api/v1`** (§7), and the Rio contact shape gained the fields it was missing (`priority`, `unreadCount`, `lastMessagePreview`, …). |
 > | **2026-08-09 (a)** | **§6 / §6a / §9 corrected to the deployed contract.** The read endpoints have returned respond.io-shaped objects since 2026-07-11; this guide still described the pre-2026-07-11 shape. §9 now documents both families and §9.3 is an old→new field map. Same release restored `timestamp` on every message and added `cswExpiresAt`, `message.payload`, `message.size`, `reactions[]` and `replyTo` to the read shapes. Webhooks (§7) are unchanged throughout. |
 > | 2026-07-11 | Read endpoints reshaped for respond.io parity (**breaking**; undocumented at the time - see the row above). |
@@ -85,7 +90,7 @@ After step 3 + 4 you have everything your system needs:
    * responds `2xx` quickly (do heavy work async - Foundryx times out at 10s and retries),
    * is **idempotent** on the event `id` (retries and at-least-once delivery mean you can see the same event twice).
 
-> A workspace must have **one active channel**. If none is connected, every send returns `409 no_active_channel`.
+> A workspace must have **at least one active channel**. If none is connected, every send returns `409 no_active_channel`. A workspace CAN have more than one (WhatsApp + Messenger + Instagram) - when you don't pass an explicit `channelId` (§4), the send targets an active **WhatsApp** channel if one exists, else the oldest active channel of any type. This means connecting a Messenger or Instagram channel never changes where an existing integration's sends go - pass `channelId` explicitly to target a specific channel, including a non-WhatsApp one.
 
 
 ---
@@ -139,7 +144,8 @@ The JSON body always has `to` + `type`, plus one type-specific object:
 
 ```jsonc
 {
-  "to": "+60123456789",     // recipient phone (digits extracted; invalid → 422 invalid_recipient)
+  "to": "+60123456789",     // recipient - see the "to" formats table below
+  "channelId": null,        // OPTIONAL - see "Choosing a channel" below
   "type": "text",           // see the table below
   "text":        { … },
   "template":    { … },
@@ -151,10 +157,24 @@ The JSON body always has `to` + `type`, plus one type-specific object:
 }
 ```
 
+**Choosing a channel (plan 32 / A7a).** `channelId` is optional - an ACTIVE channel of your workspace. Omitted, the send targets an active **WhatsApp** channel if one exists, else the oldest active channel of any type (§2). An unknown, inactive or foreign `channelId` is a typed `422 invalid_channel` - never a silent fallback to a different channel.
+
+**`to` formats:**
+
+| Format | Resolves to | Notes |
+|----|----|----|
+| `"+60123456789"` or `"phone:+60…"` | An existing contact by phone, or creates one | Digits extracted; invalid → `422 invalid_recipient`. Meaningful on any channel type, but only WhatsApp addresses by phone - see `channel_not_available_for_contact` below. |
+| `"id:<contactId>"` | An existing contact by **Foundryx** id, in your workspace | Unknown/foreign id → `422 invalid_recipient`. Never creates. |
+| `"psid:<PSID>"` | An existing contact by its Messenger Page-Scoped id **on the chosen channel** | A PSID that resolves nothing on that channel → `422 invalid_recipient`. Never creates - Foundryx cannot fabricate an identity Meta will accept. |
+| `"igsid:<IGSID>"` | An existing contact by its Instagram-Scoped id **on the chosen channel** | Same rule as `psid:` above. |
+| `"webchat:<value>"` | An existing contact by its web chat visitor identity **on the chosen channel** (plan 34 / A7b) | `value` is the identity's own stored form - `visitor:<visitorId>` for an anonymous visitor or `host:<userRef>` once a host identity assertion has verified (**§12a**, which is where the widget, the allowed origins and the exact HMAC recipe live - NOT §12, which is the agent-facing embed and uses a different secret). Same never-creates rule as `psid:`/`igsid:` above - there is no external provider to fabricate an identity against, so a value that resolves nothing is `422 invalid_recipient`. Web chat has no other addressable identifier (no phone, no PSID) - a workspace automating replies to web chat visitors needs `id:<contactId>` or `webchat:<value>`. |
+
+Whichever `to` format you use, the message still goes out on the channel resolved above (`channelId` or the WhatsApp-preferred default) - if the resolved contact has no identity there (e.g. a WhatsApp-only contact addressed with an explicit Messenger `channelId`), the send is refused `422 channel_not_available_for_contact` before anything is queued.
+
 | `type` | Body key | Window rule | Shape |
 |----|----|----|----|
 | `text` | `text` | free-form (24h) | `{ "body": "Hello" }` |
-| `template` | `template` | **exempt** - always allowed | `{ "name": "order_update", "variables": ["Jayson","ORD0001"] }` or `{ "id": "…" }` |
+| `template` | `template` | **exempt** - always allowed | `{ "name": "order_update", "variables": ["Jayson","ORD0001"] }` or `{ "id": "…" }`. **WhatsApp only** - refused on a Messenger/Instagram channel (§4.1 note below). |
 | `image` `video` `audio` `voice` `document` `sticker` | `media` | free-form (24h) | `{ "url": "https://…", "caption": "…", "filename": "…" }` (see §4.2/4.3) |
 | `interactive` | `interactive` | free-form (24h) | buttons / list / cta_url / location_request (see §4.4) |
 | `location` | `location` | free-form (24h) | `{ "latitude": 3.10, "longitude": 101.73, "name": "…", "address": "…" }` |
@@ -164,6 +184,10 @@ The JSON body always has `to` + `type`, plus one type-specific object:
 > **Free-form vs template - the 24-hour window (CSW).** WhatsApp only lets you send *free-form* content within **24 hours of the user's last inbound message**. Outside that window, **only an approved template** may be sent (to re-engage). Every inbound message resets the 24h clock. If you send free-form when the window is closed you get `409 csw_window_closed`. Templates are always allowed.
 >
 > **Check before you send, don't probe.** `cswExpiresAt` on the contact (§6a / §9.1) is the signal: in the future ⇒ free-form is allowed; past or `null` ⇒ template only. Every inbound webhook also refreshes it. Treating the `409` as your detection mechanism turns a preventable state into a user-visible failure.
+>
+> **Messenger and Instagram (plan 32 / A7a) have their OWN window, not the CSW above** - `windowExpiresAt`/`humanAgentExpiresAt` on the contact (§9.1/9.2), never `cswExpiresAt` (which stays `null` for those two types). Free-form is allowed for 24h after the person's last message the same way; there is **no template re-engagement** for Messenger/Instagram (out of scope for this integration - message templates exist for WhatsApp only). A send from THIS Gateway API outside that window is always refused `409 messaging_window_closed` (a distinct code from `csw_window_closed` - it never changes meaning) - the Gateway is automation by construction, so it can never use the human-agent 7-day extension a live agent gets in the Foundryx inbox.
+>
+> **Web chat (plan 34 / A7b) has NO messaging window at all.** `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null` for a web chat contact - there is no external provider and no re-engagement rule to encode, so a free-form send to a web chat contact is never refused for window reasons, no matter how long ago the visitor last messaged. `visitorLastSeenAt` (§9.1/9.2) tells you whether the visitor is likely still around, but it is a presence fact, not an authorization gate - sending to a visitor who left twelve days ago is not an error, it is a message that will be waiting for them when they return.
 
 #### Text
 
@@ -368,14 +392,28 @@ Returns one `ThreadItem` (§9.1). `GET …/contacts/phone:+60123456789` works to
 
 ### Update a contact - `PATCH /api/v1/omnichannel/contacts/{identifier}`
 
-Partial - only fields you send change. Send `assignedUserId`/`customFields` as `null` to clear; omit to leave unchanged.
+Partial - only fields you send change. Send `assignedUserId` as `null` to unassign. Send `customFields` as `null` (the whole value, not an object) to clear EVERY registered field's value at once, or as an object with one key set to `null` to clear just that key; omit `customFields` entirely to leave it unchanged.
 
 ```json
 { "firstName": "Jayson", "lastName": "Teh",
-  "priority": "HIGH", "assignedUserId": "…", "customFields": { "orderId": "ORD0001" } }
+  "priority": "HIGH", "assignedUserId": "…", "assignedTeamId": "…",
+  "customFields": { "orderId": "ORD0001" },
+  "language": "en-US", "countryCode": "MY",
+  "tags": ["VIP", "Wholesale"], "lifecycle": "hot_lead" }
 ```
 
 Assign a conversation to an agent by setting `assignedUserId`; unassign by sending it as `null`. Unknown assignee → `422 invalid_request`.
+
+* **`assignedTeamId`** - a **core Team id, by ID only** (never by name - a team is never auto-created from this API). Assign the conversation to a team by sending its id; unassign the team by sending `null` (this keeps the current `assignedUserId` untouched). An unknown, foreign, or inactive team id → `422 invalid_request` with `details: {"assignedTeamId": "Team not found or inactive."}`. The four ways `assignedTeamId` and `assignedUserId` interact in one PATCH:
+  * `assignedTeamId` alone → the conversation is assigned to the team and a member is picked automatically by that team's strategy (round robin / least open); a team with no eligible member is still a success (`assignedUserId` stays `null` - "Team Unassigned").
+  * `assignedTeamId` **and** `assignedUserId` together → both are set directly (no automatic pick) - but the user MUST be a member of that team, else `422 invalid_request` with `details: {"assignedUserId": "User is not a member of this team."}`.
+  * `assignedTeamId` **and** `assignedUserId: null` → the team is set, the user is cleared (Team Unassigned).
+  * `assignedUserId` alone (no `assignedTeamId`) → the user is set; if they are not a member of the conversation's CURRENTLY assigned team, the team is cleared too.
+* **`language`** - a BCP-47 tag (≤ 16 characters). **`countryCode`** - an ISO-3166 alpha-2 code (case-insensitive on write, always upper-cased on read). Either 422s if malformed.
+* **`customFields`** - values are validated against your workspace's custom-field registry (configured in the Foundryx dashboard): unknown key or a value that fails its field's type → `422 invalid_request` with `details` keyed `customFields.<key>`, and **nothing is written**. Send the whole `customFields` value as `null` to clear EVERY registered field's value at once (each cleared key appears in the webhook's `contact.updated` diff and the next `GET` shows `customFields: {}`); send an object with one key set to `null` to clear just that key (partial merge - other keys untouched); keys you omit are left unchanged.
+* **`tags`** - a list of tag **names**, and **REPLACES the whole set** (not a merge). An unknown name is auto-created in your workspace (so you never need a separate "create tag" call first). `null` clears every tag.
+* **`lifecycle`** - your workspace's lifecycle is a small pipeline of stages (e.g. New Lead → Hot Lead → Payment → Customer/Cold Lead, configurable in the dashboard). Send either the stage's **key** (e.g. `"hot_lead"`) or its display **label** (e.g. `"🔥 Hot Lead"`, emoji included) to move the contact there. A value matching no stage in your workspace → `422 invalid_request` with `details: {"lifecycle": "Unknown lifecycle stage."}`. A value that IS a real stage but has no path from the contact's *current* stage (e.g. the contact already won or lost) → `409 lifecycle_move_not_allowed`. `lifecycle` cannot be sent as `null` (there is always a current stage) - omit it to leave the contact where it is.
+* **All of the above apply atomically.** If any part of the payload fails validation (a bad `customFields` value, an unknown `lifecycle`, a blocked move), the **entire PATCH is rejected and nothing is written** - not even a `tags` name that would otherwise have been auto-created.
 
 The **request** body uses the field names above; the **response** is the updated `ThreadItem` (§9.1), so a write echoes exactly what the matching `GET` returns.
 
@@ -426,6 +464,8 @@ Every read endpoint in §6 and §6a accepts **`?format=rio`**, which returns res
 
 Both shapes are built from the same internal objects, so they carry the same information and cannot drift apart. An unrecognised value is a **`422 invalid_request`**, never a silent fallback to the other shape - a typo must not hand you a payload you'll mis-parse.
 
+Contact custom fields, tags and lifecycle (§9.1/§9.2) are shaped differently per family too: default `customFields` is an object (`{key: value}`), rio `custom_fields` is a `[{name, value}]` array; default `tags` is `[{id, name, emoji, color}]`, rio `tags` is bare name strings; default `lifecycle` is `{statusId, key, label, color, isWon, isLost}`, rio `lifecycle` is just the stage's label text (emoji included).
+
 ```bash
 curl -s -H "Authorization: Bearer $FX_WORKSPACE_KEY" \
   "https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/contacts/phone:+60123456789/messages?format=rio"
@@ -448,7 +488,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 | `message.inbound` | The user sends you a message (any type) |
 | `message.status` | A message you sent changes state (SENT/DELIVERED/READ/FAILED) |
 | `message.reaction` | A reaction is added/removed on a message |
-| `contact.updated` | A thread is assigned / status / priority changes |
+| `contact.updated` | A thread is assigned (to a user and/or a **team**) / status / priority changes, or its fields / tags / lifecycle stage change |
 
 ### The envelope
 
@@ -468,7 +508,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 * `**message.inbound**` - `id` = Meta wamid.
 
   ```json
-  { "message": { /* MessageItem (§9.2) */ }, "contact": { /* ThreadItem (§9.2) */ } }
+  { "message": { /* MessageItem (§9.1) */ }, "contact": { /* ThreadItem (§9.1) */ } }
   ```
 
   For media messages the message object exposes an **absolute, API-key-authed** `mediaUrl` (`https://YOUR-FOUNDRYX-HOST/omnichannel/media/{id}`) and renames the media fields to `mimeType`, `filename`, `size`.
@@ -483,10 +523,10 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
   ```json
   { "targetMessageId":"8dbc5265-…", "reactorType":"CONTACT", "emoji":"❤️", "removed":false }
   ```
-* `**contact.updated**` - `id` = `{contactId}:{timestamp}`.
+* `**contact.updated**` - `id` = `{contactId}:{timestamp}:{suffix}` (`suffix` is a short random hex segment, not epoch-derived - two updates to the same contact within the same second still get distinct ids, so a dedup-on-`id` consumer never drops the second one as a replay of the first). Fires on assignment (user and/or **team** - `assignedTeamId`/`assignedTeamName` ride the same `ThreadItem`) / status / priority changes AND on any `language`/`countryCode`/`customFields`/`tags`/`lifecycle` change - always the full current `ThreadItem`, never a diff.
 
   ```json
-  { "contact": { /* ThreadItem (§9.2) */ } }
+  { "contact": { /* ThreadItem (§9.1) */ } }
   ```
 
 ### Headers on every webhook POST
@@ -652,6 +692,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "id": "…",                    // Foundryx durable id (use for reactions / correlation)
   "contactId": "…",
   "channelId": "…",
+  "channelType": "WHATSAPP",    // WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT (plan 32 / A7a, plan 34 / A7b)
   "senderType": "CONTACT",      // AGENT | CONTACT | SYSTEM
   "senderId": null,
   "senderName": null,
@@ -663,6 +704,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "mediaFilename": "receipt.png", // webhook renames → filename
   "mediaSize": 20345,           // webhook renames → size
   "voice": false,
+  "mediaUnavailable": false,    // true = a Messenger/Instagram inbound attachment whose CDN link expired before we could fetch it (plan 32 / A7a); the message still lands, there is just no blob - render a muted placeholder, not an error
   "payload": { … },             // structured def for interactive/location/contacts/template
   "reactions": [ { "emoji":"❤️", "reactorType":"CONTACT", "reactor":"+6012…" } ],
   "externalMessageId": "wamid…",// Meta wamid
@@ -680,19 +722,34 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
 {
   "id": "b2ad5218-…",           // this is the contactId
   "workspaceId": "…", "tenantId": "…",
-  "name": "Jayson", "phone": "+60166753328", "avatarUrl": null,
+  "name": "Jayson",              // derived display name (first + last, else phone)
+  "firstName": "Jayson", "lastName": "Teh",
+  "phone": "+60166753328", "email": null, "avatarUrl": null,
+  "language": "en-US",           // BCP-47 tag, or null
+  "countryCode": "MY",           // ISO-3166 alpha-2, upper-cased, or null
   "assignedUserId": null, "assignedUserName": null,
+  "assignedTeamId": null, "assignedTeamName": null,  // a core Team id/name, or null
   "status": "OPEN",             // OPEN | SNOOZED | CLOSED
   "priority": "MEDIUM",
-  "channelId": "…", "channelType": "WHATSAPP",
-  "cswExpiresAt": "2026-07-10T11:02:43Z",   // when the 24h free-form window closes
+  "channelId": "…", "channelType": "WHATSAPP",  // WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT
+  "cswExpiresAt": "2026-07-10T11:02:43Z",   // WhatsApp-ONLY window mirror - null on FACEBOOK/INSTAGRAM/WEBCHAT (see below)
+  "windowExpiresAt": "2026-07-10T11:02:43Z",     // this contact's window on ITS channel type (plan 32 / A7a); always null on WEBCHAT (plan 34 / A7b - no window at all)
+  "humanAgentExpiresAt": null,                   // Messenger/Instagram only - the extended 7-day window; always null on WhatsApp and WEBCHAT
+  "visitorLastSeenAt": null,                     // WEBCHAT only (plan 34 / A7b) - the visitor's last session/message/socket-connect instant; null on every other channel type and on a web chat visitor never seen
+  "visitorProfile": null,                        // WEBCHAT only (plan 34 / A7b) - {name?, email?, phone?} the visitor typed into the pre-chat form. UNVERIFIED self-declared input, never matched on (§12a.4); null elsewhere
   "lastIncomingMessageAt": "…", "lastMessageAt": "…", "lastMessagePreview": "yeah",
   "unreadCount": 2,
+  "customFields": { "orderId": "ORD0001", "source": "Ads" },  // keyed by your workspace's registered field keys
+  "tags": [ { "id": "…", "name": "VIP", "emoji": "⭐", "color": "amber" } ],
+  "lifecycle": { "statusId": "…", "key": "hot_lead", "label": "🔥 Hot Lead",
+                 "color": "orange", "isWon": false, "isLost": false },  // or null before any stage is set
   "createdAt": "…"
 }
 ```
 
-`cswExpiresAt` tells you whether free-form is currently allowed - if it's in the past, you must send a template to re-engage. It is on the `?format=rio` shape too (§9.2 `ContactObject`).
+`cswExpiresAt` tells you whether free-form is currently allowed on a **WhatsApp** contact - if it's in the past, you must send a template to re-engage. It is on the `?format=rio` shape too (§9.2 `ContactObject`). It keeps this EXACT, WhatsApp-only meaning forever (plan 32 / A7a) - it reads `null` for a Messenger/Instagram/web chat contact even though a Messenger/Instagram contact has its own window. `windowExpiresAt` generalizes the same "is free-form currently allowed" question to every channel type (for a WhatsApp contact it carries the identical instant as `cswExpiresAt`); `humanAgentExpiresAt` is the Messenger/Instagram-only extended window - it has no template re-engagement, and a send through THIS Gateway API is always refused outside `windowExpiresAt` regardless of `humanAgentExpiresAt` (§4.1 note, `409 messaging_window_closed`) since the Gateway can never claim to be a human agent. **A web chat contact (plan 34 / A7b) has no window at all** - `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` are all `null` and a free-form send is never refused for window reasons; `visitorLastSeenAt` is the presence fact that stands in for a window on that channel type (never an authorization gate - see §4.1).
+
+`customFields`, `tags` and `lifecycle` reflect **your workspace's own configuration** (custom fields, tags and the lifecycle pipeline are all managed in the Foundryx dashboard, per workspace). `customFields` carries only currently-registered keys - a value for a field you later delete stops appearing. `lifecycle` is `null` only for a contact that predates your workspace's lifecycle graph; every contact created from here on always carries one.
 
 ---
 
@@ -708,6 +765,7 @@ Returned by `GET /contacts/{identifier}/messages?format=rio` (inside `items[]`) 
   "channelMessageId": "wamid.HBg…",     // Meta's wamid, null until the send lands
   "contactId": "fd5d6b58-…",
   "channelId": "31c4900f-…",
+  "channelType": "WHATSAPP",            // WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT (plan 32 / A7a, plan 34 / A7b)
   "traffic": "incoming",                // incoming | outgoing  (see sender.source for notes)
   "timestamp": 1783172100,              // epoch SECONDS - present on EVERY message, in + out
   "message": {
@@ -721,7 +779,8 @@ Returned by `GET /contacts/{identifier}/messages?format=rio` (inside `items[]`) 
     "mimeType": "image/png",
     "size": 39934,
     "payload": { … },                   // structured def - see below
-    "messageTag": null
+    "messageTag": null,
+    "mediaUnavailable": null            // Foundryx extension - true/false only on a message that WAS media (an expired Messenger/Instagram CDN link never got fetched); null for a message that was never media in the first place
   },
   "status": [                           // delivery state; EMPTY for inbound
     { "value": "delivered", "timestamp": 1783172100, "message": null, "code": null }
@@ -749,6 +808,7 @@ Notes that bite if you miss them:
   * `template` → the template binding
   * `null` for plain text/media. **`text` on an interactive/location message is a lossy human-readable summary - read `payload` for the real structure.**
 * **`sender.source: "system"`** = an internal note (§6a), never delivered to the customer, even though `traffic` reads `"outgoing"`.
+* **`message.mediaUnavailable: true`** means a Messenger/Instagram inbound attachment's short-lived CDN link expired before Foundryx could fetch it - the message still lands (never dropped), `message.url` is absent, and you should render a muted "media unavailable" placeholder rather than treating it as an error. It is `false` for media that fetched fine, and `null` for a message that was never media.
 * Ids are **UUID strings**, not respond.io's int64 - the one unavoidable deviation from parity.
 
 #### `ContactObject` - `?format=rio`
@@ -764,17 +824,26 @@ The `?format=rio` rendering of a contact. "The contact IS the thread."
   "profilePic": null,
   "status": "open",                    // open | snoozed | closed  (LOWERCASE on read)
   "assignee": { "id": "…", "firstName": "…", "lastName": null, "email": "…" },
-  "custom_fields": [ { "name": "orderId", "value": "ORD0001" } ],   // snake_case, respond.io parity
+  "custom_fields": [ { "name": "orderId", "value": "ORD0001" }, { "name": "source", "value": "Ads" } ],   // snake_case, respond.io parity
   "created_at": 1783173900,            // epoch SECONDS, snake_case - respond.io parity
-  "cswExpiresAt": "2026-07-10T11:02:43Z",  // Foundryx extension - ISO-8601 Z, or null
-  "language": null, "countryCode": null, "tags": [], "lifecycle": null, "isBlocked": false
+  "cswExpiresAt": "2026-07-10T11:02:43Z",  // Foundryx extension - ISO-8601 Z, WhatsApp-ONLY, or null
+  "windowExpiresAt": "2026-07-10T11:02:43Z",  // Foundryx extension - this contact's window on ITS channel type
+  "humanAgentExpiresAt": null,             // Foundryx extension - Messenger/Instagram only, else null
+  "visitorLastSeenAt": null,                // Foundryx extension - WEBCHAT only (plan 34 / A7b), else null
+  "visitorProfile": null,                   // Foundryx extension - WEBCHAT only, UNVERIFIED pre-chat {name?, email?, phone?} (§12a.4), else null
+  "language": "en-US", "countryCode": "MY",
+  "tags": ["VIP"],                       // bare names, not the {id,name,emoji,color} objects the default shape uses
+  "lifecycle": "🔥 Hot Lead",            // the stage's LABEL text (emoji included), or null
+  "isBlocked": false,
+  "assignedTeamId": null, "assignedTeamName": null   // Foundryx extension - core Team id/name, or null
 }
 ```
 
-* **`cswExpiresAt` decides free-form vs template** - if it is in the past or `null`, a free-form send will be refused with `409 csw_window_closed` and only an approved template re-engages. This is a Foundryx field with no respond.io equivalent, so it follows the house ISO-8601 `Z` convention rather than the epoch ints beside it.
+* **`cswExpiresAt` decides free-form vs template on WhatsApp** - if it is in the past or `null`, a free-form send will be refused with `409 csw_window_closed` and only an approved template re-engages. This is a Foundryx field with no respond.io equivalent, so it follows the house ISO-8601 `Z` convention rather than the epoch ints beside it. It stays `null` for a Messenger/Instagram/web chat contact (plan 32 / A7a, plan 34 / A7b) - use `windowExpiresAt`/`humanAgentExpiresAt` there instead (§4.1, §9.1); a web chat contact has no window at all, so both of those are `null` too - use `visitorLastSeenAt` as a presence signal instead.
 * `custom_fields` and `created_at` are **snake_case on purpose** - respond.io spells them that way and this object mirrors respond.io exactly. Everything else is camelCase.
-* `language`, `countryCode`, `tags`, `lifecycle`, `isBlocked` are parity placeholders we do not model - always `null`/`[]`/`false`.
-* `priority`, `channelId`, `channelType`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt` and `lastMessagePreview` are **Foundryx extensions** on this shape (respond.io has no equivalent). They are carried so `?format=rio` loses nothing versus the default - an inbox list needs `unreadCount` and `lastMessagePreview`.
+* `language`, `countryCode` mirror the default shape exactly (same values, same rules). `tags` is a bare list of NAMES (not the `{id,name,emoji,color}` objects the default shape carries - respond.io has no id/emoji/color concept for tags). `lifecycle` collapses the default shape's `{statusId,key,label,...}` object down to just the stage's **label text** (the emoji lives in the label, e.g. `"🔥 Hot Lead"`) - if you need the stable `key` or the won/lost flags, use the default shape. `isBlocked` is a respond.io concept we do not model - always `false`.
+* `priority`, `channelId`, `channelType`, `windowExpiresAt`, `humanAgentExpiresAt`, `visitorLastSeenAt`, `visitorProfile`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt`, `lastMessagePreview`, `assignedTeamId` and `assignedTeamName` are **Foundryx extensions** on this shape (respond.io has no equivalent). They are carried so `?format=rio` loses nothing versus the default - an inbox list needs `unreadCount` and `lastMessagePreview`. `assignedTeamId`/`assignedTeamName` are a core Team - BY ID ONLY on write (§6a); `assignedTeamName` is `null` on a foreign/deleted team, same as the default shape. `channelType` now also carries `FACEBOOK`/`INSTAGRAM`/`WEBCHAT` (plan 32 / A7a, plan 34 / A7b). `visitorLastSeenAt` is `null` on every channel type but `WEBCHAT` (plan 34 / A7b).
+* **`sender.teamId`** on a `MessageObject` (§9.2 above) is deliberately always `null` - it is a message-level concept (which team sent this specific message) distinct from the conversation-level `assignedTeamId` here, and is out of scope.
 
 ---
 
@@ -798,6 +867,7 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 | `mediaMime` / `mediaFilename` / `mediaSize` | `message.mimeType` / `message.filename` / `message.size` |
 | `voice: true` | `message.type === "voice"` |
 | `payload` | `message.payload` |
+| `mediaUnavailable` | `message.mediaUnavailable` (same - Foundryx extension, plan 32 / A7a) |
 | `reactions[]` | `reactions[]` (identical) |
 | `replyTo.id` / `.body` | `replyTo.messageId` / `.text` |
 | `externalMessageId` | `channelMessageId` |
@@ -808,14 +878,22 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 
 | default `ThreadItem` | `?format=rio` `ContactObject` |
 |----|----|
-| `id`, `phone` | same |
-| `name` | `firstName` + `lastName` |
+| `id`, `phone`, `email` | same |
+| `firstName`, `lastName` | same (`name` is a derived convenience field with no rio equivalent) |
 | `avatarUrl` | `profilePic` |
 | `status` (UPPER) | `status` (lower) |
 | `assignedUserId` / `assignedUserName` | `assignee.id` / `assignee.firstName` |
-| `cswExpiresAt` | `cswExpiresAt` (same, ISO `Z`) |
+| `assignedTeamId` / `assignedTeamName` | `assignedTeamId` / `assignedTeamName` (same - Foundryx extension, no respond.io equivalent) |
+| `language`, `countryCode` | same |
+| `customFields` (`{key: value}`) | `custom_fields` (`[{name, value}]`, snake_case) |
+| `tags` (`[{id,name,emoji,color}]`) | `tags` (bare `[name]`) |
+| `lifecycle` (`{statusId,key,label,color,isWon,isLost}` \| `null`) | `lifecycle` (the stage's `label` text, or `null`) |
+| `cswExpiresAt` | `cswExpiresAt` (same, ISO `Z`, WhatsApp-only) |
+| `windowExpiresAt` / `humanAgentExpiresAt` | `windowExpiresAt` / `humanAgentExpiresAt` (same - Foundryx extension) |
+| `visitorLastSeenAt` | `visitorLastSeenAt` (same - Foundryx extension, `WEBCHAT`-only presence fact, plan 34 / A7b) |
+| `visitorProfile` | `visitorProfile` (same - Foundryx extension, `WEBCHAT`-only UNVERIFIED pre-chat values, plan 34 / A7b) |
 | `createdAt` (ISO) | `created_at` (epoch seconds, snake_case) |
-| `channelId`, `channelType`, `priority`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt`, `lastMessagePreview` | not carried - read them from `contact.updated` / `message.inbound` webhooks |
+| `channelId`, `channelType`, `priority`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt`, `lastMessagePreview` | same - Foundryx extensions carried on both shapes (respond.io has no equivalent); `channelType` ∈ `WHATSAPP`\|`FACEBOOK`\|`INSTAGRAM`\|`WEBCHAT` |
 
 **Envelopes**
 
@@ -836,12 +914,16 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
 | `service_not_enabled` | 403 | Omnichannel not active for your tenant - contact the operator. |
-| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). |
-| `invalid_recipient` | 422 | `to` isn't a usable phone number. |
+| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
+| `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
+| `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
 | `no_active_channel` | 409 | The workspace has no connected number. |
+| `channel_not_available_for_contact` | 422 | (plan 32 / A7a) The resolved contact has no identity on the chosen channel (e.g. a WhatsApp-only contact addressed on a Messenger `channelId`). |
 | `template_not_found` | 422 | No APPROVED template matches `name`/`id`. |
-| `csw_window_closed` | 409 | 24h window closed - send an approved template instead. |
-| `send_rejected` | 422 | WhatsApp/Meta rejected the send (message has the reason). |
+| `csw_window_closed` | 409 | WhatsApp's 24h window closed - send an approved template instead. Unchanged, WhatsApp-only meaning (plan 32 / A7a). |
+| `messaging_window_closed` | 409 | (plan 32 / A7a) Messenger/Instagram's own re-engagement window closed - there is no template re-engagement for these two types through this API; a distinct code from `csw_window_closed`, never that one's meaning. |
+| `send_rejected` | 422 | WhatsApp/Meta rejected the send (message has the reason) - also covers a message `type` the chosen channel's type doesn't carry (e.g. `template` on Messenger/Instagram). |
+| `lifecycle_move_not_allowed` | 409 | The contact PATCH's `lifecycle` value is a real stage, but there is no path there from the contact's CURRENT stage (e.g. it already won or lost) - `message` carries the reason. |
 | `unsupported_type` | 400 | Unknown `type`. |
 | `not_found` | 404 | Reaction target message not found / not in your workspace. |
 | `contact_not_found` | 404 | Contact not found / not in your workspace. |
@@ -1063,6 +1145,89 @@ Everything else (conversation reads/sends, templates, quick-replies, members, We
 
 ---
 
+## 12a. The web chat widget (your website's visitors)
+
+§12 embeds YOUR AGENTS' inbox in your app. This section is the opposite direction: a **chat bubble on your public website**, so your customers can start a conversation that lands in the same Foundryx inbox as WhatsApp, Messenger and Instagram. Two different features, two different secrets - do not mix them up.
+
+|  | §12 embed (agent-facing) | §12a web chat (visitor-facing) |
+|----|----|----|
+| Who uses it | Your logged-in agents | Anonymous visitors on your website |
+| Configured as | An `omnichannel_shared` **connection** (operator-created) | A **WEBCHAT channel** in the Foundryx dashboard |
+| Secret | `embedSecret` (per connection) | **`widgetSecret`** (per channel; shown once at connect and once per rotation) |
+| What it signs | A JWT assertion (`timestamp . rawBody`) | A host identity assertion, `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))` |
+| Endpoint your code calls | `POST /embed/session` | none - the loader script calls `POST /public/omnichannel/webchat/{widgetKey}/session` for you |
+
+### 12a.1 One-time setup - Foundryx side
+
+1. In the dashboard: **Omnichannel > Settings > Channels > Connect > Web chat**. You get a **widget key** (public - it lives in your page source) and a **widget secret** (shown once; store it on your server).
+2. Add every exact origin the widget may run on to the channel's **Allowed origins** (e.g. `https://shop.acme.com`). Exact origins only - no wildcards, no path, no trailing slash.
+3. Set appearance, greeting, offline greeting and the pre-chat toggles in the **Widget** tab, and copy the install snippet from the same tab.
+
+### 12a.2 Mount the widget
+
+Paste the snippet into every page that should carry the bubble, ideally just before `</body>`:
+
+```html
+<script src="https://YOUR-FOUNDRYX-HOST/omnichannel/widget/wk_XXXXXXXXXXXX.js" async></script>
+```
+
+That is the whole integration for an anonymous widget. The script mounts an iframe, starts a visitor session **from your page** (which is how the allowed-origin check sees your real origin), keeps the visitor's token in **your** page's `localStorage` under `fx-webchat-token:<widgetKey>`, and injects no stylesheet into your page.
+
+If the origin is not on the allowlist, or the channel is inactive, the script renders **nothing** - no bubble, no error, no console noise. Check the allowed origins first.
+
+### 12a.3 Identify a signed-in customer (optional)
+
+By default every visitor is anonymous and one browser is one conversation. If your site knows who the visitor is you can say so - but only your SERVER may vouch for that, never the browser. Mint the assertion server-side:
+
+```
+hash = hex(HMAC-SHA256(key = widgetSecret, msg = userRef))
+```
+
+`userRef` is your own stable id for that customer (letters, digits, `-`, `_`, `.`, `:`, `@`; 128 characters max). Node:
+
+```js
+const crypto = require('crypto');
+const hash = crypto.createHmac('sha256', WIDGET_SECRET).update(userRef).digest('hex');
+```
+
+Hand `{ userRef, hash }` to the widget either before the script loads:
+
+```html
+<script>
+  window.fxChatIdentity = { userRef: "cust_8421", hash: "9f2c..." };
+</script>
+<script src="https://YOUR-FOUNDRYX-HOST/omnichannel/widget/wk_XXXXXXXXXXXX.js" async></script>
+```
+
+or at any time afterwards (e.g. once your own login completes):
+
+```js
+window.fxWebchat.identify({ userRef: "cust_8421", hash: "9f2c..." });
+```
+
+A verified assertion binds the conversation to the identity `host:<userRef>`, so the same customer keeps ONE thread across devices and browsers. A missing, malformed or non-verifying assertion is **silently ignored** and the session continues anonymously - there is no error callback and no visible difference, so verify the recipe with a test value before you ship. Rotating the widget secret invalidates every previously minted assertion at once.
+
+### 12a.4 Reading and replying through this API
+
+A web chat contact behaves like any other contact:
+
+- `channelType` reads `WEBCHAT` on every contact and message shape (§9).
+- Address it with `"to": "webchat:<value>"` (§4.1), where `<value>` is the identity's stored form - `visitor:<visitorId>` or `host:<userRef>`. Like `psid:`/`igsid:` it resolves an EXISTING identity on the chosen channel and never creates one.
+- There is **no messaging window**: `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null`, and a send is never refused for window reasons.
+- `visitorLastSeenAt` is a presence fact (the visitor's last session start / message / socket connect), not an authorization fact.
+- `visitorProfile` carries the `{name?, email?, phone?}` the visitor typed into the **pre-chat form**. Treat it as **unverified, self-declared input**: anyone can type anything into a public chat box, so it is deliberately kept OUT of the contact's own `phone`/`email` (which are matching keys) and is never used to look a contact up. If you verify one of those values by your own means, promote it yourself with `PATCH /contacts/{identifier}`.
+
+### 12a.5 What a visitor can and cannot do
+
+| | |
+|----|----|
+| Send text | Yes, up to 4096 characters |
+| Receive text and agent media (image / video / audio / voice / document) | Yes - media arrives as a short-lived signed URL |
+| Upload a file | **No** - this version has no visitor upload endpoint at all |
+| See agent names / emails / internal notes / tags / lifecycle / close reasons | **No** - the visitor surface emits a fixed, allowlisted field set plus the display name configured on the channel |
+
+---
+
 ## 13. Developer Logs Console - troubleshooting your integration
 
 Both integration paths (the API in §2-§11 and the embed in §12) used to be fire-and-forget: if a send didn't arrive or an embed token was rejected, there was nowhere to look. The **Developers ▸ Logs** console fixes that - it's a single, source-tagged activity feed of **everything your integration does**, with **trace-id correlation** so one consumption is visible end-to-end.
@@ -1120,7 +1285,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
 | GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |
-| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/fields) | `ThreadItem` |
+| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/team/language/countryCode/customFields/tags/lifecycle) | `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}/messages` | Message history | `{contactId, data[], nextBefore}` of `MessageItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}/messages/{messageId}` | Get one message | `MessageItem` |
 | POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/open` | Open conversation | `ThreadItem` |
@@ -1143,6 +1308,8 @@ The **contact and message** read endpoints above also accept `?format=rio` for t
 **Troubleshooting in the Foundryx dashboard (session-authed,** `**integration_logs.read**`**):** **Developers ▸ Logs** - one trace-correlated activity feed across inbound API calls, outbound Meta calls, webhook deliveries, and embed sessions; redacted bodies; per-tenant retention (default 30 days). See §13.
 
 **Webhooks (Foundryx → your https URL):** `message.inbound`, `message.status`, `message.reaction`, `contact.updated` - signed with `X-Fx-Signature`.
+
+**Web chat widget on your public site (§12a) - identity assertion signed with** `**widgetSecret**`**:** paste one `<script src=".../omnichannel/widget/<widgetKey>.js">` tag; the loader calls `POST /public/omnichannel/webchat/{widgetKey}/session` for you. Nothing else to build.
 
 **Embed the UI (Option B, §12) - assertion signed with** `**embedSecret**`**:**
 

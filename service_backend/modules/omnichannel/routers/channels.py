@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import require_permission
 from app.models.user import User
+from ..origins import InvalidOrigin
 from ..schemas import (
     ChannelItem,
     ChannelListResponse,
@@ -20,12 +21,22 @@ from ..schemas import (
     ChannelUpdate,
     ExportRequest,
     IdsRequest,
+    RotateWidgetSecretResult,
+    SignOutVisitorsResult,
     TestConnectionResult,
+    UpdateWebchatConfigInput,
+    WebchatConfig,
 )
+from ..services.channel_guards import ChannelTypeUnsupported
 from ..services.channel_profile_service import ChannelProfileService
 from ..services.channel_service import ChannelNotFound, ChannelService
+from ..services.webchat_service import WebchatService
 
 router = APIRouter()
+
+
+def _unsupported(exc: ChannelTypeUnsupported) -> HTTPException:
+    return HTTPException(status.HTTP_409_CONFLICT, {"reason": exc.reason})
 
 
 @router.get("", response_model=ChannelListResponse)
@@ -179,6 +190,8 @@ def sync_channel_config(
         return ChannelProfileService(db).sync_config(channel_id, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.get("/{channel_id}/profile", response_model=ChannelProfileOut)
@@ -191,6 +204,8 @@ def get_channel_profile(
         return ChannelProfileService(db).get_profile(channel_id, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.patch("/{channel_id}/profile", response_model=ChannelProfileOut)
@@ -205,6 +220,8 @@ def update_channel_profile(
         return ChannelProfileService(db).save_profile(channel_id, body, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.post("/{channel_id}/profile/sync", response_model=ChannelProfileOut)
@@ -217,6 +234,71 @@ def sync_channel_profile(
         return ChannelProfileService(db).sync_profile(channel_id, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
+
+
+# ── Web chat widget config (plan 34 S1, A7b) ─────────────────────────────────
+@router.get("/{channel_id}/widget", response_model=WebchatConfig)
+def get_channel_widget(
+    channel_id: str,
+    current_user: User = Depends(require_permission("channels.read")),
+    db: Session = Depends(get_db),
+) -> WebchatConfig:
+    try:
+        return WebchatService(db).get_config(channel_id, current_user.tenant_id)
+    except ChannelNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
+
+
+@router.put("/{channel_id}/widget", response_model=WebchatConfig)
+def update_channel_widget(
+    channel_id: str,
+    body: UpdateWebchatConfigInput,
+    current_user: User = Depends(require_permission("channels.manage")),
+    db: Session = Depends(get_db),
+) -> WebchatConfig:
+    try:
+        return WebchatService(db).update_config(channel_id, body, current_user.tenant_id)
+    except ChannelNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
+    except InvalidOrigin as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"fieldErrors": {"allowedOrigins": exc.message}},
+        )
+
+
+@router.post("/{channel_id}/widget/rotate-secret", response_model=RotateWidgetSecretResult)
+def rotate_widget_secret(
+    channel_id: str,
+    current_user: User = Depends(require_permission("channels.manage")),
+    db: Session = Depends(get_db),
+) -> RotateWidgetSecretResult:
+    try:
+        return WebchatService(db).rotate_secret(channel_id, current_user.tenant_id)
+    except ChannelNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
+
+
+@router.post("/{channel_id}/widget/sign-out-visitors", response_model=SignOutVisitorsResult)
+def sign_out_widget_visitors(
+    channel_id: str,
+    current_user: User = Depends(require_permission("channels.manage")),
+    db: Session = Depends(get_db),
+) -> SignOutVisitorsResult:
+    try:
+        return WebchatService(db).sign_out_visitors(channel_id, current_user.tenant_id)
+    except ChannelNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 # NOTE: ``GET /{channel_id}/templates`` (composer send-picker) moved to the

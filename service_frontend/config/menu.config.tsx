@@ -1,178 +1,29 @@
 import {
-  AlertCircle,
-  Bell,
   Blocks,
   Building2,
-  Captions,
-  CheckCircle,
   ClipboardList,
-  Coffee,
   Cog,
-  Euro,
-  Eye,
-  FileQuestion,
   FolderClosed,
-  HelpCircle,
-  Key,
   LayoutGrid,
-  LifeBuoy,
   Lightbulb,
   MessageSquare,
+  Video,
   Network,
   Package,
   Plug,
   RefreshCw,
-  Settings,
-  Share2,
-  Shield,
   ShieldUser,
-  ShoppingCart,
-  Star,
   Terminal,
-  UserCheck,
-  UserCircle,
   Users,
   Workflow,
 } from 'lucide-react';
 import { type MenuConfig } from './types';
 
 export const MENU_SIDEBAR: MenuConfig = [
-  {
-    title: 'Dashboards',
-    icon: LayoutGrid,
-    children: [
-      { title: 'Light Sidebar', path: '/' },
-      { title: 'Dark Sidebar', path: '/dark-sidebar' },
-    ],
-  },
-  { heading: 'User' },
-  {
-    title: 'My Account',
-    icon: Settings,
-    children: [
-      {
-        title: 'Account',
-        children: [
-          { title: 'Get Started', path: '/account/home/get-started' },
-          { title: 'User Profile', path: '/account/home/user-profile' },
-          { title: 'Company Profile', path: '/account/home/company-profile' },
-          {
-            title: 'Settings - With Sidebar',
-            path: '/account/home/settings-sidebar',
-          },
-          {
-            title: 'Settings - Enterprise',
-            path: '/account/home/settings-enterprise',
-          },
-          { title: 'Settings - Plain', path: '/account/home/settings-plain' },
-          { title: 'Settings - Modal', path: '/account/home/settings-modal' },
-        ],
-      },
-      {
-        title: 'Billing',
-        children: [
-          { title: 'Billing - Basic', path: '/account/billing/basic' },
-          {
-            title: 'Billing - Enterprise',
-            path: '/account/billing/enterprise',
-          },
-          { title: 'Plans', path: '/account/billing/plans' },
-          { title: 'Billing History', path: '/account/billing/history' },
-        ],
-      },
-      {
-        title: 'Security',
-        children: [
-          { title: 'Get Started', path: '/account/security/get-started' },
-          { title: 'Security Overview', path: '/account/security/overview' },
-          {
-            title: 'Allowed IP Addresses',
-            path: '/account/security/allowed-ip-addresses',
-          },
-          {
-            title: 'Privacy Settings',
-            path: '/account/security/privacy-settings',
-          },
-          {
-            title: 'Device Management',
-            path: '/account/security/device-management',
-          },
-          {
-            title: 'Backup & Recovery',
-            path: '/account/security/backup-and-recovery',
-          },
-          {
-            title: 'Current Sessions',
-            path: '/account/security/current-sessions',
-          },
-          { title: 'Security Log', path: '/account/security/security-log' },
-        ],
-      },
-      {
-        title: 'Members & Roles',
-        children: [
-          { title: 'Teams Starter', path: '/account/members/team-starter' },
-          { title: 'Teams', path: '/account/members/teams' },
-          { title: 'Team Info', path: '/account/members/team-info' },
-          {
-            title: 'Members Starter',
-            path: '/account/members/members-starter',
-          },
-          { title: 'Team Members', path: '/account/members/team-members' },
-          { title: 'Import Members', path: '/account/members/import-members' },
-          { title: 'Roles', path: '/account/members/roles' },
-          {
-            title: 'Permissions - Toggler',
-            path: '/account/members/permissions-toggle',
-          },
-          {
-            title: 'Permissions - Check',
-            path: '/account/members/permissions-check',
-          },
-        ],
-      },
-      { title: 'Integrations', path: '/account/integrations' },
-      { title: 'Notifications', path: '/account/notifications' },
-      { title: 'API Keys', path: '/account/api-keys' },
-      {
-        title: 'More',
-        collapse: true,
-        collapseTitle: 'Show less',
-        expandTitle: 'Show 3 more',
-        children: [
-          { title: 'Appearance', path: '/account/appearance' },
-          { title: 'Invite a Friend', path: '/account/invite-a-friend' },
-          { title: 'Activity', path: '/account/activity' },
-        ],
-      },
-    ],
-  },
-  {
-    title: 'Authentication',
-    icon: Shield,
-    children: [
-      {
-        title: 'Sign In',
-        path: '/signin',
-      },
-      {
-        title: 'Check Email',
-        path: '/signup',
-      },
-      {
-        title: 'Reset Password',
-        path: '/reset-password',
-      },
-      {
-        title: '2FA',
-        path: '/2fa',
-      },
-      { title: 'Welcome Message', path: '/auth/welcome-message' },
-      { title: 'Account Deactivated', path: '/auth/account-deactivated' },
-      { title: 'Error 404', path: '/error/404' },
-      { title: 'Error 500', path: '/error/500' },
-    ],
-  },
+  // T7 fix round 1 - was a "Light Sidebar" / "Dark Sidebar" theme-demo
+  // submenu (Metronic showcase leftovers, BL-SS-057); a single leaf to `/`
+  // matches MENU_MEGA's "Home" entry (also a single leaf, no submenu).
+  { title: 'Dashboards', icon: LayoutGrid, path: '/' },
   // Platform Console (plan 07) - operator-only: hidden unless the session user
   // is in the platform tenant AND can('tenants.read') (SidebarMenu filters).
   { heading: 'Platform', platformOnly: true },
@@ -423,6 +274,12 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/user-management/roles',
         permission: 'roles.read',
       },
+      {
+        title: 'Teams',
+        path: '/user-management/teams',
+        permission: 'teams.read',
+        termKey: 'team',
+      },
       // Permissions/Account/Logs/Settings entries removed in sprint-2/06 -
       // Metronic demo residue, the routes never existed (404 on click).
     ],
@@ -464,9 +321,36 @@ export const MENU_SIDEBAR: MenuConfig = [
     module: 'omnichannel',
     children: [
       {
+        // Dashboard (plan 30, roadmap A9) - AC-RPT-41. Permission key is the
+        // existing CORE `reports.read` (main-session override of the
+        // planner's D-A9-10 `conversation_reports.read`).
+        title: 'Dashboard',
+        path: '/omnichannel/dashboard',
+        permission: 'reports.read',
+      },
+      {
         title: 'Inbox',
         path: '/omnichannel/inbox',
         permission: 'conversations.read',
+      },
+      {
+        // Contacts module (plan 26, roadmap A2) - AC-CTM-01.
+        title: 'Contacts',
+        path: '/omnichannel/contacts',
+        permission: 'contacts.read',
+      },
+      {
+        // Broadcasts (plan 29, roadmap A4) - after Contacts (its audience
+        // picker consumes A2's segments).
+        title: 'Broadcasts',
+        path: '/omnichannel/broadcasts',
+        permission: 'broadcasts.read',
+      },
+      {
+        // Reports (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Reports',
+        path: '/omnichannel/reports',
+        permission: 'reports.read',
       },
       {
         title: 'Channels',
@@ -493,6 +377,33 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/omnichannel/settings/embed',
         permission: 'workspaces.manage',
       },
+      {
+        // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.
+        title: 'Migration',
+        path: '/omnichannel/settings/migration',
+        module: 'omnichannel',
+        permission: 'omnichannel_migration.read',
+      },
+    ],
+  },
+  // Meetings (sprint-5 S0) - module menu block, visible only while the
+  // `meetings` module is ACTIVE for the tenant AND the user holds the key its
+  // page gates on (filterMenu prunes at every level). No clickable parent.
+  {
+    title: 'Meetings',
+    icon: Video,
+    module: 'meetings',
+    children: [
+      {
+        title: 'My meetings',
+        path: '/meetings/my-meetings',
+        permission: 'meetings.view',
+      },
+      {
+        title: 'Settings',
+        path: '/settings/meetings',
+        permission: 'meetings.settings.manage',
+      },
     ],
   },
   // AutoCount ESB (sprint-4/13) - module menu block, visible only while the
@@ -513,491 +424,22 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/autocount/review',
         permission: 'autocount.sync.read',
       },
-    ],
-  },
-];
-
-export const MENU_SIDEBAR_CUSTOM: MenuConfig = [
-  {
-    title: 'Store - Client',
-    icon: Users,
-    children: [
-      { title: 'Home', path: '/store-client/home' },
       {
-        title: 'Search Results',
-        children: [
-          {
-            title: 'Search Results - Grid',
-            path: '/store-client/search-results-grid',
-          },
-          {
-            title: 'Search Results - List',
-            path: '/store-client/search-results-list',
-          },
-        ],
+        title: 'Pull',
+        path: '/autocount/pull',
+        permission: 'autocount.pull.read',
       },
       {
-        title: 'Overlays',
-        children: [
-          { title: 'Product Details', path: '/store-client/product-details' },
-          { title: 'Wishlist', path: '/store-client/wishlist' },
-        ],
+        title: 'Find document',
+        path: '/autocount/find',
+        permission: 'autocount.pull.read',
       },
-      {
-        title: 'Checkout',
-        children: [
-          {
-            title: 'Order Summary',
-            path: '/store-client/checkout/order-summary',
-          },
-          {
-            title: 'Shipping Info',
-            path: '/store-client/checkout/shipping-info',
-          },
-          {
-            title: 'Payment Method',
-            path: '/store-client/checkout/payment-method',
-          },
-          {
-            title: 'Order Placed',
-            path: '/store-client/checkout/order-placed',
-          },
-        ],
-      },
-      { title: 'My Orders', path: '/store-client/my-orders' },
-      { title: 'Order Receipt', path: '/store-client/order-receipt' },
-    ],
-  },
-];
-
-export const MENU_SIDEBAR_COMPACT: MenuConfig = [
-  {
-    title: 'Dashboards',
-    icon: LayoutGrid,
-    path: '/',
-  },
-  {
-    title: 'Public Profile',
-    icon: UserCircle,
-    children: [
-      {
-        title: 'Profiles',
-        children: [
-          { title: 'Default', path: '/public-profile/profiles/default' },
-          { title: 'Creator', path: '/public-profile/profiles/creator' },
-          { title: 'Company', path: '/public-profile/profiles/company' },
-          { title: 'NFT', path: '/public-profile/profiles/nft' },
-          { title: 'Blogger', path: '/public-profile/profiles/blogger' },
-          { title: 'CRM', path: '/public-profile/profiles/crm' },
-          {
-            title: 'More',
-            collapse: true,
-            collapseTitle: 'Show less',
-            expandTitle: 'Show 4 more',
-            children: [
-              { title: 'Gamer', path: '/public-profile/profiles/gamer' },
-              { title: 'Feeds', path: '/public-profile/profiles/feeds' },
-              { title: 'Plain', path: '/public-profile/profiles/plain' },
-              { title: 'Modal', path: '/public-profile/profiles/modal' },
-            ],
-          },
-        ],
-      },
-      {
-        title: 'Projects',
-        children: [
-          { title: '3 Columns', path: '/public-profile/projects/3-columns' },
-          { title: '2 Columns', path: '/public-profile/projects/2-columns' },
-        ],
-      },
-      { title: 'Works', path: '/public-profile/works' },
-      { title: 'Teams', path: '/public-profile/teams' },
-      { title: 'Network', path: '/public-profile/network' },
-      { title: 'Activity', path: '/public-profile/activity' },
-      {
-        title: 'More',
-        collapse: true,
-        collapseTitle: 'Show less',
-        expandTitle: 'Show 3 more',
-        children: [
-          { title: 'Campaigns - Card', path: '/public-profile/campaigns/card' },
-          { title: 'Campaigns - List', path: '/public-profile/campaigns/list' },
-          { title: 'Empty', path: '/public-profile/empty' },
-        ],
-      },
-    ],
-  },
-  {
-    title: 'My Account',
-    icon: Settings,
-    children: [
-      {
-        title: 'Account',
-        children: [
-          { title: 'Get Started', path: '/account/home/get-started' },
-          { title: 'User Profile', path: '/account/home/user-profile' },
-          { title: 'Company Profile', path: '/account/home/company-profile' },
-          {
-            title: 'Settings - With Sidebar',
-            path: '/account/home/settings-sidebar',
-          },
-          {
-            title: 'Settings - Enterprise',
-            path: '/account/home/settings-enterprise',
-          },
-          { title: 'Settings - Plain', path: '/account/home/settings-plain' },
-          { title: 'Settings - Modal', path: '/account/home/settings-modal' },
-        ],
-      },
-      {
-        title: 'Billing',
-        children: [
-          { title: 'Billing - Basic', path: '/account/billing/basic' },
-          {
-            title: 'Billing - Enterprise',
-            path: '/account/billing/enterprise',
-          },
-          { title: 'Plans', path: '/account/billing/plans' },
-          { title: 'Billing History', path: '/account/billing/history' },
-        ],
-      },
-      {
-        title: 'Security',
-        children: [
-          { title: 'Get Started', path: '/account/security/get-started' },
-          { title: 'Security Overview', path: '/account/security/overview' },
-          {
-            title: 'Allowed IP Addresses',
-            path: '/account/security/allowed-ip-addresses',
-          },
-          {
-            title: 'Privacy Settings',
-            path: '/account/security/privacy-settings',
-          },
-          {
-            title: 'Device Management',
-            path: '/account/security/device-management',
-          },
-          {
-            title: 'Backup & Recovery',
-            path: '/account/security/backup-and-recovery',
-          },
-          {
-            title: 'Current Sessions',
-            path: '/account/security/current-sessions',
-          },
-          { title: 'Security Log', path: '/account/security/security-log' },
-        ],
-      },
-      {
-        title: 'Members & Roles',
-        children: [
-          { title: 'Teams Starter', path: '/account/members/team-starter' },
-          { title: 'Teams', path: '/account/members/teams' },
-          { title: 'Team Info', path: '/account/members/team-info' },
-          {
-            title: 'Members Starter',
-            path: '/account/members/members-starter',
-          },
-          { title: 'Team Members', path: '/account/members/team-members' },
-          { title: 'Import Members', path: '/account/members/import-members' },
-          { title: 'Roles', path: '/account/members/roles' },
-          {
-            title: 'Permissions - Toggler',
-            path: '/account/members/permissions-toggle',
-          },
-          {
-            title: 'Permissions - Check',
-            path: '/account/members/permissions-check',
-          },
-        ],
-      },
-      { title: 'Integrations', path: '/account/integrations' },
-      { title: 'Notifications', path: '/account/notifications' },
-      { title: 'API Keys', path: '/account/api-keys' },
-      {
-        title: 'More',
-        collapse: true,
-        collapseTitle: 'Show less',
-        expandTitle: 'Show 3 more',
-        children: [
-          { title: 'Appearance', path: '/account/appearance' },
-          { title: 'Invite a Friend', path: '/account/invite-a-friend' },
-          { title: 'Activity', path: '/account/activity' },
-        ],
-      },
-    ],
-  },
-  {
-    title: 'Network',
-    icon: Users,
-    children: [
-      { title: 'Get Started', path: '/network/get-started' },
-      {
-        title: 'User Cards',
-        children: [
-          { title: 'Mini Cards', path: '/network/user-cards/mini-cards' },
-          { title: 'Team Crew', path: '/network/user-cards/team-crew' },
-          { title: 'Author', path: '/network/user-cards/author' },
-          { title: 'NFT', path: '/network/user-cards/nft' },
-          { title: 'Social', path: '/network/user-cards/social' },
-        ],
-      },
-      {
-        title: 'User Table',
-        children: [
-          { title: 'Team Crew', path: '/network/user-table/team-crew' },
-          { title: 'App Roster', path: '/network/user-table/app-roster' },
-          {
-            title: 'Market Authors',
-            path: '/network/user-table/market-authors',
-          },
-          { title: 'SaaS Users', path: '/network/user-table/saas-users' },
-          { title: 'Store Clients', path: '/network/user-table/store-clients' },
-          { title: 'Visitors', path: '/network/user-table/visitors' },
-        ],
-      },
-      { title: 'Cooperations', path: '/network/cooperations', disabled: true },
-      { title: 'Leads', path: '/network/leads', disabled: true },
-      { title: 'Donators', path: '/network/donators', disabled: true },
-    ],
-  },
-  {
-    title: 'Store - Client',
-    icon: ShoppingCart,
-    children: [
-      { title: 'Home', path: '/store-client/home' },
-      {
-        title: 'Search Results - Grid',
-        path: '/store-client/search-results-grid',
-      },
-      {
-        title: 'Search Results - List',
-        path: '/store-client/search-results-list',
-      },
-      { title: 'Product Details', path: '/store-client/product-details' },
-      { title: 'Wishlist', path: '/store-client/wishlist' },
-      {
-        title: 'Checkout',
-        children: [
-          {
-            title: 'Order Summary',
-            path: '/store-client/checkout/order-summary',
-          },
-          {
-            title: 'Shipping Info',
-            path: '/store-client/checkout/shipping-info',
-          },
-          {
-            title: 'Payment Method',
-            path: '/store-client/checkout/payment-method',
-          },
-          {
-            title: 'Order Placed',
-            path: '/store-client/checkout/order-placed',
-          },
-        ],
-      },
-      { title: 'My Orders', path: '/store-client/my-orders' },
-      { title: 'Order Receipt', path: '/store-client/order-receipt' },
-    ],
-  },
-  {
-    title: 'User Management',
-    icon: ShieldUser,
-    children: [
-      {
-        title: 'Users',
-        path: '/user-management/users',
-      },
-      {
-        title: 'Roles',
-        path: '/user-management/roles',
-      },
-      // Permissions/Account/Logs/Settings entries removed in sprint-2/06 -
-      // Metronic demo residue, the routes never existed (404 on click).
-    ],
-  },
-  // Products catalog (CORE master-data) - top-level, not under Ideation.
-  {
-    title: 'Products',
-    icon: Package,
-    path: '/products',
-    permission: 'products.read',
-  },
-  {
-    title: 'Ideation',
-    icon: Lightbulb,
-    children: [
-      { title: 'Ideas', path: '/ideation/ideas' },
-      {
-        title: 'Business requirements',
-        path: '/ideation/business-requirements',
-        permission: 'ideation.business_requirements.read',
-      },
-      { title: 'Triage board', path: '/ideation/board' },
-    ],
-  },
-  {
-    title: 'Omnichannel',
-    icon: MessageSquare,
-    children: [
-      {
-        title: 'Inbox',
-        path: '/omnichannel/inbox',
-      },
-      {
-        title: 'Channels',
-        path: '/omnichannel/settings/channels',
-      },
-      {
-        title: 'Workspaces',
-        path: '/omnichannel/settings/workspaces',
-      },
-      {
-        title: 'Media limits',
-        path: '/omnichannel/settings/media',
-      },
-      {
-        title: 'Quick replies',
-        path: '/omnichannel/settings/quick-replies',
-      },
-      {
-        title: 'Embed access',
-        path: '/omnichannel/settings/embed',
-      },
-    ],
-  },
-  // AutoCount ESB (sprint-4/13) - tagged so the mega menu prunes it exactly
-  // like the sidebar (the mega menus are SEPARATE copies; an untagged entry
-  // here would leak a gated path).
-  {
-    title: 'AutoCount',
-    icon: RefreshCw,
-    module: 'autocount',
-    children: [
-      {
-        title: 'Companies',
-        path: '/autocount/companies',
-        permission: 'autocount.companies.read',
-      },
-      {
-        title: 'Review',
-        path: '/autocount/review',
-        permission: 'autocount.sync.read',
-      },
-    ],
-  },
-  {
-    title: 'Authentication',
-    icon: Shield,
-    children: [
-      {
-        title: 'Sign In',
-        path: '/signin',
-      },
-      {
-        title: 'Check Email',
-        path: '/signup',
-      },
-      {
-        title: 'Reset Password',
-        path: '/reset-password',
-      },
-      {
-        title: '2FA',
-        path: '/2fa',
-      },
-      { title: 'Welcome Message', path: '/auth/welcome-message' },
-      { title: 'Account Deactivated', path: '/auth/account-deactivated' },
-      { title: 'Error 404', path: '/error/404' },
-      { title: 'Error 500', path: '/error/500' },
     ],
   },
 ];
 
 export const MENU_MEGA: MenuConfig = [
   { title: 'Home', path: '/' },
-  {
-    title: 'My Account',
-    children: [
-      {
-        title: 'General Pages',
-        children: [
-          { title: 'Integrations', icon: Plug, path: '/account/integrations' },
-          {
-            title: 'Notifications',
-            icon: Bell,
-            path: '/account/notifications',
-          },
-          { title: 'API Keys', icon: Key, path: '/account/api-keys' },
-          { title: 'Appearance', icon: Eye, path: '/account/appearance' },
-          {
-            title: 'Invite a Friend',
-            icon: UserCheck,
-            path: '/account/invite-a-friend',
-          },
-          { title: 'Activity', icon: LifeBuoy, path: '/account/activity' },
-          { title: 'Brand', icon: CheckCircle, disabled: true },
-          { title: 'Get Paid', icon: Euro, disabled: true },
-        ],
-      },
-      {
-        title: 'Other pages',
-        children: [
-          {
-            title: 'Account Home',
-            children: [
-              { title: 'Get Started', path: '/account/home/get-started' },
-              { title: 'User Profile', path: '/account/home/user-profile' },
-              {
-                title: 'Company Profile',
-                path: '/account/home/company-profile',
-              },
-              { title: 'With Sidebar', path: '/account/home/settings-sidebar' },
-              {
-                title: 'Enterprise',
-                path: '/account/home/settings-enterprise',
-              },
-              { title: 'Plain', path: '/account/home/settings-plain' },
-              { title: 'Modal', path: '/account/home/settings-modal' },
-            ],
-          },
-          {
-            title: 'Security',
-            children: [
-              { title: 'Get Started', path: '/account/security/get-started' },
-              {
-                title: 'Security Overview',
-                path: '/account/security/overview',
-              },
-              {
-                title: 'IP Addresses',
-                path: '/account/security/allowed-ip-addresses',
-              },
-              {
-                title: 'Privacy Settings',
-                path: '/account/security/privacy-settings',
-              },
-              {
-                title: 'Device Management',
-                path: '/account/security/device-management',
-              },
-              {
-                title: 'Backup & Recovery',
-                path: '/account/security/backup-and-recovery',
-              },
-              {
-                title: 'Current Sessions',
-                path: '/account/security/current-sessions',
-              },
-              { title: 'Security Log', path: '/account/security/security-log' },
-            ],
-          },
-        ],
-      },
-    ],
-  },
   {
     title: 'Apps',
     children: [
@@ -1015,6 +457,12 @@ export const MENU_MEGA: MenuConfig = [
                 title: 'Roles',
                 path: '/user-management/roles',
                 permission: 'roles.read',
+              },
+              {
+                title: 'Teams',
+                path: '/user-management/teams',
+                permission: 'teams.read',
+                termKey: 'team',
               },
             ],
           },
@@ -1034,6 +482,105 @@ export const MENU_MEGA: MenuConfig = [
                 title: 'Log settings',
                 path: '/developers/logs/settings',
                 permission: 'integration_logs.manage',
+              },
+            ],
+          },
+        ],
+      },
+      // Omnichannel (D-A2-16, plan 26; extended plan 29) - closes a
+      // pre-existing gap verified 2026-09-06: this DESKTOP mega menu had NO
+      // Omnichannel entry at all (only the sidebar copy was tagged), so a
+      // tenant without the module saw the Apps menu missing the section, but
+      // a page-URL guess would have 403'd correctly - the fix here is purely
+      // additive parity with the sidebar, same module + per-child permission
+      // tags (Inbox, Contacts, Broadcasts, Channels, Workspaces, Media
+      // limits, Quick replies, Embed access).
+      {
+        title: 'Omnichannel',
+        module: 'omnichannel',
+        children: [
+          {
+            children: [
+              {
+                // Dashboard (plan 30, roadmap A9) - AC-RPT-41.
+                title: 'Dashboard',
+                path: '/omnichannel/dashboard',
+                permission: 'reports.read',
+              },
+              {
+                title: 'Inbox',
+                path: '/omnichannel/inbox',
+                permission: 'conversations.read',
+              },
+              {
+                title: 'Contacts',
+                path: '/omnichannel/contacts',
+                permission: 'contacts.read',
+              },
+              {
+                title: 'Broadcasts',
+                path: '/omnichannel/broadcasts',
+                permission: 'broadcasts.read',
+              },
+              {
+                // Reports (plan 30, roadmap A9) - AC-RPT-41.
+                title: 'Reports',
+                path: '/omnichannel/reports',
+                permission: 'reports.read',
+              },
+              {
+                title: 'Channels',
+                path: '/omnichannel/settings/channels',
+                permission: 'channels.read',
+              },
+              {
+                title: 'Workspaces',
+                path: '/omnichannel/settings/workspaces',
+                permission: 'workspaces.read',
+              },
+              {
+                title: 'Media limits',
+                path: '/omnichannel/settings/media',
+                permission: 'channels.manage',
+              },
+              {
+                title: 'Quick replies',
+                path: '/omnichannel/settings/quick-replies',
+                permission: 'workspaces.manage',
+              },
+              {
+                title: 'Embed access',
+                path: '/omnichannel/settings/embed',
+                permission: 'workspaces.manage',
+              },
+              {
+                // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.
+                title: 'Migration',
+                path: '/omnichannel/settings/migration',
+                module: 'omnichannel',
+                permission: 'omnichannel_migration.read',
+              },
+            ],
+          },
+        ],
+      },
+      // Meetings (sprint-5 S0) - the DESKTOP mega menu copy. Same module +
+      // permission tags, so `filterMenu` prunes it identically in all three.
+      {
+        title: 'Meetings',
+        module: 'meetings',
+        children: [
+          {
+            children: [
+              {
+                title: 'My meetings',
+                path: '/meetings/my-meetings',
+                permission: 'meetings.view',
+              },
+              {
+                title: 'Settings',
+                path: '/settings/meetings',
+                permission: 'meetings.settings.manage',
               },
             ],
           },
@@ -1060,6 +607,16 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/autocount/review',
                 permission: 'autocount.sync.read',
               },
+              {
+                title: 'Pull',
+                path: '/autocount/pull',
+                permission: 'autocount.pull.read',
+              },
+              {
+                title: 'Find document',
+                path: '/autocount/find',
+                permission: 'autocount.pull.read',
+              },
             ],
           },
         ],
@@ -1070,86 +627,6 @@ export const MENU_MEGA: MenuConfig = [
 
 export const MENU_MEGA_MOBILE: MenuConfig = [
   { title: 'Home', path: '/' },
-  {
-    title: 'My Account',
-    children: [
-      {
-        title: 'General Pages',
-        children: [
-          { title: 'Integrations', icon: Plug, path: '/account/integrations' },
-          {
-            title: 'Notifications',
-            icon: Bell,
-            path: '/account/notifications',
-          },
-          { title: 'API Keys', icon: Key, path: '/account/api-keys' },
-          { title: 'Appearance', icon: Eye, path: '/account/appearance' },
-          {
-            title: 'Invite a Friend',
-            icon: UserCheck,
-            path: '/account/invite-a-friend',
-          },
-          { title: 'Activity', icon: LifeBuoy, path: '/account/activity' },
-          { title: 'Brand', icon: CheckCircle, disabled: true },
-          { title: 'Get Paid', icon: Euro, disabled: true },
-        ],
-      },
-      {
-        title: 'Other pages',
-        children: [
-          {
-            title: 'Account Home',
-            children: [
-              { title: 'Get Started', path: '/account/home/get-started' },
-              { title: 'User Profile', path: '/account/home/user-profile' },
-              {
-                title: 'Company Profile',
-                path: '/account/home/company-profile',
-              },
-              { title: 'With Sidebar', path: '/account/home/settings-sidebar' },
-              {
-                title: 'Enterprise',
-                path: '/account/home/settings-enterprise',
-              },
-              { title: 'Plain', path: '/account/home/settings-plain' },
-              { title: 'Modal', path: '/account/home/settings-modal' },
-            ],
-          },
-          {
-            title: 'Security',
-            children: [
-              { title: 'Get Started', path: '/account/security/get-started' },
-              {
-                title: 'Security Overview',
-                path: '/account/security/overview',
-              },
-              {
-                title: 'IP Addresses',
-                path: '/account/security/allowed-ip-addresses',
-              },
-              {
-                title: 'Privacy Settings',
-                path: '/account/security/privacy-settings',
-              },
-              {
-                title: 'Device Management',
-                path: '/account/security/device-management',
-              },
-              {
-                title: 'Backup & Recovery',
-                path: '/account/security/backup-and-recovery',
-              },
-              {
-                title: 'Current Sessions',
-                path: '/account/security/current-sessions',
-              },
-              { title: 'Security Log', path: '/account/security/security-log' },
-            ],
-          },
-        ],
-      },
-    ],
-  },
   {
     title: 'User Management',
     icon: Users,
@@ -1163,6 +640,12 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Roles',
         path: '/user-management/roles',
         permission: 'roles.read',
+      },
+      {
+        title: 'Teams',
+        path: '/user-management/teams',
+        permission: 'teams.read',
+        termKey: 'team',
       },
     ],
   },
@@ -1179,6 +662,96 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Log settings',
         path: '/developers/logs/settings',
         permission: 'integration_logs.manage',
+      },
+    ],
+  },
+  // Omnichannel (D-A2-16, plan 26; extended plan 29) - closes a
+  // pre-existing gap verified 2026-09-06: the mobile mega menu had NO
+  // Omnichannel block at all, so a tenant on a phone had no path to
+  // Inbox/Contacts/Broadcasts/Channels/etc from this menu surface. Same
+  // module + per-child permission tags, mirroring MENU_SIDEBAR/MENU_MEGA.
+  {
+    title: 'Omnichannel',
+    icon: MessageSquare,
+    module: 'omnichannel',
+    children: [
+      {
+        // Dashboard (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Dashboard',
+        path: '/omnichannel/dashboard',
+        permission: 'reports.read',
+      },
+      {
+        title: 'Inbox',
+        path: '/omnichannel/inbox',
+        permission: 'conversations.read',
+      },
+      {
+        title: 'Contacts',
+        path: '/omnichannel/contacts',
+        permission: 'contacts.read',
+      },
+      {
+        title: 'Broadcasts',
+        path: '/omnichannel/broadcasts',
+        permission: 'broadcasts.read',
+      },
+      {
+        // Reports (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Reports',
+        path: '/omnichannel/reports',
+        permission: 'reports.read',
+      },
+      {
+        title: 'Channels',
+        path: '/omnichannel/settings/channels',
+        permission: 'channels.read',
+      },
+      {
+        title: 'Workspaces',
+        path: '/omnichannel/settings/workspaces',
+        permission: 'workspaces.read',
+      },
+      {
+        title: 'Media limits',
+        path: '/omnichannel/settings/media',
+        permission: 'channels.manage',
+      },
+      {
+        title: 'Quick replies',
+        path: '/omnichannel/settings/quick-replies',
+        permission: 'workspaces.manage',
+      },
+      {
+        title: 'Embed access',
+        path: '/omnichannel/settings/embed',
+        permission: 'workspaces.manage',
+      },
+      {
+        // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.
+        title: 'Migration',
+        path: '/omnichannel/settings/migration',
+        module: 'omnichannel',
+        permission: 'omnichannel_migration.read',
+      },
+    ],
+  },
+  // Meetings (sprint-5 S0) - third menu copy; same module + permission tags so
+  // the mobile mega menu prunes identically.
+  {
+    title: 'Meetings',
+    icon: Video,
+    module: 'meetings',
+    children: [
+      {
+        title: 'My meetings',
+        path: '/meetings/my-meetings',
+        permission: 'meetings.view',
+      },
+      {
+        title: 'Settings',
+        path: '/settings/meetings',
+        permission: 'meetings.settings.manage',
       },
     ],
   },
@@ -1199,92 +772,16 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         path: '/autocount/review',
         permission: 'autocount.sync.read',
       },
-    ],
-  },
-];
-
-export const MENU_HELP: MenuConfig = [
-  {
-    title: 'Getting Started',
-    icon: Coffee,
-    path: 'https://keenthemes.com/metronic/tailwind/docs/getting-started/installation',
-  },
-  {
-    title: 'Support Forum',
-    icon: AlertCircle,
-    children: [
       {
-        title: 'All Questions',
-        icon: FileQuestion,
-        path: 'https://devs.keenthemes.com',
+        title: 'Pull',
+        path: '/autocount/pull',
+        permission: 'autocount.pull.read',
       },
       {
-        title: 'Popular Questions',
-        icon: Star,
-        path: 'https://devs.keenthemes.com/popular',
-      },
-      {
-        title: 'Ask Question',
-        icon: HelpCircle,
-        path: 'https://devs.keenthemes.com/question/create',
+        title: 'Find document',
+        path: '/autocount/find',
+        permission: 'autocount.pull.read',
       },
     ],
-  },
-  {
-    title: 'Licenses & FAQ',
-    icon: Captions,
-    path: 'https://keenthemes.com/metronic/tailwind/docs/getting-started/license',
-  },
-  {
-    title: 'Documentation',
-    icon: FileQuestion,
-    path: 'https://keenthemes.com/metronic/tailwind/docs',
-  },
-  { separator: true },
-  { title: 'Contact Us', icon: Share2, path: 'https://keenthemes.com/contact' },
-];
-
-export const MENU_ROOT: MenuConfig = [
-  {
-    title: 'Public Profile',
-    icon: UserCircle,
-    rootPath: '/public-profile/',
-    path: '/public-profile/profiles/default',
-    childrenIndex: 2,
-  },
-  {
-    title: 'Account',
-    icon: Settings,
-    rootPath: '/account/',
-    path: '/',
-    childrenIndex: 3,
-  },
-  {
-    title: 'Network',
-    icon: Users,
-    rootPath: '/network/',
-    path: '/network/get-started',
-    childrenIndex: 4,
-  },
-  {
-    title: 'Authentication',
-    icon: Shield,
-    rootPath: '/authentication/',
-    path: '/authentication/get-started',
-    childrenIndex: 5,
-  },
-  {
-    title: 'Store - Client',
-    icon: ShoppingCart,
-    rootPath: '/store-client/',
-    path: '/store-client/home',
-    childrenIndex: 6,
-  },
-  {
-    title: 'User Management',
-    icon: ShieldUser,
-    rootPath: '/user-management/',
-    path: '/user-management/users',
-    childrenIndex: 7,
   },
 ];

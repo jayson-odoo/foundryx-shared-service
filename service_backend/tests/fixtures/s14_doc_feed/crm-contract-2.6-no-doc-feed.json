@@ -1,0 +1,8 @@
+{
+  "version": "2.6",
+  "entities": [
+    "suppliers", "customers", "product_categories", "units_of_measure",
+    "warehouses", "products", "sales_agents", "sales_orders",
+    "purchase_orders", "shipping_orders", "brands", "stock_balances"
+  ]
+}

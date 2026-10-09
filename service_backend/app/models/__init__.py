@@ -48,6 +48,7 @@ from app.models.role import Role, user_roles
 from app.models.user import User, UserStatus
 from app.models.view_preference import UserViewPreference
 from app.models.terminology import TerminologyOverride
+from app.models.team import TEAM_MEMBER_ROLES, Team, TeamMember
 from app.models.import_job import ImportJob, ImportSettings
 from app.models.background_job import (
     JOB_ABORTED,
@@ -134,6 +135,7 @@ from app.models.workflow import (
     TRIGGER_MANUAL,
     TRIGGER_SCHEDULE,
     Workflow,
+    WorkflowAgentState,
     WorkflowRun,
     WorkflowRunNode,
     WorkflowVersion,
@@ -184,6 +186,14 @@ from app.models.review import (
     ReviewDecision,
     ReviewRole,
     ReviewRoleActor,
+)
+from app.models.pending_action import (
+    PENDING_ACTION_CANCELLED,
+    PENDING_ACTION_COMMITTED,
+    PENDING_ACTION_FAILED,
+    PENDING_ACTION_PENDING,
+    PENDING_ACTION_STATUSES,
+    PendingAction,
 )
 
 __all__ = [
@@ -296,6 +306,7 @@ __all__ = [
     "RETRY_BACKOFF_SECONDS",
     "MAX_ATTEMPTS",
     "Workflow",
+    "WorkflowAgentState",
     "WorkflowVersion",
     "Form",
     "FormVersion",
@@ -338,4 +349,11 @@ __all__ = [
     "ROLE_USER",
     "ROLE_ASSISTANT",
     "MESSAGE_ROLES",
+    # Deferred actions (sprint-4/23, T5).
+    "PendingAction",
+    "PENDING_ACTION_PENDING",
+    "PENDING_ACTION_COMMITTED",
+    "PENDING_ACTION_CANCELLED",
+    "PENDING_ACTION_FAILED",
+    "PENDING_ACTION_STATUSES",
 ]

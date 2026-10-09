@@ -127,4 +127,52 @@ describe('autocount-formula - TS twin of modules/autocount/formula.py', () => {
       expect(boolean?.formula).toBe('if(value == "T", true, false)');
     });
   });
+
+  // sprint-5/02 (AC-02-09/20) - the document status/filter formula building
+  // blocks: two new functions + named-variable support.
+  describe('document formula additions (sprint-5/02)', () => {
+    it('startswith checks a prefix', () => {
+      expect(evaluateFormula('startswith(upper(value), "SPO-")', 'spo-001')).toBe(true);
+      expect(evaluateFormula('startswith(upper(value), "SPO-")', 'PO-001')).toBe(false);
+    });
+    it('coalesce returns the first non-null argument, short-circuiting', () => {
+      expect(evaluateFormula('coalesce(value, "fallback")', null)).toBe('fallback');
+      expect(evaluateFormula('coalesce(value, "fallback")', 'MYR')).toBe('MYR');
+      expect(evaluateFormula('coalesce(null, null, "CNY")', 'x')).toBe('CNY');
+    });
+    it('not() as a function call negates a parenthesized boolean', () => {
+      expect(evaluateFormula('not(startswith(value, "SPO-"))', 'PO-1')).toBe(true);
+      expect(evaluateFormula('not(startswith(value, "SPO-"))', 'SPO-1')).toBe(false);
+    });
+
+    it('a bare identifier is still "Unknown name" with no knownVariables (parity preserved)', () => {
+      expect(() => evaluateFormula('Cancelled == "T"', 'x')).toThrow(FormulaParseError);
+    });
+    it('parseFormula/validateFormula accept a named variable when declared known', () => {
+      expect(validateFormula('Cancelled == "T"', ['Cancelled'])).toBeNull();
+      expect(validateFormula('Cancelled == "T"')).not.toBeNull();
+    });
+    it('evaluateFormula resolves named facts, dotted names included', () => {
+      const facts = { Cancelled: 'T', 'lines.open_count': 0 };
+      expect(
+        evaluateFormula(
+          'if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))',
+          null,
+          facts,
+        ),
+      ).toBe('cancelled');
+      expect(
+        evaluateFormula(
+          'if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))',
+          null,
+          { Cancelled: 'F', 'lines.open_count': 0 },
+        ),
+      ).toBe('closed');
+    });
+    it('a known but absent fact resolves to null, never a throw', () => {
+      expect(evaluateFormula('default(Missing, "N/A")', null, { Missing: null, Other: 1 })).toBe(
+        'N/A',
+      );
+    });
+  });
 });

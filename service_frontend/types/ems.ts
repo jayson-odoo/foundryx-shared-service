@@ -188,6 +188,9 @@ export interface ProductKind {
 export interface TenantSettings {
   defaultCurrency: string;
   priceDecimals: number;
+  /** Deferred-actions grace windows (sprint-4/23, T5, AC-DLA-42), 1-60. */
+  deferredDestructiveSeconds: number;
+  deferredReversibleSeconds: number;
 }
 
 export interface ProductCategory {

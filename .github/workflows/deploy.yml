@@ -7,6 +7,17 @@ on:
   pull_request:
     branches:
       - main
+  # Merge-queue entries: GitHub creates a temporary branch containing the
+  # candidate merge result (this PR merged onto main plus every entry queued
+  # ahead of it) and fires this event. Every validate/test job below runs for
+  # it because none of them filter on event name, so the queue gates on the
+  # exact same checks as a PR - this is what catches two individually-green
+  # branches that only break combined (two module migrations each adding
+  # their own head on top of the same base, a shared count assertion off by
+  # one). Only "Build, push, deploy" and "Notify owner" stay off merge_group
+  # (see their own `if:` below): a queue entry only validates the merge
+  # candidate, the deploy belongs to the `push` that lands on main afterward.
+  merge_group:
   workflow_dispatch:
 
 env:
@@ -19,6 +30,27 @@ env:
   CI_FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
 
 jobs:
+  # Fast pre-check: fail in under a minute when an alembic migration graph
+  # (core or any module) has more than one head, instead of consuming a full
+  # test-backend cycle to discover the same thing. Two branches each merging
+  # main and adding their own revision on top of the same head give that
+  # graph two heads once both land - green individually, broken combined,
+  # exactly the class of bug PR #91's stale-literal fixtures reproduced
+  # against #92's real 0011 migration. stdlib-only AST parse (no pip
+  # install: alembic's env.py imports the whole app); adapted from
+  # sorento_crm's `.github/workflows/deploy.yml` `check-migration-heads` job,
+  # generalized from one alembic directory to every directory this repo's
+  # per-module alembic convention creates (core `service_backend/alembic/`
+  # plus each `service_backend/modules/<name>/alembic/` - see the script's
+  # own docstring for exactly which directories it checks).
+  check-migration-heads:
+    name: Single alembic head per module (fast gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert exactly one head per alembic graph
+        run: python3 scripts/check_migration_heads.py
+
   lint-conventions:
     name: Lint conventions (no emdash, brand spelling)
     runs-on: ubuntu-latest
@@ -42,6 +74,23 @@ jobs:
           # filename references are a sanctioned exception (see PRINCIPLES.md).
           if git grep -I -n 'Foundry[X]' | grep -v 'TokensStudio'; then
             echo "::error::Found the banned brand misspelling (capital X after Foundry) - the brand is 'Foundryx'. See PRINCIPLES.md."
+            exit 1
+          fi
+      - name: No stray play[w]right mentions outside the allowed set (AC-DLA-69)
+        run: |
+          # 'play[w]right' so this script never matches itself, same trick as
+          # 'Foundry[X]' above. D15 (plan 23): that E2E tool is retired here -
+          # AGENTS.md and PRINCIPLES.md are the only files allowed to name it,
+          # each with one retirement sentence (checked by the frontend guard
+          # test, service_frontend/no-play[w]right.guard.test.ts).
+          all=$(git grep -Iil 'play[w]right' -- . ':!documentation/plans' ':!documentation/preliminary_planning' ':!service_backend/modules/meetings/bot' ':!service_frontend/package-lock.json' ':!service_frontend/no-play[w]right.guard.test.ts' || true)
+          hits=""
+          if [ -n "$all" ]; then
+            hits=$(printf '%s\n' "$all" | grep -v -x -e AGENTS.md -e PRINCIPLES.md || true)
+          fi
+          if [ -n "$hits" ]; then
+            echo "::error::Found tracked files mentioning the retired E2E tool outside AGENTS.md/PRINCIPLES.md:"
+            echo "$hits"
             exit 1
           fi
 
@@ -101,9 +150,92 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
+  test-backend:
+    name: Test backend (pytest)
+    runs-on: ubuntu-latest
+    # The suite runs under pytest-xdist here (PR #77): measured 3m26s at
+    # `-n 4` locally, and the hosted runner has 4 cores - 30 min is a wide
+    # margin, not a target.
+    timeout-minutes: 30
+    env:
+      # Conftest builds its own in-memory SQLite DB per test and disables the
+      # email dispatcher / startup orphan sweep, so nothing here ever opens a
+      # real connection - these are throwaway values so app.config.Settings
+      # (DATABASE_URL/JWT_SECRET have no default) and app.main import cleanly.
+      DATABASE_URL: postgresql://x:x@localhost/x
+      JWT_SECRET: ci-dummy-secret
+      FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
+      OMNICHANNEL_FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_TASK_ALWAYS_EAGER: "true"
+      # The zero-config AI stub (AC-BI-12) and every stateful-AI-runtime test
+      # that rides it only answer when settings.environment == "development"
+      # (app/ai/client.py) - "development" is also Settings' own default, so
+      # this just makes CI match what a coder's local .env already carries.
+      ENVIRONMENT: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: service_backend/requirements.txt
+      - name: Install WeasyPrint native dependencies (Pango/cairo/gdk-pixbuf)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libglib2.0-0 libpango-1.0-0 libpangoft2-1.0-0 libpangocairo-1.0-0 \
+            libgdk-pixbuf2.0-0 libcairo2 libffi-dev shared-mime-info fonts-dejavu-core
+      - name: Install backend dependencies
+        working-directory: service_backend
+        run: pip install -r requirements.txt
+      - name: Run pytest
+        working-directory: service_backend
+        # Parallelism is opt-in on the command line by design (pytest.ini
+        # keeps a bare run serial for cheap single-file runs on the shared
+        # dev machine); `--dist loadfile` pins every test in a file to one
+        # worker so conftest's module-global registries stay coherent.
+        run: python -m pytest -q -n auto --dist loadfile -p no:cacheprovider --durations=15
+
+  test-frontend:
+    name: Test frontend (lint + vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: service_frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: service_frontend
+        run: npm ci --force
+      - name: Lint
+        working-directory: service_frontend
+        run: npm run lint
+      # CI-only knobs (vitest.config.mts stays untouched so local runs keep
+      # their defaults): the hosted runner has 4 cores and vitest's default
+      # worker count starves the RTL `waitFor` polls (a different
+      # timing-sensitive test flaked on every run - not a per-test bug), so
+      # cap the worker threads and give every test a CI-scale timeout. Both
+      # bounds are pinned: vitest derives its default `minThreads` from the
+      # core count and refuses a `maxWorkers` below it.
+      - name: Vitest
+        working-directory: service_frontend
+        run: npm test -- --run --minWorkers=2 --maxWorkers=2 --testTimeout=20000
+
   build-and-deploy:
     name: Build, push, deploy (blue/green)
-    needs: [lint-conventions, validate-backend, validate-frontend]
+    needs:
+      [
+        check-migration-heads,
+        lint-conventions,
+        validate-backend,
+        validate-frontend,
+        test-backend,
+        test-frontend,
+      ]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -206,11 +338,14 @@ jobs:
             # a cheap /dev/tcp probe polls until it's back). ~5 min budget.
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts"
-            scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/"
-            scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml"
-            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env"
-            echo ".env + files synced"
+            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts" || { echo "::error::cannot mkdir $D/scripts - the deploy user cannot write DEPLOY_PATH. On the host run: sudo chown -R $U $D"; exit 1; }
+            scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/" || { echo "::error::scp deploy script failed - DEPLOY_PATH not writable by $U (sudo chown -R $U $D on the host)"; exit 1; }
+            # Compose MUST land or the host keeps a stale compose - fatal + diagnostic.
+            scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml" || { echo "::error::scp docker-compose.yml failed - $D/docker-compose.yml not writable by $U. Fix on the host: sudo chown $U $D/docker-compose.yml (or sudo chown -R $U $D)"; exit 1; }
+            # .env: warn but do not block - the host keeps its existing .env if this
+            # write is refused (e.g. a root-owned .env from an earlier run).
+            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env" || echo "::warning::.env write refused (permission) - host keeps its existing .env. Fix: sudo chown $U $D/.env on the host"
+            echo "files synced (see any warnings above)"
 
       - name: Deploy blue/green via Caddy (retry)
         uses: nick-fields/retry@v3
@@ -233,16 +368,22 @@ jobs:
 
       - name: Verify public endpoints (retry)
         uses: nick-fields/retry@v3
+        env:
+          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
         with:
           timeout_minutes: 4
           max_attempts: 3
           retry_wait_seconds: 10
           command: |
+            set -eo pipefail
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
             O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+            [ -n "$APP_DOMAIN" ] || { echo "APP_DOMAIN repository variable is not set"; exit 1; }
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
             ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; curl -fsS -o /dev/null http://127.0.0.1:\$BE/health && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
+            curl --fail --silent --show-error --output /dev/null "https://$APP_DOMAIN/"
+            echo "public HTTPS certificate verified"
 
   notify-owner:
     name: Notify owner by email

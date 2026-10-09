@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
 import type { WebhookEndpoint } from '@/types/whatsapp-webhook';
 import { useWebhookList } from './use-webhook-list';
@@ -62,7 +62,7 @@ export function ChannelWebhooksTab({ channelId }: { channelId: string }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <ResourceList key={reloadKey} config={config} />
+      <ResourceList key={reloadKey} config={config} hideHeader />
 
       <WebhookEndpointDialog
         channelId={channelId}

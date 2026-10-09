@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 
 export interface CursorMenuItem {
   id: string;
@@ -83,7 +84,8 @@ export function CursorMenu({
                 item.onSelect();
               }}
               className={cn(
-                'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-hidden hover:bg-accent',
+                PRESSED_CLASS,
+                'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-hidden hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
                 item.danger && 'text-destructive hover:bg-destructive/10',
               )}
             >

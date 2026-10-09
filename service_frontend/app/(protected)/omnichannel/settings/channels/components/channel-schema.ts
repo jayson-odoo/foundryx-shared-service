@@ -40,6 +40,30 @@ export const channelProfileSchema = z.object({
 
 export type ChannelProfileValues = z.infer<typeof channelProfileSchema>;
 
-/** One form drives both tabs (single global Edit toggle + one Save, GP-1). */
-export const channelDetailSchema = channelFormSchema.merge(channelProfileSchema);
+/**
+ * Widget tab (plan 34 / A7b, AC-WEB-04) - appearance + greetings + pre-chat
+ * toggles for a `WEBCHAT` channel. Every field optional so the schema stays
+ * silent for every other channel type (same convention as the profile tab's
+ * WhatsApp-only fields).
+ */
+export const channelWidgetSchema = z.object({
+  widgetAccentColor: z
+    .string()
+    .trim()
+    .regex(/^#[0-9a-fA-F]{6}$/, 'Enter a valid hex color (e.g. #FF5A00)')
+    .optional(),
+  widgetPosition: z.enum(['left', 'right']).optional(),
+  widgetHeaderTitle: z.string().trim().max(80, 'Header title is too long').optional(),
+  widgetAgentDisplayName: z.string().trim().max(80, 'Display name is too long').optional(),
+  widgetGreeting: z.string().trim().max(500, 'Greeting is too long').optional(),
+  widgetOfflineGreeting: z.string().trim().max(500, 'Offline greeting is too long').optional(),
+  widgetAskName: z.boolean().optional(),
+  widgetAskEmail: z.boolean().optional(),
+  widgetAskPhone: z.boolean().optional(),
+});
+
+export type ChannelWidgetValues = z.infer<typeof channelWidgetSchema>;
+
+/** One form drives every tab (single global Edit toggle + one Save, GP-1). */
+export const channelDetailSchema = channelFormSchema.merge(channelProfileSchema).merge(channelWidgetSchema);
 export type ChannelDetailValues = z.infer<typeof channelDetailSchema>;

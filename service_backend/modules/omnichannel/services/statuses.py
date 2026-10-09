@@ -23,6 +23,17 @@ DEFAULT_STATUSES: Dict[str, List[Tuple[str, str, int, bool]]] = {
         ("SNOOZED", "Snoozed", 1, False),
         ("CLOSED", "Closed", 2, True),
     ],
+    # Plan 29 (A4, D-A4-3) - broadcast lifecycle. Machine-driven only (never
+    # tenant-edited); rendered by a frontend `StatusBadge` registry exactly
+    # like `wa_templates`, not the tenant-editable status-engine canvas.
+    "BROADCAST": [
+        ("DRAFT", "Draft", 0, False),
+        ("SCHEDULED", "Scheduled", 1, False),
+        ("SENDING", "Sending", 2, False),
+        ("SENT", "Sent", 3, True),
+        ("CANCELLED", "Cancelled", 4, True),
+        ("FAILED", "Failed", 5, True),
+    ],
 }
 
 

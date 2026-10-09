@@ -147,6 +147,32 @@ def test_ssrf_guard_unit():
     assert validate_callback_url("https://consumer.example/hook") == "https://consumer.example/hook"
 
 
+def test_callback_url_error_messages_keep_their_callback_url_prefix():
+    """Plan sprint-4/31 S5 extracted the SSRF guard to core
+    (`app/services/url_guard.py`), which defaults to a generic "URL" subject.
+    `validate_callback_url` must pass `subject="Callback URL"` so every
+    pre-existing consumer-facing 422 string on this public surface stays
+    byte-identical to before the extraction (review S5 - nothing pinned this
+    before, which is why the copy drifted silently)."""
+    from modules.omnichannel.services.webhook_service import validate_callback_url
+
+    with pytest.raises(WebhookError) as exc_info:
+        validate_callback_url("http://x.example")
+    assert str(exc_info.value) == "Callback URL must use https://."
+
+    with pytest.raises(WebhookError) as exc_info:
+        validate_callback_url("https://localhost")
+    assert str(exc_info.value) == "Callback URL cannot target localhost."
+
+    with pytest.raises(WebhookError) as exc_info:
+        validate_callback_url("https://192.168.1.10/h")
+    assert str(exc_info.value) == "Callback URL cannot target a private or reserved IP."
+
+    with pytest.raises(WebhookError) as exc_info:
+        validate_callback_url("https:///no-host")
+    assert str(exc_info.value) == "Callback URL is missing a host."
+
+
 # ── Signed delivery on inbound ───────────────────────────────────────────────
 def test_inbound_message_forwards_signed(client, session_factory, _capture_post):
     from tests.test_omnichannel_webhooks import _seed_thread

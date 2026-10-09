@@ -1,0 +1,65 @@
+{
+    "snapshotId": "fda6cf2b-c3f3-4918-979d-bf5eea7b3d8f",
+    "entity": "stock_balances",
+    "companyCode": "MCH",
+    "status": "ready",
+    "extractedAt": "2026-09-20T14:30:53.954508Z",
+    "expiresAt": "2026-09-21T14:30:53.954508Z",
+    "recordCount": 3165,
+    "complete": true,
+    "contentHash": "fb7abb8896ca8d23623e2c6d7d43f16c8cc92c112d98671de81341e724d2314b",
+    "sourcePageSize": 300,
+    "excludedCount": 0,
+    "excludedRows": [],
+    "zeroPairs": 7380,
+    "negativePairs": 9,
+    "fractionalPairs": 0,
+    "excludedNonzeroCount": 0,
+    "negativePairList": [
+        {
+            "item_code": "AC-EXP-006",
+            "location_code": "HQ-ACC",
+            "qty": -3
+        },
+        {
+            "item_code": "AC-EXP-027",
+            "location_code": "HQ-ACC",
+            "qty": -32
+        },
+        {
+            "item_code": "CARTON BOX",
+            "location_code": "HOLD",
+            "qty": -470
+        },
+        {
+            "item_code": "CARTON BOX",
+            "location_code": "MWH-RSV",
+            "qty": -234
+        },
+        {
+            "item_code": "COURIER",
+            "location_code": "MOCHA-WH",
+            "qty": -73
+        },
+        {
+            "item_code": "MISC",
+            "location_code": "MKTG-HQ",
+            "qty": -2
+        },
+        {
+            "item_code": "RPACC",
+            "location_code": "REPAIR",
+            "qty": -7
+        },
+        {
+            "item_code": "TRANSPORT",
+            "location_code": "HQ",
+            "qty": -10
+        },
+        {
+            "item_code": "TRANSPORT",
+            "location_code": "MOCHA-WH",
+            "qty": -69
+        }
+    ]
+}

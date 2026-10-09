@@ -13,9 +13,15 @@ from app.services.storage import storage_for_tenant
 from app.uploads import detect_upload_mime
 from ..schemas import TemplateDetail, TemplateManageListResponse
 from ..template_schemas import WaTemplateDoc
+from ..services.channel_guards import ChannelTypeUnsupported
 from ..services.template_management_service import TemplateManagementService, TemplateNotFound
 
 router = APIRouter()
+
+
+def _unsupported(exc: ChannelTypeUnsupported) -> HTTPException:
+    return HTTPException(status.HTTP_409_CONFLICT, {"reason": exc.reason})
+
 
 # Draft media-header sample cap (matches the avatar/branding ceilings).
 _SAMPLE_MAX_BYTES = 5 * 1024 * 1024
@@ -47,6 +53,8 @@ def list_templates(
         )
     except TemplateNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
     return TemplateManageListResponse(data=items, total=total, page=page)
 
 
@@ -61,6 +69,8 @@ def get_template(
         return _service(db).get(channel_id, template_id, current_user.tenant_id)
     except TemplateNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Template not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.post("/{channel_id}/templates/sync", response_model=TemplateManageListResponse)
@@ -73,6 +83,8 @@ def sync_templates(
         items, total = _service(db).sync(channel_id, current_user.tenant_id)
     except TemplateNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
     return TemplateManageListResponse(data=items, total=total, page=0)
 
 
@@ -108,6 +120,8 @@ def create_draft(
         return _service(db).save_draft(channel_id, doc, current_user.tenant_id)
     except TemplateNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.post("/{channel_id}/templates/{template_id}/submit", response_model=TemplateDetail)
@@ -121,6 +135,8 @@ def submit_template(
         return _service(db).submit(channel_id, template_id, current_user.tenant_id)
     except TemplateNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Template not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.patch("/{channel_id}/templates/{template_id}", response_model=TemplateDetail)
@@ -135,6 +151,8 @@ def edit_template(
         return _service(db).edit(channel_id, template_id, doc, current_user.tenant_id)
     except TemplateNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Template not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.delete("/{channel_id}/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -148,4 +166,6 @@ def delete_template(
         _service(db).delete(channel_id, template_id, current_user.tenant_id)
     except TemplateNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Template not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
