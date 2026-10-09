@@ -38,6 +38,9 @@ const grant = (over: Partial<ConnectorGrant> = {}): ConnectorGrant => ({
   ...over,
 });
 
+const isRevoke = (l: unknown) =>
+  /revoke/i.test(typeof l === 'function' ? String((l as (r: ConnectorGrant[]) => string)([grant()])) : String(l));
+
 const query: ListQuery = { page: 1, pageSize: 25, search: 'ali', sort: undefined, filter: null, segment: 'active' };
 
 beforeEach(() => {
@@ -76,19 +79,20 @@ describe('useConnectorGrantListConfig (AC-19-60)', () => {
 
   it('Revoke is gated by connector.manage, row + bulk surfaces', () => {
     const c = cfg();
-    const row = c.actions.find((a) => a.surfaces?.row && /revoke/i.test(a.label));
-    const bulk = c.actions.find((a) => a.surfaces?.bulk && /revoke/i.test(a.label));
-    expect(row?.permission).toBe('connector.manage');
-    expect(bulk?.permission).toBe('connector.manage');
+    const row = c.actions.find((a) => a.surfaces?.row && isRevoke(a.label));
+    const bulk = c.actions.find((a) => a.surfaces?.bulk && isRevoke(a.label));
+    expect(row?.permission as unknown).toBe('connector.manage');
+    expect(bulk?.permission as unknown).toBe('connector.manage');
   });
 
   it('bulk revoke requires typing REVOKE; single row confirm has no typed input', () => {
     const c = cfg();
-    const row = c.actions.find((a) => a.surfaces?.row && /revoke/i.test(a.label))!;
-    const bulk = c.actions.find((a) => a.surfaces?.bulk && /revoke/i.test(a.label))!;
+    const row = c.actions.find((a) => a.surfaces?.row && isRevoke(a.label))!;
+    const bulk = c.actions.find((a) => a.surfaces?.bulk && isRevoke(a.label))!;
     expect(row.confirm).toBeDefined();
     expect(row.confirm?.input).toBeUndefined();
-    expect(bulk.confirm?.input?.expected([grant(), grant({ id: 'g2' })])).toBe('REVOKE');
+    const exp = bulk.confirm?.input?.expected;
+    expect(typeof exp === 'function' ? exp([grant(), grant({ id: 'g2' })]) : exp).toBe('REVOKE');
   });
 
   it('Revoke is hidden for revoked and expired rows, shown for active', async () => {

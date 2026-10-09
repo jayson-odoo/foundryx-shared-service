@@ -23,6 +23,8 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/hooks/use-datetime', () => ({
   useDatetime: () => ({ formatDate: (s: string) => s, formatDateTime: (s: string) => s }),
 }));
+vi.mock('next-auth/react', () => ({ useSession: () => ({ data: null, status: 'unauthenticated' }), signOut: vi.fn() }));
+vi.mock('@/services/terminology-service', () => ({ terminologyService: { getTerminology: vi.fn().mockResolvedValue({}), list: vi.fn().mockResolvedValue([]), get: vi.fn().mockResolvedValue({}) } }));
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 beforeEach(() => {

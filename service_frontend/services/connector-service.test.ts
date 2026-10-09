@@ -36,7 +36,7 @@ describe('connector-service (AC-19-60/61, S5 wire)', () => {
     apiFetch.mockResolvedValue({ data: [], total: 0, page: 0 });
     await listGrants({});
     const url = new URL(String(apiFetch.mock.calls[0][0]), 'http://x');
-    expect([...url.searchParams.keys()]).toEqual([]);
+    expect(Array.from(url.searchParams.keys())).toEqual([]);
   });
 
   it('getGrant and getGrantActivity hit the id paths', async () => {

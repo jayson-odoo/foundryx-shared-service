@@ -54,6 +54,7 @@ const CARVE_OUTS = [
   'app/(protected)/platform/tenants/components/use-tenant-actions.tsx',
   'app/(protected)/user-management/users/components/use-user-actions.tsx',
   'app/(protected)/documents/shares/page.tsx',
+  'app/(protected)/settings/claude-connector/components/use-connector-grant-list-config.tsx',
 ];
 
 /**
@@ -149,6 +150,12 @@ const DISCLOSED_PLAIN_CONFIRMS: { file: string; count: number; reason: string }[
     count: 1,
     reason:
       'operator-console Deactivate acts on ANOTHER tenant (cross-tenant) - outside the deferred-actions engine\'s own-tenant scope (`PendingAction` is keyed to the actor\'s JWT tenant). The storefront (own-tenant) Deactivate uses `deferred` (T5 fix round 2, S2).',
+  },
+  {
+    file: 'app/(protected)/settings/claude-connector/components/use-connector-grant-list-config.tsx',
+    count: 1,
+    reason:
+      'Claude connector single-grant Revoke (sprint-4/19, AC-19-60) - a security access cut, not a record delete; the bulk Revoke carries the typed REVOKE input.',
   },
 ];
 

@@ -13,6 +13,7 @@ vi.mock('@/components/platform/resource-list', () => ({
   ResourceList: () => <div data-testid="grants-list" />,
 }));
 vi.mock('./components/products-tab', () => ({ ProductsTab: () => <div data-testid="products-tab" /> }));
+vi.mock('@/providers/settings-provider', () => ({ useSettings: () => ({ settings: { container: 'fixed' } }) }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/settings/claude-connector',
