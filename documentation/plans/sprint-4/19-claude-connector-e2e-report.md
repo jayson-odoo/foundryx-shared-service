@@ -79,3 +79,10 @@ Totals: pass 16, fail 0, deferred 0 (row cap sub-clause noted in step 8).
 Finding (not a failure): free message text returned by `chat_get_conversation` for a bot/staff delivery message carries
 third-party phone numbers typed into the message body ("Contact Number: ..."). The views exclude phone columns and the
 ruling allows raw text, so step 9 only fails on phone keys or phone values in structured fields.
+
+### Known, accepted behaviour (owner ruling 9 Oct, relayed by crew 10 Oct)
+
+`chat_get_conversation` / `chat_search_messages` return raw message bodies; phone numbers that customers typed inside a
+message stay visible. Ruling (a): no masking of free text, raw message text allowed, authorized staff only (the user must
+hold `analytics.connector.use` and `system.chat_history.view`). Structured phone fields stay excluded and OTP codes stay
+masked (`******`) as built. No sorento masker change.
