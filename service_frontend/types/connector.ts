@@ -6,6 +6,7 @@ export interface ConnectorGrant {
   id: string;
   status: ConnectorGrantStatus;
   product: string;
+  productName: string;
   productUserId: string;
   userName: string;
   userEmail?: string | null;
@@ -20,12 +21,29 @@ export interface ConnectorGrant {
 export interface ConnectorCall {
   id: string;
   tool: string;
-  statusCode: number;
-  rows: number;
-  chars: number;
+  statusCode: number | null;
+  errorCode?: string | null;
+  rows: number | null;
+  chars: number | null;
   ms: number;
   truncated: boolean;
+  args?: string | null;
   at: string;
+}
+
+/** One row of the merged Activity table: a tool call or a grant lifecycle event. */
+export interface ConnectorActivityRow {
+  id: string;
+  kind: 'call' | 'event';
+  at: string;
+  event: string;
+  tool: string | null;
+  status: string | null;
+  rows: number | null;
+  chars: number | null;
+  ms: number | null;
+  args: string | null;
+  truncated: boolean;
 }
 
 export interface ConnectorEvent {

@@ -38,12 +38,12 @@ export function useConnectorProducts(): UseConnectorProducts {
       try {
         const product = await refreshManifest(key);
         if (product.stale) {
-          toast.error(product.lastError ?? 'Manifest refresh failed.');
+          toast.error(product.lastError ?? 'Manifest refresh failed.', { duration: 8000 });
         } else {
           toast.success('Manifest refreshed.');
         }
       } catch {
-        toast.error('Manifest refresh failed.');
+        toast.error('Manifest refresh failed.', { duration: 8000 });
       }
       await load();
       setRefreshingKey(null);

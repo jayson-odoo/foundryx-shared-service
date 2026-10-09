@@ -1,7 +1,7 @@
 'use client';
 
 import { Check, Copy, LoaderCircleIcon, RefreshCw, TriangleAlert } from 'lucide-react';
-import { Alert, AlertContent, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui/alert';
+import { Alert, AlertContent, AlertDescription, AlertIcon } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -41,11 +41,12 @@ function ProductCard({
 }) {
   const { formatDateTime } = useDatetime();
   const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const name = product.displayName ?? product.key;
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{product.displayName ?? product.key}</CardTitle>
+        <CardTitle>{name}</CardTitle>
         {canManage && (
           <Button type="button" size="sm" variant="outline" disabled={refreshing} onClick={onRefresh}>
             {refreshing ? <LoaderCircleIcon className="animate-spin" /> : <RefreshCw />}
@@ -60,12 +61,8 @@ function ProductCard({
               <TriangleAlert />
             </AlertIcon>
             <AlertContent>
-              <AlertTitle>Manifest is stale</AlertTitle>
               <AlertDescription>
-                {product.lastError && <span className="block">{product.lastError}</span>}
-                {product.fetchedAt && (
-                  <span className="block">Last good fetch {formatDateTime(product.fetchedAt)}</span>
-                )}
+                {`${name} manifest is stale: last refresh failed (${product.lastError ?? 'unknown'}). Serving the copy fetched ${product.fetchedAt ? formatDateTime(product.fetchedAt) : 'earlier'}.`}
               </AlertDescription>
             </AlertContent>
           </Alert>

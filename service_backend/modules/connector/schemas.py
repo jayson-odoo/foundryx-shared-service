@@ -13,6 +13,7 @@ class GrantItem(ApiModel):
     id: str
     status: str
     product: str
+    productName: str
     productUserId: str
     userName: Optional[str] = None
     userEmail: Optional[str] = None
@@ -42,6 +43,7 @@ class CallItem(ApiModel):
     # not part of the fixed wire but needed by the activity view: ok|error + code
     status: str
     errorCode: Optional[str] = None
+    args: Optional[str] = None
 
 
 class EventItem(ApiModel):

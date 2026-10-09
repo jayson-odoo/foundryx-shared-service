@@ -81,15 +81,15 @@ class ManifestService:
                 self.product, method="GET", raw_path=MANIFEST_PATH, query="", body=b"",
                 sub="", grant_id="", consented_at=0, tool="")
             if resp.status_code != 200:
-                error = f"HTTP {resp.status_code}"
+                error = "upstream_error"
             else:
                 data = resp.json()
                 if not isinstance(data, dict) or not isinstance(data.get("tools"), list):
-                    error, data = "invalid manifest", None
+                    error, data = "upstream_error", None
         except httpx.HTTPError as exc:
-            error = type(exc).__name__
+            error = "upstream_unavailable"
         except ValueError:
-            error = "invalid manifest"
+            error = "upstream_error"
         if row is None:
             row = self.repo.new_manifest(self.product.key)
         if error is not None:

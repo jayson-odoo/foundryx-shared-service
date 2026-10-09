@@ -1,28 +1,86 @@
 'use client';
 
 import { useMemo } from 'react';
+import type { Column, ColumnDef } from '@tanstack/react-table';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
+import { ClampedText } from '@/components/platform/clamped-text';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
-import type { ConnectorCall } from '@/types/connector';
+import type { ConnectorActivity, ConnectorActivityRow } from '@/types/connector';
 
-type Col = { id: keyof ConnectorCall; title: string; size: number };
+const EVENT_LABELS: Record<string, string> = {
+  consented: 'Consented',
+  denied: 'Denied',
+  refreshed: 'Token refreshed',
+  revoked: 'Revoked',
+  revoked_by_admin: 'Revoked by admin',
+  refresh_reuse: 'Refresh token reused',
+  expired: 'Expired',
+};
 
-const PLAIN_COLUMNS: Col[] = [
-  { id: 'statusCode', title: 'Code', size: 80 },
-  { id: 'rows', title: 'Rows', size: 80 },
-  { id: 'chars', title: 'Chars', size: 90 },
-  { id: 'ms', title: 'ms', size: 80 },
-];
+function eventLabel(type: string): string {
+  return EVENT_LABELS[type] ?? type.replaceAll('_', ' ');
+}
 
-/** Activity calls on the Resource shell: a client-side page over the loaded calls. */
+/** Calls + lifecycle events merged into one newest-first table. */
+export function mergeActivity(activity: ConnectorActivity | null): ConnectorActivityRow[] {
+  const calls: ConnectorActivityRow[] = (activity?.calls ?? []).map((c) => ({
+    id: `call:${c.id}`,
+    kind: 'call',
+    at: c.at,
+    event: 'Tool call',
+    tool: c.tool,
+    status: c.errorCode || 'ok',
+    rows: c.rows,
+    chars: c.chars,
+    ms: c.ms,
+    args: c.args ?? null,
+    truncated: c.truncated,
+  }));
+  const events: ConnectorActivityRow[] = (activity?.events ?? []).map((e) => ({
+    id: `event:${e.id}`,
+    kind: 'event',
+    at: e.at,
+    event: eventLabel(e.type),
+    tool: null,
+    status: null,
+    rows: null,
+    chars: null,
+    ms: null,
+    args: e.detail ?? null,
+    truncated: false,
+  }));
+  return [...calls, ...events].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
+const dash = (v: string | number | null | undefined) => (v === null || v === undefined || v === '' ? '-' : String(v));
+
+type Header = { column: Column<ConnectorActivityRow> };
+
+function col(
+  id: string,
+  title: string,
+  size: number,
+  cell: ColumnDef<ConnectorActivityRow>['cell'],
+): ColumnDef<ConnectorActivityRow> {
+  return {
+    id,
+    meta: { headerTitle: title },
+    header: ({ column }: Header) => <DataGridColumnHeader title={title} column={column} />,
+    cell,
+    size,
+    enableSorting: false,
+  };
+}
+
+/** Activity on the Resource shell: one client-paged table, no title/toggle chrome. */
 export function useConnectorActivityListConfig(
-  calls: ConnectorCall[],
-): ResourceListConfig<ConnectorCall> {
+  activity: ConnectorActivity | null,
+): ResourceListConfig<ConnectorActivityRow> {
   const { formatDateTime } = useDatetime();
-
-  return useMemo<ResourceListConfig<ConnectorCall>>(
+  const merged = useMemo(() => mergeActivity(activity), [activity]);
+  return useMemo<ResourceListConfig<ConnectorActivityRow>>(
     () => ({
       viewKey: 'claude-connector-activity',
       getRowId: (row) => row.id,
@@ -30,65 +88,46 @@ export function useConnectorActivityListConfig(
       fetcher: async (query) => {
         const start = query.page * query.pageSize;
         return {
-          data: calls.slice(start, start + query.pageSize),
-          total: calls.length,
+          data: merged.slice(start, start + query.pageSize),
+          total: merged.length,
           page: query.page,
         };
       },
       defaultView: 'list',
+      enableStatusViews: false,
       columns: [
-        {
-          id: 'at',
-          accessorFn: (row) => row.at,
-          meta: { headerTitle: 'Time' },
-          header: ({ column }) => <DataGridColumnHeader title="Time" column={column} />,
-          cell: ({ row }) => (
-            <span className="text-sm text-muted-foreground">{formatDateTime(row.original.at)}</span>
-          ),
-          size: 170,
-          enableSorting: false,
-        },
-        {
-          id: 'tool',
-          accessorFn: (row) => row.tool,
-          meta: { headerTitle: 'Tool' },
-          header: ({ column }) => <DataGridColumnHeader title="Tool" column={column} />,
-          cell: ({ row }) => <code className="text-xs">{row.original.tool}</code>,
-          size: 180,
-          enableSorting: false,
-        },
-        ...PLAIN_COLUMNS.map((c) => ({
-          id: c.id,
-          accessorFn: (row: ConnectorCall) => row[c.id],
-          meta: { headerTitle: c.title },
-          header: ({ column }: { column: import('@tanstack/react-table').Column<ConnectorCall> }) => (
-            <DataGridColumnHeader title={c.title} column={column} />
-          ),
-          cell: ({ row }: { row: import('@tanstack/react-table').Row<ConnectorCall> }) => (
-            <span className="text-sm">{String(row.original[c.id])}</span>
-          ),
-          size: c.size,
-          enableSorting: false,
-        })),
-        {
-          id: 'result',
-          accessorFn: (row) => row.truncated,
-          meta: { headerTitle: 'Result' },
-          header: ({ column }) => <DataGridColumnHeader title="Result" column={column} />,
-          cell: ({ row }) =>
-            row.original.truncated ? (
+        col('at', 'Time', 170, ({ row }) => (
+          <span className="text-sm text-muted-foreground">{formatDateTime(row.original.at)}</span>
+        )),
+        col('event', 'Event', 140, ({ row }) => <span className="text-sm">{row.original.event}</span>),
+        col('tool', 'Tool', 200, ({ row }) => (
+          <code className="text-xs">{dash(row.original.tool)}</code>
+        )),
+        col('status', 'Status', 190, ({ row }) => (
+          <span className="text-sm">{dash(row.original.status)}</span>
+        )),
+        col('rows', 'Rows', 80, ({ row }) => <span className="text-sm">{dash(row.original.rows)}</span>),
+        col('chars', 'Chars', 90, ({ row }) => <span className="text-sm">{dash(row.original.chars)}</span>),
+        col('ms', 'ms', 80, ({ row }) => <span className="text-sm">{dash(row.original.ms)}</span>),
+        col('args', 'Args', 260, ({ row }) => (
+          <div className="flex items-center gap-2">
+            {row.original.args ? (
+              <ClampedText text={row.original.args} lines={1} />
+            ) : (
+              <span className="text-sm">-</span>
+            )}
+            {row.original.truncated && (
               <Badge variant="warning" appearance="light" size="sm">
                 Truncated
               </Badge>
-            ) : null,
-          size: 110,
-          enableSorting: false,
-        },
+            )}
+          </div>
+        )),
       ],
       filterFields: [],
       exportColumns: [],
       actions: [],
     }),
-    [calls, formatDateTime],
+    [merged, formatDateTime],
   );
 }

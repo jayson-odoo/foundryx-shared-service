@@ -2,6 +2,7 @@
 
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 import { ResourceList } from '@/components/platform/resource-list';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ProductsTab } from './components/products-tab';
@@ -13,13 +14,17 @@ export default function ClaudeConnectorPage() {
   return (
     <RequirePermission permission="connector.read">
       <Container width="fluid">
+        <PageHeader
+          title="Claude connector"
+          crumbs={[{ label: 'Settings' }, { label: 'Claude connector' }]}
+        />
         <Tabs defaultValue="grants" className="gap-4">
           <TabsList variant="line">
             <TabsTrigger value="grants">Grants</TabsTrigger>
             <TabsTrigger value="products">Products</TabsTrigger>
           </TabsList>
           <TabsContent value="grants">
-            <ResourceList config={config} />
+            <ResourceList config={config} hideHeader />
           </TabsContent>
           <TabsContent value="products">
             <ProductsTab />

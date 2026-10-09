@@ -88,9 +88,10 @@ export type ResourceAction<T> =
        * `confirm-action-dialog.tsx` for the full disclosed list.
        */
       confirm?: {
-        title: string;
-        description?: string;
-        confirmLabel?: string;
+        /** Static, or derived from the target rows (e.g. "Revoke 2 grants?"). */
+        title: string | ((rows: T[]) => string);
+        description?: string | ((rows: T[]) => string);
+        confirmLabel?: string | ((rows: T[]) => string);
         /**
          * Typed confirmation (sprint-2/02 - module-uninstall UX): the confirm
          * button stays disabled until the user types `expected(rows)`

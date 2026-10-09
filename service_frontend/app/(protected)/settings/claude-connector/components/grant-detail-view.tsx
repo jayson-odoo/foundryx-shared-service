@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { useForm } from 'react-hook-form';
 import { Activity, Info, LoaderCircleIcon } from 'lucide-react';
@@ -11,8 +11,11 @@ import { ResourceList } from '@/components/platform/resource-list';
 import { ResourceForm, type ResourceFormConfig } from '@/components/platform/resource-form';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useDatetime } from '@/hooks/use-datetime';
-import type { ConnectorActivity, ConnectorGrant } from '@/types/connector';
-import { CONNECTOR_PATH, CONNECTOR_STATUS_REGISTRY } from './connector-status';
+import { buildListNav } from '@/lib/list-context';
+import { listGrants } from '@/services/connector-service';
+import type { ListQuery } from '@/types/resource';
+import type { ConnectorActivity, ConnectorGrant, ConnectorGrantStatus } from '@/types/connector';
+import { CONNECTOR_PATH, CONNECTOR_STATUS_REGISTRY, connectorGrantPath } from './connector-status';
 import { useConnectorActivityListConfig } from './use-connector-activity-list-config';
 import { useConnectorGrant } from './use-connector-grant';
 import { useConnectorGrantActions } from './use-connector-grant-list-config';
@@ -27,25 +30,10 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function ActivityTab({ activity }: { activity: ConnectorActivity | null }) {
-  const { formatDateTime } = useDatetime();
-  const calls = activity?.calls ?? [];
-  const events = activity?.events ?? [];
-  const callsConfig = useConnectorActivityListConfig(calls);
-
+  const config = useConnectorActivityListConfig(activity);
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <ResourceList config={callsConfig} />
-      {events.length > 0 && (
-        <ul className="flex flex-col gap-2">
-          {events.map((e) => (
-            <li key={e.id} className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-medium capitalize">{e.type}</span>
-              <span className="text-muted-foreground">{formatDateTime(e.at)}</span>
-              {e.detail && <span className="text-muted-foreground">{e.detail}</span>}
-            </li>
-          ))}
-        </ul>
-      )}
+    <div className="py-2">
+      <ResourceList config={config} hideHeader />
     </div>
   );
 }
@@ -55,7 +43,7 @@ function DetailsTab({ grant }: { grant: ConnectorGrant }) {
   return (
     <div className="flex flex-col gap-4 py-2">
       {grant.userEmail && <Row label="Email">{grant.userEmail}</Row>}
-      <Row label="Product">{grant.product}</Row>
+      <Row label="Product">{grant.productName}</Row>
       <Row label="Product user id">
         <code className="text-xs">{grant.productUserId}</code>
       </Row>
@@ -78,17 +66,34 @@ export function GrantDetailView({ grantId }: { grantId: string }) {
   const actions = useConnectorGrantActions();
   const form = useForm({ mode: 'onTouched' });
 
+  // Shell record-nav (carried list query): the neighbour at an index of that query.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      listGrants({
+        status: (query.segment as ConnectorGrantStatus | undefined) ?? 'active',
+        search: query.search || undefined,
+        page: index,
+        pageSize: 1,
+      }).then((r) => ({ recordId: r.data[0]?.id ?? null, total: r.total })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) =>
+      buildListNav(connectorGrantPath(recordId), { ctx, i: index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<ConnectorGrant> | null>(() => {
     if (!grant) return null;
     return {
       breadcrumb: [
         { label: 'Settings' },
         { label: 'Claude connector', href: CONNECTOR_PATH },
-        { label: 'Grant' },
+        { label: grant.userName },
       ],
       backHref: CONNECTOR_PATH,
       title: grant.userName,
-      subtitle: grant.product,
+      subtitle: grant.productName,
       tabs: [
         { id: 'details', label: 'Details', icon: Info, render: () => <DetailsTab grant={grant} /> },
         {
@@ -105,8 +110,10 @@ export function GrantDetailView({ grantId }: { grantId: string }) {
       isDirty: false,
       onSave: () => true,
       onCancel: reload,
+      onReload: reload,
+      recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
-  }, [grant, activity, actions, reload]);
+  }, [grant, activity, actions, reload, fetchRecordAt, buildRecordHref]);
 
   if (isLoading) {
     return (
