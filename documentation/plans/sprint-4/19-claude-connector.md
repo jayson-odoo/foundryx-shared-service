@@ -144,6 +144,13 @@ goes through a crew-note with lane CLAUDE-CONNECTOR first. This card only adds w
    (the MCP endpoint and `/token`, `/register`, `/revoke`), with the browser endpoints exempt: `/mcp/*/oauth/authorize`,
    `/mcp/*/oauth/consent-return`, and the `/.well-known/*` metadata.
 
+## 7a. Accepted risks (review round 1)
+
+- consent-return with `error=access_denied` carries no product signature, only the binding cookie (`SameSite=None`).
+  A cross-site POST that knows a live `request_id` can cancel that user's own in-flight connect. Impact = the user
+  retries; no grant, token or data is issued. Accepted; a signed denial would need a contract change with sorento.
+- Prune runs inside the `workflows.run_due` beat tick (own try/rollback); its own beat task = BL-SS-302.
+
 ## 8. Build order after answers
 
 UAC `19-claude-connector-acceptance-criteria.md` -> tester red tests (crypto/call JWT, OAuth endpoints, consent-return

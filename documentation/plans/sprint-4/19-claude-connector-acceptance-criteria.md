@@ -32,7 +32,7 @@ Contract: sorento-crm `documentation/plans/analytics/CONTRACT-claude-connector-s
   secret/URL/tenant is listed as `misconfigured` and every endpoint for it answers 404 (MCP/OAuth) without leaking
   which part is missing.
 - **AC-19-11 [BE]** Tables in schema `app_connector`: oauth_clients, pending_requests, auth_codes, tokens, grants,
-  assertion_jti, call_log, grant_events; every row carries `tenant_id` (from the product, never client input).
+  assertion_jti, call_log, grant_events, manifest_cache; every row carries `tenant_id` (from the product, never client input).
 - **AC-19-12 [T]** The module Alembic migration creates exactly those tables and is checked on a dev copy
   (`upgrade` then `downgrade`); revision ids <= 32 chars.
 
@@ -82,12 +82,13 @@ Contract: sorento-crm `documentation/plans/analytics/CONTRACT-claude-connector-s
 - **AC-19-45 [BE]** Error mapping per card section 5: 401 family -> one retry with a fresh token then tool error;
   403 `connector_access_removed`/`user_inactive`/`reconsent_required` -> grant revoked (reason = code) + tool error,
   next call 401; other 403/404/413/422/429/5xx/timeout/refused -> tool error, grant stays.
-- **AC-19-46 [BE]** Every `tools/call` writes one call_log row (grant, user, tool, args capped 4 KB, status,
+- **AC-19-46 [BE]** Every `tools/call` that reaches the product (or fails on the way to it) writes one call_log row (grant, user, tool, args capped 4 KB, status,
   ms, rows, chars, error code) committed BEFORE the response; if the write fails the client gets a tool error with
   no product data (fail-closed).
 - **AC-19-47 [BE]** Bearer for product A used on `/mcp/B` -> 401; a token of a revoked/expired grant -> 401; a grant's
   `last_used_at` updates on use; a grant idle 90 d is Expired by the prune and its tokens die.
-- **AC-19-48 [BE]** Throttle per grant on `tools/call` (429 + `Retry-After` over the limit).
+- **AC-19-48 [BE]** Throttle per grant on `tools/call` and per IP on DCR, authorize, consent-return, token failures and revoke (429 + `Retry-After` over the limit).
+- **AC-19-49 [BE]** Forwarding is pinned to the product: a manifest tool whose `path_template` is not a clean absolute path (`@`, `//`, `..`, `?`, `#`, `\`, no leading `/`) or whose method is not GET/POST is hidden; a call never goes to a host other than the API base host; a path param that is empty, `.`, `..` or has a control character is `-32602`; MCP request bodies over 1 MB and product responses over 8 MB are refused; equal SS->product and product->SS secrets mark the product misconfigured.
 
 ## S5 - Admin API + perms
 
