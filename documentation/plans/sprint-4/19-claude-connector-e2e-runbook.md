@@ -45,6 +45,14 @@ cd sorento_crm_frontend && npm ci --force && npx next dev -p 3032
 ```
 Check each port's owner before and after: `lsof -p $(lsof -ti :PORT -sTCP:LISTEN) | grep cwd`. Stop only your own pids.
 
+Behind a public tunnel (owner hand test) also set on SS: `CONNECTOR_PUBLIC_BASE_URL=<tunnel origin>` (and
+`PUBLIC_BASE_URL`), `TRUST_PROXY_HEADERS=true`, `CONNECTOR_ALLOWED_CLIENT_CIDRS=160.79.104.0/21` (Anthropic outbound range);
+sorento `CONNECTOR_SS_CALLBACK_URL=<tunnel origin>/mcp/sorento/oauth/consent-return`. Locally leave the allowlist empty.
+All `CONNECTOR_*` values may live in `service_backend/.env` (real environment variables win).
+
+**Never point this script at production.** Steps 12, 14 and 15 change the databases they are given (age tokens, remove a
+role permission, revoke INSERT on `call_log`); the script refuses non-localhost hosts unless `E2E_ALLOW_REMOTE=1`.
+
 ## 2. Run
 ```
 export SORENTO_LOGIN_EMAIL=<test user> SORENTO_LOGIN_PASSWORD=<its password>

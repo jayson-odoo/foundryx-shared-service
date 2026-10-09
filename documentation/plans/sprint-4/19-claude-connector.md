@@ -137,12 +137,16 @@ goes through a crew-note with lane CLAUDE-CONNECTOR first. This card only adds w
    `CONNECTOR_CALL_LOG_RETENTION_DAYS` (default 180).
 4. **Manifest cached 15 min + Refresh**; when the product is down the last good copy is served and the admin
    Products view marks it **stale** (fetch error + last good fetched-at).
-5. **Claude IP allowlist at the proxy, not in app code.** Range verified: Anthropic outbound IPv4 `160.79.104.0/21`
-   ("stable IP addresses that Anthropic uses for outbound requests, for example when making MCP tool calls"),
-   source https://platform.claude.com/docs/en/api/ip-addresses (fetched 9 Oct 2026). Kept as a config value in the
-   deploy runbook, not hard-coded. **Owner deploy step:** Caddy rule allowing only that range on `POST /mcp/*`
-   (the MCP endpoint and `/token`, `/register`, `/revoke`), with the browser endpoints exempt: `/mcp/*/oauth/authorize`,
-   `/mcp/*/oauth/consent-return`, and the `/.well-known/*` metadata.
+5. **Claude IP allowlist: proxy rule at deploy, plus an app-level env gate (owner e2e plan, 10 Oct).** Range verified:
+   Anthropic outbound IPv4 `160.79.104.0/21` ("stable IP addresses that Anthropic uses for outbound requests, for example
+   when making MCP tool calls"), source https://platform.claude.com/docs/en/api/ip-addresses (fetched 9 Oct 2026).
+   - App gate: `CONNECTOR_ALLOWED_CLIENT_CIDRS` (comma list, empty = off, any invalid entry = fail closed) checked before
+     auth on the Claude-facing endpoints only (`POST /mcp/{p}`, `/oauth/register`, `/oauth/token`, `/oauth/revoke`);
+     browser endpoints (`/oauth/authorize`, `/oauth/consent-return`, `/.well-known/*`) exempt. Client IP comes from the
+     throttle resolver (X-Forwarded-For only with `TRUST_PROXY_HEADERS=true`). It is what makes a time-boxed tunnel safe.
+   - `CONNECTOR_PUBLIC_BASE_URL` overrides `PUBLIC_BASE_URL` for the issuer, both metadata documents, WWW-Authenticate,
+     the consent return_url, the MCP URL in the admin view and the binding-cookie path, so a tunnel URL needs no code change.
+   - **Owner deploy step (complementary):** Caddy rule allowing only that range on the same Claude-facing paths.
 
 ## 7a. Accepted risks (review round 1)
 
