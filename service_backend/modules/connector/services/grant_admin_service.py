@@ -7,8 +7,6 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.config import settings
-
 from .. import registry
 from ..models import Grant
 from ..repositories.connector_repository import ConnectorRepository
@@ -116,7 +114,7 @@ class GrantAdminService:
         tools = visible_tools(cache.manifest_json if cache else None)
         return ProductItem(
             key=p.key, displayName=p.display_name,
-            mcpUrl=f"{settings.public_base_url.rstrip('/')}/mcp/{p.key}",
+            mcpUrl=f"{registry.public_base_url()}/mcp/{p.key}",
             consentUrl=p.consent_url, apiBase=p.api_base_url,
             manifestVersion=cache.version if cache else None, toolCount=len(tools),
             tools=[ToolSummary(name=t["name"], method=t["http"]["method"].upper(),

@@ -21,7 +21,7 @@ from ..services.oauth_service import (
     OAuthService,
     TokenError,
 )
-from ._common import oauth_service, require_method
+from ._common import oauth_service, require_allowed_client, require_method
 
 router = APIRouter()
 
@@ -70,7 +70,8 @@ async def _form(request: Request) -> Dict[str, str]:
     return {k: v for k, v in form.items() if isinstance(v, str)}
 
 
-@router.api_route("/{p}/oauth/register", methods=["GET", "POST"], include_in_schema=False)
+@router.api_route("/{p}/oauth/register", methods=["GET", "POST"], include_in_schema=False,
+                  dependencies=[Depends(require_allowed_client)])
 async def register(request: Request, svc: OAuthService = Depends(oauth_service),
                    db: Session = Depends(get_db)) -> Response:
     require_method(request, "POST")
@@ -130,7 +131,8 @@ async def consent_return(request: Request, svc: OAuthService = Depends(oauth_ser
     return RedirectResponse(url, status_code=302, headers=_NO_STORE)
 
 
-@router.api_route("/{p}/oauth/token", methods=["GET", "POST"], include_in_schema=False)
+@router.api_route("/{p}/oauth/token", methods=["GET", "POST"], include_in_schema=False,
+                  dependencies=[Depends(require_allowed_client)])
 async def token(request: Request, svc: OAuthService = Depends(oauth_service),
                 db: Session = Depends(get_db)) -> Response:
     require_method(request, "POST")
@@ -147,7 +149,8 @@ async def token(request: Request, svc: OAuthService = Depends(oauth_service),
         return _oauth_error(exc.error)
 
 
-@router.api_route("/{p}/oauth/revoke", methods=["GET", "POST"], include_in_schema=False)
+@router.api_route("/{p}/oauth/revoke", methods=["GET", "POST"], include_in_schema=False,
+                  dependencies=[Depends(require_allowed_client)])
 async def revoke(request: Request, svc: OAuthService = Depends(oauth_service),
                  db: Session = Depends(get_db)) -> Response:
     require_method(request, "POST")

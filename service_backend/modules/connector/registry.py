@@ -129,3 +129,16 @@ def manifest_ttl_seconds() -> int:
 
 def call_timeout_seconds() -> int:
     return _int("CONNECTOR_CALL_TIMEOUT_SECONDS", 15)
+
+
+def public_base_url() -> str:
+    """Base URL for everything the connector emits: CONNECTOR_PUBLIC_BASE_URL
+    (tunnel/staging) else the platform setting. No trailing slash."""
+    from app.config import settings
+
+    return (_val(_env(), "CONNECTOR_PUBLIC_BASE_URL") or settings.public_base_url).rstrip("/")
+
+
+def allowed_client_cidrs() -> Optional[str]:
+    """Raw CONNECTOR_ALLOWED_CLIENT_CIDRS (None/blank = no allow-list)."""
+    return _val(_env(), "CONNECTOR_ALLOWED_CLIENT_CIDRS") or None

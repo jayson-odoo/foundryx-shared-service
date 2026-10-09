@@ -9,14 +9,15 @@ from fastapi.responses import JSONResponse, Response
 from ..services import mcp_service
 from ..services.mcp_service import McpService
 from ..services.oauth_service import OAuthService, Unauthorized
-from ._common import oauth_service, require_method
+from ._common import oauth_service, require_allowed_client, require_method
 
 router = APIRouter()
 
 MAX_BODY_BYTES = 1_048_576
 
 
-@router.api_route("/{p}", methods=["GET", "POST"], include_in_schema=False)
+@router.api_route("/{p}", methods=["GET", "POST"], include_in_schema=False,
+                  dependencies=[Depends(require_allowed_client)])
 async def mcp(request: Request, svc: OAuthService = Depends(oauth_service)) -> Response:
     require_method(request, "POST")
     scheme, _, token = (request.headers.get("authorization") or "").partition(" ")

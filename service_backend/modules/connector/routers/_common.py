@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 from fastapi import Depends, HTTPException, Request
+
+from app.api_errors import ApiError
+from app.services.throttle import client_ip
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.database import get_db
 
+from .. import registry
+from ..services.client_access import client_allowed
 from ..services.oauth_service import OAuthService, ProductContext, ProductNotFound, resolve_context
 
 
@@ -20,10 +24,16 @@ def product_context(p: str, db: Session = Depends(get_db)) -> ProductContext:
 
 def oauth_service(ctx: ProductContext = Depends(product_context),
                   db: Session = Depends(get_db)) -> OAuthService:
-    return OAuthService(db, ctx, settings.public_base_url)
+    return OAuthService(db, ctx, registry.public_base_url())
 
 
 def require_method(request: Request, *allowed: str) -> None:
     if request.method not in allowed:
         raise HTTPException(status_code=405, detail="Method not allowed",
                             headers={"Allow": ", ".join(allowed)})
+
+
+def require_allowed_client(request: Request) -> None:
+    """Runs BEFORE auth on the Claude-facing endpoints: uniform 403, no detail."""
+    if not client_allowed(client_ip(request)):
+        raise ApiError(403, "forbidden", "Forbidden")
