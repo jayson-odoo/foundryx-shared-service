@@ -38,3 +38,28 @@ AC mapping (by journey): AC-19-60 (grants list + revoke single/bulk) PASS; AC-19
 ## Teardown
 
 Backend/frontend stopped (pids recorded, nothing left on :8031/:3031), `.env.local` restored from backup, test grants deleted, session `ssconn` closed. Nothing committed.
+
+## Round 2
+
+Head `1864555e` (round 2 = 664fb394 + 51464768, tunnel config af9f7458). agent-browser session `ssconn2`, backend :8031 (env on the command line, product Sorento at :8099 deliberately down), frontend :3031 fresh `rm -rf .next && npm run build`, DB `foundryx_service_ssconn` (10 real active grants "MCP User" with real call_log incl. error codes + 3 throwaway "Test User N" grants inserted by SQL, deleted at teardown). Real clicks from the sidebar (Settings > Claude connector), then row open, record-nav next, tabs. Evidence: `documentation/mockups/SS-CONNECTOR-L/evidence/round2/`. Screenshots showing the Details tab (carries an email) were deleted; none saved show a person name or email.
+
+| Item | Result | Evidence |
+|---|---|---|
+| D1 Activity shows errorCode | PASS: `validation_error` in the Status column (call_log has error_code `validation_error`) | 08-activity-errors-1280 |
+| D2 no literal "null" | PASS: Rows shows "-"; body text has no `null` | 07-activity-1280, 08 |
+| D3 table view select + row "..." Revoke | PASS: select column + "..." per row -> Revoke; bulk "Actions" -> Revoke | 02-row-menu-1280, 04-bulk-select-1280 |
+| D4 error toast auto-dismisses | PASS: toast visible at 2 s, gone at ~10 s (0 toasts) | 11, 12 |
+| D5 stale banner sentence | PASS: "Sorento manifest is stale: last refresh failed (upstream_error). Serving the copy fetched ..." and toast "upstream_error", no "ConnectError" | 11-products-refresh-fail-1280, 20-products-375 |
+| Dev: title + breadcrumb before tabs | PASS (Grants, Products, detail) | 01, 10 |
+| Dev: Filters + Export | PASS (plus Columns) | 01-grants-1280 |
+| Dev: detail record nav N/M + Actions menu | PASS: opened a row from the list (2 / 11), pressed next -> 3 / 11, "..." menu holds Revoke; breadcrumb ends with the grant name | 09-detail-actions-menu-1280, 23 |
+| Dev: Activity one merged table, no page header, no Active/Trashed toggle | PASS: tool calls + "Consented" event in one table, search + Columns only | 07, 08 |
+| Dev: revoke copy | PASS: single "Revoke this grant?" "Test User 3 loses Claude access to Sorento now. Connecting again asks them to sign in to Sorento." Bulk "Revoke 2 grants?" typed REVOKE, button disabled for "REV", enabled for "REVOKE"; DB confirms 2 revoked, reason admin | 03-revoke-single-1280, 05-bulk-confirm-1280 |
+| Dev: product shows "Sorento" | PASS (list, cards, detail, Products) | 01, 22 |
+| AC-19-60 grants list/segments/revoke/detail+Activity | PASS | above |
+| AC-19-61 Products read-only, copy MCP URL, Refresh | PASS: facts, secrets Set/Set, copy button, refresh with Sorento down keeps last copy and shows stale banner | 10, 11 |
+| AC-19-62 1280 + 375, no horizontal scroll, no instructional copy | PASS: `documentElement.scrollWidth` = viewport on products/grants list/grants cards/detail/activity at 375 and on all 1280 pages; console empty; 0 "Foundryx" in body text; no teaching copy | 20, 21, 22, 23 |
+
+Remaining differences vs the mock (none in the checklist, all cosmetic): the Active|Revoked|Expired segments render as a dropdown, not a segmented control (shell N-way segment behavior); Activity "Status" is plain text, not a coloured badge; Activity at 375 is a horizontally scrolling table inside its card (mock shows cards); the Products tab has no tools table and no "Manifest stale" badge beside the title (the banner carries it); the grants table scrolls horizontally inside its own container at 1280 (page itself does not). D6 not reproduced.
+
+Teardown: session `ssconn2` closed, backend/frontend pids stopped (:8031/:3031 free), `.env.local` restored, throwaway grants + events deleted, the failed manifest refresh left the Sorento manifest_cache flagged stale in `foundryx_service_ssconn` (harmless). Nothing committed.
