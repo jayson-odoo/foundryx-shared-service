@@ -50,7 +50,8 @@ class GrantAdminService:
         counts = self.repo.calls_since([g.id for g in grants], since)
         names = self.repo.client_names(list({g.client_id for g in grants}))
         return [GrantItem(
-            id=g.id, status=g.status, product=g.product, productName=_product_name(g.product), productUserId=g.product_user_id,
+            id=g.id, status=g.status, product=g.product,
+            productName=_product_name(g.product), productUserId=g.product_user_id,
             userName=g.name, userEmail=g.email, clientName=names.get(g.client_id),
             grantedAt=g.created_at, consentedAt=g.consented_at, lastUsedAt=g.last_used_at,
             calls30d=counts.get(g.id, 0), revokedReason=g.revoked_reason) for g in grants]

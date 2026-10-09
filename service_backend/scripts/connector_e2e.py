@@ -22,6 +22,8 @@ Environment
   SORENTO_DB_URL          product Postgres URL         (step 9 evidence, 14, 16)
   EXPECT_TOOLS            expected tool count          (default 39)
   RBAC_WAIT               seconds to wait out the product RBAC cache (default 35)
+Never point this at production: steps 12/14/15 change the given databases.
+Remote hosts are refused (exit 2) unless E2E_ALLOW_REMOTE=1.
 Nothing secret is printed: tokens, codes, the email and the password never reach stdout.
 """
 from __future__ import annotations
@@ -592,7 +594,28 @@ def s16() -> str:
     return "; ".join(parts)
 
 
+def _refuse_remote() -> Optional[str]:
+    """Name of the first non-local target, or None. Empty DB host = local socket."""
+    if os.environ.get("E2E_ALLOW_REMOTE") == "1":
+        return None
+    local = {"localhost", "127.0.0.1", "::1"}
+    for name, value in (("SS_BASE", SS), ("SORENTO_API", SO_API), ("SORENTO_WEB", SO_WEB),
+                        ("SS_DB_URL", SS_DB), ("SORENTO_DB_URL", SO_DB)):
+        if not value:
+            continue
+        host = up.urlsplit(value).hostname or ""
+        if host and host not in local:
+            return f"{name} host '{host}'"
+    return None
+
+
 def main() -> int:
+    remote = _refuse_remote()
+    if remote:
+        print(f"REFUSED: {remote} is not local. Never point this at production "
+              "(steps 12/14/15 change the databases). Set E2E_ALLOW_REMOTE=1 to override.",
+              file=sys.stderr)
+        return 2
     if not EMAIL or not PASSWORD:
         print("FAIL 0 config: set SORENTO_LOGIN_EMAIL and SORENTO_LOGIN_PASSWORD")
         return 2
