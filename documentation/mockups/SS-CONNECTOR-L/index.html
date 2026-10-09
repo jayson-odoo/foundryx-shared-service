@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude connector admin (mockup v1)</title>
+<style>
+:root{
+  --g50:#f7f6f4;--g100:#ecebe7;--g200:#d9d6cf;--g400:#918a80;--g500:#6b6660;--g600:#4b4642;--g800:#1e1a17;
+  --page:#fbfaf8;--pri:#ff5a00;--pri-soft:#fff2e9;
+  --ok:#1b8648;--ok-soft:#e3f5e9;--bad:#d93420;--bad-soft:#fce5df;--warn:#9b6d0f;--warn-soft:#fcf0db;--info:#0f6ef6;--info-soft:#e3efff;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--g800);font:14px/1.45 Inter,ui-sans-serif,system-ui,sans-serif}
+h1,h2,h3{font-family:Poppins,Inter,ui-sans-serif,system-ui,sans-serif}
+.doc{max-width:1360px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:0 0 4px}
+.intro{color:var(--g500);font-size:13px;margin:0 0 16px;max-width:900px}
+section{margin:0 0 40px}
+section>h2{font-size:16px;margin:0 0 4px}
+.why{font-size:12.5px;color:var(--g500);margin:0 0 12px;max-width:900px}
+.row{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
+.desk{width:1280px;max-width:100%;background:#fff;border:1px solid var(--g100);border-radius:12px;overflow:hidden}
+.phone{width:375px;flex:none;background:#fff;border:1px solid var(--g100);border-radius:16px;overflow:hidden}
+.cap{font-size:11px;color:var(--g500);padding:6px 12px;border-bottom:1px solid var(--g100);background:var(--g50);font-weight:600}
+.screen{display:flex;min-height:560px}
+.side{width:240px;flex:none;border-right:1px solid var(--g100);padding:16px 12px;font-size:13px;background:var(--g50)}
+.side .grp{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--g500);padding:10px 8px 6px}
+.side .it{padding:6px 8px 6px 16px;border-radius:6px;color:var(--g600)}
+.side .it.on{background:var(--pri-soft);color:var(--pri);font-weight:500}
+.main{flex:1;min-width:0;padding:16px 24px}
+.crumb{font-size:13px;color:var(--g500);margin-bottom:6px}
+.crumb b{color:var(--g800);font-weight:500}
+.title{font:600 18px Poppins,Inter,sans-serif;margin:0 0 12px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--g100);margin-bottom:14px;overflow-x:auto}
+.tab{padding:8px 12px;font-size:13px;color:var(--g500);border-bottom:2px solid transparent;white-space:nowrap}
+.tab.on{color:var(--pri);border-color:var(--pri);font-weight:500}
+.tb{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+.seg{display:inline-flex;border:1px solid var(--g200);border-radius:8px;overflow:hidden}
+.seg span{padding:5px 12px;font-size:12.5px;color:var(--g600);border-right:1px solid var(--g200)}
+.seg span:last-child{border-right:0}
+.seg span.on{background:var(--pri);color:#fff}
+.inp{border:1px solid var(--g200);border-radius:8px;padding:5px 10px;font-size:12.5px;color:var(--g400);min-width:200px;background:#fff}
+.btn{border:1px solid var(--g200);border-radius:8px;padding:5px 10px;font-size:12.5px;background:#fff;color:var(--g600)}
+.btn.pri{background:var(--pri);border-color:var(--pri);color:#fff}
+.btn.bad{background:var(--bad);border-color:var(--bad);color:#fff}
+.sp{flex:1}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;color:var(--g500);font-weight:500;padding:8px;border-bottom:1px solid var(--g100);background:var(--g50);white-space:nowrap}
+td{padding:9px 8px;border-bottom:1px solid var(--g100);vertical-align:middle}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--g600)}
+.badge{display:inline-block;font-size:11px;border-radius:999px;padding:1px 8px;font-weight:500}
+.b-ok{background:var(--ok-soft);color:var(--ok)}.b-bad{background:var(--bad-soft);color:var(--bad)}.b-warn{background:var(--warn-soft);color:var(--warn)}.b-info{background:var(--info-soft);color:var(--info)}.b-mut{background:var(--g100);color:var(--g600)}
+.cb{width:14px;height:14px;border:1.5px solid var(--g400);border-radius:3px;display:inline-block;vertical-align:middle}
+.cb.on{background:var(--pri);border-color:var(--pri)}
+.dots{color:var(--g400);font-weight:700;letter-spacing:1px}
+.bulk{display:flex;align-items:center;gap:10px;background:var(--pri-soft);border:1px solid #ffd2b8;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-size:12.5px}
+.menu{position:absolute;right:30px;top:150px;background:#fff;border:1px solid var(--g200);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.1);font-size:12.5px;min-width:160px}
+.menu div{padding:7px 12px}.menu .r{color:var(--bad)}
+.rel{position:relative}
+.dlgwrap{background:rgba(15,15,13,.45);padding:40px 16px;display:grid;place-items:center}
+.dlg{background:#fff;border-radius:12px;width:440px;max-width:100%;padding:18px 20px}
+.dlg h3{margin:0 0 8px;font-size:16px}
+.dlg p{font-size:13px;color:var(--g600);margin:0 0 12px}
+.kv{display:grid;grid-template-columns:180px 1fr;gap:6px 16px;font-size:13px;margin-bottom:12px}
+.kv dt{color:var(--g500)}.kv dd{margin:0}
+.banner{border:1px solid #f1d9a6;background:var(--warn-soft);color:var(--warn);border-radius:8px;padding:8px 12px;font-size:12.5px;margin-bottom:12px}
+.card{border:1px solid var(--g100);border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:12.5px}
+.card .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.map{font-size:12.5px}
+.map td{vertical-align:top}
+.ph{padding:12px}
+</style>
+</head>
+<body>
+<div class="doc">
+<h1>Claude connector admin - mockup v1</h1>
+<p class="intro">Lane SS-CONNECTOR-L, PR #117. The SS-side admin surface only: the consent screen is sorento's own page
+(crew Q1 b), so SS shows no consent UI. Case: the sorento product connection, its real tool names from sorento's manifest
+(<code>app/services/analytics_connector/manifest.py</code>, <code>reused_tools.py</code>) and real sorento role names from dev data
+(<code>user_roles</code> on <code>sorento_acm_dev</code>). Person names and emails are replaced by the user's role in brackets because
+sorento-crm is a public repo and this mock must carry no person data; the live page shows the name from the grant's snapshot.</p>
+
+<section>
+<h2>1. Grants list (desktop 1280)</h2>
+<p class="why">Settings &gt; Claude connector &gt; Grants. Resource shell list: Active | Revoked | Expired segments, search, filters,
+export, columns. Row "..." and bulk actions both offer Revoke.</p>
+<div class="desk"><div class="cap">1280 px - Grants, Active segment, two rows selected</div>
+<div class="screen">
+ <div class="side"><div class="grp">Settings</div><div class="it">Branding</div><div class="it">Integrations</div><div class="it">Terminology</div><div class="it on">Claude connector</div><div class="it">Workflows</div></div>
+ <div class="main rel">
+  <div class="crumb">Settings / <b>Claude connector</b></div>
+  <div class="title">Claude connector</div>
+  <div class="tabs"><div class="tab on">Grants</div><div class="tab">Products</div></div>
+  <div class="tb"><div class="seg"><span class="on">Active</span><span>Revoked</span><span>Expired</span></div>
+   <div class="inp">Search user or product user id</div><span class="sp"></span>
+   <span class="btn">Filters</span><span class="btn">Export</span><span class="btn">Columns</span></div>
+  <div class="bulk"><b>2 selected</b><span class="sp"></span><span class="btn">Export</span><span class="btn bad">Revoke</span></div>
+  <table>
+   <thead><tr><th><span class="cb"></span></th><th>User</th><th>Product user id</th><th>Product</th><th>Client</th><th>Granted</th><th>Last used</th><th>Calls (30 d)</th><th>Status</th><th></th></tr></thead>
+   <tbody>
+    <tr><td><span class="cb on"></span></td><td>[Project Customer Service user]</td><td class="mono">sorento user id</td><td>Sorento</td><td>Claude</td><td>9 Oct 2026, 10:14</td><td>9 Oct 2026, 16:02</td><td>48</td><td><span class="badge b-ok">Active</span></td><td class="dots">...</td></tr>
+    <tr><td><span class="cb on"></span></td><td>[Warehouse Manager user]</td><td class="mono">sorento user id</td><td>Sorento</td><td>Claude</td><td>8 Oct 2026, 09:30</td><td>9 Oct 2026, 11:47</td><td>12</td><td><span class="badge b-ok">Active</span></td><td class="dots">...</td></tr>
+    <tr><td><span class="cb"></span></td><td>[Admin user]</td><td class="mono">sorento user id</td><td>Sorento</td><td>Claude</td><td>2 Oct 2026, 14:05</td><td>7 Oct 2026, 18:20</td><td>131</td><td><span class="badge b-ok">Active</span></td><td class="dots">...</td></tr>
+   </tbody>
+  </table>
+  <div class="menu"><div>Open</div><div class="r">Revoke</div></div>
+ </div>
+</div></div>
+</section>
+
+<section>
+<h2>2. Revoke confirm</h2>
+<p class="why">Single row: plain confirm. Bulk: typed confirm (type REVOKE), the shared ConfirmActionDialog contract.</p>
+<div class="row">
+ <div class="desk" style="width:620px"><div class="cap">Row revoke</div><div class="dlgwrap"><div class="dlg">
+  <h3>Revoke this grant?</h3><p>[Project Customer Service user] loses Claude access to Sorento now. Connecting again asks them to sign in to Sorento.</p>
+  <div class="tb" style="justify-content:flex-end;margin:0"><span class="btn">Cancel</span><span class="btn bad">Revoke</span></div></div></div></div>
+ <div class="desk" style="width:620px"><div class="cap">Bulk revoke (2)</div><div class="dlgwrap"><div class="dlg">
+  <h3>Revoke 2 grants?</h3><p>Both users lose Claude access to Sorento now. Type REVOKE to confirm.</p>
+  <div class="inp" style="margin-bottom:12px">REVOKE</div>
+  <div class="tb" style="justify-content:flex-end;margin:0"><span class="btn">Cancel</span><span class="btn bad">Revoke 2</span></div></div></div></div>
+</div>
+</section>
+
+<section>
+<h2>3. Grant detail - Activity tab (desktop)</h2>
+<p class="why">Resource form, read-only (no Edit toggle). Details tab = the grant facts; Activity tab = its call log + lifecycle events,
+newest first. Status codes are sorento's contract codes. Args are shown capped; the response body is never stored.</p>
+<div class="desk"><div class="cap">1280 px - grant detail, Activity tab</div>
+<div class="screen">
+ <div class="side"><div class="grp">Settings</div><div class="it">Branding</div><div class="it">Integrations</div><div class="it on">Claude connector</div></div>
+ <div class="main">
+  <div class="crumb">Settings / Claude connector / <b>[Warehouse Manager user]</b></div>
+  <div class="tb"><div class="title" style="margin:0">[Warehouse Manager user]</div><span class="badge b-ok">Active</span><span class="sp"></span><span class="btn">&lsaquo; 2 / 3 &rsaquo;</span><span class="btn">Actions</span></div>
+  <div class="tabs"><div class="tab">Details</div><div class="tab on">Activity</div></div>
+  <table>
+   <thead><tr><th>Time</th><th>Event</th><th>Tool</th><th>Status</th><th>Rows</th><th>Chars</th><th>ms</th><th>Args</th></tr></thead>
+   <tbody>
+    <tr><td>9 Oct 2026, 11:47</td><td>Tool call</td><td class="mono">crm_inventory_stock_balance_list</td><td><span class="badge b-ok">ok</span></td><td>1000</td><td>120 000</td><td>840</td><td class="mono">{"warehouse_code": "..."} <span class="badge b-warn">truncated</span></td></tr>
+    <tr><td>9 Oct 2026, 11:45</td><td>Tool call</td><td class="mono">chat_search_messages</td><td><span class="badge b-bad">chat_history_not_permitted</span></td><td>0</td><td>0</td><td>95</td><td class="mono">{"text": "..."}</td></tr>
+    <tr><td>9 Oct 2026, 11:44</td><td>Tool call</td><td class="mono">crm_inventory_warehouses_list</td><td><span class="badge b-ok">ok</span></td><td>14</td><td>2 310</td><td>210</td><td class="mono">{}</td></tr>
+    <tr><td>9 Oct 2026, 10:02</td><td>Tool call</td><td class="mono">crm_master_products_list</td><td><span class="badge b-mut">upstream_unavailable</span></td><td>0</td><td>0</td><td>15 000</td><td class="mono">{"search": "..."}</td></tr>
+    <tr><td>8 Oct 2026, 09:31</td><td>Token refreshed</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>8 Oct 2026, 09:30</td><td>Consented</td><td></td><td><span class="badge b-info">via Sorento sign-in</span></td><td></td><td></td><td></td><td></td></tr>
+   </tbody>
+  </table>
+ </div>
+</div></div>
+</section>
+
+<section>
+<h2>4. Products tab (read-only, desktop)</h2>
+<p class="why">Env-configured products (crew Q1 a). Secrets show only set / missing. Manifest stale when the last refresh failed
+(crew Q4 a): the last good copy keeps serving. Refresh manifest is the only action (connector.manage).</p>
+<div class="desk"><div class="cap">1280 px - Products, manifest stale</div>
+<div class="screen">
+ <div class="side"><div class="grp">Settings</div><div class="it">Integrations</div><div class="it on">Claude connector</div></div>
+ <div class="main">
+  <div class="crumb">Settings / <b>Claude connector</b></div>
+  <div class="title">Claude connector</div>
+  <div class="tabs"><div class="tab">Grants</div><div class="tab on">Products</div></div>
+  <div class="banner">Sorento manifest is stale: last refresh failed (upstream_error). Serving the copy fetched 9 Oct 2026, 15:45.</div>
+  <div class="tb"><div class="title" style="margin:0;font-size:15px">Sorento</div><span class="badge b-warn">Manifest stale</span><span class="sp"></span><span class="btn pri">Refresh manifest</span></div>
+  <dl class="kv">
+   <dt>MCP URL</dt><dd class="mono">https://&lt;ss host&gt;/mcp/sorento &nbsp;<span class="btn">Copy</span></dd>
+   <dt>Consent page</dt><dd class="mono">https://&lt;sorento host&gt;/connect/claude</dd>
+   <dt>API base</dt><dd class="mono">https://&lt;sorento host&gt;</dd>
+   <dt>Connection id</dt><dd class="mono">set in env</dd>
+   <dt>SS to Sorento secret</dt><dd><span class="badge b-ok">Set</span></dd>
+   <dt>Sorento to SS secret</dt><dd><span class="badge b-ok">Set</span></dd>
+   <dt>Manifest version</dt><dd class="mono">hash of tools</dd>
+   <dt>Tools</dt><dd>39 (34 reused read tools + 5 chat tools)</dd>
+  </dl>
+  <table><thead><tr><th>Tool</th><th>Method</th><th>Path</th></tr></thead><tbody>
+   <tr><td class="mono">chat_query</td><td>POST</td><td class="mono">/api/v1/connector/query</td></tr>
+   <tr><td class="mono">crm_master_brands_list</td><td>GET</td><td class="mono">/api/v1/master-data/brands/</td></tr>
+   <tr><td class="mono">crm_lookup_resolve</td><td>POST</td><td class="mono">/api/v1/lookup/resolve</td></tr>
+  </tbody></table>
+ </div>
+</div></div>
+</section>
+
+<section>
+<h2>5. Mobile 375</h2>
+<p class="why">Card view of the same list on narrow screens (Resource shell card render), detail tabs scroll horizontally.</p>
+<div class="row">
+ <div class="phone"><div class="cap">375 px - Grants</div><div class="ph">
+  <div class="title">Claude connector</div>
+  <div class="tabs"><div class="tab on">Grants</div><div class="tab">Products</div></div>
+  <div class="tb"><div class="seg"><span class="on">Active</span><span>Revoked</span><span>Expired</span></div></div>
+  <div class="tb"><div class="inp" style="min-width:0;flex:1">Search</div><span class="btn">Filters</span></div>
+  <div class="card"><div class="top"><b>[Project Customer Service user]</b><span class="dots">...</span></div>Sorento - Claude<br><span style="color:var(--g500)">Last used 9 Oct, 16:02 - 48 calls</span><br><span class="badge b-ok">Active</span></div>
+  <div class="card"><div class="top"><b>[Warehouse Manager user]</b><span class="dots">...</span></div>Sorento - Claude<br><span style="color:var(--g500)">Last used 9 Oct, 11:47 - 12 calls</span><br><span class="badge b-ok">Active</span></div>
+ </div></div>
+ <div class="phone"><div class="cap">375 px - Activity</div><div class="ph">
+  <div class="crumb">Claude connector /</div>
+  <div class="tb"><div class="title" style="margin:0;font-size:15px">[Warehouse Manager user]</div><span class="badge b-ok">Active</span></div>
+  <div class="tabs"><div class="tab">Details</div><div class="tab on">Activity</div></div>
+  <div class="card"><div class="top"><span class="mono">crm_inventory_stock_balance_list</span><span class="badge b-ok">ok</span></div>9 Oct, 11:47 - 1000 rows <span class="badge b-warn">truncated</span></div>
+  <div class="card"><div class="top"><span class="mono">chat_search_messages</span><span class="badge b-bad">denied</span></div>9 Oct, 11:45 - chat_history_not_permitted</div>
+  <div class="card"><div class="top"><span>Consented</span></div>8 Oct, 09:30 - via Sorento sign-in</div>
+ </div></div>
+</div>
+</section>
+
+<section>
+<h2>6. Element to component map</h2>
+<table class="map">
+<thead><tr><th>Element</th><th>Reuses (repo path)</th></tr></thead>
+<tbody>
+<tr><td>Sidebar entry Settings &gt; Claude connector</td><td><code>service_frontend/config/</code> menu arrays (MENU_SIDEBAR + MEGA + MEGA_MOBILE), tagged <code>permission: 'connector.read'</code>, <code>module: 'connector'</code>; pruned by <code>lib/menu-filter.ts</code></td></tr>
+<tr><td>Page tabs Grants | Products</td><td>shadcn Tabs (<code>components/ui/tabs</code>) as on the Settings pages</td></tr>
+<tr><td>Grants list, toolbar, search, Filters, Export, Columns</td><td><code>components/platform/resource-list</code> via <code>useConnectorGrantListConfig()</code> (Users list = reference)</td></tr>
+<tr><td>Active | Revoked | Expired</td><td>Resource-list segments (<code>ResourceListConfig.segments</code> / segmented control)</td></tr>
+<tr><td>Status badges</td><td><code>components/platform/status-badge</code> + a per-entity registry</td></tr>
+<tr><td>Row "..." and bulk Revoke</td><td><code>components/platform/resource-actions</code> action registry (<code>surfaces: {row, bulk}</code>)</td></tr>
+<tr><td>Revoke confirm, typed REVOKE on bulk</td><td><code>ConfirmActionDialog</code> typed-confirm contract (<code>ResourceAction.confirm.input</code>)</td></tr>
+<tr><td>Grant detail with Details | Activity, record nav</td><td><code>components/platform/resource-form</code> (read-only, no Edit toggle, like the Email log detail)</td></tr>
+<tr><td>Activity table</td><td>embedded <code>ResourceList</code> in a tab (omnichannel Templates tab pattern)</td></tr>
+<tr><td>Products facts + secrets set/missing</td><td>read-only <code>FormRow</code> rows in a ResourceForm-style card</td></tr>
+<tr><td>Copy MCP URL</td><td>existing copy button used on the API key reveal (omnichannel developer settings)</td></tr>
+<tr><td>Stale banner</td><td><code>components/ui/alert</code> warning variant</td></tr>
+<tr><td>Mobile cards</td><td>Resource-list <code>cardRender</code> + card/list toggle (App Store precedent)</td></tr>
+<tr><td>Dates</td><td><code>hooks/use-datetime.ts</code> (session tz)</td></tr>
+</tbody></table>
+</section>
+</div>
+</body>
+</html>
