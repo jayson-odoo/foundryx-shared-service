@@ -7,7 +7,7 @@ hashes. Datetimes are aware-UTC (``UTCDateTime``); JSON uses ``none_as_null``.
 """
 import uuid
 
-from sqlalchemy import Column, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.types import JSON
 
@@ -122,6 +122,8 @@ class CallLog(ConnectorBase):
     rows = Column(Integer, nullable=True)
     chars = Column(Integer, nullable=True)
     error_code = Column(String(64), nullable=True)
+    http_status = Column(Integer, nullable=True)
+    truncated = Column(Boolean, nullable=False, default=False)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False, index=True)
 
 

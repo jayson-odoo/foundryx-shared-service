@@ -42,6 +42,7 @@ class ProductStatus:
     key: str
     status: str  # "ok" | "misconfigured"
     product: Optional[Product] = None
+    partial: Optional[Product] = None  # misconfigured: whatever was set (admin view only)
 
 
 _env_override: Optional[Mapping[str, str]] = None
@@ -72,7 +73,12 @@ def load_products(env: Mapping[str, str]) -> dict[str, ProductStatus]:
         prefix = f"CONNECTOR_{key.upper()}_"
         vals = {name: _val(env, prefix + name) for name in _REQUIRED}
         if not all(vals.values()):
-            out[key] = ProductStatus(key=key, status="misconfigured")
+            out[key] = ProductStatus(key=key, status="misconfigured", partial=Product(
+                key=key, display_name=_val(env, prefix + "DISPLAY_NAME") or key,
+                tenant_slug=vals["TENANT_SLUG"], connection_id=vals["CONNECTION_ID"],
+                consent_url=vals["CONSENT_URL"], api_base_url=vals["API_BASE_URL"].rstrip("/"),
+                ss_to_product_secret=vals["SS_TO_PRODUCT_SECRET"],
+                product_to_ss_secret=vals["PRODUCT_TO_SS_SECRET"]))
             continue
         product = Product(
             key=key,
@@ -89,6 +95,10 @@ def load_products(env: Mapping[str, str]) -> dict[str, ProductStatus]:
         )
         out[key] = ProductStatus(key=key, status="ok", product=product)
     return out
+
+
+def all_products() -> dict[str, ProductStatus]:
+    return load_products(_env())
 
 
 def get_product(key: str) -> Optional[Product]:

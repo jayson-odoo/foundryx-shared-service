@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..services import mcp_service
+from ..services.mcp_service import McpService
 from ..services.oauth_service import OAuthService, Unauthorized
 from ._common import oauth_service, require_method
 
@@ -36,7 +37,8 @@ async def mcp(request: Request, svc: OAuthService = Depends(oauth_service)) -> R
         message = json.loads(body)
     except ValueError:
         return JSONResponse(mcp_service.rpc_error(None, mcp_service.PARSE_ERROR, "Parse error"))
-    out = mcp_service.handle(svc.product, grant, message)
-    if out is None:
-        return Response(status_code=202)
-    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+    reply = McpService(svc.db, svc.ctx, grant).handle(message)
+    if reply.body is None:
+        return Response(status_code=reply.status)
+    return JSONResponse(reply.body, status_code=reply.status,
+                        headers={"Cache-Control": "no-store", **reply.headers})

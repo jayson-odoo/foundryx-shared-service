@@ -81,7 +81,7 @@ def resolve_context(db: Session, key: str) -> ProductContext:
     tenant = TenantRepository(db).get_by_slug(product.tenant_slug)
     if tenant is None or tenant.is_platform or not tenant.signin_allowed:
         raise ProductNotFound()
-    if not ModuleRepository(db).is_active(tenant.id, MODULE_NAME):
+    if not ModuleRepository(db).is_active(tenant.id, MODULE_NAME):  # no row / INACTIVE = 404
         raise ProductNotFound()
     return ProductContext(product=product, tenant_id=tenant.id)
 
@@ -347,12 +347,7 @@ class OAuthService:
     def revoke_grant(self, grant: Grant, *, reason: str, event: str = "revoked",
                      actor_user_id: Optional[str] = None) -> None:
         """Mark revoked + kill every token (caller commits)."""
-        grant.status = "revoked"
-        grant.revoked_reason = reason
-        grant.revoked_at = _now()
-        self.repo.delete_grant_tokens(grant.id)
-        self.repo.add_event(product=self.product.key, event=event, grant_id=grant.id,
-                            reason=reason, actor_user_id=actor_user_id)
+        self.repo.revoke_grant(grant, reason=reason, event=event, actor_user_id=actor_user_id)
 
     # --- bearer authentication (MCP) ----------------------------------------------------------
     def authenticate_access(self, token: str) -> Grant:

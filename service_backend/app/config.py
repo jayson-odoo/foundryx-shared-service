@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # window-throttle (no permanent lock).
     throttle_connector_max_fails: int = 30
     throttle_connector_window_minutes: int = 15
+    # tools/call per grant: calls per window.
+    throttle_connector_call_max: int = 120
+    throttle_connector_call_window_minutes: int = 1
     # Web chat visitor session/message endpoints (plan sprint-4/34 / A7b S2,
     # AC-WEB-30, D-A7B-22) - own bucket, TWO independent key namespaces
     # (`ip:<ip>`, `v:<visitorId>`) so a single busy office IP and a single

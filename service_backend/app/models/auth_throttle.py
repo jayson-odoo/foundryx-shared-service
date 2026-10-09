@@ -32,6 +32,8 @@ THROTTLE_SCOPE_EMBED = "embed_session"
 # Claude connector OAuth endpoints (plan sprint-4/19): DCR + token failures per IP
 # and tools/call per grant - own bucket, never shares login.
 THROTTLE_SCOPE_CONNECTOR = "connector"
+# tools/call per grant (key = grant id).
+THROTTLE_SCOPE_CONNECTOR_CALL = "connector_call"
 # Omnichannel web chat public visitor API (plan sprint-4/34 / A7b S2,
 # AC-WEB-30, D-A7B-22) - own bucket, shared by TWO independent key namespaces
 # within it (`ip:<ip>`, `v:<visitorId>` - see `throttle.py`'s
