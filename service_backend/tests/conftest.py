@@ -259,3 +259,120 @@ def client(session_factory):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+# --- Claude connector (plan sprint-4/19) -------------------------------------
+
+
+@pytest.fixture
+def connector_session_factory():
+    """SQLite session factory with the connector module mounted + installed for the
+    default tenant (mirrors ``ideation_session_factory``)."""
+    from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
+    from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
+    from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
+    from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    ).execution_options(
+        schema_translate_map={
+            OMNI_SCHEMA: "omni",
+            AUTOCOUNT_SCHEMA: "omni",
+            IDEATION_SCHEMA: "ideation",
+            CONNECTOR_SCHEMA: "connector",
+        }
+    )
+    with engine.connect() as conn:
+        conn.exec_driver_sql("ATTACH ':memory:' AS omni")
+        conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
+        conn.exec_driver_sql("ATTACH ':memory:' AS connector")
+        conn.commit()
+    Base.metadata.create_all(bind=engine)
+    OmniBase.metadata.create_all(bind=engine)
+    AutocountBase.metadata.create_all(bind=engine)
+    IdeationBase.metadata.create_all(bind=engine)
+    ConnectorBase.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    db = TestingSessionLocal()
+    seed_statuses(db)
+    seed_tenant_transitions(db)
+    seed_default_tenant(db)
+    seed_platform_tenant(db)
+    seed_permissions(db)
+    seed_platform_admin(db)
+    from app.template_engine.seed_templates import seed_platform_templates
+
+    seed_platform_templates(db)
+
+    admin_role = Role(
+        tenant_id=DEFAULT_TENANT_ID,
+        name="Admin",
+        description="Full system access",
+        is_system=True,
+    )
+    admin_role.permissions = tenant_admin_grant(db, DEFAULT_TENANT_ID)
+    db.add(admin_role)
+    db.flush()
+    demo = User(
+        tenant_id=DEFAULT_TENANT_ID,
+        email=ACTIVE_EMAIL,
+        password=hash_password(ACTIVE_PASSWORD),
+        name="Demo User",
+        status=UserStatus.ACTIVE.value,
+        email_verified_at=func.now(),
+    )
+    demo.roles = [admin_role]
+    db.add(demo)
+    db.commit()
+
+    from app.module_loader import bootstrap_modules
+    from app.services.app_store_service import AppStoreService
+
+    bootstrap_modules(engine=engine, db=db)
+    AppStoreService(db).install(DEFAULT_TENANT_ID, "connector")
+    db.close()
+
+    yield TestingSessionLocal
+
+
+@pytest.fixture
+def connector_client(connector_session_factory, monkeypatch):
+    """HTTPS TestClient (the binding cookie is Secure) with two configured products
+    (``acme``, ``beta``, both owned by the default tenant) and public base
+    ``https://ss.test``. Env is reset on teardown."""
+    from modules.connector import registry
+    from modules.connector.services import product_client
+    from tests.connector_support import PUBLIC_BASE, make_env
+
+    def override_get_db():
+        db = connector_session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    monkeypatch.setattr(settings, "public_base_url", PUBLIC_BASE)
+    registry.set_env_for_tests(make_env())
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app, base_url="https://testserver") as c:
+        c._factory = connector_session_factory
+        yield c
+    app.dependency_overrides.clear()
+    registry.set_env_for_tests(None)
+    product_client.TRANSPORT = None
+
+
+@pytest.fixture
+def fake_product(connector_client):
+    """Installs an httpx.MockTransport emulating the ``acme`` product."""
+    from modules.connector.services import product_client
+    from tests.connector_support import FakeProduct
+
+    fp = FakeProduct()
+    product_client.TRANSPORT = fp.transport()
+    yield fp
+    product_client.TRANSPORT = None
