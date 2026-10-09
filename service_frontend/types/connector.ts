@@ -63,6 +63,14 @@ export interface ConnectorProduct {
   secrets: { ssToProduct: ConnectorSecretState; productToSs: ConnectorSecretState };
 }
 
+export interface ConnectorRevokeResult {
+  ok: true;
+}
+
+export interface ConnectorBulkRevokeResult {
+  revoked: number;
+}
+
 export interface ConnectorGrantListParams {
   status?: ConnectorGrantStatus;
   product?: string;

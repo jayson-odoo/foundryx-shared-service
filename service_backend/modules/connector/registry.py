@@ -72,7 +72,7 @@ def load_products(env: Mapping[str, str]) -> dict[str, ProductStatus]:
             continue
         prefix = f"CONNECTOR_{key.upper()}_"
         vals = {name: _val(env, prefix + name) for name in _REQUIRED}
-        if not all(vals.values()):
+        if not all(vals.values()) or vals["SS_TO_PRODUCT_SECRET"] == vals["PRODUCT_TO_SS_SECRET"]:
             out[key] = ProductStatus(key=key, status="misconfigured", partial=Product(
                 key=key, display_name=_val(env, prefix + "DISPLAY_NAME") or key,
                 tenant_slug=vals["TENANT_SLUG"], connection_id=vals["CONNECTION_ID"],

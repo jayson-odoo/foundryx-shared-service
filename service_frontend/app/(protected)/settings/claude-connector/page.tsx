@@ -1,5 +1,6 @@
 'use client';
 
+import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ResourceList } from '@/components/platform/resource-list';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -11,7 +12,7 @@ export default function ClaudeConnectorPage() {
 
   return (
     <RequirePermission permission="connector.read">
-      <div className="mx-auto w-full px-4 lg:px-6">
+      <Container width="fluid">
         <Tabs defaultValue="grants" className="gap-4">
           <TabsList variant="line">
             <TabsTrigger value="grants">Grants</TabsTrigger>
@@ -24,7 +25,7 @@ export default function ClaudeConnectorPage() {
             <ProductsTab />
           </TabsContent>
         </Tabs>
-      </div>
+      </Container>
     </RequirePermission>
   );
 }

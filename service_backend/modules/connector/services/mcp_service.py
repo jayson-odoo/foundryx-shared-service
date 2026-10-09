@@ -156,7 +156,10 @@ class McpService:
         for p in path_params:
             if p not in args:
                 return None
-            path = path.replace("{" + p + "}", quote(_scalar(args[p]), safe=""))
+            value = _scalar(args[p])
+            if value in ("", ".", "..") or any(ord(c) < 32 or ord(c) == 127 for c in value):
+                return None  # dot-segments / control chars never reach the URL
+            path = path.replace("{" + p + "}", quote(value, safe=""))
         pairs = [(k, _scalar(args[k])) for k in query_params if k in args]
         query = urlencode(pairs)
         body = b""
@@ -206,7 +209,6 @@ class McpService:
                             status="error", error_code="upstream_unavailable", http_status=sc)
 
     def _success(self, rid, name, args, resp: httpx.Response, started) -> dict:
-        original_chars = len(resp.content)
         try:
             data: Any = resp.json()
         except ValueError:
@@ -226,6 +228,7 @@ class McpService:
                 data = {**data, "rows": data["rows"][:MAX_ROWS], "truncated": True,
                         "originalRows": rows, "returnedRows": MAX_ROWS}
         text = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+        original_chars = len(resp.text)  # characters, not bytes
         if len(text) > MAX_TEXT_CHARS:
             truncated = True
             cut = MAX_TEXT_CHARS

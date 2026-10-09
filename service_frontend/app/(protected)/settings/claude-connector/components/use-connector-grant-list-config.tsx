@@ -59,8 +59,8 @@ export function useConnectorGrantActions(): ResourceAction<ConnectorGrant>[] {
           },
         },
         run: async (rows, runtime) => {
-          await bulkRevokeGrants(rows.map((r) => r.id));
-          toast.success(`Revoked ${rows.length} grant(s).`);
+          const result = await bulkRevokeGrants(rows.map((r) => r.id));
+          toast.success(`Revoked ${result.revoked} grant(s).`);
           runtime.reload();
         },
       },

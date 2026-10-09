@@ -1,10 +1,12 @@
 import { apiFetch } from '@/lib/api-client';
 import type {
   ConnectorActivity,
+  ConnectorBulkRevokeResult,
   ConnectorGrant,
   ConnectorGrantListParams,
   ConnectorGrantPage,
   ConnectorProduct,
+  ConnectorRevokeResult,
 } from '@/types/connector';
 
 export function listGrants(params: ConnectorGrantListParams): Promise<ConnectorGrantPage> {
@@ -26,14 +28,14 @@ export function getGrantActivity(id: string): Promise<ConnectorActivity> {
   return apiFetch<ConnectorActivity>(`/connector/grants/${encodeURIComponent(id)}/activity`);
 }
 
-export function revokeGrant(id: string): Promise<ConnectorGrant> {
-  return apiFetch<ConnectorGrant>(`/connector/grants/${encodeURIComponent(id)}/revoke`, {
+export function revokeGrant(id: string): Promise<ConnectorRevokeResult> {
+  return apiFetch<ConnectorRevokeResult>(`/connector/grants/${encodeURIComponent(id)}/revoke`, {
     method: 'POST',
   });
 }
 
-export function bulkRevokeGrants(ids: string[]): Promise<unknown> {
-  return apiFetch<unknown>('/connector/grants/bulk-revoke', {
+export function bulkRevokeGrants(ids: string[]): Promise<ConnectorBulkRevokeResult> {
+  return apiFetch<ConnectorBulkRevokeResult>('/connector/grants/bulk-revoke', {
     method: 'POST',
     body: JSON.stringify({ ids }),
   });

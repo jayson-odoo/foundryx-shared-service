@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import re
+
 import httpx
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,17 @@ class ManifestUnavailable(Exception):
     pass
 
 
+_PATH_RE = re.compile(r"^/[A-Za-z0-9/_\-{}.~]*$")
+
+
+def clean_path_template(path: Any) -> bool:
+    """A manifest path is operator-trusted but still pinned: it can never change
+    the host (no '@', '//', scheme tricks) or climb ('..'), query or fragment."""
+    if not isinstance(path, str) or not _PATH_RE.match(path):
+        return False
+    return not any(bad in path for bad in ("//", "..", "?", "#", "@", "\\"))
+
+
 def is_visible_tool(tool: Any) -> bool:
     """Read-only only: readOnlyHint true AND destructiveHint not true; shape-checked."""
     if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
@@ -27,7 +40,8 @@ def is_visible_tool(tool: Any) -> bool:
         return False
     http = tool.get("http")
     return (isinstance(http, dict) and isinstance(http.get("method"), str)
-            and isinstance(http.get("path_template"), str)
+            and http["method"].upper() in ("GET", "POST")
+            and clean_path_template(http.get("path_template"))
             and isinstance(tool.get("input_schema"), dict))
 
 

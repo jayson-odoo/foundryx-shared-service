@@ -4,6 +4,7 @@
 ``httpx.MockTransport``. Raises ``httpx.HTTPError`` on transport failure.
 """
 from typing import Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -21,12 +22,21 @@ def send(product: Product, *, method: str, raw_path: str, query: str, body: byte
         audience=product.call_audience, sub=sub, grant_id=grant_id, consented_at=consented_at,
         tool=tool, method=method, raw_path=raw_path, query=query, body=body)
     url = product.api_base_url + raw_path + (f"?{query}" if query else "")
+    if urlsplit(url).hostname != urlsplit(product.api_base_url).hostname:
+        raise httpx.TransportError("host mismatch")  # nothing is sent
     headers = {"Authorization": f"Connector {token}", "Accept": "application/json"}
     if body:
         headers["Content-Type"] = "application/json"
     timeout = httpx.Timeout(float(registry.call_timeout_seconds()))
     with httpx.Client(transport=TRANSPORT, timeout=timeout, follow_redirects=False) as client:
-        resp = client.request(method.upper(), url, content=body or None, headers=headers)
-    if len(resp.content) > MAX_RESPONSE_BYTES:
-        raise httpx.TransportError("response too large")
-    return resp
+        with client.stream(method.upper(), url, content=body or None, headers=headers) as resp:
+            chunks, size = [], 0
+            for chunk in resp.iter_bytes():
+                size += len(chunk)
+                if size > MAX_RESPONSE_BYTES:
+                    raise httpx.TransportError("response too large")
+                chunks.append(chunk)
+    kept = [(k, v) for k, v in resp.headers.items()
+            if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+    return httpx.Response(resp.status_code, headers=kept, content=b"".join(chunks),
+                          request=resp.request)

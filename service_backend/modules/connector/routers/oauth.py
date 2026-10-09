@@ -1,6 +1,8 @@
 """Connector OAuth endpoints (public; auth happens in-endpoint). HTTP only."""
 from typing import Dict
 
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
@@ -41,6 +43,19 @@ def _throttled(exc: Throttled) -> JSONResponse:
                         headers={"Retry-After": str(exc.retry_after_seconds), **_NO_STORE})
 
 
+def _guard(db: Session, request: Request, prefix: str):
+    """Per-IP throttle for the browser/public endpoints; every attempt counts.
+    Returns a 429 response or None."""
+    throttle = ThrottleService(db)
+    key = f"{prefix}:{client_ip(request)}"
+    try:
+        throttle.enforce_connector(key=key)
+    except Throttled as exc:
+        return _throttled(exc)
+    throttle.record_connector(key=key)
+    return None
+
+
 def _oauth_error(error: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": error}, status_code=status, headers=_NO_STORE)
 
@@ -77,21 +92,29 @@ async def register(request: Request, svc: OAuthService = Depends(oauth_service),
 
 
 @router.api_route("/{p}/oauth/authorize", methods=["GET", "POST"], include_in_schema=False)
-def authorize(request: Request, svc: OAuthService = Depends(oauth_service)) -> Response:
+def authorize(request: Request, svc: OAuthService = Depends(oauth_service),
+              db: Session = Depends(get_db)) -> Response:
     require_method(request, "GET")
+    limited = _guard(db, request, "authz")
+    if limited is not None:
+        return limited
     try:
         url, bind = svc.begin_authorize(dict(request.query_params))
     except AuthorizeRefused:
         return _error_page()
     resp = RedirectResponse(url, status_code=302, headers=_NO_STORE)
-    resp.set_cookie(BIND_COOKIE, bind, max_age=600, path=f"/mcp/{svc.product.key}/oauth",
+    resp.set_cookie(BIND_COOKIE, bind, max_age=600, path=urlparse(svc.issuer).path + "/oauth",
                     secure=True, httponly=True, samesite="none")
     return resp
 
 
 @router.api_route("/{p}/oauth/consent-return", methods=["GET", "POST"], include_in_schema=False)
-async def consent_return(request: Request, svc: OAuthService = Depends(oauth_service)) -> Response:
+async def consent_return(request: Request, svc: OAuthService = Depends(oauth_service),
+                         db: Session = Depends(get_db)) -> Response:
     require_method(request, "POST")
+    limited = _guard(db, request, "consent")
+    if limited is not None:
+        return limited
     form = await _form(request)
     try:
         url = svc.complete_consent(
@@ -123,8 +146,12 @@ async def token(request: Request, svc: OAuthService = Depends(oauth_service),
 
 
 @router.api_route("/{p}/oauth/revoke", methods=["GET", "POST"], include_in_schema=False)
-async def revoke(request: Request, svc: OAuthService = Depends(oauth_service)) -> Response:
+async def revoke(request: Request, svc: OAuthService = Depends(oauth_service),
+                 db: Session = Depends(get_db)) -> Response:
     require_method(request, "POST")
+    limited = _guard(db, request, "revoke")
+    if limited is not None:
+        return limited
     form = await _form(request)
     svc.revoke(form.get("token"), form.get("client_id"))
     return Response(status_code=200, headers=_NO_STORE)

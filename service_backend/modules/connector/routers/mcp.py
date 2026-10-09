@@ -29,6 +29,10 @@ async def mcp(request: Request, svc: OAuthService = Depends(oauth_service)) -> R
                 f'Bearer resource_metadata="{svc.base}/.well-known/oauth-protected-resource/mcp/{svc.product.key}"'
             )},
         )
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        return JSONResponse(mcp_service.rpc_error(None, mcp_service.INVALID_REQUEST, "Too large"),
+                            status_code=413)
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
         return JSONResponse(mcp_service.rpc_error(None, mcp_service.INVALID_REQUEST, "Too large"),
