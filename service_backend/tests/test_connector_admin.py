@@ -354,3 +354,72 @@ def test_call_log_retention_setting_override(connector_client, two_grants, fake_
     finally:
         db.close()
     assert rows(connector_client._factory, "call_log") == []
+
+
+# --- UI round 2 wire additions ------------------------------------------------------------
+
+
+def test_grant_wire_carries_product_display_name(connector_client, two_grants):
+    h = admin_headers(connector_client)
+    by_user = {g["productUserId"]: g for g in list_grants(connector_client, h)["data"]}
+    assert by_user["42"]["productName"] == "Acme"
+    assert by_user["43"]["productName"] == "Beta"
+    one = connector_client.get(f"/connector/grants/{by_user['42']['id']}", headers=h).json()
+    assert one["productName"] == "Acme"
+
+
+def test_activity_call_rows_carry_error_code_and_stored_args_never_the_response(
+        connector_client, two_grants, fake_product):
+    import json as _json
+
+    a, _ = two_grants
+    h = admin_headers(connector_client)
+    gid = next(g["id"] for g in list_grants(connector_client, h)["data"] if g["productUserId"] == "42")
+    call_tool(connector_client, a["access"], "stock_list", {"search": "widgets"})
+    fake_product.responder = lambda req, c: httpx.Response(
+        403, json={"error": {"code": "chat_history_not_permitted", "message": "no"}})
+    call_tool(connector_client, a["access"], "stock_list", {"search": "denied"})
+    res = connector_client.get(f"/connector/grants/{gid}/activity", headers=h)
+    assert res.status_code == 200, res.text
+    calls = res.json()["calls"]
+    assert len(calls) == 2
+    by_args = {}
+    for c in calls:
+        assert "errorCode" in c and "args" in c
+        args = c["args"]
+        args = _json.loads(args) if isinstance(args, str) else args
+        by_args[args["search"]] = c
+    assert by_args["widgets"]["errorCode"] in (None, "")
+    assert by_args["denied"]["errorCode"] == "chat_history_not_permitted"
+    assert "PRODUCT-DATA" not in res.text
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (httpx.ConnectError("boom"), "upstream_unavailable"),
+    (httpx.ReadTimeout("slow"), "upstream_unavailable"),
+])
+def test_refresh_transport_failure_reports_contract_style_code(
+        connector_client, fake_product, exc, expected):
+    h = admin_headers(connector_client)
+    connector_client.post("/connector/products/acme/refresh-manifest", headers=h)
+
+    def boom(req):
+        raise exc
+
+    fake_product.manifest_error = boom
+    connector_client.post("/connector/products/acme/refresh-manifest", headers=h)
+    items = connector_client.get("/connector/products", headers=h).json()
+    items = items["data"] if isinstance(items, dict) else items
+    acme = next(p for p in items if p["key"] == "acme")
+    assert acme["stale"] is True
+    assert acme["lastError"] == expected
+    assert "Error" not in acme["lastError"] and "Timeout" not in acme["lastError"]
+
+
+def test_refresh_product_5xx_reports_upstream_error(connector_client, fake_product):
+    h = admin_headers(connector_client)
+    fake_product.manifest_error = lambda req: httpx.Response(503, json={"error": {"code": "x"}})
+    connector_client.post("/connector/products/acme/refresh-manifest", headers=h)
+    items = connector_client.get("/connector/products", headers=h).json()
+    items = items["data"] if isinstance(items, dict) else items
+    assert next(p for p in items if p["key"] == "acme")["lastError"] == "upstream_error"
