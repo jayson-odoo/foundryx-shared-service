@@ -1,136 +1,153 @@
-# 19 - Claude connector module (SS-CONNECTOR) - behaviour card
+# 19 - Claude connector module (SS-CONNECTOR) - behaviour card r2
 
-Status: **Plan stage. This card is under owner review (crew-ask on PR #117). No code until it is agreed.**
-After agreement: UAC (`19-claude-connector-acceptance-criteria.md`) then the build plan, per the repo pipeline.
+Status: **Plan. Card r2 (aligned to the sorento contract) under owner review. Backend build may start on the
+parts the r2 questions do not change; the grants admin UI waits for the mock.**
+r1 answers (crew, 9 Oct): Q1 (b) the PRODUCT shows consent, SS shows none; Q2 (a) two secrets, one per direction;
+Q3 (a) the product is the only authority for OTP/phone masking, no SS scrubber; Q4 (a) access 1 h, refresh 30 d
+rotating, grant idle-expires at 90 d; Q5 (a) product serves a signed manifest.
 
-## 0. What already exists (verified, `service_backend/`)
+**Contract source of truth:** sorento-crm `documentation/plans/analytics/CONTRACT-claude-connector-ss-09oct.md`
+(branch `claude/analytics-connector-e2jret`, head 76659f561, sections 0-9). SS builds to it exactly; any change
+goes through a crew-note with lane CLAUDE-CONNECTOR first. This card only adds what the contract leaves to SS.
+
+## 0. Facts (verified)
 
 | Fact | Where |
 |---|---|
-| No OAuth server, PKCE or MCP code anywhere | only `OAuth2PasswordBearer` for reading bearers, `app/dependencies.py:12,22` |
-| Signed-user pattern to copy: product signs an HS256 assertion, SS verifies by connection id; tenant comes from the connection row, never the assertion | `modules/ideation/services/embed.py:241-309` |
-| Stricter variant with a single-use `jti` ledger + `iat` skew + origin allow-list | `modules/omnichannel/services/embed_session_service.py:153-187,289-306` |
-| Ideation embed has **no** replay protection and **no** throttle (we must not copy that gap) | `modules/ideation/services/embed.py` (no jti), `modules/ideation/routers/embed.py` |
-| Secrets are Fernet-encrypted, fail closed on decrypt | `app/secrets.py:30-35`, `modules/ideation/services/embed.py:210-221` |
-| Outbound to sorento today = static `X-API-Key`, not signed | `modules/autocount/sinks_sorento.py:203-204` |
-| Only signed outbound pattern = `sha256=` HMAC over `{timestamp}.{body}` | `modules/omnichannel/services/webhook_delivery.py:61-69` |
-| Module routers can be `"public": true` (no `require_module`), auth done in-endpoint | `app/module_loader.py:56-86` |
-| Module hooks install/install_tenant/uninstall_tenant/register_* | `modules/ideation/bootstrap.py:28-178` |
-| Activity log (Developer Logs console) - closed source tuple, never raises, redacts | `app/models/integration_activity.py:37-91`, `app/activity_log/service.py:110-181` |
-| Throttle scopes (enforce/record pairs) | `app/services/throttle.py:51-88,221-283` |
-
-**Not verified:** sorento-crm #1547 (`analytics_connector.py`, `sorento_analytics_mcp/cap.py`, `tools.py:102`). This
-session's GitHub access is scoped to foundryx-shared-service only, so I cannot read sorento-crm. The design below
-is written from the OAuth/MCP specs + the lane brief; I will port #1547's generic parts once access is granted (crew-note).
+| SS has no OAuth server, PKCE or MCP code; bearer reading only | `service_backend/app/dependencies.py:12,22` |
+| Signed-user pattern (product signs HS256, SS verifies by connection) | `service_backend/modules/ideation/services/embed.py:241-309`; sorento side `sorento_crm_backend/app/services/ideation_embed_service.py:161` |
+| Single-use `jti` ledger + skew pattern to reuse | `service_backend/modules/omnichannel/services/embed_session_service.py:153-187,289-306` |
+| Module routers may be `"public": true` (auth in-endpoint) | `service_backend/app/module_loader.py:56-86` |
+| Developer Logs `record()` is failure-isolated (never raises) -> cannot be the fail-closed audit | `service_backend/app/activity_log/service.py:105-181` |
+| sorento verifies calls: claims list, 60 s lifetime, 5 s skew, 120 s replay, 4096-char token cap | `sorento_crm_backend/app/services/analytics_connector/access.py:36-46` |
+| sorento req_hash + sent-order canonical query (SS must produce byte-identical) | `access.py:92-101` |
+| sorento manifest: 34 reused + 5 chat tools, `version` = hash of tools | `sorento_crm_backend/app/services/analytics_connector/manifest.py:1-8,30-110` |
+| `analytics.connector.use` granted to NO role, no admin bypass | `sorento_crm_backend/app/rbac/permission_registry.py:938-947` |
+| chat tools also need `system.chat_history.view` | `permission_registry.py:388`, `access.py:47-55` |
+| sorento roles in dev data: Salesperson, Admin, Project Customer Service, Warehouse Manager, Purchasing, ... | `select name from user_roles` on local `sorento_acm_dev`; Salesperson seeded at `alembic/versions/identity_0001_s0_model.py:47` |
 
 ## 1. Rules
 
-1. **One connector per product.** URL `https://<ss host>/mcp/<product>` (e.g. `/mcp/sorento`). Each product has its own
-   OAuth issuer, sign-in, tool list and grants. One shared module (`modules/connector`, schema `app_connector`) behind all of them.
-2. **Product key is globally unique** and the registry row is owned by exactly one SS tenant (the operator of that
-   product). Grants, audit and admin all scope to that tenant.
-3. **Identity = product login.** SS never asks for a password. The product signs an assertion of who logged in; the
-   grant stores `(product, product_user_id)` + display name/email snapshot.
-4. **Read-only.** The manifest may only declare tools with `readOnlyHint: true`; SS refuses to register any other
-   (and only forwards `tools/list` + `tools/call`, no resources/prompts/sampling in v1).
-5. **Product RBAC decides every call.** SS never caches data or permissions. Each call goes to the product as that user;
-   a user whose role loses access sees it on the next call.
-6. **Data rules (from the #1547 card):** raw message text allowed, phone numbers excluded, OTPs masked. The product is
-   the authority (it knows its fields); SS adds caps (size/rows) and a defense-in-depth scrubber (Q3).
-7. **Per-user OAuth only.** No static org token. Tokens are opaque random strings, stored hashed (SHA-256), never logged.
-8. **Everything is audited**: consent, deny, token issue/refresh, every tool call (tool name, args hash, result size,
-   truncated?, status, latency, error code). Never the response body.
+1. **One connector per product**: `https://<ss>/mcp/<product>` (first: `/mcp/sorento`). Own OAuth issuer, tool list,
+   grants. Shared module `modules/connector`, schema `app_connector`.
+2. **Product registry = env** (contract section 1 says secrets are env only): per product `connection_id`, owning SS
+   tenant slug, consent URL, API base URL, the two secrets, audiences. Admin sees it read-only (Q1).
+3. **Identity = product login.** SS never sees a password. The grant stores `(product, product_user_id = sub)`,
+   name + email snapshot, `consented_at = assertion iat` (so a consent signed before a sorento revoke-all cannot
+   outlive it; sorento security note 2).
+4. **Consent is the product's screen** (r1 Q1 b). SS only redirects to it and receives the form-POST.
+5. **Browser binding**: `/authorize` sets an HttpOnly Secure `SameSite=None` cookie holding a random binding value
+   (hash stored on the pending request). The assertion form-POST is accepted only with that cookie for that
+   `request_id` (stops the mailed-link consent phishing, sorento security note 1). `SameSite=None` is required
+   because the POST comes cross-site from sorento.
+6. **DCR redirect URIs exact-match an allow-list**, default only `https://claude.ai/api/mcp/auth_callback`.
+7. **Read-only.** SS registers only manifest tools whose `annotations.readOnlyHint` is true and
+   `destructiveHint` false; MCP methods served: `initialize`, `notifications/initialized`, `ping`, `tools/list`,
+   `tools/call`. Nothing else.
+8. **Args validated** against the tool's `input_schema` with `additionalProperties: false`; only the manifest's
+   `query_params` are sent, in manifest order; path params percent-encoded `safe=""`; `path_template` used verbatim
+   (trailing slash kept); POST body = the remaining args. Body cap 1 MB (contract 9.4).
+9. **Every call signed** with a fresh call JWT (contract section 3 claims, `exp = iat + 60`, new `jti`).
+10. **Product RBAC decides every call**; SS caches no data and no permissions.
+11. **Caps**: response text 120 000 chars, list rows 1000; over -> cut + `truncated: true` note. No SS scrubber
+    (r1 Q3 a).
+12. **Tokens** opaque, stored SHA-256 hashed, never logged. Access 1 h, refresh 30 d rotating; replay of a used refresh
+    token revokes the whole grant. Grant unused 90 d -> expired (r1 Q4 a).
+13. **Fail-closed audit**: one `app_connector.call_log` row per `tools/call` (user, tool, args capped 4 KB, status,
+    ms, rows, chars, error code) written and committed BEFORE the result is returned; if that write fails Claude
+    gets a tool error and no data. Grant lifecycle rows (consented, denied, refreshed, revoked + reason).
 
-## 2. Consent flow (step by step)
+## 2. Consent flow
 
-OAuth 2.1 + PKCE S256 + Dynamic Client Registration (RFC 7591) + Protected Resource Metadata (RFC 9728), which is
-what claude.ai remote connectors use.
+1. User adds custom connector `https://<ss>/mcp/sorento` in claude.ai.
+2. Claude calls MCP with no token -> `401` + `WWW-Authenticate: Bearer resource_metadata="<ss>/.well-known/oauth-protected-resource/mcp/sorento"`.
+3. Claude reads protected-resource metadata, then authorization-server metadata (issuer `<ss>/mcp/sorento`).
+4. Claude registers (`POST /mcp/sorento/oauth/register`, RFC 7591). Exact redirect allow-list; throttled per IP.
+5. Browser -> `GET /mcp/sorento/oauth/authorize` (client_id, redirect_uri, PKCE S256 challenge, state). SS checks
+   them, stores a pending request (10 min), sets the binding cookie, and 302s to
+   `https://<sorento>/connect/claude?req=<consent_request JWT>` (contract 2.1 claims; `return_url` =
+   `<ss>/mcp/sorento/oauth/consent-return`).
+6. sorento handles login, inspect, Allow/Deny (contract 2.2-2.4). Allow -> the page form-POSTs `request_id` +
+   `assertion` to `return_url`; Deny -> `request_id` + `error=access_denied`.
+7. SS `consent-return`: binding cookie matches the request, request live and unused, assertion HS256 with the
+   product->SS secret, `typ/iss/aud/connection_id/request_id`, `exp-iat <= 120`, jti unused (ledger). Then
+   create or reuse the grant `(product, sub, client_id)`, mint a single-use auth code (60 s, bound to client,
+   redirect, challenge), 302 to Claude with `code&state`. Deny -> 302 with `error=access_denied&state`.
+8. Claude `POST /mcp/sorento/oauth/token` (code + verifier) -> access + refresh.
+9. `POST /mcp/sorento` (Streamable HTTP, stateless JSON) with Bearer -> token -> grant -> product -> validate args ->
+   signed call -> map errors -> cap -> audit (committed) -> MCP result.
 
-1. User in claude.ai adds custom connector `https://<ss>/mcp/sorento`.
-2. Claude POSTs MCP `initialize` with no token → SS `401` + `WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource/mcp/sorento"`.
-3. Claude reads protected-resource metadata → authorization-server metadata (issuer `https://<ss>/mcp/sorento`).
-4. Claude registers itself (`POST /mcp/sorento/oauth/register`). SS accepts only redirect URIs on an allow-list
-   (`https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`; configurable). Throttled per IP.
-5. Claude opens the browser at `/mcp/sorento/oauth/authorize?client_id&redirect_uri&code_challenge&state&...`.
-   SS validates client + exact redirect URI + S256 challenge, stores a **pending request** (random id, 10 min TTL),
-   and redirects to the product's configured login URL: `https://<sorento>/connector/consent?request=<id>`.
-   (The return URL is fixed in the product's own config, never taken from the query, so it cannot be an open redirect.)
-6. User logs in to sorento normally (its own MFA etc.). Sorento redirects back to
-   `https://<ss>/mcp/sorento/oauth/callback?assertion=<jwt>`. Assertion = HS256 with the product's **assertion key**:
-   `iss=sorento, aud=ss-connector:sorento, typ=connector-assertion, sub=<product user id>, name, email, role_label,
-   nonce=<pending request id>, iat, exp (<=120 s), jti` (jti single-use ledger, like `EmbedJti`).
-7. SS verifies signature, iss/aud/typ, exp/iat skew, nonce = a live pending request, jti unused. Then shows the
-   **consent page** (SS-hosted, shared code, product-branded): "Claude wants read-only access to Sorento as
-   *Aisha Tan (Sales Agent)*. It can: <tool list from manifest>. Allow / Deny".
-8. Allow → create or reuse the grant for `(product, product_user_id, client_id)`, issue a single-use auth code
-   (60 s, bound to client + redirect + PKCE challenge), redirect to Claude with `code&state`.
-   Deny → redirect with `error=access_denied`.
-9. Claude calls `/token` with code + verifier → access token (1 h) + refresh token (30 d, rotating; replaying an old
-   refresh token revokes the whole grant = theft signal).
-10. Tool calls: `POST /mcp/sorento` (JSON-RPC, Streamable HTTP, stateless) with Bearer. SS resolves token → grant →
-    product (active?) → validates args against the manifest JSON Schema → signed POST to
-    `{product api base}/connector/tools/{tool}` with headers `X-FX-Connector-Timestamp`, `-Nonce`, `-Grant`,
-    `-User` (product user id), `-Signature: sha256=HMAC(call key, ts.nonce.method.path.sha256(body))`
-    (same shape as the webhook signer, `webhook_delivery.py:61-69`, plus nonce + path binding). Product checks
-    signature + 5 min skew + nonce, runs the tool **as that user with its own RBAC**, returns JSON.
-11. SS applies caps (default 64 KB / 200 rows, per-tool override in the manifest), marks truncation, writes the
-    audit row, returns an MCP `tools/call` result.
+## 3. What an admin sees (SS tenant admin of the product's owning tenant)
 
-## 3. What an admin sees (SS tenant admin owning the product)
-
-- **Connector › Products** (Resource list → form): key, display name, MCP URL (copy button), login URL, API base URL,
-  assertion key + call key (write-only `SecretInput`, rotate action), status Active/Disabled, tool manifest
-  (read-only list, "Refresh from product" action), last manifest fetch time.
-- **Connector › Grants** (Resource list): product, user (name + product user id), client ("Claude"), granted at,
-  last used, calls (30 d), status Active/Revoked. Segments Active|Revoked. Row + bulk action **Revoke** (typed
-  confirm for bulk). Row → detail with an **Activity** tab = that grant's audit rows.
-- Calls also appear in **Developer Logs** under a new source `connector` (`integration_activity.py:37-43`).
-- Perms: `connector.read`, `connector.manage` (products + revoke). Grant sweep for existing Admins.
+- Menu **Settings > Claude connector** with two tabs:
+  - **Grants** (Resource list): user name, product user id, product, client, granted, last used, calls 30 d, status
+    (Active/Revoked/Expired). Segments Active|Revoked|Expired. Row + bulk **Revoke** (typed confirm on bulk).
+    Row -> detail with an **Activity** tab (that grant's call_log + lifecycle rows).
+  - **Products** (read-only): key, MCP URL (copy), consent URL, API base, manifest version + fetched-at, tool count,
+    secrets shown only as "set / missing". Action **Refresh manifest**.
+- Perms `connector.read` (lists) and `connector.manage` (revoke, refresh), core-CSV-style module CSV, granted to
+  tenant Admin on install + a grant sweep for existing Admins.
 
 ## 4. Revoke behaviour
 
-- Admin revoke: grant → Revoked, all its access + refresh tokens deleted in the same transaction. The next Claude
-  call gets `401 invalid_token`; claude.ai shows "reconnect", and reconnecting runs the full consent again (new grant).
-- Claude-side disconnect: Claude may call `/oauth/revoke` (RFC 7009) → same result.
-- Product disables the product (admin toggle Disabled) → every call 401 + consent page says "Sorento connector is
-  turned off". Grants kept (re-enabling restores them).
-- Product reports the user is gone (`error.code = user_inactive`) → SS auto-revokes that grant.
-- Refresh-token replay → whole grant revoked (audited `refresh_reuse`).
+- Admin revoke -> grant Revoked + all its tokens deleted in one transaction -> next Claude call 401 -> claude.ai
+  asks to reconnect -> full consent -> NEW grant row (old stays Revoked with its history).
+- Claude disconnect -> `/oauth/revoke` (RFC 7009) -> same.
+- sorento answers 403 `connector_access_removed` / `user_inactive` / `reconsent_required` -> SS revokes the grant
+  (reason = the code) and returns a tool error; the call after that gets 401.
+- Refresh-token replay -> grant revoked (`refresh_reuse`).
+- 90 d idle -> Expired by the beat prune.
 
-## 5. Error states (what Claude/the user sees)
+## 5. Error states (contract section 5 mapping)
 
-| Situation | SS behaviour | User sees |
+| sorento answer | SS does | Claude/user sees |
 |---|---|---|
-| Product down / timeout (10 s) | tool result `isError: true`, audit `upstream_unavailable` | "Sorento is not reachable right now. Try again in a minute." |
-| Product 5xx | same, `upstream_error` | "Sorento had an error answering this." |
-| RBAC denies (product 403 `forbidden`) | tool result `isError: true` with product's message | "Your Sorento role can't see conversations of other teams." |
-| Assertion expired / bad signature / replayed jti at callback | SS error page, no grant | "Sign-in took too long or was already used. Go back to Claude and connect again." |
-| Pending request expired (>10 min) | error page | same text |
-| Grant revoked / token expired | HTTP 401 `invalid_token` | Claude prompts to reconnect |
-| Bad args (schema) | JSON-RPC `-32602` | Claude retries with fixed args |
-| Response too big | truncated + `"truncated": true` note | Claude says it only sees the first N rows |
-| Throttled | HTTP 429 + `Retry-After` | Claude waits |
+| 401 `invalid_signature` / `token_expired` / `replayed` / `wrong_audience` | retry ONCE with a fresh token; then tool error + log `upstream_auth` | "The Sorento connection is misconfigured. An admin has been notified." |
+| 403 `connector_access_removed` / `user_inactive` / `reconsent_required` | revoke grant, tool error | "Your Sorento access for Claude was removed. Reconnect the connector." |
+| 403 `chat_history_not_permitted` / `route_not_allowed` / `permission_required` / `param_not_allowed` | tool error, grant stays | sorento's message, e.g. "You do not have permission to view chat history." |
+| 404 / 422 | tool error | sorento's message |
+| 413 | tool error | "That request is too large." |
+| 429 / 5xx / timeout 15 s / connection refused | tool error, grant stays | "Sorento is not reachable right now. Try again in a minute." |
+| consent-return: bad/expired/replayed assertion, missing binding cookie, expired request | SS error page, no grant | "Sign-in took too long or did not start in this browser. Go back to Claude and connect again." |
+| grant revoked / token expired | HTTP 401 `invalid_token` | Claude prompts reconnect |
+| args fail schema | JSON-RPC `-32602` | Claude retries |
+| response > 120 000 chars or > 1000 rows | cut + `truncated: true` | Claude says it saw part of the data |
+| audit write fails | tool error, no data | "The call could not be recorded, so no data was returned." |
 
-**Product error shape (contract):** `{"error": {"code": "forbidden|not_found|invalid_args|user_inactive|internal", "message": "<safe for end user>"}}`.
+## 6. Examples (sorento roles from dev data; no person data)
 
-## 6. Examples (role names are placeholders: I could not read sorento dev data from this sandbox, see note)
-
-1. **Sales agent** "Aisha" connects; tool `list_conversations` returns only her assigned threads (sorento RBAC);
-   message text visible, contact phone field absent, an OTP in a message shows as `OTP ••••••`.
-2. **Supervisor** asks "how many chats did my team close this week" → `conversation_stats` returns team-wide numbers.
-   Same question by Aisha → only her own numbers. SS code path identical; product decides.
-3. Admin revokes Aisha's grant at 10:02 → her Claude call at 10:03 fails 401 → she reconnects → new grant row,
-   old one stays Revoked in the list with its audit history.
-4. Aisha's sorento account is deactivated → next call product answers `user_inactive` → SS revokes the grant and the
-   grants list shows Revoked (reason: user inactive).
-5. Sorento is being deployed (down 40 s) → Claude gets "Sorento is not reachable", audit row `upstream_unavailable`,
+1. A **Salesperson** (role seeded at `identity_0001_s0_model.py:47`) adds the connector. `analytics.connector.use` is
+   granted to no role by default (`permission_registry.py:938-947`), so sorento's consent page shows the
+   no-permission view, only Deny works, SS receives `error=access_denied`, no grant row is created.
+2. An admin gives the **Project Customer Service** role `analytics.connector.use` + `system.chat_history.view`. A user
+   with that role connects; `chat_query` grouped by month returns counts; SS stores grant (sorento, `sub`),
+   `consented_at` = assertion iat; the call shows on the Grants detail Activity tab.
+3. A **Warehouse Manager** user holds `analytics.connector.use` but not `system.chat_history.view`: a reused stock read
+   tool works; `chat_search_messages` returns 403 `chat_history_not_permitted` -> tool error, grant stays Active.
+4. An **Admin** user (no bypass) does "log out other devices": sorento stamps `users.connector_revoked_at`; the next
+   call gets 403 `reconsent_required`; SS marks the grant Revoked (reason reconsent_required); the call after that is
+   401 and claude.ai asks to reconnect.
+5. sorento is redeploying for 40 s: calls time out -> "Sorento is not reachable", call_log status `upstream_unavailable`,
    grant untouched.
 
-## 7. Contract for products (to agree with lane CLAUDE-CONNECTOR before code)
+## 7. Questions (r2, max 5)
 
-- `GET /connector/manifest` (signed like tool calls, no user header) → `{version, tools:[{name, title, description,
-  inputSchema, readOnlyHint:true, maxBytes?, maxRows?}]}`.
-- `GET /connector/consent?request=<id>` → product login → 302 to the SS callback with the assertion (section 2.6).
-- `POST /connector/tools/{name}` signed (section 2.10) → `200 {result}` or the error shape (section 5).
-- Product stores two keys (assertion key, call key) + the SS callback URL in its own DB config (ideation-embed pattern).
-Full contract doc: `documentation/connector/product-contract.md` (written after this card is agreed).
+1. **Product registry source.** (a) env per product (`CONNECTOR_PRODUCTS=sorento`, `CONNECTOR_SORENTO_*`), read-only in
+   the admin page; (b) DB rows with Fernet secrets edited in an admin Products form. **Rec (a)**: contract section 1
+   fixes secrets as env-only, adding a product is a deploy event anyway, and there is no secret-editing UI to secure.
+2. **Who sees Grants.** (a) admin of the product's owning SS tenant (`connector.read/manage`); (b) platform operator
+   only. **Rec (a)**: it matches tenant scoping everywhere else and the product's own operator team runs it.
+3. **call_log retention.** (a) 180 days, pruned by the existing beat; (b) keep forever. **Rec (a)**: args may hold
+   customer names/text, so bounded retention; sorento keeps its own per-call audit (contract 4).
+4. **Manifest refresh.** (a) cache, re-fetch every 15 min and on Refresh, serve the last good copy if sorento is down;
+   (b) fetch on every `tools/list`. **Rec (a)**: `tools/list` stays up while sorento redeploys; `version` change is
+   picked up within 15 min.
+5. **Claude IP allowlist (160.79.104.0/21, contract section 0).** (a) Caddy/nginx rule on `/mcp/*` at deploy, no app
+   code; (b) app-level check too. **Rec (a)** plus OAuth discovery/authorize/consent-return exempt (the browser, not
+   Claude, calls those).
+
+## 8. Build order after answers
+
+UAC `19-claude-connector-acceptance-criteria.md` -> tester red tests (crypto/call JWT, OAuth endpoints, consent-return
+binding, MCP tools/call forwarding, error mapping, caps, fail-closed audit) -> coder -> reviewer + security review ->
+mock for Settings > Claude connector -> UI -> joint run against sorento `claude/analytics-connector-e2jret` locally.
