@@ -1,7 +1,6 @@
 # 19 - Claude connector module (SS-CONNECTOR) - behaviour card r2
 
-Status: **Plan. Card r2 (aligned to the sorento contract) under owner review. Backend build may start on the
-parts the r2 questions do not change; the grants admin UI waits for the mock.**
+Status: **Build. Card r2 agreed (answers in section 7). Backend red-first in progress; admin UI waits for the mock.**
 r1 answers (crew, 9 Oct): Q1 (b) the PRODUCT shows consent, SS shows none; Q2 (a) two secrets, one per direction;
 Q3 (a) the product is the only authority for OTP/phone masking, no SS scrubber; Q4 (a) access 1 h, refresh 30 d
 rotating, grant idle-expires at 90 d; Q5 (a) product serves a signed manifest.
@@ -130,24 +129,74 @@ goes through a crew-note with lane CLAUDE-CONNECTOR first. This card only adds w
 5. sorento is redeploying for 40 s: calls time out -> "Sorento is not reachable", call_log status `upstream_unavailable`,
    grant untouched.
 
-## 7. Questions (r2, max 5)
+## 7. r2 answers (crew a59366446, 9 Oct) - all (a)
 
-1. **Product registry source.** (a) env per product (`CONNECTOR_PRODUCTS=sorento`, `CONNECTOR_SORENTO_*`), read-only in
-   the admin page; (b) DB rows with Fernet secrets edited in an admin Products form. **Rec (a)**: contract section 1
-   fixes secrets as env-only, adding a product is a deploy event anyway, and there is no secret-editing UI to secure.
-2. **Who sees Grants.** (a) admin of the product's owning SS tenant (`connector.read/manage`); (b) platform operator
-   only. **Rec (a)**: it matches tenant scoping everywhere else and the product's own operator team runs it.
-3. **call_log retention.** (a) 180 days, pruned by the existing beat; (b) keep forever. **Rec (a)**: args may hold
-   customer names/text, so bounded retention; sorento keeps its own per-call audit (contract 4).
-4. **Manifest refresh.** (a) cache, re-fetch every 15 min and on Refresh, serve the last good copy if sorento is down;
-   (b) fetch on every `tools/list`. **Rec (a)**: `tools/list` stays up while sorento redeploys; `version` change is
-   picked up within 15 min.
-5. **Claude IP allowlist (160.79.104.0/21, contract section 0).** (a) Caddy/nginx rule on `/mcp/*` at deploy, no app
-   code; (b) app-level check too. **Rec (a)** plus OAuth discovery/authorize/consent-return exempt (the browser, not
-   Claude, calls those).
+1. **Registry = env per product**, admin view read-only (contract section 1).
+2. **Grants visible to the owning SS tenant admin**, perms `connector.read` / `connector.manage`.
+3. **call_log retention default 180 days** (beat prune). Owner may override; the value is a setting
+   `CONNECTOR_CALL_LOG_RETENTION_DAYS` (default 180).
+4. **Manifest cached 15 min + Refresh**; when the product is down the last good copy is served and the admin
+   Products view marks it **stale** (fetch error + last good fetched-at).
+5. **Claude IP allowlist at the proxy, not in app code.** Range verified: Anthropic outbound IPv4 `160.79.104.0/21`
+   ("stable IP addresses that Anthropic uses for outbound requests, for example when making MCP tool calls"),
+   source https://platform.claude.com/docs/en/api/ip-addresses (fetched 9 Oct 2026). Kept as a config value in the
+   deploy runbook, not hard-coded. **Owner deploy step:** Caddy rule allowing only that range on `POST /mcp/*`
+   (the MCP endpoint and `/token`, `/register`, `/revoke`), with the browser endpoints exempt: `/mcp/*/oauth/authorize`,
+   `/mcp/*/oauth/consent-return`, and the `/.well-known/*` metadata.
 
 ## 8. Build order after answers
 
 UAC `19-claude-connector-acceptance-criteria.md` -> tester red tests (crypto/call JWT, OAuth endpoints, consent-return
 binding, MCP tools/call forwarding, error mapping, caps, fail-closed audit) -> coder -> reviewer + security review ->
 mock for Settings > Claude connector -> UI -> joint run against sorento `claude/analytics-connector-e2jret` locally.
+
+## 9. Build design - fixed interfaces (tests are written against these)
+
+Module `service_backend/modules/connector/` (mirror `modules/ideation/`): `manifest.json` (schema `app_connector`,
+version table `alembic_version_connector`, public routers), `db.py` (`ConnectorBase`, `CONNECTOR_SCHEMA`),
+`models.py`, `bootstrap.py`, `permissions/permissions.csv` (`connector.read`, `connector.manage`), `alembic/`.
+
+**crypto.py** (pure; replaces the r1 HMAC `sign_call`/`verify_call` and the r1 `verify_assertion` signature):
+- `pkce_verify(verifier, challenge, method) -> bool`, `redirect_allowed(uri, allowed) -> bool`,
+  `new_token() -> str`, `hash_token(token) -> str` (kept).
+- `canonical_query(query: str) -> str`, `request_hash(method, raw_path, query, body: bytes) -> str` (byte-identical
+  to sorento `access.py:92-101`).
+- `sign_call(secret, *, connection_id, audience, sub, grant_id, consented_at: int, tool, method, raw_path, query,
+  body: bytes, now: int | None = None) -> str` (HS256, `iss="foundryx-ss"`, `typ="connector_call"`, `exp=iat+60`).
+- `sign_consent_request(secret, *, connection_id, audience, request_id, client_name, redirect_host, return_url,
+  now: int | None = None, ttl: int = 600) -> str`.
+- `verify_assertion(token, secret, *, issuer, connection_id, request_id, now: int | None = None) -> dict`, raises
+  `AssertionInvalid` (`aud` fixed `"foundryx-connector"`, `typ="connector_assertion"`, `exp-iat<=120`, 5 s skew,
+  token <= 4096 chars). jti single use is checked by the service against `assertion_jti`.
+
+**registry.py**: `Product` dataclass (`key, display_name, tenant_slug, connection_id, consent_url, api_base_url,
+ss_to_product_secret, product_to_ss_secret, issuer, consent_audience, call_audience`), `load_products(env: Mapping[str,str])
+-> dict[str, ProductStatus]` and `get_product(key) -> Product | None` (None when unknown or misconfigured).
+Env: `CONNECTOR_PRODUCTS=sorento,acme`; per key `CONNECTOR_<KEY>_{TENANT_SLUG,CONNECTION_ID,CONSENT_URL,API_BASE_URL,
+SS_TO_PRODUCT_SECRET,PRODUCT_TO_SS_SECRET}` required, `_{DISPLAY_NAME,ISSUER,CONSENT_AUDIENCE,CALL_AUDIENCE}` optional,
+defaults `key`, `<key>-connector-consent`, `<key>-connector-api`. Global `CONNECTOR_REDIRECT_ALLOWLIST` (comma list,
+default `https://claude.ai/api/mcp/auth_callback`), `CONNECTOR_CALL_LOG_RETENTION_DAYS=180`,
+`CONNECTOR_MANIFEST_TTL_SECONDS=900`, `CONNECTOR_CALL_TIMEOUT_SECONDS=15`. Tests inject via
+`registry.set_env_for_tests(mapping)` / reset.
+
+**Endpoints** (`{p}` = product key; base = `settings.public_base_url`):
+- `GET /.well-known/oauth-protected-resource/mcp/{p}`, `GET /.well-known/oauth-authorization-server/mcp/{p}`
+- `POST /mcp/{p}/oauth/register` (JSON, RFC 7591), `GET /mcp/{p}/oauth/authorize`,
+  `POST /mcp/{p}/oauth/consent-return` (form: `request_id`, `assertion` | `error`), `POST /mcp/{p}/oauth/token`
+  (form), `POST /mcp/{p}/oauth/revoke` (form)
+- `POST /mcp/{p}` MCP JSON-RPC
+- Admin (session JWT, module-gated): `GET /connector/grants`, `GET /connector/grants/{id}`,
+  `GET /connector/grants/{id}/activity`, `POST /connector/grants/{id}/revoke`, `POST /connector/grants/bulk-revoke`
+  `{ids}`, `GET /connector/products`, `POST /connector/products/{key}/refresh-manifest`.
+- Binding cookie `fx_connector_bind`, path `/mcp/{p}/oauth`, HttpOnly, Secure, SameSite=None.
+
+**Tables** (`app_connector`, all with `tenant_id`): `oauth_clients`, `pending_requests` (id, client, redirect,
+challenge, state, bind_hash, expires_at, used_at), `auth_codes` (hash, grant, client, redirect, challenge,
+expires_at, used_at), `tokens` (hash, kind access|refresh, grant, family, expires_at, used_at, revoked_at),
+`grants` (product, product_user_id, name, email, client_id, consented_at, status active|revoked|expired,
+revoked_reason, last_used_at), `assertion_jti`, `call_log`, `grant_events`, `manifest_cache` (product, json,
+version, fetched_at, last_error).
+
+**Seams for tests**: outbound HTTP via `modules.connector.services.product_client.TRANSPORT` (None = real httpx;
+tests set an `httpx.MockTransport`); audit write `modules.connector.services.audit.write_call_log` (tests patch it
+to raise for fail-closed). Prune: `modules.connector.services.maintenance.prune(db, now)` wired into the existing beat.
