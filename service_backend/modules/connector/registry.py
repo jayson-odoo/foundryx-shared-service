@@ -53,8 +53,35 @@ def set_env_for_tests(env: Optional[Mapping[str, str]]) -> None:
     _env_override = env
 
 
+_dotenv_cache: tuple[str, float, dict[str, str]] | None = None
+
+
+def _dotenv_values() -> dict[str, str]:
+    """CONNECTOR_* values from ``.env`` in the cwd (same file pydantic Settings
+    reads), re-read only when the file changes."""
+    global _dotenv_cache
+    from pathlib import Path
+
+    from dotenv import dotenv_values
+
+    path = Path(".env").resolve()
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        _dotenv_cache = None
+        return {}
+    if _dotenv_cache is None or _dotenv_cache[0] != str(path) or _dotenv_cache[1] != mtime:
+        vals = {k: v for k, v in dotenv_values(path).items()
+                if k.startswith("CONNECTOR_") and v is not None}
+        _dotenv_cache = (str(path), mtime, vals)
+    return _dotenv_cache[2]
+
+
 def _env() -> Mapping[str, str]:
-    return _env_override if _env_override is not None else os.environ
+    if _env_override is not None:
+        return _env_override
+    # real environment wins over the .env file
+    return {**_dotenv_values(), **os.environ}
 
 
 def _val(env: Mapping[str, str], name: str) -> str:
