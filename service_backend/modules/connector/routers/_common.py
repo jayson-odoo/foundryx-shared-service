@@ -1,4 +1,6 @@
 """Shared router plumbing for the public connector endpoints (HTTP only)."""
+
+from __future__ import annotations
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 

@@ -5,6 +5,8 @@ BL-030). Tenant comes from the product registry entry, never from client input.
 Tokens, auth codes and the browser-binding value are stored ONLY as SHA-256
 hashes. Datetimes are aware-UTC (``UTCDateTime``); JSON uses ``none_as_null``.
 """
+
+from __future__ import annotations
 import uuid
 
 from sqlalchemy import Boolean, Column, ForeignKey, Index, Integer, String, Text, UniqueConstraint

@@ -1,5 +1,7 @@
 """Per-module Alembic env - connector. Isolated history in
 ``alembic_version_connector`` inside ``app_connector`` (mirrors ideation)."""
+
+from __future__ import annotations
 from alembic import context
 from sqlalchemy import create_engine
 

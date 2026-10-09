@@ -3,6 +3,8 @@
 ``TRANSPORT`` is the test seam: None = real httpx; tests set an
 ``httpx.MockTransport``. Raises ``httpx.HTTPError`` on transport failure.
 """
+
+from __future__ import annotations
 from typing import Optional
 from urllib.parse import urlsplit
 

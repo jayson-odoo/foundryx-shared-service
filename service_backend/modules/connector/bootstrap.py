@@ -1,4 +1,6 @@
 """Connector bootstrap - the App-Store module contract (plan 08 section 4)."""
+
+from __future__ import annotations
 from pathlib import Path
 
 from sqlalchemy import text

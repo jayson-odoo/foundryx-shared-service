@@ -1,4 +1,6 @@
 """OAuth discovery documents (RFC 9728 / RFC 8414) - public, per product."""
+
+from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from ..services.oauth_service import OAuthService

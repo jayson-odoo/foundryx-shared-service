@@ -3,6 +3,8 @@
 A separate declarative base keeps these tables out of core's ``Base.metadata``.
 Mirrors ``modules/ideation/db.py``.
 """
+
+from __future__ import annotations
 from sqlalchemy.orm import declarative_base
 
 CONNECTOR_SCHEMA = "app_connector"

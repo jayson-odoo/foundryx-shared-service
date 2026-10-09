@@ -1,4 +1,6 @@
 """Connector OAuth endpoints (public; auth happens in-endpoint). HTTP only."""
+
+from __future__ import annotations
 from typing import Dict
 
 from urllib.parse import urlparse

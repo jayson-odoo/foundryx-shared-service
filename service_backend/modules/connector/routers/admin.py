@@ -1,4 +1,6 @@
 """Connector admin API (session JWT, module-gated, perm-gated). HTTP only."""
+
+from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query

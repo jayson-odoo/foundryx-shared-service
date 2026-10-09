@@ -1,4 +1,6 @@
 """Connector admin wire schemas (camelCase names are fixed - the UI is built to them)."""
+
+from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 

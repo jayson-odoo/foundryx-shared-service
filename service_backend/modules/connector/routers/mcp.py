@@ -1,4 +1,6 @@
 """MCP endpoint ``POST /mcp/{p}`` - Bearer auth, JSON-RPC in/out. HTTP only."""
+
+from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, Request

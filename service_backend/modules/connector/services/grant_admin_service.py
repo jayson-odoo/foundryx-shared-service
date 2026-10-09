@@ -1,5 +1,7 @@
 """Tenant-admin operations over connector grants + products. Tenant-scoped:
 the tenant is the caller's, a foreign id is indistinguishable from a missing one."""
+
+from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 

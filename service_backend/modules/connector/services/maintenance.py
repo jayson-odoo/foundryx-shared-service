@@ -4,6 +4,8 @@ Idle grants (90 d unused) expire and their tokens die; ``call_log`` older than
 ``CONNECTOR_CALL_LOG_RETENTION_DAYS`` is deleted; spent/expired pending requests,
 codes, tokens and assertion jti rows are cleaned up. Caller commits.
 """
+
+from __future__ import annotations
 from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session

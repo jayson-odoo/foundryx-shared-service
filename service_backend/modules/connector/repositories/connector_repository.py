@@ -3,6 +3,8 @@
 The tenant is the product registry's owning tenant (never client input).
 Atomic "claim" updates (``used_at IS NULL``) make single-use rows race-safe.
 """
+
+from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
