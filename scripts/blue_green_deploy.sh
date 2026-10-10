@@ -153,6 +153,16 @@ TMP_CADDY=$(mktemp)
 cat > "$TMP_CADDY" <<EOF
 # Managed by blue_green_deploy.sh - do not edit by hand. Active color: ${NEW}.
 ${APP_DOMAIN} {
+	# Claude connector OAuth discovery (RFC 9728 / RFC 8414 path insertion): for
+	# the resource/issuer ${BACKEND_PATH}/mcp/<p> an MCP client asks the host ROOT
+	# for /.well-known/oauth-*${BACKEND_PATH}/mcp/<p>. Forward those to the backend
+	# UNSTRIPPED (it checks the prefix against its public base URL).
+	@connector_wellknown path /.well-known/oauth-authorization-server${BACKEND_PATH}/* /.well-known/oauth-protected-resource${BACKEND_PATH}/*
+	handle @connector_wellknown {
+		reverse_proxy 127.0.0.1:${NEW_BE_PORT} {
+			header_up Host {host}
+		}
+	}
 	# Backend under ${BACKEND_PATH} - handle_path STRIPS the prefix so the
 	# backend receives root paths (/auth/login, /public/avatars/...).
 	# (Caddy already sets X-Forwarded-For/Proto/Host upstream; only Host needs
