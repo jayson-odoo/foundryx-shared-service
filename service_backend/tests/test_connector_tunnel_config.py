@@ -142,6 +142,7 @@ def test_cidr_browser_endpoints_exempt(connector_client, monkeypatch):
 
 def test_cidr_trust_on_uses_forwarded_for(connector_client, monkeypatch):
     monkeypatch.setattr(settings, "trust_proxy_headers", True)
+    monkeypatch.setattr(settings, "trusted_proxies", "127.0.0.1")
     _env(CONNECTOR_ALLOWED_CLIENT_CIDRS=CIDR)
     with _client_from(connector_client, "127.0.0.1") as c:
         ok = c.post("/mcp/acme", json={}, headers={"X-Forwarded-For": CLAUDE_IP})
