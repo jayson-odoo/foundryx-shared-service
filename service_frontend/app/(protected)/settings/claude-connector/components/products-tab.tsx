@@ -1,15 +1,17 @@
 'use client';
 
-import { Check, Copy, LoaderCircleIcon, RefreshCw, TriangleAlert } from 'lucide-react';
+import Link from 'next/link';
+import { Check, Copy, LoaderCircleIcon, Pencil, Plus, RefreshCw, TriangleAlert } from 'lucide-react';
 import { Alert, AlertContent, AlertDescription, AlertIcon } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardToolbar } from '@/components/ui/card';
 import { useCan } from '@/hooks/use-can';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { ConnectorProduct, ConnectorSecretState } from '@/types/connector';
 import { useConnectorProducts } from './use-connector-products';
+import { productPath } from './use-connector-product-form';
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -31,11 +33,13 @@ function SecretBadge({ state }: { state: ConnectorSecretState }) {
 function ProductCard({
   product,
   canManage,
+  canEdit,
   refreshing,
   onRefresh,
 }: {
   product: ConnectorProduct;
   canManage: boolean;
+  canEdit: boolean;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
@@ -46,13 +50,28 @@ function ProductCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{name}</CardTitle>
-        {canManage && (
-          <Button type="button" size="sm" variant="outline" disabled={refreshing} onClick={onRefresh}>
-            {refreshing ? <LoaderCircleIcon className="animate-spin" /> : <RefreshCw />}
-            Refresh manifest
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <CardTitle>{name}</CardTitle>
+          {product.status === 'misconfigured' && (
+            <Badge variant="destructive" appearance="light" size="sm">
+              Misconfigured
+            </Badge>
+          )}
+        </div>
+        <CardToolbar className="flex-wrap">
+          <Button type="button" size="sm" variant="outline" asChild>
+            <Link href={productPath(product.key)}>
+              <Pencil />
+              {canEdit ? 'Edit' : 'Settings'}
+            </Link>
           </Button>
-        )}
+          {canManage && product.status !== 'misconfigured' && (
+            <Button type="button" size="sm" variant="outline" disabled={refreshing} onClick={onRefresh}>
+              {refreshing ? <LoaderCircleIcon className="animate-spin" /> : <RefreshCw />}
+              Refresh manifest
+            </Button>
+          )}
+        </CardToolbar>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {product.stale && (
@@ -112,7 +131,8 @@ function ProductCard({
   );
 }
 
-/** Read-only Products tab (AC-19-61): facts, secret set/missing, manifest refresh. */
+/** Products tab (AC-19-61): facts, secret set/missing, manifest refresh, plus Add/Edit
+ * into the database-backed settings form (lane SETTINGS-IN-DB-SS). */
 export function ProductsTab() {
   const { can } = useCan();
   const { products, isLoading, refreshingKey, refresh } = useConnectorProducts();
@@ -125,12 +145,27 @@ export function ProductsTab() {
     );
   }
 
+  const canEdit = can('connector.settings');
   return (
     <div className="flex flex-col gap-4">
+      {canEdit && (
+        <div className="flex justify-end">
+          <Button type="button" size="sm" asChild>
+            <Link href="/settings/claude-connector/products/new">
+              <Plus />
+              Add product
+            </Link>
+          </Button>
+        </div>
+      )}
+      {products.length === 0 && (
+        <p className="py-12 text-center text-sm text-muted-foreground">No products yet.</p>
+      )}
       {products.map((p) => (
         <ProductCard
           key={p.key}
           product={p}
+          canEdit={canEdit}
           canManage={can('connector.manage')}
           refreshing={refreshingKey === p.key}
           onRefresh={() => void refresh(p.key)}

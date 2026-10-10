@@ -5,6 +5,7 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { PageHeader } from '@/components/platform/page-header';
 import { ResourceList } from '@/components/platform/resource-list';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { AccessTab } from './components/access-tab';
 import { ProductsTab } from './components/products-tab';
 import { useConnectorGrantListConfig } from './components/use-connector-grant-list-config';
 
@@ -22,12 +23,16 @@ export default function ClaudeConnectorPage() {
           <TabsList variant="line">
             <TabsTrigger value="grants">Grants</TabsTrigger>
             <TabsTrigger value="products">Products</TabsTrigger>
+            <TabsTrigger value="access">Access</TabsTrigger>
           </TabsList>
           <TabsContent value="grants">
             <ResourceList config={config} hideHeader />
           </TabsContent>
           <TabsContent value="products">
             <ProductsTab />
+          </TabsContent>
+          <TabsContent value="access">
+            <AccessTab />
           </TabsContent>
         </Tabs>
       </Container>
