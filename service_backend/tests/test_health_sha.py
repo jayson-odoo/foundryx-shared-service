@@ -17,8 +17,10 @@ def test_production_hides_the_checkout_sha_unless_opted_in(monkeypatch):
 
     health._git_sha.cache_clear()
     monkeypatch.delenv("GIT_SHA", raising=False)
-    monkeypatch.setattr(settings, "environment", "production")
     try:
-        assert health.health()["git_sha"] is None
+        for env in ("production", "staging", "prod"):
+            health._git_sha.cache_clear()
+            monkeypatch.setattr(settings, "environment", env)
+            assert health.health()["git_sha"] is None, env
     finally:
         health._git_sha.cache_clear()

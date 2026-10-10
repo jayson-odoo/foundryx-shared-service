@@ -400,9 +400,8 @@ class SettingsService:
         row = existing or self.repo.upsert_tenant(self.tenant_id)
         for col, value in updates.items():
             setattr(row, col, value)
-        if changed:
-            SettingsRepository.stamp(row, actor, _now())
-            self.repo.audit(self.tenant_id, actor, "tenant", "updated", changed)
+        SettingsRepository.stamp(row, actor, _now())
+        self.repo.audit(self.tenant_id, actor, "tenant", "updated", changed)
         self.db.commit()
         return self.get_tenant()
 
