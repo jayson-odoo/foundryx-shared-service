@@ -349,3 +349,13 @@ def test_retention_is_per_tenant(connector_client, h, fake_product):
     finally:
         db.close()
     assert rows(connector_client._factory, "call_log") == []
+
+
+def test_env_added_later_for_another_tenant_does_not_bleed_into_db_product(connector_client, h):
+    assert _create(connector_client, h, apiBaseUrl="").status_code == 201
+    registry.set_env_for_tests(make_env({"CONNECTOR_PRODUCTS": "acme,beta,delta",
+                                         "CONNECTOR_DELTA_TENANT_SLUG": "someone-else",
+                                         "CONNECTOR_DELTA_API_BASE_URL": "https://evil.test"}))
+    s = _settings(connector_client, h, "delta")
+    assert s["fields"]["apiBaseUrl"] == {"value": None, "source": "unset"}
+    assert s["status"] == "misconfigured"
