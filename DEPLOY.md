@@ -216,12 +216,22 @@ Variable in GitHub and re-run the workflow - never SSH in to hand-edit `.env`.
    validate` / `caddy reload` / `install`. Each swap the script writes:
    ```caddyfile
    icp-demo.foundryx.my {
+       @connector_wellknown path /.well-known/oauth-authorization-server/be/* /.well-known/oauth-protected-resource/be/*
+       handle @connector_wellknown { reverse_proxy 127.0.0.1:8001 { header_up Host {host} … } }
        handle_path /be/* { reverse_proxy 127.0.0.1:8001 { header_up Host {host} … } }
        handle          { reverse_proxy 127.0.0.1:3001 { header_up Host {host} … } }
        encode gzip
        tls you@foundryx.my
    }
    ```
+   The `@connector_wellknown` route is for the Claude connector: its MCP resource
+   and OAuth issuer are `https://<host>/be/mcp/<product>`, and an MCP client
+   discovers OAuth metadata by inserting the well-known segment at the host ROOT
+   (RFC 9728 / RFC 8414): `/.well-known/oauth-protected-resource/be/mcp/<product>`
+   and `/.well-known/oauth-authorization-server/be/mcp/<product>`. Those must reach
+   the backend unstripped (it checks the prefix against the connector's public
+   base URL); without the route they fall through to the frontend and 404, and
+   Claude cannot connect.
    Replace your old sorento site block with this import (and stop the old
    containers so ports `3001`/`8001` are free).
 4. First deploy: `.active_color` is absent → script starts `blue`, brings up the
