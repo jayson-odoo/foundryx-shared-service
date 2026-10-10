@@ -541,3 +541,20 @@ def test_consent_url_must_be_https_outside_development(connector_client, h, monk
     assert connector_client.put("/connector/settings", headers=h,
                                 json={"publicBaseUrl": "http://ss.example"}).status_code == 422
     assert _create(connector_client, h).status_code == 201
+
+
+
+def test_short_environment_secret_hint_never_reveals_characters(connector_client, h):
+    """Env secrets have no length minimum: below 16 characters the hint is '****' only."""
+    registry.set_env_for_tests(make_env({"CONNECTOR_ACME_SS_TO_PRODUCT_SECRET": "short-ss"}))
+    s = _settings(connector_client, h, "acme")
+    assert s["secrets"]["ssToProduct"]["hint"] == "****"
+    assert s["secrets"]["productToSs"]["hint"] == "****" + PRODUCT_TO_SS[-4:]
+
+
+def test_noop_tenant_save_writes_nothing(connector_client, h):
+    assert connector_client.put("/connector/settings", headers=h, json={}).status_code == 200
+    assert connector_client.put("/connector/settings", headers=h,
+                                json={"publicBaseUrl": None}).status_code == 200
+    assert rows(connector_client._factory, "tenant_settings") == []
+    assert rows(connector_client._factory, "settings_audit") == []

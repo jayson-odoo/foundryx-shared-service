@@ -391,9 +391,13 @@ class SettingsService:
                     errors[wire] = err
         if errors:
             raise Invalid(errors)
-        row = self.repo.upsert_tenant(self.tenant_id)
+        existing = self.repo.tenant_row(self.tenant_id)
         col_to_wire = {v[0]: k for k, v in TENANT_WIRE.items()}
-        changed = [col_to_wire[c] for c, v in updates.items() if getattr(row, c) != v]
+        changed = [col_to_wire[c] for c, v in updates.items()
+                   if (getattr(existing, c) if existing else None) != v]
+        if not changed:
+            return self.get_tenant()  # nothing to save: no empty row, no audit
+        row = existing or self.repo.upsert_tenant(self.tenant_id)
         for col, value in updates.items():
             setattr(row, col, value)
         if changed:

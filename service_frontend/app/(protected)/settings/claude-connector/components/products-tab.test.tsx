@@ -108,9 +108,19 @@ describe('ProductsTab settings entry points (SETTINGS-IN-DB-SS)', () => {
   });
 
   it('empty state', async () => {
+    canKeys.push('app_store.read');
     listProducts.mockResolvedValue([]);
     render(<ProductsTab />);
     await screen.findByText('No products yet.');
     expect(screen.getByRole('link', { name: 'App Store' }).getAttribute('href')).toBe('/app-store/connector');
+  });
+});
+
+describe('ProductsTab empty state without App Store access', () => {
+  it('omits the App Store link', async () => {
+    listProducts.mockResolvedValue([]);
+    render(<ProductsTab />);
+    await screen.findByText('No products yet.');
+    expect(screen.queryByTestId('app-store-hint')).toBeNull();
   });
 });

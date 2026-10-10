@@ -161,13 +161,15 @@ export function ProductsTab() {
       {products.length === 0 && (
         <div className="flex flex-col items-center gap-2 py-12 text-center text-sm text-muted-foreground">
           <p>No products yet.</p>
-          <p data-testid="app-store-hint">
-            The Claude connector is installed per workspace from the{' '}
-            <Link href="/app-store/connector" className="text-primary underline-offset-4 hover:underline">
-              App Store
-            </Link>
-            .
-          </p>
+          {can('app_store.read') && (
+            <p data-testid="app-store-hint">
+              The Claude connector is installed per workspace from the{' '}
+              <Link href="/app-store/connector" className="text-primary underline-offset-4 hover:underline">
+                App Store
+              </Link>
+              .
+            </p>
+          )}
         </div>
       )}
       {products.map((p) => (
