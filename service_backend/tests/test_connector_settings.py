@@ -488,14 +488,17 @@ def test_tenant_may_only_narrow_operator_security_settings(connector_client, h):
 
 
 def test_without_environment_limits_the_tenant_value_stands_alone(connector_client, h):
+    """CIDRs and retention stand alone when the environment sets nothing; the
+    redirect allowlist is still capped by the built-in default."""
     registry.set_env_for_tests({k: v for k, v in make_env().items()
                                 if k != "CONNECTOR_REDIRECT_ALLOWLIST"})
-    other = "https://other.example/cb"
-    assert connector_client.put("/connector/settings", headers=h,
-                                json={"redirectAllowlist": other, "allowedClientCidrs": "0.0.0.0/0",
-                                      "callLogRetentionDays": 3650}).status_code == 200
+    put = lambda body: connector_client.put("/connector/settings", headers=h, json=body)  # noqa: E731
+    assert put({"allowedClientCidrs": "0.0.0.0/0", "callLogRetentionDays": 3650}).status_code == 200
+    assert put({"redirectAllowlist": "https://other.example/cb"}).status_code == 422
+    assert put({"redirectAllowlist": REDIRECT}).status_code == 200
     s = connector_client.get("/connector/settings", headers=h).json()
-    assert s["ceilings"] == {} and s["redirectAllowlist"]["value"] == other
+    assert s["ceilings"] == {"redirectAllowlist": REDIRECT}
+    assert s["allowedClientCidrs"]["value"] == "0.0.0.0/0"
 
 
 def test_tightened_environment_overrides_a_stored_looser_value(connector_client, h):
@@ -504,3 +507,27 @@ def test_tightened_environment_overrides_a_stored_looser_value(connector_client,
     registry.set_env_for_tests(make_env({"CONNECTOR_ALLOWED_CLIENT_CIDRS": "160.79.104.0/21"}))
     s = connector_client.get("/connector/settings", headers=h).json()
     assert s["allowedClientCidrs"] == {"value": "160.79.104.0/21", "source": "environment"}
+
+
+
+def test_pruning_honours_a_tightened_environment_retention(connector_client, h, fake_product):
+    """A stored retention above the environment ceiling never keeps logs longer."""
+    from datetime import datetime, timedelta, timezone
+
+    from modules.connector.services import maintenance
+    from tests.connector_support import call_tool, sql
+
+    assert connector_client.put("/connector/settings", headers=h,
+                                json={"callLogRetentionDays": 60}).status_code == 200
+    g = connect(connector_client)
+    call_tool(connector_client, g["access"], "stock_list", {})
+    sql(connector_client._factory, "UPDATE connector.call_log SET created_at=:t",
+        t=(datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S.000000"))
+    registry.set_env_for_tests(make_env({"CONNECTOR_CALL_LOG_RETENTION_DAYS": "7"}))
+    db = connector_client._factory()
+    try:
+        maintenance.prune(db, datetime.now(timezone.utc))
+        db.commit()
+    finally:
+        db.close()
+    assert rows(connector_client._factory, "call_log") == []
