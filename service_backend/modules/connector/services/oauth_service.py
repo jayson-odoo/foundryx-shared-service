@@ -75,10 +75,11 @@ class ProductContext:
 
 
 def resolve_context(db: Session, key: str) -> ProductContext:
-    product = registry.get_product(key)
+    product = registry.get_product(key, db)
     if product is None:
         raise ProductNotFound()
-    tenant = TenantRepository(db).get_by_slug(product.tenant_slug)
+    repo = TenantRepository(db)
+    tenant = repo.get_by_id(product.tenant_id) if product.tenant_id else repo.get_by_slug(product.tenant_slug)
     if tenant is None or tenant.is_platform or not tenant.signin_allowed:
         raise ProductNotFound()
     if not ModuleRepository(db).is_active(tenant.id, MODULE_NAME):  # no row / INACTIVE = 404
@@ -93,11 +94,14 @@ def _redirect_with(uri: str, params: Mapping[str, Optional[str]]) -> str:
 
 
 class OAuthService:
-    def __init__(self, db: Session, ctx: ProductContext, public_base_url: str):
+    def __init__(self, db: Session, ctx: ProductContext, public_base_url: Optional[str] = None):
         self.db = db
         self.ctx = ctx
         self.product = ctx.product
         self.repo = ConnectorRepository(db, ctx.tenant_id)
+        self.config = registry.tenant_config(db, ctx.tenant_id)
+        if public_base_url is None:
+            public_base_url = self.config.public_base_url
         self.base = public_base_url.rstrip("/")
 
     @property
@@ -129,7 +133,7 @@ class OAuthService:
         uris = body.get("redirect_uris")
         if not isinstance(uris, list) or not uris or len(uris) > MAX_REDIRECT_URIS:
             raise InvalidRedirect()
-        allowed = registry.redirect_allowlist()
+        allowed = self.config.redirect_allowlist
         if not all(isinstance(u, str) and crypto.redirect_allowed(u, allowed) for u in uris):
             raise InvalidRedirect()
         name = body.get("client_name")
@@ -157,7 +161,7 @@ class OAuthService:
             raise AuthorizeRefused()
         registered = [u for u in (client.redirect_uris or []) if isinstance(u, str)]
         if not (crypto.redirect_allowed(redirect_uri, registered)
-                and crypto.redirect_allowed(redirect_uri, registry.redirect_allowlist())):
+                and crypto.redirect_allowed(redirect_uri, self.config.redirect_allowlist)):
             raise AuthorizeRefused()
         if params.get("code_challenge_method") != "S256" or not _CHALLENGE_RE.match(challenge):
             raise AuthorizeRefused()

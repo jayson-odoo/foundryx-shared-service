@@ -1,22 +1,31 @@
 """Connector product registry (plan sprint-4/19, section 9).
 
-Products come from the environment only (secrets never live in the DB). A
-product missing any required value is listed as ``misconfigured`` and resolves
-to ``None`` everywhere, so its endpoints answer a uniform 404 without saying
-which part is missing.
+Products and settings come from the database (lane SETTINGS-IN-DB-SS, secrets
+Fernet-encrypted) with the environment as the per-field fallback. A product
+missing any required value is listed as ``misconfigured`` and resolves to
+``None`` everywhere, so its endpoints answer a uniform 404 without saying
+which part is missing. Nothing is cached: a saved change applies on the next
+request.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
-from typing import Mapping, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Mapping, Optional
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 DEFAULT_REDIRECT_ALLOWLIST = ["https://claude.ai/api/mcp/auth_callback"]
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _REQUIRED = ("TENANT_SLUG", "CONNECTION_ID", "CONSENT_URL", "API_BASE_URL",
              "SS_TO_PRODUCT_SECRET", "PRODUCT_TO_SS_SECRET")
+SECRET_FIELDS = ("SS_TO_PRODUCT_SECRET", "PRODUCT_TO_SS_SECRET")
+# Fields that decide where signed traffic goes or what it claims.
+BINDING_FIELDS = ("CONNECTION_ID", "CONSENT_URL", "API_BASE_URL", "ISSUER", "CONSENT_AUDIENCE",
+                  "CALL_AUDIENCE")
 
 
 @dataclass(frozen=True)
@@ -32,6 +41,10 @@ class Product:
     issuer: str = ""
     consent_audience: str = ""
     call_audience: str = ""
+    tenant_id: str = ""  # set for database-backed products (owner); env products resolve by slug
+    # API base URL came from the database (tenant-set): every outbound call re-runs the
+    # SSRF guard. Operator (environment) URLs stay exempt so internal targets keep working.
+    guard_outbound: bool = False
 
     def __repr__(self) -> str:  # never leak secrets through logs/tracebacks
         return f"Product(key={self.key!r})"
@@ -43,6 +56,7 @@ class ProductStatus:
     status: str  # "ok" | "misconfigured"
     product: Optional[Product] = None
     partial: Optional[Product] = None  # misconfigured: whatever was set (admin view only)
+    sources: dict = field(default_factory=dict)  # FIELD -> database|environment|default|unset|unreadable
 
 
 _env_override: Optional[Mapping[str, str]] = None
@@ -88,48 +102,150 @@ def _val(env: Mapping[str, str], name: str) -> str:
     return (env.get(name) or "").strip()
 
 
-def load_products(env: Mapping[str, str]) -> dict[str, ProductStatus]:
-    out: dict[str, ProductStatus] = {}
+# Product fields, in the env-name spelling. Required ones decide ok/misconfigured.
+FIELDS = ("DISPLAY_NAME", "TENANT_SLUG", "CONNECTION_ID", "CONSENT_URL", "API_BASE_URL",
+          "SS_TO_PRODUCT_SECRET", "PRODUCT_TO_SS_SECRET", "ISSUER", "CONSENT_AUDIENCE",
+          "CALL_AUDIENCE")
+
+
+def defaults_for(key: str) -> dict[str, str]:
+    return {"DISPLAY_NAME": key, "ISSUER": key, "CONSENT_AUDIENCE": f"{key}-connector-consent",
+            "CALL_AUDIENCE": f"{key}-connector-api"}
+
+
+def env_product_keys(env: Mapping[str, str]) -> list[str]:
+    out: list[str] = []
     for raw in _val(env, "CONNECTOR_PRODUCTS").split(","):
         key = raw.strip().lower()
-        if not key or key in out:
-            continue
-        if not _KEY_RE.match(key):
-            out[key] = ProductStatus(key=key, status="misconfigured")
-            continue
-        prefix = f"CONNECTOR_{key.upper()}_"
-        vals = {name: _val(env, prefix + name) for name in _REQUIRED}
-        if not all(vals.values()) or vals["SS_TO_PRODUCT_SECRET"] == vals["PRODUCT_TO_SS_SECRET"]:
-            out[key] = ProductStatus(key=key, status="misconfigured", partial=Product(
-                key=key, display_name=_val(env, prefix + "DISPLAY_NAME") or key,
-                tenant_slug=vals["TENANT_SLUG"], connection_id=vals["CONNECTION_ID"],
-                consent_url=vals["CONSENT_URL"], api_base_url=vals["API_BASE_URL"].rstrip("/"),
-                ss_to_product_secret=vals["SS_TO_PRODUCT_SECRET"],
-                product_to_ss_secret=vals["PRODUCT_TO_SS_SECRET"]))
-            continue
-        product = Product(
-            key=key,
-            display_name=_val(env, prefix + "DISPLAY_NAME") or key,
-            tenant_slug=vals["TENANT_SLUG"],
-            connection_id=vals["CONNECTION_ID"],
-            consent_url=vals["CONSENT_URL"],
-            api_base_url=vals["API_BASE_URL"].rstrip("/"),
-            ss_to_product_secret=vals["SS_TO_PRODUCT_SECRET"],
-            product_to_ss_secret=vals["PRODUCT_TO_SS_SECRET"],
-            issuer=_val(env, prefix + "ISSUER") or key,
-            consent_audience=_val(env, prefix + "CONSENT_AUDIENCE") or f"{key}-connector-consent",
-            call_audience=_val(env, prefix + "CALL_AUDIENCE") or f"{key}-connector-api",
-        )
-        out[key] = ProductStatus(key=key, status="ok", product=product)
+        if key and key not in out:
+            out.append(key)
     return out
 
 
-def all_products() -> dict[str, ProductStatus]:
-    return load_products(_env())
+def env_fields(env: Mapping[str, str], key: str) -> dict[str, str]:
+    prefix = f"CONNECTOR_{key.upper()}_"
+    return {name: _val(env, prefix + name) for name in FIELDS}
 
 
-def get_product(key: str) -> Optional[Product]:
-    st = load_products(_env()).get((key or "").lower())
+def build_status(key: str, vals: Mapping[str, str], *, tenant_id: str = "",
+                 sources: Optional[Mapping[str, str]] = None,
+                 guard_outbound: bool = False) -> ProductStatus:
+    """``vals`` = the explicitly set values (blank = unset); defaults fill the rest."""
+    if not _KEY_RE.match(key):
+        return ProductStatus(key=key, status="misconfigured", sources=dict(sources or {}))
+    d = defaults_for(key)
+    v = {name: (vals.get(name) or "") for name in FIELDS}
+    product = Product(
+        key=key,
+        display_name=v["DISPLAY_NAME"] or d["DISPLAY_NAME"],
+        tenant_slug=v["TENANT_SLUG"],
+        connection_id=v["CONNECTION_ID"],
+        consent_url=v["CONSENT_URL"],
+        api_base_url=v["API_BASE_URL"].rstrip("/"),
+        ss_to_product_secret=v["SS_TO_PRODUCT_SECRET"],
+        product_to_ss_secret=v["PRODUCT_TO_SS_SECRET"],
+        issuer=v["ISSUER"] or d["ISSUER"],
+        consent_audience=v["CONSENT_AUDIENCE"] or d["CONSENT_AUDIENCE"],
+        call_audience=v["CALL_AUDIENCE"] or d["CALL_AUDIENCE"],
+        tenant_id=tenant_id,
+        guard_outbound=guard_outbound,
+    )
+    ok = (all(v[name] for name in _REQUIRED)
+          and v["SS_TO_PRODUCT_SECRET"] != v["PRODUCT_TO_SS_SECRET"])
+    return ProductStatus(key=key, status="ok" if ok else "misconfigured",
+                         product=product if ok else None, partial=None if ok else product,
+                         sources=dict(sources or {}))
+
+
+def load_products(env: Mapping[str, str]) -> dict[str, ProductStatus]:
+    """Environment-only view (the fallback layer)."""
+    out: dict[str, ProductStatus] = {}
+    for key in env_product_keys(env):
+        vals = env_fields(env, key)
+        sources = {n: ("environment" if vals[n] else "default" if n in defaults_for(key) else "unset")
+                   for n in FIELDS}
+        out[key] = build_status(key, vals, sources=sources)
+    return out
+
+
+def merge_row(env: Mapping[str, str], key: str, tenant_slug: str, tenant_id: str,
+              db_vals: Mapping[str, str], unreadable: frozenset[str] = frozenset()) -> ProductStatus:
+    """Per-field precedence: database (non-blank) > environment (only when the
+    environment assigns ``key`` to this same tenant) > built-in default. A secret
+    the database holds but cannot decrypt stays unset (fail closed)."""
+    env_applies = (key in env_product_keys(env)
+                   and _val(env, f"CONNECTOR_{key.upper()}_TENANT_SLUG") == tenant_slug)
+    ev = env_fields(env, key) if env_applies else {n: "" for n in FIELDS}
+    # The operator's secrets sign tokens for the operator's URLs and claims only: once
+    # any of those is set in the database, the secrets must be saved there too, so a
+    # tenant can never point operator-signed traffic somewhere else.
+    if any((db_vals.get(n) or "").strip() for n in BINDING_FIELDS):
+        for n in SECRET_FIELDS:
+            ev[n] = ""
+    vals: dict[str, str] = {"TENANT_SLUG": tenant_slug}
+    sources: dict[str, str] = {"TENANT_SLUG": "database"}
+    for name in FIELDS:
+        if name == "TENANT_SLUG":
+            continue
+        if name in unreadable:
+            vals[name], sources[name] = "", "unreadable"
+        elif (db_vals.get(name) or "").strip():
+            vals[name], sources[name] = db_vals[name].strip(), "database"
+        elif ev[name]:
+            vals[name], sources[name] = ev[name], "environment"
+        else:
+            vals[name] = ""
+            sources[name] = "default" if name in defaults_for(key) else "unset"
+    return build_status(key, vals, tenant_id=tenant_id, sources=sources,
+                        guard_outbound=sources.get("API_BASE_URL") == "database")
+
+
+def env_owner_slug(env: Mapping[str, str], key: str) -> str:
+    """The tenant slug the environment assigns ``key`` to ("" = not an env product)."""
+    if key not in env_product_keys(env):
+        return ""
+    return _val(env, f"CONNECTOR_{key.upper()}_TENANT_SLUG")
+
+
+def resolve_products(db: "Session", tenant_id: Optional[str] = None) -> dict[str, ProductStatus]:
+    """Every product: environment products plus database rows (merged per field).
+    ``tenant_id`` limits the database rows read (and decrypted) to one tenant."""
+    from .repositories.settings_repository import SettingsRepository
+
+    env = _env()
+    out = load_products(env)
+    for key, st in SettingsRepository(db).resolved_rows(env, tenant_id).items():
+        owner = st.product or st.partial
+        env_slug = env_owner_slug(env, key)
+        if env_slug and owner is not None and env_slug != owner.tenant_slug:
+            continue  # the operator assigned this key to another tenant: env wins
+        out[key] = st
+    return out
+
+
+def resolve_product(db: "Session", key: str) -> Optional[ProductStatus]:
+    from .repositories.settings_repository import SettingsRepository
+
+    key = (key or "").lower()
+    env = _env()
+    st = SettingsRepository(db).resolved_row(env, key)
+    owner = (st.product or st.partial) if st else None
+    env_slug = env_owner_slug(env, key)
+    if st is None or (env_slug and owner is not None and env_slug != owner.tenant_slug):
+        return load_products(env).get(key)  # the operator's assignment wins
+    return st
+
+
+def all_products(db: Optional["Session"] = None,
+                 tenant_id: Optional[str] = None) -> dict[str, ProductStatus]:
+    return resolve_products(db, tenant_id) if db is not None else load_products(_env())
+
+
+def get_product(key: str, db: Optional["Session"] = None) -> Optional[Product]:
+    if db is not None:
+        st = resolve_product(db, key)
+    else:
+        st = load_products(_env()).get((key or "").lower())
     return st.product if st and st.status == "ok" else None
 
 
@@ -169,3 +285,130 @@ def public_base_url() -> str:
 def allowed_client_cidrs() -> Optional[str]:
     """Raw CONNECTOR_ALLOWED_CLIENT_CIDRS (None/blank = no allow-list)."""
     return _val(_env(), "CONNECTOR_ALLOWED_CLIENT_CIDRS") or None
+
+
+# --- per-tenant settings (database > environment > default) ---------------------------
+
+# setting name -> (env var, built-in default as text; "" = none)
+TENANT_SETTINGS = {
+    "public_base_url": ("CONNECTOR_PUBLIC_BASE_URL", ""),  # default = settings.public_base_url
+    "allowed_client_cidrs": ("CONNECTOR_ALLOWED_CLIENT_CIDRS", ""),
+    "redirect_allowlist": ("CONNECTOR_REDIRECT_ALLOWLIST", ",".join(DEFAULT_REDIRECT_ALLOWLIST)),
+    "manifest_ttl_seconds": ("CONNECTOR_MANIFEST_TTL_SECONDS", "900"),
+    "call_timeout_seconds": ("CONNECTOR_CALL_TIMEOUT_SECONDS", "15"),
+    "call_log_retention_days": ("CONNECTOR_CALL_LOG_RETENTION_DAYS", "180"),
+}
+_INT_SETTINGS = ("manifest_ttl_seconds", "call_timeout_seconds", "call_log_retention_days")
+
+
+@dataclass(frozen=True)
+class TenantConfig:
+    public_base_url: str
+    allowed_client_cidrs: Optional[str]
+    redirect_allowlist: list
+    manifest_ttl_seconds: int
+    call_timeout_seconds: int
+    call_log_retention_days: int
+    values: dict = field(default_factory=dict)   # name -> effective text ("" = none)
+    sources: dict = field(default_factory=dict)  # name -> database|environment|default|unset
+
+
+def _networks(raw: str) -> Optional[list]:
+    import ipaddress
+
+    try:
+        return [ipaddress.ip_network(p.strip(), strict=False) for p in raw.split(",") if p.strip()]
+    except ValueError:
+        return None
+
+
+CEILING_SETTINGS = ("allowed_client_cidrs", "redirect_allowlist", "call_log_retention_days")
+
+
+def ceilings(env: Mapping[str, str]) -> dict[str, str]:
+    """{setting: the value a tenant may only narrow}. CIDRs and retention are capped
+    only when the environment sets them; redirect URIs are always capped (by the
+    environment list, else the built-in default)."""
+    out = {}
+    for name in CEILING_SETTINGS:
+        envv = _val(env, TENANT_SETTINGS[name][0])
+        if not envv and name == "redirect_allowlist":
+            envv = TENANT_SETTINGS[name][1]  # the built-in default still caps redirects
+        if envv:
+            out[name] = envv
+    return out
+
+
+def ceiling_error(env: Mapping[str, str], name: str, value: str) -> Optional[str]:
+    """The environment is a ceiling for the security settings: a tenant value may
+    only narrow it. Returns why ``value`` breaks the ceiling, else None."""
+    env_name, default = TENANT_SETTINGS[name]
+    envv = _val(env, env_name)
+    if name == "allowed_client_cidrs" and envv:
+        outer, inner = _networks(envv), _networks(value)
+        if outer is None or inner is None:
+            return "Not a valid list of IP ranges."
+        for net in inner:
+            if not any(net.version == o.version and net.subnet_of(o) for o in outer):
+                return f"{net} is outside the deployment's allowed ranges ({envv})."
+    if name == "redirect_allowlist":
+        allowed = [x.strip() for x in (envv or default).split(",") if x.strip()]
+        for uri in (x.strip() for x in value.split(",") if x.strip()):
+            if uri not in allowed:
+                return f"{uri} is not in the deployment's allowed redirect URLs."
+    if name == "call_log_retention_days" and envv:
+        try:
+            if int(value) > int(envv):
+                return f"At most {int(envv)} days (deployment limit)."
+        except ValueError:
+            return None
+    return None
+
+
+def merge_tenant_config(env: Mapping[str, str], db_vals: Mapping[str, object]) -> TenantConfig:
+    from app.config import settings
+
+    values: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    for name, (env_name, default) in TENANT_SETTINGS.items():
+        if name == "public_base_url":
+            default = settings.public_base_url
+        dbv = db_vals.get(name)
+        dbv = "" if dbv is None else str(dbv).strip()
+        if dbv and ceiling_error(env, name, dbv):
+            dbv = ""  # the environment was tightened after this was saved: it wins
+        envv = _val(env, env_name)
+        if name in _INT_SETTINGS and envv:
+            try:
+                envv = str(int(envv))
+            except ValueError:
+                envv = ""  # a malformed env value falls through to the default, as before
+        if dbv:
+            values[name], sources[name] = dbv, "database"
+        elif envv:
+            values[name], sources[name] = envv, "environment"
+        elif default:
+            values[name], sources[name] = default, "default"
+        else:
+            values[name], sources[name] = "", "unset"
+    values["public_base_url"] = values["public_base_url"].rstrip("/")
+    allow = [x.strip() for x in values["redirect_allowlist"].split(",") if x.strip()]
+    return TenantConfig(
+        public_base_url=values["public_base_url"],
+        allowed_client_cidrs=values["allowed_client_cidrs"] or None,
+        redirect_allowlist=allow or list(DEFAULT_REDIRECT_ALLOWLIST),
+        manifest_ttl_seconds=int(values["manifest_ttl_seconds"]),
+        call_timeout_seconds=int(values["call_timeout_seconds"]),
+        call_log_retention_days=int(values["call_log_retention_days"]),
+        values=values, sources=sources)
+
+
+def tenant_config(db: Optional["Session"], tenant_id: Optional[str]) -> TenantConfig:
+    """The effective settings for ``tenant_id`` (None = environment only, used
+    where no product resolved, e.g. the allow-list on an unknown product)."""
+    db_vals: dict[str, object] = {}
+    if db is not None and tenant_id:
+        from .repositories.settings_repository import SettingsRepository
+
+        db_vals = SettingsRepository(db).tenant_values(tenant_id)
+    return merge_tenant_config(_env(), db_vals)

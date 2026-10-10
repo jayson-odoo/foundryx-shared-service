@@ -6,6 +6,11 @@ the lifecycle fault-injection steps, against LOCAL copies of shared-service (SS)
 line per step, exit code non-zero on any FAIL. stdlib + httpx only (use the SS venv); `psql` and `agent-browser` on PATH.
 No public tunnels. Never point it at prod. It prints no tokens, codes, emails or passwords.
 
+> Since lane SETTINGS-IN-DB-SS (PR #119) every `CONNECTOR_*` value below can instead be
+> saved on Settings > Claude connector (database wins per field, environment is the
+> fallback and a ceiling for the security lists). See
+> `documentation/plans/sprint-5/connector-settings-in-db.md`.
+
 ## 1. Local copies (ports reserved: SS 8031, sorento API 8032, sorento web 3032)
 
 Databases are COPIES: an SS database with the connector module installed for tenant `default`, and a clone of a sorento

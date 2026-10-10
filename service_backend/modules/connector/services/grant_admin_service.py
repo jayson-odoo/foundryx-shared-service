@@ -25,9 +25,9 @@ from .manifest_service import ManifestService, ManifestUnavailable, visible_tool
 STATUSES = ("active", "revoked", "expired")
 
 
-def _product_name(key: str) -> str:
+def _product_name(key: str, products: dict) -> str:
     """Registry display name; a name left at its key is title-cased for people."""
-    st = registry.all_products().get(key)
+    st = products.get(key)
     p = (st.product or st.partial) if st else None
     name = p.display_name if p else key
     return name.replace("_", " ").title() if name == key else name
@@ -49,9 +49,10 @@ class GrantAdminService:
         since = datetime.now(timezone.utc) - timedelta(days=30)
         counts = self.repo.calls_since([g.id for g in grants], since)
         names = self.repo.client_names(list({g.client_id for g in grants}))
+        products = registry.all_products(self.db, self.tenant_id)
         return [GrantItem(
             id=g.id, status=g.status, product=g.product,
-            productName=_product_name(g.product), productUserId=g.product_user_id,
+            productName=_product_name(g.product, products), productUserId=g.product_user_id,
             userName=g.name, userEmail=g.email, clientName=names.get(g.client_id),
             grantedAt=g.created_at, consentedAt=g.consented_at, lastUsedAt=g.last_used_at,
             calls30d=counts.get(g.id, 0), revokedReason=g.revoked_reason) for g in grants]
@@ -104,18 +105,18 @@ class GrantAdminService:
 
     # --- products -----------------------------------------------------------------------------
     def _owned(self) -> list[registry.ProductStatus]:
-        return [st for st in registry.all_products().values()
+        return [st for st in registry.all_products(self.db, self.tenant_id).values()
                 if (st.product or st.partial) is not None
                 and (st.product or st.partial).tenant_slug == self.tenant_slug]
 
-    def _view(self, st: registry.ProductStatus) -> ProductItem:
+    def _view(self, st: registry.ProductStatus, base: Optional[str] = None) -> ProductItem:
         p = st.product or st.partial
         assert p is not None
         cache = self.repo.get_manifest(p.key)
         tools = visible_tools(cache.manifest_json if cache else None)
         return ProductItem(
             key=p.key, displayName=p.display_name,
-            mcpUrl=f"{registry.public_base_url()}/mcp/{p.key}",
+            mcpUrl=f"{base or registry.tenant_config(self.db, self.tenant_id).public_base_url}/mcp/{p.key}",
             consentUrl=p.consent_url, apiBase=p.api_base_url,
             manifestVersion=cache.version if cache else None, toolCount=len(tools),
             tools=[ToolSummary(name=t["name"], method=t["http"]["method"].upper(),
@@ -127,7 +128,8 @@ class GrantAdminService:
             status=st.status)
 
     def products(self) -> list[ProductItem]:
-        return [self._view(st) for st in self._owned()]
+        base = registry.tenant_config(self.db, self.tenant_id).public_base_url
+        return [self._view(st, base) for st in self._owned()]
 
     def refresh_manifest(self, key: str) -> ProductItem:
         st = next((s for s in self._owned() if s.key == key), None)

@@ -55,6 +55,10 @@ const CARVE_OUTS = [
   'app/(protected)/user-management/users/components/use-user-actions.tsx',
   'app/(protected)/documents/shares/page.tsx',
   'app/(protected)/settings/claude-connector/components/use-connector-grant-list-config.tsx',
+  // Lane SETTINGS-IN-DB-SS: deleting a connector product's saved settings drops
+  // its encrypted secrets for good (irreversible) - typed product-key confirm,
+  // owner-approved on PR #119 (Q4).
+  'app/(protected)/settings/claude-connector/components/use-connector-product-form.tsx',
 ];
 
 /**

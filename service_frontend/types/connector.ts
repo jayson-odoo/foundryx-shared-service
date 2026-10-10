@@ -79,6 +79,7 @@ export interface ConnectorProduct {
   stale: boolean;
   lastError: string | null;
   secrets: { ssToProduct: ConnectorSecretState; productToSs: ConnectorSecretState };
+  status?: 'ok' | 'misconfigured';
 }
 
 export interface ConnectorRevokeResult {
@@ -101,4 +102,85 @@ export interface ConnectorGrantPage {
   data: ConnectorGrant[];
   total: number;
   page: number;
+}
+
+// --- settings in the database (lane SETTINGS-IN-DB-SS) ---------------------------------
+
+/** Where an effective value comes from: saved here, the server environment, or built in. */
+export type ConnectorSettingSource = 'database' | 'environment' | 'default' | 'unset' | 'unreadable';
+
+export interface ConnectorSettingValue {
+  value: string | null;
+  source: ConnectorSettingSource;
+}
+
+export interface ConnectorSecretValue {
+  state: 'set' | 'missing' | 'unreadable';
+  source: ConnectorSettingSource;
+  /** "****" + the last 4 characters of a set secret; never more of it. */
+  hint?: string | null;
+}
+
+export type ConnectorProductField =
+  | 'displayName'
+  | 'connectionId'
+  | 'consentUrl'
+  | 'apiBaseUrl'
+  | 'issuer'
+  | 'consentAudience'
+  | 'callAudience';
+
+export type ConnectorSecretSlot = 'ssToProduct' | 'productToSs';
+
+export interface ConnectorProductSettings {
+  key: string;
+  /** A database row exists (only then can it be deleted). */
+  stored: boolean;
+  status: 'ok' | 'misconfigured';
+  fields: Record<ConnectorProductField, ConnectorSettingValue>;
+  secrets: Record<ConnectorSecretSlot, ConnectorSecretValue>;
+}
+
+/** Omitted = unchanged; '' = clear (fall back); blank secret = keep. */
+export type ConnectorProductSettingsInput = Partial<Record<ConnectorProductField, string>> & {
+  ssToProductSecret?: string;
+  productToSsSecret?: string;
+  clearSecrets?: ConnectorSecretSlot[];
+};
+
+export interface ConnectorProductCreateInput extends ConnectorProductSettingsInput {
+  key: string;
+}
+
+export type ConnectorTenantField =
+  | 'publicBaseUrl'
+  | 'allowedClientCidrs'
+  | 'redirectAllowlist'
+  | 'manifestTtlSeconds'
+  | 'callTimeoutSeconds'
+  | 'callLogRetentionDays';
+
+export type ConnectorTenantSettings = Record<ConnectorTenantField, ConnectorSettingValue> & {
+  /** Deployment limits a saved value must stay within (only those the server sets). */
+  ceilings: Partial<Record<ConnectorTenantField, string>>;
+};
+
+/** Omitted = unchanged; null = clear (fall back to environment/default). */
+export interface ConnectorTenantSettingsInput {
+  publicBaseUrl?: string | null;
+  allowedClientCidrs?: string | null;
+  redirectAllowlist?: string | null;
+  manifestTtlSeconds?: number | null;
+  callTimeoutSeconds?: number | null;
+  callLogRetentionDays?: number | null;
+}
+
+export interface ConnectorSettingsAuditItem {
+  id: string;
+  target: string;
+  action: 'created' | 'updated' | 'deleted';
+  fields: string[];
+  actorUserId: string | null;
+  actorName: string | null;
+  at: string;
 }

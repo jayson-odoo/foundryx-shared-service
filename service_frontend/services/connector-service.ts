@@ -6,7 +6,13 @@ import type {
   ConnectorGrantListParams,
   ConnectorGrantPage,
   ConnectorProduct,
+  ConnectorProductCreateInput,
+  ConnectorProductSettings,
+  ConnectorProductSettingsInput,
   ConnectorRevokeResult,
+  ConnectorSettingsAuditItem,
+  ConnectorTenantSettings,
+  ConnectorTenantSettingsInput,
 } from '@/types/connector';
 
 export function listGrants(params: ConnectorGrantListParams): Promise<ConnectorGrantPage> {
@@ -51,4 +57,54 @@ export function refreshManifest(key: string): Promise<ConnectorProduct> {
     `/connector/products/${encodeURIComponent(key)}/refresh-manifest`,
     { method: 'POST' },
   );
+}
+
+// --- settings in the database (lane SETTINGS-IN-DB-SS) ---------------------------------
+
+export function getTenantSettings(): Promise<ConnectorTenantSettings> {
+  return apiFetch<ConnectorTenantSettings>('/connector/settings');
+}
+
+export function updateTenantSettings(
+  input: ConnectorTenantSettingsInput,
+): Promise<ConnectorTenantSettings> {
+  return apiFetch<ConnectorTenantSettings>('/connector/settings', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function listSettingsAudit(): Promise<ConnectorSettingsAuditItem[]> {
+  const res = await apiFetch<{ data: ConnectorSettingsAuditItem[] }>('/connector/settings/audit');
+  return res.data;
+}
+
+export function getProductSettings(key: string): Promise<ConnectorProductSettings> {
+  return apiFetch<ConnectorProductSettings>(
+    `/connector/products/${encodeURIComponent(key)}/settings`,
+  );
+}
+
+export function createProduct(input: ConnectorProductCreateInput): Promise<ConnectorProductSettings> {
+  return apiFetch<ConnectorProductSettings>('/connector/products', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateProductSettings(
+  key: string,
+  input: ConnectorProductSettingsInput,
+): Promise<ConnectorProductSettings> {
+  return apiFetch<ConnectorProductSettings>(
+    `/connector/products/${encodeURIComponent(key)}/settings`,
+    { method: 'PUT', body: JSON.stringify(input) },
+  );
+}
+
+export function deleteProduct(key: string, confirmKey: string): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>(`/connector/products/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ confirmKey }),
+  });
 }

@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.services.url_guard import UrlGuardError, assert_deliverable
+
 from .. import crypto, registry
 from ..registry import Product
 
@@ -18,7 +20,8 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 def send(product: Product, *, method: str, raw_path: str, query: str, body: bytes, sub: str,
-         grant_id: str, consented_at: int, tool: str) -> httpx.Response:
+         grant_id: str, consented_at: int, tool: str,
+         timeout_seconds: Optional[int] = None) -> httpx.Response:
     token = crypto.sign_call(
         product.ss_to_product_secret, connection_id=product.connection_id,
         audience=product.call_audience, sub=sub, grant_id=grant_id, consented_at=consented_at,
@@ -26,10 +29,15 @@ def send(product: Product, *, method: str, raw_path: str, query: str, body: byte
     url = product.api_base_url + raw_path + (f"?{query}" if query else "")
     if urlsplit(url).hostname != urlsplit(product.api_base_url).hostname:
         raise httpx.TransportError("host mismatch")  # nothing is sent
+    if product.guard_outbound:  # tenant-set base URL: re-check right before sending
+        try:
+            assert_deliverable(url, subject="API base URL")
+        except UrlGuardError:
+            raise httpx.TransportError("blocked target") from None  # nothing is sent
     headers = {"Authorization": f"Connector {token}", "Accept": "application/json"}
     if body:
         headers["Content-Type"] = "application/json"
-    timeout = httpx.Timeout(float(registry.call_timeout_seconds()))
+    timeout = httpx.Timeout(float(timeout_seconds or registry.call_timeout_seconds()))
     with httpx.Client(transport=TRANSPORT, timeout=timeout, follow_redirects=False) as client:
         with client.stream(method.upper(), url, content=body or None, headers=headers) as resp:
             chunks, size = [], 0

@@ -83,3 +83,44 @@ describe('ProductsTab (AC-19-61)', () => {
     expect(screen.queryByRole('button', { name: /refresh manifest/i })).toBeNull();
   });
 });
+
+describe('ProductsTab settings entry points (SETTINGS-IN-DB-SS)', () => {
+  it('connector.settings shows Add product and Edit links', async () => {
+    canKeys.push('connector.settings');
+    render(<ProductsTab />);
+    await screen.findByText('https://ss.test/mcp/acme');
+    expect(screen.getByRole('link', { name: /add product/i }).getAttribute('href')).toBe(
+      '/settings/claude-connector/products/new',
+    );
+    expect(screen.getByRole('link', { name: /edit/i }).getAttribute('href')).toBe(
+      '/settings/claude-connector/products/acme',
+    );
+  });
+
+  it('read-only sees Settings link, no Add product; misconfigured badge, no refresh', async () => {
+    listProducts.mockResolvedValue([prod({ status: 'misconfigured' })]);
+    render(<ProductsTab />);
+    await screen.findByText('https://ss.test/mcp/acme');
+    expect(screen.queryByRole('link', { name: /add product/i })).toBeNull();
+    expect(screen.getByRole('link', { name: /settings/i })).toBeTruthy();
+    expect(screen.getByText('Misconfigured')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /refresh manifest/i })).toBeNull();
+  });
+
+  it('empty state', async () => {
+    canKeys.push('app_store.read');
+    listProducts.mockResolvedValue([]);
+    render(<ProductsTab />);
+    await screen.findByText('No products yet.');
+    expect(screen.getByRole('link', { name: 'App Store' }).getAttribute('href')).toBe('/app-store/connector');
+  });
+});
+
+describe('ProductsTab empty state without App Store access', () => {
+  it('omits the App Store link', async () => {
+    listProducts.mockResolvedValue([]);
+    render(<ProductsTab />);
+    await screen.findByText('No products yet.');
+    expect(screen.queryByTestId('app-store-hint')).toBeNull();
+  });
+});

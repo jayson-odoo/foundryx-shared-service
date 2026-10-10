@@ -151,3 +151,55 @@ class ManifestCache(ConnectorBase):
     fetched_at = Column(UTCDateTime(), nullable=True)
     last_error = Column(Text, nullable=True)
     __table_args__ = (UniqueConstraint("tenant_id", "product", name="uq_connector_manifest"),)
+
+
+class ProductSetting(ConnectorBase):
+    """A product configured in the database (lane SETTINGS-IN-DB-SS). ``key`` is
+    deployment-unique (it is the URL). A NULL/blank column falls back to the
+    environment for the same key, but only when the environment assigns that key
+    to this row's tenant. The two shared secrets live ONLY in
+    ``secrets_encrypted`` (core Fernet, ``app/secrets.py``)."""
+
+    __tablename__ = "product_settings"
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    key = Column(String(32), nullable=False, unique=True)
+    display_name = Column(String(120), nullable=True)
+    connection_id = Column(String(128), nullable=True)
+    consent_url = Column(Text, nullable=True)
+    api_base_url = Column(Text, nullable=True)
+    issuer = Column(String(128), nullable=True)
+    consent_audience = Column(String(128), nullable=True)
+    call_audience = Column(String(128), nullable=True)
+    secrets_encrypted = Column(Text, nullable=True)
+    updated_by = Column(String, nullable=True)
+    updated_at = Column(UTCDateTime(), nullable=True)
+    created_at = _created()
+
+
+class TenantSetting(ConnectorBase):
+    """Per-tenant connector settings; NULL = environment, else built-in default."""
+
+    __tablename__ = "tenant_settings"
+    tenant_id = Column(String, primary_key=True)
+    public_base_url = Column(Text, nullable=True)
+    allowed_client_cidrs = Column(Text, nullable=True)
+    redirect_allowlist = Column(Text, nullable=True)
+    manifest_ttl_seconds = Column(Integer, nullable=True)
+    call_timeout_seconds = Column(Integer, nullable=True)
+    call_log_retention_days = Column(Integer, nullable=True)
+    updated_by = Column(String, nullable=True)
+    updated_at = Column(UTCDateTime(), nullable=True)
+
+
+class SettingsAudit(ConnectorBase):
+    """Who changed which settings when. Field NAMES only - never values."""
+
+    __tablename__ = "settings_audit"
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    actor_user_id = Column(String, nullable=True)
+    target = Column(String(64), nullable=False)  # "tenant" | "product:<key>"
+    action = Column(String(16), nullable=False)  # created | updated | deleted
+    fields = Column(JSON(none_as_null=True), nullable=True)
+    created_at = _created()
