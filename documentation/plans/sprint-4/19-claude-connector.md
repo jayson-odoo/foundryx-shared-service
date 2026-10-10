@@ -147,6 +147,7 @@ goes through a crew-note with lane CLAUDE-CONNECTOR first. This card only adds w
    - `CONNECTOR_PUBLIC_BASE_URL` overrides `PUBLIC_BASE_URL` for the issuer, both metadata documents, WWW-Authenticate,
      the consent return_url, the MCP URL in the admin view and the binding-cookie path, so a tunnel URL needs no code change.
    - **Owner deploy step (complementary):** Caddy rule allowing only that range on the same Claude-facing paths.
+   - **Do not enable the allowlist in prod until issue #118 / BL-SS-303 is fixed** (client IP resolution behind Cloudflare: forged first XFF hop through tunnels; prod likely sees Cloudflare edge IPs).
 
 ## 7a. Accepted risks (review round 1)
 
