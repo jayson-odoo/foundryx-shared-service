@@ -270,9 +270,11 @@ def _parse_networks(raw: str) -> Optional[list]:
 
 def _parse_ip(value: str):
     try:
-        return ipaddress.ip_address(value.strip())
+        addr = ipaddress.ip_address(value.strip())
     except ValueError:
         return None
+    # ::ffff:10.0.0.1 is 10.0.0.1 - one key, and it matches IPv4 ranges.
+    return getattr(addr, "ipv4_mapped", None) or addr
 
 
 def client_ip(request: Request) -> str:
@@ -298,8 +300,11 @@ def client_ip(request: Request) -> str:
 
     peer_addr = _parse_ip(peer)
     if peer_addr is None or not trusted(peer_addr):
-        return peer
-    hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",")]
+        return peer if peer_addr is None else str(peer_addr)
+    # Every header line, in order: a forged first line must not hide a proxy's
+    # own line appended after it.
+    raw = ",".join(request.headers.getlist("x-forwarded-for"))
+    hops = [h.strip() for h in raw.split(",")]
     resolved = peer
     for hop in reversed([h for h in hops if h]):
         addr = _parse_ip(hop)

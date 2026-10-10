@@ -46,7 +46,8 @@ class Settings(BaseSettings):
     # Proxies whose X-Forwarded-For is believed (CSV of IPs/CIDRs). Empty =
     # nobody, even with trust_proxy_headers on; an invalid entry = nobody. The
     # resolver walks the chain right-to-left and takes the first untrusted hop
-    # (issue #118 - the old first-hop read was forgeable).
+    # (issue #118 - the old first-hop read was forgeable). Keep it equal to
+    # gunicorn's FORWARDED_ALLOW_IPS (docker-compose.yml) so both walks agree.
     trusted_proxies: str = ""
     # Dual throttle policy (D6): email = temp lock (never permanent - a hard
     # lockout is an attacker DoS on victims); IP = window throttle.

@@ -25,7 +25,8 @@ PROXY = "172.18.0.1"
 
 
 def _req(peer, xff=None):
-    headers = [] if xff is None else [(b"x-forwarded-for", xff.encode())]
+    xffs = [] if xff is None else [xff] if isinstance(xff, str) else xff
+    headers = [(b"x-forwarded-for", v.encode()) for v in xffs]
     return Request({"type": "http", "client": (peer, 5000) if peer else None,
                     "headers": headers, "method": "GET", "path": "/"})
 
@@ -95,6 +96,17 @@ def test_ipv6_peer_and_hops(monkeypatch):
     assert client_ip(_req("::1", f"{CLAUDE_IP}, 2001:db8::7")) == "2001:db8::7"
 
 
+def test_every_header_line_is_walked(trusting):
+    """A proxy that adds its own header LINE (not a comma append) must not let
+    the client's forged first line win."""
+    assert client_ip(_req("127.0.0.1", [CLAUDE_IP, OUTSIDE_IP])) == OUTSIDE_IP
+
+
+def test_ipv4_mapped_ipv6_is_normalized(trusting):
+    assert client_ip(_req("::ffff:127.0.0.1", f"{CLAUDE_IP}, ::ffff:{OUTSIDE_IP}")) == OUTSIDE_IP
+    assert client_ip(_req(f"::ffff:{OUTSIDE_IP}", CLAUDE_IP)) == OUTSIDE_IP
+
+
 # ---- endpoint: the connector allowlist ----------------------------------------
 
 
@@ -145,3 +157,27 @@ def test_rotating_forged_xff_does_not_reset_login_throttle(session_factory, monk
             assert res.status_code == 429
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+# ---- deploy config guard -------------------------------------------------------
+
+
+def test_deploy_never_trusts_every_forwarder():
+    """Under FORWARDED_ALLOW_IPS="*" uvicorn rewrites request.client to the
+    LEFTMOST (client-forgeable) hop before client_ip ever runs, and the app's
+    walk must agree with uvicorn's."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "docker-compose.yml").read_text()
+    start = (root / "service_backend" / "start.sh").read_text()
+
+    def default(name):
+        m = re.search(rf"^\s*{name}:\s*\$\{{{name}:-([^}}]*)\}}\s*$", compose, re.M)
+        assert m, f"{name} must be set in docker-compose.yml with a default"
+        return m.group(1)
+
+    assert "*" not in default("FORWARDED_ALLOW_IPS")
+    assert default("TRUSTED_PROXIES") == default("FORWARDED_ALLOW_IPS")
+    assert '"${FORWARDED_ALLOW_IPS:-*}"' not in start
