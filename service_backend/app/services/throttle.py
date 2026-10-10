@@ -15,6 +15,7 @@ The guard runs BEFORE any credential work (cheap rejection under attack) and
 the 429 is deliberately distinct from the uniform 401 - locking is observable
 anyway; clarity beats theater.
 """
+import ipaddress
 import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol
@@ -257,17 +258,64 @@ def prune_stale(db: Session) -> int:
 # ── request-level helpers (used by the auth router) ──────────────────────────
 
 
+def _parse_networks(raw: str) -> Optional[list]:
+    """`trusted_proxies` CSV -> networks. Any invalid entry = None (trust
+    nobody): a typo must fail closed, never widen trust."""
+    try:
+        return [ipaddress.ip_network(p.strip(), strict=False)
+                for p in (raw or "").split(",") if p.strip()]
+    except ValueError:
+        return None
+
+
+def _parse_ip(value: str):
+    try:
+        addr = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    # ::ffff:10.0.0.1 is 10.0.0.1 - one key, and it matches IPv4 ranges.
+    return getattr(addr, "ipv4_mapped", None) or addr
+
+
 def client_ip(request: Request) -> str:
-    """The throttle key for the caller's address. X-Forwarded-For (first hop)
-    is honored ONLY behind the known proxy (`trust_proxy_headers`) - otherwise
-    attackers mint fresh counters per spoofed header."""
-    if settings.trust_proxy_headers:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            first_hop = forwarded.split(",")[0].strip()
-            if first_hop:
-                return first_hop
-    return request.client.host if request.client else "unknown"
+    """The caller's address, for throttle keys and IP allowlists.
+
+    X-Forwarded-For is honored only when `trust_proxy_headers` is on AND the
+    socket peer is a configured trusted proxy (`trusted_proxies`, empty =
+    nobody). The chain is then walked RIGHT to left, skipping trusted hops, and
+    the first untrusted hop wins: everything left of it was written by the
+    client and is forgeable (issue #118 - the old first-hop read let any caller
+    claim an allowlisted IP or mint a fresh throttle bucket per request)."""
+    peer = request.client.host if request.client else None
+    if peer is None:
+        return "unknown"
+    if not settings.trust_proxy_headers:
+        return peer
+    networks = _parse_networks(settings.trusted_proxies)
+    if not networks:
+        return peer
+
+    def trusted(addr) -> bool:
+        return any(addr in net for net in networks if net.version == addr.version)
+
+    peer_addr = _parse_ip(peer)
+    if peer_addr is None or not trusted(peer_addr):
+        return peer if peer_addr is None else str(peer_addr)
+    # Every header line, in order: a forged first line must not hide a proxy's
+    # own line appended after it.
+    raw = ",".join(request.headers.getlist("x-forwarded-for"))
+    hops = [h.strip() for h in raw.split(",")]
+    resolved = peer
+    for hop in reversed([h for h in hops if h]):
+        addr = _parse_ip(hop)
+        if addr is None:
+            # Junk can only sit on the client side of the chain: keep the last
+            # address a trusted proxy vouched for, never key on the junk.
+            return resolved
+        resolved = str(addr)
+        if not trusted(addr):
+            return resolved
+    return resolved
 
 
 def normalize_email(email: str) -> str:

@@ -27,9 +27,14 @@ x-backend-env: &backend-env
   ENVIRONMENT: production
   DEBUG: "false"
   # Behind Caddy (sets X-Forwarded-*). Real client IP for the auth throttle +
-  # correct scheme/host for generated links & secure cookies.
+  # connector IP allowlist, correct scheme/host for generated links & cookies.
+  # Only peers in these ranges may set X-Forwarded-For (issue #118): containers
+  # bind 127.0.0.1, so a peer is always host Caddy (via the docker gateway) or a
+  # sibling container - never the internet. NEVER "*": uvicorn then takes the
+  # LEFTMOST (client-forgeable) hop.
   TRUST_PROXY_HEADERS: "true"
-  FORWARDED_ALLOW_IPS: "*"
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+  FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
   # Container-start bootstrap controls (start.sh; issue #89). This anchor is an
   # allow-list, so without these lines the documented SKIP_MIGRATIONS=1 bypass
   # and the lock-timeout/retry tuning never reached the container. Defaults =

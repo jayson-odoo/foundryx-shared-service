@@ -77,12 +77,14 @@ fi
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8001}"
 
+# FORWARDED_ALLOW_IPS: never "*" - uvicorn then trusts the LEFTMOST (client-
+# forgeable) X-Forwarded-For hop (issue #118). Prod sets it in docker-compose.yml.
 echo "Starting FastAPI (gunicorn/UvicornWorker) on ${API_HOST}:${API_PORT}..."
 exec python -m gunicorn app.main:app \
   --workers "${WORKERS:-4}" \
   --worker-class uvicorn.workers.UvicornWorker \
   --bind "${API_HOST}:${API_PORT}" \
-  --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-*}" \
+  --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}" \
   --timeout 120 \
   --keep-alive 5 \
   --access-logfile - \

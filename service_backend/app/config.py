@@ -40,10 +40,15 @@ class Settings(BaseSettings):
     # Public self-signup kill-switch (D3) - BL-032 re-enables with real tenant
     # provisioning. While false the endpoint 404s.
     signup_enabled: bool = False
-    # Honor X-Forwarded-For (first hop) only when deployed behind the known
-    # proxy - false for direct uvicorn in dev, or attackers mint fresh
-    # counters per spoofed header.
+    # Honor X-Forwarded-For only when deployed behind a known proxy - false for
+    # direct uvicorn in dev, or attackers mint fresh counters per spoofed header.
     trust_proxy_headers: bool = False
+    # Proxies whose X-Forwarded-For is believed (CSV of IPs/CIDRs). Empty =
+    # nobody, even with trust_proxy_headers on; an invalid entry = nobody. The
+    # resolver walks the chain right-to-left and takes the first untrusted hop
+    # (issue #118 - the old first-hop read was forgeable). Keep it equal to
+    # gunicorn's FORWARDED_ALLOW_IPS (docker-compose.yml) so both walks agree.
+    trusted_proxies: str = ""
     # Dual throttle policy (D6): email = temp lock (never permanent - a hard
     # lockout is an attacker DoS on victims); IP = window throttle.
     throttle_email_max_fails: int = 5
