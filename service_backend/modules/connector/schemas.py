@@ -150,6 +150,8 @@ class TenantSettings(ApiModel):
     callTimeoutSeconds: SettingValue
     callLogRetentionDays: SettingValue
     forwardedForWarning: bool = False
+    # wire field -> the deployment value a saved value must stay within
+    ceilings: Dict[str, str] = Field(default_factory=dict)
 
 
 class TenantSettingsUpdate(ApiModel):

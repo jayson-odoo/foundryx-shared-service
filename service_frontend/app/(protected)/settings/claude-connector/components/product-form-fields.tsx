@@ -151,7 +151,7 @@ export function SecretsTab({ form, editing, creating, settings }: ProductFieldsP
             </FormRow>
           );
         }
-        const canClear = !creating && s?.source === 'database';
+        const canClear = !creating && (s?.source === 'database' || s?.source === 'unreadable');
         return (
           <FormRow key={slot} label={label} required={creating}>
             <div className="flex max-w-xl flex-col gap-2">

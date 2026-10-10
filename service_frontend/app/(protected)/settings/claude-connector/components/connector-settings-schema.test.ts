@@ -72,6 +72,7 @@ describe('connector settings mapping (SETTINGS-IN-DB-SS)', () => {
     ).toBe(false);
     expect(createProductSchema.safeParse({ ...BLANK_PRODUCT, key: 'Bad Key' }).success).toBe(false);
     expect(createProductSchema.safeParse({ ...BLANK_PRODUCT, key: 'delta' }).success).toBe(true);
+    expect(createProductSchema.safeParse({ ...BLANK_PRODUCT, key: 'new' }).success).toBe(false);
   });
 
   it('tenant values: database prefill, blank -> null, ints converted', () => {
@@ -83,6 +84,7 @@ describe('connector settings mapping (SETTINGS-IN-DB-SS)', () => {
       callTimeoutSeconds: v('20', 'database'),
       callLogRetentionDays: v('180', 'environment'),
       forwardedForWarning: true,
+      ceilings: {},
     } as ConnectorTenantSettings;
     const f = tenantFormValues(s);
     expect(f.publicBaseUrl).toBe('https://t.example');

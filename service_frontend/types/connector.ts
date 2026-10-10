@@ -161,6 +161,8 @@ export type ConnectorTenantField =
 export type ConnectorTenantSettings = Record<ConnectorTenantField, ConnectorSettingValue> & {
   /** Issue #118: the allow-list can be spoofed through X-Forwarded-For. */
   forwardedForWarning: boolean;
+  /** Deployment limits a saved value must stay within (only those the server sets). */
+  ceilings: Partial<Record<ConnectorTenantField, string>>;
 };
 
 /** Omitted = unchanged; null = clear (fall back to environment/default). */

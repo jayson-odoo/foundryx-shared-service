@@ -94,12 +94,14 @@ def _redirect_with(uri: str, params: Mapping[str, Optional[str]]) -> str:
 
 
 class OAuthService:
-    def __init__(self, db: Session, ctx: ProductContext, public_base_url: str):
+    def __init__(self, db: Session, ctx: ProductContext, public_base_url: Optional[str] = None):
         self.db = db
         self.ctx = ctx
         self.product = ctx.product
         self.repo = ConnectorRepository(db, ctx.tenant_id)
         self.config = registry.tenant_config(db, ctx.tenant_id)
+        if public_base_url is None:
+            public_base_url = self.config.public_base_url
         self.base = public_base_url.rstrip("/")
 
     @property

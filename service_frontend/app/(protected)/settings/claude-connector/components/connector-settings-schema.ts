@@ -13,6 +13,8 @@ import type {
 
 /** Mirrors the backend key rule (`registry._KEY_RE`): it becomes the MCP URL. */
 export const PRODUCT_KEY_RE = /^[a-z][a-z0-9_]{0,31}$/;
+/** `products/new` is the create route, so `new` can never be a product key. */
+export const RESERVED_KEYS = ['new'];
 export const MIN_SECRET_LEN = 16;
 
 export const PRODUCT_FIELDS: ConnectorProductField[] = [
@@ -94,7 +96,7 @@ export const productFormSchema = z
 export type ProductFormValues = z.infer<typeof productFormSchema>;
 
 export const createProductSchema = productFormSchema.superRefine((v, ctx) => {
-  if (!PRODUCT_KEY_RE.test(v.key)) {
+  if (!PRODUCT_KEY_RE.test(v.key) || RESERVED_KEYS.includes(v.key)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['key'],

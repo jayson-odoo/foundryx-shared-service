@@ -3,6 +3,7 @@ import { render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsProvider } from '@/providers/settings-provider';
 import { TooltipsProvider } from '@/providers/tooltips-provider';
+import { ApiError } from '@/lib/api-client';
 import { ProductFormView } from './product-form-view';
 
 /** Container reads layout settings - provide the real providers. */
@@ -118,8 +119,17 @@ describe('ProductFormView (SETTINGS-IN-DB-SS)', () => {
   });
 
   it('not found shows a way back, not a spinner', async () => {
-    getProductSettings.mockRejectedValue(new Error('404'));
+    getProductSettings.mockRejectedValue(new ApiError('Not found', 404));
     render(<ProductFormView productKey="nope" initialEditing={false} />);
     await screen.findByText('Product not found.');
+  });
+});
+
+describe('ProductFormView load errors (SETTINGS-IN-DB-SS review)', () => {
+  it('a network failure offers Retry, not "not found"', async () => {
+    getProductSettings.mockRejectedValueOnce(new Error('network down'));
+    render(<ProductFormView productKey="acme" initialEditing={false} />);
+    await userEvent.click(await screen.findByRole('button', { name: /retry/i }));
+    await screen.findByText('https://acme.test/connect/claude');
   });
 });

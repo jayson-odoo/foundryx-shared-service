@@ -30,6 +30,7 @@ const settings = (over: Record<string, unknown> = {}) => ({
   callTimeoutSeconds: { value: '15', source: 'default' },
   callLogRetentionDays: { value: '180', source: 'default' },
   forwardedForWarning: true,
+  ceilings: { allowedClientCidrs: '160.79.104.0/21' },
   ...over,
 });
 
@@ -50,6 +51,10 @@ describe('AccessTab (SETTINGS-IN-DB-SS)', () => {
     expect(screen.getAllByText('Default').length).toBeGreaterThan(0);
     expect(screen.getByText('Environment')).toBeTruthy();
     expect(screen.getByTestId('xff-warning')).toBeTruthy();
+    expect(screen.getByTestId('limit-allowedClientCidrs').textContent).toBe(
+      'Deployment limit: 160.79.104.0/21',
+    );
+    expect(screen.queryByTestId('limit-publicBaseUrl')).toBeNull();
     expect(screen.getByText(/Product acme updated: Secret to product/)).toBeTruthy();
     expect(screen.queryAllByRole('textbox').length).toBe(0);
   });

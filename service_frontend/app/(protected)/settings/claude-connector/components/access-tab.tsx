@@ -146,6 +146,12 @@ export function AccessTab() {
           {TENANT_FIELDS.map((f) => {
             const v = s[f];
             const isCidr = f === 'allowedClientCidrs';
+            const limit = s.ceilings?.[f];
+            const limitLine = limit ? (
+              <span className="break-all text-xs text-muted-foreground" data-testid={`limit-${f}`}>
+                {`Deployment limit: ${limit}`}
+              </span>
+            ) : null;
             if (a.editing && a.values) {
               return (
                 <FormRow key={f} label={TENANT_LABELS[f]}>
@@ -159,6 +165,7 @@ export function AccessTab() {
                       aria-invalid={!!a.errors[f]}
                       onChange={(e) => a.setValue(f, e.target.value)}
                     />
+                    {limitLine}
                     {a.errors[f] && <p className="text-sm text-destructive">{a.errors[f]}</p>}
                   </div>
                 </FormRow>
@@ -172,6 +179,7 @@ export function AccessTab() {
                     <span className="min-w-0 break-all font-mono text-xs">{v.value || '-'}</span>
                     <SourceBadge source={v.source} />
                   </div>
+                  {limitLine}
                 </div>
               </FormRow>
             );

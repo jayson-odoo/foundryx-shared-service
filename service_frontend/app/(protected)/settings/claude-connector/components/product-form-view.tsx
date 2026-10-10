@@ -15,13 +15,29 @@ export interface ProductFormViewProps {
 
 /** Loads + renders a connector product's settings form (create when no key). */
 export function ProductFormView({ productKey, initialEditing }: ProductFormViewProps) {
-  const { config, form, isLoading, notFound } = useConnectorProductForm(productKey, initialEditing);
+  const { config, form, isLoading, notFound, loadError, retry } = useConnectorProductForm(
+    productKey,
+    initialEditing,
+  );
 
   if (isLoading) {
     return (
       <Container width="fluid">
         <div className="flex items-center justify-center py-24 text-muted-foreground">
           <LoaderCircleIcon className="size-6 animate-spin" />
+        </div>
+      </Container>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Container width="fluid">
+        <div className="flex flex-col items-center gap-3 py-24 text-center">
+          <p className="text-sm font-medium">Could not load this product.</p>
+          <Button variant="outline" size="sm" onClick={retry}>
+            Retry
+          </Button>
         </div>
       </Container>
     );

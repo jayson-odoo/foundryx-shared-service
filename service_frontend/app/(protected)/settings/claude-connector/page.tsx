@@ -31,7 +31,8 @@ export default function ClaudeConnectorPage() {
           <TabsContent value="products">
             <ProductsTab />
           </TabsContent>
-          <TabsContent value="access">
+          {/* kept mounted so unsaved Access edits survive a tab switch */}
+          <TabsContent value="access" forceMount className="data-[state=inactive]:hidden">
             <AccessTab />
           </TabsContent>
         </Tabs>

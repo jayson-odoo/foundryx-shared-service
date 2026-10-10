@@ -77,8 +77,12 @@ class SettingsRepository:
         vals, unreadable = row_values(row)
         return registry.merge_row(env, row.key, slug, row.tenant_id, vals, unreadable)
 
-    def resolved_rows(self, env: Mapping[str, str]) -> dict[str, registry.ProductStatus]:
-        rows = self.db.query(ProductSetting).all()
+    def resolved_rows(self, env: Mapping[str, str],
+                      tenant_id: Optional[str] = None) -> dict[str, registry.ProductStatus]:
+        q = self.db.query(ProductSetting)
+        if tenant_id is not None:
+            q = q.filter(ProductSetting.tenant_id == tenant_id)
+        rows = q.all()
         slugs = self._slugs({r.tenant_id for r in rows})
         return {r.key: self._resolve(env, r, slugs.get(r.tenant_id, "")) for r in rows
                 if r.tenant_id in slugs}

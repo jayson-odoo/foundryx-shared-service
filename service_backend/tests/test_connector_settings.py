@@ -272,10 +272,13 @@ def test_db_cidrs_gate_claude_facing_endpoints(connector_client, h, monkeypatch)
 
 def test_db_redirect_allowlist_applies(connector_client, h):
     other = "https://other.example/cb"
+    registry.set_env_for_tests(make_env({"CONNECTOR_REDIRECT_ALLOWLIST": f"{REDIRECT},{other}"}))
     res = connector_client.put("/connector/settings", headers=h,
-                               json={"redirectAllowlist": f"{REDIRECT}, {other}"})
+                               json={"redirectAllowlist": other})
     assert res.status_code == 200, res.text
     registered_client(connector_client, redirect=other)
+    from tests.connector_support import register
+    assert register(connector_client, redirect=REDIRECT).status_code == 400
 
 
 # ---- permissions + audit ---------------------------------------------------------------
@@ -463,3 +466,41 @@ def test_api_base_url_change_drops_cached_manifest(connector_client, h, fake_pro
                                json={"apiBaseUrl": "https://delta2.test"})
     assert res.status_code == 200, res.text
     assert [r for r in rows(connector_client._factory, "manifest_cache") if r["product"] == "delta"] == []
+
+
+# ---- environment is a ceiling for the security settings ------------------------------
+
+
+def test_tenant_may_only_narrow_operator_security_settings(connector_client, h):
+    registry.set_env_for_tests(make_env({"CONNECTOR_ALLOWED_CLIENT_CIDRS": "160.79.104.0/21",
+                                         "CONNECTOR_CALL_LOG_RETENTION_DAYS": "90"}))
+    put = lambda body: connector_client.put("/connector/settings", headers=h, json=body)  # noqa: E731
+    assert put({"allowedClientCidrs": "0.0.0.0/0"}).status_code == 422
+    assert put({"allowedClientCidrs": "160.79.105.0/24"}).status_code == 200
+    assert put({"redirectAllowlist": f"{REDIRECT}, https://evil.example/cb"}).status_code == 422
+    assert put({"redirectAllowlist": REDIRECT}).status_code == 200
+    assert put({"callLogRetentionDays": 365}).status_code == 422
+    assert put({"callLogRetentionDays": 30}).status_code == 200
+    s = connector_client.get("/connector/settings", headers=h).json()
+    assert s["allowedClientCidrs"] == {"value": "160.79.105.0/24", "source": "database"}
+    assert s["ceilings"] == {"allowedClientCidrs": "160.79.104.0/21",
+                             "redirectAllowlist": REDIRECT, "callLogRetentionDays": "90"}
+
+
+def test_without_environment_limits_the_tenant_value_stands_alone(connector_client, h):
+    registry.set_env_for_tests({k: v for k, v in make_env().items()
+                                if k != "CONNECTOR_REDIRECT_ALLOWLIST"})
+    other = "https://other.example/cb"
+    assert connector_client.put("/connector/settings", headers=h,
+                                json={"redirectAllowlist": other, "allowedClientCidrs": "0.0.0.0/0",
+                                      "callLogRetentionDays": 3650}).status_code == 200
+    s = connector_client.get("/connector/settings", headers=h).json()
+    assert s["ceilings"] == {} and s["redirectAllowlist"]["value"] == other
+
+
+def test_tightened_environment_overrides_a_stored_looser_value(connector_client, h):
+    assert connector_client.put("/connector/settings", headers=h,
+                                json={"allowedClientCidrs": "0.0.0.0/0"}).status_code == 200
+    registry.set_env_for_tests(make_env({"CONNECTOR_ALLOWED_CLIENT_CIDRS": "160.79.104.0/21"}))
+    s = connector_client.get("/connector/settings", headers=h).json()
+    assert s["allowedClientCidrs"] == {"value": "160.79.104.0/21", "source": "environment"}

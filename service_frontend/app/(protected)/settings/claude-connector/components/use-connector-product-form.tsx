@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { KeyRound, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { ApiError } from '@/lib/api-client';
 import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
@@ -34,6 +35,8 @@ export interface UseConnectorProductForm {
   form: UseFormReturn<ProductFormValues>;
   isLoading: boolean;
   notFound: boolean;
+  loadError: boolean;
+  retry: () => void;
 }
 
 function applyServerErrors(form: UseFormReturn<ProductFormValues>, errors: Record<string, string>) {
@@ -52,6 +55,8 @@ export function useConnectorProductForm(
   const [settings, setSettings] = useState<ConnectorProductSettings | null>(null);
   const [isLoading, setIsLoading] = useState(!creating);
   const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   const form = useForm<ProductFormValues>({
     mode: 'onTouched',
@@ -63,6 +68,7 @@ export function useConnectorProductForm(
     if (creating) return;
     let active = true;
     setIsLoading(true);
+    setLoadError(false);
     getProductSettings(productKey)
       .then((s) => {
         if (!active) return;
@@ -70,12 +76,16 @@ export function useConnectorProductForm(
         form.reset(productFormValues(s));
         setNotFound(false);
       })
-      .catch(() => active && setNotFound(true))
+      .catch((e) => {
+        if (!active) return;
+        if (e instanceof ApiError && e.status === 404) setNotFound(true);
+        else setLoadError(true);
+      })
       .finally(() => active && setIsLoading(false));
     return () => {
       active = false;
     };
-  }, [productKey, creating, form]);
+  }, [productKey, creating, form, attempt]);
 
   const onSave = useCallback(async (): Promise<boolean> => {
     if (!(await form.trigger())) return false;
@@ -98,7 +108,8 @@ export function useConnectorProductForm(
       const errors = serverFieldErrors(e);
       if (errors) {
         applyServerErrors(form, errors);
-        toast.error('Some fields need attention.');
+        const secrets = 'ssToProductSecret' in errors || 'productToSsSecret' in errors;
+        toast.error(secrets ? 'Check the Secrets tab.' : 'Some fields need attention.');
       } else {
         toast.error(e instanceof Error ? e.message : 'Save failed.');
       }
@@ -140,7 +151,7 @@ export function useConnectorProductForm(
   );
 
   const config = useMemo<ResourceFormConfig<ConnectorProductSettings> | null>(() => {
-    if (isLoading || notFound) return null;
+    if (isLoading || notFound || loadError) return null;
     const title = creating ? 'New product' : (settings?.fields.displayName.value ?? productKey ?? '');
     return {
       breadcrumb: [
@@ -196,7 +207,7 @@ export function useConnectorProductForm(
         if (settings) form.reset(productFormValues(settings));
       },
     };
-  }, [isLoading, notFound, creating, settings, productKey, form, actions, initialEditing, onSave, router]);
+  }, [isLoading, notFound, loadError, creating, settings, productKey, form, actions, initialEditing, onSave, router]);
 
-  return { config, form, isLoading, notFound };
+  return { config, form, isLoading, notFound, loadError, retry: () => setAttempt((n) => n + 1) };
 }

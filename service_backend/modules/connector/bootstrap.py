@@ -68,7 +68,8 @@ def sweep_settings_grant(db: Session) -> None:
     holders = db.execute(
         select(Role.id, Role.tenant_id)
         .join(role_permissions, role_permissions.c.role_id == Role.id)
-        .where(role_permissions.c.permission_id == manage_id, Role.name == "Admin")
+        .where(role_permissions.c.permission_id == manage_id, Role.name == "Admin",
+               Role.is_system.is_(True))
     ).all()
     already = set(db.execute(select(role_permissions.c.role_id).where(
         role_permissions.c.permission_id == settings_id)).scalars())

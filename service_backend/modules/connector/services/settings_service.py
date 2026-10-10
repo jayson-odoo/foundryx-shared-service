@@ -57,6 +57,7 @@ PRODUCT_WIRE = {
 SECRET_WIRE = {"ssToProductSecret": "ssToProduct", "productToSsSecret": "productToSs"}
 _URL_FIELDS = ("consentUrl", "apiBaseUrl")
 MIN_SECRET_LEN = 16
+RESERVED_KEYS = frozenset({"new"})  # /settings/claude-connector/products/new is the create page
 _MAX_LEN = {"display_name": 120, "connection_id": 128, "issuer": 128, "consent_audience": 128,
             "call_audience": 128}
 
@@ -219,13 +220,22 @@ class SettingsService:
                 secrets[slot] = value
                 secrets_changed = True
                 changed.append(wire)
+        if unreadable and secrets_changed:
+            for wire, slot in SECRET_WIRE.items():
+                if slot not in secrets and slot not in body.clearSecrets and wire not in errors:
+                    errors[wire] = "The saved secrets can no longer be read: enter both again."
+        if secrets_changed and not app_settings.fernet_key and \
+                app_settings.environment not in ("development", "test"):
+            errors.setdefault("ssToProductSecret",
+                              "Secrets cannot be saved: the server has no FERNET_KEY.")
         if errors:
             raise Invalid(errors)
         if secrets_changed:
             row.secrets_encrypted = encode_secrets(secrets)
         return sorted(set(changed))
 
-    def _check_resolved(self, row: ProductSetting, key: str) -> None:
+    def _check_resolved(self, row: ProductSetting, key: str,
+                        edited: frozenset[str] = frozenset()) -> None:
         """Reject a save the registry would silently turn into a broken product:
         equal secrets, or a binding field saved here while a secret still comes
         from the environment (the environment's secrets never follow a
@@ -241,11 +251,12 @@ class SettingsService:
         st = registry.resolve_product(self.db, key)
         p = (st.product or st.partial) if st else None
         if p and p.ss_to_product_secret and p.ss_to_product_secret == p.product_to_ss_secret:
-            raise Invalid({"productToSsSecret": "Must differ from the secret to the product."})
+            field = "ssToProductSecret" if edited == {"ssToProductSecret"} else "productToSsSecret"
+            raise Invalid({field: "The two secrets must differ."})
 
     def create_product(self, body: ProductSettingsCreate, actor: Optional[str]) -> ProductSettings:
         key = (body.key or "").strip().lower()
-        if not registry._KEY_RE.match(key):
+        if not registry._KEY_RE.match(key) or key in RESERVED_KEYS:
             raise Invalid({"key": "Lowercase letters, digits and _, starting with a letter (max 32)."})
         if self.repo.get_any(key) is not None:
             raise Conflict("A product with this key already exists.")
@@ -261,7 +272,7 @@ class SettingsService:
         except IntegrityError:  # a concurrent create won the unique key
             self.db.rollback()
             raise Conflict("A product with this key already exists.") from None
-        self._check_resolved(row, key)
+        self._check_resolved(row, key, frozenset(changed))
         self.repo.drop_manifest(self.tenant_id, key)
         self.repo.audit(self.tenant_id, actor, f"product:{key}", "created", changed)
         self.db.commit()
@@ -276,10 +287,13 @@ class SettingsService:
         created = row is None
         if row is None:  # first save of an environment product creates its row
             row = ProductSetting(tenant_id=self.tenant_id, key=st.key)
-            self.repo.add(row)
         changed = self._apply(row, body, set(body.model_fields_set))
+        if created and not changed:
+            return self.get_product(st.key)  # nothing to save: no empty row
+        if created:
+            self.repo.add(row)
         self.db.flush()
-        self._check_resolved(row, st.key)
+        self._check_resolved(row, st.key, frozenset(changed))
         if "apiBaseUrl" in changed:
             self.repo.drop_manifest(self.tenant_id, st.key)  # never reuse another host's tools
         if changed or created:
@@ -307,7 +321,9 @@ class SettingsService:
         cfg = registry.tenant_config(self.db, self.tenant_id)
         out = {wire: SettingValue(value=cfg.values[col] or None, source=cfg.sources[col])
                for wire, (col, _k, _a, _b) in TENANT_WIRE.items()}
-        return TenantSettings(**out, forwardedForWarning=bool(
+        col_to_wire = {v[0]: k for k, v in TENANT_WIRE.items()}
+        limits = {col_to_wire[c]: v for c, v in registry.ceilings(registry._env()).items()}
+        return TenantSettings(**out, ceilings=limits, forwardedForWarning=bool(
             app_settings.trust_proxy_headers and not FORWARDED_FOR_TRUSTED))
 
     def update_tenant(self, body: TenantSettingsUpdate, actor: Optional[str]) -> TenantSettings:
@@ -350,6 +366,13 @@ class SettingsService:
                     continue
                 value = ", ".join(p.strip() for p in value.split(",") if p.strip())
             updates[col] = value
+        env = registry._env()
+        for wire, (col, _kind, _lo, _hi) in TENANT_WIRE.items():
+            value = updates.get(col)
+            if wire not in errors and value is not None:
+                err = registry.ceiling_error(env, col, str(value))
+                if err:
+                    errors[wire] = err
         if errors:
             raise Invalid(errors)
         row = self.repo.upsert_tenant(self.tenant_id)

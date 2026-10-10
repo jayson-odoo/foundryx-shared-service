@@ -207,13 +207,14 @@ def env_owner_slug(env: Mapping[str, str], key: str) -> str:
     return _val(env, f"CONNECTOR_{key.upper()}_TENANT_SLUG")
 
 
-def resolve_products(db: "Session") -> dict[str, ProductStatus]:
-    """Every product: environment products plus database rows (merged per field)."""
+def resolve_products(db: "Session", tenant_id: Optional[str] = None) -> dict[str, ProductStatus]:
+    """Every product: environment products plus database rows (merged per field).
+    ``tenant_id`` limits the database rows read (and decrypted) to one tenant."""
     from .repositories.settings_repository import SettingsRepository
 
     env = _env()
     out = load_products(env)
-    for key, st in SettingsRepository(db).resolved_rows(env).items():
+    for key, st in SettingsRepository(db).resolved_rows(env, tenant_id).items():
         owner = st.product or st.partial
         env_slug = env_owner_slug(env, key)
         if env_slug and owner is not None and env_slug != owner.tenant_slug:
@@ -235,8 +236,9 @@ def resolve_product(db: "Session", key: str) -> Optional[ProductStatus]:
     return st
 
 
-def all_products(db: Optional["Session"] = None) -> dict[str, ProductStatus]:
-    return resolve_products(db) if db is not None else load_products(_env())
+def all_products(db: Optional["Session"] = None,
+                 tenant_id: Optional[str] = None) -> dict[str, ProductStatus]:
+    return resolve_products(db, tenant_id) if db is not None else load_products(_env())
 
 
 def get_product(key: str, db: Optional["Session"] = None) -> Optional[Product]:
@@ -311,6 +313,55 @@ class TenantConfig:
     sources: dict = field(default_factory=dict)  # name -> database|environment|default|unset
 
 
+def _networks(raw: str) -> Optional[list]:
+    import ipaddress
+
+    try:
+        return [ipaddress.ip_network(p.strip(), strict=False) for p in raw.split(",") if p.strip()]
+    except ValueError:
+        return None
+
+
+CEILING_SETTINGS = ("allowed_client_cidrs", "redirect_allowlist", "call_log_retention_days")
+
+
+def ceilings(env: Mapping[str, str]) -> dict[str, str]:
+    """{setting: the environment value a tenant may only narrow} - only what the
+    environment actually sets (nothing set = the tenant value stands alone)."""
+    out = {}
+    for name in CEILING_SETTINGS:
+        envv = _val(env, TENANT_SETTINGS[name][0])
+        if envv:
+            out[name] = envv
+    return out
+
+
+def ceiling_error(env: Mapping[str, str], name: str, value: str) -> Optional[str]:
+    """The environment is a ceiling for the security settings: a tenant value may
+    only narrow it. Returns why ``value`` breaks the ceiling, else None."""
+    env_name, default = TENANT_SETTINGS[name]
+    envv = _val(env, env_name)
+    if name == "allowed_client_cidrs" and envv:
+        outer, inner = _networks(envv), _networks(value)
+        if outer is None or inner is None:
+            return "Not a valid list of IP ranges."
+        for net in inner:
+            if not any(net.version == o.version and net.subnet_of(o) for o in outer):
+                return f"{net} is outside the deployment's allowed ranges ({envv})."
+    if name == "redirect_allowlist" and envv:
+        allowed = [x.strip() for x in envv.split(",") if x.strip()]
+        for uri in (x.strip() for x in value.split(",") if x.strip()):
+            if uri not in allowed:
+                return f"{uri} is not in the deployment's allowed redirect URLs."
+    if name == "call_log_retention_days" and envv:
+        try:
+            if int(value) > int(envv):
+                return f"At most {int(envv)} days (deployment limit)."
+        except ValueError:
+            return None
+    return None
+
+
 def merge_tenant_config(env: Mapping[str, str], db_vals: Mapping[str, object]) -> TenantConfig:
     from app.config import settings
 
@@ -321,6 +372,8 @@ def merge_tenant_config(env: Mapping[str, str], db_vals: Mapping[str, object]) -
             default = settings.public_base_url
         dbv = db_vals.get(name)
         dbv = "" if dbv is None else str(dbv).strip()
+        if dbv and ceiling_error(env, name, dbv):
+            dbv = ""  # the environment was tightened after this was saved: it wins
         envv = _val(env, env_name)
         if name in _INT_SETTINGS and envv:
             try:
