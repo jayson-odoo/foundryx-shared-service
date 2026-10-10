@@ -103,6 +103,12 @@ def _valid_url(value: str) -> bool:
             and parts.username is None and parts.password is None)
 
 
+def _https_ok(value: str) -> bool:
+    """Plain http is for local development only."""
+    return (urlsplit(value).scheme == "https"
+            or app_settings.environment in ("development", "test"))
+
+
 def _cidr_error(raw: str) -> Optional[str]:
     items = [p.strip() for p in raw.split(",") if p.strip()]
     if not items:
@@ -120,8 +126,10 @@ def _now() -> datetime:
 
 
 class SettingsService:
-    def __init__(self, db: Session, tenant_id: str, tenant_slug: str):
+    def __init__(self, db: Session, tenant_id: str, tenant_slug: str,
+                 show_secret_hint: bool = False):
         self.db = db
+        self.show_secret_hint = show_secret_hint
         self.tenant_id = tenant_id
         self.tenant_slug = tenant_slug
         self.repo = SettingsRepository(db)
@@ -163,8 +171,9 @@ class SettingsService:
             state = ("unreadable" if source == "unreadable"
                      else "set" if secret_vals[slot] else "missing")
             value = secret_vals[slot]
-            hint = f"****{value[-4:]}" if state == "set" and len(value) >= MIN_SECRET_LEN else (
-                "****" if state == "set" else None)
+            hint = None
+            if self.show_secret_hint and state == "set":
+                hint = f"****{value[-4:]}" if len(value) >= MIN_SECRET_LEN else "****"
             secrets[slot] = SecretValue(state=state, source=source, hint=hint)
         return ProductSettings(key=p.key, stored=stored, status=st.status, fields=fields,
                                secrets=secrets)
@@ -185,6 +194,9 @@ class SettingsService:
             value = (getattr(body, wire) or "").strip()
             if wire in _URL_FIELDS and value and not _valid_url(value):
                 errors[wire] = "Enter an http(s) URL."
+                continue
+            if wire == "consentUrl" and value and not _https_ok(value):
+                errors[wire] = "Use https:// (the consent request travels in this URL)."
                 continue
             if wire == "apiBaseUrl" and value:
                 # The server calls this URL: https and public addresses only. An
@@ -351,6 +363,9 @@ class SettingsService:
             if kind == "url":
                 if not _valid_url(value):
                     errors[wire] = "Enter an http(s) URL."
+                    continue
+                if not _https_ok(value):
+                    errors[wire] = "Use https://."
                     continue
                 value = value.rstrip("/")
             elif kind == "urls":

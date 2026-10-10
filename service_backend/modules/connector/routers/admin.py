@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_actor_user_id, require_permission
+from app.dependencies import effective_permission_keys, get_actor_user_id, require_permission
 from app.models.user import User
 
 from ..schemas import (
@@ -112,7 +112,9 @@ def refresh_manifest(key: str, db: Session = Depends(get_db),
 
 
 def _settings(db: Session, user: User) -> ss.SettingsService:
-    return ss.SettingsService(db, user.tenant_id, user.tenant.slug if user.tenant else "")
+    # the secret hint ("****" + last 4) is for editors only, never read-only users
+    return ss.SettingsService(db, user.tenant_id, user.tenant.slug if user.tenant else "",
+                              show_secret_hint="connector.settings" in effective_permission_keys(user))
 
 
 def _translate(exc: Exception) -> HTTPException:

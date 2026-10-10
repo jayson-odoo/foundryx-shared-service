@@ -286,6 +286,8 @@ def test_db_redirect_allowlist_applies(connector_client, h):
 def test_read_perm_cannot_edit(connector_client):
     seed_user_with_perms(connector_client._factory, "reader@example.com", ["connector.read"])
     rh = admin_headers(connector_client, "reader@example.com", "Passw0rd!x")
+    secrets = connector_client.get("/connector/products/acme/settings", headers=rh).json()["secrets"]
+    assert secrets["ssToProduct"]["state"] == "set" and secrets["ssToProduct"]["hint"] is None
     assert connector_client.get("/connector/settings", headers=rh).status_code == 200
     assert connector_client.get("/connector/products/acme/settings", headers=rh).status_code == 200
     assert connector_client.put("/connector/settings", headers=rh, json={}).status_code == 403
@@ -530,3 +532,12 @@ def test_pruning_honours_a_tightened_environment_retention(connector_client, h, 
     finally:
         db.close()
     assert rows(connector_client._factory, "call_log") == []
+
+
+
+def test_consent_url_must_be_https_outside_development(connector_client, h, monkeypatch):
+    monkeypatch.setattr(settings, "environment", "production")
+    assert _create(connector_client, h, consentUrl="http://delta.test/c").status_code == 422
+    assert connector_client.put("/connector/settings", headers=h,
+                                json={"publicBaseUrl": "http://ss.example"}).status_code == 422
+    assert _create(connector_client, h).status_code == 201

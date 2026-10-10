@@ -10,3 +10,15 @@ def test_health_reports_git_sha_from_env(monkeypatch):
         assert health.health() == {"status": "ok", "git_sha": "abc123"}
     finally:
         health._git_sha.cache_clear()
+
+
+def test_production_hides_the_checkout_sha_unless_opted_in(monkeypatch):
+    from app.config import settings
+
+    health._git_sha.cache_clear()
+    monkeypatch.delenv("GIT_SHA", raising=False)
+    monkeypatch.setattr(settings, "environment", "production")
+    try:
+        assert health.health()["git_sha"] is None
+    finally:
+        health._git_sha.cache_clear()
