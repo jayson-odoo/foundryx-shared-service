@@ -56,6 +56,7 @@ class ManifestService:
         self.db = db
         self.product = product
         self.repo = ConnectorRepository(db, tenant_id)
+        self.config = registry.tenant_config(db, tenant_id)
 
     def cached(self):
         return self.repo.get_manifest(self.product.key)
@@ -64,7 +65,7 @@ class ManifestService:
         row = self.cached()
         now = datetime.now(timezone.utc)
         if (not force and row is not None and row.manifest_json and row.fetched_at is not None
-                and now - row.fetched_at < timedelta(seconds=registry.manifest_ttl_seconds())):
+                and now - row.fetched_at < timedelta(seconds=self.config.manifest_ttl_seconds)):
             return row.manifest_json
         try:
             return self._fetch(row, now)
@@ -79,7 +80,8 @@ class ManifestService:
         try:
             resp = product_client.send(
                 self.product, method="GET", raw_path=MANIFEST_PATH, query="", body=b"",
-                sub="", grant_id="", consented_at=0, tool="")
+                sub="", grant_id="", consented_at=0, tool="",
+                timeout_seconds=self.config.call_timeout_seconds)
             if resp.status_code != 200:
                 error = "upstream_error"
             else:

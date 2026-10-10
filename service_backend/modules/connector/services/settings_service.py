@@ -1,0 +1,325 @@
+"""Connector settings in the database (lane SETTINGS-IN-DB-SS).
+
+Tenant-scoped: a tenant edits only the products it owns (database rows with its
+``tenant_id``, or environment products whose TENANT_SLUG is its slug) and its own
+tenant-level settings. Secrets are write-only and Fernet-encrypted; every change
+writes an audit row with field NAMES only. Nothing is cached, so a save applies
+on the next request.
+"""
+
+from __future__ import annotations
+import ipaddress
+from datetime import datetime, timezone
+from typing import Optional
+from urllib.parse import urlsplit
+
+from sqlalchemy.orm import Session
+
+from app.config import settings as app_settings
+
+from .. import registry
+from ..models import ProductSetting
+from ..repositories.settings_repository import (
+    COLUMNS,
+    SECRET_SLOTS,
+    SettingsRepository,
+    decode_secrets,
+    encode_secrets,
+)
+from ..schemas import (
+    ProductSettings,
+    ProductSettingsCreate,
+    ProductSettingsUpdate,
+    SecretValue,
+    SettingsAuditItem,
+    SettingValue,
+    TenantSettings,
+    TenantSettingsUpdate,
+)
+from .client_access import FORWARDED_FOR_TRUSTED
+
+# wire name -> model column (plain product fields)
+PRODUCT_WIRE = {
+    "displayName": "display_name",
+    "connectionId": "connection_id",
+    "consentUrl": "consent_url",
+    "apiBaseUrl": "api_base_url",
+    "issuer": "issuer",
+    "consentAudience": "consent_audience",
+    "callAudience": "call_audience",
+}
+SECRET_WIRE = {"ssToProductSecret": "ssToProduct", "productToSsSecret": "productToSs"}
+_URL_FIELDS = ("consentUrl", "apiBaseUrl")
+MIN_SECRET_LEN = 16
+_MAX_LEN = {"display_name": 120, "connection_id": 128, "issuer": 128, "consent_audience": 128,
+            "call_audience": 128}
+
+# wire name -> (TenantSetting column, kind, min, max)
+TENANT_WIRE = {
+    "publicBaseUrl": ("public_base_url", "url", None, None),
+    "allowedClientCidrs": ("allowed_client_cidrs", "cidrs", None, None),
+    "redirectAllowlist": ("redirect_allowlist", "urls", None, None),
+    "manifestTtlSeconds": ("manifest_ttl_seconds", "int", 0, 86400),
+    "callTimeoutSeconds": ("call_timeout_seconds", "int", 1, 120),
+    "callLogRetentionDays": ("call_log_retention_days", "int", 1, 3650),
+}
+
+
+class NotFound(Exception):
+    pass
+
+
+class Conflict(Exception):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+class Invalid(Exception):
+    """422 with a per-field map (the UI highlights the field)."""
+
+    def __init__(self, errors: dict[str, str]):
+        super().__init__("invalid")
+        self.errors = errors
+
+
+def _valid_url(value: str) -> bool:
+    parts = urlsplit(value)
+    return parts.scheme in ("http", "https") and bool(parts.hostname) and " " not in value
+
+
+def _cidr_error(raw: str) -> Optional[str]:
+    items = [p.strip() for p in raw.split(",") if p.strip()]
+    if not items:
+        return "Enter at least one range, or leave blank for no allow-list."
+    for item in items:
+        try:
+            ipaddress.ip_network(item, strict=False)
+        except ValueError:
+            return f"{item!r} is not an IP address or CIDR range."
+    return None
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class SettingsService:
+    def __init__(self, db: Session, tenant_id: str, tenant_slug: str):
+        self.db = db
+        self.tenant_id = tenant_id
+        self.tenant_slug = tenant_slug
+        self.repo = SettingsRepository(db)
+
+    # --- products -----------------------------------------------------------------------
+    def _owned_status(self, key: str) -> Optional[registry.ProductStatus]:
+        """The product's merged status, only if this tenant owns it."""
+        key = (key or "").lower()
+        row = self.repo.get_any(key)
+        if row is not None:
+            if row.tenant_id != self.tenant_id:
+                return None
+            return registry.resolve_product(self.db, key)
+        st = registry.load_products(registry._env()).get(key)
+        p = (st.product or st.partial) if st else None
+        return st if p is not None and p.tenant_slug == self.tenant_slug else None
+
+    def _view(self, st: registry.ProductStatus, stored: bool) -> ProductSettings:
+        p = st.product or st.partial
+        assert p is not None
+        src = st.sources
+        values = {"displayName": p.display_name, "connectionId": p.connection_id,
+                  "consentUrl": p.consent_url, "apiBaseUrl": p.api_base_url, "issuer": p.issuer,
+                  "consentAudience": p.consent_audience, "callAudience": p.call_audience}
+        fields = {wire: SettingValue(value=values[wire] or None,
+                                     source=src.get(COLUMNS[col], "unset"))
+                  for wire, col in PRODUCT_WIRE.items()}
+        secret_vals = {"ssToProduct": p.ss_to_product_secret, "productToSs": p.product_to_ss_secret}
+        secrets = {}
+        for slot, field in SECRET_SLOTS.items():
+            source = src.get(field, "unset")
+            state = ("unreadable" if source == "unreadable"
+                     else "set" if secret_vals[slot] else "missing")
+            secrets[slot] = SecretValue(state=state, source=source)
+        return ProductSettings(key=p.key, stored=stored, status=st.status, fields=fields,
+                               secrets=secrets)
+
+    def get_product(self, key: str) -> ProductSettings:
+        st = self._owned_status(key)
+        if st is None:
+            raise NotFound()
+        return self._view(st, stored=self.repo.get(self.tenant_id, st.key) is not None)
+
+    def _apply(self, row: ProductSetting, body: ProductSettingsUpdate, sent: set[str]) -> list[str]:
+        """Validate + apply the sent fields onto ``row``; returns changed wire names."""
+        errors: dict[str, str] = {}
+        changed: list[str] = []
+        for wire, col in PRODUCT_WIRE.items():
+            if wire not in sent:
+                continue
+            value = (getattr(body, wire) or "").strip()
+            if wire in _URL_FIELDS and value and not _valid_url(value):
+                errors[wire] = "Enter an http(s) URL."
+                continue
+            if wire == "apiBaseUrl":
+                value = value.rstrip("/")
+            if col in _MAX_LEN and len(value) > _MAX_LEN[col]:
+                errors[wire] = f"At most {_MAX_LEN[col]} characters."
+                continue
+            if (getattr(row, col) or "") != value:
+                setattr(row, col, value or None)
+                changed.append(wire)
+        secrets, unreadable = decode_secrets(row)
+        if unreadable:
+            secrets = {}  # undecryptable = start over; the admin re-enters
+        secrets_changed = False
+        for slot in body.clearSecrets:
+            if slot in secrets or unreadable:
+                secrets.pop(slot, None)
+                secrets_changed = True
+                changed.append(next(w for w, s in SECRET_WIRE.items() if s == slot))
+        for wire, slot in SECRET_WIRE.items():
+            value = (getattr(body, wire) or "").strip() if wire in sent else ""
+            if not value:
+                continue  # blank = keep
+            if len(value) < MIN_SECRET_LEN:
+                errors[wire] = f"Use at least {MIN_SECRET_LEN} characters."
+                continue
+            if secrets.get(slot) != value:
+                secrets[slot] = value
+                secrets_changed = True
+                changed.append(wire)
+        if errors:
+            raise Invalid(errors)
+        if secrets_changed:
+            row.secrets_encrypted = encode_secrets(secrets)
+        return sorted(set(changed))
+
+    def _check_resolved(self, key: str) -> None:
+        """Reject a save whose effective secrets end up equal (the registry would
+        otherwise silently mark the product misconfigured)."""
+        st = registry.resolve_product(self.db, key)
+        p = (st.product or st.partial) if st else None
+        if p and p.ss_to_product_secret and p.ss_to_product_secret == p.product_to_ss_secret:
+            raise Invalid({"productToSsSecret": "Must differ from the secret to the product."})
+
+    def create_product(self, body: ProductSettingsCreate, actor: Optional[str]) -> ProductSettings:
+        key = (body.key or "").strip().lower()
+        if not registry._KEY_RE.match(key):
+            raise Invalid({"key": "Lowercase letters, digits and _, starting with a letter (max 32)."})
+        if self.repo.get_any(key) is not None:
+            raise Conflict("A product with this key already exists.")
+        env_st = registry.load_products(registry._env()).get(key)
+        env_p = (env_st.product or env_st.partial) if env_st else None
+        if env_p is not None and env_p.tenant_slug != self.tenant_slug:
+            raise Conflict("A product with this key already exists.")
+        row = ProductSetting(tenant_id=self.tenant_id, key=key)
+        changed = self._apply(row, body, set(body.model_fields_set) - {"key"})
+        SettingsRepository.stamp(row, actor, _now())
+        self.repo.add(row)
+        self._check_resolved(key)
+        self.repo.audit(self.tenant_id, actor, f"product:{key}", "created", changed)
+        self.db.commit()
+        return self.get_product(key)
+
+    def update_product(self, key: str, body: ProductSettingsUpdate,
+                       actor: Optional[str]) -> ProductSettings:
+        st = self._owned_status(key)
+        if st is None:
+            raise NotFound()
+        row = self.repo.get(self.tenant_id, st.key)
+        created = row is None
+        if row is None:  # first save of an environment product creates its row
+            row = ProductSetting(tenant_id=self.tenant_id, key=st.key)
+            self.repo.add(row)
+        changed = self._apply(row, body, set(body.model_fields_set))
+        self.db.flush()
+        self._check_resolved(st.key)
+        if changed or created:
+            SettingsRepository.stamp(row, actor, _now())
+            self.repo.audit(self.tenant_id, actor, f"product:{st.key}",
+                            "created" if created else "updated", changed)
+        self.db.commit()
+        return self.get_product(st.key)
+
+    def delete_product(self, key: str, confirm_key: str, actor: Optional[str]) -> None:
+        row = self.repo.get(self.tenant_id, (key or "").lower())
+        if row is None:
+            raise NotFound()
+        if (confirm_key or "").strip() != row.key:
+            raise Invalid({"confirmKey": "Type the product key to confirm."})
+        if self.repo.active_grants(self.tenant_id, row.key):
+            raise Conflict("Revoke this product's active grants first.")
+        self.repo.delete(row)
+        self.repo.audit(self.tenant_id, actor, f"product:{row.key}", "deleted", [])
+        self.db.commit()
+
+    # --- tenant-level ---------------------------------------------------------------------
+    def get_tenant(self) -> TenantSettings:
+        cfg = registry.tenant_config(self.db, self.tenant_id)
+        out = {wire: SettingValue(value=cfg.values[col] or None, source=cfg.sources[col])
+               for wire, (col, _k, _a, _b) in TENANT_WIRE.items()}
+        return TenantSettings(**out, forwardedForWarning=bool(
+            app_settings.trust_proxy_headers and not FORWARDED_FOR_TRUSTED))
+
+    def update_tenant(self, body: TenantSettingsUpdate, actor: Optional[str]) -> TenantSettings:
+        errors: dict[str, str] = {}
+        updates: dict[str, object] = {}
+        for wire in body.model_fields_set:
+            if wire not in TENANT_WIRE:
+                continue
+            col, kind, lo, hi = TENANT_WIRE[wire]
+            raw = getattr(body, wire)
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                updates[col] = None
+                continue
+            if kind == "int":
+                if not (lo <= int(raw) <= hi):
+                    errors[wire] = f"Between {lo} and {hi}."
+                    continue
+                updates[col] = int(raw)
+                continue
+            value = str(raw).strip()
+            if kind == "url":
+                if not _valid_url(value):
+                    errors[wire] = "Enter an http(s) URL."
+                    continue
+                value = value.rstrip("/")
+            elif kind == "urls":
+                items = [x.strip() for x in value.split(",") if x.strip()]
+                bad = next((x for x in items if not _valid_url(x)), None)
+                if bad is not None:
+                    errors[wire] = f"{bad!r} is not an http(s) URL."
+                    continue
+                value = ", ".join(items)
+            elif kind == "cidrs":
+                err = _cidr_error(value)
+                if err:
+                    errors[wire] = err
+                    continue
+                value = ", ".join(p.strip() for p in value.split(",") if p.strip())
+            updates[col] = value
+        if errors:
+            raise Invalid(errors)
+        row = self.repo.upsert_tenant(self.tenant_id)
+        col_to_wire = {v[0]: k for k, v in TENANT_WIRE.items()}
+        changed = [col_to_wire[c] for c, v in updates.items() if getattr(row, c) != v]
+        for col, value in updates.items():
+            setattr(row, col, value)
+        if changed:
+            SettingsRepository.stamp(row, actor, _now())
+            self.repo.audit(self.tenant_id, actor, "tenant", "updated", changed)
+        self.db.commit()
+        return self.get_tenant()
+
+    def audit(self) -> list[SettingsAuditItem]:
+        from app.models.user import User
+
+        rows = self.repo.list_audit(self.tenant_id)
+        ids = {r.actor_user_id for r in rows if r.actor_user_id}
+        names = dict(self.db.query(User.id, User.name)
+                     .filter(User.tenant_id == self.tenant_id, User.id.in_(ids)).all()) if ids else {}
+        return [SettingsAuditItem(id=r.id, target=r.target, action=r.action,
+                                  fields=list(r.fields or []), actorUserId=r.actor_user_id,
+                                  actorName=names.get(r.actor_user_id), at=r.created_at)
+                for r in rows]

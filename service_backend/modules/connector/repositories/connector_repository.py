@@ -261,8 +261,14 @@ class MaintenanceRepository:
                                    event="expired", reason="idle"))
         return len(idle)
 
-    def prune_call_log(self, cutoff: datetime) -> int:
-        return self.db.query(CallLog).filter(CallLog.created_at < cutoff).delete(synchronize_session=False)
+    def prune_call_log(self, cutoff: datetime, *, tenant_id: Optional[str] = None,
+                       exclude_tenants: Optional[list[str]] = None) -> int:
+        q = self.db.query(CallLog).filter(CallLog.created_at < cutoff)
+        if tenant_id is not None:
+            q = q.filter(CallLog.tenant_id == tenant_id)
+        if exclude_tenants:
+            q = q.filter(CallLog.tenant_id.notin_(exclude_tenants))
+        return q.delete(synchronize_session=False)
 
     def prune_ephemeral(self, now: datetime) -> None:
         horizon = now - timedelta(days=1)

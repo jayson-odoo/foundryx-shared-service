@@ -40,7 +40,7 @@ NEW_PRODUCT = {
     "connectionId": "conn-delta",
     "consentUrl": "https://delta.test/connect/claude",
     "apiBaseUrl": "https://delta.test/",
-    "ssToProductSecret": "delta-ss-secret",
+    "ssToProductSecret": "delta-ss-secret-0001",
     "productToSsSecret": "delta-p2s-secret",
 }
 
@@ -144,11 +144,11 @@ def test_foreign_tenant_cannot_see_or_edit_product(connector_client, h):
 def test_secrets_encrypted_at_rest_and_never_returned(connector_client, h):
     assert _create(connector_client, h).status_code == 201
     raw = rows(connector_client._factory, "product_settings")
-    assert raw and not any_row_has(connector_client._factory, "product_settings", "delta-ss-secret")
-    assert all("delta-ss-secret" not in str(v) for r in raw for v in r.values())
+    assert raw and not any_row_has(connector_client._factory, "product_settings", "delta-ss-secret-0001")
+    assert all("delta-ss-secret-0001" not in str(v) for r in raw for v in r.values())
     for path in ("/connector/products/delta/settings", "/connector/products", "/connector/settings"):
         body = connector_client.get(path, headers=h).text
-        assert "delta-ss-secret" not in body and "delta-p2s-secret" not in body
+        assert "delta-ss-secret-0001" not in body and "delta-p2s-secret" not in body
     s = _settings(connector_client, h, "delta")
     assert s["secrets"]["ssToProduct"] == {"state": "set", "source": "database"}
 
@@ -218,12 +218,15 @@ def test_delete_needs_typed_key_and_no_active_grants(connector_client, h, fake_p
 # ---- tenant-level settings ------------------------------------------------------------
 
 
-def test_tenant_settings_sources_and_public_base_url(connector_client, h):
+def test_tenant_settings_sources_and_public_base_url(connector_client, h, monkeypatch):
+    monkeypatch.setattr(settings, "trust_proxy_headers", True)
     s = connector_client.get("/connector/settings", headers=h).json()
     assert s["publicBaseUrl"] == {"value": "https://ss.test", "source": "default"}
     assert s["redirectAllowlist"] == {"value": REDIRECT, "source": "environment"}
     assert s["callTimeoutSeconds"] == {"value": "15", "source": "default"}
-    assert s["forwardedForWarning"] is True
+    assert s["forwardedForWarning"] is True  # issue #118: until lane SS-118-XFF merges
+    monkeypatch.setattr(settings, "trust_proxy_headers", False)
+    assert connector_client.get("/connector/settings", headers=h).json()["forwardedForWarning"] is False
     res = connector_client.put("/connector/settings", headers=h,
                                json={"publicBaseUrl": TUNNEL + "/", "callTimeoutSeconds": 20})
     assert res.status_code == 200, res.text
@@ -285,12 +288,12 @@ def test_admin_holds_connector_settings(connector_client, h):
 def test_changes_are_audited_by_field_name_only(connector_client, h):
     assert _create(connector_client, h).status_code == 201
     connector_client.put("/connector/products/delta/settings", headers=h,
-                         json={"ssToProductSecret": "another-secret", "displayName": "D2"})
+                         json={"ssToProductSecret": "another-secret-00001", "displayName": "D2"})
     connector_client.put("/connector/settings", headers=h, json={"callTimeoutSeconds": 30})
     audit = rows(connector_client._factory, "settings_audit")
     assert len(audit) == 3
     text_all = " ".join(str(v) for r in audit for v in r.values())
-    assert "another-secret" not in text_all and "delta-ss-secret" not in text_all
+    assert "another-secret-00001" not in text_all and "delta-ss-secret-0001" not in text_all
     assert "ssToProductSecret" in text_all and "callTimeoutSeconds" in text_all
     res = connector_client.get("/connector/settings/audit", headers=h)
     assert res.status_code == 200 and len(res.json()["data"]) == 3

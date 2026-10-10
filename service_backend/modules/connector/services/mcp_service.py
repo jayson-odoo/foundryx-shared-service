@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.services.throttle import ThrottleService, Throttled
 
+from .. import registry
 from ..models import Grant
 from ..repositories.connector_repository import ConnectorRepository
 from . import audit, product_client
@@ -176,7 +177,9 @@ class McpService:
             for attempt in (0, 1):
                 resp = product_client.send(
                     self.product, method=method, raw_path=raw_path, query=query, body=body,
-                    sub=g.product_user_id, grant_id=g.id, consented_at=consented, tool=name)
+                    sub=g.product_user_id, grant_id=g.id, consented_at=consented, tool=name,
+                    timeout_seconds=registry.tenant_config(
+                        self.db, self.ctx.tenant_id).call_timeout_seconds)
                 if resp.status_code != 401 or attempt == 1:
                     break
         except httpx.HTTPError:

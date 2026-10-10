@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import Field
 
@@ -95,3 +95,83 @@ class BulkRevokeRequest(ApiModel):
 
 class BulkRevokeResult(ApiModel):
     revoked: int
+
+
+# --- settings in the database (lane SETTINGS-IN-DB-SS) ---------------------------------
+
+
+class SettingValue(ApiModel):
+    value: Optional[str] = None
+    source: str  # database | environment | default | unset
+
+
+class SecretValue(ApiModel):
+    state: str  # set | missing | unreadable
+    source: str  # database | environment | unset | unreadable
+
+
+class ProductSettings(ApiModel):
+    key: str
+    stored: bool  # a database row exists (only then can it be deleted)
+    status: str
+    fields: Dict[str, SettingValue]
+    secrets: Dict[str, SecretValue]
+
+
+class ProductSettingsUpdate(ApiModel):
+    """Omitted = unchanged; "" or null on a plain field = clear (fall back);
+    a blank secret = keep; ``clearSecrets`` drops the stored secret."""
+
+    displayName: Optional[str] = None
+    connectionId: Optional[str] = None
+    consentUrl: Optional[str] = None
+    apiBaseUrl: Optional[str] = None
+    issuer: Optional[str] = None
+    consentAudience: Optional[str] = None
+    callAudience: Optional[str] = None
+    ssToProductSecret: Optional[str] = None
+    productToSsSecret: Optional[str] = None
+    clearSecrets: List[Literal["ssToProduct", "productToSs"]] = Field(default_factory=list)
+
+
+class ProductSettingsCreate(ProductSettingsUpdate):
+    key: str
+
+
+class ProductDelete(ApiModel):
+    confirmKey: str
+
+
+class TenantSettings(ApiModel):
+    publicBaseUrl: SettingValue
+    allowedClientCidrs: SettingValue
+    redirectAllowlist: SettingValue
+    manifestTtlSeconds: SettingValue
+    callTimeoutSeconds: SettingValue
+    callLogRetentionDays: SettingValue
+    forwardedForWarning: bool = False
+
+
+class TenantSettingsUpdate(ApiModel):
+    """Omitted = unchanged; null or "" = clear (fall back to environment/default)."""
+
+    publicBaseUrl: Optional[str] = None
+    allowedClientCidrs: Optional[str] = None
+    redirectAllowlist: Optional[str] = None
+    manifestTtlSeconds: Optional[int] = None
+    callTimeoutSeconds: Optional[int] = None
+    callLogRetentionDays: Optional[int] = None
+
+
+class SettingsAuditItem(ApiModel):
+    id: str
+    target: str
+    action: str
+    fields: List[str] = Field(default_factory=list)
+    actorUserId: Optional[str] = None
+    actorName: Optional[str] = None
+    at: datetime
+
+
+class SettingsAuditList(ApiModel):
+    data: List[SettingsAuditItem]

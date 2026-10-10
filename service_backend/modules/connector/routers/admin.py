@@ -16,15 +16,24 @@ from ..schemas import (
     BulkRevokeResult,
     GrantItem,
     GrantPage,
+    ProductDelete,
     ProductItem,
     ProductList,
+    ProductSettings,
+    ProductSettingsCreate,
+    ProductSettingsUpdate,
+    SettingsAuditList,
+    TenantSettings,
+    TenantSettingsUpdate,
 )
+from ..services import settings_service as ss
 from ..services.grant_admin_service import GrantAdminService, NotFound
 
 router = APIRouter()
 
 _READ = require_permission("connector.read")
 _MANAGE = require_permission("connector.manage")
+_SETTINGS = require_permission("connector.settings")
 
 
 def _svc(db: Session, user: User) -> GrantAdminService:
@@ -97,3 +106,83 @@ def refresh_manifest(key: str, db: Session = Depends(get_db),
         return _svc(db, user).refresh_manifest(key)
     except NotFound:
         raise _missing() from None
+
+
+# --- settings in the database (lane SETTINGS-IN-DB-SS) ---------------------------------
+
+
+def _settings(db: Session, user: User) -> ss.SettingsService:
+    return ss.SettingsService(db, user.tenant_id, user.tenant.slug if user.tenant else "")
+
+
+def _translate(exc: Exception) -> HTTPException:
+    if isinstance(exc, ss.NotFound):
+        return _missing()
+    if isinstance(exc, ss.Conflict):
+        return HTTPException(status_code=409, detail=exc.message)
+    if isinstance(exc, ss.Invalid):
+        return HTTPException(status_code=422, detail={"fieldErrors": exc.errors})
+    raise exc
+
+
+_SETTINGS_ERRORS = (ss.NotFound, ss.Conflict, ss.Invalid)
+
+
+@router.get("/settings", response_model=TenantSettings)
+def get_settings(db: Session = Depends(get_db), user: User = Depends(_READ)) -> TenantSettings:
+    return _settings(db, user).get_tenant()
+
+
+@router.put("/settings", response_model=TenantSettings)
+def put_settings(body: TenantSettingsUpdate, db: Session = Depends(get_db),
+                 user: User = Depends(_SETTINGS),
+                 actor: str = Depends(get_actor_user_id)) -> TenantSettings:
+    try:
+        return _settings(db, user).update_tenant(body, actor)
+    except _SETTINGS_ERRORS as exc:
+        raise _translate(exc) from None
+
+
+@router.get("/settings/audit", response_model=SettingsAuditList)
+def settings_audit(db: Session = Depends(get_db), user: User = Depends(_READ)) -> SettingsAuditList:
+    return SettingsAuditList(data=_settings(db, user).audit())
+
+
+@router.post("/products", response_model=ProductSettings, status_code=201)
+def create_product(body: ProductSettingsCreate, db: Session = Depends(get_db),
+                   user: User = Depends(_SETTINGS),
+                   actor: str = Depends(get_actor_user_id)) -> ProductSettings:
+    try:
+        return _settings(db, user).create_product(body, actor)
+    except _SETTINGS_ERRORS as exc:
+        raise _translate(exc) from None
+
+
+@router.get("/products/{key}/settings", response_model=ProductSettings)
+def get_product_settings(key: str, db: Session = Depends(get_db),
+                         user: User = Depends(_READ)) -> ProductSettings:
+    try:
+        return _settings(db, user).get_product(key)
+    except _SETTINGS_ERRORS as exc:
+        raise _translate(exc) from None
+
+
+@router.put("/products/{key}/settings", response_model=ProductSettings)
+def put_product_settings(key: str, body: ProductSettingsUpdate, db: Session = Depends(get_db),
+                         user: User = Depends(_SETTINGS),
+                         actor: str = Depends(get_actor_user_id)) -> ProductSettings:
+    try:
+        return _settings(db, user).update_product(key, body, actor)
+    except _SETTINGS_ERRORS as exc:
+        raise _translate(exc) from None
+
+
+@router.delete("/products/{key}")
+def delete_product(key: str, body: ProductDelete, db: Session = Depends(get_db),
+                   user: User = Depends(_SETTINGS),
+                   actor: str = Depends(get_actor_user_id)) -> dict:
+    try:
+        _settings(db, user).delete_product(key, body.confirmKey, actor)
+    except _SETTINGS_ERRORS as exc:
+        raise _translate(exc) from None
+    return {"ok": True}

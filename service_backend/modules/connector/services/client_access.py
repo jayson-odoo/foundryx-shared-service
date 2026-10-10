@@ -1,4 +1,5 @@
-"""Source-IP allow-list for the Claude-facing endpoints (CONNECTOR_ALLOWED_CLIENT_CIDRS).
+"""Source-IP allow-list for the Claude-facing endpoints (tenant setting, else
+CONNECTOR_ALLOWED_CLIENT_CIDRS).
 
 Unset/blank = off. Any invalid entry = fail closed (nobody allowed). The caller
 passes the resolved client IP (the throttle's resolver, so X-Forwarded-For is
@@ -12,7 +13,16 @@ from typing import Optional
 from .. import registry
 
 
+# Issue #118: behind the trusted proxy, ``client_ip`` takes the FIRST
+# X-Forwarded-For hop, which a client can set itself. Until lane SS-118-XFF
+# merges, the settings page warns that the allow-list can be spoofed. Flip to
+# True in that lane.
+FORWARDED_FOR_TRUSTED = False
+
+
 def client_allowed(ip: str, raw_cidrs: Optional[str] = None) -> bool:
+    """``raw_cidrs`` = the effective (tenant > environment) list; None = read the
+    environment only."""
     raw = registry.allowed_client_cidrs() if raw_cidrs is None else raw_cidrs.strip() or None
     if raw is None:
         return True
