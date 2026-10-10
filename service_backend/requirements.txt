@@ -62,3 +62,4 @@ google-auth>=2.34.0
 docker>=7
 
 imageio-ffmpeg>=0.5.1   # bundles a static ffmpeg binary → voice-note transcode (AC-12-04) works on a native local boot with no system ffmpeg; the Docker image still ships a full system ffmpeg and is preferred at runtime
+jsonschema>=4.0

@@ -227,6 +227,13 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/settings/email-log',
         permission: 'emails.read',
       },
+      // Claude connector (plan sprint-4/19) - grants + products.
+      {
+        title: 'Claude connector',
+        path: '/settings/claude-connector',
+        permission: 'connector.read',
+        module: 'connector',
+      },
       // Workflow engine tenant settings (plan sprint-2/10) - run retention.
       {
         title: 'Workflows',
@@ -586,6 +593,23 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
+      // Claude connector (plan sprint-4/19) - desktop mega copy.
+      {
+        title: 'Claude connector',
+        module: 'connector',
+        children: [
+          {
+            children: [
+              {
+                title: 'Claude connector',
+                path: '/settings/claude-connector',
+                permission: 'connector.read',
+                module: 'connector',
+              },
+            ],
+          },
+        ],
+      },
       // AutoCount ESB (sprint-4/13) - the DESKTOP mega menu. demo1 renders
       // MENU_SIDEBAR, MENU_MEGA and MENU_MEGA_MOBILE, so an entry present in
       // the mobile mega but absent here is visible on a phone and missing on a
@@ -752,6 +776,20 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Settings',
         path: '/settings/meetings',
         permission: 'meetings.settings.manage',
+      },
+    ],
+  },
+  // Claude connector (plan sprint-4/19) - third menu copy.
+  {
+    title: 'Claude connector',
+    icon: Plug,
+    module: 'connector',
+    children: [
+      {
+        title: 'Claude connector',
+        path: '/settings/claude-connector',
+        permission: 'connector.read',
+        module: 'connector',
       },
     ],
   },

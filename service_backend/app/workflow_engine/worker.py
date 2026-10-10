@@ -225,6 +225,19 @@ def run_due_workflows_task() -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("AI trace prune failed")
             db.rollback()
+        # Claude connector housekeeping (plan sprint-4/19) - idle-grant expiry +
+        # call_log retention; same beat tick, isolated. Rides workflows.run_due for
+        # now (no dedicated connector beat task yet).
+        try:
+            from datetime import datetime, timezone
+
+            from modules.connector.services import maintenance as connector_maintenance
+
+            connector_maintenance.prune(db, datetime.now(timezone.utc))
+            db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("connector prune failed")
+            db.rollback()
         return {"fired": fired, "pruned": pruned, "redriven": redriven}
     except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("scheduled-workflow tick failed")

@@ -71,6 +71,10 @@ export function ConfirmActionDialog<T>({
   // Typed confirmation (irreversible actions) - must match expected exactly.
   const [confirmText, setConfirmText] = useState('');
 
+  const resolve = (v: string | ((rows: T[]) => string) | undefined): string | undefined =>
+    typeof v === 'function' ? v(rows) : v;
+  const description = resolve(pending?.confirm?.description);
+
   const close = () => {
     setConfirmText('');
     onClose();
@@ -83,12 +87,8 @@ export function ConfirmActionDialog<T>({
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{pending?.confirm?.title}</AlertDialogTitle>
-          {pending?.confirm?.description && (
-            <AlertDialogDescription>
-              {pending.confirm.description}
-            </AlertDialogDescription>
-          )}
+          <AlertDialogTitle>{resolve(pending?.confirm?.title)}</AlertDialogTitle>
+          {description && <AlertDialogDescription>{description}</AlertDialogDescription>}
         </AlertDialogHeader>
         {pending?.confirm?.input && (
           <div className="flex flex-col gap-1.5">
@@ -120,7 +120,7 @@ export function ConfirmActionDialog<T>({
               close();
             }}
           >
-            {pending?.confirm?.confirmLabel ?? 'Confirm'}
+            {resolve(pending?.confirm?.confirmLabel) ?? 'Confirm'}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

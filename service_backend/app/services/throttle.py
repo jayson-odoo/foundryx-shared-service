@@ -26,6 +26,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.auth_throttle import (
     THROTTLE_SCOPE_BUILD,
+    THROTTLE_SCOPE_CONNECTOR,
+    THROTTLE_SCOPE_CONNECTOR_CALL,
     THROTTLE_SCOPE_DOC_SHARE,
     THROTTLE_SCOPE_EMAIL,
     THROTTLE_SCOPE_EMBED,
@@ -86,6 +88,18 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
             settings.throttle_embed_max_fails,
             timedelta(minutes=settings.throttle_embed_window_minutes),
             None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_CONNECTOR_CALL:
+        return (
+            settings.throttle_connector_call_max,
+            timedelta(minutes=settings.throttle_connector_call_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_CONNECTOR:
+        return (
+            settings.throttle_connector_max_fails,
+            timedelta(minutes=settings.throttle_connector_window_minutes),
+            None,
         )
     if scope == THROTTLE_SCOPE_WEBCHAT:
         return (
@@ -323,6 +337,24 @@ class ThrottleService:
 
     def record_embed(self, *, ip: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_EMBED, ip)
+
+    # ---- Claude connector OAuth (own bucket, plan sprint-4/19) ----
+
+    def enforce_connector(self, *, key: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_CONNECTOR, key)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_connector(self, *, key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_CONNECTOR, key)
+
+    def enforce_connector_call(self, *, grant_id: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_CONNECTOR_CALL, grant_id)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_connector_call(self, *, grant_id: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_CONNECTOR_CALL, grant_id)
 
     # ---- omnichannel web chat public visitor API (own bucket, plan
     # sprint-4/34 / A7b S2, AC-WEB-30, D-A7B-22) ----

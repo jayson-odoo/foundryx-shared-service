@@ -1,0 +1,51 @@
+"""MCP endpoint ``POST /mcp/{p}`` - Bearer auth, JSON-RPC in/out. HTTP only."""
+
+from __future__ import annotations
+import json
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, Response
+
+from ..services import mcp_service
+from ..services.mcp_service import McpService
+from ..services.oauth_service import OAuthService, Unauthorized
+from ._common import oauth_service, require_allowed_client, require_method
+
+router = APIRouter()
+
+MAX_BODY_BYTES = 1_048_576
+
+
+@router.api_route("/{p}", methods=["GET", "POST"], include_in_schema=False,
+                  dependencies=[Depends(require_allowed_client)])
+async def mcp(request: Request, svc: OAuthService = Depends(oauth_service)) -> Response:
+    require_method(request, "POST")
+    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
+    try:
+        if scheme.lower() != "bearer":
+            raise Unauthorized()
+        grant = svc.authenticate_access(token.strip())
+    except Unauthorized:
+        return JSONResponse(
+            {"error": "invalid_token"}, status_code=401,
+            headers={"WWW-Authenticate": (
+                f'Bearer resource_metadata="{svc.base}/.well-known/oauth-protected-resource/mcp/{svc.product.key}"'
+            )},
+        )
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        return JSONResponse(mcp_service.rpc_error(None, mcp_service.INVALID_REQUEST, "Too large"),
+                            status_code=413)
+    body = await request.body()
+    if len(body) > MAX_BODY_BYTES:
+        return JSONResponse(mcp_service.rpc_error(None, mcp_service.INVALID_REQUEST, "Too large"),
+                            status_code=413)
+    try:
+        message = json.loads(body)
+    except ValueError:
+        return JSONResponse(mcp_service.rpc_error(None, mcp_service.PARSE_ERROR, "Parse error"))
+    reply = McpService(svc.db, svc.ctx, grant).handle(message)
+    if reply.body is None:
+        return Response(status_code=reply.status)
+    return JSONResponse(reply.body, status_code=reply.status,
+                        headers={"Cache-Control": "no-store", **reply.headers})
