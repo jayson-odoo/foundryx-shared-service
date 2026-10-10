@@ -13,7 +13,12 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlsplit
 
+from dataclasses import replace
+
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from app.services.url_guard import UrlGuardError, validate_public_https_url
 
 from app.config import settings as app_settings
 
@@ -25,6 +30,7 @@ from ..repositories.settings_repository import (
     SettingsRepository,
     decode_secrets,
     encode_secrets,
+    row_values,
 )
 from ..schemas import (
     ProductSettings,
@@ -83,9 +89,18 @@ class Invalid(Exception):
         self.errors = errors
 
 
+MAX_URL_LEN = 2048
+MAX_LIST_LEN = 4096
+
+
 def _valid_url(value: str) -> bool:
+    """http(s), a host, no credentials, no whitespace or control characters
+    (``urlsplit`` silently drops tabs/newlines, so check the raw string)."""
+    if len(value) > MAX_URL_LEN or any(ord(ch) < 33 or ord(ch) == 127 for ch in value):
+        return False
     parts = urlsplit(value)
-    return parts.scheme in ("http", "https") and bool(parts.hostname) and " " not in value
+    return (parts.scheme in ("http", "https") and bool(parts.hostname)
+            and parts.username is None and parts.password is None)
 
 
 def _cidr_error(raw: str) -> Optional[str]:
@@ -119,7 +134,14 @@ class SettingsService:
         if row is not None:
             if row.tenant_id != self.tenant_id:
                 return None
-            return registry.resolve_product(self.db, key)
+            env = registry._env()
+            st = self.repo.resolved_row(env, key)
+            env_slug = registry.env_owner_slug(env, key)
+            if st is not None and env_slug and env_slug != self.tenant_slug:
+                # the operator assigned this key to another tenant: this row is inert
+                return replace(st, status="misconfigured", product=None,
+                               partial=st.product or st.partial)
+            return st
         st = registry.load_products(registry._env()).get(key)
         p = (st.product or st.partial) if st else None
         return st if p is not None and p.tenant_slug == self.tenant_slug else None
@@ -161,6 +183,14 @@ class SettingsService:
             if wire in _URL_FIELDS and value and not _valid_url(value):
                 errors[wire] = "Enter an http(s) URL."
                 continue
+            if wire == "apiBaseUrl" and value:
+                # The server calls this URL: https and public addresses only. An
+                # internal target stays possible through the operator's environment.
+                try:
+                    validate_public_https_url(value, subject="API base URL")
+                except UrlGuardError as exc:
+                    errors[wire] = str(exc)
+                    continue
             if wire == "apiBaseUrl":
                 value = value.rstrip("/")
             if col in _MAX_LEN and len(value) > _MAX_LEN[col]:
@@ -195,9 +225,19 @@ class SettingsService:
             row.secrets_encrypted = encode_secrets(secrets)
         return sorted(set(changed))
 
-    def _check_resolved(self, key: str) -> None:
-        """Reject a save whose effective secrets end up equal (the registry would
-        otherwise silently mark the product misconfigured)."""
+    def _check_resolved(self, row: ProductSetting, key: str) -> None:
+        """Reject a save the registry would silently turn into a broken product:
+        equal secrets, or a binding field saved here while a secret still comes
+        from the environment (the environment's secrets never follow a
+        tenant-set URL or claim - see ``registry.merge_row``)."""
+        vals, _ = row_values(row)
+        if any(vals.get(n) for n in registry.BINDING_FIELDS):
+            missing = {wire: "Enter this secret too: it must be saved here when the URLs, "
+                             "connection ID, issuer or audiences are."
+                       for wire, slot in SECRET_WIRE.items()
+                       if not vals.get(SECRET_SLOTS[slot])}
+            if missing and registry.env_owner_slug(registry._env(), key) == self.tenant_slug:
+                raise Invalid(missing)
         st = registry.resolve_product(self.db, key)
         p = (st.product or st.partial) if st else None
         if p and p.ss_to_product_secret and p.ss_to_product_secret == p.product_to_ss_secret:
@@ -216,8 +256,13 @@ class SettingsService:
         row = ProductSetting(tenant_id=self.tenant_id, key=key)
         changed = self._apply(row, body, set(body.model_fields_set) - {"key"})
         SettingsRepository.stamp(row, actor, _now())
-        self.repo.add(row)
-        self._check_resolved(key)
+        try:
+            self.repo.add(row)
+        except IntegrityError:  # a concurrent create won the unique key
+            self.db.rollback()
+            raise Conflict("A product with this key already exists.") from None
+        self._check_resolved(row, key)
+        self.repo.drop_manifest(self.tenant_id, key)
         self.repo.audit(self.tenant_id, actor, f"product:{key}", "created", changed)
         self.db.commit()
         return self.get_product(key)
@@ -234,7 +279,9 @@ class SettingsService:
             self.repo.add(row)
         changed = self._apply(row, body, set(body.model_fields_set))
         self.db.flush()
-        self._check_resolved(st.key)
+        self._check_resolved(row, st.key)
+        if "apiBaseUrl" in changed:
+            self.repo.drop_manifest(self.tenant_id, st.key)  # never reuse another host's tools
         if changed or created:
             SettingsRepository.stamp(row, actor, _now())
             self.repo.audit(self.tenant_id, actor, f"product:{st.key}",
@@ -251,6 +298,7 @@ class SettingsService:
         if self.repo.active_grants(self.tenant_id, row.key):
             raise Conflict("Revoke this product's active grants first.")
         self.repo.delete(row)
+        self.repo.drop_manifest(self.tenant_id, row.key)
         self.repo.audit(self.tenant_id, actor, f"product:{row.key}", "deleted", [])
         self.db.commit()
 
@@ -280,6 +328,9 @@ class SettingsService:
                 updates[col] = int(raw)
                 continue
             value = str(raw).strip()
+            if len(value) > MAX_LIST_LEN:
+                errors[wire] = f"At most {MAX_LIST_LEN} characters."
+                continue
             if kind == "url":
                 if not _valid_url(value):
                     errors[wire] = "Enter an http(s) URL."

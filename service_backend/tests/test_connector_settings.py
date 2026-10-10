@@ -78,8 +78,20 @@ def test_db_only_product_resolves_without_any_env(connector_client, h):
 
 
 def test_db_field_wins_blank_falls_back_to_env(connector_client, h):
+    # display name is cosmetic: it may override the environment on its own
+    res = connector_client.put("/connector/products/acme/settings", headers=h,
+                               json={"displayName": "Acme Prod"})
+    assert res.status_code == 200, res.text
+    assert _settings(connector_client, h, "acme")["secrets"]["ssToProduct"]["source"] == "environment"
+    # a URL decides where operator-signed traffic goes: the secrets must come along
     res = connector_client.put("/connector/products/acme/settings", headers=h,
                                json={"consentUrl": "https://acme.test/db-consent"})
+    assert res.status_code == 422
+    assert set(res.json()["detail"]["fieldErrors"]) == {"ssToProductSecret", "productToSsSecret"}
+    res = connector_client.put("/connector/products/acme/settings", headers=h,
+                               json={"consentUrl": "https://acme.test/db-consent",
+                                     "ssToProductSecret": SS_TO_PRODUCT,
+                                     "productToSsSecret": PRODUCT_TO_SS})
     assert res.status_code == 200, res.text
     s = _settings(connector_client, h, "acme")
     assert s["fields"]["consentUrl"] == {"value": "https://acme.test/db-consent", "source": "database"}
@@ -91,7 +103,7 @@ def test_db_field_wins_blank_falls_back_to_env(connector_client, h):
     assert loc.startswith("https://acme.test/db-consent?req=")
     # clearing the field returns it to the environment value
     res = connector_client.put("/connector/products/acme/settings", headers=h,
-                               json={"consentUrl": ""})
+                               json={"consentUrl": "", "clearSecrets": ["ssToProduct", "productToSs"]})
     assert res.status_code == 200
     assert _settings(connector_client, h, "acme")["fields"]["consentUrl"] == {
         "value": CONSENT_URL, "source": "environment"}
@@ -359,3 +371,95 @@ def test_env_added_later_for_another_tenant_does_not_bleed_into_db_product(conne
     s = _settings(connector_client, h, "delta")
     assert s["fields"]["apiBaseUrl"] == {"value": None, "source": "unset"}
     assert s["status"] == "misconfigured"
+
+
+
+# ---- security review fixes ------------------------------------------------------------
+
+
+def test_env_secrets_never_follow_a_tenant_set_binding_field(connector_client, h):
+    """Even if a row is planted directly, environment secrets drop once a URL or
+    claim is saved here: the product is misconfigured, never operator-signed."""
+    from tests.connector_support import sql
+    assert connector_client.put("/connector/products/acme/settings", headers=h,
+                                json={"displayName": "Acme"}).status_code == 200
+    sql(connector_client._factory,
+        "UPDATE connector.product_settings SET api_base_url='https://attacker.example' WHERE key='acme'")
+    s = _settings(connector_client, h, "acme")
+    assert s["secrets"]["ssToProduct"]["state"] == "missing"
+    assert s["status"] == "misconfigured"
+    assert connector_client.get("/.well-known/oauth-authorization-server/mcp/acme").status_code == 404
+
+
+@pytest.mark.parametrize("url", ["http://delta.test", "https://127.0.0.1", "https://169.254.169.254",
+                                 "https://10.0.0.5", "https://localhost:8001", "https://u:p@delta.test",
+                                 "https://delta.test/\tx"])
+def test_api_base_url_rejects_internal_and_odd_targets(connector_client, h, url):
+    res = _create(connector_client, h, apiBaseUrl=url)
+    assert res.status_code == 422, (url, res.text)
+
+
+def test_outbound_call_rechecks_tenant_set_base_url(connector_client, h, monkeypatch):
+    """DNS can be re-pointed after save: the guard runs again before every call."""
+    import httpx
+
+    from app.services import url_guard
+    from modules.connector.services import product_client
+
+    assert _create(connector_client, h).status_code == 201
+    product = registry.get_product("delta", connector_client._factory())
+    assert product is not None and product.guard_outbound
+    monkeypatch.setattr(url_guard.socket, "getaddrinfo",
+                        lambda *a, **k: [(None, None, None, None, ("169.254.169.254", 0))])
+    sent = []
+    product_client.TRANSPORT = httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200))
+    with pytest.raises(httpx.TransportError):
+        product_client.send(product, method="GET", raw_path="/x", query="", body=b"", sub="",
+                            grant_id="", consented_at=0, tool="")
+    assert sent == []
+    env_product = registry.get_product("acme", connector_client._factory())
+    assert env_product is not None and not env_product.guard_outbound
+
+
+def test_operator_env_assignment_beats_a_squatted_db_key(connector_client, h):
+    assert _create(connector_client, h).status_code == 201
+    env = make_env({"CONNECTOR_PRODUCTS": "acme,beta,delta",
+                    "CONNECTOR_DELTA_TENANT_SLUG": "someone-else",
+                    "CONNECTOR_DELTA_CONNECTION_ID": "conn-op",
+                    "CONNECTOR_DELTA_CONSENT_URL": "https://op.test/c",
+                    "CONNECTOR_DELTA_API_BASE_URL": "https://op.test",
+                    "CONNECTOR_DELTA_SS_TO_PRODUCT_SECRET": "op-ss-secret-00000001",
+                    "CONNECTOR_DELTA_PRODUCT_TO_SS_SECRET": "op-p2s-secret-0000001"})
+    registry.set_env_for_tests(env)
+    live = registry.resolve_product(connector_client._factory(), "delta")
+    assert live.product is not None and live.product.api_base_url == "https://op.test"
+    assert _settings(connector_client, h, "delta")["status"] == "misconfigured"
+    keys = [p["key"] for p in connector_client.get("/connector/products", headers=h).json()["data"]]
+    assert "delta" not in keys
+
+
+def test_cidr_answer_is_uniform_for_unusable_products(connector_client, h, monkeypatch):
+    """A tenant allow-list never applies to an unknown or misconfigured product,
+    so an outside caller cannot tell which keys exist."""
+    monkeypatch.setattr(settings, "trust_proxy_headers", False)
+    assert connector_client.put("/connector/settings", headers=h,
+                                json={"allowedClientCidrs": CIDR}).status_code == 200
+    assert _create(connector_client, h, consentUrl="").status_code == 201  # misconfigured
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    with TestClient(app, base_url="https://testserver", client=(OUTSIDE_IP, 5000)) as c:
+        assert c.post("/mcp/nosuch", json=ping).status_code == 404
+        assert c.post("/mcp/delta", json=ping).status_code == 404
+        assert c.post("/mcp/acme", json=ping).status_code == 403
+
+
+def test_api_base_url_change_drops_cached_manifest(connector_client, h, fake_product):
+    from tests.connector_support import sql
+    assert _create(connector_client, h).status_code == 201
+    sql(connector_client._factory,
+        "INSERT INTO connector.manifest_cache (id, tenant_id, product, version) "
+        "SELECT 'm1', tenant_id, 'delta', 'v1' FROM connector.product_settings WHERE key='delta'")
+    assert rows(connector_client._factory, "manifest_cache")
+    res = connector_client.put("/connector/products/delta/settings", headers=h,
+                               json={"apiBaseUrl": "https://delta2.test"})
+    assert res.status_code == 200, res.text
+    assert [r for r in rows(connector_client._factory, "manifest_cache") if r["product"] == "delta"] == []

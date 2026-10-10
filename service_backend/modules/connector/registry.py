@@ -22,6 +22,10 @@ DEFAULT_REDIRECT_ALLOWLIST = ["https://claude.ai/api/mcp/auth_callback"]
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _REQUIRED = ("TENANT_SLUG", "CONNECTION_ID", "CONSENT_URL", "API_BASE_URL",
              "SS_TO_PRODUCT_SECRET", "PRODUCT_TO_SS_SECRET")
+SECRET_FIELDS = ("SS_TO_PRODUCT_SECRET", "PRODUCT_TO_SS_SECRET")
+# Fields that decide where signed traffic goes or what it claims.
+BINDING_FIELDS = ("CONNECTION_ID", "CONSENT_URL", "API_BASE_URL", "ISSUER", "CONSENT_AUDIENCE",
+                  "CALL_AUDIENCE")
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,9 @@ class Product:
     consent_audience: str = ""
     call_audience: str = ""
     tenant_id: str = ""  # set for database-backed products (owner); env products resolve by slug
+    # API base URL came from the database (tenant-set): every outbound call re-runs the
+    # SSRF guard. Operator (environment) URLs stay exempt so internal targets keep working.
+    guard_outbound: bool = False
 
     def __repr__(self) -> str:  # never leak secrets through logs/tracebacks
         return f"Product(key={self.key!r})"
@@ -121,7 +128,8 @@ def env_fields(env: Mapping[str, str], key: str) -> dict[str, str]:
 
 
 def build_status(key: str, vals: Mapping[str, str], *, tenant_id: str = "",
-                 sources: Optional[Mapping[str, str]] = None) -> ProductStatus:
+                 sources: Optional[Mapping[str, str]] = None,
+                 guard_outbound: bool = False) -> ProductStatus:
     """``vals`` = the explicitly set values (blank = unset); defaults fill the rest."""
     if not _KEY_RE.match(key):
         return ProductStatus(key=key, status="misconfigured", sources=dict(sources or {}))
@@ -140,6 +148,7 @@ def build_status(key: str, vals: Mapping[str, str], *, tenant_id: str = "",
         consent_audience=v["CONSENT_AUDIENCE"] or d["CONSENT_AUDIENCE"],
         call_audience=v["CALL_AUDIENCE"] or d["CALL_AUDIENCE"],
         tenant_id=tenant_id,
+        guard_outbound=guard_outbound,
     )
     ok = (all(v[name] for name in _REQUIRED)
           and v["SS_TO_PRODUCT_SECRET"] != v["PRODUCT_TO_SS_SECRET"])
@@ -167,6 +176,12 @@ def merge_row(env: Mapping[str, str], key: str, tenant_slug: str, tenant_id: str
     env_applies = (key in env_product_keys(env)
                    and _val(env, f"CONNECTOR_{key.upper()}_TENANT_SLUG") == tenant_slug)
     ev = env_fields(env, key) if env_applies else {n: "" for n in FIELDS}
+    # The operator's secrets sign tokens for the operator's URLs and claims only: once
+    # any of those is set in the database, the secrets must be saved there too, so a
+    # tenant can never point operator-signed traffic somewhere else.
+    if any((db_vals.get(n) or "").strip() for n in BINDING_FIELDS):
+        for n in SECRET_FIELDS:
+            ev[n] = ""
     vals: dict[str, str] = {"TENANT_SLUG": tenant_slug}
     sources: dict[str, str] = {"TENANT_SLUG": "database"}
     for name in FIELDS:
@@ -181,7 +196,15 @@ def merge_row(env: Mapping[str, str], key: str, tenant_slug: str, tenant_id: str
         else:
             vals[name] = ""
             sources[name] = "default" if name in defaults_for(key) else "unset"
-    return build_status(key, vals, tenant_id=tenant_id, sources=sources)
+    return build_status(key, vals, tenant_id=tenant_id, sources=sources,
+                        guard_outbound=sources.get("API_BASE_URL") == "database")
+
+
+def env_owner_slug(env: Mapping[str, str], key: str) -> str:
+    """The tenant slug the environment assigns ``key`` to ("" = not an env product)."""
+    if key not in env_product_keys(env):
+        return ""
+    return _val(env, f"CONNECTOR_{key.upper()}_TENANT_SLUG")
 
 
 def resolve_products(db: "Session") -> dict[str, ProductStatus]:
@@ -191,6 +214,10 @@ def resolve_products(db: "Session") -> dict[str, ProductStatus]:
     env = _env()
     out = load_products(env)
     for key, st in SettingsRepository(db).resolved_rows(env).items():
+        owner = st.product or st.partial
+        env_slug = env_owner_slug(env, key)
+        if env_slug and owner is not None and env_slug != owner.tenant_slug:
+            continue  # the operator assigned this key to another tenant: env wins
         out[key] = st
     return out
 
@@ -201,7 +228,11 @@ def resolve_product(db: "Session", key: str) -> Optional[ProductStatus]:
     key = (key or "").lower()
     env = _env()
     st = SettingsRepository(db).resolved_row(env, key)
-    return st if st is not None else load_products(env).get(key)
+    owner = (st.product or st.partial) if st else None
+    env_slug = env_owner_slug(env, key)
+    if st is None or (env_slug and owner is not None and env_slug != owner.tenant_slug):
+        return load_products(env).get(key)  # the operator's assignment wins
+    return st
 
 
 def all_products(db: Optional["Session"] = None) -> dict[str, ProductStatus]:

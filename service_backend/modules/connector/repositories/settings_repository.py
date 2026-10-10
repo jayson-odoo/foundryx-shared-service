@@ -19,7 +19,7 @@ from app.models.tenant import Tenant
 from app.secrets import decrypt_secret, encrypt_secret
 
 from .. import registry
-from ..models import Grant, ProductSetting, SettingsAudit, TenantSetting
+from ..models import Grant, ManifestCache, ProductSetting, SettingsAudit, TenantSetting
 
 # product column <-> registry FIELD name
 COLUMNS = {
@@ -105,6 +105,11 @@ class SettingsRepository:
     def delete(self, row: ProductSetting) -> None:
         self.db.delete(row)
         self.db.flush()
+
+    def drop_manifest(self, tenant_id: str, key: str) -> None:
+        self.db.query(ManifestCache).filter(ManifestCache.tenant_id == tenant_id,
+                                            ManifestCache.product == key).delete(
+            synchronize_session=False)
 
     def active_grants(self, tenant_id: str, key: str) -> int:
         return (self.db.query(Grant.id)

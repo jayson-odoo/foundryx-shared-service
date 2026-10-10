@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.services.url_guard import UrlGuardError, assert_deliverable
+
 from .. import crypto, registry
 from ..registry import Product
 
@@ -27,6 +29,11 @@ def send(product: Product, *, method: str, raw_path: str, query: str, body: byte
     url = product.api_base_url + raw_path + (f"?{query}" if query else "")
     if urlsplit(url).hostname != urlsplit(product.api_base_url).hostname:
         raise httpx.TransportError("host mismatch")  # nothing is sent
+    if product.guard_outbound:  # tenant-set base URL: re-check right before sending
+        try:
+            assert_deliverable(url, subject="API base URL")
+        except UrlGuardError:
+            raise httpx.TransportError("blocked target") from None  # nothing is sent
     headers = {"Authorization": f"Connector {token}", "Accept": "application/json"}
     if body:
         headers["Content-Type"] = "application/json"
