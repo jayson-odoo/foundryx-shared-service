@@ -11,7 +11,10 @@ vi.mock('@/hooks/use-can', () => ({
 const getTenantSettings = vi.fn();
 const updateTenantSettings = vi.fn();
 const listSettingsAudit = vi.fn();
+const listProducts = vi.fn();
 vi.mock('@/services/connector-service', () => ({
+  listProducts: (...a: unknown[]) => listProducts(...a),
+  refreshManifest: vi.fn(),
   getTenantSettings: (...a: unknown[]) => getTenantSettings(...a),
   updateTenantSettings: (...a: unknown[]) => updateTenantSettings(...a),
   listSettingsAudit: (...a: unknown[]) => listSettingsAudit(...a),
@@ -29,7 +32,6 @@ const settings = (over: Record<string, unknown> = {}) => ({
   manifestTtlSeconds: { value: '900', source: 'default' },
   callTimeoutSeconds: { value: '15', source: 'default' },
   callLogRetentionDays: { value: '180', source: 'default' },
-  forwardedForWarning: true,
   ceilings: { allowedClientCidrs: '160.79.104.0/21' },
   ...over,
 });
@@ -38,6 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   canKeys.splice(0, canKeys.length, 'connector.read', 'connector.settings');
   getTenantSettings.mockResolvedValue(settings());
+  listProducts.mockResolvedValue([{ key: 'acme', displayName: 'Acme ERP' }]);
   listSettingsAudit.mockResolvedValue([
     { id: 'a1', target: 'product:acme', action: 'updated', fields: ['ssToProductSecret'],
       actorUserId: 'u1', actorName: 'Demo Admin', at: '2026-10-10T00:00:00Z' },
@@ -45,25 +48,20 @@ beforeEach(() => {
 });
 
 describe('AccessTab (SETTINGS-IN-DB-SS)', () => {
-  it('shows effective values with their source and the #118 warning', async () => {
+  it('shows effective values, their source, the limit and links to the products', async () => {
     render(<AccessTab />);
     await screen.findByText('https://ss.test');
     expect(screen.getAllByText('Default').length).toBeGreaterThan(0);
     expect(screen.getByText('Environment')).toBeTruthy();
-    expect(screen.getByTestId('xff-warning')).toBeTruthy();
+    expect(screen.queryByTestId('xff-warning')).toBeNull();
+    const link = await screen.findByRole('link', { name: 'Acme ERP' });
+    expect(link.getAttribute('href')).toBe('/settings/claude-connector/products/acme');
     expect(screen.getByTestId('limit-allowedClientCidrs').textContent).toBe(
       'Deployment limit: 160.79.104.0/21',
     );
     expect(screen.queryByTestId('limit-publicBaseUrl')).toBeNull();
     expect(screen.getByText(/Product acme updated: Secret to product/)).toBeTruthy();
     expect(screen.queryAllByRole('textbox').length).toBe(0);
-  });
-
-  it('no warning once the X-Forwarded-For fix ships', async () => {
-    getTenantSettings.mockResolvedValue(settings({ forwardedForWarning: false }));
-    render(<AccessTab />);
-    await screen.findByText('https://ss.test');
-    expect(screen.queryByTestId('xff-warning')).toBeNull();
   });
 
   it('read-only users get no Edit button', async () => {

@@ -83,7 +83,6 @@ describe('connector settings mapping (SETTINGS-IN-DB-SS)', () => {
       manifestTtlSeconds: v('900', 'default'),
       callTimeoutSeconds: v('20', 'database'),
       callLogRetentionDays: v('180', 'environment'),
-      forwardedForWarning: true,
       ceilings: {},
     } as ConnectorTenantSettings;
     const f = tenantFormValues(s);

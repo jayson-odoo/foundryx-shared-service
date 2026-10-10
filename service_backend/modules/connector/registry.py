@@ -326,11 +326,14 @@ CEILING_SETTINGS = ("allowed_client_cidrs", "redirect_allowlist", "call_log_rete
 
 
 def ceilings(env: Mapping[str, str]) -> dict[str, str]:
-    """{setting: the environment value a tenant may only narrow} - only what the
-    environment actually sets (nothing set = the tenant value stands alone)."""
+    """{setting: the value a tenant may only narrow}. CIDRs and retention are capped
+    only when the environment sets them; redirect URIs are always capped (by the
+    environment list, else the built-in default)."""
     out = {}
     for name in CEILING_SETTINGS:
         envv = _val(env, TENANT_SETTINGS[name][0])
+        if not envv and name == "redirect_allowlist":
+            envv = TENANT_SETTINGS[name][1]  # the built-in default still caps redirects
         if envv:
             out[name] = envv
     return out
@@ -348,8 +351,8 @@ def ceiling_error(env: Mapping[str, str], name: str, value: str) -> Optional[str
         for net in inner:
             if not any(net.version == o.version and net.subnet_of(o) for o in outer):
                 return f"{net} is outside the deployment's allowed ranges ({envv})."
-    if name == "redirect_allowlist" and envv:
-        allowed = [x.strip() for x in envv.split(",") if x.strip()]
+    if name == "redirect_allowlist":
+        allowed = [x.strip() for x in (envv or default).split(",") if x.strip()]
         for uri in (x.strip() for x in value.split(",") if x.strip()):
             if uri not in allowed:
                 return f"{uri} is not in the deployment's allowed redirect URLs."

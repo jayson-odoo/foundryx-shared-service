@@ -58,7 +58,7 @@ const acme = (over: Record<string, unknown> = {}) => ({
     callAudience: v('acme-connector-api', 'default'),
   },
   secrets: {
-    ssToProduct: { state: 'set', source: 'environment' },
+    ssToProduct: { state: 'set', source: 'environment', hint: '****-001' },
     productToSs: { state: 'unreadable', source: 'unreadable' },
   },
   ...over,
@@ -78,6 +78,8 @@ describe('ProductFormView (SETTINGS-IN-DB-SS)', () => {
     await userEvent.click(screen.getByRole('tab', { name: /secrets/i }));
     expect(screen.getByText('Set')).toBeTruthy();
     expect(screen.getByText('Unreadable - re-enter')).toBeTruthy();
+    expect(screen.getByTestId('hint-ssToProduct').textContent).toBe('****-001');
+    expect(screen.queryByTestId('hint-productToSs')).toBeNull();
     expect(screen.queryAllByRole('textbox').length).toBe(0);
   });
 

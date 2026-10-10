@@ -108,6 +108,9 @@ class SettingValue(ApiModel):
 class SecretValue(ApiModel):
     state: str  # set | missing | unreadable
     source: str  # database | environment | unset | unreadable
+    # "****" + last 4 characters, so an admin can tell which secret is stored
+    # (only for a set secret of at least 16 characters; never more of it).
+    hint: Optional[str] = None
 
 
 class ProductSettings(ApiModel):
@@ -149,7 +152,6 @@ class TenantSettings(ApiModel):
     manifestTtlSeconds: SettingValue
     callTimeoutSeconds: SettingValue
     callLogRetentionDays: SettingValue
-    forwardedForWarning: bool = False
     # wire field -> the deployment value a saved value must stay within
     ceilings: Dict[str, str] = Field(default_factory=dict)
 

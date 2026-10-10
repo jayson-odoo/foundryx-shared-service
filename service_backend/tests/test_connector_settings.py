@@ -162,7 +162,8 @@ def test_secrets_encrypted_at_rest_and_never_returned(connector_client, h):
         body = connector_client.get(path, headers=h).text
         assert "delta-ss-secret-0001" not in body and "delta-p2s-secret" not in body
     s = _settings(connector_client, h, "delta")
-    assert s["secrets"]["ssToProduct"] == {"state": "set", "source": "database"}
+    assert s["secrets"]["ssToProduct"] == {"state": "set", "source": "database", "hint": "****0001"}
+    assert s["secrets"]["productToSs"]["hint"] == "****cret"
 
 
 def test_blank_secret_keeps_clear_falls_back(connector_client, h, fake_product):
@@ -170,7 +171,8 @@ def test_blank_secret_keeps_clear_falls_back(connector_client, h, fake_product):
                                json={"ssToProductSecret": "", "displayName": "Acme"})
     assert res.status_code == 200
     s = _settings(connector_client, h, "acme")
-    assert s["secrets"]["ssToProduct"] == {"state": "set", "source": "environment"}
+    assert s["secrets"]["ssToProduct"] == {"state": "set", "source": "environment",
+                                           "hint": "****" + SS_TO_PRODUCT[-4:]}
     res = connector_client.put("/connector/products/acme/settings", headers=h,
                                json={"ssToProductSecret": "rotated-db-secret"})
     assert res.status_code == 200
@@ -230,15 +232,12 @@ def test_delete_needs_typed_key_and_no_active_grants(connector_client, h, fake_p
 # ---- tenant-level settings ------------------------------------------------------------
 
 
-def test_tenant_settings_sources_and_public_base_url(connector_client, h, monkeypatch):
-    monkeypatch.setattr(settings, "trust_proxy_headers", True)
+def test_tenant_settings_sources_and_public_base_url(connector_client, h):
     s = connector_client.get("/connector/settings", headers=h).json()
     assert s["publicBaseUrl"] == {"value": "https://ss.test", "source": "default"}
     assert s["redirectAllowlist"] == {"value": REDIRECT, "source": "environment"}
     assert s["callTimeoutSeconds"] == {"value": "15", "source": "default"}
-    assert s["forwardedForWarning"] is True  # issue #118: until lane SS-118-XFF merges
-    monkeypatch.setattr(settings, "trust_proxy_headers", False)
-    assert connector_client.get("/connector/settings", headers=h).json()["forwardedForWarning"] is False
+    assert "forwardedForWarning" not in s  # issue #118 fixed by #120: no warning
     res = connector_client.put("/connector/settings", headers=h,
                                json={"publicBaseUrl": TUNNEL + "/", "callTimeoutSeconds": 20})
     assert res.status_code == 200, res.text

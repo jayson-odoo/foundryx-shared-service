@@ -1,7 +1,7 @@
 'use client';
 
-import { LoaderCircleIcon, Pencil, TriangleAlert } from 'lucide-react';
-import { Alert, AlertContent, AlertDescription, AlertIcon } from '@/components/ui/alert';
+import Link from 'next/link';
+import { LoaderCircleIcon, Pencil } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle, CardToolbar } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,8 @@ import type { ConnectorSettingsAuditItem, ConnectorTenantField } from '@/types/c
 import { TENANT_FIELDS, TENANT_INT_FIELDS } from './connector-settings-schema';
 import { SourceBadge } from './source-badge';
 import { useConnectorAccess } from './use-connector-access';
+import { useConnectorProducts } from './use-connector-products';
+import { productPath } from './use-connector-product-form';
 
 export const TENANT_LABELS: Record<ConnectorTenantField, string> = {
   publicBaseUrl: 'Public base URL',
@@ -35,22 +37,6 @@ const FIELD_LABELS: Record<string, string> = {
   ssToProductSecret: 'Secret to product',
   productToSsSecret: 'Secret from product',
 };
-
-function ForwardedForWarning() {
-  return (
-    <Alert variant="warning" appearance="light" data-testid="xff-warning">
-      <AlertIcon>
-        <TriangleAlert />
-      </AlertIcon>
-      <AlertContent>
-        <AlertDescription>
-          The IP allow-list trusts the first X-Forwarded-For hop, which a client can set itself
-          (issue #118). Do not rely on it as the only control.
-        </AlertDescription>
-      </AlertContent>
-    </Alert>
-  );
-}
 
 function auditTarget(item: ConnectorSettingsAuditItem): string {
   return item.target === 'tenant' ? 'Access' : item.target.replace(/^product:/, 'Product ');
@@ -79,6 +65,37 @@ function AuditCard({ audit }: { audit: ConnectorSettingsAuditItem[] }) {
                     a.fields.length ? `: ${a.fields.map((f) => FIELD_LABELS[f] ?? f).join(', ')}` : ''
                   }`}
                 />
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The products these settings apply to, linked to their own settings pages. */
+function ProductsCard() {
+  const { products, isLoading } = useConnectorProducts();
+  return (
+    <Card>
+      <CardHeader>
+        <CardHeading>
+          <CardTitle>Products</CardTitle>
+        </CardHeading>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <LoaderCircleIcon className="size-4 animate-spin text-muted-foreground" />
+        ) : products.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No products yet.</p>
+        ) : (
+          <ul className="flex flex-wrap gap-2" data-testid="access-products">
+            {products.map((p) => (
+              <li key={p.key}>
+                <Button variant="outline" size="sm" asChild>
+                  <Link href={productPath(p.key)}>{p.displayName ?? p.key}</Link>
+                </Button>
               </li>
             ))}
           </ul>
@@ -130,7 +147,7 @@ export function AccessTab() {
                   </Button>
                   <Button size="sm" disabled={a.saving} onClick={() => void a.save()}>
                     {a.saving && <LoaderCircleIcon className="animate-spin" />}
-                    Save
+                    Save settings
                   </Button>
                 </>
               ) : (
@@ -145,7 +162,6 @@ export function AccessTab() {
         <CardContent className="flex flex-col">
           {TENANT_FIELDS.map((f) => {
             const v = s[f];
-            const isCidr = f === 'allowedClientCidrs';
             const limit = s.ceilings?.[f];
             const limitLine = limit ? (
               <span className="break-all text-xs text-muted-foreground" data-testid={`limit-${f}`}>
@@ -156,7 +172,6 @@ export function AccessTab() {
               return (
                 <FormRow key={f} label={TENANT_LABELS[f]}>
                   <div className="flex max-w-xl flex-col gap-2">
-                    {isCidr && s.forwardedForWarning && <ForwardedForWarning />}
                     <Input
                       aria-label={TENANT_LABELS[f]}
                       inputMode={TENANT_INT_FIELDS.includes(f) ? 'numeric' : undefined}
@@ -174,7 +189,6 @@ export function AccessTab() {
             return (
               <FormRow key={f} label={TENANT_LABELS[f]}>
                 <div className="flex min-w-0 flex-col gap-2">
-                  {isCidr && s.forwardedForWarning && v.value && <ForwardedForWarning />}
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <span className="min-w-0 break-all font-mono text-xs">{v.value || '-'}</span>
                     <SourceBadge source={v.source} />
@@ -186,6 +200,7 @@ export function AccessTab() {
           })}
         </CardContent>
       </Card>
+      <ProductsCard />
       <AuditCard audit={a.audit} />
     </div>
   );

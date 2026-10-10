@@ -117,6 +117,8 @@ export interface ConnectorSettingValue {
 export interface ConnectorSecretValue {
   state: 'set' | 'missing' | 'unreadable';
   source: ConnectorSettingSource;
+  /** "****" + the last 4 characters of a set secret; never more of it. */
+  hint?: string | null;
 }
 
 export type ConnectorProductField =
@@ -159,8 +161,6 @@ export type ConnectorTenantField =
   | 'callLogRetentionDays';
 
 export type ConnectorTenantSettings = Record<ConnectorTenantField, ConnectorSettingValue> & {
-  /** Issue #118: the allow-list can be spoofed through X-Forwarded-For. */
-  forwardedForWarning: boolean;
   /** Deployment limits a saved value must stay within (only those the server sets). */
   ceilings: Partial<Record<ConnectorTenantField, string>>;
 };

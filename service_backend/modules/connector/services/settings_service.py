@@ -42,7 +42,6 @@ from ..schemas import (
     TenantSettings,
     TenantSettingsUpdate,
 )
-from .client_access import FORWARDED_FOR_TRUSTED
 
 # wire name -> model column (plain product fields)
 PRODUCT_WIRE = {
@@ -163,7 +162,10 @@ class SettingsService:
             source = src.get(field, "unset")
             state = ("unreadable" if source == "unreadable"
                      else "set" if secret_vals[slot] else "missing")
-            secrets[slot] = SecretValue(state=state, source=source)
+            value = secret_vals[slot]
+            hint = f"****{value[-4:]}" if state == "set" and len(value) >= MIN_SECRET_LEN else (
+                "****" if state == "set" else None)
+            secrets[slot] = SecretValue(state=state, source=source, hint=hint)
         return ProductSettings(key=p.key, stored=stored, status=st.status, fields=fields,
                                secrets=secrets)
 
@@ -323,8 +325,7 @@ class SettingsService:
                for wire, (col, _k, _a, _b) in TENANT_WIRE.items()}
         col_to_wire = {v[0]: k for k, v in TENANT_WIRE.items()}
         limits = {col_to_wire[c]: v for c, v in registry.ceilings(registry._env()).items()}
-        return TenantSettings(**out, ceilings=limits, forwardedForWarning=bool(
-            app_settings.trust_proxy_headers and not FORWARDED_FOR_TRUSTED))
+        return TenantSettings(**out, ceilings=limits)
 
     def update_tenant(self, body: TenantSettingsUpdate, actor: Optional[str]) -> TenantSettings:
         errors: dict[str, str] = {}

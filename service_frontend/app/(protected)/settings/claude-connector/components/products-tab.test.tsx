@@ -111,5 +111,6 @@ describe('ProductsTab settings entry points (SETTINGS-IN-DB-SS)', () => {
     listProducts.mockResolvedValue([]);
     render(<ProductsTab />);
     await screen.findByText('No products yet.');
+    expect(screen.getByRole('link', { name: 'App Store' }).getAttribute('href')).toBe('/app-store/connector');
   });
 });

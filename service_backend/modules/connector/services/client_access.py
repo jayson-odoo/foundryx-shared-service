@@ -13,13 +13,6 @@ from typing import Optional
 from .. import registry
 
 
-# Issue #118: behind the trusted proxy, ``client_ip`` takes the FIRST
-# X-Forwarded-For hop, which a client can set itself. Until lane SS-118-XFF
-# merges, the settings page warns that the allow-list can be spoofed. Flip to
-# True in that lane.
-FORWARDED_FOR_TRUSTED = False
-
-
 def client_allowed(ip: str, raw_cidrs: Optional[str] = None) -> bool:
     """``raw_cidrs`` = the effective (tenant > environment) list; None = read the
     environment only."""

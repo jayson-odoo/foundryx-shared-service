@@ -141,6 +141,11 @@ export function SecretsTab({ form, editing, creating, settings }: ProductFieldsP
             <Badge variant={s.state === 'set' ? 'success' : 'destructive'} appearance="light" size="sm">
               {STATE_LABEL[s.state]}
             </Badge>
+            {s.hint && (
+              <span className="font-mono text-xs text-muted-foreground" data-testid={`hint-${slot}`}>
+                {s.hint}
+              </span>
+            )}
             {s.state !== 'missing' && <SourceBadge source={s.source} />}
           </div>
         );
