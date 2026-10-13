@@ -265,6 +265,7 @@ def test_ac_p_10_hidden_rows_never_listed(setup):
 
 
 def test_ac_p_10_other_tenant_never_visible(setup):
+    from app.models.status import TENANT_STATUS_ACTIVE, TENANT_STATUS_IDS
     from app.models.tenant import Tenant
     from modules.ideation.models import Idea
     from modules.ideation.services.statuses import idea_status_id
@@ -272,7 +273,7 @@ def test_ac_p_10_other_tenant_never_visible(setup):
     s = setup
     db = s["factory"]()
     try:
-        t = Tenant(name="Other Co", slug="other-portal")
+        t = Tenant(name="Other Co", slug="other-portal", status_id=TENANT_STATUS_IDS[TENANT_STATUS_ACTIVE])
         db.add(t)
         db.flush()
         foreign = Idea(

@@ -739,3 +739,157 @@ class SimilarOwnIn(ApiModel):
     submitter_crm_user_id: Optional[str] = None
     submitter_phone: Optional[str] = None
     is_test: bool = False
+
+
+# ── Idea portal (lane IDEA-PORTAL) ────────────────────────────────────────────
+
+
+class PortalPrincipalOut(ApiModel):
+    kind: Literal["staff", "crm", "contact"]
+    name: Optional[str] = None
+    role: str
+    productId: Optional[str] = None
+
+
+class PortalSessionOut(ApiModel):
+    token: str
+    principal: PortalPrincipalOut
+    # Link sign-in only: the idea the chatbot link addressed (its survivor).
+    ideaId: Optional[str] = None
+
+
+class PortalEmbedSessionIn(ApiModel):
+    token: str = Field(min_length=1, max_length=4096)
+
+
+class PortalLinkSessionIn(ApiModel):
+    token: str = Field(min_length=1, max_length=128)
+    last4: str = Field(pattern=r"^[0-9]{4}$")
+
+
+class PortalCardOut(ApiModel):
+    id: str
+    ideaNumber: Optional[str] = None
+    title: str
+    upvotes: int = 0
+    commentCount: int = 0
+    isMine: bool = False
+    myVote: bool = False
+    column: Optional[str] = None
+    statusLabel: Optional[str] = None
+    statusColor: Optional[str] = None
+    productName: Optional[str] = None
+    submittedAt: Optional[datetime] = None
+
+
+class PortalColumnOut(ApiModel):
+    key: str
+    title: str
+    color: str
+    ideas: List[PortalCardOut]
+
+
+class PortalRoadmapOut(ApiModel):
+    columns: List[PortalColumnOut]
+
+
+class PortalListOut(ApiModel):
+    items: List[PortalCardOut]
+    total: int
+    page: int
+    pageSize: int
+
+
+class PortalChangelogItemOut(PortalCardOut):
+    deliveredAt: datetime
+
+
+class PortalChangelogOut(ApiModel):
+    items: List[PortalChangelogItemOut]
+
+
+class PortalTimelineStepOut(ApiModel):
+    key: str
+    label: str
+    color: Optional[str] = None
+    state: Literal["done", "current", "upcoming"]
+
+
+class PortalIdeaOut(PortalCardOut):
+    """The idea page. Shows exactly the owner-ruled fields (Business problem =
+    ``problem``, Desired outcome, Use cases, Current workaround) - never
+    proposed solution / impact / department / raw text / contact ids."""
+
+    problem: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[str] = None
+    currentWorkaround: Optional[str] = None
+    submitterFirstName: Optional[str] = None
+    timeline: List[PortalTimelineStepOut]
+    # Staff only (null for everyone else).
+    portalHidden: Optional[bool] = None
+
+
+class PortalVoteOut(ApiModel):
+    id: str
+    upvotes: int
+    myVote: bool
+
+
+class PortalVoterOut(ApiModel):
+    name: Optional[str] = None
+    role: str
+    isMe: bool = False
+
+
+class PortalCommentOut(IdeaCommentOut):
+    authorRole: str
+    likeCount: int = 0
+    likedByMe: bool = False
+
+
+class PortalLikeOut(ApiModel):
+    likeCount: int
+    likedByMe: bool
+
+
+class PortalActivityOut(ApiModel):
+    kind: Literal["submitted", "status_changed", "comment", "upvotes", "comment_like"]
+    at: datetime
+    by: Optional[str] = None
+    source: Optional[str] = None
+    fromLabel: Optional[str] = None
+    toLabel: Optional[str] = None
+    toColor: Optional[str] = None
+    comment: Optional[PortalCommentOut] = None
+    replies: List[PortalCommentOut] = []
+    day: Optional[str] = None
+    count: Optional[int] = None
+    names: List[str] = []
+    commentId: Optional[str] = None
+
+
+class PortalProductOut(ApiModel):
+    id: str
+    name: str
+
+
+class PortalIdeaCreateIn(ApiModel):
+    title: str = Field(max_length=120)
+    problem: str = Field(max_length=4000)
+    productId: Optional[str] = Field(default=None, max_length=64)
+    desiredOutcome: Optional[str] = Field(default=None, max_length=4000)
+    useCases: Optional[str] = Field(default=None, max_length=4000)
+    currentWorkaround: Optional[str] = Field(default=None, max_length=4000)
+
+    @field_validator("title", "problem")
+    @classmethod
+    def _required(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("This field is required.")
+        return v
+
+
+class PortalHiddenIn(ApiModel):
+    hidden: bool

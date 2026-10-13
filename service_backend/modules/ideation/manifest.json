@@ -58,6 +58,11 @@
       "public": true
     },
     {
+      "name": "portal",
+      "prefix": "/portal/ideas",
+      "public": true
+    },
+    {
       "name": "embed_admin",
       "prefix": "/ideation/embed-connections"
     }

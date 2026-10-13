@@ -35,6 +35,9 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_FORM_PUBLIC,
     THROTTLE_SCOPE_IDEA_COMMENT_IP,
     THROTTLE_SCOPE_IDEA_COMMENT_TOKEN,
+    THROTTLE_SCOPE_IDEA_PORTAL_COMMENT,
+    THROTTLE_SCOPE_IDEA_PORTAL_LINK_IP,
+    THROTTLE_SCOPE_IDEA_PORTAL_LINK_TOKEN,
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_PORTAL,
     THROTTLE_SCOPE_PULL,
@@ -130,6 +133,24 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_idea_comment_ip_max,
             timedelta(minutes=settings.throttle_idea_comment_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_PORTAL_LINK_TOKEN:
+        return (
+            settings.throttle_idea_portal_link_token_max,
+            timedelta(minutes=settings.throttle_idea_portal_link_window_minutes),
+            timedelta(minutes=settings.throttle_idea_portal_link_lock_minutes),
+        )
+    if scope == THROTTLE_SCOPE_IDEA_PORTAL_LINK_IP:
+        return (
+            settings.throttle_idea_portal_link_ip_max,
+            timedelta(minutes=settings.throttle_idea_portal_link_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_PORTAL_COMMENT:
+        return (
+            settings.throttle_idea_portal_comment_max,
+            timedelta(minutes=settings.throttle_idea_portal_comment_window_minutes),
             None,
         )
     if scope == THROTTLE_SCOPE_PULL_KEY:
@@ -241,6 +262,7 @@ def prune_stale(db: Session) -> int:
             settings.throttle_email_window_minutes,
             settings.throttle_ip_window_minutes,
             settings.throttle_email_lock_minutes,
+            settings.throttle_idea_portal_comment_window_minutes,
         )
     )
     deleted = (
@@ -480,3 +502,28 @@ class ThrottleService:
     def record_idea_comment(self, *, ip: str, token_key: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_IDEA_COMMENT_TOKEN, token_key)
         self.store.record_failure(THROTTLE_SCOPE_IDEA_COMMENT_IP, ip)
+
+    # ---- Ideation idea portal (own buckets, lane IDEA-PORTAL) ----
+
+    def enforce_idea_portal_link(self, *, ip: str, token_key: str) -> None:
+        """``token_key`` = sha256 hex of the link token (never the raw token)."""
+        retry = self.store.check(THROTTLE_SCOPE_IDEA_PORTAL_LINK_TOKEN, token_key)
+        if retry is None:
+            retry = self.store.check(THROTTLE_SCOPE_IDEA_PORTAL_LINK_IP, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_idea_portal_link_failure(self, *, ip: str, token_key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_PORTAL_LINK_TOKEN, token_key)
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_PORTAL_LINK_IP, ip)
+
+    def reset_idea_portal_link(self, *, token_key: str) -> None:
+        self.store.reset(THROTTLE_SCOPE_IDEA_PORTAL_LINK_TOKEN, token_key)
+
+    def enforce_idea_portal_comment(self, *, principal_key: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_IDEA_PORTAL_COMMENT, principal_key)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_idea_portal_comment(self, *, principal_key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_PORTAL_COMMENT, principal_key)

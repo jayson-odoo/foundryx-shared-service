@@ -121,6 +121,14 @@ class Settings(BaseSettings):
     throttle_idea_comment_token_max: int = 5
     throttle_idea_comment_ip_max: int = 20
     throttle_idea_comment_window_minutes: int = 15
+    # Idea portal (lane IDEA-PORTAL): chatbot-link sign-in confirm attempts.
+    throttle_idea_portal_link_token_max: int = 5
+    throttle_idea_portal_link_ip_max: int = 20
+    throttle_idea_portal_link_window_minutes: int = 15
+    throttle_idea_portal_link_lock_minutes: int = 15
+    # Portal comments per signed-in principal per window.
+    throttle_idea_portal_comment_max: int = 20
+    throttle_idea_portal_comment_window_minutes: int = 60
     throttle_pull_key_window_minutes: int = 5
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10

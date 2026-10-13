@@ -142,7 +142,12 @@ class IdeaCommentService:
         from .public_status import PublicIdeaStatusService
 
         project = PublicIdeaStatusService.public_display_name
-        fallback = {AUTHOR_USER: "Team member", AUTHOR_EMBED: "Portal user", AUTHOR_PUBLIC: "Submitter"}
+        fallback = {
+            AUTHOR_USER: "Team member",
+            AUTHOR_EMBED: "Portal user",
+            AUTHOR_PUBLIC: "Submitter",
+            "contact": "Dealer",
+        }
         out: List[IdeaCommentOut] = []
         for c in rows:
             if c.authorName is not None:

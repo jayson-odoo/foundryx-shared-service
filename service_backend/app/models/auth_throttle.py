@@ -63,6 +63,12 @@ THROTTLE_SCOPE_BUILD = "build"
 # credential) and per client IP. Every successful post counts.
 THROTTLE_SCOPE_IDEA_COMMENT_TOKEN = "idea_comment_token"
 THROTTLE_SCOPE_IDEA_COMMENT_IP = "idea_comment_ip"
+# Ideation idea portal (lane IDEA-PORTAL): the chatbot-link sign-in confirm step
+# (wrong last-4 digits) per link (key = sha256 of the link token, TEMP lock) and
+# per client IP, and portal comment posts per signed-in principal.
+THROTTLE_SCOPE_IDEA_PORTAL_LINK_TOKEN = "idea_portal_link_token"
+THROTTLE_SCOPE_IDEA_PORTAL_LINK_IP = "idea_portal_link_ip"
+THROTTLE_SCOPE_IDEA_PORTAL_COMMENT = "idea_portal_comment"
 
 
 class AuthThrottle(Base):
