@@ -770,7 +770,7 @@ def flat_source_ref(
 
     if entity_type in LINKED_DOCUMENT_REF_CODES:
         # AC-CANCEL-PULL - the CRM's OWN derivation for the doc-feed-shaped
-        # linked documents: `{book}:{XS|XP|CG|CR}:{DocKey}`. `database_name`
+        # linked documents: `{book}:{XS|XP|CSGN|CSGR}:{DocKey}`. `database_name`
         # carries the BOOK here (`http_source.book.identity_scope`).
         book = (database_name or "").strip()
         if not book:

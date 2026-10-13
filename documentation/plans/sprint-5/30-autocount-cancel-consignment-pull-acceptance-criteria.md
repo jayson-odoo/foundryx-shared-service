@@ -32,7 +32,7 @@ required fields, mapping errors).
   - `DOCUMENT_PRESETS`.
 
   SO/PO/SPO are unchanged.
-- **AC-30-02 [BE][T]** Each record's `source_ref` is the CRM's own derivation `{book}:{XS|XP|CG|CR}:{DocKey}`, where
+- **AC-30-02 [BE][T]** Each record's `source_ref` is the CRM's own derivation `{book}:{XS|XP|CSGN|CSGR}:{DocKey}`, where
   `book` is the book of the company's own Delivery Orders (else Goods Receive Notes) feed. `SqlDbSource` row hashes
   and delete intents key on the same string. A company with no doc-feed book is a named identity error at mapping
   and a named error at push, never a guess.

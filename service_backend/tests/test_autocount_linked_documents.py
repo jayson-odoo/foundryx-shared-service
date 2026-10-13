@@ -7,7 +7,7 @@ behind contract 2.8. What is NEW and therefore pinned here:
 * the WIRE is the DO/GRN doc-feed shape the CRM (#1623) already ingests:
   body ``{companyCode, book, records}``, each record the AutoCount header row
   under its own PascalCase column names with its lines in ``Details``,
-  ``source_ref`` = the CRM's own ``{book}:{XS|XP|CG|CR}:{DocKey}``, and
+  ``source_ref`` = the CRM's own ``{book}:{XS|XP|CSGN|CSGR}:{DocKey}``, and
   deletions by ``doc_keys``;
 * the link columns ``FromDocType``/``FromDocNo``/``FromDocDtlKey`` ride every
   line with ``ItemCode``/``Location``/``Qty`` (``FromDocDtlKey`` is often empty,
@@ -229,8 +229,8 @@ def test_the_source_ref_is_the_crm_derivation_per_entity():
     assert {e: linked_document_ref(e, BOOK, 7) for e in ALL} == {
         ENTITY_CANCEL_SALES_ORDER: "db1:XS:7",
         ENTITY_CANCEL_PURCHASE_ORDER: "db1:XP:7",
-        ENTITY_CONSIGNMENT: "db1:CG:7",
-        ENTITY_CONSIGNMENT_RETURN: "db1:CR:7",
+        ENTITY_CONSIGNMENT: "db1:CSGN:7",
+        ENTITY_CONSIGNMENT_RETURN: "db1:CSGR:7",
     }
 
 
@@ -416,7 +416,7 @@ def test_a_hand_entered_consignment_maps_with_no_source_document():
     )])
     mapped = _preset_engine(ENTITY_CONSIGNMENT).map_document(raw)
     assert mapped.ok, [e.message() for e in mapped.errors]
-    assert mapped.record.source_ref == f"{BOOK}:CG:7"
+    assert mapped.record.source_ref == f"{BOOK}:CSGN:7"
     line = mapped.record.sink_payload()["Details"][0]
     assert line["FromDocType"] is None and line["FromDocNo"] is None
 
@@ -427,7 +427,7 @@ def test_a_consignment_return_points_back_at_its_cg_document():
     )])
     mapped = _preset_engine(ENTITY_CONSIGNMENT_RETURN).map_document(raw)
     assert mapped.ok, [e.message() for e in mapped.errors]
-    assert mapped.record.source_ref == f"{BOOK}:CR:8"
+    assert mapped.record.source_ref == f"{BOOK}:CSGR:8"
     line = mapped.record.sink_payload()["Details"][0]
     assert (line["FromDocType"], line["FromDocNo"]) == ("CG", "CG-000001")
 
@@ -472,7 +472,7 @@ def test_each_entity_posts_the_doc_feed_envelope_to_its_own_route(entity_type):
         requests.append(request)
         body = json.loads(request.content)
         code = {"cancel_sales_orders": "XS", "cancel_purchase_orders": "XP",
-                "consignments": "CG", "consignment_returns": "CR"}[request.url.path.rsplit("/", 1)[-1]]
+                "consignments": "CSGN", "consignment_returns": "CSGR"}[request.url.path.rsplit("/", 1)[-1]]
         records = [
             {"source_ref": f"{body['book']}:{code}:{r['DocKey']}", "outcome": "created", "entity_id": "id-1"}
             for r in body["records"]
@@ -709,7 +709,7 @@ def test_a_deleted_document_goes_to_the_doc_keys_deletions_door(monkeypatch, _st
         calls.append({"keys": list(doc_keys), "from": doc_date_from, "to": doc_date_to,
                       "path": self._path_segment, "book": self.book})
         code = {ENTITY_CANCEL_SALES_ORDER: "XS", ENTITY_CANCEL_PURCHASE_ORDER: "XP",
-                ENTITY_CONSIGNMENT: "CG", ENTITY_CONSIGNMENT_RETURN: "CR"}[self.entity_type]
+                ENTITY_CONSIGNMENT: "CSGN", ENTITY_CONSIGNMENT_RETURN: "CSGR"}[self.entity_type]
         return {"summary": {"total": 1, "deleted": 1},
                 "records": [{"source_ref": f"{self.book}:{code}:{k}", "outcome": "deleted"} for k in doc_keys]}
 
@@ -1198,3 +1198,20 @@ def test_a_future_from_date_never_inverts_the_delete_window(monkeypatch, _stock_
     SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_CANCEL_SALES_ORDER, job_id=job.id)
     [(start, end)] = seen
     assert start == end
+
+
+def test_the_ref_codes_match_the_crm():
+    """CRM #1623 mints these itself from the envelope `book` + `DocKey`
+    (`autocount_cancel_ingest_service.py` `_PREFIX` / `_source_ref`, confirmed
+    by the crew at CRM head 431a030d) and answers verdicts under them. A
+    mismatch makes every verdict miss and quarantines every delete as
+    wrong-book - so all four are pinned verbatim here, NOT AutoCount's own
+    `CG`/`CR`."""
+    from modules.autocount.canonical.documents import LINKED_DOCUMENT_REF_CODES
+
+    assert LINKED_DOCUMENT_REF_CODES == {
+        ENTITY_CANCEL_SALES_ORDER: "XS",
+        ENTITY_CANCEL_PURCHASE_ORDER: "XP",
+        ENTITY_CONSIGNMENT: "CSGN",
+        ENTITY_CONSIGNMENT_RETURN: "CSGR",
+    }

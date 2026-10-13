@@ -266,7 +266,7 @@ Cancel SO (`XS`), Cancel PO (`XP`), Consignment (`Consignment`) and Consignment 
   - `Note` is capped at 4000 chars.
 
   The typed canonical fields are the mapping layer only.
-- **Identity:** `source_ref` = `{book}:{XS|XP|CG|CR}:{DocKey}`, the CRM's own derivation, which
+- **Identity:** `source_ref` = `{book}:{XS|XP|CSGN|CSGR}:{DocKey}`, the CRM's own derivation, which
   verdicts are matched by. `SqlDbSource.source_ref` uses the same `identity_scope`, so row hashes and
   delete intents agree.
 - **Deletions:** a reconcile delete intent goes to `SorentoSink.delete_doc_keys`

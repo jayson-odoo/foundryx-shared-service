@@ -570,13 +570,18 @@ class CanonicalShippingOrder(CanonicalDocument):
 # target - minus the ESB-internal join/fingerprint columns below.
 
 # The CRM's doc-type code per entity: the second segment of the derived
-# `source_ref`. AutoCount's own codes (`XS`/`XP`; `CG`/`CR` are what the
-# DTL `FromDocType` and header `ToDocType` columns carry).
+# `source_ref`, verbatim from CRM #1623 (`autocount_cancel_ingest_service.py`
+# `_PREFIX`, confirmed by the crew at CRM head 431a030d): `XS`/`XP` are
+# AutoCount's own codes, consignments are `CSGN` and consignment returns
+# `CSGR` - NOT the `CG`/`CR` AutoCount itself uses in `FromDocType`/
+# `ToDocType`. A wrong code here makes every verdict miss its staged row and
+# quarantines every delete as wrong-book; `test_the_ref_codes_match_the_crm`
+# pins all four.
 LINKED_DOCUMENT_REF_CODES: Dict[str, str] = {
     ENTITY_CANCEL_SALES_ORDER: "XS",
     ENTITY_CANCEL_PURCHASE_ORDER: "XP",
-    ENTITY_CONSIGNMENT: "CG",
-    ENTITY_CONSIGNMENT_RETURN: "CR",
+    ENTITY_CONSIGNMENT: "CSGN",
+    ENTITY_CONSIGNMENT_RETURN: "CSGR",
 }
 
 # Columns the presets select for the ESB's own use (master-ref joins and the

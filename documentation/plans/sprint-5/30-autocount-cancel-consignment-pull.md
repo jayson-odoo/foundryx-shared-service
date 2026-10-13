@@ -16,7 +16,7 @@ Lane AC-CANCEL-PULL. Contract: `30-autocount-cancel-consignment-pull-acceptance-
    required-field gate and named mapping errors. They never reach the wire.
 3. **Wire.** The DO/GRN doc-feed shape the CRM already ingests:
    - body `{companyCode, book, records}`, each record the SQL header row (PascalCase) plus `Details`;
-   - `source_ref` = `{book}:{XS|XP|CG|CR}:{DocKey}`;
+   - `source_ref` = `{book}:{XS|XP|CSGN|CSGR}:{DocKey}`;
    - `book` = the company's own DO (else GRN) feed book;
    - deletions through `delete_doc_keys`.
 4. **Gate.** Contract >= 2.8 with the entity's name advertised. `auto_push` and `approve()` refuse the logging-sink
