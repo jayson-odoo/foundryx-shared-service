@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AlertCircle, Eye, EyeOff, LoaderCircleIcon } from 'lucide-react';
 import { useForm } from 'react-hook-form';
@@ -20,11 +21,15 @@ import { Input } from '@/components/ui/input';
 import { useSignin } from '@/hooks/use-signin';
 import { useTenantBranding } from '@/hooks/use-branding';
 import { signupEnabled } from '@/lib/auth-flags';
+import { safeCallbackPath } from '@/lib/safe-callback';
 import { getSigninSchema, SigninSchemaType } from '../forms/signin-schema';
 
 export default function Page() {
   const [passwordVisible, setPasswordVisible] = useState(false);
-  const { signin, isProcessing, error } = useSignin('/');
+  // A same-origin `?callbackUrl=` path returns the user where they came from
+  // (e.g. the ideas portal); anything else falls back to the dashboard.
+  const searchParams = useSearchParams();
+  const { signin, isProcessing, error } = useSignin(safeCallbackPath(searchParams.get('callbackUrl')));
   // White-label: the tenant's chosen system name, then its org name; never the
   // Foundryx product name. Unresolved/unbranded → a neutral greeting.
   const { branding } = useTenantBranding();

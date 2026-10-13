@@ -784,3 +784,174 @@ class SimilarOwnIn(ApiModel):
     submitter_crm_user_id: Optional[str] = None
     submitter_phone: Optional[str] = None
     is_test: bool = False
+
+
+# ── Idea portal (lane IDEA-PORTAL) ────────────────────────────────────────────
+
+
+class PortalPrincipalOut(ApiModel):
+    kind: Literal["staff", "crm"]
+    name: Optional[str] = None
+    role: str
+    productId: Optional[str] = None
+    # May hide ideas, edit changelog notes and delete anyone's comment.
+    canManage: bool = False
+
+
+class PortalSessionOut(ApiModel):
+    token: str
+    principal: PortalPrincipalOut
+
+
+class PortalEmbedSessionIn(ApiModel):
+    token: str = Field(min_length=1, max_length=4096)
+
+
+class PortalCardOut(ApiModel):
+    id: str
+    ideaNumber: Optional[str] = None
+    title: str
+    upvotes: int = 0
+    commentCount: int = 0
+    isMine: bool = False
+    myVote: bool = False
+    column: Optional[str] = None
+    statusLabel: Optional[str] = None
+    statusColor: Optional[str] = None
+    productName: Optional[str] = None
+    submittedAt: Optional[datetime] = None
+
+
+class PortalColumnOut(ApiModel):
+    key: str
+    title: str
+    color: str
+    # All visible ideas in the column; ``ideas`` holds the top 100 by votes.
+    count: int = 0
+    ideas: List[PortalCardOut]
+
+
+class PortalRoadmapOut(ApiModel):
+    columns: List[PortalColumnOut]
+
+
+class PortalListOut(ApiModel):
+    items: List[PortalCardOut]
+    total: int
+    page: int
+    pageSize: int
+
+
+class PortalChangelogItemOut(PortalCardOut):
+    deliveredAt: datetime
+    note: Optional[str] = None
+
+
+class PortalChangelogOut(ApiModel):
+    items: List[PortalChangelogItemOut]
+
+
+class PortalTimelineStepOut(ApiModel):
+    key: str
+    label: str
+    color: str = "gray"
+    state: Literal["done", "current", "upcoming"]
+
+
+class PortalIdeaOut(PortalCardOut):
+    """The idea page. Shows exactly the owner-ruled fields (Business problem =
+    ``problem``, Desired outcome, Use cases, Current workaround) - never
+    proposed solution / impact / department / raw text / contact ids."""
+
+    problem: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    # One entry per use case (IDEA-CORE stores JSON list[str]).
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
+    submitterFirstName: Optional[str] = None
+    timeline: List[PortalTimelineStepOut]
+    # Managers only (null for everyone else).
+    portalHidden: Optional[bool] = None
+    # The changelog note (Q3).
+    note: Optional[str] = None
+
+
+class PortalVoteOut(ApiModel):
+    id: str
+    upvotes: int
+    myVote: bool
+
+
+class PortalVoterOut(ApiModel):
+    name: Optional[str] = None
+    role: str
+    isMe: bool = False
+
+
+class PortalCommentOut(IdeaCommentOut):
+    authorRole: str
+    likeCount: int = 0
+    likedByMe: bool = False
+
+
+class PortalLikeOut(ApiModel):
+    likeCount: int
+    likedByMe: bool
+
+
+class PortalActivityOut(ApiModel):
+    kind: Literal["submitted", "status_changed", "comment", "upvote", "comment_like"]
+    at: datetime
+    by: Optional[str] = None
+    source: Optional[str] = None
+    fromLabel: Optional[str] = None
+    toLabel: Optional[str] = None
+    toColor: Optional[str] = None
+    comment: Optional[PortalCommentOut] = None
+    replies: List[PortalCommentOut] = []
+    commentId: Optional[str] = None
+
+
+class PortalProductOut(ApiModel):
+    id: str
+    name: str
+
+
+class PortalIdeaCreateIn(ApiModel):
+    title: str = Field(max_length=120)
+    problem: str = Field(max_length=4000)
+    productId: Optional[str] = Field(default=None, max_length=64)
+    desiredOutcome: Optional[str] = Field(default=None, max_length=4000)
+    # One entry per use case - the same List[str] shape as IDEA-CORE's
+    # ``ideas.use_cases``. A one-per-line string is still accepted and split.
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = Field(default=None, max_length=4000)
+
+    @field_validator("useCases", mode="before")
+    @classmethod
+    def _use_cases(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.splitlines()
+        if isinstance(v, list):
+            if len(v) > 20:
+                raise ValueError("At most 20 use cases.")
+            for item in v:
+                if not isinstance(item, str) or len(item) > 500:
+                    raise ValueError("Each use case is text of at most 500 characters.")
+        return v
+
+    @field_validator("title", "problem")
+    @classmethod
+    def _required(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("This field is required.")
+        return v
+
+
+class PortalHiddenIn(ApiModel):
+    hidden: bool
+
+
+class PortalNoteIn(ApiModel):
+    note: Optional[str] = Field(default=None, max_length=500)

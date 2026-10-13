@@ -135,6 +135,7 @@ class IdeaActionService:
                 (submitter_name or "").strip() or (actor.name if actor else None)
             ),
             submitter_crm_user_id=(submitter_crm_user_id or "").strip() or None,
+            submitter_user_id=actor.id if actor else None,
             captured_json=captured,
         )
         self.db.add(idea)

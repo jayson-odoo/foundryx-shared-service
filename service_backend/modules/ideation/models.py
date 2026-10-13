@@ -222,6 +222,17 @@ class Idea(IdeationBase):
     # target - service-enforced, AC-94-05); ``merged_at`` stamps when.
     merged_into_id = Column(String, nullable=True, index=True)
     merged_at = Column(UTCDateTime(), nullable=True)
+    # Idea portal (lane IDEA-PORTAL, Q5): a manager hides an idea carrying
+    # internal detail from the signed-in portal. A hidden idea stays visible to
+    # managers and to its own submitter; every other portal viewer gets the
+    # uniform 404.
+    portal_hidden = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Q3: the manager-edited one-line "what changed" note on the changelog.
+    portal_note = Column(Text, nullable=True)
+    # The shared-service staff user who created the idea (operator create or
+    # the portal) - the staff ownership link for the portal's "Yours" / "My
+    # ideas" (lane IDEA-PORTAL). NULL for WhatsApp / embed / pre-portal rows.
+    submitter_user_id = Column(String, nullable=True, index=True)
     # Field-level merge (plan 20, D5) - set on an absorbed child whose merge
     # rewrote survivor fields: ``{field: {"before": ..., "after": ...}}``.
     # Unmerge restores each survivor field still equal to ``after``.
@@ -262,6 +273,11 @@ class IdeaVote(IdeationBase):
     # Merge/unmerge (D4): NULL = cast on this idea; set = this vote row MOVED
     # here from the merged member idea at that id (unmerge moves it back).
     origin_idea_id = Column(String, nullable=True, index=True)
+    # Idea portal voters list (lane IDEA-PORTAL): the display first name and role
+    # (Staff / Dealer / Member) stamped by the portal at vote time. NULL on votes
+    # cast elsewhere - the portal then falls back to a role-only label.
+    voter_name = Column(String, nullable=True)
+    voter_role = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -292,6 +308,49 @@ class IdeaComment(IdeationBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     edited_at = Column(UTCDateTime(), nullable=True)
     deleted_at = Column(UTCDateTime(), nullable=True)
+
+
+_COMMENT_FK = IdeaComment.__table__.c.id
+
+
+class IdeaCommentLike(IdeationBase):
+    """One like on a comment by one portal principal (lane IDEA-PORTAL). At most
+    one row per ``(comment_id, liker_id)`` so a like toggles. ``liker_id`` uses
+    the portal voter-id namespace (user id / ``embed-user:`` / ``contact:``)."""
+
+    __tablename__ = "idea_comment_likes"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
+    comment_id = Column(String, ForeignKey(_COMMENT_FK), nullable=False, index=True)
+    liker_id = Column(String, nullable=False)
+    liker_name = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("comment_id", "liker_id", name="uq_idea_comment_like"),
+    )
+
+
+class IdeaActivity(IdeationBase):
+    """The idea portal's status-change history (lane IDEA-PORTAL). One row per
+    idea status move, written by the ideation event-bus subscriber for EVERY
+    idea (unlike ``idea_status_events``, which only keeps rows for requesters
+    with a phone). Backfilled once from ``idea_status_events``;
+    ``source_event_id`` is that row's id, so the backfill is idempotent."""
+
+    __tablename__ = "idea_activity"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)  # status_changed
+    from_label = Column(String, nullable=True)
+    to_label = Column(String, nullable=True)
+    to_color = Column(String, nullable=True)
+    source_event_id = Column(String, nullable=True, unique=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
 class IdeaAttachment(IdeationBase):

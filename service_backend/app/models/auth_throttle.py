@@ -63,6 +63,10 @@ THROTTLE_SCOPE_BUILD = "build"
 # credential) and per client IP. Every successful post counts.
 THROTTLE_SCOPE_IDEA_COMMENT_TOKEN = "idea_comment_token"
 THROTTLE_SCOPE_IDEA_COMMENT_IP = "idea_comment_ip"
+# Ideation idea portal (lane IDEA-PORTAL): comment posts and idea submits per
+# signed-in principal (key = sha256 of tenant + voter id).
+THROTTLE_SCOPE_IDEA_PORTAL_COMMENT = "idea_portal_comment"
+THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT = "idea_portal_submit"
 
 
 class AuthThrottle(Base):

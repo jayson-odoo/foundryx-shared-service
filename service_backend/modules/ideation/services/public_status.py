@@ -80,6 +80,28 @@ def _looks_like_a_phone_or_email(candidate: str) -> bool:
     return sum(1 for ch in candidate if ch.isdigit()) >= 5
 
 
+def project_first_name(raw_name: Optional[str]) -> Optional[str]:
+    """The public first-name projection of a stored name (rules documented on
+    ``PublicIdeaStatusService._first_name``): NFKC first, reject a phone/email
+    shaped whole, then the first whitespace token only if it carries no digit
+    and at least one letter; else ``None``. Shared with the idea portal."""
+    if not raw_name:
+        return None
+
+    normalized = unicodedata.normalize("NFKC", raw_name)
+    if _looks_like_a_phone_or_email(normalized):
+        return None
+
+    first_token = normalized.strip().split()[0] if normalized.strip() else None
+    if not first_token:
+        return None
+    if any(ch.isdigit() for ch in first_token):
+        return None
+    if not any(ch.isalpha() for ch in first_token):
+        return None
+    return first_token
+
+
 class PublicIdeaStatusService:
     def __init__(self, db: Session):
         self.db = db
@@ -267,21 +289,7 @@ class PublicIdeaStatusService:
             if contact is not None:
                 raw_name = contact.first_name
 
-        if not raw_name:
-            return None
-
-        normalized = unicodedata.normalize("NFKC", raw_name)
-        if _looks_like_a_phone_or_email(normalized):
-            return None
-
-        first_token = normalized.strip().split()[0] if normalized.strip() else None
-        if not first_token:
-            return None
-        if any(ch.isdigit() for ch in first_token):
-            return None
-        if not any(ch.isalpha() for ch in first_token):
-            return None
-        return first_token
+        return project_first_name(raw_name)
 
     def _next_step(self, status_row: Status) -> str:
         known = PUBLIC_NEXT_STEP.get(status_row.key)

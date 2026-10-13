@@ -143,6 +143,11 @@ def register_engine_entities() -> None:
 
     register_event_subscriber(bus_subscriber)
 
+    # Idea portal activity log (lane IDEA-PORTAL): one row per idea status move.
+    from .services.portal import bus_subscriber as portal_bus_subscriber
+
+    register_event_subscriber(portal_bus_subscriber)
+
     # BR Send to build: the GitHub crew-intake provider joins the core
     # connections registry (type ``scm``). Idempotent.
     from app.integrations import register_provider
