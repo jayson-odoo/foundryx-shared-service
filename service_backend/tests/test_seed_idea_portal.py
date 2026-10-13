@@ -6,6 +6,21 @@ from tests.test_ideation_portal import _staff_session  # noqa: F401
 from tests.test_ideation_public_status import ideation_client, setup  # noqa: F401
 
 
+def test_seed_refuses_outside_development(setup, monkeypatch):
+    import pytest
+
+    from app.config import settings
+    from scripts.seed_idea_portal import seed_idea_portal
+
+    monkeypatch.setattr(settings, "environment", "production")
+    db = setup["factory"]()
+    try:
+        with pytest.raises(SystemExit):
+            seed_idea_portal(db, DEFAULT_TENANT_ID)
+    finally:
+        db.close()
+
+
 def test_seed_is_idempotent_and_fills_the_portal(setup):
     from scripts.seed_idea_portal import seed_idea_portal
 

@@ -47,7 +47,10 @@ export function SubmitIdeaForm() {
       problem: problem.trim(),
       productId: effectiveProduct,
       desiredOutcome: desiredOutcome.trim() || null,
-      useCases: useCases.trim() || null,
+      useCases: useCases
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean),
       currentWorkaround: currentWorkaround.trim() || null,
     });
     if (created) router.push(paths.idea(created.id));

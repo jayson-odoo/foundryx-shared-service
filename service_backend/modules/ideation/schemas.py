@@ -877,8 +877,23 @@ class PortalIdeaCreateIn(ApiModel):
     problem: str = Field(max_length=4000)
     productId: Optional[str] = Field(default=None, max_length=64)
     desiredOutcome: Optional[str] = Field(default=None, max_length=4000)
-    useCases: Optional[str] = Field(default=None, max_length=4000)
+    # One entry per use case - the same List[str] shape as IDEA-CORE's
+    # ``ideas.use_cases``. A one-per-line string is still accepted and split.
+    useCases: Optional[List[str]] = None
     currentWorkaround: Optional[str] = Field(default=None, max_length=4000)
+
+    @field_validator("useCases", mode="before")
+    @classmethod
+    def _use_cases(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.splitlines()
+        if isinstance(v, list):
+            if len(v) > 20:
+                raise ValueError("At most 20 use cases.")
+            for item in v:
+                if not isinstance(item, str) or len(item) > 500:
+                    raise ValueError("Each use case is text of at most 500 characters.")
+        return v
 
     @field_validator("title", "problem")
     @classmethod

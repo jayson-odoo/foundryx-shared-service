@@ -17,7 +17,8 @@ seeded idea carries ``intake_ref = "portal-seed:<key>"``):
 
 Requires the ideation module ACTIVE for the tenant (Services > Ideation >
 Install) - refuses otherwise, so a hand test never runs on a half-set-up tenant.
-Never run against production data: everything it writes is demo content.
+Refuses unless ENVIRONMENT=development (``--allow-non-dev`` for a throwaway
+test copy): everything it writes is demo content.
 """
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -113,13 +114,22 @@ def _bump_number_sequence(db: Session, at_least: int) -> None:
     )
 
 
-def seed_idea_portal(db: Session, tenant_id: str, product_name: str = "Sorento CRM") -> Dict[str, int]:
+def seed_idea_portal(
+    db: Session, tenant_id: str, product_name: str = "Sorento CRM", *, allow_non_dev: bool = False
+) -> Dict[str, int]:
     """Idempotent. Returns ``{"created": n, "skipped": m}``."""
     from app.repositories.module_repository import ModuleRepository
     from modules.ideation.models import Idea, IdeaActivity, IdeaComment, IdeaCommentLike, IdeaVote
     from modules.ideation.services.numbering import mint_idea_identity
     from modules.ideation.services.statuses import idea_status_id
 
+    from app.config import settings
+
+    if settings.environment != "development" and not allow_non_dev:
+        raise SystemExit(
+            "Refusing to seed demo ideas outside ENVIRONMENT=development "
+            "(pass --allow-non-dev for a throwaway test copy)."
+        )
     if not ModuleRepository(db).is_active(tenant_id, "ideation"):
         raise SystemExit("Ideation is not active for this tenant - install it first (Services > Ideation).")
 
@@ -220,13 +230,16 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Seed demo data for the idea portal.")
     parser.add_argument("--tenant-slug", default="default")
     parser.add_argument("--product", default="Sorento CRM")
+    parser.add_argument("--allow-non-dev", action="store_true", help="Seed a non-development test copy.")
     args = parser.parse_args(argv)
 
     from app.database import SessionLocal
 
     db = SessionLocal()
     try:
-        out = seed_idea_portal(db, _tenant_id(db, args.tenant_slug), args.product)
+        out = seed_idea_portal(
+            db, _tenant_id(db, args.tenant_slug), args.product, allow_non_dev=args.allow_non_dev
+        )
         print(f"idea portal seed: created {out['created']}, skipped {out['skipped']}")
     finally:
         db.close()

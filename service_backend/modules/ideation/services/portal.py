@@ -467,7 +467,7 @@ class IdeaPortalService:
         (the embed's ownership rule). Never by name."""
         q = self.db.query(Idea.id).filter(Idea.tenant_id == self.p.tenant_id)
         if self.p.kind == KIND_STAFF:
-            return owned_filter(self.db, q, self.p.tenant_id, self.p.identity)
+            return q.filter(Idea.submitter_user_id == self.p.subject)
         return owned_filter(self.db, q, self.p.tenant_id, self.p.identity)
 
     def _resolve(self, idea_id: str, *, follow_merge: bool) -> Idea:
@@ -992,7 +992,7 @@ class IdeaPortalService:
         problem: str,
         product_id: Optional[str],
         desired_outcome: Optional[str] = None,
-        use_cases: Optional[str] = None,
+        use_cases: Optional[List[str]] = None,
         current_workaround: Optional[str] = None,
     ) -> Dict[str, Any]:
         from .actions import IdeaActionService

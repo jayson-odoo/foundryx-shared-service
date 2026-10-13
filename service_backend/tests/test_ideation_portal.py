@@ -390,6 +390,13 @@ def test_ac_p_31_submit_as_crm_user(setup):
         "title": "Two use cases", "problem": "p", "productId": s["product_id"],
         "useCases": "- Dealer asks for an ETA\n\n* Showroom install plan\n"})
     assert multi.json()["useCases"] == ["Dealer asks for an ETA", "Showroom install plan"]
+    as_list = s["client"].post("/portal/ideas", headers=hc, json={
+        "title": "List shape", "problem": "p", "productId": s["product_id"],
+        "useCases": ["Dealer asks for an ETA", " ", "Showroom install plan"]})
+    assert as_list.json()["useCases"] == ["Dealer asks for an ETA", "Showroom install plan"]
+    too_many = s["client"].post("/portal/ideas", headers=hc, json={
+        "title": "x", "problem": "p", "productId": s["product_id"], "useCases": ["u"] * 21})
+    assert too_many.status_code == 422
     bad = s["client"].post("/portal/ideas", headers=hc, json={"title": "x", "problem": "", "productId": s["product_id"]})
     assert bad.status_code == 422
 

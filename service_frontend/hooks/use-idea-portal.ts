@@ -159,6 +159,16 @@ export function useEmbedPortalSession(embedToken: string | null): UsePortalSessi
     };
   }, [embedToken]);
 
+  // A 401 mid-session clears the token (service layer): leave the ready state
+  // so the gate shows "not available" instead of a page of inline errors.
+  useEffect(
+    () =>
+      ideaPortalAuth.subscribe((token) => {
+        if (token === null) setStatus((s) => (s === 'ready' ? 'signin' : s));
+      }),
+    [],
+  );
+
   return { status, principal, signOut: () => ideaPortalAuth.set(null) };
 }
 

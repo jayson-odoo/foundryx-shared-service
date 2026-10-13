@@ -143,7 +143,7 @@ export interface PortalIdeaInput {
   problem: string;
   productId: string | null;
   desiredOutcome?: string | null;
-  useCases?: string | null;
+  useCases?: string[] | null;
   currentWorkaround?: string | null;
 }
 

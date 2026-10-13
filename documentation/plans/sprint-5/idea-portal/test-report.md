@@ -6,7 +6,7 @@ Environment: a sandbox with Postgres 16 and Redis. Backend on :8001. A freshly r
 
 Data:
 - Real ideas IDEA-0010 and IDEA-0014.
-- Filler ideas IDEA-S01..S04, tagged `[sample]`.
+- Filler ideas tagged `[sample]` (the hand-test seed `scripts/seed_idea_portal.py` mints them real numbers).
 
 Browser pass:
 - Real clicks with Playwright and Chromium.
