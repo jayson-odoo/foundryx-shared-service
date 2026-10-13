@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
@@ -13,6 +13,7 @@ import {
   GitMerge,
   Lightbulb,
   Rocket,
+  Sparkles,
   Split,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
@@ -21,7 +22,7 @@ import type { ResourceAction } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useCan } from '@/hooks/use-can';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
-import type { Idea, Product } from '@/types/ideation';
+import type { Idea, MergeFieldChoices, Product } from '@/types/ideation';
 import type { ListQuery } from '@/types/resource';
 import { promoteIdeasToBr } from '../promote-to-br';
 import { selectIdeaRows } from '../select-idea-rows';
@@ -29,6 +30,8 @@ import { DetailsTab, AttachmentsTab } from './idea-form-fields';
 import { statusRegistryFor } from './status-registry';
 import { IdeaBrsTab } from './idea-brs-tab';
 import { IdeaMergedTab } from './idea-merged-tab';
+import { IdeaSimilarTab } from './idea-similar-tab';
+import { MergeIdeasDialog } from '../merge-ideas-dialog';
 import { VoteCell } from './vote-cell';
 import { ideaFormPath, buildIdeaFormQuery } from './paths';
 import { ideaFormSchema, type IdeaFormValues } from './idea-schema';
@@ -38,18 +41,30 @@ function toFormValues(idea: Idea | null): IdeaFormValues {
     return {
       problem: '',
       productId: '',
-      proposedSolution: '',
-      impact: '',
-      department: '',
+      title: '',
+      desiredOutcome: '',
+      useCases: [],
+      currentWorkaround: '',
       rawText: '',
     };
   return {
     problem: idea.problem,
     productId: idea.productId,
-    proposedSolution: idea.proposedSolution ?? '',
-    impact: idea.impact ?? '',
-    department: idea.department ?? '',
+    title: idea.title ?? '',
+    desiredOutcome: idea.desiredOutcome ?? '',
+    useCases: idea.useCases ?? [],
+    currentWorkaround: idea.currentWorkaround ?? '',
     rawText: idea.rawText,
+  };
+}
+
+/** The card fields a save sends (plan 20) - blank use cases dropped. */
+function cardFields(values: IdeaFormValues) {
+  return {
+    title: values.title ?? '',
+    desiredOutcome: values.desiredOutcome ?? '',
+    useCases: (values.useCases ?? []).map((s) => s.trim()).filter(Boolean),
+    currentWorkaround: values.currentWorkaround ?? '',
   };
 }
 
@@ -58,6 +73,9 @@ export interface UseIdeaFormResult {
   form: UseFormReturn<IdeaFormValues>;
   isLoading: boolean;
   notFound: boolean;
+  /** The field-level merge dialog opened from the Similar ideas tab (plan 20),
+   * rendered next to the form. */
+  mergeDialog: ReactNode;
 }
 
 /** Loads the idea + products, wires RHF, and assembles the form config. */
@@ -80,6 +98,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
   // (a `key` on the tab forces `useIdeaMerged` to refetch, mirroring the
   // quick-replace remount pattern used elsewhere in the shell).
   const [mergedReloadToken, setMergedReloadToken] = useState(0);
+  // Similar ideas -> Merge (plan 20, AC-20-23): the rows picked to merge with
+  // this idea; non-null opens the field-level merge dialog.
+  const [similarMergeRows, setSimilarMergeRows] = useState<Idea[] | null>(null);
+  const [similarReloadToken, setSimilarReloadToken] = useState(0);
 
   const form = useForm<IdeaFormValues>({
     mode: 'onTouched',
@@ -313,9 +335,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           const created = await ideationService.createIdea({
             productId: values.productId,
             problem: values.problem,
-            proposedSolution: values.proposedSolution ?? '',
-            impact: values.impact ?? '',
-            department: values.department ?? '',
+            ...cardFields(values),
             rawText: values.rawText ?? '',
           });
           toast.success('Idea captured.');
@@ -325,9 +345,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           const updated = await ideationService.updateIdea(ideaId, {
             problem: values.problem,
             productId: values.productId,
-            proposedSolution: values.proposedSolution ?? '',
-            impact: values.impact ?? '',
-            department: values.department ?? '',
+            ...cardFields(values),
             rawText: values.rawText ?? '',
           });
           setIdea(updated);
@@ -464,6 +482,24 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               },
             ]
           : []),
+        // Similar ideas (plan 20, AC-20-23) - AI-ranked, on any live idea that
+        // is not itself merged into another.
+        ...(!creating && idea && !idea.mergedIntoId
+          ? [
+              {
+                id: 'similar',
+                label: 'Similar ideas',
+                icon: Sparkles,
+                render: () => (
+                  <IdeaSimilarTab
+                    key={similarReloadToken}
+                    ideaId={idea.id}
+                    onMerge={(rows) => setSimilarMergeRows(rows)}
+                  />
+                ),
+              },
+            ]
+          : []),
         // "Merged from" (AC-94-25) - only once this idea is a survivor with at
         // least one merged child.
         ...(!creating && idea && mergedCount > 0
@@ -519,9 +555,33 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     ideationService,
     showBrsTab,
     mergedReloadToken,
+    similarReloadToken,
     fetchRecordAt,
     buildRecordHref,
   ]);
 
-  return { config, form, isLoading, notFound };
+  const mergeDialog =
+    idea && similarMergeRows ? (
+      <MergeIdeasDialog
+        ideas={[idea, ...similarMergeRows]}
+        initialKeptId={idea.id}
+        onClose={() => setSimilarMergeRows(null)}
+        onMerge={async (survivorId: string, fields: MergeFieldChoices) => {
+          if (!ideationService.merge) throw new Error('Merge is not available.');
+          const ids = [idea.id, ...similarMergeRows.map((r) => r.id)];
+          const survivor = await ideationService.merge(survivorId, ids, fields);
+          toast.success(`Merged into ${survivor.ideaNumber ?? survivor.title ?? survivor.problem}.`);
+          if (survivor.id !== idea.id) {
+            router.push(paths.formHref(survivor.id));
+            return;
+          }
+          setIdea(survivor);
+          form.reset(toFormValues(survivor));
+          setSimilarReloadToken((t) => t + 1);
+          setMergedReloadToken((t) => t + 1);
+        }}
+      />
+    ) : null;
+
+  return { config, form, isLoading, notFound, mergeDialog };
 }

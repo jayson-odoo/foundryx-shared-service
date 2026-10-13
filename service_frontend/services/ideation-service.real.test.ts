@@ -185,6 +185,10 @@ describe('realIdeationService', () => {
       body: JSON.stringify({
         productId: 'p1',
         problem: 'Export orders',
+        title: '',
+        desiredOutcome: '',
+        useCases: [],
+        currentWorkaround: '',
         proposedSolution: 'Add a button',
         impact: 'Saves time',
         department: 'CS',
@@ -202,12 +206,62 @@ describe('realIdeationService', () => {
       body: JSON.stringify({
         productId: 'p1',
         problem: 'Export orders',
+        title: '',
+        desiredOutcome: '',
+        useCases: [],
+        currentWorkaround: '',
         proposedSolution: '',
         impact: '',
         department: '',
         rawText: '',
       }),
     });
+  });
+
+  it('createIdea sends the plan-20 card fields', async () => {
+    apiFetch.mockResolvedValue(anIdea());
+    await svc.createIdea({
+      productId: 'p1',
+      problem: 'Dealers cannot track orders',
+      title: 'Order tracking',
+      desiredOutcome: 'Self-service status',
+      useCases: ['Check shipping'],
+      currentWorkaround: 'Call sales',
+      rawText: '',
+    });
+    const body = JSON.parse(apiFetch.mock.calls[0][1].body);
+    expect(body).toMatchObject({
+      title: 'Order tracking',
+      desiredOutcome: 'Self-service status',
+      useCases: ['Check shipping'],
+      currentWorkaround: 'Call sales',
+    });
+  });
+
+  it('updateIdea PATCHes the card fields when given', async () => {
+    apiFetch.mockResolvedValue(anIdea());
+    await svc.updateIdea('idea-1', { title: 'T', useCases: ['A'], desiredOutcome: '' });
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ title: 'T', desiredOutcome: '', useCases: ['A'] }),
+    });
+  });
+
+  it('merge sends the fields map only when given; similar GETs the ranked list', async () => {
+    apiFetch.mockResolvedValue(anIdea());
+    await svc.merge('a', ['a', 'b']);
+    expect(apiFetch).toHaveBeenLastCalledWith('/ideation/ideas/merge', {
+      method: 'POST',
+      body: JSON.stringify({ survivorId: 'a', ideaIds: ['a', 'b'] }),
+    });
+    await svc.merge('a', ['a', 'b'], { problem: ['a', 'b'] });
+    expect(apiFetch).toHaveBeenLastCalledWith('/ideation/ideas/merge', {
+      method: 'POST',
+      body: JSON.stringify({ survivorId: 'a', ideaIds: ['a', 'b'], fields: { problem: ['a', 'b'] } }),
+    });
+    apiFetch.mockResolvedValue({ available: false, ideas: [] });
+    await expect(svc.similar('a')).resolves.toEqual({ available: false, ideas: [] });
+    expect(apiFetch).toHaveBeenLastCalledWith('/ideation/ideas/a/similar');
   });
 
   it('updateIdea PATCHes only the provided fields', async () => {

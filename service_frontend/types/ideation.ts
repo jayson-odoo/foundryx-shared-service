@@ -21,6 +21,13 @@ export type IdeaSource = 'whatsapp' | 'voice' | 'manual';
 /** An attachment on an idea - voice note, image, video, or generic file. */
 export type IdeaAttachmentKind = 'audio' | 'image' | 'video' | 'file';
 
+/** The merged child a survivor's read-through row came from (plan 20,
+ * AC-20-14) - set on comments/attachments that live on that child. */
+export interface IdeaSourceRef {
+  id: string;
+  ideaNumber?: string | null;
+}
+
 export interface IdeaAttachment {
   id: string;
   kind: IdeaAttachmentKind;
@@ -34,6 +41,8 @@ export interface IdeaAttachment {
   /** Relative serve path of an UPLOADED file (fetched as a blob through the
    * api-client); null/absent for a URL-backed WhatsApp capture. */
   contentPath?: string | null;
+  /** Set when this attachment lives on an idea merged into the one shown. */
+  fromIdea?: IdeaSourceRef | null;
 }
 
 /** One transition the caller may fire from an idea's current status (issue
@@ -94,8 +103,13 @@ export interface Idea {
    * back to `problem` when null (a pre-lane idea, or a draft that never sent
    * one). Optional so existing fixtures/callers need no change. */
   title?: string | null;
-  /** One-line problem/observation (the headline on cards). */
+  /** The business problem (shown as "Business problem"; the headline on
+   * cards when there is no title). */
   problem: string;
+  /** Canny-style card fields (plan 20) - null/empty on older ideas. */
+  desiredOutcome?: string | null;
+  useCases?: string[];
+  currentWorkaround?: string | null;
   /** Proposed solution - a segregated intake field (nullable until captured). */
   proposedSolution?: string | null;
   /** Impact of solving it - a segregated intake field (nullable until captured). */
@@ -142,6 +156,9 @@ export interface IdeaComment {
   canDelete: boolean;
   createdAt: string; // ISO
   editedAt: string | null;
+  /** Set when this comment lives on an idea merged into the one shown
+   * (read-only there - canEdit/canDelete are false). */
+  fromIdea?: IdeaSourceRef | null;
 }
 
 /** A top-level comment with its replies (one level), oldest first. */
@@ -237,4 +254,26 @@ export interface PublicIdeaStatus {
   nextStep: string;
   timeline: PublicIdeaTimelineStep[];
   mergedInto?: PublicMergedInto | null;
+}
+
+/** The fields a field-level merge can rewrite on the kept idea (plan 20,
+ * AC-20-10) - the wire keys of `MergeIn.fields`. */
+export type MergeFieldKey =
+  | 'title'
+  | 'problem'
+  | 'desiredOutcome'
+  | 'useCases'
+  | 'currentWorkaround'
+  | 'rawText';
+
+/** Per field, the ideas whose value is used, in column order. Several ids =
+ * combined on the server. */
+export type MergeFieldChoices = Partial<Record<MergeFieldKey, string[]>>;
+
+/** AI-ranked similar ideas (plan 20, AC-20-20/21). `available` is false when
+ * the AI could not rank (the tab offers Retry - there is no word-match
+ * fallback). */
+export interface SimilarIdeas {
+  available: boolean;
+  ideas: Idea[];
 }

@@ -149,11 +149,12 @@ export function IdeasView() {
         <MergeIdeasDialog
           ideas={mergeRows}
           onClose={() => setMergeRows(null)}
-          onMerge={async (survivorId) => {
+          onMerge={async (survivorId, fields) => {
             if (!merge) return;
             const survivor = await merge(
               survivorId,
               mergeRows.map((r) => r.id),
+              fields,
             );
             toast.success(`Merged into ${survivor.ideaNumber ?? survivor.title ?? survivor.problem}.`);
           }}

@@ -21,9 +21,12 @@ import type {
   IdeaComment,
   IdeaRef,
   IdeaTransition,
+  MergeFieldChoices,
   Product,
+  SimilarIdeas,
 } from '@/types/ideation';
 import type { IdeaCreateInput, IdeaService, IdeaExtendedOps } from './ideation-service';
+import { MERGE_ROWS, combineMergeValue } from '@/lib/idea-merge';
 
 interface StatusDef {
   id: string;
@@ -434,7 +437,7 @@ export const mockIdeationService: IdeaService & IdeaExtendedOps = {
     comments = comments.filter((c) => c.ideaId !== rec.idea.id);
   },
 
-  async merge(survivorId: string, ideaIds: string[]): Promise<Idea> {
+  async merge(survivorId: string, ideaIds: string[], fields?: MergeFieldChoices): Promise<Idea> {
     const unique = Array.from(new Set(ideaIds));
     if (unique.length < 2) throw new Error('Select at least two ideas to merge.');
     if (!unique.includes(survivorId)) throw new Error('The survivor must be one of the selected ideas.');
@@ -468,7 +471,32 @@ export const mockIdeationService: IdeaService & IdeaExtendedOps = {
       rec.idea.mergedIntoId = survivorId;
       rec.mergedAt = new Date().toISOString();
     }
+    // Field-level merge (plan 20) - same combine rule as the server; the mock
+    // does not model the unmerge field restore.
+    for (const row of MERGE_ROWS) {
+      const ids = fields?.[row.key];
+      if (!ids?.length) continue;
+      const value = combineMergeValue(row, ids.map((id) => requireRecord(id).idea));
+      const target = survivorRec.idea as unknown as Record<string, unknown>;
+      target[row.key] = value ?? (row.key === 'problem' ? survivorRec.idea.problem : row.key === 'rawText' ? '' : null);
+    }
     return mockIdeationService.getIdea(survivorId);
+  },
+
+  /** Mock ranking: the other live ideas on the same product, newest first. */
+  async similar(id: string): Promise<SimilarIdeas> {
+    const target = requireRecord(id).idea;
+    const ideas = records
+      .map((r) => r.idea)
+      .filter(
+        (i) =>
+          i.id !== id &&
+          i.productId === target.productId &&
+          !i.mergedIntoId &&
+          i.isTest === target.isTest &&
+          !statusByKey(i.status).isArchived,
+      );
+    return { available: true, ideas: await Promise.all(ideas.map((i) => mockIdeationService.getIdea(i.id))) };
   },
 
   async unmerge(id: string): Promise<Idea[]> {

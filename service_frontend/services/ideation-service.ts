@@ -13,7 +13,9 @@ import type {
   IdeaAttachment,
   IdeaClusterSuggestions,
   IdeaComment,
+  MergeFieldChoices,
   Product,
+  SimilarIdeas,
 } from '@/types/ideation';
 import { realIdeationService } from './ideation-service.real';
 
@@ -21,7 +23,13 @@ import { realIdeationService } from './ideation-service.real';
 export interface IdeaCreateInput {
   productId: string;
   problem: string;
-  /** Segregated intake fields (the WhatsApp path fills the same keys). */
+  title?: string;
+  /** Canny-style card fields (plan 20). */
+  desiredOutcome?: string;
+  useCases?: string[];
+  currentWorkaround?: string;
+  /** Legacy segregated intake fields - hidden in the UI since plan 20 (data
+   * kept); still accepted so older callers stay valid. */
   proposedSolution?: string;
   impact?: string;
   department?: string;
@@ -70,7 +78,9 @@ export interface IdeaService {
    * AC-94-01) - optional here so a caller typed only against the base
    * `IdeaService` (a test double, an older consumer) stays valid; every
    * concrete implementation (`IdeaExtendedOps`) always defines it. */
-  merge?(survivorId: string, ideaIds: string[]): Promise<Idea>;
+  merge?(survivorId: string, ideaIds: string[], fields?: MergeFieldChoices): Promise<Idea>;
+  /** AI-ranked similar ideas on the same product (plan 20, AC-20-20). */
+  similar?(id: string): Promise<SimilarIdeas>;
   /** Restore a merged child (or dissolve a survivor's whole group) - AC-94-07/08. */
   unmerge?(id: string): Promise<Idea[]>;
   /** The children merged into a survivor, oldest merge first (AC-94-03/25). */
@@ -101,7 +111,8 @@ export interface IdeaService {
  * implements (optional on the base interface so a partial test double still
  * satisfies it - see `use-idea-form.test.tsx`'s `fakeService`). */
 export interface IdeaExtendedOps {
-  merge(survivorId: string, ideaIds: string[]): Promise<Idea>;
+  merge(survivorId: string, ideaIds: string[], fields?: MergeFieldChoices): Promise<Idea>;
+  similar(id: string): Promise<SimilarIdeas>;
   unmerge(id: string): Promise<Idea[]>;
   listMerged(id: string): Promise<Idea[]>;
   getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board>;
