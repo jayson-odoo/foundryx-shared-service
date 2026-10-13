@@ -478,7 +478,8 @@ export const mockIdeationService: IdeaService & IdeaExtendedOps = {
       if (!ids?.length) continue;
       const value = combineMergeValue(row, ids.map((id) => requireRecord(id).idea));
       const target = survivorRec.idea as unknown as Record<string, unknown>;
-      target[row.key] = value ?? (row.key === 'problem' ? survivorRec.idea.problem : row.key === 'rawText' ? '' : null);
+      const empty = row.key === 'problem' ? survivorRec.idea.problem : row.key === 'rawText' ? '' : row.key === 'useCases' ? [] : null;
+      target[row.key] = value ?? empty;
     }
     return mockIdeationService.getIdea(survivorId);
   },

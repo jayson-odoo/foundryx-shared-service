@@ -92,7 +92,23 @@ describe('MergeIdeasDialog (plan 20, AC-20-16)', () => {
     const onMerge = vi.fn().mockResolvedValue(undefined);
     render(<MergeIdeasDialog ideas={ideas} initialKeptId="a" onClose={vi.fn()} onMerge={onMerge} />);
     await user.click(screen.getByRole('radio', { name: 'Keep IDEA-0017' }));
+    // Untouched ticks follow the kept idea (its values stay unless changed).
+    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0017 Title' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0010 Title' })).not.toBeChecked();
     await user.click(screen.getByRole('button', { name: /^merge$/i }));
-    expect(onMerge.mock.calls[0][0]).toBe('c');
+    expect(onMerge).toHaveBeenCalledWith('c', {
+      title: ['c'],
+      problem: ['c'],
+      desiredOutcome: ['b'],
+    });
+  });
+
+  it('once a tick is changed, switching the kept idea keeps the user choices', async () => {
+    const user = userEvent.setup();
+    render(<MergeIdeasDialog ideas={ideas} initialKeptId="a" onClose={vi.fn()} onMerge={vi.fn()} />);
+    await user.click(screen.getByRole('checkbox', { name: 'Use IDEA-0004 Title' }));
+    await user.click(screen.getByRole('radio', { name: 'Keep IDEA-0017' }));
+    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0004 Title' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0010 Title' })).toBeChecked();
   });
 });

@@ -140,3 +140,38 @@ def test_similar_404_outside_tenant(ideation_client):
     h = _auth(client)
     res = _similar(client, h, "no-such-idea")
     assert res.status_code == 404
+
+
+def test_similar_never_rewrites_the_agent_connection(ideation_client, monkeypatch):
+    """A read must not persist ``agent.connection_id`` (any viewer / the embed
+    could otherwise rewrite tenant AI config)."""
+    from app.models import DEFAULT_TENANT_ID
+    from app.repositories.ai_repository import AgentRepository
+
+    client = ideation_client
+    h, _pid, cur, portal, *_ = _setup(client)
+    _seed_llm_connection(client._factory)
+    db = client._factory()
+    try:
+        agent = AgentRepository(db).get_by_key(DEFAULT_TENANT_ID, "ideation-grill")
+        agent.connection_id = None
+        db.commit()
+    finally:
+        db.close()
+    seen = []
+
+    def fake(self, **kwargs):
+        seen.append(kwargs["agent"].connection_id)
+        return SimpleNamespace(structured={"ideaIds": [portal]}), None
+
+    import modules.ideation.services.similar as similar_mod
+
+    monkeypatch.setattr(similar_mod.AiClient, "complete", fake)
+    res = _similar(client, h, cur)
+    assert res.json()["available"] is True
+    assert seen and seen[0]  # this call used a connection
+    db = client._factory()
+    try:
+        assert AgentRepository(db).get_by_key(DEFAULT_TENANT_ID, "ideation-grill").connection_id is None
+    finally:
+        db.close()

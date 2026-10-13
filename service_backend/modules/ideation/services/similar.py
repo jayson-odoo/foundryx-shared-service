@@ -114,10 +114,13 @@ class SimilarIdeasService:
         if agent is None or not agent.is_enabled:
             return None
         if not agent.connection_id:
+            # Use a configured connection for THIS call only - a read (any
+            # viewer, or the CRM iframe opening a tab) must never rewrite the
+            # tenant's agent config, so detach the row before pointing it.
             conn = any_llm_connection(self.db, tenant_id)
             if conn is not None:
+                self.db.expunge(agent)
                 agent.connection_id = conn.id
-                self.db.flush()
         listing = "\n".join(f"- {c.id}: {_idea_text(c)}" for c in candidates)
         messages = [
             {

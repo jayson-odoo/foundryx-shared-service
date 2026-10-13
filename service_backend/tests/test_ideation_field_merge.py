@@ -247,5 +247,20 @@ def test_flatten_drops_stale_snapshot(ideation_client):
     assert _merge(client, h, a, [a, b], fields={"title": [b]}).json()["title"] == "Dealer portal"
     assert _merge(client, h, d, [d, a], fields={"title": [a]}).json()["title"] == "Dealer portal"
     assert _idea_row(client._factory, b).merged_into_id == d
+    # The intermediate (a) got its own title back when it froze into d.
+    assert _idea_row(client._factory, a).title == "Order tracking"
     _unmerge(client, h, b)
     assert _idea_row(client._factory, d).title == "Dealer portal"
+
+
+def test_out_of_order_unmerge_chains_snapshots(ideation_client):
+    """S absorbs A (T0->T1) then B (T1->T2). Unmerging A first must not leave
+    A's value behind: unmerging B afterwards lands on T0."""
+    client = ideation_client
+    h, _pid, a, b, c = _three(client)
+    _merge(client, h, a, [a, b], fields={"title": [b]})
+    _merge(client, h, a, [a, c], fields={"title": [c]})
+    _unmerge(client, h, b)
+    assert _idea_row(client._factory, a).title == "Ship notice"
+    _unmerge(client, h, c)
+    assert _idea_row(client._factory, a).title == "Order tracking"

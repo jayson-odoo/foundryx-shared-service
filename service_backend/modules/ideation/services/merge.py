@@ -46,6 +46,10 @@ MERGE_FIELDS: Dict[str, str] = {
 _CAPTURED_MIRROR = {"problem", "desired_outcome", "use_cases", "current_workaround"}
 
 
+def _merged_at_key(idea: Idea) -> datetime:
+    return idea.merged_at or datetime.min.replace(tzinfo=timezone.utc)
+
+
 def _source_label(idea: Idea) -> str:
     return idea.idea_number or clean_text(idea.title) or "another idea"
 
@@ -159,6 +163,15 @@ class IdeaMergeService:
             existing_children = [
                 r for r in locked_rows if r.merged_into_id in member_ids
             ]
+            # Plan 20 D5: an absorbed member that was itself a survivor gets its
+            # own pre-merge field values back before it freezes (newest merge
+            # first), and its children's snapshots - which describe THAT member,
+            # never the new survivor - are consumed, so an unmerge can never
+            # "restore" the wrong idea.
+            for member_id in member_ids:
+                kids = [c for c in existing_children if c.merged_into_id == member_id]
+                for kid in sorted(kids, key=_merged_at_key, reverse=True):
+                    self._restore_fields(ideas_by_id[member_id], kid, kids)
             for child in existing_children:
                 # Review round 1 #3 (D4 lossless under flatten): a grandchild's
                 # votes may currently be resident on the INTERMEDIATE member
@@ -174,10 +187,6 @@ class IdeaMergeService:
                 touched_ids |= self._relocate_inherited_votes(
                     tenant_id, child.id, survivor_id
                 )
-                # Its field snapshot described the (now frozen) intermediate
-                # member, never the new survivor - drop it so an unmerge can
-                # never "restore" the wrong idea (plan 20, D5).
-                child.merge_snapshot_json = None
                 child.merged_into_id = survivor_id
                 flattened_children.append(child)
 
@@ -418,10 +427,8 @@ class IdeaMergeService:
         # Field restore (plan 20, D5) - newest merge first so layered merges
         # unwind in reverse; only fields still equal to what the merge wrote.
         survivor_row = by_id.get(root)
-        for child in sorted(
-            targets, key=lambda c: (c.merged_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True
-        ):
-            self._restore_fields(survivor_row, child)
+        for child in sorted(targets, key=_merged_at_key, reverse=True):
+            self._restore_fields(survivor_row, child, children)
 
         touched_ids = set()
         for child in targets:
@@ -459,7 +466,12 @@ class IdeaMergeService:
         )
 
     @staticmethod
-    def _restore_fields(survivor: Optional[Idea], child: Idea) -> None:
+    def _restore_fields(survivor: Optional[Idea], child: Idea, siblings: List[Idea]) -> None:
+        """Restore the survivor fields ``child``'s merge replaced (plan 20, D5)
+        - only while the survivor still holds the value that merge wrote. When
+        a LATER merge has since replaced it, hand this snapshot's ``before`` to
+        that later snapshot instead (chain), so unmerging out of order still
+        lands on the right value."""
         snapshot = child.merge_snapshot_json or {}
         if survivor is not None:
             for attr, entry in snapshot.items():
@@ -467,6 +479,15 @@ class IdeaMergeService:
                     continue
                 if getattr(survivor, attr) == entry.get("after"):
                     _set_field(survivor, attr, entry.get("before"))
+                    continue
+                for sib in siblings:
+                    other = (sib.merge_snapshot_json or {}).get(attr) if sib is not child else None
+                    if isinstance(other, dict) and other.get("before") == entry.get("after"):
+                        sib.merge_snapshot_json = {
+                            **sib.merge_snapshot_json,
+                            attr: {**other, "before": entry.get("before")},
+                        }
+                        break
         child.merge_snapshot_json = None
 
     def _restore_votes(self, tenant_id: str, survivor_id: str, child_id: str) -> None:

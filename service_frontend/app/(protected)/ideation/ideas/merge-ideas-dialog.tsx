@@ -46,8 +46,8 @@ function MergeValueView({ value }: { value: MergeValue }) {
   if (Array.isArray(value)) {
     return (
       <ul className="list-disc space-y-0.5 pl-4">
-        {value.map((item) => (
-          <li key={item}>{item}</li>
+        {value.map((item, i) => (
+          <li key={`${i}-${item}`}>{item}</li>
         ))}
       </ul>
     );
@@ -70,6 +70,8 @@ export function MergeIdeasDialog({ ideas, initialKeptId, onClose, onMerge }: Mer
   const [choices, setChoices] = useState<MergeFieldChoices>(() =>
     defaultMergeChoices(ideas, keptId),
   );
+  // Until the user changes a tick, the defaults follow the kept idea.
+  const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,8 +90,15 @@ export function MergeIdeasDialog({ ideas, initialKeptId, onClose, onMerge }: Mer
     }
   };
 
-  const toggle = (row: MergeRow, ideaId: string) =>
+  const toggle = (row: MergeRow, ideaId: string) => {
+    setTouched(true);
     setChoices((prev) => toggleMergeChoice(prev, row.key, ideaId, columnOrder));
+  };
+
+  const changeKept = (id: string) => {
+    setKeptId(id);
+    if (!touched) setChoices(defaultMergeChoices(ideas, id));
+  };
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -103,7 +112,7 @@ export function MergeIdeasDialog({ ideas, initialKeptId, onClose, onMerge }: Mer
             <div className="flex min-w-max flex-col divide-y divide-border sm:min-w-full">
               <RadioGroup
                 value={keptId}
-                onValueChange={setKeptId}
+                onValueChange={changeKept}
                 aria-label="Idea to keep"
                 className="flex gap-3 pb-2"
               >
