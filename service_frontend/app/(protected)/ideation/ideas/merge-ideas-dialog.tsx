@@ -39,7 +39,7 @@ export interface MergeIdeasDialogProps {
 }
 
 const LABEL_CELL = 'sticky left-0 z-(--z-sticky-content) w-24 shrink-0 bg-background pr-2 text-sm font-medium sm:w-40';
-const IDEA_CELL = 'min-w-48 flex-1 sm:min-w-56';
+const IDEA_CELL = 'w-48 shrink-0 sm:w-auto sm:min-w-56 sm:flex-1 sm:shrink';
 
 function MergeValueView({ value }: { value: MergeValue }) {
   if (value === null) return <span className="text-muted-foreground">-</span>;
@@ -183,7 +183,7 @@ export function MergeIdeasDialog({ ideas, initialKeptId, onClose, onMerge }: Mer
                     {combined !== null && (
                       <div className="flex gap-3">
                         <div className={LABEL_CELL} />
-                        <div className="flex-1 rounded-md border border-dashed border-border bg-muted/50 p-2 text-xs">
+                        <div className="w-0 min-w-0 flex-1 rounded-md border border-dashed border-border bg-muted/50 p-2 text-xs">
                           <p className="mb-1 font-medium text-muted-foreground">Result</p>
                           <MergeValueView value={combined} />
                         </div>
