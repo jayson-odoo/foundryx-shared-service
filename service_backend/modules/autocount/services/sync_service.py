@@ -42,6 +42,7 @@ from ..canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
+    LINKED_DOCUMENT_MODELS,
     CanonicalPurchaseOrder,
     CanonicalSalesOrder,
     CanonicalShippingOrder,
@@ -90,6 +91,8 @@ from ..repositories import (
 )
 from ..sinks import EntitySink, WriteResult
 from ..sinks_sorento import (
+    CONTRACT_GATED_ENTITIES,
+    PUSH_REFUSES_LOGGING_FALLBACK,
     SINK_SORENTO,
     SinkAnchorError,
     SorentoSinkError,
@@ -129,6 +132,8 @@ CANONICAL_MODELS = {
     # here so that drift guard stays generic rather than carving out an
     # exception for one entity.
     ENTITY_STOCK_BALANCE: CanonicalStockBalance,
+    # AC-CANCEL-PULL - Cancel SO/PO + Consignment/Return (contract 2.8).
+    **LINKED_DOCUMENT_MODELS,
 }
 
 
@@ -617,16 +622,28 @@ class SyncService:
         # landed, and changed-only staging (AC-13-11) would then never
         # re-offer them - a silent, permanent data loss. Refuse instead:
         # every row stays STAGED, nothing is marked pushed.
+        # AC-CANCEL-PULL - the same refusal for every entity in
+        # `PUSH_REFUSES_LOGGING_FALLBACK` (the four contract-2.8 linked
+        # documents join stock); stock's own message stays byte-identical.
         if (
-            entity_type == ENTITY_STOCK_BALANCE
+            entity_type in PUSH_REFUSES_LOGGING_FALLBACK
             and company.sink_impl == SINK_IMPL_SORENTO
             and sink.name != SINK_SORENTO
         ):
-            summary["error"] = (
-                "This book's Sorento consumer does not yet accept stock "
-                "balances (contract 2.5 with 'stock_balances' required) - "
-                "nothing was pushed."
-            )
+            if entity_type == ENTITY_STOCK_BALANCE:
+                summary["error"] = (
+                    "This book's Sorento consumer does not yet accept stock "
+                    "balances (contract 2.5 with 'stock_balances' required) - "
+                    "nothing was pushed."
+                )
+            else:
+                required_version, required_name = CONTRACT_GATED_ENTITIES[entity_type]
+                summary["error"] = (
+                    f"This book's Sorento consumer does not yet accept "
+                    f"{entity_type.replace('_', ' ')} records (contract "
+                    f"{required_version} with '{required_name}' required) - "
+                    "nothing was pushed."
+                )
             summary["errorCode"] = "CONTRACT_GATE"
             return summary
 

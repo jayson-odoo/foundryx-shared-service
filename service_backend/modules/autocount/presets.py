@@ -27,6 +27,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy.orm import Session
 
 from .canonical.documents import (
+    ENTITY_CANCEL_PURCHASE_ORDER,
+    ENTITY_CANCEL_SALES_ORDER,
+    ENTITY_CONSIGNMENT,
+    ENTITY_CONSIGNMENT_RETURN,
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
@@ -506,10 +510,177 @@ SPO_PRESET = DocumentPreset(
     fingerprint_query=_PO_FINGERPRINT_QUERY,
 )
 
+# ── AC-CANCEL-PULL - Cancel SO / Cancel PO / Consignment / Consignment Return ──
+#
+# Four LINKED documents on the SAME shape (schema read live from the SORENTO
+# book 2026-10-13, counts and column names only):
+#
+#   XS / XSDTL                               Cancel SO     - Debtor side
+#   XP / XPDTL                               Cancel PO     - Creditor side
+#   Consignment / ConsignmentDTL             CG- notes     - Debtor side, no source doc
+#   ConsignmentReturn / ConsignmentReturnDTL CG returns    - Debtor side, FromDocType 'CG'
+#
+# Every header has `DocKey` (PK), `DocNo`, `DocDate`, `Cancelled` ('T'/'F'),
+# `Ref`, `Note` and `LastModified datetime NOT NULL` - the same incremental
+# cursor SO/PO ride. Every DTL has `DtlKey`, `DocKey`, `Seq`, `ItemCode`,
+# `Location`, `Qty`, `UOM`, `UnitPrice`, `SubTotal`, `Description` and the
+# link triple `FromDocType`/`FromDocNo`/`FromDocDtlKey`. `FromDocDtlKey` is
+# often empty (about a quarter of XS lines, a third of CR lines), so the CRM
+# matches by `FromDocNo` + item + location + qty - all of them are selected.
+#
+# The SAME pseudo/display-line cut as SO/PO (`ItemCode IS NOT NULL AND Qty IS
+# NOT NULL`) in BOTH the header `LineCount` aggregate and the line fetch:
+# XSDTL carries 56 item lines with a NULL Qty and 123 NULL-item lines with a
+# Qty, exactly the two shapes the SO live findings closed.
+#
+# Table and column names below are CODE CONSTANTS - never operator input.
+# `{database}` is substituted from the task's own company, exactly like the
+# SO/PO/SPO presets above.
+
+# Status for a document that has no "fulfilled" quantity: voided or not.
+LINKED_DOCUMENT_STATUS_FORMULA = 'if(Cancelled == "T", "cancelled", "open")'
+
+_DEBTOR_PARTY = (
+    "c.AutoKey AS DebtorAutoKey, h.DebtorCode AS DebtorCode, "
+    "h.DebtorName AS DebtorName, h.SalesAgent AS SalesAgent",
+    "LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode",
+)
+_CREDITOR_PARTY = (
+    "s.AutoKey AS CreditorAutoKey, h.CreditorCode AS CreditorCode, "
+    "h.CreditorName AS CreditorName, h.PurchaseAgent AS SalesAgent",
+    "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode",
+)
+
+_LINKED_LINE_CUT = "d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+
+
+def _linked_header_query(header_table: str, line_table: str, party: Tuple[str, str]) -> str:
+    party_columns, party_join = party
+    return (
+        "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, "
+        f"{party_columns}, h.Ref AS Ref, h.Note AS Note, h.Cancelled AS Cancelled, "
+        "h.LastModified AS LastModified, "
+        "l.LineCount AS LineCount, l.QtySum AS QtySum, "
+        "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey, "
+        "l.LinkedLineCount AS LinkedLineCount, l.FromDocKeySum AS FromDocKeySum "
+        f"FROM {{database}}.dbo.{header_table} AS h "
+        f"{party_join} "
+        "OUTER APPLY ("
+        "SELECT COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+        "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey, "
+        "COUNT(d.FromDocDtlKey) AS LinkedLineCount, "
+        "SUM(d.FromDocDtlKey) AS FromDocKeySum "
+        f"FROM {{database}}.dbo.{line_table} AS d "
+        f"WHERE d.DocKey = h.DocKey AND {_LINKED_LINE_CUT}"
+        ") AS l"
+    )
+
+
+def _linked_line_query(line_table: str) -> str:
+    return (
+        "SELECT d.DtlKey AS DtlKey, d.Seq AS Seq, i.AutoKey AS ItemAutoKey, "
+        "d.ItemCode AS ItemCode, d.Description AS Description, "
+        "w.AutoKey AS LocationAutoKey, d.Location AS Location, d.Qty AS Qty, "
+        "d.UOM AS UOM, d.UnitPrice AS UnitPrice, d.SubTotal AS SubTotal, "
+        "d.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, "
+        "d.FromDocDtlKey AS FromDocDtlKey "
+        f"FROM {{database}}.dbo.{line_table} AS d "
+        "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
+        "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+        f"WHERE d.DocKey = :doc_key AND {_LINKED_LINE_CUT}"
+    )
+
+
+def _linked_fingerprint_query(header_table: str, line_table: str) -> str:
+    """The line-only-edit sweep (see `_SO_FINGERPRINT_QUERY`): includes the
+    link columns, so re-pointing a line at another source document moves it."""
+    return (
+        "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+        "MAX(d.DtlKey) AS MaxDtlKey, SUM(d.FromDocDtlKey) AS FromDocKeySum, "
+        "COUNT(d.FromDocDtlKey) AS LinkedLineCount "
+        f"FROM {{database}}.dbo.{line_table} AS d "
+        f"JOIN {{database}}.dbo.{header_table} AS h ON h.DocKey = d.DocKey "
+        f"WHERE h.DocDate >= :from_date AND {_LINKED_LINE_CUT} "
+        "GROUP BY d.DocKey"
+    )
+
+
+def _linked_header_fields(party_prefix: str, party_source: str, ref_transform: str) -> Tuple[PresetField, ...]:
+    return (
+        PresetField("DocNo", "doc_no", "string", required=True),
+        PresetField("DocDate", "doc_date", "date"),
+        PresetField(
+            "Cancelled", "status", "string", formula=LINKED_DOCUMENT_STATUS_FORMULA,
+        ),
+        PresetField(f"{party_source}AutoKey", f"{party_prefix}_ref", ref_transform),
+        PresetField(f"{party_source}Code", f"{party_prefix}_code", "string"),
+        PresetField(f"{party_source}Name", f"{party_prefix}_name", "string"),
+        PresetField("SalesAgent", "agent_code", "string"),
+        PresetField("Ref", "ref", "string"),
+        PresetField("Note", "note", "string"),
+    )
+
+
+_LINKED_LINE_FIELDS: Tuple[PresetField, ...] = (
+    PresetField("DtlKey", "source_ref", "string", required=True),
+    PresetField("Seq", "line_number", "string"),
+    PresetField("ItemAutoKey", "product_ref", "ref_product"),
+    PresetField("ItemCode", "product_code", "string", required=True),
+    PresetField("Description", "product_name", "string"),
+    PresetField("LocationAutoKey", "warehouse_ref", "ref_warehouse"),
+    PresetField("Location", "warehouse_code", "string"),
+    PresetField("Qty", "qty", "decimal", required=True),
+    PresetField("UOM", "uom", "string"),
+    PresetField("UnitPrice", "unit_price", "decimal"),
+    PresetField("SubTotal", "line_total", "decimal"),
+    PresetField("FromDocType", "from_doc_type", "string"),
+    PresetField("FromDocNo", "from_doc_no", "string"),
+    PresetField("FromDocDtlKey", "from_doc_line_key", "int"),
+)
+
+
+def _linked_preset(
+    label: str, header_table: str, line_table: str, *, debtor_side: bool,
+) -> DocumentPreset:
+    party = _DEBTOR_PARTY if debtor_side else _CREDITOR_PARTY
+    header = (
+        _linked_header_fields("customer", "Debtor", "ref_customer")
+        if debtor_side
+        else _linked_header_fields("supplier", "Creditor", "ref_supplier")
+    )
+    return DocumentPreset(
+        label=label,
+        header_query=_linked_header_query(header_table, line_table, party),
+        line_query=_linked_line_query(line_table),
+        key_columns=("DocKey",),
+        watermark_column="LastModified",
+        doc_date_column="DocDate",
+        from_date="2026-01-01",
+        filter_formula=None,
+        header=header,
+        line=_LINKED_LINE_FIELDS,
+        fingerprint_query=_linked_fingerprint_query(header_table, line_table),
+    )
+
+
+CANCEL_SO_PRESET = _linked_preset("AutoCount Cancel SO", "XS", "XSDTL", debtor_side=True)
+CANCEL_PO_PRESET = _linked_preset("AutoCount Cancel PO", "XP", "XPDTL", debtor_side=False)
+CONSIGNMENT_PRESET = _linked_preset(
+    "AutoCount Consignment", "Consignment", "ConsignmentDTL", debtor_side=True,
+)
+CONSIGNMENT_RETURN_PRESET = _linked_preset(
+    "AutoCount Consignment Return", "ConsignmentReturn", "ConsignmentReturnDTL",
+    debtor_side=True,
+)
+
 DOCUMENT_PRESETS: Dict[str, DocumentPreset] = {
     ENTITY_SALES_ORDER: SO_PRESET,
     ENTITY_PURCHASE_ORDER: PO_PRESET,
     ENTITY_SHIPPING_ORDER: SPO_PRESET,
+    ENTITY_CANCEL_SALES_ORDER: CANCEL_SO_PRESET,
+    ENTITY_CANCEL_PURCHASE_ORDER: CANCEL_PO_PRESET,
+    ENTITY_CONSIGNMENT: CONSIGNMENT_PRESET,
+    ENTITY_CONSIGNMENT_RETURN: CONSIGNMENT_RETURN_PRESET,
 }
 
 

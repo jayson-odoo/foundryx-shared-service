@@ -58,8 +58,29 @@ ENTITY_PURCHASE_ORDER = "purchase_order"
 # runtime branch here.
 ENTITY_SHIPPING_ORDER = "shipping_order"
 
-DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
+# AC-CANCEL-PULL - four LINKED documents (contract 2.8): each line points
+# back at the document it cancels/returns via FromDocType + FromDocNo
+# (+ FromDocDtlKey, empty since ~Oct-Nov 2024). Same fetch/mapping path as
+# SO/PO/SPO; their own canonical shape (`CanonicalLinkedDocument` below).
+ENTITY_CANCEL_SALES_ORDER = "cancel_sales_order"
+ENTITY_CANCEL_PURCHASE_ORDER = "cancel_purchase_order"
+ENTITY_CONSIGNMENT = "consignment"
+ENTITY_CONSIGNMENT_RETURN = "consignment_return"
+
+LINKED_DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
+    ENTITY_CANCEL_SALES_ORDER, ENTITY_CANCEL_PURCHASE_ORDER,
+    ENTITY_CONSIGNMENT, ENTITY_CONSIGNMENT_RETURN,
+)
+
+# The order family (SO/PO/SPO) - kept named on its own: the PO/SPO
+# filter-formula split is the only reason one document can be seen by two
+# sibling tasks, so the overlap warning compares within this family only.
+ORDER_DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
     ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER,
+)
+
+DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
+    ORDER_DOCUMENT_ENTITY_TYPES + LINKED_DOCUMENT_ENTITY_TYPES
 )
 
 
@@ -527,3 +548,132 @@ class CanonicalShippingOrder(CanonicalDocument):
     # stored value alone", `null` means "clear it" - a document whose `Ref`
     # is unmapped or blank must never send the clear signal.
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("container_number",)
+
+
+# ── AC-CANCEL-PULL - linked documents (contract 2.8) ──────────────────────────
+#
+#     !!  ONE RULE FOR THE WHOLE WIRE: AN EMPTY FIELD IS ABSENT.  !!
+# These four are NEW on the CRM side (contract 2.8, lane AC-CANCEL-CRM), so
+# there is no v1/v2 history to honour: every field is gated by the
+# consumer's own advertised contract instead (`sinks_sorento.
+# CONTRACT_GATED_ENTITIES`), never by the connection's integer
+# `contract_version` - the payload is the same at every value. A field whose
+# value is `None`, `""` or `[]` is DROPPED (never an explicit `null`); a real
+# `0`/`Decimal("0")` is a value and is kept.
+
+
+def _drop_empty(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+
+class CanonicalLinkedDocumentLine(CanonicalDocumentLine):
+    """One line of a cancel / consignment document.
+
+    ``from_doc_type``/``from_doc_no``/``from_doc_line_key`` are AutoCount's
+    ``FromDocType``/``FromDocNo``/``FromDocDtlKey``. The key has been empty
+    on every line since ~Oct-Nov 2024, so the CRM matches a line to its source
+    by ``from_doc_no`` + ``product_code`` + ``warehouse_code`` + ``qty`` -
+    which is why those are first-class wire fields here, not fallbacks.
+    """
+
+    qty: Optional[Decimal] = Field(None, ge=0)
+    unit_price: Optional[Decimal] = None
+    from_doc_type: Optional[str] = Field(None, max_length=20)
+    # `FromDocNo` is nvarchar(max) on XSDTL/XPDTL/ConsignmentReturnDTL
+    # (nvarchar(50) on ConsignmentDTL; schema read 2026-10-13) - 255 is a
+    # generous ceiling for one document number, not the column's own width.
+    from_doc_no: Optional[str] = Field(None, max_length=255)
+    from_doc_line_key: Optional[int] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref", "line_number", "product_ref", "product_code", "product_name",
+        "warehouse_ref", "warehouse_code", "qty", "uom", "unit_price", "line_total",
+        "from_doc_type", "from_doc_no", "from_doc_line_key",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = ()
+
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        data = self.model_dump(mode="json")
+        return _drop_empty({key: data[key] for key in self.SINK_FIELDS})
+
+
+class CanonicalLinkedDocument(CanonicalDocument):
+    """Shared header of the four linked documents. ``doc_no`` is AutoCount's
+    ``DocNo`` (XS-/XP-/CG-/CR- …); ``status`` is the shared five-word
+    vocabulary (``cancelled`` when the document itself was voided)."""
+
+    doc_no: Optional[str] = Field(None, max_length=100)
+    doc_date: Optional[date] = None
+    agent_code: Optional[str] = Field(None, max_length=100)
+    ref: Optional[str] = Field(None, max_length=255)
+    note: Optional[str] = None
+    lines: List[CanonicalLinkedDocumentLine] = Field(default_factory=list)
+
+    _COMMON_HEAD: ClassVar[Tuple[str, ...]] = ("source_ref", "doc_no", "doc_date", "status")
+    _COMMON_TAIL: ClassVar[Tuple[str, ...]] = ("agent_code", "ref", "note")
+
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        data = self.model_dump(mode="json")
+        payload = _drop_empty({key: data[key] for key in self.SINK_FIELDS})
+        payload["lines"] = [
+            line.sink_payload(contract_version=contract_version) for line in self.lines
+        ]
+        return payload
+
+
+_CUSTOMER_FIELDS: Tuple[str, ...] = ("customer_ref", "customer_code", "customer_name")
+_SUPPLIER_FIELDS: Tuple[str, ...] = ("supplier_ref", "supplier_code", "supplier_name")
+
+
+class _CustomerSideDocument(CanonicalLinkedDocument):
+    customer_ref: Optional[str] = Field(None, max_length=255)
+    customer_code: Optional[str] = Field(None, max_length=50)
+    customer_name: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        CanonicalLinkedDocument._COMMON_HEAD + _CUSTOMER_FIELDS
+        + CanonicalLinkedDocument._COMMON_TAIL
+    )
+
+
+class CanonicalCancelSalesOrder(_CustomerSideDocument):
+    """AutoCount ``XS``/``XSDTL`` -> CRM ``cancel_sales_orders``."""
+
+    entity_type: str = ENTITY_CANCEL_SALES_ORDER
+
+
+class CanonicalConsignment(_CustomerSideDocument):
+    """AutoCount ``Consignment``/``ConsignmentDTL`` (CG- numbers, entered by
+    hand - no source document) -> CRM ``consignments``."""
+
+    entity_type: str = ENTITY_CONSIGNMENT
+
+
+class CanonicalConsignmentReturn(_CustomerSideDocument):
+    """AutoCount ``ConsignmentReturn``/``ConsignmentReturnDTL`` (lines carry
+    ``FromDocType 'CG'``) -> CRM ``consignment_returns``."""
+
+    entity_type: str = ENTITY_CONSIGNMENT_RETURN
+
+
+class CanonicalCancelPurchaseOrder(CanonicalLinkedDocument):
+    """AutoCount ``XP``/``XPDTL`` -> CRM ``cancel_purchase_orders``."""
+
+    entity_type: str = ENTITY_CANCEL_PURCHASE_ORDER
+
+    supplier_ref: Optional[str] = Field(None, max_length=255)
+    supplier_code: Optional[str] = Field(None, max_length=50)
+    supplier_name: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        CanonicalLinkedDocument._COMMON_HEAD + _SUPPLIER_FIELDS
+        + CanonicalLinkedDocument._COMMON_TAIL
+    )
+
+
+LINKED_DOCUMENT_MODELS: Dict[str, type] = {
+    ENTITY_CANCEL_SALES_ORDER: CanonicalCancelSalesOrder,
+    ENTITY_CANCEL_PURCHASE_ORDER: CanonicalCancelPurchaseOrder,
+    ENTITY_CONSIGNMENT: CanonicalConsignment,
+    ENTITY_CONSIGNMENT_RETURN: CanonicalConsignmentReturn,
+}

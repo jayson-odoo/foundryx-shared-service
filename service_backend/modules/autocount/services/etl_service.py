@@ -43,6 +43,8 @@ from ..canonical.documents import (
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
     LINE_QUERY_DOC_KEY_PARAM,
+    LINKED_DOCUMENT_ENTITY_TYPES,
+    ORDER_DOCUMENT_ENTITY_TYPES,
     is_document_entity,
 )
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
@@ -171,7 +173,9 @@ ETL_ENTITY_TYPES = (
     ENTITY_STOCK_BALANCE,
     # sprint-5/14 section 11 (D23) - HTTP-only master, wired like brand.
     ENTITY_BRANCH,
-)
+    # AC-CANCEL-PULL - Cancel SO / Cancel PO / Consignment / Consignment
+    # Return: DB-source documents exactly like SO/PO/SPO (contract 2.8).
+) + LINKED_DOCUMENT_ENTITY_TYPES
 
 # sprint-5/10 (AC-10-11/15) - entities a task may be switched to ``pull``
 # for. ``stock_balance`` joins this set in S5b (a pull-only entity, gated by
@@ -2659,9 +2663,16 @@ class EtlService:
         refs = set(current_refs)
         if not refs:
             return []
+        # AC-CANCEL-PULL - only the ORDER family can share a document between
+        # sibling tasks (the PO/SPO filter-formula split). A cancel or
+        # consignment document lives in its OWN AutoCount table, whose DocKey
+        # can coincide numerically with an unrelated SO/PO DocKey - comparing
+        # across tables would report a false overlap.
+        if entity_type not in ORDER_DOCUMENT_ENTITY_TYPES:
+            return []
         hashes = RowHashRepository(self.db)
         overlaps: List[Dict[str, Any]] = []
-        for other in DOCUMENT_ENTITY_TYPES:
+        for other in ORDER_DOCUMENT_ENTITY_TYPES:
             if other == entity_type:
                 continue
             other_refs = set(hashes.all_hashes(tenant_id, company_id, other))

@@ -75,6 +75,8 @@ from .canonical.documents import (
     CanonicalSalesOrderLine,
     CanonicalShippingOrder,
     CanonicalShippingOrderLine,
+    LINKED_DOCUMENT_MODELS,
+    CanonicalLinkedDocumentLine,
     is_document_entity,
 )
 
@@ -1195,6 +1197,25 @@ SHIPPING_ORDER_PROFILE = EntityProfile(
     line_fulfilled_field="qty_received",
 )
 
+# AC-CANCEL-PULL - Cancel SO / Cancel PO / Consignment / Consignment Return.
+# Same document shape as SO/PO/SPO (lines nested under `SQL_DOC_LINES_KEY`,
+# line refs prefixed with the header ref). No `line_fulfilled_field`: these
+# lines carry no "delivered/received" quantity, so the `lines.*` aggregates
+# are never computed and their presets use a `Cancelled`-only status formula.
+LINKED_DOCUMENT_PROFILES: Dict[str, EntityProfile] = {
+    entity_type: EntityProfile(
+        entity_type=entity_type,
+        record_model=model,
+        identity=doc_key_identity,
+        display_path="DocNo",
+        line_model=CanonicalLinkedDocumentLine,
+        detail_key=SQL_DOC_LINES_KEY,
+        identity_path="DocKey",
+        line_ref_prefix=True,
+    )
+    for entity_type, model in LINKED_DOCUMENT_MODELS.items()
+}
+
 ENTITY_PROFILES: Dict[str, EntityProfile] = {
     GRN_PROFILE.entity_type: GRN_PROFILE,
     SUPPLIER_PROFILE.entity_type: SUPPLIER_PROFILE,
@@ -1210,6 +1231,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,
     PURCHASE_ORDER_PROFILE.entity_type: PURCHASE_ORDER_PROFILE,
     SHIPPING_ORDER_PROFILE.entity_type: SHIPPING_ORDER_PROFILE,
+    **LINKED_DOCUMENT_PROFILES,
 }
 
 

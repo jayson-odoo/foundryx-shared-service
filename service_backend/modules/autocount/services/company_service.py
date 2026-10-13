@@ -62,7 +62,11 @@ from ..formula import (
     result_to_json,
     string_literals,
 )
-from ..canonical.documents import DOCUMENT_STATUS_VALUES, is_document_entity
+from ..canonical.documents import (
+    DOCUMENT_STATUS_VALUES,
+    LINKED_DOCUMENT_ENTITY_TYPES,
+    is_document_entity,
+)
 from ..mapping_catalog import (
     SorentoFieldDef,
     accepted_fields,
@@ -112,6 +116,7 @@ from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
     CONTRACT_GATED_ENTITIES,
     DOC_FEED_CONTRACT_VERSION,
+    LINKED_DOCUMENTS_CONTRACT_VERSION,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -1039,6 +1044,11 @@ class CompanyService:
         ENTITY_PRODUCT: PRODUCT_CODE_WINS_CONTRACT_VERSION,
         # sprint-5/14 section 11 (D26) - branch rides the 2.7 door.
         ENTITY_BRANCH: DOC_FEED_CONTRACT_VERSION,
+        # AC-CANCEL-PULL - the four linked documents ride the 2.8 doors.
+        **{
+            entity_type: LINKED_DOCUMENTS_CONTRACT_VERSION
+            for entity_type in LINKED_DOCUMENT_ENTITY_TYPES
+        },
     }
 
     def contract_gate(

@@ -262,9 +262,13 @@ def test_link_match_fields_survive_an_empty_from_doc_dtl_key():
 
 def test_a_zero_quantity_is_a_real_value_not_an_empty_one():
     """Kill test: the omit-when-empty rule must never drop a genuine 0."""
-    line = _full_line(qty=Decimal("0"), line_total=Decimal("0")).sink_payload(contract_version=2)
+    line = _full_line(
+        qty=Decimal("0"), line_total=Decimal("0"), line_number=0, from_doc_line_key=0,
+    ).sink_payload(contract_version=2)
     assert line["qty"] == "0"
     assert line["line_total"] == "0"
+    assert line["line_number"] == 0
+    assert line["from_doc_line_key"] == 0
 
 
 def test_the_payload_ignores_the_connection_contract_version():
