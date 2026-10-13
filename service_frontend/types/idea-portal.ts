@@ -69,7 +69,8 @@ export interface PortalTimelineStep {
 export interface PortalIdea extends PortalCard {
   problem: string | null;
   desiredOutcome: string | null;
-  useCases: string | null;
+  /** One entry per use case. */
+  useCases: string[] | null;
   currentWorkaround: string | null;
   submitterFirstName: string | null;
   timeline: PortalTimelineStep[];

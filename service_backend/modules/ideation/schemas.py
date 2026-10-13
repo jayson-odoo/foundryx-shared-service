@@ -820,7 +820,8 @@ class PortalIdeaOut(PortalCardOut):
 
     problem: Optional[str] = None
     desiredOutcome: Optional[str] = None
-    useCases: Optional[str] = None
+    # One entry per use case (IDEA-CORE stores JSON list[str]).
+    useCases: Optional[List[str]] = None
     currentWorkaround: Optional[str] = None
     submitterFirstName: Optional[str] = None
     timeline: List[PortalTimelineStepOut]

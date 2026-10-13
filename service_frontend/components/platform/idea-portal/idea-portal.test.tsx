@@ -65,7 +65,7 @@ const idea: PortalIdea = {
   submittedAt: '2026-10-02T06:31:00Z',
   problem: 'Dealers cannot track the status after they place an order.',
   desiredOutcome: null,
-  useCases: 'Customer asks when the basin arrives\n- Plan showroom install',
+  useCases: ['Customer asks when the basin arrives', 'Plan showroom install'],
   currentWorkaround: 'Call the sales team.',
   submitterFirstName: 'Aiman',
   timeline: [
@@ -125,7 +125,7 @@ describe('IdeaPage', () => {
     expect(within(fields).getByText('Use cases')).toBeInTheDocument();
     expect(within(fields).getByText('Current workaround')).toBeInTheDocument();
     expect(within(fields).queryByText('Desired outcome')).toBeNull();
-    // Use cases render one bullet per line, list markers stripped.
+    // Use cases render one bullet per entry.
     expect(within(fields).getByText('Plan showroom install').tagName).toBe('LI');
     for (const dropped of ['Proposed solution', 'Impact', 'Department']) {
       expect(screen.queryByText(dropped)).toBeNull();

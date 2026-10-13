@@ -31,6 +31,9 @@ def test_seed_is_idempotent_and_fills_the_portal(setup):
     hidden = [i for i in c.get("/portal/ideas?pageSize=100", headers=h).json()["items"]
               if i["title"].startswith("[sample] Internal margin")]
     assert hidden and c.get(f"/portal/ideas/{hidden[0]['id']}", headers=h).json()["portalHidden"] is True
+    price = [i for i in cols["under_review"]["ideas"] if "price list" in i["title"]][0]
+    assert c.get(f"/portal/ideas/{price['id']}", headers=h).json()["useCases"] == [
+        "Dealer quoting a walk-in customer", "Dealer preparing a project tender"]
     spec = [i for i in cols["planned"]["ideas"]][0]
     voters = c.get(f"/portal/ideas/{spec['id']}/voters", headers=h).json()
     assert {v["role"] for v in voters} == {"Staff", "Dealer"}

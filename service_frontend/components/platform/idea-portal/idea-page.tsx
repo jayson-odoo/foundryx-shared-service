@@ -278,13 +278,14 @@ function UpvoteRow({ row }: { row: Extract<FeedRow, { kind: 'upvotes' }> }) {
 }
 
 function Fields({ idea }: { idea: PortalIdea }) {
-  const rows: { label: string; value: string | null; list?: boolean }[] = [
-    { label: 'Business problem', value: idea.problem },
-    { label: 'Desired outcome', value: idea.desiredOutcome },
-    { label: 'Use cases', value: idea.useCases, list: true },
-    { label: 'Current workaround', value: idea.currentWorkaround },
+  const useCases = (idea.useCases ?? []).filter((u) => u.trim());
+  const rows: { label: string; text?: string | null; list?: string[] }[] = [
+    { label: 'Business problem', text: idea.problem },
+    { label: 'Desired outcome', text: idea.desiredOutcome },
+    { label: 'Use cases', list: useCases },
+    { label: 'Current workaround', text: idea.currentWorkaround },
   ];
-  const shown = rows.filter((r) => r.value && r.value.trim());
+  const shown = rows.filter((r) => (r.list ? r.list.length > 0 : Boolean(r.text && r.text.trim())));
   if (shown.length === 0) return null;
   return (
     <Card data-testid="portal-idea-fields">
@@ -296,16 +297,12 @@ function Fields({ idea }: { idea: PortalIdea }) {
               <dd className="mt-1 break-words whitespace-pre-wrap text-foreground/80">
                 {r.list ? (
                   <ul className="list-disc pl-5">
-                    {(r.value ?? '')
-                      .split(/\r?\n/)
-                      .map((l) => l.replace(/^\s*[-*•]\s*/, '').trim())
-                      .filter(Boolean)
-                      .map((l, i) => (
-                        <li key={i}>{l}</li>
-                      ))}
+                    {r.list.map((l, i) => (
+                      <li key={i}>{l}</li>
+                    ))}
                   </ul>
                 ) : (
-                  r.value
+                  r.text
                 )}
               </dd>
             </div>

@@ -385,6 +385,11 @@ def test_ac_p_31_submit_as_crm_user(setup):
     assert body["isMine"] is True
     assert body["statusLabel"] == "New"
     assert body["ideaNumber"]
+    assert body["useCases"] is None
+    multi = s["client"].post("/portal/ideas", headers=hc, json={
+        "title": "Two use cases", "problem": "p", "productId": s["product_id"],
+        "useCases": "- Dealer asks for an ETA\n\n* Showroom install plan\n"})
+    assert multi.json()["useCases"] == ["Dealer asks for an ETA", "Showroom install plan"]
     bad = s["client"].post("/portal/ideas", headers=hc, json={"title": "x", "problem": "", "productId": s["product_id"]})
     assert bad.status_code == 422
 
@@ -771,3 +776,13 @@ def test_review_whatsapp_voter_is_a_dealer(setup):
         db.close()
     voters = s["client"].get(f"/portal/ideas/{iid}/voters", headers=_staff_session(s)).json()
     assert voters == [{"name": "Aiman", "role": "Dealer", "isMe": False}]
+
+
+def test_use_cases_accepts_idea_core_list_shape():
+    """PR #124 stores ideas.use_cases as JSON list[str]; the portal reads either
+    that list or an older one-per-line text answer, always returning a list."""
+    from modules.ideation.services.portal import as_use_case_list
+
+    assert as_use_case_list(["Dealer asks for an ETA", "  ", "Showroom plan"]) == ["Dealer asks for an ETA", "Showroom plan"]
+    assert as_use_case_list("- one\n• two\n\n") == ["one", "two"]
+    assert as_use_case_list([]) is None and as_use_case_list(None) is None and as_use_case_list("") is None

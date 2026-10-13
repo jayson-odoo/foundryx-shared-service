@@ -40,7 +40,7 @@ _IDEAS = [
     ("price-list", None, "[sample] Dealer price list for basins and WCs in the chatbot",
      "Dealers ask the sales desk for the latest price of basins and WCs several times a day.",
      "triaged", 5, {"desired_outcome": "The chatbot replies with the current dealer price.",
-                    "use_cases": "Dealer quoting a walk-in customer\nDealer preparing a project tender"}),
+                    "use_cases": ["Dealer quoting a walk-in customer", "Dealer preparing a project tender"]}),
     ("warehouse-stock", None, "[sample] Show stock by warehouse for shower sets",
      "Sales cannot see which warehouse holds a shower set before promising delivery.",
      "linked", 3, {"current_workaround": "Call each warehouse and ask."}),

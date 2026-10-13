@@ -95,8 +95,10 @@ _KEY_TO_COLUMN = {k: col for col, _t, _c, keys in DEFAULT_COLUMNS for k in keys}
 CLOSED_COLUMN = "closed"
 CHANGELOG_STATUS_KEYS = ("delivered",)
 
-# IDEA-CORE fields (owner ruling 13 Oct). Read defensively: a column once
-# IDEA-CORE ships it, else the captured_json answer, else null.
+# IDEA-CORE fields (owner ruling 13 Oct; PR #124 0017_ideation_canny_fields):
+# desired_outcome / current_workaround TEXT, use_cases JSON list[str]. Read
+# defensively: the column once IDEA-CORE ships it, else the captured_json
+# answer, else null. use_cases is ALWAYS a list on the wire.
 CORE_FIELDS = (
     ("desiredOutcome", "desired_outcome"),
     ("useCases", "use_cases"),
@@ -104,6 +106,21 @@ CORE_FIELDS = (
 )
 
 MAX_PAGE_SIZE = 100
+
+
+def as_use_case_list(value: Any) -> Optional[List[str]]:
+    """``use_cases`` as a list of non-empty strings (IDEA-CORE stores JSON
+    list[str]; a textarea / older captured answer is one use case per line,
+    list markers stripped). ``None`` when there are none."""
+    if value is None:
+        return None
+    items = value if isinstance(value, list) else str(value).splitlines()
+    out = []
+    for item in items:
+        text = str(item).strip().lstrip("-*\u2022").strip()
+        if text:
+            out.append(text)
+    return out or None
 
 
 class PortalError(Exception):
@@ -635,11 +652,13 @@ class IdeaPortalService:
 
     # ---- idea page ---------------------------------------------------------
 
-    def _core_field(self, idea: Idea, attr: str) -> Optional[str]:
+    def _core_field(self, idea: Idea, attr: str) -> Any:
         value = getattr(idea, attr, None)
         if not value:
             value = (idea.captured_json or {}).get(attr)
-        return value or None
+        if attr == "use_cases":
+            return as_use_case_list(value)
+        return value if isinstance(value, str) and value.strip() else None
 
     def _timeline(self, idea: Idea) -> List[Dict[str, Any]]:
         current = self.smap.column(idea.status_id)
@@ -1006,10 +1025,11 @@ class IdeaPortalService:
         captured = dict(idea.captured_json or {})
         for value, attr in (
             (desired_outcome, "desired_outcome"),
-            (use_cases, "use_cases"),
+            (as_use_case_list(use_cases), "use_cases"),
             (current_workaround, "current_workaround"),
         ):
-            value = (value or "").strip() or None
+            if isinstance(value, str):
+                value = value.strip() or None
             if value:
                 captured[attr] = value
                 if hasattr(Idea, attr):
