@@ -23,6 +23,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 SEED_PREFIX = "portal-seed:"
@@ -88,6 +89,30 @@ def _product(db: Session, tenant_id: str, name: str):
     return p
 
 
+def _bump_number_sequence(db: Session, at_least: int) -> None:
+    """Postgres: move ``ideas_idea_number_seq`` past every existing idea number
+    (and past ``at_least``) so a later minted number can never collide with the
+    explicit IDEA-0010 / IDEA-0014 this seed writes. Without it the next real
+    capture after IDEA-0009 fails on the unique ``idea_number`` (the SQLite test
+    fallback numbers from max+1, so only Postgres ever shows it)."""
+    from modules.ideation.db import IDEATION_SCHEMA
+    from modules.ideation.models import Idea
+    from modules.ideation.services.numbering import _NUMBER_RE, _is_postgres
+
+    if not _is_postgres(db):
+        return
+    best = at_least
+    for (value,) in db.query(Idea.idea_number).filter(Idea.idea_number.isnot(None)):
+        m = _NUMBER_RE.match(value or "")
+        if m:
+            best = max(best, int(m.group(1)))
+    seq = f'"{IDEATION_SCHEMA}".ideas_idea_number_seq'
+    db.execute(
+        text(f"SELECT setval('{seq}', GREATEST((SELECT last_value FROM {seq}), :n))"),
+        {"n": best},
+    )
+
+
 def seed_idea_portal(db: Session, tenant_id: str, product_name: str = "Sorento CRM") -> Dict[str, int]:
     """Idempotent. Returns ``{"created": n, "skipped": m}``."""
     from app.repositories.module_repository import ModuleRepository
@@ -99,6 +124,8 @@ def seed_idea_portal(db: Session, tenant_id: str, product_name: str = "Sorento C
         raise SystemExit("Ideation is not active for this tenant - install it first (Services > Ideation).")
 
     product = _product(db, tenant_id, product_name)
+    explicit = [int(num.split("-")[1]) for _k, num, *_ in _IDEAS if num]
+    _bump_number_sequence(db, max(explicit))
     created = skipped = 0
     base = _now() - timedelta(days=12)
     for n, (key, number, title, problem, status_key, votes, extra) in enumerate(_IDEAS):
@@ -175,6 +202,7 @@ def seed_idea_portal(db: Session, tenant_id: str, product_name: str = "Sorento C
                 created_at=created_at + timedelta(days=1, hours=6),
             ))
         created += 1
+    _bump_number_sequence(db, max(explicit))
     db.commit()
     return {"created": created, "skipped": skipped}
 
