@@ -538,3 +538,121 @@ def test_embed_merge_unmerge_scope(scoped):
     assert expired2.status_code == 401
     expired3 = client.get(f"/embed/ideas/{scoped['in_scope']}/merged", headers=EXPIRED_BEARER)
     assert expired3.status_code == 401
+
+
+def test_embed_field_merge_and_scope(scoped):
+    """Plan 20 AC-20-15 - the embed merge takes the same ``fields`` map; a
+    ``fields`` id outside the connection's product still denies (404)."""
+    client = scoped["client"]
+    factory = client._factory
+    second = _insert_idea(factory, scoped["product_id"], problem="second in scope")
+
+    denied = client.post(
+        "/embed/ideas/merge",
+        headers=scoped["bearer"],
+        json={
+            "survivorId": scoped["in_scope"],
+            "ideaIds": [scoped["in_scope"], scoped["other_product"]],
+            "fields": {"problem": [scoped["other_product"]]},
+        },
+    )
+    assert denied.status_code == 404, denied.text
+
+    res = client.post(
+        "/embed/ideas/merge",
+        headers=scoped["bearer"],
+        json={
+            "survivorId": scoped["in_scope"],
+            "ideaIds": [scoped["in_scope"], second],
+            "fields": {"problem": [second]},
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["problem"] == "second in scope"
+
+
+def test_embed_similar_scoped(scoped, monkeypatch):
+    """Plan 20 AC-20-22 - the embed Similar route is product-scoped (404 for an
+    out-of-scope idea) and ranks only same-product candidates."""
+    from types import SimpleNamespace
+
+    import modules.ideation.services.similar as similar_mod
+
+    client = scoped["client"]
+    second = _insert_idea(client._factory, scoped["product_id"], problem="second in scope")
+
+    def fake(self, **kwargs):
+        return SimpleNamespace(structured={"ideaIds": [scoped["other_product"], second]}), None
+
+    monkeypatch.setattr(similar_mod.AiClient, "complete", fake)
+    out_of_scope = client.get(
+        f"/embed/ideas/{scoped['other_product']}/similar", headers=scoped["bearer"]
+    )
+    assert out_of_scope.status_code == 404, out_of_scope.text
+
+    res = client.get(f"/embed/ideas/{scoped['in_scope']}/similar", headers=scoped["bearer"])
+    assert res.status_code == 200, res.text
+    assert res.json()["available"] is True
+    assert [i["id"] for i in res.json()["ideas"]] == [second]
+
+
+def test_embed_card_fields_json_parity(scoped):
+    """Plan 20 AC-20-09 - the embed JSON carries the card fields on create,
+    read and edit (Sorento's native pages consume these routes)."""
+    client, bearer = scoped["client"], scoped["bearer"]
+    created = client.post(
+        "/embed/ideas",
+        headers=bearer,
+        json={
+            "problem": "Dealers cannot track order status",
+            "title": "Order tracking",
+            "desiredOutcome": "Self-service status",
+            "useCases": ["Check shipping"],
+            "currentWorkaround": "Call sales",
+        },
+    )
+    assert created.status_code == 201, created.text
+    idea_id = created.json()["id"]
+    got = client.get(f"/embed/ideas/{idea_id}", headers=bearer).json()
+    assert got["title"] == "Order tracking"
+    assert got["desiredOutcome"] == "Self-service status"
+    assert got["useCases"] == ["Check shipping"]
+    assert got["currentWorkaround"] == "Call sales"
+    patched = client.patch(
+        f"/embed/ideas/{idea_id}",
+        headers=bearer,
+        json={"useCases": ["A", "B"], "currentWorkaround": ""},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["useCases"] == ["A", "B"]
+    assert patched.json()["currentWorkaround"] is None
+
+
+def test_embed_merge_lifecycle_json_parity(scoped):
+    """Plan 20 AC-20-19 - field merge, merged list, comment read-through and
+    unmerge restore all work over the embed JSON routes."""
+    client, bearer = scoped["client"], scoped["bearer"]
+    keep, other = scoped["in_scope"], _insert_idea(
+        client._factory, scoped["product_id"], problem="second in scope"
+    )
+    res = client.post(
+        f"/embed/ideas/{other}/comments", headers=bearer, json={"body": "on the other idea"}
+    )
+    assert res.status_code == 201, res.text
+
+    merged = client.post(
+        "/embed/ideas/merge",
+        headers=bearer,
+        json={"survivorId": keep, "ideaIds": [keep, other], "fields": {"problem": [keep, other]}},
+    )
+    assert merged.status_code == 200, merged.text
+    assert "--- from" in merged.json()["problem"]
+
+    children = client.get(f"/embed/ideas/{keep}/merged", headers=bearer).json()
+    assert [c["id"] for c in children] == [other]
+    comments = client.get(f"/embed/ideas/{keep}/comments", headers=bearer).json()
+    assert [c["fromIdea"]["id"] for c in comments if c["fromIdea"]] == [other]
+
+    res = client.post(f"/embed/ideas/{other}/unmerge", headers=bearer)
+    assert res.status_code == 200, res.text
+    assert client.get(f"/embed/ideas/{keep}", headers=bearer).json()["problem"] == "in scope"

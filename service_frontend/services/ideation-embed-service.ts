@@ -20,7 +20,9 @@ import type {
   IdeaAttachment,
   IdeaClusterSuggestions,
   IdeaComment,
+  MergeFieldChoices,
   Product,
+  SimilarIdeas,
 } from '@/types/ideation';
 import type { IdeaCreateInput, IdeaExtendedOps, IdeaService } from './ideation-service';
 
@@ -111,6 +113,10 @@ export const ideationEmbedService: IdeaService &
       method: 'POST',
       body: JSON.stringify({
         problem: input.problem,
+        title: input.title ?? '',
+        desiredOutcome: input.desiredOutcome ?? '',
+        useCases: input.useCases ?? [],
+        currentWorkaround: input.currentWorkaround ?? '',
         proposedSolution: input.proposedSolution ?? '',
         impact: input.impact ?? '',
         department: input.department ?? '',
@@ -128,6 +134,10 @@ export const ideationEmbedService: IdeaService &
     void productId; // embed never reassigns the product (scope integrity)
     const patch: Record<string, unknown> = {};
     if (fields.problem !== undefined) patch.problem = fields.problem;
+    if (fields.title !== undefined) patch.title = fields.title;
+    if (fields.desiredOutcome !== undefined) patch.desiredOutcome = fields.desiredOutcome;
+    if (fields.useCases !== undefined) patch.useCases = fields.useCases;
+    if (fields.currentWorkaround !== undefined) patch.currentWorkaround = fields.currentWorkaround;
     if (fields.proposedSolution !== undefined) patch.proposedSolution = fields.proposedSolution;
     if (fields.impact !== undefined) patch.impact = fields.impact;
     if (fields.department !== undefined) patch.department = fields.department;
@@ -198,11 +208,15 @@ export const ideationEmbedService: IdeaService &
 
   // Merge / unmerge parity (AC-94-16) - every id the backend resolves stays
   // scoped to the token's tenant AND product, same as every other embed route.
-  merge(survivorId: string, ideaIds: string[]): Promise<Idea> {
+  merge(survivorId: string, ideaIds: string[], fields?: MergeFieldChoices): Promise<Idea> {
     return apiFetch<Idea>('/embed/ideas/merge', {
       method: 'POST',
-      body: JSON.stringify({ survivorId, ideaIds }),
+      body: JSON.stringify(fields ? { survivorId, ideaIds, fields } : { survivorId, ideaIds }),
     });
+  },
+
+  similar(id: string): Promise<SimilarIdeas> {
+    return apiFetch<SimilarIdeas>(`${embedIdea(id)}/similar`);
   },
 
   unmerge(id: string): Promise<Idea[]> {

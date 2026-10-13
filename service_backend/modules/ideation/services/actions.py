@@ -23,6 +23,7 @@ from app.services.status_machine import (
 
 from ..models import Idea, IdeaVote
 from ..schemas import IdeaOut
+from .card_fields import clean_text, clean_use_cases
 from .ideas import IdeaReadService, next_capture_priority
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
 
@@ -77,6 +78,10 @@ class IdeaActionService:
         department: Optional[str] = None,
         raw_text: str = "",
         source: str = "manual",
+        title: Optional[str] = None,
+        desired_outcome: Optional[str] = None,
+        use_cases: Optional[List[str]] = None,
+        current_workaround: Optional[str] = None,
         actor: Optional[User] = None,
         submitter_crm_user_id: Optional[str] = None,
         submitter_name: Optional[str] = None,
@@ -104,7 +109,15 @@ class IdeaActionService:
             captured["impact"] = impact
         if department:
             captured["department"] = department
+        card = {
+            "desired_outcome": clean_text(desired_outcome),
+            "use_cases": clean_use_cases(use_cases),
+            "current_workaround": clean_text(current_workaround),
+        }
+        captured.update({k: v for k, v in card.items() if v})
         idea = Idea(
+            title=clean_text(title),
+            **card,
             tenant_id=tenant_id,
             product_id=product_id,
             status_id=initial_idea_status_id(self.db, tenant_id),
@@ -154,6 +167,10 @@ class IdeaActionService:
         department: Optional[str] = None,
         raw_text: Optional[str] = None,
         voter_id: Optional[str] = None,
+        title: Optional[str] = None,
+        desired_outcome: Optional[str] = None,
+        use_cases: Optional[List[str]] = None,
+        current_workaround: Optional[str] = None,
     ) -> IdeaOut:
         """Operator edit of the mutable idea fields (partial). Status moves ride
         the dedicated ``/{id}/status`` route - never duplicated here. Each provided
@@ -175,6 +192,21 @@ class IdeaActionService:
         ):
             if arg is not None:
                 value = arg.strip() or None
+                setattr(idea, key, value)
+                if value:
+                    captured[key] = value
+                else:
+                    captured.pop(key, None)
+        if title is not None:
+            idea.title = clean_text(title)
+        # Card fields (plan 20): ``None`` = untouched, blank / empty list clears.
+        for arg, key, clean in (
+            (desired_outcome, "desired_outcome", clean_text),
+            (use_cases, "use_cases", clean_use_cases),
+            (current_workaround, "current_workaround", clean_text),
+        ):
+            if arg is not None:
+                value = clean(arg)
                 setattr(idea, key, value)
                 if value:
                     captured[key] = value

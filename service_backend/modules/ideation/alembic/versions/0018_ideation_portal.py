@@ -23,15 +23,15 @@ engine (the suite builds the schema via ``IdeationBase.metadata.create_all``;
 ``services/portal.py::backfill_activity_from_status_events`` is the same
 backfill in ORM form, unit-tested directly).
 
-Revision ID: 0017_ideation_portal
-Revises: 0016_ideation_own_ideas
+Revision ID: 0018_ideation_portal
+Revises: 0017_ideation_canny_fields
 Create Date: 2026-10-13
 """
 from alembic import op
 from sqlalchemy import text
 
-revision = "0017_ideation_portal"
-down_revision = "0016_ideation_own_ideas"
+revision = "0018_ideation_portal"
+down_revision = "0017_ideation_canny_fields"
 branch_labels = None
 depends_on = None
 

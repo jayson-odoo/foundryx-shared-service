@@ -96,6 +96,11 @@ function CommentRow({
               Submitter
             </Badge>
           )}
+          {comment.fromIdea && (
+            <Badge variant="outline" appearance="light" size="sm">
+              from {comment.fromIdea.ideaNumber ?? 'merged idea'}
+            </Badge>
+          )}
           <span className="text-xs text-muted-foreground">
             {formatDateTime(comment.createdAt)}
           </span>
@@ -113,7 +118,7 @@ function CommentRow({
           <>
             <CommentBody text={comment.body ?? ''} />
             <div className="mt-1 flex flex-wrap items-center gap-3">
-              {canComment && (
+              {canComment && !comment.fromIdea && (
                 <button
                   type="button"
                   className={cn(PRESSED_CLASS, linkButton)}

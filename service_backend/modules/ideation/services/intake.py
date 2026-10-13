@@ -46,6 +46,7 @@ from app.services.status_machine import StatusMachineError
 from modules.omnichannel.models import Contact, Workspace
 
 from ..models import Idea, IdeaAttachment, IdeaVote
+from .card_fields import clean_text, clean_use_cases
 from .dedup import DedupService, dead_candidate_status_ids
 from .intake_definitions import (
     IDEATION_INTAKE_KEY,
@@ -317,6 +318,9 @@ class IntakeService:
         proposed_solution: Optional[str] = None,
         impact: Optional[str] = None,
         department: Optional[str] = None,
+        desired_outcome: Optional[str] = None,
+        use_cases: Optional[List[str]] = None,
+        current_workaround: Optional[str] = None,
         submitter_phone: Optional[str] = None,
         submitter_name: Optional[str] = None,
         submitter_tier: Optional[str] = None,
@@ -372,6 +376,14 @@ class IntakeService:
             value = (values[key] or "").strip()
             if value:
                 captured[key] = value
+        # Canny-style card fields (plan 20) - mirrored onto their columns by the
+        # completion sink's ``sync_idea_columns_from_captured``.
+        card = {
+            "desired_outcome": clean_text(desired_outcome),
+            "use_cases": clean_use_cases(use_cases),
+            "current_workaround": clean_text(current_workaround),
+        }
+        captured.update({k: v for k, v in card.items() if v})
         transcript = (raw_transcript or "").strip()
         idea = Idea(
             tenant_id=tenant_id,

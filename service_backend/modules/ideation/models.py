@@ -155,6 +155,13 @@ class Idea(IdeationBase):
     proposed_solution = Column(Text, nullable=True)
     impact = Column(Text, nullable=True)
     department = Column(String, nullable=True)
+    # Canny-style card fields (plan 20, owner ruling 13 Oct). ``problem`` above is
+    # shown as "Business problem"; these three complete the card. The UI hides
+    # proposed_solution / impact / department (columns + data kept). Intake keys
+    # are locked with the CRM: desired_outcome / use_cases / current_workaround.
+    desired_outcome = Column(Text, nullable=True)
+    use_cases = Column(JSON(none_as_null=True), nullable=True)  # list[str]
+    current_workaround = Column(Text, nullable=True)
     raw_text = Column(Text, nullable=False, default="")
     source = Column(String, nullable=False, default="manual")  # whatsapp|voice|manual
     # Cross-schema FK into omnichannel contacts (the synced submitter copy);
@@ -226,6 +233,10 @@ class Idea(IdeationBase):
     # the portal) - the staff ownership link for the portal's "Yours" / "My
     # ideas" (lane IDEA-PORTAL). NULL for WhatsApp / embed / pre-portal rows.
     submitter_user_id = Column(String, nullable=True, index=True)
+    # Field-level merge (plan 20, D5) - set on an absorbed child whose merge
+    # rewrote survivor fields: ``{field: {"before": ..., "after": ...}}``.
+    # Unmerge restores each survivor field still equal to ``after``.
+    merge_snapshot_json = Column(JSON(none_as_null=True), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
