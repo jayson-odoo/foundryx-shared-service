@@ -136,6 +136,15 @@ class IdeaOut(ApiModel):
     mergedCount: int = 0
 
 
+class SimilarIdeasOut(ApiModel):
+    """Similar ideas for one idea (plan 20, AC-20-20/21) - AI-ranked, most
+    similar first. ``available`` is false when the AI is unavailable or its
+    output is unusable (the UI offers Retry; there is no word-match fallback)."""
+
+    available: bool
+    ideas: List[IdeaOut] = []
+
+
 class BoardColumnOut(ApiModel):
     """One triage-board column - a status-engine row (issue #94, plan section
     6: never the old hardcoded ``BOARD_COLUMNS``) + the ideas parked in it.

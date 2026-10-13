@@ -58,6 +58,7 @@ from ..schemas import (
     IdeaUpdateIn,
     MergeIn,
     ReorderIn,
+    SimilarIdeasOut,
     StatusIn,
     VoteIn,
 )
@@ -73,6 +74,7 @@ from ..services.embed import (
 )
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
+from ..services.similar import SimilarIdeasService
 from ..services.ownership import SubmitterIdentity, merged_child_ids, owned_ids
 
 router = APIRouter()
@@ -540,6 +542,23 @@ def embed_list_merged_ideas(
             principal.tenant_id, idea_id, voter_id=_embed_voter_id(principal)
         ),
     )
+
+
+@router.get("/ideas/{idea_id}/similar", response_model=SimilarIdeasOut)
+def embed_similar_ideas(
+    idea_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> SimilarIdeasOut:
+    """Similar ideas from the iframe (plan 20, AC-20-22). Scoped to
+    tenant+product (404 otherwise); candidates share the idea's product, so the
+    result never leaves the connection's scope."""
+    _assert_in_scope(db, principal, idea_id)
+    out = SimilarIdeasService(db, EMBED_CONTENT_PREFIX).similar(
+        principal.tenant_id, idea_id, voter_id=_embed_voter_id(principal)
+    )
+    out.ideas = _mark_mine(db, principal, out.ideas)
+    return out
 
 
 @router.post("/ideas/{idea_id}/unmerge", response_model=List[IdeaOut])

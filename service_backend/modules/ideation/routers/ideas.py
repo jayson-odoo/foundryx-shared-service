@@ -28,6 +28,7 @@ from ..schemas import (
     IdeaUpdateIn,
     MergeIn,
     ReorderIn,
+    SimilarIdeasOut,
     StatusIn,
     VoteIn,
 )
@@ -38,6 +39,7 @@ from ..services.clustering import ClusteringService
 from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
+from ..services.similar import SimilarIdeasService
 
 router = APIRouter()
 
@@ -196,6 +198,20 @@ def get_idea(
     """One idea by id - every section present (attachments empty-state), submitter
     human-readable (never a raw UUID). 404 if not found in the tenant."""
     return IdeaReadService(db).get(
+        current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
+    )
+
+
+@router.get("/{idea_id}/similar", response_model=SimilarIdeasOut)
+def similar_ideas(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> SimilarIdeasOut:
+    """Ideas on the same product that describe the same need (plan 20,
+    AC-20-20/21) - ranked by ONE AI call, most similar first.
+    ``available: false`` when the AI is unavailable (no word-match fallback)."""
+    return SimilarIdeasService(db).similar(
         current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
     )
 

@@ -569,3 +569,28 @@ def test_embed_field_merge_and_scope(scoped):
     )
     assert res.status_code == 200, res.text
     assert res.json()["problem"] == "second in scope"
+
+
+def test_embed_similar_scoped(scoped, monkeypatch):
+    """Plan 20 AC-20-22 - the embed Similar route is product-scoped (404 for an
+    out-of-scope idea) and ranks only same-product candidates."""
+    from types import SimpleNamespace
+
+    import modules.ideation.services.similar as similar_mod
+
+    client = scoped["client"]
+    second = _insert_idea(client._factory, scoped["product_id"], problem="second in scope")
+
+    def fake(self, **kwargs):
+        return SimpleNamespace(structured={"ideaIds": [scoped["other_product"], second]}), None
+
+    monkeypatch.setattr(similar_mod.AiClient, "complete", fake)
+    out_of_scope = client.get(
+        f"/embed/ideas/{scoped['other_product']}/similar", headers=scoped["bearer"]
+    )
+    assert out_of_scope.status_code == 404, out_of_scope.text
+
+    res = client.get(f"/embed/ideas/{scoped['in_scope']}/similar", headers=scoped["bearer"])
+    assert res.status_code == 200, res.text
+    assert res.json()["available"] is True
+    assert [i["id"] for i in res.json()["ideas"]] == [second]
