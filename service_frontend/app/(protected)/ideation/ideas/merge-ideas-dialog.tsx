@@ -38,8 +38,8 @@ export interface MergeIdeasDialogProps {
   onMerge: (survivorId: string, fields: MergeFieldChoices) => Promise<void>;
 }
 
-const LABEL_CELL = 'sticky left-0 z-[1] w-32 shrink-0 bg-background pr-2 text-sm font-medium sm:w-40';
-const IDEA_CELL = 'min-w-56 flex-1';
+const LABEL_CELL = 'sticky left-0 z-(--z-sticky-content) w-24 shrink-0 bg-background pr-2 text-sm font-medium sm:w-40';
+const IDEA_CELL = 'min-w-48 flex-1 sm:min-w-56';
 
 function MergeValueView({ value }: { value: MergeValue }) {
   if (value === null) return <span className="text-muted-foreground">-</span>;
