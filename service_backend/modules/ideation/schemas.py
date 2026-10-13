@@ -16,6 +16,14 @@ from pydantic import Field, field_validator, model_validator
 from app.schemas.base import ApiModel
 
 
+class IdeaSourceOut(ApiModel):
+    """The merged child a read-through row came from (plan 20, AC-20-14) - set
+    on a survivor's comments/attachments that physically live on a child."""
+
+    id: str
+    ideaNumber: Optional[str] = None
+
+
 class IdeaAttachmentOut(ApiModel):
     """An idea attachment (voice note, image, video, file). Empty until the
     create_idea / attachment slice lands - the detail section renders empty."""
@@ -29,6 +37,8 @@ class IdeaAttachmentOut(ApiModel):
     # Relative serve path for an uploaded file (bytes in tenant storage); null
     # for a URL-backed WhatsApp capture (plan sprint-5/15, AC-15-19).
     contentPath: Optional[str] = None
+    # Set when this row lives on a child merged into the idea being read.
+    fromIdea: Optional[IdeaSourceOut] = None
 
 
 class TransitionOut(ApiModel):
@@ -84,6 +94,11 @@ class IdeaOut(ApiModel):
     # idea or a draft that never sent one; the FE falls back to ``problem``.
     title: Optional[str] = None
     problem: str
+    # Canny-style card fields (plan 20). ``problem`` is shown as "Business
+    # problem"; the three legacy fields below stay on the wire (hidden in UI).
+    desiredOutcome: Optional[str] = None
+    useCases: List[str] = []
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -119,6 +134,15 @@ class IdeaOut(ApiModel):
     mergedIntoId: Optional[str] = None
     mergedInto: Optional[IdeaMergedIntoOut] = None
     mergedCount: int = 0
+
+
+class SimilarIdeasOut(ApiModel):
+    """Similar ideas for one idea (plan 20, AC-20-20/21) - AI-ranked, most
+    similar first. ``available`` is false when the AI is unavailable or its
+    output is unusable (the UI offers Retry; there is no word-match fallback)."""
+
+    available: bool
+    ideas: List[IdeaOut] = []
 
 
 class BoardColumnOut(ApiModel):
@@ -191,6 +215,9 @@ class IdeaCommentOut(ApiModel):
     canDelete: bool = False
     createdAt: datetime
     editedAt: Optional[datetime] = None
+    # Set on a survivor's read of a merged child's comment (plan 20, AC-20-14);
+    # such a row is read-only on the survivor (canEdit/canDelete false).
+    fromIdea: Optional[IdeaSourceOut] = None
 
 
 # NUL and the other C0 controls, except newline and tab (AC-19-36), and lone
@@ -279,6 +306,10 @@ class MergeIn(ApiModel):
 
     survivorId: str
     ideaIds: List[str]
+    # Field-level merge (plan 20, AC-20-10/11): ``{fieldKey: [ideaId, ...]}`` -
+    # one id = that idea's value; several = combined in the given order.
+    # Omitted = the survivor's fields are unchanged (pre-plan-20 behaviour).
+    fields: Optional[Dict[str, List[str]]] = None
 
 
 class StatusIn(ApiModel):
@@ -309,6 +340,10 @@ class IdeaCreateIn(ApiModel):
 
     productId: str
     problem: str
+    title: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -322,7 +357,11 @@ class IdeaUpdateIn(ApiModel):
     NOT this route, so ``status`` is intentionally absent."""
 
     productId: Optional[str] = None
+    title: Optional[str] = None
     problem: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -714,6 +753,12 @@ class OneShotIdeaIn(ApiModel):
     product_id: str
     problem: str
     title: Optional[str] = None
+    # Canny-style card fields (plan 20) - key names locked with the CRM
+    # (IDEA-CAPTURE, sorento-crm #1625). Unknown keys stay ignored (no
+    # ``extra='forbid'``) so the CRM can send these before this deploys.
+    desired_outcome: Optional[str] = None
+    use_cases: Optional[List[str]] = None
+    current_workaround: Optional[str] = None
     proposed_solution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None

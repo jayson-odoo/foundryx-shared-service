@@ -230,8 +230,19 @@ def test_ac_1101_problem_required_others_optional(ideation_client):
     definition = get_intake_definition("ideation")
     assert definition is not None
     fields = {f.key: f for f in definition.target_schema.input_fields() if f.key}
-    assert set(fields) == {"problem", "proposed_solution", "impact", "department"}
+    # Plan 20 (AC-20-04) adds three optional card fields.
+    assert set(fields) == {
+        "problem",
+        "proposed_solution",
+        "impact",
+        "department",
+        "desired_outcome",
+        "use_cases",
+        "current_workaround",
+    }
     assert fields["problem"].required is True
+    for key in ("desired_outcome", "use_cases", "current_workaround"):
+        assert fields[key].required is not True
     assert fields["proposed_solution"].required is not True
     assert fields["impact"].required is not True
     assert fields["department"].required is not True

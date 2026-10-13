@@ -58,6 +58,7 @@ from ..schemas import (
     IdeaUpdateIn,
     MergeIn,
     ReorderIn,
+    SimilarIdeasOut,
     StatusIn,
     VoteIn,
 )
@@ -73,6 +74,7 @@ from ..services.embed import (
 )
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
+from ..services.similar import SimilarIdeasService
 from ..services.ownership import SubmitterIdentity, merged_child_ids, owned_ids
 
 router = APIRouter()
@@ -103,6 +105,10 @@ class EmbedIdeaCreateIn(BaseModel):
     operator create contract."""
 
     problem: str
+    title: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -345,7 +351,9 @@ def embed_merge_ideas(
     return _mark_one(
         db,
         principal,
-        IdeaMergeService(db).merge(principal.tenant_id, body.survivorId, body.ideaIds),
+        IdeaMergeService(db).merge(
+            principal.tenant_id, body.survivorId, body.ideaIds, fields=body.fields
+        ),
     )
 
 
@@ -374,6 +382,11 @@ def embed_create_idea(
         raw_text=body.rawText,
         source=(body.source or "embed"),
         actor=None,
+        title=body.title,
+        desired_outcome=body.desiredOutcome,
+        use_cases=body.useCases,
+        current_workaround=body.currentWorkaround,
+
         # The viewing CRM user is the submitter (the isMine ownership link).
         submitter_crm_user_id=principal.sub,
         submitter_name=principal.name,
@@ -505,6 +518,10 @@ def embed_update_idea(
         department=body.department,
         raw_text=body.rawText,
         voter_id=_embed_voter_id(principal),
+        title=body.title,
+        desired_outcome=body.desiredOutcome,
+        use_cases=body.useCases,
+        current_workaround=body.currentWorkaround,
     )
     return _mark_one(db, principal, out)
 
@@ -525,6 +542,23 @@ def embed_list_merged_ideas(
             principal.tenant_id, idea_id, voter_id=_embed_voter_id(principal)
         ),
     )
+
+
+@router.get("/ideas/{idea_id}/similar", response_model=SimilarIdeasOut)
+def embed_similar_ideas(
+    idea_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> SimilarIdeasOut:
+    """Similar ideas from the iframe (plan 20, AC-20-22). Scoped to
+    tenant+product (404 otherwise); candidates share the idea's product, so the
+    result never leaves the connection's scope."""
+    _assert_in_scope(db, principal, idea_id)
+    out = SimilarIdeasService(db, EMBED_CONTENT_PREFIX).similar(
+        principal.tenant_id, idea_id, voter_id=_embed_voter_id(principal)
+    )
+    out.ideas = _mark_mine(db, principal, out.ideas)
+    return out
 
 
 @router.post("/ideas/{idea_id}/unmerge", response_model=List[IdeaOut])

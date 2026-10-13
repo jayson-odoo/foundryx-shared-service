@@ -53,10 +53,13 @@ IDEATION_INTAKE_KEY = "ideation"
 # Human-readable labels for each captured field - used verbatim in the form
 # document (below). Kept in sync with the schema below.
 IDEATION_FIELD_LABELS: Dict[str, str] = {
-    "problem": "Problem statement",
+    "problem": "Business problem",
     "proposed_solution": "Proposed solution",
     "impact": "Impact",
     "department": "Department",
+    "desired_outcome": "Desired outcome",
+    "use_cases": "Use cases",
+    "current_workaround": "Current workaround",
 }
 
 # The point-form recap labels used in the deterministic reply_text templates
@@ -134,6 +137,32 @@ def _ideation_target_schema() -> FormDocument:
                                     "type": "text",
                                     "key": "department",
                                     "label": IDEATION_FIELD_LABELS["department"],
+                                    "required": False,
+                                },
+                                # Canny-style card fields (plan 20) - optional,
+                                # NOT in OPTIONAL_ASK_ORDER (the bot's asking
+                                # order is the CRM's call, IDEA-CAPTURE). A
+                                # turn's ``use_cases`` may be a list or a
+                                # newline string; the sink normalises it.
+                                {
+                                    "id": "f-desired-outcome",
+                                    "type": "textarea",
+                                    "key": "desired_outcome",
+                                    "label": IDEATION_FIELD_LABELS["desired_outcome"],
+                                    "required": False,
+                                },
+                                {
+                                    "id": "f-use-cases",
+                                    "type": "textarea",
+                                    "key": "use_cases",
+                                    "label": IDEATION_FIELD_LABELS["use_cases"],
+                                    "required": False,
+                                },
+                                {
+                                    "id": "f-current-workaround",
+                                    "type": "textarea",
+                                    "key": "current_workaround",
+                                    "label": IDEATION_FIELD_LABELS["current_workaround"],
                                     "required": False,
                                 },
                             ],

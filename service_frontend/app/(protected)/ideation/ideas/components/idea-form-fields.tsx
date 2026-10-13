@@ -9,8 +9,11 @@ import {
   ImageIcon,
   Mic,
   Paperclip,
+  Plus,
+  X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
@@ -79,85 +82,56 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
   return (
     <Card>
       <CardContent className="py-1">
-        <FormRow label="Problem statement" required={editing}>
+        <FormRow label="Title">
           {editing ? (
             <FormField
               control={form.control}
-              name="problem"
+              name="title"
               render={({ field }) => (
                 <FormItem className="max-w-xl">
                   <FormControl>
-                    <Textarea rows={3} placeholder="The problem or observation" {...field} />
+                    <Input placeholder="A short name for the idea" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
           ) : (
-            <span className="whitespace-pre-wrap">{idea?.problem || '-'}</span>
+            <span>{idea?.title || '-'}</span>
           )}
         </FormRow>
 
-        <FormRow label="Proposed solution">
+        <TextRow form={form} editing={editing} name="problem" label="Business problem" required placeholder="What problem does the business have?" value={idea?.problem} />
+        <TextRow form={form} editing={editing} name="desiredOutcome" label="Desired outcome" placeholder="What should be true once it is solved?" value={idea?.desiredOutcome} />
+
+        <FormRow label="Use cases">
           {editing ? (
             <FormField
               control={form.control}
-              name="proposedSolution"
+              name="useCases"
               render={({ field }) => (
                 <FormItem className="max-w-xl">
                   <FormControl>
-                    <Textarea rows={3} placeholder="How could we solve it?" {...field} />
+                    <UseCasesInput value={field.value} onChange={field.onChange} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
+          ) : idea?.useCases && idea.useCases.length > 0 ? (
+            <ul className="list-disc space-y-0.5 pl-5">
+              {idea.useCases.map((u, i) => (
+                <li key={`${i}-${u}`} className="whitespace-pre-wrap">
+                  {u}
+                </li>
+              ))}
+            </ul>
           ) : (
-            <span className="whitespace-pre-wrap text-muted-foreground">
-              {idea?.proposedSolution || '-'}
-            </span>
+            '-'
           )}
         </FormRow>
 
-        <FormRow label="Impact">
-          {editing ? (
-            <FormField
-              control={form.control}
-              name="impact"
-              render={({ field }) => (
-                <FormItem className="max-w-xl">
-                  <FormControl>
-                    <Textarea rows={3} placeholder="What does solving it improve?" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          ) : (
-            <span className="whitespace-pre-wrap text-muted-foreground">
-              {idea?.impact || '-'}
-            </span>
-          )}
-        </FormRow>
-
-        <FormRow label="Department">
-          {editing ? (
-            <FormField
-              control={form.control}
-              name="department"
-              render={({ field }) => (
-                <FormItem className="max-w-sm">
-                  <FormControl>
-                    <Input placeholder="Which team is this for?" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          ) : (
-            (idea?.department || '-')
-          )}
-        </FormRow>
+        <TextRow form={form} editing={editing} name="currentWorkaround" label="Current workaround" placeholder="How is it handled today?" value={idea?.currentWorkaround} />
 
         {/* A new idea needs a product; an existing idea keeps its saved one. */}
         {creating && (
@@ -215,7 +189,7 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
           {idea && idea.rank != null ? <span className="tabular-nums">#{idea.rank}</span> : '-'}
         </FormRow>
 
-        <FormRow label="Raw notes">
+        <FormRow label="Original message">
           {editing ? (
             <FormField
               control={form.control}
@@ -223,7 +197,7 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
               render={({ field }) => (
                 <FormItem className="max-w-xl">
                   <FormControl>
-                    <Textarea rows={4} placeholder="Verbatim capture / context" {...field} />
+                    <Textarea rows={4} placeholder="The message as it was sent" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -241,6 +215,90 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
         </FormRow>
       </CardContent>
     </Card>
+  );
+}
+
+type CardTextField = 'problem' | 'desiredOutcome' | 'currentWorkaround';
+
+interface TextRowProps {
+  form: UseFormReturn<IdeaFormValues>;
+  editing: boolean;
+  name: CardTextField;
+  label: string;
+  placeholder: string;
+  value?: string | null;
+  required?: boolean;
+}
+
+/** One multi-line card field: a Textarea in edit mode, the text otherwise. */
+function TextRow({ form, editing, name, label, placeholder, value, required }: TextRowProps) {
+  return (
+    <FormRow label={label} required={required && editing}>
+      {editing ? (
+        <FormField
+          control={form.control}
+          name={name}
+          render={({ field }) => (
+            <FormItem className="max-w-xl">
+              <FormControl>
+                <Textarea rows={3} placeholder={placeholder} {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      ) : (
+        <span className="whitespace-pre-wrap">{value || '-'}</span>
+      )}
+    </FormRow>
+  );
+}
+
+export interface UseCasesInputProps {
+  value: string[];
+  onChange: (value: string[]) => void;
+}
+
+/** Use cases editor (plan 20, AC-20-07): one Input per use case with remove,
+ * plus an add button. Blank rows are dropped on save. */
+export function UseCasesInput({ value, onChange }: UseCasesInputProps) {
+  const items = value.length > 0 ? value : [''];
+  const update = (index: number, next: string) =>
+    onChange(items.map((item, i) => (i === index ? next : item)));
+  const removeAt = (index: number) => onChange(items.filter((_, i) => i !== index));
+  return (
+    <div className="flex flex-col gap-2">
+      {items.map((item, index) => (
+        <div key={index} className="flex items-center gap-2">
+          <Input
+            value={item}
+            onChange={(e) => update(index, e.target.value)}
+            placeholder="A situation where this is needed"
+            aria-label={`Use case ${index + 1}`}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            mode="icon"
+            size="sm"
+            onClick={() => removeAt(index)}
+            aria-label={`Remove use case ${index + 1}`}
+            disabled={items.length === 1 && !item}
+          >
+            <X />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="self-start"
+        onClick={() => onChange([...items, ''])}
+      >
+        <Plus /> Add use case
+      </Button>
+    </div>
   );
 }
 
@@ -318,6 +376,11 @@ export function AttachmentsTab({ attachments, onUpload, fetchContent }: Attachme
                       <ClampedText text={a.name} lines={1} className="text-sm font-medium" />
                       {meta && <p className="text-xs text-muted-foreground">{meta}</p>}
                     </div>
+                    {a.fromIdea && (
+                      <Badge variant="outline" appearance="light" size="sm">
+                        from {a.fromIdea.ideaNumber ?? 'merged idea'}
+                      </Badge>
+                    )}
                     <Badge variant="outline" appearance="light" className="capitalize">
                       {a.kind}
                     </Badge>
