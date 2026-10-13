@@ -30,6 +30,7 @@ from ..services import (
     AutocountServiceError,
     CompanyNotFound,
     CompanyService,
+    ContractGateRefused,
     EntityNotConfigured,
     JobNotFound,
     NotAwaitingApproval,
@@ -44,7 +45,9 @@ router = APIRouter()
 def _raise(exc: AutocountServiceError) -> None:
     if isinstance(exc, (CompanyNotFound, JobNotFound)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
-    if isinstance(exc, NotAwaitingApproval):
+    if isinstance(exc, (NotAwaitingApproval, ContractGateRefused)):
+        # ContractGateRefused (AC-CANCEL-PULL): the batch is back in review,
+        # rows still STAGED - a state conflict with the consumer, not bad input.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
     if isinstance(exc, (PushFailed, PreviewFailed)):
         # An UPSTREAM fault, not bad client input - 422 would tell the operator

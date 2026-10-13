@@ -562,6 +562,11 @@ class CanonicalShippingOrder(CanonicalDocument):
 # `0`/`Decimal("0")` is a value and is kept.
 
 
+# AC-CANCEL-PULL (security review) - the cap on a linked document's free-text
+# `note` on the wire. Agreed with the CRM lane as part of the 2.8 shape.
+NOTE_MAX_CHARS = 4000
+
+
 def _drop_empty(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in payload.items() if value not in (None, "", [])}
 
@@ -609,12 +614,25 @@ class CanonicalLinkedDocument(CanonicalDocument):
     note: Optional[str] = None
     lines: List[CanonicalLinkedDocumentLine] = Field(default_factory=list)
 
+    @field_validator("note")
+    @classmethod
+    def _note_is_bounded(cls, value: Optional[str]) -> Optional[str]:
+        """AutoCount `Note` is nvarchar(max), often RTF with embedded images.
+        One multi-megabyte note must never bloat a staged row or sink a whole
+        200-record ingest batch, so it is CUT (never rejected - the document
+        itself is still good) at `NOTE_MAX_CHARS`."""
+        if value is not None and len(value) > NOTE_MAX_CHARS:
+            return value[:NOTE_MAX_CHARS]
+        return value
+
     _COMMON_HEAD: ClassVar[Tuple[str, ...]] = ("source_ref", "doc_no", "doc_date", "status")
     _COMMON_TAIL: ClassVar[Tuple[str, ...]] = ("agent_code", "ref", "note")
 
     def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
         data = self.model_dump(mode="json")
         payload = _drop_empty({key: data[key] for key in self.SINK_FIELDS})
+        # `lines` is structural, not optional data: always present, `[]` for
+        # a header with no lines (the CRM reads that as "no lines").
         payload["lines"] = [
             line.sink_payload(contract_version=contract_version) for line in self.lines
         ]

@@ -592,8 +592,11 @@ def _linked_line_query(line_table: str) -> str:
 
 
 def _linked_fingerprint_query(header_table: str, line_table: str) -> str:
-    """The line-only-edit sweep (see `_SO_FINGERPRINT_QUERY`): includes the
-    link columns, so re-pointing a line at another source document moves it."""
+    """The line-only-edit sweep (see `_SO_FINGERPRINT_QUERY`). Catches a line
+    added/removed, a qty change and a change to a FILLED `FromDocDtlKey`;
+    it does NOT see a text-only edit of `FromDocNo`/`ItemCode`/`Location`
+    on an existing line (no portable text aggregate) - those reach the CRM
+    on the next reconcile or the next header `LastModified` bump."""
     return (
         "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
         "MAX(d.DtlKey) AS MaxDtlKey, SUM(d.FromDocDtlKey) AS FromDocKeySum, "

@@ -2499,7 +2499,11 @@ class EtlService:
         every page of the walk with ``(stage, page, totalPages)``. ``None``
         (every caller before this AC) leaves the walk exactly as it was.
         """
-        from ..sinks_sorento import SinkAnchorError, SorentoSinkError
+        from ..sinks_sorento import (
+            CONTRACT_GATED_ENTITIES,
+            SinkAnchorError,
+            SorentoSinkError,
+        )
 
         company, config = self._task_config(tenant_id, company_id, entity_type)
         self._require_runnable(config)
@@ -2531,13 +2535,24 @@ class EtlService:
             # activatable on a logging-sink company by design (runs then log
             # only, deliver nothing, until a Sorento target is set - the
             # Review & Activate tab warns of exactly this, non-blocking).
+            reason = (
+                "No consumer is configured for this company, so there is "
+                "nothing to dry-run. Point the company at Sorento first."
+            )
+            gate = CONTRACT_GATED_ENTITIES.get(entity_type)
+            if company.sink_impl == SINK_IMPL_SORENTO and gate is not None:
+                # AC-CANCEL-PULL (review nit) - the company IS on Sorento; the
+                # consumer just does not accept this entity yet. Say that.
+                reason = (
+                    f"This company's Sorento consumer does not yet accept "
+                    f"{entity_type.replace('_', ' ')} records (contract "
+                    f"{gate[0]} with '{gate[1]}' required), so there is "
+                    "nothing to dry-run."
+                )
             payload: Dict[str, Any] = {
                 "previewable": False,
                 "sink": sink.name,
-                "reason": (
-                    "No consumer is configured for this company, so there is "
-                    "nothing to dry-run. Point the company at Sorento first."
-                ),
+                "reason": reason,
             }
             warnings = self._preview_warnings(
                 tenant_id, company_id, entity_type, current_refs, sink, config

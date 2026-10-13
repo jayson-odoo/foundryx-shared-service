@@ -370,14 +370,17 @@ def test_party_columns_follow_the_document_side():
     assert "Debtor" not in query
 
 
-def _preset_engine(entity_type: str) -> MappingEngine:
+def _preset_engine(entity_type: str, *, status_formula: str = "") -> MappingEngine:
     preset = DOCUMENT_PRESETS[entity_type]
     rows: List[MappingRow] = []
     for scope, fields in ((SCOPE_HEADER, preset.header), (SCOPE_LINE, preset.line)):
         for spec in fields:
+            formula = spec.formula
+            if status_formula and scope == SCOPE_HEADER and spec.canonical_field == "status":
+                formula = status_formula
             rows.append(MappingRow(
                 spec.source_path, spec.canonical_field, spec.transform, scope,
-                is_required=spec.required, is_enabled=spec.enabled, formula=spec.formula,
+                is_required=spec.required, is_enabled=spec.enabled, formula=formula,
             ))
     return MappingEngine(
         rows, entity_type=entity_type,
@@ -504,11 +507,11 @@ def test_each_entity_posts_to_its_own_plural_ingest_route(entity_type):
     assert result is not None
 
 
-def _staged(db, company_id, entity_type):
+def _staged(db, company_id, entity_type, *, job_status=None):
     from app.models.background_job import JOB_RUNNING, BackgroundJob
 
     job = BackgroundJob(
-        tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status=JOB_RUNNING,
+        tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status=job_status or JOB_RUNNING,
         payload_json={"companyId": company_id, "entityType": entity_type},
     )
     db.add(job)
@@ -576,3 +579,82 @@ def test_the_task_view_contract_banner_knows_the_2_8_requirement():
 
     for entity_type in ALL:
         assert CompanyService._CONTRACT_GATE_REQUIRED_VERSIONS[entity_type] == 2.8
+
+
+@pytest.mark.parametrize("entity_type", ALL + ["stock_balance"])
+def test_approve_refuses_a_shut_gate_and_leaves_rows_staged(monkeypatch, _stock_gate_rig, entity_type):
+    """Review blocker: the manual approval is a delivery path too. Below 2.8
+    it must refuse (409, batch back in review, rows STAGED) - never mark the
+    rows PUSHED through the logging fallback. Stock shares the same hole."""
+    from app.models.background_job import JOB_NEEDS_REVIEW
+    from modules.autocount.services.sync_service import ContractGateRefused, SyncService
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.4, entities=["sales_orders"]),
+    )
+    db, company = _stock_gate_rig
+    if entity_type == "stock_balance":
+        row, job = _staged(db, company.id, ENTITY_CONSIGNMENT, job_status=JOB_NEEDS_REVIEW)
+        row.entity_type = entity_type
+        job.payload_json = {"companyId": company.id, "entityType": entity_type}
+        db.commit()
+    else:
+        row, job = _staged(db, company.id, entity_type, job_status=JOB_NEEDS_REVIEW)
+
+    with pytest.raises(ContractGateRefused) as excinfo:
+        SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
+    assert excinfo.value.error_code == "CONTRACT_GATE"
+    db.refresh(row)
+    db.refresh(job)
+    assert row.status == STAGED
+    assert job.status == JOB_NEEDS_REVIEW
+
+
+def test_approve_still_delivers_once_the_gate_opens(monkeypatch, _stock_gate_rig):
+    """Control: at 2.8 with the path advertised, approval reaches the real sink."""
+    from app.models.background_job import JOB_NEEDS_REVIEW
+    from modules.autocount.services.sync_service import SyncService
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.8, entities=list(SEGMENTS.values())),
+    )
+    sent: List[str] = []
+
+    def fake_write_batch(self, records, *, request_id, **_kwargs):
+        from modules.autocount.sinks import WriteResult
+
+        sent.extend(r.source_ref for r in records)
+        return [WriteResult(ok=True, sink="sorento", delivered=True) for _ in records]
+
+    monkeypatch.setattr(SorentoSink, "write_batch", fake_write_batch)
+    db, company = _stock_gate_rig
+    row, job = _staged(db, company.id, ENTITY_CANCEL_SALES_ORDER, job_status=JOB_NEEDS_REVIEW)
+    SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
+    assert sent == [row.source_ref]
+
+
+def test_a_header_formula_over_line_aggregates_runs_for_a_linked_document():
+    """Review should-fix: the save gate offers `lines.*` to every document's
+    header formulas, so the run must define them here too (qty-based, nothing
+    fulfilled) - never a per-document "Unknown name 'lines.count'"."""
+    engine = _preset_engine(
+        ENTITY_CANCEL_SALES_ORDER,
+        status_formula='if(lines.count == 0, "closed", if(lines.outstanding_sum > 0, "open", "closed"))',
+    )
+    raw = {"DocKey": 3, "DocNo": "XS-3", "Cancelled": "F", "_lines": [_fake_line()]}
+    mapped = engine.map_document(raw)
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert mapped.record.status == "open"
+    empty = engine.map_document({"DocKey": 4, "DocNo": "XS-4", "Cancelled": "F", "_lines": []})
+    assert empty.ok, [e.message() for e in empty.errors]
+    assert empty.record.status == "closed"
+
+
+def test_a_huge_note_is_cut_never_rejected():
+    from modules.autocount.canonical.documents import NOTE_MAX_CHARS
+
+    record = CanonicalConsignment(source_ref="r", doc_no="CG-1", note="x" * (NOTE_MAX_CHARS + 500))
+    assert len(record.sink_payload()["note"]) == NOTE_MAX_CHARS
+    assert record.sink_payload()["lines"] == []

@@ -149,6 +149,42 @@ class NotAwaitingApproval(AutocountServiceError):
     pass
 
 
+class ContractGateRefused(AutocountServiceError):
+    """AC-CANCEL-PULL - an approval for an entity in
+    ``PUSH_REFUSES_LOGGING_FALLBACK`` whose consumer contract gate is shut.
+    The batch goes back to ``needs_review`` with every row STAGED, never
+    "delivered" through the logging sink (which would mark the rows PUSHED
+    while nothing reached the consumer - a silent, permanent loss)."""
+
+    error_code = "CONTRACT_GATE"
+
+
+def _contract_gate_refusal(company: Any, entity_type: str, sink: Any) -> Optional[str]:
+    """The operator message when a push for ``entity_type`` must be refused
+    because a Sorento company's contract gate routed it to the logging-sink
+    fallback; ``None`` when the push may proceed. Shared by ``auto_push`` and
+    ``approve`` so the two delivery paths can never disagree."""
+    if entity_type not in PUSH_REFUSES_LOGGING_FALLBACK:
+        return None
+    if company.sink_impl != SINK_IMPL_SORENTO or sink.name == SINK_SORENTO:
+        return None
+    if entity_type == ENTITY_STOCK_BALANCE:
+        # Byte-identical to the plan-13 message (AC-13-06).
+        return (
+            "This book's Sorento consumer does not yet accept stock "
+            "balances (contract 2.5 with 'stock_balances' required) - "
+            "nothing was pushed."
+        )
+    gate = CONTRACT_GATED_ENTITIES.get(entity_type)
+    requirement = (
+        f" (contract {gate[0]} with '{gate[1]}' required)" if gate is not None else ""
+    )
+    return (
+        f"This book's Sorento consumer does not yet accept "
+        f"{entity_type.replace('_', ' ')} records{requirement} - nothing was pushed."
+    )
+
+
 class PushFailed(AutocountServiceError):
     """The push raised part-way through. The batch is back in ``needs_review``
     and is re-approvable - it is NOT stranded and NOT silently half-delivered."""
@@ -624,26 +660,10 @@ class SyncService:
         # every row stays STAGED, nothing is marked pushed.
         # AC-CANCEL-PULL - the same refusal for every entity in
         # `PUSH_REFUSES_LOGGING_FALLBACK` (the four contract-2.8 linked
-        # documents join stock); stock's own message stays byte-identical.
-        if (
-            entity_type in PUSH_REFUSES_LOGGING_FALLBACK
-            and company.sink_impl == SINK_IMPL_SORENTO
-            and sink.name != SINK_SORENTO
-        ):
-            if entity_type == ENTITY_STOCK_BALANCE:
-                summary["error"] = (
-                    "This book's Sorento consumer does not yet accept stock "
-                    "balances (contract 2.5 with 'stock_balances' required) - "
-                    "nothing was pushed."
-                )
-            else:
-                required_version, required_name = CONTRACT_GATED_ENTITIES[entity_type]
-                summary["error"] = (
-                    f"This book's Sorento consumer does not yet accept "
-                    f"{entity_type.replace('_', ' ')} records (contract "
-                    f"{required_version} with '{required_name}' required) - "
-                    "nothing was pushed."
-                )
+        # documents join stock); `approve()` runs the SAME check.
+        refusal = _contract_gate_refusal(company, entity_type, sink)
+        if refusal is not None:
+            summary["error"] = refusal
             summary["errorCode"] = "CONTRACT_GATE"
             return summary
 
@@ -1225,6 +1245,12 @@ class SyncService:
             company = self.companies.get(tenant_id, company_id)
             entity_type = self._entity_type_for(job)
             sink = self.companies.sink_for_company(tenant_id, company, entity_type)
+            # AC-CANCEL-PULL (review blocker) - the manual approval is a
+            # delivery path too: a shut contract gate must never let it
+            # "deliver" through the logging-sink fallback.
+            refusal = _contract_gate_refusal(company, entity_type, sink)
+            if refusal is not None:
+                raise ContractGateRefused(refusal)
         except Exception as exc:  # noqa: BLE001
             self._release_claim(job, [], exc)
             raise
