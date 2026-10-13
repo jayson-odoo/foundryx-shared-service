@@ -32,6 +32,7 @@ from ..schemas import (
     IdeaAttachmentOut,
     IdeaMergedIntoOut,
     IdeaOut,
+    IdeaSourceOut,
     TransitionOut,
 )
 from .card_fields import clean_use_cases
@@ -186,6 +187,34 @@ class IdeaReadService:
                 )
             )
         return out
+
+    def _add_merged_child_attachments(
+        self, ideas: List[Idea], attachments: Dict[str, List[IdeaAttachmentOut]]
+    ) -> None:
+        """Plan 20 (AC-20-14, D4): a survivor also lists the attachments of the
+        ideas merged into it, labelled ``fromIdea`` (they stay on the child, so
+        unmerge moves nothing). Batched: one children query + one attachment
+        query for the whole page."""
+        survivor_ids = [i.id for i in ideas if not i.merged_into_id]
+        if not survivor_ids:
+            return
+        children = (
+            self.db.query(Idea)
+            .filter(
+                Idea.merged_into_id.in_(survivor_ids),
+                Idea.tenant_id.in_({i.tenant_id for i in ideas}),
+            )
+            .all()
+        )
+        if not children:
+            return
+        child_rows = self._attachments_by_idea(children)
+        for child in children:
+            source = IdeaSourceOut(id=child.id, ideaNumber=child.idea_number)
+            for a in child_rows.get(child.id, []):
+                attachments.setdefault(child.merged_into_id, []).append(
+                    a.model_copy(update={"fromIdea": source})
+                )
 
     def _merge_maps(
         self, ideas: List[Idea]
@@ -388,6 +417,7 @@ class IdeaReadService:
         products, statuses, contacts = self._resolve_maps(ideas)
         my_votes = self._my_votes(ideas, voter_id)
         attachments = self._attachments_by_idea(ideas)
+        self._add_merged_child_attachments(ideas, attachments)
         transitions_map, advance_map = self._transitions_and_advance(
             ideas, statuses, tenant_id, actor
         )

@@ -163,7 +163,11 @@ def merge_ideas(
     merged, fewer than 2, an id outside the tenant) writes nothing (422/404).
     Reuses ``ideation.triage.manage`` (D7, no new permission)."""
     return IdeaMergeService(db).merge(
-        current_user.tenant_id, body.survivorId, body.ideaIds, actor=current_user
+        current_user.tenant_id,
+        body.survivorId,
+        body.ideaIds,
+        actor=current_user,
+        fields=body.fields,
     )
 
 

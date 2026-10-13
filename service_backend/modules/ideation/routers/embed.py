@@ -349,7 +349,9 @@ def embed_merge_ideas(
     return _mark_one(
         db,
         principal,
-        IdeaMergeService(db).merge(principal.tenant_id, body.survivorId, body.ideaIds),
+        IdeaMergeService(db).merge(
+            principal.tenant_id, body.survivorId, body.ideaIds, fields=body.fields
+        ),
     )
 
 

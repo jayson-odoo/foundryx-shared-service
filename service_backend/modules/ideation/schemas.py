@@ -16,6 +16,14 @@ from pydantic import Field, field_validator, model_validator
 from app.schemas.base import ApiModel
 
 
+class IdeaSourceOut(ApiModel):
+    """The merged child a read-through row came from (plan 20, AC-20-14) - set
+    on a survivor's comments/attachments that physically live on a child."""
+
+    id: str
+    ideaNumber: Optional[str] = None
+
+
 class IdeaAttachmentOut(ApiModel):
     """An idea attachment (voice note, image, video, file). Empty until the
     create_idea / attachment slice lands - the detail section renders empty."""
@@ -29,6 +37,8 @@ class IdeaAttachmentOut(ApiModel):
     # Relative serve path for an uploaded file (bytes in tenant storage); null
     # for a URL-backed WhatsApp capture (plan sprint-5/15, AC-15-19).
     contentPath: Optional[str] = None
+    # Set when this row lives on a child merged into the idea being read.
+    fromIdea: Optional[IdeaSourceOut] = None
 
 
 class TransitionOut(ApiModel):
@@ -196,6 +206,9 @@ class IdeaCommentOut(ApiModel):
     canDelete: bool = False
     createdAt: datetime
     editedAt: Optional[datetime] = None
+    # Set on a survivor's read of a merged child's comment (plan 20, AC-20-14);
+    # such a row is read-only on the survivor (canEdit/canDelete false).
+    fromIdea: Optional[IdeaSourceOut] = None
 
 
 # NUL and the other C0 controls, except newline and tab (AC-19-36), and lone
@@ -284,6 +297,10 @@ class MergeIn(ApiModel):
 
     survivorId: str
     ideaIds: List[str]
+    # Field-level merge (plan 20, AC-20-10/11): ``{fieldKey: [ideaId, ...]}`` -
+    # one id = that idea's value; several = combined in the given order.
+    # Omitted = the survivor's fields are unchanged (pre-plan-20 behaviour).
+    fields: Optional[Dict[str, List[str]]] = None
 
 
 class StatusIn(ApiModel):

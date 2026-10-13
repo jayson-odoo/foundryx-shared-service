@@ -14,7 +14,7 @@ never left the child, so restoring only moves back the STAMPED rows - see
 (``mint_idea_identity``, idempotent).
 """
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from sqlalchemy import or_
@@ -26,9 +26,61 @@ from app.models.user import User
 from ..models import Idea, IdeaVote
 from ..schemas import IdeaOut
 from .actions import IdeaActionService
+from .card_fields import clean_text, clean_use_cases
 from .ideas import IdeaReadService
 from .numbering import mint_idea_identity
 from .status_events import record_flatten_events, record_merge_events, record_unmerge_events
+
+
+# Field-level merge (plan 20, AC-20-10): wire key -> Idea attribute. The only
+# fields a merge may rewrite on the survivor (the owner's merge field set).
+MERGE_FIELDS: Dict[str, str] = {
+    "title": "title",
+    "problem": "problem",
+    "desiredOutcome": "desired_outcome",
+    "useCases": "use_cases",
+    "currentWorkaround": "current_workaround",
+    "rawText": "raw_text",
+}
+# Attributes mirrored in ``captured_json`` (the intake answer keys).
+_CAPTURED_MIRROR = {"problem", "desired_outcome", "use_cases", "current_workaround"}
+
+
+def _source_label(idea: Idea) -> str:
+    return idea.idea_number or clean_text(idea.title) or "another idea"
+
+
+def combine_field(attr: str, chosen: List[Idea]) -> Any:
+    """The survivor value for ``attr`` built from the ticked ideas, in order.
+    One idea = its value verbatim; several = text joined with a
+    ``--- from IDEA-xxxx ---`` line before each value after the first (empty
+    values skipped), use cases concatenated with exact duplicates dropped."""
+    if attr == "use_cases":
+        merged: List[str] = []
+        for idea in chosen:
+            for item in clean_use_cases(idea.use_cases) or []:
+                if item not in merged:
+                    merged.append(item)
+        return merged or None
+    parts = [(idea, clean_text(getattr(idea, attr))) for idea in chosen]
+    parts = [(idea, value) for idea, value in parts if value]
+    if not parts:
+        return "" if attr == "raw_text" else None
+    first, *rest = parts
+    chunks = [first[1]] + [f"--- from {_source_label(i)} ---\n{v}" for i, v in rest]
+    return "\n\n".join(chunks)
+
+
+def _set_field(idea: Idea, attr: str, value: Any) -> None:
+    """Write ``attr`` and keep its ``captured_json`` mirror in step."""
+    setattr(idea, attr, value)
+    if attr in _CAPTURED_MIRROR:
+        captured = dict(idea.captured_json or {})
+        if value:
+            captured[attr] = value
+        else:
+            captured.pop(attr, None)
+        idea.captured_json = captured
 
 
 class IdeaMergeService:
@@ -45,6 +97,7 @@ class IdeaMergeService:
         survivor_id: str,
         idea_ids: List[str],
         actor: Optional[User] = None,
+        fields: Optional[Dict[str, List[str]]] = None,
     ) -> IdeaOut:
         """Collapse ``idea_ids`` onto ``survivor_id`` (AC-94-01). All
         validation (D6) happens BEFORE any write - a rejected merge changes
@@ -82,6 +135,8 @@ class IdeaMergeService:
 
         survivor = ideas_by_id[survivor_id]
         members = [ideas_by_id[i] for i in ids if i != survivor_id]
+        # Field values computed (and validated) BEFORE any write (AC-20-11).
+        field_values = self._resolve_fields(fields, ids, ideas_by_id)
 
         # ── writes from here on ──────────────────────────────────────────
         mint_idea_identity(self.db, survivor)  # D10 (AC-94-12)
@@ -119,6 +174,10 @@ class IdeaMergeService:
                 touched_ids |= self._relocate_inherited_votes(
                     tenant_id, child.id, survivor_id
                 )
+                # Its field snapshot described the (now frozen) intermediate
+                # member, never the new survivor - drop it so an unmerge can
+                # never "restore" the wrong idea (plan 20, D5).
+                child.merge_snapshot_json = None
                 child.merged_into_id = survivor_id
                 flattened_children.append(child)
 
@@ -138,6 +197,19 @@ class IdeaMergeService:
             row = ideas_by_id.get(idea_id) or self._idea_in_tenant(tenant_id, idea_id)
             if row is not None:
                 self._actions._recount(row)
+
+        # Field-level merge (plan 20, D5): write the chosen values and park the
+        # replaced survivor values on the FIRST absorbed member so unmerge can
+        # restore them.
+        snapshot: Dict[str, Dict[str, Any]] = {}
+        for attr, value in field_values.items():
+            before = getattr(survivor, attr)
+            if before == value:
+                continue
+            snapshot[attr] = {"before": before, "after": value}
+            _set_field(survivor, attr, value)
+        if snapshot:
+            members[0].merge_snapshot_json = snapshot
 
         record_merge_events(
             self.db, tenant_id=tenant_id, survivor=survivor, members=members, actor=actor
@@ -164,6 +236,33 @@ class IdeaMergeService:
             .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
             .first()
         )
+
+    def _resolve_fields(
+        self,
+        fields: Optional[Dict[str, List[str]]],
+        ids: List[str],
+        ideas_by_id: Dict[str, Idea],
+    ) -> Dict[str, Any]:
+        """Validate the ``fields`` map (AC-20-11) and compute each survivor
+        value. 422 on an unknown key, an empty / duplicated id list, or an id
+        outside the merge set. ``problem`` is NOT NULL: a choice whose ticked
+        values are all empty leaves it unchanged."""
+        if not fields:
+            return {}
+        values: Dict[str, Any] = {}
+        for key, chosen_ids in fields.items():
+            attr = MERGE_FIELDS.get(key)
+            if attr is None:
+                raise HTTPException(422, f"Unknown merge field: {key}.")
+            if not chosen_ids or len(set(chosen_ids)) != len(chosen_ids):
+                raise HTTPException(422, f"Merge field {key} needs distinct idea ids.")
+            if any(i not in ids for i in chosen_ids):
+                raise HTTPException(422, f"Merge field {key} names an idea outside the merge.")
+            value = combine_field(attr, [ideas_by_id[i] for i in chosen_ids])
+            if attr == "problem" and not value:
+                continue
+            values[attr] = value
+        return values
 
     def _validate_merge_set(self, ideas) -> None:
         """D6 - refuse a mixed/invalid selection, no writes (AC-94-04)."""
@@ -316,6 +415,14 @@ class IdeaMergeService:
         # None on every target.
         former_survivor_ids = {child.id: child.merged_into_id for child in targets}
 
+        # Field restore (plan 20, D5) - newest merge first so layered merges
+        # unwind in reverse; only fields still equal to what the merge wrote.
+        survivor_row = by_id.get(root)
+        for child in sorted(
+            targets, key=lambda c: (c.merged_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True
+        ):
+            self._restore_fields(survivor_row, child)
+
         touched_ids = set()
         for child in targets:
             survivor_id = child.merged_into_id
@@ -350,6 +457,17 @@ class IdeaMergeService:
         return self._reader.serialize_many(
             ordered, actor.id if actor else None, tenant_id=tenant_id, actor=actor
         )
+
+    @staticmethod
+    def _restore_fields(survivor: Optional[Idea], child: Idea) -> None:
+        snapshot = child.merge_snapshot_json or {}
+        if survivor is not None:
+            for attr, entry in snapshot.items():
+                if attr not in MERGE_FIELDS.values() or not isinstance(entry, dict):
+                    continue
+                if getattr(survivor, attr) == entry.get("after"):
+                    _set_field(survivor, attr, entry.get("before"))
+        child.merge_snapshot_json = None
 
     def _restore_votes(self, tenant_id: str, survivor_id: str, child_id: str) -> None:
         """D4 - unmerge is LOSSLESS: a shadowed row never left the child (D4/

@@ -538,3 +538,34 @@ def test_embed_merge_unmerge_scope(scoped):
     assert expired2.status_code == 401
     expired3 = client.get(f"/embed/ideas/{scoped['in_scope']}/merged", headers=EXPIRED_BEARER)
     assert expired3.status_code == 401
+
+
+def test_embed_field_merge_and_scope(scoped):
+    """Plan 20 AC-20-15 - the embed merge takes the same ``fields`` map; a
+    ``fields`` id outside the connection's product still denies (404)."""
+    client = scoped["client"]
+    factory = client._factory
+    second = _insert_idea(factory, scoped["product_id"], problem="second in scope")
+
+    denied = client.post(
+        "/embed/ideas/merge",
+        headers=scoped["bearer"],
+        json={
+            "survivorId": scoped["in_scope"],
+            "ideaIds": [scoped["in_scope"], scoped["other_product"]],
+            "fields": {"problem": [scoped["other_product"]]},
+        },
+    )
+    assert denied.status_code == 404, denied.text
+
+    res = client.post(
+        "/embed/ideas/merge",
+        headers=scoped["bearer"],
+        json={
+            "survivorId": scoped["in_scope"],
+            "ideaIds": [scoped["in_scope"], second],
+            "fields": {"problem": [second]},
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["problem"] == "second in scope"
