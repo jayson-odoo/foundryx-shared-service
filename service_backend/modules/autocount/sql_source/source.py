@@ -1964,12 +1964,31 @@ class SqlDbSource:
         try:
             return flat_source_ref(
                 raw,
-                database_name=getattr(self._ctx.company, "database_name", ""),
+                database_name=self._identity_scope(),
                 key_columns=self.key_columns,
                 entity_type=self.entity_type,
             )
         except IdentityError:
             return None
+
+    def _identity_scope(self) -> str:
+        """The SAME scope the mapping engine mints the record's ``source_ref``
+        under (``http_source.book.identity_scope``) - so ``ac_row_hash`` keys,
+        delete intents and the staged record all agree. The company's
+        ``database_name`` for every entity except the doc-feed-shaped linked
+        documents (AC-CANCEL-PULL), which are filed under the company's doc-feed
+        book. Resolved once per source."""
+        cached = getattr(self, "_identity_scope_cache", None)
+        if cached is None:
+            from ..http_source.book import identity_scope
+
+            config = getattr(self._ctx, "entity_config", None)
+            cached = identity_scope(
+                self._ctx.db, self._ctx.tenant_id, self._ctx.company, self.entity_type,
+                getattr(config, "source_config", None),
+            )
+            self._identity_scope_cache = cached
+        return cached
 
     def _prior_hashes(self, raw_rows: Sequence[Dict[str, Any]]) -> Dict[str, str]:
         refs = [ref for ref in (self.source_ref(raw) for raw in raw_rows) if ref]

@@ -76,7 +76,9 @@ from .canonical.documents import (
     CanonicalShippingOrder,
     CanonicalShippingOrderLine,
     LINKED_DOCUMENT_MODELS,
+    LINKED_DOCUMENT_REF_CODES,
     CanonicalLinkedDocumentLine,
+    linked_document_ref,
     is_document_entity,
 )
 
@@ -766,6 +768,20 @@ def flat_source_ref(
             )
         return f"{book}:{BRANCH_REF_MARKER}:{':'.join(parts)}"
 
+    if entity_type in LINKED_DOCUMENT_REF_CODES:
+        # AC-CANCEL-PULL - the CRM's OWN derivation for the doc-feed-shaped
+        # linked documents: `{book}:{XS|XP|CG|CR}:{DocKey}`. `database_name`
+        # carries the BOOK here (`http_source.book.identity_scope`).
+        book = (database_name or "").strip()
+        if not book:
+            raise IdentityError(
+                "this company has no doc-feed book (configure its Delivery "
+                "Orders feed first), so the document cannot be correlated"
+            )
+        if len(parts) != 1:
+            raise IdentityError("a linked document is keyed on DocKey alone")
+        return linked_document_ref(entity_type, book, parts[0])
+
     company = (database_name or "").strip()
     if not company:
         raise IdentityError(
@@ -1221,6 +1237,8 @@ LINKED_DOCUMENT_PROFILES: Dict[str, EntityProfile] = {
         identity_path="DocKey",
         line_ref_prefix=True,
         line_ordered_field="qty",
+        # The wire is the raw vendor-shaped row (CRM #1623, doc-feed shape).
+        raw_record_field="source_record",
     )
     for entity_type, model in LINKED_DOCUMENT_MODELS.items()
 }

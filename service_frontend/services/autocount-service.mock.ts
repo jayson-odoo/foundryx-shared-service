@@ -4014,7 +4014,7 @@ function linkedDocumentPreset(
       `h.${party}Name AS ${party}Name, h.Ref AS Ref, h.Note AS Note, h.Cancelled AS Cancelled, ` +
       `h.LastModified AS LastModified FROM {database}.dbo.${headerTable} AS h`,
     lineQuery:
-      'SELECT d.DtlKey AS DtlKey, d.Seq AS Seq, d.ItemCode AS ItemCode, d.Description AS Description, ' +
+      'SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, d.ItemCode AS ItemCode, d.Description AS Description, ' +
       'd.Location AS Location, d.Qty AS Qty, d.UOM AS UOM, d.UnitPrice AS UnitPrice, d.SubTotal AS SubTotal, ' +
       'd.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, d.FromDocDtlKey AS FromDocDtlKey ' +
       `FROM {database}.dbo.${lineTable} AS d WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL`,
@@ -4035,7 +4035,7 @@ function linkedDocumentPreset(
       { sourcePath: `${party}AutoKey`, sorentoField: `${prefix}_ref`, transform: `ref_${prefix}` },
       { sourcePath: `${party}Code`, sorentoField: `${prefix}_code`, transform: 'string' },
       { sourcePath: `${party}Name`, sorentoField: `${prefix}_name`, transform: 'string' },
-      { sourcePath: 'SalesAgent', sorentoField: 'agent_code', transform: 'string' },
+      { sourcePath: debtorSide ? 'SalesAgent' : 'PurchaseAgent', sorentoField: 'agent_code', transform: 'string' },
       { sourcePath: 'Ref', sorentoField: 'ref', transform: 'string' },
       { sourcePath: 'Note', sorentoField: 'note', transform: 'string' },
     ],

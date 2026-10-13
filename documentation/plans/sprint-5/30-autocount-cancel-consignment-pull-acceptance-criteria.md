@@ -18,20 +18,41 @@ same column names but is out of scope here (API-only).
 
 Tests: `service_backend/tests/test_autocount_linked_documents.py` (T).
 
-## Slice 1 - registration + canonical shape
+## Slice 1 - registration + wire shape
+
+Rework 2026-10-13 (crew audit at 336df54d, CRM #1623): the wire is the DO/GRN doc-feed shape the CRM already
+ingests, not a snake_case canonical one. The typed canonical fields remain the MAPPING layer only (Mapping tab,
+required fields, mapping errors).
 
 - **AC-30-01 [BE][T]** Given the module loads, the four entity types are document entities
-  (`DOCUMENT_ENTITY_TYPES`), in `ETL_ENTITY_TYPES`, `ENTITY_PROFILES` (nested `_lines`, line refs
-  `{db}:{DocKey}:{DtlKey}`, no fulfilment aggregate), `CANONICAL_MODELS` and `DOCUMENT_PRESETS`. SO/PO/SPO
-  are unchanged.
-- **AC-30-02 [BE][T]** Given a linked document, its wire payload is exactly the agreed shape:
-  - **header:** `source_ref`, `doc_no`, `doc_date`, `status`, `customer_*` or `supplier_*`, `agent_code`, `ref`, `note`, `lines`;
-  - **line:** `source_ref`, `line_number`, `product_ref`/`product_code`/`product_name`, `warehouse_ref`/`warehouse_code`, `qty`, `uom`, `unit_price`, `line_total`, `from_doc_type`, `from_doc_no`, `from_doc_line_key`.
-- **AC-30-03 [BE][T]** Given an optional field that is `None`, `""` or `[]`, it is omitted from the payload, never sent as `null`. A
-  real `0` is kept. The payload is the same at every connection `contract_version`.
-- **AC-30-04 [BE][T]** Given `FromDocDtlKey` is empty, `from_doc_line_key` is absent while `from_doc_no`,
-  `product_code`, `warehouse_code` and `qty` are still on the line (the CRM's match key).
-- **AC-30-05 [BE][T]** `status` stays in the five-word vocabulary; duplicate line refs reject the document.
+  (`DOCUMENT_ENTITY_TYPES`), and are registered in:
+  - `ETL_ENTITY_TYPES`;
+  - `ENTITY_PROFILES` (nested `_lines`, raw row kept in `source_record`);
+  - `CANONICAL_MODELS`;
+  - `DOCUMENT_PRESETS`.
+
+  SO/PO/SPO are unchanged.
+- **AC-30-02 [BE][T]** Each record's `source_ref` is the CRM's own derivation `{book}:{XS|XP|CG|CR}:{DocKey}`, where
+  `book` is the book of the company's own Delivery Orders (else Goods Receive Notes) feed. `SqlDbSource` row hashes
+  and delete intents key on the same string. A company with no doc-feed book is a named identity error at mapping
+  and a named error at push, never a guess.
+- **AC-30-03 [BE][T]** Each wire record is the AutoCount header row under its own PascalCase column names, with its
+  lines under `Details` (always present, `[]` when there are none):
+  - the ESB-internal join and fingerprint columns (`*AutoKey`, `LineCount`, `QtySum`, ...) are stripped;
+  - decimals are JSON numbers;
+  - datetimes are the vendor's naive MYT `YYYY-MM-DDTHH:MM:SS.fff`;
+  - `Note` is cut at 4000 chars.
+
+  The body is `{companyCode, book, records}`.
+- **AC-30-04 [BE][T]** Every line carries `DocKey`, `DtlKey`, `ItemCode`, `Location`, `Qty` and the link columns
+  `FromDocType`/`FromDocNo`/`FromDocDtlKey` (the CRM's match key when `FromDocDtlKey` is empty).
+- **AC-30-05 [BE][T]** `status` stays in the five-word vocabulary. Duplicate line refs reject the document.
+- **AC-30-06 [BE][T]** Given a document deleted in AutoCount (a reconcile delete intent), it is sent to
+  `/ingest/<path>/deletions` as `{doc_date_from, doc_date_to, doc_keys}`:
+  - the window is the task `fromDate` (else `2023-01-01`) to MYT today;
+  - a `deleted`/`deactivated`/`not_found` verdict marks it handled.
+
+  Owner ruling: a deleted cancel document must lower the CRM's cancelled qty.
 
 ## Slice 2 - mapping catalogue + presets
 
@@ -45,7 +66,7 @@ Tests: `service_backend/tests/test_autocount_linked_documents.py` (T).
 - **AC-30-12 [BE][T]** XS / Consignment / ConsignmentReturn read the Debtor columns, XP the Creditor
   columns; every preset row targets a catalogue field and covers every required field.
 - **AC-30-13 [BE][T]** Fake rows map end to end through the real engine:
-  - Cancel SO maps to `open` with prefixed refs;
+  - Cancel SO maps to `open` under `{book}:XS:{DocKey}`, and its wire record equals the golden record;
   - a voided (`Cancelled='T'`) Cancel PO maps to `cancelled`;
   - a CG consignment has no `from_*`;
   - a return points at `CG` + its CG number;
@@ -53,10 +74,10 @@ Tests: `service_backend/tests/test_autocount_linked_documents.py` (T).
 
 ## Slice 3 - delivery behind contract 2.8
 
-- **AC-30-20 [BE][T]** Each entity posts to its own plural `/ingest/<path>`, and is accepted only when
+- **AC-30-20 [BE][T]** Each entity posts the doc-feed envelope to its own plural `/ingest/<path>`, and is accepted only when
   the consumer advertises contract >= 2.8 AND the path name in `entities`. Without that, the company sink
   falls back to logging, and the entities are absent from the operator "supported entities" sentence.
-- **AC-30-21 [BE][T]** Given a Sorento company whose consumer is below 2.8, `auto_push` refuses the run
+- **AC-30-21 [BE][T]** Given a Sorento company whose consumer is below 2.8, `auto_push` AND `approve()` refuse the run
   with `errorCode CONTRACT_GATE` and every row stays STAGED. It never "delivers" through the logging
   fallback, which would mark rows pushed and lose them.
 - **AC-30-22 [BE][T]** The task view's contract banner knows the 2.8 requirement; missing customer/supplier/

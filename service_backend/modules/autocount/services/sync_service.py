@@ -42,6 +42,7 @@ from ..canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
+    LINKED_DOCUMENT_ENTITY_TYPES,
     LINKED_DOCUMENT_MODELS,
     CanonicalPurchaseOrder,
     CanonicalSalesOrder,
@@ -147,6 +148,11 @@ class JobNotFound(AutocountServiceError):
 
 class NotAwaitingApproval(AutocountServiceError):
     pass
+
+
+# AC-CANCEL-PULL - the doc-date floor of a linked-document deletion window when
+# the task carries no `fromDate` (the doc-feed backfill's own floor).
+LINKED_DOCUMENT_DELETE_FLOOR = "2023-01-01"
 
 
 class ContractGateRefused(AutocountServiceError):
@@ -1085,7 +1091,16 @@ class SyncService:
             key_fields = tuple(str(c) for c in key_fields if str(c).strip())
             pairs = pairs_from_refs(refs, key_fields=key_fields) or None
         try:
-            if hasattr(sink, "delete_batch"):
+            if entity_type in LINKED_DOCUMENT_ENTITY_TYPES and hasattr(sink, "delete_doc_keys"):
+                # AC-CANCEL-PULL - the doc-feed deletions door (CRM #1623):
+                # `{doc_date_from, doc_date_to, doc_keys}`, never `source_refs`.
+                # A cancel document deleted in AutoCount must lower the CRM's
+                # cancelled qty (owner ruling), so its delete intent is sent.
+                self._push_linked_document_deletes(
+                    refs, sink=sink, tenant_id=tenant_id, company_id=company_id,
+                    entity_type=entity_type, apply_chunk=apply_chunk,
+                )
+            elif hasattr(sink, "delete_batch"):
                 params = inspect.signature(sink.delete_batch).parameters
                 extra_kwargs: Dict[str, Any] = {}
                 if codes and "codes" in params:
@@ -1123,6 +1138,46 @@ class SyncService:
         if summary.get("deleteFailures") and not summary.get("error"):
             summary["error"] = summary["deleteFailures"][0]["error"]
         return True
+
+    def _push_linked_document_deletes(
+        self,
+        refs: List[str],
+        *,
+        sink: EntitySink,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        apply_chunk: Callable[..., None],
+    ) -> None:
+        """AC-CANCEL-PULL - delete intents for the doc-feed-shaped linked
+        documents go through ``SorentoSink.delete_doc_keys`` (the DO/GRN body
+        shape). The DocKey is the integer after the last ``:`` of the staged
+        ``source_ref`` (``{book}:{CODE}:{DocKey}`` - the SAME parse the doc
+        feed's sweep does), and the CRM's verdicts echo that same ref, so
+        ``apply_chunk`` matches them unchanged. A ref with no integer DocKey is
+        never sent (it stays STAGED). The window is the task's own ``fromDate``
+        floor .. MYT today: the deleted document's DocDate is gone from
+        AutoCount, and every document this task ever pushed is in it."""
+        from ..doc_feed.clock import MYT
+
+        by_key: Dict[int, List[str]] = {}
+        for ref in refs:
+            tail = str(ref).rsplit(":", 1)[-1]
+            if tail.lstrip("-").isdigit():
+                by_key.setdefault(int(tail), []).append(ref)
+        if not by_key:
+            return
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        doc_date_from = str(
+            ((config.source_config or {}).get("fromDate") if config is not None else None)
+            or LINKED_DOCUMENT_DELETE_FLOOR
+        )
+        doc_date_to = datetime.now(MYT).date().isoformat()
+        result = sink.delete_doc_keys(  # type: ignore[attr-defined]
+            sorted(by_key), doc_date_from=doc_date_from, doc_date_to=doc_date_to,
+        )
+        sent = [ref for key in sorted(by_key) for ref in by_key[key]]
+        apply_chunk(sent, (result or {}).get("records") or [], None)
 
     def preview(self, tenant_id: str, job_id: str) -> Dict[str, Any]:
         """Ask the consumer what approving WOULD do, writing nothing (AC-14-20/21).

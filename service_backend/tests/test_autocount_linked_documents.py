@@ -4,12 +4,14 @@ Four more AutoCount documents pulled through the existing DATABASE source
 (``source_impl = sql_db``) exactly like SO/PO/SPO, and pushed to the CRM
 behind contract 2.8. What is NEW and therefore pinned here:
 
-* the four canonical shapes and their wire payload (golden, every optional
-  field OMITTED when empty - never an explicit ``null``);
-* the link fields (``from_doc_type``/``from_doc_no``/``from_doc_line_key``) -
-  ``FromDocDtlKey`` is empty on every line since ~Oct-Nov 2024, so the CRM
-  matches on ``from_doc_no`` + ``product_code`` + ``warehouse_code`` + ``qty``
-  and all four must ride the line;
+* the WIRE is the DO/GRN doc-feed shape the CRM (#1623) already ingests:
+  body ``{companyCode, book, records}``, each record the AutoCount header row
+  under its own PascalCase column names with its lines in ``Details``,
+  ``source_ref`` = the CRM's own ``{book}:{XS|XP|CG|CR}:{DocKey}``, and
+  deletions by ``doc_keys``;
+* the link columns ``FromDocType``/``FromDocNo``/``FromDocDtlKey`` ride every
+  line with ``ItemCode``/``Location``/``Qty`` (``FromDocDtlKey`` is often empty,
+  so the CRM matches on the other four);
 * the four ``DocumentPreset`` rows (SQL text shape, ``:doc_key`` bind, every
   preset row targets a catalog field) mapped end to end through the REAL
   engine with fake rows;
@@ -22,6 +24,7 @@ All rows below are fake. Never real AutoCount data.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List
 
@@ -46,6 +49,7 @@ from modules.autocount.canonical.documents import (
     CanonicalConsignmentReturn,
     CanonicalLinkedDocumentLine,
     is_document_entity,
+    linked_document_ref,
 )
 from modules.autocount.mapping import (
     ENTITY_PROFILES,
@@ -145,139 +149,119 @@ def test_the_existing_order_documents_are_unchanged():
     }
 
 
-# ── canonical wire shape (golden) ────────────────────────────────────────────
+# ── wire shape: the DO/GRN doc-feed record (golden) ─────────────────────────
+
+BOOK = "db1"
 
 
-def _full_line(**overrides) -> CanonicalLinkedDocumentLine:
-    data = dict(
-        source_ref=f"{DB}:51234:998877",
-        line_number=1,
-        product_ref=f"{DB}:10442",
-        product_code="CHAIR-01",
-        product_name="Office chair",
-        warehouse_ref=f"{DB}:7",
-        warehouse_code="HQ",
-        qty=Decimal("2"),
-        uom="UNIT",
-        unit_price=Decimal("150.00"),
-        line_total=Decimal("300.00"),
-        from_doc_type="SO",
-        from_doc_no="SO-000456",
-        from_doc_line_key=445566,
-    )
-    data.update(overrides)
-    return CanonicalLinkedDocumentLine(**data)
+def _raw_row(**overrides) -> dict:
+    """A fake XS header row exactly as `SqlDbSource` hands it to the mapper:
+    driver types (Decimal, naive datetime), the ESB-internal join/fingerprint
+    columns, and its lines nested under `_lines`."""
+    row = {
+        "DocKey": 51234, "DocNo": "XS-000123",
+        "DocDate": datetime(2026, 10, 1), "DebtorAutoKey": 300,
+        "DebtorCode": "300-A001", "DebtorName": "Acme Sdn Bhd", "SalesAgent": "JOHN",
+        "Ref": "R-1", "Description": "Cancel", "RefDocNo": None, "CurrencyCode": "MYR",
+        "Note": "free text", "Cancelled": "F",
+        "LastModified": datetime(2026, 10, 1, 9, 0, 0, 120000),
+        "LineCount": 1, "QtySum": Decimal("2.00000000"), "SubTotalSum": Decimal("300.00"),
+        "MaxDtlKey": 998877, "LinkedLineCount": 0, "FromDocKeySum": None,
+        "_lines": [_fake_line()],
+    }
+    row.update(overrides)
+    return row
 
 
-GOLDEN_LINE = {
-    "source_ref": f"{DB}:51234:998877",
-    "line_number": 1,
-    "product_ref": f"{DB}:10442",
-    "product_code": "CHAIR-01",
-    "product_name": "Office chair",
-    "warehouse_ref": f"{DB}:7",
-    "warehouse_code": "HQ",
-    "qty": "2",
-    "uom": "UNIT",
-    "unit_price": "150.00",
-    "line_total": "300.00",
-    "from_doc_type": "SO",
-    "from_doc_no": "SO-000456",
-    "from_doc_line_key": 445566,
+def _fake_line(**overrides) -> dict:
+    line = {
+        "DocKey": 51234, "DtlKey": 998877, "Seq": 1, "ItemAutoKey": 10442,
+        "ItemCode": "CHAIR-01", "Description": "Office chair", "LocationAutoKey": 7,
+        "Location": "HQ", "Qty": Decimal("2.00000000"), "UOM": "UNIT",
+        "UnitPrice": Decimal("150.50000000"), "SubTotal": Decimal("301.00"),
+        "FromDocType": "SO", "FromDocNo": "SO-000456", "FromDocDtlKey": None,
+    }
+    line.update(overrides)
+    return line
+
+
+GOLDEN_RECORD = {
+    "DocKey": 51234, "DocNo": "XS-000123", "DocDate": "2026-10-01T00:00:00.000",
+    "DebtorCode": "300-A001", "DebtorName": "Acme Sdn Bhd", "SalesAgent": "JOHN",
+    "Ref": "R-1", "Description": "Cancel", "RefDocNo": None, "CurrencyCode": "MYR",
+    "Note": "free text", "Cancelled": "F", "LastModified": "2026-10-01T09:00:00.120",
+    "Details": [{
+        "DocKey": 51234, "DtlKey": 998877, "Seq": 1, "ItemCode": "CHAIR-01",
+        "Description": "Office chair", "Location": "HQ", "Qty": 2, "UOM": "UNIT",
+        "UnitPrice": 150.5, "SubTotal": 301, "FromDocType": "SO",
+        "FromDocNo": "SO-000456", "FromDocDtlKey": None,
+    }],
 }
 
 
-def test_cancel_sales_order_payload_is_exactly_the_agreed_shape():
-    record = CanonicalCancelSalesOrder(
-        source_ref=f"{DB}:51234", doc_no="XS-000123", doc_date="2026-10-01",
-        status="open", customer_ref=f"{DB}:300", customer_code="300-A001",
-        customer_name="Acme Sdn Bhd", agent_code="JOHN", ref="R-1", note="free text",
-        lines=[_full_line()],
+def _record(entity_type=ENTITY_CANCEL_SALES_ORDER, raw=None, **fields):
+    raw = raw if raw is not None else _raw_row()
+    return MODELS[entity_type](
+        source_ref=linked_document_ref(entity_type, BOOK, raw["DocKey"]),
+        doc_no=raw.get("DocNo"), source_record=raw, **fields,
     )
-    assert record.sink_payload(contract_version=2) == {
-        "source_ref": f"{DB}:51234",
-        "doc_no": "XS-000123",
-        "doc_date": "2026-10-01",
-        "status": "open",
-        "customer_ref": f"{DB}:300",
-        "customer_code": "300-A001",
-        "customer_name": "Acme Sdn Bhd",
-        "agent_code": "JOHN",
-        "ref": "R-1",
-        "note": "free text",
-        "lines": [GOLDEN_LINE],
+
+
+def test_the_wire_record_is_the_vendor_header_with_details():
+    """CRM #1623 takes the DO/GRN doc-feed record: PascalCase AutoCount
+    columns verbatim, lines under `Details`, the ESB's own join/fingerprint
+    columns stripped, decimals as JSON numbers, datetimes as the vendor's
+    naive `YYYY-MM-DDTHH:MM:SS.fff`."""
+    payload = _record().sink_payload(contract_version=2)
+    assert payload == GOLDEN_RECORD
+    json.dumps(payload)  # wire-safe as is
+
+
+def test_the_staged_json_round_trip_keeps_the_wire_values():
+    """`canonical_json` is what the push rehydrates from - numbers must stay
+    numbers through it, never become strings."""
+    record = _record()
+    rehydrated = CanonicalCancelSalesOrder(**record.model_dump(mode="json"))
+    assert rehydrated.sink_payload() == GOLDEN_RECORD
+
+
+def test_the_source_ref_is_the_crm_derivation_per_entity():
+    assert {e: linked_document_ref(e, BOOK, 7) for e in ALL} == {
+        ENTITY_CANCEL_SALES_ORDER: "db1:XS:7",
+        ENTITY_CANCEL_PURCHASE_ORDER: "db1:XP:7",
+        ENTITY_CONSIGNMENT: "db1:CG:7",
+        ENTITY_CONSIGNMENT_RETURN: "db1:CR:7",
     }
 
 
-def test_cancel_purchase_order_carries_the_supplier_not_the_customer():
-    record = CanonicalCancelPurchaseOrder(
-        source_ref=f"{DB}:9", doc_no="XP-000001", status="cancelled",
-        supplier_ref=f"{DB}:400", supplier_code="400-S001", supplier_name="Supply Co",
-        lines=[_full_line(from_doc_type="PO", from_doc_no="PO-000010")],
-    )
-    payload = record.sink_payload(contract_version=2)
-    assert payload["supplier_code"] == "400-S001"
-    assert not any(key.startswith("customer_") for key in payload)
-    assert payload["status"] == "cancelled"
-    assert payload["lines"][0]["from_doc_type"] == "PO"
+def test_no_canonical_key_ever_reaches_the_wire():
+    payload = _record(customer_code="300-A001", status="open").sink_payload()
+    for key in ("source_ref", "doc_no", "customer_code", "status", "lines", "_lines"):
+        assert key not in payload, key
+    for internal in ("DebtorAutoKey", "LineCount", "QtySum", "SubTotalSum", "MaxDtlKey",
+                     "LinkedLineCount", "FromDocKeySum"):
+        assert internal not in payload, internal
+    assert "ItemAutoKey" not in payload["Details"][0]
+    assert "LocationAutoKey" not in payload["Details"][0]
 
 
-def test_consignment_and_return_carry_the_customer():
-    for model in (CanonicalConsignment, CanonicalConsignmentReturn):
-        assert "customer_code" in model.SINK_FIELDS
-        assert "supplier_code" not in model.SINK_FIELDS
+def test_the_link_match_columns_ride_every_line():
+    """FromDocDtlKey is often empty: the CRM matches by FromDocNo + item +
+    location + qty, so all of them are on the line regardless."""
+    line = _record().sink_payload()["Details"][0]
+    for key in ("FromDocType", "FromDocNo", "FromDocDtlKey", "ItemCode", "Location", "Qty", "DocKey"):
+        assert key in line, key
 
 
-def test_empty_optional_fields_are_omitted_never_sent_as_null():
-    """A consignment (CG-) is entered by hand: no source doc, so no from_*
-    on the wire at all, and an unset header field is absent, not null."""
-    record = CanonicalConsignment(
-        source_ref=f"{DB}:77", doc_no="CG-000001",
-        lines=[_full_line(
-            from_doc_type=None, from_doc_no="", from_doc_line_key=None,
-            product_ref=None, unit_price=None,
-        )],
-    )
-    payload = record.sink_payload(contract_version=2)
-    assert payload == {
-        "source_ref": f"{DB}:77",
-        "doc_no": "CG-000001",
-        "lines": [payload["lines"][0]],
-    }
-    line = payload["lines"][0]
-    for absent in ("from_doc_type", "from_doc_no", "from_doc_line_key", "product_ref", "unit_price"):
-        assert absent not in line, absent
-    assert None not in line.values()
+def test_a_header_without_lines_still_sends_details():
+    payload = _record(raw=_raw_row(_lines=[])).sink_payload()
+    assert payload["Details"] == []
 
 
-def test_link_match_fields_survive_an_empty_from_doc_dtl_key():
-    """FromDocDtlKey is EMPTY since ~Oct-Nov 2024 - the CRM then matches by
-    from_doc_no + product_code + warehouse_code + qty, so all four must still
-    be on the line."""
-    line = _full_line(from_doc_line_key=None).sink_payload(contract_version=2)
-    assert "from_doc_line_key" not in line
-    for kept in ("from_doc_no", "product_code", "warehouse_code", "qty"):
-        assert line[kept] is not None, kept
-
-
-def test_a_zero_quantity_is_a_real_value_not_an_empty_one():
-    """Kill test: the omit-when-empty rule must never drop a genuine 0."""
-    line = _full_line(
-        qty=Decimal("0"), line_total=Decimal("0"), line_number=0, from_doc_line_key=0,
-    ).sink_payload(contract_version=2)
-    assert line["qty"] == "0"
-    assert line["line_total"] == "0"
-    assert line["line_number"] == 0
-    assert line["from_doc_line_key"] == 0
-
-
-def test_the_payload_ignores_the_connection_contract_version():
-    """These four are gated on the consumer's live contract (2.8) instead -
-    the v1/v2 fallback split never applies, so nothing disappears at v1."""
-    record = CanonicalCancelSalesOrder(
-        source_ref=f"{DB}:1", doc_no="XS-1", customer_code="C", lines=[_full_line()],
-    )
-    assert record.sink_payload(contract_version=1) == record.sink_payload(contract_version=2)
+def test_a_zero_quantity_is_a_number_not_dropped():
+    raw = _raw_row(_lines=[_fake_line(Qty=Decimal("0E-8"), SubTotal=Decimal("0.00"))])
+    line = _record(raw=raw).sink_payload()["Details"][0]
+    assert line["Qty"] == 0 and line["SubTotal"] == 0
 
 
 def test_status_stays_in_the_fixed_vocabulary():
@@ -286,10 +270,15 @@ def test_status_stays_in_the_fixed_vocabulary():
 
 
 def test_duplicate_line_refs_are_rejected():
+    line = CanonicalLinkedDocumentLine(source_ref="r:1", product_code="A", qty=Decimal("1"))
     with pytest.raises(ValueError):
-        CanonicalConsignmentReturn(
-            source_ref="r", doc_no="CR-1", lines=[_full_line(), _full_line()],
-        )
+        CanonicalConsignmentReturn(source_ref="r", doc_no="CR-1", lines=[line, line])
+
+
+def test_consignment_and_return_carry_the_customer():
+    for model in (CanonicalConsignment, CanonicalConsignmentReturn):
+        assert "customer_code" in model.SINK_FIELDS
+        assert "supplier_code" not in model.SINK_FIELDS
 
 
 # ── mapping catalogue ────────────────────────────────────────────────────────
@@ -370,7 +359,9 @@ def test_party_columns_follow_the_document_side():
     assert "Debtor" not in query
 
 
-def _preset_engine(entity_type: str, *, status_formula: str = "") -> MappingEngine:
+def _preset_engine(
+    entity_type: str, *, status_formula: str = "", book: str = BOOK,
+) -> MappingEngine:
     preset = DOCUMENT_PRESETS[entity_type]
     rows: List[MappingRow] = []
     for scope, fields in ((SCOPE_HEADER, preset.header), (SCOPE_LINE, preset.line)):
@@ -385,81 +376,71 @@ def _preset_engine(entity_type: str, *, status_formula: str = "") -> MappingEngi
     return MappingEngine(
         rows, entity_type=entity_type,
         profile=flat_profile(entity_type, list(preset.key_columns)),
-        database_name=DB,
+        # The identity scope of a linked document is the company's doc-feed
+        # BOOK (`http_source.book.identity_scope`).
+        database_name=book,
     )
 
 
-def _fake_line(**overrides) -> dict:
-    line = {
-        "DtlKey": 998877, "Seq": 1, "ItemAutoKey": 10442, "ItemCode": "CHAIR-01",
-        "Description": "Office chair", "LocationAutoKey": 7, "Location": "HQ",
-        "Qty": Decimal("2"), "UOM": "UNIT", "UnitPrice": Decimal("150.00"),
-        "SubTotal": Decimal("300.00"), "FromDocType": "SO", "FromDocNo": "SO-000456",
-        "FromDocDtlKey": None,
-    }
-    line.update(overrides)
-    return line
-
-
 def test_the_cancel_so_preset_maps_a_fake_row_end_to_end():
-    raw = {
-        "DocKey": 51234, "DocNo": "XS-000123", "DocDate": "2026-10-01",
-        "DebtorAutoKey": 300, "DebtorCode": "300-A001", "DebtorName": "Acme Sdn Bhd",
-        "SalesAgent": "JOHN", "Ref": "R-1", "Note": "free text", "Cancelled": "F",
-        "LastModified": "2026-10-01 09:00:00", "LineCount": 1,
-        "_lines": [_fake_line()],
-    }
-    mapped = _preset_engine(ENTITY_CANCEL_SALES_ORDER).map_document(raw)
+    """The preset rows validate the row (required doc_no / product_code /
+    qty, status formula) and the record keeps the raw row for the wire, filed
+    under the CRM's own ref `{book}:XS:{DocKey}`."""
+    mapped = _preset_engine(ENTITY_CANCEL_SALES_ORDER).map_document(_raw_row())
     assert mapped.ok, [e.message() for e in mapped.errors]
-    payload = mapped.record.sink_payload(contract_version=2)
-    assert payload["source_ref"] == f"{DB}:51234"
-    assert payload["doc_no"] == "XS-000123"
-    assert payload["status"] == "open"
-    assert payload["customer_ref"] == f"{DB}:300"
-    [line] = payload["lines"]
-    assert line["source_ref"] == f"{DB}:51234:998877"
-    assert line["product_ref"] == f"{DB}:10442"
-    assert line["warehouse_code"] == "HQ"
-    assert line["from_doc_no"] == "SO-000456"
-    assert "from_doc_line_key" not in line
+    record = mapped.record
+    assert record.source_ref == f"{BOOK}:XS:51234"
+    assert record.doc_no == "XS-000123"
+    assert record.status == "open"
+    assert record.lines[0].product_code == "CHAIR-01"
+    assert record.sink_payload() == GOLDEN_RECORD
 
 
 def test_a_voided_cancel_document_maps_to_cancelled():
-    raw = {
-        "DocKey": 1, "DocNo": "XP-1", "CreditorAutoKey": 400, "Cancelled": "T",
-        "_lines": [_fake_line(FromDocType="PO", FromDocNo="PO-1", FromDocDtlKey=55)],
-    }
+    raw = _raw_row(
+        DocKey=1, DocNo="XP-1", CreditorAutoKey=400, PurchaseAgent="AMY", Cancelled="T",
+        _lines=[_fake_line(DocKey=1, FromDocType="PO", FromDocNo="PO-1", FromDocDtlKey=55)],
+    )
     mapped = _preset_engine(ENTITY_CANCEL_PURCHASE_ORDER).map_document(raw)
     assert mapped.ok, [e.message() for e in mapped.errors]
     assert mapped.record.status == "cancelled"
-    assert mapped.record.supplier_ref == f"{DB}:400"
-    assert mapped.record.lines[0].from_doc_line_key == 55
+    assert mapped.record.source_ref == f"{BOOK}:XP:1"
+    assert mapped.record.agent_code == "AMY"
+    line = mapped.record.sink_payload()["Details"][0]
+    assert (line["FromDocType"], line["FromDocNo"], line["FromDocDtlKey"]) == ("PO", "PO-1", 55)
 
 
 def test_a_hand_entered_consignment_maps_with_no_source_document():
-    raw = {
-        "DocKey": 7, "DocNo": "CG-000001", "DebtorCode": "300-A001", "Cancelled": "F",
-        "_lines": [_fake_line(FromDocType=None, FromDocNo=None)],
-    }
+    raw = _raw_row(DocKey=7, DocNo="CG-000001", _lines=[_fake_line(
+        DocKey=7, FromDocType=None, FromDocNo=None,
+    )])
     mapped = _preset_engine(ENTITY_CONSIGNMENT).map_document(raw)
     assert mapped.ok, [e.message() for e in mapped.errors]
-    line = mapped.record.sink_payload(contract_version=2)["lines"][0]
-    assert "from_doc_type" not in line and "from_doc_no" not in line
+    assert mapped.record.source_ref == f"{BOOK}:CG:7"
+    line = mapped.record.sink_payload()["Details"][0]
+    assert line["FromDocType"] is None and line["FromDocNo"] is None
 
 
 def test_a_consignment_return_points_back_at_its_cg_document():
-    raw = {
-        "DocKey": 8, "DocNo": "CR-000001", "DebtorCode": "300-A001", "Cancelled": "F",
-        "_lines": [_fake_line(FromDocType="CG", FromDocNo="CG-000001")],
-    }
+    raw = _raw_row(DocKey=8, DocNo="CR-000001", _lines=[_fake_line(
+        DocKey=8, FromDocType="CG", FromDocNo="CG-000001",
+    )])
     mapped = _preset_engine(ENTITY_CONSIGNMENT_RETURN).map_document(raw)
     assert mapped.ok, [e.message() for e in mapped.errors]
-    line = mapped.record.sink_payload(contract_version=2)["lines"][0]
-    assert (line["from_doc_type"], line["from_doc_no"]) == ("CG", "CG-000001")
+    assert mapped.record.source_ref == f"{BOOK}:CR:8"
+    line = mapped.record.sink_payload()["Details"][0]
+    assert (line["FromDocType"], line["FromDocNo"]) == ("CG", "CG-000001")
+
+
+def test_an_unknown_book_is_a_named_identity_error_never_a_guess():
+    engine = _preset_engine(ENTITY_CANCEL_SALES_ORDER, book="")
+    mapped = engine.map_document(_raw_row())
+    assert not mapped.ok
+    assert any("book" in e.message() for e in mapped.errors)
 
 
 def test_a_line_without_an_item_code_is_a_named_mapping_error():
-    raw = {"DocKey": 9, "DocNo": "XS-9", "_lines": [_fake_line(ItemCode=None)]}
+    raw = _raw_row(DocKey=9, DocNo="XS-9", _lines=[_fake_line(DocKey=9, ItemCode=None)])
     mapped = _preset_engine(ENTITY_CANCEL_SALES_ORDER).map_document(raw)
     assert not mapped.ok
     assert any("product_code" in e.message() for e in mapped.errors)
@@ -481,14 +462,19 @@ def test_each_entity_is_gated_on_contract_2_8_and_its_own_name(entity_type):
 
 
 @pytest.mark.parametrize("entity_type", ALL)
-def test_each_entity_posts_to_its_own_plural_ingest_route(entity_type):
+def test_each_entity_posts_the_doc_feed_envelope_to_its_own_route(entity_type):
+    """`{companyCode, book, records}` to `/ingest/<plural>`; each record is
+    the vendor-shaped row, and the CRM's verdict (keyed by its own
+    `{book}:{CODE}:{DocKey}` derivation) is matched back to the record."""
     requests: List[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         body = json.loads(request.content)
+        code = {"cancel_sales_orders": "XS", "cancel_purchase_orders": "XP",
+                "consignments": "CG", "consignment_returns": "CR"}[request.url.path.rsplit("/", 1)[-1]]
         records = [
-            {"source_ref": r["source_ref"], "outcome": "created", "entity_id": "id-1"}
+            {"source_ref": f"{body['book']}:{code}:{r['DocKey']}", "outcome": "created", "entity_id": "id-1"}
             for r in body["records"]
         ]
         return httpx.Response(200, json={
@@ -498,17 +484,29 @@ def test_each_entity_posts_to_its_own_plural_ingest_route(entity_type):
         })
 
     sink = SorentoSink(base_url="http://x", api_key="k", entity_type=entity_type,
-                       transport=httpx.MockTransport(handle))
-    record = MODELS[entity_type](source_ref="ref-1", doc_no="D-1", lines=[_full_line()])
-    result = sink.write_batch([record], request_id="t")
+                       company_code="SOR", book=BOOK, transport=httpx.MockTransport(handle))
+    [result] = sink.write_batch([_record(entity_type)], request_id="t")
     assert requests[0].url.path == f"/api/v1/external/ingest/{SEGMENTS[entity_type]}"
-    sent = json.loads(requests[0].content)["records"][0]
-    assert sent["lines"][0]["from_doc_no"] == "SO-000456"
-    assert result is not None
+    body = json.loads(requests[0].content)
+    assert body["book"] == BOOK and body["companyCode"] == "SOR"
+    assert body["records"] == [GOLDEN_RECORD]
+    assert result.delivered is True
 
 
-def _staged(db, company_id, entity_type, *, job_status=None):
+def _with_doc_feed_book(db, company, book: str = BOOK) -> None:
+    """The company's Delivery Orders feed row: the book the linked documents
+    are filed under (`http_source.book.linked_document_book`)."""
+    from modules.autocount.models import AcDocFeed
+
+    db.add(AcDocFeed(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, feed="delivery_orders", book=book,
+    ))
+    db.commit()
+
+
+def _staged(db, company_id, entity_type, *, job_status=None, op=None):
     from app.models.background_job import JOB_RUNNING, BackgroundJob
+    from modules.autocount.models import STAGED_OP_DELETE
 
     job = BackgroundJob(
         tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status=job_status or JOB_RUNNING,
@@ -516,17 +514,44 @@ def _staged(db, company_id, entity_type, *, job_status=None):
     )
     db.add(job)
     db.commit()
-    record = MODELS[entity_type](source_ref=f"{DB}:1", doc_no="D-1", lines=[_full_line()])
+    record = _record(entity_type)
+    deleting = op == STAGED_OP_DELETE
     row = AcStagedRecord(
         tenant_id=DEFAULT_TENANT_ID, company_id=company_id, entity_type=entity_type,
         job_id=job.id, source_ref=record.source_ref, doc_no="D-1",
-        raw_json={"DocKey": 1}, canonical_json=record.model_dump(mode="json"),
-        status=STAGED,
+        raw_json=None if deleting else {"DocKey": 51234},
+        canonical_json=None if deleting else record.model_dump(mode="json"),
+        status=STAGED, **({"op": op} if op else {}),
     )
     db.add(row)
     db.commit()
     db.refresh(row)
     return row, job
+
+
+def test_the_identity_scope_of_a_linked_document_is_the_doc_feed_book(_stock_gate_rig):
+    """`SqlDbSource.source_ref` (row hashes, delete intents) and the mapping
+    engine both read `identity_scope`, so they always agree."""
+    from modules.autocount.http_source.book import identity_scope
+
+    db, company = _stock_gate_rig
+    assert identity_scope(db, DEFAULT_TENANT_ID, company, ENTITY_CONSIGNMENT, None) == ""
+    _with_doc_feed_book(db, company)
+    assert identity_scope(db, DEFAULT_TENANT_ID, company, ENTITY_CONSIGNMENT, None) == BOOK
+    # Every other entity keeps the company's database name.
+    assert identity_scope(db, DEFAULT_TENANT_ID, company, ENTITY_SALES_ORDER, None) == company.database_name
+
+
+def test_a_company_without_a_doc_feed_book_fails_closed_at_push(monkeypatch, _stock_gate_rig):
+    from modules.autocount.services.company_service import AutocountServiceError, CompanyService
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.8, entities=list(SEGMENTS.values())),
+    )
+    db, company = _stock_gate_rig
+    with pytest.raises(AutocountServiceError, match="doc-feed book"):
+        CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_CANCEL_SALES_ORDER)
 
 
 @pytest.mark.parametrize("entity_type", ALL)
@@ -538,6 +563,7 @@ def test_sink_for_company_falls_back_to_logging_below_2_8(monkeypatch, _stock_ga
         lambda self: SorentoContractInfo(version=2.7, entities=[SEGMENTS[entity_type]]),
     )
     db, company = _stock_gate_rig
+    _with_doc_feed_book(db, company)
     sink = CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, entity_type)
     assert sink.name == SINK_LOGGING
 
@@ -550,8 +576,10 @@ def test_sink_for_company_opens_at_2_8_with_the_entity_advertised(monkeypatch, _
         lambda self: SorentoContractInfo(version=2.8, entities=list(SEGMENTS.values())),
     )
     db, company = _stock_gate_rig
+    _with_doc_feed_book(db, company)
     sink = CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_CONSIGNMENT)
     assert isinstance(sink, SorentoSink)
+    assert sink.book == BOOK
 
 
 @pytest.mark.parametrize("entity_type", ALL)
@@ -566,6 +594,7 @@ def test_auto_push_refuses_a_shut_gate_and_leaves_rows_staged(monkeypatch, _stoc
         lambda self: SorentoContractInfo(version=2.7, entities=["sales_orders"]),
     )
     db, company = _stock_gate_rig
+    _with_doc_feed_book(db, company)
     row, job = _staged(db, company.id, entity_type)
     summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, entity_type, job_id=job.id)
     assert summary.get("errorCode") == "CONTRACT_GATE", summary
@@ -594,6 +623,7 @@ def test_approve_refuses_a_shut_gate_and_leaves_rows_staged(monkeypatch, _stock_
         lambda self: SorentoContractInfo(version=2.4, entities=["sales_orders"]),
     )
     db, company = _stock_gate_rig
+    _with_doc_feed_book(db, company)
     if entity_type == "stock_balance":
         row, job = _staged(db, company.id, ENTITY_CONSIGNMENT, job_status=JOB_NEEDS_REVIEW)
         row.entity_type = entity_type
@@ -630,6 +660,7 @@ def test_approve_still_delivers_once_the_gate_opens(monkeypatch, _stock_gate_rig
 
     monkeypatch.setattr(SorentoSink, "write_batch", fake_write_batch)
     db, company = _stock_gate_rig
+    _with_doc_feed_book(db, company)
     row, job = _staged(db, company.id, ENTITY_CANCEL_SALES_ORDER, job_status=JOB_NEEDS_REVIEW)
     SyncService(db).approve(DEFAULT_TENANT_ID, job.id)
     assert sent == [row.source_ref]
@@ -655,6 +686,85 @@ def test_a_header_formula_over_line_aggregates_runs_for_a_linked_document():
 def test_a_huge_note_is_cut_never_rejected():
     from modules.autocount.canonical.documents import NOTE_MAX_CHARS
 
-    record = CanonicalConsignment(source_ref="r", doc_no="CG-1", note="x" * (NOTE_MAX_CHARS + 500))
-    assert len(record.sink_payload()["note"]) == NOTE_MAX_CHARS
-    assert record.sink_payload()["lines"] == []
+    payload = _record(raw=_raw_row(Note="x" * (NOTE_MAX_CHARS + 500))).sink_payload()
+    assert len(payload["Note"]) == NOTE_MAX_CHARS
+
+
+@pytest.mark.parametrize("entity_type", ALL)
+def test_a_deleted_document_goes_to_the_doc_keys_deletions_door(monkeypatch, _stock_gate_rig, entity_type):
+    """Owner ruling: a cancel document deleted in AutoCount must lower the
+    CRM's cancelled qty. Its staged delete intent is sent through the DO/GRN
+    deletions body `{doc_date_from, doc_date_to, doc_keys}` and a
+    `deleted` verdict (echoing the CRM's own ref) marks it PUSHED."""
+    from modules.autocount.models import STAGED_OP_DELETE, STAGED_PUSHED
+    from modules.autocount.services.sync_service import SyncService
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.8, entities=list(SEGMENTS.values())),
+    )
+    calls: List[dict] = []
+
+    def fake_delete_doc_keys(self, doc_keys, *, doc_date_from, doc_date_to, dry_run=False, on_chunk=None):
+        calls.append({"keys": list(doc_keys), "from": doc_date_from, "to": doc_date_to,
+                      "path": self._path_segment, "book": self.book})
+        code = {ENTITY_CANCEL_SALES_ORDER: "XS", ENTITY_CANCEL_PURCHASE_ORDER: "XP",
+                ENTITY_CONSIGNMENT: "CG", ENTITY_CONSIGNMENT_RETURN: "CR"}[self.entity_type]
+        return {"summary": {"total": 1, "deleted": 1},
+                "records": [{"source_ref": f"{self.book}:{code}:{k}", "outcome": "deleted"} for k in doc_keys]}
+
+    def no_ref_deletes(self, *_a, **_k):  # pragma: no cover - must never be called
+        raise AssertionError("linked documents never use the source_refs deletions body")
+
+    monkeypatch.setattr(SorentoSink, "delete_doc_keys", fake_delete_doc_keys)
+    monkeypatch.setattr(SorentoSink, "delete_batch", no_ref_deletes)
+    db, company = _stock_gate_rig
+    _with_doc_feed_book(db, company)
+    row, job = _staged(db, company.id, entity_type, op=STAGED_OP_DELETE)
+
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, entity_type, job_id=job.id)
+    assert summary.get("deletedHandled") == 1, summary
+    [call] = calls
+    assert call["keys"] == [51234]
+    assert call["path"] == SEGMENTS[entity_type] and call["book"] == BOOK
+    assert call["from"] == "2023-01-01"  # no task config: the delete floor
+    assert len(call["to"]) == 10
+    db.refresh(row)
+    assert row.status == STAGED_PUSHED
+
+
+def test_the_sql_source_keys_row_hashes_on_the_same_crm_ref(session_factory):
+    """`SqlDbSource.source_ref` keys `ac_row_hash` and the reconcile's delete
+    intents. It must mint the SAME `{book}:{CODE}:{DocKey}` the mapped record
+    carries, or a change would never match its stored hash and a delete
+    would carry a ref the CRM never issued."""
+    from modules.autocount.models import AcEntityConfig, SOURCE_IMPL_SQL_DB
+    from modules.autocount.sql_source.runtime import RUNTIME
+    from modules.autocount.sql_source.source import SqlDbSource
+    from tests.test_autocount_documents import (
+        HEADER_QUERY, LINE_QUERY, _company, _ctx, _source_engine, _sql_connection,
+    )
+
+    db = session_factory()
+    try:
+        conn = _sql_connection(db, _source_engine())
+        company = _company(db)
+        _with_doc_feed_book(db, company)
+        config = AcEntityConfig(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+            entity_type=ENTITY_CANCEL_SALES_ORDER, source_impl=SOURCE_IMPL_SQL_DB,
+        )
+        config.source_config = {
+            "connectionId": conn.id, "query": HEADER_QUERY, "lineQuery": LINE_QUERY,
+            "keyColumns": ["doc_key"], "watermarkColumn": "last_modified",
+            "comparedColumns": [], "fromDate": "2026-01-01", "docDateColumn": "doc_date",
+            "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+        }
+        config.result_columns = ["doc_key", "doc_no", "status", "doc_date", "last_modified"]
+        db.add(config)
+        db.commit()
+        source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CANCEL_SALES_ORDER)
+        assert source.source_ref({"doc_key": "D001"}) == f"{BOOK}:XS:D001"
+    finally:
+        db.close()
+        RUNTIME.dispose_all()

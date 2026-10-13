@@ -242,3 +242,34 @@ the header and rows read as an unknown id. Supplier and cost data never widens t
 `autocount.pull.read` alone, the same rule as the doc finder's GRN type. The gateway itself is
 key + company scoped, like DO, so `autocount.pull.manage` (who can issue a key) can still read
 GRN through it (accepted with option (a); a per-key entity allowlist is the fix if needed). Contract: section 8 of the plan 16 contract.
+
+## 12. Linked documents on the doc-feed wire (AC-CANCEL-PULL, CRM contract 2.8)
+
+Cancel SO (`XS`), Cancel PO (`XP`), Consignment (`Consignment`) and Consignment Return
+(`ConsignmentReturn`) are pulled by the regular `sql_db` ETL tasks (presets in `presets.py`,
+`DOCUMENT_PRESETS`), not by this feed. They are delivered on THIS feed's wire shape, because CRM
+#1623 ingests them through the same door shape as DO/GRN. Plan and AC:
+`documentation/plans/sprint-5/30-autocount-cancel-consignment-pull-acceptance-criteria.md`.
+
+- **Paths and gate:** `cancel_sales_orders`, `cancel_purchase_orders`, `consignments`,
+  `consignment_returns`. Each needs contract >= 2.8 with its own name in `entities`
+  (`CONTRACT_GATED_ENTITIES`). Below that gate `auto_push` and `approve()` refuse with
+  `CONTRACT_GATE`, and rows stay STAGED (`PUSH_REFUSES_LOGGING_FALLBACK`).
+- **Body:** `{companyCode, book, records}`. `book` is the book of the company's own `delivery_orders`
+  feed row, else its `goods_receive_notes` row (`http_source.book.linked_document_book`). It fails
+  closed when the company has none.
+- **Record:** the SQL header row under its AutoCount column names, with lines under `Details`
+  (`CanonicalLinkedDocument.sink_payload`):
+  - the ESB's join and fingerprint columns are stripped;
+  - decimals are JSON numbers;
+  - datetimes are naive MYT `YYYY-MM-DDTHH:MM:SS.fff`;
+  - `Note` is capped at 4000 chars.
+
+  The typed canonical fields are the mapping layer only.
+- **Identity:** `source_ref` = `{book}:{XS|XP|CG|CR}:{DocKey}`, the CRM's own derivation, which
+  verdicts are matched by. `SqlDbSource.source_ref` uses the same `identity_scope`, so row hashes and
+  delete intents agree.
+- **Deletions:** a reconcile delete intent goes to `SorentoSink.delete_doc_keys`
+  (`{doc_date_from, doc_date_to, doc_keys}`). The window is the task `fromDate` (else
+  `2023-01-01`) to MYT today. A deleted cancel document must lower the CRM's cancelled qty (owner
+  ruling).

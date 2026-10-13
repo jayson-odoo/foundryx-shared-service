@@ -44,8 +44,11 @@ def identity_scope(
     """
     # Lazy imports: this module is imported by ``doc_feed.runner`` and the
     # sink factory, which must stay cycle-free.
+    from ..canonical.documents import LINKED_DOCUMENT_REF_CODES
     from ..canonical.masters import ENTITY_BRANCH
 
+    if entity_type in LINKED_DOCUMENT_REF_CODES:
+        return linked_document_book(db, tenant_id, company)
     if entity_type != ENTITY_BRANCH:
         return getattr(company, "database_name", "") or ""
     from ..provider import PROVIDER_KEY
@@ -58,3 +61,26 @@ def identity_scope(
     if conn is None:
         return ""
     return derive_book(str((conn.config_json or {}).get("baseUrl") or "")) or ""
+
+
+def linked_document_book(db, tenant_id: str, company) -> str:
+    """AC-CANCEL-PULL - the book the four linked documents (Cancel SO/PO,
+    Consignment, Consignment Return) are filed under on the CRM: the SAME
+    book as this company's own doc feeds (its Delivery Orders feed, else its
+    Goods Receive Notes feed), so they land beside its DOs. ``''`` when the
+    company has no doc feed with a book - the identity function turns that
+    into a named field error rather than guessing. Resolved with the
+    company's OWN ``tenant_id`` (the polymorphic-stored-id rule)."""
+    from ..doc_feed.constants import FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES
+    from ..repositories.doc_feed_repository import DocFeedRepository
+
+    company_id = getattr(company, "id", None)
+    if not company_id or db is None:
+        return ""
+    repo = DocFeedRepository(db)
+    for feed in (FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES):
+        row = repo.get(tenant_id, company_id, feed)
+        book = str(getattr(row, "book", "") or "").strip() if row is not None else ""
+        if book:
+            return book
+    return ""

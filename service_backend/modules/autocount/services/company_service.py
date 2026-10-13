@@ -960,6 +960,20 @@ class CompanyService:
         that has no connection yet (never saved) falls back to the company's
         own open connection. FAIL CLOSED: no derivable book raises a named
         error instead of posting a body the CRM 422s for the whole batch."""
+        if entity_type in LINKED_DOCUMENT_ENTITY_TYPES:
+            # AC-CANCEL-PULL - the doc-feed-shaped linked documents carry the
+            # SAME top-level `book` as this company's DO/GRN feeds (the book
+            # their `source_ref` is filed under). FAIL CLOSED like branch.
+            from ..http_source.book import linked_document_book
+
+            book = linked_document_book(self.db, tenant_id, company)
+            if not book:
+                raise AutocountServiceError(
+                    "This company has no doc-feed book (configure its Delivery "
+                    "Orders feed first), so cancel and consignment documents "
+                    "cannot be delivered to Sorento."
+                )
+            return {"book": book}
         if entity_type != ENTITY_BRANCH:
             return {}
         config = self.configs.get(tenant_id, company.id, ENTITY_BRANCH)

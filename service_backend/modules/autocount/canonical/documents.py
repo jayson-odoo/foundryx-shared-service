@@ -39,7 +39,7 @@ other canonical shape.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from decimal import Decimal
@@ -552,41 +552,91 @@ class CanonicalShippingOrder(CanonicalDocument):
 
 # ── AC-CANCEL-PULL - linked documents (contract 2.8) ──────────────────────────
 #
-#     !!  ONE RULE FOR THE WHOLE WIRE: AN EMPTY FIELD IS ABSENT.  !!
-# These four are NEW on the CRM side (contract 2.8, lane AC-CANCEL-CRM), so
-# there is no v1/v2 history to honour: every field is gated by the
-# consumer's own advertised contract instead (`sinks_sorento.
-# CONTRACT_GATED_ENTITIES`), never by the connection's integer
-# `contract_version` - the payload is the same at every value. A field whose
-# value is `None`, `""` or `[]` is DROPPED (never an explicit `null`); a real
-# `0`/`Decimal("0")` is a value and is kept.
+#     !!  THE WIRE IS THE DO/GRN DOC-FEED SHAPE, NOT A CANONICAL ONE.  !!
+# CRM #1623 ingests these four through the SAME door shape as the
+# delivery-order / goods-receive-note feeds (`autocount-doc-feeds.md`
+# section 1/3, contract 13): body `{companyCode, book, records}`, each record
+# the AutoCount HEADER row with its own PascalCase column names and its lines
+# under `Details`, deletions by `doc_keys`. The CRM derives `source_ref` as
+# `{book}:{CODE}:{DocKey}` and answers verdicts under it, so that is this
+# record's `source_ref` too (`linked_document_ref`).
+#
+# The typed fields below (`doc_no`, `status`, `customer_code`, lines'
+# `product_code`/`qty`, ...) are the MAPPING layer only: the Mapping tab, the
+# required-field gate and the mapping errors run on them exactly as for
+# SO/PO. They never reach the wire. The wire is `source_record` - the row
+# `SqlDbSource` fetched (header columns + the `_lines` it nested), filled by
+# the mapping engine (`EntityProfile.raw_record_field`), never a mapping
+# target - minus the ESB-internal join/fingerprint columns below.
 
+# The CRM's doc-type code per entity: the second segment of the derived
+# `source_ref`. AutoCount's own codes (`XS`/`XP`; `CG`/`CR` are what the
+# DTL `FromDocType` and header `ToDocType` columns carry).
+LINKED_DOCUMENT_REF_CODES: Dict[str, str] = {
+    ENTITY_CANCEL_SALES_ORDER: "XS",
+    ENTITY_CANCEL_PURCHASE_ORDER: "XP",
+    ENTITY_CONSIGNMENT: "CG",
+    ENTITY_CONSIGNMENT_RETURN: "CR",
+}
 
-# AC-CANCEL-PULL (security review) - the cap on a linked document's free-text
-# `note` on the wire. Agreed with the CRM lane as part of the 2.8 shape.
+# Columns the presets select for the ESB's own use (master-ref joins and the
+# change-detection fingerprint), never AutoCount table columns - stripped from
+# the wire so the CRM only ever sees the vendor's own fields.
+LINKED_HEADER_INTERNAL_COLUMNS = frozenset({
+    "DebtorAutoKey", "CreditorAutoKey", "LineCount", "QtySum", "SubTotalSum",
+    "MaxDtlKey", "LinkedLineCount", "FromDocKeySum",
+})
+LINKED_LINE_INTERNAL_COLUMNS = frozenset({"ItemAutoKey", "LocationAutoKey"})
+
+# The cap on a linked document's free-text `Note` on the wire.
 NOTE_MAX_CHARS = 4000
 
+# The vendor feed's own datetime format (naive MYT, millisecond precision -
+# e.g. `2026-09-28T10:00:00.000`); AutoCount stores local time, so a SQL
+# `datetime` is already MYT and is only formatted, never shifted.
+_VENDOR_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"
 
-def _drop_empty(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+def linked_document_ref(entity_type: str, book: str, doc_key: Any) -> str:
+    """``{book}:{CODE}:{DocKey}`` - the CRM's own derivation, verbatim."""
+    return f"{book}:{LINKED_DOCUMENT_REF_CODES[entity_type]}:{doc_key}"
+
+
+def vendor_json_value(value: Any) -> Any:
+    """One SQL value as the vendor feed would send it: a ``Decimal`` as a JSON
+    number (``int`` when integral, else ``float``), a ``datetime`` as the
+    naive vendor string, a ``date`` as its midnight, bytes/GUIDs as text.
+    Recursive over lists/dicts. Applied BEFORE the record is stored, so the
+    staged ``canonical_json`` already holds the wire values."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None).strftime(_VENDOR_DATETIME_FORMAT)[:-3]
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day).strftime(
+            _VENDOR_DATETIME_FORMAT
+        )[:-3]
+    if isinstance(value, (int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [vendor_json_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): vendor_json_value(v) for k, v in value.items()}
+    return str(value)
 
 
 class CanonicalLinkedDocumentLine(CanonicalDocumentLine):
-    """One line of a cancel / consignment document.
-
-    ``from_doc_type``/``from_doc_no``/``from_doc_line_key`` are AutoCount's
-    ``FromDocType``/``FromDocNo``/``FromDocDtlKey``. The key has been empty
-    on every line since ~Oct-Nov 2024, so the CRM matches a line to its source
-    by ``from_doc_no`` + ``product_code`` + ``warehouse_code`` + ``qty`` -
-    which is why those are first-class wire fields here, not fallbacks.
-    """
+    """The MAPPING-layer line of a cancel / consignment document (validation
+    only - see the section comment). ``product_code`` + ``qty`` are required
+    by the catalogue because the CRM matches a line to its source document by
+    ``FromDocNo`` + item + location + qty (``FromDocDtlKey`` is often empty)."""
 
     qty: Optional[Decimal] = Field(None, ge=0)
     unit_price: Optional[Decimal] = None
     from_doc_type: Optional[str] = Field(None, max_length=20)
-    # `FromDocNo` is nvarchar(max) on XSDTL/XPDTL/ConsignmentReturnDTL
-    # (nvarchar(50) on ConsignmentDTL; schema read 2026-10-13) - 255 is a
-    # generous ceiling for one document number, not the column's own width.
+    # `FromDocNo` is nvarchar(max) on XSDTL/XPDTL/ConsignmentReturnDTL.
     from_doc_no: Optional[str] = Field(None, max_length=255)
     from_doc_line_key: Optional[int] = None
 
@@ -597,15 +647,10 @@ class CanonicalLinkedDocumentLine(CanonicalDocumentLine):
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = ()
 
-    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
-        data = self.model_dump(mode="json")
-        return _drop_empty({key: data[key] for key in self.SINK_FIELDS})
-
 
 class CanonicalLinkedDocument(CanonicalDocument):
-    """Shared header of the four linked documents. ``doc_no`` is AutoCount's
-    ``DocNo`` (XS-/XP-/CG-/CR- …); ``status`` is the shared five-word
-    vocabulary (``cancelled`` when the document itself was voided)."""
+    """Shared header of the four linked documents. ``sink_payload`` is the
+    raw vendor-shaped record (see the section comment)."""
 
     doc_no: Optional[str] = Field(None, max_length=100)
     doc_date: Optional[date] = None
@@ -613,28 +658,38 @@ class CanonicalLinkedDocument(CanonicalDocument):
     ref: Optional[str] = Field(None, max_length=255)
     note: Optional[str] = None
     lines: List[CanonicalLinkedDocumentLine] = Field(default_factory=list)
-
-    @field_validator("note")
-    @classmethod
-    def _note_is_bounded(cls, value: Optional[str]) -> Optional[str]:
-        """AutoCount `Note` is nvarchar(max), often RTF with embedded images.
-        One multi-megabyte note must never bloat a staged row or sink a whole
-        200-record ingest batch, so it is CUT (never rejected - the document
-        itself is still good) at `NOTE_MAX_CHARS`."""
-        if value is not None and len(value) > NOTE_MAX_CHARS:
-            return value[:NOTE_MAX_CHARS]
-        return value
+    source_record: Dict[str, Any] = Field(default_factory=dict)
 
     _COMMON_HEAD: ClassVar[Tuple[str, ...]] = ("source_ref", "doc_no", "doc_date", "status")
     _COMMON_TAIL: ClassVar[Tuple[str, ...]] = ("agent_code", "ref", "note")
 
+    @field_validator("source_record", mode="before")
+    @classmethod
+    def _vendor_values(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        record = vendor_json_value(value)
+        # Security review: AutoCount `Note` is nvarchar(max), often RTF with
+        # embedded images - CUT (never rejected) so one huge note can never
+        # bloat a staged row or sink a whole ingest batch.
+        note = record.get("Note")
+        if isinstance(note, str) and len(note) > NOTE_MAX_CHARS:
+            record["Note"] = note[:NOTE_MAX_CHARS]
+        return record
+
     def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
-        data = self.model_dump(mode="json")
-        payload = _drop_empty({key: data[key] for key in self.SINK_FIELDS})
-        # `lines` is structural, not optional data: always present, `[]` for
-        # a header with no lines (the CRM reads that as "no lines").
-        payload["lines"] = [
-            line.sink_payload(contract_version=contract_version) for line in self.lines
+        """The vendor record: header columns verbatim (minus the ESB-internal
+        ones) and its lines under ``Details``. ``Details`` is always present
+        (``[]`` for a header with no lines) - it is structure, not data."""
+        raw = dict(self.source_record or {})
+        lines = raw.pop(SQL_DOC_LINES_KEY, None) or []
+        payload = {
+            key: value for key, value in raw.items()
+            if key not in LINKED_HEADER_INTERNAL_COLUMNS and not key.startswith("_")
+        }
+        payload["Details"] = [
+            {key: value for key, value in line.items() if key not in LINKED_LINE_INTERNAL_COLUMNS}
+            for line in lines if isinstance(line, dict)
         ]
         return payload
 

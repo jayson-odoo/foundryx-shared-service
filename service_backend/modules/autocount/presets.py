@@ -533,6 +533,12 @@ SPO_PRESET = DocumentPreset(
 # XSDTL carries 56 item lines with a NULL Qty and 123 NULL-item lines with a
 # Qty, exactly the two shapes the SO live findings closed.
 #
+# WIRE (CRM #1623): the record sent is these SELECTed rows themselves (the
+# DO/GRN doc-feed shape - header columns + `Details`), so every column keeps
+# its AutoCount name (`PurchaseAgent`, not an alias) and every line carries
+# its `DocKey`. The master-ref joins (`*AutoKey`) and fingerprint aggregates
+# are stripped before sending (`canonical.documents.LINKED_*_INTERNAL_COLUMNS`).
+#
 # Table and column names below are CODE CONSTANTS - never operator input.
 # `{database}` is substituted from the task's own company, exactly like the
 # SO/PO/SPO presets above.
@@ -547,7 +553,7 @@ _DEBTOR_PARTY = (
 )
 _CREDITOR_PARTY = (
     "s.AutoKey AS CreditorAutoKey, h.CreditorCode AS CreditorCode, "
-    "h.CreditorName AS CreditorName, h.PurchaseAgent AS SalesAgent",
+    "h.CreditorName AS CreditorName, h.PurchaseAgent AS PurchaseAgent",
     "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode",
 )
 
@@ -558,7 +564,9 @@ def _linked_header_query(header_table: str, line_table: str, party: Tuple[str, s
     party_columns, party_join = party
     return (
         "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, "
-        f"{party_columns}, h.Ref AS Ref, h.Note AS Note, h.Cancelled AS Cancelled, "
+        f"{party_columns}, h.Ref AS Ref, h.Description AS Description, "
+        "h.RefDocNo AS RefDocNo, h.CurrencyCode AS CurrencyCode, "
+        "h.Note AS Note, h.Cancelled AS Cancelled, "
         "h.LastModified AS LastModified, "
         "l.LineCount AS LineCount, l.QtySum AS QtySum, "
         "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey, "
@@ -578,7 +586,8 @@ def _linked_header_query(header_table: str, line_table: str, party: Tuple[str, s
 
 def _linked_line_query(line_table: str) -> str:
     return (
-        "SELECT d.DtlKey AS DtlKey, d.Seq AS Seq, i.AutoKey AS ItemAutoKey, "
+        "SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, "
+        "i.AutoKey AS ItemAutoKey, "
         "d.ItemCode AS ItemCode, d.Description AS Description, "
         "w.AutoKey AS LocationAutoKey, d.Location AS Location, d.Qty AS Qty, "
         "d.UOM AS UOM, d.UnitPrice AS UnitPrice, d.SubTotal AS SubTotal, "
@@ -608,7 +617,9 @@ def _linked_fingerprint_query(header_table: str, line_table: str) -> str:
     )
 
 
-def _linked_header_fields(party_prefix: str, party_source: str, ref_transform: str) -> Tuple[PresetField, ...]:
+def _linked_header_fields(
+    party_prefix: str, party_source: str, ref_transform: str, agent_column: str,
+) -> Tuple[PresetField, ...]:
     return (
         PresetField("DocNo", "doc_no", "string", required=True),
         PresetField("DocDate", "doc_date", "date"),
@@ -618,7 +629,7 @@ def _linked_header_fields(party_prefix: str, party_source: str, ref_transform: s
         PresetField(f"{party_source}AutoKey", f"{party_prefix}_ref", ref_transform),
         PresetField(f"{party_source}Code", f"{party_prefix}_code", "string"),
         PresetField(f"{party_source}Name", f"{party_prefix}_name", "string"),
-        PresetField("SalesAgent", "agent_code", "string"),
+        PresetField(agent_column, "agent_code", "string"),
         PresetField("Ref", "ref", "string"),
         PresetField("Note", "note", "string"),
     )
@@ -647,9 +658,9 @@ def _linked_preset(
 ) -> DocumentPreset:
     party = _DEBTOR_PARTY if debtor_side else _CREDITOR_PARTY
     header = (
-        _linked_header_fields("customer", "Debtor", "ref_customer")
+        _linked_header_fields("customer", "Debtor", "ref_customer", "SalesAgent")
         if debtor_side
-        else _linked_header_fields("supplier", "Creditor", "ref_supplier")
+        else _linked_header_fields("supplier", "Creditor", "ref_supplier", "PurchaseAgent")
     )
     return DocumentPreset(
         label=label,
