@@ -1165,3 +1165,36 @@ def test_a_paged_run_stages_vendor_values_from_real_driver_types(session_factory
     finally:
         db.close()
         RUNTIME.dispose_all()
+
+
+@pytest.mark.parametrize("tail", ["0012", "١٢", "12abc"])
+def test_a_non_canonical_doc_key_is_quarantined_never_aliased(monkeypatch, _stock_gate_rig, tail):
+    """`0012` must never alias DocKey 12, nor non-ASCII digits parse."""
+    from modules.autocount.models import STAGED_FAILED
+    from modules.autocount.services.sync_service import SyncService
+
+    db, company, row, job, calls = _delete_rig(monkeypatch, _stock_gate_rig, ENTITY_CONSIGNMENT)
+    row.source_ref = f"{linked_document_ref(ENTITY_CONSIGNMENT, BOOK, '')}{tail}"
+    db.commit()
+    SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_CONSIGNMENT, job_id=job.id)
+    assert calls == []
+    db.refresh(row)
+    assert row.status == STAGED_FAILED
+
+
+def test_a_future_from_date_never_inverts_the_delete_window(monkeypatch, _stock_gate_rig):
+    from modules.autocount.services.sync_service import SyncService
+
+    db, company, _row, job, _calls = _delete_rig(
+        monkeypatch, _stock_gate_rig, ENTITY_CANCEL_SALES_ORDER, from_date="2099-01-01",
+    )
+    seen: List[tuple] = []
+
+    def capture(self, doc_keys, *, doc_date_from, doc_date_to, dry_run=False, on_chunk=None):
+        seen.append((doc_date_from, doc_date_to))
+        return {"records": []}
+
+    monkeypatch.setattr(SorentoSink, "delete_doc_keys", capture)
+    SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_CANCEL_SALES_ORDER, job_id=job.id)
+    [(start, end)] = seen
+    assert start == end
