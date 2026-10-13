@@ -12,6 +12,7 @@ Lane IDEA-CORE (PR #124). Settled by the owner's 13 Oct field ruling, the behavi
 - **AC-20-06 [FE][T]** Given the idea Details tab, then the rows are, in order: Title, Business problem (the `problem` column, relabelled from "Problem statement"), Desired outcome, Use cases (a bullet list), Current workaround, followed by the existing meta rows. "Original message" is the relabelled raw notes row. Proposed solution, Impact and Department are not rendered in view, edit or create. An empty field shows "-".
 - **AC-20-07 [FE][T]** Given edit mode, then Title is an Input, Business problem / Desired outcome / Current workaround are Textareas, and Use cases is a list of Inputs with add and remove. Save sends only the new field set.
 - **AC-20-08 [E2E]** The same Details tab renders inside the CRM embed (`/embed/ideas/<id>`), at 375px and 1280px.
+- **AC-20-09 [BE][T]** Given an embed token (the JSON surface Sorento's native Ideas pages consume through its gateway), then `POST /embed/ideas`, `GET /embed/ideas/{id}` and `PATCH /embed/ideas/{id}` carry `title`, `desiredOutcome`, `useCases` and `currentWorkaround` exactly like the operator routes.
 
 ## S2 - Field-level merge (N ideas)
 
@@ -24,6 +25,7 @@ Lane IDEA-CORE (PR #124). Settled by the owner's 13 Oct field ruling, the behavi
 - **AC-20-16 [FE][T]** The merge dialog shows one column per selected idea and one row per field (Title, Business problem, Desired outcome, Use cases, Current workaround, Original message), with a checkbox in each non-empty cell. Default tick = the kept idea's cell, or the first non-empty column when that cell is empty. A row where every cell is empty has no checkbox. Merge is disabled while a row that has any content has no tick. A radio in each column header picks the kept idea (default = the idea the dialog was opened from, else the first). Rows with two or more ticks show a Result preview. A "Carried over" row lists votes, comments and attachments.
 - **AC-20-17 [FE][T]** The Ideas list bulk Merge opens the same dialog for any N of 2 or more.
 - **AC-20-18 [E2E]** The dialog is usable at 375px: the grid scrolls sideways inside the dialog, the page has no horizontal scroll, and the field label column stays visible.
+- **AC-20-19 [BE][T]** Given an embed token, the whole merge lifecycle works over JSON: `POST /embed/ideas/merge` with `fields`, `GET /embed/ideas/{id}/merged`, the survivor's `GET /embed/ideas/{id}/comments` with `fromIdea`, and `POST /embed/ideas/{id}/unmerge` restoring the survivor's fields.
 
 ## S3 - Similar ideas
 

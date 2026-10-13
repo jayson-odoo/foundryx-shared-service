@@ -2,6 +2,8 @@
 
 Lane IDEA-CORE, PR #124. Keyed to `20-ideation-merge-similar-acceptance-criteria.md`.
 
+Head verified: `b6cffdec` (browser pass and full frontend vitest 473 files / 3762 tests).
+
 Environment: cloud sandbox with a sandbox-local Postgres 16 and Redis, fresh `bootstrap_db`, uvicorn on :8001, a fresh `rm -rf .next && npm run build` + `next start` on :3001, and a headless Chromium (playwright-core) driving real clicks. Data: the owner's real IDEA-0010 title, business problem and original message, plus "Quotation knowledge capture", plus two ideas marked `(SAMPLE)`, all created locally and never committed. AI: a local OpenAI connection on the tenant's `ideation-grill` agent (model gpt-4o-mini). Screenshots are in `20-evidence/browser/`.
 
 Automated suites:
@@ -28,6 +30,7 @@ Automated suites:
 | AC-20-06 | PASS | vitest `DetailsTab - plan 20 card fields`. Browser: `op-details-desktop/mobile.png`, `embed-details-*.png` (empty new fields show "-"; no Proposed solution / Impact / Department rows) |
 | AC-20-07 | PASS | vitest edit-mode + `UseCasesInput`; capture dialog test |
 | AC-20-08 | PASS | `embed-list/details/similar-{desktop,mobile}.png` via `/embed/ideas#token=` (embed token minted from a signed assertion, the same handoff Sorento's iframe uses), scrollWidth = viewport at 375 and 1280 |
+| AC-20-09 | PASS | `test_embed_card_fields_json_parity` |
 | AC-20-10 | PASS | `test_field_merge_picks_and_combines`, `test_combined_skips_empty_values`. Browser: ticked two Business problem cells and two Use cases cells; the result on Details matched the dialog's Result preview (`op-merge-dialog-ticked-desktop.png`, `op-after-merge-desktop.png`) |
 | AC-20-11 | PASS | `test_field_merge_validation_writes_nothing`, `test_merge_without_fields_keeps_survivor_values` |
 | AC-20-12 | PASS | `test_votes_still_move_with_field_merge`; the full `test_ideation_merge.py` suite stays green; live merge minted IDEA-0001 for the survivor |
@@ -37,6 +40,7 @@ Automated suites:
 | AC-20-16 | PASS | vitest `MergeIdeasDialog (plan 20)` (5 tests, including the kept radio moving the untouched defaults); `op-merge-dialog-desktop.png` |
 | AC-20-17 | PASS | `ideas-view.tsx` bulk Merge opens the same dialog with `fields`; the list action allows N >= 2 |
 | AC-20-18 | PASS | `op-merge-dialog-mobile.png`: grid scrolls inside the dialog, the label column stays, page scrollWidth is 375 |
+| AC-20-19 | PASS | `test_embed_merge_lifecycle_json_parity` |
 | AC-20-20 | PASS | `test_similar_ranked_by_ai_and_scoped`, `test_similar_candidates_exclude_merged_and_test`. Live AI: for IDEA-0010 the model returned the two dealer/order ideas in about 1.7s and left out "Quotation knowledge capture" |
 | AC-20-21 | PASS | `test_similar_unavailable_on_*` (error, unusable output, exception), `test_similar_no_candidates_makes_no_ai_call`, `test_similar_never_rewrites_the_agent_connection`. Live, with no connection: `{"available":false,"ideas":[]}` |
 | AC-20-22 | PASS | `test_embed_similar_scoped`; live embed call returned `available:true` |
