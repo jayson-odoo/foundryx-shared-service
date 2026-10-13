@@ -984,3 +984,184 @@ def test_the_missing_doc_feed_book_is_a_named_prerequisite():
     assert "delivery_orders" in line.inactive
     [line] = document_prerequisites(states, has_doc_feed_book=True)
     assert "delivery_orders" not in line.inactive
+
+
+def test_the_company_detail_endpoint_names_the_missing_doc_feed_book(client, session_factory):
+    """Review: the prerequisite is wired through the real detail route (not
+    only the pure function), and clears once the DO feed has a book."""
+    from modules.autocount.models import AcEntityConfig
+    from tests.test_autocount_db_company import _auth
+    from tests.test_autocount_documents import _company
+
+    db = session_factory()
+    company = _company(db)
+    db.add(AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_CONSIGNMENT, source_impl="sql_db",
+    ))
+    db.commit()
+    headers = _auth(client)
+
+    def consignment_line():
+        body = client.get(f"/autocount/companies/{company.id}", headers=headers).json()
+        return next(
+            p for p in body["company"]["documentPrerequisites"]
+            if p["entityType"] == ENTITY_CONSIGNMENT
+        )
+
+    try:
+        assert "delivery_orders" in consignment_line()["inactive"]
+        _with_doc_feed_book(db, company)
+        assert "delivery_orders" not in consignment_line()["inactive"]
+    finally:
+        db.close()
+
+
+def test_deletes_go_out_per_chunk_and_keep_earlier_marks_on_a_later_failure(
+    monkeypatch, _stock_gate_rig,
+):
+    """Review S3: one `delete_doc_keys` call per `batch_size` chunk, each
+    chunk's verdicts committed before the next is sent - a failure on chunk 2
+    never undoes chunk 1."""
+    from modules.autocount.models import STAGED_OP_DELETE, STAGED_PUSHED
+    from modules.autocount.services.sync_service import SyncService
+
+    db, company, first, job, _calls = _delete_rig(monkeypatch, _stock_gate_rig, ENTITY_CONSIGNMENT)
+    second = AcStagedRecord(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_CONSIGNMENT,
+        job_id=job.id, source_ref=linked_document_ref(ENTITY_CONSIGNMENT, BOOK, 99999),
+        doc_no="D-2", status=STAGED, op=STAGED_OP_DELETE,
+    )
+    db.add(second)
+    db.commit()
+    calls: List[List[int]] = []
+
+    def chunked(self, doc_keys, *, doc_date_from, doc_date_to, dry_run=False, on_chunk=None):
+        calls.append(list(doc_keys))
+        if len(calls) == 2:
+            raise RuntimeError("consumer went away on chunk 2")
+        return {"records": [
+            {"source_ref": linked_document_ref(self.entity_type, self.book, k), "outcome": "deleted"}
+            for k in doc_keys
+        ]}
+
+    monkeypatch.setattr(SorentoSink, "delete_doc_keys", chunked)
+    real_init = SorentoSink.__init__
+
+    def one_per_chunk(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        self.batch_size = 1
+
+    monkeypatch.setattr(SorentoSink, "__init__", one_per_chunk)
+    SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_CONSIGNMENT, job_id=job.id)
+    assert calls == [[51234], [99999]]
+    db.refresh(first)
+    db.refresh(second)
+    assert first.status == STAGED_PUSHED
+    assert second.status == STAGED
+
+
+def test_a_paged_run_stages_vendor_values_from_real_driver_types(session_factory):
+    """Review blocker K-B2: the end-to-end run must carry DRIVER types
+    (Decimal / datetime, as SQL Server returns them) through `SqlDbSource`
+    into the staged record - a `json_safe` call site would turn them into
+    strings on the wire. SQLite is told to return those types here."""
+    import sqlite3
+
+    import sqlalchemy as sa
+    from sqlalchemy.pool import StaticPool
+
+    from app.jobs.service import JobService
+    from modules.autocount.models import ETL_STATUS_ACTIVE, AcEntityConfig, SOURCE_IMPL_SQL_DB
+    from modules.autocount.presets import seed_document_mapping
+    from modules.autocount.sql_source.runtime import RUNTIME
+    from tests.test_autocount_documents import _company, _sql_connection
+
+    sqlite3.register_converter("DECIMAL", lambda raw: Decimal(raw.decode()))
+    engine = sa.create_engine(
+        "sqlite://", poolclass=StaticPool,
+        connect_args={"check_same_thread": False, "detect_types": sqlite3.PARSE_DECLTYPES},
+    )
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE cg (DocKey INTEGER PRIMARY KEY, DocNo TEXT, DocDate TIMESTAMP, "
+            "Cancelled TEXT, LastModified TIMESTAMP)"
+        )
+        conn.exec_driver_sql(
+            "CREATE TABLE cgdtl (DtlKey INTEGER PRIMARY KEY, DocKey INTEGER, ItemCode TEXT, "
+            "Location TEXT, Qty DECIMAL, UnitPrice DECIMAL)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO cg VALUES (1, 'CG-000001', '2026-10-01 00:00:00', 'F', "
+            "'2026-10-01 09:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO cgdtl VALUES (11, 1, 'CHAIR-01', 'HQ', '2.00000000', '150.50000000')"
+        )
+        sample = conn.exec_driver_sql("SELECT Qty, LastModified FROM cg JOIN cgdtl USING (DocKey)").one()
+    assert isinstance(sample[0], Decimal) and isinstance(sample[1], datetime)
+
+    db = session_factory()
+    try:
+        sql_conn = _sql_connection(db, engine)
+        company = _company(db)
+        _with_doc_feed_book(db, company)
+        config = AcEntityConfig(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+            entity_type=ENTITY_CONSIGNMENT, source_impl=SOURCE_IMPL_SQL_DB,
+        )
+        config.source_config = {
+            "connectionId": sql_conn.id,
+            "query": "SELECT DocKey, DocNo, DocDate, Cancelled, LastModified FROM cg",
+            "lineQuery": (
+                "SELECT DocKey, DtlKey, ItemCode, Location, Qty, UnitPrice "
+                "FROM cgdtl WHERE DocKey = :doc_key"
+            ),
+            "keyColumns": ["DocKey"], "watermarkColumn": "LastModified",
+            "comparedColumns": [], "fromDate": "2026-01-01", "docDateColumn": "DocDate",
+            "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+        }
+        config.result_columns = ["DocKey", "DocNo", "DocDate", "Cancelled", "LastModified"]
+        config.line_result_columns = ["DocKey", "DtlKey", "ItemCode", "Location", "Qty", "UnitPrice"]
+        config.etl_status = ETL_STATUS_ACTIVE
+        db.add(config)
+        db.commit()
+        seed_document_mapping(
+            db, DEFAULT_TENANT_ID, company.id, ENTITY_CONSIGNMENT,
+            header_columns=None, line_columns=None,
+        )
+        db.commit()
+        JobService(db).create_and_enqueue(
+            type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
+            payload={"companyId": company.id, "entityType": ENTITY_CONSIGNMENT, "mode": "incremental"},
+        )
+        [staged] = (
+            db.query(AcStagedRecord)
+            .filter(AcStagedRecord.company_id == company.id,
+                    AcStagedRecord.entity_type == ENTITY_CONSIGNMENT)
+            .all()
+        )
+        wire = CanonicalConsignment(**staged.canonical_json).sink_payload()
+        assert wire["LastModified"] == "2026-10-01T09:00:00.000", wire
+        assert wire["DocDate"] == "2026-10-01T00:00:00.000", wire
+        line = wire["Details"][0]
+        assert line["Qty"] == 2 and isinstance(line["Qty"], int), line
+        assert line["UnitPrice"] == 150.5, line
+
+        # The fingerprint sweep's keyed re-fetch is the OTHER path a staged
+        # document is built on - same vendor values.
+        from modules.autocount.sql_source.source import SqlDbSource
+        from tests.test_autocount_documents import _ctx
+
+        db.refresh(config)
+        source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CONSIGNMENT)
+        try:
+            refetched = [r.raw for r in source.fetch_by_keys([1]).records]
+        finally:
+            source.close()
+        assert refetched, "the keyed re-fetch returned nothing to check"
+        assert refetched[0]["LastModified"] == "2026-10-01T09:00:00.000"
+        assert refetched[0]["_lines"][0]["Qty"] == 2
+    finally:
+        db.close()
+        RUNTIME.dispose_all()

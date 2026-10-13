@@ -1179,7 +1179,10 @@ class SyncService:
         for row in pending:
             ref = str(row.source_ref or "")
             tail = ref[len(prefix):] if getattr(sink, "book", None) and ref.startswith(prefix) else ""
-            if tail.isdigit():
+            # ASCII digits in canonical form only (security nit): `isdigit`
+            # alone admits `²`/Arabic-Indic digits, and `0012` would alias
+            # DocKey 12 - each such ref is quarantined, never sent.
+            if tail.isascii() and tail.isdigit() and str(int(tail)) == tail:
                 sendable.setdefault(int(tail), []).append(ref)
             else:
                 unsendable.append(row)
@@ -1203,11 +1206,13 @@ class SyncService:
         raw_from = str(
             ((config.source_config or {}).get("fromDate") if config is not None else "") or ""
         ).strip()
+        today = datetime.now(MYT).date()
         try:
-            doc_date_from = _date.fromisoformat(raw_from).isoformat()
+            # A future `fromDate` would invert the window; clamp it to today.
+            doc_date_from = min(_date.fromisoformat(raw_from), today).isoformat()
         except ValueError:
             doc_date_from = LINKED_DOCUMENT_DELETE_FLOOR
-        doc_date_to = datetime.now(MYT).date().isoformat()
+        doc_date_to = today.isoformat()
         keys = sorted(sendable)
         size = max(1, int(getattr(sink, "batch_size", 0) or len(keys)))
         for start in range(0, len(keys), size):
