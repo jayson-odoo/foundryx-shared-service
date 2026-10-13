@@ -66,6 +66,7 @@ def _crm_session(s, *, sub="crm-user-1", name="Alice Tan", product_id=None, idea
     res = s["client"].post("/portal/ideas/session/embed", json={"token": embed_token})
     assert res.status_code == 200, res.text
     assert res.json()["principal"]["kind"] == "crm"
+    assert res.json()["principal"]["canManage"] is (ideas_manage is True)
     return {"Authorization": f"Bearer {res.json()['token']}"}
 
 
@@ -111,9 +112,8 @@ def test_ac_p_02_crm_session(setup):
     h = _crm_session(setup)
     me = setup["client"].get("/portal/ideas/me", headers=h).json()
     assert me["kind"] == "crm" and me["name"] == "Alice" and me["role"] == "Staff"
-    assert me["canManage"] is True  # no ideas_manage claim = unrestricted (embed rule)
-    restricted = _crm_session(setup, sub="crm-user-2", ideas_manage=False)
-    assert setup["client"].get("/portal/ideas/me", headers=restricted).json()["canManage"] is False
+    # No ideas_manage claim = NOT a manager (security review #3).
+    assert me["canManage"] is False
 
 
 def test_ac_p_02_bad_embed_token(setup):
@@ -564,7 +564,7 @@ def test_ac_p_54_activity_feed(setup):
     assert res.status_code == 200, res.text
     kinds = [e["kind"] for e in res.json()]
     assert kinds.count("status_changed") == 1
-    assert {"submitted", "status_changed", "comment", "upvotes", "comment_like"} <= set(kinds)
+    assert {"submitted", "status_changed", "comment", "upvote", "comment_like"} <= set(kinds)
     assert kinds[-1] == "submitted"  # newest first
     sc = [e for e in res.json() if e["kind"] == "status_changed"][0]
     assert sc["fromLabel"] == "New" and sc["toLabel"] == "Triaged"
@@ -573,18 +573,27 @@ def test_ac_p_54_activity_feed(setup):
 
 
 def test_ac_p_54_live_status_change_recorded(setup):
-    from modules.ideation.services.portal import record_status_activity
+    """A REAL status-engine move (operator API) writes one activity row through
+    the bus subscriber; the draft -> captured create writes none."""
     from modules.ideation.models import IdeaActivity
 
     s = setup
-    iid = _idea(s, 910)
+    c = s["client"]
+    created = c.post(
+        "/ideation/ideas", headers=s["h"], json={"productId": s["product_id"], "problem": "Live move"}
+    )
+    assert created.status_code == 201, created.text
+    iid = created.json()["id"]
+    moved = c.post(f"/ideation/ideas/{iid}/status", headers=s["h"], json={"status": "triaged"})
+    assert moved.status_code == 200, moved.text
     db = s["factory"]()
     try:
-        record_status_activity(db, tenant_id=DEFAULT_TENANT_ID, idea_id=iid, from_label="New", to_label="Triaged")
-        db.commit()
-        assert db.query(IdeaActivity).filter(IdeaActivity.idea_id == iid).count() == 1
+        rows = db.query(IdeaActivity).filter(IdeaActivity.idea_id == iid).all()
+        assert [(r.from_label, r.to_label) for r in rows] == [("New", "Triaged")]
     finally:
         db.close()
+    feed = c.get(f"/portal/ideas/{iid}/activity", headers=_staff_session(s)).json()
+    assert [e["kind"] for e in feed] == ["status_changed", "submitted"]
 
 
 def test_ac_p_04_portal_token_never_authenticates_staff_endpoints(setup):
@@ -592,3 +601,173 @@ def test_ac_p_04_portal_token_never_authenticates_staff_endpoints(setup):
     h = _staff_session(s)
     assert s["client"].get("/auth/me", headers=h).status_code == 401
     assert s["client"].get("/ideation/ideas", headers=h).status_code == 401
+
+
+# ── H. security review fixes ──────────────────────────────────────────────────
+
+
+def _staff_user(s, email, perm_keys):
+    from tests.test_impersonation import _make_user
+
+    return _make_user(s["factory"], email, "pw12345678", perm_keys=perm_keys)
+
+
+def test_sec_no_portal_session_while_impersonating(setup):
+    """Security review #1: an impersonating admin must never mint a portal token
+    as the target (writes are never attributed to the target)."""
+    s = setup
+    target = _staff_user(s, "sales1@sorento.my", ["ideation.ideas.view"])
+    c = s["client"]
+    assert c.post("/impersonation/start", headers=s["h"], json={"targetUserId": target}).status_code == 200
+    res = c.post(
+        "/portal/ideas/session/staff", headers={**s["h"], "X-Impersonate-User-Id": target}
+    )
+    assert res.status_code == 403
+    assert "token" not in res.text
+
+
+def test_sec_staff_without_manage_is_not_manager(setup):
+    s = setup
+    _staff_user(s, "sales2@sorento.my", ["ideation.ideas.view"])
+    h = _auth(s["client"], email="sales2@sorento.my", password="pw12345678")
+    body = s["client"].post("/portal/ideas/session/staff", headers=h).json()
+    assert body["principal"]["canManage"] is False
+    _staff_user(s, "noview@sorento.my", ["roles.read"])
+    h2 = _auth(s["client"], email="noview@sorento.my", password="pw12345678")
+    assert s["client"].post("/portal/ideas/session/staff", headers=h2).status_code == 403
+
+
+def test_sec_crm_manager_only_when_claim_is_true(setup):
+    """Security review #3: a host that never sends ideas_manage gets
+    non-managers (no silent moderation rights for every CRM user)."""
+    s = setup
+    me = lambda h: s["client"].get("/portal/ideas/me", headers=h).json()  # noqa: E731
+    assert me(_crm_session(s, sub="c-a"))["canManage"] is False
+    assert me(_crm_session(s, sub="c-b", ideas_manage=False))["canManage"] is False
+    assert me(_crm_session(s, sub="c-c", ideas_manage=True))["canManage"] is True
+
+
+def test_sec_token_lifetimes(setup):
+    from datetime import datetime, timezone
+
+    s = setup
+    now = datetime.now(timezone.utc).timestamp()
+    staff = jwt.get_unverified_claims(s["client"].post("/portal/ideas/session/staff", headers=s["h"]).json()["token"])
+    assert staff["exp"] - now <= 12 * 3600 + 5
+    crm = jwt.get_unverified_claims(_crm_session(s)["Authorization"].split(" ", 1)[1])
+    assert crm["exp"] - now <= 2 * 3600 + 5
+
+
+def test_sec_no_store_on_errors(setup):
+    """Security review #4: error responses carry the same no-store/noindex headers."""
+    s = setup
+    for res in (
+        s["client"].get("/portal/ideas/roadmap"),
+        s["client"].get("/portal/ideas/no-such-idea", headers=_staff_session(s)),
+        s["client"].get("/portal/ideas?pageSize=0", headers=_staff_session(s)),
+    ):
+        assert res.status_code in (401, 404, 422)
+        assert res.headers.get("cache-control") == "no-store"
+        assert res.headers.get("x-robots-tag") == "noindex"
+
+
+def test_sec_column_list_capped(setup):
+    s = setup
+    qs = "&".join(["column=under_review"] * 21)
+    assert s["client"].get(f"/portal/ideas?{qs}", headers=_staff_session(s)).status_code == 422
+
+
+def test_sec_submit_throttled(setup):
+    s = setup
+    h = _crm_session(s, sub="c-spam")
+    body = {"title": "t", "problem": "p", "productId": s["product_id"]}
+    codes = [s["client"].post("/portal/ideas", headers=h, json=body).status_code for _ in range(11)]
+    assert codes[:10] == [201] * 10 and codes[10] == 429
+
+
+def test_sec_comment_author_first_name_only(setup):
+    from modules.ideation.models import IdeaComment
+
+    s = setup
+    iid = _idea(s, 990)
+    h = _crm_session(s, sub="c-name", name="Alice Tan")
+    s["client"].post(f"/portal/ideas/{iid}/comments", headers=h, json={"body": "hi"})
+    # A comment written elsewhere stores the author's FULL name.
+    db = s["factory"]()
+    try:
+        db.add(IdeaComment(tenant_id=DEFAULT_TENANT_ID, idea_id=iid, author_kind="user",
+                           author_id="u-legacy", author_name="Nadia Binti Ahmad", body="older"))
+        db.commit()
+    finally:
+        db.close()
+    rows = s["client"].get(f"/portal/ideas/{iid}/comments", headers=h).json()
+    assert sorted(r["authorName"] for r in rows) == ["Alice", "Nadia"]
+
+
+def test_review_staff_owns_what_they_submit(setup):
+    """Code review blocker #1: a staff submitter sees Yours / My ideas and can
+    still open their own hidden idea."""
+    from modules.ideation.models import Idea
+
+    s = setup
+    c = s["client"]
+    _staff_user(s, "sales3@sorento.my", ["ideation.ideas.view"])
+    h_login = _auth(c, email="sales3@sorento.my", password="pw12345678")
+    h = {"Authorization": "Bearer " + c.post("/portal/ideas/session/staff", headers=h_login).json()["token"]}
+    other = _idea(s, 995)
+    created = c.post("/portal/ideas", headers=h, json={"title": "Mine", "problem": "p", "productId": s["product_id"]})
+    assert created.status_code == 201, created.text
+    mine_id = created.json()["id"]
+    assert created.json()["isMine"] is True
+    mine = c.get("/portal/ideas/roadmap?mine=true", headers=h).json()["columns"]
+    assert [i["id"] for col in mine for i in col["ideas"]] == [mine_id]
+    db = s["factory"]()
+    try:
+        for i in (mine_id, other):
+            db.query(Idea).filter(Idea.id == i).first().portal_hidden = True
+        db.commit()
+    finally:
+        db.close()
+    assert c.get(f"/portal/ideas/{mine_id}", headers=h).status_code == 200
+    assert c.get(f"/portal/ideas/{other}", headers=h).status_code == 404
+
+
+def test_review_legacy_down_vote_switches_to_up(setup):
+    from modules.ideation.models import IdeaVote
+
+    s = setup
+    iid = _idea(s, 996)
+    h = _staff_session(s)
+    me = s["client"].get("/portal/ideas/me", headers=h).json()  # noqa: F841
+    db = s["factory"]()
+    try:
+        from app.models.user import User
+
+        uid = db.query(User.id).filter(User.email == "demo@example.com").scalar()
+        db.add(IdeaVote(tenant_id=DEFAULT_TENANT_ID, idea_id=iid, voter_id=uid, dir="down"))
+        db.commit()
+    finally:
+        db.close()
+    r = s["client"].post(f"/portal/ideas/{iid}/vote", headers=h).json()
+    assert r["myVote"] is True and r["upvotes"] == 1
+
+
+def test_review_whatsapp_voter_is_a_dealer(setup):
+    from modules.ideation.models import IdeaVote
+    from modules.omnichannel.models import Contact, Workspace
+
+    s = setup
+    iid = _idea(s, 997)
+    db = s["factory"]()
+    try:
+        ws = db.query(Workspace).filter(Workspace.tenant_id == DEFAULT_TENANT_ID).first()
+        contact = Contact(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, first_name="Aiman Rahman", phone="+60123456789")
+        db.add(contact)
+        db.flush()
+        # The intake requester upvote stores the bare contact id.
+        db.add(IdeaVote(tenant_id=DEFAULT_TENANT_ID, idea_id=iid, voter_id=contact.id, dir="up"))
+        db.commit()
+    finally:
+        db.close()
+    voters = s["client"].get(f"/portal/ideas/{iid}/voters", headers=_staff_session(s)).json()
+    assert voters == [{"name": "Aiman", "role": "Dealer", "isMe": False}]

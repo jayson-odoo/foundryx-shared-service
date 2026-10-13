@@ -28,7 +28,7 @@ export function RoadmapView() {
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
-        <h1 className="font-heading text-xl font-semibold">Roadmap</h1>
+        <div role="heading" aria-level={1} className="font-heading text-xl font-semibold">Roadmap</div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {!principal.productId && (products.data?.length ?? 0) > 1 && (
             <SearchSelect

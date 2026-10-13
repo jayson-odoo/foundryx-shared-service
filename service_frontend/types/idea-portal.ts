@@ -38,6 +38,8 @@ export interface PortalColumn {
   key: string;
   title: string;
   color: string;
+  /** All visible ideas in the column; `ideas` holds the top 100 by votes. */
+  count: number;
   ideas: PortalCard[];
 }
 
@@ -114,7 +116,7 @@ export type PortalActivityKind =
   | 'submitted'
   | 'status_changed'
   | 'comment'
-  | 'upvotes'
+  | 'upvote'
   | 'comment_like';
 
 export interface PortalActivity {
@@ -127,9 +129,6 @@ export interface PortalActivity {
   toColor: string | null;
   comment: PortalComment | null;
   replies: PortalComment[];
-  day: string | null;
-  count: number | null;
-  names: string[];
   commentId: string | null;
 }
 

@@ -14,6 +14,9 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
+import { dateKey } from '@/lib/datetime';
 import type { PortalActivity, PortalComment, PortalIdea, PortalVoter } from '@/types/idea-portal';
 import { PortalStatusPill } from './portal-status-pill';
 import { PortalLoading, PortalMessage } from './portal-states';
@@ -124,13 +127,13 @@ function CommentItem({
             aria-pressed={c.likedByMe}
             aria-label={c.likedByMe ? 'Unlike' : 'Like'}
             onClick={() => onLike(c.id)}
-            className={c.likedByMe ? 'inline-flex items-center gap-1 text-primary' : 'inline-flex items-center gap-1 hover:text-foreground'}
+            className={cn(PRESSED_CLASS, 'inline-flex items-center gap-1', c.likedByMe ? 'text-primary' : 'hover:text-foreground')}
           >
             <Heart className="size-3.5" aria-hidden />
             {c.likeCount}
           </button>
           {onReply && (
-            <button type="button" onClick={onReply} className="inline-flex items-center gap-1 hover:text-foreground">
+            <button type="button" onClick={onReply} className={cn(PRESSED_CLASS, 'inline-flex items-center gap-1 hover:text-foreground')}>
               <Reply className="size-3.5" aria-hidden />
               Reply
             </button>
@@ -140,7 +143,7 @@ function CommentItem({
               type="button"
               aria-label="Delete comment"
               onClick={() => onDelete(c.id)}
-              className="inline-flex items-center gap-1 hover:text-destructive"
+              className={cn(PRESSED_CLASS, 'inline-flex items-center gap-1 hover:text-destructive')}
             >
               <Trash2 className="size-3.5" aria-hidden />
             </button>
@@ -162,7 +165,7 @@ function ActivityItem({
   onDelete: (id: string) => void;
   onReply: (parentId: string, body: string) => Promise<void>;
 }) {
-  const { formatDateTime, formatDate } = useDatetime();
+  const { formatDateTime } = useDatetime();
   const [replying, setReplying] = useState(false);
   if (e.kind === 'comment' && e.comment) {
     const top = e.comment;
@@ -192,7 +195,7 @@ function ActivityItem({
   }
   let text: React.ReactNode = null;
   let dot = colorToHex('gray');
-  let when = formatDateTime(e.at);
+  const when = formatDateTime(e.at);
   if (e.kind === 'status_changed') {
     dot = colorToHex(e.toColor);
     text = (
@@ -210,16 +213,6 @@ function ActivityItem({
         {e.source === 'whatsapp' ? ' over WhatsApp' : ''}
       </>
     );
-  } else if (e.kind === 'upvotes') {
-    const named = e.names.join(', ');
-    const others = (e.count ?? 0) - e.names.length;
-    text = (
-      <>
-        <b>{named || `${e.count} ${e.count === 1 ? 'person' : 'people'}`}</b>
-        {named && others > 0 ? ` and ${others} ${others === 1 ? 'other' : 'others'}` : ''} upvoted
-      </>
-    );
-    when = formatDate(e.at);
   } else if (e.kind === 'comment_like') {
     text = (
       <>
@@ -233,6 +226,52 @@ function ActivityItem({
       <div>
         <div>{text}</div>
         <div className="text-xs text-muted-foreground">{when}</div>
+      </div>
+    </li>
+  );
+}
+
+/** A feed row: one backend event, or consecutive upvotes on the same LOCAL day
+ * folded into one "X and N others upvoted" line. */
+export type FeedRow =
+  | { kind: 'event'; event: PortalActivity }
+  | { kind: 'upvotes'; at: string; names: string[]; count: number };
+
+export function groupFeed(events: PortalActivity[], timeZone: string): FeedRow[] {
+  const rows: FeedRow[] = [];
+  let groupDay: string | null = null;
+  for (const e of events) {
+    if (e.kind === 'upvote') {
+      const day = dateKey(e.at, { timeZone });
+      const last = rows[rows.length - 1];
+      if (last && last.kind === 'upvotes' && groupDay === day) {
+        last.count += 1;
+        if (e.by && !last.names.includes(e.by)) last.names.push(e.by);
+        continue;
+      }
+      groupDay = day;
+      rows.push({ kind: 'upvotes', at: e.at, names: e.by ? [e.by] : [], count: 1 });
+      continue;
+    }
+    groupDay = null;
+    rows.push({ kind: 'event', event: e });
+  }
+  return rows;
+}
+
+function UpvoteRow({ row }: { row: Extract<FeedRow, { kind: 'upvotes' }> }) {
+  const { formatDate } = useDatetime();
+  const named = row.names.slice(0, 3);
+  const others = row.count - named.length;
+  return (
+    <li className="flex gap-3" data-kind="upvotes">
+      <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ backgroundColor: colorToHex('gray') }} aria-hidden />
+      <div>
+        <div>
+          <b>{named.length ? named.join(', ') : `${row.count} ${row.count === 1 ? 'person' : 'people'}`}</b>
+          {named.length > 0 && others > 0 ? ` and ${others} ${others === 1 ? 'other' : 'others'}` : ''} upvoted
+        </div>
+        <div className="text-xs text-muted-foreground">{formatDate(row.at)}</div>
       </div>
     </li>
   );
@@ -335,7 +374,7 @@ export interface IdeaPageProps {
  * activity feed (newest first), "where is it" timeline, voters. */
 export function IdeaPage({ ideaId }: IdeaPageProps) {
   const { paths, principal } = useIdeaPortal();
-  const { formatDate } = useDatetime();
+  const { formatDate, timeZone } = useDatetime();
   const page = usePortalIdeaPage(ideaId);
   const idea = page.idea.data;
 
@@ -357,7 +396,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
             <UpvoteBox size="lg" count={idea.upvotes} voted={idea.myVote} onVote={() => onAction(page.vote())} />
             <div className="min-w-0">
               {idea.ideaNumber && <p className="text-sm font-medium text-muted-foreground">{idea.ideaNumber}</p>}
-              <h1 className="font-heading text-xl font-semibold break-words sm:text-2xl">{idea.title}</h1>
+              <div role="heading" aria-level={1} className="font-heading text-xl font-semibold break-words sm:text-2xl">{idea.title}</div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 {idea.statusLabel && <PortalStatusPill label={idea.statusLabel} color={idea.statusColor} />}
                 {idea.submitterFirstName && <span>Submitted by {idea.submitterFirstName}</span>}
@@ -409,15 +448,19 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
               />
             </div>
             <ol className="flex flex-col gap-4 text-sm" data-testid="portal-activity">
-              {(page.activity.data ?? []).map((e, i) => (
-                <ActivityItem
-                  key={`${e.kind}-${e.comment?.id ?? e.at}-${i}`}
-                  e={e}
-                  onLike={(id) => onAction(page.likeComment(id))}
-                  onDelete={(id) => onAction(page.deleteComment(id))}
-                  onReply={(parentId, body) => page.addComment(body, parentId)}
-                />
-              ))}
+              {groupFeed(page.activity.data ?? [], timeZone).map((row, i) =>
+                row.kind === 'upvotes' ? (
+                  <UpvoteRow key={`upvotes-${row.at}-${i}`} row={row} />
+                ) : (
+                  <ActivityItem
+                    key={`${row.event.kind}-${row.event.comment?.id ?? row.event.at}-${i}`}
+                    e={row.event}
+                    onLike={(id) => onAction(page.likeComment(id))}
+                    onDelete={(id) => onAction(page.deleteComment(id))}
+                    onReply={(parentId, body) => page.addComment(body, parentId)}
+                  />
+                ),
+              )}
             </ol>
           </section>
         </div>

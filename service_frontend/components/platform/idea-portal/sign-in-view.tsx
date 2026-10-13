@@ -20,7 +20,7 @@ export function PortalSignIn() {
       <Card>
         <CardContent className="flex flex-col gap-4 py-6">
           <BrandMark branding={branding} />
-          <h1 className="font-heading text-lg font-semibold">Sign in to see the roadmap</h1>
+          <div role="heading" aria-level={1} className="font-heading text-lg font-semibold">Sign in to see the roadmap</div>
           <Button asChild>
             <Link href={`/signin?callbackUrl=${encodeURIComponent(pathname)}`}>Staff sign in</Link>
           </Button>

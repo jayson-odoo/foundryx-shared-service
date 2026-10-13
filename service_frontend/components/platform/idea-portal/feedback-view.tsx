@@ -54,7 +54,7 @@ export function FeedbackView() {
         <SubmitIdeaForm />
       </aside>
       <section className="order-1 flex min-w-0 flex-col gap-3 lg:order-2">
-        <h1 className="font-heading text-xl font-semibold">Feedback</h1>
+        <div role="heading" aria-level={1} className="font-heading text-xl font-semibold">Feedback</div>
         <div className="flex flex-wrap items-center gap-2">
           <ListSearchInput
             value={q}

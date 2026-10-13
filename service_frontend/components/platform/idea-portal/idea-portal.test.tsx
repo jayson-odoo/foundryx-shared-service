@@ -82,11 +82,13 @@ const staffComment = {
   createdAt: '2026-10-10T08:40:00Z', editedAt: null, likeCount: 1, likedByMe: false,
 };
 const reply = { ...staffComment, id: 'c2', parentId: 'c1', authorName: 'Aiman', authorKind: 'embed', authorRole: 'Staff', body: 'Thanks', isMine: true, canDelete: true, likeCount: 0 };
-const base = { by: null, source: null, fromLabel: null, toLabel: null, toColor: null, comment: null, replies: [], day: null, count: null, names: [], commentId: null };
+const base = { by: null, source: null, fromLabel: null, toLabel: null, toColor: null, comment: null, replies: [], commentId: null };
 const activity: PortalActivity[] = [
   { ...base, kind: 'status_changed', at: '2026-10-11T02:02:00Z', fromLabel: 'New', toLabel: 'Triaged', toColor: 'indigo' },
   { ...base, kind: 'comment', at: '2026-10-10T08:40:00Z', comment: staffComment, replies: [reply] },
-  { ...base, kind: 'upvotes', at: '2026-10-09T00:00:00Z', count: 3, names: ['Hafiz'] },
+  { ...base, kind: 'upvote', at: '2026-10-09T03:00:00Z', by: 'Hafiz' },
+  { ...base, kind: 'upvote', at: '2026-10-09T02:00:00Z', by: null },
+  { ...base, kind: 'upvote', at: '2026-10-09T01:00:00Z', by: null },
   { ...base, kind: 'submitted', at: '2026-10-02T06:31:00Z', by: 'Aiman', source: 'whatsapp' },
 ];
 
@@ -210,19 +212,34 @@ describe('RoadmapBoard', () => {
   it('renders columns in order with counts and links to the idea page', async () => {
     const card = { ...idea, id: 'a', title: 'Quotation knowledge capture', isMine: false, myVote: true, upvotes: 4 };
     const columns: PortalColumn[] = [
-      { key: 'under_review', title: 'Under review', color: 'blue', ideas: [card] },
-      { key: 'planned', title: 'Planned', color: 'violet', ideas: [] },
+      { key: 'under_review', title: 'Under review', color: 'blue', count: 7, ideas: [card] },
+      { key: 'planned', title: 'Planned', color: 'violet', count: 0, ideas: [] },
     ];
     const onVote = vi.fn();
     render(<RoadmapBoard columns={columns} ideaHref={(id) => `/portal/ideas/${id}`} onVote={onVote} />);
     const sections = screen.getAllByRole('region');
     expect(sections.map((s) => s.getAttribute('aria-label'))).toEqual(['Under review', 'Planned']);
     expect(within(sections[1]).getByText('No ideas')).toBeInTheDocument();
+    expect(within(sections[0]).getByText('7')).toBeInTheDocument(); // the column total, not the capped card count
     const link = within(sections[0]).getByTestId('portal-idea-card');
     expect(link).toHaveAttribute('href', '/portal/ideas/a');
     const box = within(link).getByRole('button', { name: /remove upvote \(4\)/i });
     expect(box).toHaveAttribute('aria-pressed', 'true');
     await userEvent.click(box);
     expect(onVote).toHaveBeenCalledWith('a');
+  });
+});
+
+describe('groupFeed', () => {
+  it('folds same-local-day upvotes; a UTC+8 viewer splits a UTC day boundary correctly', async () => {
+    const { groupFeed } = await import('./idea-page');
+    const up = (at: string, by: string | null) => ({ ...base, kind: 'upvote' as const, at, by });
+    // 15:30Z and 17:30Z are the same UTC day but different KL days.
+    const events = [up('2026-10-09T17:30:00Z', 'Hafiz'), up('2026-10-09T15:30:00Z', 'Ravi'), up('2026-10-09T15:00:00Z', null)];
+    const utc = groupFeed(events, 'UTC');
+    expect(utc).toHaveLength(1);
+    expect(utc[0]).toMatchObject({ kind: 'upvotes', count: 3, names: ['Hafiz', 'Ravi'] });
+    const kl = groupFeed(events, 'Asia/Kuala_Lumpur');
+    expect(kl.map((r) => (r.kind === 'upvotes' ? r.count : 0))).toEqual([1, 2]);
   });
 });

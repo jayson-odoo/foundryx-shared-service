@@ -781,6 +781,8 @@ class PortalColumnOut(ApiModel):
     key: str
     title: str
     color: str
+    # All visible ideas in the column; ``ideas`` holds the top 100 by votes.
+    count: int = 0
     ideas: List[PortalCardOut]
 
 
@@ -852,7 +854,7 @@ class PortalLikeOut(ApiModel):
 
 
 class PortalActivityOut(ApiModel):
-    kind: Literal["submitted", "status_changed", "comment", "upvotes", "comment_like"]
+    kind: Literal["submitted", "status_changed", "comment", "upvote", "comment_like"]
     at: datetime
     by: Optional[str] = None
     source: Optional[str] = None
@@ -861,9 +863,6 @@ class PortalActivityOut(ApiModel):
     toColor: Optional[str] = None
     comment: Optional[PortalCommentOut] = None
     replies: List[PortalCommentOut] = []
-    day: Optional[str] = None
-    count: Optional[int] = None
-    names: List[str] = []
     commentId: Optional[str] = None
 
 

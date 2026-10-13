@@ -222,6 +222,10 @@ class Idea(IdeationBase):
     portal_hidden = Column(Boolean, nullable=False, default=False, server_default="false")
     # Q3: the manager-edited one-line "what changed" note on the changelog.
     portal_note = Column(Text, nullable=True)
+    # The shared-service staff user who created the idea (operator create or
+    # the portal) - the staff ownership link for the portal's "Yours" / "My
+    # ideas" (lane IDEA-PORTAL). NULL for WhatsApp / embed / pre-portal rows.
+    submitter_user_id = Column(String, nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False

@@ -25,7 +25,7 @@ export function RoadmapBoard({ columns, ideaHref, onVote }: RoadmapBoardProps) {
           <header className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
             <span className="size-2 rounded-full" style={{ backgroundColor: colorToHex(col.color) }} aria-hidden />
             {col.title}
-            <span className="ml-auto text-xs font-normal text-muted-foreground">{col.ideas.length}</span>
+            <span className="ml-auto text-xs font-normal text-muted-foreground">{col.count}</span>
           </header>
           <div className="flex flex-col gap-2">
             {col.ideas.length === 0 ? (

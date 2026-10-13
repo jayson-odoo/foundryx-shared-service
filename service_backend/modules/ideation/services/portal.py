@@ -16,8 +16,8 @@ portal. Two exchanges mint one, each tenant-bound by its own credential:
 
 Managers (``can_manage``) may hide an idea from the portal (Q5), edit its
 changelog note (Q3) and delete anyone's comment: shared-service staff holding
-``ideation.triage.manage``; a CRM user unless the host sent
-``ideas_manage=false`` (the embed iframe's own rule).
+``ideation.triage.manage``; a CRM user only when the host sent
+``ideas_manage=true``.
 
 Every resolve re-checks liveness (tenant sign-in, ideation module ACTIVE, the
 user still active with the view permission / the embed connection still
@@ -44,6 +44,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from jose import JWTError, jwt
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -61,13 +62,18 @@ from ..models import (
     IdeaVote,
 )
 from .comments import AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
-from .ownership import SubmitterIdentity, owned_filter, owned_ids
+from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
 from .statuses import IDEA_ENTITY
 
 PORTAL_TYP = "idea_portal"
 PORTAL_AUD = "ideation-portal"
-PORTAL_TTL = timedelta(days=30)
+# Security review: the staff token is bound to the staff login on the client
+# and re-checked per request; the CRM token lives in iframe memory and is
+# re-exchanged on every load, so it stays close to the embed token's own TTL.
+PORTAL_TTL = {"staff": timedelta(hours=12), "crm": timedelta(hours=2)}
+ROADMAP_COLUMN_CAP = 100
+CHANGELOG_CAP = 200
 
 KIND_STAFF = "staff"
 KIND_CRM = "crm"
@@ -187,7 +193,7 @@ def mint_portal_token(p: PortalPrincipal, extra: Optional[Dict[str, Any]] = None
         "pid": p.product_id,
         "cid": p.connection_id,
         "iat": int(now.timestamp()),
-        "exp": int((now + PORTAL_TTL).timestamp()),
+        "exp": int((now + PORTAL_TTL[p.kind]).timestamp()),
     })
     return jwt.encode(claims, _signing_key(), algorithm="HS256")
 
@@ -263,7 +269,7 @@ def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
         # The CRM user's name/phone ride the token (signed by us at exchange).
         p.name = claims.get("nm") or "Staff"
         p.phone = claims.get("ph")
-        p.can_manage = claims.get("mg") is not False
+        p.can_manage = claims.get("mg") is True
     return p
 
 
@@ -284,7 +290,12 @@ def principal_out(p: PortalPrincipal) -> Dict[str, Any]:
     }
 
 
-def session_for_staff(db: Session, user: User) -> Dict[str, Any]:
+def session_for_staff(db: Session, user: User, *, impersonating: bool = False) -> Dict[str, Any]:
+    """Security review #1: never while impersonating - a portal token minted as
+    the target would attribute the admin's votes/comments to the target and
+    outlive the impersonation session."""
+    if impersonating:
+        raise PortalError(403, "impersonating", "Stop impersonating to open the ideas portal.")
     if not _tenant_ok(db, user.tenant_id):
         raise PortalError(403, "module_inactive", "Ideas are not available.")
     if _staff_user(db, user.tenant_id, user.id) is None:
@@ -318,9 +329,12 @@ def session_for_embed(db: Session, embed_token: str) -> Dict[str, Any]:
         product_id=ep.product_id,
         phone=ep.phone,
         connection_id=ep.connection_id,
-        can_manage=ep.ideas_manage is not False,
+        # Security review: manager rights only when the host EXPLICITLY sends
+        # ideas_manage=true (a host that never sends the claim gets
+        # non-managers - moderation is never a silent default).
+        can_manage=ep.ideas_manage is True,
     )
-    return _session_out(p, extra={"nm": name, "ph": ep.phone, "mg": ep.ideas_manage})
+    return _session_out(p, extra={"nm": name, "ph": ep.phone, "mg": ep.ideas_manage is True})
 
 
 # ── status map ────────────────────────────────────────────────────────────────
@@ -427,9 +441,17 @@ class IdeaPortalService:
         if p.product_id:
             q = q.filter(Idea.product_id == p.product_id)
         if not p.can_manage:
-            owned = owned_filter(self.db, self.db.query(Idea.id), p.tenant_id, p.identity)
-            q = q.filter(or_(Idea.portal_hidden.is_(False), Idea.id.in_(owned.subquery())))
+            q = q.filter(or_(Idea.portal_hidden.is_(False), Idea.id.in_(self._owned_q().subquery())))
         return q
+
+    def _owned_q(self):
+        """Ids of the viewer's OWN ideas (tenant-scoped): a staff user owns what
+        they created (``submitter_user_id``); a CRM user owns by CRM id / phone
+        (the embed's ownership rule). Never by name."""
+        q = self.db.query(Idea.id).filter(Idea.tenant_id == self.p.tenant_id)
+        if self.p.kind == KIND_STAFF:
+            return q.filter(Idea.submitter_user_id == self.p.subject)
+        return owned_filter(self.db, q, self.p.tenant_id, self.p.identity)
 
     def _resolve(self, idea_id: str, *, follow_merge: bool) -> Idea:
         """A visible idea by id, or 404. ``follow_merge``: a merged child
@@ -477,7 +499,7 @@ class IdeaPortalService:
             )
             .all()
         }
-        mine = owned_ids(self.db, self.p.tenant_id, ids, self.p.identity)
+        mine = {r[0] for r in self._owned_q().filter(Idea.id.in_(ids)).all()}
         products = self._product_names({i.product_id for i in ideas})
         out = []
         for i in ideas:
@@ -512,7 +534,7 @@ class IdeaPortalService:
         return dict(rows)
 
     def _mine_filter(self, q):
-        return owned_filter(self.db, q, self.p.tenant_id, self.p.identity)
+        return q.filter(Idea.id.in_(self._owned_q().subquery()))
 
     # ---- roadmap / feedback / changelog ------------------------------------
 
@@ -522,16 +544,27 @@ class IdeaPortalService:
             q = q.filter(Idea.product_id == product_id)
         if mine:
             q = self._mine_filter(q)
-        ideas = q.order_by(Idea.upvotes.desc(), Idea.created_at.desc(), Idea.id.asc()).all()
-        cards = self._cards(ideas)
+        order = (Idea.upvotes.desc(), Idea.created_at.desc(), Idea.id.asc())
+        counts = dict(
+            q.with_entities(Idea.status_id, func.count(Idea.id)).group_by(Idea.status_id).all()
+        )
+        # Top ROADMAP_COLUMN_CAP cards per column by votes (one query per
+        # column, bounded); the full set is the Feedback list.
         columns = []
         for col in self.smap.columns:
+            rows = (
+                q.filter(Idea.status_id.in_(col.status_ids or {"-"}))
+                .order_by(*order)
+                .limit(ROADMAP_COLUMN_CAP)
+                .all()
+            )
             columns.append(
                 {
                     "key": col.key,
                     "title": col.title,
                     "color": col.color,
-                    "ideas": [c for c in cards if c["column"] == col.key],
+                    "count": sum(counts.get(s, 0) for s in col.status_ids),
+                    "ideas": self._cards(rows),
                 }
             )
         return {"columns": columns}
@@ -579,7 +612,13 @@ class IdeaPortalService:
         delivered = {
             sid for sid, st in self.smap.by_id.items() if st.key in CHANGELOG_STATUS_KEYS
         }
-        ideas = self._visible().filter(Idea.status_id.in_(delivered or {"-"})).all()
+        ideas = (
+            self._visible()
+            .filter(Idea.status_id.in_(delivered or {"-"}))
+            .order_by(Idea.updated_at.desc())
+            .limit(CHANGELOG_CAP)
+            .all()
+        )
         ids = [i.id for i in ideas]
         last_move = dict(
             self.db.query(IdeaActivity.idea_id, func.max(IdeaActivity.created_at))
@@ -665,6 +704,9 @@ class IdeaPortalService:
             .filter(IdeaVote.idea_id == idea.id, IdeaVote.voter_id == self.p.voter_id)
             .first()
         )
+        # Decided BEFORE the row changes (review: reading ``existing.dir``
+        # after switching a legacy down-vote to up reported the vote as off).
+        voted = existing is None or existing.dir != "up"
         if existing is not None and existing.dir == "up":
             self.db.delete(existing)
         elif existing is not None:
@@ -682,20 +724,18 @@ class IdeaPortalService:
                     created_at=_now(),
                 )
             )
-        self.db.flush()
+        try:
+            self.db.flush()
+        except IntegrityError:
+            # A concurrent double-click already inserted this vote: it is on.
+            self.db.rollback()
+            idea = self._resolve(idea_id, follow_merge=False)
+            voted = True
         IdeaActionService(self.db)._recount(idea)
         self.db.commit()
         self.db.refresh(idea)
-        voted = existing is None or existing.dir != "up"
         return {"id": idea.id, "upvotes": idea.upvotes or 0, "myVote": voted}
 
-    @staticmethod
-    def _role_for_voter(voter_id: str, stored: Optional[str]) -> str:
-        # Votes cast over WhatsApp (the requester upvote) are dealers; every
-        # portal / operator / embed voter is staff.
-        if stored:
-            return stored
-        return STAFF_ROLE
 
     def voters(self, idea_id: str) -> List[Dict[str, Any]]:
         idea = self._resolve(idea_id, follow_merge=True)
@@ -705,23 +745,43 @@ class IdeaPortalService:
             .order_by(IdeaVote.created_at.desc(), IdeaVote.id.asc())
             .all()
         )
-        # Votes cast outside the portal carry no name: staff ids resolve to the
-        # user's first name (tenant-scoped), the rest show their role only.
-        staff_ids = [r.voter_id for r in rows if not r.voter_name and ":" not in r.voter_id]
-        names = {}
-        if staff_ids:
-            names = {
+        # Votes cast outside the portal carry no name. A bare id is a tenant
+        # user (operator board) or, failing that, a WhatsApp requester's
+        # contact id (the intake upvote) - a dealer. Both resolved
+        # tenant-scoped; ``embed-user:`` ids are Sorento staff.
+        bare = [r.voter_id for r in rows if ":" not in r.voter_id]
+        users: Dict[str, Optional[str]] = {}
+        contacts: Dict[str, Optional[str]] = {}
+        if bare:
+            users = {
                 u.id: first_name(u.name)
-                for u in self.db.query(User).filter(User.id.in_(staff_ids), User.tenant_id == idea.tenant_id)
+                for u in self.db.query(User).filter(User.id.in_(bare), User.tenant_id == idea.tenant_id)
             }
-        return [
-            {
-                "name": first_name(r.voter_name) if r.voter_name else names.get(r.voter_id),
-                "role": self._role_for_voter(r.voter_id, r.voter_role),
-                "isMe": r.voter_id == self.p.voter_id,
-            }
-            for r in rows
-        ]
+            from modules.omnichannel.models import Contact
+
+            rest = [i for i in bare if i not in users]
+            if rest:
+                contacts = {
+                    c.id: first_name(c.first_name)
+                    for c in self.db.query(Contact).filter(
+                        Contact.id.in_(rest), Contact.tenant_id == idea.tenant_id
+                    )
+                }
+
+        def _who(r: IdeaVote) -> Tuple[Optional[str], str]:
+            if r.voter_name:
+                return first_name(r.voter_name), r.voter_role or STAFF_ROLE
+            if r.voter_id.startswith("embed"):
+                return None, STAFF_ROLE
+            if r.voter_id in users:
+                return users[r.voter_id], STAFF_ROLE
+            return contacts.get(r.voter_id), "Dealer"
+
+        out = []
+        for r in rows:
+            name, role = _who(r)
+            out.append({"name": name, "role": role, "isMe": r.voter_id == self.p.voter_id})
+        return out
 
     # ---- comments ----------------------------------------------------------
 
@@ -746,6 +806,8 @@ class IdeaPortalService:
         for r in rows:
             d = r.model_dump()
             d["authorRole"] = STAFF_ROLE if r.authorKind in (AUTHOR_USER, AUTHOR_EMBED) else "Submitter"
+            if d["authorName"]:
+                d["authorName"] = first_name(d["authorName"]) or d["authorRole"]
             d["likeCount"] = counts.get(r.id, 0)
             d["likedByMe"] = r.id in liked
             out.append(d)
@@ -817,7 +879,12 @@ class IdeaPortalService:
                     created_at=_now(),
                 )
             )
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # A concurrent double-click already liked it.
+            self.db.rollback()
+            existing = None
         count = (
             self.db.query(func.count(IdeaCommentLike.id))
             .filter(IdeaCommentLike.comment_id == comment.id)
@@ -858,18 +925,14 @@ class IdeaPortalService:
         for c in comments:
             if not c["parentId"]:
                 events.append((c["createdAt"], 1, {"kind": "comment", "at": c["createdAt"], "comment": c, "replies": replies.get(c["id"], [])}))
-        # Upvotes grouped per UTC day (newest vote of the day as its time).
-        by_day: Dict[str, List[IdeaVote]] = {}
+        # One entry per upvote; the client groups them by the VIEWER's local
+        # day (review: grouping by UTC day mislabels days for UTC+8 viewers).
         for v in (
             self.db.query(IdeaVote)
             .filter(IdeaVote.idea_id == idea.id, IdeaVote.tenant_id == idea.tenant_id, IdeaVote.dir == "up")
             .all()
         ):
-            by_day.setdefault(v.created_at.astimezone(timezone.utc).date().isoformat(), []).append(v)
-        for day, votes in by_day.items():
-            at = max(v.created_at for v in votes)
-            names = [first_name(v.voter_name) for v in votes if v.voter_name]
-            events.append((at, 1, {"kind": "upvotes", "at": at, "day": day, "count": len(votes), "names": [n for n in names if n][:3]}))
+            events.append((v.created_at, 1, {"kind": "upvote", "at": v.created_at, "by": first_name(v.voter_name)}))
         live = {c["id"]: c for c in comments if not c["isDeleted"]}
         for like in (
             self.db.query(IdeaCommentLike)
@@ -916,7 +979,15 @@ class IdeaPortalService:
         from .actions import IdeaActionService
         from .numbering import mint_idea_identity
 
+        from app.services.throttle import Throttled, ThrottleService
+
         p = self.p
+        throttle = ThrottleService(self.db)
+        key = hashlib.sha256(f"{p.tenant_id}:{p.voter_id}".encode("utf-8")).hexdigest()
+        try:
+            throttle.enforce_idea_portal_submit(principal_key=key)
+        except Throttled as exc:
+            raise PortalError(429, "too_many_ideas", "Too many ideas. Try again later.", exc.retry_after_seconds)
         product_id = p.product_id or product_id
         if not product_id or product_id not in {x["id"] for x in self.products()}:
             raise PortalError(422, "invalid_product", "Choose a product.")
@@ -946,6 +1017,7 @@ class IdeaPortalService:
         idea.captured_json = captured
         mint_idea_identity(self.db, idea)
         self.db.commit()
+        throttle.record_idea_portal_submit(principal_key=key)
         return self.detail(idea.id)
 
 

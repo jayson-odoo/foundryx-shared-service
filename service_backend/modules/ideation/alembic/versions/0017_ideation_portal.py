@@ -5,6 +5,9 @@
   every existing row reads false = visible, which matches today's behaviour.
 - ``ideas.portal_note`` TEXT NULL (Q3) - the changelog note managers edit.
   NULL for every existing row (nothing to copy from).
+- ``ideas.submitter_user_id`` VARCHAR NULL + index - the staff creator (portal
+  "Yours"). No backfill: existing operator-created rows only stored the
+  operator's NAME, and ownership is never inferred from a name.
 - ``idea_votes.voter_name`` / ``voter_role`` (nullable) - stamped by portal
   votes for the voters list. Existing votes stay NULL; the portal falls back
   to a role-only label for them (there is no name to copy from).
@@ -47,6 +50,15 @@ def upgrade() -> None:
         )
     )
     bind.execute(text(f'ALTER TABLE "{s}".ideas ADD COLUMN IF NOT EXISTS portal_note TEXT NULL'))
+    bind.execute(
+        text(f'ALTER TABLE "{s}".ideas ADD COLUMN IF NOT EXISTS submitter_user_id VARCHAR NULL')
+    )
+    bind.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_ideas_submitter_user_id "
+            f'ON "{s}".ideas (submitter_user_id)'
+        )
+    )
     for col in ("voter_name", "voter_role"):
         bind.execute(
             text(f'ALTER TABLE "{s}".idea_votes ADD COLUMN IF NOT EXISTS {col} VARCHAR NULL')
@@ -119,5 +131,7 @@ def downgrade() -> None:
     bind.execute(text(f'DROP TABLE IF EXISTS "{s}".idea_comment_likes'))
     for col in ("voter_role", "voter_name"):
         bind.execute(text(f'ALTER TABLE "{s}".idea_votes DROP COLUMN IF EXISTS {col}'))
+    bind.execute(text(f'DROP INDEX IF EXISTS "{s}".ix_ideas_submitter_user_id'))
+    bind.execute(text(f'ALTER TABLE "{s}".ideas DROP COLUMN IF EXISTS submitter_user_id'))
     bind.execute(text(f'ALTER TABLE "{s}".ideas DROP COLUMN IF EXISTS portal_note'))
     bind.execute(text(f'ALTER TABLE "{s}".ideas DROP COLUMN IF EXISTS portal_hidden'))

@@ -32,7 +32,7 @@ export function ChangelogView() {
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <h1 className="font-heading text-xl font-semibold">Changelog</h1>
+      <div role="heading" aria-level={1} className="font-heading text-xl font-semibold">Changelog</div>
       {log.loading && !log.data && <PortalLoading />}
       {log.error && <PortalMessage text="The changelog could not be loaded." />}
       {log.data && groups.length === 0 && <p className="text-sm text-muted-foreground">Nothing delivered yet</p>}

@@ -11,12 +11,15 @@ HTTP + Pydantic only; every query lives in ``services/portal.py``.
 """
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Header, Query, Response, status
+from typing import Callable
+
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_real_user
 from app.models.user import User
 
 from ..schemas import (
@@ -48,7 +51,42 @@ from ..services.portal import (
     session_for_staff,
 )
 
-router = APIRouter()
+NO_STORE_HEADERS = {
+    # Ideas can carry internal business detail: never cache, never index.
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+class _NoStoreRoute(APIRoute):
+    """Security review #4: stamp the private headers on EVERY response of this
+    router - errors (401/403/404/422/429) included, which build their own
+    response and would otherwise drop headers set on the dependency's."""
+
+    def get_route_handler(self) -> Callable:
+        handler = super().get_route_handler()
+
+        async def wrapped(request: Request) -> Response:
+            try:
+                response = await handler(request)
+            except Exception as exc:  # noqa: BLE001 - converted by the app's own handler
+                convert = None
+                for cls in type(exc).__mro__:
+                    convert = request.app.exception_handlers.get(cls)
+                    if convert is not None:
+                        break
+                if convert is None:
+                    raise
+                response = await convert(request, exc)
+            response.headers.update(NO_STORE_HEADERS)
+            return response
+
+        return wrapped
+
+
+router = APIRouter(route_class=_NoStoreRoute)
+MAX_COLUMNS = 20
 
 
 def _raise(exc: PortalError):
@@ -99,11 +137,14 @@ def _svc(db: Session, p: PortalPrincipal) -> IdeaPortalService:
 
 @router.post("/session/staff", response_model=PortalSessionOut)
 def staff_session(
-    response: Response, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    response: Response,
+    user: User = Depends(get_current_user),
+    real_user: User = Depends(get_real_user),
+    db: Session = Depends(get_db),
 ):
     _private(response)
     try:
-        return session_for_staff(db, user)
+        return session_for_staff(db, user, impersonating=user.id != real_user.id)
     except PortalError as exc:
         _raise(exc)
 
@@ -158,6 +199,8 @@ def list_ideas(
     p: PortalPrincipal = Depends(require_portal_principal),
     db: Session = Depends(get_db),
 ):
+    if column and len(column) > MAX_COLUMNS:
+        raise ApiError(422, "too_many_columns", "Too many status filters.")
     return _svc(db, p).list(
         q=q, columns=column, sort=sort, mine=mine, product_id=productId,
         include_closed=includeClosed, page=page, page_size=pageSize,

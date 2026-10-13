@@ -73,10 +73,13 @@ export interface UsePortalSession {
   signOut: () => void;
 }
 
-/** Shared-service portal: an existing portal token, else a staff login
- * exchange, else the sign-in screen. */
+/** Shared-service portal (staff only): needs the staff login. A stored portal
+ * token is reused only for the SAME signed-in user; otherwise the login is
+ * exchanged for a fresh one. Signed out = the sign-in screen (and the stored
+ * token is discarded). */
 export function usePortalSession(): UsePortalSession {
-  const { status: authStatus } = useSession();
+  const { status: authStatus, data: authSession } = useSession();
+  const userId = authSession?.user?.id ?? null;
   const [status, setStatus] = useState<PortalSessionStatus>('loading');
   const [principal, setPrincipal] = useState<PortalPrincipal | null>(null);
 
@@ -84,7 +87,13 @@ export function usePortalSession(): UsePortalSession {
     if (authStatus === 'loading') return;
     let cancelled = false;
     (async () => {
-      if (ideaPortalAuth.get()) {
+      if (authStatus !== 'authenticated' || !userId) {
+        ideaPortalAuth.set(null);
+        setPrincipal(null);
+        setStatus('signin');
+        return;
+      }
+      if (ideaPortalAuth.get() && ideaPortalAuth.owner() === userId) {
         try {
           const me = await ideaPortalService.me();
           if (cancelled) return;
@@ -95,24 +104,23 @@ export function usePortalSession(): UsePortalSession {
           // stale token - cleared by the service on 401, fall through
         }
       }
-      if (authStatus === 'authenticated') {
-        try {
-          const s = await ideaPortalService.staffSession();
-          if (cancelled) return;
-          ideaPortalAuth.set(s.token);
-          setPrincipal(s.principal);
-          setStatus('ready');
-          return;
-        } catch {
-          // no ideas access for this staff user - show sign-in
-        }
+      try {
+        const s = await ideaPortalService.staffSession();
+        if (cancelled) return;
+        ideaPortalAuth.set(s.token, userId);
+        setPrincipal(s.principal);
+        setStatus('ready');
+        return;
+      } catch {
+        // no ideas access for this staff user (or impersonating) - sign-in
+        ideaPortalAuth.set(null);
       }
       if (!cancelled) setStatus('signin');
     })();
     return () => {
       cancelled = true;
     };
-  }, [authStatus]);
+  }, [authStatus, userId]);
 
   const signOut = useCallback(() => {
     ideaPortalAuth.set(null);
