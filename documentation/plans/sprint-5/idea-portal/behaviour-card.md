@@ -1,12 +1,15 @@
-# IDEA-PORTAL behaviour card v1
+# IDEA-PORTAL behaviour card v2
 
-Mock: `mock-v1.html` (open in a browser; screens 0 to 5 in the top bar).
-Screenshots at 1280 and 375: `evidence/mock-v1-*.png`.
-The sample ideas are made up. The sandbox cannot reach the dev database, so I wrote realistic Sorento dealer ideas instead.
+Mock: `mock-v2.html` (screens 0 to 6 in the top bar). Screenshots at 1280 and 375: `evidence/mock-v2-*.png`. v1 is kept as `mock-v1.html` for history.
+Real ideas: IDEA-0010 "Order status tracking for dealers" and IDEA-0014 "Quotation knowledge capture". Everything tagged `sample` is filler, including IDEA-0010's Desired outcome, Use cases and Current workaround: those fields do not exist yet (lane IDEA-CORE).
 
 ## Already decided (owner, 13 Oct)
 - **Who sees the portal:** sign in required (option b). That means staff plus dealers/contacts. No anonymous voting or commenting.
 - **Idea page fields:** Business problem, Desired outcome, Use cases, Current workaround. Proposed solution, Impact and Department are no longer shown.
+
+- Q2 roadmap columns: yes (crew default).
+- Q4 votes and comments: yes (crew default).
+- The portal also shows inside Sorento CRM (owner note on mock v1).
 
 ## What it does
 - **One portal per tenant**, at `/portal/ideas` on the shared-service frontend, with the tenant's branding. It has three tabs, and each tab is its own URL:
@@ -20,6 +23,7 @@ The sample ideas are made up. The sandbox cannot reach the dev database, so I wr
   - voters (first name and role only);
   - a comment box;
   - one activity feed, newest first: submitted, status changes, comments and replies, upvotes grouped by day, likes on comments.
+- **Inside Sorento CRM** (screen 5): the same three tabs and idea page, served from `/embed/ideas/portal` through the existing iframe SSO (`app/embed/ideas/embed-app.tsx`). There is no tenant header, and staff and CRM users act as themselves. Sorento only changes the URL its `components/ideas/IdeationEmbed.tsx` loads (or adds a tab next to the current Ideas list).
 - **The chatbot link** (`/public/ideas/<token>`, and the tenant link template) now opens this idea page inside the portal.
 - **The submitter finds their own ideas** through the "Yours" marks, the "My ideas" filter and the timeline.
 - **Not shown on the portal:**
@@ -42,7 +46,7 @@ Staff sign in with their shared-service login. Sorento CRM users arrive through 
 
 **Recommendation: (b) now, (c) as a follow-up.** It keeps the change inside shared-service and closes the forwarded-link leak.
 
-**Q2. Which statuses map to which roadmap columns?**
+**Q2 (answered: yes). Which statuses map to which roadmap columns?**
 - Under review = New and Triaged
 - Planned = Linked to BR
 - In progress = Building
@@ -59,7 +63,7 @@ Rejected, Duplicate and Archived are not on the roadmap. A status a tenant adds 
 
 **Recommendation: (a).** There is nothing new to author, and it can never go stale. Manual entries go to the backlog.
 
-**Q4. Voting and comment identity, and spam.**
+**Q4 (answered: yes). Voting and comment identity, and spam.**
 - One upvote per signed-in person: a staff user, a CRM user, or a contact. Votes can be toggled.
 - Downvotes are hidden on the portal.
 - The voter list shows first name and role ("Dealer" / "Staff"), never a phone number or email.
