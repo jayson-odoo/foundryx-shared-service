@@ -204,6 +204,12 @@ DOCUMENT_PREREQUISITES: Dict[str, Tuple[str, ...]] = {
     "sales_order": (ENTITY_CUSTOMER, "product"),
     "purchase_order": (ENTITY_SUPPLIER, "product"),
     "shipping_order": (ENTITY_SUPPLIER, "product", "warehouse"),
+    # AC-CANCEL-PULL - the linked documents reference the same masters as
+    # the order they cancel / the consignment they return.
+    "cancel_sales_order": (ENTITY_CUSTOMER, "product"),
+    "cancel_purchase_order": (ENTITY_SUPPLIER, "product"),
+    "consignment": (ENTITY_CUSTOMER, "product"),
+    "consignment_return": (ENTITY_CUSTOMER, "product"),
 }
 
 NOT_API_BACKED_MESSAGE = (

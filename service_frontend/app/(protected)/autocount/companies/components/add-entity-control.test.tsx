@@ -83,7 +83,7 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     expect(screen.queryByRole('option', { name: 'Goods received note' })).not.toBeInTheDocument();
   });
 
-  it('a DB company offers all eleven sql_db entities incl. customer + supplier + brand, never GRN', () => {
+  it('a DB company offers all fifteen sql_db entities incl. customer + supplier + brand + linked docs, never GRN', () => {
     // sprint-5/08 S4 (AC-08-31) added `brand` to the DB-capable entity set
     // (a DB task can feed it too) - was ten before that commit.
     render(<AddEntityControl entities={[]} sourceKind="db" onAdd={vi.fn()} />);
@@ -93,6 +93,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
       expect.arrayContaining([
         'Customer', 'Supplier', 'Product category', 'Unit of measure', 'Warehouse',
         'Product', 'Sales agent', 'Sales order', 'Purchase order', 'Shipping order', 'Brand',
+        // AC-CANCEL-PULL
+        'Cancel sales order', 'Cancel purchase order', 'Consignment', 'Consignment return',
       ]),
     );
     expect(names).not.toContain('Goods received note');
@@ -109,7 +111,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     const names = screen.getAllByRole('option').map((o) => o.textContent);
     // sprint-5/14 section 11 (AC-14-47): Branch is HTTP-only as well, so a DB
     // company is offered it beside Stock balance (thirteen total).
-    expect(names).toHaveLength(13);
+    // AC-CANCEL-PULL: + the four linked documents (seventeen).
+    expect(names).toHaveLength(17);
     expect(names).toContain('Stock balance');
     expect(names).toContain('Branch');
   });
@@ -124,7 +127,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(11);
+    // AC-CANCEL-PULL: 17 offered minus the two configured.
+    expect(names).toHaveLength(15);
     expect(names).not.toContain('Customer');
     expect(names).not.toContain('Sales order');
     expect(names).toContain('Supplier');
@@ -142,7 +146,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(12);
+    // AC-CANCEL-PULL: 17 offered minus Stock balance.
+    expect(names).toHaveLength(16);
     expect(names).not.toContain('Stock balance');
   });
 });

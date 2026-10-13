@@ -68,6 +68,10 @@ describe('isDocumentEntity', () => {
   it('flags SO/PO only', () => {
     expect(isDocumentEntity('sales_order')).toBe(true);
     expect(isDocumentEntity('purchase_order')).toBe(true);
+    // AC-CANCEL-PULL - the four linked documents carry lines too.
+    for (const linked of ['cancel_sales_order', 'cancel_purchase_order', 'consignment', 'consignment_return']) {
+      expect(isDocumentEntity(linked)).toBe(true);
+    }
     expect(isDocumentEntity('customer')).toBe(false);
     expect(isDocumentEntity('supplier')).toBe(false);
   });
@@ -600,6 +604,10 @@ describe('isDocumentEntity - sprint-5/02', () => {
   it('still true for sales_order/purchase_order, false otherwise', () => {
     expect(isDocumentEntity('sales_order')).toBe(true);
     expect(isDocumentEntity('purchase_order')).toBe(true);
+    // AC-CANCEL-PULL - the four linked documents carry lines too.
+    for (const linked of ['cancel_sales_order', 'cancel_purchase_order', 'consignment', 'consignment_return']) {
+      expect(isDocumentEntity(linked)).toBe(true);
+    }
     expect(isDocumentEntity('customer')).toBe(false);
   });
 });

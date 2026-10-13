@@ -191,6 +191,12 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
   // sprint-5/08 (AC-08-31) - `brand` is DB-extractable too, not just the
   // open REST API's `HTTP_ENTITY_TYPES` set.
   'brand',
+  // AC-CANCEL-PULL - Cancel SO/PO + Consignment/Return: sql_db-only documents
+  // like SO/PO/SPO, delivered behind CRM contract 2.8.
+  'cancel_sales_order',
+  'cancel_purchase_order',
+  'consignment',
+  'consignment_return',
 ];
 
 /**
