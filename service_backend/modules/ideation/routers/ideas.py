@@ -104,6 +104,10 @@ def create_idea(
         raw_text=body.rawText,
         source=body.source,
         actor=current_user,
+        title=body.title,
+        desired_outcome=body.desiredOutcome,
+        use_cases=body.useCases,
+        current_workaround=body.currentWorkaround,
     )
 
 
@@ -266,6 +270,10 @@ def update_idea(
         department=body.department,
         raw_text=body.rawText,
         voter_id=current_user.id,
+        title=body.title,
+        desired_outcome=body.desiredOutcome,
+        use_cases=body.useCases,
+        current_workaround=body.currentWorkaround,
     )
 
 

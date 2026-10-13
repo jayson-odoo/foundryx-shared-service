@@ -17,6 +17,7 @@ from app.services import status_machine
 from app.services.catalog_service import tenant_public_link_base
 
 from ..models import Idea
+from .card_fields import CARD_TEXT_KEYS, clean_text, clean_use_cases
 from .ideas import next_capture_priority
 from .numbering import mint_idea_identity
 from .statuses import IDEA_ENTITY, idea_status_id
@@ -41,6 +42,13 @@ def sync_idea_columns_from_captured(idea: Idea) -> None:
         value = captured.get(key)
         if isinstance(value, str) and value.strip():
             setattr(idea, key, value.strip())
+    for key in CARD_TEXT_KEYS:
+        value = clean_text(captured.get(key))
+        if value:
+            setattr(idea, key, value)
+    use_cases = clean_use_cases(captured.get("use_cases"))
+    if use_cases:
+        idea.use_cases = use_cases
 
 
 # Placeholders a tenant ``public_link_base_url`` may carry when its portal path

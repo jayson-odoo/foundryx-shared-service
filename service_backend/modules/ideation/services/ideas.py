@@ -34,6 +34,7 @@ from ..schemas import (
     IdeaOut,
     TransitionOut,
 )
+from .card_fields import clean_use_cases
 from .ownership import SubmitterIdentity, owned_filter
 from .statuses import IDEA_ENTITY
 
@@ -113,6 +114,9 @@ class IdeaReadService:
             advanceTransitionId=advance_transition_id,
             title=idea.title,
             problem=idea.problem,
+            desiredOutcome=idea.desired_outcome,
+            useCases=clean_use_cases(idea.use_cases) or [],
+            currentWorkaround=idea.current_workaround,
             proposedSolution=idea.proposed_solution,
             impact=idea.impact,
             department=idea.department,

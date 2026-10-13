@@ -103,6 +103,10 @@ class EmbedIdeaCreateIn(BaseModel):
     operator create contract."""
 
     problem: str
+    title: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -374,6 +378,11 @@ def embed_create_idea(
         raw_text=body.rawText,
         source=(body.source or "embed"),
         actor=None,
+        title=body.title,
+        desired_outcome=body.desiredOutcome,
+        use_cases=body.useCases,
+        current_workaround=body.currentWorkaround,
+
         # The viewing CRM user is the submitter (the isMine ownership link).
         submitter_crm_user_id=principal.sub,
         submitter_name=principal.name,
@@ -505,6 +514,10 @@ def embed_update_idea(
         department=body.department,
         raw_text=body.rawText,
         voter_id=_embed_voter_id(principal),
+        title=body.title,
+        desired_outcome=body.desiredOutcome,
+        use_cases=body.useCases,
+        current_workaround=body.currentWorkaround,
     )
     return _mark_one(db, principal, out)
 

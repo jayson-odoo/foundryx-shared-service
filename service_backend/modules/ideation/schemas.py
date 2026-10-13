@@ -84,6 +84,11 @@ class IdeaOut(ApiModel):
     # idea or a draft that never sent one; the FE falls back to ``problem``.
     title: Optional[str] = None
     problem: str
+    # Canny-style card fields (plan 20). ``problem`` is shown as "Business
+    # problem"; the three legacy fields below stay on the wire (hidden in UI).
+    desiredOutcome: Optional[str] = None
+    useCases: List[str] = []
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -309,6 +314,10 @@ class IdeaCreateIn(ApiModel):
 
     productId: str
     problem: str
+    title: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -322,7 +331,11 @@ class IdeaUpdateIn(ApiModel):
     NOT this route, so ``status`` is intentionally absent."""
 
     productId: Optional[str] = None
+    title: Optional[str] = None
     problem: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -714,6 +727,12 @@ class OneShotIdeaIn(ApiModel):
     product_id: str
     problem: str
     title: Optional[str] = None
+    # Canny-style card fields (plan 20) - key names locked with the CRM
+    # (IDEA-CAPTURE, sorento-crm #1625). Unknown keys stay ignored (no
+    # ``extra='forbid'``) so the CRM can send these before this deploys.
+    desired_outcome: Optional[str] = None
+    use_cases: Optional[List[str]] = None
+    current_workaround: Optional[str] = None
     proposed_solution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
