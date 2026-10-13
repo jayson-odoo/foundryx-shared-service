@@ -745,26 +745,21 @@ class SimilarOwnIn(ApiModel):
 
 
 class PortalPrincipalOut(ApiModel):
-    kind: Literal["staff", "crm", "contact"]
+    kind: Literal["staff", "crm"]
     name: Optional[str] = None
     role: str
     productId: Optional[str] = None
+    # May hide ideas, edit changelog notes and delete anyone's comment.
+    canManage: bool = False
 
 
 class PortalSessionOut(ApiModel):
     token: str
     principal: PortalPrincipalOut
-    # Link sign-in only: the idea the chatbot link addressed (its survivor).
-    ideaId: Optional[str] = None
 
 
 class PortalEmbedSessionIn(ApiModel):
     token: str = Field(min_length=1, max_length=4096)
-
-
-class PortalLinkSessionIn(ApiModel):
-    token: str = Field(min_length=1, max_length=128)
-    last4: str = Field(pattern=r"^[0-9]{4}$")
 
 
 class PortalCardOut(ApiModel):
@@ -802,6 +797,7 @@ class PortalListOut(ApiModel):
 
 class PortalChangelogItemOut(PortalCardOut):
     deliveredAt: datetime
+    note: Optional[str] = None
 
 
 class PortalChangelogOut(ApiModel):
@@ -826,8 +822,10 @@ class PortalIdeaOut(PortalCardOut):
     currentWorkaround: Optional[str] = None
     submitterFirstName: Optional[str] = None
     timeline: List[PortalTimelineStepOut]
-    # Staff only (null for everyone else).
+    # Managers only (null for everyone else).
     portalHidden: Optional[bool] = None
+    # The changelog note (Q3).
+    note: Optional[str] = None
 
 
 class PortalVoteOut(ApiModel):
@@ -893,3 +891,7 @@ class PortalIdeaCreateIn(ApiModel):
 
 class PortalHiddenIn(ApiModel):
     hidden: bool
+
+
+class PortalNoteIn(ApiModel):
+    note: Optional[str] = Field(default=None, max_length=500)

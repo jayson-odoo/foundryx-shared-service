@@ -3,6 +3,8 @@
 - ``ideas.portal_hidden`` BOOLEAN NOT NULL DEFAULT false (Q5). A constant
   default is a metadata-only ADD COLUMN on Postgres 11+ (no table rewrite);
   every existing row reads false = visible, which matches today's behaviour.
+- ``ideas.portal_note`` TEXT NULL (Q3) - the changelog note managers edit.
+  NULL for every existing row (nothing to copy from).
 - ``idea_votes.voter_name`` / ``voter_role`` (nullable) - stamped by portal
   votes for the voters list. Existing votes stay NULL; the portal falls back
   to a role-only label for them (there is no name to copy from).
@@ -44,6 +46,7 @@ def upgrade() -> None:
             "ADD COLUMN IF NOT EXISTS portal_hidden BOOLEAN NOT NULL DEFAULT false"
         )
     )
+    bind.execute(text(f'ALTER TABLE "{s}".ideas ADD COLUMN IF NOT EXISTS portal_note TEXT NULL'))
     for col in ("voter_name", "voter_role"):
         bind.execute(
             text(f'ALTER TABLE "{s}".idea_votes ADD COLUMN IF NOT EXISTS {col} VARCHAR NULL')
@@ -116,4 +119,5 @@ def downgrade() -> None:
     bind.execute(text(f'DROP TABLE IF EXISTS "{s}".idea_comment_likes'))
     for col in ("voter_role", "voter_name"):
         bind.execute(text(f'ALTER TABLE "{s}".idea_votes DROP COLUMN IF EXISTS {col}'))
+    bind.execute(text(f'ALTER TABLE "{s}".ideas DROP COLUMN IF EXISTS portal_note'))
     bind.execute(text(f'ALTER TABLE "{s}".ideas DROP COLUMN IF EXISTS portal_hidden'))

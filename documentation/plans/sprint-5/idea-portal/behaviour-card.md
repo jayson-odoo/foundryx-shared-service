@@ -1,4 +1,4 @@
-# IDEA-PORTAL behaviour card v2
+# IDEA-PORTAL behaviour card v3 (all questions answered)
 
 Mock: `mock-v2.html` (screens 0 to 6 in the top bar). Screenshots at 1280 and 375: `evidence/mock-v2-*.png`. v1 is kept as `mock-v1.html` for history.
 Real ideas: IDEA-0010 "Order status tracking for dealers" and IDEA-0014 "Quotation knowledge capture". Everything tagged `sample` is filler, including IDEA-0010's Desired outcome, Use cases and Current workaround: those fields do not exist yet (lane IDEA-CORE).
@@ -7,8 +7,12 @@ Real ideas: IDEA-0010 "Order status tracking for dealers" and IDEA-0014 "Quotati
 - **Who sees the portal:** sign in required (option b). That means staff plus dealers/contacts. No anonymous voting or commenting.
 - **Idea page fields:** Business problem, Desired outcome, Use cases, Current workaround. Proposed solution, Impact and Department are no longer shown.
 
-- Q2 roadmap columns: yes (crew default).
-- Q4 votes and comments: yes (crew default).
+- **Q1 (owner, 13 Oct): staff only.** The portal is for salespeople and office staff. Dealers / WhatsApp contacts can NOT sign in. Sign-in = the existing staff login: shared-service login, or Sorento CRM users through the existing embed SSO. The dealer identity design below (last 4 digits) is dropped.
+- **Q2:** roadmap columns as proposed (crew default).
+- **Q3 (owner): (a).** Delivered ideas appear automatically. A manager can edit a one-line changelog note.
+- **Q4:** votes and comments as proposed (crew default). Voters show first name + role; every portal user is "Staff".
+- **Q5 (owner): (b).** A "Hide from portal" switch on each idea, default off.
+- **Managers** (shared-service `ideation.triage.manage`, or a Sorento user whose embed `ideas_manage` claim is not false) can hide ideas, edit the changelog note and delete any comment. Everyone else can only delete their own comments.
 - The portal also shows inside Sorento CRM (owner note on mock v1).
 
 ## What it does
@@ -24,7 +28,7 @@ Real ideas: IDEA-0010 "Order status tracking for dealers" and IDEA-0014 "Quotati
   - a comment box;
   - one activity feed, newest first: submitted, status changes, comments and replies, upvotes grouped by day, likes on comments.
 - **Inside Sorento CRM** (screen 5): the same three tabs and idea page, served from `/embed/ideas/portal` through the existing iframe SSO (`app/embed/ideas/embed-app.tsx`). There is no tenant header, and staff and CRM users act as themselves. Sorento only changes the URL its `components/ideas/IdeationEmbed.tsx` loads (or adds a tab next to the current Ideas list).
-- **The chatbot link** (`/public/ideas/<token>`, and the tenant link template) now opens this idea page inside the portal.
+- **The chatbot link** sent to dealers (`/public/ideas/<token>`) stays the existing public status page (unchanged); dealers are not portal users.
 - **The submitter finds their own ideas** through the "Yours" marks, the "My ideas" filter and the timeline.
 - **Not shown on the portal:**
   - draft ideas;

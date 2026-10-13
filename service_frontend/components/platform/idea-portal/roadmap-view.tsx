@@ -39,14 +39,16 @@ export function RoadmapView() {
               onChange={(v) => setProductId(v === ALL_PRODUCTS ? null : v)}
             />
           )}
-          <Button
-            variant={mine ? 'primary' : 'outline'}
-            size="sm"
-            aria-pressed={mine}
-            onClick={() => setMine((m) => !m)}
-          >
-            My ideas
-          </Button>
+          {principal.kind === 'crm' && (
+            <Button
+              variant={mine ? 'primary' : 'outline'}
+              size="sm"
+              aria-pressed={mine}
+              onClick={() => setMine((m) => !m)}
+            >
+              My ideas
+            </Button>
+          )}
         </div>
       </div>
       {roadmap.loading && !roadmap.data && <PortalLoading />}

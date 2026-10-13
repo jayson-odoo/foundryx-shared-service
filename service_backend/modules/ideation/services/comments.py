@@ -146,7 +146,6 @@ class IdeaCommentService:
             AUTHOR_USER: "Team member",
             AUTHOR_EMBED: "Portal user",
             AUTHOR_PUBLIC: "Submitter",
-            "contact": "Dealer",
         }
         out: List[IdeaCommentOut] = []
         for c in rows:

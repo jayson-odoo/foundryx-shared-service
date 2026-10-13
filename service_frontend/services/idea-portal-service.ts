@@ -64,10 +64,6 @@ export const ideaPortalService = {
   embedSession(embedToken: string): Promise<PortalSession> {
     return publicFetch<PortalSession>(`${BASE}/session/embed`, json({ token: embedToken }));
   },
-  /** WhatsApp contact: chatbot link token + last 4 digits of their number. */
-  linkSession(token: string, last4: string): Promise<PortalSession> {
-    return publicFetch<PortalSession>(`${BASE}/session/link`, json({ token, last4 }));
-  },
   me(): Promise<PortalPrincipal> {
     return call<PortalPrincipal>('/me');
   },
@@ -93,6 +89,12 @@ export const ideaPortalService = {
     return call<PortalIdea>(`/${encodeURIComponent(id)}/hidden`, {
       method: 'PUT',
       body: JSON.stringify({ hidden }),
+    });
+  },
+  setNote(id: string, note: string | null): Promise<PortalIdea> {
+    return call<PortalIdea>(`/${encodeURIComponent(id)}/note`, {
+      method: 'PUT',
+      body: JSON.stringify({ note }),
     });
   },
   vote(id: string): Promise<PortalVote> {

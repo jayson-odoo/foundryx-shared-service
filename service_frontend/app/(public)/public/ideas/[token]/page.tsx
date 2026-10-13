@@ -10,9 +10,7 @@
  * problem/solution/impact/department beyond what the backend already decided
  * is safe to expose (AC-90-104's exact key-set pins the wire contract).
  */
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { Button } from '@/components/ui/button';
 import { AlertCircle, Loader2 } from 'lucide-react';
 import { usePublicIdeaStatus } from '@/hooks/use-public-idea-status';
 import { useTenantBranding } from '@/hooks/use-branding';
@@ -101,11 +99,8 @@ export default function PublicIdeaStatusPage() {
               mergedInto={view.mergedInto}
             />
           </div>
-          <div className="flex flex-col gap-3 lg:col-start-2 lg:row-start-1">
+          <div className="lg:col-start-2 lg:row-start-1">
             <NextStepCallout nextStep={view.nextStep} />
-            <Button asChild variant="outline" data-testid="open-in-portal">
-              <Link href={`/public/ideas/${encodeURIComponent(token)}/portal`}>Open in portal</Link>
-            </Button>
           </div>
           <div className="lg:sticky lg:top-6 lg:col-start-2 lg:row-start-2">
             <IdeaStatusTimeline timeline={view.timeline} />

@@ -3,28 +3,31 @@
 Plan + contract: ``documentation/plans/sprint-5/idea-portal/``
 (``acceptance-criteria.md`` AC-P-xx, ``behaviour-card.md`` Q1..Q5).
 
-WHO (owner ruling 13 Oct: sign-in required, no anonymous voting/commenting).
-Every portal request carries a PORTAL token: a JWT signed with a key DERIVED
-from ``settings.jwt_secret`` (HMAC, own label) - so a portal token can never
-authenticate a staff endpoint (core ``decode_access_token`` uses the raw
-secret) and a core JWT can never authenticate the portal. Three exchanges mint
-one, each tenant-bound by its own credential (never client input):
+WHO (owner answers 13 Oct, Q1): staff only - salespeople and office staff.
+Dealers / WhatsApp contacts can NOT sign in. Every portal request carries a
+PORTAL token: a JWT signed with a key DERIVED from ``settings.jwt_secret``
+(HMAC, own label) and carrying its own ``aud`` - so a portal token can never
+authenticate a staff endpoint and a core JWT can never authenticate the
+portal. Two exchanges mint one, each tenant-bound by its own credential:
 
-- ``staff``   - a shared-service user (core login) holding ``ideation.ideas.view``;
-- ``crm``     - a Sorento CRM user arriving through the ideation embed SSO (the
-                embed token's ``sub``/``name``/``phone``/product scope);
-- ``contact`` - a WhatsApp submitter: the chatbot link's ``status_token`` PLUS
-                the last 4 digits of the submitter contact's WhatsApp number
-                (Q1 option b). Throttled per link + per IP; uniform 401.
+- ``staff`` - a shared-service user (core login) holding ``ideation.ideas.view``;
+- ``crm``   - a Sorento CRM user arriving through the ideation embed SSO (the
+              embed token's ``sub``/``name``/``phone``/product scope).
+
+Managers (``can_manage``) may hide an idea from the portal (Q5), edit its
+changelog note (Q3) and delete anyone's comment: shared-service staff holding
+``ideation.triage.manage``; a CRM user unless the host sent
+``ideas_manage=false`` (the embed iframe's own rule).
 
 Every resolve re-checks liveness (tenant sign-in, ideation module ACTIVE, the
-user / contact / embed connection still exists), so suspending a tenant or
-disabling the module kills live portal sessions on the next request.
+user still active with the view permission / the embed connection still
+active), so suspending a tenant or disabling the module kills live portal
+sessions on the next request.
 
 WHAT (visibility, AC-P-10/11): tenant-scoped; never draft (``is_initial``),
 ``is_test`` or merged children (a merged child's page resolves to its
 survivor, scoped by the child's own tenant); ``portal_hidden`` ideas only for
-staff and their own submitter; a product-scoped embed connection sees only its
+managers and their own submitter; a product-scoped embed connection sees only its
 product. Off-ramp statuses (``is_archived`` and not mapped) are left out of the
 roadmap and only listed with ``includeClosed``.
 
@@ -48,8 +51,6 @@ from app.models.catalog import Product
 from app.models.status import Status
 from app.models.tenant import Tenant
 from app.models.user import User
-from modules.omnichannel.models import Contact
-from modules.omnichannel.phone import digits_only
 
 from ..models import (
     Idea,
@@ -70,14 +71,12 @@ PORTAL_TTL = timedelta(days=30)
 
 KIND_STAFF = "staff"
 KIND_CRM = "crm"
-KIND_CONTACT = "contact"
-ROLE_BY_KIND = {KIND_STAFF: "Staff", KIND_CRM: "Member", KIND_CONTACT: "Dealer"}
-
-# Portal comments by a WhatsApp contact (``IdeaComment.author_kind``).
-AUTHOR_CONTACT = "contact"
-ROLE_BY_AUTHOR_KIND = {AUTHOR_USER: "Staff", AUTHOR_EMBED: "Member", AUTHOR_CONTACT: "Dealer"}
+# Everyone on the portal is staff (Q1); the role label is the same for both.
+ROLE_BY_KIND = {KIND_STAFF: "Staff", KIND_CRM: "Staff"}
+STAFF_ROLE = "Staff"
 
 VIEW_PERMISSION = "ideation.ideas.view"
+MANAGE_PERMISSION = "ideation.triage.manage"
 
 # (column key, title, colour, platform status keys) - Q2.
 DEFAULT_COLUMNS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
@@ -120,7 +119,8 @@ def _not_found() -> PortalError:
     return PortalError(404, "not_found", "Idea not found.")
 
 
-LINK_REJECTED = PortalError(401, "link_rejected", "That number does not match this link.")
+def _forbidden() -> PortalError:
+    return PortalError(403, "forbidden", "Only managers can change this.")
 
 
 def _now() -> datetime:
@@ -139,14 +139,11 @@ class PortalPrincipal:
     product_id: Optional[str] = None
     phone: Optional[str] = None
     connection_id: Optional[str] = None
+    can_manage: bool = False
 
     @property
     def role(self) -> str:
         return ROLE_BY_KIND[self.kind]
-
-    @property
-    def is_staff(self) -> bool:
-        return self.kind == KIND_STAFF
 
     @property
     def voter_id(self) -> str:
@@ -155,9 +152,7 @@ class PortalPrincipal:
         iframe already vote with, so a person's vote is one vote everywhere."""
         if self.kind == KIND_STAFF:
             return self.subject
-        if self.kind == KIND_CRM:
-            return f"embed-user:{self.subject}"
-        return f"contact:{self.subject}"
+        return f"embed-user:{self.subject}"
 
     @property
     def identity(self) -> SubmitterIdentity:
@@ -167,11 +162,11 @@ class PortalPrincipal:
 
     @property
     def comment_kind(self) -> str:
-        return {KIND_STAFF: AUTHOR_USER, KIND_CRM: AUTHOR_EMBED}.get(self.kind, AUTHOR_CONTACT)
+        return AUTHOR_USER if self.kind == KIND_STAFF else AUTHOR_EMBED
 
     @property
     def viewer(self) -> CommentViewer:
-        return CommentViewer(kind=self.comment_kind, id=self.voter_id, can_moderate=self.is_staff)
+        return CommentViewer(kind=self.comment_kind, id=self.voter_id, can_moderate=self.can_manage)
 
 
 def _signing_key() -> str:
@@ -206,6 +201,12 @@ def _module_active(db: Session, tenant_id: str) -> bool:
     return ModuleRepository(db).is_active(tenant_id, "ideation")
 
 
+def _can_manage_staff(user: User) -> bool:
+    from app.dependencies import effective_permission_keys
+
+    return MANAGE_PERMISSION in effective_permission_keys(user)
+
+
 def _tenant_ok(db: Session, tenant_id: str) -> bool:
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     return tenant is not None and tenant.signin_allowed and _module_active(db, tenant_id)
@@ -222,14 +223,6 @@ def _staff_user(db: Session, tenant_id: str, user_id: str) -> Optional[User]:
     if VIEW_PERMISSION not in effective_permission_keys(user):
         return None
     return user
-
-
-def _contact(db: Session, tenant_id: str, contact_id: str) -> Optional[Contact]:
-    return (
-        db.query(Contact)
-        .filter(Contact.id == contact_id, Contact.tenant_id == tenant_id)
-        .first()
-    )
 
 
 def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
@@ -251,12 +244,7 @@ def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
         if user is None:
             raise _unauthorized()
         p.name = first_name(user.name) or "Staff"
-    elif kind == KIND_CONTACT:
-        contact = _contact(db, tenant_id, sub)
-        if contact is None:
-            raise _unauthorized()
-        p.phone = contact.phone
-        p.name = first_name(contact.first_name) or "Dealer"
+        p.can_manage = _can_manage_staff(user)
     else:
         from ..models import EmbedConnection
 
@@ -273,8 +261,9 @@ def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
         p.connection_id = conn.connection_id
         p.product_id = conn.product_id
         # The CRM user's name/phone ride the token (signed by us at exchange).
-        p.name = claims.get("nm") or "Member"
+        p.name = claims.get("nm") or "Staff"
         p.phone = claims.get("ph")
+        p.can_manage = claims.get("mg") is not False
     return p
 
 
@@ -286,7 +275,13 @@ def _session_out(p: PortalPrincipal, extra: Optional[Dict[str, Any]] = None) -> 
 
 
 def principal_out(p: PortalPrincipal) -> Dict[str, Any]:
-    return {"kind": p.kind, "name": p.name, "role": p.role, "productId": p.product_id}
+    return {
+        "kind": p.kind,
+        "name": p.name,
+        "role": p.role,
+        "productId": p.product_id,
+        "canManage": p.can_manage,
+    }
 
 
 def session_for_staff(db: Session, user: User) -> Dict[str, Any]:
@@ -295,7 +290,11 @@ def session_for_staff(db: Session, user: User) -> Dict[str, Any]:
     if _staff_user(db, user.tenant_id, user.id) is None:
         raise PortalError(403, "forbidden", "You do not have access to ideas.")
     p = PortalPrincipal(
-        tenant_id=user.tenant_id, kind=KIND_STAFF, subject=user.id, name=first_name(user.name) or "Staff"
+        tenant_id=user.tenant_id,
+        kind=KIND_STAFF,
+        subject=user.id,
+        name=first_name(user.name) or "Staff",
+        can_manage=_can_manage_staff(user),
     )
     return _session_out(p)
 
@@ -310,7 +309,7 @@ def session_for_embed(db: Session, embed_token: str) -> Dict[str, Any]:
     sub = (ep.sub or "").strip()
     if not sub or not _tenant_ok(db, ep.tenant_id):
         raise _unauthorized()
-    name = first_name(ep.name) or "Member"
+    name = first_name(ep.name) or "Staff"
     p = PortalPrincipal(
         tenant_id=ep.tenant_id,
         kind=KIND_CRM,
@@ -319,53 +318,9 @@ def session_for_embed(db: Session, embed_token: str) -> Dict[str, Any]:
         product_id=ep.product_id,
         phone=ep.phone,
         connection_id=ep.connection_id,
+        can_manage=ep.ideas_manage is not False,
     )
-    return _session_out(p, extra={"nm": name, "ph": ep.phone})
-
-
-def session_for_link(db: Session, *, token: str, last4: str, ip: str) -> Dict[str, Any]:
-    """Q1 (b): the chatbot link token + the last 4 digits of the submitter
-    contact's WhatsApp number. Every non-servable case is the SAME 401 so the
-    response never tells a draft from a wrong number from an unknown link."""
-    from app.services.throttle import Throttled, ThrottleService
-
-    throttle = ThrottleService(db)
-    token_key = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
-    try:
-        throttle.enforce_idea_portal_link(ip=ip, token_key=token_key)
-    except Throttled as exc:
-        raise PortalError(
-            429, "too_many_attempts", "Too many attempts. Try again later.", exc.retry_after_seconds
-        )
-
-    idea = PublicIdeaStatusService(db).resolve_idea(token)
-    contact = (
-        _contact(db, idea.tenant_id, idea.submitter_contact_id)
-        if idea is not None and idea.submitter_contact_id
-        else None
-    )
-    digits = digits_only(contact.phone) if contact is not None else ""
-    ok = (
-        contact is not None
-        and len(digits) >= 4
-        and hmac.compare_digest(digits[-4:], last4)
-        and _tenant_ok(db, idea.tenant_id)
-    )
-    if not ok:
-        throttle.record_idea_portal_link_failure(ip=ip, token_key=token_key)
-        raise LINK_REJECTED
-    throttle.reset_idea_portal_link(token_key=token_key)
-    p = PortalPrincipal(
-        tenant_id=idea.tenant_id,
-        kind=KIND_CONTACT,
-        subject=contact.id,
-        name=first_name(contact.first_name) or "Dealer",
-        phone=contact.phone,
-    )
-    out = _session_out(p)
-    # The idea the link addressed - the survivor for a merged child.
-    out["ideaId"] = idea.merged_into_id or idea.id
-    return out
+    return _session_out(p, extra={"nm": name, "ph": ep.phone, "mg": ep.ideas_manage})
 
 
 # ── status map ────────────────────────────────────────────────────────────────
@@ -471,7 +426,7 @@ class IdeaPortalService:
         q = q.filter(Idea.status_id.in_(allowed or {"-"}))
         if p.product_id:
             q = q.filter(Idea.product_id == p.product_id)
-        if not p.is_staff:
+        if not p.can_manage:
             owned = owned_filter(self.db, self.db.query(Idea.id), p.tenant_id, p.identity)
             q = q.filter(or_(Idea.portal_hidden.is_(False), Idea.id.in_(owned.subquery())))
         return q
@@ -635,6 +590,7 @@ class IdeaPortalService:
         cards = self._cards(ideas)
         for c, i in zip(cards, ideas):
             c["deliveredAt"] = last_move.get(i.id) or i.updated_at or i.created_at
+            c["note"] = i.portal_note
         cards.sort(key=lambda c: c["deliveredAt"], reverse=True)
         return {"items": cards}
 
@@ -673,18 +629,28 @@ class IdeaPortalService:
             "problem": idea.problem,
             "submitterFirstName": PublicIdeaStatusService(self.db)._first_name(idea),
             "timeline": self._timeline(idea),
-            "portalHidden": bool(idea.portal_hidden) if self.p.is_staff else None,
+            "portalHidden": bool(idea.portal_hidden) if self.p.can_manage else None,
         }
         for wire, attr in CORE_FIELDS:
             out[wire] = self._core_field(idea, attr)
+        out["note"] = idea.portal_note
         return out
 
     def set_hidden(self, idea_id: str, hidden: bool) -> Dict[str, Any]:
-        """Q5: staff hide/show an idea on the portal."""
-        if not self.p.is_staff:
-            raise PortalError(403, "forbidden", "Only staff can change this.")
+        """Q5: managers hide/show an idea on the portal."""
+        if not self.p.can_manage:
+            raise _forbidden()
         idea = self._resolve(idea_id, follow_merge=False)
         idea.portal_hidden = bool(hidden)
+        self.db.commit()
+        return self.detail(idea.id)
+
+    def set_note(self, idea_id: str, note: Optional[str]) -> Dict[str, Any]:
+        """Q3: managers edit the idea's changelog note (blank clears it)."""
+        if not self.p.can_manage:
+            raise _forbidden()
+        idea = self._resolve(idea_id, follow_merge=False)
+        idea.portal_note = (note or "").strip() or None
         self.db.commit()
         return self.detail(idea.id)
 
@@ -725,13 +691,11 @@ class IdeaPortalService:
 
     @staticmethod
     def _role_for_voter(voter_id: str, stored: Optional[str]) -> str:
+        # Votes cast over WhatsApp (the requester upvote) are dealers; every
+        # portal / operator / embed voter is staff.
         if stored:
             return stored
-        if voter_id.startswith("contact:"):
-            return "Dealer"
-        if voter_id.startswith("embed"):
-            return "Member"
-        return "Staff"
+        return STAFF_ROLE
 
     def voters(self, idea_id: str) -> List[Dict[str, Any]]:
         idea = self._resolve(idea_id, follow_merge=True)
@@ -781,7 +745,7 @@ class IdeaPortalService:
         out = []
         for r in rows:
             d = r.model_dump()
-            d["authorRole"] = ROLE_BY_AUTHOR_KIND.get(r.authorKind, "Member")
+            d["authorRole"] = STAFF_ROLE if r.authorKind in (AUTHOR_USER, AUTHOR_EMBED) else "Submitter"
             d["likeCount"] = counts.get(r.id, 0)
             d["likedByMe"] = r.id in liked
             out.append(d)
@@ -956,7 +920,7 @@ class IdeaPortalService:
         product_id = p.product_id or product_id
         if not product_id or product_id not in {x["id"] for x in self.products()}:
             raise PortalError(422, "invalid_product", "Choose a product.")
-        actor = _staff_user(self.db, p.tenant_id, p.subject) if p.is_staff else None
+        actor = _staff_user(self.db, p.tenant_id, p.subject) if p.kind == KIND_STAFF else None
         out = IdeaActionService(self.db).create_operator(
             p.tenant_id,
             product_id=product_id,
@@ -968,9 +932,6 @@ class IdeaPortalService:
         )
         idea = self.db.query(Idea).filter(Idea.id == out.id, Idea.tenant_id == p.tenant_id).first()
         idea.title = title.strip()
-        if p.kind == KIND_CONTACT:
-            idea.submitter_contact_id = p.subject
-            idea.submitter_name = None
         captured = dict(idea.captured_json or {})
         for value, attr in (
             (desired_outcome, "desired_outcome"),

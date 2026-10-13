@@ -2,8 +2,8 @@
 
 Contract: ``documentation/plans/sprint-5/idea-portal/acceptance-criteria.md``
 (AC-P-xx ids below). Every ``/portal/ideas/*`` route needs a PORTAL token,
-minted by one of three exchanges: staff (core login), crm (ideation embed
-token), contact (chatbot link token + last 4 digits of the WhatsApp number).
+minted by one of two exchanges: staff (core login) or crm (Sorento CRM user
+through the ideation embed SSO). Dealers cannot sign in (owner Q1, 13 Oct).
 """
 from datetime import datetime, timedelta, timezone
 
@@ -37,7 +37,7 @@ def _staff_session(s) -> dict:
     return {"Authorization": f"Bearer {body['token']}"}
 
 
-def _crm_session(s, *, sub="crm-user-1", name="Alice Tan", product_id=None) -> dict:
+def _crm_session(s, *, sub="crm-user-1", name="Alice Tan", product_id=None, ideas_manage=None) -> dict:
     from modules.ideation.services.embed import upsert_connection
 
     db = s["factory"]()
@@ -56,6 +56,10 @@ def _crm_session(s, *, sub="crm-user-1", name="Alice Tan", product_id=None) -> d
     a = _assertion(
         secret="portal-secret-value-123", connection_id="sorento-portal", sub=sub, name=name
     )
+    if ideas_manage is not None:
+        claims = jwt.get_unverified_claims(a)
+        claims["ideas_manage"] = ideas_manage
+        a = jwt.encode(claims, "portal-secret-value-123", algorithm=settings.jwt_algorithm)
     emb = s["client"].post("/embed/session", json={"connection_id": "sorento-portal", "assertion": a})
     assert emb.status_code == 200, emb.text
     embed_token = emb.json()["token"]
@@ -65,51 +69,25 @@ def _crm_session(s, *, sub="crm-user-1", name="Alice Tan", product_id=None) -> d
     return {"Authorization": f"Bearer {res.json()['token']}"}
 
 
-def _contact(s, *, phone="+60123456789", first_name="Aiman Rahman") -> str:
-    from modules.omnichannel.models import Contact, Workspace
+def _idea(s, n, *, status_key="captured", token=None, crm_user=None, **kw):
+    from modules.ideation.models import Idea
 
-    db = s["factory"]()
-    try:
-        ws = db.query(Workspace).filter(Workspace.tenant_id == DEFAULT_TENANT_ID).first()
-        c = Contact(
-            tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, first_name=first_name, phone=phone
-        )
-        db.add(c)
-        db.commit()
-        return c.id
-    finally:
-        db.close()
-
-
-def _idea(s, n, *, status_key="captured", token=None, contact_id=None, **kw):
-    return _make_captured_idea(
+    iid = _make_captured_idea(
         s["factory"],
         s["product_id"],
         idea_number=f"IDEA-{n:04d}",
         status_token=token,
         status_key=status_key,
-        submitter_contact_id=contact_id,
         **kw,
     )
-
-
-def _tok(c: str) -> str:
-    return "plink_" + c * 18
-
-
-def _link_session(s, token, last4, ip_headers=None):
-    return s["client"].post(
-        "/portal/ideas/session/link", json={"token": token, "last4": last4}, headers=ip_headers or {}
-    )
-
-
-def _contact_session(s, n=50, phone="+60123456789") -> tuple:
-    cid = _contact(s, phone=phone)
-    idea_id = _idea(s, n, token=_tok(chr(ord("a") + n % 26)), contact_id=cid)
-    res = _link_session(s, _tok(chr(ord("a") + n % 26)), phone[-4:])
-    assert res.status_code == 200, res.text
-    assert res.json()["principal"]["kind"] == "contact"
-    return {"Authorization": f"Bearer {res.json()['token']}"}, idea_id, cid
+    if crm_user:
+        db = s["factory"]()
+        try:
+            db.query(Idea).filter(Idea.id == iid).first().submitter_crm_user_id = crm_user
+            db.commit()
+        finally:
+            db.close()
+    return iid
 
 
 # ── A. sign-in ────────────────────────────────────────────────────────────────
@@ -132,7 +110,10 @@ def test_ac_p_01_staff_session_needs_login(setup):
 def test_ac_p_02_crm_session(setup):
     h = _crm_session(setup)
     me = setup["client"].get("/portal/ideas/me", headers=h).json()
-    assert me["kind"] == "crm" and me["name"] == "Alice"
+    assert me["kind"] == "crm" and me["name"] == "Alice" and me["role"] == "Staff"
+    assert me["canManage"] is True  # no ideas_manage claim = unrestricted (embed rule)
+    restricted = _crm_session(setup, sub="crm-user-2", ideas_manage=False)
+    assert setup["client"].get("/portal/ideas/me", headers=restricted).json()["canManage"] is False
 
 
 def test_ac_p_02_bad_embed_token(setup):
@@ -140,48 +121,11 @@ def test_ac_p_02_bad_embed_token(setup):
     assert res.status_code == 401
 
 
-def test_ac_p_03_contact_link_session(setup):
-    h, _, _ = _contact_session(setup)
-    me = setup["client"].get("/portal/ideas/me", headers=h).json()
-    assert me["kind"] == "contact"
-    assert me["role"] == "Dealer"
-    assert me["name"] == "Aiman"  # first token only, never the phone
-
-
-@pytest.mark.parametrize("case", ["wrong", "unknown", "draft", "nocontact"])
-def test_ac_p_03_link_failures_are_uniform(setup, case):
-    s = setup
-    cid = _contact(s)
-    if case == "wrong":
-        _idea(s, 51, token=_tok("w"), contact_id=cid)
-        res = _link_session(s, _tok("w"), "0000")
-    elif case == "unknown":
-        res = _link_session(s, _tok("u"), "6789")
-    elif case == "draft":
-        _idea(s, 52, token=_tok("d"), contact_id=cid, status_key="draft")
-        res = _link_session(s, _tok("d"), "6789")
-    else:
-        _idea(s, 53, token=_tok("n"))
-        res = _link_session(s, _tok("n"), "6789")
-    assert res.status_code == 401
-    assert res.json() == {"error": {"code": "link_rejected", "message": "That number does not match this link."}}
-
-
-def test_ac_p_03_link_attempts_throttled(setup):
-    s = setup
-    cid = _contact(s)
-    _idea(s, 54, token=_tok("t"), contact_id=cid)
-    codes = [_link_session(s, _tok("t"), "0000").status_code for _ in range(6)]
-    assert codes[:5] == [401] * 5
-    assert codes[5] == 429
-    # Even the right digits are refused while locked.
-    locked = _link_session(s, _tok("t"), "6789")
-    assert locked.status_code == 429
-    assert locked.headers.get("retry-after")
-
-
-def test_ac_p_03_bad_last4_shape_is_422(setup):
-    assert _link_session(setup, _tok("x"), "12ab").status_code == 422
+def test_ac_p_03_no_dealer_sign_in(setup):
+    """Owner Q1 (13 Oct): dealers / WhatsApp contacts cannot sign in at all."""
+    res = setup["client"].post("/portal/ideas/session/link", json={"token": "x" * 20, "last4": "6789"})
+    assert res.status_code in (401, 404, 405)
+    assert "token" not in res.text
 
 
 def test_ac_p_04_routes_need_portal_token(setup):
@@ -292,11 +236,12 @@ def test_ac_p_10_other_tenant_never_visible(setup):
     assert s["client"].post(f"/portal/ideas/{foreign_id}/vote", headers=h).status_code == 404
 
 
-def test_ac_p_11_portal_hidden_only_staff_and_submitter(setup):
+def test_ac_p_11_portal_hidden_only_managers_and_submitter(setup):
     from modules.ideation.models import Idea
 
     s = setup
-    hc, own_idea, _ = _contact_session(s, n=60)
+    hc = _crm_session(s, sub="crm-sales-1", ideas_manage=False)
+    own_idea = _idea(s, 60, crm_user="crm-sales-1")
     other = _idea(s, 61, title="internal pricing idea")
     db = s["factory"]()
     try:
@@ -310,6 +255,19 @@ def test_ac_p_11_portal_hidden_only_staff_and_submitter(setup):
     assert s["client"].get(f"/portal/ideas/{other}", headers=hc).status_code == 404
     staff = {i["id"] for i in s["client"].get("/portal/ideas", headers=_staff_session(s)).json()["items"]}
     assert {own_idea, other} <= staff
+
+
+def test_ac_p_11_hide_toggle_managers_only(setup):
+    s = setup
+    iid = _idea(s, 62)
+    c = s["client"]
+    restricted = _crm_session(s, sub="crm-sales-2", ideas_manage=False)
+    assert c.put(f"/portal/ideas/{iid}/hidden", headers=restricted, json={"hidden": True}).status_code == 403
+    assert c.get(f"/portal/ideas/{iid}", headers=restricted).json()["portalHidden"] is None
+    hs = _staff_session(s)
+    res = c.put(f"/portal/ideas/{iid}/hidden", headers=hs, json={"hidden": True})
+    assert res.status_code == 200 and res.json()["portalHidden"] is True
+    assert c.get(f"/portal/ideas/{iid}", headers=restricted).status_code == 404
 
 
 def test_ac_p_10_crm_product_scope(setup):
@@ -375,7 +333,8 @@ def test_ac_p_21_unmapped_status_gets_own_column(setup):
 
 def test_ac_p_22_cards_sorted_by_votes_and_mine(setup):
     s = setup
-    hc, own, _ = _contact_session(s, n=80)
+    hc = _crm_session(s, sub="crm-sales-3")
+    own = _idea(s, 80, crm_user="crm-sales-3")
     a = _idea(s, 81, upvotes=5)
     b = _idea(s, 82, upvotes=9)
     cols = s["client"].get("/portal/ideas/roadmap", headers=hc).json()["columns"]
@@ -408,9 +367,9 @@ def test_ac_p_30_search_sort_and_closed(setup):
     assert c.get("/portal/ideas?pageSize=500", headers=h).status_code == 422
 
 
-def test_ac_p_31_submit_as_contact(setup):
+def test_ac_p_31_submit_as_crm_user(setup):
     s = setup
-    hc, _, cid = _contact_session(s, n=90)
+    hc = _crm_session(s, sub="crm-sales-4")
     res = s["client"].post(
         "/portal/ideas",
         headers=hc,
@@ -444,12 +403,26 @@ def test_ac_p_40_changelog_delivered_only(setup):
     assert items[0]["deliveredAt"]
 
 
+def test_ac_p_41_changelog_note_managers_only(setup):
+    s = setup
+    d = _idea(s, 510, status_key="delivered")
+    c = s["client"]
+    restricted = _crm_session(s, sub="crm-sales-10", ideas_manage=False)
+    assert c.put(f"/portal/ideas/{d}/note", headers=restricted, json={"note": "x"}).status_code == 403
+    res = c.put(f"/portal/ideas/{d}/note", headers=_staff_session(s), json={"note": "  Spec sheets are live.  "})
+    assert res.status_code == 200 and res.json()["note"] == "Spec sheets are live."
+    items = c.get("/portal/ideas/changelog", headers=restricted).json()["items"]
+    assert items[0]["note"] == "Spec sheets are live."
+    assert c.put(f"/portal/ideas/{d}/note", headers=_staff_session(s), json={"note": "x" * 501}).status_code == 422
+
+
 # ── F. idea page ──────────────────────────────────────────────────────────────
 
 
 def test_ac_p_50_detail_shape_no_pii(setup):
     s = setup
-    hc, own, _ = _contact_session(s, n=600)
+    hc = _crm_session(s, sub="crm-sales-5")
+    own = _idea(s, 600, crm_user="crm-sales-5", submitter_name="Aiman +60123456789")
     res = s["client"].get(f"/portal/ideas/{own}", headers=hc)
     assert res.status_code == 200, res.text
     d = res.json()
@@ -459,7 +432,7 @@ def test_ac_p_50_detail_shape_no_pii(setup):
         assert k in d, k
     for k in ("proposedSolution", "impact", "department", "rawText", "submitterContactId", "statusToken"):
         assert k not in d, k
-    assert "6789" not in res.text
+    assert "6789" not in res.text  # a phone-shaped submitter name is never published
     assert d["isMine"] is True
     assert [t["label"] for t in d["timeline"]] == ["Under review", "Planned", "In progress", "Complete"]
     assert [t["state"] for t in d["timeline"]] == ["current", "upcoming", "upcoming", "upcoming"]
@@ -470,7 +443,7 @@ def test_ac_p_51_vote_toggle_distinct_principals(setup):
     iid = _idea(s, 700)
     c = s["client"]
     hs, hcrm = _staff_session(s), _crm_session(s)
-    hc, _, _ = _contact_session(s, n=701)
+    hc = _crm_session(s, sub="crm-sales-6")
     for h in (hs, hcrm, hc):
         r = c.post(f"/portal/ideas/{iid}/vote", headers=h)
         assert r.status_code == 200, r.text
@@ -500,24 +473,33 @@ def test_ac_p_52_voters_names_roles(setup):
     s = setup
     iid = _idea(s, 720)
     c = s["client"]
-    hc, _, _ = _contact_session(s, n=721)
+    from modules.ideation.models import IdeaVote
+
+    hc = _crm_session(s, sub="crm-sales-7", name="Aiman Rahman")
     c.post(f"/portal/ideas/{iid}/vote", headers=hc)
-    c.post(f"/portal/ideas/{iid}/vote", headers=_crm_session(s))
     c.post(f"/portal/ideas/{iid}/vote", headers=_staff_session(s))
+    # A legacy vote cast outside the portal (no stored name).
+    db = s["factory"]()
+    try:
+        db.add(IdeaVote(tenant_id=DEFAULT_TENANT_ID, idea_id=iid, voter_id="embed-user:legacy", dir="up"))
+        db.commit()
+    finally:
+        db.close()
     res = c.get(f"/portal/ideas/{iid}/voters", headers=hc)
     assert res.status_code == 200, res.text
     voters = res.json()
-    assert sorted(v["role"] for v in voters) == ["Dealer", "Member", "Staff"]
-    names = {v["role"]: v["name"] for v in voters}
-    assert names["Dealer"] == "Aiman" and names["Member"] == "Alice"
-    assert "@" not in res.text and "6789" not in res.text
+    assert [v["role"] for v in voters] == ["Staff", "Staff", "Staff"]
+    names = {v["name"] for v in voters}
+    assert "Aiman" in names and None in names
+    assert [v for v in voters if v["isMe"]][0]["name"] == "Aiman"
+    assert "@" not in res.text
 
 
 def test_ac_p_53_comments_likes_and_delete(setup):
     s = setup
     iid = _idea(s, 800)
     c = s["client"]
-    hc, _, _ = _contact_session(s, n=801)
+    hc = _crm_session(s, sub="crm-sales-8", name="Aiman Rahman", ideas_manage=False)
     hs = _staff_session(s)
     top = c.post(f"/portal/ideas/{iid}/comments", headers=hs, json={"body": "We will look at it."})
     assert top.status_code == 201, top.text
@@ -532,7 +514,7 @@ def test_ac_p_53_comments_likes_and_delete(setup):
     top_row = [r for r in rows if r["id"] == top.json()["id"]][0]
     assert top_row["likeCount"] == 1 and top_row["likedByMe"] is True
     assert top_row["authorRole"] == "Staff"
-    # A contact cannot delete staff's comment; staff can delete any.
+    # A non-manager cannot delete someone else's comment; a manager can.
     assert c.delete(f"/portal/ideas/{iid}/comments/{top.json()['id']}", headers=hc).status_code == 403
     assert c.delete(f"/portal/ideas/{iid}/comments/{reply.json()['id']}", headers=hs).status_code == 204
     unlike = c.post(f"/portal/ideas/{iid}/comments/{top.json()['id']}/like", headers=hc)
@@ -542,7 +524,7 @@ def test_ac_p_53_comments_likes_and_delete(setup):
 def test_ac_p_53_comment_validation_and_throttle(setup):
     s = setup
     iid = _idea(s, 810)
-    hc, _, _ = _contact_session(s, n=811)
+    hc = _crm_session(s, sub="crm-sales-9")
     c = s["client"]
     assert c.post(f"/portal/ideas/{iid}/comments", headers=hc, json={"body": ""}).status_code == 422
     assert c.post(f"/portal/ideas/{iid}/comments", headers=hc, json={"body": "x" * 2001}).status_code == 422
@@ -603,3 +585,10 @@ def test_ac_p_54_live_status_change_recorded(setup):
         assert db.query(IdeaActivity).filter(IdeaActivity.idea_id == iid).count() == 1
     finally:
         db.close()
+
+
+def test_ac_p_04_portal_token_never_authenticates_staff_endpoints(setup):
+    s = setup
+    h = _staff_session(s)
+    assert s["client"].get("/auth/me", headers=h).status_code == 401
+    assert s["client"].get("/ideation/ideas", headers=h).status_code == 401

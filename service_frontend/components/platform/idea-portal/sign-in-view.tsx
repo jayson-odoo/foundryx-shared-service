@@ -8,8 +8,8 @@ import { usePublicPageBranding } from '@/app/(public)/public-branded-shell';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 
-/** Portal sign-in (owner ruling: sign-in required). Staff use their login;
- * dealers arrive signed in from the chatbot idea link. */
+/** Portal sign-in: staff only - salespeople and office staff sign in with
+ * their staff login (owner Q1, 13 Oct). */
 export function PortalSignIn() {
   const pathname = usePathname() ?? '/portal/ideas';
   const shellBranding = usePublicPageBranding();
@@ -24,7 +24,6 @@ export function PortalSignIn() {
           <Button asChild>
             <Link href={`/signin?callbackUrl=${encodeURIComponent(pathname)}`}>Staff sign in</Link>
           </Button>
-          <p className="text-sm text-muted-foreground">Dealers: open the idea link from WhatsApp.</p>
         </CardContent>
       </Card>
     </div>

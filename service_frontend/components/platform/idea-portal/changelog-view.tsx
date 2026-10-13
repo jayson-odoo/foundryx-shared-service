@@ -50,6 +50,7 @@ export function ChangelogView() {
                       <span>{formatDate(item.deliveredAt)}</span>
                     </div>
                     <h2 className="font-heading font-semibold">{item.title}</h2>
+                    {item.note && <p className="text-sm text-muted-foreground">{item.note}</p>}
                     <p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                       <ChevronUp className="size-3.5" aria-hidden />
                       {item.upvotes} {item.upvotes === 1 ? 'vote' : 'votes'}

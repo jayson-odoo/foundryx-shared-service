@@ -26,7 +26,7 @@ const SORT_OPTIONS = [
 const PAGE_SIZE = 25;
 
 export function FeedbackView() {
-  const { paths } = useIdeaPortal();
+  const { paths, principal } = useIdeaPortal();
   const [q, setQ] = useState('');
   const [columns, setColumns] = useState<string[]>([]);
   const [sort, setSort] = useState<'top' | 'new'>('top');
@@ -83,17 +83,19 @@ export function FeedbackView() {
             value={sort}
             onChange={(v) => setSort(v === 'new' ? 'new' : 'top')}
           />
-          <Button
-            variant={mine ? 'primary' : 'outline'}
-            size="sm"
-            aria-pressed={mine}
-            onClick={() => {
-              setMine((m) => !m);
-              setPage(1);
-            }}
-          >
-            My ideas
-          </Button>
+          {principal.kind === 'crm' && (
+            <Button
+              variant={mine ? 'primary' : 'outline'}
+              size="sm"
+              aria-pressed={mine}
+              onClick={() => {
+                setMine((m) => !m);
+                setPage(1);
+              }}
+            >
+              My ideas
+            </Button>
+          )}
         </div>
         {list.loading && !list.data && <PortalLoading />}
         {list.error && <PortalMessage text="Ideas could not be loaded." />}

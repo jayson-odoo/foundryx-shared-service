@@ -3,19 +3,20 @@
  * `service_backend/modules/ideation/schemas.py` `Portal*` models.
  */
 
-export type PortalKind = 'staff' | 'crm' | 'contact';
+export type PortalKind = 'staff' | 'crm';
 
 export interface PortalPrincipal {
   kind: PortalKind;
   name: string | null;
   role: string;
   productId: string | null;
+  /** May hide ideas, edit changelog notes and delete anyone's comment. */
+  canManage: boolean;
 }
 
 export interface PortalSession {
   token: string;
   principal: PortalPrincipal;
-  ideaId?: string | null;
 }
 
 export interface PortalCard {
@@ -53,6 +54,7 @@ export interface PortalList {
 
 export interface PortalChangelogItem extends PortalCard {
   deliveredAt: string;
+  note: string | null;
 }
 
 export interface PortalTimelineStep {
@@ -70,6 +72,7 @@ export interface PortalIdea extends PortalCard {
   submitterFirstName: string | null;
   timeline: PortalTimelineStep[];
   portalHidden: boolean | null;
+  note: string | null;
 }
 
 export interface PortalVote {

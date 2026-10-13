@@ -2,22 +2,22 @@
 
 Mounted ``"public": true`` (no core JWT / ``require_module`` gate at mount):
 every route below is gated by a PORTAL token (``require_portal_principal``),
-except the three session exchanges, each of which authenticates with its own
-credential (core login / embed token / chatbot link + last 4 digits). The
-portal-token resolve re-checks tenant sign-in + module ACTIVE per request.
+except the two session exchanges, each of which authenticates with its own
+credential (core staff login / ideation embed token). Staff only - dealers
+cannot sign in (owner Q1). The portal-token resolve re-checks tenant sign-in +
+module ACTIVE + the user / connection per request.
 
 HTTP + Pydantic only; every query lives in ``services/portal.py``.
 """
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
-from app.services.throttle import client_ip
 
 from ..schemas import (
     IdeaCommentCreate,
@@ -29,8 +29,8 @@ from ..schemas import (
     PortalIdeaCreateIn,
     PortalIdeaOut,
     PortalLikeOut,
-    PortalLinkSessionIn,
     PortalListOut,
+    PortalNoteIn,
     PortalPrincipalOut,
     PortalProductOut,
     PortalRoadmapOut,
@@ -45,7 +45,6 @@ from ..services.portal import (
     principal_out,
     resolve_portal_token,
     session_for_embed,
-    session_for_link,
     session_for_staff,
 )
 
@@ -114,17 +113,6 @@ def embed_session(body: PortalEmbedSessionIn, response: Response, db: Session = 
     _private(response)
     try:
         return session_for_embed(db, body.token)
-    except PortalError as exc:
-        _raise(exc)
-
-
-@router.post("/session/link", response_model=PortalSessionOut)
-def link_session(
-    body: PortalLinkSessionIn, request: Request, response: Response, db: Session = Depends(get_db)
-):
-    _private(response)
-    try:
-        return session_for_link(db, token=body.token, last4=body.last4, ip=client_ip(request))
     except PortalError as exc:
         _raise(exc)
 
@@ -212,6 +200,19 @@ def set_hidden(
 ):
     try:
         return _svc(db, p).set_hidden(idea_id, body.hidden)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.put("/{idea_id}/note", response_model=PortalIdeaOut)
+def set_note(
+    idea_id: str,
+    body: PortalNoteIn,
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _svc(db, p).set_note(idea_id, body.note)
     except PortalError as exc:
         _raise(exc)
 

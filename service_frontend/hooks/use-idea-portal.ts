@@ -151,41 +151,6 @@ export function useEmbedPortalSession(embedToken: string | null): UsePortalSessi
   return { status, principal, signOut: () => ideaPortalAuth.set(null) };
 }
 
-// ── chatbot-link sign-in (Q1 b) ───────────────────────────────────────────────
-
-export interface UseLinkSignIn {
-  submitting: boolean;
-  error: string | null;
-  confirm: (last4: string) => Promise<string | null>;
-}
-
-export function useLinkSignIn(token: string): UseLinkSignIn {
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const confirm = useCallback(
-    async (last4: string): Promise<string | null> => {
-      setSubmitting(true);
-      setError(null);
-      try {
-        const s = await ideaPortalService.linkSession(token, last4);
-        ideaPortalAuth.set(s.token);
-        return s.ideaId ?? null;
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 429) {
-          setError('Too many attempts. Try again later.');
-        } else {
-          setError('That number does not match this link.');
-        }
-        return null;
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [token],
-  );
-  return { submitting, error, confirm };
-}
-
 // ── generic read ──────────────────────────────────────────────────────────────
 
 export interface PortalQuery<T> {
@@ -248,6 +213,7 @@ export interface UsePortalIdeaPage {
   deleteComment: (commentId: string) => Promise<void>;
   likeComment: (commentId: string) => Promise<void>;
   setHidden: (hidden: boolean) => Promise<void>;
+  setNote: (note: string | null) => Promise<void>;
   actionError: string | null;
 }
 
@@ -326,6 +292,15 @@ export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
     [run, resolvedId, idea],
   );
 
+  const setNote = useCallback(
+    (note: string | null) =>
+      run(async () => {
+        const next = await ideaPortalService.setNote(resolvedId, note);
+        idea.setData(() => next);
+      }),
+    [run, resolvedId, idea],
+  );
+
   return {
     idea,
     voters,
@@ -337,6 +312,7 @@ export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
     deleteComment,
     likeComment,
     setHidden,
+    setNote,
     actionError,
   };
 }

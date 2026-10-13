@@ -178,7 +178,7 @@ function ActivityItem({
               <Composer
                 autoFocus
                 placeholder="Write a reply"
-                submitLabel="Reply"
+                submitLabel="Send reply"
                 onSubmit={async (body) => {
                   await onReply(top.id, body);
                   setReplying(false);
@@ -309,6 +309,24 @@ function Voters({ voters }: { voters: PortalVoter[] }) {
   );
 }
 
+function NoteEditor({ note, onSave }: { note: string | null; onSave: (note: string | null) => void }) {
+  const [value, setValue] = useState(note ?? '');
+  const dirty = value.trim() !== (note ?? '');
+  return (
+    <Card data-testid="portal-note-editor">
+      <CardContent className="flex flex-col gap-2 py-4">
+        <Label htmlFor="portal-note">Changelog note</Label>
+        <Textarea id="portal-note" rows={2} maxLength={500} value={value} onChange={(e) => setValue(e.target.value)} />
+        <div className="flex justify-end">
+          <Button size="sm" variant="outline" disabled={!dirty} onClick={() => onSave(value.trim() || null)}>
+            Save note
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export interface IdeaPageProps {
   ideaId: string;
 }
@@ -351,7 +369,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
             </div>
           </div>
 
-          {principal.kind === 'staff' && idea.portalHidden !== null && (
+          {principal.canManage && idea.portalHidden !== null && (
             <div className="flex items-center gap-2">
               <Switch
                 id="portal-hidden"
@@ -360,6 +378,10 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
               />
               <Label htmlFor="portal-hidden">Hide from portal</Label>
             </div>
+          )}
+
+          {principal.canManage && idea.column === 'complete' && (
+            <NoteEditor key={idea.note ?? ''} note={idea.note} onSave={(n) => onAction(page.setNote(n))} />
           )}
 
           <Fields idea={idea} />

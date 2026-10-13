@@ -215,10 +215,13 @@ class Idea(IdeationBase):
     # target - service-enforced, AC-94-05); ``merged_at`` stamps when.
     merged_into_id = Column(String, nullable=True, index=True)
     merged_at = Column(UTCDateTime(), nullable=True)
-    # Idea portal (lane IDEA-PORTAL, Q5): staff hide an idea carrying internal
-    # detail from the signed-in portal. A hidden idea stays visible to staff and
-    # to its own submitter; every other portal viewer gets the uniform 404.
+    # Idea portal (lane IDEA-PORTAL, Q5): a manager hides an idea carrying
+    # internal detail from the signed-in portal. A hidden idea stays visible to
+    # managers and to its own submitter; every other portal viewer gets the
+    # uniform 404.
     portal_hidden = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Q3: the manager-edited one-line "what changed" note on the changelog.
+    portal_note = Column(Text, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
