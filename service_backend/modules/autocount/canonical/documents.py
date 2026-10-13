@@ -60,7 +60,8 @@ ENTITY_SHIPPING_ORDER = "shipping_order"
 
 # AC-CANCEL-PULL - four LINKED documents (contract 2.8): each line points
 # back at the document it cancels/returns via FromDocType + FromDocNo
-# (+ FromDocDtlKey, empty since ~Oct-Nov 2024). Same fetch/mapping path as
+# (+ FromDocDtlKey: keyed until Oct 2024, always NULL on XSDTL from Dec 2024 -
+# facts in `presets.py`). Same fetch/mapping path as
 # SO/PO/SPO; their own canonical shape (`CanonicalLinkedDocument` below).
 ENTITY_CANCEL_SALES_ORDER = "cancel_sales_order"
 ENTITY_CANCEL_PURCHASE_ORDER = "cancel_purchase_order"
@@ -643,8 +644,10 @@ def vendor_json_value(value: Any) -> Any:
 class CanonicalLinkedDocumentLine(CanonicalDocumentLine):
     """The MAPPING-layer line of a cancel / consignment document (validation
     only - see the section comment). ``product_code`` + ``qty`` are required
-    by the catalogue because the CRM matches a line to its source document by
-    ``FromDocNo`` + item + location + qty (``FromDocDtlKey`` is often empty)."""
+    by the catalogue (a line with neither is not a real document line). The
+    link triple rides the wire verbatim; ``FromDocDtlKey`` is always NULL on
+    XSDTL since Dec 2024 (facts in ``presets.py``), and linking is the CRM's
+    rule (owner: exact links only)."""
 
     qty: Optional[Decimal] = Field(None, ge=0)
     unit_price: Optional[Decimal] = None

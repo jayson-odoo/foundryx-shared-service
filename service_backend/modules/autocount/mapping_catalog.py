@@ -280,11 +280,10 @@ SORENTO_LINE_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
 # Read straight off each canonical class's own SINK_FIELDS (the drift lesson
 # above): these four have no v1/v2 fallback split - every wire field is a
 # mappable target. Header `doc_no` is required; a line needs its key, the
-# item code and the quantity, because the CRM matches a line to its source
-# document by `from_doc_no` + `product_code` + `warehouse_code` + `qty`
-# (AutoCount's FromDocDtlKey is often empty). `product_ref` is NOT required:
-# an unresolved item master must not quarantine a line the CRM can still
-# match by code.
+# item code and the quantity (a line with neither is not a real document line;
+# see `presets.py` for the `FromDocDtlKey` facts - the CRM owns linking, owner
+# rule: exact links only). `product_ref` is NOT required: an unresolved item
+# master must not quarantine a line whose item code is still on the wire.
 _REQUIRED_LINKED_HEADER_FIELDS = frozenset({"doc_no"})
 _REQUIRED_LINKED_LINE_FIELDS = frozenset({"source_ref", "product_code", "qty"})
 

@@ -524,9 +524,15 @@ SPO_PRESET = DocumentPreset(
 # `Ref`, `Note` and `LastModified datetime NOT NULL` - the same incremental
 # cursor SO/PO ride. Every DTL has `DtlKey`, `DocKey`, `Seq`, `ItemCode`,
 # `Location`, `Qty`, `UOM`, `UnitPrice`, `SubTotal`, `Description` and the
-# link triple `FromDocType`/`FromDocNo`/`FromDocDtlKey`. `FromDocDtlKey` is
-# often empty (about a quarter of XS lines, a third of CR lines), so the CRM
-# matches by `FromDocNo` + item + location + qty - all of them are selected.
+# link triple `FromDocType`/`FromDocNo`/`FromDocDtlKey`, all selected verbatim.
+# `FromDocDtlKey` facts (XSDTL, SORENTO, crew read-only count 2026-10-13):
+# every line keyed until Oct 2024 (2023: 7,898/7,898; 2024: 5,420/6,544,
+# Nov 2024 only 208/658), and ALWAYS NULL from Dec 2024 on (2025: 0/7,553;
+# 2026: 0/5,510) while `FromDocNo` stays filled. The other DTL tables were not
+# broken down by year. The API's DO lines carry `FromDocDtlKey` 0 always. The
+# link triple is sent verbatim; how a line is linked to its source line is the
+# CRM's rule (owner: exact links only - decision on recovering line keys is
+# pending), never inferred here.
 #
 # The SAME pseudo/display-line cut as SO/PO (`ItemCode IS NOT NULL AND Qty IS
 # NOT NULL`) in BOTH the header `LineCount` aggregate and the line fetch:

@@ -10,8 +10,8 @@ behind contract 2.8. What is NEW and therefore pinned here:
   ``source_ref`` = the CRM's own ``{book}:{XS|XP|CSGN|CSGR}:{DocKey}``, and
   deletions by ``doc_keys``;
 * the link columns ``FromDocType``/``FromDocNo``/``FromDocDtlKey`` ride every
-  line with ``ItemCode``/``Location``/``Qty`` (``FromDocDtlKey`` is often empty,
-  so the CRM matches on the other four);
+  line with ``ItemCode``/``Location``/``Qty`` (``FromDocDtlKey`` is always NULL
+  on XSDTL since Dec 2024 - facts in ``presets.py``; the CRM owns linking);
 * the four ``DocumentPreset`` rows (SQL text shape, ``:doc_key`` bind, every
   preset row targets a catalog field) mapped end to end through the REAL
   engine with fake rows;
@@ -246,8 +246,9 @@ def test_no_canonical_key_ever_reaches_the_wire():
 
 
 def test_the_link_match_columns_ride_every_line():
-    """FromDocDtlKey is often empty: the CRM matches by FromDocNo + item +
-    location + qty, so all of them are on the line regardless."""
+    """FromDocDtlKey is always NULL on XSDTL since Dec 2024 (presets.py); the
+    link triple and the line's item/location/qty ride every line verbatim so the
+    CRM can apply its own linking rule."""
     line = _record().sink_payload()["Details"][0]
     for key in ("FromDocType", "FromDocNo", "FromDocDtlKey", "ItemCode", "Location", "Qty", "DocKey"):
         assert key in line, key

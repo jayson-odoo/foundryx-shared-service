@@ -45,7 +45,9 @@ required fields, mapping errors).
 
   The body is `{companyCode, book, records}`.
 - **AC-30-04 [BE][T]** Every line carries `DocKey`, `DtlKey`, `ItemCode`, `Location`, `Qty` and the link columns
-  `FromDocType`/`FromDocNo`/`FromDocDtlKey` (the CRM's match key when `FromDocDtlKey` is empty).
+  `FromDocType`/`FromDocNo`/`FromDocDtlKey`, verbatim. `FromDocDtlKey` is always NULL on XSDTL since Dec 2024
+  (crew count 2026-10-13; keyed until Oct 2024). Linking to the source line is the CRM's rule; owner rule: exact links
+  only, decision on recovering line keys pending.
 - **AC-30-05 [BE][T]** `status` stays in the five-word vocabulary. Duplicate line refs reject the document.
 - **AC-30-06 [BE][T]** Given a document deleted in AutoCount (a reconcile delete intent), it is sent to
   `/ingest/<path>/deletions` as `{doc_date_from, doc_date_to, doc_keys}`:
