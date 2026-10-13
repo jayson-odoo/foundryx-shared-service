@@ -5,7 +5,7 @@
  * idea-page actions. UI → these hooks → `ideaPortalService` → api-client.
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { useSession } from 'next-auth/react';
+import { signOut as nextAuthSignOut, useSession } from 'next-auth/react';
 import { ApiError } from '@/lib/api-client';
 import { ideaPortalAuth } from '@/lib/idea-portal-auth';
 import { ideaPortalService } from '@/services/idea-portal-service';
@@ -122,10 +122,13 @@ export function usePortalSession(): UsePortalSession {
     };
   }, [authStatus, userId]);
 
+  // The portal sign-in IS the staff login, so signing out of the portal signs
+  // out of the staff login too (and lands back on the portal's sign-in).
   const signOut = useCallback(() => {
     ideaPortalAuth.set(null);
     setPrincipal(null);
     setStatus('signin');
+    void nextAuthSignOut({ callbackUrl: '/portal/ideas' });
   }, []);
 
   return { status, principal, signOut };
