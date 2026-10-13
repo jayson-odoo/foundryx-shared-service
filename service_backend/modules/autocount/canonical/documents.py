@@ -588,7 +588,7 @@ LINKED_HEADER_INTERNAL_COLUMNS = frozenset({
 })
 LINKED_LINE_INTERNAL_COLUMNS = frozenset({"ItemAutoKey", "LocationAutoKey"})
 
-# The cap on a linked document's free-text `Note` on the wire.
+# The cap on any one free-text cell of a linked document on the wire.
 NOTE_MAX_CHARS = 4000
 
 # The vendor feed's own datetime format (naive MYT, millisecond precision -
@@ -618,13 +618,21 @@ def vendor_json_value(value: Any) -> Any:
         return datetime(value.year, value.month, value.day).strftime(
             _VENDOR_DATETIME_FORMAT
         )[:-3]
-    if isinstance(value, (int, float, str)):
+    if isinstance(value, str):
+        # Security review: one bound for EVERY free-text cell (Note,
+        # Description, FurtherDescription, ...), never a size an ingest batch
+        # cannot carry. Cut, never rejected.
+        return value[:NOTE_MAX_CHARS] if len(value) > NOTE_MAX_CHARS else value
+    if isinstance(value, (int, float)):
         return value
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [vendor_json_value(v) for v in value]
     if isinstance(value, dict):
         return {str(k): vendor_json_value(v) for k, v in value.items()}
-    return str(value)
+    # Bytes / GUIDs / times: the SAME rendering the SQL preview uses.
+    from ..sql_source.preview import json_safe
+
+    return json_safe(value)
 
 
 class CanonicalLinkedDocumentLine(CanonicalDocumentLine):

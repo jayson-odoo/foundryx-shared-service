@@ -50,6 +50,8 @@ from sqlalchemy.pool import SingletonThreadPool, StaticPool
 from app.secrets import decrypt_secret
 
 from ..canonical.documents import (
+    LINKED_DOCUMENT_ENTITY_TYPES,
+    vendor_json_value,
     LINE_QUERY_DOC_KEY_PARAM,
     SQL_DOC_LINES_KEY,
     is_document_entity,
@@ -1396,7 +1398,7 @@ class SqlDbSource:
                         # mapping engine will name; it has no ref to hash on,
                         # so it always counts as "changed" and is staged
                         # FAILED downstream rather than silently vanishing.
-                        records.append(SourceRecord(raw=json_safe(header), last_modified=stamp))
+                        records.append(SourceRecord(raw=self._record_safe(header), last_modified=stamp))
                         continue
                     value_hash = row_hash(header, self.compared_columns)
                     hashes[ref] = value_hash
@@ -1434,7 +1436,7 @@ class SqlDbSource:
                     )
                     records.append(
                         SourceRecord(
-                            raw=json_safe(header), last_modified=stamp, error=mismatch,
+                            raw=self._record_safe(header), last_modified=stamp, error=mismatch,
                         )
                     )
 
@@ -1454,7 +1456,7 @@ class SqlDbSource:
                 preview_records: List[SourceRecord] = (
                     [
                         SourceRecord(
-                            raw=json_safe(header),
+                            raw=self._record_safe(header),
                             last_modified=(
                                 _as_utc(header.get(self.watermark_column))
                                 if self.watermark_column
@@ -1647,7 +1649,7 @@ class SqlDbSource:
                     if self.watermark_column else None
                 )
                 if ref is None:
-                    records.append(SourceRecord(raw=json_safe(header), last_modified=stamp))
+                    records.append(SourceRecord(raw=self._record_safe(header), last_modified=stamp))
                     continue
                 value_hash = row_hash(header, self.compared_columns)
                 hashes[ref] = value_hash
@@ -1678,7 +1680,7 @@ class SqlDbSource:
                 stamp = changed_stamps.get(id(header))
                 mismatch = self._line_count_mismatch(header)
                 records.append(
-                    SourceRecord(raw=json_safe(header), last_modified=stamp, error=mismatch)
+                    SourceRecord(raw=self._record_safe(header), last_modified=stamp, error=mismatch)
                 )
 
             if self.persist_hashes and filtered_this_page:
@@ -1970,6 +1972,17 @@ class SqlDbSource:
             )
         except IdentityError:
             return None
+
+    def _record_safe(self, header: Dict[str, Any]) -> Dict[str, Any]:
+        """A fetched document (header + nested `_lines`) made JSON-safe for
+        staging. The four doc-feed-shaped linked documents (AC-CANCEL-PULL)
+        are sent to the CRM AS FETCHED, so they keep vendor values - decimals
+        as JSON numbers, datetimes in the vendor's naive `.fff` form
+        (`canonical.documents.vendor_json_value`); every other document keeps
+        `json_safe` (byte-identical to before)."""
+        if self.entity_type in LINKED_DOCUMENT_ENTITY_TYPES:
+            return vendor_json_value(header)
+        return json_safe(header)
 
     def _identity_scope(self) -> str:
         """The SAME scope the mapping engine mints the record's ``source_ref``

@@ -1608,7 +1608,14 @@ def _run_paged_sql_db(
         profile=flat_profile(
             entity_type, (config.source_config or {}).get("keyColumns") or []
         ),
-        database_name=company.database_name,
+        # AC-CANCEL-PULL (review blocker) - the SAME scope `SqlDbSource.
+        # source_ref` keys row hashes / delete intents under, so the staged
+        # record's ref, its row hash and the CRM's verdict always agree (the
+        # linked documents are filed under the doc-feed book; every other
+        # entity still gets `database_name`).
+        database_name=identity_scope(
+            db, tenant_id, company, entity_type, config.source_config
+        ),
     )
     hashes_repo = RowHashRepository(db)
     staged_repo = StagedRecordRepository(db)

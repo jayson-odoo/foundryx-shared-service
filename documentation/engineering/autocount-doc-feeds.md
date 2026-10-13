@@ -270,6 +270,21 @@ Cancel SO (`XS`), Cancel PO (`XP`), Consignment (`Consignment`) and Consignment 
   verdicts are matched by. `SqlDbSource.source_ref` uses the same `identity_scope`, so row hashes and
   delete intents agree.
 - **Deletions:** a reconcile delete intent goes to `SorentoSink.delete_doc_keys`
-  (`{doc_date_from, doc_date_to, doc_keys}`). The window is the task `fromDate` (else
-  `2023-01-01`) to MYT today. A deleted cancel document must lower the CRM's cancelled qty (owner
-  ruling).
+  (`{doc_date_from, doc_date_to, doc_keys}`), one chunk at a time, with each chunk's verdicts
+  committed before the next is sent.
+  - **Window:** the task's `fromDate` (parsed; an invalid value falls back to `2023-01-01`) to MYT
+    today.
+  - **Owner ruling:** a deleted cancel document must lower the CRM's cancelled qty.
+  - **Only refs under the sink's CURRENT `{book}:{CODE}:` prefix are sent.** The body names a book
+    and bare DocKeys, so a ref pushed under an older book would delete the CRM's live document with
+    the same DocKey in the new book. Such a ref, or one with no integer DocKey, is quarantined with
+    a named reason.
+- **Raw values:** `SqlDbSource._record_safe` keeps vendor values for these four
+  (`vendor_json_value`). Every other document still goes through `json_safe`, whose
+  decimal-to-string conversion must never reach this wire.
+- **One identity scope everywhere:** every `MappingEngine` construction (paged run, non-paged run,
+  preview, simulate) and `SqlDbSource.source_ref` take `identity_scope(...)`. A new construction
+  site that passes `company.database_name` makes every verdict miss.
+- **Prerequisite:** a company with no doc-feed book shows `delivery_orders` as a blocker on its
+  document prerequisite card. A push then fails closed after the contract gate (below 2.8 the
+  answer is `CONTRACT_GATE`).

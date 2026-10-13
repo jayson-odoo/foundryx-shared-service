@@ -1097,8 +1097,8 @@ class SyncService:
                 # A cancel document deleted in AutoCount must lower the CRM's
                 # cancelled qty (owner ruling), so its delete intent is sent.
                 self._push_linked_document_deletes(
-                    refs, sink=sink, tenant_id=tenant_id, company_id=company_id,
-                    entity_type=entity_type, apply_chunk=apply_chunk,
+                    pending, sink=sink, tenant_id=tenant_id, company_id=company_id,
+                    entity_type=entity_type, apply_chunk=apply_chunk, summary=summary,
                 )
             elif hasattr(sink, "delete_batch"):
                 params = inspect.signature(sink.delete_batch).parameters
@@ -1141,43 +1141,85 @@ class SyncService:
 
     def _push_linked_document_deletes(
         self,
-        refs: List[str],
+        pending: List[AcStagedRecord],
         *,
         sink: EntitySink,
         tenant_id: str,
         company_id: str,
         entity_type: str,
         apply_chunk: Callable[..., None],
+        summary: Dict[str, Any],
     ) -> None:
         """AC-CANCEL-PULL - delete intents for the doc-feed-shaped linked
         documents go through ``SorentoSink.delete_doc_keys`` (the DO/GRN body
-        shape). The DocKey is the integer after the last ``:`` of the staged
-        ``source_ref`` (``{book}:{CODE}:{DocKey}`` - the SAME parse the doc
-        feed's sweep does), and the CRM's verdicts echo that same ref, so
-        ``apply_chunk`` matches them unchanged. A ref with no integer DocKey is
-        never sent (it stays STAGED). The window is the task's own ``fromDate``
-        floor .. MYT today: the deleted document's DocDate is gone from
-        AutoCount, and every document this task ever pushed is in it."""
+        shape, ``{doc_date_from, doc_date_to, doc_keys}``).
+
+            !!  ONLY REFS UNDER THE SINK'S OWN BOOK ARE EVER SENT.  !!
+        The body names a ``book`` and bare DocKeys, so a ref filed under a
+        DIFFERENT book (the company's doc-feed book changed since it was
+        pushed) would delete the CRM's live document of the same DocKey in
+        the NEW book (security + code review blocker). Such a ref, or one
+        with no integer DocKey, is quarantined with a named reason instead -
+        never sent, never silently re-offered.
+
+        Sent per chunk (``batch_size``), each chunk's verdicts applied and
+        committed by ``apply_chunk`` before the next is sent - the
+        push-marks-per-chunk rule; a failure on a later chunk keeps every
+        earlier chunk's marks. The window is the task's own ``fromDate``
+        floor (validated, else ``LINKED_DOCUMENT_DELETE_FLOOR``) .. MYT
+        today: the deleted document's DocDate is gone from AutoCount."""
+        from datetime import date as _date
+
+        from ..canonical.documents import linked_document_ref
         from ..doc_feed.clock import MYT
 
-        by_key: Dict[int, List[str]] = {}
-        for ref in refs:
-            tail = str(ref).rsplit(":", 1)[-1]
-            if tail.lstrip("-").isdigit():
-                by_key.setdefault(int(tail), []).append(ref)
-        if not by_key:
+        prefix = linked_document_ref(entity_type, str(getattr(sink, "book", "") or ""), "")
+        sendable: Dict[int, List[str]] = {}
+        unsendable: List[AcStagedRecord] = []
+        for row in pending:
+            ref = str(row.source_ref or "")
+            tail = ref[len(prefix):] if getattr(sink, "book", None) and ref.startswith(prefix) else ""
+            if tail.isdigit():
+                sendable.setdefault(int(tail), []).append(ref)
+            else:
+                unsendable.append(row)
+        if unsendable:
+            self.staged.mark(unsendable, status=STAGED_FAILED)
+            self._commit_chunk(summary, sink=sink)
+            summary["deleteFailures"] = (summary.get("deleteFailures") or []) + [
+                {
+                    "sourceRef": row.source_ref,
+                    "error": (
+                        "not sent: this delete belongs to a different book than "
+                        f"the company's current doc-feed book ({prefix[:-1]}) or "
+                        "carries no DocKey"
+                    ),
+                }
+                for row in unsendable
+            ]
+        if not sendable:
             return
         config = self.configs.get(tenant_id, company_id, entity_type)
-        doc_date_from = str(
-            ((config.source_config or {}).get("fromDate") if config is not None else None)
-            or LINKED_DOCUMENT_DELETE_FLOOR
-        )
+        raw_from = str(
+            ((config.source_config or {}).get("fromDate") if config is not None else "") or ""
+        ).strip()
+        try:
+            doc_date_from = _date.fromisoformat(raw_from).isoformat()
+        except ValueError:
+            doc_date_from = LINKED_DOCUMENT_DELETE_FLOOR
         doc_date_to = datetime.now(MYT).date().isoformat()
-        result = sink.delete_doc_keys(  # type: ignore[attr-defined]
-            sorted(by_key), doc_date_from=doc_date_from, doc_date_to=doc_date_to,
-        )
-        sent = [ref for key in sorted(by_key) for ref in by_key[key]]
-        apply_chunk(sent, (result or {}).get("records") or [], None)
+        keys = sorted(sendable)
+        size = max(1, int(getattr(sink, "batch_size", 0) or len(keys)))
+        for start in range(0, len(keys), size):
+            chunk = keys[start : start + size]
+            result = sink.delete_doc_keys(  # type: ignore[attr-defined]
+                chunk, doc_date_from=doc_date_from, doc_date_to=doc_date_to,
+            )
+            apply_chunk(
+                [ref for key in chunk for ref in sendable[key]],
+                (result or {}).get("records") or [],
+                None,
+            )
 
     def preview(self, tenant_id: str, job_id: str) -> Dict[str, Any]:
         """Ask the consumer what approving WOULD do, writing nothing (AC-14-20/21).

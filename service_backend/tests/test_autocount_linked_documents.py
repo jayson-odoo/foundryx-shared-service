@@ -768,3 +768,219 @@ def test_the_sql_source_keys_row_hashes_on_the_same_crm_ref(session_factory):
     finally:
         db.close()
         RUNTIME.dispose_all()
+
+
+# ── review blockers: the REAL paged run, not hand-built engines ─────────────
+
+
+def test_the_sql_source_keeps_vendor_values_for_linked_documents(session_factory):
+    """Review blocker B2: `SqlDbSource` used to pass every fetched document
+    through `json_safe` (Decimal -> "2.00000000", datetime -> isoformat), so
+    the wire carried strings. A linked document keeps vendor values: the
+    staged raw, once mapped, IS the golden wire record."""
+    from modules.autocount.sql_source.source import SqlDbSource
+
+    staged_raw = SqlDbSource._record_safe(  # the instance state it reads is entity_type only
+        type("S", (), {"entity_type": ENTITY_CANCEL_SALES_ORDER})(), _raw_row(),
+    )
+    assert staged_raw["_lines"][0]["Qty"] == 2
+    assert staged_raw["LastModified"] == "2026-10-01T09:00:00.120"
+    assert _record(raw=staged_raw).sink_payload() == GOLDEN_RECORD
+    # Every other document keeps `json_safe`, byte-identical to before.
+    so_raw = SqlDbSource._record_safe(
+        type("S", (), {"entity_type": ENTITY_SALES_ORDER})(), {"Qty": Decimal("2.0")},
+    )
+    assert so_raw == {"Qty": "2.0"}
+
+
+def test_a_paged_run_stages_under_the_crm_ref_and_hashes_the_same_key(session_factory):
+    """Review blocker B1: the watermarked (paged) run built its mapping engine
+    under `database_name`, so the staged record said `AED:XS:1` while the row
+    hash and the CRM said `db1:XS:1` - every verdict missed. Runs the real
+    job end to end on a SQLite source."""
+    import sqlalchemy as sa
+    from sqlalchemy.pool import StaticPool
+
+    from app.jobs.service import JobService
+    from modules.autocount.models import (
+        ETL_STATUS_ACTIVE, AcEntityConfig, AcRowHash, AcStagedRecord, SOURCE_IMPL_SQL_DB,
+    )
+    from modules.autocount.presets import seed_document_mapping
+    from modules.autocount.sql_source.runtime import RUNTIME
+    from tests.test_autocount_documents import _company, _sql_connection
+
+    engine = sa.create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE xs (DocKey INTEGER PRIMARY KEY, DocNo TEXT, DocDate TEXT, "
+            "Cancelled TEXT, LastModified TEXT)"
+        )
+        conn.exec_driver_sql(
+            "CREATE TABLE xsdtl (DtlKey INTEGER PRIMARY KEY, DocKey INTEGER, "
+            "ItemCode TEXT, Location TEXT, Qty NUMERIC, FromDocType TEXT, FromDocNo TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO xs VALUES (1, 'XS-000001', '2026-10-01', 'F', '2026-10-01 09:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO xsdtl VALUES (11, 1, 'CHAIR-01', 'HQ', 2, 'SO', 'SO-000456')"
+        )
+
+    db = session_factory()
+    try:
+        sql_conn = _sql_connection(db, engine)
+        company = _company(db)
+        _with_doc_feed_book(db, company)
+        config = AcEntityConfig(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+            entity_type=ENTITY_CANCEL_SALES_ORDER, source_impl=SOURCE_IMPL_SQL_DB,
+        )
+        config.source_config = {
+            "connectionId": sql_conn.id,
+            "query": "SELECT DocKey, DocNo, DocDate, Cancelled, LastModified FROM xs",
+            "lineQuery": (
+                "SELECT DocKey, DtlKey, ItemCode, Location, Qty, FromDocType, FromDocNo "
+                "FROM xsdtl WHERE DocKey = :doc_key"
+            ),
+            "keyColumns": ["DocKey"], "watermarkColumn": "LastModified",
+            "comparedColumns": [], "fromDate": "2026-01-01", "docDateColumn": "DocDate",
+            "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+        }
+        config.result_columns = ["DocKey", "DocNo", "DocDate", "Cancelled", "LastModified"]
+        config.line_result_columns = [
+            "DocKey", "DtlKey", "ItemCode", "Location", "Qty", "FromDocType", "FromDocNo",
+        ]
+        config.etl_status = ETL_STATUS_ACTIVE
+        db.add(config)
+        db.commit()
+        seed_document_mapping(
+            db, DEFAULT_TENANT_ID, company.id, ENTITY_CANCEL_SALES_ORDER,
+            header_columns=None, line_columns=None,
+        )
+        db.commit()
+
+        JobService(db).create_and_enqueue(
+            type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
+            payload={"companyId": company.id, "entityType": ENTITY_CANCEL_SALES_ORDER,
+                     "mode": "incremental"},
+        )
+        staged = (
+            db.query(AcStagedRecord)
+            .filter(AcStagedRecord.company_id == company.id,
+                    AcStagedRecord.entity_type == ENTITY_CANCEL_SALES_ORDER)
+            .all()
+        )
+        hashes = {
+            h.source_ref for h in db.query(AcRowHash).filter(
+                AcRowHash.company_id == company.id,
+                AcRowHash.entity_type == ENTITY_CANCEL_SALES_ORDER,
+            )
+        }
+        assert [row.source_ref for row in staged] == [f"{BOOK}:XS:1"], [
+            (row.source_ref, row.status, row.error) for row in staged
+        ]
+        assert hashes == {f"{BOOK}:XS:1"}
+        wire = CanonicalCancelSalesOrder(**staged[0].canonical_json).sink_payload()
+        assert wire["DocNo"] == "XS-000001"
+        assert wire["Details"][0]["FromDocNo"] == "SO-000456"
+    finally:
+        db.close()
+        RUNTIME.dispose_all()
+
+
+def _delete_rig(monkeypatch, _stock_gate_rig, entity_type, *, ref_book=BOOK, from_date=None):
+    from modules.autocount.models import STAGED_OP_DELETE
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.8, entities=list(SEGMENTS.values())),
+    )
+    calls: List[dict] = []
+
+    def fake_delete_doc_keys(self, doc_keys, *, doc_date_from, doc_date_to, dry_run=False, on_chunk=None):
+        calls.append({"keys": list(doc_keys), "from": doc_date_from, "book": self.book})
+        return {"records": [
+            {"source_ref": linked_document_ref(self.entity_type, self.book, k), "outcome": "deleted"}
+            for k in doc_keys
+        ]}
+
+    monkeypatch.setattr(SorentoSink, "delete_doc_keys", fake_delete_doc_keys)
+    db, company = _stock_gate_rig
+    _with_doc_feed_book(db, company)
+    if from_date is not None:
+        from modules.autocount.models import AcEntityConfig
+
+        db.add(AcEntityConfig(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=entity_type,
+            source_impl="sql_db", source_config={"fromDate": from_date},
+        ))
+        db.commit()
+    row, job = _staged(db, company.id, entity_type, op=STAGED_OP_DELETE)
+    row.source_ref = linked_document_ref(entity_type, ref_book, 51234)
+    db.commit()
+    return db, company, row, job, calls
+
+
+def test_a_delete_filed_under_another_book_is_quarantined_never_sent(monkeypatch, _stock_gate_rig):
+    """Security + review blocker: the deletions body names the CURRENT book
+    and bare DocKeys, so a ref pushed under an OLD book would delete the
+    CRM's live document of the same DocKey in the new book. It is quarantined
+    with a named reason instead, and nothing is sent."""
+    from modules.autocount.models import STAGED_FAILED
+    from modules.autocount.services.sync_service import SyncService
+
+    db, company, row, job, calls = _delete_rig(
+        monkeypatch, _stock_gate_rig, ENTITY_CONSIGNMENT, ref_book="oldbook",
+    )
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_CONSIGNMENT, job_id=job.id)
+    assert calls == []
+    db.refresh(row)
+    assert row.status == STAGED_FAILED
+    assert "different book" in summary["deleteFailures"][0]["error"]
+
+
+@pytest.mark.parametrize("from_date,expected", [
+    ("2026-01-01", "2026-01-01"),
+    ("not-a-date", "2023-01-01"),
+    ("", "2023-01-01"),
+])
+def test_the_delete_window_starts_at_a_valid_task_from_date(monkeypatch, _stock_gate_rig, from_date, expected):
+    from modules.autocount.services.sync_service import SyncService
+
+    db, company, _row, job, calls = _delete_rig(
+        monkeypatch, _stock_gate_rig, ENTITY_CANCEL_PURCHASE_ORDER, from_date=from_date,
+    )
+    SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_CANCEL_PURCHASE_ORDER, job_id=job.id)
+    assert calls and calls[0]["from"] == expected
+
+
+def test_below_2_8_the_gate_answers_before_the_missing_book(monkeypatch, _stock_gate_rig):
+    """Review S2: a company below 2.8 with no doc-feed book still gets the
+    logging fallback (so auto_push answers CONTRACT_GATE), never the book
+    error with no error code."""
+    from modules.autocount.services.sync_service import SyncService
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.7, entities=["sales_orders"]),
+    )
+    db, company = _stock_gate_rig
+    _row, job = _staged(db, company.id, ENTITY_CANCEL_SALES_ORDER)
+    summary = SyncService(db).auto_push(
+        DEFAULT_TENANT_ID, company.id, ENTITY_CANCEL_SALES_ORDER, job_id=job.id,
+    )
+    assert summary.get("errorCode") == "CONTRACT_GATE", summary
+
+
+def test_the_missing_doc_feed_book_is_a_named_prerequisite():
+    """Review S2 (foolproof-UI): the company detail warns before any push."""
+    from modules.autocount.services.company_service import EntityState, document_prerequisites
+
+    states = [EntityState.__new__(EntityState)]
+    states[0].entity_type = ENTITY_CONSIGNMENT
+    [line] = document_prerequisites(states, has_doc_feed_book=False)
+    assert "delivery_orders" in line.inactive
+    [line] = document_prerequisites(states, has_doc_feed_book=True)
+    assert "delivery_orders" not in line.inactive
