@@ -653,7 +653,7 @@ class IdeaPortalService:
         if idx is None:
             st = self.smap.by_id.get(idea.status_id)
             steps = [{"key": cols[0].key, "label": cols[0].title, "color": cols[0].color, "state": "done"}] if cols else []
-            steps.append({"key": CLOSED_COLUMN, "label": st.label if st else "Closed", "color": (st.color if st else "gray"), "state": "current"})
+            steps.append({"key": CLOSED_COLUMN, "label": st.label if st else "Closed", "color": (st.color if st and st.color else "gray"), "state": "current"})
             return steps
         return [
             {

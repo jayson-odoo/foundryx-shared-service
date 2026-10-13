@@ -811,7 +811,7 @@ class PortalChangelogOut(ApiModel):
 class PortalTimelineStepOut(ApiModel):
     key: str
     label: str
-    color: Optional[str] = None
+    color: str = "gray"
     state: Literal["done", "current", "upcoming"]
 
 

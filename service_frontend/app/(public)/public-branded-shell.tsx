@@ -38,10 +38,13 @@ export function usePublicPageBranding(): PublicBranding | null {
  *    stub links have no place inside an embedded iframe (AC-WEB-47).
  *  - the public idea-status page (issue #90 W1) - a real branded header +
  *    footer BrandMark of its own; a visitor opening a WhatsApp link should
- *    never see instructional stub links either. */
+ *    never see instructional stub links either.
+ *  - the idea portal (lane IDEA-PORTAL) - its own brand header + tabs. */
 function ownsChromePath(pathname: string | null): boolean {
   return Boolean(
-    pathname?.startsWith('/public/webchat/') || pathname?.startsWith('/public/ideas/'),
+    pathname?.startsWith('/public/webchat/') ||
+      pathname?.startsWith('/public/ideas/') ||
+      pathname?.startsWith('/portal/ideas'),
   );
 }
 
