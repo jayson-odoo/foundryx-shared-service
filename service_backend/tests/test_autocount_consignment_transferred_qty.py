@@ -368,3 +368,70 @@ def test_backfill_never_touches_other_entities(db):
     db.commit()
     db.expire_all()
     assert backfill_consignment_transferred_qty(db, schema=None) == 0
+
+
+def test_a_customised_line_query_is_never_advertised_as_selecting_the_column(db):
+    """Review (security + reviewer): a #122 header beside a CUSTOMISED line
+    query rewrites the header (TransferedSum) but must not list TransferedQty
+    as a line column, nor enable its row - the line query does not select it."""
+    from modules.autocount.backfill import backfill_consignment_transferred_qty
+
+    company = _company(db, "AED_CG_LINECUSTOM")
+    texts = _old("AED_CG_LINECUSTOM")
+    texts["line_query"] = texts["line_query"].replace(
+        "d.Qty IS NOT NULL", "d.Qty IS NOT NULL AND d.Qty > 0"
+    )
+    config = _config(db, company, **texts)
+    config_id = config.id
+    db.expire_all()
+    backfill_consignment_transferred_qty(db, schema=None)
+    db.expire_all()
+    after = db.get(AcEntityConfig, config_id)
+    assert after.source_config["query"] == CONSIGNMENT_PRESET.header_query.replace(
+        "{database}", "AED_CG_LINECUSTOM"
+    )
+    assert after.source_config["lineQuery"] == texts["line_query"]
+    assert "TransferedSum" in after.result_columns
+    assert "TransferedQty" not in after.line_result_columns
+    [row] = _line_rows(db, company.id)
+    assert row.is_enabled is False
+
+
+def test_a_config_never_resolves_another_tenants_company(db):
+    """Polymorphic-target_id rule: a config whose company_id points at a
+    company of ANOTHER tenant is skipped - never rewritten with that
+    company's database name, never given a row."""
+    from app.models.tenant import Tenant
+    from modules.autocount.backfill import backfill_consignment_transferred_qty
+
+    other_tenant = db.query(Tenant).filter(Tenant.id != DEFAULT_TENANT_ID).first()
+    assert other_tenant is not None
+    foreign = _company(db, "AED_CG_FOREIGN")
+    foreign.tenant_id = other_tenant.id
+    db.commit()
+    config = _config(db, foreign, **_old("AED_CG_FOREIGN"))
+    config.tenant_id = DEFAULT_TENANT_ID  # the config's own tenant differs
+    db.commit()
+    config_id = config.id
+    db.expire_all()
+    assert backfill_consignment_transferred_qty(db, schema=None) == 0
+    db.expire_all()
+    after = db.get(AcEntityConfig, config_id)
+    assert "TransferedQty" not in after.source_config["lineQuery"]
+
+
+@pytest.mark.parametrize("from_version,rewritten", [("0.15.0", True), ("0.16.0", False)])
+def test_update_tenant_runs_the_backfill_below_0_16_only(db, from_version, rewritten):
+    """AC-31-04 - the App Store Update path (version-gated like 0029)."""
+    from modules.autocount.bootstrap import update_tenant
+
+    company = _company(db, f"AED_CG_UPD_{from_version.replace('.', '')}")
+    config = _config(db, company, **_old(company.database_name))
+    config_id = config.id
+    db.expire_all()
+    update_tenant(db, DEFAULT_TENANT_ID, from_version)
+    db.commit()
+    db.expire_all()
+    after = db.get(AcEntityConfig, config_id)
+    assert ("TransferedQty" in after.source_config["lineQuery"]) is rewritten
+    assert bool(_line_rows(db, company.id)) is rewritten

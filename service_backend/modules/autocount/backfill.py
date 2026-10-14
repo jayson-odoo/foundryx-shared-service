@@ -2327,8 +2327,15 @@ def backfill_consignment_transferred_qty(
                     )
             columns_list = [str(c) for c in (result_columns or [])]
             if "TransferedSum" not in columns_list:
+                # The header query was just rewritten, so it now selects it.
                 columns_list.append("TransferedSum")
-            if "TransferedQty" not in line_columns_list:
+            # Review (security + reviewer): a CUSTOMISED `lineQuery` beside a
+            # preset header is NOT rewritten above, so it does not select
+            # TransferedQty - never advertise it in `line_result_columns`
+            # (the mapping picker's source list) nor enable its row. Keyed on
+            # what the stored line query now actually is (PO backfill B1).
+            new_line = CONSIGNMENT_PRESET.line_query.replace("{database}", database_name)
+            if source_config.get("lineQuery") == new_line and "TransferedQty" not in line_columns_list:
                 line_columns_list.append("TransferedQty")
             connectable.execute(
                 sa.update(entity_config)
