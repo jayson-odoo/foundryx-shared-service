@@ -1246,6 +1246,16 @@ class SorentoSink:
             results.append(self._result_for(ref, verdict))
         return results
 
+    def _ingest_payload(
+        self, chunk: Sequence[CanonicalRecord], *, backfill: bool
+    ) -> Dict[str, Any]:
+        """One ingest chunk's payload; ``backfill: true`` only when asked
+        (DO-BACKFILL-SS), so a non-backfill body is byte-identical to before."""
+        payload: Dict[str, Any] = {"records": self._to_records(chunk)}
+        if backfill:
+            payload["backfill"] = True
+        return payload
+
     def write_batch(
         self,
         records: Sequence[CanonicalRecord],
@@ -1264,6 +1274,13 @@ class SorentoSink:
         # state - the CALLER (the runner) is what actually withholds the
         # ledger/issue writes; this flag only controls the wire query param.
         dry_run: bool = False,
+        # DO-BACKFILL-SS - True ONLY for a doc-feed backfill run
+        # (`runner.run_backfill`): adds `"backfill": true` to every ingest
+        # envelope so the CRM takes its quiet ingest mode (no cancel relink,
+        # no embeddings). Every other caller (poll, sweep re-check, sync
+        # pushes) leaves it False and posts the exact same body as before -
+        # the key is omitted, never sent as `false`.
+        backfill: bool = False,
     ) -> List[WriteResult]:
         """Deliver a batch and return one ``WriteResult`` per input record that
         a chunk actually resolved, in order. Chunks at the vendor batch ceiling.
@@ -1315,7 +1332,7 @@ class SorentoSink:
             for chunk in chunks:
                 body, error = self._post_with_retry(
                     f"ingest/{self._path_segment}",
-                    {"records": self._to_records(chunk)},
+                    self._ingest_payload(chunk, backfill=backfill),
                     dry_run=dry_run,
                 )
                 if error is not None:
@@ -1332,7 +1349,7 @@ class SorentoSink:
                     executor.submit(
                         self._post_with_retry,
                         f"ingest/{self._path_segment}",
-                        {"records": self._to_records(chunk)},
+                        self._ingest_payload(chunk, backfill=backfill),
                         dry_run=dry_run,
                     )
                     for chunk in chunks

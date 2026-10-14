@@ -947,6 +947,9 @@ def run_backfill(
                 resolved.sink.write_batch(
                     remaining, request_id=f"{backfill_row.id}:{day.isoformat()}",
                     dry_run=dry_run, on_chunk=on_chunk,
+                    # DO-BACKFILL-SS - only this backfill push marks itself
+                    # `backfill: true` (CRM quiet ingest); poll/sweep never do.
+                    backfill=True,
                 )
             except SorentoRateLimited as exc:
                 remaining = [r for r in remaining if r.source_ref not in credited]
