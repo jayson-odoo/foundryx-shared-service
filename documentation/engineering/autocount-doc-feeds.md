@@ -131,13 +131,15 @@ refused (422) on an `off` feed even for a dry run. **Run-once guard:** a live ra
 or before the floor 409s `BACKFILL_ALREADY_DONE` once `full_backfill_done_at` is set (a later
 live range is allowed).
 
-**Backfill pushes are marked (DO-BACKFILL-SS).** Every ingest POST a backfill run makes carries
-`"backfill": true` in the envelope, after `companyCode`/`book`/`records`. A dry-run backfill
-sends it too, alongside `?dry_run=true`. The CRM uses the flag for its quiet ingest mode, which
-skips the cancel relink and the embeddings for old documents. Only `run_backfill` sets it
-(`SorentoSink.write_batch(backfill=True)`, `doc_feed/runner.py`). The poll, the sweep's re-check
-push and every sync push leave the key out entirely, so their body is unchanged. Pinned by
-`tests/test_doc_feed_backfill_flag.py`.
+**Delivery-order backfill pushes are marked (DO-BACKFILL-SS).** Every ingest POST a
+`delivery_orders` backfill run makes carries `"backfill": true` in the envelope, after
+`companyCode`/`book`/`records`. A dry-run backfill sends it too, alongside `?dry_run=true`. The
+CRM uses the flag for its quiet ingest mode, which skips the cancel relink and the embeddings for
+old documents. The CRM accepts the flag on `delivery_orders` only and answers 422 on any other
+entity, so a `goods_receive_notes` backfill leaves it out. Only `run_backfill` sets it
+(`write_batch(backfill=(feed_row.feed == FEED_DELIVERY_ORDERS))`, `doc_feed/runner.py`). The poll,
+the sweep's re-check push and every sync push leave the key out entirely, so their body is
+unchanged. Pinned by `tests/test_doc_feed_backfill_flag.py`.
 
 **Delivery accounting is by identity.** A chunk whose transient retries ran out is reported to
 `on_chunk(error)` and is NOT credited while later chunks are; credited `source_ref`s are
