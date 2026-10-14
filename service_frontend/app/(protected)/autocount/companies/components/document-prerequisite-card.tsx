@@ -6,6 +6,14 @@ import { Alert, AlertContent, AlertIcon } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { useTerminology } from '@/hooks/use-terminology';
 import type { AutocountDocumentPrerequisite } from '@/types/autocount';
+import { AC_DOC_FEED_KEYS, docFeedLabel } from '../../components/autocount-meta';
+
+/** AC-CANCEL-PULL - a doc-feed key in `inactive` (e.g. `delivery_orders`) is not a
+ *  master: it means the company has no doc-feed book, which the cancel and
+ *  consignment documents are filed under. Rendered as its own clause. */
+function isDocFeedKey(key: string): boolean {
+  return (AC_DOC_FEED_KEYS as string[]).includes(key);
+}
 
 export interface DocumentPrerequisiteCardProps {
   prerequisites: AutocountDocumentPrerequisite[];
@@ -43,24 +51,33 @@ export function DocumentPrerequisiteCard({ prerequisites, onAdd }: DocumentPrere
       </AlertIcon>
       <AlertContent>
         {lines.map((line) => {
-          const blockers = [...line.missing, ...line.inactive];
+          const feeds = line.inactive.filter(isDocFeedKey);
+          const blockers = [...line.missing, ...line.inactive.filter((m) => !isDocFeedKey(m))];
           return (
             <div
               key={line.entityType}
               className="flex flex-wrap items-center gap-x-3 gap-y-1.5"
               data-testid={`prerequisite-${line.entityType}`}
             >
-              <span className="text-sm">
-                {labelPlural(line.entityType)} will stay retryable until{' '}
-                {joinAnd(
-                  blockers.map((master) => (
-                    <strong key={master} className="font-semibold">
-                      {labelPlural(master)}
-                    </strong>
-                  )),
-                )}{' '}
-                {blockers.length === 1 ? 'is' : 'are'} active.
-              </span>
+              {blockers.length > 0 && (
+                <span className="text-sm">
+                  {labelPlural(line.entityType)} will stay retryable until{' '}
+                  {joinAnd(
+                    blockers.map((master) => (
+                      <strong key={master} className="font-semibold">
+                        {labelPlural(master)}
+                      </strong>
+                    )),
+                  )}{' '}
+                  {blockers.length === 1 ? 'is' : 'are'} active.
+                </span>
+              )}
+              {feeds.length > 0 && (
+                <span className="text-sm" data-testid={`prerequisite-${line.entityType}-feed`}>
+                  {labelPlural(line.entityType)} cannot be delivered until the{' '}
+                  <strong className="font-semibold">{docFeedLabel(feeds[0])}</strong> feed has a book.
+                </span>
+              )}
               {onAdd &&
                 line.missing.map((master) => (
                   <Button

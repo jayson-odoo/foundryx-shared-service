@@ -30,7 +30,16 @@ import type {
  * parity-pinned to the backend registry - do not add `shipping_order` there
  * until S3 lands it server-side).
  */
-const DOCUMENT_ENTITY_TYPES = new Set(['sales_order', 'purchase_order', 'shipping_order']);
+const DOCUMENT_ENTITY_TYPES = new Set([
+  'sales_order',
+  'purchase_order',
+  'shipping_order',
+  // AC-CANCEL-PULL - linked documents (contract 2.8), header + lines too.
+  'cancel_sales_order',
+  'cancel_purchase_order',
+  'consignment',
+  'consignment_return',
+]);
 
 /** True for header+lines document entities (SO/PO). Code constants, never a
  * tenant-editable key. */

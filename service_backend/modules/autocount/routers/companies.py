@@ -15,7 +15,7 @@ from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
 from ..http_client import get_http_transport
-from ..canonical.documents import is_document_entity
+from ..canonical.documents import LINKED_DOCUMENT_ENTITY_TYPES, is_document_entity
 from ..mapping import SCOPE_LINE
 from ..schemas import (
     CompanyCreate,
@@ -190,7 +190,15 @@ def get_company(
             company,
             source_kind=service.source_kind_for(current_user.tenant_id, company),
             # Pure, over the states already loaded above - no extra query.
-            prerequisites=document_prerequisites(entities),
+            prerequisites=document_prerequisites(
+                entities,
+                # AC-CANCEL-PULL - only asked when a linked document is
+                # configured (no extra query for every other company).
+                has_doc_feed_book=(
+                    not any(e.entity_type in LINKED_DOCUMENT_ENTITY_TYPES for e in entities)
+                    or service.has_doc_feed_book(current_user.tenant_id, company)
+                ),
+            ),
         ),
         entities=[EntityConfigItem.model_validate(row) for row in entities],
     )

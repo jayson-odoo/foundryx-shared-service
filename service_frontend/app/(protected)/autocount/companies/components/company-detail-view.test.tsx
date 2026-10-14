@@ -153,7 +153,8 @@ describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17, AC-08-18)'
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
     // sprint-5/14 section 11 (AC-14-47): Branch is HTTP-only too - thirteen.
-    expect(names).toHaveLength(13);
+    // AC-CANCEL-PULL: + Cancel SO/PO, Consignment, Consignment return (17).
+    expect(names).toHaveLength(17);
     expect(names).toEqual(expect.arrayContaining(['Customer', 'Supplier', 'Brand', 'Stock balance', 'Branch']));
     expect(names).not.toContain('Goods received note');
   });

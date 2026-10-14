@@ -102,4 +102,18 @@ describe('DocumentPrerequisiteCard (plan sprint-5/01, AC-01-20)', () => {
     expect(screen.queryByTestId('prerequisite-sales_order')).not.toBeInTheDocument();
     expect(screen.getByTestId('prerequisite-purchase_order')).toBeInTheDocument();
   });
+
+  it('names a missing doc-feed book as a feed, never as a pluralised master (AC-CANCEL-PULL)', () => {
+    render(
+      <DocumentPrerequisiteCard
+        prerequisites={[line({ entityType: 'consignment', inactive: ['delivery_orders'] })]}
+        onAdd={vi.fn()}
+      />,
+    );
+    const feed = screen.getByTestId('prerequisite-consignment-feed');
+    expect(feed).toHaveTextContent('Consignments cannot be delivered until the Delivery orders feed has a book.');
+    expect(screen.queryByText(/Orderss/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/will stay retryable/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('add-prerequisite-delivery_orders')).not.toBeInTheDocument();
+  });
 });

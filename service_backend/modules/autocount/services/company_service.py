@@ -62,7 +62,12 @@ from ..formula import (
     result_to_json,
     string_literals,
 )
-from ..canonical.documents import DOCUMENT_STATUS_VALUES, is_document_entity
+from ..doc_feed.constants import FEED_DELIVERY_ORDERS
+from ..canonical.documents import (
+    DOCUMENT_STATUS_VALUES,
+    LINKED_DOCUMENT_ENTITY_TYPES,
+    is_document_entity,
+)
 from ..mapping_catalog import (
     SorentoFieldDef,
     accepted_fields,
@@ -112,6 +117,7 @@ from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
     CONTRACT_GATED_ENTITIES,
     DOC_FEED_CONTRACT_VERSION,
+    LINKED_DOCUMENTS_CONTRACT_VERSION,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -199,7 +205,20 @@ DOCUMENT_PREREQUISITES: Dict[str, Tuple[str, ...]] = {
     "sales_order": (ENTITY_CUSTOMER, "product"),
     "purchase_order": (ENTITY_SUPPLIER, "product"),
     "shipping_order": (ENTITY_SUPPLIER, "product", "warehouse"),
+    # AC-CANCEL-PULL - the linked documents reference the same masters as
+    # the order they cancel / the consignment they return.
+    "cancel_sales_order": (ENTITY_CUSTOMER, "product"),
+    "cancel_purchase_order": (ENTITY_SUPPLIER, "product"),
+    "consignment": (ENTITY_CUSTOMER, "product"),
+    "consignment_return": (ENTITY_CUSTOMER, "product"),
 }
+
+# AC-CANCEL-PULL - a Sorento push of a linked document with no doc-feed book.
+LINKED_DOCUMENT_NO_BOOK_MESSAGE = (
+    "This company has no doc-feed book (configure its Delivery Orders feed "
+    "first), so cancel and consignment documents cannot be delivered to "
+    "Sorento."
+)
 
 NOT_API_BACKED_MESSAGE = (
     "This company is connected by database; the AutoCount API is not available."
@@ -335,10 +354,18 @@ class DocumentPrerequisite:
     inactive: List[str]
 
 
-def document_prerequisites(entities: List["EntityState"]) -> List[DocumentPrerequisite]:
+def document_prerequisites(
+    entities: List["EntityState"], *, has_doc_feed_book: bool = True,
+) -> List[DocumentPrerequisite]:
     """Pure: the prerequisite status of every CONFIGURED document entity, in
     the company's entity order (AC-01-11). Empty when no document entity is
-    configured. Runs over the states the detail already loaded - no query."""
+    configured. Runs over the states the detail already loaded - no query.
+
+    AC-CANCEL-PULL (review S2) - a linked document (Cancel SO/PO,
+    Consignment, Consignment Return) is filed under the company's doc-feed
+    book, so ``has_doc_feed_book=False`` names ``delivery_orders`` as a
+    blocker (in ``inactive``: it is a feed to configure, never an entity the
+    card's Add button could create)."""
     by_type = {state.entity_type: state for state in entities}
     out: List[DocumentPrerequisite] = []
     for state in entities:
@@ -352,6 +379,8 @@ def document_prerequisites(entities: List["EntityState"]) -> List[DocumentPrereq
             if m in by_type
             and (by_type[m].etl_status != ETL_STATUS_ACTIVE or not by_type[m].enabled)
         ]
+        if not has_doc_feed_book and state.entity_type in LINKED_DOCUMENT_ENTITY_TYPES:
+            inactive = inactive + [FEED_DELIVERY_ORDERS]
         out.append(DocumentPrerequisite(state.entity_type, missing, inactive))
     return out
 
@@ -929,6 +958,8 @@ class CompanyService:
                     # push-time refusal - never delivering through this
                     # fallback - lives in ``SyncService.auto_push``, D4.)
                     return sink_for(SINK_IMPL_LOGGING)
+            if entity_type in LINKED_DOCUMENT_ENTITY_TYPES and not getattr(sink, "book", None):
+                raise AutocountServiceError(LINKED_DOCUMENT_NO_BOOK_MESSAGE)
             return sink
         raise UnknownSinkImpl(
             f"Company '{company.database_name}' is configured with an unknown "
@@ -949,6 +980,17 @@ class CompanyService:
         that has no connection yet (never saved) falls back to the company's
         own open connection. FAIL CLOSED: no derivable book raises a named
         error instead of posting a body the CRM 422s for the whole batch."""
+        if entity_type in LINKED_DOCUMENT_ENTITY_TYPES:
+            # AC-CANCEL-PULL - the doc-feed-shaped linked documents carry the
+            # SAME top-level `book` as this company's DO/GRN feeds (the book
+            # their `source_ref` is filed under). An absent book is NOT
+            # raised here: `sink_for_company` runs the contract gate first
+            # (a consumer below 2.8 must answer CONTRACT_GATE), then fails
+            # closed on the missing book (`_require_linked_book`).
+            from ..http_source.book import linked_document_book
+
+            book = linked_document_book(self.db, tenant_id, company)
+            return {"book": book} if book else {}
         if entity_type != ENTITY_BRANCH:
             return {}
         config = self.configs.get(tenant_id, company.id, ENTITY_BRANCH)
@@ -970,6 +1012,13 @@ class CompanyService:
                 "delivered to Sorento."
             )
         return {"book": book}
+
+    def has_doc_feed_book(self, tenant_id: str, company: AcCompany) -> bool:
+        """AC-CANCEL-PULL - whether the company has a doc-feed book for its
+        linked documents (``document_prerequisites``' warning)."""
+        from ..http_source.book import linked_document_book
+
+        return bool(linked_document_book(self.db, tenant_id, company))
 
     def brand_contract_gate(
         self, tenant_id: str, company: AcCompany
@@ -1039,6 +1088,11 @@ class CompanyService:
         ENTITY_PRODUCT: PRODUCT_CODE_WINS_CONTRACT_VERSION,
         # sprint-5/14 section 11 (D26) - branch rides the 2.7 door.
         ENTITY_BRANCH: DOC_FEED_CONTRACT_VERSION,
+        # AC-CANCEL-PULL - the four linked documents ride the 2.8 doors.
+        **{
+            entity_type: LINKED_DOCUMENTS_CONTRACT_VERSION
+            for entity_type in LINKED_DOCUMENT_ENTITY_TYPES
+        },
     }
 
     def contract_gate(

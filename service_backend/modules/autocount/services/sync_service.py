@@ -42,6 +42,8 @@ from ..canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
+    LINKED_DOCUMENT_ENTITY_TYPES,
+    LINKED_DOCUMENT_MODELS,
     CanonicalPurchaseOrder,
     CanonicalSalesOrder,
     CanonicalShippingOrder,
@@ -90,6 +92,8 @@ from ..repositories import (
 )
 from ..sinks import EntitySink, WriteResult
 from ..sinks_sorento import (
+    CONTRACT_GATED_ENTITIES,
+    PUSH_REFUSES_LOGGING_FALLBACK,
     SINK_SORENTO,
     SinkAnchorError,
     SorentoSinkError,
@@ -129,6 +133,8 @@ CANONICAL_MODELS = {
     # here so that drift guard stays generic rather than carving out an
     # exception for one entity.
     ENTITY_STOCK_BALANCE: CanonicalStockBalance,
+    # AC-CANCEL-PULL - Cancel SO/PO + Consignment/Return (contract 2.8).
+    **LINKED_DOCUMENT_MODELS,
 }
 
 
@@ -142,6 +148,47 @@ class JobNotFound(AutocountServiceError):
 
 class NotAwaitingApproval(AutocountServiceError):
     pass
+
+
+# AC-CANCEL-PULL - the doc-date floor of a linked-document deletion window when
+# the task carries no `fromDate` (the doc-feed backfill's own floor).
+LINKED_DOCUMENT_DELETE_FLOOR = "2023-01-01"
+
+
+class ContractGateRefused(AutocountServiceError):
+    """AC-CANCEL-PULL - an approval for an entity in
+    ``PUSH_REFUSES_LOGGING_FALLBACK`` whose consumer contract gate is shut.
+    The batch goes back to ``needs_review`` with every row STAGED, never
+    "delivered" through the logging sink (which would mark the rows PUSHED
+    while nothing reached the consumer - a silent, permanent loss)."""
+
+    error_code = "CONTRACT_GATE"
+
+
+def _contract_gate_refusal(company: Any, entity_type: str, sink: Any) -> Optional[str]:
+    """The operator message when a push for ``entity_type`` must be refused
+    because a Sorento company's contract gate routed it to the logging-sink
+    fallback; ``None`` when the push may proceed. Shared by ``auto_push`` and
+    ``approve`` so the two delivery paths can never disagree."""
+    if entity_type not in PUSH_REFUSES_LOGGING_FALLBACK:
+        return None
+    if company.sink_impl != SINK_IMPL_SORENTO or sink.name == SINK_SORENTO:
+        return None
+    if entity_type == ENTITY_STOCK_BALANCE:
+        # Byte-identical to the plan-13 message (AC-13-06).
+        return (
+            "This book's Sorento consumer does not yet accept stock "
+            "balances (contract 2.5 with 'stock_balances' required) - "
+            "nothing was pushed."
+        )
+    gate = CONTRACT_GATED_ENTITIES.get(entity_type)
+    requirement = (
+        f" (contract {gate[0]} with '{gate[1]}' required)" if gate is not None else ""
+    )
+    return (
+        f"This book's Sorento consumer does not yet accept "
+        f"{entity_type.replace('_', ' ')} records{requirement} - nothing was pushed."
+    )
 
 
 class PushFailed(AutocountServiceError):
@@ -617,16 +664,12 @@ class SyncService:
         # landed, and changed-only staging (AC-13-11) would then never
         # re-offer them - a silent, permanent data loss. Refuse instead:
         # every row stays STAGED, nothing is marked pushed.
-        if (
-            entity_type == ENTITY_STOCK_BALANCE
-            and company.sink_impl == SINK_IMPL_SORENTO
-            and sink.name != SINK_SORENTO
-        ):
-            summary["error"] = (
-                "This book's Sorento consumer does not yet accept stock "
-                "balances (contract 2.5 with 'stock_balances' required) - "
-                "nothing was pushed."
-            )
+        # AC-CANCEL-PULL - the same refusal for every entity in
+        # `PUSH_REFUSES_LOGGING_FALLBACK` (the four contract-2.8 linked
+        # documents join stock); `approve()` runs the SAME check.
+        refusal = _contract_gate_refusal(company, entity_type, sink)
+        if refusal is not None:
+            summary["error"] = refusal
             summary["errorCode"] = "CONTRACT_GATE"
             return summary
 
@@ -1048,7 +1091,16 @@ class SyncService:
             key_fields = tuple(str(c) for c in key_fields if str(c).strip())
             pairs = pairs_from_refs(refs, key_fields=key_fields) or None
         try:
-            if hasattr(sink, "delete_batch"):
+            if entity_type in LINKED_DOCUMENT_ENTITY_TYPES and hasattr(sink, "delete_doc_keys"):
+                # AC-CANCEL-PULL - the doc-feed deletions door (CRM #1623):
+                # `{doc_date_from, doc_date_to, doc_keys}`, never `source_refs`.
+                # A cancel document deleted in AutoCount must lower the CRM's
+                # cancelled qty (owner ruling), so its delete intent is sent.
+                self._push_linked_document_deletes(
+                    pending, sink=sink, tenant_id=tenant_id, company_id=company_id,
+                    entity_type=entity_type, apply_chunk=apply_chunk, summary=summary,
+                )
+            elif hasattr(sink, "delete_batch"):
                 params = inspect.signature(sink.delete_batch).parameters
                 extra_kwargs: Dict[str, Any] = {}
                 if codes and "codes" in params:
@@ -1086,6 +1138,93 @@ class SyncService:
         if summary.get("deleteFailures") and not summary.get("error"):
             summary["error"] = summary["deleteFailures"][0]["error"]
         return True
+
+    def _push_linked_document_deletes(
+        self,
+        pending: List[AcStagedRecord],
+        *,
+        sink: EntitySink,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        apply_chunk: Callable[..., None],
+        summary: Dict[str, Any],
+    ) -> None:
+        """AC-CANCEL-PULL - delete intents for the doc-feed-shaped linked
+        documents go through ``SorentoSink.delete_doc_keys`` (the DO/GRN body
+        shape, ``{doc_date_from, doc_date_to, doc_keys}``).
+
+            !!  ONLY REFS UNDER THE SINK'S OWN BOOK ARE EVER SENT.  !!
+        The body names a ``book`` and bare DocKeys, so a ref filed under a
+        DIFFERENT book (the company's doc-feed book changed since it was
+        pushed) would delete the CRM's live document of the same DocKey in
+        the NEW book (security + code review blocker). Such a ref, or one
+        with no integer DocKey, is quarantined with a named reason instead -
+        never sent, never silently re-offered.
+
+        Sent per chunk (``batch_size``), each chunk's verdicts applied and
+        committed by ``apply_chunk`` before the next is sent - the
+        push-marks-per-chunk rule; a failure on a later chunk keeps every
+        earlier chunk's marks. The window is the task's own ``fromDate``
+        floor (validated, else ``LINKED_DOCUMENT_DELETE_FLOOR``) .. MYT
+        today: the deleted document's DocDate is gone from AutoCount."""
+        from datetime import date as _date
+
+        from ..canonical.documents import linked_document_ref
+        from ..doc_feed.clock import MYT
+
+        prefix = linked_document_ref(entity_type, str(getattr(sink, "book", "") or ""), "")
+        sendable: Dict[int, List[str]] = {}
+        unsendable: List[AcStagedRecord] = []
+        for row in pending:
+            ref = str(row.source_ref or "")
+            tail = ref[len(prefix):] if getattr(sink, "book", None) and ref.startswith(prefix) else ""
+            # ASCII digits in canonical form only (security nit): `isdigit`
+            # alone admits `²`/Arabic-Indic digits, and `0012` would alias
+            # DocKey 12 - each such ref is quarantined, never sent.
+            if tail.isascii() and tail.isdigit() and str(int(tail)) == tail:
+                sendable.setdefault(int(tail), []).append(ref)
+            else:
+                unsendable.append(row)
+        if unsendable:
+            self.staged.mark(unsendable, status=STAGED_FAILED)
+            self._commit_chunk(summary, sink=sink)
+            summary["deleteFailures"] = (summary.get("deleteFailures") or []) + [
+                {
+                    "sourceRef": row.source_ref,
+                    "error": (
+                        "not sent: this delete belongs to a different book than "
+                        f"the company's current doc-feed book ({prefix[:-1]}) or "
+                        "carries no DocKey"
+                    ),
+                }
+                for row in unsendable
+            ]
+        if not sendable:
+            return
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        raw_from = str(
+            ((config.source_config or {}).get("fromDate") if config is not None else "") or ""
+        ).strip()
+        today = datetime.now(MYT).date()
+        try:
+            # A future `fromDate` would invert the window; clamp it to today.
+            doc_date_from = min(_date.fromisoformat(raw_from), today).isoformat()
+        except ValueError:
+            doc_date_from = LINKED_DOCUMENT_DELETE_FLOOR
+        doc_date_to = today.isoformat()
+        keys = sorted(sendable)
+        size = max(1, int(getattr(sink, "batch_size", 0) or len(keys)))
+        for start in range(0, len(keys), size):
+            chunk = keys[start : start + size]
+            result = sink.delete_doc_keys(  # type: ignore[attr-defined]
+                chunk, doc_date_from=doc_date_from, doc_date_to=doc_date_to,
+            )
+            apply_chunk(
+                [ref for key in chunk for ref in sendable[key]],
+                (result or {}).get("records") or [],
+                None,
+            )
 
     def preview(self, tenant_id: str, job_id: str) -> Dict[str, Any]:
         """Ask the consumer what approving WOULD do, writing nothing (AC-14-20/21).
@@ -1208,6 +1347,12 @@ class SyncService:
             company = self.companies.get(tenant_id, company_id)
             entity_type = self._entity_type_for(job)
             sink = self.companies.sink_for_company(tenant_id, company, entity_type)
+            # AC-CANCEL-PULL (review blocker) - the manual approval is a
+            # delivery path too: a shut contract gate must never let it
+            # "deliver" through the logging-sink fallback.
+            refusal = _contract_gate_refusal(company, entity_type, sink)
+            if refusal is not None:
+                raise ContractGateRefused(refusal)
         except Exception as exc:  # noqa: BLE001
             self._release_claim(job, [], exc)
             raise

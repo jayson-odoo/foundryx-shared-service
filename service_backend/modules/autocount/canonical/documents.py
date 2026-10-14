@@ -39,7 +39,7 @@ other canonical shape.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from decimal import Decimal
@@ -58,8 +58,30 @@ ENTITY_PURCHASE_ORDER = "purchase_order"
 # runtime branch here.
 ENTITY_SHIPPING_ORDER = "shipping_order"
 
-DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
+# AC-CANCEL-PULL - four LINKED documents (contract 2.8): each line points
+# back at the document it cancels/returns via FromDocType + FromDocNo
+# (+ FromDocDtlKey: keyed until Oct 2024, always NULL on XSDTL from Dec 2024 -
+# facts in `presets.py`). Same fetch/mapping path as
+# SO/PO/SPO; their own canonical shape (`CanonicalLinkedDocument` below).
+ENTITY_CANCEL_SALES_ORDER = "cancel_sales_order"
+ENTITY_CANCEL_PURCHASE_ORDER = "cancel_purchase_order"
+ENTITY_CONSIGNMENT = "consignment"
+ENTITY_CONSIGNMENT_RETURN = "consignment_return"
+
+LINKED_DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
+    ENTITY_CANCEL_SALES_ORDER, ENTITY_CANCEL_PURCHASE_ORDER,
+    ENTITY_CONSIGNMENT, ENTITY_CONSIGNMENT_RETURN,
+)
+
+# The order family (SO/PO/SPO) - kept named on its own: the PO/SPO
+# filter-formula split is the only reason one document can be seen by two
+# sibling tasks, so the overlap warning compares within this family only.
+ORDER_DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
     ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER,
+)
+
+DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
+    ORDER_DOCUMENT_ENTITY_TYPES + LINKED_DOCUMENT_ENTITY_TYPES
 )
 
 
@@ -527,3 +549,220 @@ class CanonicalShippingOrder(CanonicalDocument):
     # stored value alone", `null` means "clear it" - a document whose `Ref`
     # is unmapped or blank must never send the clear signal.
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("container_number",)
+
+
+# ── AC-CANCEL-PULL - linked documents (contract 2.8) ──────────────────────────
+#
+#     !!  THE WIRE IS THE DO/GRN DOC-FEED SHAPE, NOT A CANONICAL ONE.  !!
+# CRM #1623 ingests these four through the SAME door shape as the
+# delivery-order / goods-receive-note feeds (`autocount-doc-feeds.md`
+# section 1/3, contract 13): body `{companyCode, book, records}`, each record
+# the AutoCount HEADER row with its own PascalCase column names and its lines
+# under `Details`, deletions by `doc_keys`. The CRM derives `source_ref` as
+# `{book}:{CODE}:{DocKey}` and answers verdicts under it, so that is this
+# record's `source_ref` too (`linked_document_ref`).
+#
+# The typed fields below (`doc_no`, `status`, `customer_code`, lines'
+# `product_code`/`qty`, ...) are the MAPPING layer only: the Mapping tab, the
+# required-field gate and the mapping errors run on them exactly as for
+# SO/PO. They never reach the wire. The wire is `source_record` - the row
+# `SqlDbSource` fetched (header columns + the `_lines` it nested), filled by
+# the mapping engine (`EntityProfile.raw_record_field`), never a mapping
+# target - minus the ESB-internal join/fingerprint columns below.
+
+# The CRM's doc-type code per entity: the second segment of the derived
+# `source_ref`, verbatim from CRM #1623 (`autocount_cancel_ingest_service.py`
+# `_PREFIX`, confirmed by the crew at CRM head 431a030d): `XS`/`XP` are
+# AutoCount's own codes, consignments are `CSGN` and consignment returns
+# `CSGR` - NOT the `CG`/`CR` AutoCount itself uses in `FromDocType`/
+# `ToDocType`. A wrong code here makes every verdict miss its staged row and
+# quarantines every delete as wrong-book; `test_the_ref_codes_match_the_crm`
+# pins all four.
+LINKED_DOCUMENT_REF_CODES: Dict[str, str] = {
+    ENTITY_CANCEL_SALES_ORDER: "XS",
+    ENTITY_CANCEL_PURCHASE_ORDER: "XP",
+    ENTITY_CONSIGNMENT: "CSGN",
+    ENTITY_CONSIGNMENT_RETURN: "CSGR",
+}
+
+# Columns the presets select for the ESB's own use (master-ref joins and the
+# change-detection fingerprint), never AutoCount table columns - stripped from
+# the wire so the CRM only ever sees the vendor's own fields.
+LINKED_HEADER_INTERNAL_COLUMNS = frozenset({
+    "DebtorAutoKey", "CreditorAutoKey", "LineCount", "QtySum", "SubTotalSum",
+    "MaxDtlKey", "LinkedLineCount", "FromDocKeySum",
+})
+LINKED_LINE_INTERNAL_COLUMNS = frozenset({"ItemAutoKey", "LocationAutoKey"})
+
+# The cap on any one free-text cell of a linked document on the wire.
+NOTE_MAX_CHARS = 4000
+
+# The vendor feed's own datetime format (naive MYT, millisecond precision -
+# e.g. `2026-09-28T10:00:00.000`); AutoCount stores local time, so a SQL
+# `datetime` is already MYT and is only formatted, never shifted.
+_VENDOR_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"
+
+
+def linked_document_ref(entity_type: str, book: str, doc_key: Any) -> str:
+    """``{book}:{CODE}:{DocKey}`` - the CRM's own derivation, verbatim."""
+    return f"{book}:{LINKED_DOCUMENT_REF_CODES[entity_type]}:{doc_key}"
+
+
+def vendor_json_value(value: Any) -> Any:
+    """One SQL value as the vendor feed would send it: a ``Decimal`` as a JSON
+    number (``int`` when integral, else ``float``), a ``datetime`` as the
+    naive vendor string, a ``date`` as its midnight, bytes/GUIDs as text.
+    Recursive over lists/dicts. Applied BEFORE the record is stored, so the
+    staged ``canonical_json`` already holds the wire values."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None).strftime(_VENDOR_DATETIME_FORMAT)[:-3]
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day).strftime(
+            _VENDOR_DATETIME_FORMAT
+        )[:-3]
+    if isinstance(value, str):
+        # Security review: one bound for EVERY free-text cell (Note,
+        # Description, FurtherDescription, ...), never a size an ingest batch
+        # cannot carry. Cut, never rejected.
+        return value[:NOTE_MAX_CHARS] if len(value) > NOTE_MAX_CHARS else value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [vendor_json_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): vendor_json_value(v) for k, v in value.items()}
+    # Bytes / GUIDs / times: the SAME rendering the SQL preview uses.
+    from ..sql_source.preview import json_safe
+
+    return json_safe(value)
+
+
+class CanonicalLinkedDocumentLine(CanonicalDocumentLine):
+    """The MAPPING-layer line of a cancel / consignment document (validation
+    only - see the section comment). ``product_code`` + ``qty`` are required
+    by the catalogue (a line with neither is not a real document line). The
+    link triple rides the wire verbatim; ``FromDocDtlKey`` is always NULL on
+    XSDTL since Dec 2024 (facts in ``presets.py``), and linking is the CRM's
+    rule (owner: exact links only)."""
+
+    qty: Optional[Decimal] = Field(None, ge=0)
+    unit_price: Optional[Decimal] = None
+    from_doc_type: Optional[str] = Field(None, max_length=20)
+    # `FromDocNo` is nvarchar(max) on XSDTL/XPDTL/ConsignmentReturnDTL.
+    from_doc_no: Optional[str] = Field(None, max_length=255)
+    from_doc_line_key: Optional[int] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref", "line_number", "product_ref", "product_code", "product_name",
+        "warehouse_ref", "warehouse_code", "qty", "uom", "unit_price", "line_total",
+        "from_doc_type", "from_doc_no", "from_doc_line_key",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = ()
+
+
+class CanonicalLinkedDocument(CanonicalDocument):
+    """Shared header of the four linked documents. ``sink_payload`` is the
+    raw vendor-shaped record (see the section comment)."""
+
+    doc_no: Optional[str] = Field(None, max_length=100)
+    doc_date: Optional[date] = None
+    agent_code: Optional[str] = Field(None, max_length=100)
+    ref: Optional[str] = Field(None, max_length=255)
+    note: Optional[str] = None
+    lines: List[CanonicalLinkedDocumentLine] = Field(default_factory=list)
+    source_record: Dict[str, Any] = Field(default_factory=dict)
+
+    _COMMON_HEAD: ClassVar[Tuple[str, ...]] = ("source_ref", "doc_no", "doc_date", "status")
+    _COMMON_TAIL: ClassVar[Tuple[str, ...]] = ("agent_code", "ref", "note")
+
+    @field_validator("source_record", mode="before")
+    @classmethod
+    def _vendor_values(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        record = vendor_json_value(value)
+        # Security review: AutoCount `Note` is nvarchar(max), often RTF with
+        # embedded images - CUT (never rejected) so one huge note can never
+        # bloat a staged row or sink a whole ingest batch.
+        note = record.get("Note")
+        if isinstance(note, str) and len(note) > NOTE_MAX_CHARS:
+            record["Note"] = note[:NOTE_MAX_CHARS]
+        return record
+
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        """The vendor record: header columns verbatim (minus the ESB-internal
+        ones) and its lines under ``Details``. ``Details`` is always present
+        (``[]`` for a header with no lines) - it is structure, not data."""
+        raw = dict(self.source_record or {})
+        lines = raw.pop(SQL_DOC_LINES_KEY, None) or []
+        payload = {
+            key: value for key, value in raw.items()
+            if key not in LINKED_HEADER_INTERNAL_COLUMNS and not key.startswith("_")
+        }
+        payload["Details"] = [
+            {key: value for key, value in line.items() if key not in LINKED_LINE_INTERNAL_COLUMNS}
+            for line in lines if isinstance(line, dict)
+        ]
+        return payload
+
+
+_CUSTOMER_FIELDS: Tuple[str, ...] = ("customer_ref", "customer_code", "customer_name")
+_SUPPLIER_FIELDS: Tuple[str, ...] = ("supplier_ref", "supplier_code", "supplier_name")
+
+
+class _CustomerSideDocument(CanonicalLinkedDocument):
+    customer_ref: Optional[str] = Field(None, max_length=255)
+    customer_code: Optional[str] = Field(None, max_length=50)
+    customer_name: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        CanonicalLinkedDocument._COMMON_HEAD + _CUSTOMER_FIELDS
+        + CanonicalLinkedDocument._COMMON_TAIL
+    )
+
+
+class CanonicalCancelSalesOrder(_CustomerSideDocument):
+    """AutoCount ``XS``/``XSDTL`` -> CRM ``cancel_sales_orders``."""
+
+    entity_type: str = ENTITY_CANCEL_SALES_ORDER
+
+
+class CanonicalConsignment(_CustomerSideDocument):
+    """AutoCount ``Consignment``/``ConsignmentDTL`` (CG- numbers, entered by
+    hand - no source document) -> CRM ``consignments``."""
+
+    entity_type: str = ENTITY_CONSIGNMENT
+
+
+class CanonicalConsignmentReturn(_CustomerSideDocument):
+    """AutoCount ``ConsignmentReturn``/``ConsignmentReturnDTL`` (lines carry
+    ``FromDocType 'CG'``) -> CRM ``consignment_returns``."""
+
+    entity_type: str = ENTITY_CONSIGNMENT_RETURN
+
+
+class CanonicalCancelPurchaseOrder(CanonicalLinkedDocument):
+    """AutoCount ``XP``/``XPDTL`` -> CRM ``cancel_purchase_orders``."""
+
+    entity_type: str = ENTITY_CANCEL_PURCHASE_ORDER
+
+    supplier_ref: Optional[str] = Field(None, max_length=255)
+    supplier_code: Optional[str] = Field(None, max_length=50)
+    supplier_name: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        CanonicalLinkedDocument._COMMON_HEAD + _SUPPLIER_FIELDS
+        + CanonicalLinkedDocument._COMMON_TAIL
+    )
+
+
+LINKED_DOCUMENT_MODELS: Dict[str, type] = {
+    ENTITY_CANCEL_SALES_ORDER: CanonicalCancelSalesOrder,
+    ENTITY_CANCEL_PURCHASE_ORDER: CanonicalCancelPurchaseOrder,
+    ENTITY_CONSIGNMENT: CanonicalConsignment,
+    ENTITY_CONSIGNMENT_RETURN: CanonicalConsignmentReturn,
+}

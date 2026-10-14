@@ -1477,6 +1477,11 @@ const DOCUMENT_PREREQUISITES: Record<string, string[]> = {
   sales_order: ['customer', 'product'],
   purchase_order: ['supplier', 'product'],
   shipping_order: ['supplier', 'product', 'warehouse'],
+  // AC-CANCEL-PULL - the four linked documents (contract 2.8).
+  cancel_sales_order: ['customer', 'product'],
+  cancel_purchase_order: ['supplier', 'product'],
+  consignment: ['customer', 'product'],
+  consignment_return: ['customer', 'product'],
 };
 
 /** Display order of a DB company's rows - the ten `sql_db` entities in dependency order. */
@@ -1491,6 +1496,10 @@ const DB_ENTITY_ORDER = [
   'sales_order',
   'purchase_order',
   'shipping_order',
+  'cancel_sales_order',
+  'cancel_purchase_order',
+  'consignment',
+  'consignment_return',
 ];
 
 /** The pure function the backend's `document_prerequisites(company)` must mirror. */
@@ -3987,10 +3996,81 @@ function purchaseFamilyPreset(entityType: 'purchase_order' | 'shipping_order'): 
   };
 }
 
+/** AC-CANCEL-PULL - Cancel SO/PO + Consignment/Return. Mirrors the backend's
+ *  `_linked_preset` (`modules/autocount/presets.py`): the same line shape for
+ *  all four, Debtor or Creditor side on the header, a Cancelled-only status. */
+function linkedDocumentPreset(
+  label: string,
+  headerTable: string,
+  lineTable: string,
+  debtorSide: boolean,
+): DocumentPresetSpec {
+  const party = debtorSide ? 'Debtor' : 'Creditor';
+  const prefix = debtorSide ? 'customer' : 'supplier';
+  return {
+    label,
+    headerQuery:
+      `SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, h.${party}Code AS ${party}Code, ` +
+      `h.${party}Name AS ${party}Name, h.Ref AS Ref, h.Note AS Note, h.Cancelled AS Cancelled, ` +
+      `h.LastModified AS LastModified FROM {database}.dbo.${headerTable} AS h`,
+    lineQuery:
+      'SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, d.ItemCode AS ItemCode, d.Description AS Description, ' +
+      'd.Location AS Location, d.Qty AS Qty, d.UOM AS UOM, d.UnitPrice AS UnitPrice, d.SubTotal AS SubTotal, ' +
+      'd.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, d.FromDocDtlKey AS FromDocDtlKey ' +
+      `FROM {database}.dbo.${lineTable} AS d WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL`,
+    keyColumns: ['DocKey'],
+    watermarkColumn: 'LastModified',
+    docDateColumn: 'DocDate',
+    fromDate: '2026-01-01',
+    filterFormula: null,
+    header: [
+      { sourcePath: 'DocNo', sorentoField: 'doc_no', transform: 'string', required: true },
+      { sourcePath: 'DocDate', sorentoField: 'doc_date', transform: 'date' },
+      {
+        sourcePath: 'Cancelled',
+        sorentoField: 'status',
+        transform: 'string',
+        formula: 'if(Cancelled == "T", "cancelled", "open")',
+      },
+      { sourcePath: `${party}AutoKey`, sorentoField: `${prefix}_ref`, transform: `ref_${prefix}` },
+      { sourcePath: `${party}Code`, sorentoField: `${prefix}_code`, transform: 'string' },
+      { sourcePath: `${party}Name`, sorentoField: `${prefix}_name`, transform: 'string' },
+      { sourcePath: debtorSide ? 'SalesAgent' : 'PurchaseAgent', sorentoField: 'agent_code', transform: 'string' },
+      { sourcePath: 'Ref', sorentoField: 'ref', transform: 'string' },
+      { sourcePath: 'Note', sorentoField: 'note', transform: 'string' },
+    ],
+    line: [
+      { sourcePath: 'DtlKey', sorentoField: 'source_ref', transform: 'string', required: true },
+      { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'string' },
+      { sourcePath: 'ItemAutoKey', sorentoField: 'product_ref', transform: 'ref_product' },
+      { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string', required: true },
+      { sourcePath: 'Description', sorentoField: 'product_name', transform: 'string' },
+      { sourcePath: 'LocationAutoKey', sorentoField: 'warehouse_ref', transform: 'ref_warehouse' },
+      { sourcePath: 'Location', sorentoField: 'warehouse_code', transform: 'string' },
+      { sourcePath: 'Qty', sorentoField: 'qty', transform: 'decimal', required: true },
+      { sourcePath: 'UOM', sorentoField: 'uom', transform: 'string' },
+      { sourcePath: 'UnitPrice', sorentoField: 'unit_price', transform: 'decimal' },
+      { sourcePath: 'SubTotal', sorentoField: 'line_total', transform: 'decimal' },
+      { sourcePath: 'FromDocType', sorentoField: 'from_doc_type', transform: 'string' },
+      { sourcePath: 'FromDocNo', sorentoField: 'from_doc_no', transform: 'string' },
+      { sourcePath: 'FromDocDtlKey', sorentoField: 'from_doc_line_key', transform: 'int' },
+    ],
+  };
+}
+
 const DOCUMENT_PRESETS: Record<string, DocumentPresetSpec> = {
   sales_order: SO_PRESET,
   purchase_order: purchaseFamilyPreset('purchase_order'),
   shipping_order: purchaseFamilyPreset('shipping_order'),
+  cancel_sales_order: linkedDocumentPreset('AutoCount Cancel SO', 'XS', 'XSDTL', true),
+  cancel_purchase_order: linkedDocumentPreset('AutoCount Cancel PO', 'XP', 'XPDTL', false),
+  consignment: linkedDocumentPreset('AutoCount Consignment', 'Consignment', 'ConsignmentDTL', true),
+  consignment_return: linkedDocumentPreset(
+    'AutoCount Consignment Return',
+    'ConsignmentReturn',
+    'ConsignmentReturnDTL',
+    true,
+  ),
 };
 
 /** The entity's fulfilled-quantity line field (AC-02-07) - `qty_delivered`

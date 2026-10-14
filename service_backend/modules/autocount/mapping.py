@@ -75,6 +75,10 @@ from .canonical.documents import (
     CanonicalSalesOrderLine,
     CanonicalShippingOrder,
     CanonicalShippingOrderLine,
+    LINKED_DOCUMENT_MODELS,
+    LINKED_DOCUMENT_REF_CODES,
+    CanonicalLinkedDocumentLine,
+    linked_document_ref,
     is_document_entity,
 )
 
@@ -764,6 +768,20 @@ def flat_source_ref(
             )
         return f"{book}:{BRANCH_REF_MARKER}:{':'.join(parts)}"
 
+    if entity_type in LINKED_DOCUMENT_REF_CODES:
+        # AC-CANCEL-PULL - the CRM's OWN derivation for the doc-feed-shaped
+        # linked documents: `{book}:{XS|XP|CSGN|CSGR}:{DocKey}`. `database_name`
+        # carries the BOOK here (`http_source.book.identity_scope`).
+        book = (database_name or "").strip()
+        if not book:
+            raise IdentityError(
+                "this company has no doc-feed book (configure its Delivery "
+                "Orders feed first), so the document cannot be correlated"
+            )
+        if len(parts) != 1:
+            raise IdentityError("a linked document is keyed on DocKey alone")
+        return linked_document_ref(entity_type, book, parts[0])
+
     company = (database_name or "").strip()
     if not company:
         raise IdentityError(
@@ -998,6 +1016,13 @@ class EntityProfile:
     # for every non-document profile - `MappingEngine` skips aggregate
     # computation entirely rather than guess a field name.
     line_fulfilled_field: Optional[str] = None
+    # AC-CANCEL-PULL - which mapped LINE field carries the line's quantity for
+    # the `lines.*` aggregates (`qty_ordered` for SO/PO/SPO, `qty` for the
+    # linked documents). A document with no `line_fulfilled_field` still gets
+    # every aggregate, with a fulfilled quantity of zero - the mapping save
+    # gate offers `lines.*` to every document's header formulas, so the run
+    # must always define them.
+    line_ordered_field: str = "qty_ordered"
     # sprint-5/10 S5b (AC-10-81, R11) - ONE declarative map from the combine
     # engine's generic ``{excludedRows, excludedCount, dropped, roundedCount}``
     # metadata shape onto this entity's own agreed wire names (stock:
@@ -1195,6 +1220,29 @@ SHIPPING_ORDER_PROFILE = EntityProfile(
     line_fulfilled_field="qty_received",
 )
 
+# AC-CANCEL-PULL - Cancel SO / Cancel PO / Consignment / Consignment Return.
+# Same document shape as SO/PO/SPO (lines nested under `SQL_DOC_LINES_KEY`,
+# line refs prefixed with the header ref). No `line_fulfilled_field`: these
+# lines carry no "delivered/received" quantity: the `lines.*` aggregates
+# count every line as fully open (fulfilled = 0) over `qty`, and their
+# presets use a `Cancelled`-only status formula.
+LINKED_DOCUMENT_PROFILES: Dict[str, EntityProfile] = {
+    entity_type: EntityProfile(
+        entity_type=entity_type,
+        record_model=model,
+        identity=doc_key_identity,
+        display_path="DocNo",
+        line_model=CanonicalLinkedDocumentLine,
+        detail_key=SQL_DOC_LINES_KEY,
+        identity_path="DocKey",
+        line_ref_prefix=True,
+        line_ordered_field="qty",
+        # The wire is the raw vendor-shaped row (CRM #1623, doc-feed shape).
+        raw_record_field="source_record",
+    )
+    for entity_type, model in LINKED_DOCUMENT_MODELS.items()
+}
+
 ENTITY_PROFILES: Dict[str, EntityProfile] = {
     GRN_PROFILE.entity_type: GRN_PROFILE,
     SUPPLIER_PROFILE.entity_type: SUPPLIER_PROFILE,
@@ -1210,6 +1258,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,
     PURCHASE_ORDER_PROFILE.entity_type: PURCHASE_ORDER_PROFILE,
     SHIPPING_ORDER_PROFILE.entity_type: SHIPPING_ORDER_PROFILE,
+    **LINKED_DOCUMENT_PROFILES,
 }
 
 
@@ -1246,6 +1295,7 @@ def flat_profile(entity_type: str, key_columns: Sequence[str]) -> EntityProfile:
         identity_path=", ".join(columns) or base.identity_path,
         line_ref_prefix=base.line_ref_prefix,
         line_fulfilled_field=base.line_fulfilled_field,
+        line_ordered_field=base.line_ordered_field,
         raw_record_field=base.raw_record_field,
     )
 
@@ -1328,18 +1378,20 @@ class MappingEngine:
     def _header_facts(self, raw: Dict[str, Any], lines: Sequence[Any]) -> Dict[str, Any]:
         """The NAMED-variable fact dict a header formula may reference
         (sprint-5/02, AC-02-07/09): the header's own raw record verbatim
-        (so ``Cancelled`` resolves straight off the source row) PLUS, for a
-        document entity whose profile names a ``line_fulfilled_field``, the
-        ``lines.*`` aggregates over the ALREADY-MAPPED line objects.
+        (so ``Cancelled`` resolves straight off the source row) PLUS, for
+        every document entity, the ``lines.*`` aggregates over the
+        ALREADY-MAPPED line objects (AC-CANCEL-PULL: a profile with no
+        ``line_fulfilled_field`` counts nothing as fulfilled).
 
         ``outstanding`` per line is ``max(0, ordered - fulfilled)`` - a line
         somehow over-delivered/over-received never goes NEGATIVE and cancel
         out another line's genuine shortfall in the sum.
         """
         facts: Dict[str, Any] = dict(raw)
-        if not (is_document_entity(self.entity_type) and self.profile.line_fulfilled_field):
+        if not is_document_entity(self.entity_type):
             return facts
-        ordered_field = "qty_ordered"
+        ordered_field = self.profile.line_ordered_field
+        # AC-CANCEL-PULL - None (the linked documents) = nothing fulfilled.
         fulfilled_field = self.profile.line_fulfilled_field
         zero = Decimal("0")
         ordered_sum = zero
@@ -1348,7 +1400,7 @@ class MappingEngine:
         open_count = 0
         for line in lines:
             ordered = getattr(line, ordered_field, None) or zero
-            fulfilled = getattr(line, fulfilled_field, None) or zero
+            fulfilled = (getattr(line, fulfilled_field, None) if fulfilled_field else None) or zero
             outstanding = ordered - fulfilled
             if outstanding < zero:
                 outstanding = zero

@@ -53,6 +53,7 @@ from .canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
+    LINKED_DOCUMENT_ENTITY_TYPES,
 )
 from .canonical.masters import (
     ENTITY_BRAND,
@@ -132,6 +133,10 @@ _ENTITY_PATH: Dict[str, str] = {
     # entity now (NOT a doc-feed key): same door (`/ingest/branches`), same
     # 2.7 gate, keyed by the singular entity type like every other master.
     ENTITY_BRANCH: "branches",
+    # AC-CANCEL-PULL (contract 2.8) - Cancel SO / Cancel PO / Consignment /
+    # Consignment Return. Present unconditionally, gated below exactly like
+    # brand/stock/branch.
+    **{entity_type: f"{entity_type}s" for entity_type in LINKED_DOCUMENT_ENTITY_TYPES},
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
@@ -182,6 +187,9 @@ _DEPENDENT_ENTITIES = {
     # expected and self-resolving, exactly like a document's other master
     # references.
     DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES,
+    # AC-CANCEL-PULL - a cancel/consignment line's unresolved item or
+    # location master is the same expected, self-resolving retryable.
+    *LINKED_DOCUMENT_ENTITY_TYPES,
 }
 
 
@@ -211,6 +219,11 @@ STOCK_BALANCES_CONTRACT_VERSION = 2.5
 # own name advertised in ``GET /external/contract``'s ``entities``.
 DOC_FEED_CONTRACT_VERSION = 2.7
 
+# AC-CANCEL-PULL - the consumer contract the four linked documents (Cancel
+# SO/PO, Consignment, Consignment Return) need: >= 2.8 AND the entity's own
+# plural ingest name advertised in ``GET /external/contract``'s ``entities``.
+LINKED_DOCUMENTS_CONTRACT_VERSION = 2.8
+
 # plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
 # is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
 # advertised contract to be at least this version AND to list this entity
@@ -230,7 +243,22 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
     # sprint-5/14 section 11 (D26) - `branch` rides the same 2.7 door as the
     # doc feed; the consumer must advertise `branches`.
     ENTITY_BRANCH: (DOC_FEED_CONTRACT_VERSION, "branches"),
+    # AC-CANCEL-PULL - contract 2.8, each door advertised by its own name.
+    **{
+        entity_type: (LINKED_DOCUMENTS_CONTRACT_VERSION, _ENTITY_PATH[entity_type])
+        for entity_type in LINKED_DOCUMENT_ENTITY_TYPES
+    },
 }
+
+# Gated entities that must NEVER be "delivered" through the logging-sink
+# fallback while their gate is shut: the fallback marks staged rows PUSHED
+# though nothing reached the consumer, and changed-only staging would then
+# never offer them again - a silent, permanent loss. ``auto_push`` refuses a
+# run for these with ``errorCode == "CONTRACT_GATE"`` and leaves every row
+# STAGED (stock's AC-13-06 rule, generalised).
+PUSH_REFUSES_LOGGING_FALLBACK: Tuple[str, ...] = (
+    ENTITY_STOCK_BALANCE,
+) + LINKED_DOCUMENT_ENTITY_TYPES
 
 
 def sorento_supports_entity(

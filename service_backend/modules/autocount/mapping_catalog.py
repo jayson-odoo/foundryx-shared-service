@@ -68,6 +68,8 @@ from .canonical.documents import (
     CanonicalSalesOrderLine,
     CanonicalShippingOrder,
     CanonicalShippingOrderLine,
+    LINKED_DOCUMENT_MODELS,
+    CanonicalLinkedDocumentLine,
 )
 
 # Identity is minted, never mapped (masters.py) - so it is not a mappable target.
@@ -272,6 +274,25 @@ SORENTO_LINE_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
         CanonicalShippingOrderLine, _REQUIRED_LINE_FIELDS[ENTITY_SHIPPING_ORDER],
     ),
 }
+
+
+# ── AC-CANCEL-PULL - linked documents (contract 2.8) ──────────────────────────
+# Read straight off each canonical class's own SINK_FIELDS (the drift lesson
+# above): these four have no v1/v2 fallback split - every wire field is a
+# mappable target. Header `doc_no` is required; a line needs its key, the
+# item code and the quantity (a line with neither is not a real document line;
+# see `presets.py` for the `FromDocDtlKey` facts - the CRM owns linking, owner
+# rule: exact links only). `product_ref` is NOT required: an unresolved item
+# master must not quarantine a line whose item code is still on the wire.
+_REQUIRED_LINKED_HEADER_FIELDS = frozenset({"doc_no"})
+_REQUIRED_LINKED_LINE_FIELDS = frozenset({"source_ref", "product_code", "qty"})
+
+for _entity_type, _model in LINKED_DOCUMENT_MODELS.items():
+    SORENTO_FIELDS[_entity_type] = _accepted(_model.SINK_FIELDS, _REQUIRED_LINKED_HEADER_FIELDS)
+    SORENTO_LINE_FIELDS[_entity_type] = _accepted_line(
+        CanonicalLinkedDocumentLine.SINK_FIELDS, _REQUIRED_LINKED_LINE_FIELDS,
+    )
+del _entity_type, _model
 
 
 # ── AutoCount source-field catalogs (AC-15-43) ────────────────────────────────
