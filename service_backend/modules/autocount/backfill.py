@@ -2144,3 +2144,249 @@ def backfill_customer_sales_agent(
         # completely EMPTY mapping - and both already carry the row.
         skip_unmapped=True,
     )
+
+
+# ── AC-CONSIGN-PULL - consignment `TransferedQty` (CRM contract 2.9) ────────
+#
+# The #122 consignment preset texts, pinned VERBATIM (the frozen-text rule of
+# `_OLD_PO_HEADER_QUERY_TEMPLATE` / `_OLD_SO_HEADER_QUERY` above): a task whose
+# stored header / line / fingerprint query is byte-identical to its company's
+# substitution of these is rewritten to the CURRENT `presets.CONSIGNMENT_PRESET`
+# text (which adds `TransferedQty` on the lines and a `TransferedSum`
+# aggregate on the header and the fingerprint sweep). A customised query is
+# left alone with a WARNING naming the config id.
+_OLD_CONSIGNMENT_HEADER_QUERY = (
+    "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, "
+    "c.AutoKey AS DebtorAutoKey, h.DebtorCode AS DebtorCode, h.DebtorName AS DebtorName, "
+    "h.SalesAgent AS SalesAgent, h.Ref AS Ref, h.Description AS Description, "
+    "h.RefDocNo AS RefDocNo, h.CurrencyCode AS CurrencyCode, h.Note AS Note, "
+    "h.Cancelled AS Cancelled, h.LastModified AS LastModified, "
+    "l.LineCount AS LineCount, l.QtySum AS QtySum, l.SubTotalSum AS SubTotalSum, "
+    "l.MaxDtlKey AS MaxDtlKey, l.LinkedLineCount AS LinkedLineCount, "
+    "l.FromDocKeySum AS FromDocKeySum "
+    "FROM {database}.dbo.Consignment AS h "
+    "LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode "
+    "OUTER APPLY (SELECT COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey, "
+    "COUNT(d.FromDocDtlKey) AS LinkedLineCount, SUM(d.FromDocDtlKey) AS FromDocKeySum "
+    "FROM {database}.dbo.ConsignmentDTL AS d "
+    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL) AS l"
+)
+_OLD_CONSIGNMENT_LINE_QUERY = (
+    "SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, "
+    "i.AutoKey AS ItemAutoKey, d.ItemCode AS ItemCode, d.Description AS Description, "
+    "w.AutoKey AS LocationAutoKey, d.Location AS Location, d.Qty AS Qty, "
+    "d.UOM AS UOM, d.UnitPrice AS UnitPrice, d.SubTotal AS SubTotal, "
+    "d.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, "
+    "d.FromDocDtlKey AS FromDocDtlKey "
+    "FROM {database}.dbo.ConsignmentDTL AS d "
+    "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
+    "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+    "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+)
+_OLD_CONSIGNMENT_FINGERPRINT_QUERY = (
+    "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "MAX(d.DtlKey) AS MaxDtlKey, SUM(d.FromDocDtlKey) AS FromDocKeySum, "
+    "COUNT(d.FromDocDtlKey) AS LinkedLineCount "
+    "FROM {database}.dbo.ConsignmentDTL AS d "
+    "JOIN {database}.dbo.Consignment AS h ON h.DocKey = d.DocKey "
+    "WHERE h.DocDate >= :from_date AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL "
+    "GROUP BY d.DocKey"
+)
+
+_CONSIGNMENT_BACKFILL_ENTITY_CONFIG_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "source_config",
+    "result_columns", "line_result_columns",
+}
+_CONSIGNMENT_BACKFILL_COMPANY_COLUMNS = {"id", "tenant_id", "database_name"}
+_CONSIGNMENT_BACKFILL_FIELD_MAPPING_COLUMNS = _SHIPPING_ORDER_BACKFILL_FIELD_MAPPING_COLUMNS
+
+_CONSIGNMENT_QUERY_KEYS = (
+    ("query", "header_query", _OLD_CONSIGNMENT_HEADER_QUERY),
+    ("lineQuery", "line_query", _OLD_CONSIGNMENT_LINE_QUERY),
+    ("fingerprintQuery", "fingerprint_query", _OLD_CONSIGNMENT_FINGERPRINT_QUERY),
+)
+
+
+def backfill_consignment_transferred_qty(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA, tenant_id: Optional[str] = None,
+) -> int:
+    """AC-31-04 - bring every existing ``consignment`` task onto the
+    ``TransferedQty`` preset. Returns the number of changes made (tasks
+    rewritten + mapping rows created); 0 on a schema that predates the
+    columns this touches (module Alembic 0030 and ``update_tenant`` both call
+    it).
+
+    Per task, each step independent and idempotent:
+
+    (a) **Queries.** When the stored header ``query`` is byte-identical to the
+        company's substitution of the #122 text, every stored query that is
+        still a #122 text (header / ``lineQuery`` / ``fingerprintQuery``) is
+        replaced with the current preset's; ``TransferedSum`` is appended to
+        ``result_columns`` (so it enters the row hash - every consignment
+        re-stages ONCE, intended: it is how ``TransferedQty`` reaches a 2.9
+        CRM) and ``TransferedQty`` to ``line_result_columns``. A header query
+        already at the new text is skipped silently; anything else is
+        customised: left untouched, one WARNING naming the config id.
+    (b) **Mapping row.** ``TransferedQty -> qty_transferred`` (line scope,
+        ``decimal``, optional) unless a row for ``qty_transferred`` exists in
+        ANY state - ENABLED when the task's line columns include
+        ``TransferedQty`` (after (a)), DISABLED otherwise (a customised query
+        that does not select it would map nothing).
+
+    ``tenant_id`` (``update_tenant``) scopes the pass to one tenant; ``None``
+    (the deploy migration) covers every tenant.
+
+    Frozen ``sa.table`` only, never the live ORM model; a company is
+    resolved WITH the config's own ``tenant_id`` (polymorphic-target_id rule).
+    Does not commit - the caller (Alembic / ``update_tenant``) owns that.
+    """
+    needed = {
+        "ac_entity_config": _CONSIGNMENT_BACKFILL_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _CONSIGNMENT_BACKFILL_COMPANY_COLUMNS,
+        "ac_field_mapping": _CONSIGNMENT_BACKFILL_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    from .canonical.documents import ENTITY_CONSIGNMENT
+    from .presets import CONSIGNMENT_PRESET
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        sa.column("line_result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+    select_configs = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.source_config, entity_config.c.result_columns,
+        entity_config.c.line_result_columns,
+    ).where(entity_config.c.entity_type == ENTITY_CONSIGNMENT)
+    if tenant_id is not None:
+        select_configs = select_configs.where(entity_config.c.tenant_id == tenant_id)
+    configs = connectable.execute(select_configs).fetchall()
+
+    touched = 0
+    for config_id, config_tenant_id, company_id, source_config, result_columns, line_columns in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == config_tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            continue
+        database_name = company_row[0]
+
+        # (a) the queries.
+        source_config = dict(source_config or {})
+        line_columns_list = [str(c) for c in (line_columns or [])]
+        stored_header = source_config.get("query")
+        old_header = _OLD_CONSIGNMENT_HEADER_QUERY.replace("{database}", database_name)
+        new_header = CONSIGNMENT_PRESET.header_query.replace("{database}", database_name)
+        if stored_header == old_header:
+            for key, preset_attr, old_template in _CONSIGNMENT_QUERY_KEYS:
+                old_text = old_template.replace("{database}", database_name)
+                if source_config.get(key) == old_text:
+                    source_config[key] = getattr(CONSIGNMENT_PRESET, preset_attr).replace(
+                        "{database}", database_name
+                    )
+            columns_list = [str(c) for c in (result_columns or [])]
+            if "TransferedSum" not in columns_list:
+                columns_list.append("TransferedSum")
+            if "TransferedQty" not in line_columns_list:
+                line_columns_list.append("TransferedQty")
+            connectable.execute(
+                sa.update(entity_config)
+                .where(entity_config.c.id == config_id)
+                .values(
+                    source_config=source_config,
+                    result_columns=columns_list,
+                    line_result_columns=line_columns_list,
+                )
+            )
+            touched += 1
+        elif stored_header != new_header:
+            logger.warning(
+                "Consignment task %s has a header query the TransferedQty "
+                "backfill does not recognise as the AutoCount Consignment "
+                "preset - left untouched. Add `d.TransferedQty AS "
+                "TransferedQty` to its line query (and a TransferedSum "
+                "aggregate to its header) to send TransferedQty to a 2.9 CRM.",
+                config_id,
+            )
+
+        # (b) the mapping row, in any state = already there.
+        has_row = connectable.execute(
+            sa.select(field_mapping.c.id).where(
+                field_mapping.c.tenant_id == config_tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == ENTITY_CONSIGNMENT,
+                field_mapping.c.scope == SCOPE_LINE,
+                field_mapping.c.canonical_field == "qty_transferred",
+            )
+        ).first() is not None
+        if not has_row:
+            sort_order = connectable.execute(
+                sa.select(sa.func.count())
+                .select_from(field_mapping)
+                .where(
+                    field_mapping.c.tenant_id == config_tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == ENTITY_CONSIGNMENT,
+                    field_mapping.c.scope == SCOPE_LINE,
+                )
+            ).scalar() or 0
+            connectable.execute(
+                sa.insert(field_mapping).values(
+                    id=str(uuid.uuid4()),
+                    tenant_id=config_tenant_id,
+                    company_id=company_id,
+                    entity_type=ENTITY_CONSIGNMENT,
+                    scope=SCOPE_LINE,
+                    source_path="TransferedQty",
+                    canonical_field="qty_transferred",
+                    transform="decimal",
+                    formula=None,
+                    is_required=False,
+                    is_enabled="TransferedQty" in line_columns_list,
+                    is_source_owned=True,
+                    sort_order=sort_order,
+                )
+            )
+            touched += 1
+    return touched

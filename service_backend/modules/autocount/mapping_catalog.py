@@ -68,8 +68,8 @@ from .canonical.documents import (
     CanonicalSalesOrderLine,
     CanonicalShippingOrder,
     CanonicalShippingOrderLine,
+    LINKED_DOCUMENT_LINE_MODELS,
     LINKED_DOCUMENT_MODELS,
-    CanonicalLinkedDocumentLine,
 )
 
 # Identity is minted, never mapped (masters.py) - so it is not a mappable target.
@@ -290,7 +290,7 @@ _REQUIRED_LINKED_LINE_FIELDS = frozenset({"source_ref", "product_code", "qty"})
 for _entity_type, _model in LINKED_DOCUMENT_MODELS.items():
     SORENTO_FIELDS[_entity_type] = _accepted(_model.SINK_FIELDS, _REQUIRED_LINKED_HEADER_FIELDS)
     SORENTO_LINE_FIELDS[_entity_type] = _accepted_line(
-        CanonicalLinkedDocumentLine.SINK_FIELDS, _REQUIRED_LINKED_LINE_FIELDS,
+        LINKED_DOCUMENT_LINE_MODELS[_entity_type].SINK_FIELDS, _REQUIRED_LINKED_LINE_FIELDS,
     )
 del _entity_type, _model
 

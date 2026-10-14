@@ -958,6 +958,10 @@ class CompanyService:
                     # push-time refusal - never delivering through this
                     # fallback - lives in ``SyncService.auto_push``, D4.)
                     return sink_for(SINK_IMPL_LOGGING)
+                # AC-CONSIGN-PULL - the probe just made decides the contract-
+                # gated line columns too (consignment `TransferedQty` from
+                # 2.9), so the payload never needs a second probe.
+                sink.advertised_contract_version = contract.version if contract else None
             if entity_type in LINKED_DOCUMENT_ENTITY_TYPES and not getattr(sink, "book", None):
                 raise AutocountServiceError(LINKED_DOCUMENT_NO_BOOK_MESSAGE)
             return sink

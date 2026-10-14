@@ -590,8 +590,18 @@ LINKED_DOCUMENT_REF_CODES: Dict[str, str] = {
 # the wire so the CRM only ever sees the vendor's own fields.
 LINKED_HEADER_INTERNAL_COLUMNS = frozenset({
     "DebtorAutoKey", "CreditorAutoKey", "LineCount", "QtySum", "SubTotalSum",
-    "MaxDtlKey", "LinkedLineCount", "FromDocKeySum",
+    "MaxDtlKey", "LinkedLineCount", "FromDocKeySum", "TransferedSum",
 })
+
+# AC-CONSIGN-PULL (sorento-crm#1654) - ADDITIVE line columns, each with the
+# CRM contract version that first accepts it on THIS entity's door. A column
+# in this set is stripped from every linked document's `Details` unless the
+# record's own class lists it in `CONTRACT_GATED_LINE_COLUMNS` AND the
+# consumer's LIVE advertised contract (`SorentoSink.advertised_contract_
+# version`, probed by `sink_for_company`) reaches that version. Unknown
+# contract = stripped (fail closed to the older shape).
+LINKED_CONTRACT_GATED_LINE_COLUMNS = frozenset({"TransferedQty"})
+CONSIGNMENT_TRANSFERRED_QTY_CONTRACT_VERSION = 2.9
 LINKED_LINE_INTERNAL_COLUMNS = frozenset({"ItemAutoKey", "LocationAutoKey"})
 
 # The cap on any one free-text cell of a linked document on the wire.
@@ -693,18 +703,35 @@ class CanonicalLinkedDocument(CanonicalDocument):
             record["Note"] = note[:NOTE_MAX_CHARS]
         return record
 
-    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+    # Per-entity: contract-gated line column -> the first CRM contract version
+    # that accepts it on this door (see `LINKED_CONTRACT_GATED_LINE_COLUMNS`).
+    CONTRACT_GATED_LINE_COLUMNS: ClassVar[Dict[str, float]] = {}
+
+    def sink_payload(
+        self, *, contract_version: int = 1, advertised_contract: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """The vendor record: header columns verbatim (minus the ESB-internal
         ones) and its lines under ``Details``. ``Details`` is always present
-        (``[]`` for a header with no lines) - it is structure, not data."""
+        (``[]`` for a header with no lines) - it is structure, not data.
+
+        ``advertised_contract`` is the consumer's LIVE ``/contract`` version
+        (``None`` = unknown). It only decides the contract-gated line columns
+        (AC-CONSIGN-PULL); ``contract_version`` (the connection's own integer
+        setting) does not apply to these doc-feed-shaped records at all."""
         raw = dict(self.source_record or {})
         lines = raw.pop(SQL_DOC_LINES_KEY, None) or []
         payload = {
             key: value for key, value in raw.items()
             if key not in LINKED_HEADER_INTERNAL_COLUMNS and not key.startswith("_")
         }
+        dropped = set(LINKED_LINE_INTERNAL_COLUMNS) | {
+            column for column in LINKED_CONTRACT_GATED_LINE_COLUMNS
+            if advertised_contract is None
+            or column not in self.CONTRACT_GATED_LINE_COLUMNS
+            or advertised_contract < self.CONTRACT_GATED_LINE_COLUMNS[column]
+        }
         payload["Details"] = [
-            {key: value for key, value in line.items() if key not in LINKED_LINE_INTERNAL_COLUMNS}
+            {key: value for key, value in line.items() if key not in dropped}
             for line in lines if isinstance(line, dict)
         ]
         return payload
@@ -731,11 +758,31 @@ class CanonicalCancelSalesOrder(_CustomerSideDocument):
     entity_type: str = ENTITY_CANCEL_SALES_ORDER
 
 
+class CanonicalConsignmentLine(CanonicalLinkedDocumentLine):
+    """AC-CONSIGN-PULL - a consignment line's mapping layer also carries the
+    quantity already transferred out of the consignment (``TransferedQty``,
+    ConsignmentDTL ``decimal(25,8) NOT NULL``). Optional: a mapping-layer
+    field like every other one; the WIRE value is the raw column, gated on
+    contract 2.9 (``CanonicalConsignment.CONTRACT_GATED_LINE_COLUMNS``)."""
+
+    qty_transferred: Optional[Decimal] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        CanonicalLinkedDocumentLine.SINK_FIELDS + ("qty_transferred",)
+    )
+
+
 class CanonicalConsignment(_CustomerSideDocument):
     """AutoCount ``Consignment``/``ConsignmentDTL`` (CG- numbers, entered by
-    hand - no source document) -> CRM ``consignments``."""
+    hand - no source document) -> CRM ``consignments``. Lines carry
+    ``TransferedQty`` from CRM contract 2.9 (sorento-crm#1654)."""
 
     entity_type: str = ENTITY_CONSIGNMENT
+    lines: List[CanonicalConsignmentLine] = Field(default_factory=list)
+
+    CONTRACT_GATED_LINE_COLUMNS: ClassVar[Dict[str, float]] = {
+        "TransferedQty": CONSIGNMENT_TRANSFERRED_QTY_CONTRACT_VERSION,
+    }
 
 
 class CanonicalConsignmentReturn(_CustomerSideDocument):
@@ -759,6 +806,15 @@ class CanonicalCancelPurchaseOrder(CanonicalLinkedDocument):
         + CanonicalLinkedDocument._COMMON_TAIL
     )
 
+
+# The mapping-layer LINE model per linked entity (consignment adds
+# `qty_transferred`; the other three share the base line).
+LINKED_DOCUMENT_LINE_MODELS: Dict[str, type] = {
+    ENTITY_CANCEL_SALES_ORDER: CanonicalLinkedDocumentLine,
+    ENTITY_CANCEL_PURCHASE_ORDER: CanonicalLinkedDocumentLine,
+    ENTITY_CONSIGNMENT: CanonicalConsignmentLine,
+    ENTITY_CONSIGNMENT_RETURN: CanonicalLinkedDocumentLine,
+}
 
 LINKED_DOCUMENT_MODELS: Dict[str, type] = {
     ENTITY_CANCEL_SALES_ORDER: CanonicalCancelSalesOrder,

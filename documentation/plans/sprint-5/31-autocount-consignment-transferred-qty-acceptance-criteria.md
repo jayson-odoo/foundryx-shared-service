@@ -23,3 +23,8 @@ CRM advertises contract >= 2.9; below that the 2.8 shape is sent unchanged. `Deb
   - the `TransferedQty -> qty_transferred` line mapping row is added when absent;
   - a customised query is left untouched, with a WARNING;
   - it is idempotent.
+
+Implementation notes:
+- Backfill = module Alembic `0030_autocount_consign_xfer`, plus `update_tenant` gated `< 0.16.0` (module version
+  0.16.0).
+- Verified on a local Postgres 16: the module upgrade 0029 -> 0030 rewrote a seeded #122-text task and created the row.
