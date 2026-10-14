@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..models import Idea, IdeaComment
-from ..schemas import IdeaCommentOut
+from ..schemas import IdeaCommentOut, IdeaSourceOut
 
 AUTHOR_USER = "user"
 AUTHOR_EMBED = "embed"
@@ -128,7 +128,31 @@ class IdeaCommentService:
     ) -> List[IdeaCommentOut]:
         self._idea_or_404(tenant_id, idea_id)
         rows = self._list_for(tenant_id, idea_id, viewer)
+        rows = self._with_merged_children(tenant_id, idea_id, viewer, rows)
         return self._project_names(rows) if project_names else rows
+
+    def _with_merged_children(
+        self, tenant_id: str, idea_id: str, viewer: CommentViewer, rows: List[IdeaCommentOut]
+    ) -> List[IdeaCommentOut]:
+        """Plan 20 (AC-20-14, D4): a survivor's thread also shows the comments of
+        the ideas merged into it - they stay on the child (unmerge moves
+        nothing), labelled ``fromIdea`` and read-only here (the child is frozen)."""
+        children = (
+            self.db.query(Idea.id, Idea.idea_number)
+            .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id == idea_id)
+            .all()
+        )
+        if not children:
+            return rows
+        out = list(rows)
+        for child_id, number in children:
+            source = IdeaSourceOut(id=child_id, ideaNumber=number)
+            for c in self._list_for(tenant_id, child_id, viewer):
+                out.append(
+                    c.model_copy(update={"fromIdea": source, "canEdit": False, "canDelete": False})
+                )
+        out.sort(key=lambda c: (c.createdAt, c.id))
+        return out
 
     def list_public(self, idea: Idea) -> List[IdeaCommentOut]:
         """The thread of THIS idea (a resolved public-token idea) for an anonymous
@@ -142,7 +166,11 @@ class IdeaCommentService:
         from .public_status import PublicIdeaStatusService
 
         project = PublicIdeaStatusService.public_display_name
-        fallback = {AUTHOR_USER: "Team member", AUTHOR_EMBED: "Portal user", AUTHOR_PUBLIC: "Submitter"}
+        fallback = {
+            AUTHOR_USER: "Team member",
+            AUTHOR_EMBED: "Portal user",
+            AUTHOR_PUBLIC: "Submitter",
+        }
         out: List[IdeaCommentOut] = []
         for c in rows:
             if c.authorName is not None:

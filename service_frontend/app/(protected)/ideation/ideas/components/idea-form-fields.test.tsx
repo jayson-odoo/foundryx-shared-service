@@ -9,13 +9,14 @@
  * assertion below is expected to fail until slice S1 lands.
  */
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { useForm } from 'react-hook-form';
 import { Form } from '@/components/ui/form';
 import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
 import { ideationEmbedService } from '@/services/ideation-embed-service';
 import type { Idea, Product } from '@/types/ideation';
-import { DetailsTab } from './idea-form-fields';
+import { DetailsTab, UseCasesInput } from './idea-form-fields';
 import type { IdeaFormValues } from './idea-schema';
 
 vi.mock('@/hooks/use-datetime', () => ({
@@ -55,9 +56,10 @@ function Harness({ idea, editing }: { idea: Idea | null; editing: boolean }) {
     defaultValues: {
       problem: idea?.problem ?? '',
       productId: idea?.productId ?? '',
-      proposedSolution: idea?.proposedSolution ?? '',
-      impact: idea?.impact ?? '',
-      department: idea?.department ?? '',
+      title: idea?.title ?? '',
+      desiredOutcome: idea?.desiredOutcome ?? '',
+      useCases: idea?.useCases ?? [],
+      currentWorkaround: idea?.currentWorkaround ?? '',
       rawText: idea?.rawText ?? '',
     },
   });
@@ -168,5 +170,60 @@ describe('DetailsTab - Priority shows the real rank, never the raw stored priori
     const row = within(priorityRowValue());
     expect(row.getByText('-')).toBeInTheDocument();
     expect(row.queryByText(/^#/)).not.toBeInTheDocument();
+  });
+});
+
+describe('DetailsTab - plan 20 card fields (AC-20-06/07)', () => {
+  const real = anIdea({
+    title: 'Order status tracking for dealers',
+    problem: 'Dealers cannot track the status after they place an order.',
+    rawText: 'dealer want to have a function to track the status after they place order',
+    proposedSolution: 'legacy text that must stay hidden',
+    impact: 'legacy impact',
+    department: 'legacy dept',
+  });
+
+  it('view mode shows the card rows in order, hides the legacy fields', () => {
+    render(<Harness idea={{ ...real, useCases: ['Check shipping', 'See back-orders'] }} editing={false} />);
+    const labels = ['Title', 'Business problem', 'Desired outcome', 'Use cases', 'Current workaround', 'Original message'];
+    const positions = labels.map((l) => {
+      const el = screen.getByText(l);
+      return Array.from(document.body.querySelectorAll('*')).indexOf(el);
+    });
+    expect([...positions].sort((x, y) => x - y)).toEqual(positions);
+    expect(screen.queryByText('Problem statement')).toBeNull();
+    for (const hidden of ['Proposed solution', 'Impact', 'Department', 'legacy text that must stay hidden']) {
+      expect(screen.queryByText(hidden)).toBeNull();
+    }
+    expect(screen.getByText('Check shipping').tagName).toBe('LI');
+  });
+
+  it('an old idea shows "-" for the empty new fields', () => {
+    render(<Harness idea={real} editing={false} />);
+    for (const label of ['Desired outcome', 'Use cases', 'Current workaround']) {
+      const value = screen.getByText(label).nextElementSibling as HTMLElement;
+      expect(value.textContent).toBe('-');
+    }
+  });
+
+  it('edit mode: Title input, Textareas, use cases list editor; no legacy inputs', () => {
+    render(<Harness idea={real} editing />);
+    expect(screen.getByPlaceholderText('A short name for the idea')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Use case 1' })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('How could we solve it?')).toBeNull();
+    expect(screen.queryByPlaceholderText('Which team is this for?')).toBeNull();
+  });
+});
+
+describe('UseCasesInput', () => {
+  it('adds, edits and removes use cases', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { rerender } = render(<UseCasesInput value={['A']} onChange={onChange} />);
+    await user.click(screen.getByRole('button', { name: /add use case/i }));
+    expect(onChange).toHaveBeenLastCalledWith(['A', '']);
+    rerender(<UseCasesInput value={['A', 'B']} onChange={onChange} />);
+    await user.click(screen.getByRole('button', { name: 'Remove use case 1' }));
+    expect(onChange).toHaveBeenLastCalledWith(['B']);
   });
 });

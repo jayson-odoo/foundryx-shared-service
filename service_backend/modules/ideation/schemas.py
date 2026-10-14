@@ -16,6 +16,14 @@ from pydantic import Field, field_validator, model_validator
 from app.schemas.base import ApiModel
 
 
+class IdeaSourceOut(ApiModel):
+    """The merged child a read-through row came from (plan 20, AC-20-14) - set
+    on a survivor's comments/attachments that physically live on a child."""
+
+    id: str
+    ideaNumber: Optional[str] = None
+
+
 class IdeaAttachmentOut(ApiModel):
     """An idea attachment (voice note, image, video, file). Empty until the
     create_idea / attachment slice lands - the detail section renders empty."""
@@ -29,6 +37,8 @@ class IdeaAttachmentOut(ApiModel):
     # Relative serve path for an uploaded file (bytes in tenant storage); null
     # for a URL-backed WhatsApp capture (plan sprint-5/15, AC-15-19).
     contentPath: Optional[str] = None
+    # Set when this row lives on a child merged into the idea being read.
+    fromIdea: Optional[IdeaSourceOut] = None
 
 
 class TransitionOut(ApiModel):
@@ -84,6 +94,11 @@ class IdeaOut(ApiModel):
     # idea or a draft that never sent one; the FE falls back to ``problem``.
     title: Optional[str] = None
     problem: str
+    # Canny-style card fields (plan 20). ``problem`` is shown as "Business
+    # problem"; the three legacy fields below stay on the wire (hidden in UI).
+    desiredOutcome: Optional[str] = None
+    useCases: List[str] = []
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -119,6 +134,15 @@ class IdeaOut(ApiModel):
     mergedIntoId: Optional[str] = None
     mergedInto: Optional[IdeaMergedIntoOut] = None
     mergedCount: int = 0
+
+
+class SimilarIdeasOut(ApiModel):
+    """Similar ideas for one idea (plan 20, AC-20-20/21) - AI-ranked, most
+    similar first. ``available`` is false when the AI is unavailable or its
+    output is unusable (the UI offers Retry; there is no word-match fallback)."""
+
+    available: bool
+    ideas: List[IdeaOut] = []
 
 
 class BoardColumnOut(ApiModel):
@@ -191,6 +215,9 @@ class IdeaCommentOut(ApiModel):
     canDelete: bool = False
     createdAt: datetime
     editedAt: Optional[datetime] = None
+    # Set on a survivor's read of a merged child's comment (plan 20, AC-20-14);
+    # such a row is read-only on the survivor (canEdit/canDelete false).
+    fromIdea: Optional[IdeaSourceOut] = None
 
 
 # NUL and the other C0 controls, except newline and tab (AC-19-36), and lone
@@ -279,6 +306,10 @@ class MergeIn(ApiModel):
 
     survivorId: str
     ideaIds: List[str]
+    # Field-level merge (plan 20, AC-20-10/11): ``{fieldKey: [ideaId, ...]}`` -
+    # one id = that idea's value; several = combined in the given order.
+    # Omitted = the survivor's fields are unchanged (pre-plan-20 behaviour).
+    fields: Optional[Dict[str, List[str]]] = None
 
 
 class StatusIn(ApiModel):
@@ -309,6 +340,10 @@ class IdeaCreateIn(ApiModel):
 
     productId: str
     problem: str
+    title: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -322,7 +357,11 @@ class IdeaUpdateIn(ApiModel):
     NOT this route, so ``status`` is intentionally absent."""
 
     productId: Optional[str] = None
+    title: Optional[str] = None
     problem: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -714,6 +753,12 @@ class OneShotIdeaIn(ApiModel):
     product_id: str
     problem: str
     title: Optional[str] = None
+    # Canny-style card fields (plan 20) - key names locked with the CRM
+    # (IDEA-CAPTURE, sorento-crm #1625). Unknown keys stay ignored (no
+    # ``extra='forbid'``) so the CRM can send these before this deploys.
+    desired_outcome: Optional[str] = None
+    use_cases: Optional[List[str]] = None
+    current_workaround: Optional[str] = None
     proposed_solution: Optional[str] = None
     impact: Optional[str] = None
     department: Optional[str] = None
@@ -739,3 +784,174 @@ class SimilarOwnIn(ApiModel):
     submitter_crm_user_id: Optional[str] = None
     submitter_phone: Optional[str] = None
     is_test: bool = False
+
+
+# ── Idea portal (lane IDEA-PORTAL) ────────────────────────────────────────────
+
+
+class PortalPrincipalOut(ApiModel):
+    kind: Literal["staff", "crm"]
+    name: Optional[str] = None
+    role: str
+    productId: Optional[str] = None
+    # May hide ideas, edit changelog notes and delete anyone's comment.
+    canManage: bool = False
+
+
+class PortalSessionOut(ApiModel):
+    token: str
+    principal: PortalPrincipalOut
+
+
+class PortalEmbedSessionIn(ApiModel):
+    token: str = Field(min_length=1, max_length=4096)
+
+
+class PortalCardOut(ApiModel):
+    id: str
+    ideaNumber: Optional[str] = None
+    title: str
+    upvotes: int = 0
+    commentCount: int = 0
+    isMine: bool = False
+    myVote: bool = False
+    column: Optional[str] = None
+    statusLabel: Optional[str] = None
+    statusColor: Optional[str] = None
+    productName: Optional[str] = None
+    submittedAt: Optional[datetime] = None
+
+
+class PortalColumnOut(ApiModel):
+    key: str
+    title: str
+    color: str
+    # All visible ideas in the column; ``ideas`` holds the top 100 by votes.
+    count: int = 0
+    ideas: List[PortalCardOut]
+
+
+class PortalRoadmapOut(ApiModel):
+    columns: List[PortalColumnOut]
+
+
+class PortalListOut(ApiModel):
+    items: List[PortalCardOut]
+    total: int
+    page: int
+    pageSize: int
+
+
+class PortalChangelogItemOut(PortalCardOut):
+    deliveredAt: datetime
+    note: Optional[str] = None
+
+
+class PortalChangelogOut(ApiModel):
+    items: List[PortalChangelogItemOut]
+
+
+class PortalTimelineStepOut(ApiModel):
+    key: str
+    label: str
+    color: str = "gray"
+    state: Literal["done", "current", "upcoming"]
+
+
+class PortalIdeaOut(PortalCardOut):
+    """The idea page. Shows exactly the owner-ruled fields (Business problem =
+    ``problem``, Desired outcome, Use cases, Current workaround) - never
+    proposed solution / impact / department / raw text / contact ids."""
+
+    problem: Optional[str] = None
+    desiredOutcome: Optional[str] = None
+    # One entry per use case (IDEA-CORE stores JSON list[str]).
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = None
+    submitterFirstName: Optional[str] = None
+    timeline: List[PortalTimelineStepOut]
+    # Managers only (null for everyone else).
+    portalHidden: Optional[bool] = None
+    # The changelog note (Q3).
+    note: Optional[str] = None
+
+
+class PortalVoteOut(ApiModel):
+    id: str
+    upvotes: int
+    myVote: bool
+
+
+class PortalVoterOut(ApiModel):
+    name: Optional[str] = None
+    role: str
+    isMe: bool = False
+
+
+class PortalCommentOut(IdeaCommentOut):
+    authorRole: str
+    likeCount: int = 0
+    likedByMe: bool = False
+
+
+class PortalLikeOut(ApiModel):
+    likeCount: int
+    likedByMe: bool
+
+
+class PortalActivityOut(ApiModel):
+    kind: Literal["submitted", "status_changed", "comment", "upvote", "comment_like"]
+    at: datetime
+    by: Optional[str] = None
+    source: Optional[str] = None
+    fromLabel: Optional[str] = None
+    toLabel: Optional[str] = None
+    toColor: Optional[str] = None
+    comment: Optional[PortalCommentOut] = None
+    replies: List[PortalCommentOut] = []
+    commentId: Optional[str] = None
+
+
+class PortalProductOut(ApiModel):
+    id: str
+    name: str
+
+
+class PortalIdeaCreateIn(ApiModel):
+    title: str = Field(max_length=120)
+    problem: str = Field(max_length=4000)
+    productId: Optional[str] = Field(default=None, max_length=64)
+    desiredOutcome: Optional[str] = Field(default=None, max_length=4000)
+    # One entry per use case - the same List[str] shape as IDEA-CORE's
+    # ``ideas.use_cases``. A one-per-line string is still accepted and split.
+    useCases: Optional[List[str]] = None
+    currentWorkaround: Optional[str] = Field(default=None, max_length=4000)
+
+    @field_validator("useCases", mode="before")
+    @classmethod
+    def _use_cases(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.splitlines()
+        if isinstance(v, list):
+            if len(v) > 20:
+                raise ValueError("At most 20 use cases.")
+            for item in v:
+                if not isinstance(item, str) or len(item) > 500:
+                    raise ValueError("Each use case is text of at most 500 characters.")
+        return v
+
+    @field_validator("title", "problem")
+    @classmethod
+    def _required(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("This field is required.")
+        return v
+
+
+class PortalHiddenIn(ApiModel):
+    hidden: bool
+
+
+class PortalNoteIn(ApiModel):
+    note: Optional[str] = Field(default=None, max_length=500)

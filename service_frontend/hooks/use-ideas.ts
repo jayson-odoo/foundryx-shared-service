@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { type IdeaCreateInput } from '@/services/ideation-service';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
-import type { BoardColumn, Idea, Product } from '@/types/ideation';
+import type { BoardColumn, Idea, MergeFieldChoices, Product } from '@/types/ideation';
 
 export interface UseIdeas {
   ideas: Idea[];
@@ -25,7 +25,7 @@ export interface UseIdeas {
   reorderPriority: (orderedIds: string[]) => Promise<void>;
   remove: (id: string) => Promise<void>;
   /** Collapse the given ideas onto `survivorId` (AC-94-21/22), then reload. */
-  merge?: (survivorId: string, ideaIds: string[]) => Promise<Idea>;
+  merge?: (survivorId: string, ideaIds: string[], fields?: MergeFieldChoices) => Promise<Idea>;
   /** Restore a merged child (or dissolve a survivor's group), then reload. */
   unmerge?: (id: string) => Promise<Idea[]>;
 }
@@ -123,9 +123,9 @@ export function useIdeas(opts?: { withBoard?: boolean }): UseIdeas {
   // (a partial test double may omit them); the embed and operator services
   // both always implement them.
   const merge = useCallback(
-    async (survivorId: string, ideaIds: string[]) => {
+    async (survivorId: string, ideaIds: string[], fields?: MergeFieldChoices) => {
       if (!ideationService.merge) throw new Error('Merge is not available.');
-      const survivor = await ideationService.merge(survivorId, ideaIds);
+      const survivor = await ideationService.merge(survivorId, ideaIds, fields);
       await reload();
       return survivor;
     },

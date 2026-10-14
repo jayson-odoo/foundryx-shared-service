@@ -28,6 +28,7 @@ from ..schemas import (
     IdeaUpdateIn,
     MergeIn,
     ReorderIn,
+    SimilarIdeasOut,
     StatusIn,
     VoteIn,
 )
@@ -38,6 +39,7 @@ from ..services.clustering import ClusteringService
 from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
+from ..services.similar import SimilarIdeasService
 
 router = APIRouter()
 
@@ -104,6 +106,10 @@ def create_idea(
         raw_text=body.rawText,
         source=body.source,
         actor=current_user,
+        title=body.title,
+        desired_outcome=body.desiredOutcome,
+        use_cases=body.useCases,
+        current_workaround=body.currentWorkaround,
     )
 
 
@@ -159,7 +165,11 @@ def merge_ideas(
     merged, fewer than 2, an id outside the tenant) writes nothing (422/404).
     Reuses ``ideation.triage.manage`` (D7, no new permission)."""
     return IdeaMergeService(db).merge(
-        current_user.tenant_id, body.survivorId, body.ideaIds, actor=current_user
+        current_user.tenant_id,
+        body.survivorId,
+        body.ideaIds,
+        actor=current_user,
+        fields=body.fields,
     )
 
 
@@ -188,6 +198,20 @@ def get_idea(
     """One idea by id - every section present (attachments empty-state), submitter
     human-readable (never a raw UUID). 404 if not found in the tenant."""
     return IdeaReadService(db).get(
+        current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
+    )
+
+
+@router.get("/{idea_id}/similar", response_model=SimilarIdeasOut)
+def similar_ideas(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> SimilarIdeasOut:
+    """Ideas on the same product that describe the same need (plan 20,
+    AC-20-20/21) - ranked by ONE AI call, most similar first.
+    ``available: false`` when the AI is unavailable (no word-match fallback)."""
+    return SimilarIdeasService(db).similar(
         current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
     )
 
@@ -266,6 +290,10 @@ def update_idea(
         department=body.department,
         raw_text=body.rawText,
         voter_id=current_user.id,
+        title=body.title,
+        desired_outcome=body.desiredOutcome,
+        use_cases=body.useCases,
+        current_workaround=body.currentWorkaround,
     )
 
 
