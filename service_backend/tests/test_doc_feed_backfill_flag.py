@@ -47,7 +47,8 @@ def _backfill(db, feed, *, dry_run: bool) -> AcDocFeedBackfill:
 
 
 def _vendor() -> httpx.Client:
-    """Every vendor read (poll, sweep day, backfill day) returns one DO."""
+    """Every vendor read (poll, sweep day, backfill day) returns one document
+    (the same DocKey shape serves the DO and the GRN doors)."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[{
@@ -151,7 +152,7 @@ def test_a_goods_receive_notes_backfill_push_does_not_carry_backfill(session_fac
     run_backfill(db, bf, now=NOW, vendor_transport=_vendor(), sink_transport=_capturing_sink(posts))
 
     for post in _ingest_posts(posts):
-        assert "goods" in post["path"], post["path"]
+        assert post["path"] == INGEST_PREFIX + "goods_receive_notes", post["path"]
         assert "backfill" not in post["body"]
 
 
@@ -165,6 +166,6 @@ def test_a_dry_run_goods_receive_notes_backfill_push_does_not_carry_backfill(ses
     run_backfill(db, bf, now=NOW, vendor_transport=_vendor(), sink_transport=_capturing_sink(posts))
 
     for post in _ingest_posts(posts):
-        assert "goods" in post["path"], post["path"]
+        assert post["path"] == INGEST_PREFIX + "goods_receive_notes", post["path"]
         assert post["params"].get("dry_run") == "true"
         assert "backfill" not in post["body"]
