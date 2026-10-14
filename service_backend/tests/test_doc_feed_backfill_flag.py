@@ -22,9 +22,9 @@ NOW = datetime(2026, 9, 29, 10, 0, 0, tzinfo=timezone.utc)
 INGEST_PREFIX = "/api/v1/external/ingest/"
 
 
-def _feed(db, company, ac_conn) -> AcDocFeed:
+def _feed(db, company, ac_conn, *, feed_key: str = "delivery_orders") -> AcDocFeed:
     row = AcDocFeed(
-        tenant_id=company.tenant_id, company_id=company.id, feed="delivery_orders",
+        tenant_id=company.tenant_id, company_id=company.id, feed=feed_key,
         connection_id=ac_conn.id, book="db1", mode="push", cursor_day=date(2026, 9, 29),
     )
     db.add(row)
@@ -61,7 +61,7 @@ def _vendor() -> httpx.Client:
 def _capturing_sink(posts: List[Dict[str, Any]]) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v1/external/contract":
-            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders", "goods_receive_notes"]})
         body = json.loads(request.content.decode("utf-8"))
         posts.append({"path": request.url.path, "params": dict(request.url.params), "body": body})
         recs = body.get("records") or []
@@ -135,4 +135,36 @@ def test_a_sweep_recheck_push_does_not_carry_backfill(session_factory):
     run_sweep(db, feed, dry_run=False, now=NOW, vendor_transport=_vendor(), sink_transport=_capturing_sink(posts))
 
     for post in _ingest_posts(posts):
+        assert "backfill" not in post["body"]
+
+
+def test_a_goods_receive_notes_backfill_push_does_not_carry_backfill(session_factory):
+    """Audit #126: the CRM accepts `backfill` on delivery_orders ONLY and 422s
+    it on any other entity, so a GRN backfill must leave the key out or every
+    GRN backfill chunk fails."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn, feed_key="goods_receive_notes")
+    bf = _backfill(db, feed, dry_run=False)
+    posts: List[Dict[str, Any]] = []
+
+    run_backfill(db, bf, now=NOW, vendor_transport=_vendor(), sink_transport=_capturing_sink(posts))
+
+    for post in _ingest_posts(posts):
+        assert "goods" in post["path"], post["path"]
+        assert "backfill" not in post["body"]
+
+
+def test_a_dry_run_goods_receive_notes_backfill_push_does_not_carry_backfill(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn, feed_key="goods_receive_notes")
+    bf = _backfill(db, feed, dry_run=True)
+    posts: List[Dict[str, Any]] = []
+
+    run_backfill(db, bf, now=NOW, vendor_transport=_vendor(), sink_transport=_capturing_sink(posts))
+
+    for post in _ingest_posts(posts):
+        assert "goods" in post["path"], post["path"]
+        assert post["params"].get("dry_run") == "true"
         assert "backfill" not in post["body"]
