@@ -288,3 +288,26 @@ Cancel SO (`XS`), Cancel PO (`XP`), Consignment (`Consignment`) and Consignment 
 - **Prerequisite:** a company with no doc-feed book shows `delivery_orders` as a blocker on its
   document prerequisite card. A push then fails closed after the contract gate (below 2.8 the
   answer is `CONTRACT_GATE`).
+
+### 12.1 Consignment `TransferedQty` (AC-CONSIGN-PULL, CRM contract 2.9, sorento-crm#1654)
+
+- **What is added.** The `consignment` preset adds `d.TransferedQty AS TransferedQty` to its lines (the quantity
+  already transferred out of the consignment). It also adds a `TransferedSum` aggregate to the header `OUTER APPLY`
+  and to the fingerprint sweep, because a transfer may not bump the header `LastModified`.
+  - `TransferedSum` is ESB-internal (`LINKED_HEADER_INTERNAL_COLUMNS`) and never sent.
+  - The mapping layer gains the optional line field `qty_transferred` (`CanonicalConsignmentLine`).
+- **Additive and contract-gated.** `CanonicalLinkedDocument.CONTRACT_GATED_LINE_COLUMNS` (consignment:
+  `{"TransferedQty": 2.9}`) keeps the column in `Details` only when the consumer's LIVE advertised `/contract`
+  version reaches it.
+  - The advertised version is `SorentoSink.advertised_contract_version`, set by `sink_for_company` from the probe
+    its gate already makes.
+  - An unknown or older contract sends the unchanged 2.8 shape. Any other linked document never carries the column.
+- **Existing tasks.** `backfill_consignment_transferred_qty` runs in module Alembic `0030_autocount_consign_xfer`,
+  and in `update_tenant` gated `< 0.16.0`.
+  - Trigger: a task whose stored header is still the #122 text. Every stored query that is still a #122 text is
+    rewritten, and `TransferedSum` joins `result_columns`.
+  - `TransferedQty` joins `line_result_columns`, and the `qty_transferred` line row is created enabled, only when the
+    stored `lineQuery` is now the preset text. A customised line query beside a preset header gets no
+    `TransferedQty` and a disabled row, and no warning.
+  - A customised header query is left alone with a WARNING (its row is created disabled).
+  - Every consignment re-stages once after deploy, by design.

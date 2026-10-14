@@ -4004,8 +4004,11 @@ function linkedDocumentPreset(
   headerTable: string,
   lineTable: string,
   debtorSide: boolean,
+  transferred = false,
 ): DocumentPresetSpec {
   const party = debtorSide ? 'Debtor' : 'Creditor';
+  // AC-CONSIGN-PULL - consignment lines carry TransferedQty (CRM contract 2.9).
+  const transferredColumn = transferred ? 'd.TransferedQty AS TransferedQty, ' : '';
   const prefix = debtorSide ? 'customer' : 'supplier';
   return {
     label,
@@ -4016,6 +4019,7 @@ function linkedDocumentPreset(
     lineQuery:
       'SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, d.ItemCode AS ItemCode, d.Description AS Description, ' +
       'd.Location AS Location, d.Qty AS Qty, d.UOM AS UOM, d.UnitPrice AS UnitPrice, d.SubTotal AS SubTotal, ' +
+      transferredColumn +
       'd.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, d.FromDocDtlKey AS FromDocDtlKey ' +
       `FROM {database}.dbo.${lineTable} AS d WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL`,
     keyColumns: ['DocKey'],
@@ -4054,6 +4058,9 @@ function linkedDocumentPreset(
       { sourcePath: 'FromDocType', sorentoField: 'from_doc_type', transform: 'string' },
       { sourcePath: 'FromDocNo', sorentoField: 'from_doc_no', transform: 'string' },
       { sourcePath: 'FromDocDtlKey', sorentoField: 'from_doc_line_key', transform: 'int' },
+      ...(transferred
+        ? [{ sourcePath: 'TransferedQty', sorentoField: 'qty_transferred', transform: 'decimal' }]
+        : []),
     ],
   };
 }
@@ -4064,7 +4071,7 @@ const DOCUMENT_PRESETS: Record<string, DocumentPresetSpec> = {
   shipping_order: purchaseFamilyPreset('shipping_order'),
   cancel_sales_order: linkedDocumentPreset('AutoCount Cancel SO', 'XS', 'XSDTL', true),
   cancel_purchase_order: linkedDocumentPreset('AutoCount Cancel PO', 'XP', 'XPDTL', false),
-  consignment: linkedDocumentPreset('AutoCount Consignment', 'Consignment', 'ConsignmentDTL', true),
+  consignment: linkedDocumentPreset('AutoCount Consignment', 'Consignment', 'ConsignmentDTL', true, true),
   consignment_return: linkedDocumentPreset(
     'AutoCount Consignment Return',
     'ConsignmentReturn',

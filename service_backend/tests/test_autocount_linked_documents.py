@@ -132,7 +132,11 @@ def test_each_entity_is_registered_in_every_catalogue(entity_type):
 def test_the_flat_profile_carries_nested_prefixed_lines(entity_type):
     profile = flat_profile(entity_type, ["DocKey"])
     assert profile.record_model is MODELS[entity_type]
-    assert profile.line_model is CanonicalLinkedDocumentLine
+    # AC-CONSIGN-PULL: consignment's line adds `qty_transferred`.
+    from modules.autocount.canonical.documents import LINKED_DOCUMENT_LINE_MODELS
+
+    assert profile.line_model is LINKED_DOCUMENT_LINE_MODELS[entity_type]
+    assert issubclass(profile.line_model, CanonicalLinkedDocumentLine)
     assert profile.line_ref_prefix is True
     # No fulfilment aggregate: a cancel/consignment line has no "delivered"
     # quantity, and guessing one would feed a wrong `lines.open_count`.
@@ -298,7 +302,13 @@ def test_catalog_requires_the_doc_number_and_the_crm_match_fields(entity_type):
 def test_catalog_offers_exactly_the_wire_fields(entity_type):
     model = MODELS[entity_type]
     assert accepted_field_names(entity_type) == set(model.SINK_FIELDS) - {"source_ref"}
-    assert line_accepted_field_names(entity_type) == set(CanonicalLinkedDocumentLine.SINK_FIELDS)
+    from modules.autocount.canonical.documents import LINKED_DOCUMENT_LINE_MODELS
+
+    expected = set(CanonicalLinkedDocumentLine.SINK_FIELDS)
+    if entity_type == ENTITY_CONSIGNMENT:
+        expected |= {"qty_transferred"}  # AC-CONSIGN-PULL
+    assert set(LINKED_DOCUMENT_LINE_MODELS[entity_type].SINK_FIELDS) == expected
+    assert line_accepted_field_names(entity_type) == expected
 
 
 # ── presets ──────────────────────────────────────────────────────────────────

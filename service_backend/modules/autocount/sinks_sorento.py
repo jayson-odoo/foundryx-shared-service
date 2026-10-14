@@ -50,6 +50,7 @@ import httpx
 from .canonical.base import CanonicalRecord
 from .canonical.documents import (
     CanonicalDocument,
+    CanonicalLinkedDocument,
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
@@ -599,6 +600,12 @@ class SorentoSink:
         self._api_key = api_key
         self.contract_version = contract_version
         self.book = (book or "").strip() or None
+        # AC-CONSIGN-PULL - the consumer's LIVE advertised ``/contract``
+        # version, set by ``CompanyService.sink_for_company`` from the SAME
+        # probe its contract gate already makes. Decides the contract-gated
+        # line columns of the linked documents (``TransferedQty`` from 2.9);
+        # ``None`` (never probed) sends the older shape - fail closed.
+        self.advertised_contract_version: Optional[float] = None
         self.batch_size = max(1, min(int(batch_size), SORENTO_MAX_BATCH))
         # The Sorento company this sink delivers INTO (Appendix A6). Sent as the
         # top-level ``companyCode`` on every call; a blank one is deliberately
@@ -675,7 +682,12 @@ class SorentoSink:
             # raises `TypeError` and would silently be swallowed into the
             # WRONG fallback branch (a bare call a document's signature does
             # not even accept), masking the actual error as a v1 downgrade.
-            if isinstance(record, CanonicalDocument):
+            if isinstance(record, CanonicalLinkedDocument):
+                out.append(payload(
+                    contract_version=self.contract_version,
+                    advertised_contract=self.advertised_contract_version,
+                ))
+            elif isinstance(record, CanonicalDocument):
                 out.append(payload(contract_version=self.contract_version))
             else:
                 out.append(payload())

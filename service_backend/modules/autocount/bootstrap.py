@@ -195,6 +195,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_document_line_linkage,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
+        backfill_consignment_transferred_qty,
         backfill_customer_sales_agent,
         backfill_product_item_type,
         backfill_sales_order_ref,
@@ -274,6 +275,14 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # runs the same repair once on deploy.
     if parse_version(from_version) < (0, 15, 0):
         backfill_customer_sales_agent(db, schema=schema, tenant_id=tenant_id)
+    # 0.15.0 -> 0.16.0 (AC-CONSIGN-PULL, partner of sorento-crm#1654): every
+    # existing `consignment` task still on the #122 preset text is rewritten
+    # to carry `TransferedQty` (+ the `TransferedSum` aggregate) and gets a
+    # `TransferedQty -> qty_transferred` line row. Version-GATED like the two
+    # passes above (an operator-deleted row must not be reseeded on every
+    # later update). Module Alembic 0030 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 16, 0):
+        backfill_consignment_transferred_qty(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

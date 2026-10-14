@@ -566,8 +566,15 @@ _CREDITOR_PARTY = (
 _LINKED_LINE_CUT = "d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 
 
-def _linked_header_query(header_table: str, line_table: str, party: Tuple[str, str]) -> str:
+def _linked_header_query(
+    header_table: str, line_table: str, party: Tuple[str, str], *, transferred: bool = False,
+) -> str:
+    """``transferred`` (AC-CONSIGN-PULL, consignment only): a
+    ``TransferedSum`` aggregate - a transfer out of a consignment may not
+    bump the header ``LastModified``, so the header hash must move on it."""
     party_columns, party_join = party
+    transferred_out = ", l.TransferedSum AS TransferedSum" if transferred else ""
+    transferred_in = ", SUM(d.TransferedQty) AS TransferedSum" if transferred else ""
     return (
         "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, "
         f"{party_columns}, h.Ref AS Ref, h.Description AS Description, "
@@ -576,27 +583,31 @@ def _linked_header_query(header_table: str, line_table: str, party: Tuple[str, s
         "h.LastModified AS LastModified, "
         "l.LineCount AS LineCount, l.QtySum AS QtySum, "
         "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey, "
-        "l.LinkedLineCount AS LinkedLineCount, l.FromDocKeySum AS FromDocKeySum "
+        "l.LinkedLineCount AS LinkedLineCount, l.FromDocKeySum AS FromDocKeySum"
+        f"{transferred_out} "
         f"FROM {{database}}.dbo.{header_table} AS h "
         f"{party_join} "
         "OUTER APPLY ("
         "SELECT COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
         "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey, "
         "COUNT(d.FromDocDtlKey) AS LinkedLineCount, "
-        "SUM(d.FromDocDtlKey) AS FromDocKeySum "
+        "SUM(d.FromDocDtlKey) AS FromDocKeySum"
+        f"{transferred_in} "
         f"FROM {{database}}.dbo.{line_table} AS d "
         f"WHERE d.DocKey = h.DocKey AND {_LINKED_LINE_CUT}"
         ") AS l"
     )
 
 
-def _linked_line_query(line_table: str) -> str:
+def _linked_line_query(line_table: str, *, transferred: bool = False) -> str:
+    transferred_col = "d.TransferedQty AS TransferedQty, " if transferred else ""
     return (
         "SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, "
         "i.AutoKey AS ItemAutoKey, "
         "d.ItemCode AS ItemCode, d.Description AS Description, "
         "w.AutoKey AS LocationAutoKey, d.Location AS Location, d.Qty AS Qty, "
         "d.UOM AS UOM, d.UnitPrice AS UnitPrice, d.SubTotal AS SubTotal, "
+        f"{transferred_col}"
         "d.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, "
         "d.FromDocDtlKey AS FromDocDtlKey "
         f"FROM {{database}}.dbo.{line_table} AS d "
@@ -606,7 +617,9 @@ def _linked_line_query(line_table: str) -> str:
     )
 
 
-def _linked_fingerprint_query(header_table: str, line_table: str) -> str:
+def _linked_fingerprint_query(
+    header_table: str, line_table: str, *, transferred: bool = False,
+) -> str:
     """The line-only-edit sweep (see `_SO_FINGERPRINT_QUERY`). Catches a line
     added/removed, a qty change and a change to a FILLED `FromDocDtlKey`;
     it does NOT see a text-only edit of `FromDocNo`/`ItemCode`/`Location`
@@ -615,7 +628,8 @@ def _linked_fingerprint_query(header_table: str, line_table: str) -> str:
     return (
         "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
         "MAX(d.DtlKey) AS MaxDtlKey, SUM(d.FromDocDtlKey) AS FromDocKeySum, "
-        "COUNT(d.FromDocDtlKey) AS LinkedLineCount "
+        "COUNT(d.FromDocDtlKey) AS LinkedLineCount"
+        f"{', SUM(d.TransferedQty) AS TransferedSum' if transferred else ''} "
         f"FROM {{database}}.dbo.{line_table} AS d "
         f"JOIN {{database}}.dbo.{header_table} AS h ON h.DocKey = d.DocKey "
         f"WHERE h.DocDate >= :from_date AND {_LINKED_LINE_CUT} "
@@ -659,8 +673,14 @@ _LINKED_LINE_FIELDS: Tuple[PresetField, ...] = (
 )
 
 
+# AC-CONSIGN-PULL - the consignment preset's extra line row (contract 2.9,
+# sorento-crm#1654): the quantity already transferred out of the consignment.
+_CONSIGNMENT_TRANSFERRED_LINE_FIELD = PresetField("TransferedQty", "qty_transferred", "decimal")
+
+
 def _linked_preset(
     label: str, header_table: str, line_table: str, *, debtor_side: bool,
+    transferred: bool = False,
 ) -> DocumentPreset:
     party = _DEBTOR_PARTY if debtor_side else _CREDITOR_PARTY
     header = (
@@ -670,16 +690,16 @@ def _linked_preset(
     )
     return DocumentPreset(
         label=label,
-        header_query=_linked_header_query(header_table, line_table, party),
-        line_query=_linked_line_query(line_table),
+        header_query=_linked_header_query(header_table, line_table, party, transferred=transferred),
+        line_query=_linked_line_query(line_table, transferred=transferred),
         key_columns=("DocKey",),
         watermark_column="LastModified",
         doc_date_column="DocDate",
         from_date="2026-01-01",
         filter_formula=None,
         header=header,
-        line=_LINKED_LINE_FIELDS,
-        fingerprint_query=_linked_fingerprint_query(header_table, line_table),
+        line=_LINKED_LINE_FIELDS + ((_CONSIGNMENT_TRANSFERRED_LINE_FIELD,) if transferred else ()),
+        fingerprint_query=_linked_fingerprint_query(header_table, line_table, transferred=transferred),
     )
 
 
@@ -687,6 +707,7 @@ CANCEL_SO_PRESET = _linked_preset("AutoCount Cancel SO", "XS", "XSDTL", debtor_s
 CANCEL_PO_PRESET = _linked_preset("AutoCount Cancel PO", "XP", "XPDTL", debtor_side=False)
 CONSIGNMENT_PRESET = _linked_preset(
     "AutoCount Consignment", "Consignment", "ConsignmentDTL", debtor_side=True,
+    transferred=True,
 )
 CONSIGNMENT_RETURN_PRESET = _linked_preset(
     "AutoCount Consignment Return", "ConsignmentReturn", "ConsignmentReturnDTL",
