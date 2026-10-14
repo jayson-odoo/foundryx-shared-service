@@ -28,6 +28,6 @@ Lane AC-CONSIGN-PULL, partner of sorento-crm#1654 (AC-CONSIGN-CRM). Contract:
 
 ## Follow-ups (not this lane)
 
-- Contract versions are compared as floats (`2.10` < `2.9`). This is pre-existing for every gate; a semantic-version
-  compare is a backlog item.
+- Contract versions are compared as floats (`2.10` < `2.9`). This is pre-existing for every gate and is already logged
+  as BL-SS-289 (`documentation/backlogs/backlog.md`).
 - The mapping simulate preview always shows the 2.8 shape. This is fail-closed by design.

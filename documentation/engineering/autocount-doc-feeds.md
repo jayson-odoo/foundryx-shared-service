@@ -304,7 +304,10 @@ Cancel SO (`XS`), Cancel PO (`XP`), Consignment (`Consignment`) and Consignment 
   - An unknown or older contract sends the unchanged 2.8 shape. Any other linked document never carries the column.
 - **Existing tasks.** `backfill_consignment_transferred_qty` runs in module Alembic `0030_autocount_consign_xfer`,
   and in `update_tenant` gated `< 0.16.0`.
-  - It rewrites a task whose stored queries are still the #122 text, appends `TransferedSum` / `TransferedQty` to
-    the result columns, and adds the `qty_transferred` line row.
-  - A customised query is left alone with a WARNING.
+  - Trigger: a task whose stored header is still the #122 text. Every stored query that is still a #122 text is
+    rewritten, and `TransferedSum` joins `result_columns`.
+  - `TransferedQty` joins `line_result_columns`, and the `qty_transferred` line row is created enabled, only when the
+    stored `lineQuery` is now the preset text. A customised line query beside a preset header gets no
+    `TransferedQty` and a disabled row, and no warning.
+  - A customised header query is left alone with a WARNING (its row is created disabled).
   - Every consignment re-stages once after deploy, by design.

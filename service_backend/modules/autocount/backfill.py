@@ -2225,7 +2225,9 @@ def backfill_consignment_transferred_qty(
         replaced with the current preset's; ``TransferedSum`` is appended to
         ``result_columns`` (so it enters the row hash - every consignment
         re-stages ONCE, intended: it is how ``TransferedQty`` reaches a 2.9
-        CRM) and ``TransferedQty`` to ``line_result_columns``. A header query
+        CRM); ``TransferedQty`` joins ``line_result_columns`` ONLY when the
+        stored ``lineQuery`` is now the preset text (a customised line query
+        does not select it, so it is never advertised). A header query
         already at the new text is skipped silently; anything else is
         customised: left untouched, one WARNING naming the config id.
     (b) **Mapping row.** ``TransferedQty -> qty_transferred`` (line scope,
