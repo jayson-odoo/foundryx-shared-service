@@ -58,6 +58,7 @@ from app.secrets import decrypt_secret
 from .clock import myt_date
 from .constants import (
     BACKFILL_FROM_DEFAULT,
+    FEED_DELIVERY_ORDERS,
     RUN_KIND_BACKFILL,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
@@ -947,6 +948,11 @@ def run_backfill(
                 resolved.sink.write_batch(
                     remaining, request_id=f"{backfill_row.id}:{day.isoformat()}",
                     dry_run=dry_run, on_chunk=on_chunk,
+                    # DO-BACKFILL-SS - only a DELIVERY ORDERS backfill marks
+                    # itself `backfill: true` (CRM quiet ingest). The CRM
+                    # 422s the flag on every other entity, so a GRN backfill
+                    # leaves it out; poll/sweep never send it.
+                    backfill=(feed_row.feed == FEED_DELIVERY_ORDERS),
                 )
             except SorentoRateLimited as exc:
                 remaining = [r for r in remaining if r.source_ref not in credited]

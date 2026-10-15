@@ -8,7 +8,7 @@
  */
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type { DocFeedKey, DocFeedRunKind } from '@/types/autocount';
 
 // The Resource shell itself reads `next-auth/react`'s `useSession` directly
@@ -66,6 +66,15 @@ function feedItem(over: Record<string, unknown> = {}) {
 }
 
 describe('DocFeedsTab (AC-14-90)', () => {
+  // The first `await import('./doc-feeds-tab')` cold-loads the whole
+  // Resource shell (~4-5s locally, far more on a loaded CI runner) - inside
+  // a test body it ate the 5s test budget and starved the first findByText
+  // (CI flake 2026-10-14). Warm it once here, under its own hook timeout;
+  // every test's dynamic import below then resolves from the module cache.
+  beforeAll(async () => {
+    await import('./doc-feeds-tab');
+  }, 60_000);
+
   it('lists the two feeds with book, mode, waiting and failed counts', async () => {
     getDocFeeds.mockResolvedValue({
       feeds: [
@@ -78,7 +87,7 @@ describe('DocFeedsTab (AC-14-90)', () => {
 
     render(<DocFeedsTab companyId="co-1" />);
 
-    expect(await screen.findByText(/delivery orders/i)).toBeInTheDocument();
+    expect(await screen.findByText(/delivery orders/i, {}, { timeout: 5000 })).toBeInTheDocument();
     expect(await screen.findByText(/goods receive notes/i)).toBeInTheDocument();
     expect(screen.queryByText(/branches/i)).not.toBeInTheDocument();
   });
@@ -94,7 +103,7 @@ describe('DocFeedsTab (AC-14-90)', () => {
 
     render(<DocFeedsTab companyId="co-tab-mock" />);
 
-    expect(await screen.findByText(/delivery orders/i)).toBeInTheDocument();
+    expect(await screen.findByText(/delivery orders/i, {}, { timeout: 5000 })).toBeInTheDocument();
     expect(await screen.findByText(/goods receive notes/i)).toBeInTheDocument();
     expect(view.feeds).toHaveLength(2);
     expect(screen.queryByText(/branches/i)).not.toBeInTheDocument();
