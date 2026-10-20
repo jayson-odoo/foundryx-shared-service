@@ -197,6 +197,13 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
   'cancel_purchase_order',
   'consignment',
   'consignment_return',
+  // Plan 32 (CRM #1770) - billing documents (contract 2.6) and the per-debtor
+  // AR outstanding snapshot (contract 2.10): sql_db-only documents.
+  'invoice',
+  'cash_sale',
+  'credit_note',
+  'debit_note',
+  'ar_outstanding',
 ];
 
 /**

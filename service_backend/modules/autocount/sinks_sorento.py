@@ -55,6 +55,8 @@ from .canonical.documents import (
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
     LINKED_DOCUMENT_ENTITY_TYPES,
+    BILLING_DOCUMENT_ENTITY_TYPES,
+    ENTITY_AR_OUTSTANDING,
 )
 from .canonical.masters import (
     ENTITY_BRAND,
@@ -138,6 +140,12 @@ _ENTITY_PATH: Dict[str, str] = {
     # Consignment Return. Present unconditionally, gated below exactly like
     # brand/stock/branch.
     **{entity_type: f"{entity_type}s" for entity_type in LINKED_DOCUMENT_ENTITY_TYPES},
+    # Plan 32 (CRM #1770) - the four billing documents share ONE door
+    # (contract 2.6; the record's `document_type` tells them apart, and so do
+    # their refs: `{database}:{IV|CS|CN|DN}:{DocKey}`), and the AR snapshot has
+    # its own (contract 2.10, no deletions door). Gated below.
+    **{entity_type: "billing_documents" for entity_type in BILLING_DOCUMENT_ENTITY_TYPES},
+    ENTITY_AR_OUTSTANDING: "ar_outstanding",
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
@@ -194,6 +202,112 @@ _DEPENDENT_ENTITIES = {
 }
 
 
+# ASCII digits only (``str.isdigit`` also takes "²" and "١٢"), each part
+# capped, an optional patch part ignored.
+_VERSION_PART_DIGITS = 6
+_CONTRACT_VERSION_RE = re.compile(
+    r"([0-9]{1,%d})(?:\.([0-9]{1,%d}))?(?:\.[0-9]{1,%d})?"
+    % (_VERSION_PART_DIGITS, _VERSION_PART_DIGITS, _VERSION_PART_DIGITS)
+)
+
+
+class ContractVersion(float):
+    """A CRM contract version compared as ``(major, minor)`` INTEGERS
+    (BL-SS-289). A plain float reads ``"2.10"`` as 2.1, below every 2.x gate;
+    CRM #1770 advertises exactly ``"2.10"``.
+
+    It subclasses ``float`` so every existing ``Dict[str, float]`` gate table,
+    pydantic ``float`` wire field and ``>=`` call site keeps working; only the
+    comparisons and the text change. A plain float or int on the other side of
+    a comparison is read through its shortest repr (``2.7`` is ``(2, 7)``,
+    ``2`` is ``(2, 0)``), so the existing float thresholds stay correct. A
+    threshold whose minor has two digits MUST be built as
+    ``ContractVersion(2, 10)``: the float literal ``2.10`` is 2.1.
+
+    On a float JSON wire field (``requiredVersion``, the gate banners) 2.10
+    still serialises as ``2.1``; that is display only, never a gate decision.
+    """
+
+    major: int
+    minor: int
+
+    def __new__(cls, major: int, minor: int = 0) -> "ContractVersion":
+        obj = super().__new__(cls, f"{int(major)}.{int(minor)}")
+        obj.major = int(major)
+        obj.minor = int(minor)
+        return obj
+
+    @classmethod
+    def parse(cls, value: Any) -> Optional["ContractVersion"]:
+        """``"2.10"`` / ``"2.10.3"`` / ``"3"`` / ``2.7`` / ``2`` -> a version;
+        anything else (blank, bool, ``None``, negative, non-ASCII digits,
+        absurdly long numbers) -> ``None``. Never raises: the text is
+        untrusted (`GET /contract`)."""
+        if isinstance(value, ContractVersion):
+            return value
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, int):
+            return cls(value, 0) if 0 <= value < 10 ** _VERSION_PART_DIGITS else None
+        text = repr(value) if isinstance(value, float) else str(value).strip()
+        match = _CONTRACT_VERSION_RE.fullmatch(text)
+        if match is None:
+            return None
+        return cls(int(match.group(1)), int(match.group(2) or 0))
+
+    def _key(self) -> Tuple[int, int]:
+        return (self.major, self.minor)
+
+    @staticmethod
+    def _other_key(other: Any) -> Optional[Tuple[int, int]]:
+        parsed = ContractVersion.parse(other) if isinstance(other, (int, float)) else None
+        return parsed._key() if parsed is not None else None
+
+    def __eq__(self, other: object) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() == key  # type: ignore[return-value]
+
+    def __ne__(self, other: object) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() != key  # type: ignore[return-value]
+
+    def __lt__(self, other: Any) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() < key
+
+    def __le__(self, other: Any) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() <= key
+
+    def __gt__(self, other: Any) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() > key
+
+    def __ge__(self, other: Any) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() >= key
+
+    def __hash__(self) -> int:
+        # Equal values hash equally: when this version is the float it
+        # looks like (2.7 is (2, 7)), hash as that float so a dict keyed by
+        # the plain float finds it; 2.10 has no equal float (2.1 is (2, 1)).
+        if ContractVersion._other_key(float(self)) == self._key():
+            return float.__hash__(self)
+        return hash(self._key())
+
+    def __str__(self) -> str:
+        return f"{self.major}.{self.minor}"
+
+    def __repr__(self) -> str:
+        return f"ContractVersion({self.major}, {self.minor})"
+
+    def __format__(self, spec: str) -> str:
+        return format(str(self), spec) if not spec or spec[-1] == "s" else super().__format__(spec)
+
+    def __reduce__(self) -> Any:
+        return (ContractVersion, (self.major, self.minor))
+
+
 # The consumer contract `brand` needs (sprint-5/08, AC-08-33/AC-08-20's S5
 # banner field) - named so the ONE literal is shared between the gate check
 # below and whatever reports it to the operator, rather than the same magic
@@ -225,6 +339,12 @@ DOC_FEED_CONTRACT_VERSION = 2.7
 # plural ingest name advertised in ``GET /external/contract``'s ``entities``.
 LINKED_DOCUMENTS_CONTRACT_VERSION = 2.8
 
+# Plan 32 (CRM #1770) - the billing documents door (contract 2.6, section 12)
+# and the AR outstanding door (contract 2.10, section 14). 2.10 MUST be a
+# ``ContractVersion``: the float literal ``2.10`` is 2.1 (BL-SS-289).
+BILLING_DOCUMENTS_CONTRACT_VERSION = ContractVersion(2, 6)
+AR_OUTSTANDING_CONTRACT_VERSION = ContractVersion(2, 10)
+
 # plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
 # is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
 # advertised contract to be at least this version AND to list this entity
@@ -249,6 +369,13 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
         entity_type: (LINKED_DOCUMENTS_CONTRACT_VERSION, _ENTITY_PATH[entity_type])
         for entity_type in LINKED_DOCUMENT_ENTITY_TYPES
     },
+    # Plan 32 - the four billing documents need `billing_documents` advertised;
+    # the AR snapshot needs `ar_outstanding`.
+    **{
+        entity_type: (BILLING_DOCUMENTS_CONTRACT_VERSION, "billing_documents")
+        for entity_type in BILLING_DOCUMENT_ENTITY_TYPES
+    },
+    ENTITY_AR_OUTSTANDING: (AR_OUTSTANDING_CONTRACT_VERSION, "ar_outstanding"),
 }
 
 # Gated entities that must NEVER be "delivered" through the logging-sink
@@ -259,7 +386,7 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
 # STAGED (stock's AC-13-06 rule, generalised).
 PUSH_REFUSES_LOGGING_FALLBACK: Tuple[str, ...] = (
     ENTITY_STOCK_BALANCE,
-) + LINKED_DOCUMENT_ENTITY_TYPES
+) + LINKED_DOCUMENT_ENTITY_TYPES + BILLING_DOCUMENT_ENTITY_TYPES + (ENTITY_AR_OUTSTANDING,)
 
 
 def sorento_supports_entity(
@@ -447,7 +574,7 @@ class SorentoContractInfo:
     so ``sorento_supports_entity``'s contract-gate kwargs (AC-08-33) have a
     real caller."""
 
-    version: float
+    version: "ContractVersion"
     entities: List[str]
 
 
@@ -605,7 +732,7 @@ class SorentoSink:
         # probe its contract gate already makes. Decides the contract-gated
         # line columns of the linked documents (``TransferedQty`` from 2.9);
         # ``None`` (never probed) sends the older shape - fail closed.
-        self.advertised_contract_version: Optional[float] = None
+        self.advertised_contract_version: Optional[ContractVersion] = None
         self.batch_size = max(1, min(int(batch_size), SORENTO_MAX_BATCH))
         # The Sorento company this sink delivers INTO (Appendix A6). Sent as the
         # top-level ``companyCode`` on every call; a blank one is deliberately
@@ -1085,26 +1212,15 @@ class SorentoSink:
                 return None
             raw_version = body.get("version")
             if isinstance(raw_version, bool) or raw_version is None:
-                version = 1.0
-            elif isinstance(raw_version, (int, float)):
-                version = float(raw_version)
+                version = ContractVersion(1, 0)
             else:
-                text = str(raw_version).strip()
-                try:
-                    version = float(text)
-                except ValueError:
-                    # Nit (sprint-5/08 review round 2) - a bare ``float()``
-                    # rejects a three-part semver-style string (``"2.3.1"``)
-                    # outright, so a consumer advertising a patch version
-                    # could never open the brand gate. Parse major.minor
-                    # from the first two dot-separated ints instead.
-                    parts = text.split(".")
-                    try:
-                        major = int(parts[0])
-                        minor = int(parts[1]) if len(parts) > 1 else 0
-                        version = float(f"{major}.{minor}")
-                    except (ValueError, IndexError):
-                        return None
+                # BL-SS-289 - (major, minor) integers, never a float parse:
+                # ``"2.10"`` is 2.10, not 2.1. A patch part (``"2.3.1"``) is
+                # ignored, as before.
+                parsed = ContractVersion.parse(raw_version)
+                if parsed is None:
+                    return None
+                version = parsed
             entities = body.get("entities")
             entities_list = [str(e) for e in entities] if isinstance(entities, list) else []
             return SorentoContractInfo(version=version, entities=entities_list)

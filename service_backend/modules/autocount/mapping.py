@@ -80,6 +80,17 @@ from .canonical.documents import (
     LINKED_DOCUMENT_REF_CODES,
     linked_document_ref,
     is_document_entity,
+    AR_OUTSTANDING_REF_MARKER,
+    BILLING_DOCUMENT_MODELS,
+    BILLING_DOCUMENT_REF_CODES,
+    BILLING_LINK_DO,
+    BILLING_LINK_IV,
+    BILLING_LINK_SO,
+    ENTITY_AR_OUTSTANDING,
+    CanonicalArOutstanding,
+    CanonicalArOutstandingDocument,
+    CanonicalBillingDocumentLine,
+    billing_document_ref,
 )
 
 SCOPE_HEADER = "header"
@@ -788,6 +799,16 @@ def flat_source_ref(
             "the company database name is unknown, so the row cannot be "
             "company-qualified and would collide with another company's records"
         )
+    if entity_type in BILLING_DOCUMENT_REF_CODES:
+        # Plan 32 - contract A2: `{database}:{IV|CS|CN|DN}:{DocKey}`.
+        if len(parts) != 1:
+            raise IdentityError("a billing document is keyed on DocKey alone")
+        return billing_document_ref(entity_type, company, parts[0])
+    if entity_type == ENTITY_AR_OUTSTANDING:
+        # Plan 32 - contract 14.2: `{database}:debtor:{Debtor.AutoKey}`.
+        if len(parts) != 1:
+            raise IdentityError("an AR outstanding record is keyed on the debtor alone")
+        return f"{company}:{AR_OUTSTANDING_REF_MARKER}:{parts[0]}"
     return f"{company}:{KEY_PART_SEPARATOR.join(parts)}"
 
 
@@ -1037,6 +1058,12 @@ class EntityProfile:
     # vendor row (branch: `source_record`), set by the engine after mapping.
     # `None` (every other entity) copies nothing.
     raw_record_field: Optional[str] = None
+    # Plan 32 (D6) - mint a billing line's `from_line_ref` from its link
+    # inputs (`CanonicalBillingDocumentLine.LINK_INPUT_FIELDS`).
+    billing_line_links: bool = False
+    # Plan 32 (D8) - mint an AR item's `source_ref` (the billing document's
+    # own 2.6 ref) from `ar_doc_type` + `ar_doc_key`.
+    ar_document_refs: bool = False
 
     def record_fields(self) -> set:
         hidden = {"lines", "extras"}
@@ -1243,6 +1270,38 @@ LINKED_DOCUMENT_PROFILES: Dict[str, EntityProfile] = {
     for entity_type, model in LINKED_DOCUMENT_MODELS.items()
 }
 
+# Plan 32 - billing documents (contract 2.6): the order-family shape (lines
+# nested, line refs prefixed with the header ref) plus the link minting.
+BILLING_DOCUMENT_PROFILES: Dict[str, EntityProfile] = {
+    entity_type: EntityProfile(
+        entity_type=entity_type,
+        record_model=model,
+        identity=doc_key_identity,
+        display_path="DocNo",
+        line_model=CanonicalBillingDocumentLine,
+        detail_key=SQL_DOC_LINES_KEY,
+        identity_path="DocKey",
+        line_ref_prefix=True,
+        line_ordered_field="quantity",
+        billing_line_links=True,
+    )
+    for entity_type, model in BILLING_DOCUMENT_MODELS.items()
+}
+
+# Plan 32 (D8) - one debtor per record, its open AR items as the lines; an
+# item's ref is the billing document's own ref, never prefixed.
+AR_OUTSTANDING_PROFILE = EntityProfile(
+    entity_type=ENTITY_AR_OUTSTANDING,
+    record_model=CanonicalArOutstanding,
+    identity=doc_key_identity,
+    display_path="DebtorCode",
+    line_model=CanonicalArOutstandingDocument,
+    detail_key=SQL_DOC_LINES_KEY,
+    identity_path="DebtorKey",
+    line_ref_prefix=False,
+    ar_document_refs=True,
+)
+
 ENTITY_PROFILES: Dict[str, EntityProfile] = {
     GRN_PROFILE.entity_type: GRN_PROFILE,
     SUPPLIER_PROFILE.entity_type: SUPPLIER_PROFILE,
@@ -1259,6 +1318,8 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     PURCHASE_ORDER_PROFILE.entity_type: PURCHASE_ORDER_PROFILE,
     SHIPPING_ORDER_PROFILE.entity_type: SHIPPING_ORDER_PROFILE,
     **LINKED_DOCUMENT_PROFILES,
+    **BILLING_DOCUMENT_PROFILES,
+    AR_OUTSTANDING_PROFILE.entity_type: AR_OUTSTANDING_PROFILE,
 }
 
 
@@ -1297,6 +1358,8 @@ def flat_profile(entity_type: str, key_columns: Sequence[str]) -> EntityProfile:
         line_fulfilled_field=base.line_fulfilled_field,
         line_ordered_field=base.line_ordered_field,
         raw_record_field=base.raw_record_field,
+        billing_line_links=base.billing_line_links,
+        ar_document_refs=base.ar_document_refs,
     )
 
 
@@ -1330,6 +1393,11 @@ class MappingEngine:
         entity_type: str = ENTITY_GOODS_RECEIVED_NOTE,
         profile: Optional[EntityProfile] = None,
         database_name: str = "",
+        # Plan 32 (D6) - the company's doc-feed book, which a billing line
+        # sourced from a delivery order is linked under (`{book}:DO:...`).
+        # `''` = none: a DO-sourced line is then a named error, never pushed
+        # unlinked (`http_source.book.billing_link_book`).
+        link_book: str = "",
     ):
         enabled = [row for row in rows if row.is_enabled]
         self.header_rows = [r for r in enabled if r.scope == SCOPE_HEADER]
@@ -1346,6 +1414,7 @@ class MappingEngine:
         # (plan 22 S5) use it the SAME way to mint the master refs a line/
         # header points AT.
         self.database_name = database_name
+        self.link_book = (link_book or "").strip()
         # INSTANCE-bound transform table (plan 22 S5): the module-level
         # ``TRANSFORMS`` entries plus this engine's own ``ref_*`` closures -
         # everything else about ``MappingRow.coerce`` is unchanged.
@@ -1374,6 +1443,58 @@ class MappingEngine:
             )
 
         return transform
+
+    def _mint_plan32_line_refs(self, values: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        """Plan 32 - mint the refs a billing line / AR item points at, in
+        place on ``values``. Returns ``(field, reason)`` for a line that must
+        fail its document, else ``None``.
+
+        Billing (D6, contract 14.3; owner rule: exact links only): ``SO`` ->
+        ``{database}:{SO DocKey}:{DtlKey}`` (the SO line's own ref), ``DO`` ->
+        ``{book}:DO:{DO DocKey}:{DtlKey}``, ``IV`` -> ``{database}:IV:{IV
+        DocKey}:{DtlKey}``. A missing source key, an unresolved source line or
+        any other type sends no ref (type + number only). A DO-sourced line
+        with a resolved DO line but no doc-feed book FAILS: it would otherwise
+        reach the CRM silently unlinked."""
+        if self.profile.billing_line_links:
+            values["from_line_ref"] = None
+            kind = (t_string(values.get("from_doc_type")) or "").upper()
+            line_key = values.get("from_doc_line_key")
+            if line_key is not None:
+                if kind == BILLING_LINK_SO and values.get("link_so_doc_key") is not None:
+                    values["from_line_ref"] = (
+                        f"{self.database_name}:{values['link_so_doc_key']}:{line_key}"
+                    )
+                elif kind == BILLING_LINK_IV and values.get("link_iv_doc_key") is not None:
+                    values["from_line_ref"] = (
+                        f"{self.database_name}:{BILLING_LINK_IV}:"
+                        f"{values['link_iv_doc_key']}:{line_key}"
+                    )
+                elif kind == BILLING_LINK_DO and values.get("link_do_doc_key") is not None:
+                    if not self.link_book:
+                        return (
+                            "from_line_ref",
+                            "this line comes from a delivery order but the company has "
+                            "no doc-feed book (configure its Delivery Orders feed first), "
+                            "so it cannot be linked to its DO line",
+                        )
+                    values["from_line_ref"] = (
+                        f"{self.link_book}:{BILLING_LINK_DO}:"
+                        f"{values['link_do_doc_key']}:{line_key}"
+                    )
+        if self.profile.ar_document_refs:
+            code = (t_string(values.get("ar_doc_type")) or "").upper()
+            key = values.get("ar_doc_key")
+            if code not in BILLING_DOCUMENT_REF_CODES.values():
+                return (
+                    "ar_doc_type",
+                    f"'{values.get('ar_doc_type')}' is not a billing document type "
+                    f"(one of {', '.join(BILLING_DOCUMENT_REF_CODES.values())})",
+                )
+            if key is None:
+                return ("ar_doc_key", "the AR item names no billing document key")
+            values["source_ref"] = f"{self.database_name}:{code}:{key}"
+        return None
 
     def _header_facts(self, raw: Dict[str, Any], lines: Sequence[Any]) -> Dict[str, Any]:
         """The NAMED-variable fact dict a header formula may reference
@@ -1535,6 +1656,19 @@ class MappingEngine:
                     "doc_no": values.get("from_so_external_doc_no"),
                     "dtl_key": values.get("from_so_external_line_key"),
                 }
+            link_error = self._mint_plan32_line_refs(values)
+            if link_error is not None:
+                errors.append(
+                    FieldError(
+                        field=link_error[0],
+                        source_path=f"{self.detail_key}[{index}]",
+                        reason=link_error[1],
+                        line_no=index,
+                        doc_key=doc_key,
+                        doc_no=doc_no,
+                    )
+                )
+                continue
             try:
                 lines.append(self.profile.line_model(**values))
             except Exception as exc:  # noqa: BLE001 - a model reject is a field error

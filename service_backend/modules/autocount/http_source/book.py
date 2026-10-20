@@ -84,3 +84,27 @@ def linked_document_book(db, tenant_id: str, company) -> str:
         if book:
             return book
     return ""
+
+
+def billing_link_book(db, tenant_id: str, company, entity_type: str) -> str:
+    """Plan 32 (D6) - the book a billing line sourced from a delivery order is
+    linked under (`{book}:DO:{DocKey}:{DtlKey}`, contract 14.3): the SAME
+    doc-feed book the DO feed files its documents under. Only an invoice or a
+    cash sale can come from a DO; every other entity answers ``''``. The
+    header identity of a billing document is unaffected (it stays the
+    company's database name, ``identity_scope``)."""
+    from ..canonical.documents import BILLING_DO_LINKED_ENTITY_TYPES
+
+    if entity_type not in BILLING_DO_LINKED_ENTITY_TYPES:
+        return ""
+    from ..doc_feed.constants import FEED_DELIVERY_ORDERS
+    from ..repositories.doc_feed_repository import DocFeedRepository
+
+    company_id = getattr(company, "id", None)
+    if not company_id or db is None:
+        return ""
+    # The DELIVERY ORDERS feed's own book only (never the GRN feed's): the CRM
+    # finds the DO line by (book, doc_key, dtl_key) under the book its DO
+    # was ingested with.
+    row = DocFeedRepository(db).get(tenant_id, company_id, FEED_DELIVERY_ORDERS)
+    return str(getattr(row, "book", "") or "").strip() if row is not None else ""

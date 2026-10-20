@@ -39,7 +39,7 @@ other canonical shape.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from decimal import Decimal
@@ -80,8 +80,40 @@ ORDER_DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
     ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER,
 )
 
+# Plan 32 (CRM #1770) - the four billing documents (contract 2.6, one CRM door
+# `billing_documents`) and the per-debtor AR outstanding snapshot (contract
+# 2.10). Each billing entity name IS the CRM's `document_type` value.
+ENTITY_INVOICE = "invoice"
+ENTITY_CASH_SALE = "cash_sale"
+ENTITY_CREDIT_NOTE = "credit_note"
+ENTITY_DEBIT_NOTE = "debit_note"
+ENTITY_AR_OUTSTANDING = "ar_outstanding"
+
+BILLING_DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
+    ENTITY_INVOICE, ENTITY_CASH_SALE, ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE,
+)
+
+# The billing documents whose lines can come from a delivery order (REF
+# transfer matrix: IV and CS from QT/SO/DO), so their DO hop needs the
+# company's Delivery Orders feed book.
+BILLING_DO_LINKED_ENTITY_TYPES: Tuple[str, ...] = (ENTITY_INVOICE, ENTITY_CASH_SALE)
+
+# The second segment of a billing `source_ref` (`{database}:{IV|CS|CN|DN}:
+# {DocKey}`, contract A2): DocKey is unique per document TABLE, not across
+# them, so the ref carries the type.
+BILLING_DOCUMENT_REF_CODES: Dict[str, str] = {
+    ENTITY_INVOICE: "IV",
+    ENTITY_CASH_SALE: "CS",
+    ENTITY_CREDIT_NOTE: "CN",
+    ENTITY_DEBIT_NOTE: "DN",
+}
+
+# `{database}:debtor:{Debtor.AutoKey}` (contract 14.2).
+AR_OUTSTANDING_REF_MARKER = "debtor"
+
 DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
     ORDER_DOCUMENT_ENTITY_TYPES + LINKED_DOCUMENT_ENTITY_TYPES
+    + BILLING_DOCUMENT_ENTITY_TYPES + (ENTITY_AR_OUTSTANDING,)
 )
 
 
@@ -822,3 +854,264 @@ LINKED_DOCUMENT_MODELS: Dict[str, type] = {
     ENTITY_CONSIGNMENT: CanonicalConsignment,
     ENTITY_CONSIGNMENT_RETURN: CanonicalConsignmentReturn,
 }
+
+
+# ── Plan 32 - billing documents (contract 2.6) + AR outstanding (2.10) ────────
+#
+#     !!  A CANONICAL SNAKE_CASE RECORD, NOT THE DOC-FEED SHAPE.  !!
+# Contract 2.6 section 12 (`CanonicalBillingDocument` on the CRM, unknown keys
+# refused). Three rules shape `sink_payload` below:
+#   * a push names the WHOLE document: an omitted optional field is stored as
+#     null on the CRM, so every listed key is always sent (null when empty) -
+#     never the omit-when-empty rule the order family uses;
+#   * money and quantities are JSON numbers, never the strings
+#     `model_dump(mode="json")` makes of a Decimal;
+#   * AutoCount stores MYT wall time (see `_VENDOR_DATETIME_FORMAT`). The
+#     mapping engine's `datetime` transform keeps that wall time and labels it
+#     UTC (`mapping.t_datetime`); the CRM reads a naive value as UTC, so the
+#     wire re-labels it with the fixed `+08:00` offset (MYT has no DST) and
+#     the CRM converts it to the true instant.
+
+MYT = timezone(timedelta(hours=8))
+
+BILLING_DOCUMENT_STATUS_VALUES: Tuple[str, ...] = ("posted", "cancelled")
+
+# The link types a billing line can name a source LINE of (contract 14.3).
+# Any other `FromDocType` (QT) is sent as type + number with no ref.
+BILLING_LINK_SO = "SO"
+BILLING_LINK_DO = "DO"
+BILLING_LINK_IV = "IV"
+
+
+def billing_document_ref(entity_type: str, database_name: str, doc_key: Any) -> str:
+    """``{database}:{IV|CS|CN|DN}:{DocKey}`` - contract A2, verbatim."""
+    return f"{database_name}:{BILLING_DOCUMENT_REF_CODES[entity_type]}:{doc_key}"
+
+
+def _wire_number(value: Any) -> Any:
+    """A Decimal as a JSON number (``int`` when integral, else ``float``)."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    return value
+
+
+def _myt_wall_time(value: Optional[datetime]) -> Optional[str]:
+    """AutoCount's MYT wall time (held labelled UTC) -> ISO with ``+08:00``."""
+    if value is None:
+        return None
+    return value.replace(tzinfo=None).replace(tzinfo=MYT).isoformat()
+
+
+def status_values_for(entity_type: str) -> Tuple[str, ...]:
+    """The fixed status vocabulary a document's ``status`` (and its status
+    formula's literals) must use: ``posted|cancelled`` for a billing
+    document, the five order words for every other document."""
+    if entity_type in BILLING_DOCUMENT_ENTITY_TYPES:
+        return BILLING_DOCUMENT_STATUS_VALUES
+    return DOCUMENT_STATUS_VALUES
+
+
+class CanonicalBillingDocumentLine(CanonicalDocumentLine):
+    """One billing line (contract 2.6 line). The four ``link_*`` /
+    ``from_doc_line_key`` fields are mapping INPUTS the engine mints
+    ``from_line_ref`` from (``mapping.MappingEngine``, D6); they never reach
+    the wire."""
+
+    description: Optional[str] = None
+    quantity: Optional[Decimal] = None
+    unit_price: Optional[Decimal] = None
+    discount_amount: Optional[Decimal] = None
+    net_amount: Optional[Decimal] = None
+    tax_code: Optional[str] = Field(None, max_length=100)
+    tax_rate: Optional[Decimal] = None
+    tax_amount: Optional[Decimal] = None
+    from_doc_type: Optional[str] = Field(None, max_length=20)
+    from_doc_no: Optional[str] = Field(None, max_length=255)
+    from_line_ref: Optional[str] = Field(None, max_length=255)
+    # INPUTS (never on the wire): the source line's own DtlKey and the DocKey
+    # of the header that owns it, per link type, resolved by the preset's SQL.
+    from_doc_line_key: Optional[int] = None
+    link_so_doc_key: Optional[int] = None
+    link_do_doc_key: Optional[int] = None
+    link_iv_doc_key: Optional[int] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref", "line_number", "product_ref", "product_code", "description", "uom",
+        "quantity", "unit_price", "discount_amount", "net_amount", "tax_code", "tax_rate",
+        "tax_amount", "line_total", "from_doc_type", "from_doc_no", "from_line_ref",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = ()
+    LINK_INPUT_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "from_doc_line_key", "link_so_doc_key", "link_do_doc_key", "link_iv_doc_key",
+    )
+
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        data = self.model_dump(mode="python")
+        return {key: _wire_number(data.get(key)) for key in self.SINK_FIELDS}
+
+
+class CanonicalBillingDocument(CanonicalDocument):
+    """AutoCount IV / CS / CN / DN -> CRM ``billing_documents`` (contract 2.6).
+    Subclassed per entity only to fix ``entity_type`` (= ``document_type``)."""
+
+    entity_type: str = ENTITY_INVOICE
+
+    doc_no: Optional[str] = Field(None, max_length=100)
+    doc_date: Optional[date] = None
+    source_modified_at: Optional[datetime] = None
+    customer_ref: Optional[str] = Field(None, max_length=255)
+    customer_code: Optional[str] = Field(None, max_length=50)
+    customer_name: Optional[str] = None
+    agent_code: Optional[str] = Field(None, max_length=100)
+    currency_code: Optional[str] = Field(None, max_length=10)
+    currency_rate: Optional[Decimal] = None
+    net_total: Optional[Decimal] = None
+    tax_total: Optional[Decimal] = None
+    total: Optional[Decimal] = None
+    local_net_total: Optional[Decimal] = None
+    against_doc_no: Optional[str] = Field(None, max_length=255)
+    # The CRM resolves a note's invoice by number (exactly one match); a ref
+    # is never guessed from a DocNo here, so this stays null (contract 12).
+    against_source_ref: Optional[str] = Field(None, max_length=255)
+    ref: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    lines: List[CanonicalBillingDocumentLine] = Field(default_factory=list)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref", "document_type", "doc_no", "doc_date", "status", "source_modified_at",
+        "customer_ref", "customer_code", "customer_name", "agent_code", "currency_code",
+        "currency_rate", "net_total", "tax_total", "total", "local_net_total",
+        "against_doc_no", "against_source_ref", "ref", "description",
+    )
+    # Never mapping targets: minted (`source_ref`), fixed per entity
+    # (`document_type`), or always null (`against_source_ref`).
+    UNMAPPED_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref", "document_type", "against_source_ref",
+    )
+
+    @property
+    def document_type(self) -> str:
+        return self.entity_type
+
+    @field_validator("status")
+    @classmethod
+    def _status_in_the_fixed_vocabulary(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip().lower()
+        if normalized not in BILLING_DOCUMENT_STATUS_VALUES:
+            raise ValueError(
+                f"'{value}' is not a recognised billing status - use one of "
+                f"{', '.join(BILLING_DOCUMENT_STATUS_VALUES)}"
+            )
+        return normalized
+
+    @field_validator("against_doc_no", mode="before")
+    @classmethod
+    def _first_invoice_number(cls, value: Any) -> Any:
+        """``OurInvoiceNo`` may be blank, hand-typed or a comma list (REF
+        section 1): the first non-blank entry, trimmed; ``None`` when none."""
+        if value is None:
+            return None
+        for part in str(value).split(","):
+            if part.strip():
+                return part.strip()
+        return None
+
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        data = self.model_dump(mode="python")
+        data["document_type"] = self.document_type
+        payload: Dict[str, Any] = {}
+        for key in self.SINK_FIELDS:
+            value = data.get(key)
+            if key == "source_modified_at":
+                value = _myt_wall_time(value)
+            elif isinstance(value, date):
+                value = value.isoformat()
+            payload[key] = _wire_number(value)
+        payload["lines"] = [
+            line.sink_payload(contract_version=contract_version) for line in self.lines
+        ]
+        return payload
+
+
+class CanonicalInvoice(CanonicalBillingDocument):
+    entity_type: str = ENTITY_INVOICE
+
+
+class CanonicalCashSale(CanonicalBillingDocument):
+    entity_type: str = ENTITY_CASH_SALE
+
+
+class CanonicalCreditNote(CanonicalBillingDocument):
+    entity_type: str = ENTITY_CREDIT_NOTE
+
+
+class CanonicalDebitNote(CanonicalBillingDocument):
+    entity_type: str = ENTITY_DEBIT_NOTE
+
+
+BILLING_DOCUMENT_MODELS: Dict[str, type] = {
+    ENTITY_INVOICE: CanonicalInvoice,
+    ENTITY_CASH_SALE: CanonicalCashSale,
+    ENTITY_CREDIT_NOTE: CanonicalCreditNote,
+    ENTITY_DEBIT_NOTE: CanonicalDebitNote,
+}
+
+
+class CanonicalArOutstandingDocument(CanonicalDocumentLine):
+    """One open AR item of a debtor (contract 14.2 ``documents[]``). Its
+    ``source_ref`` is the billing document's 2.6 ref, minted by the engine
+    from the two inputs ``ar_doc_type`` (``IV|CS|CN|DN``) + ``ar_doc_key``;
+    never prefixed with the debtor ref. ``outstanding`` is in the document's
+    own currency (CRM-confirmed 20 Oct); a CN's is negative."""
+
+    outstanding: Optional[Decimal] = None
+    due_date: Optional[date] = None
+    ar_doc_type: Optional[str] = Field(None, max_length=10)
+    ar_doc_key: Optional[int] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = ("source_ref", "outstanding", "due_date")
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = ()
+
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        return {
+            "source_ref": self.source_ref,
+            "outstanding": _wire_number(self.outstanding),
+            "due_date": self.due_date.isoformat() if self.due_date else None,
+        }
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class CanonicalArOutstanding(CanonicalDocument):
+    """One debtor's AR outstanding snapshot -> CRM ``ar_outstanding``
+    (contract 2.10, the whole truth for that debtor). ``as_of`` is stamped
+    when the record is mapped (the extract's read time) - never a SQL column,
+    which would move the row hash on every run and re-push every debtor -
+    and kept through the staged round trip."""
+
+    entity_type: str = ENTITY_AR_OUTSTANDING
+
+    customer_ref: Optional[str] = Field(None, max_length=255)
+    customer_code: Optional[str] = Field(None, max_length=50)
+    as_of: datetime = Field(default_factory=_now_utc)
+    total_outstanding: Optional[Decimal] = None
+    lines: List[CanonicalArOutstandingDocument] = Field(default_factory=list)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref", "customer_ref", "customer_code", "as_of", "total_outstanding",
+    )
+    UNMAPPED_FIELDS: ClassVar[Tuple[str, ...]] = ("source_ref", "as_of")
+
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        return {
+            "source_ref": self.source_ref,
+            "customer_ref": self.customer_ref,
+            "customer_code": self.customer_code,
+            "as_of": self.as_of.astimezone(MYT).isoformat(),
+            "total_outstanding": _wire_number(self.total_outstanding),
+            "documents": [line.sink_payload() for line in self.lines],
+        }

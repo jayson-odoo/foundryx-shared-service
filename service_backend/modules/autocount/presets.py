@@ -34,6 +34,11 @@ from .canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
+    ENTITY_AR_OUTSTANDING,
+    ENTITY_CASH_SALE,
+    ENTITY_CREDIT_NOTE,
+    ENTITY_DEBIT_NOTE,
+    ENTITY_INVOICE,
 )
 from .canonical.masters import (
     LOCKED_MAPPING_SOURCES,
@@ -714,6 +719,351 @@ CONSIGNMENT_RETURN_PRESET = _linked_preset(
     debtor_side=True,
 )
 
+# ── Plan 32 - billing documents IV / CS / CN / DN (CRM contract 2.6) ─────────
+#
+# REF `documentation/plans/sprint-5/32-autocount-billing-feed-contract.md`
+# (copied from the CRM's REF-autocount-billing-schema.md). Nothing here has
+# been run against the billing tables yet (SELECT is granted after 25 Oct);
+# the column names are the REF's [C-off]/[C-3p]/[I] reading, so the text is a
+# PRESET - operator-editable after the REF section 6 checks.
+#
+# * Header: `NetTotal` (incl. tax, before cash rounding) is `total`, never
+#   `FinalTotal` (= NetTotal + RoundAdj) or the CRM's `total = net_total +
+#   tax_total` check fails. `local_net_total` = `LocalNetTotal - LocalTax`
+#   (REF [?]: LocalNetTotal almost certainly includes tax). `DocStatus` is
+#   selected so the task's `filterFormula` can drop drafts once REF check 6.2
+#   names the draft letter (owner ruling 20 Oct: no guessed letter).
+# * Billing line cut (differs from the order family): keep any line with a
+#   non-zero `SubTotal` - a charge/discount/rounding line has no `ItemCode`
+#   and may have a NULL `Qty` - and drop pure text lines (`SubTotal` NULL/0
+#   AND `Qty` NULL). The SAME predicate in the header aggregate, the line
+#   fetch and the sweep. `NULL <> 0` is unknown, so a NULL-SubTotal line
+#   survives only on a non-NULL `Qty`.
+# * Line fingerprint (contract 14.3): COUNT, SUM(Qty), SUM(SubTotal),
+#   SUM(Tax), MAX(DtlKey), COUNT(FromDocDtlKey), plus SUM(TransferedQty) on
+#   IVDTL/CSDTL - a line-only edit never bumps the header `LastModified`
+#   (proven on SO). Named `LineFp*`, never `LineCount`: the LineCount guard
+#   keys on that exact name.
+# * Line links (contract 14.3, owner ruling 20 Oct: exact links only): each
+#   source line table is joined ONLY on its own `FromDocType`, by DtlKey, to
+#   read the DocKey of the header that owns the source line; the engine mints
+#   `from_line_ref` from it (`mapping.MappingEngine._mint_plan32_line_refs`).
+#   IV/CS lines come from SO or DO (QT has no ref), CN lines from IV, DN lines
+#   have no source. The DO hop needs `DODTL` on the read-only grant (RUNBOOK
+#   0.1): without it the line query fails loudly at Preview, never an
+#   unlinked push.
+# * Not handled yet (REF check 6.5): package parent/child lines (`DtlType`,
+#   `ParentDtlKey`) are not de-duplicated - no rule exists yet.
+
+BILLING_DOCUMENT_STATUS_FORMULA = 'if(Cancelled == "T", "cancelled", "posted")'
+
+_BILLING_LINE_CUT = "(d.SubTotal <> 0 OR d.Qty IS NOT NULL)"
+
+# (link column alias, source line table, join alias, FromDocType) per entity.
+_BILLING_LINKS: Dict[str, Tuple[Tuple[str, str, str, str], ...]] = {
+    ENTITY_INVOICE: (("LinkSODocKey", "SODTL", "so", "SO"), ("LinkDODocKey", "DODTL", "dd", "DO")),
+    ENTITY_CASH_SALE: (("LinkSODocKey", "SODTL", "so", "SO"), ("LinkDODocKey", "DODTL", "dd", "DO")),
+    ENTITY_CREDIT_NOTE: (("LinkIVDocKey", "IVDTL", "ivl", "IV"),),
+    ENTITY_DEBIT_NOTE: (),
+}
+
+_BILLING_LINK_FIELDS: Dict[str, PresetField] = {
+    "LinkSODocKey": PresetField("LinkSODocKey", "link_so_doc_key", "int"),
+    "LinkDODocKey": PresetField("LinkDODocKey", "link_do_doc_key", "int"),
+    "LinkIVDocKey": PresetField("LinkIVDocKey", "link_iv_doc_key", "int"),
+}
+
+
+def _billing_line_aggregates(*, transferred: bool) -> str:
+    return (
+        "COUNT(*) AS LineFpCount, SUM(d.Qty) AS LineFpQty, "
+        "SUM(d.SubTotal) AS LineFpSubTotal, SUM(d.Tax) AS LineFpTax, "
+        "MAX(d.DtlKey) AS LineFpMaxDtlKey, COUNT(d.FromDocDtlKey) AS LineFpLinked"
+        + (", SUM(d.TransferedQty) AS LineFpTransfered" if transferred else "")
+    )
+
+
+def _billing_header_query(
+    header_table: str, line_table: str, *, transferred: bool, against: bool,
+) -> str:
+    fingerprint_out = (
+        "l.LineFpCount AS LineFpCount, l.LineFpQty AS LineFpQty, "
+        "l.LineFpSubTotal AS LineFpSubTotal, l.LineFpTax AS LineFpTax, "
+        "l.LineFpMaxDtlKey AS LineFpMaxDtlKey, l.LineFpLinked AS LineFpLinked"
+        + (", l.LineFpTransfered AS LineFpTransfered" if transferred else "")
+    )
+    return (
+        "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, "
+        "h.DocStatus AS DocStatus, c.AutoKey AS DebtorAutoKey, "
+        "h.DebtorCode AS DebtorCode, h.DebtorName AS DebtorName, "
+        "h.SalesAgent AS SalesAgent, h.CurrencyCode AS CurrencyCode, "
+        "h.CurrencyRate AS CurrencyRate, h.TotalExTax AS TotalExTax, h.Tax AS Tax, "
+        "h.NetTotal AS NetTotal, h.LocalNetTotal - h.LocalTax AS LocalNetExTax, "
+        "h.Ref AS Ref, h.Description AS Description, "
+        + ("h.OurInvoiceNo AS OurInvoiceNo, " if against else "")
+        + "h.Cancelled AS Cancelled, h.LastModified AS LastModified, "
+        f"{fingerprint_out} "
+        f"FROM {{database}}.dbo.{header_table} AS h "
+        "LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode "
+        f"OUTER APPLY (SELECT {_billing_line_aggregates(transferred=transferred)} "
+        f"FROM {{database}}.dbo.{line_table} AS d "
+        f"WHERE d.DocKey = h.DocKey AND {_BILLING_LINE_CUT}) AS l"
+    )
+
+
+def _billing_line_query(line_table: str, links: Tuple[Tuple[str, str, str, str], ...]) -> str:
+    link_columns = "".join(f", {alias}.DocKey AS {column}" for column, _, alias, _ in links)
+    link_joins = "".join(
+        f" LEFT JOIN {{database}}.dbo.{table} AS {alias} "
+        f"ON d.FromDocType = '{kind}' AND {alias}.DtlKey = d.FromDocDtlKey"
+        for _, table, alias, kind in links
+    )
+    return (
+        "SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, "
+        "i.AutoKey AS ItemAutoKey, d.ItemCode AS ItemCode, "
+        "d.Description AS Description, d.UOM AS UOM, d.Qty AS Qty, "
+        "d.UnitPrice AS UnitPrice, d.DiscountAmt AS DiscountAmt, "
+        "d.SubTotalExTax AS SubTotalExTax, d.TaxCode AS TaxCode, "
+        "d.TaxRate AS TaxRate, d.Tax AS Tax, d.SubTotal AS SubTotal, "
+        "d.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, "
+        f"d.FromDocDtlKey AS FromDocDtlKey{link_columns} "
+        f"FROM {{database}}.dbo.{line_table} AS d "
+        "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode"
+        f"{link_joins} "
+        f"WHERE d.DocKey = :doc_key AND {_BILLING_LINE_CUT}"
+    )
+
+
+def _billing_fingerprint_query(header_table: str, line_table: str, *, transferred: bool) -> str:
+    return (
+        f"SELECT d.DocKey AS DocKey, {_billing_line_aggregates(transferred=transferred)} "
+        f"FROM {{database}}.dbo.{line_table} AS d "
+        f"JOIN {{database}}.dbo.{header_table} AS h ON h.DocKey = d.DocKey "
+        f"WHERE h.DocDate >= :from_date AND {_BILLING_LINE_CUT} "
+        "GROUP BY d.DocKey"
+    )
+
+
+_BILLING_HEADER_FIELDS: Tuple[PresetField, ...] = (
+    PresetField("DocNo", "doc_no", "string", required=True),
+    PresetField("DocDate", "doc_date", "date", required=True),
+    PresetField(
+        "Cancelled", "status", "string", formula=BILLING_DOCUMENT_STATUS_FORMULA, required=True,
+    ),
+    PresetField("LastModified", "source_modified_at", "datetime"),
+    PresetField("DebtorAutoKey", "customer_ref", "ref_customer"),
+    PresetField("DebtorCode", "customer_code", "string"),
+    PresetField("DebtorName", "customer_name", "string"),
+    PresetField("SalesAgent", "agent_code", "string"),
+    PresetField("CurrencyCode", "currency_code", "string"),
+    PresetField("CurrencyRate", "currency_rate", "decimal"),
+    PresetField("TotalExTax", "net_total", "decimal", required=True),
+    PresetField("Tax", "tax_total", "decimal", required=True),
+    PresetField("NetTotal", "total", "decimal", required=True),
+    PresetField("LocalNetExTax", "local_net_total", "decimal", required=True),
+    PresetField("Ref", "ref", "string"),
+    PresetField("Description", "description", "string"),
+)
+
+_BILLING_LINE_FIELDS: Tuple[PresetField, ...] = (
+    PresetField("DtlKey", "source_ref", "string", required=True),
+    PresetField("Seq", "line_number", "int"),
+    PresetField("ItemAutoKey", "product_ref", "ref_product"),
+    PresetField("ItemCode", "product_code", "string"),
+    PresetField("Description", "description", "string"),
+    PresetField("UOM", "uom", "string"),
+    PresetField("Qty", "quantity", "decimal"),
+    PresetField("UnitPrice", "unit_price", "decimal"),
+    PresetField("DiscountAmt", "discount_amount", "decimal"),
+    PresetField("SubTotalExTax", "net_amount", "decimal"),
+    PresetField("TaxCode", "tax_code", "string"),
+    PresetField("TaxRate", "tax_rate", "decimal"),
+    PresetField("Tax", "tax_amount", "decimal"),
+    PresetField("SubTotal", "line_total", "decimal"),
+    PresetField("FromDocType", "from_doc_type", "string"),
+    PresetField("FromDocNo", "from_doc_no", "string"),
+    PresetField("FromDocDtlKey", "from_doc_line_key", "int"),
+)
+
+
+def _billing_preset(
+    label: str, entity_type: str, header_table: str, line_table: str, *,
+    transferred: bool = False, against: bool = False,
+) -> DocumentPreset:
+    links = _BILLING_LINKS[entity_type]
+    header = _BILLING_HEADER_FIELDS + (
+        (PresetField("OurInvoiceNo", "against_doc_no", "string"),) if against else ()
+    )
+    return DocumentPreset(
+        label=label,
+        header_query=_billing_header_query(
+            header_table, line_table, transferred=transferred, against=against,
+        ),
+        line_query=_billing_line_query(line_table, links),
+        key_columns=("DocKey",),
+        watermark_column="LastModified",
+        doc_date_column="DocDate",
+        # Contract 12 "Backfill": the start date is shared-service
+        # configuration (owner ruling Q2, 1 Jan 2023).
+        from_date="2023-01-01",
+        filter_formula=None,
+        header=header,
+        line=_BILLING_LINE_FIELDS + tuple(_BILLING_LINK_FIELDS[column] for column, *_ in links),
+        fingerprint_query=_billing_fingerprint_query(
+            header_table, line_table, transferred=transferred,
+        ),
+    )
+
+
+INVOICE_PRESET = _billing_preset(
+    "AutoCount Invoice", ENTITY_INVOICE, "IV", "IVDTL", transferred=True,
+)
+CASH_SALE_PRESET = _billing_preset(
+    "AutoCount Cash Sale", ENTITY_CASH_SALE, "CS", "CSDTL", transferred=True,
+)
+CREDIT_NOTE_PRESET = _billing_preset(
+    "AutoCount Credit Note", ENTITY_CREDIT_NOTE, "CN", "CNDTL", against=True,
+)
+DEBIT_NOTE_PRESET = _billing_preset(
+    "AutoCount Debit Note", ENTITY_DEBIT_NOTE, "DN", "DNDTL", against=True,
+)
+
+
+# ── Plan 32 - AR outstanding sweep (CRM contract 2.10) ───────────────────────
+#
+# One record per DEBTOR (contract 14.2, the whole truth for that debtor), run
+# as a document task: the header row is the debtor, its lines are its OPEN AR
+# items. Owner rulings 20 Oct:
+# * Scope = every debtor with ANY AR row, open or not, so a debtor whose last
+#   item is paid re-stages (its fingerprint moves) and pushes `0` / `[]`.
+# * `TotalOutstanding` = SUM(ARInvoice.Outstanding) + SUM(ARDN.Outstanding)
+#   - SUM(ARCN.NetTotal - ARCN.KnockOffAmt) (Q1 (a)). REF section 4 names no
+#   rate column on the AR tables, so this is right for MYR debtors only until
+#   the REF section 6 check names the debtor figure (or a rate column).
+# * `Outstanding` per item stays in the document's own currency (CRM displays
+#   it with the document's `currency_code`).
+# An AR row maps to its billing document by `DocNo` + `DebtorCode` with
+# EXACTLY one match across the table(s) it can come from (`SourceType`/
+# `SourceKey` are REF [I], unconfirmed); an ARInvoice row can be an IV or a CS.
+# An AR row with no single match (hand-keyed AR, ambiguous number) is in the
+# total but not in the lines. A CN's item is the unapplied amount, negative.
+# The debtor's latest AR `LastModified` is the watermark AND the date floor;
+# a knock-off may bump no `LastModified`, which the fingerprint sweep (SUM,
+# open COUNT, MAX(LastModified), contract 14.3) catches on its interval. The
+# read time (`as_of`) is stamped at mapping time - never a SQL column, which
+# would move every debtor's row hash on every run.
+# Unconfirmed until access (REF section 6): `Cancelled` on ARDN/ARCN (only
+# ARInvoice lists it), and whether a knock-off bumps any `LastModified`.
+
+# A NULL `LastModified` reads as the floor date, so a debtor whose AR rows
+# carry none is still extracted (the date floor drops a NULL max).
+_AR_NO_MODIFIED = "CAST('2000-01-01' AS datetime)"
+
+_AR_ITEMS = (
+    "SELECT i.DebtorCode AS DebtorCode, i.Outstanding AS Amount, "
+    f"COALESCE(i.LastModified, {_AR_NO_MODIFIED}) AS LastModified "
+    "FROM {database}.dbo.ARInvoice AS i WHERE COALESCE(i.Cancelled, 'F') <> 'T' "
+    f"UNION ALL SELECT n.DebtorCode, n.Outstanding, COALESCE(n.LastModified, {_AR_NO_MODIFIED}) "
+    "FROM {database}.dbo.ARDN AS n "
+    "UNION ALL SELECT r.DebtorCode, -(r.NetTotal - COALESCE(r.KnockOffAmt, 0)), "
+    f"COALESCE(r.LastModified, {_AR_NO_MODIFIED}) "
+    "FROM {database}.dbo.ARCN AS r"
+)
+
+_AR_DEBTOR_TOTALS = (
+    "SELECT a.DebtorCode AS DebtorCode, SUM(a.Amount) AS TotalOutstanding, "
+    "SUM(CASE WHEN a.Amount <> 0 THEN 1 ELSE 0 END) AS OpenCount, "
+    "MAX(a.LastModified) AS LastModified "
+    f"FROM ({_AR_ITEMS}) AS a GROUP BY a.DebtorCode"
+)
+
+_AR_HEADER_QUERY = (
+    "SELECT c.AutoKey AS DebtorKey, c.AccNo AS DebtorCode, "
+    "s.TotalOutstanding AS TotalOutstanding, s.OpenCount AS OpenCount, "
+    "s.LastModified AS LastModified "
+    "FROM {database}.dbo.Debtor AS c "
+    f"JOIN ({_AR_DEBTOR_TOTALS}) AS s ON s.DebtorCode = c.AccNo"
+)
+
+
+def _ar_side_hits(ar_table: str, ar_alias: str) -> str:
+    """How many rows of the SAME AR table carry this row's DocNo + DebtorCode.
+    The match must be one-to-one both ways (review S4): two AR rows pointing
+    at one billing document would mint a duplicate line ref and reject the
+    debtor's whole snapshot, so neither is listed (both stay in the total)."""
+    return (
+        f"(SELECT COUNT(*) FROM {{database}}.dbo.{ar_table} AS a2 "
+        f"WHERE a2.DocNo = {ar_alias}.DocNo AND a2.DebtorCode = {ar_alias}.DebtorCode) AS ArHits"
+    )
+
+
+def _ar_match(table: str, ar_alias: str, prefix: str) -> str:
+    return (
+        f"(SELECT COUNT(*) FROM {{database}}.dbo.{table} AS b "
+        f"WHERE b.DocNo = {ar_alias}.DocNo AND b.DebtorCode = {ar_alias}.DebtorCode) AS {prefix}Hits, "
+        f"(SELECT MIN(b.DocKey) FROM {{database}}.dbo.{table} AS b "
+        f"WHERE b.DocNo = {ar_alias}.DocNo AND b.DebtorCode = {ar_alias}.DebtorCode) AS {prefix}Key"
+    )
+
+
+_AR_LINE_QUERY = (
+    "SELECT x.DocType AS DocType, x.BillingDocKey AS BillingDocKey, "
+    "x.Outstanding AS Outstanding, x.DueDate AS DueDate FROM ("
+    "SELECT CASE WHEN m.IvHits = 1 THEN 'IV' ELSE 'CS' END AS DocType, "
+    "CASE WHEN m.IvHits = 1 THEN m.IvKey ELSE m.CsKey END AS BillingDocKey, "
+    "i.Outstanding AS Outstanding, i.DueDate AS DueDate, i.DebtorCode AS DebtorCode "
+    "FROM {database}.dbo.ARInvoice AS i "
+    f"CROSS APPLY (SELECT {_ar_match('IV', 'i', 'Iv')}, {_ar_match('CS', 'i', 'Cs')}, "
+    f"{_ar_side_hits('ARInvoice', 'i')}) AS m "
+    "WHERE COALESCE(i.Cancelled, 'F') <> 'T' AND i.Outstanding <> 0 "
+    "AND m.IvHits + m.CsHits = 1 AND m.ArHits = 1 "
+    "UNION ALL SELECT 'DN', m.DnKey, n.Outstanding, n.DueDate, n.DebtorCode "
+    "FROM {database}.dbo.ARDN AS n "
+    f"CROSS APPLY (SELECT {_ar_match('DN', 'n', 'Dn')}, {_ar_side_hits('ARDN', 'n')}) AS m "
+    "WHERE n.Outstanding <> 0 AND m.DnHits = 1 AND m.ArHits = 1 "
+    "UNION ALL SELECT 'CN', m.CnKey, -(r.NetTotal - COALESCE(r.KnockOffAmt, 0)), NULL, r.DebtorCode "
+    "FROM {database}.dbo.ARCN AS r "
+    f"CROSS APPLY (SELECT {_ar_match('CN', 'r', 'Cn')}, {_ar_side_hits('ARCN', 'r')}) AS m "
+    "WHERE r.NetTotal - COALESCE(r.KnockOffAmt, 0) <> 0 AND m.CnHits = 1 AND m.ArHits = 1"
+    ") AS x JOIN {database}.dbo.Debtor AS c ON c.AccNo = x.DebtorCode "
+    "WHERE c.AutoKey = :doc_key"
+)
+
+# The sweep's first column MUST be aliased `DocKey`: `SqlDbSource.
+# fetch_fingerprints` reads the raw key from that exact name for every
+# document task (review B1 - `DebtorKey` here silently swept nothing).
+_AR_FINGERPRINT_QUERY = (
+    "SELECT c.AutoKey AS DocKey, s.TotalOutstanding AS FpOutstanding, "
+    "s.OpenCount AS FpOpenCount, s.LastModified AS FpLastModified "
+    "FROM {database}.dbo.Debtor AS c "
+    f"JOIN ({_AR_DEBTOR_TOTALS}) AS s ON s.DebtorCode = c.AccNo "
+    "WHERE s.LastModified >= :from_date"
+)
+
+AR_OUTSTANDING_PRESET = DocumentPreset(
+    label="AutoCount AR Outstanding",
+    header_query=_AR_HEADER_QUERY,
+    line_query=_AR_LINE_QUERY,
+    key_columns=("DebtorKey",),
+    watermark_column="LastModified",
+    doc_date_column="LastModified",
+    # A floor every live debtor clears: an open item is open whatever its age.
+    from_date="2000-01-01",
+    filter_formula=None,
+    header=(
+        PresetField("DebtorKey", "customer_ref", "ref_customer", required=True),
+        PresetField("DebtorCode", "customer_code", "string"),
+        PresetField("TotalOutstanding", "total_outstanding", "decimal", required=True),
+    ),
+    line=(
+        PresetField("DocType", "ar_doc_type", "string", required=True),
+        PresetField("BillingDocKey", "ar_doc_key", "int", required=True),
+        PresetField("Outstanding", "outstanding", "decimal", required=True),
+        PresetField("DueDate", "due_date", "date"),
+    ),
+    fingerprint_query=_AR_FINGERPRINT_QUERY,
+)
+
 DOCUMENT_PRESETS: Dict[str, DocumentPreset] = {
     ENTITY_SALES_ORDER: SO_PRESET,
     ENTITY_PURCHASE_ORDER: PO_PRESET,
@@ -722,6 +1072,11 @@ DOCUMENT_PRESETS: Dict[str, DocumentPreset] = {
     ENTITY_CANCEL_PURCHASE_ORDER: CANCEL_PO_PRESET,
     ENTITY_CONSIGNMENT: CONSIGNMENT_PRESET,
     ENTITY_CONSIGNMENT_RETURN: CONSIGNMENT_RETURN_PRESET,
+    ENTITY_INVOICE: INVOICE_PRESET,
+    ENTITY_CASH_SALE: CASH_SALE_PRESET,
+    ENTITY_CREDIT_NOTE: CREDIT_NOTE_PRESET,
+    ENTITY_DEBIT_NOTE: DEBIT_NOTE_PRESET,
+    ENTITY_AR_OUTSTANDING: AR_OUTSTANDING_PRESET,
 }
 
 

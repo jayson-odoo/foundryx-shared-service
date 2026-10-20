@@ -15,7 +15,11 @@ from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
 from ..http_client import get_http_transport
-from ..canonical.documents import LINKED_DOCUMENT_ENTITY_TYPES, is_document_entity
+from ..canonical.documents import (
+    BILLING_DO_LINKED_ENTITY_TYPES,
+    LINKED_DOCUMENT_ENTITY_TYPES,
+    is_document_entity,
+)
 from ..mapping import SCOPE_LINE
 from ..schemas import (
     CompanyCreate,
@@ -197,6 +201,11 @@ def get_company(
                 has_doc_feed_book=(
                     not any(e.entity_type in LINKED_DOCUMENT_ENTITY_TYPES for e in entities)
                     or service.has_doc_feed_book(current_user.tenant_id, company)
+                ),
+                # Plan 32 - only asked when an invoice / cash sale is configured.
+                has_delivery_order_book=(
+                    not any(e.entity_type in BILLING_DO_LINKED_ENTITY_TYPES for e in entities)
+                    or service.has_delivery_order_book(current_user.tenant_id, company)
                 ),
             ),
         ),

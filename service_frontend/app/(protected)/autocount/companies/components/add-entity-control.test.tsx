@@ -95,6 +95,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
         'Product', 'Sales agent', 'Sales order', 'Purchase order', 'Shipping order', 'Brand',
         // AC-CANCEL-PULL
         'Cancel sales order', 'Cancel purchase order', 'Consignment', 'Consignment return',
+        // Plan 32
+        'Invoice', 'Cash sale', 'Credit note', 'Debit note', 'AR outstanding',
       ]),
     );
     expect(names).not.toContain('Goods received note');
@@ -112,7 +114,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     // sprint-5/14 section 11 (AC-14-47): Branch is HTTP-only as well, so a DB
     // company is offered it beside Stock balance (thirteen total).
     // AC-CANCEL-PULL: + the four linked documents (seventeen).
-    expect(names).toHaveLength(17);
+    // Plan 32: + the four billing documents and AR outstanding (twenty-two).
+    expect(names).toHaveLength(22);
     expect(names).toContain('Stock balance');
     expect(names).toContain('Branch');
   });
@@ -127,8 +130,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    // AC-CANCEL-PULL: 17 offered minus the two configured.
-    expect(names).toHaveLength(15);
+    // Plan 32: 22 offered minus the two configured.
+    expect(names).toHaveLength(20);
     expect(names).not.toContain('Customer');
     expect(names).not.toContain('Sales order');
     expect(names).toContain('Supplier');
@@ -146,8 +149,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    // AC-CANCEL-PULL: 17 offered minus Stock balance.
-    expect(names).toHaveLength(16);
+    // Plan 32: 22 offered minus Stock balance.
+    expect(names).toHaveLength(21);
     expect(names).not.toContain('Stock balance');
   });
 });

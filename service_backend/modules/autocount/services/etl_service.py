@@ -46,6 +46,8 @@ from ..canonical.documents import (
     LINKED_DOCUMENT_ENTITY_TYPES,
     ORDER_DOCUMENT_ENTITY_TYPES,
     is_document_entity,
+    BILLING_DOCUMENT_ENTITY_TYPES,
+    ENTITY_AR_OUTSTANDING,
 )
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from ..formula import FormulaError, known_filter_variables, parse_formula
@@ -118,7 +120,7 @@ from .company_service import (
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE, TransformError
-from ..http_source.book import identity_scope
+from ..http_source.book import billing_link_book, identity_scope
 from ..http_source.combine import (
     CombineDropError,
     CombineMeasureError,
@@ -175,7 +177,11 @@ ETL_ENTITY_TYPES = (
     ENTITY_BRANCH,
     # AC-CANCEL-PULL - Cancel SO / Cancel PO / Consignment / Consignment
     # Return: DB-source documents exactly like SO/PO/SPO (contract 2.8).
-) + LINKED_DOCUMENT_ENTITY_TYPES
+) + LINKED_DOCUMENT_ENTITY_TYPES + BILLING_DOCUMENT_ENTITY_TYPES + (
+    # Plan 32 - billing documents (contract 2.6) + the AR snapshot (2.10),
+    # DB-source documents.
+    ENTITY_AR_OUTSTANDING,
+)
 
 # sprint-5/10 (AC-10-11/15) - entities a task may be switched to ``pull``
 # for. ``stock_balance`` joins this set in S5b (a pull-only entity, gated by
@@ -2861,6 +2867,8 @@ class EtlService:
             database_name=identity_scope(
                 self.db, tenant_id, company, entity_type, config.source_config
             ),
+            # Plan 32 (D6) - the DO-feed book a billing line's DO hop links under.
+            link_book=billing_link_book(self.db, tenant_id, company, entity_type),
         )
         # sprint-5/11 S5 (AC-11-40) - the SAME callback names the "mapping"
         # stage transition too (not page-driven, so `page`/`total` are

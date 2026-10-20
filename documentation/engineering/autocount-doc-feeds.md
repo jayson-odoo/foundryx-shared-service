@@ -321,3 +321,83 @@ Cancel SO (`XS`), Cancel PO (`XP`), Consignment (`Consignment`) and Consignment 
     `TransferedQty` and a disabled row, and no warning.
   - A customised header query is left alone with a WARNING (its row is created disabled).
   - Every consignment re-stages once after deploy, by design.
+
+## 13. Billing documents + AR outstanding (plan 32, CRM #1770, contracts 2.6 and 2.10)
+
+Like section 12 these are regular `sql_db` ETL tasks (presets in `presets.py`), not doc feeds. Unlike
+section 12 their wire is a **canonical snake_case record**, not the doc-feed shape. Contract copy:
+`documentation/plans/sprint-5/32-autocount-billing-feed-contract.md`; plan and UAC: `sprint-5/32-*`.
+The CRM's own section 12 and section 14 stay the contract of record. A wire change here without the
+matching CRM change is a review finding.
+
+- **Entities and doors.** `invoice` (IV/IVDTL), `cash_sale` (CS/CSDTL), `credit_note` (CN/CNDTL) and
+  `debit_note` (DN/DNDTL) all post to `ingest/billing_documents`. The entity name IS the CRM
+  `document_type`. `ar_outstanding` posts to `ingest/ar_outstanding`. Neither body carries `book`.
+- **Gates.** `billing_documents` needs contract >= 2.6 and `billing_documents` advertised;
+  `ar_outstanding` needs >= `ContractVersion(2, 10)` and `ar_outstanding` advertised. All five are in
+  `PUSH_REFUSES_LOGGING_FALLBACK`.
+  - **Contract versions compare as `(major, minor)` integers** (`ContractVersion`, BL-SS-289): the
+    float literal `2.10` is 2.1. A new two-digit-minor threshold must be built as
+    `ContractVersion(2, 10)`.
+  - The float wire fields still show 2.10 as `2.1` in the contract-gate banner (BL-SS-307,
+    display only).
+- **Identity.**
+  - Billing header: `{database}:{IV|CS|CN|DN}:{DocKey}`. The ref is filed under the company's database
+    name, not the doc-feed book. Billing line: `{header ref}:{DtlKey}`.
+  - AR: `{database}:debtor:{Debtor.AutoKey}`. An AR item's ref is the billing document's own ref,
+    never prefixed.
+  - The `flat_source_ref` branches serve both, so row hashes, delete intents and staged records
+    agree.
+- **Wire rules** (`CanonicalBillingDocument.sink_payload`):
+  - Every listed key is sent every time, null when empty. A push names the whole document, so the
+    order family's omit-when-empty rule does not apply.
+  - Decimals are JSON numbers.
+  - `source_modified_at` is AutoCount's MYT wall time with `+08:00`. The `datetime` transform keeps
+    the wall time and labels it UTC; the CRM reads a naive value as UTC.
+  - `against_doc_no` is the first non-blank entry of `OurInvoiceNo`. `against_source_ref` is always
+    null (the CRM matches by number).
+  - Status is `posted` or `cancelled` (`status_values_for`, which the mapping save gate applies too).
+- **Line links** (`MappingEngine._mint_plan32_line_refs`). Each preset joins the source line table only
+  on its own `FromDocType` and reads the owning header's DocKey. The link inputs are `link_*_doc_key`
+  and `from_doc_line_key`, and they never go on the wire.
+  - **`SO`**: `{database}:{SO DocKey}:{DtlKey}`.
+  - **`DO`**: `{book}:DO:{DO DocKey}:{DtlKey}`.
+    - The book comes from the company's Delivery Orders feed (`billing_link_book`). It is passed as
+      `MappingEngine(link_book=)` at every construction site.
+    - A DO line with no book is a named mapping error, never an unlinked push (owner ruling).
+    - `DODTL` must be on the read-only grant. Without it the line query fails at Preview.
+    - An invoice or cash-sale task on a company whose Delivery Orders feed has no book shows
+      `delivery_orders` on the document prerequisite card (`has_delivery_order_book`). The
+      GRN feed's book does not count.
+  - **`IV`** (CN lines): `{database}:IV:{IV DocKey}:{DtlKey}`.
+  - Anything else, a NULL key, or an unresolved line sends type + number and no ref.
+- **Line cut and fingerprint.**
+  - The cut is `(d.SubTotal <> 0 OR d.Qty IS NOT NULL)`. Charge lines with no `ItemCode` are kept;
+    pure text lines are dropped. The same cut applies in the header `OUTER APPLY`, the line query and
+    the sweep.
+  - The fingerprint columns are `LineFp*`, never `LineCount`, because the LineCount guard keys on that
+    name.
+  - IVDTL and CSDTL also sum `TransferedQty`.
+- **AR as a debtor-keyed document.** The header is one row per debtor that has any AR row, open or
+  not, so a paid-off debtor re-pushes `0` / `[]`. The lines are its open AR items that match exactly
+  one billing document by `DocNo` + `DebtorCode`; an item with no single match counts in the total
+  only.
+  - The match is one-to-one both ways (`ArHits = 1`). Two AR rows on one document would mint a
+    duplicate ref and reject the debtor's whole snapshot.
+  - A NULL `KnockOffAmt` counts as 0, and a NULL `LastModified` counts as the floor date.
+  - Every preset's fingerprint query aliases its key column `DocKey`
+    (`SqlDbSource.fetch_fingerprints` reads that exact name).
+  - The watermark and date column are the debtor's latest AR `LastModified`. The fingerprint sweep
+    catches a knock-off that bumps no `LastModified`.
+  - `as_of` is stamped at mapping time (the model default) and is never a SQL column, which would
+    re-push every debtor on every run.
+  - `ar_outstanding` is in `NO_DELETION_ENTITY_TYPES`: a vanished debtor is counted as `vanished`,
+    never deleted.
+  - The REF section 6 confirmations are listed in BL-SS-305.
+- **Deletions.** A billing delete intent goes through the ordinary `delete_batch`, with body
+  `{companyCode, source_refs}` sent to `ingest/billing_documents/deletions`.
+- **Push order.** The beat sweep enqueues credit and debit notes after every other due task
+  (`scheduler.sweep_order_key`). This is best effort: jobs run independently, and the CRM fills a
+  note's link when its invoice lands later.
+- **Not in this lane** (owner, after 25 Oct): the S4 backfill, the SELECT grant (`DODTL` included),
+  the REF section 6 checks, and the draft `filterFormula` (the header selects `DocStatus` for it).
