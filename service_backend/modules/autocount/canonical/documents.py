@@ -93,6 +93,11 @@ BILLING_DOCUMENT_ENTITY_TYPES: Tuple[str, ...] = (
     ENTITY_INVOICE, ENTITY_CASH_SALE, ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE,
 )
 
+# The billing documents whose lines can come from a delivery order (REF
+# transfer matrix: IV and CS from QT/SO/DO), so their DO hop needs the
+# company's Delivery Orders feed book.
+BILLING_DO_LINKED_ENTITY_TYPES: Tuple[str, ...] = (ENTITY_INVOICE, ENTITY_CASH_SALE)
+
 # The second segment of a billing `source_ref` (`{database}:{IV|CS|CN|DN}:
 # {DocKey}`, contract A2): DocKey is unique per document TABLE, not across
 # them, so the ref carries the type.

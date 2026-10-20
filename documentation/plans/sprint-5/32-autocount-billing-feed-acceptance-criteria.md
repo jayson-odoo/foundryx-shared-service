@@ -51,9 +51,10 @@ Tags: `[BE]` backend behaviour, `[T]` pinned by a pytest, `[FE]` frontend.
   `{companyCode, records}` (no `book` key); deletions post `{companyCode, source_refs}` to
   `ingest/billing_documents/deletions`; contract gate = version >= 2.6 AND `billing_documents` advertised;
   below the gate the push refuses with `CONTRACT_GATE` and rows stay STAGED (never the logging fallback).
-- **AC-32-20** `[BE][T]` Push order: an `invoice` or `cash_sale` push of a company runs before its
-  `credit_note` / `debit_note` push when both are due in one run window (dependency order, the same mechanism
-  masters-before-documents uses).
+- **AC-32-20** `[BE][T]` Push order (best effort): within one beat tick the sweep enqueues a company's
+  `invoice` / `cash_sale` tasks before its `credit_note` / `debit_note` tasks. Jobs then run independently;
+  the order is not load-bearing because the CRM fills a note's link when its invoice lands later (contract
+  12, Resolution). The platform has no cross-task dependency mechanism (none exists for masters either).
 
 ## C. AR outstanding (contract 2.10)
 
@@ -80,8 +81,11 @@ Tags: `[BE]` backend behaviour, `[T]` pinned by a pytest, `[FE]` frontend.
 ## D. Product surface
 
 - **AC-32-40** `[FE][T]` The five entities appear in the Add-entity list of a `sql_database` company with
-  readable labels (Invoice, Cash Sale, Credit Note, Debit Note, AR Outstanding), not on an HTTP company; the
-  generic contract-gate banner names their required version.
+  readable labels (Invoice, Cash sale, Credit note, Debit note, AR outstanding), not on an HTTP company. An
+  invoice / cash sale task on a company with no Delivery Orders feed book shows `delivery_orders` on the
+  document prerequisite card. **DEFERRED:** the generic contract-gate banner for these five (the Activate
+  tab renders only the brand / branch banners today, and the float `requiredVersion` would read 2.10 as
+  2.1, BL-SS-307).
 - **AC-32-41** `[BE][T]` Existing entities (SO, PO, SPO, the linked documents, masters) are byte-identical on
   the wire; the existing autocount suites stay green.
 

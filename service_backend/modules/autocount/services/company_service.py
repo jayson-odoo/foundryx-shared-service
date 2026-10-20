@@ -65,7 +65,9 @@ from ..formula import (
 from ..doc_feed.constants import FEED_DELIVERY_ORDERS
 from ..canonical.documents import (
     BILLING_DOCUMENT_ENTITY_TYPES,
+    BILLING_DO_LINKED_ENTITY_TYPES,
     ENTITY_AR_OUTSTANDING,
+    ENTITY_INVOICE,
     LINKED_DOCUMENT_ENTITY_TYPES,
     is_document_entity,
     status_values_for,
@@ -365,6 +367,7 @@ class DocumentPrerequisite:
 
 def document_prerequisites(
     entities: List["EntityState"], *, has_doc_feed_book: bool = True,
+    has_delivery_order_book: bool = True,
 ) -> List[DocumentPrerequisite]:
     """Pure: the prerequisite status of every CONFIGURED document entity, in
     the company's entity order (AC-01-11). Empty when no document entity is
@@ -389,6 +392,11 @@ def document_prerequisites(
             and (by_type[m].etl_status != ETL_STATUS_ACTIVE or not by_type[m].enabled)
         ]
         if not has_doc_feed_book and state.entity_type in LINKED_DOCUMENT_ENTITY_TYPES:
+            inactive = inactive + [FEED_DELIVERY_ORDERS]
+        # Plan 32 (review S2) - an invoice / cash sale line sourced from a DO
+        # links under the Delivery Orders feed's OWN book; without it every
+        # such document fails mapping by design (D6), so warn up front.
+        if not has_delivery_order_book and state.entity_type in BILLING_DO_LINKED_ENTITY_TYPES:
             inactive = inactive + [FEED_DELIVERY_ORDERS]
         out.append(DocumentPrerequisite(state.entity_type, missing, inactive))
     return out
@@ -1025,6 +1033,11 @@ class CompanyService:
                 "delivered to Sorento."
             )
         return {"book": book}
+
+    def has_delivery_order_book(self, tenant_id: str, company: AcCompany) -> bool:
+        """Plan 32 - whether the company's Delivery Orders feed has a book
+        (the one a billing line's DO hop links under, `billing_link_book`)."""
+        return bool(billing_link_book(self.db, tenant_id, company, ENTITY_INVOICE))
 
     def has_doc_feed_book(self, tenant_id: str, company: AcCompany) -> bool:
         """AC-CANCEL-PULL - whether the company has a doc-feed book for its

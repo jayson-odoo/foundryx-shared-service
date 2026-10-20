@@ -955,13 +955,18 @@ DEBIT_NOTE_PRESET = _billing_preset(
 # Unconfirmed until access (REF section 6): `Cancelled` on ARDN/ARCN (only
 # ARInvoice lists it), and whether a knock-off bumps any `LastModified`.
 
+# A NULL `LastModified` reads as the floor date, so a debtor whose AR rows
+# carry none is still extracted (the date floor drops a NULL max).
+_AR_NO_MODIFIED = "CAST('2000-01-01' AS datetime)"
+
 _AR_ITEMS = (
     "SELECT i.DebtorCode AS DebtorCode, i.Outstanding AS Amount, "
-    "i.LastModified AS LastModified "
+    f"COALESCE(i.LastModified, {_AR_NO_MODIFIED}) AS LastModified "
     "FROM {database}.dbo.ARInvoice AS i WHERE COALESCE(i.Cancelled, 'F') <> 'T' "
-    "UNION ALL SELECT n.DebtorCode, n.Outstanding, n.LastModified "
+    f"UNION ALL SELECT n.DebtorCode, n.Outstanding, COALESCE(n.LastModified, {_AR_NO_MODIFIED}) "
     "FROM {database}.dbo.ARDN AS n "
-    "UNION ALL SELECT r.DebtorCode, -(r.NetTotal - r.KnockOffAmt), r.LastModified "
+    "UNION ALL SELECT r.DebtorCode, -(r.NetTotal - COALESCE(r.KnockOffAmt, 0)), "
+    f"COALESCE(r.LastModified, {_AR_NO_MODIFIED}) "
     "FROM {database}.dbo.ARCN AS r"
 )
 
@@ -981,6 +986,17 @@ _AR_HEADER_QUERY = (
 )
 
 
+def _ar_side_hits(ar_table: str, ar_alias: str) -> str:
+    """How many rows of the SAME AR table carry this row's DocNo + DebtorCode.
+    The match must be one-to-one both ways (review S4): two AR rows pointing
+    at one billing document would mint a duplicate line ref and reject the
+    debtor's whole snapshot, so neither is listed (both stay in the total)."""
+    return (
+        f"(SELECT COUNT(*) FROM {{database}}.dbo.{ar_table} AS a2 "
+        f"WHERE a2.DocNo = {ar_alias}.DocNo AND a2.DebtorCode = {ar_alias}.DebtorCode) AS ArHits"
+    )
+
+
 def _ar_match(table: str, ar_alias: str, prefix: str) -> str:
     return (
         f"(SELECT COUNT(*) FROM {{database}}.dbo.{table} AS b "
@@ -997,23 +1013,27 @@ _AR_LINE_QUERY = (
     "CASE WHEN m.IvHits = 1 THEN m.IvKey ELSE m.CsKey END AS BillingDocKey, "
     "i.Outstanding AS Outstanding, i.DueDate AS DueDate, i.DebtorCode AS DebtorCode "
     "FROM {database}.dbo.ARInvoice AS i "
-    f"CROSS APPLY (SELECT {_ar_match('IV', 'i', 'Iv')}, {_ar_match('CS', 'i', 'Cs')}) AS m "
+    f"CROSS APPLY (SELECT {_ar_match('IV', 'i', 'Iv')}, {_ar_match('CS', 'i', 'Cs')}, "
+    f"{_ar_side_hits('ARInvoice', 'i')}) AS m "
     "WHERE COALESCE(i.Cancelled, 'F') <> 'T' AND i.Outstanding <> 0 "
-    "AND m.IvHits + m.CsHits = 1 "
+    "AND m.IvHits + m.CsHits = 1 AND m.ArHits = 1 "
     "UNION ALL SELECT 'DN', m.DnKey, n.Outstanding, n.DueDate, n.DebtorCode "
     "FROM {database}.dbo.ARDN AS n "
-    f"CROSS APPLY (SELECT {_ar_match('DN', 'n', 'Dn')}) AS m "
-    "WHERE n.Outstanding <> 0 AND m.DnHits = 1 "
-    "UNION ALL SELECT 'CN', m.CnKey, -(r.NetTotal - r.KnockOffAmt), NULL, r.DebtorCode "
+    f"CROSS APPLY (SELECT {_ar_match('DN', 'n', 'Dn')}, {_ar_side_hits('ARDN', 'n')}) AS m "
+    "WHERE n.Outstanding <> 0 AND m.DnHits = 1 AND m.ArHits = 1 "
+    "UNION ALL SELECT 'CN', m.CnKey, -(r.NetTotal - COALESCE(r.KnockOffAmt, 0)), NULL, r.DebtorCode "
     "FROM {database}.dbo.ARCN AS r "
-    f"CROSS APPLY (SELECT {_ar_match('CN', 'r', 'Cn')}) AS m "
-    "WHERE r.NetTotal - r.KnockOffAmt <> 0 AND m.CnHits = 1"
+    f"CROSS APPLY (SELECT {_ar_match('CN', 'r', 'Cn')}, {_ar_side_hits('ARCN', 'r')}) AS m "
+    "WHERE r.NetTotal - COALESCE(r.KnockOffAmt, 0) <> 0 AND m.CnHits = 1 AND m.ArHits = 1"
     ") AS x JOIN {database}.dbo.Debtor AS c ON c.AccNo = x.DebtorCode "
     "WHERE c.AutoKey = :doc_key"
 )
 
+# The sweep's first column MUST be aliased `DocKey`: `SqlDbSource.
+# fetch_fingerprints` reads the raw key from that exact name for every
+# document task (review B1 - `DebtorKey` here silently swept nothing).
 _AR_FINGERPRINT_QUERY = (
-    "SELECT c.AutoKey AS DebtorKey, s.TotalOutstanding AS FpOutstanding, "
+    "SELECT c.AutoKey AS DocKey, s.TotalOutstanding AS FpOutstanding, "
     "s.OpenCount AS FpOpenCount, s.LastModified AS FpLastModified "
     "FROM {database}.dbo.Debtor AS c "
     f"JOIN ({_AR_DEBTOR_TOTALS}) AS s ON s.DebtorCode = c.AccNo "

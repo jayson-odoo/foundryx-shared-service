@@ -37,7 +37,7 @@ def test_parse_keeps_minor_as_integer(text, major, minor):
     assert str(v) == f"{major}.{minor}"
 
 
-@pytest.mark.parametrize("bad", ["", "x", "2.x", None, True])
+@pytest.mark.parametrize("bad", ["", "x", "2.x", None, True, "²", "2.²", "١٢", "٢.١٠", "9" * 5000, -3, "-2", "2.", 1e16])
 def test_parse_rejects_non_versions(bad):
     assert ContractVersion.parse(bad) is None
 
@@ -78,3 +78,10 @@ def test_every_existing_gate_stays_open_on_2_10():
         assert sorento_supports_entity(
             entity_type, contract_version=v, contract_entities=[name]
         ), entity_type
+
+
+def test_equal_values_hash_equally():
+    """Review N1: a version equal to a plain float/int finds it as a dict key."""
+    assert {2.7: "x"}[ContractVersion(2, 7)] == "x"
+    assert hash(ContractVersion(2, 0)) == hash(2)
+    assert ContractVersion(2, 10) != 2.1

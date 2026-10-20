@@ -202,6 +202,15 @@ _DEPENDENT_ENTITIES = {
 }
 
 
+# ASCII digits only (``str.isdigit`` also takes "²" and "١٢"), each part
+# capped, an optional patch part ignored.
+_VERSION_PART_DIGITS = 6
+_CONTRACT_VERSION_RE = re.compile(
+    r"([0-9]{1,%d})(?:\.([0-9]{1,%d}))?(?:\.[0-9]{1,%d})?"
+    % (_VERSION_PART_DIGITS, _VERSION_PART_DIGITS, _VERSION_PART_DIGITS)
+)
+
+
 class ContractVersion(float):
     """A CRM contract version compared as ``(major, minor)`` INTEGERS
     (BL-SS-289). A plain float reads ``"2.10"`` as 2.1, below every 2.x gate;
@@ -231,18 +240,20 @@ class ContractVersion(float):
     @classmethod
     def parse(cls, value: Any) -> Optional["ContractVersion"]:
         """``"2.10"`` / ``"2.10.3"`` / ``"3"`` / ``2.7`` / ``2`` -> a version;
-        anything else (blank, bool, ``None``, non-numeric) -> ``None``."""
+        anything else (blank, bool, ``None``, negative, non-ASCII digits,
+        absurdly long numbers) -> ``None``. Never raises: the text is
+        untrusted (`GET /contract`)."""
         if isinstance(value, ContractVersion):
             return value
         if isinstance(value, bool) or value is None:
             return None
         if isinstance(value, int):
-            return cls(value, 0)
+            return cls(value, 0) if 0 <= value < 10 ** _VERSION_PART_DIGITS else None
         text = repr(value) if isinstance(value, float) else str(value).strip()
-        parts = text.split(".")
-        if not parts[0].isdigit() or (len(parts) > 1 and not parts[1].isdigit()):
+        match = _CONTRACT_VERSION_RE.fullmatch(text)
+        if match is None:
             return None
-        return cls(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+        return cls(int(match.group(1)), int(match.group(2) or 0))
 
     def _key(self) -> Tuple[int, int]:
         return (self.major, self.minor)
@@ -277,6 +288,11 @@ class ContractVersion(float):
         return NotImplemented if key is None else self._key() >= key
 
     def __hash__(self) -> int:
+        # Equal values hash equally: when this version is the float it
+        # looks like (2.7 is (2, 7)), hash as that float so a dict keyed by
+        # the plain float finds it; 2.10 has no equal float (2.1 is (2, 1)).
+        if ContractVersion._other_key(float(self)) == self._key():
+            return float.__hash__(self)
         return hash(self._key())
 
     def __str__(self) -> str:

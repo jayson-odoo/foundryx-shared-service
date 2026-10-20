@@ -22,7 +22,9 @@ REF check 6.2).
 in `entities`. Batch cap 1000 records (413 `BATCH_TOO_LARGE`). A body without `records` / `source_refs` is
 422 `INVALID_BODY`. Company anchor unchanged.
 
-**Record** (`CanonicalBillingDocument`, unknown keys refused):
+**Record** (`CanonicalBillingDocument`, unknown keys refused). Note: the example line's `from_line_ref`
+(`...:SO:1234:1` on a `DO` line) is the CRM's example verbatim and contradicts section 14.3; the code follows
+14.3 (SO line `{db}:{DocKey}:{DtlKey}`, DO line `{book}:DO:{DocKey}:{DtlKey}`). Reported to the CRM, PR #127.
 
 ```json
 {
@@ -65,7 +67,8 @@ refused.
 **Resolution.** Customer (`customer_ref`, then `customer_code`), agent (`agent_code`), product
 (`product_ref`, then `product_code`) linked only inside the anchor company, never created; unresolved lands
 null with a warning. A CN/DN links its document by `against_source_ref`, else `against_doc_no` when exactly
-one IV/CS/DN carries that number. `from_line_ref` links to the anchor's sales-order line whose `source_ref`
+one IV/CS/DN carries that number; the number is kept either way, and when that document lands later its
+ingest fills the link. `from_line_ref` links to the anchor's sales-order line whose `source_ref`
 it is; the three `from_*` values are kept as sent.
 
 **Verdicts** `created`, `updated`, `failed`, `unchanged` (identical, or older by `source_modified_at`:

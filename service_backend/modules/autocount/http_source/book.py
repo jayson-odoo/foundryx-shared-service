@@ -93,9 +93,9 @@ def billing_link_book(db, tenant_id: str, company, entity_type: str) -> str:
     cash sale can come from a DO; every other entity answers ``''``. The
     header identity of a billing document is unaffected (it stays the
     company's database name, ``identity_scope``)."""
-    from ..canonical.documents import ENTITY_CASH_SALE, ENTITY_INVOICE
+    from ..canonical.documents import BILLING_DO_LINKED_ENTITY_TYPES
 
-    if entity_type not in (ENTITY_INVOICE, ENTITY_CASH_SALE):
+    if entity_type not in BILLING_DO_LINKED_ENTITY_TYPES:
         return ""
     from ..doc_feed.constants import FEED_DELIVERY_ORDERS
     from ..repositories.doc_feed_repository import DocFeedRepository

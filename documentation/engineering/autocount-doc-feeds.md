@@ -366,6 +366,9 @@ matching CRM change is a review finding.
       `MappingEngine(link_book=)` at every construction site.
     - A DO line with no book is a named mapping error, never an unlinked push (owner ruling).
     - `DODTL` must be on the read-only grant. Without it the line query fails at Preview.
+    - An invoice or cash-sale task on a company whose Delivery Orders feed has no book shows
+      `delivery_orders` on the document prerequisite card (`has_delivery_order_book`). The
+      GRN feed's book does not count.
   - **`IV`** (CN lines): `{database}:IV:{IV DocKey}:{DtlKey}`.
   - Anything else, a NULL key, or an unresolved line sends type + number and no ref.
 - **Line cut and fingerprint.**
@@ -379,6 +382,11 @@ matching CRM change is a review finding.
   not, so a paid-off debtor re-pushes `0` / `[]`. The lines are its open AR items that match exactly
   one billing document by `DocNo` + `DebtorCode`; an item with no single match counts in the total
   only.
+  - The match is one-to-one both ways (`ArHits = 1`). Two AR rows on one document would mint a
+    duplicate ref and reject the debtor's whole snapshot.
+  - A NULL `KnockOffAmt` counts as 0, and a NULL `LastModified` counts as the floor date.
+  - Every preset's fingerprint query aliases its key column `DocKey`
+    (`SqlDbSource.fetch_fingerprints` reads that exact name).
   - The watermark and date column are the debtor's latest AR `LastModified`. The fingerprint sweep
     catches a knock-off that bumps no `LastModified`.
   - `as_of` is stamped at mapping time (the model default) and is never a SQL column, which would

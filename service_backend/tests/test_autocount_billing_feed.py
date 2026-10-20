@@ -342,8 +342,8 @@ def test_ar_outstanding_preset_shape():
     assert f":{LINE_QUERY_DOC_KEY_PARAM}" in preset.line_query
     assert ":from_date" in preset.fingerprint_query
     # A CN is unapplied NetTotal - KnockOffAmt, sent negative.
-    assert "-(r.NetTotal - r.KnockOffAmt)" in preset.header_query
-    assert "-(r.NetTotal - r.KnockOffAmt)" in preset.line_query
+    assert "-(r.NetTotal - COALESCE(r.KnockOffAmt, 0))" in preset.header_query
+    assert "-(r.NetTotal - COALESCE(r.KnockOffAmt, 0))" in preset.line_query
     # AC-32-33 - the read time is never a SQL column (it would move the row
     # hash on every run and re-push every debtor).
     for query in (preset.header_query, preset.line_query, preset.fingerprint_query):
@@ -835,3 +835,131 @@ def test_the_sweep_enqueues_invoices_and_cash_sales_before_notes():
     assert ordered.index(ENTITY_CASH_SALE) < ordered.index(ENTITY_DEBIT_NOTE)
     assert ordered.index(ENTITY_INVOICE) < ordered.index(ENTITY_DEBIT_NOTE)
     assert ordered.index(ENTITY_CASH_SALE) < ordered.index(ENTITY_CREDIT_NOTE)
+
+
+# ── review round 1 ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("entity_type", sorted(DOCUMENT_PRESETS))
+def test_every_fingerprint_query_keys_its_rows_on_doc_key(entity_type):
+    """Review B1: `SqlDbSource.fetch_fingerprints` reads the raw key from a
+    column aliased exactly `DocKey`; any other alias makes the sweep a silent
+    no-op (the AR sweep once used `DebtorKey`)."""
+    import re
+
+    query = DOCUMENT_PRESETS[entity_type].fingerprint_query
+    match = re.match(r"SELECT \S+ AS (\w+)", query)
+    assert match and match.group(1) == "DocKey", query[:80]
+
+
+def test_the_ar_fingerprint_sweep_finds_a_debtor(monkeypatch):
+    """B1 end to end through `fetch_fingerprints`: a row shaped like the AR
+    sweep's own output yields that debtor's ref."""
+    import contextlib
+    import re
+
+    from modules.autocount.sql_source import source as source_module
+    from modules.autocount.sql_source.source import SqlDbSource
+
+    query = DOCUMENT_PRESETS[ENTITY_AR_OUTSTANDING].fingerprint_query
+    aliases = re.findall(r" AS (\w+)(?:,| FROM)", query.split(" FROM ", 1)[0] + " FROM")
+    row = dict(zip(aliases, [1234, Decimal("10"), 1, datetime(2026, 10, 1)]))
+
+    class _Row:
+        _mapping = row
+
+    class _Conn:
+        def execute(self, *_a, **_k):
+            class _Result:
+                def fetchall(self_inner):
+                    return [_Row()]
+            return _Result()
+
+    monkeypatch.setattr(
+        source_module, "open_readonly", lambda *a, **k: contextlib.nullcontext(_Conn()),
+    )
+    source = SqlDbSource.__new__(SqlDbSource)
+    source._fingerprint_query_exec = query
+    source._engine = None
+    source.timeout_s = 1
+    source._secrets = []
+    source.from_date = date(2000, 1, 1)
+    source.key_columns = ["DebtorKey"]
+    source.entity_type = ENTITY_AR_OUTSTANDING
+    source._identity_scope_cache = DB
+    out = source.fetch_fingerprints()
+    assert list(out) == [f"{DB}:debtor:1234"]
+
+
+def test_the_ar_match_is_one_to_one_both_ways():
+    """Review S4: an AR row is listed only when it matches exactly one billing
+    document AND no other row of its own AR table shares its DocNo + debtor
+    (else two items mint one ref and the debtor's snapshot is rejected)."""
+    query = DOCUMENT_PRESETS[ENTITY_AR_OUTSTANDING].line_query
+    assert query.count("m.ArHits = 1") == 3
+    for table in ("ARInvoice", "ARDN", "ARCN"):
+        assert f"FROM {{database}}.dbo.{table} AS a2" in query, table
+    for hits in ("m.IvHits + m.CsHits = 1", "m.DnHits = 1", "m.CnHits = 1"):
+        assert hits in query
+
+
+def test_a_missing_knock_off_or_last_modified_never_drops_an_ar_row():
+    """Review N3/N4: a NULL `KnockOffAmt` is 0 and a NULL `LastModified` is the
+    floor, so neither silently removes an item from the total."""
+    preset = DOCUMENT_PRESETS[ENTITY_AR_OUTSTANDING]
+    assert "COALESCE(r.KnockOffAmt, 0)" in preset.header_query
+    assert "COALESCE(r.KnockOffAmt, 0)" in preset.line_query
+    for alias in ("i", "n", "r"):
+        assert f"COALESCE({alias}.LastModified," in preset.header_query, alias
+
+
+def test_an_invoice_without_a_delivery_orders_book_warns_up_front():
+    """Review S2 (foolproof-UI): IV/CS lines from a DO need the DO feed's book."""
+    from modules.autocount.doc_feed.constants import FEED_DELIVERY_ORDERS
+    from types import SimpleNamespace
+
+    from modules.autocount.models import ETL_STATUS_ACTIVE
+    from modules.autocount.services.company_service import document_prerequisites
+
+    states = [
+        SimpleNamespace(entity_type=e, etl_status=ETL_STATUS_ACTIVE, enabled=True)
+        for e in ("customer", "product", ENTITY_INVOICE, ENTITY_CREDIT_NOTE)
+    ]
+    out = {p.entity_type: p for p in document_prerequisites(states, has_delivery_order_book=False)}
+    assert FEED_DELIVERY_ORDERS in out[ENTITY_INVOICE].inactive
+    assert FEED_DELIVERY_ORDERS not in out[ENTITY_CREDIT_NOTE].inactive
+    out = {p.entity_type: p for p in document_prerequisites(states)}
+    assert FEED_DELIVERY_ORDERS not in out[ENTITY_INVOICE].inactive
+
+
+def test_the_sweep_fires_notes_after_invoices(session_factory, monkeypatch):
+    """Review S1: the real `sweep_etl_tasks` enqueues IV/CS before CN/DN, even
+    when the notes' rows come first."""
+    from modules.autocount import scheduler as scheduler_module
+    from modules.autocount.models import ETL_STATUS_ACTIVE, SOURCE_IMPL_SQL_DB, AcEntityConfig
+    from tests.test_autocount_scheduler import NOW, _company
+
+    db = session_factory()
+    try:
+        company = _company(db)
+        for entity_type in (ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE, ENTITY_INVOICE, ENTITY_CASH_SALE):
+            db.add(AcEntityConfig(
+                tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=entity_type,
+                source_impl=SOURCE_IMPL_SQL_DB, etl_status=ETL_STATUS_ACTIVE,
+                source_config={"incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00"},
+                next_incremental_at=NOW - timedelta(minutes=1),
+            ))
+        db.commit()
+        fired: List[str] = []
+        monkeypatch.setattr(
+            scheduler_module, "_sweep_one",
+            lambda db_, config, now: fired.append(config.entity_type) or "skipped",
+        )
+        scheduler_module.sweep_etl_tasks(db, now=NOW)
+        billing = [e for e in fired if e in BILLING]
+        assert set(billing) == set(BILLING)
+        last_doc = max(billing.index(ENTITY_INVOICE), billing.index(ENTITY_CASH_SALE))
+        first_note = min(billing.index(ENTITY_CREDIT_NOTE), billing.index(ENTITY_DEBIT_NOTE))
+        assert last_doc < first_note, billing
+    finally:
+        db.close()
