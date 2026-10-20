@@ -1,7 +1,7 @@
 # 32 - Billing documents + AR outstanding: test execution report
 
 Lane SS-BILLING-FEED, PR #127. Fixture rows only; no AutoCount access exists before 25 Oct, so no live
-extract was possible. Backend: `tests/test_autocount_billing_feed.py` (113), `tests/test_autocount_contract_version_compare.py` (25);
+extract was possible. Backend: `tests/test_autocount_billing_feed.py` (114), `tests/test_autocount_contract_version_compare.py` (25);
 every autocount/sorento/doc-feed suite 3159 passed. Frontend: autocount vitest 937 passed.
 
 | AC | Result | Evidence |
@@ -25,7 +25,7 @@ every autocount/sorento/doc-feed suite 3159 passed. Frontend: autocount vitest 9
 | AC-32-33 | PASS | `test_as_of_survives_the_staged_round_trip_and_is_not_restamped`, no read-time SQL column |
 | AC-32-34 | PASS | `test_a_paid_off_debtor_sends_zero_and_an_empty_list`, `test_only_ar_outstanding_has_no_deletions_door` |
 | AC-32-35 | PASS | AR gate + `auto_push` refusal at 2.9 |
-| AC-32-40 | PASS (picker, prerequisite) / DEFERRED (banner, BL-SS-307) | vitest add-entity + meta tests; `test_an_invoice_without_a_delivery_orders_book_warns_up_front` |
+| AC-32-40 | PASS (picker, prerequisite) / DEFERRED (banner, BL-SS-307, owner sign-off) | vitest add-entity + meta tests; `test_an_invoice_without_a_delivery_orders_book_warns_up_front`, `test_the_company_detail_endpoint_warns_an_invoice_without_a_delivery_orders_book` (through the real route) |
 | AC-32-41 | PASS | full autocount suites green, wire tests of SO/PO/SPO/linked untouched |
 
 Browser evidence at 375px / 1280px: DEFERRED to the owner's hand test (crew test copy). The only UI change is

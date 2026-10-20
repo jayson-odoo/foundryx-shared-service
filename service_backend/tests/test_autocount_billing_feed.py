@@ -963,3 +963,44 @@ def test_the_sweep_fires_notes_after_invoices(session_factory, monkeypatch):
         assert last_doc < first_note, billing
     finally:
         db.close()
+
+
+def test_the_company_detail_endpoint_warns_an_invoice_without_a_delivery_orders_book(
+    client, session_factory,
+):
+    """Review round 2 SF2: the DO-book prerequisite is wired through the real
+    detail route. A GRN feed book does not count; the DO feed's book clears it."""
+    from modules.autocount.models import AcDocFeed, AcEntityConfig
+    from tests.test_autocount_db_company import _auth
+    from tests.test_autocount_documents import _company
+
+    db = session_factory()
+    company = _company(db)
+    db.add(AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_INVOICE, source_impl="sql_db",
+    ))
+    db.commit()
+    headers = _auth(client)
+
+    def invoice_line():
+        body = client.get(f"/autocount/companies/{company.id}", headers=headers).json()
+        return next(
+            p for p in body["company"]["documentPrerequisites"]
+            if p["entityType"] == ENTITY_INVOICE
+        )
+
+    try:
+        assert "delivery_orders" in invoice_line()["inactive"]
+        db.add(AcDocFeed(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, feed="goods_receive_notes", book="grnbook",
+        ))
+        db.commit()
+        assert "delivery_orders" in invoice_line()["inactive"]
+        db.add(AcDocFeed(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, feed="delivery_orders", book=BOOK,
+        ))
+        db.commit()
+        assert "delivery_orders" not in invoice_line()["inactive"]
+    finally:
+        db.close()
