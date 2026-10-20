@@ -44,6 +44,9 @@ from ..canonical.documents import (
     ENTITY_SHIPPING_ORDER,
     LINKED_DOCUMENT_ENTITY_TYPES,
     LINKED_DOCUMENT_MODELS,
+    BILLING_DOCUMENT_MODELS,
+    ENTITY_AR_OUTSTANDING,
+    CanonicalArOutstanding,
     CanonicalPurchaseOrder,
     CanonicalSalesOrder,
     CanonicalShippingOrder,
@@ -135,6 +138,9 @@ CANONICAL_MODELS = {
     ENTITY_STOCK_BALANCE: CanonicalStockBalance,
     # AC-CANCEL-PULL - Cancel SO/PO + Consignment/Return (contract 2.8).
     **LINKED_DOCUMENT_MODELS,
+    # Plan 32 - billing documents (2.6) + the AR snapshot (2.10).
+    **BILLING_DOCUMENT_MODELS,
+    ENTITY_AR_OUTSTANDING: CanonicalArOutstanding,
 }
 
 

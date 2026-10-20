@@ -104,6 +104,15 @@ def active_tenant_service_join(query, tenant_id_column):
     )
 
 
+def sweep_order_key(entity_type: str) -> int:
+    """Plan 32 (D11) - the enqueue order of one tick's due tasks: credit and
+    debit notes after every other entity (so after invoices and cash sales);
+    every other entity keeps its relative order (a stable sort on 0)."""
+    from .canonical.documents import ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE
+
+    return 1 if entity_type in (ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE) else 0
+
+
 def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:
     """The beat tick body. Returns ``{fired, skipped, failed}`` - a plain dict
     so the Celery task can hand it straight back as the task result."""
@@ -142,6 +151,11 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
         .all()
     )
     fired = skipped = failed = 0
+    # Plan 32 (D11) - within one tick, invoices and cash sales are enqueued
+    # before credit and debit notes (contract 12: IV/CS before CN/DN). Best
+    # effort only: the jobs run independently, and the CRM fills a note's
+    # link when its invoice lands later, so the order is never load-bearing.
+    due.sort(key=lambda config: sweep_order_key(config.entity_type))
     for config in due:
         try:
             outcome = _sweep_one(db, config, now=now)

@@ -67,7 +67,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
-from .http_source.book import identity_scope
+from .http_source.book import billing_link_book, identity_scope
 from .http_source.combine import (
     CombineDropError,
     apply_pull_metadata_map,
@@ -908,6 +908,8 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         database_name=identity_scope(
             db, tenant_id, company, entity_type, config.source_config
         ),
+        # Plan 32 (D6) - the DO-feed book a billing line's DO hop links under.
+        link_book=billing_link_book(db, tenant_id, company, entity_type),
     )
     # plan 13 (AC-13-11, D6) review round 2 B2 fix - the changed-set an HTTP
     # source counted this run (added/hash-changed) is now a DECLARED
@@ -1616,6 +1618,8 @@ def _run_paged_sql_db(
         database_name=identity_scope(
             db, tenant_id, company, entity_type, config.source_config
         ),
+        # Plan 32 (D6) - the DO-feed book a billing line's DO hop links under.
+        link_book=billing_link_book(db, tenant_id, company, entity_type),
     )
     hashes_repo = RowHashRepository(db)
     staged_repo = StagedRecordRepository(db)
@@ -3032,6 +3036,8 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         database_name=identity_scope(
             db, tenant_id, company, entity_type, config.source_config
         ),
+        # Plan 32 (D6) - the DO-feed book a billing line's DO hop links under.
+        link_book=billing_link_book(db, tenant_id, company, entity_type),
     )
 
     delivered: List[Tuple[str, Dict[str, Any]]] = []

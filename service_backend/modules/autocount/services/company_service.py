@@ -36,7 +36,7 @@ from ..activity import (
 )
 from ..client import AutoCountClient, AutoCountError
 from ..canonical.masters import LOCKED_MAPPING_SOURCES
-from ..http_source.book import derive_book, identity_scope
+from ..http_source.book import billing_link_book, derive_book, identity_scope
 from ..http_source.lookups import effective_result_columns
 from ..mapping import (
     DEFAULT_MAPPINGS,
@@ -64,9 +64,11 @@ from ..formula import (
 )
 from ..doc_feed.constants import FEED_DELIVERY_ORDERS
 from ..canonical.documents import (
-    DOCUMENT_STATUS_VALUES,
+    BILLING_DOCUMENT_ENTITY_TYPES,
+    ENTITY_AR_OUTSTANDING,
     LINKED_DOCUMENT_ENTITY_TYPES,
     is_document_entity,
+    status_values_for,
 )
 from ..mapping_catalog import (
     SorentoFieldDef,
@@ -118,6 +120,8 @@ from ..sinks_sorento import (
     CONTRACT_GATED_ENTITIES,
     DOC_FEED_CONTRACT_VERSION,
     LINKED_DOCUMENTS_CONTRACT_VERSION,
+    AR_OUTSTANDING_CONTRACT_VERSION,
+    BILLING_DOCUMENTS_CONTRACT_VERSION,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -211,6 +215,11 @@ DOCUMENT_PREREQUISITES: Dict[str, Tuple[str, ...]] = {
     "cancel_purchase_order": (ENTITY_SUPPLIER, "product"),
     "consignment": (ENTITY_CUSTOMER, "product"),
     "consignment_return": (ENTITY_CUSTOMER, "product"),
+    # Plan 32 - billing documents reference the customer and product masters
+    # (both resolved only, never created: an unresolved one lands null with a
+    # warning); the AR snapshot needs the customer (unresolved = `failed`).
+    **{entity_type: (ENTITY_CUSTOMER, "product") for entity_type in BILLING_DOCUMENT_ENTITY_TYPES},
+    ENTITY_AR_OUTSTANDING: (ENTITY_CUSTOMER,),
 }
 
 # AC-CANCEL-PULL - a Sorento push of a linked document with no doc-feed book.
@@ -1097,6 +1106,12 @@ class CompanyService:
             entity_type: LINKED_DOCUMENTS_CONTRACT_VERSION
             for entity_type in LINKED_DOCUMENT_ENTITY_TYPES
         },
+        # Plan 32 - billing documents (2.6) and the AR snapshot (2.10).
+        **{
+            entity_type: BILLING_DOCUMENTS_CONTRACT_VERSION
+            for entity_type in BILLING_DOCUMENT_ENTITY_TYPES
+        },
+        ENTITY_AR_OUTSTANDING: AR_OUTSTANDING_CONTRACT_VERSION,
     }
 
     def contract_gate(
@@ -2395,15 +2410,17 @@ class CompanyService:
                     #     !!  A STATUS FORMULA'S LITERALS ARE THE FIXED VOCABULARY.  !!
                     # (AC-02-08.) Checked on every string literal reachable in
                     # the expression (an `if`/`coalesce` branch, a comparison
-                    # operand, ...) - never just the top-level shape.
+                    # operand, ...) - never just the top-level shape. Plan 32:
+                    # a billing document's vocabulary is `posted|cancelled`.
+                    status_values = status_values_for(entity_type)
                     bad = [
                         lit for lit in string_literals(parsed)
-                        if lit not in DOCUMENT_STATUS_VALUES
+                        if lit not in status_values
                     ]
                     if bad:
                         raise AutocountServiceError(
                             f"'{bad[0]}' is not a recognised document status - use "
-                            f"one of {', '.join(DOCUMENT_STATUS_VALUES)}."
+                            f"one of {', '.join(status_values)}."
                         )
             clean.append(
                 MappingWriteRow(
@@ -2713,6 +2730,8 @@ class CompanyService:
             database_name=identity_scope(
                 self.db, tenant_id, company, entity_type, config.source_config
             ),
+            # Plan 32 (D6) - the DO-feed book a billing line's DO hop links under.
+            link_book=billing_link_book(self.db, tenant_id, company, entity_type),
         )
         mock_record = dict(record)
         if lines is not None and engine.detail_key is not None:
@@ -2782,6 +2801,7 @@ class CompanyService:
                 ref_pairs=FIELD_REF_TRANSFORMS,
                 known_vars=header_known_vars,
                 check_status_vocabulary=True,
+                status_values=status_values_for(entity_type),
             )
         )
         engine_rows.extend(
@@ -2816,6 +2836,7 @@ class CompanyService:
         ref_pairs: Dict[str, str],
         known_vars: frozenset,
         check_status_vocabulary: bool = False,
+        status_values: Tuple[str, ...] = (),
     ) -> List[MappingRow]:
         """One scope's slice of ``_draft_engine_rows`` - the guard chain
         shared by header and line, parameterised by which catalog applies.
@@ -2871,12 +2892,12 @@ class CompanyService:
                     # 422 the instant it was actually saved.
                     bad = [
                         lit for lit in string_literals(parsed)
-                        if lit not in DOCUMENT_STATUS_VALUES
+                        if lit not in status_values
                     ]
                     if bad:
                         raise AutocountServiceError(
                             f"'{bad[0]}' is not a recognised document status - use "
-                            f"one of {', '.join(DOCUMENT_STATUS_VALUES)}."
+                            f"one of {', '.join(status_values)}."
                         )
             engine_rows.append(
                 MappingRow(

@@ -519,7 +519,11 @@ MASTER_ENTITIES: List[str] = [
 # sprint-5/14 section 11 (D27) - masters whose full-extract reconcile never
 # stages or pushes a delete (the CRM has no deletions door for them, and other
 # documents reference their rows): a vanished row is only COUNTED.
-NO_DELETION_ENTITY_TYPES = frozenset({ENTITY_BRANCH})
+# Plan 32 - `ar_outstanding` has no deletions door either (contract 14.1): a
+# debtor with nothing open is pushed with `total_outstanding: 0`, and one that
+# drops out of the extract entirely is counted `vanished`, never deleted.
+# (The literal, not the documents.py constant: this module must not import it.)
+NO_DELETION_ENTITY_TYPES = frozenset({ENTITY_BRANCH, "ar_outstanding"})
 
 # sprint-5/14 section 11 (round 3, S1) - the branch identity pair is LOCKED to
 # its vendor columns: the CRM derives its verdict `source_ref` from the BODY's

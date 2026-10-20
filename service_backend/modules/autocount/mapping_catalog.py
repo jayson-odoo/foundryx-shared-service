@@ -70,6 +70,11 @@ from .canonical.documents import (
     CanonicalShippingOrderLine,
     LINKED_DOCUMENT_LINE_MODELS,
     LINKED_DOCUMENT_MODELS,
+    BILLING_DOCUMENT_MODELS,
+    ENTITY_AR_OUTSTANDING,
+    CanonicalArOutstanding,
+    CanonicalBillingDocument,
+    CanonicalBillingDocumentLine,
 )
 
 # Identity is minted, never mapped (masters.py) - so it is not a mappable target.
@@ -293,6 +298,46 @@ for _entity_type, _model in LINKED_DOCUMENT_MODELS.items():
         LINKED_DOCUMENT_LINE_MODELS[_entity_type].SINK_FIELDS, _REQUIRED_LINKED_LINE_FIELDS,
     )
 del _entity_type, _model
+
+
+# ── Plan 32 - billing documents (2.6) + AR outstanding (2.10) ─────────────────
+# Header required = the contract's own required set (minus the minted /
+# fixed `source_ref` and `document_type`). A billing line needs only its key:
+# `quantity` is required by the CRM, but a charge line may carry a NULL `Qty`
+# (REF gotcha 1) - the CRM names it, the ESB does not invent a value. The link
+# INPUTS are mappable; the minted `from_line_ref` is not.
+_REQUIRED_BILLING_HEADER_FIELDS = frozenset({
+    "doc_no", "doc_date", "status", "net_total", "tax_total", "total", "local_net_total",
+})
+_REQUIRED_BILLING_LINE_FIELDS = frozenset({"source_ref"})
+_BILLING_HEADER_TARGETS = tuple(
+    name for name in CanonicalBillingDocument.SINK_FIELDS
+    if name not in CanonicalBillingDocument.UNMAPPED_FIELDS
+)
+_BILLING_LINE_TARGETS = tuple(
+    name for name in CanonicalBillingDocumentLine.SINK_FIELDS if name != "from_line_ref"
+) + CanonicalBillingDocumentLine.LINK_INPUT_FIELDS
+
+for _entity_type in BILLING_DOCUMENT_MODELS:
+    SORENTO_FIELDS[_entity_type] = _accepted(_BILLING_HEADER_TARGETS, _REQUIRED_BILLING_HEADER_FIELDS)
+    SORENTO_LINE_FIELDS[_entity_type] = _accepted_line(
+        _BILLING_LINE_TARGETS, _REQUIRED_BILLING_LINE_FIELDS,
+    )
+del _entity_type
+
+# An AR item's `source_ref` is minted from `ar_doc_type` + `ar_doc_key`;
+# `as_of` is stamped at mapping time.
+SORENTO_FIELDS[ENTITY_AR_OUTSTANDING] = _accepted(
+    tuple(
+        name for name in CanonicalArOutstanding.SINK_FIELDS
+        if name not in CanonicalArOutstanding.UNMAPPED_FIELDS
+    ),
+    frozenset({"customer_ref", "total_outstanding"}),
+)
+SORENTO_LINE_FIELDS[ENTITY_AR_OUTSTANDING] = _accepted_line(
+    ("ar_doc_type", "ar_doc_key", "outstanding", "due_date"),
+    frozenset({"ar_doc_type", "ar_doc_key", "outstanding"}),
+)
 
 
 # ── AutoCount source-field catalogs (AC-15-43) ────────────────────────────────
