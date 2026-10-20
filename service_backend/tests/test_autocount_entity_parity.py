@@ -70,13 +70,18 @@ def test_ac_sql_db_entity_types_is_every_extractable_entity_minus_grn():
     assert ts_sql_db == set(ENTITY_PROFILES) - excluded
     assert ts_sql_db == set(ETL_ENTITY_TYPES) - excluded
     # AC-CANCEL-PULL: + cancel_sales_order / cancel_purchase_order /
-    # consignment / consignment_return - fifteen.
-    assert len(ts_sql_db) == 15, (
+    # consignment / consignment_return - fifteen. Plan 32: + the four billing
+    # documents and ar_outstanding - twenty.
+    assert len(ts_sql_db) == 20, (
         "AC_SQL_DB_ENTITY_TYPES must include shipping_order (AC-02-10), "
-        "brand (AC-08-31) and the four AC-CANCEL-PULL documents - got "
+        "brand (AC-08-31), the four AC-CANCEL-PULL documents and the five "
+        "plan-32 billing entities - got "
         f"{len(ts_sql_db)}: {sorted(ts_sql_db)}"
     )
-    for linked in ("cancel_sales_order", "cancel_purchase_order", "consignment", "consignment_return"):
+    for linked in (
+        "cancel_sales_order", "cancel_purchase_order", "consignment", "consignment_return",
+        "invoice", "cash_sale", "credit_note", "debit_note", "ar_outstanding",
+    ):
         assert linked in ts_sql_db, f"AC_SQL_DB_ENTITY_TYPES is missing {linked} (AC-CANCEL-PULL)"
     assert "shipping_order" in ts_sql_db, (
         "AC_SQL_DB_ENTITY_TYPES is missing shipping_order (AC-02-10)"

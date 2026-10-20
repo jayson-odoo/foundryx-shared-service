@@ -839,8 +839,9 @@ def test_shipping_order_entity():
     # HTTP-only, no `sql_db` variant exists or is planned (AC-10-39/D4);
     # `branch` (sprint-5/14 section 11) is HTTP-only for the same reason.
     # AC-CANCEL-PULL: + the four linked documents (Cancel SO/PO,
-    # Consignment, Consignment Return) - fifteen.
-    assert len(set(ENTITY_PROFILES) - {"goods_received_note", "stock_balance", "branch"}) == 15
+    # Consignment, Consignment Return) - fifteen. Plan 32: + invoice /
+    # cash_sale / credit_note / debit_note / ar_outstanding - twenty.
+    assert len(set(ENTITY_PROFILES) - {"goods_received_note", "stock_balance", "branch"}) == 20
 
 
 def test_filter_formula_skips_headers(session_factory):
@@ -3307,10 +3308,21 @@ _LINE_FILTER_PREDICATES = ("d.ItemCode IS NOT NULL", "d.Qty IS NOT NULL")
 # Parametrized over the registry itself (not a hardcoded SO/PO/SPO list) so
 # a fourth document preset cannot ship without this guard covering it.
 from modules.autocount.presets import DOCUMENT_PRESETS as _DOCUMENT_PRESETS  # noqa: E402
+from modules.autocount.canonical.documents import (  # noqa: E402
+    BILLING_DOCUMENT_ENTITY_TYPES as _BILLING,
+    ENTITY_AR_OUTSTANDING as _AR,
+)
+
+# Plan 32 - the billing documents keep charge lines with no ItemCode (their
+# own cut, pinned in `test_autocount_billing_feed.py`), and the AR snapshot's
+# lines are AR items, not item lines: neither carries the order-family filter.
+_ORDER_FAMILY_PRESETS = sorted(
+    e for e in _DOCUMENT_PRESETS if e not in set(_BILLING) | {_AR}
+)
 
 
 @pytest.mark.parametrize(
-    "entity_type", sorted(_DOCUMENT_PRESETS), ids=sorted(_DOCUMENT_PRESETS)
+    "entity_type", _ORDER_FAMILY_PRESETS, ids=_ORDER_FAMILY_PRESETS
 )
 def test_document_preset_line_query_and_header_fingerprint_apply_the_same_line_filter(entity_type):
     preset = _DOCUMENT_PRESETS[entity_type]

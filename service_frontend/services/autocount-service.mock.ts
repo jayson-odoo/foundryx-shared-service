@@ -1482,6 +1482,12 @@ const DOCUMENT_PREREQUISITES: Record<string, string[]> = {
   cancel_purchase_order: ['supplier', 'product'],
   consignment: ['customer', 'product'],
   consignment_return: ['customer', 'product'],
+  // Plan 32 - billing documents (contract 2.6) + the AR snapshot (2.10).
+  invoice: ['customer', 'product'],
+  cash_sale: ['customer', 'product'],
+  credit_note: ['customer', 'product'],
+  debit_note: ['customer', 'product'],
+  ar_outstanding: ['customer'],
 };
 
 /** Display order of a DB company's rows - the ten `sql_db` entities in dependency order. */
@@ -1500,6 +1506,11 @@ const DB_ENTITY_ORDER = [
   'cancel_purchase_order',
   'consignment',
   'consignment_return',
+  'invoice',
+  'cash_sale',
+  'credit_note',
+  'debit_note',
+  'ar_outstanding',
 ];
 
 /** The pure function the backend's `document_prerequisites(company)` must mirror. */
@@ -4065,6 +4076,118 @@ function linkedDocumentPreset(
   };
 }
 
+/** Plan 32 - IV / CS / CN / DN. Mirrors the backend's `_billing_preset`
+ *  (`modules/autocount/presets.py`): the billing line cut keeps charge lines
+ *  (no ItemCode), the status vocabulary is posted | cancelled, and CN/DN carry
+ *  `OurInvoiceNo`. The SQL text here is abbreviated (mock only). */
+function billingDocumentPreset(
+  label: string,
+  headerTable: string,
+  lineTable: string,
+  links: string[],
+  against = false,
+): DocumentPresetSpec {
+  const linkFields: Record<string, { sourcePath: string; sorentoField: string; transform: string }> = {
+    SO: { sourcePath: 'LinkSODocKey', sorentoField: 'link_so_doc_key', transform: 'int' },
+    DO: { sourcePath: 'LinkDODocKey', sorentoField: 'link_do_doc_key', transform: 'int' },
+    IV: { sourcePath: 'LinkIVDocKey', sorentoField: 'link_iv_doc_key', transform: 'int' },
+  };
+  return {
+    label,
+    headerQuery:
+      'SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, h.DocStatus AS DocStatus, ' +
+      'h.DebtorCode AS DebtorCode, h.DebtorName AS DebtorName, h.SalesAgent AS SalesAgent, ' +
+      'h.CurrencyCode AS CurrencyCode, h.CurrencyRate AS CurrencyRate, h.TotalExTax AS TotalExTax, ' +
+      'h.Tax AS Tax, h.NetTotal AS NetTotal, h.LocalNetTotal - h.LocalTax AS LocalNetExTax, ' +
+      (against ? 'h.OurInvoiceNo AS OurInvoiceNo, ' : '') +
+      `h.Ref AS Ref, h.Description AS Description, h.Cancelled AS Cancelled, h.LastModified AS LastModified FROM {database}.dbo.${headerTable} AS h`,
+    lineQuery:
+      'SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, d.ItemCode AS ItemCode, d.Description AS Description, ' +
+      'd.UOM AS UOM, d.Qty AS Qty, d.UnitPrice AS UnitPrice, d.DiscountAmt AS DiscountAmt, d.SubTotalExTax AS SubTotalExTax, ' +
+      'd.TaxCode AS TaxCode, d.TaxRate AS TaxRate, d.Tax AS Tax, d.SubTotal AS SubTotal, ' +
+      'd.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, d.FromDocDtlKey AS FromDocDtlKey ' +
+      `FROM {database}.dbo.${lineTable} AS d WHERE d.DocKey = :doc_key AND (d.SubTotal <> 0 OR d.Qty IS NOT NULL)`,
+    keyColumns: ['DocKey'],
+    watermarkColumn: 'LastModified',
+    docDateColumn: 'DocDate',
+    fromDate: '2023-01-01',
+    filterFormula: null,
+    header: [
+      { sourcePath: 'DocNo', sorentoField: 'doc_no', transform: 'string', required: true },
+      { sourcePath: 'DocDate', sorentoField: 'doc_date', transform: 'date', required: true },
+      {
+        sourcePath: 'Cancelled',
+        sorentoField: 'status',
+        transform: 'string',
+        formula: 'if(Cancelled == "T", "cancelled", "posted")',
+        required: true,
+      },
+      { sourcePath: 'LastModified', sorentoField: 'source_modified_at', transform: 'datetime' },
+      { sourcePath: 'DebtorAutoKey', sorentoField: 'customer_ref', transform: 'ref_customer' },
+      { sourcePath: 'DebtorCode', sorentoField: 'customer_code', transform: 'string' },
+      { sourcePath: 'DebtorName', sorentoField: 'customer_name', transform: 'string' },
+      { sourcePath: 'SalesAgent', sorentoField: 'agent_code', transform: 'string' },
+      { sourcePath: 'CurrencyCode', sorentoField: 'currency_code', transform: 'string' },
+      { sourcePath: 'CurrencyRate', sorentoField: 'currency_rate', transform: 'decimal' },
+      { sourcePath: 'TotalExTax', sorentoField: 'net_total', transform: 'decimal', required: true },
+      { sourcePath: 'Tax', sorentoField: 'tax_total', transform: 'decimal', required: true },
+      { sourcePath: 'NetTotal', sorentoField: 'total', transform: 'decimal', required: true },
+      { sourcePath: 'LocalNetExTax', sorentoField: 'local_net_total', transform: 'decimal', required: true },
+      { sourcePath: 'Ref', sorentoField: 'ref', transform: 'string' },
+      { sourcePath: 'Description', sorentoField: 'description', transform: 'string' },
+      ...(against ? [{ sourcePath: 'OurInvoiceNo', sorentoField: 'against_doc_no', transform: 'string' }] : []),
+    ],
+    line: [
+      { sourcePath: 'DtlKey', sorentoField: 'source_ref', transform: 'string', required: true },
+      { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'int' },
+      { sourcePath: 'ItemAutoKey', sorentoField: 'product_ref', transform: 'ref_product' },
+      { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string' },
+      { sourcePath: 'Description', sorentoField: 'description', transform: 'string' },
+      { sourcePath: 'UOM', sorentoField: 'uom', transform: 'string' },
+      { sourcePath: 'Qty', sorentoField: 'quantity', transform: 'decimal' },
+      { sourcePath: 'UnitPrice', sorentoField: 'unit_price', transform: 'decimal' },
+      { sourcePath: 'DiscountAmt', sorentoField: 'discount_amount', transform: 'decimal' },
+      { sourcePath: 'SubTotalExTax', sorentoField: 'net_amount', transform: 'decimal' },
+      { sourcePath: 'TaxCode', sorentoField: 'tax_code', transform: 'string' },
+      { sourcePath: 'TaxRate', sorentoField: 'tax_rate', transform: 'decimal' },
+      { sourcePath: 'Tax', sorentoField: 'tax_amount', transform: 'decimal' },
+      { sourcePath: 'SubTotal', sorentoField: 'line_total', transform: 'decimal' },
+      { sourcePath: 'FromDocType', sorentoField: 'from_doc_type', transform: 'string' },
+      { sourcePath: 'FromDocNo', sorentoField: 'from_doc_no', transform: 'string' },
+      { sourcePath: 'FromDocDtlKey', sorentoField: 'from_doc_line_key', transform: 'int' },
+      ...links.map((kind) => linkFields[kind]),
+    ],
+  };
+}
+
+/** Plan 32 - the per-debtor AR snapshot (contract 2.10). Mirrors the backend's
+ *  `AR_OUTSTANDING_PRESET`; the SQL text here is abbreviated (mock only). */
+const AR_OUTSTANDING_PRESET: DocumentPresetSpec = {
+  label: 'AutoCount AR Outstanding',
+  headerQuery:
+    'SELECT c.AutoKey AS DebtorKey, c.AccNo AS DebtorCode, s.TotalOutstanding AS TotalOutstanding, ' +
+    's.OpenCount AS OpenCount, s.LastModified AS LastModified FROM {database}.dbo.Debtor AS c',
+  lineQuery:
+    'SELECT x.DocType AS DocType, x.BillingDocKey AS BillingDocKey, x.Outstanding AS Outstanding, ' +
+    'x.DueDate AS DueDate FROM ar_items AS x WHERE x.DebtorKey = :doc_key',
+  keyColumns: ['DebtorKey'],
+  watermarkColumn: 'LastModified',
+  docDateColumn: 'LastModified',
+  fromDate: '2000-01-01',
+  filterFormula: null,
+  header: [
+    { sourcePath: 'DebtorKey', sorentoField: 'customer_ref', transform: 'ref_customer', required: true },
+    { sourcePath: 'DebtorCode', sorentoField: 'customer_code', transform: 'string' },
+    { sourcePath: 'TotalOutstanding', sorentoField: 'total_outstanding', transform: 'decimal', required: true },
+  ],
+  line: [
+    { sourcePath: 'DocType', sorentoField: 'ar_doc_type', transform: 'string', required: true },
+    { sourcePath: 'BillingDocKey', sorentoField: 'ar_doc_key', transform: 'int', required: true },
+    { sourcePath: 'Outstanding', sorentoField: 'outstanding', transform: 'decimal', required: true },
+    { sourcePath: 'DueDate', sorentoField: 'due_date', transform: 'date' },
+  ],
+};
+
 const DOCUMENT_PRESETS: Record<string, DocumentPresetSpec> = {
   sales_order: SO_PRESET,
   purchase_order: purchaseFamilyPreset('purchase_order'),
@@ -4078,6 +4201,11 @@ const DOCUMENT_PRESETS: Record<string, DocumentPresetSpec> = {
     'ConsignmentReturnDTL',
     true,
   ),
+  invoice: billingDocumentPreset('AutoCount Invoice', 'IV', 'IVDTL', ['SO', 'DO']),
+  cash_sale: billingDocumentPreset('AutoCount Cash Sale', 'CS', 'CSDTL', ['SO', 'DO']),
+  credit_note: billingDocumentPreset('AutoCount Credit Note', 'CN', 'CNDTL', ['IV'], true),
+  debit_note: billingDocumentPreset('AutoCount Debit Note', 'DN', 'DNDTL', [], true),
+  ar_outstanding: AR_OUTSTANDING_PRESET,
 };
 
 /** The entity's fulfilled-quantity line field (AC-02-07) - `qty_delivered`

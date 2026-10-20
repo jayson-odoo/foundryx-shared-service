@@ -39,6 +39,13 @@ const DOCUMENT_ENTITY_TYPES = new Set([
   'cancel_purchase_order',
   'consignment',
   'consignment_return',
+  // Plan 32 - billing documents (contract 2.6) + the AR snapshot (2.10): a
+  // header query + a line query each (an AR record's lines are its open items).
+  'invoice',
+  'cash_sale',
+  'credit_note',
+  'debit_note',
+  'ar_outstanding',
 ]);
 
 /** True for header+lines document entities (SO/PO). Code constants, never a

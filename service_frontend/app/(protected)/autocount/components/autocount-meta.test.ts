@@ -53,7 +53,7 @@ import {
 } from './autocount-meta';
 
 describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
-  it('is exactly the fifteen sql_db entities - customer + supplier + brand + linked docs included, GRN absent', () => {
+  it('is exactly the twenty sql_db entities - customer + supplier + brand + linked docs + billing included, GRN absent', () => {
     // sprint-5/08 S4 (AC-08-31) added `brand` - was ten before that commit
     // (this literal went stale until sprint-5/08 review round 1).
     expect(AC_SQL_DB_ENTITY_TYPES).toEqual([
@@ -73,6 +73,12 @@ describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
       'cancel_purchase_order',
       'consignment',
       'consignment_return',
+      // Plan 32 - billing documents + the AR snapshot.
+      'invoice',
+      'cash_sale',
+      'credit_note',
+      'debit_note',
+      'ar_outstanding',
     ]);
     expect(AC_SQL_DB_ENTITY_TYPES).not.toContain('goods_received_note');
   });

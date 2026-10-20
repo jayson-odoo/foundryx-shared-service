@@ -97,6 +97,8 @@ export function diffForDisplay(
 /** Keys whose humanized label gets an acronym wrong; exact-key overrides only. */
 const FIELD_LABEL_OVERRIDES: Record<string, string> = {
   po_ref: 'PO ref',
+  // Plan 32 - the AR snapshot entity (an acronym, never "Ar outstanding").
+  ar_outstanding: 'AR outstanding',
 };
 
 /** `supplier_name` / `supplierName` → `Supplier name`. */
