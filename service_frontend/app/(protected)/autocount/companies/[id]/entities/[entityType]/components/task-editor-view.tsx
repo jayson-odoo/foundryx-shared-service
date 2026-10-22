@@ -41,16 +41,18 @@ import {
 import { useAutocountMapping, useAutocountMappingPresets } from '@/hooks/use-autocount-mapping';
 import { usePreviewColumnsMap, useSetDeliveryMode } from '@/hooks/use-autocount-pull';
 import {
+  alertDraftOf,
   alertSettingsOf,
+  type AutocountAlertDraft,
   HTTP_PRESETS,
   isDocumentEntity,
   mappingSourceColumns,
   mappingSourceColumnsForTask,
   mergeTaskEcho,
+  validateAlertDraft,
 } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
-  AutocountAlertSettings,
   AutocountEtlSourceConfig,
   AutocountEtlStatus,
   AutocountEtlTask,
@@ -174,11 +176,13 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
 
   // Failure alerts (plan 33, AC-33-15) - saved with the schedule through the
   // SAME config PUT, so the one Save and the shell dirty-guard cover them.
-  const [alerts, setAlerts] = useState<AutocountAlertSettings>(() => alertSettingsOf(null));
-  const savedAlerts = useMemo(() => alertSettingsOf(task), [task]);
+  const [alerts, setAlerts] = useState<AutocountAlertDraft>(() => alertDraftOf(alertSettingsOf(null)));
+  const [alertErrors, setAlertErrors] = useState<Record<string, string>>({});
+  const savedAlerts = useMemo(() => alertDraftOf(alertSettingsOf(task)), [task]);
   const savedAlertsKey = JSON.stringify(savedAlerts);
   useEffect(() => {
-    setAlerts(JSON.parse(savedAlertsKey) as AutocountAlertSettings);
+    setAlerts(JSON.parse(savedAlertsKey) as AutocountAlertDraft);
+    setAlertErrors({});
   }, [savedAlertsKey]);
   const alertsDirty = JSON.stringify(alerts) !== savedAlertsKey;
 
@@ -477,7 +481,18 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       return true;
     }
     if (configDirty || sourceKindDirty || alertsDirty) {
-      const ok = await save({ ...config, query: (config.query ?? '').trim() }, derivedImpl, alerts);
+      // Plan 33 - an empty/out-of-range alert field blocks the save with that
+      // field's error; an alert-only change sends no source config at all, so
+      // the source is never re-previewed and the activation gate is untouched.
+      const checked = validateAlertDraft(alerts);
+      setAlertErrors(checked.errors);
+      if (!checked.settings) return false;
+      const sourcePart = configDirty || sourceKindDirty;
+      const ok = await save(
+        sourcePart ? { ...config, query: (config.query ?? '').trim() } : null,
+        sourcePart ? derivedImpl : undefined,
+        checked.settings,
+      );
       if (!ok) return false;
       // A document entity's FIRST clean config save seeds its field mapping
       // server-side (`seed_document_mapping`) - the Mapping tab's own hook
@@ -544,6 +559,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     setSourceKind(baselineSourceKind);
     setDeliveryMode(task?.deliveryMode ?? 'push');
     setAlerts(savedAlerts);
+    setAlertErrors({});
     // B1 round 8 - re-derive the previewed pair from the baseline task rather
     // than leaving it pointed at whatever was Tested during the discarded
     // edit. Without this, Save on the SAVED, already-proved config stays
@@ -893,7 +909,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 // read fresh at render time (unlike the toast above, this is
                 // never stale - `deliveryModeSetter` here is the CURRENT
                 // render's hook return).
-                fieldErrors={{ ...fieldErrors, ...deliveryModeSetter.fieldErrors }}
+                fieldErrors={{ ...fieldErrors, ...deliveryModeSetter.fieldErrors, ...alertErrors }}
                 deliveryMode={deliveryMode}
                 onDeliveryModeChange={setDeliveryMode}
                 alerts={alerts}
@@ -967,6 +983,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       onCancel,
     };
   }, [
+    alertErrors,
     alerts,
     apiConnections.connections,
     apiConnections.isLoading,

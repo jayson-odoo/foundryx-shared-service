@@ -55,7 +55,7 @@ export interface UseAutocountEtlTaskResult {
    * `saveError`) on rejection.
    */
   save: (
-    sourceConfig: AutocountEtlSourceConfig,
+    sourceConfig: AutocountEtlSourceConfig | null,
     sourceImpl?: 'sql_db' | 'autocount_http',
     alerts?: AutocountAlertSettings,
   ) => Promise<boolean>;
@@ -102,7 +102,7 @@ export function useAutocountEtlTask(
 
   const save = useCallback(
     async (
-      sourceConfig: AutocountEtlSourceConfig,
+      sourceConfig: AutocountEtlSourceConfig | null,
       sourceImpl?: 'sql_db' | 'autocount_http',
       alerts?: AutocountAlertSettings,
     ): Promise<boolean> => {
@@ -111,7 +111,7 @@ export function useAutocountEtlTask(
       setFieldErrors({});
       try {
         const saved = await autocountService.updateEtlTask(companyId, entityType, {
-          sourceConfig,
+          ...(sourceConfig ? { sourceConfig } : {}),
           ...(sourceImpl ? { sourceImpl } : {}),
           ...(alerts ? { alerts } : {}),
         });

@@ -3,12 +3,11 @@
 import { useState } from 'react';
 import { BellRing, ShieldAlert, TriangleAlert, X } from 'lucide-react';
 import type {
-  AutocountAlertSettings,
   AutocountDeliveryMode,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
 } from '@/types/autocount';
-import { isDocumentEntity, pushGateWarning } from '@/lib/autocount-etl';
+import { type AutocountAlertDraft, isDocumentEntity, pushGateWarning } from '@/lib/autocount-etl';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -41,8 +40,8 @@ export interface ScheduleTabProps {
   deliveryMode: AutocountDeliveryMode;
   onDeliveryModeChange: (mode: AutocountDeliveryMode) => void;
   /** Failure-alert settings draft (plan 33, AC-33-15) - saved with the schedule. */
-  alerts?: AutocountAlertSettings;
-  onAlertsChange?: (next: AutocountAlertSettings) => void;
+  alerts?: AutocountAlertDraft;
+  onAlertsChange?: (next: AutocountAlertDraft) => void;
 }
 
 const MAX_ALERT_EMAILS = 10;
@@ -199,15 +198,15 @@ export function ScheduleTab({
 
 interface FailureAlertsCardProps {
   editing: boolean;
-  alerts: AutocountAlertSettings;
-  onChange: (next: AutocountAlertSettings) => void;
+  alerts: AutocountAlertDraft;
+  onChange: (next: AutocountAlertDraft) => void;
   fieldErrors: Record<string, string>;
 }
 
 /** Plan 33 (AC-33-15) - the per-integration failure-alert settings. */
 function FailureAlertsCard({ editing, alerts, onChange, fieldErrors }: FailureAlertsCardProps) {
   const [draftEmail, setDraftEmail] = useState('');
-  const patch = (next: Partial<AutocountAlertSettings>) => onChange({ ...alerts, ...next });
+  const patch = (next: Partial<AutocountAlertDraft>) => onChange({ ...alerts, ...next });
   const addEmail = () => {
     const address = draftEmail.trim();
     if (!address) return;
@@ -245,7 +244,7 @@ function FailureAlertsCard({ editing, alerts, onChange, fieldErrors }: FailureAl
             min={1}
             max={20}
             value={alerts.alertAfterFailedRuns}
-            onChange={(e) => patch({ alertAfterFailedRuns: Number(e.target.value) })}
+            onChange={(e) => patch({ alertAfterFailedRuns: e.target.value })}
             disabled={!editing}
           />
           {fieldErrors.alertAfterFailedRuns && (
@@ -260,7 +259,7 @@ function FailureAlertsCard({ editing, alerts, onChange, fieldErrors }: FailureAl
             min={2}
             max={48}
             value={alerts.alertStaleMultiple}
-            onChange={(e) => patch({ alertStaleMultiple: Number(e.target.value) })}
+            onChange={(e) => patch({ alertStaleMultiple: e.target.value })}
             disabled={!editing}
           />
           {fieldErrors.alertStaleMultiple && (

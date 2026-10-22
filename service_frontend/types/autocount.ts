@@ -1328,7 +1328,8 @@ export interface AutocountPushGate {
 
 /** `PUT .../etl-task` body - replaces the task's source config (draft save). */
 export interface AutocountEtlTaskUpdate {
-  sourceConfig: AutocountEtlSourceConfig;
+  /** Omitted on an alert-only save (no source preview, gate untouched). */
+  sourceConfig?: AutocountEtlSourceConfig;
   /**
    * The task's Source (sprint-5/08, D13) - present when the operator's
    * toggle derives `sql_db` or `autocount_http`; omitted when the picked
