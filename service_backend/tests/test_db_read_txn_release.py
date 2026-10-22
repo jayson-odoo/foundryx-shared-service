@@ -608,11 +608,21 @@ def test_concurrent_page_batch_releases_on_the_calling_thread(db):
     assert not any(seen), "concurrent vendor pages went out inside the caller's read transaction"
 
 
-def test_route_releases_the_transaction_its_auth_dependency_began(client, session_factory):
+def test_route_releases_the_transaction_its_auth_dependency_began(
+    client, session_factory, scratch_session, monkeypatch
+):
     """The API shape end to end: ``require_permission`` -> ``get_current_user``
     is a sync dependency that reads the user, so the request's transaction
     begins in ITS threadpool hop; the endpoint then probes the vendor from a
-    different hop. The probe must go out with no read transaction open."""
+    different hop. The probe must go out with no read transaction open.
+
+    And it must not touch anything outside the request: the request context
+    is a copy of its parent's (here the test thread's, in prod the gunicorn
+    worker's main thread, where import-time DB work leaves a scope), so
+    without ``ReadTransactionScopeMiddleware`` every request would share the
+    parent's scope and one request's seam would commit another's session.
+    The parent scope here holds a foreign open read transaction."""
+    from app import database
     from app.database import get_db
     from app.main import app
     from modules.autocount.http_client import get_http_transport
@@ -649,6 +659,9 @@ def test_route_releases_the_transaction_its_auth_dependency_began(client, sessio
     app.dependency_overrides[get_http_transport] = lambda: httpx.Client(
         transport=httpx.MockTransport(handler)
     )
+    parent_scope = database._scope.set(database._Scope())
+    scratch_session.execute(text("SELECT 1"))  # a foreign transaction in the parent scope
+    foreign_commits = _spy_commits(monkeypatch, scratch_session)
     try:
         response = client.post(
             "/autocount/http/preview-columns",
@@ -656,12 +669,14 @@ def test_route_releases_the_transaction_its_auth_dependency_began(client, sessio
             headers=headers,
         )
     finally:
+        database._scope.reset(parent_scope)
         app.dependency_overrides.pop(get_http_transport, None)
         if previous_get_db is not None:
             app.dependency_overrides[get_db] = previous_get_db
 
     assert response.status_code == 200, response.text
     assert seen == [False], "the vendor probe went out inside the request's read transaction"
+    assert foreign_commits == [], "the request's seam committed a session outside the request"
 
 
 def test_bootstrap_main_names_its_sessions_before_any_migration(monkeypatch):
