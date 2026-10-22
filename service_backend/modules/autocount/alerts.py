@@ -291,8 +291,11 @@ def _evaluate_one(
             config.tenant_id, config.company_id, config.entity_type, CLEAN_RUN_MODES
         )
     )
-    activated = _aware(config.activated_at)
-    anchor = max((t for t in (last_clean, activated) if t is not None), default=None)
+    started = max(
+        (t for t in (_aware(config.activated_at), _aware(config.resumed_at)) if t is not None),
+        default=None,
+    )
+    anchor = max((t for t in (last_clean, started) if t is not None), default=None)
     failed = runs.failed_runs_since(
         config.tenant_id, config.company_id, config.entity_type, anchor, FAILED_RUN_MODES
     )

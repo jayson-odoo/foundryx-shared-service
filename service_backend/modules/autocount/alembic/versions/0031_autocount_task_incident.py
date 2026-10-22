@@ -1,6 +1,7 @@
 """autocount integration failure alerts (plan 33, AC-33-16)
 
-NEW table only - ``ac_task_incident``, one OPEN row per integration
+``ac_entity_config`` += nullable ``resumed_at`` (set only by resume; NULL =
+never resumed, so no backfill) plus the NEW table ``ac_task_incident``, one OPEN row per integration
 (``ac_entity_config`` row) enforced by a partial unique index. No existing row
 gains a column and the four alert settings live in ``source_config`` (an absent
 key is the default), so no backfill is needed (DoD 2): every existing
@@ -38,6 +39,10 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
+
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.ac_entity_config ADD COLUMN IF NOT EXISTS resumed_at TIMESTAMPTZ NULL"
+    )
 
     if TABLE not in _tables():
         op.create_table(
@@ -80,3 +85,4 @@ def downgrade() -> None:
         return
     if TABLE in _tables():
         op.drop_table(TABLE, schema=SCHEMA)
+    op.execute(f"ALTER TABLE {SCHEMA}.ac_entity_config DROP COLUMN IF EXISTS resumed_at")

@@ -255,6 +255,9 @@ class AcEntityConfig(AutocountBase):
         String, nullable=False, default=ETL_STATUS_DRAFT, server_default="draft"
     )
     activated_at = Column(UTCDateTime(), nullable=True)
+    # Plan 33 - set ONLY by resume; with ``activated_at`` it starts the
+    # failure-alert clock. NULL = never resumed. Not on the wire.
+    resumed_at = Column(UTCDateTime(), nullable=True)
     # The sweep's due-selection keys (AC-22-13) - INDEXED, one query per tick.
     next_incremental_at = Column(UTCDateTime(), nullable=True, index=True)
     next_reconcile_at = Column(UTCDateTime(), nullable=True, index=True)

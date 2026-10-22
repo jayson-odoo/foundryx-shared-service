@@ -3235,8 +3235,9 @@ class EtlService:
             raise EtlStateError("Only a paused task can be resumed.")
         now = datetime.now(timezone.utc)
         config.etl_status = ETL_STATUS_ACTIVE
-        # Plan 33 - a resume restarts the failure-alert clock (AC-33-02).
-        config.activated_at = now
+        # Plan 33 - a resume restarts the failure-alert clock (AC-33-02)
+        # without rewriting the user-visible activation date.
+        config.resumed_at = now
         config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
             self._schedule_source_config(config), now=now
         )
