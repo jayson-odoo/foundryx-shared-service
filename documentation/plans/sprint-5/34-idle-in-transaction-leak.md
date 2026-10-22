@@ -1,7 +1,7 @@
 # Plan 34 - No transaction held open across network I/O (app_autocount)
 
 Lane: SS-IDLE-TXN-LEAK (crew), branch `crew/ss-idle-txn-leak`, size S (no behaviour the owner sees).
-Status: REVIEW (round 1 addressed).
+Status: REVIEW (rounds 1 and 2 addressed).
 
 ## Why
 
@@ -59,10 +59,14 @@ Fix once, at the session layer (`app/database.py`), and call it from the few net
 not by sprinkling `db.commit()` through `sync.py`:
 
 - **Read-transaction registry.** A `Session` `after_begin` listener records every session whose
-  transaction autobegan in a `ContextVar` (immutable tuple; each entry pinned to its thread and
-  to a per-transaction token in `session.info`); `after_transaction_end` forgets it. Per
-  context, not per thread: the API runs endpoint, serialization and `get_db` close as separate
-  threadpool hops on shared pool threads. A `before_cursor_execute` listener marks the
+  transaction autobegan in the current scope; `after_transaction_end` forgets it. Scope = one
+  API request (`ReadTransactionScopeMiddleware`, pure ASGI, a fresh mutable registry in a
+  `ContextVar`), shared by every threadpool hop of that request: `get_current_user` is a sync
+  dependency that reads the user, so the request transaction begins in ITS hop and the seam
+  runs in the endpoint's hop, often on another pool thread (review round 2). Outside a request
+  the context makes its own (Celery main thread; a 3.12 pool thread starts empty). Each entry
+  carries a per-transaction token in `session.info`; on interpreters whose threads inherit
+  context it is also pinned to its thread. A `before_cursor_execute` listener marks the
   connection as "wrote" for any statement that is not a plain `SELECT` (DML, `SAVEPOINT`,
   `SET LOCAL`, `SELECT ... FOR UPDATE/SHARE`, xact advisory locks, `set_config`).
 - **`release_read_transactions()`** ends (commits) every registered transaction in this thread

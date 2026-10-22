@@ -6,7 +6,7 @@ import sys
 import threading
 import weakref
 from contextvars import ContextVar
-from typing import Dict, Generator, List, Tuple
+from typing import Dict, Generator, List, Optional, Tuple
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Connection, Engine
@@ -162,15 +162,68 @@ class _ReadTxn:
         self.connections: List["weakref.ref[Connection]"] = [weakref.ref(connection)]
 
 
-# The registry is per CONTEXT (and each entry pinned to its thread), not per
-# thread: the API runs an endpoint, its response serialization and get_db's
-# close as separate threadpool hops, each in its own context copy, on pool
-# threads shared by every request - a thread-local registry would let one
-# request's seam commit another request's session. Values are immutable
-# tuples, so a context copy never mutates its parent's or a sibling's view.
-_registered: ContextVar[Tuple[Tuple["weakref.ref[Session]", int, _ReadTxn], ...]] = ContextVar(
-    "foundryx_read_txn_sessions", default=()
-)
+# Interpreters whose new threads start with a COPY of the caller's context
+# (free-threaded 3.13+ by default) would hand a pool thread its caller's scope
+# while the caller still uses the session; there, an entry stays pinned to the
+# thread that registered it. Prod (python:3.12) never inherits: a pool thread
+# starts with an empty context, so it can never see its caller's scope.
+_THREADS_INHERIT_CONTEXT = bool(getattr(sys.flags, "thread_inherit_context", False))
+
+
+class _Scope:
+    """One unit of work's registry of autobegun session transactions.
+
+    Mutable on purpose: FastAPI runs a request's sync auth dependency (where
+    the request's transaction begins, reading the user), its endpoint and
+    get_db's close as separate threadpool hops, each in a COPY of the request
+    context and often on different pool threads. Every copy holds this same
+    object, so a seam in the endpoint hop sees what the dependency hop began.
+    Another request gets its own scope (``ReadTransactionScopeMiddleware``).
+    """
+
+    __slots__ = ("entries",)
+
+    def __init__(self) -> None:
+        self.entries: List[Tuple["weakref.ref[Session]", int, _ReadTxn]] = []
+
+
+_scope: ContextVar[Optional[_Scope]] = ContextVar("foundryx_read_txn_scope", default=None)
+
+
+def new_read_transaction_scope() -> None:
+    """Start a fresh scope in the current context. One per API request
+    (``ReadTransactionScopeMiddleware``); without one, the first transaction
+    a context begins creates its own (a Celery worker's main thread, a pool
+    thread)."""
+    _scope.set(_Scope())
+
+
+def _current_scope() -> _Scope:
+    scope = _scope.get()
+    if scope is None:
+        scope = _Scope()
+        _scope.set(scope)
+    return scope
+
+
+class ReadTransactionScopeMiddleware:
+    """Pure ASGI: give every HTTP request its own read-transaction scope, so
+    a seam in one request can reach the transaction an earlier hop of the
+    SAME request began, and never another request's (pool threads are shared
+    by every request)."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        token = _scope.set(_Scope())
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _scope.reset(token)
 
 
 def _statement_is_plain_read(statement: str) -> bool:
@@ -202,11 +255,11 @@ def _track_autobegun_transaction(
         return
     state = _ReadTxn(transaction, connection)
     session.info[_READ_TXN_KEY] = state
-    live = tuple(
-        entry for entry in _registered.get()
+    scope = _current_scope()
+    scope.entries = [
+        entry for entry in scope.entries
         if entry[0]() is not None and entry[0]() is not session
-    )
-    _registered.set(live + ((weakref.ref(session), threading.get_ident(), state),))
+    ] + [(weakref.ref(session), threading.get_ident(), state)]
 
 
 @event.listens_for(Session, "after_transaction_end")
@@ -214,9 +267,11 @@ def _forget_transaction(session: Session, transaction: SessionTransaction) -> No
     if transaction.parent is not None:
         return
     state = session.info.pop(_READ_TXN_KEY, None)
-    entries = _registered.get()
-    if state is not None and any(entry[2] is state for entry in entries):
-        _registered.set(tuple(entry for entry in entries if entry[2] is not state))
+    scope = _scope.get()
+    if state is not None and scope is not None:
+        # An entry left in ANOTHER scope (the transaction ended in a different
+        # request) is inert: its token no longer matches ``session.info``.
+        scope.entries = [entry for entry in scope.entries if entry[2] is not state]
 
 
 def release_read_transactions() -> int:
@@ -229,15 +284,21 @@ def release_read_transactions() -> int:
     write is ever committed early and no unit of work is split. The commit
     does not expire loaded objects: the caller keeps using what it read,
     exactly as before, and its next query simply autobegins a fresh
-    transaction. Only sessions this context began on this thread are
-    touched (a Session is not thread-safe): a caller about to fan I/O out to
-    a thread pool must call it on its own thread first.
+    transaction. Only sessions of the current scope (this API request, or
+    this worker thread) are touched - never another request's, never a
+    caller's from a pool thread - so a caller about to fan I/O out to a
+    thread pool must call it on its own thread first.
     """
     released = 0
+    scope = _scope.get()
+    if scope is None:
+        return 0
     thread = threading.get_ident()
-    for ref, owner, state in _registered.get():
+    for ref, owner, state in list(scope.entries):
         session = ref()
-        if session is None or owner != thread or session.info.get(_READ_TXN_KEY) is not state:
+        if session is None or session.info.get(_READ_TXN_KEY) is not state:
+            continue
+        if _THREADS_INHERIT_CONTEXT and owner != thread:
             continue
         transaction = session.get_transaction()
         if (

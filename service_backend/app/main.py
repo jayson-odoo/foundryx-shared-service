@@ -162,6 +162,14 @@ from app.module_platform.public_cors_middleware import PublicCorsMiddleware  # n
 
 app.add_middleware(PublicCorsMiddleware)
 
+# Plan 34 - one read-transaction scope per request, so a network seam can end
+# the read transaction an earlier threadpool hop of the SAME request began
+# (the sync auth dependency reads the user) and never another request's.
+# Added last = outermost, so every middleware's own session shares it too.
+from app.database import ReadTransactionScopeMiddleware  # noqa: E402
+
+app.add_middleware(ReadTransactionScopeMiddleware)
+
 # Frontend NextAuth calls ${BACKEND_API_URL}/auth/login
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(users.router, prefix="/users", tags=["users"])
