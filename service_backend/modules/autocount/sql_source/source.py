@@ -47,6 +47,7 @@ from cryptography.fernet import InvalidToken
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import SingletonThreadPool, StaticPool
 
+from app.database import release_read_transactions
 from app.secrets import decrypt_secret
 
 from ..canonical.documents import (
@@ -1876,6 +1877,11 @@ class SqlDbSource:
         cursor, never run genuinely in parallel.
         """
         from app.config import settings as _settings
+
+        # Plan 34 - ``_prior_hashes`` re-read the app DB since this page's
+        # connection opened, and the thread-pool branch queries from OTHER
+        # threads: end this thread's read transaction here, before the lines.
+        release_read_transactions()
 
         workers = int(getattr(_settings, "autocount_line_fetch_workers", 4) or 4)
         if workers <= 1 or isinstance(

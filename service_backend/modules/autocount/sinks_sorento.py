@@ -47,6 +47,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
+from app.database import release_read_transactions
+
 from .canonical.base import CanonicalRecord
 from .canonical.documents import (
     CanonicalDocument,
@@ -858,6 +860,9 @@ class SorentoSink:
 
         waits = 0
         while True:
+            # Plan 34 - never hold the caller's app-DB read transaction
+            # across a Sorento POST (300 s timeout, 429 waits).
+            release_read_transactions()
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
                 response = client.post(url, params=params, json=body, headers=headers)
 
@@ -1202,6 +1207,7 @@ class SorentoSink:
         """
         url = f"{self._base_url}/api/v1/external/contract"
         headers = {"X-API-Key": self._api_key}
+        release_read_transactions()  # plan 34
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
                 response = client.get(url, headers=headers)
@@ -1238,6 +1244,7 @@ class SorentoSink:
         """
         url = f"{self._base_url}/api/v1/external/contract"
         headers = {"X-API-Key": self._api_key}
+        release_read_transactions()  # plan 34
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
                 response = client.get(url, headers=headers)

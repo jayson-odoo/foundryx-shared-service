@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from cryptography.fernet import InvalidToken
 
+from app.database import release_read_transactions
 from app.jobs.service import JobService
 from app.models.background_job import JOB_FAILED
 from app.models.integration_activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS
@@ -966,6 +967,7 @@ def run_backfill(
                 if _job_is_dead(db, job_id):
                     day_orphaned = True
                     break
+                release_read_transactions()  # plan 34 - not across the wait
                 time.sleep(exc.retry_after)
                 continue
             except Exception as exc:  # noqa: BLE001
