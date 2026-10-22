@@ -47,6 +47,7 @@ from .schemas import (
     HttpPreviewColumnOut,
     HttpPreviewResponse,
     LookupPreviewCountOut,
+    OpenIncident,
 )
 from .services.etl_service import (
     AutocountServiceError,
@@ -163,6 +164,11 @@ def _task_echo_model(view: EtlTaskView) -> EtlTaskResponse:
         deliveryMode=view.delivery_mode,
         combineOutputColumns=view.combine_output_columns,
         previewJobId=None,
+        # plan 33 - the same alert settings + incident `_task_response` carries.
+        openIncident=(
+            OpenIncident.model_validate(view.open_incident) if view.open_incident else None
+        ),
+        **view.alert_settings,
     )
 
 

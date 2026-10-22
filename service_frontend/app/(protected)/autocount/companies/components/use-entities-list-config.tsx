@@ -353,7 +353,24 @@ export function useAutocountEntitiesListConfig({
         meta: { headerTitle: 'Health' },
         header: ({ column }) => <DataGridColumnHeader title="Health" column={column} />,
         cell: ({ row }) => {
-          const { consecutiveFailures, lastError, lastSuccessAt } = row.original;
+          const { consecutiveFailures, lastError, lastSuccessAt, openIncident } = row.original;
+          // Plan 33 (AC-33-14) - an open incident wins over every other state.
+          if (openIncident) {
+            return (
+              <div className="flex min-w-0 flex-col items-start gap-1">
+                <Badge variant="destructive" appearance="light" size="sm">
+                  Failing
+                </Badge>
+                {openIncident.lastError && (
+                  <ClampedText
+                    text={openIncident.lastError}
+                    lines={2}
+                    className="text-xs text-destructive"
+                  />
+                )}
+              </div>
+            );
+          }
           if (consecutiveFailures > 0) {
             return (
               <div className="flex min-w-0 flex-col items-start gap-1">

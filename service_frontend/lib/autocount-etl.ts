@@ -3,6 +3,7 @@
  * editor, the SQL editor and the mock service. No React, no fetch.
  */
 import type {
+  AutocountAlertSettings,
   AutocountAnchorErrorCode,
   AutocountCombineConfig,
   AutocountCompany,
@@ -20,6 +21,24 @@ import type {
   DocFeedWindow,
   HttpPreview,
 } from '@/types/autocount';
+
+/** Plan 33 (AC-33-11) - the server's defaults for the failure-alert settings. */
+export const DEFAULT_ALERT_SETTINGS: AutocountAlertSettings = {
+  alertsEnabled: true,
+  alertAfterFailedRuns: 2,
+  alertStaleMultiple: 3,
+  alertEmails: [],
+};
+
+/** The task's failure-alert settings with an absent field read as its default. */
+export function alertSettingsOf(task: AutocountEtlTask | null): AutocountAlertSettings {
+  return {
+    alertsEnabled: task?.alertsEnabled ?? DEFAULT_ALERT_SETTINGS.alertsEnabled,
+    alertAfterFailedRuns: task?.alertAfterFailedRuns ?? DEFAULT_ALERT_SETTINGS.alertAfterFailedRuns,
+    alertStaleMultiple: task?.alertStaleMultiple ?? DEFAULT_ALERT_SETTINGS.alertStaleMultiple,
+    alertEmails: task?.alertEmails ?? DEFAULT_ALERT_SETTINGS.alertEmails,
+  };
+}
 
 /**
  * Entities whose task carries a second (line) query + a from-date (Q20).

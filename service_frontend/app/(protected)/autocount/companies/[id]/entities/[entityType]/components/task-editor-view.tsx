@@ -26,6 +26,7 @@ import { ResourceList } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useAutocountCompany } from '@/hooks/use-autocount-company';
 import { useCan } from '@/hooks/use-can';
+import { useDatetime } from '@/hooks/use-datetime';
 import {
   useAutocountApiConnections,
   useAutocountEtlTask,
@@ -40,6 +41,7 @@ import {
 import { useAutocountMapping, useAutocountMappingPresets } from '@/hooks/use-autocount-mapping';
 import { usePreviewColumnsMap, useSetDeliveryMode } from '@/hooks/use-autocount-pull';
 import {
+  alertSettingsOf,
   HTTP_PRESETS,
   isDocumentEntity,
   mappingSourceColumns,
@@ -48,9 +50,11 @@ import {
 } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
+  AutocountAlertSettings,
   AutocountEtlSourceConfig,
   AutocountEtlStatus,
   AutocountEtlTask,
+  AutocountOpenIncident,
 } from '@/types/autocount';
 import {
   AC_COMPANIES_MANAGE,
@@ -81,6 +85,39 @@ export interface TaskEditorViewProps {
   entityType: string;
   /** Tab to open (the entities list deep-links Mapping; default Query). */
   initialTab?: AcTaskTab;
+}
+
+/** Plan 33 (AC-33-13) - the incident banner under the header. Its own
+ * component so the datetime hook only mounts while an incident is open. */
+function IncidentBanner({
+  incident,
+  onViewRuns,
+}: {
+  incident: AutocountOpenIncident;
+  onViewRuns: (() => void) | null;
+}) {
+  const { formatDateTime } = useDatetime();
+  const since = formatDateTime(incident.firstFailureAt ?? incident.openedAt);
+  const count =
+    incident.failedRuns === 0
+      ? 'no successful run'
+      : `${incident.failedRuns} failed ${incident.failedRuns === 1 ? 'run' : 'runs'}`;
+  const error = incident.lastError ? ` Last error: ${incident.lastError}` : '';
+  return (
+    <Alert variant="destructive" appearance="light" data-testid="task-incident-banner">
+      <AlertIcon>
+        <TriangleAlert />
+      </AlertIcon>
+      <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
+        <span>{`Failing since ${since} - ${count}.${error}`}</span>
+        {onViewRuns && (
+          <Button type="button" variant="outline" size="sm" onClick={onViewRuns}>
+            View runs
+          </Button>
+        )}
+      </AlertTitle>
+    </Alert>
+  );
 }
 
 /**
@@ -134,6 +171,16 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     setDeliveryMode(task?.deliveryMode ?? 'push');
   }, [task?.deliveryMode]);
   const deliveryModeDirty = deliveryMode !== (task?.deliveryMode ?? 'push');
+
+  // Failure alerts (plan 33, AC-33-15) - saved with the schedule through the
+  // SAME config PUT, so the one Save and the shell dirty-guard cover them.
+  const [alerts, setAlerts] = useState<AutocountAlertSettings>(() => alertSettingsOf(null));
+  const savedAlerts = useMemo(() => alertSettingsOf(task), [task]);
+  const savedAlertsKey = JSON.stringify(savedAlerts);
+  useEffect(() => {
+    setAlerts(JSON.parse(savedAlertsKey) as AutocountAlertSettings);
+  }, [savedAlertsKey]);
+  const alertsDirty = JSON.stringify(alerts) !== savedAlertsKey;
 
   const [config, setConfig] = useState<AutocountEtlSourceConfig | null>(null);
   // The task's Source (sprint-5/08, D13) - API | Database, the ONE place the
@@ -270,7 +317,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
 
   const configDirty = useMemo(() => JSON.stringify(config) !== JSON.stringify(baseline), [config, baseline]);
   const sourceKindDirty = sourceKind !== baselineSourceKind;
-  const dirty = configDirty || sourceKindDirty || draft.dirty || deliveryModeDirty;
+  const dirty = configDirty || sourceKindDirty || draft.dirty || deliveryModeDirty || alertsDirty;
 
   const onChange = useCallback((patch: Partial<AutocountEtlSourceConfig>) => {
     setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
@@ -429,8 +476,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       reload();
       return true;
     }
-    if (configDirty || sourceKindDirty) {
-      const ok = await save({ ...config, query: (config.query ?? '').trim() }, derivedImpl);
+    if (configDirty || sourceKindDirty || alertsDirty) {
+      const ok = await save({ ...config, query: (config.query ?? '').trim() }, derivedImpl, alerts);
       if (!ok) return false;
       // A document entity's FIRST clean config save seeds its field mapping
       // server-side (`seed_document_mapping`) - the Mapping tab's own hook
@@ -475,6 +522,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     toast.success('Task saved.');
     return true;
   }, [
+    alerts,
+    alertsDirty,
     companyId,
     config,
     configDirty,
@@ -494,6 +543,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     setConfig(baseline ? { ...baseline } : null);
     setSourceKind(baselineSourceKind);
     setDeliveryMode(task?.deliveryMode ?? 'push');
+    setAlerts(savedAlerts);
     // B1 round 8 - re-derive the previewed pair from the baseline task rather
     // than leaving it pointed at whatever was Tested during the discarded
     // edit. Without this, Save on the SAVED, already-proved config stays
@@ -505,7 +555,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         : null,
     );
     draft.reset();
-  }, [baseline, baselineSourceKind, draft, task]);
+  }, [baseline, baselineSourceKind, draft, savedAlerts, task]);
 
   const onRan = useCallback(() => setRunsKey((k) => k + 1), []);
 
@@ -724,6 +774,13 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           )}
         </span>
       ),
+      banner: ({ setActiveTab }) =>
+        task.openIncident ? (
+          <IncidentBanner
+            incident={task.openIncident}
+            onViewRuns={can(AC_SYNC_READ) ? () => setActiveTab('runs') : null}
+          />
+        ) : null,
       tabs: [
         {
           id: 'query',
@@ -839,6 +896,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 fieldErrors={{ ...fieldErrors, ...deliveryModeSetter.fieldErrors }}
                 deliveryMode={deliveryMode}
                 onDeliveryModeChange={setDeliveryMode}
+                alerts={alerts}
+                onAlertsChange={setAlerts}
               />
             </div>
           ),
@@ -908,6 +967,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       onCancel,
     };
   }, [
+    alerts,
     apiConnections.connections,
     apiConnections.isLoading,
     can,

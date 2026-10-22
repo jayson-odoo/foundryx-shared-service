@@ -1,7 +1,9 @@
 'use client';
 
-import { ShieldAlert, TriangleAlert } from 'lucide-react';
+import { useState } from 'react';
+import { BellRing, ShieldAlert, TriangleAlert, X } from 'lucide-react';
 import type {
+  AutocountAlertSettings,
   AutocountDeliveryMode,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
@@ -9,6 +11,7 @@ import type {
 import { isDocumentEntity, pushGateWarning } from '@/lib/autocount-etl';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
@@ -16,7 +19,9 @@ import {
   CardHeading,
   CardTitle,
 } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { AC_DELIVERY_MODE_REGISTRY } from '../../../../../components/autocount-meta';
@@ -35,7 +40,12 @@ export interface ScheduleTabProps {
    * separate PUT, never `sourceConfig`. */
   deliveryMode: AutocountDeliveryMode;
   onDeliveryModeChange: (mode: AutocountDeliveryMode) => void;
+  /** Failure-alert settings draft (plan 33, AC-33-15) - saved with the schedule. */
+  alerts?: AutocountAlertSettings;
+  onAlertsChange?: (next: AutocountAlertSettings) => void;
 }
+
+const MAX_ALERT_EMAILS = 10;
 
 const DELIVERY_SEGMENT_CLASS =
   'data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-primary';
@@ -58,6 +68,8 @@ export function ScheduleTab({
   fieldErrors,
   deliveryMode,
   onDeliveryModeChange,
+  alerts,
+  onAlertsChange,
 }: ScheduleTabProps) {
   const hasWatermark = Boolean(config.watermarkColumn);
   const isActive = task.etlStatus === 'active';
@@ -172,6 +184,141 @@ export function ScheduleTab({
           </Card>
         </ScheduleCadenceCards>
       )}
+
+      {!isPull && alerts && onAlertsChange && (
+        <FailureAlertsCard
+          editing={editing}
+          alerts={alerts}
+          onChange={onAlertsChange}
+          fieldErrors={fieldErrors}
+        />
+      )}
     </div>
+  );
+}
+
+interface FailureAlertsCardProps {
+  editing: boolean;
+  alerts: AutocountAlertSettings;
+  onChange: (next: AutocountAlertSettings) => void;
+  fieldErrors: Record<string, string>;
+}
+
+/** Plan 33 (AC-33-15) - the per-integration failure-alert settings. */
+function FailureAlertsCard({ editing, alerts, onChange, fieldErrors }: FailureAlertsCardProps) {
+  const [draftEmail, setDraftEmail] = useState('');
+  const patch = (next: Partial<AutocountAlertSettings>) => onChange({ ...alerts, ...next });
+  const addEmail = () => {
+    const address = draftEmail.trim();
+    if (!address) return;
+    const known = alerts.alertEmails.some((e) => e.toLowerCase() === address.toLowerCase());
+    if (!known) patch({ alertEmails: [...alerts.alertEmails, address] });
+    setDraftEmail('');
+  };
+  const atLimit = alerts.alertEmails.length >= MAX_ALERT_EMAILS;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardHeading>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <BellRing className="size-4" />
+            Failure alerts
+          </CardTitle>
+        </CardHeading>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">{alerts.alertsEnabled ? 'On' : 'Off'}</span>
+          <Switch
+            aria-label="Failure alerts"
+            checked={alerts.alertsEnabled}
+            onCheckedChange={(checked) => patch({ alertsEnabled: checked })}
+            disabled={!editing}
+          />
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 md:grid-cols-2">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="alert-after-runs">Alert after N failed runs in a row</Label>
+          <Input
+            id="alert-after-runs"
+            type="number"
+            min={1}
+            max={20}
+            value={alerts.alertAfterFailedRuns}
+            onChange={(e) => patch({ alertAfterFailedRuns: Number(e.target.value) })}
+            disabled={!editing}
+          />
+          {fieldErrors.alertAfterFailedRuns && (
+            <p className="text-xs text-destructive">{fieldErrors.alertAfterFailedRuns}</p>
+          )}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="alert-stale-multiple">Alert when no clean run for N x the interval</Label>
+          <Input
+            id="alert-stale-multiple"
+            type="number"
+            min={2}
+            max={48}
+            value={alerts.alertStaleMultiple}
+            onChange={(e) => patch({ alertStaleMultiple: Number(e.target.value) })}
+            disabled={!editing}
+          />
+          {fieldErrors.alertStaleMultiple && (
+            <p className="text-xs text-destructive">{fieldErrors.alertStaleMultiple}</p>
+          )}
+        </div>
+        <div className="flex flex-col gap-1.5 md:col-span-2">
+          <Label htmlFor="alert-also-email">Also email</Label>
+          {alerts.alertEmails.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {alerts.alertEmails.map((address) => (
+                <Badge key={address} variant="secondary" appearance="light" className="gap-1">
+                  {address}
+                  {editing && (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${address}`}
+                      onClick={() =>
+                        patch({ alertEmails: alerts.alertEmails.filter((e) => e !== address) })
+                      }
+                    >
+                      <X className="size-3" />
+                    </button>
+                  )}
+                </Badge>
+              ))}
+            </div>
+          )}
+          {editing && (
+            <div className="flex gap-2">
+              <Input
+                id="alert-also-email"
+                type="email"
+                value={draftEmail}
+                onChange={(e) => setDraftEmail(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  addEmail();
+                }}
+                disabled={atLimit}
+                placeholder="name@example.com"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addEmail}
+                disabled={atLimit || !draftEmail.trim()}
+              >
+                Add
+              </Button>
+            </div>
+          )}
+          {fieldErrors.alertEmails && (
+            <p className="text-xs text-destructive">{fieldErrors.alertEmails}</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
