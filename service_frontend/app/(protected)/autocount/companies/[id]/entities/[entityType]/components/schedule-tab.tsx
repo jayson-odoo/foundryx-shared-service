@@ -275,15 +275,18 @@ function FailureAlertsCard({ editing, alerts, onChange, fieldErrors }: FailureAl
                 <Badge key={address} variant="secondary" appearance="light" className="gap-1">
                   {address}
                   {editing && (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-4"
                       aria-label={`Remove ${address}`}
                       onClick={() =>
                         patch({ alertEmails: alerts.alertEmails.filter((e) => e !== address) })
                       }
                     >
                       <X className="size-3" />
-                    </button>
+                    </Button>
                   )}
                 </Badge>
               ))}
