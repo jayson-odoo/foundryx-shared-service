@@ -30,6 +30,7 @@ from ..schemas import (
     ContractGate,
     DocumentPrerequisiteOut,
     EntityConfigItem,
+    OpenIncident,
     EntityConfigUpdate,
     EntityDeliveryModeUpdate,
     EtlRepushResponse,
@@ -599,6 +600,10 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         deliveryMode=view.delivery_mode,
         combineOutputColumns=view.combine_output_columns,
         previewJobId=view.preview_job_id,
+        openIncident=(
+            OpenIncident.model_validate(view.open_incident) if view.open_incident else None
+        ),
+        **view.alert_settings,
     )
 
 
@@ -700,6 +705,25 @@ def update_etl_task(
         # nested ``sourceConfig.sourceImpl`` only if a caller ever sends that
         # shape instead (never both silently disagreeing - the top-level one
         # wins, matching what ``EtlService.update_task`` dispatches on).
+        alert_fields = dict(
+            alertsEnabled=body.alertsEnabled,
+            alertAfterFailedRuns=body.alertAfterFailedRuns,
+            alertStaleMultiple=body.alertStaleMultiple,
+            alertEmails=body.alertEmails,
+        )
+        if body.sourceConfig is None:
+            # Plan 33 - an alert-only save needs at least one alert field and
+            # nothing else: no source preview, no gate change. Anything else
+            # without a sourceConfig is a 422 (never silently dropped).
+            if body.sourceImpl is not None or all(v is None for v in alert_fields.values()):
+                return _field_errors(
+                    {"sourceConfig": "Send the source configuration to save the task."},
+                    "The task could not be saved. Fix the highlighted fields.",
+                )
+            view = EtlService(db).update_alert_settings(
+                current_user.tenant_id, company_id, entity_type, alert_fields
+            )
+            return _task_response(view)
         raw = body.sourceConfig.model_dump()
         raw["sourceImpl"] = body.sourceImpl or body.sourceConfig.sourceImpl
         # review round 5 (R5-B) - ``model_dump()`` always emits every
@@ -713,6 +737,7 @@ def update_etl_task(
         # stored" (AC-10-80).
         if "combine" not in body.sourceConfig.model_fields_set:
             raw.pop("combine", None)
+        raw.update(alert_fields)
         view = EtlService(db).update_task(
             current_user.tenant_id,
             company_id,

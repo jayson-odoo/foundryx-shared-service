@@ -76,6 +76,9 @@ export interface ResourceFormConfig<T> {
   /** Identity avatar node (e.g. initials). */
   avatar?: ReactNode;
   tabs: FormTab[];
+  /** Full-width notice between the record card and the tabs (e.g. an open
+   * incident); receives `setActiveTab` so its action can jump to a tab. */
+  banner?: (ctx: { setActiveTab: (id: string) => void }) => ReactNode;
   /** Tab to open on mount (defaults to the first tab). */
   initialTabId?: string;
   /** Form-surface actions for the "…" menu. */

@@ -2,6 +2,10 @@
 
     !!  EVERY query below filters ``tenant_id`` AND ``company_id`` (AC-13-41).  !!
 
+Only the plan 33 alert sweep reads across tenants (``all_open_config_ids``,
+``open_orphans``, ``list_for_alert_check``; the last is lifecycle-joined); every
+row it loads is re-resolved by its own ``tenant_id`` before use.
+
 Company scope is not decoration. One tenant legitimately runs several AutoCount
 companies (D16 - ``AppId`` IS the company selector), so a tenant-only filter
 would let company A's staged supplier documents surface under company B inside
@@ -15,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, func, nulls_first, nulls_last, or_, select, update
+from sqlalchemy import Text, and_, cast, exists, func, not_, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.background_job import (
@@ -25,8 +29,15 @@ from app.models.background_job import (
     BackgroundJob,
 )
 from app.models.connection import Connection
+from app.models.permission import Permission
+from app.models.role import Role
+from app.models.user import User
 
 from ..models import (
+    DELIVERY_MODE_PUSH,
+    ETL_STATUS_ACTIVE,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
+    SOURCE_IMPL_SQL_DB,
     PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_READY,
     STAGED,
@@ -45,8 +56,12 @@ from ..models import (
     AcRowHash,
     AcStagedRecord,
     AcSyncRun,
+    AcTaskIncident,
     AcWatermark,
 )
+
+# ``sync.py`` writes this exact note on a budget cut-short pass (plan 33).
+BUDGET_NOTE_LIKE = "Budget reached after page %; continues on the next tick."
 
 # A job that is ACTUALLY EXECUTING. ``needs_review`` is deliberately absent -
 # it is non-terminal but parked on a human, not running (see
@@ -326,6 +341,26 @@ class EntityConfigRepository:
                 AcEntityConfig.company_id == company_id,
             )
             .order_by(AcEntityConfig.entity_type.asc())
+            .all()
+        )
+
+
+    def list_for_alert_check(self, tenant_join, open_ids: Sequence[str]) -> List[AcEntityConfig]:
+        """Plan 33 - every ACTIVE push integration of an active tenant/Service
+        (``tenant_join`` is the sweep's own lifecycle predicate), plus any
+        integration holding an open incident so it can be closed."""
+        return (
+            tenant_join(self.db.query(AcEntityConfig), AcEntityConfig.tenant_id)
+            .filter(
+                or_(
+                    and_(
+                        AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
+                        AcEntityConfig.source_impl.in_((SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)),
+                        AcEntityConfig.delivery_mode == DELIVERY_MODE_PUSH,
+                    ),
+                    AcEntityConfig.id.in_(list(open_ids)),
+                )
+            )
             .all()
         )
 
@@ -1256,6 +1291,214 @@ class SyncRunRepository:
             .all()
         )
         return rows, total
+
+    # ── failure-alert evaluation (plan 33) ───────────────────────────────────
+
+    @staticmethod
+    def _budget_only():
+        """A run cut short by the run budget (``sync.py`` writes exactly this
+        note and sets ``truncated``). A push error is appended AFTER the note,
+        so a combined message no longer matches and stays a failure."""
+        return and_(AcSyncRun.truncated.is_(True), AcSyncRun.error.like(BUDGET_NOTE_LIKE))
+
+    def _clean_clause(self):
+        return and_(
+            AcSyncRun.outcome == "SUCCESS",
+            or_(AcSyncRun.error.is_(None), AcSyncRun.error == "", self._budget_only()),
+        )
+
+    def _failed_clause(self):
+        return or_(
+            AcSyncRun.outcome == "FAILED",
+            and_(
+                AcSyncRun.outcome == "SUCCESS",
+                AcSyncRun.error.isnot(None),
+                AcSyncRun.error != "",
+                not_(self._budget_only()),
+            ),
+        )
+
+    def _scope(self, tenant_id: str, company_id: str, entity_type: str):
+        return (
+            AcSyncRun.tenant_id == tenant_id,
+            AcSyncRun.company_id == company_id,
+            AcSyncRun.entity_type == entity_type,
+            AcSyncRun.finished_at.isnot(None),
+        )
+
+    def last_clean_finished_at(
+        self, tenant_id: str, company_id: str, entity_type: str, clean_modes: Sequence[str]
+    ) -> Optional[datetime]:
+        """Finish time of the latest clean run (SUCCESS with no push error;
+        a budget cut-short run is clean)."""
+        return (
+            self.db.query(func.max(AcSyncRun.finished_at))
+            .filter(
+                *self._scope(tenant_id, company_id, entity_type),
+                AcSyncRun.mode.in_(tuple(clean_modes)),
+                self._clean_clause(),
+            )
+            .scalar()
+        )
+
+    def failed_runs_summary(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        since: Optional[datetime],
+        failed_modes: Sequence[str],
+    ) -> Tuple[int, Optional[datetime], Optional[str]]:
+        """``(count, earliest finish, latest error)`` of the finished scheduled
+        runs that failed after ``since`` - aggregates and ONE latest row, never
+        every failed run."""
+        conditions = (
+            *self._scope(tenant_id, company_id, entity_type),
+            AcSyncRun.mode.in_(tuple(failed_modes)),
+            self._failed_clause(),
+            *((AcSyncRun.finished_at > since,) if since is not None else ()),
+        )
+        count, earliest = (
+            self.db.query(func.count(AcSyncRun.id), func.min(AcSyncRun.finished_at))
+            .filter(*conditions)
+            .one()
+        )
+        if not count:
+            return 0, None, None
+        latest = (
+            self.db.query(AcSyncRun.error)
+            .filter(*conditions)
+            .order_by(AcSyncRun.finished_at.desc(), AcSyncRun.id.desc())
+            .limit(1)
+            .scalar()
+        )
+        return int(count), earliest, latest
+
+
+class TaskIncidentRepository:
+    """``ac_task_incident`` - plan 33. Every read carries the tenant."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, incident: AcTaskIncident) -> AcTaskIncident:
+        self.db.add(incident)
+        self.db.flush()
+        return incident
+
+    def get_open(self, tenant_id: str, entity_config_id: str) -> Optional[AcTaskIncident]:
+        return (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.entity_config_id == entity_config_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .first()
+        )
+
+    def open_for_company(
+        self, tenant_id: str, company_id: str
+    ) -> Dict[str, AcTaskIncident]:
+        """Open incidents of one company keyed by ``entity_config_id`` - ONE query."""
+        rows = (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.company_id == company_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .all()
+        )
+        return {row.entity_config_id: row for row in rows}
+
+    def users_with_permission(self, tenant_id: str, permission_key: str) -> List[User]:
+        """Users of THIS tenant holding ``permission_key`` through a role of
+        this same tenant (never a user or role of another tenant)."""
+        return (
+            self.db.query(User)
+            .join(User.roles)
+            .filter(
+                User.tenant_id == tenant_id,
+                Role.tenant_id == tenant_id,
+                Role.permissions.any(Permission.key == permission_key),
+            )
+            .distinct()
+            .all()
+        )
+
+    def claim_notice(
+        self, incident: AcTaskIncident, expected_last_notified: Optional[datetime], now: datetime
+    ) -> bool:
+        """Guarded claim of one reminder: only the check whose read of
+        ``last_notified_at`` is still current wins (rowcount 1)."""
+        result = self.db.execute(
+            update(AcTaskIncident)
+            .where(
+                AcTaskIncident.id == incident.id,
+                AcTaskIncident.tenant_id == incident.tenant_id,
+                AcTaskIncident.closed_at.is_(None),
+                AcTaskIncident.last_notified_at.is_not_distinct_from(expected_last_notified),
+            )
+            .values(last_notified_at=now, notices_sent=AcTaskIncident.notices_sent + 1)
+            .execution_options(synchronize_session=False)
+        )
+        won = result.rowcount == 1
+        if won:
+            self.db.refresh(incident)
+        return won
+
+    def claim_close(self, incident: AcTaskIncident, now: datetime, reason: str) -> bool:
+        """Guarded close: only one of two overlapping checks closes (and so
+        sends the recovered notice for) an incident."""
+        result = self.db.execute(
+            update(AcTaskIncident)
+            .where(
+                AcTaskIncident.id == incident.id,
+                AcTaskIncident.tenant_id == incident.tenant_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .values(closed_at=now, close_reason=reason)
+            .execution_options(synchronize_session=False)
+        )
+        won = result.rowcount == 1
+        if won:
+            self.db.refresh(incident)
+        return won
+
+    def last_notice_at(self, tenant_id: str, entity_config_id: str) -> Optional[datetime]:
+        """Latest notice for this integration across ALL its incidents, closed
+        ones included (the 4 h mail budget)."""
+        return (
+            self.db.query(func.max(AcTaskIncident.last_notified_at))
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.entity_config_id == entity_config_id,
+                AcTaskIncident.notices_sent > 0,
+            )
+            .scalar()
+        )
+
+    def open_orphans(self) -> List[AcTaskIncident]:
+        """Open incidents whose integration row no longer exists."""
+        return (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.closed_at.is_(None),
+                ~exists().where(AcEntityConfig.id == AcTaskIncident.entity_config_id),
+            )
+            .all()
+        )
+
+    def all_open_config_ids(self) -> List[str]:
+        """Every open incident's integration id, all tenants (the sweep's
+        evaluator, which resolves each one tenant-scoped afterwards)."""
+        return [
+            row[0]
+            for row in self.db.query(AcTaskIncident.entity_config_id)
+            .filter(AcTaskIncident.closed_at.is_(None))
+            .all()
+        ]
 
 
 class SyncJobRepository:

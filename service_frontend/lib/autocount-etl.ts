@@ -3,6 +3,7 @@
  * editor, the SQL editor and the mock service. No React, no fetch.
  */
 import type {
+  AutocountAlertSettings,
   AutocountAnchorErrorCode,
   AutocountCombineConfig,
   AutocountCompany,
@@ -20,6 +21,70 @@ import type {
   DocFeedWindow,
   HttpPreview,
 } from '@/types/autocount';
+
+/** Plan 33 (AC-33-11) - the server's defaults for the failure-alert settings. */
+export const DEFAULT_ALERT_SETTINGS: AutocountAlertSettings = {
+  alertsEnabled: true,
+  alertAfterFailedRuns: 2,
+  alertStaleMultiple: 3,
+  alertEmails: [],
+};
+
+/** The task's failure-alert settings with an absent field read as its default. */
+export function alertSettingsOf(task: AutocountEtlTask | null): AutocountAlertSettings {
+  return {
+    alertsEnabled: task?.alertsEnabled ?? DEFAULT_ALERT_SETTINGS.alertsEnabled,
+    alertAfterFailedRuns: task?.alertAfterFailedRuns ?? DEFAULT_ALERT_SETTINGS.alertAfterFailedRuns,
+    alertStaleMultiple: task?.alertStaleMultiple ?? DEFAULT_ALERT_SETTINGS.alertStaleMultiple,
+    alertEmails: task?.alertEmails ?? DEFAULT_ALERT_SETTINGS.alertEmails,
+  };
+}
+
+/** The editable alert settings: the two number fields hold the raw text so a
+ * cleared field stays empty (never snaps to 0) until Save validates it. */
+export interface AutocountAlertDraft {
+  alertsEnabled: boolean;
+  alertAfterFailedRuns: string;
+  alertStaleMultiple: string;
+  alertEmails: string[];
+}
+
+export function alertDraftOf(settings: AutocountAlertSettings): AutocountAlertDraft {
+  return {
+    alertsEnabled: settings.alertsEnabled,
+    alertAfterFailedRuns: String(settings.alertAfterFailedRuns),
+    alertStaleMultiple: String(settings.alertStaleMultiple),
+    alertEmails: settings.alertEmails,
+  };
+}
+
+function boundedWhole(text: string, low: number, high: number): number | null {
+  if (!/^\d+$/.test(text.trim())) return null;
+  const value = Number(text.trim());
+  return value >= low && value <= high ? value : null;
+}
+
+/** Live mirror of the server's alert-setting rules (the server re-validates). */
+export function validateAlertDraft(draft: AutocountAlertDraft): {
+  settings: AutocountAlertSettings | null;
+  errors: Record<string, string>;
+} {
+  const errors: Record<string, string> = {};
+  const after = boundedWhole(draft.alertAfterFailedRuns, 1, 20);
+  const multiple = boundedWhole(draft.alertStaleMultiple, 2, 48);
+  if (after === null) errors.alertAfterFailedRuns = 'Between 1 and 20 runs.';
+  if (multiple === null) errors.alertStaleMultiple = 'Between 2 and 48 intervals.';
+  if (after === null || multiple === null) return { settings: null, errors };
+  return {
+    settings: {
+      alertsEnabled: draft.alertsEnabled,
+      alertAfterFailedRuns: after,
+      alertStaleMultiple: multiple,
+      alertEmails: draft.alertEmails,
+    },
+    errors,
+  };
+}
 
 /**
  * Entities whose task carries a second (line) query + a from-date (Q20).

@@ -3239,6 +3239,8 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
   ): Promise<AutocountEtlTask> {
     await pause(250);
     const current = etlTaskFor(companyId, entityType);
+    // An alert-only save carries no source config (plan 33): echo the alert settings only.
+    if (!input.sourceConfig) return cloneJson({ ...current, ...(input.alerts ?? {}) });
     let cfg = input.sourceConfig;
     const key = taskKey(companyId, entityType);
     const previousImpl: 'sql_db' | 'autocount_http' =

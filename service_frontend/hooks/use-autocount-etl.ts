@@ -11,6 +11,7 @@ import {
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountApiConnection,
+  AutocountAlertSettings,
   AutocountCombineConfig,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
@@ -54,8 +55,9 @@ export interface UseAutocountEtlTaskResult {
    * `saveError`) on rejection.
    */
   save: (
-    sourceConfig: AutocountEtlSourceConfig,
+    sourceConfig: AutocountEtlSourceConfig | null,
     sourceImpl?: 'sql_db' | 'autocount_http',
+    alerts?: AutocountAlertSettings,
   ) => Promise<boolean>;
   /** Adopt a task returned by a lifecycle call (activate/pause/resume/run/preview). */
   apply: (task: AutocountEtlTask) => void;
@@ -100,16 +102,18 @@ export function useAutocountEtlTask(
 
   const save = useCallback(
     async (
-      sourceConfig: AutocountEtlSourceConfig,
+      sourceConfig: AutocountEtlSourceConfig | null,
       sourceImpl?: 'sql_db' | 'autocount_http',
+      alerts?: AutocountAlertSettings,
     ): Promise<boolean> => {
       setIsSaving(true);
       setSaveError(null);
       setFieldErrors({});
       try {
         const saved = await autocountService.updateEtlTask(companyId, entityType, {
-          sourceConfig,
+          ...(sourceConfig ? { sourceConfig } : {}),
           ...(sourceImpl ? { sourceImpl } : {}),
+          ...(alerts ? { alerts } : {}),
         });
         setTask(saved);
         return true;

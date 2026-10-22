@@ -55,6 +55,31 @@ export interface AutocountDocumentPrerequisite {
 }
 
 /**
+ * Plan 33 (AC-33-12) - the integration's open failure-alert incident, or null.
+ * `reason` is `consecutive` (N scheduled runs in a row failed) or `stale` (no
+ * clean run for the stale window). `firstFailureAt` is the stale clock's start
+ * for a stale incident; nullable for safety.
+ */
+export interface AutocountOpenIncident {
+  openedAt: string; // ISO Z
+  firstFailureAt: string | null; // ISO Z
+  failedRuns: number;
+  lastError: string | null;
+  reason: 'consecutive' | 'stale';
+}
+
+/** Plan 33 (AC-33-11) - the per-integration failure-alert settings. */
+export interface AutocountAlertSettings {
+  alertsEnabled: boolean;
+  /** 1..20, default 2. */
+  alertAfterFailedRuns: number;
+  /** 2..48, default 3. */
+  alertStaleMultiple: number;
+  /** Up to 10 extra addresses, default []. */
+  alertEmails: string[];
+}
+
+/**
  * Per-entity sync configuration seeded when a company is registered, PLUS the
  * entity's live delta state.
  *
@@ -102,6 +127,8 @@ export interface AutocountEntityConfig {
    * convention as `AutocountEtlTask.sourceImpl`).
    */
   deliveryMode?: AutocountDeliveryMode;
+  /** Plan 33 (AC-33-12) - the open incident, or null/absent. */
+  openIncident?: AutocountOpenIncident | null;
 }
 
 /**
@@ -1248,6 +1275,13 @@ export interface AutocountEtlTask {
    * existed) = no preview in flight.
    */
   previewJobId?: string | null;
+  /** Plan 33 (AC-33-11) - failure-alert settings, defaults resolved by the server. */
+  alertsEnabled?: boolean;
+  alertAfterFailedRuns?: number;
+  alertStaleMultiple?: number;
+  alertEmails?: string[];
+  /** Plan 33 (AC-33-12) - the open incident, or null/absent. */
+  openIncident?: AutocountOpenIncident | null;
   /**
    * sprint-5/13 (AC-13-30, D18) - whether Push may be freely chosen for THIS
    * task, decided by the backend ONLY (never a hardcoded entity list on the
@@ -1294,7 +1328,8 @@ export interface AutocountPushGate {
 
 /** `PUT .../etl-task` body - replaces the task's source config (draft save). */
 export interface AutocountEtlTaskUpdate {
-  sourceConfig: AutocountEtlSourceConfig;
+  /** Omitted on an alert-only save (no source preview, gate untouched). */
+  sourceConfig?: AutocountEtlSourceConfig;
   /**
    * The task's Source (sprint-5/08, D13) - present when the operator's
    * toggle derives `sql_db` or `autocount_http`; omitted when the picked
@@ -1303,6 +1338,8 @@ export interface AutocountEtlTaskUpdate {
    * no task at all on that path).
    */
   sourceImpl?: 'sql_db' | 'autocount_http';
+  /** Plan 33 (AC-33-11) - sent beside `sourceConfig`; omitted = keep stored. */
+  alerts?: AutocountAlertSettings;
 }
 
 // ── activation gate + runs (plan 22, slice S2 - AC-22-17/18/19, Appendix A6) ──

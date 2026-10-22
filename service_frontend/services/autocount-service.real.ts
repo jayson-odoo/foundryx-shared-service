@@ -372,8 +372,9 @@ export const realAutocountService: AutocountService = {
       {
         method: 'PUT',
         body: JSON.stringify({
-          sourceConfig: input.sourceConfig,
+          ...(input.sourceConfig ? { sourceConfig: input.sourceConfig } : {}),
           ...(input.sourceImpl ? { sourceImpl: input.sourceImpl } : {}),
+          ...(input.alerts ?? {}),
         }),
       },
     ).then(normalizeEtlTask);

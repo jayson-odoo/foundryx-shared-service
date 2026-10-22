@@ -171,6 +171,15 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
             fired += 1
         elif outcome == "skipped":
             skipped += 1
+    # Plan 33 - the failure-alert check rides the same tick; its own crash
+    # never changes what the sweep reports or whether the next tick enqueues.
+    try:
+        from .alerts import evaluate_integration_alerts
+
+        evaluate_integration_alerts(db, now=now)
+    except Exception:  # noqa: BLE001 - alerting must never break the sweep
+        logger.exception("autocount failure-alert check failed")
+        db.rollback()
     return {"fired": fired, "skipped": skipped, "failed": failed}
 
 
