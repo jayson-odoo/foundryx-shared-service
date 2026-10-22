@@ -31,6 +31,8 @@ from typing import Any, Dict, Iterator, List, Sequence, Tuple
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine, URL
 
+from app.database import release_read_transactions
+
 from .errors import SqlConnectError, SqlGuardError, SqlQueryError, SqlSourceError
 
 __all__ = [
@@ -202,7 +204,12 @@ def open_readonly(
     Connect/setup failures raise ``SqlConnectError``; the caller's own
     statements raise whatever they raise (the preview maps those to
     ``SqlQueryError``).
+
+    Plan 34: the pool wait, the connect and the customer-DB queries can each
+    take tens of seconds, so the caller's app-DB read transaction is ended
+    first - never held (with its ac_* locks) across a customer database.
     """
+    release_read_transactions()
     try:
         conn = engine.connect()
     except Exception as exc:  # noqa: BLE001 - every driver has its own class

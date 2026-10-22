@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.config import settings
+from app.database import release_read_transactions
 from app.services.url_guard import UrlGuardError, assert_deliverable
 
 # 10s per AC-08-02 - a probe, not an extraction; a slow/hung wrapper must
@@ -109,6 +110,7 @@ def probe_open_connection(
         follow_redirects=False,
     )
     owns_client = transport is None
+    release_read_transactions()  # plan 34 - no app-DB read txn across the probe
     try:
         try:
             response = client.get(

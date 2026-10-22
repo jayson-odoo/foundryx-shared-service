@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app.config import settings
+from app.database import release_read_transactions
 from app.integrations.base import TestResult
 
 from .sinks_sorento import SINK_CONCURRENCY_KEY, contract_major
@@ -167,6 +168,7 @@ class SorentoProvider:
             )
 
         url = f"{base_url.rstrip('/')}{_PROBE_PATH}"
+        release_read_transactions()  # plan 34
         try:
             with httpx.Client(timeout=10.0, transport=transport) as client:
                 response = client.post(
@@ -227,6 +229,7 @@ class SorentoProvider:
         url = f"{base_url.rstrip('/')}{_CONTRACT_PATH}"
         advertised: Optional[str] = None
         detail = "its contract endpoint was unreachable"
+        release_read_transactions()  # plan 34
         try:
             with httpx.Client(timeout=10.0, transport=transport) as client:
                 response = client.get(url, headers={"X-API-Key": api_key})

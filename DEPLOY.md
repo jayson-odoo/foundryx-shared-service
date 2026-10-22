@@ -404,6 +404,35 @@ script prints a `::warning::`), run the migrations yourself first, then
 deploy. Unset it afterwards. `BOOTSTRAP_LOCK_TIMEOUT`, `BOOTSTRAP_ATTEMPTS`
 and `BOOTSTRAP_RETRY_DELAY` reach the container the same way.
 
+### Idle-in-transaction safety net (proposal, owner applies)
+
+Plan 34 removed the cause (read transactions held across network I/O); this
+is the backstop so a future leak cannot block a deploy for long. NOT applied
+by the lane - the owner runs it once, on the host:
+
+```sql
+ALTER ROLE foundryx IN DATABASE foundryx_service
+  SET idle_in_transaction_session_timeout = '15min';
+```
+
+- Value: 15 min = 3 x `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (300s), the longest
+  legitimate hold left (a WRITE transaction across one Sorento POST, see the
+  `worker_jobs` bullet above). Tighter kills a slow push mid-chunk.
+- Role / database: `foundryx` / `foundryx_service` are the compose defaults;
+  use the host `.env`'s `POSTGRES_USER` / `POSTGRES_DB` if they differ.
+- Where: the role default covers every process (api, workers, beat, psql)
+  and takes effect on NEW connections only - restart the stack (or let the
+  pools recycle) after running it. The per-worker env
+  `WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS=900`
+  (`docker-compose.yml`) is the narrower alternative (workers only, not the
+  API).
+- Effect when it fires: Postgres ends the session; the next statement on it
+  fails, the request 500s or the job fails (the orphan sweep marks it). That
+  is the intended trade: a stuck holder dies instead of the deploy.
+- Check: `SHOW idle_in_transaction_session_timeout;` from a fresh
+  `docker exec ... psql -U foundryx -d foundryx_service`. Undo:
+  `ALTER ROLE foundryx IN DATABASE foundryx_service RESET idle_in_transaction_session_timeout;`
+
 ### Module migration lock timeout (operator recovery)
 
 Symptom: the deploy aborted with `DEPLOY ABORTED (backend_<new> ...)` and the
@@ -437,6 +466,12 @@ colour kept serving on the old schema.
    `client_addr` to its container with `docker network inspect
    foundryx_ss_network`. Keep the `regexp_replace` redaction when you paste
    results anywhere: raw `query` text carries customer literals.
+   `application_name` names the owning process (plan 34): `foundryx-api`
+   (backend_blue/green), `foundryx-worker-jobs`, `foundryx-worker-workflow`,
+   `foundryx-worker-omni`, `foundryx-beat`, `foundryx-bootstrap_db` (the
+   bootstrap and its migrations, via `PGAPPNAME`); empty = a hand-opened
+   psql, a migration run outside `bootstrap_db`, or a container still on an
+   image older than plan 34.
 2. **Decide.**
    - `idle in transaction` with a large `xact_age`: a leaked transaction
      (a worker task, a hand-opened psql). Restart the owning container
@@ -444,6 +479,10 @@ colour kept serving on the old schema.
    - `active` long query from the live API or a worker: wait for it, or
      re-run the deploy off-peak.
    - Your own leftover psql / script session: close it.
+   - Since plan 34 the app ends its own read transactions before every
+     AutoCount / Sorento / customer-DB call, so a minutes-old `idle in
+     transaction` from a `foundryx-*` process is a regression to report,
+     not the expected shape.
 3. **`pg_terminate_backend` with care.** `SELECT pg_cancel_backend(<pid>);`
    first (cancels the running statement only). `SELECT
    pg_terminate_backend(<pid>);` ends the session and ROLLS BACK its open

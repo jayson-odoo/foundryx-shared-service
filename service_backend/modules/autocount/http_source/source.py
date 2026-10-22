@@ -37,6 +37,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
+from app.database import release_read_transactions
+
 from ..canonical.masters import ENTITY_BRANCH, NO_DELETION_ENTITY_TYPES
 from ..client import parse_last_modified
 from ..mapping import IdentityError, flat_source_ref
@@ -675,6 +677,9 @@ class HttpApiSource:
         every other straggler's, is simply discarded; never awaited,
         never retried by this method."""
         results: Dict[int, EnvelopePage] = {}
+        # Plan 34 - pages go out on pool threads, whose release cannot reach
+        # this thread's session: end its read transaction here, first.
+        release_read_transactions()
         executor = ThreadPoolExecutor(max_workers=len(batch_pages))
         try:
             futures = {

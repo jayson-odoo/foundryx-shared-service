@@ -20,6 +20,7 @@ from typing import Any, Deque, Dict, List, Optional
 
 import httpx
 
+from app.database import release_read_transactions
 from app.integrations.masking import mask_payload
 
 from ..client import CallRecord
@@ -255,6 +256,9 @@ class HttpApiClient:
             self._record_call(path, params, None, started, error=f"blocked: {exc.message}")
             raise HttpTransportError(exc.message, is_timeout=False) from exc
         url = f"{self.base_url}{path}"
+        # Plan 34 - never hold the caller's app-DB read transaction (and its
+        # locks on ac_company / ac_entity_config) across a vendor request.
+        release_read_transactions()
         try:
             response = self._client.get(
                 url,

@@ -295,6 +295,12 @@ class Settings(BaseSettings):
     worker_db_statement_timeout_seconds: int = 0
     worker_db_lock_timeout_seconds: int = 0
     worker_db_idle_in_transaction_session_timeout_seconds: int = 0
+    # Postgres `application_name` for this process's app-DB connections
+    # (plan 34). Empty = derived from argv (`foundryx-api`,
+    # `foundryx-worker-<queue>`, `foundryx-beat`, `foundryx-<script>`) in
+    # `app/database.py::process_application_name()`, so the DEPLOY.md
+    # lock-holder report names the owning process. Capped at 63 chars.
+    db_application_name: str = ""
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like
