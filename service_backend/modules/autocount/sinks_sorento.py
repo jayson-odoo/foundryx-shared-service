@@ -1064,6 +1064,9 @@ class SorentoSink:
                 if on_chunk is not None:
                     on_chunk(chunk, chunk_records, None)
         else:
+            # Plan 34 - the POSTs run on pool threads, whose release cannot
+            # reach this thread's session: end its read transaction here.
+            release_read_transactions()
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = [
                     executor.submit(self._run_delete_chunk, chunk, dry_run, codes, pairs)
@@ -1468,6 +1471,9 @@ class SorentoSink:
                 if on_chunk is not None:
                     on_chunk(chunk, chunk_results, None)
         else:
+            # Plan 34 - the POSTs run on pool threads, whose release cannot
+            # reach this thread's session: end its read transaction here.
+            release_read_transactions()
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = [
                     executor.submit(

@@ -17,7 +17,7 @@ from alembic import command
 from alembic.config import Config
 
 from app.config import settings
-from app.database import SessionLocal
+from app.database import SessionLocal, process_application_name
 from app.seed import seed_all
 
 APP_ROLE = "foundryx"
@@ -89,10 +89,22 @@ def _apply_bootstrap_lock_timeout() -> None:
     os.environ["PGOPTIONS"] = f"{existing} {opt}".strip() if existing else opt
 
 
+def _name_bootstrap_sessions() -> None:
+    """Plan 34 - name every libpq connection this bootstrap opens (the role/db
+    probe, core Alembic, every module's Alembic engine - none of which pass
+    connect_args) through ``PGAPPNAME``, so the DEPLOY.md lock report shows
+    ``foundryx-bootstrap_db`` for a waiting migration instead of an empty
+    name. An operator's own ``PGAPPNAME`` wins. Postgres-only."""
+    if not settings.database_url.startswith("postgresql"):
+        return
+    os.environ.setdefault("PGAPPNAME", process_application_name())
+
+
 def main() -> None:
     # First thing: bound how long any bootstrap statement will WAIT for a lock,
     # so a lock held by the still-live blue color can't hang the deploy (300s).
     _apply_bootstrap_lock_timeout()
+    _name_bootstrap_sessions()
     if settings.database_url.startswith("postgresql"):
         ensure_role_and_db()
     run_migrations()

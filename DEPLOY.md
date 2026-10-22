@@ -468,8 +468,10 @@ colour kept serving on the old schema.
    results anywhere: raw `query` text carries customer literals.
    `application_name` names the owning process (plan 34): `foundryx-api`
    (backend_blue/green), `foundryx-worker-jobs`, `foundryx-worker-workflow`,
-   `foundryx-worker-omni`, `foundryx-beat`, `foundryx-bootstrap_db`; empty =
-   a hand-opened psql or a container still on an image older than plan 34.
+   `foundryx-worker-omni`, `foundryx-beat`, `foundryx-bootstrap_db` (the
+   bootstrap and its migrations, via `PGAPPNAME`); empty = a hand-opened
+   psql, a migration run outside `bootstrap_db`, or a container still on an
+   image older than plan 34.
 2. **Decide.**
    - `idle in transaction` with a large `xact_age`: a leaked transaction
      (a worker task, a hand-opened psql). Restart the owning container

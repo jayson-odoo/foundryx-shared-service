@@ -1,10 +1,12 @@
 """Database configuration and session management."""
 import logging
 import os
+import re
 import sys
 import threading
 import weakref
-from typing import Dict, Generator
+from contextvars import ContextVar
+from typing import Dict, Generator, List, Tuple
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Connection, Engine
@@ -137,36 +139,48 @@ def get_db() -> Generator[Session, None, None]:
 # ``release_read_transactions()`` is called by every network seam right
 # before its I/O and ends such transactions; it never ends one that wrote.
 
-_CONNECTION_KEY = "foundryx_read_txn_connection"
-_thread_state = threading.local()
+_READ_TXN_KEY = "foundryx_read_txn"
 # Connections whose current transaction ran anything but a plain SELECT.
 _wrote: "weakref.WeakSet[Connection]" = weakref.WeakSet()
-_LOCKING_CLAUSES = (
-    " FOR UPDATE",
-    " FOR NO KEY UPDATE",
-    " FOR SHARE",
-    " FOR KEY SHARE",
-    "ADVISORY_XACT_LOCK",
+_LOCKING = re.compile(
+    r"\bFOR\s+(?:NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b"
+    r"|ADVISORY_XACT_LOCK|\bSET_CONFIG\s*\(",
+    re.IGNORECASE,
 )
 
 
-def _thread_sessions() -> "weakref.WeakSet[Session]":
-    sessions = getattr(_thread_state, "sessions", None)
-    if sessions is None:
-        sessions = _thread_state.sessions = weakref.WeakSet()
-    return sessions
+class _ReadTxn:
+    """Bookkeeping for one autobegun session transaction, kept in
+    ``session.info`` while the transaction lives. Its identity is the token
+    a registry entry must match, so an entry left in a context that outlived
+    its transaction can never act on the session's NEXT transaction."""
+
+    __slots__ = ("transaction", "connections")
+
+    def __init__(self, transaction: SessionTransaction, connection: Connection) -> None:
+        self.transaction = transaction
+        self.connections: List["weakref.ref[Connection]"] = [weakref.ref(connection)]
+
+
+# The registry is per CONTEXT (and each entry pinned to its thread), not per
+# thread: the API runs an endpoint, its response serialization and get_db's
+# close as separate threadpool hops, each in its own context copy, on pool
+# threads shared by every request - a thread-local registry would let one
+# request's seam commit another request's session. Values are immutable
+# tuples, so a context copy never mutates its parent's or a sibling's view.
+_registered: ContextVar[Tuple[Tuple["weakref.ref[Session]", int, _ReadTxn], ...]] = ContextVar(
+    "foundryx_read_txn_sessions", default=()
+)
 
 
 def _statement_is_plain_read(statement: str) -> bool:
-    """True only for a SELECT that takes no row lock and no transaction-scoped
-    advisory lock - the only statements whose transaction can be ended under
-    the caller without changing what it holds. Anything else (DML, DDL,
-    SAVEPOINT, SET LOCAL, ...) counts as a write."""
-    head = statement.lstrip()[:6].upper()
-    if head != "SELECT":
+    """True only for a SELECT that takes no row lock, no transaction-scoped
+    advisory lock and sets no transaction-local setting - the only statements
+    whose transaction can be ended under the caller without changing what it
+    holds. Anything else (DML, DDL, SAVEPOINT, SET LOCAL, ...) is a write."""
+    if statement.lstrip()[:6].upper() != "SELECT":
         return False
-    upper = statement.upper()
-    return not any(clause in upper for clause in _LOCKING_CLAUSES)
+    return _LOCKING.search(statement) is None
 
 
 @event.listens_for(Engine, "before_cursor_execute")
@@ -182,15 +196,27 @@ def _track_autobegun_transaction(
     if transaction.origin is not SessionTransactionOrigin.AUTOBEGIN:
         return
     _wrote.discard(connection)
-    session.info[_CONNECTION_KEY] = weakref.ref(connection)
-    _thread_sessions().add(session)
+    state = session.info.get(_READ_TXN_KEY)
+    if state is not None and state.transaction is transaction:
+        state.connections.append(weakref.ref(connection))  # a second bind
+        return
+    state = _ReadTxn(transaction, connection)
+    session.info[_READ_TXN_KEY] = state
+    live = tuple(
+        entry for entry in _registered.get()
+        if entry[0]() is not None and entry[0]() is not session
+    )
+    _registered.set(live + ((weakref.ref(session), threading.get_ident(), state),))
 
 
 @event.listens_for(Session, "after_transaction_end")
 def _forget_transaction(session: Session, transaction: SessionTransaction) -> None:
-    if transaction.parent is None:
-        session.info.pop(_CONNECTION_KEY, None)
-        _thread_sessions().discard(session)
+    if transaction.parent is not None:
+        return
+    state = session.info.pop(_READ_TXN_KEY, None)
+    entries = _registered.get()
+    if state is not None and any(entry[2] is state for entry in entries):
+        _registered.set(tuple(entry for entry in entries if entry[2] is not state))
 
 
 def release_read_transactions() -> int:
@@ -203,29 +229,33 @@ def release_read_transactions() -> int:
     write is ever committed early and no unit of work is split. The commit
     does not expire loaded objects: the caller keeps using what it read,
     exactly as before, and its next query simply autobegins a fresh
-    transaction. Only the calling thread's sessions are touched (a Session
-    is not thread-safe).
+    transaction. Only sessions this context began on this thread are
+    touched (a Session is not thread-safe): a caller about to fan I/O out to
+    a thread pool must call it on its own thread first.
     """
     released = 0
-    for session in list(_thread_sessions()):
+    thread = threading.get_ident()
+    for ref, owner, state in _registered.get():
+        session = ref()
+        if session is None or owner != thread or session.info.get(_READ_TXN_KEY) is not state:
+            continue
         transaction = session.get_transaction()
         if (
-            transaction is None
+            transaction is not state.transaction
             or not transaction.is_active
-            or transaction.origin is not SessionTransactionOrigin.AUTOBEGIN
             or session.in_nested_transaction()
             or session.new
             or session.dirty
             or session.deleted
         ):
             continue
-        ref = session.info.get(_CONNECTION_KEY)
-        connection = ref() if ref is not None else None
-        if (
+        connections = [conn_ref() for conn_ref in state.connections]
+        if any(
             connection is None
             or connection.closed
             or connection.invalidated
             or connection in _wrote
+            for connection in connections
         ):
             continue
         expire_on_commit = session.expire_on_commit
