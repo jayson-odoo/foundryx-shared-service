@@ -24,6 +24,7 @@ seam calls it right before its I/O. These tests pin:
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import uuid
@@ -177,19 +178,84 @@ def test_release_leaves_a_locking_select_open(sql):
     assert _statement_is_plain_read("SELECT id FROM t") is True
     assert _statement_is_plain_read("  select 1") is True
     assert _statement_is_plain_read(sql) is False
+    # Same clause after a newline / tab (how a formatted query renders it).
+    assert _statement_is_plain_read(sql.replace(" FOR ", "\nFOR ").replace(" ", "\t", 1)) is False
 
 
-def test_release_only_touches_the_calling_threads_sessions(scratch_session):
+def test_set_config_counts_as_a_write():
+    """``set_config(.., true)`` is transaction-local, like ``SET LOCAL``:
+    ending the transaction would silently drop the setting."""
+    from app.database import _statement_is_plain_read
+
+    assert _statement_is_plain_read("SELECT set_config('app.tenant', 'x', true)") is False
+
+
+def _spy_commits(monkeypatch, session, *, raises: bool = False) -> List[str]:
+    """Record (and optionally fail) every ``commit`` on ``session``. A spy,
+    not a transaction-state check: sqlite refuses a cross-thread COMMIT on
+    its own, which would hide a release that tried one (Postgres would not)."""
+    calls: List[str] = []
+    real_commit = session.commit
+
+    def commit() -> None:
+        calls.append(threading.current_thread().name)
+        if raises:
+            raise RuntimeError("commit refused")
+        real_commit()
+
+    monkeypatch.setattr(session, "commit", commit)
+    return calls
+
+
+def test_release_only_touches_the_calling_threads_sessions(scratch_session, monkeypatch):
     """A Session is not thread-safe: a release on one thread must never
-    commit a session another thread is using."""
+    commit a session another thread is using (the Sorento / page-walk
+    thread pools call the seams from pool threads)."""
+    commits = _spy_commits(monkeypatch, scratch_session)
     scratch_session.execute(text("SELECT 1"))
     released: List[int] = []
-    other = threading.Thread(target=lambda: released.append(_release()))
+    other = threading.Thread(target=lambda: released.append(_release()), name="pool-thread")
     other.start()
     other.join()
 
+    assert commits == [], f"a release on another thread committed this session: {commits}"
     assert released == [0]
     assert scratch_session.in_transaction()
+
+
+def test_release_only_touches_the_calling_contexts_sessions(scratch_session, monkeypatch):
+    """The API runs the endpoint, the response serialization and get_db's
+    close as separate threadpool hops, each in its own context copy, and a
+    pool thread is reused across requests. A seam in request B must never
+    commit request A's session just because A's endpoint ran on the same
+    pool thread."""
+    import contextvars
+
+    commits = _spy_commits(monkeypatch, scratch_session)
+    contextvars.copy_context().run(lambda: scratch_session.execute(text("SELECT 1")))
+    released = contextvars.copy_context().run(_release)
+
+    assert commits == [], "request B's seam committed request A's session"
+    assert released == 0
+    assert scratch_session.in_transaction()
+
+
+def test_release_survives_a_commit_that_raises(scratch_session, db, monkeypatch, caplog):
+    """A session whose commit fails is skipped with a warning; the release
+    still ends every other read transaction and never raises into the
+    caller's network call."""
+    import logging
+
+    _spy_commits(monkeypatch, scratch_session, raises=True)
+    scratch_session.execute(text("SELECT 1"))
+    db.execute(text("SELECT 1"))
+
+    with caplog.at_level(logging.WARNING, logger="app.database"):
+        released = _release()
+
+    assert released == 1
+    assert not db.in_transaction()
+    assert any("could not end a read transaction" in r.getMessage() for r in caplog.records)
 
 
 def test_release_skips_a_broken_session_and_never_raises(scratch_session, db):
@@ -359,6 +425,92 @@ def test_sorento_provider_test_button_releases_the_read_transaction(db):
         pass
 
     assert seen and not any(seen), "the Sorento Test probe went out inside the read transaction"
+
+
+def test_open_api_probe_releases_the_read_transaction(db):
+    from modules.autocount.http_client import probe_open_connection
+
+    seen: List[bool] = []
+    client = httpx.Client(transport=httpx.MockTransport(_recording_handler(db, seen, [])))
+    db.execute(text("SELECT 1"))
+
+    probe_open_connection(BASE_URL, transport=client)
+
+    assert seen == [False], "the open-API probe went out inside the read transaction"
+
+
+def _concurrent_sink(db, seen: List[bool], entity_type: str):
+    from modules.autocount.sinks_sorento import SorentoSink
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(db.in_transaction())
+        body = json.loads(request.content or b"{}")
+        refs = [r.get("source_ref") for r in body.get("records") or []] or list(
+            body.get("source_refs") or []
+        )
+        return httpx.Response(
+            200,
+            json={
+                "summary": {"created": len(refs)},
+                "records": [{"source_ref": r, "outcome": "created"} for r in refs],
+                "deleted": refs, "not_found": [],
+            },
+        )
+
+    return SorentoSink(
+        base_url="https://sorento.example.com", api_key="k", entity_type=entity_type,
+        transport=httpx.MockTransport(handler), batch_size=1, concurrency_config="2",
+    )
+
+
+def test_concurrent_sorento_push_releases_on_the_calling_thread(db):
+    """At sinkConcurrency > 1 the POSTs run on pool threads, whose release
+    cannot touch the caller's session: the caller must end its own read
+    transaction before it submits the chunks."""
+    from modules.autocount.canonical.masters import CanonicalBrand, ENTITY_BRAND
+
+    seen: List[bool] = []
+    sink = _concurrent_sink(db, seen, ENTITY_BRAND)
+    db.execute(text("SELECT 1"))
+
+    sink.write_batch(
+        [CanonicalBrand(source_ref=f"MOCHA:{i}", code=str(i), name=str(i)) for i in range(2)],
+        request_id="req-1",
+    )
+
+    assert len(seen) == 2
+    assert not any(seen), "a concurrent Sorento POST went out inside the caller's read transaction"
+
+
+def test_concurrent_sorento_delete_releases_on_the_calling_thread(db):
+    seen: List[bool] = []
+    sink = _concurrent_sink(db, seen, ENTITY_PRODUCT)
+    db.execute(text("SELECT 1"))
+
+    try:
+        sink.delete_batch(["MOCHA:A", "MOCHA:B"])
+    except Exception:  # noqa: BLE001 - only the transaction state at send time matters
+        pass
+
+    assert len(seen) == 2
+    assert not any(seen), "a concurrent Sorento delete went out inside the caller's read transaction"
+
+
+def test_concurrent_page_batch_releases_on_the_calling_thread(db):
+    from modules.autocount.http_source.source import HttpApiSource
+
+    seen: List[bool] = []
+
+    class _Probe:
+        def _fetch_page_concurrent(self, path, page, page_size):
+            seen.append(db.in_transaction())
+            return page
+
+    db.execute(text("SELECT 1"))
+    HttpApiSource._run_concurrent_batch(_Probe(), "/itembypage", 10, [1, 2])
+
+    assert len(seen) == 2
+    assert not any(seen), "concurrent vendor pages went out inside the caller's read transaction"
 
 
 # ── a real ETL walk ───────────────────────────────────────────────────────
