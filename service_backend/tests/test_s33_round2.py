@@ -567,3 +567,43 @@ def test_ac_33_05_a_lost_close_claim_sends_no_recovered_email_and_stays_open(
     assert len(_open_incidents(db, config.id)) == 1
     assert len(_emails(db)) == emails_before
     assert not any(e.subject.endswith("is running again") for e in _emails(db))
+
+
+# ── round 3: empty / non-alert PUT bodies, address length ────────────────────
+
+
+def _stored_task_snapshot(session_factory, company_id: str):
+    db = session_factory()
+    config = _config_row(db, type("C", (), {"id": company_id}))
+    snap = (config.source_impl, config.etl_status, dict(config.source_config or {}))
+    db.close()
+    return snap
+
+
+def test_ac_33_11_an_empty_put_body_is_a_422_and_stores_nothing(client, session_factory, rig):
+    company_id, _sql = rig
+    before = _stored_task_snapshot(session_factory, company_id)
+    response = client.put(_url(company_id), json={}, headers=_auth(client))
+    assert response.status_code == 422, response.text
+    assert _stored_task_snapshot(session_factory, company_id) == before
+
+
+def test_ac_33_11_a_non_alert_put_without_source_config_is_a_422_not_silently_dropped(
+    client, session_factory, rig
+):
+    company_id, _sql = rig
+    before = _stored_task_snapshot(session_factory, company_id)
+    response = client.put(
+        _url(company_id), json={"sourceImpl": "autocount_http"}, headers=_auth(client)
+    )
+    assert response.status_code == 422, response.text
+    assert _stored_task_snapshot(session_factory, company_id) == before
+
+
+def test_ac_33_11_an_also_email_with_a_65_character_local_part_is_a_422(client, rig):
+    company_id, sql_id = rig
+    response = _put(client, company_id, sql_id, alertEmails=["a" * 65 + "@example.com"])
+    assert response.status_code == 422, response.text
+    assert "alertEmails" in response.text
+    ok = _put(client, company_id, sql_id, alertEmails=["a" * 64 + "@example.com"])
+    assert ok.status_code == 200, ok.text
