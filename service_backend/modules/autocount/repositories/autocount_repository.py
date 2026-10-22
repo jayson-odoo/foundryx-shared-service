@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, and_, cast, func, nulls_first, nulls_last, or_, select, update
+from sqlalchemy import Text, and_, cast, exists, func, not_, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.background_job import (
@@ -51,6 +51,9 @@ from ..models import (
     AcTaskIncident,
     AcWatermark,
 )
+
+# ``sync.py`` writes this exact note on a budget cut-short pass (plan 33).
+BUDGET_NOTE_LIKE = "Budget reached after page %; continues on the next tick."
 
 # A job that is ACTUALLY EXECUTING. ``needs_review`` is deliberately absent -
 # it is non-terminal but parked on a human, not running (see
@@ -1263,52 +1266,85 @@ class SyncRunRepository:
 
     # ── failure-alert evaluation (plan 33) ───────────────────────────────────
 
+    @staticmethod
+    def _budget_only():
+        """A run cut short by the run budget (``sync.py`` writes exactly this
+        note and sets ``truncated``). A push error is appended AFTER the note,
+        so a combined message no longer matches and stays a failure."""
+        return and_(AcSyncRun.truncated.is_(True), AcSyncRun.error.like(BUDGET_NOTE_LIKE))
+
+    def _clean_clause(self):
+        return and_(
+            AcSyncRun.outcome == "SUCCESS",
+            or_(AcSyncRun.error.is_(None), AcSyncRun.error == "", self._budget_only()),
+        )
+
+    def _failed_clause(self):
+        return or_(
+            AcSyncRun.outcome == "FAILED",
+            and_(
+                AcSyncRun.outcome == "SUCCESS",
+                AcSyncRun.error.isnot(None),
+                AcSyncRun.error != "",
+                not_(self._budget_only()),
+            ),
+        )
+
+    def _scope(self, tenant_id: str, company_id: str, entity_type: str):
+        return (
+            AcSyncRun.tenant_id == tenant_id,
+            AcSyncRun.company_id == company_id,
+            AcSyncRun.entity_type == entity_type,
+            AcSyncRun.finished_at.isnot(None),
+        )
+
     def last_clean_finished_at(
         self, tenant_id: str, company_id: str, entity_type: str, clean_modes: Sequence[str]
     ) -> Optional[datetime]:
-        """Finish time of the latest run that ended SUCCESS with no error."""
+        """Finish time of the latest clean run (SUCCESS with no push error;
+        a budget cut-short run is clean)."""
         return (
             self.db.query(func.max(AcSyncRun.finished_at))
             .filter(
-                AcSyncRun.tenant_id == tenant_id,
-                AcSyncRun.company_id == company_id,
-                AcSyncRun.entity_type == entity_type,
+                *self._scope(tenant_id, company_id, entity_type),
                 AcSyncRun.mode.in_(tuple(clean_modes)),
-                AcSyncRun.outcome == "SUCCESS",
-                or_(AcSyncRun.error.is_(None), AcSyncRun.error == ""),
-                AcSyncRun.finished_at.isnot(None),
+                self._clean_clause(),
             )
             .scalar()
         )
 
-    def failed_runs_since(
+    def failed_runs_summary(
         self,
         tenant_id: str,
         company_id: str,
         entity_type: str,
         since: Optional[datetime],
         failed_modes: Sequence[str],
-    ) -> List[AcSyncRun]:
-        """Finished scheduled runs that failed (FAILED, or SUCCESS carrying an
-        error) after ``since``, oldest first."""
-        q = self.db.query(AcSyncRun).filter(
-            AcSyncRun.tenant_id == tenant_id,
-            AcSyncRun.company_id == company_id,
-            AcSyncRun.entity_type == entity_type,
+    ) -> Tuple[int, Optional[datetime], Optional[str]]:
+        """``(count, earliest finish, latest error)`` of the finished scheduled
+        runs that failed after ``since`` - aggregates and ONE latest row, never
+        every failed run."""
+        conditions = (
+            *self._scope(tenant_id, company_id, entity_type),
             AcSyncRun.mode.in_(tuple(failed_modes)),
-            AcSyncRun.finished_at.isnot(None),
-            or_(
-                AcSyncRun.outcome == "FAILED",
-                and_(
-                    AcSyncRun.outcome == "SUCCESS",
-                    AcSyncRun.error.isnot(None),
-                    AcSyncRun.error != "",
-                ),
-            ),
+            self._failed_clause(),
+            *((AcSyncRun.finished_at > since,) if since is not None else ()),
         )
-        if since is not None:
-            q = q.filter(AcSyncRun.finished_at > since)
-        return q.order_by(AcSyncRun.finished_at.asc(), AcSyncRun.id.asc()).all()
+        count, earliest = (
+            self.db.query(func.count(AcSyncRun.id), func.min(AcSyncRun.finished_at))
+            .filter(*conditions)
+            .one()
+        )
+        if not count:
+            return 0, None, None
+        latest = (
+            self.db.query(AcSyncRun.error)
+            .filter(*conditions)
+            .order_by(AcSyncRun.finished_at.desc(), AcSyncRun.id.desc())
+            .limit(1)
+            .scalar()
+        )
+        return int(count), earliest, latest
 
 
 class TaskIncidentRepository:
@@ -1360,6 +1396,69 @@ class TaskIncidentRepository:
                 Role.permissions.any(Permission.key == permission_key),
             )
             .distinct()
+            .all()
+        )
+
+    def claim_notice(
+        self, incident: AcTaskIncident, expected_last_notified: Optional[datetime], now: datetime
+    ) -> bool:
+        """Guarded claim of one reminder: only the check whose read of
+        ``last_notified_at`` is still current wins (rowcount 1)."""
+        result = self.db.execute(
+            update(AcTaskIncident)
+            .where(
+                AcTaskIncident.id == incident.id,
+                AcTaskIncident.tenant_id == incident.tenant_id,
+                AcTaskIncident.closed_at.is_(None),
+                AcTaskIncident.last_notified_at.is_not_distinct_from(expected_last_notified),
+            )
+            .values(last_notified_at=now, notices_sent=AcTaskIncident.notices_sent + 1)
+            .execution_options(synchronize_session=False)
+        )
+        won = result.rowcount == 1
+        if won:
+            self.db.refresh(incident)
+        return won
+
+    def claim_close(self, incident: AcTaskIncident, now: datetime, reason: str) -> bool:
+        """Guarded close: only one of two overlapping checks closes (and so
+        sends the recovered notice for) an incident."""
+        result = self.db.execute(
+            update(AcTaskIncident)
+            .where(
+                AcTaskIncident.id == incident.id,
+                AcTaskIncident.tenant_id == incident.tenant_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .values(closed_at=now, close_reason=reason)
+            .execution_options(synchronize_session=False)
+        )
+        won = result.rowcount == 1
+        if won:
+            self.db.refresh(incident)
+        return won
+
+    def last_notice_at(self, tenant_id: str, entity_config_id: str) -> Optional[datetime]:
+        """Latest notice for this integration across ALL its incidents, closed
+        ones included (the 4 h mail budget)."""
+        return (
+            self.db.query(func.max(AcTaskIncident.last_notified_at))
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.entity_config_id == entity_config_id,
+                AcTaskIncident.notices_sent > 0,
+            )
+            .scalar()
+        )
+
+    def open_orphans(self) -> List[AcTaskIncident]:
+        """Open incidents whose integration row no longer exists."""
+        return (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.closed_at.is_(None),
+                ~exists().where(AcEntityConfig.id == AcTaskIncident.entity_config_id),
+            )
             .all()
         )
 

@@ -28,10 +28,12 @@ from __future__ import annotations
 import html
 import logging
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+import email_validator
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
@@ -81,11 +83,25 @@ CLEAN_RUN_MODES = (RUN_MODE_MANUAL, RUN_MODE_INCREMENTAL, RUN_MODE_RECONCILE)
 
 ALERT_SETTING_KEYS = ("alertsEnabled", "alertAfterFailedRuns", "alertStaleMultiple", "alertEmails")
 
-_EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 _ERROR_LINE_MAX = 500
 
 
 # ── settings ─────────────────────────────────────────────────────────────────
+
+
+def is_safe_email(address: Any) -> bool:
+    """Plain ASCII, no whitespace / control / angle brackets (a header-injection
+    or display-name trick never reaches the outbox), then the house validator
+    (the one pydantic's ``EmailStr`` uses)."""
+    if not isinstance(address, str) or not address or len(address) > 254:
+        return False
+    if not address.isascii() or not address.isprintable() or any(c in address for c in " <>,;"):
+        return False
+    try:
+        email_validator.validate_email(address, check_deliverability=False, allow_smtputf8=False)
+    except email_validator.EmailNotValidError:
+        return False
+    return True
 
 
 def resolve_alert_settings(source_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -111,11 +127,15 @@ def resolve_alert_settings(source_config: Optional[Dict[str, Any]]) -> Dict[str,
             else DEFAULT_ALERT_STALE_MULTIPLE
         ),
         "alertEmails": (
-            [e for e in emails if isinstance(e, str) and _EMAIL_RE.match(e)]
+            [e for e in emails if is_safe_email(e)]
             if isinstance(emails, list)
             else []
         ),
     }
+
+
+def _printable(value: str) -> str:
+    return "".join(c if c.isprintable() else "?" for c in value)[:80]
 
 
 def _bounded_int(value: Any, low: int, high: int) -> Optional[int]:
@@ -170,9 +190,9 @@ def validate_alert_settings(
         else:
             cleaned: List[str] = []
             seen = set()
-            for address in (e.strip() for e in emails):
-                if not _EMAIL_RE.match(address):
-                    errors["alertEmails"] = f"'{address}' is not a valid email address."
+            for address in emails:
+                if not is_safe_email(address):
+                    errors["alertEmails"] = f"'{_printable(address)}' is not a valid email address."
                     break
                 if address.lower() not in seen:
                     seen.add(address.lower())
@@ -216,7 +236,18 @@ def evaluate_integration_alerts(db: Session, *, now: Optional[datetime] = None) 
 
     now = now or datetime.now(timezone.utc)
     counts = {"opened": 0, "reminded": 0, "recovered": 0, "closed": 0, "failed": 0}
-    open_ids = TaskIncidentRepository(db).all_open_config_ids()
+    incidents = TaskIncidentRepository(db)
+    # An open incident whose integration was deleted can never be evaluated.
+    try:
+        for orphan in incidents.open_orphans():
+            _close(orphan, now, INCIDENT_CLOSE_DISABLED)
+            counts["closed"] += 1
+        db.commit()
+    except Exception:  # noqa: BLE001 - never stops the per-integration check
+        logger.exception("autocount failure-alert orphan close failed")
+        db.rollback()
+        counts["failed"] += 1
+    open_ids = incidents.all_open_config_ids()
     # Same tenant lifecycle + module-active predicate as the sweep itself. An
     # integration that stopped being alertable is still loaded when it holds an
     # open incident, so the incident can be closed.
@@ -281,6 +312,17 @@ def _evaluate_one(
             counts["closed"] += 1
         return
 
+    started = max(
+        (t for t in (_aware(config.activated_at), _aware(config.resumed_at)) if t is not None),
+        default=None,
+    )
+    # A pause and resume that both landed between two checks: the resume is
+    # newer than the incident, so it closes silently and the check starts fresh.
+    if incident is not None and started is not None and started > _aware(incident.opened_at):
+        _close(incident, now, INCIDENT_CLOSE_PAUSED)
+        counts["closed"] += 1
+        incident = None
+
     company = CompanyRepository(db).get(config.tenant_id, config.company_id)
     if company is None:
         return
@@ -291,36 +333,36 @@ def _evaluate_one(
             config.tenant_id, config.company_id, config.entity_type, CLEAN_RUN_MODES
         )
     )
-    started = max(
-        (t for t in (_aware(config.activated_at), _aware(config.resumed_at)) if t is not None),
-        default=None,
-    )
     anchor = max((t for t in (last_clean, started) if t is not None), default=None)
-    failed = runs.failed_runs_since(
+    failed_count, earliest_failed, latest_error = runs.failed_runs_summary(
         config.tenant_id, config.company_id, config.entity_type, anchor, FAILED_RUN_MODES
     )
-    last_error = _first_line(failed[-1].error) if failed else None
+    last_error = _first_line(latest_error)
 
     if incident is not None:
         if last_clean is not None and last_clean > _aware(incident.opened_at):
-            _close(incident, now, INCIDENT_CLOSE_RECOVERED)
-            counts["recovered"] += 1
-            _notify(db, config, company, incident, "recovered", now, alert_settings)
+            if incidents.claim_close(incident, now, INCIDENT_CLOSE_RECOVERED):
+                counts["recovered"] += 1
+                # A silent incident (never emailed) recovers silently too.
+                if (incident.notices_sent or 0) > 0:
+                    _notify(db, config, company, incident, "recovered", now, alert_settings)
             return
-        incident.failed_runs = len(failed) if failed else incident.failed_runs
+        if failed_count:
+            incident.failed_runs = failed_count
         if last_error:
             incident.last_error = last_error
-        since = _aware(incident.last_notified_at) or _aware(incident.opened_at)
-        if now - since >= REMINDER_INTERVAL:
-            _notify(db, config, company, incident, "reminder", now, alert_settings)
+        expected = incident.last_notified_at
+        since = _aware(expected) or _aware(incident.opened_at)
+        if now - since >= REMINDER_INTERVAL and incidents.claim_notice(incident, expected, now):
+            _notify(db, config, company, incident, "reminder", now, alert_settings, stamp=False)
             counts["reminded"] += 1
         return
 
     reason: Optional[str] = None
     first_failure: Optional[datetime] = None
-    if len(failed) >= alert_settings["alertAfterFailedRuns"]:
+    if failed_count >= alert_settings["alertAfterFailedRuns"]:
         reason = INCIDENT_REASON_CONSECUTIVE
-        first_failure = _aware(failed[0].finished_at)
+        first_failure = _aware(earliest_failed)
     elif anchor is not None:
         window = max(
             timedelta(minutes=alert_settings["alertStaleMultiple"] * _interval_minutes(config.source_config)),
@@ -332,6 +374,11 @@ def _evaluate_one(
     if reason is None:
         return
 
+    # Mail budget (AC-33-18): an opening alert is emailed only when no notice
+    # went out for this integration in the last 4 h; otherwise it opens with the
+    # banner and badge only and its first email follows the 4 h cadence.
+    previous_notice = _aware(incidents.last_notice_at(config.tenant_id, config.id))
+    silent = previous_notice is not None and now - previous_notice < REMINDER_INTERVAL
     incident = incidents.add(
         AcTaskIncident(
             tenant_id=config.tenant_id,
@@ -341,13 +388,15 @@ def _evaluate_one(
             reason=reason,
             opened_at=now,
             first_failure_at=first_failure,
-            failed_runs=len(failed),
+            failed_runs=failed_count,
             last_error=last_error,
+            last_notified_at=previous_notice if silent else None,
             notices_sent=0,
         )
     )
     counts["opened"] += 1
-    _notify(db, config, company, incident, "alert", now, alert_settings)
+    if not silent:
+        _notify(db, config, company, incident, "alert", now, alert_settings)
 
 
 # ── recipients + emails ──────────────────────────────────────────────────────
@@ -491,19 +540,36 @@ def _notify(
     kind: str,
     now: datetime,
     alert_settings: Dict[str, Any],
+    *,
+    stamp: bool = True,
 ) -> None:
     """Enqueue one outbox email per recipient (tenant + permission scoped) and
-    stamp the notice. No recipients is fine: the banner still shows."""
+    stamp the notice. No recipients is fine: the banner still shows. A reminder
+    arrives already stamped by its guarded claim (``stamp=False``)."""
     link = _runs_link(config)
     for address, tz_name in alert_recipients(db, config.tenant_id, alert_settings["alertEmails"]):
         subject, rows, lead = _compose(kind, config, company, incident, now, _zone(tz_name))
         html_body, text_body = _render(lead, rows, link)
         row = email_service.enqueue_raw(
-            db, config.tenant_id, address, subject, html_body, text_body,
+            db, config.tenant_id, address, _safe_subject(subject), html_body, text_body,
             template_key=f"autocount_incident_{kind}", commit=False,
         )
         # Stamped with the check's own clock (sub-second ordering of notices).
         row.created_at = now
-    incident.last_notified_at = now
-    if kind != "recovered":
-        incident.notices_sent = (incident.notices_sent or 0) + 1
+    if stamp:
+        incident.last_notified_at = now
+        if kind != "recovered":
+            incident.notices_sent = (incident.notices_sent or 0) + 1
+
+
+_SUBJECT_BREAKS = re.compile(r"\s+")
+
+
+def _safe_subject(subject: str) -> str:
+    """CR, LF, NUL, ESC, TAB and every other control / format / separator
+    character collapse to single spaces (a tenant-typed name never breaks the
+    outbox or the shared SMTP connection)."""
+    cleaned = "".join(
+        " " if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else c for c in subject
+    )
+    return _SUBJECT_BREAKS.sub(" ", cleaned).strip()
