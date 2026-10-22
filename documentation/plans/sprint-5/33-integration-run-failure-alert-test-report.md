@@ -43,3 +43,11 @@ Test files: BE `service_backend/tests/test_s33_integration_alerts.py` (evaluator
 - Recovered email and incident close live: DEFERRED pending the crew clearing the copy's row hashes (DELETE_GUARD blocks a clean run).
 - AC-33-11 round 3 (empty body, non-alert body, 65-character local part): tests red, fix pending.
 - AC-33-20 live index on the copy: after crew re-applies the crew SQL.
+
+## Live recovered path (copy :3109, build 640df1f5, 22 Oct 18:03 MYT)
+
+Setup: crew SQL re-applied to the copy DB (`ix_ac_sync_run_finished` created). The copy's 12,325 SRT `stock_balance` `ac_row_hash` rows were cleared (copy DB only, crew-ordered). "SRT open API" was repointed through the UI to the local stub `http://127.0.0.1:18733/api/db1`. The stub answers the stock paths, the contract probe and the stock push.
+
+1. The first "Run now" ended SUCCESS with a push error, because the stub did not yet answer the POST. The incident stayed open, which is correct: a push error counts as failed (Q3a).
+2. The stub was extended. The second "Run now" (manual) ended SUCCESS with no error and 5,000 staged records answered "unchanged" by the stub. The incident closed (`close_reason recovered`), and 2 "Stock balance (SRT) is running again" rows were written to the outbox.
+3. Result: no banner, no "Last run failed" and no Failing badge, at 1280 and 375 (scrollWidth = clientWidth). AC-33-06 live PASS. Evidence: `33-evidence/live-ac-33-06-recovered-*`.
