@@ -466,3 +466,104 @@ def test_ac_33_19_tenant_and_remote_text_is_html_escaped_in_the_body(session_fac
     assert "<b>x</b>" not in html_body
     assert "<script>" not in html_body
     db.close()
+
+
+# ── 2b. the claim guard itself (kill-test pins) ──────────────────────────────
+
+
+def _repo(db):
+    from modules.autocount.repositories import TaskIncidentRepository
+
+    return TaskIncidentRepository(db)
+
+
+def _open_one(db, config):
+    rows = _open_incidents(db, config.id)
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_ac_33_05_claim_notice_is_guarded_by_the_expected_last_notified(failing, session_factory):
+    db, _company_row, config = failing
+    _evaluate(db)
+    incident = _open_one(db, config)
+    t0 = incident.last_notified_at
+    sent_before = incident.notices_sent
+    later = NOW + timedelta(hours=4, minutes=1)
+
+    assert _repo(db).claim_notice(incident, t0, later) is True
+    db.commit()
+
+    # a second, overlapping check still holding the SAME stale expected value
+    db_b = session_factory()
+    stale = _open_one(db_b, config)
+    assert _repo(db_b).claim_notice(stale, t0, later + timedelta(seconds=1)) is False
+    db_b.commit()
+    db_b.close()
+
+    db.expire_all()
+    fresh = _open_one(db, config)
+    assert fresh.notices_sent == sent_before + 1, "the loser must not bump notices_sent"
+    assert fresh.last_notified_at.replace(tzinfo=None) == later.replace(tzinfo=None)
+
+
+def test_ac_33_05_claim_close_is_guarded_so_only_one_check_closes(failing, session_factory):
+    db, _company_row, config = failing
+    _evaluate(db)
+    incident = _open_one(db, config)
+    incident_id = incident.id
+    first = NOW + timedelta(minutes=2)
+
+    db_b = session_factory()
+    stale = _open_one(db_b, config)
+
+    assert _repo(db).claim_close(incident, first, "recovered") is True
+    db.commit()
+    assert _repo(db_b).claim_close(stale, first + timedelta(minutes=5), "paused") is False
+    db_b.commit()
+    db_b.close()
+
+    db.expire_all()
+    row = db.get(_incident_model(), incident_id)
+    assert row.close_reason == "recovered", "the loser must not overwrite the close"
+    assert row.closed_at.replace(tzinfo=None) == first.replace(tzinfo=None)
+
+
+def test_ac_33_05_a_lost_notice_claim_sends_no_reminder_and_changes_nothing(
+    failing, monkeypatch
+):
+    from modules.autocount.repositories import TaskIncidentRepository
+
+    db, _company_row, config = failing
+    _evaluate(db)
+    incident = _open_one(db, config)
+    notified, sent = incident.last_notified_at, incident.notices_sent
+    emails_before = len(_emails(db))
+
+    monkeypatch.setattr(TaskIncidentRepository, "claim_notice", lambda *_a, **_k: False)
+    _evaluate(db, now=NOW + timedelta(hours=4, minutes=1))
+
+    db.expire_all()
+    again = _open_one(db, config)
+    assert len(_emails(db)) == emails_before
+    assert again.last_notified_at == notified
+    assert again.notices_sent == sent
+
+
+def test_ac_33_05_a_lost_close_claim_sends_no_recovered_email_and_stays_open(
+    failing, monkeypatch
+):
+    from modules.autocount.repositories import TaskIncidentRepository
+
+    db, company, config = failing
+    _evaluate(db)
+    emails_before = len(_emails(db))
+    _clean(db, company, -1)
+
+    monkeypatch.setattr(TaskIncidentRepository, "claim_close", lambda *_a, **_k: False)
+    _evaluate(db, now=NOW + timedelta(minutes=2))
+
+    db.expire_all()
+    assert len(_open_incidents(db, config.id)) == 1
+    assert len(_emails(db)) == emails_before
+    assert not any(e.subject.endswith("is running again") for e in _emails(db))
