@@ -670,7 +670,10 @@ def test_bootstrap_names_its_migration_sessions(monkeypatch):
     monkeypatch.setattr(settings, "database_url", "postgresql://u:p@localhost/x")
     monkeypatch.setattr(settings, "db_application_name", "", raising=False)
     monkeypatch.setattr(database.sys, "argv", ["/app/scripts/bootstrap_db.py"])
-    monkeypatch.delenv("PGAPPNAME", raising=False)
+    # setenv first so monkeypatch records the original state and restores it
+    # (a bare delenv of an absent var records nothing and the value leaks).
+    monkeypatch.setenv("PGAPPNAME", "placeholder")
+    monkeypatch.delenv("PGAPPNAME")
 
     bootstrap_db._name_bootstrap_sessions()
     assert os.environ["PGAPPNAME"] == "foundryx-bootstrap_db"
