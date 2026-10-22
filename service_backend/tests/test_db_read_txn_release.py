@@ -657,6 +657,29 @@ def test_app_engine_connect_args_carry_application_name_on_postgres_only(monkeyp
     assert database.app_connect_args() == {}
 
 
+def test_bootstrap_names_its_migration_sessions(monkeypatch):
+    """Alembic builds its own engines (alembic/env.py, modules/*/alembic/
+    env.py) with no connect_args, so a migration blocked on a lock showed an
+    empty application_name in the lock report. bootstrap_db names every
+    libpq connection it opens through PGAPPNAME; an operator's own value
+    wins."""
+    from app import database
+    from app.config import settings
+    from scripts import bootstrap_db
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://u:p@localhost/x")
+    monkeypatch.setattr(settings, "db_application_name", "", raising=False)
+    monkeypatch.setattr(database.sys, "argv", ["/app/scripts/bootstrap_db.py"])
+    monkeypatch.delenv("PGAPPNAME", raising=False)
+
+    bootstrap_db._name_bootstrap_sessions()
+    assert os.environ["PGAPPNAME"] == "foundryx-bootstrap_db"
+
+    monkeypatch.setenv("PGAPPNAME", "operator-run")
+    bootstrap_db._name_bootstrap_sessions()
+    assert os.environ["PGAPPNAME"] == "operator-run"
+
+
 # ── Postgres: pg_stat_activity is the ground truth ────────────────────────
 
 
