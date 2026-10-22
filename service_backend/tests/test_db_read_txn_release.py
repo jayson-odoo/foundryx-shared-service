@@ -192,6 +192,23 @@ def test_release_only_touches_the_calling_threads_sessions(scratch_session):
     assert scratch_session.in_transaction()
 
 
+def test_release_skips_a_broken_session_and_never_raises(scratch_session, db):
+    """Another session on this thread whose connection died (invalidated,
+    or its transaction failed) is its owner's to roll back. Release must
+    skip it - never raise into the caller's network call - and still end
+    the healthy read transaction."""
+    scratch_session.execute(text("SELECT 1"))
+    scratch_session.connection().invalidate()
+    db.execute(text("SELECT 1"))
+    assert db.in_transaction()
+
+    released = _release()
+
+    assert released == 1
+    assert not db.in_transaction()
+    scratch_session.rollback()
+
+
 # ── the seams ─────────────────────────────────────────────────────────────
 
 
@@ -437,6 +454,9 @@ def test_scheduled_http_walk_never_holds_a_read_transaction_across_vendor_reques
     "argv, expected",
     [
         (["/usr/local/bin/gunicorn", "app.main:app", "--worker-class", "uvicorn.workers.UvicornWorker"], "foundryx-api"),
+        # start.sh: `exec python -m gunicorn app.main:app ...`
+        (["/usr/local/lib/python3.12/site-packages/gunicorn/__main__.py", "app.main:app"], "foundryx-api"),
+        (["/usr/local/lib/python3.12/site-packages/celery/__main__.py", "-A", "app.workflow_engine.worker", "beat"], "foundryx-beat"),
         (["/usr/local/bin/uvicorn", "app.main:app", "--reload"], "foundryx-api"),
         (["/usr/local/bin/celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "jobs", "-c", "2"], "foundryx-worker-jobs"),
         (["/usr/local/bin/celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "workflow", "--loglevel", "info"], "foundryx-worker-workflow"),
