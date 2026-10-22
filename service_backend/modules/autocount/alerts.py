@@ -37,7 +37,7 @@ import email_validator
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
-from app.models import User, UserStatus
+from app.models import UserStatus
 from app.services.email_service import email_service
 
 from .models import (
