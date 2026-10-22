@@ -44,6 +44,18 @@ class CompanyCreate(ApiModel):
     refPrefix: Optional[str] = None
 
 
+class OpenIncident(ApiModel):
+    """Plan 33 (AC-33-12) - the integration's open failure-alert incident."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    openedAt: datetime = Field(validation_alias="opened_at")
+    firstFailureAt: Optional[datetime] = Field(default=None, validation_alias="first_failure_at")
+    failedRuns: int = Field(validation_alias="failed_runs")
+    lastError: Optional[str] = Field(default=None, validation_alias="last_error")
+    reason: str
+
+
 class EntityConfigItem(ApiModel):
     """One configured entity plus its live delta state (``EntityState``).
 
@@ -89,6 +101,8 @@ class EntityConfigItem(ApiModel):
     etlStatus: str = Field(default="draft", validation_alias="etl_status")
     # sprint-5/10 (AC-10-11/17) - the Delivery column, no per-row fetch.
     deliveryMode: str = Field(default="push", validation_alias="delivery_mode")
+    # plan 33 (AC-33-12) - the Failing badge needs no per-row fetch.
+    openIncident: Optional[OpenIncident] = Field(default=None, validation_alias="open_incident")
 
 
 class EntityDeliveryModeUpdate(ApiModel):
@@ -862,6 +876,12 @@ class EtlTaskUpdate(ApiModel):
     # (a nested value, if a caller ever sends one, still wins nothing over an
     # explicit top-level one - the router prefers the top-level field).
     sourceImpl: Optional[str] = None
+    # plan 33 (AC-33-11) - failure-alert settings; ``None`` = keep the stored
+    # value. Ranges are validated by the service (house per-field 422).
+    alertsEnabled: Optional[bool] = None
+    alertAfterFailedRuns: Optional[int] = None
+    alertStaleMultiple: Optional[int] = None
+    alertEmails: Optional[List[str]] = None
 
 
 class EtlTaskResponse(ApiModel):
@@ -939,6 +959,13 @@ class EtlTaskResponse(ApiModel):
     # job, if any (`ac_entity_config.preview_job_id`). `None`/absent = no
     # preview in flight; lets a remounted editor re-attach.
     previewJobId: Optional[str] = None
+    # plan 33 (AC-33-11/12) - the failure-alert settings (defaults resolved)
+    # and the open incident, `null` when there is none.
+    alertsEnabled: bool = True
+    alertAfterFailedRuns: int = 2
+    alertStaleMultiple: int = 3
+    alertEmails: List[str] = []
+    openIncident: Optional[OpenIncident] = None
 
 
 class HttpPreviewResponse(ApiModel):

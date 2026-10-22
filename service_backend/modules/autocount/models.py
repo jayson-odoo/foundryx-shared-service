@@ -554,6 +554,55 @@ class AcSyncRun(AutocountBase):
     duration_ms = Column(Integer, nullable=True)
 
 
+# ── integration failure alerts (plan 33) ─────────────────────────────────────
+
+INCIDENT_REASON_CONSECUTIVE = "consecutive"
+INCIDENT_REASON_STALE = "stale"
+INCIDENT_CLOSE_RECOVERED = "recovered"
+INCIDENT_CLOSE_PAUSED = "paused"
+INCIDENT_CLOSE_DISABLED = "disabled"
+
+
+class AcTaskIncident(AutocountBase):
+    """One open alert state per integration (``ac_entity_config`` row), from
+    the moment its failure rules trip until a clean run (or a pause / alerts
+    off) closes it. At most ONE row with ``closed_at IS NULL`` per integration,
+    enforced by the database; closed rows stay as history.
+
+    ``first_failure_at`` is the earliest counted failed run for a ``consecutive``
+    incident and the stale clock's start for a ``stale`` one.
+    """
+
+    __tablename__ = "ac_task_incident"
+    __table_args__ = (
+        Index(
+            "uq_ac_task_incident_one_open",
+            "entity_config_id",
+            unique=True,
+            postgresql_where=text("closed_at IS NULL"),
+            sqlite_where=text("closed_at IS NULL"),
+        ),
+        Index("ix_ac_task_incident_scope", "tenant_id", "company_id"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    company_id = Column(String, nullable=False)
+    entity_config_id = Column(String, nullable=False)
+    entity_type = Column(String, nullable=False)
+    reason = Column(String, nullable=False)  # consecutive | stale
+    opened_at = Column(UTCDateTime(), nullable=False)
+    first_failure_at = Column(UTCDateTime(), nullable=True)
+    failed_runs = Column(Integer, nullable=False, default=0, server_default="0")
+    last_error = Column(Text, nullable=True)
+    last_notified_at = Column(UTCDateTime(), nullable=True)
+    notices_sent = Column(Integer, nullable=False, default=0, server_default="0")
+    closed_at = Column(UTCDateTime(), nullable=True)
+    close_reason = Column(String, nullable=True)  # recovered | paused | disabled
+
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class AcPullSnapshot(AutocountBase):
     """One IMMUTABLE extraction of ONE (company, entity) at one instant
     (sprint-5/10 §2.4, AC-10-18/19).

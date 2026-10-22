@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, func, nulls_first, nulls_last, or_, select, update
+from sqlalchemy import Text, and_, cast, func, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.background_job import (
@@ -25,6 +25,9 @@ from app.models.background_job import (
     BackgroundJob,
 )
 from app.models.connection import Connection
+from app.models.permission import Permission
+from app.models.role import Role
+from app.models.user import User
 
 from ..models import (
     PULL_SNAPSHOT_STATUS_BUILDING,
@@ -45,6 +48,7 @@ from ..models import (
     AcRowHash,
     AcStagedRecord,
     AcSyncRun,
+    AcTaskIncident,
     AcWatermark,
 )
 
@@ -1256,6 +1260,118 @@ class SyncRunRepository:
             .all()
         )
         return rows, total
+
+    # ── failure-alert evaluation (plan 33) ───────────────────────────────────
+
+    def last_clean_finished_at(
+        self, tenant_id: str, company_id: str, entity_type: str, clean_modes: Sequence[str]
+    ) -> Optional[datetime]:
+        """Finish time of the latest run that ended SUCCESS with no error."""
+        return (
+            self.db.query(func.max(AcSyncRun.finished_at))
+            .filter(
+                AcSyncRun.tenant_id == tenant_id,
+                AcSyncRun.company_id == company_id,
+                AcSyncRun.entity_type == entity_type,
+                AcSyncRun.mode.in_(tuple(clean_modes)),
+                AcSyncRun.outcome == "SUCCESS",
+                or_(AcSyncRun.error.is_(None), AcSyncRun.error == ""),
+                AcSyncRun.finished_at.isnot(None),
+            )
+            .scalar()
+        )
+
+    def failed_runs_since(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        since: Optional[datetime],
+        failed_modes: Sequence[str],
+    ) -> List[AcSyncRun]:
+        """Finished scheduled runs that failed (FAILED, or SUCCESS carrying an
+        error) after ``since``, oldest first."""
+        q = self.db.query(AcSyncRun).filter(
+            AcSyncRun.tenant_id == tenant_id,
+            AcSyncRun.company_id == company_id,
+            AcSyncRun.entity_type == entity_type,
+            AcSyncRun.mode.in_(tuple(failed_modes)),
+            AcSyncRun.finished_at.isnot(None),
+            or_(
+                AcSyncRun.outcome == "FAILED",
+                and_(
+                    AcSyncRun.outcome == "SUCCESS",
+                    AcSyncRun.error.isnot(None),
+                    AcSyncRun.error != "",
+                ),
+            ),
+        )
+        if since is not None:
+            q = q.filter(AcSyncRun.finished_at > since)
+        return q.order_by(AcSyncRun.finished_at.asc(), AcSyncRun.id.asc()).all()
+
+
+class TaskIncidentRepository:
+    """``ac_task_incident`` - plan 33. Every read carries the tenant."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, incident: AcTaskIncident) -> AcTaskIncident:
+        self.db.add(incident)
+        self.db.flush()
+        return incident
+
+    def get_open(self, tenant_id: str, entity_config_id: str) -> Optional[AcTaskIncident]:
+        return (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.entity_config_id == entity_config_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .first()
+        )
+
+    def open_for_company(
+        self, tenant_id: str, company_id: str
+    ) -> Dict[str, AcTaskIncident]:
+        """Open incidents of one company keyed by ``entity_config_id`` - ONE query."""
+        rows = (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.company_id == company_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .all()
+        )
+        return {row.entity_config_id: row for row in rows}
+
+    def users_with_permission(self, tenant_id: str, permission_key: str) -> List[User]:
+        """Users of THIS tenant holding ``permission_key`` through a role of
+        this same tenant (never a user or role of another tenant)."""
+        return (
+            self.db.query(User)
+            .join(User.roles)
+            .filter(
+                User.tenant_id == tenant_id,
+                Role.tenant_id == tenant_id,
+                Role.permissions.any(Permission.key == permission_key),
+            )
+            .distinct()
+            .all()
+        )
+
+    def all_open_config_ids(self) -> List[str]:
+        """Every open incident's integration id, all tenants (the sweep's
+        evaluator, which resolves each one tenant-scoped afterwards)."""
+        return [
+            row[0]
+            for row in self.db.query(AcTaskIncident.entity_config_id)
+            .filter(AcTaskIncident.closed_at.is_(None))
+            .all()
+        ]
 
 
 class SyncJobRepository:

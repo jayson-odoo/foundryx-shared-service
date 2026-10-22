@@ -50,6 +50,7 @@ from ..canonical.documents import (
     ENTITY_AR_OUTSTANDING,
 )
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
+from ..alerts import resolve_alert_settings, validate_alert_settings
 from ..formula import FormulaError, known_filter_variables, parse_formula
 from ..canonical.masters import (
     ENTITY_BRAND,
@@ -84,6 +85,7 @@ from ..repositories import (
     RowHashRepository,
     SyncJobRepository,
     SyncRunRepository,
+    TaskIncidentRepository,
     WatermarkRepository,
 )
 from ..sources import INITIAL_LOAD_FULL
@@ -359,6 +361,10 @@ class EtlTaskView:
     # editor re-attach to a running Test/Run-preview job. ``None`` = no
     # preview in flight.
     preview_job_id: Optional[str] = None
+    # plan 33 - the failure-alert settings (defaults filled in) + the open
+    # incident, if any (AC-33-11/12).
+    alert_settings: Dict[str, Any] = field(default_factory=dict)
+    open_incident: Optional[Any] = None
 
 
 @dataclass
@@ -1287,6 +1293,14 @@ class EtlService:
             # computation that could drift.
             combine_output_columns=combine_output_columns(merged.get("combine")),
             preview_job_id=config.preview_job_id if config is not None else None,
+            alert_settings=resolve_alert_settings(
+                config.source_config if config is not None else None
+            ),
+            open_incident=(
+                TaskIncidentRepository(self.db).get_open(tenant_id, config.id)
+                if config is not None and tenant_id is not None
+                else None
+            ),
         )
 
     def _brand_contract_gate(
@@ -1904,6 +1918,12 @@ class EtlService:
             existing_key_fields=existing_key_fields,
             existing_combine=existing_combine,
         )
+        # Plan 33 - the failure-alert settings ride the same save.
+        alert_keys, alert_errors = validate_alert_settings(
+            raw, config.source_config if config is not None else None
+        )
+        for key, message in alert_errors.items():
+            errors.setdefault(key, message)
         if errors:
             raise EtlValidationError(errors)
 
@@ -1972,7 +1992,7 @@ class EtlService:
                 demote = True
 
         config.source_impl = SOURCE_IMPL_AUTOCOUNT_HTTP
-        config.source_config = clean
+        config.source_config = {**clean, **alert_keys}
         if demote and config.etl_status == ETL_STATUS_ACTIVE:
             config.etl_status = ETL_STATUS_DRAFT
 
@@ -2151,6 +2171,13 @@ class EtlService:
         )
         for key, message in more.items():
             errors.setdefault(key, message)
+        # Plan 33 - the failure-alert settings ride the same save.
+        stored_config = self.configs.get(tenant_id, company_id, entity_type)
+        alert_keys, alert_errors = validate_alert_settings(
+            raw, stored_config.source_config if stored_config is not None else None
+        )
+        for key, message in alert_errors.items():
+            errors.setdefault(key, message)
 
         watermark = clean.get("watermarkColumn")
         if not errors and watermark and engine is not None:
@@ -2209,7 +2236,7 @@ class EtlService:
                     etl_status=ETL_STATUS_DRAFT,
                 )
             )
-        config.source_config = clean
+        config.source_config = {**clean, **alert_keys}
         #     !!  AC-08-28: sourceImpl CHANGE ON AN ACTIVE TASK DEMOTES IT TO
         #         DRAFT - EVERY DIRECTION, NOT JUST HTTP -> SQL (B2, review
         #         round 1: this branch used to never write ``source_impl`` at
@@ -3208,6 +3235,8 @@ class EtlService:
             raise EtlStateError("Only a paused task can be resumed.")
         now = datetime.now(timezone.utc)
         config.etl_status = ETL_STATUS_ACTIVE
+        # Plan 33 - a resume restarts the failure-alert clock (AC-33-02).
+        config.activated_at = now
         config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
             self._schedule_source_config(config), now=now
         )

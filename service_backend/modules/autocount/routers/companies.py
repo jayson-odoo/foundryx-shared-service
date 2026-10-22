@@ -30,6 +30,7 @@ from ..schemas import (
     ContractGate,
     DocumentPrerequisiteOut,
     EntityConfigItem,
+    OpenIncident,
     EntityConfigUpdate,
     EntityDeliveryModeUpdate,
     EtlRepushResponse,
@@ -599,6 +600,10 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         deliveryMode=view.delivery_mode,
         combineOutputColumns=view.combine_output_columns,
         previewJobId=view.preview_job_id,
+        openIncident=(
+            OpenIncident.model_validate(view.open_incident) if view.open_incident else None
+        ),
+        **view.alert_settings,
     )
 
 
@@ -713,6 +718,13 @@ def update_etl_task(
         # stored" (AC-10-80).
         if "combine" not in body.sourceConfig.model_fields_set:
             raw.pop("combine", None)
+        # plan 33 - failure-alert settings (None = keep the stored value).
+        raw.update(
+            alertsEnabled=body.alertsEnabled,
+            alertAfterFailedRuns=body.alertAfterFailedRuns,
+            alertStaleMultiple=body.alertStaleMultiple,
+            alertEmails=body.alertEmails,
+        )
         view = EtlService(db).update_task(
             current_user.tenant_id,
             company_id,

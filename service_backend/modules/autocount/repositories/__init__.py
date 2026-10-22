@@ -12,6 +12,7 @@ from .autocount_repository import (
     StagedRecordRepository,
     SyncJobRepository,
     SyncRunRepository,
+    TaskIncidentRepository,
     WatermarkRepository,
 )
 
@@ -28,5 +29,6 @@ __all__ = [
     "StagedRecordRepository",
     "SyncJobRepository",
     "SyncRunRepository",
+    "TaskIncidentRepository",
     "WatermarkRepository",
 ]

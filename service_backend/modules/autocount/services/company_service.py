@@ -114,6 +114,7 @@ from ..repositories import (
     EntityConfigRepository,
     FieldMappingRepository,
     RowHashRepository,
+    TaskIncidentRepository,
     WatermarkRepository,
 )
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
@@ -458,6 +459,8 @@ class EntityState:
     # sprint-5/10 (AC-10-11/17) - the entities LIST's Delivery column needs
     # no per-row fetch either.
     delivery_mode: str = DELIVERY_MODE_PUSH
+    # plan 33 (AC-33-12) - the open failure-alert incident, if any.
+    open_incident: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -678,6 +681,9 @@ class CompanyService:
             row.entity_type: row
             for row in self.watermarks.list_for_company(tenant_id, company_id)
         }
+        open_incidents = TaskIncidentRepository(self.db).open_for_company(
+            tenant_id, company_id
+        )
         states: List[EntityState] = []
         for config in self.configs.list_for_company(tenant_id, company_id):
             mark = marks.get(config.entity_type)
@@ -699,6 +705,7 @@ class CompanyService:
                     last_error=mark.last_error if mark else None,
                     etl_status=config.etl_status or ETL_STATUS_DRAFT,
                     delivery_mode=config.delivery_mode or DELIVERY_MODE_PUSH,
+                    open_incident=open_incidents.get(config.id),
                 )
             )
         return states
