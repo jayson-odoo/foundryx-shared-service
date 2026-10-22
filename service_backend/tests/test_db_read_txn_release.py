@@ -34,6 +34,7 @@ import httpx
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.models import DEFAULT_TENANT_ID
 from app.models.connection import Connection
@@ -54,10 +55,16 @@ def db(session_factory):
 
 @pytest.fixture
 def scratch_session():
-    """A file-less sqlite engine of our own (not the shared conftest
-    StaticPool), so a write test can tell "committed" from "still pending"
-    through a second, independent connection."""
-    engine = create_engine("sqlite:///:memory:", future=True)
+    """A sqlite engine of our own (not the shared conftest one). One
+    connection usable from any thread (StaticPool, no ``check_same_thread``),
+    like a psycopg2 connection: the hop tests begin a transaction on one
+    thread and end it on another, and sqlite's own thread check would
+    otherwise refuse that COMMIT whenever the OS hands the second thread a
+    new id."""
+    engine = create_engine(
+        "sqlite://", future=True, poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"))
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -274,21 +281,37 @@ def test_release_never_touches_another_requests_session(scratch_session, monkeyp
     assert scratch_session.in_transaction()
 
 
-def test_a_stale_entry_never_acts_on_the_sessions_next_transaction(scratch_session, monkeypatch):
+def test_a_stale_entry_never_acts_on_the_sessions_next_transaction(monkeypatch):
     """A scope can outlive the transaction it registered (the transaction
     ended in another request's context). It must never act on the session's
-    NEXT transaction, begun elsewhere."""
-    request_a, request_b = _request(), _request()
-    request_a.run(lambda: scratch_session.execute(text("SELECT 1")))
-    request_b.run(scratch_session.commit)
-    request_b.run(lambda: scratch_session.execute(text("SELECT 1")))
-    commits = _spy_commits(monkeypatch, scratch_session)
+    NEXT transaction, begun elsewhere. A session bound to one long-lived
+    Connection (``Session(bind=conn)``, as Alembic data migrations use)
+    keeps the same open connection across transactions, so only the
+    per-transaction token tells the two apart."""
+    from sqlalchemy.orm import Session as OrmSession
 
-    released = request_a.run(_release)
+    engine = create_engine(
+        "sqlite://", future=True, poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    connection = engine.connect()
+    session = OrmSession(bind=connection)
+    try:
+        request_a, request_b = _request(), _request()
+        request_a.run(lambda: session.execute(text("SELECT 1")))
+        request_b.run(session.commit)
+        request_b.run(lambda: session.execute(text("SELECT 1")))
+        commits = _spy_commits(monkeypatch, session)
 
-    assert commits == [], "a stale scope entry committed the session's next transaction"
-    assert released == 0
-    assert scratch_session.in_transaction()
+        released = request_a.run(_release)
+
+        assert commits == [], "a stale scope entry committed the session's next transaction"
+        assert released == 0
+        assert session.in_transaction()
+    finally:
+        session.close()
+        connection.close()
+        engine.dispose()
 
 
 def test_threads_that_inherit_context_are_still_pinned_to_their_thread(
