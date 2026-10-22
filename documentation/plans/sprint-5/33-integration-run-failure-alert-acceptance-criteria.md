@@ -22,7 +22,9 @@ Terms:
 - **AC-33-02 [BE][T]** Stale rule. An ACTIVE integration with no clean run finished in the last
   `max(M x incrementalMinutes, 60 min)` opens an incident (M default 3). The clock starts at the later
   of the last clean run and the time the integration was last activated or resumed, so a freshly
-  activated integration with no run yet does not trip at once. A wedged run that never finishes trips
+  activated integration with no run yet does not trip at once. A resume is stamped in its own
+  nullable `resumed_at` column; `activated_at` (shown as "Activated <date>") is never rewritten by a
+  resume. NULL = not resumed since plan 33, no backfill needed. A wedged run that never finishes trips
   this rule.
 - **AC-33-03 [BE][T]** The check runs from the existing 60 s ETL sweep (`scheduler.sweep_etl_tasks`),
   over every ACTIVE integration of every tenant where the AutoCount module is active. One integration's
@@ -47,7 +49,9 @@ Terms:
   `Still failing: <Integration> (<Company>), <n> failed runs since <time>`; recovered
   `<Integration> (<Company>) is running again`. The body names integration, company (name and
   database), failing-since time, failed-run count, the last error's first line, and a button to the
-  integration's Runs tab on the tenant's own host (`.../autocount/companies/<id>/entities/<type>?tab=runs`).
+  integration's Runs tab (`.../autocount/companies/<id>/entities/<type>?tab=runs`) on
+  `settings.frontend_url`, the same base every account email uses (`user_service.py:278`). A
+  non-default tenant's link therefore lands on the bare host: BL-SS-298 (tenant-host links) covers it.
   Times use the recipient's `users.timezone`, else UTC, with the zone shown. No "Foundryx" in the text.
 - **AC-33-10 [BE][T]** Emails go through the outbox (`email_service.enqueue_raw`) only. Tests never
   reach SMTP. No WhatsApp is sent.
