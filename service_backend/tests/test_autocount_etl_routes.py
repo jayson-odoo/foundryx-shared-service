@@ -451,6 +451,13 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         # sprint-5/11 (AC-11-23/27) - the in-flight preview job claim; None
         # for a task with no preview running.
         "previewJobId": None,
+        # plan 33 (AC-33-11/12) - failure-alert settings (absent = defaults)
+        # and the open incident (None when there is none).
+        "alertsEnabled": True,
+        "alertAfterFailedRuns": 2,
+        "alertStaleMultiple": 3,
+        "alertEmails": [],
+        "openIncident": None,
     }
 
 

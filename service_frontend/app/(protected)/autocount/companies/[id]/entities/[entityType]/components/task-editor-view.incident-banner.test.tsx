@@ -155,6 +155,10 @@ vi.mock('@/hooks/use-autocount-mapping', () => ({
   }),
 }));
 
+vi.mock('@/components/platform/resource-list', () => ({
+  ResourceList: () => <div data-testid="runs-list-stub" />,
+}));
+
 vi.mock('../../../../components/use-runs-list-config', () => ({
   useAutocountRunsListConfig: () => ({}),
 }));
@@ -209,6 +213,7 @@ describe('TaskEditorView incident banner (AC-33-13)', () => {
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'Runs' })).toHaveAttribute('aria-selected', 'true'),
     );
+    expect(screen.getByTestId('runs-list-stub')).toBeInTheDocument();
   });
 
   it('AC-33-13: no banner when there is no open incident', () => {
