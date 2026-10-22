@@ -2,6 +2,10 @@
 
     !!  EVERY query below filters ``tenant_id`` AND ``company_id`` (AC-13-41).  !!
 
+Only the plan 33 alert sweep reads across tenants (``all_open_config_ids``,
+``open_orphans``, ``list_for_alert_check``; the last is lifecycle-joined); every
+row it loads is re-resolved by its own ``tenant_id`` before use.
+
 Company scope is not decoration. One tenant legitimately runs several AutoCount
 companies (D16 - ``AppId`` IS the company selector), so a tenant-only filter
 would let company A's staged supplier documents surface under company B inside
