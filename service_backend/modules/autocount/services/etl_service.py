@@ -2401,6 +2401,23 @@ class EtlService:
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
+    def update_alert_settings(
+        self, tenant_id: str, company_id: str, entity_type: str, raw: Dict[str, Any]
+    ) -> EtlTaskView:
+        """Plan 33 (AC-33-11) - save ONLY the failure-alert settings: no source
+        preview, no activation-gate change, works on an active task."""
+        self._require_task_entity(tenant_id, company_id, entity_type)
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        if config is None:
+            raise EntityConfigNotFound("Save the integration's source before its alerts.")
+        alert_keys, errors = validate_alert_settings(raw, config.source_config)
+        if errors:
+            raise EtlValidationError(errors)
+        config.source_config = {**(config.source_config or {}), **alert_keys}
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
+
     # ── task lifecycle (plan 22 §2.6, AC-22-18/19/20) ────────────────────────
     #
     # Every method here is suffixed ``_task``: this service ALSO owns the raw

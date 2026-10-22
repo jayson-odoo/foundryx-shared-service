@@ -864,7 +864,8 @@ class ContractGate(ApiModel):
 class EtlTaskUpdate(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    sourceConfig: EtlSourceConfigIn
+    # Plan 33 - omitted on an alert-only save (only the alert fields below).
+    sourceConfig: Optional[EtlSourceConfigIn] = None
     # sprint-5/08 review round 1 (B1) - the FE's real service posts
     # ``sourceImpl`` as a TOP-LEVEL sibling of ``sourceConfig`` (see
     # ``autocount-service.real.ts``'s ``updateEtlTask``), never nested inside

@@ -506,6 +506,11 @@ class AcSyncRun(AutocountBase):
     __table_args__ = (
         Index("ix_ac_sync_run_scope", "tenant_id", "company_id", "entity_type"),
         Index("ix_ac_sync_run_job", "tenant_id", "job_id"),
+        # plan 33 (AC-33-20) - the failure-alert check's aggregates.
+        Index(
+            "ix_ac_sync_run_finished",
+            "tenant_id", "company_id", "entity_type", "finished_at",
+        ),
     )
 
     id = Column(String, primary_key=True, default=_uuid)

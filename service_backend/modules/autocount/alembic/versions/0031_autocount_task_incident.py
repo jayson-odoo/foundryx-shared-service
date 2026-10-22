@@ -44,6 +44,11 @@ def upgrade() -> None:
         f"ALTER TABLE {SCHEMA}.ac_entity_config ADD COLUMN IF NOT EXISTS resumed_at TIMESTAMPTZ NULL"
     )
 
+    op.execute(
+        f"CREATE INDEX IF NOT EXISTS ix_ac_sync_run_finished ON {SCHEMA}.ac_sync_run "
+        f"(tenant_id, company_id, entity_type, finished_at)"
+    )
+
     if TABLE not in _tables():
         op.create_table(
             TABLE,
@@ -86,3 +91,4 @@ def downgrade() -> None:
     if TABLE in _tables():
         op.drop_table(TABLE, schema=SCHEMA)
     op.execute(f"ALTER TABLE {SCHEMA}.ac_entity_config DROP COLUMN IF EXISTS resumed_at")
+    op.execute(f"DROP INDEX IF EXISTS {SCHEMA}.ix_ac_sync_run_finished")

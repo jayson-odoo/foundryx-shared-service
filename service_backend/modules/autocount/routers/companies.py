@@ -705,6 +705,18 @@ def update_etl_task(
         # nested ``sourceConfig.sourceImpl`` only if a caller ever sends that
         # shape instead (never both silently disagreeing - the top-level one
         # wins, matching what ``EtlService.update_task`` dispatches on).
+        alert_fields = dict(
+            alertsEnabled=body.alertsEnabled,
+            alertAfterFailedRuns=body.alertAfterFailedRuns,
+            alertStaleMultiple=body.alertStaleMultiple,
+            alertEmails=body.alertEmails,
+        )
+        if body.sourceConfig is None:
+            # Plan 33 - an alert-only save: no source preview, no gate change.
+            view = EtlService(db).update_alert_settings(
+                current_user.tenant_id, company_id, entity_type, alert_fields
+            )
+            return _task_response(view)
         raw = body.sourceConfig.model_dump()
         raw["sourceImpl"] = body.sourceImpl or body.sourceConfig.sourceImpl
         # review round 5 (R5-B) - ``model_dump()`` always emits every
@@ -718,13 +730,7 @@ def update_etl_task(
         # stored" (AC-10-80).
         if "combine" not in body.sourceConfig.model_fields_set:
             raw.pop("combine", None)
-        # plan 33 - failure-alert settings (None = keep the stored value).
-        raw.update(
-            alertsEnabled=body.alertsEnabled,
-            alertAfterFailedRuns=body.alertAfterFailedRuns,
-            alertStaleMultiple=body.alertStaleMultiple,
-            alertEmails=body.alertEmails,
-        )
+        raw.update(alert_fields)
         view = EtlService(db).update_task(
             current_user.tenant_id,
             company_id,
