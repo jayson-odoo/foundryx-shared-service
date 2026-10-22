@@ -607,3 +607,21 @@ def test_ac_33_11_an_also_email_with_a_65_character_local_part_is_a_422(client, 
     assert "alertEmails" in response.text
     ok = _put(client, company_id, sql_id, alertEmails=["a" * 64 + "@example.com"])
     assert ok.status_code == 200, ok.text
+
+
+def test_ac_33_11_source_impl_with_alert_fields_but_no_source_config_is_a_422(
+    client, session_factory, rig
+):
+    """A non-alert field next to alert fields must not be silently dropped: it
+    is a 422 naming `sourceConfig`, and the alert field is NOT applied."""
+    company_id, _sql = rig
+    before = _stored_task_snapshot(session_factory, company_id)
+    response = client.put(
+        _url(company_id),
+        json={"sourceImpl": "autocount_http", "alertsEnabled": False},
+        headers=_auth(client),
+    )
+    assert response.status_code == 422, response.text
+    assert "sourceConfig" in response.json()["detail"]["fieldErrors"]
+    assert _stored_task_snapshot(session_factory, company_id) == before
+    assert "alertsEnabled" not in before[2]
