@@ -712,7 +712,14 @@ def update_etl_task(
             alertEmails=body.alertEmails,
         )
         if body.sourceConfig is None:
-            # Plan 33 - an alert-only save: no source preview, no gate change.
+            # Plan 33 - an alert-only save needs at least one alert field and
+            # nothing else: no source preview, no gate change. Anything else
+            # without a sourceConfig is a 422 (never silently dropped).
+            if body.sourceImpl is not None or all(v is None for v in alert_fields.values()):
+                return _field_errors(
+                    {"sourceConfig": "Send the source configuration to save the task."},
+                    "The task could not be saved. Fix the highlighted fields.",
+                )
             view = EtlService(db).update_alert_settings(
                 current_user.tenant_id, company_id, entity_type, alert_fields
             )

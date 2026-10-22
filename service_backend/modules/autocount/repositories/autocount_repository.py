@@ -30,6 +30,10 @@ from app.models.role import Role
 from app.models.user import User
 
 from ..models import (
+    DELIVERY_MODE_PUSH,
+    ETL_STATUS_ACTIVE,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
+    SOURCE_IMPL_SQL_DB,
     PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_READY,
     STAGED,
@@ -333,6 +337,26 @@ class EntityConfigRepository:
                 AcEntityConfig.company_id == company_id,
             )
             .order_by(AcEntityConfig.entity_type.asc())
+            .all()
+        )
+
+
+    def list_for_alert_check(self, tenant_join, open_ids: Sequence[str]) -> List[AcEntityConfig]:
+        """Plan 33 - every ACTIVE push integration of an active tenant/Service
+        (``tenant_join`` is the sweep's own lifecycle predicate), plus any
+        integration holding an open incident so it can be closed."""
+        return (
+            tenant_join(self.db.query(AcEntityConfig), AcEntityConfig.tenant_id)
+            .filter(
+                or_(
+                    and_(
+                        AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
+                        AcEntityConfig.source_impl.in_((SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)),
+                        AcEntityConfig.delivery_mode == DELIVERY_MODE_PUSH,
+                    ),
+                    AcEntityConfig.id.in_(list(open_ids)),
+                )
+            )
             .all()
         )
 

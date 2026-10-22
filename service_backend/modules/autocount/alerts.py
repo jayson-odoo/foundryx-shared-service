@@ -34,7 +34,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import email_validator
-from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
@@ -58,7 +57,12 @@ from .models import (
     AcEntityConfig,
     AcTaskIncident,
 )
-from .repositories import CompanyRepository, SyncRunRepository, TaskIncidentRepository
+from .repositories import (
+    CompanyRepository,
+    EntityConfigRepository,
+    SyncRunRepository,
+    TaskIncidentRepository,
+)
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -98,7 +102,9 @@ def is_safe_email(address: Any) -> bool:
     if not address.isascii() or not address.isprintable() or any(c in address for c in " <>,;"):
         return False
     try:
-        email_validator.validate_email(address, check_deliverability=False, allow_smtputf8=False)
+        email_validator.validate_email(
+            address, check_deliverability=False, allow_smtputf8=False, strict=True
+        )
     except email_validator.EmailNotValidError:
         return False
     return True
@@ -251,19 +257,8 @@ def evaluate_integration_alerts(db: Session, *, now: Optional[datetime] = None) 
     # Same tenant lifecycle + module-active predicate as the sweep itself. An
     # integration that stopped being alertable is still loaded when it holds an
     # open incident, so the incident can be closed.
-    configs = (
-        active_tenant_service_join(db.query(AcEntityConfig), AcEntityConfig.tenant_id)
-        .filter(
-            or_(
-                and_(
-                    AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
-                    AcEntityConfig.source_impl.in_((SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)),
-                    AcEntityConfig.delivery_mode == DELIVERY_MODE_PUSH,
-                ),
-                AcEntityConfig.id.in_(open_ids),
-            )
-        )
-        .all()
+    configs = EntityConfigRepository(db).list_for_alert_check(
+        active_tenant_service_join, open_ids
     )
     keys = [(config.tenant_id, config.id) for config in configs]
     for tenant_id, config_id in keys:
