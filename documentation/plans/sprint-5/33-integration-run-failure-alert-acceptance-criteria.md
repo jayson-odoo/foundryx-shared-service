@@ -2,8 +2,8 @@
 
 Lane: SS-INTEGRATION-ALERT (crew), PR #128. Plan: `33-integration-run-failure-alert.md`.
 
-DRAFT: written on the recommended answers of the behaviour card (Q1 a, Q2 b, Q3 a, Q4 a, Q5 a).
-Revised when the owner answers.
+Owner answered the behaviour card as recommended (Q1 a, Q2 b, Q3 a, Q4 a, Q5 a) and approved
+mockup v1, 22 Oct 15:15. DO/GRN doc feeds are out of scope (BL-SS-308).
 
 Terms:
 - **Integration** = one `AcEntityConfig` row (`app_autocount.ac_entity_config`).
