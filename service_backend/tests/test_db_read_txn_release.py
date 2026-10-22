@@ -223,21 +223,116 @@ def test_release_only_touches_the_calling_threads_sessions(scratch_session, monk
     assert scratch_session.in_transaction()
 
 
-def test_release_only_touches_the_calling_contexts_sessions(scratch_session, monkeypatch):
-    """The API runs the endpoint, the response serialization and get_db's
-    close as separate threadpool hops, each in its own context copy, and a
-    pool thread is reused across requests. A seam in request B must never
-    commit request A's session just because A's endpoint ran on the same
-    pool thread."""
+def _request():
+    """A fresh request context, the way ``ReadTransactionScopeMiddleware``
+    makes one: every threadpool hop of the request runs in a COPY of it."""
     import contextvars
 
+    from app.database import new_read_transaction_scope
+
+    ctx = contextvars.copy_context()
+    ctx.run(new_read_transaction_scope)
+    return ctx
+
+
+def test_release_reaches_a_transaction_begun_in_an_earlier_hop_of_the_same_request(
+    scratch_session,
+):
+    """FastAPI runs the sync auth dependency (which reads the user, so the
+    request's transaction begins THERE), the endpoint and get_db's close as
+    separate threadpool hops, each in its own context copy, often on
+    different pool threads. A seam in the endpoint hop must still end the
+    transaction the dependency hop began."""
+    request = _request()
+    dependency_hop = threading.Thread(
+        target=lambda: request.copy().run(lambda: scratch_session.execute(text("SELECT 1")))
+    )
+    dependency_hop.start()
+    dependency_hop.join()
+    assert scratch_session.in_transaction()
+
+    released: List[int] = []
+    endpoint_hop = threading.Thread(target=lambda: released.append(request.copy().run(_release)))
+    endpoint_hop.start()
+    endpoint_hop.join()
+
+    assert released == [1]
+    assert not scratch_session.in_transaction()
+
+
+def test_release_never_touches_another_requests_session(scratch_session, monkeypatch):
+    """Pool threads are shared by every request: a seam in request B must
+    never commit request A's session, even on the very thread A's hop ran."""
     commits = _spy_commits(monkeypatch, scratch_session)
-    contextvars.copy_context().run(lambda: scratch_session.execute(text("SELECT 1")))
-    released = contextvars.copy_context().run(_release)
+    request_a, request_b = _request(), _request()
+    request_a.copy().run(lambda: scratch_session.execute(text("SELECT 1")))
+
+    released = request_b.copy().run(_release)
 
     assert commits == [], "request B's seam committed request A's session"
     assert released == 0
     assert scratch_session.in_transaction()
+
+
+def test_a_stale_entry_never_acts_on_the_sessions_next_transaction(scratch_session, monkeypatch):
+    """A scope can outlive the transaction it registered (the transaction
+    ended in another request's context). It must never act on the session's
+    NEXT transaction, begun elsewhere."""
+    request_a, request_b = _request(), _request()
+    request_a.run(lambda: scratch_session.execute(text("SELECT 1")))
+    request_b.run(scratch_session.commit)
+    request_b.run(lambda: scratch_session.execute(text("SELECT 1")))
+    commits = _spy_commits(monkeypatch, scratch_session)
+
+    released = request_a.run(_release)
+
+    assert commits == [], "a stale scope entry committed the session's next transaction"
+    assert released == 0
+    assert scratch_session.in_transaction()
+
+
+def test_threads_that_inherit_context_are_still_pinned_to_their_thread(
+    scratch_session, monkeypatch
+):
+    """Prod (3.12) starts every thread with an EMPTY context, so a pool
+    thread cannot see its caller's scope. On an interpreter whose threads
+    inherit the caller's context (free-threaded 3.13+), a pool thread would
+    share the caller's scope while the caller is still using the session:
+    there the release falls back to the registering thread only."""
+    from app import database
+
+    monkeypatch.setattr(database, "_THREADS_INHERIT_CONTEXT", True)
+    commits = _spy_commits(monkeypatch, scratch_session)
+    request = _request()
+    request.run(lambda: scratch_session.execute(text("SELECT 1")))
+    released: List[int] = []
+    pool_thread = threading.Thread(target=lambda: released.append(request.copy().run(_release)))
+    pool_thread.start()
+    pool_thread.join()
+
+    assert commits == []
+    assert released == [0]
+    assert request.copy().run(_release) == 1
+
+
+def test_release_leaves_a_two_bind_session_alone_when_its_first_bind_wrote():
+    from sqlalchemy.orm import Session as OrmSession
+
+    first = create_engine("sqlite:///:memory:", future=True)
+    second = create_engine("sqlite:///:memory:", future=True)
+    with first.begin() as conn:
+        conn.execute(text("CREATE TABLE t (id INTEGER PRIMARY KEY)"))
+    session = OrmSession(binds={})
+    try:
+        session.execute(text("INSERT INTO t (id) VALUES (1)"), bind_arguments={"bind": first})
+        session.execute(text("SELECT 1"), bind_arguments={"bind": second})
+
+        assert _release() == 0
+        assert session.in_transaction(), "release committed a write on the first bind"
+    finally:
+        session.close()
+        first.dispose()
+        second.dispose()
 
 
 def test_release_survives_a_commit_that_raises(scratch_session, db, monkeypatch, caplog):
@@ -511,6 +606,92 @@ def test_concurrent_page_batch_releases_on_the_calling_thread(db):
 
     assert len(seen) == 2
     assert not any(seen), "concurrent vendor pages went out inside the caller's read transaction"
+
+
+def test_route_releases_the_transaction_its_auth_dependency_began(client, session_factory):
+    """The API shape end to end: ``require_permission`` -> ``get_current_user``
+    is a sync dependency that reads the user, so the request's transaction
+    begins in ITS threadpool hop; the endpoint then probes the vendor from a
+    different hop. The probe must go out with no read transaction open."""
+    from app.database import get_db
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+
+    db = session_factory()
+    conn = _open_connection(db)
+    db.close()
+    login = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
+    assert login.status_code == 200, login.text
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    sessions: List[Any] = []
+
+    def recording_get_db():
+        session = session_factory()
+        sessions.append(session)
+        try:
+            yield session
+        finally:
+            session.close()
+
+    seen: List[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(any(s.in_transaction() for s in sessions))
+        return httpx.Response(
+            200,
+            json={"TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
+                  "Data": [{"ItemCode": "A1", "UOM": "UNIT"}]},
+        )
+
+    previous_get_db = app.dependency_overrides.get(get_db)
+    app.dependency_overrides[get_db] = recording_get_db
+    app.dependency_overrides[get_http_transport] = lambda: httpx.Client(
+        transport=httpx.MockTransport(handler)
+    )
+    try:
+        response = client.post(
+            "/autocount/http/preview-columns",
+            json={"connectionId": conn.id, "path": "/itemuombypage"},
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
+        if previous_get_db is not None:
+            app.dependency_overrides[get_db] = previous_get_db
+
+    assert response.status_code == 200, response.text
+    assert seen == [False], "the vendor probe went out inside the request's read transaction"
+
+
+def test_bootstrap_main_names_its_sessions_before_any_migration(monkeypatch):
+    from tests.test_deploy_module_bootstrap_abort import (
+        _stub_bootstrap_pipeline_except_modules,
+    )
+
+    fake_manifest = {"module_name": "fakemod-p34", "_dir": "fakemod-p34", "version": "1.0.0"}
+    bootstrap_db_module = _stub_bootstrap_pipeline_except_modules(monkeypatch, fake_manifest)
+    from app import database
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://x:x@localhost:5432/x")
+    monkeypatch.setattr(settings, "db_application_name", "", raising=False)
+    monkeypatch.setattr(database.sys, "argv", ["/app/scripts/bootstrap_db.py"])
+    monkeypatch.setenv("PGAPPNAME", "placeholder")
+    monkeypatch.delenv("PGAPPNAME")
+    monkeypatch.setattr("app.services.app_store_service.module_hooks", lambda name: None)
+    seen: List[str] = []
+    monkeypatch.setattr(
+        "app.module_platform.migrations.run_module_migrations",
+        lambda engine, name: seen.append(os.environ.get("PGAPPNAME", "")),
+    )
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.check_module_schema_drift", lambda engine: None
+    )
+
+    bootstrap_db_module.main()
+
+    assert seen == ["foundryx-bootstrap_db"]
 
 
 # ── a real ETL walk ───────────────────────────────────────────────────────
