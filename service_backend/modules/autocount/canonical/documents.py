@@ -267,11 +267,20 @@ class CanonicalSalesOrderLine(CanonicalDocumentLine):
     # PER LINE, not per header - one order routinely carries several delivery
     # dates (Sorento's own ADR-0011 reasoning, mirrored here).
     required_date: Optional[date] = None
+    # FULFIL-SO-REMARK - SO lines only (PO/SPO lines declare neither). The raw
+    # AutoCount `FurtherDescription` (RTF stripping is the CRM's job) and the
+    # Description of the nearest earlier text-only line of the same document.
+    # v2+ only like every fallback field.
+    line_remark: Optional[str] = None
+    section_heading: Optional[str] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "product_ref", "warehouse_ref", "qty_ordered",
         "qty_delivered", "unit_price", "discount", "line_total", "uom",
         "required_date",
+    )
+    FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        CanonicalDocumentLine.FALLBACK_FIELDS + ("line_remark", "section_heading")
     )
 
 
@@ -487,6 +496,9 @@ class CanonicalSalesOrder(CanonicalDocument):
     # only like `ref`; omitted when `None` (never an explicit `null`), but a
     # real `False` IS sent (`OMIT_WHEN_NONE_FIELDS`, not the EMPTY list).
     transferable: Optional[bool] = None
+    # FULFIL-SO-REMARK - AutoCount `SO.ShipInfo` (Shipping Info; carries the
+    # customer PR number). SO only; v2+ only; never sent as an explicit `null`.
+    ship_info: Optional[str] = None
     # SS-PO-REF (partner of sorento #1528) - the customer's own PO number,
     # AutoCount `UDFNote` by default. Its own field: `ref` keeps feeding
     # Sorento's Project label. SO only; v2+ only like `ref`; max 255 matches
@@ -501,9 +513,9 @@ class CanonicalSalesOrder(CanonicalDocument):
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "customer_code", "customer_name", "agent_code", "ref", "transferable",
-        "po_ref",
+        "po_ref", "ship_info",
     )
-    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("ref", "po_ref")
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("ref", "po_ref", "ship_info")
     OMIT_WHEN_NONE_FIELDS: ClassVar[Tuple[str, ...]] = ("transferable",)
 
 

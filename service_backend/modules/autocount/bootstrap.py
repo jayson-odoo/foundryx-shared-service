@@ -200,6 +200,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_product_item_type,
         backfill_sales_order_ref,
         backfill_sales_order_transferable,
+        backfill_so_remark_fields,
         backfill_shipping_order_container_number,
         backfill_sink_impl_defaults,
         default_schema,
@@ -283,6 +284,15 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # later update). Module Alembic 0030 runs the same repair once on deploy.
     if parse_version(from_version) < (0, 16, 0):
         backfill_consignment_transferred_qty(db, schema=schema, tenant_id=tenant_id)
+    # 0.16.0 -> 0.17.0 (FULFIL-SO-REMARK, partner of the Sorento CRM): every
+    # existing `sales_order` task gets `ShipInfo -> ship_info` (header) and
+    # `FurtherDescription -> line_remark` / `SectionHeading -> section_heading`
+    # (line) rows - enabled when the query is rewritten to the new preset text,
+    # disabled + one warning for a hand-written query. Version-GATED so an
+    # operator-deleted row is not reseeded on every later update. Module
+    # Alembic 0032 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 17, 0):
+        backfill_so_remark_fields(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

@@ -116,8 +116,12 @@ def _backfill():
 
 
 def test_so_header_query_selects_transferable_after_ref():  # AC-18-01
-    assert _SO_HEADER_QUERY == _NEW_SO_HEADER_QUERY, _SO_HEADER_QUERY
-    assert _fp(_SO_LINE_QUERY) == _SO_LINE_QUERY_FINGERPRINT
+    # FULFIL-SO-REMARK moved the live preset one column on (`ShipInfo`); this
+    # lane's own target text is FROZEN history, so pin it, not today's preset.
+    assert _SO_HEADER_QUERY.replace("h.ShipInfo AS ShipInfo, ", "") == _NEW_SO_HEADER_QUERY
+    from modules.autocount.backfill import _PRE_REMARK_SO_LINE_QUERY
+
+    assert _fp(_PRE_REMARK_SO_LINE_QUERY) == _SO_LINE_QUERY_FINGERPRINT
     assert _fp(_SO_FINGERPRINT_QUERY) == _SO_FINGERPRINT_QUERY_FINGERPRINT
 
 
@@ -508,7 +512,8 @@ def test_update_tenant_walks_a_pre_ref_preset_task_to_the_new_text(db):  # AC-18
     db.expire_all()
 
     after = db.get(AcEntityConfig, config_id)
-    assert after.source_config["query"] == _NEW_SO_HEADER_QUERY.replace("{database}", "AED_UPD_TR")
+    # update_tenant chains on to FULFIL-SO-REMARK, so it ends on today's preset.
+    assert after.source_config["query"] == _SO_HEADER_QUERY.replace("{database}", "AED_UPD_TR")
     assert {"Ref", "Transferable"} <= set(after.result_columns)
     assert [r.is_enabled for r in _rows(db, company.id, "ref")] == [True]
     assert [r.is_enabled for r in _rows(db, company.id)] == [True]
@@ -534,7 +539,9 @@ def test_ref_backfill_alone_targets_its_frozen_text_not_the_live_preset(db):
 def test_frozen_0025_target_equals_todays_preset():  # review: frozen target
     from modules.autocount.backfill import _TRANSFERABLE_SO_HEADER_QUERY
 
-    assert _TRANSFERABLE_SO_HEADER_QUERY == _NEW_SO_HEADER_QUERY == _SO_HEADER_QUERY
+    # Frozen history: today's preset is this text plus FULFIL-SO-REMARK's ShipInfo.
+    assert _TRANSFERABLE_SO_HEADER_QUERY == _NEW_SO_HEADER_QUERY
+    assert _SO_HEADER_QUERY.replace("h.ShipInfo AS ShipInfo, ", "") == _NEW_SO_HEADER_QUERY
 
 
 def test_update_tenant_never_reseeds_rows_an_operator_deleted(db):  # review: no reseed
