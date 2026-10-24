@@ -31,8 +31,10 @@ No backfill and no live push here.
   `from_doc_line_key`) resolved in SQL by conditional `LEFT JOIN`s on `SODTL` / `DODTL` / `IVDTL`. The DO
   hop needs the company's DO-feed book: the engine takes a `link_book` (the same
   `http_source.book.linked_document_book` the linked documents use); a DO line on a company with no book is a
-  named mapping error (owner ruling 20 Oct: exact links only, fail loudly). `DODTL` joins the RUNBOOK 0.1
-  grant (owner ruling 20 Oct); without it the line query fails at Preview.
+  named mapping error (owner ruling 20 Oct: exact links only, fail loudly). ~~`DODTL` joins the RUNBOOK 0.1
+  grant~~ **Superseded 25 Oct (lane SS-BILLING-DO-API):** no `DODTL` grant. The DO DocKey comes from the
+  Delivery Orders feed ledger by `FromDocNo` within the book (exactly one match, else a named error); module
+  0032 rewrites stored line queries.
 - **D7 Drafts.** No draft letter is guessed (owner ruling 20 Oct): the header selects `DocStatus`, the task's
   `filterFormula` is set after REF check 6.2.
 - **D8 AR outstanding = a debtor-keyed document.** Header row = one debtor with any AR row (open or not, so a

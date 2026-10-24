@@ -42,11 +42,13 @@ Tags: `[BE]` backend behaviour, `[T]` pinned by a pytest, `[FE]` frontend.
   list, trimmed, `null` when blank; `against_source_ref` is `null` (the CRM resolves by number).
 - **AC-32-17** `[BE][T]` Line link refs (`from_line_ref`): `FromDocType 'SO'` -> `{database}:{SO DocKey}:
   {FromDocDtlKey}`; `'DO'` -> `{book}:DO:{DO DocKey}:{FromDocDtlKey}` with the company's DO-feed book (DO
-  DocKey from `DODTL`); `'IV'` -> `{database}:IV:{IV DocKey}:{FromDocDtlKey}`. A NULL `FromDocDtlKey`, an
+  DocKey: ~~from `DODTL`~~ from the Delivery Orders feed ledger by `FromDocNo` within the book, lane
+  SS-BILLING-DO-API); `'IV'` -> `{database}:IV:{IV DocKey}:{FromDocDtlKey}`. A NULL `FromDocDtlKey`, an
   unresolved source line, or any other type (QT) sends `from_doc_type`/`from_doc_no` and `from_line_ref: null`.
 - **AC-32-18** `[BE][T]` A `'DO'`-sourced line on a company with no DO-feed book is a named mapping error on
-  that document (never pushed silently unlinked). A missing `DODTL` grant fails the line query loudly
-  (Preview / run error), never an unlinked push.
+  that document (never pushed silently unlinked). Superseded 25 Oct: no `DODTL` grant; a DO line whose
+  `FromDocNo` matches zero or several delivered DOs in the ledger is a named mapping error, never an unlinked
+  or guessed push (`tests/test_autocount_billing_feed.py`, `tests/test_autocount_billing_do_link.py`).
 - **AC-32-19** `[BE][T]` Sink: all four post to `ingest/billing_documents` with body
   `{companyCode, records}` (no `book` key); deletions post `{companyCode, source_refs}` to
   `ingest/billing_documents/deletions`; contract gate = version >= 2.6 AND `billing_documents` advertised;

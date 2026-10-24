@@ -357,15 +357,24 @@ matching CRM change is a review finding.
   - `against_doc_no` is the first non-blank entry of `OurInvoiceNo`. `against_source_ref` is always
     null (the CRM matches by number).
   - Status is `posted` or `cancelled` (`status_values_for`, which the mapping save gate applies too).
-- **Line links** (`MappingEngine._mint_plan32_line_refs`). Each preset joins the source line table only
-  on its own `FromDocType` and reads the owning header's DocKey. The link inputs are `link_*_doc_key`
+- **Line links** (`MappingEngine._mint_plan32_line_refs`). For `SO` and `IV`, each preset joins the
+  source line table only on its own `FromDocType` and reads the owning header's DocKey. `DO` is not a join
+  (see below). The link inputs are `link_*_doc_key`
   and `from_doc_line_key`, and they never go on the wire.
   - **`SO`**: `{database}:{SO DocKey}:{DtlKey}`.
   - **`DO`**: `{book}:DO:{DO DocKey}:{DtlKey}`.
     - The book comes from the company's Delivery Orders feed (`billing_link_book`). It is passed as
       `MappingEngine(link_book=)` at every construction site.
     - A DO line with no book is a named mapping error, never an unlinked push (owner ruling).
-    - `DODTL` must be on the read-only grant. Without it the line query fails at Preview.
+    - **No `DODTL` join** (lane SS-BILLING-DO-API, owner ruling 25 Oct: the AutoCount admin will not grant
+      it). The DO DocKey is the ONE not-vanished `ac_doc_feed_ledger` row of the Delivery Orders feed,
+      under that same book, whose `lower(trim(doc_no))` equals the line's `FromDocNo`
+      (`http_source.book.billing_do_doc_keys`, passed as `MappingEngine(do_doc_keys=)` at every
+      construction site). No match, several matches, no DO number or no lookup wired = a named
+      `from_line_ref` error. A failed document drops its row hash, so the next full pass retries it and
+      links once the DO feed has delivered that DO. There is no live vendor fallback: the hapi DO
+      doors are by-day only and the line does not carry its DO's date. Module 0032 moves stored plan-32
+      line queries off the join.
     - An invoice or cash-sale task on a company whose Delivery Orders feed has no book shows
       `delivery_orders` on the document prerequisite card (`has_delivery_order_book`). The
       GRN feed's book does not count.
@@ -399,5 +408,5 @@ matching CRM change is a review finding.
 - **Push order.** The beat sweep enqueues credit and debit notes after every other due task
   (`scheduler.sweep_order_key`). This is best effort: jobs run independently, and the CRM fills a
   note's link when its invoice lands later.
-- **Not in this lane** (owner, after 25 Oct): the S4 backfill, the SELECT grant (`DODTL` included),
+- **Not in this lane** (owner, after 25 Oct): the S4 backfill, the SELECT grant (`DODTL` no longer needed, 25 Oct),
   the REF section 6 checks, and the draft `filterFormula` (the header selects `DocStatus` for it).
