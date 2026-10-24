@@ -497,8 +497,9 @@ class CanonicalSalesOrder(CanonicalDocument):
     # real `False` IS sent (`OMIT_WHEN_NONE_FIELDS`, not the EMPTY list).
     transferable: Optional[bool] = None
     # FULFIL-SO-REMARK - AutoCount `SO.ShipInfo` (Shipping Info; carries the
-    # customer PR number). SO only; v2+ only; never sent as an explicit `null`.
-    ship_info: Optional[str] = None
+    # customer PR number). SO only; v2+ only; max 255 like `po_ref`. NOT in
+    # OMIT_WHEN_EMPTY_FIELDS: a blanked value goes out as `null` and clears the CRM value.
+    ship_info: Optional[str] = Field(None, max_length=255)
     # SS-PO-REF (partner of sorento #1528) - the customer's own PO number,
     # AutoCount `UDFNote` by default. Its own field: `ref` keeps feeding
     # Sorento's Project label. SO only; v2+ only like `ref`; max 255 matches
@@ -515,7 +516,7 @@ class CanonicalSalesOrder(CanonicalDocument):
         "customer_code", "customer_name", "agent_code", "ref", "transferable",
         "po_ref", "ship_info",
     )
-    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("ref", "po_ref", "ship_info")
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("ref", "po_ref")
     OMIT_WHEN_NONE_FIELDS: ClassVar[Tuple[str, ...]] = ("transferable",)
 
 

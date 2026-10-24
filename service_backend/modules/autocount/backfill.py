@@ -892,14 +892,6 @@ _TRANSFERABLE_SO_HEADER_QUERY = _REF_SO_HEADER_QUERY.replace(
     "h.Ref AS Ref, ", "h.Ref AS Ref, h.Transferable AS Transferable, ", 1
 )
 
-def _CURRENT_SO_HEADER_QUERY() -> str:
-    """The live preset header text (lazy: `presets` imports lazily here to
-    keep this module free of a top-level import cycle)."""
-    from .presets import _SO_HEADER_QUERY
-
-    return _SO_HEADER_QUERY
-
-
 _SALES_ORDER_REF_ENTITY_CONFIG_COLUMNS = {
     "id", "tenant_id", "company_id", "entity_type", "source_config", "result_columns",
 }
@@ -1035,7 +1027,7 @@ def backfill_sales_order_ref(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCH
             new_text,
             _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name),
             # FULFIL-SO-REMARK: the live preset is a later text too.
-            _CURRENT_SO_HEADER_QUERY().replace("{database}", database_name),
+            _REMARK_SO_HEADER_QUERY.replace("{database}", database_name),
         }
 
         if stored_query in later_texts:
@@ -1207,7 +1199,7 @@ def backfill_sales_order_transferable(
         old_text = _REF_SO_HEADER_QUERY.replace("{database}", database_name)
         new_text = _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name)
 
-        if stored_query == new_text or stored_query == _CURRENT_SO_HEADER_QUERY().replace(
+        if stored_query == new_text or stored_query == _REMARK_SO_HEADER_QUERY.replace(
             "{database}", database_name
         ):
             # Already migrated (a previous pass, or a freshly-created task
@@ -1307,6 +1299,26 @@ _PRE_REMARK_SO_LINE_QUERY = (
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
+# FULFIL-SO-REMARK's own target texts (0032) - FROZEN, never read off the live
+# preset, so a later SO preset lane cannot silently change what 0032 writes.
+# `test_frozen_remark_targets_equal_todays_preset` forces a conscious re-pin.
+_REMARK_SO_HEADER_QUERY = _TRANSFERABLE_SO_HEADER_QUERY.replace(
+    "h.Transferable AS Transferable, ", "h.Transferable AS Transferable, h.ShipInfo AS ShipInfo, ", 1
+)
+_REMARK_SO_LINE_QUERY = _PRE_REMARK_SO_LINE_QUERY.replace(
+    "d.Seq AS Seq ",
+    "d.Seq AS Seq, d.FurtherDescription AS FurtherDescription, "
+    "sh.SectionHeading AS SectionHeading ", 1,
+).replace(
+    "WHERE d.DocKey = :doc_key",
+    "OUTER APPLY (SELECT TOP 1 x.Description AS SectionHeading "
+    "FROM {database}.dbo.SODTL AS x WHERE x.DocKey = d.DocKey AND x.Seq < d.Seq "
+    "AND (x.ItemCode IS NULL OR x.Qty IS NULL) "
+    "AND LTRIM(RTRIM(ISNULL(x.Description, ''))) <> '' "
+    "ORDER BY x.Seq DESC, x.DtlKey DESC) AS sh "
+    "WHERE d.DocKey = :doc_key", 1,
+)
+
 _SO_REMARK_ENTITY_CONFIG_COLUMNS = _SALES_ORDER_REF_ENTITY_CONFIG_COLUMNS | {"line_result_columns"}
 
 
@@ -1346,8 +1358,6 @@ def backfill_so_remark_fields(
         have = existing_columns(bind, table, schema=schema)
         if have is None or not columns <= have:
             return 0
-
-    from .presets import _SO_HEADER_QUERY, _SO_LINE_QUERY
 
     entity_config = sa.table(
         "ac_entity_config",
@@ -1390,11 +1400,11 @@ def backfill_so_remark_fields(
     sides = (
         (
             SCOPE_HEADER, "query", "result_columns", _TRANSFERABLE_SO_HEADER_QUERY,
-            _SO_HEADER_QUERY, ("ShipInfo",), (("ShipInfo", "ship_info"),),
+            _REMARK_SO_HEADER_QUERY, ("ShipInfo",), (("ShipInfo", "ship_info"),),
         ),
         (
             SCOPE_LINE, "lineQuery", "line_result_columns", _PRE_REMARK_SO_LINE_QUERY,
-            _SO_LINE_QUERY, ("FurtherDescription", "SectionHeading"),
+            _REMARK_SO_LINE_QUERY, ("FurtherDescription", "SectionHeading"),
             (("FurtherDescription", "line_remark"), ("SectionHeading", "section_heading")),
         ),
     )

@@ -216,7 +216,7 @@ _SO_LINE_QUERY = (
     "FROM {database}.dbo.SODTL AS x WHERE x.DocKey = d.DocKey AND x.Seq < d.Seq "
     "AND (x.ItemCode IS NULL OR x.Qty IS NULL) "
     "AND LTRIM(RTRIM(ISNULL(x.Description, ''))) <> '' "
-    "ORDER BY x.Seq DESC) AS sh "
+    "ORDER BY x.Seq DESC, x.DtlKey DESC) AS sh "
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
