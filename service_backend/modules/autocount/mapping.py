@@ -1398,10 +1398,11 @@ class MappingEngine:
         # `''` = none: a DO-sourced line is then a named error, never pushed
         # unlinked (`http_source.book.billing_link_book`).
         link_book: str = "",
-        # Lane SS-BILLING-DO-API - DO number -> the DocKeys the DO feed ledger
-        # holds under ``link_book`` (`http_source.book.billing_do_doc_keys`).
-        # ``None`` = not wired: a DO-sourced line then fails closed.
-        do_doc_keys: Optional[Callable[[str], Sequence[int]]] = None,
+        # Lane SS-BILLING-DO-API - (book, DO number) -> the DocKeys the DO feed
+        # ledger holds; always asked with ``link_book`` itself
+        # (`http_source.book.billing_do_doc_keys`). ``None`` = not wired: a
+        # DO-sourced line then fails closed.
+        do_doc_keys: Optional[Callable[[str, str], Sequence[int]]] = None,
     ):
         enabled = [row for row in rows if row.is_enabled]
         self.header_rows = [r for r in enabled if r.scope == SCOPE_HEADER]
@@ -1531,7 +1532,7 @@ class MappingEngine:
         cache_key = doc_no.lower()
         keys = self._do_doc_key_cache.get(cache_key)
         if keys is None:
-            keys = tuple(sorted({int(k) for k in self.do_doc_keys(doc_no)}))
+            keys = tuple(sorted({int(k) for k in self.do_doc_keys(self.link_book, doc_no)}))
             self._do_doc_key_cache[cache_key] = keys
         if not keys:
             return (

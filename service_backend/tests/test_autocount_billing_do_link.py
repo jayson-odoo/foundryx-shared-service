@@ -61,9 +61,11 @@ def test_only_invoice_and_cash_sale_get_a_lookup(db):
     assert billing_do_doc_keys(db, DEFAULT_TENANT_ID, company, ENTITY_DEBIT_NOTE) is None
 
 
-def test_no_do_feed_book_means_no_lookup(db):
+def test_a_blank_book_matches_nothing(db):
     company, _conn = make_company(db)
-    assert billing_do_doc_keys(db, DEFAULT_TENANT_ID, company, ENTITY_INVOICE) is None
+    _ledger(db, company, 9001, "DO-1", book="")
+    lookup = billing_do_doc_keys(db, DEFAULT_TENANT_ID, company, ENTITY_INVOICE)
+    assert lookup("", "DO-1") == [] and lookup("  ", "DO-1") == []
 
 
 def test_the_lookup_reads_only_this_companys_live_do_rows_in_the_do_book(db):
@@ -76,10 +78,12 @@ def test_the_lookup_reads_only_this_companys_live_do_rows_in_the_do_book(db):
     _ledger(db, company, 9004, "DO-2609/0077", company_id="another-company")
     _ledger(db, company, 9005, "DO-2609/0077", vanished=True)  # deleted in AutoCount
     lookup = billing_do_doc_keys(db, DEFAULT_TENANT_ID, company, ENTITY_INVOICE)
-    assert lookup("DO-2609/0077") == [9001]
+    assert lookup(BOOK, "DO-2609/0077") == [9001]
     # Trimmed + case-insensitive, like the doc finder's ledger read.
-    assert lookup("  do-2609/0077 ") == [9001]
-    assert lookup("DO-2609/9999") == []
+    assert lookup(BOOK, "  do-2609/0077 ") == [9001]
+    assert lookup(BOOK, "DO-2609/9999") == []
+    # The book is the caller's (the engine's own link_book), never a guess.
+    assert lookup("otherbook", "DO-2609/0077") == [9002]
 
 
 def test_the_lookup_is_tenant_scoped(db):
@@ -91,7 +95,7 @@ def test_the_lookup_is_tenant_scoped(db):
     ))
     db.commit()
     lookup = billing_do_doc_keys(db, DEFAULT_TENANT_ID, company, ENTITY_INVOICE)
-    assert lookup("DO-1") == []
+    assert lookup(BOOK, "DO-1") == []
 
 
 def test_two_live_dos_with_one_number_are_both_returned(db):
@@ -101,4 +105,4 @@ def test_two_live_dos_with_one_number_are_both_returned(db):
     _ledger(db, company, 9001, "DO-1")
     _ledger(db, company, 9002, "DO-1")
     lookup = billing_do_doc_keys(db, DEFAULT_TENANT_ID, company, ENTITY_INVOICE)
-    assert sorted(lookup("DO-1")) == [9001, 9002]
+    assert sorted(lookup(BOOK, "DO-1")) == [9001, 9002]

@@ -486,12 +486,13 @@ def test_document_type_is_fixed_per_entity(entity_type):
 
 
 def _do_keys(table: Dict[str, List[int]]):
-    """A fake DO-feed-ledger lookup: DO number -> the delivered DocKeys."""
+    """A fake DO-feed-ledger lookup: (book, DO number) -> the delivered
+    DocKeys. Only answers for BOOK: the engine must ask with its own book."""
     calls: List[str] = []
 
-    def lookup(doc_no: str) -> List[int]:
+    def lookup(book: str, doc_no: str) -> List[int]:
         calls.append(doc_no)
-        return list(table.get(doc_no, []))
+        return list(table.get(doc_no, [])) if book == BOOK else []
 
     lookup.calls = calls  # type: ignore[attr-defined]
     return lookup

@@ -2425,6 +2425,15 @@ _OLD_BILLING_DO_LINE_QUERIES: Dict[str, str] = {
     "invoice": _OLD_BILLING_DO_LINE_TEMPLATE.replace("<LINE>", "IVDTL"),
     "cash_sale": _OLD_BILLING_DO_LINE_TEMPLATE.replace("<LINE>", "CSDTL"),
 }
+# What 0032 rewrites TO - frozen too, so a later preset edit never changes
+# what this migration writes (pinned equal to today's preset by a test).
+_NEW_BILLING_DO_LINE_QUERIES: Dict[str, str] = {
+    entity_type: old.replace(", dd.DocKey AS LinkDODocKey", "", 1).replace(
+        " LEFT JOIN {database}.dbo.DODTL AS dd ON d.FromDocType = 'DO' "
+        "AND dd.DtlKey = d.FromDocDtlKey", "", 1,
+    )
+    for entity_type, old in _OLD_BILLING_DO_LINE_QUERIES.items()
+}
 _BILLING_DO_LINK_COLUMN = "LinkDODocKey"
 
 
@@ -2438,8 +2447,8 @@ def backfill_billing_do_link_queries(
     that predates the columns this touches.
 
     Per task: when the stored ``lineQuery`` is byte-identical to the
-    company's substitution of the plan-32 text, it becomes the current
-    (DODTL-free) preset text, ``LinkDODocKey`` leaves ``line_result_columns``
+    company's substitution of the plan-32 text, it becomes the frozen
+    DODTL-free preset text (``_NEW_BILLING_DO_LINE_QUERIES``), ``LinkDODocKey`` leaves ``line_result_columns``
     (the query no longer selects it) and every ENABLED line row reading
     ``LinkDODocKey`` is DISABLED (an enabled row on an unselected column
     422s the next Mapping-tab save; the engine ignores ``link_do_doc_key``
@@ -2467,12 +2476,7 @@ def backfill_billing_do_link_queries(
         if have is None or not columns <= have:
             return 0
 
-    from .presets import CASH_SALE_PRESET, INVOICE_PRESET
-
-    new_templates = {
-        "invoice": INVOICE_PRESET.line_query,
-        "cash_sale": CASH_SALE_PRESET.line_query,
-    }
+    new_templates = _NEW_BILLING_DO_LINE_QUERIES
     entity_config = sa.table(
         "ac_entity_config",
         sa.column("id", sa.String),
@@ -2543,8 +2547,10 @@ def backfill_billing_do_link_queries(
             .where(entity_config.c.id == config_id)
             .values(
                 source_config=source_config,
-                line_result_columns=[
-                    str(c) for c in (line_columns or []) if str(c) != _BILLING_DO_LINK_COLUMN
+                # NULL = never previewed (the mapping save skips its column
+                # check) - must stay NULL, never become "zero columns".
+                line_result_columns=None if line_columns is None else [
+                    str(c) for c in line_columns if str(c) != _BILLING_DO_LINK_COLUMN
                 ],
             )
         )

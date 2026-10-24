@@ -72,7 +72,7 @@ def _old_line(entity_type: str, database: str) -> str:
     return _OLD_BILLING_DO_LINE_QUERIES[entity_type].replace("{database}", database)
 
 
-def _config(db, company, entity_type, *, line_query) -> AcEntityConfig:
+def _config(db, company, entity_type, *, line_query, line_columns=LINE_COLUMNS) -> AcEntityConfig:
     preset = PRESETS.get(entity_type, INVOICE_PRESET)
     config = AcEntityConfig(
         tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=entity_type,
@@ -85,7 +85,7 @@ def _config(db, company, entity_type, *, line_query) -> AcEntityConfig:
         "watermarkColumn": "LastModified", "comparedColumns": [],
     }
     config.result_columns = ["DocKey", "DocNo", "LastModified"]
-    config.line_result_columns = list(LINE_COLUMNS)
+    config.line_result_columns = None if line_columns is None else list(line_columns)
     db.add(config)
     db.add(AcFieldMapping(
         id=str(uuid.uuid4()), tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
@@ -114,6 +114,32 @@ def _do_rows(db, company_id: str, entity_type: str) -> List[AcFieldMapping]:
         )
         .all()
     )
+
+
+def test_the_frozen_new_texts_are_todays_preset():
+    from modules.autocount.backfill import _NEW_BILLING_DO_LINE_QUERIES
+
+    for entity_type, preset in PRESETS.items():
+        assert _NEW_BILLING_DO_LINE_QUERIES[entity_type] == preset.line_query
+
+
+def test_never_previewed_line_columns_stay_null(db):
+    """NULL = never previewed (the mapping save skips its column check);
+    the backfill must not turn it into "zero columns"."""
+    from modules.autocount.backfill import backfill_billing_do_link_queries
+
+    company = _company(db, "FAKE_DB_NULLCOLS")
+    config = _config(
+        db, company, ENTITY_INVOICE,
+        line_query=_old_line(ENTITY_INVOICE, "FAKE_DB_NULLCOLS"), line_columns=None,
+    )
+    config_id = config.id
+    db.expire_all()
+    assert backfill_billing_do_link_queries(db, schema=None) == 2
+    db.expire_all()
+    after = db.get(AcEntityConfig, config_id)
+    assert "DODTL" not in after.source_config["lineQuery"]
+    assert after.line_result_columns is None
 
 
 def test_the_frozen_old_texts_are_the_plan_32_dodtl_join():

@@ -375,6 +375,13 @@ matching CRM change is a review finding.
       links once the DO feed has delivered that DO. There is no live vendor fallback: the hapi DO
       doors are by-day only and the line does not carry its DO's date. Module 0032 moves stored plan-32
       line queries off the join.
+    - **Order of operations:** backfill the Delivery Orders feed back to (at least) the billing task's
+      `fromDate` BEFORE backfilling invoices / cash sales. An invoice whose DO the ledger does not yet
+      hold fails with "no delivery order with that number has been delivered" (it used to go out with
+      type + number only) and is retried on the next full pass once the DO is in.
+    - Accepted edges: a DO line with a NULL `FromDocDtlKey` still goes out type + number only (no line
+      key, so no ref can be built, AC-32-17). A DO number reused after an unswept deletion (older than the
+      45-day sweep) could match the old ledger row; this is an AutoCount number-reuse corner, not a guess.
     - An invoice or cash-sale task on a company whose Delivery Orders feed has no book shows
       `delivery_orders` on the document prerequisite card (`has_delivery_order_book`). The
       GRN feed's book does not count.
