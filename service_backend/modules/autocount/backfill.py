@@ -1026,7 +1026,7 @@ def backfill_sales_order_ref(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCH
         later_texts = {
             new_text,
             _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name),
-            # FULFIL-SO-REMARK: the live preset is a later text too.
+            # FULFIL-SO-REMARK: the FROZEN remark target is a later text too.
             _REMARK_SO_HEADER_QUERY.replace("{database}", database_name),
         }
 
