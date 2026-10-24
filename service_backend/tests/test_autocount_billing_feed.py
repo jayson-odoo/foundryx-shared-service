@@ -260,23 +260,29 @@ def test_billing_fingerprint_columns(entity_type):
 
 
 def test_billing_presets_join_only_the_source_line_tables_they_can_link_to():
-    """IV/CS lines come from SO or DO (owner ruling: DODTL for the exact DO
-    hop), CN lines from IV only, DN lines have no transfer source."""
+    """IV/CS lines come from SO or DO, CN lines from IV only, DN lines have no
+    transfer source. Lane SS-BILLING-DO-API (owner ruling 25 Oct): the DO hop
+    NEVER joins `DODTL` (the AutoCount admin will not grant it) - the DO
+    DocKey is resolved from the DO feed's own ledger instead."""
     joins = {
-        ENTITY_INVOICE: {"SODTL", "DODTL"},
-        ENTITY_CASH_SALE: {"SODTL", "DODTL"},
+        ENTITY_INVOICE: {"SODTL"},
+        ENTITY_CASH_SALE: {"SODTL"},
         ENTITY_CREDIT_NOTE: {"IVDTL"},
         ENTITY_DEBIT_NOTE: set(),
     }
     for entity_type, expected in joins.items():
-        query = DOCUMENT_PRESETS[entity_type].line_query
-        for table in ("SODTL", "DODTL"):
+        preset = DOCUMENT_PRESETS[entity_type]
+        query = preset.line_query
+        for table in ("SODTL", "IVDTL"):
             present = f"LEFT JOIN {{database}}.dbo.{table} AS" in query
             assert present == (table in expected), (entity_type, table)
-        if entity_type == ENTITY_CREDIT_NOTE:
-            assert "LEFT JOIN {database}.dbo.IVDTL AS" in query
+        # No billing query reads DODTL / DO at all, in any of the three queries.
+        for text in (preset.header_query, preset.line_query, preset.fingerprint_query):
+            assert "DODTL" not in text and ".dbo.DO " not in text, entity_type
+        assert "LinkDODocKey" not in query
+        assert "LinkDODocKey" not in {row.source_path for row in preset.line}
         # Every join is conditional on the link type, never a blind DtlKey join.
-        for table, kind in (("SODTL", "SO"), ("DODTL", "DO"), ("IVDTL", "IV")):
+        for table, kind in (("SODTL", "SO"), ("IVDTL", "IV")):
             if table in expected:
                 assert f"d.FromDocType = '{kind}'" in query, (entity_type, table)
 
@@ -362,7 +368,7 @@ def test_ar_outstanding_catalog():
 # ── B. mapping end to end (fake rows) ────────────────────────────────────────
 
 
-def _engine(entity_type: str, *, link_book: str = BOOK) -> MappingEngine:
+def _engine(entity_type: str, *, link_book: str = BOOK, do_doc_keys=None) -> MappingEngine:
     preset = DOCUMENT_PRESETS[entity_type]
     rows: List[MappingRow] = []
     for scope, fields in ((SCOPE_HEADER, preset.header), (SCOPE_LINE, preset.line)):
@@ -374,7 +380,7 @@ def _engine(entity_type: str, *, link_book: str = BOOK) -> MappingEngine:
     return MappingEngine(
         rows, entity_type=entity_type,
         profile=flat_profile(entity_type, list(preset.key_columns)),
-        database_name=DB, link_book=link_book,
+        database_name=DB, link_book=link_book, do_doc_keys=do_doc_keys,
     )
 
 
@@ -386,7 +392,7 @@ def _iv_line(**overrides) -> dict:
         "SubTotalExTax": Decimal("1000.00"), "TaxCode": "SV-10", "TaxRate": Decimal("10.00"),
         "Tax": Decimal("100.00"), "SubTotal": Decimal("1100.00"),
         "FromDocType": "SO", "FromDocNo": "SO-1", "FromDocDtlKey": 77,
-        "LinkSODocKey": 1234, "LinkDODocKey": None, "LinkIVDocKey": None,
+        "LinkSODocKey": 1234, "LinkIVDocKey": None,
     }
     line.update(overrides)
     return line
@@ -479,27 +485,121 @@ def test_document_type_is_fixed_per_entity(entity_type):
     assert record.sink_payload()["document_type"] == entity_type
 
 
-def test_a_do_line_links_to_the_do_feed_book_line():
-    row = _iv_row(_lines=[_iv_line(
-        FromDocType="DO", FromDocNo="DO-2609/0077", FromDocDtlKey=555,
-        LinkSODocKey=None, LinkDODocKey=9001,
-    )])
-    mapped = _engine(ENTITY_INVOICE, link_book=BOOK).map_document(row)
+def _do_keys(table: Dict[str, List[int]]):
+    """A fake DO-feed-ledger lookup: DO number -> the delivered DocKeys."""
+    calls: List[str] = []
+
+    def lookup(doc_no: str) -> List[int]:
+        calls.append(doc_no)
+        return list(table.get(doc_no, []))
+
+    lookup.calls = calls  # type: ignore[attr-defined]
+    return lookup
+
+
+def _do_line(**overrides) -> dict:
+    values = dict(
+        FromDocType="DO", FromDocNo="DO-2609/0077", FromDocDtlKey=555, LinkSODocKey=None,
+    )
+    values.update(overrides)
+    return _iv_line(**values)
+
+
+def test_a_do_line_links_to_the_do_feed_book_line_via_the_ledger():
+    """Lane SS-BILLING-DO-API - the DO DocKey comes from the DO feed ledger
+    (looked up by the line's FromDocNo within the link book), never DODTL."""
+    row = _iv_row(_lines=[_do_line()])
+    lookup = _do_keys({"DO-2609/0077": [9001]})
+    mapped = _engine(ENTITY_INVOICE, link_book=BOOK, do_doc_keys=lookup).map_document(row)
     assert mapped.ok, [e.message() for e in mapped.errors]
     line = mapped.record.sink_payload()["lines"][0]
     assert line["from_line_ref"] == f"{BOOK}:DO:9001:555"
     assert line["from_doc_type"] == "DO" and line["from_doc_no"] == "DO-2609/0077"
+    assert lookup.calls == ["DO-2609/0077"]
+
+
+def test_a_cash_sale_do_line_links_the_same_way():
+    row = _iv_row(_lines=[_do_line()])
+    lookup = _do_keys({"DO-2609/0077": [9001]})
+    mapped = _engine(ENTITY_CASH_SALE, link_book=BOOK, do_doc_keys=lookup).map_document(row)
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert mapped.record.sink_payload()["lines"][0]["from_line_ref"] == f"{BOOK}:DO:9001:555"
+
+
+def test_a_stale_sql_link_column_is_never_trusted_over_the_ledger():
+    """A task still on the pre-lane lineQuery may hand a LinkDODocKey; the
+    ledger is the only authority, so a disagreeing column is ignored."""
+    row = _iv_row(_lines=[_do_line(LinkDODocKey=1)])
+    lookup = _do_keys({"DO-2609/0077": [9001]})
+    mapped = _engine(ENTITY_INVOICE, link_book=BOOK, do_doc_keys=lookup).map_document(row)
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert mapped.record.sink_payload()["lines"][0]["from_line_ref"] == f"{BOOK}:DO:9001:555"
 
 
 def test_a_do_line_without_a_do_feed_book_is_a_named_error_never_unlinked():
     """Owner ruling 20 Oct: exact links only, fail loudly. A DO-sourced line
     on a company with no doc-feed book must not be pushed with a null ref."""
-    row = _iv_row(_lines=[_iv_line(
-        FromDocType="DO", FromDocNo="DO-1", FromDocDtlKey=555, LinkSODocKey=None, LinkDODocKey=9001,
-    )])
-    mapped = _engine(ENTITY_INVOICE, link_book="").map_document(row)
+    row = _iv_row(_lines=[_do_line()])
+    lookup = _do_keys({"DO-2609/0077": [9001]})
+    mapped = _engine(ENTITY_INVOICE, link_book="", do_doc_keys=lookup).map_document(row)
     assert not mapped.ok
     assert any("book" in e.message().lower() for e in mapped.errors), [e.message() for e in mapped.errors]
+
+
+@pytest.mark.parametrize("table,needle", [
+    ({}, "no delivery order"),  # the DO feed never delivered it
+    ({"DO-2609/0077": [9001, 9002]}, "2 delivery orders"),  # ambiguous: never guess
+])
+def test_a_do_line_the_ledger_cannot_pin_to_one_do_is_a_named_error(table, needle):
+    row = _iv_row(_lines=[_do_line()])
+    mapped = _engine(ENTITY_INVOICE, link_book=BOOK, do_doc_keys=_do_keys(table)).map_document(row)
+    assert not mapped.ok
+    messages = [e.message() for e in mapped.errors]
+    assert any(needle in m.lower() for m in messages), messages
+    assert any(e.field == "from_line_ref" for e in mapped.errors)
+
+
+@pytest.mark.parametrize("overrides", [{"FromDocNo": None}, {"FromDocNo": "   "}])
+def test_a_do_line_with_no_do_number_is_a_named_error(overrides):
+    row = _iv_row(_lines=[_do_line(**overrides)])
+    lookup = _do_keys({"DO-2609/0077": [9001]})
+    mapped = _engine(ENTITY_INVOICE, link_book=BOOK, do_doc_keys=lookup).map_document(row)
+    assert not mapped.ok
+    assert lookup.calls == []
+
+
+def test_a_do_line_with_no_ledger_lookup_wired_fails_closed():
+    """An engine built without the lookup (a caller that forgot it) must
+    fail the DO line, never push it unlinked."""
+    row = _iv_row(_lines=[_do_line()])
+    mapped = _engine(ENTITY_INVOICE, link_book=BOOK).map_document(row)
+    assert not mapped.ok
+    assert any(e.field == "from_line_ref" for e in mapped.errors)
+
+
+def test_a_do_line_with_no_source_line_key_sends_type_and_number_only():
+    """Unchanged rule: a NULL FromDocDtlKey cannot be linked - no lookup."""
+    row = _iv_row(_lines=[_do_line(FromDocDtlKey=None)])
+    lookup = _do_keys({"DO-2609/0077": [9001]})
+    mapped = _engine(ENTITY_INVOICE, link_book=BOOK, do_doc_keys=lookup).map_document(row)
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert mapped.record.sink_payload()["lines"][0]["from_line_ref"] is None
+    assert lookup.calls == []
+
+
+def test_the_ledger_lookup_is_asked_once_per_do_number():
+    row = _iv_row(_lines=[
+        _do_line(DtlKey=1, FromDocDtlKey=555),
+        _do_line(DtlKey=2, FromDocDtlKey=556),
+    ])
+    lookup = _do_keys({"DO-2609/0077": [9001]})
+    engine = _engine(ENTITY_INVOICE, link_book=BOOK, do_doc_keys=lookup)
+    mapped = engine.map_document(row)
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    refs = [line["from_line_ref"] for line in mapped.record.sink_payload()["lines"]]
+    assert refs == [f"{BOOK}:DO:9001:555", f"{BOOK}:DO:9001:556"]
+    engine.map_document(row)
+    assert lookup.calls == ["DO-2609/0077"]
 
 
 def test_a_credit_note_line_links_to_its_invoice_line():
