@@ -1398,6 +1398,10 @@ class MappingEngine:
         # `''` = none: a DO-sourced line is then a named error, never pushed
         # unlinked (`http_source.book.billing_link_book`).
         link_book: str = "",
+        # Lane SS-BILLING-DO-API - DO number -> the DocKeys the DO feed ledger
+        # holds under ``link_book`` (`http_source.book.billing_do_doc_keys`).
+        # ``None`` = not wired: a DO-sourced line then fails closed.
+        do_doc_keys: Optional[Callable[[str], Sequence[int]]] = None,
     ):
         enabled = [row for row in rows if row.is_enabled]
         self.header_rows = [r for r in enabled if r.scope == SCOPE_HEADER]
@@ -1415,6 +1419,10 @@ class MappingEngine:
         # header points AT.
         self.database_name = database_name
         self.link_book = (link_book or "").strip()
+        self.do_doc_keys = do_doc_keys
+        # One ledger read per DO number per engine (a backfill maps many
+        # invoices off the same DO).
+        self._do_doc_key_cache: Dict[str, Tuple[int, ...]] = {}
         # INSTANCE-bound transform table (plan 22 S5): the module-level
         # ``TRANSFORMS`` entries plus this engine's own ``ref_*`` closures -
         # everything else about ``MappingRow.coerce`` is unchanged.
@@ -1453,9 +1461,16 @@ class MappingEngine:
         ``{database}:{SO DocKey}:{DtlKey}`` (the SO line's own ref), ``DO`` ->
         ``{book}:DO:{DO DocKey}:{DtlKey}``, ``IV`` -> ``{database}:IV:{IV
         DocKey}:{DtlKey}``. A missing source key, an unresolved source line or
-        any other type sends no ref (type + number only). A DO-sourced line
-        with a resolved DO line but no doc-feed book FAILS: it would otherwise
-        reach the CRM silently unlinked."""
+        any other type sends no ref (type + number only).
+
+        The DO DocKey is NOT read from SQL (lane SS-BILLING-DO-API, owner
+        ruling 25 Oct: no ``DODTL`` grant): it is the ONE DO the DO feed
+        ledger holds under ``link_book`` with the line's ``from_doc_no``. A
+        DO-sourced line with a source line key FAILS when the company has no
+        doc-feed book, names no DO number, or the ledger holds zero or
+        several such DOs - it would otherwise reach the CRM unlinked or
+        guessed. A stale ``link_do_doc_key`` from a pre-lane line query is
+        ignored: the ledger is the only authority."""
         if self.profile.billing_line_links:
             values["from_line_ref"] = None
             kind = (t_string(values.get("from_doc_type")) or "").upper()
@@ -1470,7 +1485,7 @@ class MappingEngine:
                         f"{self.database_name}:{BILLING_LINK_IV}:"
                         f"{values['link_iv_doc_key']}:{line_key}"
                     )
-                elif kind == BILLING_LINK_DO and values.get("link_do_doc_key") is not None:
+                elif kind == BILLING_LINK_DO:
                     if not self.link_book:
                         return (
                             "from_line_ref",
@@ -1478,9 +1493,11 @@ class MappingEngine:
                             "no doc-feed book (configure its Delivery Orders feed first), "
                             "so it cannot be linked to its DO line",
                         )
+                    do_doc_key = self._resolve_do_doc_key(values.get("from_doc_no"))
+                    if isinstance(do_doc_key, str):
+                        return ("from_line_ref", do_doc_key)
                     values["from_line_ref"] = (
-                        f"{self.link_book}:{BILLING_LINK_DO}:"
-                        f"{values['link_do_doc_key']}:{line_key}"
+                        f"{self.link_book}:{BILLING_LINK_DO}:{do_doc_key}:{line_key}"
                     )
         if self.profile.ar_document_refs:
             code = (t_string(values.get("ar_doc_type")) or "").upper()
@@ -1495,6 +1512,41 @@ class MappingEngine:
                 return ("ar_doc_key", "the AR item names no billing document key")
             values["source_ref"] = f"{self.database_name}:{code}:{key}"
         return None
+
+    def _resolve_do_doc_key(self, raw_doc_no: Any) -> Any:
+        """The DocKey of the ONE delivery order numbered ``raw_doc_no`` in the
+        DO feed ledger, or a named reason (``str``) why there is not exactly
+        one. Never guesses."""
+        doc_no = (t_string(raw_doc_no) or "").strip()
+        if not doc_no:
+            return (
+                "this line comes from a delivery order but names no DO number, "
+                "so it cannot be linked to its DO line"
+            )
+        if self.do_doc_keys is None:
+            return (
+                "this line comes from a delivery order but the delivery-order "
+                "ledger is not available to this run, so it cannot be linked to its DO line"
+            )
+        cache_key = doc_no.lower()
+        keys = self._do_doc_key_cache.get(cache_key)
+        if keys is None:
+            keys = tuple(sorted({int(k) for k in self.do_doc_keys(doc_no)}))
+            self._do_doc_key_cache[cache_key] = keys
+        if not keys:
+            return (
+                f"this line comes from delivery order {doc_no}, but no delivery order "
+                f"with that number has been delivered under book '{self.link_book}' "
+                "(run or backfill the Delivery Orders feed to cover it first), so it "
+                "cannot be linked to its DO line"
+            )
+        if len(keys) > 1:
+            return (
+                f"this line comes from delivery order {doc_no}, but {len(keys)} delivery "
+                f"orders with that number are held under book '{self.link_book}', so it "
+                "cannot be linked to its DO line without guessing"
+            )
+        return keys[0]
 
     def _header_facts(self, raw: Dict[str, Any], lines: Sequence[Any]) -> Dict[str, Any]:
         """The NAMED-variable fact dict a header formula may reference

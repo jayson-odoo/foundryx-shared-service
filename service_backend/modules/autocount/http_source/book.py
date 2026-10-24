@@ -12,7 +12,7 @@ company_service`` (the sink factory) and ``http_source.source`` all import it.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Callable, List, Optional
 from urllib.parse import urlsplit
 
 _BOOK_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
@@ -108,3 +108,38 @@ def billing_link_book(db, tenant_id: str, company, entity_type: str) -> str:
     # was ingested with.
     row = DocFeedRepository(db).get(tenant_id, company_id, FEED_DELIVERY_ORDERS)
     return str(getattr(row, "book", "") or "").strip() if row is not None else ""
+
+
+def billing_do_doc_keys(
+    db, tenant_id: str, company, entity_type: str,
+) -> Optional[Callable[[str], List[int]]]:
+    """Lane SS-BILLING-DO-API - the DO-number -> DocKeys lookup a billing
+    line sourced from a delivery order resolves its DO through (owner ruling
+    25 Oct: the AutoCount admin will not grant ``DODTL``, so the line query
+    no longer joins it).
+
+    Reads the DO feed's own ledger (``ac_doc_feed_ledger``: book, doc_key,
+    doc_no of every DO the CRM holds from us), under the SAME book
+    ``billing_link_book`` mints the ref with, so a link can only ever point
+    at a DO the CRM actually has. Vanished DOs (deleted in AutoCount) are
+    excluded. Returns every match - the mapping engine links on exactly one
+    and fails the line otherwise. ``None`` for an entity that never links a
+    DO, or a company with no Delivery Orders feed book (the engine already
+    names that case). Tenant AND company scoped (polymorphic-stored-id rule).
+    No vendor I/O: the hapi DO doors are by-day only, and an IV line does not
+    carry its DO's date, so there is nothing exact to fetch on demand."""
+    book = billing_link_book(db, tenant_id, company, entity_type)
+    if not book:
+        return None
+    from ..doc_feed.constants import FEED_DELIVERY_ORDERS
+    from ..repositories.doc_feed_repository import DocFeedLedgerRepository
+
+    repo = DocFeedLedgerRepository(db)
+    company_id = company.id
+
+    def lookup(doc_no: str) -> List[int]:
+        return repo.live_doc_keys_for_doc_no(
+            tenant_id, company_id, FEED_DELIVERY_ORDERS, book, doc_no,
+        )
+
+    return lookup
