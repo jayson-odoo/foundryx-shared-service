@@ -266,7 +266,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
     moving it to 28, and SS-DEBTOR-AGENT the data-only
     `0029_autocount_sales_agent` backfill, moving it to 29, and
     AC-CONSIGN-PULL the data-only `0030_autocount_consign_xfer` backfill,
-    moving it to 30; a
+    moving it to 30, and SS-BILLING-DO-API the data-only
+    `0032_autocount_billing_do_link` backfill, moving it to 32; a
     reviewer/coder adding one beyond THAT for a schema-free slice still trips
     this guard rather than the drift going unnoticed."""
     versions_dir = (
@@ -278,8 +279,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
         match = re.match(r"^(\d+)_", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    assert highest <= 31, (
-        f"a new autocount migration (>0031) exists ({highest}) - AC-12-32 "
+    assert highest <= 32, (
+        f"a new autocount migration (>0032) exists ({highest}) - AC-12-32 "
         "says THIS plan ships no schema change (a later plan may legitimately "
         "move this ceiling again, as AC-CONSIGN-PULL just did from 29 to 30, and "
         "SS-INTEGRATION-ALERT (plan 33) did from 30 to 31)"
