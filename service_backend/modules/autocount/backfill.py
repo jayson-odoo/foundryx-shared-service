@@ -2399,3 +2399,167 @@ def backfill_consignment_transferred_qty(
             )
             touched += 1
     return touched
+
+
+# ── Lane SS-BILLING-DO-API - IV/CS line query off DODTL (module 0032) ────────
+#
+# The plan-32 (#127) IV/CS line query, verbatim (`{database}` unsubstituted).
+# FROZEN: a later preset edit must never change what this pass recognises.
+_OLD_BILLING_DO_LINE_TEMPLATE = (
+    "SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, "
+    "i.AutoKey AS ItemAutoKey, d.ItemCode AS ItemCode, "
+    "d.Description AS Description, d.UOM AS UOM, d.Qty AS Qty, "
+    "d.UnitPrice AS UnitPrice, d.DiscountAmt AS DiscountAmt, "
+    "d.SubTotalExTax AS SubTotalExTax, d.TaxCode AS TaxCode, "
+    "d.TaxRate AS TaxRate, d.Tax AS Tax, d.SubTotal AS SubTotal, "
+    "d.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, "
+    "d.FromDocDtlKey AS FromDocDtlKey, so.DocKey AS LinkSODocKey, "
+    "dd.DocKey AS LinkDODocKey "
+    "FROM {database}.dbo.<LINE> AS d "
+    "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
+    "LEFT JOIN {database}.dbo.SODTL AS so ON d.FromDocType = 'SO' AND so.DtlKey = d.FromDocDtlKey "
+    "LEFT JOIN {database}.dbo.DODTL AS dd ON d.FromDocType = 'DO' AND dd.DtlKey = d.FromDocDtlKey "
+    "WHERE d.DocKey = :doc_key AND (d.SubTotal <> 0 OR d.Qty IS NOT NULL)"
+)
+_OLD_BILLING_DO_LINE_QUERIES: Dict[str, str] = {
+    "invoice": _OLD_BILLING_DO_LINE_TEMPLATE.replace("<LINE>", "IVDTL"),
+    "cash_sale": _OLD_BILLING_DO_LINE_TEMPLATE.replace("<LINE>", "CSDTL"),
+}
+_BILLING_DO_LINK_COLUMN = "LinkDODocKey"
+
+
+def backfill_billing_do_link_queries(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA, tenant_id: Optional[str] = None,
+) -> int:
+    """Lane SS-BILLING-DO-API (owner ruling 25 Oct: the AutoCount admin will
+    not grant ``DODTL``) - move every existing ``invoice`` / ``cash_sale``
+    task off the plan-32 line query that joins it. Returns the number of
+    changes made (tasks rewritten + mapping rows disabled); 0 on a schema
+    that predates the columns this touches.
+
+    Per task: when the stored ``lineQuery`` is byte-identical to the
+    company's substitution of the plan-32 text, it becomes the current
+    (DODTL-free) preset text, ``LinkDODocKey`` leaves ``line_result_columns``
+    (the query no longer selects it) and every ENABLED line row reading
+    ``LinkDODocKey`` is DISABLED (an enabled row on an unselected column
+    422s the next Mapping-tab save; the engine ignores ``link_do_doc_key``
+    anyway - the DO DocKey now comes from the DO feed ledger). A query
+    already at the new text is skipped silently; anything else is customised:
+    left untouched, one WARNING naming the config id (it still reads DODTL
+    and fails loudly at Preview without the grant - never an unlinked push).
+
+    No row hash moves (``result_columns`` is untouched), so nothing
+    re-stages because of this pass. ``tenant_id`` (``update_tenant``) scopes
+    the pass; ``None`` (the deploy migration) covers every tenant. Frozen
+    ``sa.table`` only, company resolved WITH the config's own ``tenant_id``.
+    Does not commit - the caller owns that.
+    """
+    needed = {
+        "ac_entity_config": _CONSIGNMENT_BACKFILL_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _CONSIGNMENT_BACKFILL_COMPANY_COLUMNS,
+        "ac_field_mapping": {
+            "id", "tenant_id", "company_id", "entity_type", "scope", "source_path",
+            "is_enabled",
+        },
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    from .presets import CASH_SALE_PRESET, INVOICE_PRESET
+
+    new_templates = {
+        "invoice": INVOICE_PRESET.line_query,
+        "cash_sale": CASH_SALE_PRESET.line_query,
+    }
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("line_result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("is_enabled", sa.Boolean),
+        schema=schema,
+    )
+
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+    select_configs = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.entity_type, entity_config.c.source_config,
+        entity_config.c.line_result_columns,
+    ).where(entity_config.c.entity_type.in_(list(_OLD_BILLING_DO_LINE_QUERIES)))
+    if tenant_id is not None:
+        select_configs = select_configs.where(entity_config.c.tenant_id == tenant_id)
+    configs = connectable.execute(select_configs).fetchall()
+
+    touched = 0
+    for config_id, config_tenant_id, company_id, entity_type, source_config, line_columns in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == config_tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            continue
+        database_name = company_row[0]
+        source_config = dict(source_config or {})
+        stored = source_config.get("lineQuery")
+        old = _OLD_BILLING_DO_LINE_QUERIES[entity_type].replace("{database}", database_name)
+        new = new_templates[entity_type].replace("{database}", database_name)
+        if stored != old:
+            if stored != new:
+                logger.warning(
+                    "Billing task %s (%s) has a line query the DO-link backfill does not "
+                    "recognise as the AutoCount preset - left untouched. Remove its DODTL "
+                    "join: DO-sourced lines now link through the Delivery Orders feed "
+                    "ledger, and the DODTL grant is not available.",
+                    config_id, entity_type,
+                )
+            continue
+        source_config["lineQuery"] = new
+        connectable.execute(
+            sa.update(entity_config)
+            .where(entity_config.c.id == config_id)
+            .values(
+                source_config=source_config,
+                line_result_columns=[
+                    str(c) for c in (line_columns or []) if str(c) != _BILLING_DO_LINK_COLUMN
+                ],
+            )
+        )
+        touched += 1
+        disabled = connectable.execute(
+            sa.update(field_mapping)
+            .where(
+                field_mapping.c.tenant_id == config_tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == entity_type,
+                field_mapping.c.scope == SCOPE_LINE,
+                field_mapping.c.source_path == _BILLING_DO_LINK_COLUMN,
+                field_mapping.c.is_enabled.is_(True),
+            )
+            .values(is_enabled=False)
+        )
+        touched += disabled.rowcount or 0
+    return touched

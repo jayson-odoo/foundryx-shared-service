@@ -195,6 +195,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_document_line_linkage,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
+        backfill_billing_do_link_queries,
         backfill_consignment_transferred_qty,
         backfill_customer_sales_agent,
         backfill_product_item_type,
@@ -283,6 +284,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # later update). Module Alembic 0030 runs the same repair once on deploy.
     if parse_version(from_version) < (0, 16, 0):
         backfill_consignment_transferred_qty(db, schema=schema, tenant_id=tenant_id)
+    # 0.16.0 -> 0.17.0 (SS-BILLING-DO-API, owner ruling 25 Oct: no DODTL
+    # grant): every existing `invoice` / `cash_sale` task still on the plan-32
+    # line query is moved off its DODTL join (the DO DocKey now comes from the
+    # Delivery Orders feed ledger). Version-GATED like the passes above.
+    # Module Alembic 0032 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 17, 0):
+        backfill_billing_do_link_queries(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

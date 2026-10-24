@@ -93,6 +93,12 @@ def _config(db, company, entity_type, *, line_query) -> AcEntityConfig:
         canonical_field="link_do_doc_key", transform="int", is_required=False,
         is_enabled=True, sort_order=20,
     ))
+    db.add(AcFieldMapping(
+        id=str(uuid.uuid4()), tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=entity_type, scope=SCOPE_LINE, source_path="LinkSODocKey",
+        canonical_field="link_so_doc_key", transform="int", is_required=False,
+        is_enabled=True, sort_order=19,
+    ))
     db.commit()
     db.refresh(config)
     return config
@@ -143,6 +149,13 @@ def test_backfill_rewrites_a_plan_32_task(db, entity_type):
     assert after.line_result_columns == [c for c in LINE_COLUMNS if c != "LinkDODocKey"]
     [row] = _do_rows(db, company.id, entity_type)
     assert row.is_enabled is False
+    # Only the DO link row - the SO link row (still selected) stays enabled.
+    so_row = db.query(AcFieldMapping).filter(
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == entity_type,
+        AcFieldMapping.canonical_field == "link_so_doc_key",
+    ).one()
+    assert so_row.is_enabled is True
     # Idempotent: a second pass changes nothing.
     assert backfill_billing_do_link_queries(db, schema=None) == 0
 
