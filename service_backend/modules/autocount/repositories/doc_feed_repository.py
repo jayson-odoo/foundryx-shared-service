@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -218,6 +218,32 @@ class DocFeedLedgerRepository:
             for key, digest in rows:
                 out[int(key)] = digest
         return out
+
+    def live_doc_keys_for_doc_no(
+        self, tenant_id: str, company_id: str, feed: str, book: str, doc_no: str,
+    ) -> List[int]:
+        """Lane SS-BILLING-DO-API - every not-vanished DocKey of (feed, book)
+        whose number is ``doc_no`` (trimmed, case-insensitive: the
+        ``lower(trim(doc_no))`` expression ``ix_ac_doc_feed_ledger_docno`` is
+        built on). ALL of them, never the first: a caller that needs one
+        exact match must see the ambiguity."""
+        wanted = (doc_no or "").strip().lower()
+        if not wanted:
+            return []
+        rows = (
+            self.db.query(AcDocFeedLedger.doc_key)
+            .filter(
+                AcDocFeedLedger.tenant_id == tenant_id,
+                AcDocFeedLedger.company_id == company_id,
+                AcDocFeedLedger.feed == feed,
+                func.lower(func.trim(AcDocFeedLedger.doc_no)) == wanted,
+                AcDocFeedLedger.book == book,
+                AcDocFeedLedger.vanished_at.is_(None),
+            )
+            .order_by(AcDocFeedLedger.doc_key)
+            .all()
+        )
+        return [int(key) for (key,) in rows]
 
     def window_rows(
         self, tenant_id: str, company_id: str, feed: str, book: str,

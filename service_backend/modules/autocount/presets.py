@@ -761,9 +761,11 @@ CONSIGNMENT_RETURN_PRESET = _linked_preset(
 #   read the DocKey of the header that owns the source line; the engine mints
 #   `from_line_ref` from it (`mapping.MappingEngine._mint_plan32_line_refs`).
 #   IV/CS lines come from SO or DO (QT has no ref), CN lines from IV, DN lines
-#   have no source. The DO hop needs `DODTL` on the read-only grant (RUNBOOK
-#   0.1): without it the line query fails loudly at Preview, never an
-#   unlinked push.
+#   have no source. The DO hop is NOT a join (lane SS-BILLING-DO-API, owner
+#   ruling 25 Oct: the AutoCount admin will not grant `DODTL`): the engine
+#   resolves the DO DocKey from the DO feed's own ledger by the line's
+#   `FromDocNo` (`http_source.book.billing_do_doc_keys`), and a line that
+#   ledger cannot pin to exactly one DO fails its document.
 # * Not handled yet (REF check 6.5): package parent/child lines (`DtlType`,
 #   `ParentDtlKey`) are not de-duplicated - no rule exists yet.
 
@@ -773,15 +775,14 @@ _BILLING_LINE_CUT = "(d.SubTotal <> 0 OR d.Qty IS NOT NULL)"
 
 # (link column alias, source line table, join alias, FromDocType) per entity.
 _BILLING_LINKS: Dict[str, Tuple[Tuple[str, str, str, str], ...]] = {
-    ENTITY_INVOICE: (("LinkSODocKey", "SODTL", "so", "SO"), ("LinkDODocKey", "DODTL", "dd", "DO")),
-    ENTITY_CASH_SALE: (("LinkSODocKey", "SODTL", "so", "SO"), ("LinkDODocKey", "DODTL", "dd", "DO")),
+    ENTITY_INVOICE: (("LinkSODocKey", "SODTL", "so", "SO"),),
+    ENTITY_CASH_SALE: (("LinkSODocKey", "SODTL", "so", "SO"),),
     ENTITY_CREDIT_NOTE: (("LinkIVDocKey", "IVDTL", "ivl", "IV"),),
     ENTITY_DEBIT_NOTE: (),
 }
 
 _BILLING_LINK_FIELDS: Dict[str, PresetField] = {
     "LinkSODocKey": PresetField("LinkSODocKey", "link_so_doc_key", "int"),
-    "LinkDODocKey": PresetField("LinkDODocKey", "link_do_doc_key", "int"),
     "LinkIVDocKey": PresetField("LinkIVDocKey", "link_iv_doc_key", "int"),
 }
 
