@@ -48,7 +48,7 @@ def test_section_heading_apply_is_top_1_with_a_dtlkey_tiebreak():
     assert re.search(r"ORDER BY x\.Seq DESC,\s*x\.DtlKey DESC\)", _SO_LINE_QUERY), _SO_LINE_QUERY
 
 
-def test_update_tenant_from_0_17_0_does_not_rerun_the_remark_backfill(db):  # noqa: F811
+def test_update_tenant_from_0_18_0_does_not_rerun_the_remark_backfill(db):  # noqa: F811
     from modules.autocount.bootstrap import update_tenant
 
     company = _company(db, database="AED_RM_GATE")
@@ -58,7 +58,7 @@ def test_update_tenant_from_0_17_0_does_not_rerun_the_remark_backfill(db):  # no
         line_query="SELECT d.DtlKey FROM AED_RM_GATE.dbo.SODTL AS d WHERE d.DocKey = :doc_key",
         columns=["DocKey"], line_columns=["DtlKey"],
     )
-    update_tenant(db, DEFAULT_TENANT_ID, "0.16.0")
+    update_tenant(db, DEFAULT_TENANT_ID, "0.17.0")
     db.commit()
     db.expire_all()
     for scope, field in ((SCOPE_HEADER, "ship_info"), (SCOPE_LINE, "line_remark"),
@@ -66,7 +66,7 @@ def test_update_tenant_from_0_17_0_does_not_rerun_the_remark_backfill(db):  # no
         for row in _rows(db, company.id, scope, field):
             db.delete(row)
     db.commit()
-    update_tenant(db, DEFAULT_TENANT_ID, "0.17.0")
+    update_tenant(db, DEFAULT_TENANT_ID, "0.18.0")
     db.commit()
     db.expire_all()
     for scope, field in ((SCOPE_HEADER, "ship_info"), (SCOPE_LINE, "line_remark"),

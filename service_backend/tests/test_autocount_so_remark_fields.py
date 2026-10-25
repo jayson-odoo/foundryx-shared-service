@@ -53,8 +53,8 @@ MODULE_ROOT = pathlib.Path(autocount_module.__file__).resolve().parent
 VERSIONS_DIR = MODULE_ROOT / "alembic" / "versions"
 
 HELPER_NAME = "backfill_so_remark_fields"
-PREVIOUS_REVISION = "0031_autocount_task_incident"
-NEW_REVISION_GLOB = "0032_*.py"  # 0026 is long taken; 0031 is the head
+PREVIOUS_REVISION = "0032_autocount_billing_do_link"
+NEW_REVISION_GLOB = "0032_autocount_so_*.py"  # main's 0032_autocount_billing_do_link is the parent
 
 # FROZEN previous preset texts (what a deployed task holds today).
 _OLD_SO_HEADER_QUERY = (

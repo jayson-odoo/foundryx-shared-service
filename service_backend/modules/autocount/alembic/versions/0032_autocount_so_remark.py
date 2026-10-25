@@ -19,7 +19,7 @@ Pure DATA, no column added; does not commit (Alembic's transaction owns that).
 The Sorento CRM drops unknown keys, so this can ship before the CRM change.
 
 Revision ID: 0032_autocount_so_remark   (25 chars <= 32)
-Revises: 0031_autocount_task_incident
+Revises: 0032_autocount_billing_do_link
 Create Date: 2026-10-25
 """
 from typing import Sequence, Union
@@ -29,7 +29,7 @@ from alembic import op
 from modules.autocount.backfill import backfill_so_remark_fields
 
 revision: str = "0032_autocount_so_remark"
-down_revision: Union[str, Sequence[str], None] = "0031_autocount_task_incident"
+down_revision: Union[str, Sequence[str], None] = "0032_autocount_billing_do_link"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
