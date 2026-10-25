@@ -149,7 +149,7 @@ The SO preset selects `h.ShipInfo AS ShipInfo` (header) and, per line, the raw
 `d.FurtherDescription AS FurtherDescription` plus `SectionHeading` (the Description of the nearest
 earlier text-only line of the same document, via an `OUTER APPLY`). They map to the SO fields
 `ship_info`, `line_remark` and `section_heading`; the Sorento CRM strips RTF and drops unknown
-keys. Module migration `0032_autocount_so_remark` (and `update_tenant` from a pre-0.17.0 version)
+keys. Module migration `0032_autocount_so_remark` (and `update_tenant` from a pre-0.18.0 version)
 rewrites a task's header or line query only when it is byte-identical to the previous preset text,
 and seeds the three rows enabled in that case.
 
@@ -160,8 +160,13 @@ rows seeded DISABLED, with one warning naming the config id. Manual operator ste
 2. Line query: add `d.FurtherDescription AS FurtherDescription` and, after the existing joins,
    `OUTER APPLY (SELECT TOP 1 x.Description AS SectionHeading FROM {database}.dbo.SODTL AS x
    WHERE x.DocKey = d.DocKey AND x.Seq < d.Seq AND (x.ItemCode IS NULL OR x.Qty IS NULL)
-   AND LTRIM(RTRIM(ISNULL(x.Description, ''))) <> '' ORDER BY x.Seq DESC) AS sh`, selecting
+   AND LTRIM(RTRIM(ISNULL(x.Description, ''))) <> '' ORDER BY x.Seq DESC, x.DtlKey DESC) AS sh`, selecting
    `sh.SectionHeading AS SectionHeading`. Keep the `ItemCode IS NOT NULL AND Qty IS NOT NULL` cut.
 3. Run the query test so the new columns are recorded, then enable the three seeded rows on the
    Mapping tab (`ShipInfo -> ship_info`, `FurtherDescription -> line_remark`,
    `SectionHeading -> section_heading`).
+4. Do steps 1-3 only after the Sorento CRM release that adds the `ship_info` / `line_remark` /
+   `section_heading` columns (sorento-crm#1847) is live: an older CRM drops the keys, and an SO
+   whose row hash does not change is not sent again. Then press Repush on the task so every SO is
+   re-sent once with the new fields (line columns never enter the row hash, so without a Repush an
+   unchanged SO keeps its old line remarks in the CRM).
