@@ -186,7 +186,7 @@ _SO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, c.AutoKey AS DebtorAutoKey, "
     "h.SalesAgent AS SalesAgent, h.DocDate AS DocDate, "
     "h.UDF_DelDate AS RequestedDeliveryDate, h.Note AS Note, h.Ref AS Ref, "
-    "h.Transferable AS Transferable, "
+    "h.Transferable AS Transferable, h.ShipInfo AS ShipInfo, "
     "h.Cancelled AS Cancelled, h.DebtorCode AS DebtorCode, "
     "h.DebtorName AS DebtorName, h.LastModified AS LastModified, "
     "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
@@ -207,10 +207,16 @@ _SO_LINE_QUERY = (
     "d.TransferedQty AS TransferedQty, d.UnitPrice AS UnitPrice, "
     "d.DiscountAmt AS DiscountAmt, d.SubTotal AS SubTotal, d.UOM AS UOM, "
     "d.DeliveryDate AS DeliveryDate, d.ItemCode AS ItemCode, "
-    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq "
+    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq, "
+    "d.FurtherDescription AS FurtherDescription, sh.SectionHeading AS SectionHeading "
     "FROM {database}.dbo.SODTL AS d "
     "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
     "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+    "OUTER APPLY (SELECT TOP 1 x.Description AS SectionHeading "
+    "FROM {database}.dbo.SODTL AS x WHERE x.DocKey = d.DocKey AND x.Seq < d.Seq "
+    "AND (x.ItemCode IS NULL OR x.Qty IS NULL) "
+    "AND LTRIM(RTRIM(ISNULL(x.Description, ''))) <> '' "
+    "ORDER BY x.Seq DESC, x.DtlKey DESC) AS sh "
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
@@ -249,6 +255,8 @@ SO_PRESET = DocumentPreset(
         PresetField("Note", "internal_note", "string"),
         PresetField("Ref", "ref", "string"),
         PresetField("Transferable", "transferable", "bool"),
+        # FULFIL-SO-REMARK - the Shipping Info text (PR number pattern).
+        PresetField("ShipInfo", "ship_info", "string"),
         # SS-PO-REF - a per-company UDF the shared header query never selects
         # (SQL pack section 4b): `plan_rows` seeds it DISABLED unless the
         # task's own query returns a `UDFNote` column.
@@ -275,6 +283,10 @@ SO_PRESET = DocumentPreset(
         # S3 (AC-02-27) - the line queries already SELECT Seq; without a
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
+        # FULFIL-SO-REMARK - raw `FurtherDescription` (the CRM strips RTF) and
+        # the nearest earlier text-only line's Description of the same document.
+        PresetField("FurtherDescription", "line_remark", "string"),
+        PresetField("SectionHeading", "section_heading", "string"),
     ),
     fingerprint_query=_SO_FINGERPRINT_QUERY,
 )

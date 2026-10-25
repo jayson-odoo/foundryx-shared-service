@@ -188,7 +188,11 @@ def test_po_spo_and_so_line_fingerprint_queries_are_byte_unchanged():
     assert _fp(_PO_HEADER_QUERY) == _PO_HEADER_QUERY_FINGERPRINT, (
         "_PO_HEADER_QUERY changed - this lane touches SO only"
     )
-    assert _fp(_SO_LINE_QUERY) == _SO_LINE_QUERY_FINGERPRINT, (
+    from modules.autocount.backfill import _PRE_REMARK_SO_LINE_QUERY
+
+    # FULFIL-SO-REMARK changed the live SO line query; the frozen previous
+    # text is what this pin now guards.
+    assert _fp(_PRE_REMARK_SO_LINE_QUERY) == _SO_LINE_QUERY_FINGERPRINT, (
         "_SO_LINE_QUERY changed - this lane touches the SO HEADER query only"
     )
     assert _fp(_SO_FINGERPRINT_QUERY) == _SO_FINGERPRINT_QUERY_FINGERPRINT, (

@@ -1026,6 +1026,8 @@ def backfill_sales_order_ref(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCH
         later_texts = {
             new_text,
             _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name),
+            # FULFIL-SO-REMARK: the FROZEN remark target is a later text too.
+            _REMARK_SO_HEADER_QUERY.replace("{database}", database_name),
         }
 
         if stored_query in later_texts:
@@ -1197,7 +1199,9 @@ def backfill_sales_order_transferable(
         old_text = _REF_SO_HEADER_QUERY.replace("{database}", database_name)
         new_text = _TRANSFERABLE_SO_HEADER_QUERY.replace("{database}", database_name)
 
-        if stored_query == new_text:
+        if stored_query == new_text or stored_query == _REMARK_SO_HEADER_QUERY.replace(
+            "{database}", database_name
+        ):
             # Already migrated (a previous pass, or a freshly-created task
             # already on the new preset, whose row `seed_company_defaults`
             # owns) - nothing to do, no warning, and an operator's
@@ -1274,6 +1278,250 @@ def backfill_sales_order_transferable(
                 "Mapping tab.",
                 config_id,
             )
+    return touched
+
+
+# ── FULFIL-SO-REMARK - SO `ShipInfo`, line `FurtherDescription`/`SectionHeading`
+
+# The SO line preset text BEFORE this lane - FROZEN (never read off the live
+# preset, same rule as the header texts above). The header's previous text is
+# `_TRANSFERABLE_SO_HEADER_QUERY`.
+_PRE_REMARK_SO_LINE_QUERY = (
+    "SELECT d.DtlKey AS DtlKey, i.AutoKey AS ItemAutoKey, "
+    "w.AutoKey AS LocationAutoKey, d.Qty AS Qty, "
+    "d.TransferedQty AS TransferedQty, d.UnitPrice AS UnitPrice, "
+    "d.DiscountAmt AS DiscountAmt, d.SubTotal AS SubTotal, d.UOM AS UOM, "
+    "d.DeliveryDate AS DeliveryDate, d.ItemCode AS ItemCode, "
+    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq "
+    "FROM {database}.dbo.SODTL AS d "
+    "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
+    "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+    "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+)
+
+# FULFIL-SO-REMARK's own target texts (0032) - FROZEN, never read off the live
+# preset, so a later SO preset lane cannot silently change what 0032 writes.
+# `test_frozen_remark_targets_equal_todays_preset` forces a conscious re-pin.
+_REMARK_SO_HEADER_QUERY = _TRANSFERABLE_SO_HEADER_QUERY.replace(
+    "h.Transferable AS Transferable, ", "h.Transferable AS Transferable, h.ShipInfo AS ShipInfo, ", 1
+)
+_REMARK_SO_LINE_QUERY = _PRE_REMARK_SO_LINE_QUERY.replace(
+    "d.Seq AS Seq ",
+    "d.Seq AS Seq, d.FurtherDescription AS FurtherDescription, "
+    "sh.SectionHeading AS SectionHeading ", 1,
+).replace(
+    "WHERE d.DocKey = :doc_key",
+    "OUTER APPLY (SELECT TOP 1 x.Description AS SectionHeading "
+    "FROM {database}.dbo.SODTL AS x WHERE x.DocKey = d.DocKey AND x.Seq < d.Seq "
+    "AND (x.ItemCode IS NULL OR x.Qty IS NULL) "
+    "AND LTRIM(RTRIM(ISNULL(x.Description, ''))) <> '' "
+    "ORDER BY x.Seq DESC, x.DtlKey DESC) AS sh "
+    "WHERE d.DocKey = :doc_key", 1,
+)
+
+_SO_REMARK_ENTITY_CONFIG_COLUMNS = _SALES_ORDER_REF_ENTITY_CONFIG_COLUMNS | {"line_result_columns"}
+
+
+def backfill_so_remark_fields(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA, tenant_id: Optional[str] = None,
+) -> int:
+    """Bring every ``sales_order`` task onto the FULFIL-SO-REMARK preset: a
+    header ``ShipInfo -> ship_info`` row and line ``FurtherDescription ->
+    line_remark`` / ``SectionHeading -> section_heading`` rows.
+
+    Per task, the header and the line sides are independent and idempotent:
+
+    * a stored query byte-identical to the FROZEN previous preset text (own
+      company's ``database_name`` substituted) is rewritten to the CURRENT
+      preset text and the new column name(s) are appended to a non-empty
+      ``result_columns`` / ``line_result_columns``; a query already at the
+      current text is skipped silently (its rows are ``seed_company_defaults``'
+      or an operator's - a deliberately deleted row is never reseeded);
+      anything else (a hand-written query such as prod ``AED_SORENTO``) is
+      left byte-untouched;
+    * each mapping row is created only when none exists in ANY state -
+      ENABLED when the query was just rewritten or its column list already
+      carries the column, DISABLED with one WARNING naming the config id
+      otherwise.
+
+    Returns rows created + queries replaced; 0 on a schema predating these
+    tables. ``tenant_id`` scopes the pass to one tenant (``update_tenant``);
+    ``None`` (module Alembic 0032) covers every tenant. Frozen ``sa.table``
+    only; the company is resolved WITH the config's own ``tenant_id``.
+    """
+    needed = {
+        "ac_entity_config": _SO_REMARK_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _SALES_ORDER_REF_COMPANY_COLUMNS,
+        "ac_field_mapping": _SALES_ORDER_REF_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        sa.column("line_result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    # (scope, query key, columns attribute, frozen old text, current text,
+    #  columns the new text adds, ((source_path, canonical_field), ...))
+    sides = (
+        (
+            SCOPE_HEADER, "query", "result_columns", _TRANSFERABLE_SO_HEADER_QUERY,
+            _REMARK_SO_HEADER_QUERY, ("ShipInfo",), (("ShipInfo", "ship_info"),),
+        ),
+        (
+            SCOPE_LINE, "lineQuery", "line_result_columns", _PRE_REMARK_SO_LINE_QUERY,
+            _REMARK_SO_LINE_QUERY, ("FurtherDescription", "SectionHeading"),
+            (("FurtherDescription", "line_remark"), ("SectionHeading", "section_heading")),
+        ),
+    )
+
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+
+    stmt = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.source_config, entity_config.c.result_columns,
+        entity_config.c.line_result_columns,
+    ).where(entity_config.c.entity_type == ENTITY_SALES_ORDER)
+    if tenant_id is not None:
+        stmt = stmt.where(entity_config.c.tenant_id == tenant_id)
+    configs = connectable.execute(stmt).fetchall()
+
+    touched = 0
+    for config_id, cfg_tenant, company_id, source_config, result_columns, line_columns in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == cfg_tenant,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            logger.warning(
+                "Sales-order task %s's company could not be resolved under "
+                "its own tenant - the SO remark backfill skipped it.",
+                config_id,
+            )
+            continue
+        database_name = company_row[0]
+        fresh = dict(source_config or {})
+        columns_by_attr = {
+            "result_columns": list(result_columns or []),
+            "line_result_columns": list(line_columns or []),
+        }
+        state: Dict[str, str] = {}  # scope -> "replaced" | "current" | "other"
+        values: Dict[str, Any] = {}
+        for scope, query_key, columns_attr, old_tpl, new_tpl, added, _rows in sides:
+            stored = fresh.get(query_key)
+            old_text = old_tpl.replace("{database}", database_name)
+            new_text = new_tpl.replace("{database}", database_name)
+            if stored == new_text:
+                state[scope] = "current"
+                continue
+            if stored != old_text:
+                state[scope] = "other"
+                continue
+            fresh[query_key] = new_text
+            values["source_config"] = fresh
+            columns = columns_by_attr[columns_attr]
+            # An EMPTY column list means "never previewed" - leave it empty.
+            if columns:
+                for name in added:
+                    if name not in columns:
+                        columns.append(name)
+                values[columns_attr] = columns
+            state[scope] = "replaced"
+            touched += 1
+        if values:
+            connectable.execute(
+                sa.update(entity_config).where(entity_config.c.id == config_id).values(**values)
+            )
+
+        for scope, _qk, columns_attr, _old, _new, _added, rows in sides:
+            if state[scope] == "current":
+                # Already on the current text: nothing to seed, and a row an
+                # operator deleted on purpose is never brought back.
+                continue
+            for source_path, canonical_field in rows:
+                has_row = connectable.execute(
+                    sa.select(field_mapping.c.id).where(
+                        field_mapping.c.tenant_id == cfg_tenant,
+                        field_mapping.c.company_id == company_id,
+                        field_mapping.c.entity_type == ENTITY_SALES_ORDER,
+                        field_mapping.c.scope == scope,
+                        field_mapping.c.canonical_field == canonical_field,
+                    )
+                ).first() is not None
+                if has_row:
+                    continue
+                sort_order = connectable.execute(
+                    sa.select(sa.func.coalesce(sa.func.max(field_mapping.c.sort_order), -1) + 1)
+                    .where(
+                        field_mapping.c.tenant_id == cfg_tenant,
+                        field_mapping.c.company_id == company_id,
+                        field_mapping.c.entity_type == ENTITY_SALES_ORDER,
+                        field_mapping.c.scope == scope,
+                    )
+                ).scalar()
+                enabled = state[scope] == "replaced" or source_path in columns_by_attr[columns_attr]
+                connectable.execute(
+                    sa.insert(field_mapping).values(
+                        id=str(uuid.uuid4()),
+                        tenant_id=cfg_tenant,
+                        company_id=company_id,
+                        entity_type=ENTITY_SALES_ORDER,
+                        scope=scope,
+                        source_path=source_path,
+                        canonical_field=canonical_field,
+                        transform="string",
+                        formula=None,
+                        is_required=False,
+                        is_enabled=enabled,
+                        is_source_owned=True,
+                        sort_order=sort_order,
+                    )
+                )
+                touched += 1
+                if not enabled:
+                    logger.warning(
+                        "Sales-order task %s has a %s query the SO remark backfill "
+                        "does not recognise as the AutoCount SO preset - left "
+                        "untouched. Add `%s` to the query and enable the "
+                        "`%s -> %s` row on the Mapping tab.",
+                        config_id, scope, source_path, source_path, canonical_field,
+                    )
     return touched
 
 

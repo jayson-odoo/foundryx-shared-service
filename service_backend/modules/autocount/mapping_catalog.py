@@ -145,6 +145,10 @@ _LINE_FALLBACK_FIELDS: Tuple[str, ...] = (
     "product_code", "product_name", "warehouse_code", "line_number",
 )
 
+# FULFIL-SO-REMARK - SO-line-only wire fields, offered only when the entity's
+# own line model declares them (read off the model, so PO/SPO never gain them).
+_LINE_REMARK_FIELDS: Tuple[str, ...] = ("line_remark", "section_heading")
+
 # sprint-5/06 (AC-06-10) - the two DIRECTLY-mapped linkage wire fields
 # (`from_so_numbers`, `from_po_number`; never minted). Offered ONLY when the
 # entity's own line model declares them (PO/SPO; SO declares neither) - the
@@ -209,8 +213,12 @@ def _line_fields(line_model, required: frozenset) -> Tuple[SorentoFieldDef, ...]
     declared_direct_wire = tuple(
         name for name in _LINE_LINKAGE_DIRECT_WIRE_FIELDS if name in line_model.model_fields
     )
+    declared_remark = tuple(
+        name for name in _LINE_REMARK_FIELDS if name in line_model.model_fields
+    )
     return _accepted_line(
-        line_model.SINK_FIELDS + _LINE_FALLBACK_FIELDS + declared_direct_wire + declared_input,
+        line_model.SINK_FIELDS + _LINE_FALLBACK_FIELDS + declared_remark
+        + declared_direct_wire + declared_input,
         required,
     )
 

@@ -477,3 +477,11 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   deployed to prod 2026-10-08 06:12, before this ESB change. No backfill: a backfilled row
   would land disabled on every preset-query task; the operator moves `UDFNote` from Ref to
   PO ref on the Sales Order Mapping tab and re-pushes open SOs.
+- 2026-10-25 (FULFIL-SO-REMARK, partner of the Sorento CRM; the CRM drops unknown keys, so either
+  deploy order is safe): three new sink fields, all v2+ (`FALLBACK_FIELDS`), SO only (PO/SPO
+  declare none). Header `CanonicalSalesOrder.ship_info: Optional[str]` (max 255, like `po_ref`),
+  AutoCount `SO.ShipInfo`; unlike `ref`/`po_ref` it is NOT omitted when blank, a blanked Shipping
+  Info goes out as `null` and clears the CRM value. Lines `CanonicalSalesOrderLine.line_remark`
+  (raw `SODTL.FurtherDescription`, RTF stripped by the CRM) and `section_heading` (Description of
+  the nearest earlier text-only line of the same document), both sent as-is (`null` clears).
+  Backfill `backfill_so_remark_fields` + module Alembic 0032; manifest 0.17.0.
