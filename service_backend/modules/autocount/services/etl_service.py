@@ -122,7 +122,7 @@ from .company_service import (
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE, TransformError
-from ..http_source.book import billing_link_book, identity_scope
+from ..http_source.book import billing_do_doc_keys, billing_link_book, identity_scope
 from ..http_source.combine import (
     CombineDropError,
     CombineMeasureError,
@@ -2913,6 +2913,8 @@ class EtlService:
             ),
             # Plan 32 (D6) - the DO-feed book a billing line's DO hop links under.
             link_book=billing_link_book(self.db, tenant_id, company, entity_type),
+            # Lane SS-BILLING-DO-API - the DO-feed ledger lookup that pins a DO line's DO.
+            do_doc_keys=billing_do_doc_keys(self.db, tenant_id, company, entity_type),
         )
         # sprint-5/11 S5 (AC-11-40) - the SAME callback names the "mapping"
         # stage transition too (not page-driven, so `page`/`total` are

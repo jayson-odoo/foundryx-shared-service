@@ -12,7 +12,7 @@ company_service`` (the sink factory) and ``http_source.source`` all import it.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Callable, List, Optional
 from urllib.parse import urlsplit
 
 _BOOK_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
@@ -108,3 +108,42 @@ def billing_link_book(db, tenant_id: str, company, entity_type: str) -> str:
     # was ingested with.
     row = DocFeedRepository(db).get(tenant_id, company_id, FEED_DELIVERY_ORDERS)
     return str(getattr(row, "book", "") or "").strip() if row is not None else ""
+
+
+def billing_do_doc_keys(
+    db, tenant_id: str, company, entity_type: str,
+) -> Optional[Callable[[str, str], List[int]]]:
+    """Lane SS-BILLING-DO-API - the ``(book, DO number) -> DocKeys`` lookup a
+    billing line sourced from a delivery order resolves its DO through (owner
+    ruling 25 Oct: the AutoCount admin will not grant ``DODTL``, so the line
+    query no longer joins it).
+
+    Reads the DO feed's own ledger (``ac_doc_feed_ledger``: book, doc_key,
+    doc_no of every DO the CRM holds from us). The engine passes its OWN
+    ``link_book`` (``billing_link_book``) as ``book``, so the book the ref is
+    minted with and the book the DocKey was found under are one value - a
+    link can only ever point at a DO the CRM has under that book. Vanished
+    DOs (deleted in AutoCount) are excluded. Returns every match - the
+    mapping engine links on exactly one and fails the line otherwise.
+    ``None`` for an entity that never links a DO. Tenant AND company scoped
+    (polymorphic-stored-id rule). No vendor I/O: the hapi DO doors are by-day
+    only, and an IV line does not carry its DO's date, so there is nothing
+    exact to fetch on demand."""
+    from ..canonical.documents import BILLING_DO_LINKED_ENTITY_TYPES
+
+    company_id = getattr(company, "id", None)
+    if entity_type not in BILLING_DO_LINKED_ENTITY_TYPES or not company_id or db is None:
+        return None
+    from ..doc_feed.constants import FEED_DELIVERY_ORDERS
+    from ..repositories.doc_feed_repository import DocFeedLedgerRepository
+
+    repo = DocFeedLedgerRepository(db)
+
+    def lookup(book: str, doc_no: str) -> List[int]:
+        if not (book or "").strip():
+            return []
+        return repo.live_doc_keys_for_doc_no(
+            tenant_id, company_id, FEED_DELIVERY_ORDERS, book.strip(), doc_no,
+        )
+
+    return lookup
