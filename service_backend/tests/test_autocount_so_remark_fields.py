@@ -434,11 +434,16 @@ def test_module_migration_chains_onto_the_head_and_calls_the_helper():  # SS-3
     spec.loader.exec_module(module)
     assert module.down_revision == PREVIOUS_REVISION
     assert HELPER_NAME in text
+    # Single head: at most ONE later migration chains onto this one (plan 35's
+    # 0033 does), never two.
+    successors = []
     for other in VERSIONS_DIR.glob("*.py"):
         if other == path:
             continue
         down = re.search(r'^down_revision[^=]*=\s*"([^"]+)"', other.read_text(), re.M)
-        assert not (down and down.group(1) == revision.group(1)), other.name
+        if down and down.group(1) == revision.group(1):
+            successors.append(other.name)
+    assert len(successors) <= 1, successors
 
 
 def test_manifest_version_is_bumped_past_0_16_0():  # SS-3
