@@ -196,6 +196,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_entity_config_defaults,
         backfill_etl_defaults,
         backfill_billing_do_link_queries,
+        backfill_billing_preset_fix,
         backfill_consignment_transferred_qty,
         backfill_customer_sales_agent,
         backfill_product_item_type,
@@ -301,6 +302,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # Alembic 0032 runs the same repair once on deploy.
     if parse_version(from_version) < (0, 18, 0):
         backfill_so_remark_fields(db, schema=schema, tenant_id=tenant_id)
+    # 0.18.0 -> 0.19.0 (SS-BILLING-PRESET-FIX, plan 35): every existing billing
+    # / AR task still on the plan-32 text moves to the preset fixed against the
+    # real AutoCount schema (drafts filtered, CS NULL DocStatus, DN without
+    # FromDoc*, cancelled ARDN/ARCN out, IV/CS DODTL join back). Version-GATED
+    # like the passes above. Module Alembic 0033 runs the same repair on deploy.
+    if parse_version(from_version) < (0, 19, 0):
+        backfill_billing_preset_fix(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

@@ -357,31 +357,20 @@ matching CRM change is a review finding.
   - `against_doc_no` is the first non-blank entry of `OurInvoiceNo`. `against_source_ref` is always
     null (the CRM matches by number).
   - Status is `posted` or `cancelled` (`status_values_for`, which the mapping save gate applies too).
-- **Line links** (`MappingEngine._mint_plan32_line_refs`). For `SO` and `IV`, each preset joins the
-  source line table only on its own `FromDocType` and reads the owning header's DocKey. `DO` is not a join
-  (see below). The link inputs are `link_*_doc_key`
-  and `from_doc_line_key`, and they never go on the wire.
+- **Line links** (`MappingEngine._mint_plan32_line_refs`). Each preset joins the source line table
+  (`SODTL`, `DODTL`, `IVDTL`) only on its own `FromDocType` and reads the owning header's DocKey. The link
+  inputs are `link_*_doc_key` and `from_doc_line_key`, and they never go on the wire.
   - **`SO`**: `{database}:{SO DocKey}:{DtlKey}`.
-  - **`DO`**: `{book}:DO:{DO DocKey}:{DtlKey}`.
+  - **`DO`**: `{book}:DO:{DO DocKey}:{DtlKey}`, DocKey from the `DODTL` join (plan 35, crew ruling 27 Oct:
+    the grant exists; the 25 Oct DO-feed-ledger lookup is gone, module 0033 puts the join back on stored
+    IV/CS line queries).
     - The book comes from the company's Delivery Orders feed (`billing_link_book`). It is passed as
       `MappingEngine(link_book=)` at every construction site.
-    - A DO line with no book is a named mapping error, never an unlinked push (owner ruling).
-    - **No `DODTL` join** (lane SS-BILLING-DO-API, owner ruling 25 Oct: the AutoCount admin will not grant
-      it). The DO DocKey is the ONE not-vanished `ac_doc_feed_ledger` row of the Delivery Orders feed,
-      under that same book, whose `lower(trim(doc_no))` equals the line's `FromDocNo`
-      (`http_source.book.billing_do_doc_keys`, passed as `MappingEngine(do_doc_keys=)` at every
-      construction site). No match, several matches, no DO number or no lookup wired = a named
-      `from_line_ref` error. A failed document drops its row hash, so the next full pass retries it and
-      links once the DO feed has delivered that DO. There is no live vendor fallback: the hapi DO
-      doors are by-day only and the line does not carry its DO's date. Module 0032 moves stored plan-32
-      line queries off the join.
-    - **Order of operations:** backfill the Delivery Orders feed back to (at least) the billing task's
-      `fromDate` BEFORE backfilling invoices / cash sales. An invoice whose DO the ledger does not yet
-      hold fails with "no delivery order with that number has been delivered" (it used to go out with
-      type + number only) and is retried on the next full pass once the DO is in.
-    - Accepted edges: a DO line with a NULL `FromDocDtlKey` still goes out type + number only (no line
-      key, so no ref can be built, AC-32-17). A DO number reused after an unswept deletion (older than the
-      45-day sweep) could match the old ledger row; this is an AutoCount number-reuse corner, not a guess.
+    - A DO line that `DODTL` resolves but whose company has no book is a named mapping error, never an
+      unlinked push (owner ruling 20 Oct: exact links only).
+    - 2025-26 IV lines carry only `FromDocNo` (`FromDocDtlKey` 100% NULL, scout 27 Oct): they go out with
+      type + number (the DO header link) and no line ref. A key `DODTL` cannot resolve also sends no ref.
+      Never a line guessed from the DO number.
     - An invoice or cash-sale task on a company whose Delivery Orders feed has no book shows
       `delivery_orders` on the document prerequisite card (`has_delivery_order_book`). The
       GRN feed's book does not count.
@@ -393,7 +382,12 @@ matching CRM change is a review finding.
     the sweep.
   - The fingerprint columns are `LineFp*`, never `LineCount`, because the LineCount guard keys on that
     name.
-  - IVDTL and CSDTL also sum `TransferedQty`.
+  - IVDTL and CSDTL also sum `TransferedQty`. `DNDTL` has no `FromDoc*` columns, so the DN preset
+    has no `LineFpLinked` and no `FromDoc*` line fields (debit notes have no source document).
+- **Drafts and `DocStatus`** (REF check 6.2, scout 27 Oct). `D` = draft: every IV/CS/CN/DN preset carries
+  `filterFormula` `DocStatus != "D"`. `E` (5 IV in 2025, one with an AR row) is kept pending the
+  owner (BL-SS-311). `CS` has no `DocStatus` column: its header selects `NULL AS DocStatus`, which
+  the filter keeps.
 - **AR as a debtor-keyed document.** The header is one row per debtor that has any AR row, open or
   not, so a paid-off debtor re-pushes `0` / `[]`. The lines are its open AR items that match exactly
   one billing document by `DocNo` + `DebtorCode`; an item with no single match counts in the total
@@ -409,11 +403,13 @@ matching CRM change is a review finding.
     re-push every debtor on every run.
   - `ar_outstanding` is in `NO_DELETION_ENTITY_TYPES`: a vanished debtor is counted as `vanished`,
     never deleted.
-  - The REF section 6 confirmations are listed in BL-SS-305.
+  - Cancelled rows (`COALESCE(Cancelled, 'F') = 'T'`) are out of the total and the lines on all three
+    AR tables (ARDN / ARCN carry `Cancelled`, scout 27 Oct).
+  - The remaining REF section 6 confirmations are listed in BL-SS-305.
 - **Deletions.** A billing delete intent goes through the ordinary `delete_batch`, with body
   `{companyCode, source_refs}` sent to `ingest/billing_documents/deletions`.
 - **Push order.** The beat sweep enqueues credit and debit notes after every other due task
   (`scheduler.sweep_order_key`). This is best effort: jobs run independently, and the CRM fills a
   note's link when its invoice lands later.
-- **Not in this lane** (owner, after 25 Oct): the S4 backfill, the SELECT grant (`DODTL` no longer needed, 25 Oct),
-  the REF section 6 checks, and the draft `filterFormula` (the header selects `DocStatus` for it).
+- **Not in this lane** (owner, after 25 Oct): the S4 backfill. The SELECT grant (incl. `DODTL`), the REF
+  section 6 checks and the draft `filterFormula` landed in plan 35 (`sprint-5/35-autocount-billing-preset-fix.md`).

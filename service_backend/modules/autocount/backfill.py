@@ -2817,3 +2817,401 @@ def backfill_billing_do_link_queries(
         )
         touched += disabled.rowcount or 0
     return touched
+
+
+# ── Plan 35 (SS-BILLING-PRESET-FIX) - billing presets vs the real schema (module 0033) ──
+#
+# The scout AC-BILLING-ACCESS-CHECK (27 Oct) ran the plan-32 billing queries on
+# the read-only grant: `CS` has no `DocStatus`, `DNDTL` has no `FromDoc*`,
+# ARDN / ARCN carry `Cancelled`, a draft is `D`, and `DODTL` IS granted. The
+# texts below are what each task was stored with before plan 35, verbatim
+# (`{database}` unsubstituted). FROZEN: a later preset edit must never change
+# what this pass recognises or writes (the targets are pinned equal to
+# today's preset by a test). IV/CS lines are what 0032 wrote; they go back to
+# what 0032 read (the PR #127 DODTL join).
+_PRE35_CS_HEADER = (
+    "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, h.DocStatus AS "
+    "DocStatus, c.AutoKey AS DebtorAutoKey, h.DebtorCode AS DebtorCode, h.DebtorName AS "
+    "DebtorName, h.SalesAgent AS SalesAgent, h.CurrencyCode AS CurrencyCode, "
+    "h.CurrencyRate AS CurrencyRate, h.TotalExTax AS TotalExTax, h.Tax AS Tax, h.NetTotal "
+    "AS NetTotal, h.LocalNetTotal - h.LocalTax AS LocalNetExTax, h.Ref AS Ref, "
+    "h.Description AS Description, h.Cancelled AS Cancelled, h.LastModified AS "
+    "LastModified, l.LineFpCount AS LineFpCount, l.LineFpQty AS LineFpQty, "
+    "l.LineFpSubTotal AS LineFpSubTotal, l.LineFpTax AS LineFpTax, l.LineFpMaxDtlKey AS "
+    "LineFpMaxDtlKey, l.LineFpLinked AS LineFpLinked, l.LineFpTransfered AS "
+    "LineFpTransfered FROM {database}.dbo.CS AS h LEFT JOIN {database}.dbo.Debtor AS c ON "
+    "c.AccNo = h.DebtorCode OUTER APPLY (SELECT COUNT(*) AS LineFpCount, SUM(d.Qty) AS "
+    "LineFpQty, SUM(d.SubTotal) AS LineFpSubTotal, SUM(d.Tax) AS LineFpTax, MAX(d.DtlKey) "
+    "AS LineFpMaxDtlKey, COUNT(d.FromDocDtlKey) AS LineFpLinked, SUM(d.TransferedQty) AS "
+    "LineFpTransfered FROM {database}.dbo.CSDTL AS d WHERE d.DocKey = h.DocKey AND "
+    "(d.SubTotal <> 0 OR d.Qty IS NOT NULL)) AS l"
+)
+_PRE35_DN_HEADER = (
+    "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, h.DocStatus AS "
+    "DocStatus, c.AutoKey AS DebtorAutoKey, h.DebtorCode AS DebtorCode, h.DebtorName AS "
+    "DebtorName, h.SalesAgent AS SalesAgent, h.CurrencyCode AS CurrencyCode, "
+    "h.CurrencyRate AS CurrencyRate, h.TotalExTax AS TotalExTax, h.Tax AS Tax, h.NetTotal "
+    "AS NetTotal, h.LocalNetTotal - h.LocalTax AS LocalNetExTax, h.Ref AS Ref, "
+    "h.Description AS Description, h.OurInvoiceNo AS OurInvoiceNo, h.Cancelled AS "
+    "Cancelled, h.LastModified AS LastModified, l.LineFpCount AS LineFpCount, l.LineFpQty "
+    "AS LineFpQty, l.LineFpSubTotal AS LineFpSubTotal, l.LineFpTax AS LineFpTax, "
+    "l.LineFpMaxDtlKey AS LineFpMaxDtlKey, l.LineFpLinked AS LineFpLinked FROM "
+    "{database}.dbo.DN AS h LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode "
+    "OUTER APPLY (SELECT COUNT(*) AS LineFpCount, SUM(d.Qty) AS LineFpQty, SUM(d.SubTotal) "
+    "AS LineFpSubTotal, SUM(d.Tax) AS LineFpTax, MAX(d.DtlKey) AS LineFpMaxDtlKey, "
+    "COUNT(d.FromDocDtlKey) AS LineFpLinked FROM {database}.dbo.DNDTL AS d WHERE d.DocKey "
+    "= h.DocKey AND (d.SubTotal <> 0 OR d.Qty IS NOT NULL)) AS l"
+)
+_PRE35_DN_LINE = (
+    "SELECT d.DocKey AS DocKey, d.DtlKey AS DtlKey, d.Seq AS Seq, i.AutoKey AS "
+    "ItemAutoKey, d.ItemCode AS ItemCode, d.Description AS Description, d.UOM AS UOM, "
+    "d.Qty AS Qty, d.UnitPrice AS UnitPrice, d.DiscountAmt AS DiscountAmt, d.SubTotalExTax "
+    "AS SubTotalExTax, d.TaxCode AS TaxCode, d.TaxRate AS TaxRate, d.Tax AS Tax, "
+    "d.SubTotal AS SubTotal, d.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, "
+    "d.FromDocDtlKey AS FromDocDtlKey FROM {database}.dbo.DNDTL AS d LEFT JOIN "
+    "{database}.dbo.Item AS i ON i.ItemCode = d.ItemCode WHERE d.DocKey = :doc_key AND "
+    "(d.SubTotal <> 0 OR d.Qty IS NOT NULL)"
+)
+_PRE35_DN_FINGERPRINT = (
+    "SELECT d.DocKey AS DocKey, COUNT(*) AS LineFpCount, SUM(d.Qty) AS LineFpQty, "
+    "SUM(d.SubTotal) AS LineFpSubTotal, SUM(d.Tax) AS LineFpTax, MAX(d.DtlKey) AS "
+    "LineFpMaxDtlKey, COUNT(d.FromDocDtlKey) AS LineFpLinked FROM {database}.dbo.DNDTL AS "
+    "d JOIN {database}.dbo.DN AS h ON h.DocKey = d.DocKey WHERE h.DocDate >= :from_date "
+    "AND (d.SubTotal <> 0 OR d.Qty IS NOT NULL) GROUP BY d.DocKey"
+)
+_PRE35_AR_HEADER = (
+    "SELECT c.AutoKey AS DebtorKey, c.AccNo AS DebtorCode, s.TotalOutstanding AS "
+    "TotalOutstanding, s.OpenCount AS OpenCount, s.LastModified AS LastModified FROM "
+    "{database}.dbo.Debtor AS c JOIN (SELECT a.DebtorCode AS DebtorCode, SUM(a.Amount) AS "
+    "TotalOutstanding, SUM(CASE WHEN a.Amount <> 0 THEN 1 ELSE 0 END) AS OpenCount, "
+    "MAX(a.LastModified) AS LastModified FROM (SELECT i.DebtorCode AS DebtorCode, "
+    "i.Outstanding AS Amount, COALESCE(i.LastModified, CAST('2000-01-01' AS datetime)) AS "
+    "LastModified FROM {database}.dbo.ARInvoice AS i WHERE COALESCE(i.Cancelled, 'F') <> "
+    "'T' UNION ALL SELECT n.DebtorCode, n.Outstanding, COALESCE(n.LastModified, "
+    "CAST('2000-01-01' AS datetime)) FROM {database}.dbo.ARDN AS n UNION ALL SELECT "
+    "r.DebtorCode, -(r.NetTotal - COALESCE(r.KnockOffAmt, 0)), COALESCE(r.LastModified, "
+    "CAST('2000-01-01' AS datetime)) FROM {database}.dbo.ARCN AS r) AS a GROUP BY "
+    "a.DebtorCode) AS s ON s.DebtorCode = c.AccNo"
+)
+_PRE35_AR_LINE = (
+    "SELECT x.DocType AS DocType, x.BillingDocKey AS BillingDocKey, x.Outstanding AS "
+    "Outstanding, x.DueDate AS DueDate FROM (SELECT CASE WHEN m.IvHits = 1 THEN 'IV' ELSE "
+    "'CS' END AS DocType, CASE WHEN m.IvHits = 1 THEN m.IvKey ELSE m.CsKey END AS "
+    "BillingDocKey, i.Outstanding AS Outstanding, i.DueDate AS DueDate, i.DebtorCode AS "
+    "DebtorCode FROM {database}.dbo.ARInvoice AS i CROSS APPLY (SELECT (SELECT COUNT(*) "
+    "FROM {database}.dbo.IV AS b WHERE b.DocNo = i.DocNo AND b.DebtorCode = i.DebtorCode) "
+    "AS IvHits, (SELECT MIN(b.DocKey) FROM {database}.dbo.IV AS b WHERE b.DocNo = i.DocNo "
+    "AND b.DebtorCode = i.DebtorCode) AS IvKey, (SELECT COUNT(*) FROM {database}.dbo.CS AS "
+    "b WHERE b.DocNo = i.DocNo AND b.DebtorCode = i.DebtorCode) AS CsHits, (SELECT "
+    "MIN(b.DocKey) FROM {database}.dbo.CS AS b WHERE b.DocNo = i.DocNo AND b.DebtorCode = "
+    "i.DebtorCode) AS CsKey, (SELECT COUNT(*) FROM {database}.dbo.ARInvoice AS a2 WHERE "
+    "a2.DocNo = i.DocNo AND a2.DebtorCode = i.DebtorCode) AS ArHits) AS m WHERE "
+    "COALESCE(i.Cancelled, 'F') <> 'T' AND i.Outstanding <> 0 AND m.IvHits + m.CsHits = 1 "
+    "AND m.ArHits = 1 UNION ALL SELECT 'DN', m.DnKey, n.Outstanding, n.DueDate, "
+    "n.DebtorCode FROM {database}.dbo.ARDN AS n CROSS APPLY (SELECT (SELECT COUNT(*) FROM "
+    "{database}.dbo.DN AS b WHERE b.DocNo = n.DocNo AND b.DebtorCode = n.DebtorCode) AS "
+    "DnHits, (SELECT MIN(b.DocKey) FROM {database}.dbo.DN AS b WHERE b.DocNo = n.DocNo AND "
+    "b.DebtorCode = n.DebtorCode) AS DnKey, (SELECT COUNT(*) FROM {database}.dbo.ARDN AS "
+    "a2 WHERE a2.DocNo = n.DocNo AND a2.DebtorCode = n.DebtorCode) AS ArHits) AS m WHERE "
+    "n.Outstanding <> 0 AND m.DnHits = 1 AND m.ArHits = 1 UNION ALL SELECT 'CN', m.CnKey, "
+    "-(r.NetTotal - COALESCE(r.KnockOffAmt, 0)), NULL, r.DebtorCode FROM "
+    "{database}.dbo.ARCN AS r CROSS APPLY (SELECT (SELECT COUNT(*) FROM {database}.dbo.CN "
+    "AS b WHERE b.DocNo = r.DocNo AND b.DebtorCode = r.DebtorCode) AS CnHits, (SELECT "
+    "MIN(b.DocKey) FROM {database}.dbo.CN AS b WHERE b.DocNo = r.DocNo AND b.DebtorCode = "
+    "r.DebtorCode) AS CnKey, (SELECT COUNT(*) FROM {database}.dbo.ARCN AS a2 WHERE "
+    "a2.DocNo = r.DocNo AND a2.DebtorCode = r.DebtorCode) AS ArHits) AS m WHERE r.NetTotal "
+    "- COALESCE(r.KnockOffAmt, 0) <> 0 AND m.CnHits = 1 AND m.ArHits = 1) AS x JOIN "
+    "{database}.dbo.Debtor AS c ON c.AccNo = x.DebtorCode WHERE c.AutoKey = :doc_key"
+)
+_PRE35_AR_FINGERPRINT = (
+    "SELECT c.AutoKey AS DocKey, s.TotalOutstanding AS FpOutstanding, s.OpenCount AS "
+    "FpOpenCount, s.LastModified AS FpLastModified FROM {database}.dbo.Debtor AS c JOIN "
+    "(SELECT a.DebtorCode AS DebtorCode, SUM(a.Amount) AS TotalOutstanding, SUM(CASE WHEN "
+    "a.Amount <> 0 THEN 1 ELSE 0 END) AS OpenCount, MAX(a.LastModified) AS LastModified "
+    "FROM (SELECT i.DebtorCode AS DebtorCode, i.Outstanding AS Amount, "
+    "COALESCE(i.LastModified, CAST('2000-01-01' AS datetime)) AS LastModified FROM "
+    "{database}.dbo.ARInvoice AS i WHERE COALESCE(i.Cancelled, 'F') <> 'T' UNION ALL "
+    "SELECT n.DebtorCode, n.Outstanding, COALESCE(n.LastModified, CAST('2000-01-01' AS "
+    "datetime)) FROM {database}.dbo.ARDN AS n UNION ALL SELECT r.DebtorCode, -(r.NetTotal "
+    "- COALESCE(r.KnockOffAmt, 0)), COALESCE(r.LastModified, CAST('2000-01-01' AS "
+    "datetime)) FROM {database}.dbo.ARCN AS r) AS a GROUP BY a.DebtorCode) AS s ON "
+    "s.DebtorCode = c.AccNo WHERE s.LastModified >= :from_date"
+)
+
+_BILLING_DRAFT_FILTER = 'DocStatus != "D"'
+_BILLING_FILTER_ENTITY_TYPES = ("invoice", "cash_sale", "credit_note", "debit_note")
+_BILLING_FROM_DOC_COLUMNS = ("FromDocType", "FromDocNo", "FromDocDtlKey")
+_DN_FROM_DOC_CUTS = (
+    ", l.LineFpLinked AS LineFpLinked",
+    ", COUNT(d.FromDocDtlKey) AS LineFpLinked",
+    ", d.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, d.FromDocDtlKey AS FromDocDtlKey",
+)
+_AR_CANCEL_FIXES = (
+    ("FROM {database}.dbo.ARDN AS n UNION ALL",
+     "FROM {database}.dbo.ARDN AS n WHERE COALESCE(n.Cancelled, 'F') <> 'T' UNION ALL"),
+    ("FROM {database}.dbo.ARCN AS r)",
+     "FROM {database}.dbo.ARCN AS r WHERE COALESCE(r.Cancelled, 'F') <> 'T')"),
+    ("WHERE n.Outstanding <> 0 AND",
+     "WHERE COALESCE(n.Cancelled, 'F') <> 'T' AND n.Outstanding <> 0 AND"),
+    ("WHERE r.NetTotal - COALESCE(r.KnockOffAmt, 0) <> 0 AND",
+     "WHERE COALESCE(r.Cancelled, 'F') <> 'T' AND r.NetTotal - COALESCE(r.KnockOffAmt, 0) <> 0 AND"),
+)
+
+
+def _p35_rewrite(text: str, pairs) -> str:
+    for old, new in pairs:
+        text = text.replace(old, new)
+    return text
+
+
+_PRE35_BILLING_TEXTS: Dict[str, Dict[str, str]] = {
+    "invoice": {"lineQuery": _NEW_BILLING_DO_LINE_QUERIES["invoice"]},
+    "cash_sale": {
+        "query": _PRE35_CS_HEADER, "lineQuery": _NEW_BILLING_DO_LINE_QUERIES["cash_sale"],
+    },
+    "debit_note": {
+        "query": _PRE35_DN_HEADER, "lineQuery": _PRE35_DN_LINE,
+        "fingerprintQuery": _PRE35_DN_FINGERPRINT,
+    },
+    "ar_outstanding": {
+        "query": _PRE35_AR_HEADER, "lineQuery": _PRE35_AR_LINE,
+        "fingerprintQuery": _PRE35_AR_FINGERPRINT,
+    },
+}
+_POST35_BILLING_TEXTS: Dict[str, Dict[str, str]] = {
+    "invoice": {"lineQuery": _OLD_BILLING_DO_LINE_QUERIES["invoice"]},
+    "cash_sale": {
+        "query": _PRE35_CS_HEADER.replace("h.DocStatus AS DocStatus", "NULL AS DocStatus", 1),
+        "lineQuery": _OLD_BILLING_DO_LINE_QUERIES["cash_sale"],
+    },
+    "debit_note": {
+        key: _p35_rewrite(text, [(cut, "") for cut in _DN_FROM_DOC_CUTS])
+        for key, text in _PRE35_BILLING_TEXTS["debit_note"].items()
+    },
+    "ar_outstanding": {
+        key: _p35_rewrite(text, _AR_CANCEL_FIXES)
+        for key, text in _PRE35_BILLING_TEXTS["ar_outstanding"].items()
+    },
+}
+
+
+def backfill_billing_preset_fix(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA, tenant_id: Optional[str] = None,
+) -> int:
+    """Plan 35 (lane SS-BILLING-PRESET-FIX) - move every existing billing /
+    AR task onto the preset fixed against the real AutoCount schema. Returns
+    the number of changes made (tasks rewritten + mapping rows changed); 0 on
+    a schema that predates the columns this touches.
+
+    Per task and per stored query (``query`` / ``lineQuery`` /
+    ``fingerprintQuery``): byte-identical to the company's substitution of
+    the frozen pre-plan-35 text -> the frozen new text; already new, or
+    blank, -> skipped silently; anything else is customised: left untouched,
+    one WARNING naming the config id. Each query stands on its own.
+
+    Riding along with a rewrite (an enabled row on an unselected column 422s
+    the next Mapping-tab save):
+    * IV/CS ``lineQuery`` (the DODTL join is back): ``LinkDODocKey`` rejoins
+      ``line_result_columns`` and its line row is enabled (0032 disabled it),
+      or created when the task was seeded after 0032;
+    * DN ``query``: ``LineFpLinked`` leaves ``result_columns``; DN
+      ``lineQuery``: the ``FromDoc*`` columns leave ``line_result_columns``
+      and their enabled line rows are disabled.
+    NULL column lists (never previewed) stay NULL.
+
+    A blank ``filterFormula`` on an IV/CS/CN/DN task becomes the draft
+    filter; a hand-written one is left with one WARNING.
+
+    ``tenant_id`` (``update_tenant``) scopes the pass; ``None`` (the deploy
+    migration) covers every tenant. Frozen ``sa.table`` only, company
+    resolved WITH the config's own ``tenant_id``. Does not commit.
+    """
+    needed = {
+        "ac_entity_config": _CONSIGNMENT_BACKFILL_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _CONSIGNMENT_BACKFILL_COMPANY_COLUMNS,
+        "ac_field_mapping": _CONSIGNMENT_BACKFILL_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        sa.column("line_result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+    entity_types = sorted(set(_BILLING_FILTER_ENTITY_TYPES) | set(_PRE35_BILLING_TEXTS))
+    select_configs = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.entity_type, entity_config.c.source_config,
+        entity_config.c.result_columns, entity_config.c.line_result_columns,
+    ).where(entity_config.c.entity_type.in_(entity_types))
+    if tenant_id is not None:
+        select_configs = select_configs.where(entity_config.c.tenant_id == tenant_id)
+    configs = connectable.execute(select_configs).fetchall()
+
+    def line_rows(config_tenant_id: str, company_id: str, entity_type: str, source_path: str):
+        return (
+            field_mapping.c.tenant_id == config_tenant_id,
+            field_mapping.c.company_id == company_id,
+            field_mapping.c.entity_type == entity_type,
+            field_mapping.c.scope == SCOPE_LINE,
+            field_mapping.c.source_path == source_path,
+        )
+
+    touched = 0
+    for (
+        config_id, config_tenant_id, company_id, entity_type, source_config,
+        result_columns, line_columns,
+    ) in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == config_tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            continue
+        database_name = company_row[0]
+        fresh = dict(source_config or {})
+        rewritten = set()
+        for key, old_template in _PRE35_BILLING_TEXTS.get(entity_type, {}).items():
+            stored = fresh.get(key)
+            old = old_template.replace("{database}", database_name)
+            new = _POST35_BILLING_TEXTS[entity_type][key].replace("{database}", database_name)
+            if stored == old:
+                fresh[key] = new
+                rewritten.add(key)
+            elif stored and stored != new:
+                logger.warning(
+                    "Billing task %s (%s) has a %s the plan-35 backfill does not recognise "
+                    "as the AutoCount preset - left untouched. Compare it with the preset "
+                    "(Mapping tab, Use preset): CS has no DocStatus, DNDTL has no FromDoc* "
+                    "columns, cancelled ARDN/ARCN rows are excluded, and IV/CS lines join "
+                    "DODTL for the DO line.",
+                    config_id, entity_type, key,
+                )
+        filter_changed = False
+        if entity_type in _BILLING_FILTER_ENTITY_TYPES:
+            stored_filter = str(fresh.get("filterFormula") or "").strip()
+            if not stored_filter:
+                fresh["filterFormula"] = _BILLING_DRAFT_FILTER
+                filter_changed = True
+            elif stored_filter != _BILLING_DRAFT_FILTER:
+                logger.warning(
+                    "Billing task %s (%s) has its own filter formula - left untouched. "
+                    "Make sure it also drops AutoCount drafts (%s).",
+                    config_id, entity_type, _BILLING_DRAFT_FILTER,
+                )
+        if not rewritten and not filter_changed:
+            continue
+
+        header_list = None if result_columns is None else [str(c) for c in result_columns]
+        line_list = None if line_columns is None else [str(c) for c in line_columns]
+        if entity_type in ("invoice", "cash_sale") and "lineQuery" in rewritten:
+            if line_list is not None and "LinkDODocKey" not in line_list:
+                line_list.append("LinkDODocKey")
+            has_row = connectable.execute(
+                sa.select(field_mapping.c.id).where(
+                    *line_rows(config_tenant_id, company_id, entity_type, "LinkDODocKey")
+                )
+            ).first() is not None
+            if has_row:
+                enabled = connectable.execute(
+                    sa.update(field_mapping)
+                    .where(
+                        *line_rows(config_tenant_id, company_id, entity_type, "LinkDODocKey"),
+                        field_mapping.c.is_enabled.is_(False),
+                    )
+                    .values(is_enabled=True)
+                )
+                touched += enabled.rowcount or 0
+            else:
+                sort_order = connectable.execute(
+                    sa.select(sa.func.count())
+                    .select_from(field_mapping)
+                    .where(
+                        field_mapping.c.tenant_id == config_tenant_id,
+                        field_mapping.c.company_id == company_id,
+                        field_mapping.c.entity_type == entity_type,
+                        field_mapping.c.scope == SCOPE_LINE,
+                    )
+                ).scalar() or 0
+                connectable.execute(
+                    sa.insert(field_mapping).values(
+                        id=str(uuid.uuid4()),
+                        tenant_id=config_tenant_id,
+                        company_id=company_id,
+                        entity_type=entity_type,
+                        scope=SCOPE_LINE,
+                        source_path="LinkDODocKey",
+                        canonical_field="link_do_doc_key",
+                        transform="int",
+                        formula=None,
+                        is_required=False,
+                        is_enabled=True,
+                        is_source_owned=True,
+                        sort_order=sort_order,
+                    )
+                )
+                touched += 1
+        if entity_type == "debit_note":
+            if "query" in rewritten and header_list is not None:
+                header_list = [c for c in header_list if c != "LineFpLinked"]
+            if "lineQuery" in rewritten:
+                if line_list is not None:
+                    line_list = [c for c in line_list if c not in _BILLING_FROM_DOC_COLUMNS]
+                for column in _BILLING_FROM_DOC_COLUMNS:
+                    disabled = connectable.execute(
+                        sa.update(field_mapping)
+                        .where(
+                            *line_rows(config_tenant_id, company_id, entity_type, column),
+                            field_mapping.c.is_enabled.is_(True),
+                        )
+                        .values(is_enabled=False)
+                    )
+                    touched += disabled.rowcount or 0
+        connectable.execute(
+            sa.update(entity_config)
+            .where(entity_config.c.id == config_id)
+            .values(
+                source_config=fresh,
+                result_columns=header_list,
+                line_result_columns=line_list,
+            )
+        )
+        touched += 1
+    return touched

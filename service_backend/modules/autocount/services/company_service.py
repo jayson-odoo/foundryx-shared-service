@@ -36,7 +36,7 @@ from ..activity import (
 )
 from ..client import AutoCountClient, AutoCountError
 from ..canonical.masters import LOCKED_MAPPING_SOURCES
-from ..http_source.book import billing_do_doc_keys, billing_link_book, derive_book, identity_scope
+from ..http_source.book import billing_link_book, derive_book, identity_scope
 from ..http_source.lookups import effective_result_columns
 from ..mapping import (
     DEFAULT_MAPPINGS,
@@ -2752,8 +2752,6 @@ class CompanyService:
             ),
             # Plan 32 (D6) - the DO-feed book a billing line's DO hop links under.
             link_book=billing_link_book(self.db, tenant_id, company, entity_type),
-            # Lane SS-BILLING-DO-API - the DO-feed ledger lookup that pins a DO line's DO.
-            do_doc_keys=billing_do_doc_keys(self.db, tenant_id, company, entity_type),
         )
         mock_record = dict(record)
         if lines is not None and engine.detail_key is not None:
