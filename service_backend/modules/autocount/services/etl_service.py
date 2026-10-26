@@ -120,7 +120,12 @@ from .company_service import (
     ConnectionNotFound,
     EntityConfigNotFound,
 )
-from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
+from ..presets import (
+    DOCUMENT_PRESETS,
+    HTTP_PRESETS,
+    seed_document_mapping,
+    seed_http_preset_mapping,
+)
 from ..mapping import SCOPE_HEADER, SCOPE_LINE, TransformError
 from ..http_source.book import billing_link_book, identity_scope
 from ..http_source.combine import (
@@ -2216,6 +2221,21 @@ class EtlService:
             if config is not None and isinstance(config.source_config, dict)
             else None
         )
+        # Plan 36 - the UI never sends ``fingerprintQuery`` (the sweep is not
+        # an editor field), so "not sent" keeps the stored one; a task with
+        # none takes its entity preset's sweep query, the same policy as
+        # ``backfill_document_fingerprint_queries``. Without this every
+        # Source-tab Save wiped the sweep (line-only edits and AR knock-offs
+        # then waited for the daily reconcile).
+        if is_document_entity(entity_type) and not clean.get("fingerprintQuery"):
+            kept = (previous_source_config or {}).get("fingerprintQuery")
+            preset = DOCUMENT_PRESETS.get(entity_type)
+            if kept:
+                clean["fingerprintQuery"] = kept
+            elif preset is not None and preset.fingerprint_query and company.database_name:
+                clean["fingerprintQuery"] = preset.fingerprint_query.replace(
+                    "{database}", str(company.database_name)
+                )
         # sprint-5/08 review round 1 (B2) - captured BEFORE the branch below
         # may create a fresh row (whose ``source_impl`` starts at
         # ``sql_db`` and has nothing to demote from).

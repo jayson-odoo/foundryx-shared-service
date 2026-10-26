@@ -41,6 +41,12 @@ that entity/scope). This is what `replace_mapping` already wrote on every ordina
 seed == save == reset; before it, a plain Save silently rewrote the flag and the reset preview
 reported phantom `changed` rows forever.
 
+**The line-fingerprint sweep query is not an editor field** (plan 36). A Save that does not send
+`fingerprintQuery` (the UI never does) keeps the stored one; a document task with none stored
+takes its entity preset's sweep query, company database substituted - the same policy as
+`backfill_document_fingerprint_queries`. Before plan 36 every Source-tab Save stored `None`, so a
+UI-made task had no sweep and line-only edits / AR knock-offs waited for the daily reconcile.
+
 ## 2. "Reset to preset"
 
 `POST /autocount/companies/{companyId}/entities/{entityType}/mapping/reset-preset`
