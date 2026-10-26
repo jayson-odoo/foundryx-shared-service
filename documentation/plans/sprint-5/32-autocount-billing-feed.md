@@ -34,9 +34,12 @@ No backfill and no live push here.
   named mapping error (owner ruling 20 Oct: exact links only, fail loudly). ~~`DODTL` joins the RUNBOOK 0.1
   grant~~ **Superseded 25 Oct (lane SS-BILLING-DO-API):** no `DODTL` grant. The DO DocKey comes from the
   Delivery Orders feed ledger by `FromDocNo` within the book (exactly one match, else a named error); module
-  0032 rewrites stored line queries.
+  0032 rewrites stored line queries. **Superseded 27 Oct (plan 35, SS-BILLING-PRESET-FIX):** the `DODTL`
+  grant exists; the join is back (module 0033) and the ledger lookup is gone. A DO line with only `FromDocNo`
+  sends type + number and no line ref.
 - **D7 Drafts.** No draft letter is guessed (owner ruling 20 Oct): the header selects `DocStatus`, the task's
-  `filterFormula` is set after REF check 6.2.
+  `filterFormula` is set after REF check 6.2. **Done 27 Oct (plan 35):** `D` = draft, `DocStatus != "D"`; `E`
+  kept pending the owner (BL-SS-311).
 - **D8 AR outstanding = a debtor-keyed document.** Header row = one debtor with any AR row (open or not, so a
   paid-off debtor re-pushes `0` / `[]`, owner ruling 20 Oct); lines = its open AR items that match exactly one
   billing document by `DocNo` + `DebtorCode` (the `SourceType`/`SourceKey` columns are unconfirmed, REF

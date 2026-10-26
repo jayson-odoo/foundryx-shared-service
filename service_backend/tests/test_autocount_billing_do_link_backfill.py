@@ -116,11 +116,12 @@ def _do_rows(db, company_id: str, entity_type: str) -> List[AcFieldMapping]:
     )
 
 
-def test_the_frozen_new_texts_are_todays_preset():
+def _frozen_new(entity_type: str) -> str:
+    """What 0032 writes. Plan 35 restored the DODTL join in the preset, so
+    0032's target is its own frozen text, no longer today's preset."""
     from modules.autocount.backfill import _NEW_BILLING_DO_LINE_QUERIES
 
-    for entity_type, preset in PRESETS.items():
-        assert _NEW_BILLING_DO_LINE_QUERIES[entity_type] == preset.line_query
+    return _NEW_BILLING_DO_LINE_QUERIES[entity_type]
 
 
 def test_never_previewed_line_columns_stay_null(db):
@@ -147,7 +148,7 @@ def test_the_frozen_old_texts_are_the_plan_32_dodtl_join():
 
     assert set(_OLD_BILLING_DO_LINE_QUERIES) == {ENTITY_INVOICE, ENTITY_CASH_SALE}
     for entity_type, old in _OLD_BILLING_DO_LINE_QUERIES.items():
-        new = PRESETS[entity_type].line_query
+        new = _frozen_new(entity_type)
         assert "DODTL" in old and "DODTL" not in new
         assert old.replace(", dd.DocKey AS LinkDODocKey", "", 1).replace(
             " LEFT JOIN {database}.dbo.DODTL AS dd ON d.FromDocType = 'DO' "
@@ -168,7 +169,7 @@ def test_backfill_rewrites_a_plan_32_task(db, entity_type):
     assert backfill_billing_do_link_queries(db, schema=None) == 2
     db.expire_all()
     after = db.get(AcEntityConfig, config_id)
-    assert after.source_config["lineQuery"] == PRESETS[entity_type].line_query.replace(
+    assert after.source_config["lineQuery"] == _frozen_new(entity_type).replace(
         "{database}", database,
     )
     assert "LinkDODocKey" not in after.line_result_columns
@@ -238,8 +239,12 @@ def test_a_config_never_resolves_another_tenants_company(db):
 
 
 @pytest.mark.parametrize("from_version,rewritten", [("0.16.0", True), ("0.17.0", False)])
-def test_update_tenant_runs_the_backfill_below_0_17_only(db, from_version, rewritten):
+def test_update_tenant_runs_the_backfill_below_0_17_only(db, monkeypatch, from_version, rewritten):
+    from modules.autocount import backfill
     from modules.autocount.bootstrap import update_tenant
+
+    # The 0.19.0 pass (plan 35) puts the DODTL join back; isolate 0032's own gate.
+    monkeypatch.setattr(backfill, "backfill_billing_preset_fix", lambda *a, **k: 0)
 
     company = _company(db, f"FAKE_DB_UPD_{from_version.replace('.', '')}")
     config = _config(db, company, ENTITY_INVOICE, line_query=_old_line(ENTITY_INVOICE, company.database_name))

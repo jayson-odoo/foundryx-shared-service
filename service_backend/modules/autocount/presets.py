@@ -743,8 +743,11 @@ CONSIGNMENT_RETURN_PRESET = _linked_preset(
 #   `FinalTotal` (= NetTotal + RoundAdj) or the CRM's `total = net_total +
 #   tax_total` check fails. `local_net_total` = `LocalNetTotal - LocalTax`
 #   (REF [?]: LocalNetTotal almost certainly includes tax). `DocStatus` is
-#   selected so the task's `filterFormula` can drop drafts once REF check 6.2
-#   names the draft letter (owner ruling 20 Oct: no guessed letter).
+#   selected so the `filterFormula` drops drafts: REF check 6.2 (scout
+#   AC-BILLING-ACCESS-CHECK, 27 Oct) names `D` (19 IV + 3 CN in Oct 2026, none
+#   with an AR row). `E` (5 IV in 2025, one with an AR row) is KEPT until the
+#   owner says what it means. `CS` has no `DocStatus` column: it selects NULL
+#   under the same name, which the filter keeps.
 # * Billing line cut (differs from the order family): keep any line with a
 #   non-zero `SubTotal` - a charge/discount/rounding line has no `ItemCode`
 #   and may have a NULL `Qty` - and drop pure text lines (`SubTotal` NULL/0
@@ -760,54 +763,65 @@ CONSIGNMENT_RETURN_PRESET = _linked_preset(
 #   source line table is joined ONLY on its own `FromDocType`, by DtlKey, to
 #   read the DocKey of the header that owns the source line; the engine mints
 #   `from_line_ref` from it (`mapping.MappingEngine._mint_plan32_line_refs`).
-#   IV/CS lines come from SO or DO (QT has no ref), CN lines from IV, DN lines
-#   have no source. The DO hop is NOT a join (lane SS-BILLING-DO-API, owner
-#   ruling 25 Oct: the AutoCount admin will not grant `DODTL`): the engine
-#   resolves the DO DocKey from the DO feed's own ledger by the line's
-#   `FromDocNo` (`http_source.book.billing_do_doc_keys`), and a line that
-#   ledger cannot pin to exactly one DO fails its document.
+#   IV/CS lines come from SO or DO (QT has no ref), CN lines from IV. `DNDTL`
+#   has no `FromDocType` / `FromDocNo` / `FromDocDtlKey` at all (REF check 6),
+#   so DN reads none of them and has no `LineFpLinked`. The DO hop is the
+#   `DODTL` join (plan 35, crew ruling 27 Oct: the grant now exists; the
+#   25 Oct DO-feed-ledger lookup is gone): a line with `FromDocDtlKey` links
+#   to its DO line; a 2025-26 line carries only `FromDocNo` (key 100% NULL)
+#   and sends type + number, the DO header link, with no line ref.
 # * Not handled yet (REF check 6.5): package parent/child lines (`DtlType`,
 #   `ParentDtlKey`) are not de-duplicated - no rule exists yet.
 
 BILLING_DOCUMENT_STATUS_FORMULA = 'if(Cancelled == "T", "cancelled", "posted")'
 
+# A draft is not a posted document (REF check 6.2: `D`). NULL (CS) passes.
+BILLING_DRAFT_FILTER_FORMULA = 'DocStatus != "D"'
+
 _BILLING_LINE_CUT = "(d.SubTotal <> 0 OR d.Qty IS NOT NULL)"
 
 # (link column alias, source line table, join alias, FromDocType) per entity.
 _BILLING_LINKS: Dict[str, Tuple[Tuple[str, str, str, str], ...]] = {
-    ENTITY_INVOICE: (("LinkSODocKey", "SODTL", "so", "SO"),),
-    ENTITY_CASH_SALE: (("LinkSODocKey", "SODTL", "so", "SO"),),
+    ENTITY_INVOICE: (("LinkSODocKey", "SODTL", "so", "SO"), ("LinkDODocKey", "DODTL", "dd", "DO")),
+    ENTITY_CASH_SALE: (("LinkSODocKey", "SODTL", "so", "SO"), ("LinkDODocKey", "DODTL", "dd", "DO")),
     ENTITY_CREDIT_NOTE: (("LinkIVDocKey", "IVDTL", "ivl", "IV"),),
     ENTITY_DEBIT_NOTE: (),
 }
 
 _BILLING_LINK_FIELDS: Dict[str, PresetField] = {
     "LinkSODocKey": PresetField("LinkSODocKey", "link_so_doc_key", "int"),
+    "LinkDODocKey": PresetField("LinkDODocKey", "link_do_doc_key", "int"),
     "LinkIVDocKey": PresetField("LinkIVDocKey", "link_iv_doc_key", "int"),
 }
 
+_BILLING_FROM_DOC_COLUMNS = ("FromDocType", "FromDocNo", "FromDocDtlKey")
 
-def _billing_line_aggregates(*, transferred: bool) -> str:
+
+def _billing_line_aggregates(*, transferred: bool, from_doc: bool) -> str:
     return (
         "COUNT(*) AS LineFpCount, SUM(d.Qty) AS LineFpQty, "
         "SUM(d.SubTotal) AS LineFpSubTotal, SUM(d.Tax) AS LineFpTax, "
-        "MAX(d.DtlKey) AS LineFpMaxDtlKey, COUNT(d.FromDocDtlKey) AS LineFpLinked"
+        "MAX(d.DtlKey) AS LineFpMaxDtlKey"
+        + (", COUNT(d.FromDocDtlKey) AS LineFpLinked" if from_doc else "")
         + (", SUM(d.TransferedQty) AS LineFpTransfered" if transferred else "")
     )
 
 
 def _billing_header_query(
     header_table: str, line_table: str, *, transferred: bool, against: bool,
+    doc_status: bool, from_doc: bool,
 ) -> str:
     fingerprint_out = (
         "l.LineFpCount AS LineFpCount, l.LineFpQty AS LineFpQty, "
         "l.LineFpSubTotal AS LineFpSubTotal, l.LineFpTax AS LineFpTax, "
-        "l.LineFpMaxDtlKey AS LineFpMaxDtlKey, l.LineFpLinked AS LineFpLinked"
+        "l.LineFpMaxDtlKey AS LineFpMaxDtlKey"
+        + (", l.LineFpLinked AS LineFpLinked" if from_doc else "")
         + (", l.LineFpTransfered AS LineFpTransfered" if transferred else "")
     )
     return (
         "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, h.DocDate AS DocDate, "
-        "h.DocStatus AS DocStatus, c.AutoKey AS DebtorAutoKey, "
+        + ("h.DocStatus AS DocStatus, " if doc_status else "NULL AS DocStatus, ")
+        + "c.AutoKey AS DebtorAutoKey, "
         "h.DebtorCode AS DebtorCode, h.DebtorName AS DebtorName, "
         "h.SalesAgent AS SalesAgent, h.CurrencyCode AS CurrencyCode, "
         "h.CurrencyRate AS CurrencyRate, h.TotalExTax AS TotalExTax, h.Tax AS Tax, "
@@ -818,13 +832,16 @@ def _billing_header_query(
         f"{fingerprint_out} "
         f"FROM {{database}}.dbo.{header_table} AS h "
         "LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode "
-        f"OUTER APPLY (SELECT {_billing_line_aggregates(transferred=transferred)} "
+        "OUTER APPLY (SELECT "
+        f"{_billing_line_aggregates(transferred=transferred, from_doc=from_doc)} "
         f"FROM {{database}}.dbo.{line_table} AS d "
         f"WHERE d.DocKey = h.DocKey AND {_BILLING_LINE_CUT}) AS l"
     )
 
 
-def _billing_line_query(line_table: str, links: Tuple[Tuple[str, str, str, str], ...]) -> str:
+def _billing_line_query(
+    line_table: str, links: Tuple[Tuple[str, str, str, str], ...], *, from_doc: bool,
+) -> str:
     link_columns = "".join(f", {alias}.DocKey AS {column}" for column, _, alias, _ in links)
     link_joins = "".join(
         f" LEFT JOIN {{database}}.dbo.{table} AS {alias} "
@@ -837,9 +854,9 @@ def _billing_line_query(line_table: str, links: Tuple[Tuple[str, str, str, str],
         "d.Description AS Description, d.UOM AS UOM, d.Qty AS Qty, "
         "d.UnitPrice AS UnitPrice, d.DiscountAmt AS DiscountAmt, "
         "d.SubTotalExTax AS SubTotalExTax, d.TaxCode AS TaxCode, "
-        "d.TaxRate AS TaxRate, d.Tax AS Tax, d.SubTotal AS SubTotal, "
-        "d.FromDocType AS FromDocType, d.FromDocNo AS FromDocNo, "
-        f"d.FromDocDtlKey AS FromDocDtlKey{link_columns} "
+        "d.TaxRate AS TaxRate, d.Tax AS Tax, d.SubTotal AS SubTotal"
+        + "".join(f", d.{column} AS {column}" for column in _BILLING_FROM_DOC_COLUMNS if from_doc)
+        + f"{link_columns} "
         f"FROM {{database}}.dbo.{line_table} AS d "
         "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode"
         f"{link_joins} "
@@ -847,9 +864,12 @@ def _billing_line_query(line_table: str, links: Tuple[Tuple[str, str, str, str],
     )
 
 
-def _billing_fingerprint_query(header_table: str, line_table: str, *, transferred: bool) -> str:
+def _billing_fingerprint_query(
+    header_table: str, line_table: str, *, transferred: bool, from_doc: bool,
+) -> str:
     return (
-        f"SELECT d.DocKey AS DocKey, {_billing_line_aggregates(transferred=transferred)} "
+        "SELECT d.DocKey AS DocKey, "
+        f"{_billing_line_aggregates(transferred=transferred, from_doc=from_doc)} "
         f"FROM {{database}}.dbo.{line_table} AS d "
         f"JOIN {{database}}.dbo.{header_table} AS h ON h.DocKey = d.DocKey "
         f"WHERE h.DocDate >= :from_date AND {_BILLING_LINE_CUT} "
@@ -901,29 +921,35 @@ _BILLING_LINE_FIELDS: Tuple[PresetField, ...] = (
 
 def _billing_preset(
     label: str, entity_type: str, header_table: str, line_table: str, *,
-    transferred: bool = False, against: bool = False,
+    transferred: bool = False, against: bool = False, doc_status: bool = True,
+    from_doc: bool = True,
 ) -> DocumentPreset:
     links = _BILLING_LINKS[entity_type]
     header = _BILLING_HEADER_FIELDS + (
         (PresetField("OurInvoiceNo", "against_doc_no", "string"),) if against else ()
     )
+    line = tuple(
+        field for field in _BILLING_LINE_FIELDS
+        if from_doc or field.source_path not in _BILLING_FROM_DOC_COLUMNS
+    )
     return DocumentPreset(
         label=label,
         header_query=_billing_header_query(
             header_table, line_table, transferred=transferred, against=against,
+            doc_status=doc_status, from_doc=from_doc,
         ),
-        line_query=_billing_line_query(line_table, links),
+        line_query=_billing_line_query(line_table, links, from_doc=from_doc),
         key_columns=("DocKey",),
         watermark_column="LastModified",
         doc_date_column="DocDate",
         # Contract 12 "Backfill": the start date is shared-service
         # configuration (owner ruling Q2, 1 Jan 2023).
         from_date="2023-01-01",
-        filter_formula=None,
+        filter_formula=BILLING_DRAFT_FILTER_FORMULA,
         header=header,
-        line=_BILLING_LINE_FIELDS + tuple(_BILLING_LINK_FIELDS[column] for column, *_ in links),
+        line=line + tuple(_BILLING_LINK_FIELDS[column] for column, *_ in links),
         fingerprint_query=_billing_fingerprint_query(
-            header_table, line_table, transferred=transferred,
+            header_table, line_table, transferred=transferred, from_doc=from_doc,
         ),
     )
 
@@ -932,13 +958,13 @@ INVOICE_PRESET = _billing_preset(
     "AutoCount Invoice", ENTITY_INVOICE, "IV", "IVDTL", transferred=True,
 )
 CASH_SALE_PRESET = _billing_preset(
-    "AutoCount Cash Sale", ENTITY_CASH_SALE, "CS", "CSDTL", transferred=True,
+    "AutoCount Cash Sale", ENTITY_CASH_SALE, "CS", "CSDTL", transferred=True, doc_status=False,
 )
 CREDIT_NOTE_PRESET = _billing_preset(
     "AutoCount Credit Note", ENTITY_CREDIT_NOTE, "CN", "CNDTL", against=True,
 )
 DEBIT_NOTE_PRESET = _billing_preset(
-    "AutoCount Debit Note", ENTITY_DEBIT_NOTE, "DN", "DNDTL", against=True,
+    "AutoCount Debit Note", ENTITY_DEBIT_NOTE, "DN", "DNDTL", against=True, from_doc=False,
 )
 
 
@@ -965,8 +991,11 @@ DEBIT_NOTE_PRESET = _billing_preset(
 # open COUNT, MAX(LastModified), contract 14.3) catches on its interval. The
 # read time (`as_of`) is stamped at mapping time - never a SQL column, which
 # would move every debtor's row hash on every run.
-# Unconfirmed until access (REF section 6): `Cancelled` on ARDN/ARCN (only
-# ARInvoice lists it), and whether a knock-off bumps any `LastModified`.
+# REF section 6 (scout AC-BILLING-ACCESS-CHECK, 27 Oct): ARDN and ARCN DO
+# carry `Cancelled` (333 cancelled ARCN, 15 cancelled ARDN on AED_SORENTO), so
+# a cancelled row is out of the total and the lines on all three tables; a
+# knock-off bumps no `LastModified` (0 of 4,923 in 30 days), so the sweep's SUM
+# is what catches a payment.
 
 # A NULL `LastModified` reads as the floor date, so a debtor whose AR rows
 # carry none is still extracted (the date floor drops a NULL max).
@@ -977,10 +1006,10 @@ _AR_ITEMS = (
     f"COALESCE(i.LastModified, {_AR_NO_MODIFIED}) AS LastModified "
     "FROM {database}.dbo.ARInvoice AS i WHERE COALESCE(i.Cancelled, 'F') <> 'T' "
     f"UNION ALL SELECT n.DebtorCode, n.Outstanding, COALESCE(n.LastModified, {_AR_NO_MODIFIED}) "
-    "FROM {database}.dbo.ARDN AS n "
+    "FROM {database}.dbo.ARDN AS n WHERE COALESCE(n.Cancelled, 'F') <> 'T' "
     "UNION ALL SELECT r.DebtorCode, -(r.NetTotal - COALESCE(r.KnockOffAmt, 0)), "
     f"COALESCE(r.LastModified, {_AR_NO_MODIFIED}) "
-    "FROM {database}.dbo.ARCN AS r"
+    "FROM {database}.dbo.ARCN AS r WHERE COALESCE(r.Cancelled, 'F') <> 'T'"
 )
 
 _AR_DEBTOR_TOTALS = (
@@ -1033,11 +1062,13 @@ _AR_LINE_QUERY = (
     "UNION ALL SELECT 'DN', m.DnKey, n.Outstanding, n.DueDate, n.DebtorCode "
     "FROM {database}.dbo.ARDN AS n "
     f"CROSS APPLY (SELECT {_ar_match('DN', 'n', 'Dn')}, {_ar_side_hits('ARDN', 'n')}) AS m "
-    "WHERE n.Outstanding <> 0 AND m.DnHits = 1 AND m.ArHits = 1 "
+    "WHERE COALESCE(n.Cancelled, 'F') <> 'T' AND n.Outstanding <> 0 "
+    "AND m.DnHits = 1 AND m.ArHits = 1 "
     "UNION ALL SELECT 'CN', m.CnKey, -(r.NetTotal - COALESCE(r.KnockOffAmt, 0)), NULL, r.DebtorCode "
     "FROM {database}.dbo.ARCN AS r "
     f"CROSS APPLY (SELECT {_ar_match('CN', 'r', 'Cn')}, {_ar_side_hits('ARCN', 'r')}) AS m "
-    "WHERE r.NetTotal - COALESCE(r.KnockOffAmt, 0) <> 0 AND m.CnHits = 1 AND m.ArHits = 1"
+    "WHERE COALESCE(r.Cancelled, 'F') <> 'T' AND r.NetTotal - COALESCE(r.KnockOffAmt, 0) <> 0 "
+    "AND m.CnHits = 1 AND m.ArHits = 1"
     ") AS x JOIN {database}.dbo.Debtor AS c ON c.AccNo = x.DebtorCode "
     "WHERE c.AutoKey = :doc_key"
 )
