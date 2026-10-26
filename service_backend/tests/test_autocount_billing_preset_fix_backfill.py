@@ -349,6 +349,62 @@ def test_the_pass_scopes_to_one_tenant(db):
     assert db.get(AcEntityConfig, config_id).source_config["filterFormula"] is None
 
 
+def test_a_customised_header_without_doc_status_gets_no_filter(db, caplog):
+    """Review round 1: the draft filter needs a DocStatus column. A CS header
+    hand-edited after the "Invalid column" error (h.DocStatus removed) would
+    otherwise fail every run with "Unknown name 'DocStatus'"."""
+    company = _company(db, "FAKE_DB_P35_NOSTATUS")
+    custom = _old(ENTITY_CASH_SALE, "query", company.database_name).replace(
+        "h.DocStatus AS DocStatus, ", "", 1,
+    )
+    assert "DocStatus" not in custom
+    config = _config(
+        db, company, ENTITY_CASH_SALE, overrides={"query": custom},
+        result_columns=["DocKey", "DocNo"],
+    )
+    config_id = config.id
+    with caplog.at_level(logging.WARNING):
+        _run(db)
+    assert config_id in caplog.text
+    after = db.get(AcEntityConfig, config_id)
+    assert after.source_config["query"] == custom
+    assert after.source_config["filterFormula"] is None
+
+
+def test_a_previewed_doc_status_column_is_enough_for_the_filter(db):
+    """A hand-written header that still returns DocStatus (seen at Preview)
+    takes the draft filter."""
+    company = _company(db, "FAKE_DB_P35_PREVIEWED")
+    custom = "SELECT * FROM FAKE_DB_P35_PREVIEWED.dbo.IV AS h"
+    config = _config(
+        db, company, ENTITY_INVOICE, overrides={"query": custom},
+        result_columns=["DocKey", "DocStatus"],
+    )
+    config_id = config.id
+    _run(db)
+    after = db.get(AcEntityConfig, config_id)
+    assert after.source_config["filterFormula"] == DOCUMENT_PRESETS[ENTITY_INVOICE].filter_formula
+
+
+def test_a_link_do_row_on_another_column_is_never_duplicated(db):
+    """Review round 1: the unique key is (company, entity, scope,
+    canonical_field). An operator who pointed link_do_doc_key at another
+    column keeps that row; no second link_do_doc_key row is inserted (that
+    would raise IntegrityError and abort the deploy migration)."""
+    company = _company(db, "FAKE_DB_P35_REPOINTED")
+    config = _config(db, company, ENTITY_INVOICE)
+    _line_row(db, company, ENTITY_INVOICE, "MyDoKey", "link_do_doc_key", enabled=True)
+    config_id = config.id
+    assert _run(db) > 0
+    assert "DODTL" in db.get(AcEntityConfig, config_id).source_config["lineQuery"]
+    rows = db.query(AcFieldMapping).filter(
+        AcFieldMapping.company_id == company.id,
+        AcFieldMapping.entity_type == ENTITY_INVOICE,
+        AcFieldMapping.canonical_field == "link_do_doc_key",
+    ).all()
+    assert [(r.source_path, r.is_enabled) for r in rows] == [("MyDoKey", True)]
+
+
 # ── wiring ───────────────────────────────────────────────────────────────────
 
 
@@ -364,6 +420,30 @@ def test_update_tenant_runs_the_pass_below_0_19_only(db, from_version, rewritten
     db.expire_all()
     after = db.get(AcEntityConfig, config_id)
     assert (after.source_config["filterFormula"] is not None) is rewritten
+
+
+def test_a_tenant_below_0_17_gets_the_join_back_after_0032_removes_it(db):
+    """Review round 1: update_tenant must run the 0032 pass BEFORE the
+    plan-35 pass. A task still on the PR #127 text goes 0032 -> DODTL-free
+    -> plan 35 -> DODTL join; the other order would leave it DODTL-free."""
+    from modules.autocount.backfill import _OLD_BILLING_DO_LINE_QUERIES
+    from modules.autocount.bootstrap import update_tenant
+
+    company = _company(db, "FAKE_DB_P35_ORDER")
+    database = company.database_name
+    config = _config(
+        db, company, ENTITY_INVOICE,
+        overrides={"lineQuery": _OLD_BILLING_DO_LINE_QUERIES[ENTITY_INVOICE].replace("{database}", database)},
+    )
+    _line_row(db, company, ENTITY_INVOICE, "LinkDODocKey", "link_do_doc_key", enabled=True)
+    config_id = config.id
+    update_tenant(db, DEFAULT_TENANT_ID, "0.16.0")
+    db.commit()
+    db.expire_all()
+    after = db.get(AcEntityConfig, config_id)
+    assert after.source_config["lineQuery"] == _new(ENTITY_INVOICE, "lineQuery", database)
+    [row] = _rows(db, company.id, ENTITY_INVOICE, "LinkDODocKey")
+    assert row.is_enabled is True
 
 
 def test_the_manifest_is_0_19_0():
