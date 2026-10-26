@@ -216,3 +216,30 @@ def test_a_save_that_keeps_the_sweep_query_keeps_the_fingerprints(session_factor
     )
     assert _fingerprint_refs(db, company.id) == ["AED_FPKEEP7:D001"]
     db.close()
+
+
+def test_the_update_tenant_backfill_filling_a_wiped_sweep_resets_its_fingerprints(session_factory):
+    """Same gap on the App Store Update path: backfill_document_fingerprint_
+    queries fills a None sweep with the preset text, so the old rows go."""
+    from modules.autocount.backfill import backfill_document_fingerprint_queries
+
+    db = session_factory()
+    conn, company = _rig(db, "AED_FPKEEP8")
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, _raw(conn.id))
+    config = db.query(AcEntityConfig).filter(AcEntityConfig.company_id == company.id).one()
+    config.source_config = {**config.source_config, "fingerprintQuery": None}
+    db.commit()
+    _seed_fingerprints(db, company.id, "AED_FPKEEP8:D001")
+    other = _rig(db, "AED_FPKEEP8B")[1]
+    db.add(AcDocFingerprint(
+        tenant_id=DEFAULT_TENANT_ID, company_id=other.id, entity_type=ENTITY_SALES_ORDER,
+        source_ref="AED_FPKEEP8B:D001", fingerprint="other-sha",
+    ))
+    db.commit()
+    assert backfill_document_fingerprint_queries(db, schema=None) >= 1
+    db.commit()
+    assert _stored(db, company.id)["fingerprintQuery"]
+    assert _fingerprint_refs(db, company.id) == []
+    # Another company's rows (no config to fill) are untouched.
+    assert _fingerprint_refs(db, other.id) == ["AED_FPKEEP8B:D001"]
+    db.close()
