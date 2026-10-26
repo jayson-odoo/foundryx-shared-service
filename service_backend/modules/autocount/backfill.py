@@ -24,6 +24,7 @@ incident and the rule live there and in
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any, Callable, Dict, Optional
 
@@ -2939,6 +2940,9 @@ _PRE35_AR_FINGERPRINT = (
 )
 
 _BILLING_DRAFT_FILTER = 'DocStatus != "D"'
+# The filter reads `DocStatus`: a header that no longer returns it (hand-edited
+# after the CS "Invalid column" error) would fail every run on the filter.
+_SELECTS_DOC_STATUS = re.compile(r"\bAS\s+DocStatus\b", re.IGNORECASE)
 _BILLING_FILTER_ENTITY_TYPES = ("invoice", "cash_sale", "credit_note", "debit_note")
 _BILLING_FROM_DOC_COLUMNS = ("FromDocType", "FromDocNo", "FromDocDtlKey")
 _DN_FROM_DOC_CUTS = (
@@ -3020,7 +3024,9 @@ def backfill_billing_preset_fix(
     NULL column lists (never previewed) stay NULL.
 
     A blank ``filterFormula`` on an IV/CS/CN/DN task becomes the draft
-    filter; a hand-written one is left with one WARNING.
+    filter when its header returns ``DocStatus`` (the stored ``query``
+    selects it, or Preview saw it in ``result_columns``); otherwise, and for
+    a hand-written filter, it is left with one WARNING.
 
     ``tenant_id`` (``update_tenant``) scopes the pass; ``None`` (the deploy
     migration) covers every tenant. Frozen ``sa.table`` only, company
@@ -3127,9 +3133,19 @@ def backfill_billing_preset_fix(
         filter_changed = False
         if entity_type in _BILLING_FILTER_ENTITY_TYPES:
             stored_filter = str(fresh.get("filterFormula") or "").strip()
-            if not stored_filter:
+            has_status = bool(_SELECTS_DOC_STATUS.search(str(fresh.get("query") or ""))) or (
+                "DocStatus" in [str(c) for c in (result_columns or [])]
+            )
+            if not stored_filter and has_status:
                 fresh["filterFormula"] = _BILLING_DRAFT_FILTER
                 filter_changed = True
+            elif not stored_filter:
+                logger.warning(
+                    "Billing task %s (%s) has a header query that returns no DocStatus "
+                    "column - no draft filter set. Select DocStatus (NULL AS DocStatus on "
+                    "CS) and set the filter %s so AutoCount drafts are not pushed as posted.",
+                    config_id, entity_type, _BILLING_DRAFT_FILTER,
+                )
             elif stored_filter != _BILLING_DRAFT_FILTER:
                 logger.warning(
                     "Billing task %s (%s) has its own filter formula - left untouched. "
@@ -3144,9 +3160,15 @@ def backfill_billing_preset_fix(
         if entity_type in ("invoice", "cash_sale") and "lineQuery" in rewritten:
             if line_list is not None and "LinkDODocKey" not in line_list:
                 line_list.append("LinkDODocKey")
+            # Any row on the target (uq_ac_field_mapping is on canonical_field):
+            # one pointed at another column is the operator's and stays.
             has_row = connectable.execute(
                 sa.select(field_mapping.c.id).where(
-                    *line_rows(config_tenant_id, company_id, entity_type, "LinkDODocKey")
+                    field_mapping.c.tenant_id == config_tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == entity_type,
+                    field_mapping.c.scope == SCOPE_LINE,
+                    field_mapping.c.canonical_field == "link_do_doc_key",
                 )
             ).first() is not None
             if has_row:
