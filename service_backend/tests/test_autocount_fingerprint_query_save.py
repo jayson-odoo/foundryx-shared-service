@@ -21,7 +21,7 @@ from typing import Dict
 
 from app.models import DEFAULT_TENANT_ID
 from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
-from modules.autocount.models import AcEntityConfig
+from modules.autocount.models import AcDocFingerprint, AcEntityConfig
 from modules.autocount.presets import DOCUMENT_PRESETS
 from modules.autocount.schemas import EtlSourceConfigIn
 from modules.autocount.services.etl_service import EtlService
@@ -147,4 +147,72 @@ def test_a_put_through_the_route_keeps_the_stored_sweep_query(client, session_fa
     stored = _stored(db, company_id)
     assert stored["fromDate"] == "2025-06-01"
     assert stored["fingerprintQuery"] == CUSTOM_SWEEP
+    db.close()
+
+
+# ── review round 1: a changed sweep query resets its fingerprint rows ───────
+
+
+def _seed_fingerprints(db, company_id: str, *refs: str) -> None:
+    for ref in refs:
+        db.add(AcDocFingerprint(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company_id,
+            entity_type=ENTITY_SALES_ORDER, source_ref=ref, fingerprint="old-sha",
+        ))
+    db.commit()
+
+
+def _fingerprint_refs(db, company_id: str):
+    db.expire_all()
+    return sorted(r.source_ref for r in db.query(AcDocFingerprint).filter(
+        AcDocFingerprint.tenant_id == DEFAULT_TENANT_ID,
+        AcDocFingerprint.company_id == company_id,
+        AcDocFingerprint.entity_type == ENTITY_SALES_ORDER,
+    ))
+
+
+def test_a_new_sweep_query_text_resets_the_stored_fingerprints(session_factory):
+    """A different sweep text hashes every document differently: left in
+    place, the next tick would re-stage the whole window unpaced. Same rule
+    as backfill.py's fingerprint rewrites (plan 06 S1)."""
+    db = session_factory()
+    conn, company = _rig(db, "AED_FPKEEP5")
+    service = EtlService(db)
+    service.update_task(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, _raw(conn.id))
+    _seed_fingerprints(db, company.id, "AED_FPKEEP5:D001", "AED_FPKEEP5:D002")
+    service.update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER,
+        _raw(conn.id, fingerprintQuery=CUSTOM_SWEEP),
+    )
+    assert _fingerprint_refs(db, company.id) == []
+    db.close()
+
+
+def test_a_wiped_sweep_refilled_by_the_preset_resets_the_stored_fingerprints(session_factory):
+    """A pre-plan-36 Save left fingerprintQuery None but kept the old rows;
+    the first plan-36 Save fills the preset text, so those rows go."""
+    db = session_factory()
+    conn, company = _rig(db, "AED_FPKEEP6")
+    service = EtlService(db)
+    service.update_task(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, _raw(conn.id))
+    config = db.query(AcEntityConfig).filter(AcEntityConfig.company_id == company.id).one()
+    config.source_config = {**config.source_config, "fingerprintQuery": None}
+    db.commit()
+    _seed_fingerprints(db, company.id, "AED_FPKEEP6:D001")
+    service.update_task(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, _raw(conn.id))
+    assert _stored(db, company.id)["fingerprintQuery"]
+    assert _fingerprint_refs(db, company.id) == []
+    db.close()
+
+
+def test_a_save_that_keeps_the_sweep_query_keeps_the_fingerprints(session_factory):
+    db = session_factory()
+    conn, company = _rig(db, "AED_FPKEEP7")
+    service = EtlService(db)
+    service.update_task(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, _raw(conn.id))
+    _seed_fingerprints(db, company.id, "AED_FPKEEP7:D001")
+    service.update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, _raw(conn.id, fromDate="2025-01-01"),
+    )
+    assert _fingerprint_refs(db, company.id) == ["AED_FPKEEP7:D001"]
     db.close()
