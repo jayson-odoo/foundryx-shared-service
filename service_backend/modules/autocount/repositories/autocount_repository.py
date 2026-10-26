@@ -1246,6 +1246,23 @@ class DocFingerprintRepository:
         self.db.flush()
         return deleted
 
+    def clear_all(self, tenant_id: str, company_id: str, entity_type: str) -> int:
+        """Drop EVERY fingerprint row of one task (plan 36): a new sweep
+        query text hashes every document differently, so the stored rows
+        would all mismatch at once and stage the whole window unpaced. With
+        none stored the next sweep re-seeds silently. Does not commit."""
+        deleted = (
+            self.db.query(AcDocFingerprint)
+            .filter(
+                AcDocFingerprint.tenant_id == tenant_id,
+                AcDocFingerprint.company_id == company_id,
+                AcDocFingerprint.entity_type == entity_type,
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db.flush()
+        return deleted
+
 
 class SyncRunRepository:
     def __init__(self, db: Session):

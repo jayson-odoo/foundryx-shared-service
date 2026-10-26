@@ -80,6 +80,7 @@ from ..models import (
 )
 from ..repositories import (
     ConnectionRepository,
+    DocFingerprintRepository,
     EntityConfigRepository,
     PullSnapshotRepository,
     RowHashRepository,
@@ -2221,9 +2222,10 @@ class EtlService:
             if config is not None and isinstance(config.source_config, dict)
             else None
         )
-        # Plan 36 - the UI never sends ``fingerprintQuery`` (the sweep is not
-        # an editor field), so "not sent" keeps the stored one; a task with
-        # none takes its entity preset's sweep query, the same policy as
+        # Plan 36 - the sweep is not an editor field (the editor only echoes
+        # back what it loaded, possibly null), so "not sent" / null / blank
+        # keeps the stored one; a task with none takes its entity preset's
+        # sweep query, the same policy as
         # ``backfill_document_fingerprint_queries``. Without this every
         # Source-tab Save wiped the sweep (line-only edits and AR knock-offs
         # then waited for the daily reconcile).
@@ -2236,6 +2238,14 @@ class EtlService:
                 clean["fingerprintQuery"] = preset.fingerprint_query.replace(
                     "{database}", str(company.database_name)
                 )
+        # A different sweep text hashes every document differently: drop the
+        # stored fingerprints so the next sweep re-seeds instead of staging
+        # the whole window unpaced (the backfill.py plan-06 S1 rule).
+        if (
+            previous_source_config is not None
+            and previous_source_config.get("fingerprintQuery") != clean.get("fingerprintQuery")
+        ):
+            DocFingerprintRepository(self.db).clear_all(tenant_id, company_id, entity_type)
         # sprint-5/08 review round 1 (B2) - captured BEFORE the branch below
         # may create a fresh row (whose ``source_impl`` starts at
         # ``sql_db`` and has nothing to demote from).

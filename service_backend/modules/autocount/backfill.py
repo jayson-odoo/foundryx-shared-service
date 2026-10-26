@@ -1588,6 +1588,20 @@ def backfill_document_fingerprint_queries(
         sa.column("database_name", sa.String),
         schema=schema,
     )
+    # Plan 36 review - optional: a schema without the sweep table has no rows
+    # to reset.
+    fingerprint_columns = existing_columns(bind, "ac_doc_fingerprint", schema=schema)
+    fingerprint_table = (
+        sa.table(
+            "ac_doc_fingerprint",
+            sa.column("tenant_id", sa.String),
+            sa.column("company_id", sa.String),
+            sa.column("entity_type", sa.String),
+            schema=schema,
+        )
+        if fingerprint_columns and {"tenant_id", "company_id", "entity_type"} <= fingerprint_columns
+        else None
+    )
 
     connectable = bind.connection() if hasattr(bind, "get_bind") else bind
 
@@ -1633,6 +1647,17 @@ def backfill_document_fingerprint_queries(
             .where(entity_config.c.id == config_id)
             .values(source_config=fresh)
         )
+        # Plan 36 review: a task whose sweep a pre-36 Save wiped may still
+        # hold fingerprint rows from its OLD text; the new text would
+        # mismatch them all at once (the plan-06 S1 rule), so drop them.
+        if fingerprint_table is not None:
+            connectable.execute(
+                sa.delete(fingerprint_table).where(
+                    fingerprint_table.c.tenant_id == tenant_id,
+                    fingerprint_table.c.company_id == company_id,
+                    fingerprint_table.c.entity_type == entity_type,
+                )
+            )
         touched += 1
     return touched
 
