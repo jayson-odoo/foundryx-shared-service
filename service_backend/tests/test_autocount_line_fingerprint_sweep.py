@@ -23,7 +23,7 @@ A2. ``ac_doc_fingerprint(tenant_id, company_id, entity_type, source_ref,
     (``sql_source.hashing.document_fingerprint``).
 A3. INCREMENTAL runs only (never reconcile, never the initial load): when
     ``now - last_fingerprint_sweep_at >= settings.autocount_fingerprint_sweep_minutes``
-    (default 15, floor 1) the source runs the fingerprint query once, the
+    (default 0 = every incremental run, owner ruling 27 Oct; floor 0) the source runs the fingerprint query once, the
     header fetch adds ``DocKey IN (changed keys)`` (chunked at 500,
     ``FINGERPRINT_KEY_CHUNK``) to ``LastModified > :since``; the first sweep
     SEEDS fingerprints for known-hash documents without fetching them; staged
@@ -407,13 +407,18 @@ def test_document_fingerprint_is_a_sha_over_the_ordered_values_as_strings():
     assert fn(["3", "10", "2", None]) != same
 
 
-def test_sweep_interval_setting_defaults_to_15_minutes_with_a_floor_of_1():
-    assert getattr(settings, "autocount_fingerprint_sweep_minutes", None) == 15
+def test_sweep_interval_setting_defaults_to_0_every_incremental_run_with_a_floor_of_0():
+    """Owner ruling 27 Oct: the line check runs on EVERY incremental run, at
+    whatever cadence the task is configured for - the setting stays only as
+    an opt-in throttle."""
+    assert getattr(settings, "autocount_fingerprint_sweep_minutes", None) == 0
     data = settings.model_dump()
-    assert Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 1}) \
-        .autocount_fingerprint_sweep_minutes == 1
+    assert Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 0}) \
+        .autocount_fingerprint_sweep_minutes == 0
+    assert Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 15}) \
+        .autocount_fingerprint_sweep_minutes == 15
     with pytest.raises(ValidationError):
-        Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 0})
+        Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": -1})
 
 
 def test_changed_key_in_list_is_chunked_at_500():
@@ -631,7 +636,29 @@ def test_first_incremental_sweep_seeds_known_documents_without_fetching_them(rig
     assert rig.watermark().last_fingerprint_sweep_at is not None
 
 
-def test_a_run_inside_the_sweep_interval_does_not_run_the_fingerprint_query(rig):
+def test_incremental_runs_a_minute_apart_both_run_the_sweep(rig):
+    """Owner ruling 27 Oct (default interval 0): back-to-back incremental runs
+    - a 1-minute task cadence - each run the line check, and the second one
+    re-stages a delivery that landed between them."""
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.statements["fingerprint"]) == 1, "first incremental did not sweep"
+    first_swept_at = rig.watermark().last_fingerprint_sweep_at
+
+    with rig.engine.begin() as conn:
+        conn.exec_driver_sql("UPDATE so_line SET qty_delivered = '4' WHERE dtl_key = 'D001-1'")
+    job, run = rig.run(RUN_MODE_INCREMENTAL)
+
+    assert len(rig.statements["fingerprint"]) == 1, "second incremental did not sweep"
+    assert set(rig.staged(job.id)) == {"D001"}
+    assert run.updated_count == 1
+    assert rig.watermark().last_fingerprint_sweep_at > first_swept_at
+
+
+def test_a_run_inside_an_opt_in_sweep_interval_does_not_run_the_fingerprint_query(
+    rig, monkeypatch
+):
+    monkeypatch.setattr(settings, "autocount_fingerprint_sweep_minutes", 15)
     rig.run(RUN_MODE_MANUAL)
     rig.run(RUN_MODE_INCREMENTAL)  # first sweep (seeds)
     swept_at = rig.watermark().last_fingerprint_sweep_at
