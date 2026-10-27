@@ -405,6 +405,12 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             payload={"companyId": company_id, "entityType": entity_type, "mode": mode},
         )
     except Exception as exc:  # noqa: BLE001
+        if due_reconcile and mode != RUN_MODE_RECONCILE:
+            # The open-pass deferral below must not be lost to a failed
+            # enqueue either (nothing was queued, so no overlap risk).
+            db.rollback()
+            _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
+            db.commit()
         # S4 review SHOULD-FIX 4: the claim above already COMMITTED (the due
         # time already advanced), so a failure here is a genuinely LOST tick,
         # not a retried one - invisible unless it is stamped somewhere an
@@ -444,8 +450,10 @@ def _keep_reconcile_due(
 ) -> None:
     """Undo this tick's re-arm of ``next_reconcile_at`` (back to ``slot``,
     still ``<= now`` so the next tick finds it due). Guarded on the value the
-    claim wrote: if anything else re-armed the task since (an activate/resume
-    recomputing the schedule), that newer value wins."""
+    claim wrote: if anything else re-armed the task since to a DIFFERENT value
+    (an activate/resume with a changed schedule), that value wins. A re-arm
+    that recomputes the very same slot is indistinguishable and gets the old
+    slot back - at worst one extra reconcile, never a lost one."""
     if slot is None or armed is None:
         return
     db.query(AcEntityConfig).filter(

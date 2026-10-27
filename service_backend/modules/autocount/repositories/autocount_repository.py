@@ -63,6 +63,10 @@ from ..models import (
 
 # ``sync.py`` writes this exact note on a budget cut-short pass (plan 33).
 BUDGET_NOTE_LIKE = "Budget reached after page %; continues on the next tick."
+# ``sync.py`` starts a run's error with exactly this when the line-fingerprint
+# sweep alone failed (SS-RECONCILE-SKIP-FIX) - shown on the run, not alerted:
+# the watermark pass still delivered, and the sweep retries next run.
+SWEEP_NOTE_PREFIX = "Line fingerprint sweep failed: "
 
 # A job that is ACTUALLY EXECUTING. ``needs_review`` is deliberately absent -
 # it is non-terminal but parked on a human, not running (see
@@ -1345,10 +1349,20 @@ class SyncRunRepository:
         so a combined message no longer matches and stays a failure."""
         return and_(AcSyncRun.truncated.is_(True), AcSyncRun.error.like(BUDGET_NOTE_LIKE))
 
+    @staticmethod
+    def _sweep_only():
+        """A run whose only fault is the line-fingerprint sweep. A push error
+        is written BEFORE the sweep note, so a combined message does not
+        match and stays a failure."""
+        return AcSyncRun.error.startswith(SWEEP_NOTE_PREFIX, autoescape=True)
+
     def _clean_clause(self):
         return and_(
             AcSyncRun.outcome == "SUCCESS",
-            or_(AcSyncRun.error.is_(None), AcSyncRun.error == "", self._budget_only()),
+            or_(
+                AcSyncRun.error.is_(None), AcSyncRun.error == "",
+                self._budget_only(), self._sweep_only(),
+            ),
         )
 
     def _failed_clause(self):
@@ -1359,6 +1373,7 @@ class SyncRunRepository:
                 AcSyncRun.error.isnot(None),
                 AcSyncRun.error != "",
                 not_(self._budget_only()),
+                not_(self._sweep_only()),
             ),
         )
 

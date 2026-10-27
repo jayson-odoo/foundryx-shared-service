@@ -688,3 +688,30 @@ def test_a_concurrent_re_arm_wins_over_the_deferred_slot_restore(session_factory
     db.expire_all()
     assert db.get(AcEntityConfig, config.id).next_reconcile_at == re_armed
     db.close()
+
+
+def test_an_open_pass_deferral_survives_an_enqueue_failure(session_factory, monkeypatch):
+    from app.jobs.service import JobService
+    from modules.autocount.models import AcWatermark
+
+    db = session_factory()
+    company = _company(db)
+    slot = NOW - timedelta(minutes=5)
+    config = _task(db, company, next_reconcile_at=slot)
+    db.add(
+        AcWatermark(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_CUSTOMER,
+            cursor_json={"pass": {"kind": RUN_MODE_INCREMENTAL, "complete": False}},
+        )
+    )
+    db.commit()
+
+    def raising_enqueue(self, **kwargs):
+        raise RuntimeError("boom - enqueue exploded")
+
+    monkeypatch.setattr(JobService, "create_and_enqueue", raising_enqueue)
+
+    assert sweep_etl_tasks(db, now=NOW)["failed"] == 1
+    db.expire_all()
+    assert db.get(AcEntityConfig, config.id).next_reconcile_at == slot
+    db.close()

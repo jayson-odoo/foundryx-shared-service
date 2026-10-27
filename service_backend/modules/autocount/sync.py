@@ -106,6 +106,7 @@ from .models import (
     AcSyncRun,
     AcWatermark,
 )
+from .repositories.autocount_repository import SWEEP_NOTE_PREFIX
 from .repositories import (
     CompanyRepository,
     DocFingerprintRepository,
@@ -1569,7 +1570,7 @@ def _run_fingerprint_sweep(
             "autocount fingerprint sweep failed for job %s (%s.%s): %s",
             job.id, entity_type, company_id, exc,
         )
-        return 0, 0, 0, 0, f"Line fingerprint sweep failed: {exc}"[:1000]
+        return 0, 0, 0, 0, f"{SWEEP_NOTE_PREFIX}{exc}"[:1000]
 
 
 def _run_paged_sql_db(

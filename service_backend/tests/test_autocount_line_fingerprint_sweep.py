@@ -786,3 +786,35 @@ def test_every_fingerprint_row_is_scoped_to_the_tenant_and_company(rig):
     assert all(row.seen_at is not None for row in rows)
     assert all(isinstance(row.fingerprint, str) and len(row.fingerprint) == 64 for row in rows)
     assert len({row.fingerprint for row in rows}) == 3, "three different line sets, three fingerprints"
+
+
+def test_a_sweep_only_error_is_shown_on_the_run_but_not_alerted(db):
+    """SS-RECONCILE-SKIP-FIX - the run row carries the sweep failure (visible
+    in the Runs list), but the failure-alert aggregates treat it like a budget
+    note: the watermark pass still delivered, so it is neither a failed run
+    nor a reason for a "stale" incident. A push error before it still is."""
+    from modules.autocount.models import AcSyncRun
+    from modules.autocount.repositories import SyncRunRepository
+    from modules.autocount.repositories.autocount_repository import SWEEP_NOTE_PREFIX
+
+    at = datetime(2026, 10, 27, 4, 0, tzinfo=timezone.utc)
+    base = dict(
+        tenant_id=DEFAULT_TENANT_ID, company_id="co-sweep", entity_type=ENTITY_CUSTOMER,
+        mode=RUN_MODE_INCREMENTAL, outcome="SUCCESS", started_at=at,
+    )
+    db.add(AcSyncRun(**base, error=f"{SWEEP_NOTE_PREFIX}boom", finished_at=at))
+    repo = SyncRunRepository(db)
+    db.flush()
+    assert repo.failed_runs_summary(
+        DEFAULT_TENANT_ID, "co-sweep", ENTITY_CUSTOMER, None, [RUN_MODE_INCREMENTAL]
+    )[0] == 0
+    assert repo.last_clean_finished_at(
+        DEFAULT_TENANT_ID, "co-sweep", ENTITY_CUSTOMER, [RUN_MODE_INCREMENTAL]
+    ) == at
+
+    later = at + timedelta(minutes=15)
+    db.add(AcSyncRun(**base, error=f"push 500 {SWEEP_NOTE_PREFIX}boom", finished_at=later))
+    db.flush()
+    assert repo.failed_runs_summary(
+        DEFAULT_TENANT_ID, "co-sweep", ENTITY_CUSTOMER, None, [RUN_MODE_INCREMENTAL]
+    )[0] == 1
