@@ -1425,11 +1425,13 @@ def _run_fingerprint_sweep(
     tenant_id: str,
     company_id: str,
     entity_type: str,
-) -> Tuple[int, int, int, int]:
+) -> Tuple[int, int, int, int, Optional[str]]:
     """The line-fingerprint sweep (feat/line-fingerprint-sweep) - INCREMENTAL
     runs only, called once per run AFTER the watermark-paged pass above has
-    already committed. Returns ``(staged, failed, added, updated)`` to fold
-    into the run's own totals; a task with no ``fingerprint_query`` (predates
+    already committed. Returns ``(staged, failed, added, updated, error)`` -
+    the counts fold into the run's own totals, ``error`` (``None`` unless the
+    sweep itself failed) onto the run row's ``error`` so the Runs list shows
+    it (SS-RECONCILE-SKIP-FIX: a WARNING log alone reached no operator); a task with no ``fingerprint_query`` (predates
     this lane, or never picked the preset), or one still inside its own
     sweep interval, is a silent no-op - the caller's totals are untouched
     either way.
@@ -1477,20 +1479,20 @@ def _run_fingerprint_sweep(
     ``autocount_fingerprint_sweep_minutes``.
     """
     if not getattr(source, "fingerprint_query", None):
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, None
 
     now = datetime.now(timezone.utc)
     interval = timedelta(minutes=settings.autocount_fingerprint_sweep_minutes)
     last_swept = watermark_row.last_fingerprint_sweep_at
     if last_swept is not None and (now - last_swept) < interval:
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, None
 
     try:
         fingerprints = source.fetch_fingerprints()
         if not fingerprints:
             watermark_row.last_fingerprint_sweep_at = now
             db.commit()
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, None
 
         fp_repo = DocFingerprintRepository(db)
         hashes_repo = RowHashRepository(db)
@@ -1560,14 +1562,14 @@ def _run_fingerprint_sweep(
 
         watermark_row.last_fingerprint_sweep_at = now
         db.commit()
-        return staged, failed, added, updated
+        return staged, failed, added, updated, None
     except Exception as exc:  # noqa: BLE001 - a broken sweep must never fail the run
         db.rollback()
         logger.warning(
             "autocount fingerprint sweep failed for job %s (%s.%s): %s",
             job.id, entity_type, company_id, exc,
         )
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, f"Line fingerprint sweep failed: {exc}"[:1000]
 
 
 def _run_paged_sql_db(
@@ -2116,8 +2118,11 @@ def _run_paged_sql_db(
     # reconcile (which already re-reads and re-diffs every header). A
     # truncated pass (``page.complete`` False) defers to its own
     # continuation tick, same as the reconcile-delete block above.
+    sweep_error: Optional[str] = None
     if mode == RUN_MODE_INCREMENTAL and page is not None and page.complete:
-        sweep_staged, sweep_failed, sweep_added, sweep_updated = _run_fingerprint_sweep(
+        (
+            sweep_staged, sweep_failed, sweep_added, sweep_updated, sweep_error,
+        ) = _run_fingerprint_sweep(
             db, service, job, source, engine, watermark_row,
             tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
         )
@@ -2289,6 +2294,10 @@ def _run_paged_sql_db(
         # to `None` (prod finding 2026-09-07: `pushed_count 0` / `error NULL`
         # with no way to tell a chunk-level fault happened).
         run.error = push_summary.get("error") if push_summary else None
+    if sweep_error:
+        # Appended, like the push error above: a failed line sweep means
+        # line-only changes (e.g. a DO transfer) were not looked at this run.
+        run.error = f"{run.error} {sweep_error}" if run.error else sweep_error
 
     record_activity(
         db, tenant_id=tenant_id, operation=f"sync {entity_type}", status=ACTIVITY_SUCCESS,

@@ -40,6 +40,7 @@ from ..models import (
     SOURCE_IMPL_SQL_DB,
     PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_READY,
+    RUN_MODE_SKIPPED,
     STAGED,
     STAGED_DISCARDED,
     STAGED_FAILED,
@@ -1308,6 +1309,32 @@ class SyncRunRepository:
             .all()
         )
         return rows, total
+
+    def has_skip_since(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        since: datetime,
+        reason_prefix: str,
+    ) -> bool:
+        """Whether a skipped-tick row with this reason was already written for
+        the task at or after ``since`` (the scheduler's one-row-per-deferred-
+        reconcile-slot dedupe)."""
+        return (
+            self.db.query(AcSyncRun.id)
+            .filter(
+                AcSyncRun.tenant_id == tenant_id,
+                AcSyncRun.company_id == company_id,
+                AcSyncRun.entity_type == entity_type,
+                AcSyncRun.mode == RUN_MODE_SKIPPED,
+                AcSyncRun.started_at >= since,
+                AcSyncRun.skip_reason.startswith(reason_prefix, autoescape=True),
+            )
+            .first()
+            is not None
+        )
 
     # ── failure-alert evaluation (plan 33) ───────────────────────────────────
 

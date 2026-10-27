@@ -660,3 +660,31 @@ def test_an_open_incremental_pass_does_not_consume_a_due_reconcile(session_facto
     db.refresh(config)
     assert config.next_reconcile_at == slot
     db.close()
+
+
+def test_a_concurrent_re_arm_wins_over_the_deferred_slot_restore(session_factory, monkeypatch):
+    """The restore is guarded on the value the claim wrote: if an
+    activate/resume re-armed the schedule between the claim and the overlap
+    guard, that newer value stands."""
+    from modules.autocount.repositories import SyncJobRepository
+
+    db = session_factory()
+    company = _company(db)
+    config = _task(db, company, next_reconcile_at=NOW - timedelta(minutes=5))
+    job = _running_job(db, company.id)
+    re_armed = NOW + timedelta(hours=7)
+    real = SyncJobRepository.first_unfinished
+
+    def first_unfinished_with_a_resume(self, *args, **kwargs):
+        self.db.query(AcEntityConfig).filter(AcEntityConfig.id == config.id).update(
+            {AcEntityConfig.next_reconcile_at: re_armed}, synchronize_session=False
+        )
+        self.db.commit()
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(SyncJobRepository, "first_unfinished", first_unfinished_with_a_resume)
+
+    assert sweep_etl_tasks(db, now=NOW)["skipped"] == 1
+    db.expire_all()
+    assert db.get(AcEntityConfig, config.id).next_reconcile_at == re_armed
+    db.close()
