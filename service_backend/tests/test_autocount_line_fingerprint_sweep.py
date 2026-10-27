@@ -1027,3 +1027,101 @@ def test_a_task_not_keyed_on_doc_key_skips_the_fast_pass_between_full_passes(rig
     rig.run(RUN_MODE_INCREMENTAL)
     assert rig.statements["fingerprint"] == []
     assert rig.window_lookups() == []
+
+
+# ── SS-RECONCILE-SKIP-FIX: the service refills an EMPTY line-check query ────
+# Owner OK 27 Oct: an empty fingerprintQuery silently turns the line check
+# off. The service refills it from the entity's preset on startup/deploy and
+# in the scheduler before a sweep - idempotent, never over a custom query,
+# logged and recorded as an Activity row naming the task.
+
+
+def _refill_activity(db, config_id):
+    from app.models.integration_activity import IntegrationActivity
+
+    db.expire_all()
+    return [
+        row for row in db.query(IntegrationActivity).all()
+        if config_id in repr(row.request_summary_json) and "line check" in row.operation
+    ]
+
+
+@pytest.mark.parametrize("empty", ["", "   ", None])
+def test_startup_refills_an_empty_fingerprint_query_from_the_preset(db, empty, caplog):
+    from modules.autocount.bootstrap import install
+
+    company = _api_company(db, database="AED_FP_S")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery=empty)
+    config_id = config.id
+    db.expire_all()
+
+    with caplog.at_level(logging.WARNING):
+        install(db.get_bind(), db)
+    db.commit()
+    db.expire_all()
+
+    assert db.get(AcEntityConfig, config_id).source_config["fingerprintQuery"] == (
+        SO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_S")
+    )
+    assert any(
+        config_id in r.getMessage() and "refill" in r.getMessage().lower() for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+    assert len(_refill_activity(db, config_id)) == 1
+
+    install(db.get_bind(), db)  # idempotent: nothing more to refill
+    db.commit()
+    assert len(_refill_activity(db, config_id)) == 1
+
+
+def test_startup_never_touches_a_custom_fingerprint_query(db):
+    from modules.autocount.bootstrap import install
+
+    company = _api_company(db, database="AED_FP_K")
+    custom = "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount FROM AED_FP_K.dbo.SODTL AS d GROUP BY d.DocKey"
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery=custom)
+    config_id = config.id
+    db.expire_all()
+
+    install(db.get_bind(), db)
+    db.commit()
+    db.expire_all()
+
+    assert db.get(AcEntityConfig, config_id).source_config["fingerprintQuery"] == custom
+    assert _refill_activity(db, config_id) == []
+
+
+def test_the_scheduler_refills_an_empty_fingerprint_query_before_the_sweep(db):
+    from modules.autocount.scheduler import sweep_etl_tasks
+
+    company = _api_company(db, database="AED_FP_T")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    config.etl_status = ETL_STATUS_ACTIVE
+    config.next_incremental_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+    config_id = config.id
+
+    sweep_etl_tasks(db)
+    db.expire_all()
+
+    assert db.get(AcEntityConfig, config_id).source_config["fingerprintQuery"] == (
+        SO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_T")
+    )
+    assert len(_refill_activity(db, config_id)) == 1
+
+
+def test_a_refill_resets_stored_fingerprints_so_the_first_sweep_only_seeds(db):
+    from modules.autocount.backfill import refill_empty_fingerprint_queries
+
+    model = _model()
+    company = _api_company(db, database="AED_FP_R")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    db.add(model(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_SALES_ORDER,
+        source_ref="AED_FP_R:1", fingerprint="old", seen_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+    assert refill_empty_fingerprint_queries(db, config_ids=[config.id]) == 1
+    db.commit()
+    db.expire_all()
+    assert db.query(model).filter(model.company_id == company.id).count() == 0
