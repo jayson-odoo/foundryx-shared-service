@@ -703,8 +703,9 @@ refreshes on every sweep tick regardless of whether the header's own compared co
 
 On an INCREMENTAL run only (never the initial load, never reconcile - both already have a
 complete, correct view), once the watermark-paged pass above finishes and
-`now - ac_watermark.last_fingerprint_sweep_at >= autocount_fingerprint_sweep_minutes` (default
-15, floor 1; NULL/missing = due), the sweep runs the fingerprint query exactly once and buckets
+the optional throttle allows it (`autocount_fingerprint_sweep_minutes`, default 0 = every
+incremental run, floor 0; when set > 0, `now - ac_watermark.last_fingerprint_sweep_at` must reach
+it, NULL/missing = due - owner ruling 2026-10-27, SS-RECONCILE-SKIP-FIX), the sweep runs the fingerprint query exactly once and buckets
 every returned DocKey:
 
 - a **stored fingerprint that differs** - genuinely changed; its DocKey joins a **separate
@@ -733,15 +734,17 @@ once).
 
 **Cost.** The fingerprint query is a full scan + hash aggregate over EVERY line row inside
 `from_date`, not a bounded page - on the live company that is 1.19M SODTL rows for `sales_order`
-alone, run up to 96 times a day per document entity (every `autocount_fingerprint_sweep_minutes`
-at the default 15) across three document entities (SO/PO/SPO), over the ZeroTier relay to the
-on-prem SQL server. Measured on AED_SORENTO (SO fingerprint query, `from_date` 2023-09-01, 1.19M
-SODTL rows): elapsed 0.54 s, CPU 5.99 s (parallel plan), 2026-09-07 ~11:00Z. PO/SPO not measured
-separately; PODTL is a fraction of SODTL, so its cost is lower. At 0.54 s elapsed per tick the
-default `autocount_fingerprint_sweep_minutes` interval (15) stands - well under the ~5 s
-threshold below. Mitigation knob: `AUTOCOUNT_FINGERPRINT_SWEEP_MINUTES` - raise to 30 or 60
-(still floor-1-enforced, never disabled outright) if a future measurement (a larger `from_date`
-window, a busier server) comes in above roughly 5 s per tick.
+alone, run on EVERY incremental run per document entity (owner ruling 2026-10-27: the line
+check follows the task's own configured cadence - 1 minute in prod, so up to 1,440 times a day -
+instead of the original 15-minute floor, so a line-only change such as a DO transfer never waits)
+across three document entities (SO/PO/SPO), over the ZeroTier relay to the on-prem SQL server.
+Measured on AED_SORENTO (SO fingerprint query, `from_date` 2023-09-01, 1.19M SODTL rows): elapsed
+0.54 s, CPU 5.99 s (parallel plan), 2026-09-07 ~11:00Z. PO/SPO not measured separately; PODTL is
+a fraction of SODTL, so its cost is lower. 0.54 s elapsed per run is well under the ~5 s
+threshold below, even once a minute. Mitigation knob: `AUTOCOUNT_FINGERPRINT_SWEEP_MINUTES` -
+set it above 0 (e.g. 5 or 15) to throttle the sweep if a future measurement (a larger
+`from_date` window, a busier server) comes in above roughly 5 s per run, or pick a cheaper query
+shape.
 
 **Blind spot (documented, accepted).** A change that leaves all four aggregates identical -
 same line count, same summed quantities, same max detail key (an in-place edit to a

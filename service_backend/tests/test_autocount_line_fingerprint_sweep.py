@@ -591,11 +591,6 @@ class _Rig:
             .one()
         )
 
-    def age_sweep(self, minutes: int):
-        watermark = self.watermark()
-        watermark.last_fingerprint_sweep_at = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-        self.db.commit()
-
     def close(self):
         self.db.close()
         RUNTIME.dispose_all()
@@ -676,7 +671,7 @@ def test_a_run_inside_an_opt_in_sweep_interval_does_not_run_the_fingerprint_quer
 
 def test_a_delivery_that_leaves_the_header_untouched_is_restaged_by_the_sweep(rig):
     """SO419208: TransferedQty rises, SO.LastModified does not. The next
-    incremental run past the interval must re-stage exactly that document as
+    incremental run must re-stage exactly that document as
     an UPDATE carrying the new qty_delivered, refresh its row hash and its
     fingerprint, and leave the two unchanged documents unfetched."""
     rig.run(RUN_MODE_MANUAL)
@@ -686,7 +681,6 @@ def test_a_delivery_that_leaves_the_header_untouched_is_restaged_by_the_sweep(ri
 
     with rig.engine.begin() as conn:
         conn.exec_driver_sql("UPDATE so_line SET qty_delivered = '4' WHERE dtl_key = 'D001-1'")
-    rig.age_sweep(minutes=16)
 
     job4, run4 = rig.run(RUN_MODE_INCREMENTAL)
     assert len(rig.statements["fingerprint"]) == 1
@@ -736,7 +730,6 @@ def test_a_new_document_and_a_fingerprint_change_stage_in_the_same_incremental_r
             "INSERT INTO so_header VALUES ('D004', 'SO-004', 'open', '2026-08-04', '2026-09-01 09:00:00')"
         )
         conn.exec_driver_sql("INSERT INTO so_line VALUES ('D004-1', 'D004', 'ITEM-D', '1', '0')")
-    rig.age_sweep(minutes=16)
 
     job, run = rig.run(RUN_MODE_INCREMENTAL)
     staged = rig.staged(job.id)
