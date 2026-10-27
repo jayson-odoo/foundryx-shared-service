@@ -798,6 +798,12 @@ class EtlSourceConfigIn(ApiModel):
     # fields are persisted `ac_field_mapping` rows now (AC-02-01), saved
     # through the mapping editor's PUT, not this task-config PUT.
     filterFormula: Optional[str] = None
+    # Plan 36 - the document line-fingerprint sweep query. Not an editor
+    # field (the editor echoes back what it loaded): omitted / null / blank
+    # keeps the stored one (or the entity preset's when none is stored), so a
+    # Source-tab Save never wipes it. A changed text resets the task's
+    # fingerprint rows.
+    fingerprintQuery: Optional[str] = None
     incrementalMinutes: int = 15
     reconcileMode: str = "dailyAt"
     reconcileHours: Optional[int] = None
