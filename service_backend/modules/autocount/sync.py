@@ -1498,7 +1498,7 @@ def _run_fingerprint_sweep(
     last_swept = watermark_row.last_fingerprint_sweep_at
     full_pass = not interval or last_swept is None or (now - last_swept) >= interval
     window_days = settings.autocount_fingerprint_fast_window_days
-    if not full_pass and not window_days:
+    if not full_pass and (not window_days or not _fast_window_applies(source)):
         return 0, 0, 0, 0, None
 
     try:
@@ -1602,6 +1602,16 @@ def _run_fingerprint_sweep(
 FINGERPRINT_WINDOW_KEY = "fingerprintWindow"
 
 
+def _fast_window_applies(source) -> bool:
+    """The fast pass bounds the fingerprint's ``DocKey`` by the task's own
+    first KEY in the window, so it only applies when that key IS the
+    document key (``DocKey``, any case/underscores). A task keyed on
+    something else (the AR Outstanding preset's ``DebtorKey``: debtor keys
+    do not follow the window's dates) keeps the full pass on its cadence."""
+    keys = list(getattr(source, "key_columns", None) or [])
+    return bool(keys) and keys[0].replace("_", "").lower() == "dockey"
+
+
 def _fast_window_first_key(
     db: Session, source, watermark_row: AcWatermark, *, now: datetime, window_days: int
 ) -> Any:
@@ -1609,13 +1619,17 @@ def _fast_window_first_key(
     cache when it was computed for the same window start (so the header
     lookup runs once per day per task, not once per run), else looked up and
     cached. ``None`` = no document in the window (the fast pass is a no-op;
-    the plain watermark pass still stages anything new)."""
+    the plain watermark pass still stages anything new; never cached)."""
     window_start = (now - timedelta(days=window_days)).date()
     cursor = watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
     cached = cursor.get(FINGERPRINT_WINDOW_KEY)
     if isinstance(cached, dict) and cached.get("start") == window_start.isoformat():
         return cached.get("firstKey")
     first_key = source.window_first_key(window_start)
+    if first_key is None:
+        # Not cached: an empty window is cheap to re-check, and a document
+        # created later today must not wait for tomorrow's lookup.
+        return None
     if isinstance(first_key, Decimal) and first_key == first_key.to_integral_value():
         first_key = int(first_key)
     elif first_key is not None and not isinstance(first_key, (int, str)):

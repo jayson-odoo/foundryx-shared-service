@@ -981,3 +981,49 @@ def test_a_sweep_only_error_is_shown_on_the_run_but_not_alerted(db):
     assert repo.failed_runs_summary(
         DEFAULT_TENANT_ID, "co-sweep", ENTITY_CUSTOMER, None, [RUN_MODE_INCREMENTAL]
     )[0] == 1
+
+
+def test_an_empty_window_is_not_cached_so_a_later_document_gets_the_fast_pass(rig):
+    """Review nit: a ``None`` first key must not stick for the whole day - a
+    document created later that day would otherwise wait for the full pass."""
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # full
+    rig.run(RUN_MODE_INCREMENTAL)  # fast: no document in the window yet
+    assert len(rig.window_lookups()) == 1
+    assert rig.statements["fingerprint"] == []
+
+    rig.add_doc("D010", days_ago=0)
+    rig.run(RUN_MODE_INCREMENTAL)  # looked up again, now finds D010
+    assert len(rig.window_lookups()) == 1
+    rig.deliver("D010-1", "1")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert set(rig.staged(job.id)) == {"D010"}
+
+
+def test_the_fast_pass_only_runs_for_a_task_keyed_on_doc_key(session_factory):
+    """Review should-fix: a task whose key column is not the fingerprint's
+    ``DocKey`` (the AR Outstanding preset keys on ``DebtorKey``) gets no DocKey
+    window - its keys do not follow the window's dates, so the bound would
+    not be fast. It keeps the full pass on its cadence."""
+    from modules.autocount.sync import _fast_window_applies
+
+    class _Src:
+        key_columns = ["DebtorKey"]
+
+    assert _fast_window_applies(_Src()) is False
+    _Src.key_columns = ["DocKey"]
+    assert _fast_window_applies(_Src()) is True
+
+
+def test_a_task_not_keyed_on_doc_key_skips_the_fast_pass_between_full_passes(rig, monkeypatch):
+    import modules.autocount.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "_fast_window_applies", lambda source: False)
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # full still runs
+    assert len(rig.sweep_statements("full")) == 1
+
+    rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.statements["fingerprint"] == []
+    assert rig.window_lookups() == []
