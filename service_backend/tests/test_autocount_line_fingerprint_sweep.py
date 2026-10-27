@@ -738,6 +738,9 @@ def test_a_fingerprint_query_error_fails_only_the_sweep(session_factory, caplog)
         assert rig.watermark().last_fingerprint_sweep_at is None, (
             "a failed sweep must not be counted as done"
         )
+        # SS-RECONCILE-SKIP-FIX: a WARNING log alone is invisible to an
+        # operator - the failure is surfaced on the run row the Runs list shows.
+        assert run.error and "fingerprint sweep failed" in run.error.lower(), run.error
         assert any(
             r.levelno >= logging.WARNING and "fingerprint" in r.getMessage().lower()
             for r in caplog.records

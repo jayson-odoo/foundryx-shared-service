@@ -524,3 +524,139 @@ def test_an_active_healthy_tenant_task_still_dispatches(session_factory):
 
     assert result == {"fired": 1, "skipped": 0, "failed": 0}
     assert len(_jobs_for(db, company.id, ENTITY_CUSTOMER)) == 1
+
+
+# ── SS-RECONCILE-SKIP-FIX: a skipped reconcile tick must not be consumed ──────
+# Prod (AED sales_order, 27 Oct): the daily reconcile tick met an in-flight
+# run, was skipped, but the claim had already re-armed ``next_reconcile_at`` to
+# the next day - the whole day's reconcile was lost.
+
+
+def _running_job(db, company_id, *, entity_type=ENTITY_CUSTOMER):
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status="running",
+        payload_json={"companyId": company_id, "entityType": entity_type},
+        started_at=NOW - timedelta(minutes=2), heartbeat_at=NOW - timedelta(minutes=1),
+    )
+    db.add(job)
+    db.commit()
+    return job
+
+
+def _skip_rows(db, company_id):
+    return (
+        db.query(AcSyncRun)
+        .filter(
+            AcSyncRun.tenant_id == DEFAULT_TENANT_ID,
+            AcSyncRun.company_id == company_id,
+            AcSyncRun.mode == RUN_MODE_SKIPPED,
+        )
+        .all()
+    )
+
+
+def test_a_reconcile_tick_skipped_for_an_in_flight_run_stays_due(session_factory):
+    db = session_factory()
+    company = _company(db)
+    slot = NOW - timedelta(minutes=5)
+    config = _task(db, company, next_reconcile_at=slot)
+    _running_job(db, company.id)
+
+    result = sweep_etl_tasks(db, now=NOW)
+
+    assert result == {"fired": 0, "skipped": 1, "failed": 0}
+    db.refresh(config)
+    assert config.next_reconcile_at == slot, "the skipped reconcile slot must NOT be advanced"
+    rows = _skip_rows(db, company.id)
+    assert len(rows) == 1
+    assert "reconcile" in rows[0].skip_reason.lower()
+    assert "retr" in rows[0].skip_reason.lower()
+    db.close()
+
+
+def test_a_deferred_reconcile_records_one_skip_row_not_one_per_tick(session_factory):
+    db = session_factory()
+    company = _company(db)
+    config = _task(db, company, next_reconcile_at=NOW - timedelta(minutes=5))
+    _running_job(db, company.id)
+
+    for minute in range(3):
+        sweep_etl_tasks(db, now=NOW + timedelta(minutes=minute))
+
+    assert len(_skip_rows(db, company.id)) == 1
+    db.refresh(config)
+    assert config.next_reconcile_at <= NOW
+    assert len(_jobs_for(db, company.id, ENTITY_CUSTOMER)) == 1  # never queued behind
+    db.close()
+
+
+def test_the_deferred_reconcile_runs_exactly_once_after_the_in_flight_run_ends(session_factory):
+    db = session_factory()
+    company = _company(db)
+    config = _task(db, company, next_reconcile_at=NOW - timedelta(minutes=5))
+    job = _running_job(db, company.id)
+
+    assert sweep_etl_tasks(db, now=NOW)["skipped"] == 1
+    job.status = "done"
+    job.finished_at = NOW + timedelta(seconds=30)
+    db.commit()
+
+    later = NOW + timedelta(minutes=1)
+    assert sweep_etl_tasks(db, now=later) == {"fired": 1, "skipped": 0, "failed": 0}
+    jobs = [j for j in _jobs_for(db, company.id, ENTITY_CUSTOMER) if j.id != job.id]
+    assert len(jobs) == 1
+    assert jobs[0].payload_json["mode"] == RUN_MODE_RECONCILE
+    db.refresh(config)
+    assert config.next_reconcile_at > later
+    # The next tick finds nothing due - no second reconcile.
+    assert sweep_etl_tasks(db, now=later + timedelta(minutes=1)) == {
+        "fired": 0, "skipped": 0, "failed": 0,
+    }
+    db.close()
+
+
+def test_both_due_and_in_flight_advances_incremental_but_keeps_reconcile_due(session_factory):
+    """The incremental slot is still consumed (the next incremental re-reads
+    everything past the watermark, so nothing is lost and the overlap is not
+    re-reported every tick); only the reconcile slot is kept due."""
+    db = session_factory()
+    company = _company(db)
+    slot = NOW - timedelta(minutes=5)
+    config = _task(
+        db, company, next_incremental_at=NOW - timedelta(minutes=1), next_reconcile_at=slot,
+    )
+    _running_job(db, company.id)
+
+    assert sweep_etl_tasks(db, now=NOW)["skipped"] == 1
+
+    db.refresh(config)
+    assert config.next_incremental_at > NOW
+    assert config.next_reconcile_at == slot
+    db.close()
+
+
+def test_an_open_incremental_pass_does_not_consume_a_due_reconcile(session_factory):
+    """Sibling path in ``_sweep_one``: an open incremental pass wins the
+    tick's MODE (F3) - the reconcile slot that was due must stay due rather
+    than be re-armed for a reconcile that never ran."""
+    from modules.autocount.models import AcWatermark
+
+    db = session_factory()
+    company = _company(db)
+    slot = NOW - timedelta(minutes=5)
+    config = _task(db, company, next_reconcile_at=slot)
+    db.add(
+        AcWatermark(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_CUSTOMER,
+            cursor_json={"pass": {"kind": RUN_MODE_INCREMENTAL, "complete": False}},
+        )
+    )
+    db.commit()
+
+    assert sweep_etl_tasks(db, now=NOW)["fired"] == 1
+
+    jobs = _jobs_for(db, company.id, ENTITY_CUSTOMER)
+    assert [j.payload_json["mode"] for j in jobs] == [RUN_MODE_INCREMENTAL]
+    db.refresh(config)
+    assert config.next_reconcile_at == slot
+    db.close()
