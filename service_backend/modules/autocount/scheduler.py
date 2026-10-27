@@ -398,6 +398,8 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         db.commit()
         return "skipped"
 
+    _refill_empty_line_check(db, config)
+
     try:
         JobService(db).create_and_enqueue(
             type=AUTOCOUNT_SYNC,
@@ -443,6 +445,28 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
         db.commit()
     return "fired"
+
+
+def _refill_empty_line_check(db: Session, config: AcEntityConfig) -> None:
+    """SS-RECONCILE-SKIP-FIX (owner OK 27 Oct): a document task whose
+    line-check query is empty gets it refilled from its preset right before
+    the run is enqueued (the deploy-time refill covers the rest). A Python
+    check first, so a task that has one costs no query. Never fails the tick:
+    a refill problem is logged and the run goes ahead as before."""
+    from .backfill import refill_empty_fingerprint_queries
+    from .presets import DOCUMENT_PRESETS
+
+    if config.entity_type not in DOCUMENT_PRESETS:
+        return
+    current = (config.source_config or {}).get("fingerprintQuery")
+    if isinstance(current, str) and current.strip():
+        return
+    try:
+        refill_empty_fingerprint_queries(db, config_ids=[config.id])
+        db.commit()
+    except Exception:  # noqa: BLE001 - a refill never blocks the run
+        db.rollback()
+        logger.exception("autocount line-check refill failed for task %s", config.id)
 
 
 def _keep_reconcile_due(

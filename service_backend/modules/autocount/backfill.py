@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import sqlalchemy as sa
 
@@ -1535,7 +1535,12 @@ _FINGERPRINT_BACKFILL_COMPANY_COLUMNS = {"id", "tenant_id", "database_name"}
 
 
 def backfill_document_fingerprint_queries(
-    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+    bind: Any,
+    *,
+    schema: Optional[str] = AUTOCOUNT_SCHEMA,
+    config_ids: Optional[Sequence[str]] = None,
+    on_refill: Optional[Callable[[str, str, str, str], None]] = None,
+    warn_custom: bool = True,
 ) -> int:
     """Sets ``source_config["fingerprintQuery"]`` from the entity's own
     preset (with ``{database}`` substituted from the task's OWN company)
@@ -1560,6 +1565,14 @@ def backfill_document_fingerprint_queries(
     Never a bare id lookup: a config's company is resolved WITH the
     config's OWN ``tenant_id`` (the polymorphic-target_id rule) before its
     ``database_name`` is trusted for the substitution.
+
+    SS-RECONCILE-SKIP-FIX (owner OK 27 Oct): also the service's own refill
+    (``refill_empty_fingerprint_queries``, on every deploy and before a
+    scheduled sweep). A blank/whitespace-only value counts as empty.
+    ``config_ids`` narrows the pass to those tasks, ``on_refill(config_id,
+    tenant_id, company_id, entity_type)`` is told about each refilled task,
+    and ``warn_custom=False`` drops the per-task "left untouched" warning a
+    pass that runs on every deploy would otherwise repeat forever.
     """
     needed = {
         "ac_entity_config": _FINGERPRINT_BACKFILL_ENTITY_CONFIG_COLUMNS,
@@ -1605,12 +1618,15 @@ def backfill_document_fingerprint_queries(
 
     connectable = bind.connection() if hasattr(bind, "get_bind") else bind
 
-    configs = connectable.execute(
-        sa.select(
-            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
-            entity_config.c.entity_type, entity_config.c.source_config,
-        ).where(entity_config.c.entity_type.in_(list(DOCUMENT_PRESETS.keys())))
-    ).fetchall()
+    select = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.entity_type, entity_config.c.source_config,
+    ).where(entity_config.c.entity_type.in_(list(DOCUMENT_PRESETS.keys())))
+    if config_ids is not None:
+        if not config_ids:
+            return 0
+        select = select.where(entity_config.c.id.in_(list(config_ids)))
+    configs = connectable.execute(select).fetchall()
 
     touched = 0
     for config_id, tenant_id, company_id, entity_type, source_config in configs:
@@ -1620,7 +1636,11 @@ def backfill_document_fingerprint_queries(
 
         source_config = source_config or {}
         existing = source_config.get("fingerprintQuery")
+        if isinstance(existing, str):
+            existing = existing.strip()
         if existing:
+            if not warn_custom:
+                continue
             logger.warning(
                 "Task %s already has a fingerprintQuery - the "
                 "line-fingerprint-sweep backfill left it untouched.",
@@ -1659,6 +1679,50 @@ def backfill_document_fingerprint_queries(
                 )
             )
         touched += 1
+        if on_refill is not None:
+            on_refill(config_id, tenant_id, company_id, entity_type)
+    return touched
+
+
+def refill_empty_fingerprint_queries(
+    db: Any, *, config_ids: Optional[Sequence[str]] = None
+) -> int:
+    """SS-RECONCILE-SKIP-FIX (owner OK 27 Oct) - the service's OWN refill of
+    an EMPTY line-check (``fingerprintQuery``) from the entity's preset. An
+    empty one silently turns the line check off (line-only changes such as a
+    DO transfer then wait for the daily reconcile). Runs on every deploy
+    (``bootstrap.install``) and in the scheduler before a task's sweep.
+
+    Idempotent; a non-empty (custom) query is never touched; each refill is
+    logged and recorded as an Activity row naming the task. The task's stored
+    fingerprints are reset (``backfill_document_fingerprint_queries``), so the
+    first sweep after a refill only seeds the baseline. The caller commits.
+    """
+    from .activity import ACTIVITY_SUCCESS, record_activity
+
+    refilled: List[Tuple[str, str, str, str]] = []
+    touched = backfill_document_fingerprint_queries(
+        db,
+        schema=default_schema(db.get_bind()),
+        config_ids=config_ids,
+        on_refill=lambda *row: refilled.append(row),
+        warn_custom=False,
+    )
+    for config_id, tenant_id, company_id, entity_type in refilled:
+        logger.warning(
+            "autocount task %s (%s, company %s) had an empty line-check query; "
+            "refilled it from the %s preset. The next sweep seeds the baseline.",
+            config_id, entity_type, company_id, entity_type,
+        )
+        # Activity writes commit the session, which also commits the refill.
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"refill line check query {entity_type}",
+            status=ACTIVITY_SUCCESS,
+            request={"taskId": config_id, "companyId": company_id, "entityType": entity_type},
+            response={"refilledFrom": "preset", "fingerprintsReset": True},
+        )
     return touched
 
 

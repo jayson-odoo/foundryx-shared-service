@@ -1125,3 +1125,34 @@ def test_a_refill_resets_stored_fingerprints_so_the_first_sweep_only_seeds(db):
     db.commit()
     db.expire_all()
     assert db.query(model).filter(model.company_id == company.id).count() == 0
+
+
+def test_the_deploy_refill_does_not_warn_about_custom_queries_on_every_deploy(db, caplog):
+    from modules.autocount.bootstrap import install
+
+    company = _api_company(db, database="AED_FP_W")
+    custom = "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount FROM AED_FP_W.dbo.SODTL AS d GROUP BY d.DocKey"
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery=custom)
+    config_id = config.id
+
+    with caplog.at_level(logging.WARNING):
+        install(db.get_bind(), db)
+    assert not any(config_id in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_a_targeted_refill_only_touches_the_named_task(db):
+    from modules.autocount.backfill import refill_empty_fingerprint_queries
+
+    company = _api_company(db, database="AED_FP_N")
+    target = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    other = _stored_config(db, company, ENTITY_PURCHASE_ORDER, fingerprintQuery="")
+    target_id, other_id = target.id, other.id
+
+    assert refill_empty_fingerprint_queries(db, config_ids=[target_id]) == 1
+    db.commit()
+    db.expire_all()
+    assert db.get(AcEntityConfig, target_id).source_config["fingerprintQuery"]
+    assert db.get(AcEntityConfig, other_id).source_config["fingerprintQuery"] == ""
+    assert refill_empty_fingerprint_queries(db, config_ids=[]) == 0

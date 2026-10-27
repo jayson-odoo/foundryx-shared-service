@@ -151,6 +151,12 @@ def install(engine: Engine, db: Session) -> None:
     """
     create_schema_and_tables(engine)
     PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    # SS-RECONCILE-SKIP-FIX: every deploy refills an EMPTY line-check query
+    # from the task's preset (never a custom one) - an empty one silently
+    # switches the line check off.
+    from .backfill import refill_empty_fingerprint_queries
+
+    refill_empty_fingerprint_queries(db)
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:
