@@ -1476,8 +1476,9 @@ def _run_fingerprint_sweep(
     WARNING naming "fingerprint", the run's own outcome (and whatever the
     paged pass above already staged) stands, and
     ``last_fingerprint_sweep_at`` is left untouched so the NEXT tick tries
-    again rather than silently going quiet for
-    ``autocount_fingerprint_sweep_minutes``.
+    again rather than silently going quiet for an opt-in
+    ``autocount_fingerprint_sweep_minutes`` throttle (default 0 = every
+    incremental run).
     """
     if not getattr(source, "fingerprint_query", None):
         return 0, 0, 0, 0, None
@@ -1485,7 +1486,8 @@ def _run_fingerprint_sweep(
     now = datetime.now(timezone.utc)
     interval = timedelta(minutes=settings.autocount_fingerprint_sweep_minutes)
     last_swept = watermark_row.last_fingerprint_sweep_at
-    if last_swept is not None and (now - last_swept) < interval:
+    # Default 0: no throttle - every incremental run sweeps (owner ruling).
+    if interval and last_swept is not None and (now - last_swept) < interval:
         return 0, 0, 0, 0, None
 
     try:
