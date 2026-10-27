@@ -3,7 +3,9 @@
 ONE indexed query selects every ACTIVE ``sql_db`` task whose next incremental
 or reconcile time is due; each is then claimed (a guarded ``UPDATE`` so two
 beats ticking the same task never both enqueue), overlap-guarded (a run still
-in flight → a ``skipped`` run-history row, no job queued), and enqueued
+in flight → a ``skipped`` run-history row, no job queued; a skipped
+RECONCILE slot is deferred, not consumed - it stays due and runs on the first
+tick after the in-flight run ends), and enqueued
 through the SAME ``autocount_sync`` background job the manual "Run now" button
 uses - ``mode='incremental'`` or ``'reconcile'`` (reconcile wins when both are
 due).
@@ -54,6 +56,14 @@ from .services.etl_service import EtlService
 from .bootstrap import MODULE_NAME as AUTOCOUNT_MODULE_NAME
 
 logger = logging.getLogger("foundryx.autocount")
+
+# The run-history ``skip_reason`` of a reconcile deferred by the overlap guard
+# (SS-RECONCILE-SKIP-FIX) - also the prefix the one-row-per-slot dedupe reads.
+RECONCILE_DEFERRED_REASON = (
+    "A run for this task was still in progress when the reconcile schedule "
+    "fired; the reconcile stays due and is retried on the first tick after "
+    "that run ends."
+)
 
 # S3 review SHOULD-FIX 3: a job wedged in ``running``/``pending`` forever (a
 # crashed worker that never reached a terminal status) makes the overlap
@@ -239,6 +249,10 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
     next_incremental, next_reconcile = EtlService.next_run_times(
         config.source_config or {}, now=now
     )
+    # The reconcile slot exactly as it stood before this tick's claim - a
+    # tick that ends up NOT running a reconcile puts it back (see
+    # ``_keep_reconcile_due``).
+    reconcile_slot = config.next_reconcile_at
 
     # Guarded claim - two beat processes ticking the same task must not both
     # enqueue (mirrors `run_due_workflows`'s claim-before-fire UPDATE). Only
@@ -342,25 +356,49 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             )
             in_flight = None
     if in_flight is not None:
-        SyncRunRepository(db).add(
-            AcSyncRun(
-                tenant_id=tenant_id,
-                company_id=company_id,
-                entity_type=entity_type,
-                job_id=None,
-                mode=RUN_MODE_SKIPPED,
-                skip_reason=(
-                    f"A run for this task was still in progress when the "
-                    f"{'reconcile' if mode == RUN_MODE_RECONCILE else 'incremental'} "
-                    f"schedule fired; this tick was skipped."
-                ),
-                started_at=now,
-                finished_at=now,
-                duration_ms=0,
+        runs = SyncRunRepository(db)
+        if due_reconcile:
+            #     !!  A SKIPPED RECONCILE IS DEFERRED, NEVER CONSUMED
+            #         (SS-RECONCILE-SKIP-FIX, prod 27 Oct).  !!
+            # The claim above already re-armed ``next_reconcile_at`` to the
+            # NEXT day; leaving it there lost the whole day's reconcile (and
+            # with it every line-only change the incremental cannot see).
+            # Put the slot back so it stays due: every following tick meets
+            # this same guard until the in-flight run ends, then the first
+            # tick after that claims and runs the reconcile exactly once.
+            _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
+            # One skip row per deferred slot, not one per minute while the
+            # run is in flight - unless the incremental cadence was ALSO due,
+            # which has always written its own row per cadence.
+            write_row = due_incremental or not runs.has_skip_since(
+                tenant_id, company_id, entity_type,
+                since=reconcile_slot, reason_prefix=RECONCILE_DEFERRED_REASON,
             )
-        )
+            reason = RECONCILE_DEFERRED_REASON
+        else:
+            write_row = True
+            reason = (
+                "A run for this task was still in progress when the incremental "
+                "schedule fired; this tick was skipped."
+            )
+        if write_row:
+            runs.add(
+                AcSyncRun(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    job_id=None,
+                    mode=RUN_MODE_SKIPPED,
+                    skip_reason=reason,
+                    started_at=now,
+                    finished_at=now,
+                    duration_ms=0,
+                )
+            )
         db.commit()
         return "skipped"
+
+    _refill_empty_line_check(db, config)
 
     try:
         JobService(db).create_and_enqueue(
@@ -369,6 +407,12 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             payload={"companyId": company_id, "entityType": entity_type, "mode": mode},
         )
     except Exception as exc:  # noqa: BLE001
+        if due_reconcile and mode != RUN_MODE_RECONCILE:
+            # The open-pass deferral below must not be lost to a failed
+            # enqueue either (nothing was queued, so no overlap risk).
+            db.rollback()
+            _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
+            db.commit()
         # S4 review SHOULD-FIX 4: the claim above already COMMITTED (the due
         # time already advanced), so a failure here is a genuinely LOST tick,
         # not a retried one - invisible unless it is stamped somewhere an
@@ -392,4 +436,51 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         finally:
             fresh.close()
         raise
+    if due_reconcile and mode != RUN_MODE_RECONCILE:
+        # An open non-reconcile pass won this tick's mode (F3 above), so the
+        # reconcile that was due did not run - keep it due rather than lose
+        # it to the claim's re-arm. Done AFTER the enqueue: the job now
+        # exists, so a sibling beat that claims the slot meanwhile meets the
+        # overlap guard instead of double-enqueueing.
+        _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
+        db.commit()
     return "fired"
+
+
+def _refill_empty_line_check(db: Session, config: AcEntityConfig) -> None:
+    """SS-RECONCILE-SKIP-FIX (owner OK 27 Oct): a document task whose
+    line-check query is empty gets it refilled from its preset right before
+    the run is enqueued (the deploy-time refill covers the rest). A Python
+    check first, so a task that has one costs no query. Never fails the tick:
+    a refill problem is logged and the run goes ahead as before."""
+    from .backfill import refill_empty_fingerprint_queries
+    from .presets import DOCUMENT_PRESETS
+
+    if config.entity_type not in DOCUMENT_PRESETS:
+        return
+    current = (config.source_config or {}).get("fingerprintQuery")
+    if isinstance(current, str) and current.strip():
+        return
+    try:
+        refill_empty_fingerprint_queries(db, config_ids=[config.id])
+        db.commit()
+    except Exception:  # noqa: BLE001 - a refill never blocks the run
+        db.rollback()
+        logger.exception("autocount line-check refill failed for task %s", config.id)
+
+
+def _keep_reconcile_due(
+    db: Session, config_id: str, *, armed: Optional[datetime], slot: Optional[datetime]
+) -> None:
+    """Undo this tick's re-arm of ``next_reconcile_at`` (back to ``slot``,
+    still ``<= now`` so the next tick finds it due). Guarded on the value the
+    claim wrote: if anything else re-armed the task since to a DIFFERENT value
+    (an activate/resume with a changed schedule), that value wins. A re-arm
+    that recomputes the very same slot is indistinguishable and gets the old
+    slot back - at worst one extra reconcile, never a lost one."""
+    if slot is None or armed is None:
+        return
+    db.query(AcEntityConfig).filter(
+        AcEntityConfig.id == config_id,
+        AcEntityConfig.next_reconcile_at == armed,
+    ).update({AcEntityConfig.next_reconcile_at: slot}, synchronize_session=False)

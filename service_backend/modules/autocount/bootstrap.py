@@ -12,6 +12,7 @@ integration provider. Companies, watermarks, entity config, staging and the sync
 job handler are filled in by later slices - the hooks are wired now so the
 module contract is complete from day one.
 """
+import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -151,6 +152,23 @@ def install(engine: Engine, db: Session) -> None:
     """
     create_schema_and_tables(engine)
     PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    # SS-RECONCILE-SKIP-FIX: every deploy refills an EMPTY line-check query
+    # from the task's preset (never a custom one) - an empty one silently
+    # switches the line check off. BEST-EFFORT: the permission sync above is
+    # committed first, and a refill failure (a lock/statement timeout on a
+    # task row) is logged, never allowed to abort the deploy (module_loader
+    # re-raises install errors, issue #89) - the scheduler retries per task.
+    from .backfill import refill_empty_fingerprint_queries
+
+    db.commit()
+    try:
+        refill_empty_fingerprint_queries(db)
+        db.commit()
+    except Exception:  # noqa: BLE001 - never block a deploy on a refill
+        db.rollback()
+        logging.getLogger("foundryx.autocount").exception(
+            "autocount line-check refill failed at bootstrap; the scheduler retries per task"
+        )
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:

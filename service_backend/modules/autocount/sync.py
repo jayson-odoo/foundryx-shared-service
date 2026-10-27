@@ -106,6 +106,7 @@ from .models import (
     AcSyncRun,
     AcWatermark,
 )
+from .repositories.autocount_repository import SWEEP_NOTE_PREFIX
 from .repositories import (
     CompanyRepository,
     DocFingerprintRepository,
@@ -1425,11 +1426,13 @@ def _run_fingerprint_sweep(
     tenant_id: str,
     company_id: str,
     entity_type: str,
-) -> Tuple[int, int, int, int]:
+) -> Tuple[int, int, int, int, Optional[str]]:
     """The line-fingerprint sweep (feat/line-fingerprint-sweep) - INCREMENTAL
     runs only, called once per run AFTER the watermark-paged pass above has
-    already committed. Returns ``(staged, failed, added, updated)`` to fold
-    into the run's own totals; a task with no ``fingerprint_query`` (predates
+    already committed. Returns ``(staged, failed, added, updated, error)`` -
+    the counts fold into the run's own totals, ``error`` (``None`` unless the
+    sweep itself failed) onto the run row's ``error`` so the Runs list shows
+    it (SS-RECONCILE-SKIP-FIX: a WARNING log alone reached no operator); a task with no ``fingerprint_query`` (predates
     this lane, or never picked the preset), or one still inside its own
     sweep interval, is a silent no-op - the caller's totals are untouched
     either way.
@@ -1473,24 +1476,46 @@ def _run_fingerprint_sweep(
     WARNING naming "fingerprint", the run's own outcome (and whatever the
     paged pass above already staged) stands, and
     ``last_fingerprint_sweep_at`` is left untouched so the NEXT tick tries
-    again rather than silently going quiet for
-    ``autocount_fingerprint_sweep_minutes``.
+    again rather than silently going quiet for the full-pass interval.
+
+    **FULL vs FAST (SS-RECONCILE-SKIP-FIX, owner ruling 27 Oct: lines are
+    checked on EVERY incremental run).** The FULL pass (the whole
+    ``fromDate`` range) runs when ``autocount_fingerprint_sweep_minutes`` has
+    elapsed since ``last_fingerprint_sweep_at`` (0 = every run) and is the
+    only pass that stamps it. Every other run takes the FAST pass: the same
+    query bounded to ``DocKey >= the first DocKey of the last
+    autocount_fingerprint_fast_window_days`` (``_fast_window_first_key``,
+    looked up once per window day). Both hash the same per-document
+    aggregates into the same ``ac_doc_fingerprint`` rows, so a change the
+    fast pass staged is not staged again by the next full pass. A document
+    older than the window waits for the full pass (at most the interval).
     """
     if not getattr(source, "fingerprint_query", None):
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, None
 
     now = datetime.now(timezone.utc)
     interval = timedelta(minutes=settings.autocount_fingerprint_sweep_minutes)
     last_swept = watermark_row.last_fingerprint_sweep_at
-    if last_swept is not None and (now - last_swept) < interval:
-        return 0, 0, 0, 0
+    full_pass = not interval or last_swept is None or (now - last_swept) >= interval
+    window_days = settings.autocount_fingerprint_fast_window_days
+    if not full_pass and (not window_days or not _fast_window_applies(source)):
+        return 0, 0, 0, 0, None
 
     try:
-        fingerprints = source.fetch_fingerprints()
+        if full_pass:
+            fingerprints = source.fetch_fingerprints()
+        else:
+            min_key = _fast_window_first_key(
+                db, source, watermark_row, now=now, window_days=window_days
+            )
+            if min_key is None:
+                return 0, 0, 0, 0, None
+            fingerprints = source.fetch_fingerprints(min_key=min_key)
         if not fingerprints:
-            watermark_row.last_fingerprint_sweep_at = now
-            db.commit()
-            return 0, 0, 0, 0
+            if full_pass:
+                watermark_row.last_fingerprint_sweep_at = now
+                db.commit()
+            return 0, 0, 0, 0, None
 
         fp_repo = DocFingerprintRepository(db)
         hashes_repo = RowHashRepository(db)
@@ -1558,16 +1583,64 @@ def _run_fingerprint_sweep(
         if seed_only:
             fp_repo.upsert_many(tenant_id, company_id, entity_type, seed_only, seen_at=now)
 
-        watermark_row.last_fingerprint_sweep_at = now
+        if full_pass:
+            watermark_row.last_fingerprint_sweep_at = now
         db.commit()
-        return staged, failed, added, updated
+        return staged, failed, added, updated, None
     except Exception as exc:  # noqa: BLE001 - a broken sweep must never fail the run
         db.rollback()
         logger.warning(
             "autocount fingerprint sweep failed for job %s (%s.%s): %s",
             job.id, entity_type, company_id, exc,
         )
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, f"{SWEEP_NOTE_PREFIX}{exc}"[:1000]
+
+
+# The watermark's ``cursor_json`` key caching the FAST pass's window bound -
+# ``{"start": <window start ISO date>, "firstKey": <DocKey or None>}``. Losing
+# it (a cursor reset) only costs one fresh lookup.
+FINGERPRINT_WINDOW_KEY = "fingerprintWindow"
+
+
+def _fast_window_applies(source) -> bool:
+    """The fast pass bounds the fingerprint's ``DocKey`` by the task's own
+    first KEY in the window, so it only applies when that key IS the
+    document key (``DocKey``, any case/underscores). A task keyed on
+    something else (the AR Outstanding preset's ``DebtorKey``: debtor keys
+    do not follow the window's dates) keeps the full pass on its cadence."""
+    keys = list(getattr(source, "key_columns", None) or [])
+    return bool(keys) and keys[0].replace("_", "").lower() == "dockey"
+
+
+def _fast_window_first_key(
+    db: Session, source, watermark_row: AcWatermark, *, now: datetime, window_days: int
+) -> Any:
+    """The first DocKey dated inside the fast window, from the watermark's
+    cache when it was computed for the same window start (so the header
+    lookup runs once per day per task, not once per run), else looked up and
+    cached. ``None`` = no document in the window (the fast pass is a no-op;
+    the plain watermark pass still stages anything new; never cached)."""
+    window_start = (now - timedelta(days=window_days)).date()
+    cursor = watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
+    cached = cursor.get(FINGERPRINT_WINDOW_KEY)
+    if isinstance(cached, dict) and cached.get("start") == window_start.isoformat():
+        return cached.get("firstKey")
+    first_key = source.window_first_key(window_start)
+    if first_key is None:
+        # Not cached: an empty window is cheap to re-check, and a document
+        # created later today must not wait for tomorrow's lookup.
+        return None
+    if isinstance(first_key, Decimal) and first_key == first_key.to_integral_value():
+        first_key = int(first_key)
+    elif first_key is not None and not isinstance(first_key, (int, str)):
+        first_key = str(first_key)
+    # A NEW dict (in-place JSON mutation is not tracked).
+    watermark_row.cursor_json = {
+        **cursor,
+        FINGERPRINT_WINDOW_KEY: {"start": window_start.isoformat(), "firstKey": first_key},
+    }
+    db.commit()
+    return first_key
 
 
 def _run_paged_sql_db(
@@ -1956,6 +2029,11 @@ def _run_paged_sql_db(
                     # happened to be empty", which is normal completion.
                     "rowsScanned": cumulative_rows_scanned,
                 },
+                # The fast line-check's cached window bound rides through the
+                # per-page rewrite (otherwise every run would look it up).
+                FINGERPRINT_WINDOW_KEY: (watermark_row.cursor_json or {}).get(
+                    FINGERPRINT_WINDOW_KEY
+                ),
             }
             run.rows_scanned = total_rows_scanned
             run.added_count = total_added
@@ -2116,8 +2194,11 @@ def _run_paged_sql_db(
     # reconcile (which already re-reads and re-diffs every header). A
     # truncated pass (``page.complete`` False) defers to its own
     # continuation tick, same as the reconcile-delete block above.
+    sweep_error: Optional[str] = None
     if mode == RUN_MODE_INCREMENTAL and page is not None and page.complete:
-        sweep_staged, sweep_failed, sweep_added, sweep_updated = _run_fingerprint_sweep(
+        (
+            sweep_staged, sweep_failed, sweep_added, sweep_updated, sweep_error,
+        ) = _run_fingerprint_sweep(
             db, service, job, source, engine, watermark_row,
             tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
         )
@@ -2289,6 +2370,10 @@ def _run_paged_sql_db(
         # to `None` (prod finding 2026-09-07: `pushed_count 0` / `error NULL`
         # with no way to tell a chunk-level fault happened).
         run.error = push_summary.get("error") if push_summary else None
+    if sweep_error:
+        # Appended, like the push error above: a failed line sweep means
+        # line-only changes (e.g. a DO transfer) were not looked at this run.
+        run.error = f"{run.error} {sweep_error}" if run.error else sweep_error
 
     record_activity(
         db, tenant_id=tenant_id, operation=f"sync {entity_type}", status=ACTIVITY_SUCCESS,

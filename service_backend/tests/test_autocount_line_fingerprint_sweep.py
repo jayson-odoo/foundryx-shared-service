@@ -23,7 +23,7 @@ A2. ``ac_doc_fingerprint(tenant_id, company_id, entity_type, source_ref,
     (``sql_source.hashing.document_fingerprint``).
 A3. INCREMENTAL runs only (never reconcile, never the initial load): when
     ``now - last_fingerprint_sweep_at >= settings.autocount_fingerprint_sweep_minutes``
-    (default 15, floor 1) the source runs the fingerprint query once, the
+    (default 0 = every incremental run, owner ruling 27 Oct; floor 0) the source runs the fingerprint query once, the
     header fetch adds ``DocKey IN (changed keys)`` (chunked at 500,
     ``FINGERPRINT_KEY_CHUNK``) to ``LastModified > :since``; the first sweep
     SEEDS fingerprints for known-hash documents without fetching them; staged
@@ -407,13 +407,25 @@ def test_document_fingerprint_is_a_sha_over_the_ordered_values_as_strings():
     assert fn(["3", "10", "2", None]) != same
 
 
-def test_sweep_interval_setting_defaults_to_15_minutes_with_a_floor_of_1():
+def test_full_pass_interval_defaults_to_15_minutes_with_a_floor_of_0():
+    """Owner ruling 27 Oct + crew cost measurement: the line check runs on
+    EVERY incremental run as a FAST pass over a recent window; the FULL pass
+    keeps its 15-minute cadence (0 = the full pass on every run)."""
     assert getattr(settings, "autocount_fingerprint_sweep_minutes", None) == 15
     data = settings.model_dump()
-    assert Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 1}) \
-        .autocount_fingerprint_sweep_minutes == 1
+    assert Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 0}) \
+        .autocount_fingerprint_sweep_minutes == 0
     with pytest.raises(ValidationError):
-        Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 0})
+        Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": -1})
+
+
+def test_fast_window_defaults_to_60_days_with_a_floor_of_0():
+    assert getattr(settings, "autocount_fingerprint_fast_window_days", None) == 60
+    data = settings.model_dump()
+    assert Settings.model_validate({**data, "autocount_fingerprint_fast_window_days": 0}) \
+        .autocount_fingerprint_fast_window_days == 0
+    with pytest.raises(ValidationError):
+        Settings.model_validate({**data, "autocount_fingerprint_fast_window_days": -1})
 
 
 def test_changed_key_in_list_is_chunked_at_500():
@@ -591,6 +603,37 @@ class _Rig:
         watermark.last_fingerprint_sweep_at = datetime.now(timezone.utc) - timedelta(minutes=minutes)
         self.db.commit()
 
+    def add_doc(self, doc_key: str, *, days_ago: int, qty_delivered: str = "0"):
+        """A document dated ``days_ago`` before today (the fast window is
+        relative to the run's own clock), stamped modified now."""
+        doc_date = (datetime.now(timezone.utc).date() - timedelta(days=days_ago)).isoformat()
+        with self.engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO so_header VALUES (?, ?, 'open', ?, ?)",
+                (doc_key, f"SO-{doc_key}", doc_date,
+                 datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO so_line VALUES (?, ?, 'ITEM-N', '3', ?)",
+                (f"{doc_key}-1", doc_key, qty_delivered),
+            )
+
+    def deliver(self, dtl_key: str, qty: str):
+        with self.engine.begin() as conn:
+            conn.exec_driver_sql(
+                "UPDATE so_line SET qty_delivered = ? WHERE dtl_key = ?", (qty, dtl_key)
+            )
+
+    def sweep_statements(self, kind: str):
+        """``fast`` = bounded by the window's first DocKey, ``full`` = not."""
+        fast = [s for s in self.statements["fingerprint"] if ") AS fp WHERE" in s[0]]
+        if kind == "fast":
+            return fast
+        return [s for s in self.statements["fingerprint"] if s not in fast]
+
+    def window_lookups(self):
+        return [s for s in self.statements["header"] if "AS first_key" in s[0]]
+
     def close(self):
         self.db.close()
         RUNTIME.dispose_all()
@@ -631,17 +674,137 @@ def test_first_incremental_sweep_seeds_known_documents_without_fetching_them(rig
     assert rig.watermark().last_fingerprint_sweep_at is not None
 
 
-def test_a_run_inside_the_sweep_interval_does_not_run_the_fingerprint_query(rig):
+def test_incremental_runs_a_minute_apart_both_run_a_line_check(rig):
+    """Owner ruling 27 Oct: back-to-back incremental runs (a 1-minute task
+    cadence) each check lines. Between full passes that is the FAST pass,
+    bounded by the window's first DocKey, and it re-stages a recent
+    document's delivery without touching the full-pass clock."""
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # first sweep: FULL (never swept), seeds
+    assert len(rig.sweep_statements("full")) == 1
+    full_swept_at = rig.watermark().last_fingerprint_sweep_at
+
+    rig.deliver("D010-1", "2")
+    job, run = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("fast")) == 1, rig.statements["fingerprint"]
+    assert rig.sweep_statements("full") == []
+    assert set(rig.staged(job.id)) == {"D010"}
+    assert run.updated_count == 1
+
+    rig.deliver("D010-1", "3")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("fast")) == 1
+    assert set(rig.staged(job.id)) == {"D010"}
+    assert rig.watermark().last_fingerprint_sweep_at == full_swept_at, (
+        "a fast pass must not reset the full-pass clock"
+    )
+
+
+def test_the_full_pass_keeps_its_15_minute_cadence(rig):
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+    first = rig.watermark().last_fingerprint_sweep_at
+
+    rig.age_sweep(minutes=16)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    assert len(rig.sweep_statements("full")) == 1
+    assert rig.sweep_statements("fast") == []
+    assert rig.watermark().last_fingerprint_sweep_at > first
+
+
+def test_a_document_older_than_the_fast_window_waits_for_the_full_pass(rig):
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    old_doc = "D001"  # dated 2026-08-01: inside fromDate, outside 60 days
+    rig.deliver(f"{old_doc}-1", "4")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("fast")) == 1
+    assert old_doc not in rig.staged(job.id)
+
+    rig.age_sweep(minutes=16)
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("full")) == 1
+    assert set(rig.staged(job.id)) == {old_doc}
+
+
+def test_a_change_staged_by_the_fast_pass_is_not_restaged_by_the_full_pass(rig):
+    """Both passes hash the SAME per-document aggregates, so the fingerprint
+    the fast pass stored is exactly what the full pass computes."""
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    rig.deliver("D010-1", "2")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert set(rig.staged(job.id)) == {"D010"}
+    after_fast = rig.fingerprints()
+
+    rig.age_sweep(minutes=16)
+    job, run = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("full")) == 1
+    assert rig.staged(job.id) == {}
+    assert run.updated_count == 0 and run.added_count == 0
+    assert rig.fingerprints() == after_fast
+
+
+def test_the_window_first_doc_key_is_looked_up_once_per_window_day(rig):
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.window_lookups()) == 1
+    assert len(rig.sweep_statements("fast")) == 1
+    rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.window_lookups() == [], "cached for the same window start"
+    assert len(rig.sweep_statements("fast")) == 1
+
+
+def test_a_document_created_after_the_lookup_is_inside_the_fast_window(rig):
+    """DocKeys grow with creation, so ``DocKey >= first key of the window``
+    keeps every later document in view without a fresh lookup."""
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # fast, caches the window's first key
+
+    rig.add_doc("D011", days_ago=0)
+    rig.run(RUN_MODE_INCREMENTAL)  # the watermark pass stages it; fast pass seeds it
+    rig.deliver("D011-1", "1")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.window_lookups() == []
+    assert set(rig.staged(job.id)) == {"D011"}
+
+
+def test_a_zero_fast_window_turns_the_fast_pass_off(rig, monkeypatch):
+    monkeypatch.setattr(settings, "autocount_fingerprint_fast_window_days", 0)
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    rig.deliver("D010-1", "2")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.statements["fingerprint"] == []
+    assert rig.window_lookups() == []
+    assert "D010" not in rig.staged(job.id)
+
+
+def test_a_run_inside_the_full_pass_interval_does_not_run_the_full_query(rig):
     rig.run(RUN_MODE_MANUAL)
     rig.run(RUN_MODE_INCREMENTAL)  # first sweep (seeds)
     swept_at = rig.watermark().last_fingerprint_sweep_at
 
-    # A delivery lands, but the interval has not elapsed - this tick is a
-    # plain watermark run.
+    # A delivery lands on a document OUTSIDE the fast window, and the full
+    # interval has not elapsed - this run is a plain watermark run plus a
+    # fast pass that cannot see it.
     with rig.engine.begin() as conn:
         conn.exec_driver_sql("UPDATE so_line SET qty_delivered = '4' WHERE dtl_key = 'D001-1'")
     job3, run3 = rig.run(RUN_MODE_INCREMENTAL)
-    assert rig.statements["fingerprint"] == [], "sweep ran inside the interval"
+    assert rig.sweep_statements("full") == [], "full sweep ran inside the interval"
     assert run3.rows_scanned == 0
     assert rig.staged(job3.id) == {}
     assert rig.watermark().last_fingerprint_sweep_at == swept_at
@@ -649,7 +812,7 @@ def test_a_run_inside_the_sweep_interval_does_not_run_the_fingerprint_query(rig)
 
 def test_a_delivery_that_leaves_the_header_untouched_is_restaged_by_the_sweep(rig):
     """SO419208: TransferedQty rises, SO.LastModified does not. The next
-    incremental run past the interval must re-stage exactly that document as
+    incremental run past the full-pass interval must re-stage exactly that document as
     an UPDATE carrying the new qty_delivered, refresh its row hash and its
     fingerprint, and leave the two unchanged documents unfetched."""
     rig.run(RUN_MODE_MANUAL)
@@ -738,6 +901,9 @@ def test_a_fingerprint_query_error_fails_only_the_sweep(session_factory, caplog)
         assert rig.watermark().last_fingerprint_sweep_at is None, (
             "a failed sweep must not be counted as done"
         )
+        # SS-RECONCILE-SKIP-FIX: a WARNING log alone is invisible to an
+        # operator - the failure is surfaced on the run row the Runs list shows.
+        assert run.error and "fingerprint sweep failed" in run.error.lower(), run.error
         assert any(
             r.levelno >= logging.WARNING and "fingerprint" in r.getMessage().lower()
             for r in caplog.records
@@ -783,3 +949,250 @@ def test_every_fingerprint_row_is_scoped_to_the_tenant_and_company(rig):
     assert all(row.seen_at is not None for row in rows)
     assert all(isinstance(row.fingerprint, str) and len(row.fingerprint) == 64 for row in rows)
     assert len({row.fingerprint for row in rows}) == 3, "three different line sets, three fingerprints"
+
+
+def test_a_sweep_only_error_is_shown_on_the_run_but_not_alerted(db):
+    """SS-RECONCILE-SKIP-FIX - the run row carries the sweep failure (visible
+    in the Runs list), but the failure-alert aggregates treat it like a budget
+    note: the watermark pass still delivered, so it is neither a failed run
+    nor a reason for a "stale" incident. A push error before it still is."""
+    from modules.autocount.models import AcSyncRun
+    from modules.autocount.repositories import SyncRunRepository
+    from modules.autocount.repositories.autocount_repository import SWEEP_NOTE_PREFIX
+
+    at = datetime(2026, 10, 27, 4, 0, tzinfo=timezone.utc)
+    base = dict(
+        tenant_id=DEFAULT_TENANT_ID, company_id="co-sweep", entity_type=ENTITY_CUSTOMER,
+        mode=RUN_MODE_INCREMENTAL, outcome="SUCCESS", started_at=at,
+    )
+    db.add(AcSyncRun(**base, error=f"{SWEEP_NOTE_PREFIX}boom", finished_at=at))
+    repo = SyncRunRepository(db)
+    db.flush()
+    assert repo.failed_runs_summary(
+        DEFAULT_TENANT_ID, "co-sweep", ENTITY_CUSTOMER, None, [RUN_MODE_INCREMENTAL]
+    )[0] == 0
+    assert repo.last_clean_finished_at(
+        DEFAULT_TENANT_ID, "co-sweep", ENTITY_CUSTOMER, [RUN_MODE_INCREMENTAL]
+    ) == at
+
+    later = at + timedelta(minutes=15)
+    db.add(AcSyncRun(**base, error=f"push 500 {SWEEP_NOTE_PREFIX}boom", finished_at=later))
+    db.flush()
+    assert repo.failed_runs_summary(
+        DEFAULT_TENANT_ID, "co-sweep", ENTITY_CUSTOMER, None, [RUN_MODE_INCREMENTAL]
+    )[0] == 1
+
+
+def test_an_empty_window_is_not_cached_so_a_later_document_gets_the_fast_pass(rig):
+    """Review nit: a ``None`` first key must not stick for the whole day - a
+    document created later that day would otherwise wait for the full pass."""
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # full
+    rig.run(RUN_MODE_INCREMENTAL)  # fast: no document in the window yet
+    assert len(rig.window_lookups()) == 1
+    assert rig.statements["fingerprint"] == []
+
+    rig.add_doc("D010", days_ago=0)
+    rig.run(RUN_MODE_INCREMENTAL)  # looked up again, now finds D010
+    assert len(rig.window_lookups()) == 1
+    rig.deliver("D010-1", "1")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert set(rig.staged(job.id)) == {"D010"}
+
+
+def test_the_fast_pass_only_runs_for_a_task_keyed_on_doc_key(session_factory):
+    """Review should-fix: a task whose key column is not the fingerprint's
+    ``DocKey`` (the AR Outstanding preset keys on ``DebtorKey``) gets no DocKey
+    window - its keys do not follow the window's dates, so the bound would
+    not be fast. It keeps the full pass on its cadence."""
+    from modules.autocount.sync import _fast_window_applies
+
+    class _Src:
+        key_columns = ["DebtorKey"]
+
+    assert _fast_window_applies(_Src()) is False
+    _Src.key_columns = ["DocKey"]
+    assert _fast_window_applies(_Src()) is True
+
+
+def test_a_task_not_keyed_on_doc_key_skips_the_fast_pass_between_full_passes(rig, monkeypatch):
+    import modules.autocount.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "_fast_window_applies", lambda source: False)
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # full still runs
+    assert len(rig.sweep_statements("full")) == 1
+
+    rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.statements["fingerprint"] == []
+    assert rig.window_lookups() == []
+
+
+# ── SS-RECONCILE-SKIP-FIX: the service refills an EMPTY line-check query ────
+# Owner OK 27 Oct: an empty fingerprintQuery silently turns the line check
+# off. The service refills it from the entity's preset on startup/deploy and
+# in the scheduler before a sweep - idempotent, never over a custom query,
+# logged and recorded as an Activity row naming the task.
+
+
+def _refill_activity(db, config_id):
+    from app.models.integration_activity import IntegrationActivity
+
+    db.expire_all()
+    return [
+        row for row in db.query(IntegrationActivity).all()
+        if config_id in repr(row.request_summary_json) and "line check" in row.operation
+    ]
+
+
+@pytest.mark.parametrize("empty", ["", "   ", None])
+def test_startup_refills_an_empty_fingerprint_query_from_the_preset(db, empty, caplog):
+    from modules.autocount.bootstrap import install
+
+    company = _api_company(db, database="AED_FP_S")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery=empty)
+    config_id = config.id
+    db.expire_all()
+
+    with caplog.at_level(logging.WARNING):
+        install(db.get_bind(), db)
+    db.commit()
+    db.expire_all()
+
+    assert db.get(AcEntityConfig, config_id).source_config["fingerprintQuery"] == (
+        SO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_S")
+    )
+    assert any(
+        config_id in r.getMessage() and "refill" in r.getMessage().lower() for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+    assert len(_refill_activity(db, config_id)) == 1
+
+    install(db.get_bind(), db)  # idempotent: nothing more to refill
+    db.commit()
+    assert len(_refill_activity(db, config_id)) == 1
+
+
+def test_startup_never_touches_a_custom_fingerprint_query(db):
+    from modules.autocount.bootstrap import install
+
+    company = _api_company(db, database="AED_FP_K")
+    custom = "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount FROM AED_FP_K.dbo.SODTL AS d GROUP BY d.DocKey"
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery=custom)
+    config_id = config.id
+    db.expire_all()
+
+    install(db.get_bind(), db)
+    db.commit()
+    db.expire_all()
+
+    assert db.get(AcEntityConfig, config_id).source_config["fingerprintQuery"] == custom
+    assert _refill_activity(db, config_id) == []
+
+
+def test_the_scheduler_refills_an_empty_fingerprint_query_before_the_sweep(db):
+    from modules.autocount.scheduler import sweep_etl_tasks
+
+    company = _api_company(db, database="AED_FP_T")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    config.etl_status = ETL_STATUS_ACTIVE
+    config.next_incremental_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+    config_id = config.id
+
+    sweep_etl_tasks(db)
+    db.expire_all()
+
+    assert db.get(AcEntityConfig, config_id).source_config["fingerprintQuery"] == (
+        SO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_T")
+    )
+    assert len(_refill_activity(db, config_id)) == 1
+
+
+def test_a_refill_resets_stored_fingerprints_so_the_first_sweep_only_seeds(db):
+    from modules.autocount.backfill import refill_empty_fingerprint_queries
+
+    model = _model()
+    company = _api_company(db, database="AED_FP_R")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    db.add(model(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_SALES_ORDER,
+        source_ref="AED_FP_R:1", fingerprint="old", seen_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+    assert refill_empty_fingerprint_queries(db, config_ids=[config.id]) == 1
+    db.commit()
+    db.expire_all()
+    assert db.query(model).filter(model.company_id == company.id).count() == 0
+
+
+def test_the_deploy_refill_does_not_warn_about_custom_queries_on_every_deploy(db, caplog):
+    from modules.autocount.bootstrap import install
+
+    company = _api_company(db, database="AED_FP_W")
+    custom = "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount FROM AED_FP_W.dbo.SODTL AS d GROUP BY d.DocKey"
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery=custom)
+    config_id = config.id
+
+    with caplog.at_level(logging.WARNING):
+        install(db.get_bind(), db)
+    assert not any(config_id in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_a_targeted_refill_only_touches_the_named_task(db):
+    from modules.autocount.backfill import refill_empty_fingerprint_queries
+
+    company = _api_company(db, database="AED_FP_N")
+    target = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    other = _stored_config(db, company, ENTITY_PURCHASE_ORDER, fingerprintQuery="")
+    target_id, other_id = target.id, other.id
+
+    assert refill_empty_fingerprint_queries(db, config_ids=[target_id]) == 1
+    db.commit()
+    db.expire_all()
+    assert db.get(AcEntityConfig, target_id).source_config["fingerprintQuery"]
+    assert db.get(AcEntityConfig, other_id).source_config["fingerprintQuery"] == ""
+    assert refill_empty_fingerprint_queries(db, config_ids=[]) == 0
+
+
+def test_a_refill_activity_row_carries_the_task_id_as_its_reference(db):
+    from modules.autocount.backfill import refill_empty_fingerprint_queries
+
+    company = _api_company(db, database="AED_FP_X")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    refill_empty_fingerprint_queries(db, config_ids=[config.id])
+    rows = _refill_activity(db, config.id)
+    assert [row.external_ref for row in rows] == [config.id]
+
+
+def test_a_failing_deploy_refill_never_aborts_the_install(db, monkeypatch):
+    import modules.autocount.backfill as backfill_module
+    from modules.autocount.bootstrap import install
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("lock timeout")
+
+    monkeypatch.setattr(backfill_module, "refill_empty_fingerprint_queries", boom)
+    install(db.get_bind(), db)  # must not raise
+
+
+def test_a_failing_scheduler_refill_still_enqueues_the_run(db, monkeypatch):
+    import modules.autocount.backfill as backfill_module
+    from app.models.background_job import BackgroundJob
+    from modules.autocount.scheduler import sweep_etl_tasks
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("lock timeout")
+
+    monkeypatch.setattr(backfill_module, "refill_empty_fingerprint_queries", boom)
+    company = _api_company(db, database="AED_FP_F")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    config.etl_status = ETL_STATUS_ACTIVE
+    config.next_incremental_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+
+    assert sweep_etl_tasks(db)["fired"] == 1
+    assert db.query(BackgroundJob).filter(BackgroundJob.type == AUTOCOUNT_SYNC).count() == 1
