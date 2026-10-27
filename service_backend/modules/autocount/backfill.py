@@ -1626,7 +1626,10 @@ def backfill_document_fingerprint_queries(
         if not config_ids:
             return 0
         select = select.where(entity_config.c.id.in_(list(config_ids)))
-    configs = connectable.execute(select).fetchall()
+    # Row-locked (FOR UPDATE on Postgres, a no-op on SQLite) so a UI Save that
+    # commits a custom query between this read and the UPDATE below cannot be
+    # overwritten (lost update) - the Save waits, then wins.
+    configs = connectable.execute(select.with_for_update()).fetchall()
 
     touched = 0
     for config_id, tenant_id, company_id, entity_type, source_config in configs:
@@ -1696,7 +1699,7 @@ def refill_empty_fingerprint_queries(
     Idempotent; a non-empty (custom) query is never touched; each refill is
     logged and recorded as an Activity row naming the task. The task's stored
     fingerprints are reset (``backfill_document_fingerprint_queries``), so the
-    first sweep after a refill only seeds the baseline. The caller commits.
+    first sweep after a refill only seeds the baseline. Commits the refill.
     """
     from .activity import ACTIVITY_SUCCESS, record_activity
 
@@ -1708,6 +1711,10 @@ def refill_empty_fingerprint_queries(
         on_refill=lambda *row: refilled.append(row),
         warn_custom=False,
     )
+    if refilled:
+        # Commit the refill BEFORE the Activity writes: a failed Activity
+        # insert rolls its session back and must not undo a logged refill.
+        db.commit()
     for config_id, tenant_id, company_id, entity_type in refilled:
         logger.warning(
             "autocount task %s (%s, company %s) had an empty line-check query; "
@@ -1720,6 +1727,8 @@ def refill_empty_fingerprint_queries(
             tenant_id=tenant_id,
             operation=f"refill line check query {entity_type}",
             status=ACTIVITY_SUCCESS,
+            # The task id, so Developers > Logs finds it by reference.
+            external_ref=config_id,
             request={"taskId": config_id, "companyId": company_id, "entityType": entity_type},
             response={"refilledFrom": "preset", "fingerprintsReset": True},
         )

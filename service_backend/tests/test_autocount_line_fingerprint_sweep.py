@@ -1156,3 +1156,43 @@ def test_a_targeted_refill_only_touches_the_named_task(db):
     assert db.get(AcEntityConfig, target_id).source_config["fingerprintQuery"]
     assert db.get(AcEntityConfig, other_id).source_config["fingerprintQuery"] == ""
     assert refill_empty_fingerprint_queries(db, config_ids=[]) == 0
+
+
+def test_a_refill_activity_row_carries_the_task_id_as_its_reference(db):
+    from modules.autocount.backfill import refill_empty_fingerprint_queries
+
+    company = _api_company(db, database="AED_FP_X")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    refill_empty_fingerprint_queries(db, config_ids=[config.id])
+    rows = _refill_activity(db, config.id)
+    assert [row.external_ref for row in rows] == [config.id]
+
+
+def test_a_failing_deploy_refill_never_aborts_the_install(db, monkeypatch):
+    import modules.autocount.backfill as backfill_module
+    from modules.autocount.bootstrap import install
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("lock timeout")
+
+    monkeypatch.setattr(backfill_module, "refill_empty_fingerprint_queries", boom)
+    install(db.get_bind(), db)  # must not raise
+
+
+def test_a_failing_scheduler_refill_still_enqueues_the_run(db, monkeypatch):
+    import modules.autocount.backfill as backfill_module
+    from app.models.background_job import BackgroundJob
+    from modules.autocount.scheduler import sweep_etl_tasks
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("lock timeout")
+
+    monkeypatch.setattr(backfill_module, "refill_empty_fingerprint_queries", boom)
+    company = _api_company(db, database="AED_FP_F")
+    config = _stored_config(db, company, ENTITY_SALES_ORDER, fingerprintQuery="")
+    config.etl_status = ETL_STATUS_ACTIVE
+    config.next_incremental_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+
+    assert sweep_etl_tasks(db)["fired"] == 1
+    assert db.query(BackgroundJob).filter(BackgroundJob.type == AUTOCOUNT_SYNC).count() == 1
