@@ -407,18 +407,25 @@ def test_document_fingerprint_is_a_sha_over_the_ordered_values_as_strings():
     assert fn(["3", "10", "2", None]) != same
 
 
-def test_sweep_interval_setting_defaults_to_0_every_incremental_run_with_a_floor_of_0():
-    """Owner ruling 27 Oct: the line check runs on EVERY incremental run, at
-    whatever cadence the task is configured for - the setting stays only as
-    an opt-in throttle."""
-    assert getattr(settings, "autocount_fingerprint_sweep_minutes", None) == 0
+def test_full_pass_interval_defaults_to_15_minutes_with_a_floor_of_0():
+    """Owner ruling 27 Oct + crew cost measurement: the line check runs on
+    EVERY incremental run as a FAST pass over a recent window; the FULL pass
+    keeps its 15-minute cadence (0 = the full pass on every run)."""
+    assert getattr(settings, "autocount_fingerprint_sweep_minutes", None) == 15
     data = settings.model_dump()
     assert Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 0}) \
         .autocount_fingerprint_sweep_minutes == 0
-    assert Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": 15}) \
-        .autocount_fingerprint_sweep_minutes == 15
     with pytest.raises(ValidationError):
         Settings.model_validate({**data, "autocount_fingerprint_sweep_minutes": -1})
+
+
+def test_fast_window_defaults_to_60_days_with_a_floor_of_0():
+    assert getattr(settings, "autocount_fingerprint_fast_window_days", None) == 60
+    data = settings.model_dump()
+    assert Settings.model_validate({**data, "autocount_fingerprint_fast_window_days": 0}) \
+        .autocount_fingerprint_fast_window_days == 0
+    with pytest.raises(ValidationError):
+        Settings.model_validate({**data, "autocount_fingerprint_fast_window_days": -1})
 
 
 def test_changed_key_in_list_is_chunked_at_500():
@@ -591,6 +598,42 @@ class _Rig:
             .one()
         )
 
+    def age_sweep(self, minutes: int):
+        watermark = self.watermark()
+        watermark.last_fingerprint_sweep_at = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        self.db.commit()
+
+    def add_doc(self, doc_key: str, *, days_ago: int, qty_delivered: str = "0"):
+        """A document dated ``days_ago`` before today (the fast window is
+        relative to the run's own clock), stamped modified now."""
+        doc_date = (datetime.now(timezone.utc).date() - timedelta(days=days_ago)).isoformat()
+        with self.engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO so_header VALUES (?, ?, 'open', ?, ?)",
+                (doc_key, f"SO-{doc_key}", doc_date,
+                 datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO so_line VALUES (?, ?, 'ITEM-N', '3', ?)",
+                (f"{doc_key}-1", doc_key, qty_delivered),
+            )
+
+    def deliver(self, dtl_key: str, qty: str):
+        with self.engine.begin() as conn:
+            conn.exec_driver_sql(
+                "UPDATE so_line SET qty_delivered = ? WHERE dtl_key = ?", (qty, dtl_key)
+            )
+
+    def sweep_statements(self, kind: str):
+        """``fast`` = bounded by the window's first DocKey, ``full`` = not."""
+        fast = [s for s in self.statements["fingerprint"] if "min_doc_key" in repr(s[1])]
+        if kind == "fast":
+            return fast
+        return [s for s in self.statements["fingerprint"] if s not in fast]
+
+    def window_lookups(self):
+        return [s for s in self.statements["header"] if "window_start" in repr(s[1])]
+
     def close(self):
         self.db.close()
         RUNTIME.dispose_all()
@@ -631,39 +674,137 @@ def test_first_incremental_sweep_seeds_known_documents_without_fetching_them(rig
     assert rig.watermark().last_fingerprint_sweep_at is not None
 
 
-def test_incremental_runs_a_minute_apart_both_run_the_sweep(rig):
-    """Owner ruling 27 Oct (default interval 0): back-to-back incremental runs
-    - a 1-minute task cadence - each run the line check, and the second one
-    re-stages a delivery that landed between them."""
+def test_incremental_runs_a_minute_apart_both_run_a_line_check(rig):
+    """Owner ruling 27 Oct: back-to-back incremental runs (a 1-minute task
+    cadence) each check lines. Between full passes that is the FAST pass,
+    bounded by the window's first DocKey, and it re-stages a recent
+    document's delivery without touching the full-pass clock."""
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # first sweep: FULL (never swept), seeds
+    assert len(rig.sweep_statements("full")) == 1
+    full_swept_at = rig.watermark().last_fingerprint_sweep_at
+
+    rig.deliver("D010-1", "2")
+    job, run = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("fast")) == 1, rig.statements["fingerprint"]
+    assert rig.sweep_statements("full") == []
+    assert set(rig.staged(job.id)) == {"D010"}
+    assert run.updated_count == 1
+
+    rig.deliver("D010-1", "3")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("fast")) == 1
+    assert set(rig.staged(job.id)) == {"D010"}
+    assert rig.watermark().last_fingerprint_sweep_at == full_swept_at, (
+        "a fast pass must not reset the full-pass clock"
+    )
+
+
+def test_the_full_pass_keeps_its_15_minute_cadence(rig):
     rig.run(RUN_MODE_MANUAL)
     rig.run(RUN_MODE_INCREMENTAL)
-    assert len(rig.statements["fingerprint"]) == 1, "first incremental did not sweep"
-    first_swept_at = rig.watermark().last_fingerprint_sweep_at
+    first = rig.watermark().last_fingerprint_sweep_at
 
-    with rig.engine.begin() as conn:
-        conn.exec_driver_sql("UPDATE so_line SET qty_delivered = '4' WHERE dtl_key = 'D001-1'")
+    rig.age_sweep(minutes=16)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    assert len(rig.sweep_statements("full")) == 1
+    assert rig.sweep_statements("fast") == []
+    assert rig.watermark().last_fingerprint_sweep_at > first
+
+
+def test_a_document_older_than_the_fast_window_waits_for_the_full_pass(rig):
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    old_doc = "D001"  # dated 2026-08-01: inside fromDate, outside 60 days
+    rig.deliver(f"{old_doc}-1", "4")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("fast")) == 1
+    assert old_doc not in rig.staged(job.id)
+
+    rig.age_sweep(minutes=16)
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("full")) == 1
+    assert set(rig.staged(job.id)) == {old_doc}
+
+
+def test_a_change_staged_by_the_fast_pass_is_not_restaged_by_the_full_pass(rig):
+    """Both passes hash the SAME per-document aggregates, so the fingerprint
+    the fast pass stored is exactly what the full pass computes."""
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    rig.deliver("D010-1", "2")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert set(rig.staged(job.id)) == {"D010"}
+    after_fast = rig.fingerprints()
+
+    rig.age_sweep(minutes=16)
     job, run = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("full")) == 1
+    assert rig.staged(job.id) == {}
+    assert run.updated_count == 0 and run.added_count == 0
+    assert rig.fingerprints() == after_fast
 
-    assert len(rig.statements["fingerprint"]) == 1, "second incremental did not sweep"
-    assert set(rig.staged(job.id)) == {"D001"}
-    assert run.updated_count == 1
-    assert rig.watermark().last_fingerprint_sweep_at > first_swept_at
+
+def test_the_window_first_doc_key_is_looked_up_once_per_window_day(rig):
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.window_lookups()) == 1
+    assert len(rig.sweep_statements("fast")) == 1
+    rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.window_lookups() == [], "cached for the same window start"
+    assert len(rig.sweep_statements("fast")) == 1
 
 
-def test_a_run_inside_an_opt_in_sweep_interval_does_not_run_the_fingerprint_query(
-    rig, monkeypatch
-):
-    monkeypatch.setattr(settings, "autocount_fingerprint_sweep_minutes", 15)
+def test_a_document_created_after_the_lookup_is_inside_the_fast_window(rig):
+    """DocKeys grow with creation, so ``DocKey >= first key of the window``
+    keeps every later document in view without a fresh lookup."""
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # fast, caches the window's first key
+
+    rig.add_doc("D011", days_ago=0)
+    rig.run(RUN_MODE_INCREMENTAL)  # the watermark pass stages it; fast pass seeds it
+    rig.deliver("D011-1", "1")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.window_lookups() == []
+    assert set(rig.staged(job.id)) == {"D011"}
+
+
+def test_a_zero_fast_window_turns_the_fast_pass_off(rig, monkeypatch):
+    monkeypatch.setattr(settings, "autocount_fingerprint_fast_window_days", 0)
+    rig.add_doc("D010", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)
+
+    rig.deliver("D010-1", "2")
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.statements["fingerprint"] == []
+    assert rig.window_lookups() == []
+    assert "D010" not in rig.staged(job.id)
+
+
+def test_a_run_inside_the_full_pass_interval_does_not_run_the_full_query(rig):
     rig.run(RUN_MODE_MANUAL)
     rig.run(RUN_MODE_INCREMENTAL)  # first sweep (seeds)
     swept_at = rig.watermark().last_fingerprint_sweep_at
 
-    # A delivery lands, but the interval has not elapsed - this tick is a
-    # plain watermark run.
+    # A delivery lands on a document OUTSIDE the fast window, and the full
+    # interval has not elapsed - this run is a plain watermark run plus a
+    # fast pass that cannot see it.
     with rig.engine.begin() as conn:
         conn.exec_driver_sql("UPDATE so_line SET qty_delivered = '4' WHERE dtl_key = 'D001-1'")
     job3, run3 = rig.run(RUN_MODE_INCREMENTAL)
-    assert rig.statements["fingerprint"] == [], "sweep ran inside the interval"
+    assert rig.sweep_statements("full") == [], "full sweep ran inside the interval"
     assert run3.rows_scanned == 0
     assert rig.staged(job3.id) == {}
     assert rig.watermark().last_fingerprint_sweep_at == swept_at
@@ -671,7 +812,7 @@ def test_a_run_inside_an_opt_in_sweep_interval_does_not_run_the_fingerprint_quer
 
 def test_a_delivery_that_leaves_the_header_untouched_is_restaged_by_the_sweep(rig):
     """SO419208: TransferedQty rises, SO.LastModified does not. The next
-    incremental run must re-stage exactly that document as
+    incremental run past the full-pass interval must re-stage exactly that document as
     an UPDATE carrying the new qty_delivered, refresh its row hash and its
     fingerprint, and leave the two unchanged documents unfetched."""
     rig.run(RUN_MODE_MANUAL)
@@ -681,6 +822,7 @@ def test_a_delivery_that_leaves_the_header_untouched_is_restaged_by_the_sweep(ri
 
     with rig.engine.begin() as conn:
         conn.exec_driver_sql("UPDATE so_line SET qty_delivered = '4' WHERE dtl_key = 'D001-1'")
+    rig.age_sweep(minutes=16)
 
     job4, run4 = rig.run(RUN_MODE_INCREMENTAL)
     assert len(rig.statements["fingerprint"]) == 1
@@ -730,6 +872,7 @@ def test_a_new_document_and_a_fingerprint_change_stage_in_the_same_incremental_r
             "INSERT INTO so_header VALUES ('D004', 'SO-004', 'open', '2026-08-04', '2026-09-01 09:00:00')"
         )
         conn.exec_driver_sql("INSERT INTO so_line VALUES ('D004-1', 'D004', 'ITEM-D', '1', '0')")
+    rig.age_sweep(minutes=16)
 
     job, run = rig.run(RUN_MODE_INCREMENTAL)
     staged = rig.staged(job.id)
