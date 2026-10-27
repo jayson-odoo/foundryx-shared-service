@@ -522,16 +522,25 @@ class Settings(BaseSettings):
     # how many TIMES a transient fault is retried, never how long any one
     # attempt can take.
     autocount_sink_retry_attempts: int = 3
-    # feat/line-fingerprint-sweep - an optional THROTTLE on how often an
-    # INCREMENTAL run also runs a document task's fingerprint query (never the
-    # initial load, never reconcile - a reconcile already re-hashes every
-    # header). Read at CALL time ("retune without a restart"); when > 0 the
-    # gate is `now - AcWatermark.last_fingerprint_sweep_at >= this interval`
-    # (missing/NULL = due). Default 0 = EVERY incremental run whose page pass
-    # finished (owner ruling 27 Oct: the line check follows the task's own
-    # configured cadence, e.g. 1 minute, not a separate 15-minute floor - a
-    # line-only change such as a DO transfer must not wait). Floor 0.
-    autocount_fingerprint_sweep_minutes: int = 0
+    # feat/line-fingerprint-sweep + SS-RECONCILE-SKIP-FIX - the line check
+    # (fingerprint query) on INCREMENTAL runs whose page pass finished (never
+    # the initial load, never reconcile - a reconcile already re-hashes every
+    # header). Owner ruling 27 Oct: lines are checked on EVERY incremental
+    # run, at the task's own cadence. Prod cost (crew, Sorento SO from
+    # 2026-01-01: ~1M logical reads per full pass) rules out a full pass every
+    # minute, so the check has two shapes over the SAME per-document hash:
+    #   * FULL - the whole `fromDate` range, at most every
+    #     `autocount_fingerprint_sweep_minutes` (gate: `now -
+    #     AcWatermark.last_fingerprint_sweep_at >= this`, NULL = due).
+    #     0 = full on every run. Floor 0.
+    #   * FAST - every other incremental run: only documents whose DocKey is
+    #     at least the first DocKey dated inside the last
+    #     `autocount_fingerprint_fast_window_days` (a seekable DocKey bound,
+    #     looked up once per window day). 0 = no fast pass (lines are then
+    #     checked only on the full cadence). Floor 0.
+    # Read at CALL time ("retune without a restart").
+    autocount_fingerprint_sweep_minutes: int = 15
+    autocount_fingerprint_fast_window_days: int = 60
 
     @field_validator("background_job_orphan_after_minutes")
     @classmethod
@@ -633,11 +642,13 @@ class Settings(BaseSettings):
             raise ValueError("autocount_sink_retry_attempts must be between 1 and 5.")
         return v
 
-    @field_validator("autocount_fingerprint_sweep_minutes")
+    @field_validator(
+        "autocount_fingerprint_sweep_minutes", "autocount_fingerprint_fast_window_days"
+    )
     @classmethod
-    def _autocount_fingerprint_sweep_minutes_floor(cls, v: int) -> int:
+    def _autocount_fingerprint_sweep_minutes_floor(cls, v: int, info) -> int:
         if v < 0:
-            raise ValueError("autocount_fingerprint_sweep_minutes must not be negative.")
+            raise ValueError(f"{info.field_name} must not be negative.")
         return v
 
 

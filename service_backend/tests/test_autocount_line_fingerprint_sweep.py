@@ -626,13 +626,13 @@ class _Rig:
 
     def sweep_statements(self, kind: str):
         """``fast`` = bounded by the window's first DocKey, ``full`` = not."""
-        fast = [s for s in self.statements["fingerprint"] if "min_doc_key" in repr(s[1])]
+        fast = [s for s in self.statements["fingerprint"] if ") AS fp WHERE" in s[0]]
         if kind == "fast":
             return fast
         return [s for s in self.statements["fingerprint"] if s not in fast]
 
     def window_lookups(self):
-        return [s for s in self.statements["header"] if "window_start" in repr(s[1])]
+        return [s for s in self.statements["header"] if "AS first_key" in s[0]]
 
     def close(self):
         self.db.close()

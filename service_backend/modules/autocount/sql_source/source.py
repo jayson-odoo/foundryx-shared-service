@@ -345,6 +345,36 @@ def build_keyed_header_wrap(
     return sql, params
 
 
+def build_fingerprint_window_wrap(fingerprint_exec: str, quoted_doc_key: str) -> str:
+    """SS-RECONCILE-SKIP-FIX (owner ruling 27 Oct) - the FAST line-check pass:
+    the task's own stored fingerprint query, unchanged, as a derived table
+    bounded by ``DocKey >= :min_doc_key`` (the first DocKey of the recent
+    window). The SELECT list is the inner query's, so every row hashes to
+    exactly the fingerprint the FULL pass computes for that document - the two
+    passes share ``ac_doc_fingerprint``. A predicate on the grouping column
+    lets the server seek the line and header tables' DocKey indexes instead of
+    scanning the header for its DocDate floor. ``fingerprint_exec`` is the
+    already bind-escaped statement (only ``:from_date`` survives)."""
+    inner = _strip_trailing_order_by(fingerprint_exec)
+    return f"SELECT * FROM ({inner}) AS fp WHERE fp.{quoted_doc_key} >= :min_doc_key"
+
+
+def build_window_first_key_wrap(
+    query: str, quoted_key: str, quoted_date_column: str
+) -> str:
+    """The FAST pass's window bound: the smallest key among the header rows
+    dated inside the window (and inside the permanent ``fromDate`` floor).
+    DocKeys grow with creation, so ``DocKey >= this`` covers every document in
+    the window plus anything created since - a superset, never a gap. Looked
+    up once per window day (cached by ``sync.py``), not once per run."""
+    inner = _strip_trailing_order_by(query).replace(":", r"\:")
+    return (
+        f"SELECT MIN(t.{quoted_key}) AS first_key FROM ({inner}) AS t "
+        f"WHERE t.{quoted_date_column} >= :window_start "
+        f"AND t.{quoted_date_column} >= :from_date"
+    )
+
+
 def _lexicographic_key_predicate(quoted_keys: List[str]) -> str:
     """``t.k0 > :last_key0 OR (t.k0 = :last_key0 AND (t.k1 > :last_key1 OR
     ...))`` - one key column degenerates to ``t.k > :last_key`` (the single
@@ -1527,7 +1557,29 @@ class SqlDbSource:
 
     # ── fingerprint sweep (feat/line-fingerprint-sweep) ─────────────────────
 
-    def fetch_fingerprints(self) -> Dict[str, Tuple[Any, str]]:
+    def window_first_key(self, window_start: date) -> Any:
+        """The first (smallest) key of the documents dated on or after
+        ``window_start`` - ``None`` when there are none, or for a task that
+        is not a document task (no date column to window on)."""
+        if not self.is_document or not self.doc_date_column:
+            return None
+        sql = build_window_first_key_wrap(
+            self.query, self._quoted_keys()[0], self._quoted_doc_date_column()
+        )
+        with open_readonly(
+            self._engine, timeout_s=self.timeout_s, secrets=self._secrets
+        ) as conn:
+            try:
+                return conn.execute(
+                    sa.text(sql),
+                    {"window_start": window_start, "from_date": self.from_date},
+                ).scalar()
+            except Exception as exc:  # noqa: BLE001 - every driver has its own class
+                from .runtime import sanitize_error
+
+                raise SqlQueryError(sanitize_error(exc, secrets=self._secrets)) from exc
+
+    def fetch_fingerprints(self, min_key: Any = None) -> Dict[str, Tuple[Any, str]]:
         """Run this task's ``fingerprint_query`` ONCE and return
         ``{source_ref: (raw_key_value, fingerprint)}`` for every row it
         returns - empty when no fingerprint query is configured (a task
@@ -1542,16 +1594,25 @@ class SqlDbSource:
         straight to ``source_ref`` for the SAME ``{database}:{key}`` scheme
         ``ac_row_hash`` already uses. Every OTHER column, in SELECT order,
         is what ``document_fingerprint`` hashes.
+
+        ``min_key`` given = the FAST pass (``build_fingerprint_window_wrap``):
+        the same query bounded to ``DocKey >= min_key``, same columns, so the
+        same per-document fingerprint.
         """
         if not self._fingerprint_query_exec:
             return {}
+        statement = self._fingerprint_query_exec
+        params: Dict[str, Any] = {"from_date": self.from_date}
+        if min_key is not None:
+            statement = build_fingerprint_window_wrap(
+                statement, self._engine.dialect.identifier_preparer.quote("DocKey")
+            )
+            params["min_doc_key"] = min_key
         with open_readonly(
             self._engine, timeout_s=self.timeout_s, secrets=self._secrets
         ) as conn:
             try:
-                result = conn.execute(
-                    sa.text(self._fingerprint_query_exec), {"from_date": self.from_date}
-                )
+                result = conn.execute(sa.text(statement), params)
                 rows = [dict(row._mapping) for row in result.fetchall()]
             except Exception as exc:  # noqa: BLE001 - every driver has its own class
                 from .runtime import sanitize_error

@@ -703,9 +703,14 @@ refreshes on every sweep tick regardless of whether the header's own compared co
 
 On an INCREMENTAL run only (never the initial load, never reconcile - both already have a
 complete, correct view), once the watermark-paged pass above finishes and
-the optional throttle allows it (`autocount_fingerprint_sweep_minutes`, default 0 = every
-incremental run, floor 0; when set > 0, `now - ac_watermark.last_fingerprint_sweep_at` must reach
-it, NULL/missing = due - owner ruling 2026-10-27, SS-RECONCILE-SKIP-FIX), the sweep runs the fingerprint query exactly once and buckets
+the line check runs on EVERY incremental run (owner ruling 2026-10-27, SS-RECONCILE-SKIP-FIX) in
+one of two shapes over the same per-document hash: the FULL pass (whole `fromDate` range) when
+`now - ac_watermark.last_fingerprint_sweep_at >= autocount_fingerprint_sweep_minutes` (default 15,
+floor 0 = every run; NULL/missing = due - only the full pass stamps it), else the FAST pass - the
+same query wrapped as `SELECT * FROM (<fingerprint query>) AS fp WHERE fp.DocKey >= :min_doc_key`,
+where `min_doc_key` is the smallest key of the headers dated within the last
+`autocount_fingerprint_fast_window_days` (default 60, 0 = no fast pass), looked up once per window
+day and cached on the watermark's `cursor_json.fingerprintWindow`. Either way the sweep runs the fingerprint query exactly once and buckets
 every returned DocKey:
 
 - a **stored fingerprint that differs** - genuinely changed; its DocKey joins a **separate
@@ -734,17 +739,17 @@ once).
 
 **Cost.** The fingerprint query is a full scan + hash aggregate over EVERY line row inside
 `from_date`, not a bounded page - on the live company that is 1.19M SODTL rows for `sales_order`
-alone, run on EVERY incremental run per document entity (owner ruling 2026-10-27: the line
-check follows the task's own configured cadence - 1 minute in prod, so up to 1,440 times a day -
-instead of the original 15-minute floor, so a line-only change such as a DO transfer never waits)
-across three document entities (SO/PO/SPO), over the ZeroTier relay to the on-prem SQL server.
-Measured on AED_SORENTO (SO fingerprint query, `from_date` 2023-09-01, 1.19M SODTL rows): elapsed
-0.54 s, CPU 5.99 s (parallel plan), 2026-09-07 ~11:00Z. PO/SPO not measured separately; PODTL is
-a fraction of SODTL, so its cost is lower. 0.54 s elapsed per run is well under the ~5 s
-threshold below, even once a minute. Mitigation knob: `AUTOCOUNT_FINGERPRINT_SWEEP_MINUTES` -
-set it above 0 (e.g. 5 or 15) to throttle the sweep if a future measurement (a larger
-`from_date` window, a busier server) comes in above roughly 5 s per run, or pick a cheaper query
-shape.
+alone; crew measured it on prod 2026-10-27 (the live company's SO from 2026-01-01: 164,755 lines / 42,603
+docs, ~392 ms, ~998k logical reads - 878k of them SODTL per-doc lookups, 84k a full SO scan since
+SO has no DocDate index; PO ~152 ms / 42k reads, run twice for the PO + SPO tasks). Running that
+FULL pass every minute would be ~1.5 billion page reads a day and growing, so the owner's "line
+check every run" ruling is met by the FAST pass on every incremental run (bounded by
+`DocKey >= :min_doc_key`, which seeks `PK_SO_DocKey` instead of scanning SO for the DocDate floor)
+with the FULL pass kept at its 15-minute cadence plus the daily reconcile. A document dated before
+the fast window waits at most one full interval. The window lookup wraps the header query and runs
+once per task per day. Crew times the DocKey-bounded query and the window lookup on prod after
+merge; mitigation knobs: `AUTOCOUNT_FINGERPRINT_FAST_WINDOW_DAYS` (narrow the window) and
+`AUTOCOUNT_FINGERPRINT_SWEEP_MINUTES` (space out the full pass), or a cheaper query shape.
 
 **Blind spot (documented, accepted).** A change that leaves all four aggregates identical -
 same line count, same summed quantities, same max detail key (an in-place edit to a
