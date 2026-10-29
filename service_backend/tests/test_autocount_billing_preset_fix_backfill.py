@@ -446,11 +446,12 @@ def test_a_tenant_below_0_17_gets_the_join_back_after_0032_removes_it(db):
     assert row.is_enabled is True
 
 
-def test_the_manifest_is_0_19_0():
+def test_the_manifest_is_at_least_0_19_0():
     import json
 
     manifest = Path(__file__).resolve().parents[1] / "modules" / "autocount" / "manifest.json"
-    assert json.loads(manifest.read_text())["version"] == "0.19.0"
+    version = json.loads(manifest.read_text())["version"]
+    assert tuple(int(p) for p in version.split(".")) >= (0, 19, 0)
 
 
 def test_module_migration_0033_runs_the_pass():

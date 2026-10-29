@@ -217,6 +217,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_billing_preset_fix,
         backfill_consignment_transferred_qty,
         backfill_customer_sales_agent,
+        backfill_product_item_class,
         backfill_product_item_type,
         backfill_sales_order_ref,
         backfill_sales_order_transferable,
@@ -327,6 +328,12 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # like the passes above. Module Alembic 0033 runs the same repair on deploy.
     if parse_version(from_version) < (0, 19, 0):
         backfill_billing_preset_fix(db, schema=schema, tenant_id=tenant_id)
+    # 0.19.0 -> 0.20.0 (ITEM-CLASS, partner of sorento-crm ITEM-CLASS): every
+    # existing `product` task gets an `ItemClass -> item_class_code` row.
+    # Version-GATED and tenant-scoped like the ItemType pass. Module Alembic
+    # 0034 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 20, 0):
+        backfill_product_item_class(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

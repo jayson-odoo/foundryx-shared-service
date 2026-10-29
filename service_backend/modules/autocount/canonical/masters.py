@@ -369,6 +369,11 @@ class CanonicalProduct(CanonicalMaster):
     # (``MISC``/``PROJECT``/``WASTE``/...), sent as a plain CODE beside
     # ``brand_code`` (closes BL-SS-201). Blank -> omitted, never ``null``.
     item_type_code: Optional[str] = None
+    # ITEM-CLASS (partner of sorento-crm ITEM-CLASS) - AutoCount ``ItemClass``
+    # (``SERENE``/``DIY``; blank on most items), sent as a plain CODE right
+    # after ``item_type_code``. Blank is sent as ``""`` (never ``null``) when a
+    # mapping row sets the field, see ``sink_payload``.
+    item_class_code: Optional[str] = None
     list_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     # sprint-5/08 (AC-08-16) - the open REST API's ``Discontinued`` flag.
@@ -387,10 +392,24 @@ class CanonicalProduct(CanonicalMaster):
         "uom_code",
         "brand_code",
         "item_type_code",
+        "item_class_code",
         "list_price",
         "cost_price",
         "is_active",
     )
+
+    def sink_payload(self) -> Dict[str, Any]:
+        """The master rule (a ``None`` key is omitted), with ONE exception:
+        ``item_class_code`` set by a mapping row to blank is sent as ``""``.
+        Item class narrows a Sorento contact's access, so a class AutoCount
+        cleared must clear on the CRM too (crew ruling 29 Oct, security M1);
+        the CRM reads ``""`` as "no class". A task with no ``ItemClass`` row
+        never sets the field and still sends nothing, nor does a source row that
+        lacks the column (the mapping engine skips a missing path)."""
+        payload = super().sink_payload()
+        if "item_class_code" in self.model_fields_set and self.item_class_code is None:
+            payload["item_class_code"] = ""
+        return payload
 
 
 class CanonicalStockBalance(CanonicalRecord):
