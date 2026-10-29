@@ -381,7 +381,8 @@ def test_a_blank_description_falls_back_to_the_code_and_desc2_is_trimmed(wired, 
     rows = [
         {"ItemClass": "BARE", "Description": "", "Desc2": "", "ShortCode": ""},
         {"ItemClass": "SPACED", "Description": "   ", "Desc2": " Second line ", "ShortCode": ""},
-        {"ItemClass": "NODESC", "ShortCode": ""},
+        # hapi always sends all four keys; a row without `Desc2` still sends "".
+        {"ItemClass": "NODESC2", "Description": "No second line", "ShortCode": ""},
     ]
     _stub_vendor_client(monkeypatch, _vendor(rows, []))
     _open_contract(monkeypatch)
@@ -394,7 +395,7 @@ def test_a_blank_description_falls_back_to_the_code_and_desc2_is_trimmed(wired, 
     assert by_code["BARE"]["name"] == "BARE" and by_code["BARE"]["description"] == ""
     assert by_code["SPACED"]["name"] == "SPACED"
     assert by_code["SPACED"]["description"] == "Second line"
-    assert by_code["NODESC"]["name"] == "NODESC" and by_code["NODESC"]["description"] == ""
+    assert by_code["NODESC2"]["name"] == "No second line" and by_code["NODESC2"]["description"] == ""
     assert {r["is_active"] for r in by_code.values()} == {True}
 
 
