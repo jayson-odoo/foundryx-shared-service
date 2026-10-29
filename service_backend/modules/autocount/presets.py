@@ -1470,6 +1470,10 @@ PRODUCT_HTTP_PRESET = HttpPreset(
         # carries `ItemType`; existing tasks get this row from
         # `backfill_product_item_type` (module Alembic 0028).
         PresetField("ItemType", "item_type_code", "string"),
+        # ITEM-CLASS (partner of sorento-crm ITEM-CLASS) - every `/itembypage`
+        # row carries `ItemClass` (often ""); existing tasks get this row from
+        # `backfill_product_item_class` (module Alembic 0034).
+        PresetField("ItemClass", "item_class_code", "string"),
         # AC-10-74 (R10) - withheld during the check period: sending
         # `uom_code` would make a pull diverge from a manual upload on every
         # product (the manual template carries no UOM column). Seeded

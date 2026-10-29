@@ -2274,6 +2274,46 @@ def backfill_product_item_type(
     )
 
 
+
+# ── ITEM-CLASS (partner of sorento-crm ITEM-CLASS) ──────────────────────────
+
+# FROZEN like the ItemType pair above - a later preset edit must not change
+# what module Alembic 0034 did.
+_ITEM_CLASS_SOURCE_COLUMN = "ItemClass"
+
+
+def backfill_product_item_class(
+    bind: Any,
+    *,
+    schema: Optional[str] = AUTOCOUNT_SCHEMA,
+    tenant_id: Optional[str] = None,
+) -> int:
+    """Give every EXISTING ``product`` task an ``ItemClass -> item_class_code``
+    header row: ``backfill_product_item_type`` exactly (see its docstring),
+    for AutoCount's ``ItemClass``. ENABLED on the ``/itembypage`` preset path
+    (every row of that endpoint carries ``ItemClass``, blank on most items) or
+    when the cached ``result_columns`` list it, DISABLED with one WARNING
+    otherwise. ``skip_unmapped`` (BL-SS-300): a task with NO header rows is
+    left to its first-save preset seed, which now carries the row itself. Module Alembic 0034 runs it once; ``update_tenant`` only from
+    below 0.20.0 and for that tenant only."""
+    return _backfill_source_owned_header_row(
+        bind,
+        schema=schema,
+        tenant_id=tenant_id,
+        entity_type=ENTITY_PRODUCT,
+        source_column=_ITEM_CLASS_SOURCE_COLUMN,
+        canonical_field="item_class_code",
+        known_good=lambda source_impl, source_config: (
+            source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+            and source_config.get("path") == _ITEM_TYPE_HTTP_PATH
+        ),
+        task_label="Product",
+        known_good_label="the AutoCount `/itembypage` preset",
+        # BL-SS-300: an empty product task keeps its first-save preset seed.
+        skip_unmapped=True,
+    )
+
+
 def _backfill_source_owned_header_row(
     bind: Any,
     *,

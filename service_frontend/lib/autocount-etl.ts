@@ -765,6 +765,7 @@ export const HTTP_PRESETS: Record<string, HttpPreset> = {
       { sourcePath: 'ItemGroup', transform: 'string', canonicalField: 'category_code' },
       { sourcePath: 'ItemBrand', transform: 'string', canonicalField: 'brand_code' },
       { sourcePath: 'ItemType', transform: 'string', canonicalField: 'item_type_code' },
+      { sourcePath: 'ItemClass', transform: 'string', canonicalField: 'item_class_code' },
       { sourcePath: 'BaseUOM', transform: 'string', canonicalField: 'uom_code' },
       { sourcePath: 'IsActive', transform: 't_f_bool', canonicalField: 'is_active', required: true },
       { sourcePath: 'Discontinued', transform: 't_f_bool', canonicalField: 'is_discontinued' },

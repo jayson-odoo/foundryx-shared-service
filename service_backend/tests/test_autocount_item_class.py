@@ -193,7 +193,7 @@ def _company(db, *, database: str, tenant_id: str = DEFAULT_TENANT_ID) -> AcComp
 
 def _product_config(db, company: AcCompany, *, source_impl: str = SOURCE_IMPL_AUTOCOUNT_HTTP,
                     path: str = "/itembypage", result_columns=None,
-                    tenant_id: str = None) -> AcEntityConfig:
+                    tenant_id: str = None, mapped: bool = True) -> AcEntityConfig:
     config = AcEntityConfig(
         tenant_id=tenant_id or company.tenant_id, company_id=company.id,
         entity_type=ENTITY_PRODUCT, source_impl=source_impl,
@@ -206,6 +206,8 @@ def _product_config(db, company: AcCompany, *, source_impl: str = SOURCE_IMPL_AU
     db.add(config)
     db.commit()
     db.refresh(config)
+    if mapped:
+        _seed_existing_rows(db, company)
     return config
 
 
@@ -240,7 +242,6 @@ def _rows(db, company_id: str, field: str = "item_class_code"):
 def test_backfill_seeds_an_enabled_row_on_an_http_item_task(db):
     company = _company(db, database="AED_IC_HTTP")
     _product_config(db, company)
-    _seed_existing_rows(db, company)
     db.expire_all()
 
     assert _backfill()(db, schema=None) == 1
@@ -448,3 +449,14 @@ def test_update_tenant_never_reseeds_another_tenants_deleted_row(db):
     db.expire_all()
     assert _rows(db, other.id) == []
     assert len(_rows(db, mine.id)) == 1
+
+
+def test_backfill_leaves_an_empty_product_task_to_its_first_save_seed(db):
+    """BL-SS-300: a task saved before its first mapping (zero header rows)
+    must not get a lone ``item_class_code`` row, or the full preset seed on
+    its first save (only while the mapping is empty) never runs."""
+    company = _company(db, database="AED_IC_EMPTY")
+    _product_config(db, company, mapped=False)
+    assert _backfill()(db, schema=None) == 0
+    db.expire_all()
+    assert db.query(AcFieldMapping).filter(AcFieldMapping.company_id == company.id).count() == 0
