@@ -7,9 +7,13 @@ ItemType repair exactly: ENABLED on the AutoCount ``/itembypage`` preset path
 or when ``result_columns`` already list ``ItemClass``, DISABLED with one
 WARNING otherwise.
 
-Pure DATA, no column added. Every product row whose ItemClass is non-blank
-re-stages ONCE after deploy (the new key enters the payload hash); a blank
-ItemClass is omitted from the payload, so most rows do not.
+Pure DATA, no column added. Every product row re-stages ONCE after deploy:
+the new key enters the payload hash, and a blank ItemClass is sent as ""
+(crew ruling 29 Oct, security M1) so the CRM clears a class AutoCount
+cleared. Live size 29 Oct: db1 11,962 + db2 3,520 = 15,482 rows, pushed by the
+ordinary master push (`autocount_sink_batch_size` 200 per request, inside the
+600 s `autocount_run_time_budget_seconds` per run; a run cut short resumes on
+the next tick), so about 78 requests in total.
 
 Deploy order: the sorento-crm ITEM-CLASS PR should land first where any
 product task pushes (the CRM drops unknown keys, so an older CRM only loses

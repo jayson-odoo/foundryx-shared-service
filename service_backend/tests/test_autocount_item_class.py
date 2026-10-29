@@ -10,7 +10,10 @@ push payload AND the pull-gateway snapshot rows (both
 
 Wire contract (what the CRM builds against):
 * key ``item_class_code``, a string, trimmed (same as ``item_type_code``);
-* OMITTED (never ``null``) when AutoCount's ``ItemClass`` is blank/absent.
+* SENT AS ``""`` when the product task maps ``ItemClass`` and the item's value is blank (crew
+  ruling 29 Oct, security M1: item class is an access attribute, so the CRM must clear a class
+  AutoCount cleared); OMITTED when no mapping row targets it, or the source row does not carry
+  the column at all (the source said nothing, so the CRM leaves the class alone).
 
 Existing tenants: every existing ``product`` task gets an
 ``ItemClass -> item_class_code`` row via ``backfill_product_item_class``
@@ -78,9 +81,21 @@ def test_sink_payload_carries_item_class_code():
     assert payload["brand_code"] == "SORENTO"
 
 
-def test_sink_payload_omits_item_class_code_when_none():
+def test_sink_payload_omits_item_class_code_when_no_mapping_sets_it():
     payload = CanonicalProduct(source_ref="X", code="X").sink_payload()
     assert "item_class_code" not in payload
+
+
+def test_sink_payload_sends_blank_when_a_mapping_set_it_to_none():
+    payload = CanonicalProduct(source_ref="X", code="X", item_class_code=None).sink_payload()
+    assert payload["item_class_code"] == ""
+
+
+def test_other_none_fields_are_still_omitted():
+    """Only item_class_code clears: brand/item type keep the "absent = untouched" rule."""
+    payload = CanonicalProduct(source_ref="X", code="X", item_class_code=None, brand_code=None,
+                               item_type_code=None).sink_payload()
+    assert "brand_code" not in payload and "item_type_code" not in payload
 
 
 def test_mapping_catalog_accepts_item_class_code_for_product():
@@ -135,13 +150,14 @@ def test_preset_maps_owner_sample_item_classes_onto_the_wire(item_class, expecte
 
 
 @pytest.mark.parametrize("blank", ["", "   ", None])
-def test_blank_item_class_is_omitted_never_null(blank):
+def test_blank_item_class_is_sent_as_blank_never_null(blank):
     mapped = _engine().map_document(_raw(ItemClass=blank))
     assert mapped.ok, [e.message() for e in mapped.errors]
-    assert "item_class_code" not in mapped.record.sink_payload()
+    assert mapped.record.sink_payload()["item_class_code"] == ""
 
 
 def test_absent_item_class_column_is_omitted():
+    """No column = no information: the engine skips the row, so the CRM is left alone."""
     raw = _raw()
     raw.pop("ItemClass")
     mapped = _engine().map_document(raw)
@@ -149,13 +165,33 @@ def test_absent_item_class_column_is_omitted():
     assert "item_class_code" not in mapped.record.sink_payload()
 
 
-def test_fixture_item_row_with_empty_item_class_omits_the_key():
+def test_a_task_without_the_item_class_row_omits_the_key():
+    rows = [
+        MappingRow(
+            source_path=f.source_path, canonical_field=f.canonical_field,
+            transform=f.transform, formula=f.formula, is_required=f.required,
+            is_enabled=f.enabled,
+        )
+        for f in PRODUCT_HTTP_PRESET.rows
+        if f.canonical_field != "item_class_code"
+    ]
+    engine = MappingEngine(
+        rows, entity_type=ENTITY_PRODUCT,
+        profile=flat_profile(ENTITY_PRODUCT, list(PRODUCT_HTTP_PRESET.key_fields)),
+        database_name="AED_SORENTO",
+    )
+    mapped = engine.map_document(_raw())
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert "item_class_code" not in mapped.record.sink_payload()
+
+
+def test_fixture_item_row_with_empty_item_class_sends_blank():
     """The real recorded ``/itembypage`` row carries ``ItemClass: ""`` (96% of
-    db1 items do): the key is omitted, the rest of the row still maps."""
+    db1 items do): sent as ``""`` so the CRM clears any class it holds."""
     row = json.loads(FIXTURE.read_text())["Data"][0]
     assert row["ItemClass"] == ""
     payload = _engine().map_document(dict(row)).record.sink_payload()
-    assert "item_class_code" not in payload
+    assert payload["item_class_code"] == ""
     assert payload["item_type_code"] == "MISC"
     assert payload["brand_code"] == "OTHERS"
 
