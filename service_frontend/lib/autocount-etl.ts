@@ -327,14 +327,18 @@ export function branchContractBanner(
  * from the generic `task.contractGate`, like the branch banner. A WARNING,
  * never a block: a run keeps the classes staged until the consumer deploys
  * 2.11. The consumer's own version is left out: 2.10 arrives on the float wire
- * as 2.1 (`ContractVersion`, display only). `null` when the gate is absent or
- * names another entity.
+ * as 2.1 (`ContractVersion`, display only); an unreachable consumer (no
+ * version) reads "unknown", as the branch banner does. `null` when the gate is
+ * absent or names another entity.
  */
 export function itemClassContractBanner(
   task: Pick<AutocountEtlTask, 'contractGate'>,
 ): string | null {
   const gate = task.contractGate;
   if (!gate || gate.entity !== 'item_class') return null;
+  if (gate.version == null) {
+    return `Consumer contract unknown - item classes land when ${gate.requiredVersion} is deployed`;
+  }
   return `Consumer contract does not accept item classes yet - they land when ${gate.requiredVersion} is deployed`;
 }
 

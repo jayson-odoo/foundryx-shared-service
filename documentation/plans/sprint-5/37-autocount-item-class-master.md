@@ -27,16 +27,19 @@ deactivates, never hard deletes; #1988 D5).
 
 - **D1 Entity `item_class`**, an HTTP-only master wired exactly like `brand` (`canonical/masters.py:64`).
   `CanonicalItemClass` caps = the CRM's: code 50, name 150 (fails at mapping, never a CRM 422).
-- **D2 Preset** `ITEM_CLASS_HTTP_PRESET`, path `/ItemClass`, key `ItemClass`, no watermark. Every row reads
-  `ItemClass` (always filled) because a formula row with a blank own source short-circuits to None
+- **D2 Preset** `ITEM_CLASS_HTTP_PRESET`, path `/ItemClass`, key `ItemClass`, no watermark. The two formula
+  rows read `ItemClass` (always filled) because a formula row with a blank own source short-circuits to None
   (`mapping.py:576-583`):
   - `code` = `ItemClass` (required);
-  - `name` = `Description`, falling back to the code when blank (the brand rule, #1988 D8):
-    `if(trim(default(Description, "")) != "", trim(Description), value)`;
-  - `description` = `trim(default(Desc2, ""))`: a blank is sent as `""` and clears the CRM placeholder
-    "Auto-created by product import" (#1988 D3);
-  - `is_active` = `true`: AutoCount has no flag, being on the list means active, and it reactivates a class
-    an earlier sweep deactivated (#1988 D8).
+  - `name` = `ItemClass` row with formula `if(trim(default(Description, "")) != "", trim(Description), value)`:
+    the Description, falling back to the code when blank (the brand rule, #1988 D8);
+  - `description` = `Desc2` (plain row, the ItemGroup shape). Every transform reads a blank as absent
+    (`mapping.py` `t_string`), so `CanonicalItemClass.sink_payload` writes `""` when the description is None:
+    it clears the CRM placeholder "Auto-created by product import" (#1988 D3). The description is therefore
+    always sent; an operator who disables the Desc2 row also clears the CRM description, which matches
+    AutoCount being master for it (#1988 D3);
+  - `is_active` = `ItemClass` row with formula `true`: AutoCount has no flag, being on the list means active,
+    and it reactivates a class an earlier sweep deactivated (#1988 D8).
 - **D3 Contract gate** `CONTRACT_GATED_ENTITIES[item_class] = (2.11, "item_classes")`, and `item_class` joins
   `PUSH_REFUSES_LOGGING_FALLBACK`: on a 2.10 CRM a run refuses with `CONTRACT_GATE` and keeps the rows
   STAGED, instead of the logging fallback marking them PUSHED (a full list with changed-only staging would
@@ -60,10 +63,20 @@ deactivates, never hard deletes; #1988 D5).
 `service_backend/tests/test_autocount_item_class_master.py`: preset rows + mapping of the recorded db1/db2
 fixtures (name fallback, `""` description, `is_active` true, code cap 50 / name cap 150 field error), sink
 payload keys, ingest path `item_classes`, contract gate (2.10 shut, 2.11 without `item_classes` shut,
-2.11 with it open), refuse-not-log on a shut gate, vanished class staged as a delete, sweep order puts
-`item_class` before `brand` / `product`. Pins moved: `test_autocount_entity_parity.py`,
-`test_autocount_contract_2_1_masters.py`, FE `autocount-meta.test.ts`, `lib/autocount-etl.test.ts`,
-`add-entity-control.test.tsx`. No live hapi calls.
+2.11 with it open), refuse-not-log on a shut gate and the held-back classes landing after the upgrade,
+vanished class staged as a delete, sweep order puts `item_class` before `brand` / `product`. Pins moved:
+`test_autocount_entity_parity.py`, `test_autocount_contract_version_compare.py`,
+`test_autocount_document_mapping.py`, FE `autocount-meta.test.ts`, `lib/autocount-etl.test.ts`,
+`add-entity-control.test.tsx`, `company-detail-view.test.tsx` (`test_autocount_contract_2_1_masters.py` covers
+`item_class` through `CANONICAL_MODELS` unchanged). No live hapi calls.
+
+## Review follow-ups (not in this PR)
+
+- `etl_service.py` "no SQL variant" guard only names `stock_balance`: a direct API save of `item_class` (or
+  `branch`) on a DB company with a blank `sourceImpl` makes an unusable `sql_db` draft (the FE always sends
+  `autocount_http`).
+- `company_service.contract_gate` compares the version only, never the advertised `entities` (existing
+  pattern; the CRM's 2.11 always lists `item_classes`).
 
 ## Docs
 
