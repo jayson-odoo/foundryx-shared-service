@@ -73,11 +73,16 @@ def test_fetch_contract_detail_numeric_body_unchanged():
 
 
 def test_every_existing_gate_stays_open_on_2_10():
+    """Every gate up to 2.10 opens on a 2.10 CRM; plan 37's `item_class`
+    (2.11) is the first gate above it and stays shut."""
     v = ContractVersion.parse("2.10")
-    for entity_type, (_required, name) in CONTRACT_GATED_ENTITIES.items():
+    for entity_type, (required, name) in CONTRACT_GATED_ENTITIES.items():
         assert sorento_supports_entity(
             entity_type, contract_version=v, contract_entities=[name]
-        ), entity_type
+        ) is (v >= required), entity_type
+    assert not sorento_supports_entity(
+        "item_class", contract_version=v, contract_entities=["item_classes"]
+    )
 
 
 def test_equal_values_hash_equally():

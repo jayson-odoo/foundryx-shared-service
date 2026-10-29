@@ -64,6 +64,7 @@ from .canonical.masters import (
     ENTITY_BRAND,
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
+    ENTITY_ITEM_CLASS,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
@@ -122,6 +123,8 @@ _ENTITY_PATH: Dict[str, str] = {
     # actually gates it behind the consumer's advertised contract, since a
     # 2.2 consumer has no ``/ingest/brands`` route yet.
     ENTITY_BRAND: "brands",
+    # Plan 37 (CRM contract 2.11) - gated exactly like ``brand`` above.
+    ENTITY_ITEM_CLASS: "item_classes",
     # plan 13 (BL-SS-207) - contract 2.5 (Appendix A2). Present here
     # unconditionally, exactly like ``brand`` above; ``sorento_supports_
     # entity`` is what actually gates it behind the consumer's advertised
@@ -347,6 +350,10 @@ LINKED_DOCUMENTS_CONTRACT_VERSION = 2.8
 BILLING_DOCUMENTS_CONTRACT_VERSION = ContractVersion(2, 6)
 AR_OUTSTANDING_CONTRACT_VERSION = ContractVersion(2, 10)
 
+# Plan 37 (CRM #1988) - the item classes door (contract 2.11). A
+# ``ContractVersion`` for the same two-digit-minor reason as 2.10 above.
+ITEM_CLASSES_CONTRACT_VERSION = ContractVersion(2, 11)
+
 # plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
 # is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
 # advertised contract to be at least this version AND to list this entity
@@ -378,6 +385,8 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
         for entity_type in BILLING_DOCUMENT_ENTITY_TYPES
     },
     ENTITY_AR_OUTSTANDING: (AR_OUTSTANDING_CONTRACT_VERSION, "ar_outstanding"),
+    # Plan 37 - the consumer must advertise `item_classes`.
+    ENTITY_ITEM_CLASS: (ITEM_CLASSES_CONTRACT_VERSION, "item_classes"),
 }
 
 # Gated entities that must NEVER be "delivered" through the logging-sink
@@ -386,9 +395,14 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
 # never offer them again - a silent, permanent loss. ``auto_push`` refuses a
 # run for these with ``errorCode == "CONTRACT_GATE"`` and leaves every row
 # STAGED (stock's AC-13-06 rule, generalised).
+# Plan 37 - `item_class` is a full list with no watermark: rows marked PUSHED
+# by the fallback would never be offered again after the CRM upgrades.
 PUSH_REFUSES_LOGGING_FALLBACK: Tuple[str, ...] = (
     ENTITY_STOCK_BALANCE,
-) + LINKED_DOCUMENT_ENTITY_TYPES + BILLING_DOCUMENT_ENTITY_TYPES + (ENTITY_AR_OUTSTANDING,)
+) + LINKED_DOCUMENT_ENTITY_TYPES + BILLING_DOCUMENT_ENTITY_TYPES + (
+    ENTITY_AR_OUTSTANDING,
+    ENTITY_ITEM_CLASS,
+)
 
 
 def sorento_supports_entity(

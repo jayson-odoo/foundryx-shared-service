@@ -322,6 +322,27 @@ export function branchContractBanner(
 }
 
 /**
+ * The Review & Activate banner for an `item_class` task whose consumer
+ * contract does not yet accept item classes (plan 37, contract 2.11) - read
+ * from the generic `task.contractGate`, like the branch banner. A WARNING,
+ * never a block: a run keeps the classes staged until the consumer deploys
+ * 2.11. The consumer's own version is left out: 2.10 arrives on the float wire
+ * as 2.1 (`ContractVersion`, display only); an unreachable consumer (no
+ * version) reads "unknown", as the branch banner does. `null` when the gate is
+ * absent or names another entity.
+ */
+export function itemClassContractBanner(
+  task: Pick<AutocountEtlTask, 'contractGate'>,
+): string | null {
+  const gate = task.contractGate;
+  if (!gate || gate.entity !== 'item_class') return null;
+  if (gate.version == null) {
+    return `Consumer contract unknown - item classes land when ${gate.requiredVersion} is deployed`;
+  }
+  return `Consumer contract does not accept item classes yet - they land when ${gate.requiredVersion} is deployed`;
+}
+
+/**
  * The Review & Activate banner for a `brand` task whose consumer contract
  * does not yet accept brands (sprint-5/08, AC-08-33) - a WARNING, never a
  * block: the task still activates and runs, it simply falls back to the
@@ -820,6 +841,22 @@ export const HTTP_PRESETS: Record<string, HttpPreset> = {
       { sourcePath: 'ItemBrand', transform: 'string', canonicalField: 'code', required: true },
       { sourcePath: 'ItemBrand', transform: 'string', canonicalField: 'name', required: true },
       { sourcePath: 'Description', transform: 'string', canonicalField: 'description' },
+    ],
+  },
+  // Plan 37 - mirrors the backend's `ITEM_CLASS_HTTP_PRESET`: name falls back
+  // to the code and is_active is `true`, both as formulas on the `ItemClass`
+  // row (seeded by the backend on the first save).
+  item_class: {
+    path: '/ItemClass',
+    keyFields: ['ItemClass'],
+    watermarkField: null,
+    comparedFields: [],
+    distinctOf: null,
+    mapping: [
+      { sourcePath: 'ItemClass', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'ItemClass', transform: 'string', canonicalField: 'name' },
+      { sourcePath: 'Desc2', transform: 'string', canonicalField: 'description' },
+      { sourcePath: 'ItemClass', transform: 'bool', canonicalField: 'is_active' },
     ],
   },
   // sprint-5/14 section 11 (D23) - mirrors the backend's `BRANCH_HTTP_PRESET`

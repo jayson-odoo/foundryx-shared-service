@@ -9,6 +9,7 @@ import {
   anchorErrorTitle,
   brandContractBanner,
   branchContractBanner,
+  itemClassContractBanner,
   derivePrefix,
   formatDurationMs,
   httpPreviewAsSqlPreview,
@@ -533,6 +534,30 @@ describe('branchContractBanner (sprint-5/14 section 11, AC-14-44)', () => {
   });
 });
 
+describe('itemClassContractBanner (plan 37)', () => {
+  // The consumer's own version is left out: a 2.10 CRM arrives on the float
+  // wire as 2.1 (`ContractVersion`, display only), which would read as wrong.
+  it('names the required version from the generic contractGate for an item_class task', () => {
+    expect(
+      itemClassContractBanner({ contractGate: { entity: 'item_class', version: 2.1, requiredVersion: 2.11 } }),
+    ).toBe('Consumer contract does not accept item classes yet - they land when 2.11 is deployed');
+  });
+
+  it('says the contract is unknown when the consumer could not be reached', () => {
+    expect(
+      itemClassContractBanner({ contractGate: { entity: 'item_class', version: null, requiredVersion: 2.11 } }),
+    ).toBe('Consumer contract unknown - item classes land when 2.11 is deployed');
+  });
+
+  it('is null without a gate or for another entity', () => {
+    expect(itemClassContractBanner({})).toBeNull();
+    expect(itemClassContractBanner({ contractGate: null })).toBeNull();
+    expect(
+      itemClassContractBanner({ contractGate: { entity: 'branch', version: 2.6, requiredVersion: 2.7 } }),
+    ).toBeNull();
+  });
+});
+
 describe('pushGateWarning (sprint-5/13, AC-13-40)', () => {
   it('names the real advertised version and the required one for a contract-shut gate', () => {
     expect(pushGateWarning({ version: 2.4, requiredVersion: 2.5 })).toBe(
@@ -665,7 +690,7 @@ describe('REF_PREFIX_RE (AC-08-07)', () => {
 });
 
 describe('HTTP_PRESETS (AC-08-16)', () => {
-  it('has exactly the six confirmed masters plus stock_balance plus branch, each with a leading-slash path', () => {
+  it('has exactly the six confirmed masters plus stock_balance, branch and item_class, each with a leading-slash path', () => {
     expect(Object.keys(HTTP_PRESETS).sort()).toEqual(
       [
         'product',
@@ -676,6 +701,7 @@ describe('HTTP_PRESETS (AC-08-16)', () => {
         'unit_of_measure',
         'stock_balance',
         'branch',
+        'item_class',
       ].sort(),
     );
     for (const preset of Object.values(HTTP_PRESETS)) {

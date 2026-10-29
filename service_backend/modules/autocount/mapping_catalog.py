@@ -39,6 +39,7 @@ from .canonical.masters import (
     ENTITY_BRAND,
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
+    ENTITY_ITEM_CLASS,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
@@ -48,6 +49,7 @@ from .canonical.masters import (
     ENTITY_WAREHOUSE,
     CanonicalBrand,
     CanonicalBranch,
+    CanonicalItemClass,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -249,6 +251,8 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     # admits nothing, so the Mapping tab shows "No deliverable fields mapped
     # yet." even with real rows saved.
     ENTITY_BRAND: _accepted(CanonicalBrand.SINK_FIELDS),
+    # Plan 37 - the brand shape.
+    ENTITY_ITEM_CLASS: _accepted(CanonicalItemClass.SINK_FIELDS),
     # sprint-5/14 section 11 (D24) - `acc_no` + `code` (the row's identity pair)
     # are required; `name` is optional; `source_ref`/`source_record` are never
     # mapping targets.

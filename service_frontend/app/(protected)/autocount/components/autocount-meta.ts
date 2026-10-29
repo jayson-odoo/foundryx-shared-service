@@ -160,6 +160,8 @@ export const AC_HTTP_ENTITY_TYPES: string[] = [
   // sprint-5/14 section 11 (D23) - the paged `branchbypage` address records, a
   // regular HTTP master with no `sql_db` variant.
   'branch',
+  // Plan 37 (ITEM-CLASS-SS) - the `/ItemClass` list, HTTP-only like branch.
+  'item_class',
 ];
 
 /**

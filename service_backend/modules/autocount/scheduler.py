@@ -117,9 +117,14 @@ def active_tenant_service_join(query, tenant_id_column):
 def sweep_order_key(entity_type: str) -> int:
     """Plan 32 (D11) - the enqueue order of one tick's due tasks: credit and
     debit notes after every other entity (so after invoices and cash sales);
-    every other entity keeps its relative order (a stable sort on 0)."""
+    every other entity keeps its relative order (a stable sort on 0).
+    Plan 37 (D5) - item classes first, so they reach the CRM before the
+    brands and products that name them (the CRM adopts by code either way)."""
     from .canonical.documents import ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE
+    from .canonical.masters import ENTITY_ITEM_CLASS
 
+    if entity_type == ENTITY_ITEM_CLASS:
+        return -1
     return 1 if entity_type in (ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE) else 0
 
 

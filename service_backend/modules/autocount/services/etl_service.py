@@ -56,6 +56,7 @@ from ..canonical.masters import (
     ENTITY_BRAND,
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
+    ENTITY_ITEM_CLASS,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
@@ -183,6 +184,8 @@ ETL_ENTITY_TYPES = (
     ENTITY_STOCK_BALANCE,
     # sprint-5/14 section 11 (D23) - HTTP-only master, wired like brand.
     ENTITY_BRANCH,
+    # Plan 37 - HTTP-only master, wired like brand.
+    ENTITY_ITEM_CLASS,
     # AC-CANCEL-PULL - Cancel SO / Cancel PO / Consignment / Consignment
     # Return: DB-source documents exactly like SO/PO/SPO (contract 2.8).
 ) + LINKED_DOCUMENT_ENTITY_TYPES + BILLING_DOCUMENT_ENTITY_TYPES + (
