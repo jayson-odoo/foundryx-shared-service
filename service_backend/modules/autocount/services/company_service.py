@@ -125,6 +125,7 @@ from ..sinks_sorento import (
     LINKED_DOCUMENTS_CONTRACT_VERSION,
     AR_OUTSTANDING_CONTRACT_VERSION,
     BILLING_DOCUMENTS_CONTRACT_VERSION,
+    ITEM_CLASSES_CONTRACT_VERSION,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -160,6 +161,7 @@ from ..canonical.masters import (  # noqa: E402
     ENTITY_BRAND,
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
+    ENTITY_ITEM_CLASS,
     ENTITY_PRODUCT,
     ENTITY_SUPPLIER,
 )
@@ -1132,6 +1134,8 @@ class CompanyService:
             for entity_type in BILLING_DOCUMENT_ENTITY_TYPES
         },
         ENTITY_AR_OUTSTANDING: AR_OUTSTANDING_CONTRACT_VERSION,
+        # Plan 37 - item classes (2.11).
+        ENTITY_ITEM_CLASS: ITEM_CLASSES_CONTRACT_VERSION,
     }
 
     def contract_gate(

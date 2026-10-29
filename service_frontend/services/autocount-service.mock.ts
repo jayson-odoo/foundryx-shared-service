@@ -1247,6 +1247,7 @@ function mockListEtlRuns(
 //   /location         list, 2 rows - `warehouse` (small on purpose).
 //   /ItemGroup        list, 60 rows - `product_category`.
 //   /ItemBrand        list, 12 rows - `brand`.
+//   /ItemClass        list, 2 rows - `item_class`.
 //   /branchbypage     paged, 4 rows (2 fixture pages) - `branch`.
 //   /itembypage + distinctOf ["BaseUOM","SalesUOM","PurchaseUOM"] - `unit_of_measure`.
 //   /bogus            422 on `path` ("Not found").
@@ -1333,6 +1334,12 @@ const ITEM_BRAND_ROWS: Array<Record<string, unknown>> = ITEM_BRANDS.map((b) => (
   Description: '',
 }));
 
+// Plan 37 - the crew's recorded db1 `/ItemClass` GET (30 Oct): a plain list.
+const ITEM_CLASS_ROWS: Array<Record<string, unknown>> = [
+  { ItemClass: 'DIY', Description: 'SORENTO LITE - DIY', Desc2: '', ShortCode: '' },
+  { ItemClass: 'SERENE', Description: 'SORENTO SERENE SERIES', Desc2: '', ShortCode: '' },
+];
+
 const BRANCH_ROWS: Array<Record<string, unknown>> = [
   { BranchCode: 'HQ', BranchName: 'Head Office', AccNo: '300-R009' },
   { BranchCode: 'PJ', BranchName: 'Petaling Jaya Branch', AccNo: '300-R014' },
@@ -1353,6 +1360,7 @@ const HTTP_PATH_FIXTURES: Record<string, HttpPathFixture> = {
   '/location': { envelope: 'list', rows: LOCATION_ROWS },
   '/ItemGroup': { envelope: 'list', rows: ITEM_GROUP_ROWS },
   '/ItemBrand': { envelope: 'list', rows: ITEM_BRAND_ROWS },
+  '/ItemClass': { envelope: 'list', rows: ITEM_CLASS_ROWS },
   // sprint-5/14 section 11 - the paged `branchbypage` rows (the committed vendor
   // fixtures branch-page-1.json + branch-page-2.json, walk order): one row has a
   // blank AccNo and one a blank BranchCode, as the live endpoint's edge cases.
@@ -4486,6 +4494,22 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       { sourcePath: 'ItemBrand', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'ItemBrand', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'Description', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  item_class: {
+    label: 'Item class (open REST API)',
+    rows: [
+      { sourcePath: 'ItemClass', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      {
+        sourcePath: 'ItemClass',
+        canonicalField: 'name',
+        transform: 'string',
+        formula: 'if(trim(default(Description, "")) != "", trim(Description), value)',
+        required: false,
+        enabled: true,
+      },
+      { sourcePath: 'Desc2', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'ItemClass', canonicalField: 'is_active', transform: 'bool', formula: 'true', required: false, enabled: true },
     ],
   },
   branch: {

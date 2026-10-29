@@ -45,6 +45,7 @@ from .canonical.masters import (
     ENTITY_BRAND,
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
+    ENTITY_ITEM_CLASS,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_STOCK_BALANCE,
@@ -1551,6 +1552,32 @@ BRAND_HTTP_PRESET = HttpPreset(
     ),
 )
 
+# Plan 37 (ITEM-CLASS-SS, CRM contract 2.11) - the ItemGroup shape: a plain
+# list, no paging, no LastModified, no active flag. The two formula rows read
+# the always-filled `ItemClass`, because a formula row whose own source is
+# blank short-circuits to None (`MappingRow.coerce`): the name falls back to
+# the code (the brand rule) and a listed class is active (it also reactivates
+# one an earlier sweep deactivated). A blank `Desc2` is sent as "" by
+# `CanonicalItemClass.sink_payload`.
+ITEM_CLASS_HTTP_PRESET = HttpPreset(
+    label="Item class (open REST API)",
+    path="/ItemClass",
+    key_fields=("ItemClass",),
+    watermark_field=None,
+    distinct_of=None,
+    rows=(
+        PresetField("ItemClass", "code", "string", required=True),
+        PresetField(
+            "ItemClass",
+            "name",
+            "string",
+            formula='if(trim(default(Description, "")) != "", trim(Description), value)',
+        ),
+        PresetField("Desc2", "description", "string"),
+        PresetField("ItemClass", "is_active", "bool", formula="true"),
+    ),
+)
+
 # sprint-5/14 section 11 (D23) - the paged `branchbypage` address records, a
 # regular master like product. The vendor row is unique on (AccNo, BranchCode)
 # (BranchCode alone repeats), so both key the row; the raw row travels to the
@@ -1664,6 +1691,7 @@ HTTP_PRESETS: Dict[str, HttpPreset] = {
     ENTITY_WAREHOUSE: WAREHOUSE_HTTP_PRESET,
     ENTITY_PRODUCT_CATEGORY: PRODUCT_CATEGORY_HTTP_PRESET,
     ENTITY_BRAND: BRAND_HTTP_PRESET,
+    ENTITY_ITEM_CLASS: ITEM_CLASS_HTTP_PRESET,
     ENTITY_UNIT_OF_MEASURE: UNIT_OF_MEASURE_HTTP_PRESET,
     ENTITY_STOCK_BALANCE: STOCK_BALANCE_HTTP_PRESET,
     ENTITY_BRANCH: BRANCH_HTTP_PRESET,

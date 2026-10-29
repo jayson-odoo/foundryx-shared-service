@@ -44,6 +44,7 @@ from .canonical.masters import (
     ENTITY_BRAND,
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
+    ENTITY_ITEM_CLASS,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
@@ -55,6 +56,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
     CanonicalBrand,
     CanonicalBranch,
+    CanonicalItemClass,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -1163,6 +1165,15 @@ BRAND_PROFILE = EntityProfile(
     identity_path="Code",
 )
 
+# Plan 37 - the open REST API's ``ItemClass`` list, flat like brand.
+ITEM_CLASS_PROFILE = EntityProfile(
+    entity_type=ENTITY_ITEM_CLASS,
+    record_model=CanonicalItemClass,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
 # sprint-5/14 section 11 (D23-D25) - the open REST API's `branchbypage` rows.
 # Runs FLAT like brand; `flat_source_ref` mints the CRM's own
 # `{book}:BR:{AccNo}:{BranchCode}` (the engine's `database_name` is the BOOK for
@@ -1312,6 +1323,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     PRODUCT_PROFILE.entity_type: PRODUCT_PROFILE,
     SALES_AGENT_PROFILE.entity_type: SALES_AGENT_PROFILE,
     BRAND_PROFILE.entity_type: BRAND_PROFILE,
+    ITEM_CLASS_PROFILE.entity_type: ITEM_CLASS_PROFILE,
     BRANCH_PROFILE.entity_type: BRANCH_PROFILE,
     STOCK_BALANCE_PROFILE.entity_type: STOCK_BALANCE_PROFILE,
     SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,

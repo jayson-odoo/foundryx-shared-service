@@ -62,6 +62,9 @@ ENTITY_PRODUCT = "product"
 # sprint-5/08 (AC-08-31) - the open REST API's ItemBrand lookup. Lives here
 # for the same no-import-cycle reason as its five siblings above.
 ENTITY_BRAND = "brand"
+# Plan 37 (ITEM-CLASS-SS, CRM contract 2.11) - the open REST API's ItemClass
+# list. Lives here for the same no-import-cycle reason as its siblings above.
+ENTITY_ITEM_CLASS = "item_class"
 # sprint-5/14 section 11 (D23) - the open REST API's `branchbypage` address
 # records, a regular HTTP master entity (formerly a doc feed). Lives here for
 # the same no-import-cycle reason as its siblings above.
@@ -265,6 +268,39 @@ class CanonicalBrand(CanonicalMaster):
         "description",
         "is_active",
     )
+
+
+class CanonicalItemClass(CanonicalMaster):
+    """AutoCount ``ItemClass`` -> Sorento ``item_classes`` (plan 37, CRM
+    contract 2.11). The brand shape exactly, with the CRM's own column widths
+    (``item_classes`` code 50 / name 150), so a value that would 422 there
+    fails at mapping time instead.
+    """
+
+    entity_type: str = ENTITY_ITEM_CLASS
+
+    code: Optional[str] = Field(None, max_length=50)
+    name: Optional[str] = Field(None, max_length=150)
+    description: Optional[str] = None
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "description",
+        "is_active",
+    )
+
+    def sink_payload(self) -> Dict[str, Any]:
+        """AutoCount is master for the description (CRM #1988 D3): a blank
+        one is sent as ``""``, which clears the "Auto-created by product
+        import" placeholder a product push left. The mapping engine reads a
+        blank value as absent (``t_string``), so the blank is written here;
+        every other None stays omitted."""
+        payload = super().sink_payload()
+        payload.setdefault("description", "")
+        return payload
 
 
 class CanonicalBranch(CanonicalMaster):
@@ -514,6 +550,7 @@ MASTER_ENTITIES: List[str] = [
     ENTITY_SALES_AGENT,
     ENTITY_BRAND,
     ENTITY_BRANCH,
+    ENTITY_ITEM_CLASS,
 ]
 
 # sprint-5/14 section 11 (D27) - masters whose full-extract reconcile never

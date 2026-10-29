@@ -19,7 +19,7 @@ them:
 
 | Task | Registry | Entities |
 |---|---|---|
-| `source_impl == autocount_http` | `HTTP_PRESETS[entity].rows` | product, customer, warehouse, product_category, brand, unit_of_measure, stock_balance |
+| `source_impl == autocount_http` | `HTTP_PRESETS[entity].rows` | product, customer, warehouse, product_category, brand, item_class, unit_of_measure, stock_balance, branch |
 | anything else (a `sql_database` task) | `DOCUMENT_PRESETS[entity].header` | sales_order, purchase_order, shipping_order - **header scope only** |
 
 Anything else answers `None`. Deliberately NOT a preset: `company_service`'s own
