@@ -268,11 +268,28 @@ def test_http_preset_path_keys_and_rows():
     assert preset.watermark_field is None  # no LastModified: a full list every run
     rows = {r.canonical_field: r for r in preset.rows}
     assert set(rows) == {"code", "name", "description", "is_active"}
-    # Every row reads the always-filled `ItemClass`: a formula row whose own
-    # source is blank short-circuits to None (`mapping.py` `MappingRow.coerce`).
-    assert {r.source_path for r in preset.rows} == {"ItemClass"}
+    # The formula rows read the always-filled `ItemClass`: a formula row whose
+    # own source is blank short-circuits to None (`mapping.py` `MappingRow.coerce`).
+    assert rows["name"].source_path == "ItemClass" and rows["name"].formula
+    assert rows["is_active"].source_path == "ItemClass" and rows["is_active"].formula == "true"
+    # The ItemGroup shape for the description; a blank one is sent as "" by
+    # the model (every transform reads blank as absent, `mapping.py` `t_string`).
+    assert rows["description"].source_path == "Desc2" and rows["description"].formula is None
     assert rows["code"].required is True and rows["code"].formula is None
     assert all(r.enabled for r in preset.rows)
+
+
+def test_a_blank_description_is_sent_as_an_empty_string_and_other_blanks_are_omitted():
+    """AutoCount is master for the description (#1988 D3): "" clears the CRM's
+    "Auto-created by product import" placeholder. Every other None stays
+    omitted (absent = untouched, `CanonicalMaster.sink_payload`)."""
+    from modules.autocount.canonical.masters import CanonicalItemClass
+
+    payload = CanonicalItemClass(source_ref="R", code="DIY", name="DIY").sink_payload()
+    assert payload["description"] == ""
+    assert "is_active" not in payload and "source_doc_no" not in payload
+    kept = CanonicalItemClass(source_ref="R", code="DIY", name="DIY", description="Lite").sink_payload()
+    assert kept["description"] == "Lite"
 
 
 def test_canonical_item_class_caps_match_the_crm_columns():
