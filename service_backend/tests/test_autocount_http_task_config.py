@@ -451,7 +451,8 @@ def test_first_clean_save_seeds_http_preset_product(db):
     # seeded row for it was one the save gate refuses and every ordinary
     # Save swept away.
     # ITEM-TYPE-SS - and 9 again: the `ItemType -> item_type_code` row.
-    assert len(rows) == 9, [r.canonical_field for r in rows]
+    # ITEM-CLASS - 10: the `ItemClass -> item_class_code` row.
+    assert len(rows) == 10, [r.canonical_field for r in rows]
     by_source = {r.source_path: r for r in rows}
     assert by_source["IsActive"].transform == "t_f_bool"
     assert "Discontinued" not in by_source

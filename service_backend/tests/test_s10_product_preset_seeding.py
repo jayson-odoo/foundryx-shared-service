@@ -112,7 +112,8 @@ def test_first_clean_save_seeds_nine_mapping_rows_for_product(db):
     # never sent, so seeding a row for it only produced one the save gate
     # refuses on a PUT and every ordinary Save swept away.
     # ITEM-TYPE-SS - 9: the `ItemType -> item_type_code` row joins.
-    assert len(rows) == 9, sorted(pairs)
+    # ITEM-CLASS - 10: the `ItemClass -> item_class_code` row joins.
+    assert len(rows) == 10, sorted(pairs)
     assert ("ItemType", "item_type_code") in pairs
     assert ("BaseUOMPrice", "list_price") in pairs
     assert ("Description", "description") in pairs
