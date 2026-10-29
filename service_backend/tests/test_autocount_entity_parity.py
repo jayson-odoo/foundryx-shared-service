@@ -59,14 +59,15 @@ def test_ac_sql_db_entity_types_is_every_extractable_entity_minus_grn():
     (sprint-5/08, AC-08-31 - "a DB task can feed it too"); an entity added to
     either side without the other fails LOUDLY here.
     """
-    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.canonical.masters import ENTITY_BRANCH, ENTITY_ITEM_CLASS
 
     src = TS_PATH.read_text()
     ts_sql_db = _string_array(src, "AC_SQL_DB_ENTITY_TYPES")
     # sprint-5/14 section 11 (AC-14-40): `branch` is HTTP-only exactly like
     # `stock_balance` - it registers in ENTITY_PROFILES / ETL_ENTITY_TYPES but
     # has no `sql_db` variant, so the SQL picker set stays eleven.
-    excluded = {ENTITY_GOODS_RECEIVED_NOTE, ENTITY_STOCK_BALANCE, ENTITY_BRANCH}
+    # Plan 37 (ITEM-CLASS-SS): `item_class` is HTTP-only too.
+    excluded = {ENTITY_GOODS_RECEIVED_NOTE, ENTITY_STOCK_BALANCE, ENTITY_BRANCH, ENTITY_ITEM_CLASS}
     assert ts_sql_db == set(ENTITY_PROFILES) - excluded
     assert ts_sql_db == set(ETL_ENTITY_TYPES) - excluded
     # AC-CANCEL-PULL: + cancel_sales_order / cancel_purchase_order /
@@ -121,9 +122,10 @@ def test_http_presets_parity_backend_and_frontend():
     # sprint-5/10 S5b (AC-10-40) - `stock_balance` joins the open REST API
     # preset set.
     # sprint-5/14 section 11 (AC-14-40) - `branch` joins as an HTTP-only master.
+    # Plan 37 (ITEM-CLASS-SS) - `item_class` joins as an HTTP-only master.
     assert ts_http == {
         "product", "customer", "warehouse", "product_category", "brand", "unit_of_measure",
-        "stock_balance", "branch",
+        "stock_balance", "branch", "item_class",
     }
 
 

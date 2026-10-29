@@ -115,9 +115,11 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     // company is offered it beside Stock balance (thirteen total).
     // AC-CANCEL-PULL: + the four linked documents (seventeen).
     // Plan 32: + the four billing documents and AR outstanding (twenty-two).
-    expect(names).toHaveLength(22);
+    // Plan 37: + Item class, HTTP-only (twenty-three).
+    expect(names).toHaveLength(23);
     expect(names).toContain('Stock balance');
     expect(names).toContain('Branch');
+    expect(names).toContain('Item class');
   });
 
   it('a DB company\'s list drops the entities already configured', () => {
@@ -130,8 +132,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    // Plan 32: 22 offered minus the two configured.
-    expect(names).toHaveLength(20);
+    // Plan 37: 23 offered minus the two configured.
+    expect(names).toHaveLength(21);
     expect(names).not.toContain('Customer');
     expect(names).not.toContain('Sales order');
     expect(names).toContain('Supplier');
@@ -149,8 +151,8 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    // Plan 32: 22 offered minus Stock balance.
-    expect(names).toHaveLength(21);
+    // Plan 37: 23 offered minus Stock balance.
+    expect(names).toHaveLength(22);
     expect(names).not.toContain('Stock balance');
   });
 });
@@ -163,10 +165,10 @@ describe('AddEntityControl - open (http) company kind (sprint-5/08, AC-08-18)', 
     expect(names).toEqual(
       expect.arrayContaining([
         'Product', 'Customer', 'Warehouse', 'Product category', 'Brand', 'Unit of measure',
-        'Stock balance', 'Branch',
+        'Stock balance', 'Branch', 'Item class',
       ]),
     );
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(9);
   });
 
   it("an open company's list drops entities already configured", () => {
@@ -179,7 +181,7 @@ describe('AddEntityControl - open (http) company kind (sprint-5/08, AC-08-18)', 
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(7);
+    expect(names).toHaveLength(8);
     expect(names).not.toContain('Product');
   });
 
