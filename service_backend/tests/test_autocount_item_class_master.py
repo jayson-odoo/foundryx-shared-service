@@ -488,6 +488,26 @@ def test_a_shut_gate_refuses_the_push_and_keeps_every_class_staged(wired, monkey
     assert len(staged) == 2 and {r.status for r in staged} == {STAGED}
 
 
+def test_classes_held_back_on_2_10_are_pushed_once_the_crm_reaches_2_11(wired, monkeypatch):
+    """The point of refusing the logging fallback: nothing is lost while the
+    CRM is behind; the next run after the upgrade delivers the full list."""
+    db, company = wired
+    _stub_vendor_client(monkeypatch, _vendor(load_item_classes("db1"), []))
+    _contract(monkeypatch, "2.10", ["brands", "products", "item_classes"])
+    posts: List[httpx.Request] = []
+    _inject_sink_transport(monkeypatch, _crm(posts))
+    _run_sync(db, company)
+    assert not _ingested_records(posts)
+
+    _open_contract(monkeypatch)
+    # Each run closes its vendor client; the next run gets a fresh stub.
+    _stub_vendor_client(monkeypatch, _vendor(load_item_classes("db1"), []))
+    _run_sync(db, company)
+
+    assert [r["code"] for r in _ingested_records(posts)] == ["DIY", "SERENE"]
+    assert {r.status for r in _staged(db, company)} == {STAGED_PUSHED}
+
+
 def test_sink_for_company_opens_on_2_11_and_not_on_2_10(db, monkeypatch):
     from modules.autocount.services.company_service import CompanyService
 

@@ -543,6 +543,12 @@ describe('itemClassContractBanner (plan 37)', () => {
     ).toBe('Consumer contract does not accept item classes yet - they land when 2.11 is deployed');
   });
 
+  it('says the contract is unknown when the consumer could not be reached', () => {
+    expect(
+      itemClassContractBanner({ contractGate: { entity: 'item_class', version: null, requiredVersion: 2.11 } }),
+    ).toBe('Consumer contract unknown - item classes land when 2.11 is deployed');
+  });
+
   it('is null without a gate or for another entity', () => {
     expect(itemClassContractBanner({})).toBeNull();
     expect(itemClassContractBanner({ contractGate: null })).toBeNull();
