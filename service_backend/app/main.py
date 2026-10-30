@@ -1,9 +1,12 @@
 """FastAPI application factory and router wiring."""
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import HTMLResponse
 
 from app.api.v1 import (
     ai,
@@ -120,7 +123,35 @@ async def lifespan(_: FastAPI):
         stop_dispatcher()
 
 
-app = FastAPI(title="Foundryx Shared Service API", debug=settings.debug, lifespan=lifespan)
+# Behind Caddy the API lives under a STRIPPED path prefix (`BACKEND_PATH`, e.g.
+# `/be`, carried by PUBLIC_BASE_URL). Swagger UI must fetch the spec at
+# <prefix>/openapi.json and "Try it out" must call <prefix>/..., but the app
+# itself still routes on root paths - so only the docs + `servers` get the
+# prefix. NOT `root_path`: that would make request.url.path carry the prefix
+# and break the `/api/v1/` prefix checks (api_errors, activity log).
+_DOCS_PREFIX = urlparse(settings.public_base_url).path.rstrip("/")
+
+app = FastAPI(
+    title="Foundryx Shared Service API",
+    debug=settings.debug,
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    servers=[{"url": _DOCS_PREFIX}] if _DOCS_PREFIX else None,
+)
+
+
+@app.get("/docs", include_in_schema=False)
+def swagger_ui() -> HTMLResponse:
+    return get_swagger_ui_html(
+        openapi_url=f"{_DOCS_PREFIX}{app.openapi_url}", title=f"{app.title} - Swagger UI"
+    )
+
+
+@app.get("/redoc", include_in_schema=False)
+def redoc_ui() -> HTMLResponse:
+    return get_redoc_html(openapi_url=f"{_DOCS_PREFIX}{app.openapi_url}", title=f"{app.title} - ReDoc")
+
 
 # Structured error envelope for the public gateway API (`/api/v1/*`, AC-01-36).
 from app.api_errors import install_api_error_handler  # noqa: E402
