@@ -1123,6 +1123,8 @@ Message types:
 
 `theme` = whitelisted brand primitives (`{ primary, surface, text, bubbleIn, bubbleOut, radius, … }`); `colorScheme` = `"light" | "dark"`.
 
+While your tenant is suspended or archived, new embed sessions are refused and existing embed sessions stop working (`403`); they work again once the tenant is restored.
+
 ### 12.5 Scopes - the widget only ever sees what you signed
 
 * `**thread:<contactId>**` - the widget can read/act on **only that contact**. Any attempt (via the UI or a hand-crafted API call with the token) to read another contact's thread, or to list the workspace, returns `**403**`. The live WebSocket is filtered server-side too - it only receives that contact's events.

@@ -144,6 +144,11 @@ class EmbedSessionService:
         # Tenant is now attributable - every subsequent failure lands on the
         # connection's tenant console (AC-DLC-20).
         ctx["tenant_id"] = conn.tenant_id
+        # A tenant that may not sign in (suspended or archived) gets no new session.
+        from app.dependencies import tenant_signin_allowed
+
+        if not tenant_signin_allowed(self.db, conn.tenant_id):
+            raise EmbedError(403, "tenant_suspended", "This tenant is suspended.")
 
         embed_secret = self._embed_secret(conn)
 

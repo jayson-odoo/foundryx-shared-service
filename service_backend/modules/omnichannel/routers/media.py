@@ -25,7 +25,11 @@ from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import assert_tenant_signin_allowed, effective_permission_keys
+from app.dependencies import (
+    assert_staff_token,
+    assert_tenant_signin_allowed,
+    effective_permission_keys,
+)
 from app.models.tenant import DEFAULT_TENANT_ID
 from app.repositories.user_repository import UserRepository
 from app.security import decode_access_token
@@ -71,8 +75,10 @@ def _resolve_principal(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid credentials.")
     user_id = payload.get("sub")
-    if not user_id or payload.get("kind") == "profile":
+    if not user_id:
         raise HTTPException(status_code=401, detail="Invalid credentials.")
+    # Same accepted token types as every other session route.
+    assert_staff_token(payload)
     tenant_id = payload.get("tenant_id") or DEFAULT_TENANT_ID
     user = UserRepository(db).get_by_id(user_id, tenant_id)
     if user is None:
