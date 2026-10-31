@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-01** | **`GET /api/v1/omnichannel/channels`** (§5a). Lists the channels your API key can send on, so you can map a `channelId` to a number. Each item carries `isDefault`, the channel `POST /messages` uses when `channelId` is omitted. Additive and non-breaking. |
 > | **2026-09-09** | **Web chat widget section + `visitorProfile`** (plan 34 / A7b, review round 1). New **§12a** documents the visitor-facing widget end to end: the install snippet, allowed origins, the exact host-identity recipe `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))`, `window.fxChatIdentity` / `fxWebchat.identify()`, and what a visitor can and cannot do. The `webchat:` `to` row in §4.1 now points there instead of at §12 (the agent-facing embed, which uses a different secret and a different HMAC input). `ThreadItem`/`ContactObject` gain **`visitorProfile`** (§9.1/9.2) - the `{name?, email?, phone?}` a visitor typed into the pre-chat form, UNVERIFIED and deliberately NOT written onto the contact's own `phone`/`email` (those are matching keys); `null` on every channel type but `WEBCHAT`. Non-breaking - no existing field changed meaning. |
 > | **2026-09-08** | **Web chat channel** (plan 34 / A7b). `channelType` now also takes `WEBCHAT` on every contact/message shape (§9). Sending: `to` gains a `webchat:<value>` prefix (§4.1), following the identical `psid:`/`igsid:` rule - an EXISTING identity on the chosen channel only, never created. `ThreadItem`/`ContactObject` gain `visitorLastSeenAt` (§9.1/9.2) - a presence fact (the visitor's last session/message/socket-connect instant), `null` on every channel type but `WEBCHAT`. A web chat channel has **no messaging window at all** - `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null` for a web chat contact, and a send via this Gateway API is never refused for window reasons on that channel type. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never uses `webchat:` and never reads `visitorLastSeenAt` sees byte-identical behaviour. |
 > | **2026-09-07** | **Messenger + Instagram channels** (plan 32 / A7a). `channelType` now also takes `FACEBOOK`/`INSTAGRAM` on every contact/message shape (§9). Sending: `POST /messages` accepts an optional `channelId` selector (§4); the implicit channel choice (no `channelId`) now PREFERS an active `WHATSAPP` channel, so a workspace that connects a second channel type never re-points an existing integration's sends (§2). `to` gains three new prefixes - `psid:<id>` / `igsid:<id>` (resolve an EXISTING contact identity on the CHOSEN channel only, never create) and `id:<contactId>` (§4.1); a bare value or `phone:` is unchanged. Two new error codes (§10): `messaging_window_closed` (409, Messenger/Instagram's own re-engagement window closed - `csw_window_closed` keeps its exact WhatsApp-only meaning) and `channel_not_available_for_contact` (422, the resolved contact has no identity on the chosen channel). `ThreadItem`/`ContactObject` gain `windowExpiresAt`/`humanAgentExpiresAt` (§9.1/9.2) - the per-channel-type messaging window; `cswExpiresAt` keeps its documented WhatsApp-only meaning verbatim (reads `null` for a Messenger/Instagram contact). `MessageItem`/`MessageObject` gain `channelType` and `mediaUnavailable` (§9.1/9.2) - a Messenger/Instagram inbound attachment whose CDN link expired before Foundryx could fetch it; the message still lands, render a muted placeholder. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never sets `channelId` and never uses the new `to` prefixes sees byte-identical behaviour. |
@@ -314,6 +315,34 @@ Only **APPROVED** templates on the workspace's active channel.
 ```
 
 Use `name` (or `id`) + fill `variableCount` values in `template.variables` when sending (§4.1). Templates are authored + submitted to Meta by the Foundryx admin in the dashboard; you only consume the approved ones.
+
+
+---
+
+## 5a. Listing channels
+
+### `GET /api/v1/omnichannel/channels`
+
+The channels of your API key's workspace, oldest first. No pagination (a workspace has only a handful).
+
+```json
+{ "data": [
+  { "id": "…", "channelType": "WHATSAPP", "name": "Support", "status": "ACTIVE",
+    "isActive": true, "isDefault": true,
+    "displayPhoneNumber": "+60 11-111 0000", "verifiedName": "Example Co",
+    "createdAt": "2026-01-01T00:00:00Z" }
+] }
+```
+
+| Field | Notes |
+|----|----|
+| `id` | Pass as `channelId` on `POST /messages` (§4). |
+| `channelType` | `WHATSAPP`, `FACEBOOK`, `INSTAGRAM` or `WEBCHAT`. |
+| `status` / `isActive` | A disconnected or inactive channel is still listed, with its real `status` and `isActive: false`, so you can see a number that stopped working. A removed channel is not listed. |
+| `isDefault` | `true` on exactly the channel `POST /messages` uses when you omit `channelId`; `false` on the rest. When no channel is active, none is default. |
+| `displayPhoneNumber`, `verifiedName` | `null` on channels that have no phone number. |
+
+Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number.
 
 
 ---

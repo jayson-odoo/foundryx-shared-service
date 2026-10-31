@@ -22,9 +22,11 @@ from ..models import (
     WhatsappTemplate,
 )
 from ..phone import digits_only
+from ..repositories.channel_repository import ChannelRepository
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
     PublicSendRequest,
+    PublicChannelItem,
     PublicTemplateItem,
     RioAssignee,
     RioContactItem,
@@ -1081,6 +1083,37 @@ class PublicGatewayService:
         if reserved:
             store.finalize(workspace_id, idempotency_key, message_id)
         return message_id, False
+
+    # ── Channels (read-only) ─────────────────────────────────────────────────
+    def list_channels(self, tenant_id: str, workspace_id: str) -> list[PublicChannelItem]:
+        """The workspace's channels, oldest first. Inactive / disconnected rows
+        are listed with their real status (a consumer must see a number that
+        stopped working); trashed rows are not. ``isDefault`` is the channel
+        ``_workspace_channel`` returns for an omitted ``channelId`` - the SAME
+        resolver, so the flag can never drift from what a send does; with no
+        active channel nothing is default."""
+        rows = ChannelRepository(self.db).list_by_workspace(
+            workspace_id, tenant_id, oldest_first=True
+        )
+        try:
+            default_id: Optional[str] = self._workspace_channel(tenant_id, workspace_id).id
+        except ApiError:
+            default_id = None
+        smap = statuses.id_to_key_map(self.db, tenant_id)
+        return [
+            PublicChannelItem(
+                id=c.id,
+                channelType=c.channel_type,
+                name=c.name,
+                status=smap.get(c.status_id, "ACTIVE"),
+                isActive=c.is_active,
+                isDefault=c.id == default_id,
+                displayPhoneNumber=c.display_phone_number,
+                verifiedName=c.verified_name,
+                createdAt=c.created_at,
+            )
+            for c in rows
+        ]
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
     def list_templates(
