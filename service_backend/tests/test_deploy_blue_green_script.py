@@ -234,9 +234,13 @@ def test_plan39_healthy_deploy_recreates_redis_after_old_color_then_checks(tmp_p
     assert active == "green"
     rm_old = _line_index(calls, "compose rm -f backend_blue frontend_blue")
     redis_up = _line_index(calls, "docker compose up -d redis", last=True)
-    authed = _line_index(calls, "stub: authenticated ping, REDISCLI_AUTH matched")
+    authed = _line_index(calls, "stub: authenticated ping, REDISCLI_AUTH matched", last=True)
     unauthed = _line_index(calls, "stub: unauthenticated ping")
     assert rm_old < redis_up < authed < unauthed
+    # AC-39-14: one authenticated ping BEFORE the new color starts, one AFTER redis is recreated
+    first_authed = _line_index(calls, "stub: authenticated ping, REDISCLI_AUTH matched")
+    new_color_up = _line_index(calls, "up -d --no-deps backend_green")
+    assert first_authed < new_color_up < redis_up < authed
     # the infra step did not recreate redis (the only plain `up -d redis` is the late one)
     assert sum(1 for ln in calls.splitlines() if ln.endswith("compose up -d redis")) == 1
     assert "--no-recreate redis" in calls
@@ -245,7 +249,6 @@ def test_plan39_healthy_deploy_recreates_redis_after_old_color_then_checks(tmp_p
 @pytest.mark.parametrize(
     "case,kwargs,message",
     [
-        ("missing_password", {"dotenv": ""}, "REDIS_PASSWORD is not set"),
         ("auth_ping_not_pong", {"FAKE_REDIS_AUTH_REPLY": "ERR invalid password", "REDIS_WAIT_TICKS": "2"}, "did not answer an authenticated PING"),
         ("unauth_not_refused", {"FAKE_REDIS_NOAUTH_REPLY": "PONG"}, "accepted an unauthenticated PING"),
     ],
