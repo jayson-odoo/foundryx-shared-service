@@ -11,6 +11,7 @@
 > | Date | Change |
 > |----|----|
 > | **2026-11-01** | **Mark a contact read** (`POST /contacts/{identifier}/read`, section 6a). Resets `unreadCount` and sends a WhatsApp read receipt per channel; each receipt answers `sent`, `already_sent`, `failed`, `channel_unavailable` or `not_supported`. Only this route sends a read receipt. Additive: no existing shape changes. |
+> | **2026-11-01** | **`message.outbound` webhook event + sender-side `message.status`** (§7). New opt-in event type `message.outbound` fires once for every message Foundryx sends on your channel, whichever path created it (your `POST /messages`, a workflow, an inbox agent, a broadcast); `data` is `{ message, contact, source }` and `source` says which path. Separately, `message.status` now also fires for `SENT` (Meta accepted the send) and `FAILED` (a synchronous send failure), not only for `DELIVERED`/`READ`/receipt-driven `FAILED`; **existing `message.status` subscribers receive these new deliveries with no opt-in**, so make sure your handler accepts `SENT` and does not move a status backward. Non-breaking for a consumer that does not subscribe to `message.outbound` - every existing field and event keeps its meaning. |
 > | **2026-09-09** | **Web chat widget section + `visitorProfile`** (plan 34 / A7b, review round 1). New **§12a** documents the visitor-facing widget end to end: the install snippet, allowed origins, the exact host-identity recipe `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))`, `window.fxChatIdentity` / `fxWebchat.identify()`, and what a visitor can and cannot do. The `webchat:` `to` row in §4.1 now points there instead of at §12 (the agent-facing embed, which uses a different secret and a different HMAC input). `ThreadItem`/`ContactObject` gain **`visitorProfile`** (§9.1/9.2) - the `{name?, email?, phone?}` a visitor typed into the pre-chat form, UNVERIFIED and deliberately NOT written onto the contact's own `phone`/`email` (those are matching keys); `null` on every channel type but `WEBCHAT`. Non-breaking - no existing field changed meaning. |
 > | **2026-09-08** | **Web chat channel** (plan 34 / A7b). `channelType` now also takes `WEBCHAT` on every contact/message shape (§9). Sending: `to` gains a `webchat:<value>` prefix (§4.1), following the identical `psid:`/`igsid:` rule - an EXISTING identity on the chosen channel only, never created. `ThreadItem`/`ContactObject` gain `visitorLastSeenAt` (§9.1/9.2) - a presence fact (the visitor's last session/message/socket-connect instant), `null` on every channel type but `WEBCHAT`. A web chat channel has **no messaging window at all** - `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null` for a web chat contact, and a send via this Gateway API is never refused for window reasons on that channel type. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never uses `webchat:` and never reads `visitorLastSeenAt` sees byte-identical behaviour. |
 > | **2026-09-07** | **Messenger + Instagram channels** (plan 32 / A7a). `channelType` now also takes `FACEBOOK`/`INSTAGRAM` on every contact/message shape (§9). Sending: `POST /messages` accepts an optional `channelId` selector (§4); the implicit channel choice (no `channelId`) now PREFERS an active `WHATSAPP` channel, so a workspace that connects a second channel type never re-points an existing integration's sends (§2). `to` gains three new prefixes - `psid:<id>` / `igsid:<id>` (resolve an EXISTING contact identity on the CHOSEN channel only, never create) and `id:<contactId>` (§4.1); a bare value or `phone:` is unchanged. Two new error codes (§10): `messaging_window_closed` (409, Messenger/Instagram's own re-engagement window closed - `csw_window_closed` keeps its exact WhatsApp-only meaning) and `channel_not_available_for_contact` (422, the resolved contact has no identity on the chosen channel). `ThreadItem`/`ContactObject` gain `windowExpiresAt`/`humanAgentExpiresAt` (§9.1/9.2) - the per-channel-type messaging window; `cswExpiresAt` keeps its documented WhatsApp-only meaning verbatim (reads `null` for a Messenger/Instagram contact). `MessageItem`/`MessageObject` gain `channelType` and `mediaUnavailable` (§9.1/9.2) - a Messenger/Instagram inbound attachment whose CDN link expired before Foundryx could fetch it; the message still lands, render a muted placeholder. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never sets `channelId` and never uses the new `to` prefixes sees byte-identical behaviour. |
@@ -512,7 +513,8 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 | Event | Fires when |
 |----|----|
 | `message.inbound` | The user sends you a message (any type) |
-| `message.status` | A message you sent changes state (SENT/DELIVERED/READ/FAILED) |
+| `message.outbound` | Foundryx sends a message on your channel (your API call, a workflow, an inbox agent or a broadcast). **Opt-in**: you receive nothing new unless you subscribe to it |
+| `message.status` | A message you sent changes state (SENT/DELIVERED/READ/FAILED). `SENT` fires when Meta accepts the send and `FAILED` fires on a synchronous send failure, as well as on the later delivery receipts |
 | `message.reaction` | A reaction is added/removed on a message |
 | `contact.updated` | A thread is assigned (to a user and/or a **team**) / status / priority changes, or its fields / tags / lifecycle stage change |
 
@@ -538,12 +540,32 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
   ```
 
   For media messages the message object exposes an **absolute, API-key-authed** `mediaUrl` (`https://YOUR-FOUNDRYX-HOST/omnichannel/media/{id}`) and renames the media fields to `mimeType`, `filename`, `size`.
+* `**message.outbound**` - `id` = `{messageId}:outbound` (stable across retries of the same delivery).
+
+  ```json
+  { "message": { /* MessageItem (§9.1) */ }, "contact": { /* ThreadItem (§9.1) */ }, "source": "api" }
+  ```
+
+  Same `MessageItem` and `ThreadItem` shapes as `message.inbound`. `message.deliveryStatus` is normally `QUEUED` at this point; the send outcome follows as a `message.status` event. Media messages carry the same **absolute, API-key-authed** `mediaUrl` and `mimeType`/`filename`/`size` as `message.inbound`. `source` is one of:
+
+  | `source` | Meaning |
+  |----|----|
+  | `api` | Sent through the Gateway API with your API key (`POST /messages`) |
+  | `inbox` | Sent by a person in the Foundryx inbox or the embedded conversation UI |
+  | `broadcast` | Sent as part of a broadcast |
+  | `workflow` | Sent by automation with no user attached (a workflow send node or any other automated send) |
+
+  Unlike an inbound message, an outbound message has a sender, so `message.senderType`, `message.senderId` and `message.senderName` can be filled on `message.outbound`. For a send made with your API key, `senderId` is an `apikey:<id>` value (the key's id, not a person); for an inbox agent it is that user's id; for an embedded-UI agent `senderId` can be `null` and `senderExternalAgentId` carries the agent; for a workflow or broadcast both can be `null`. Do not assume a user id. For a voice message `mimeType` is `audio/ogg`, the type that is actually sent, and `GET` messages reports the same.
+
+  One event per new outbound message. It does **not** fire for internal notes, reactions (those stay `message.reaction`), inbound messages, migrated/imported history, or workflow test sandbox sends. An idempotent `POST /messages` replay creates no new message and so no second event. A problem enqueueing this event never fails or undoes the send.
 * `**message.status**` - `id` = `{messageId}:{deliveryStatus}` (one per transition).
 
   ```json
   { "messageId":"0a0d673d-…", "externalMessageId":"wamid…", "contactId":"b2ad5218-…",
     "deliveryStatus":"DELIVERED", "errorCode":null, "errorMessage":null }
   ```
+
+  `deliveryStatus` is one of `SENT`, `DELIVERED`, `READ`, `FAILED`. `SENT` is emitted when Meta accepts the send and `FAILED` on a synchronous failure (Meta rejection or a local failure such as a media transcode error), with `errorCode`/`errorMessage` filled for `FAILED` only (both are `null` on `SENT`, `DELIVERED` and `READ`). On `FAILED`, `errorCode` is the provider's own code when it gave one (for example a Meta error code) and `null` otherwise, such as a local media failure; `errorMessage` is at most 300 characters. A temporary failure that Foundryx retries is not reported as `FAILED` and carries no error text to you. Normally a send ends in one `SENT` or one `FAILED` on `message.status`. Delivery is at-least-once, so the same event can arrive more than once: dedupe on the event id (`{messageId}:{deliveryStatus}`). While a message is being retried, `GET` messages can show a generic error text and an `errorCode` on it. Ignore any `deliveryStatus` value you do not recognise rather than failing the delivery. Each status is its own event (`{messageId}:SENT`, `{messageId}:FAILED`, ...); a later Meta `sent` receipt for the same message adds no second `SENT`. **If you already subscribe to `message.status` you now also receive `SENT` and sender-side `FAILED` events.** Delivery order across events is not guaranteed (each event is delivered and retried independently), so a `DELIVERED` can arrive before the `SENT` for the same message: never move a stored status backward (rank `SENT` < `DELIVERED` < `READ`), and treat `FAILED` as a terminal outcome.
 * `**message.reaction**`
 
   ```json
@@ -720,7 +742,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "channelId": "…",
   "channelType": "WHATSAPP",    // WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT (plan 32 / A7a, plan 34 / A7b)
   "senderType": "CONTACT",      // AGENT | CONTACT | SYSTEM
-  "senderId": null,
+  "senderId": null,             // outbound: a user id, or "apikey:<id>" for an API send (also on message.outbound)
   "senderName": null,
   "messageType": "IMAGE",       // TEXT|TEMPLATE|IMAGE|VIDEO|AUDIO|VOICE|DOCUMENT|
                                 //   STICKER|INTERACTIVE|LOCATION|CONTACTS|UNSUPPORTED
@@ -1334,7 +1356,7 @@ The **contact and message** read endpoints above also accept `?format=rio` for t
 
 **Troubleshooting in the Foundryx dashboard (session-authed,** `**integration_logs.read**`**):** **Developers ▸ Logs** - one trace-correlated activity feed across inbound API calls, outbound Meta calls, webhook deliveries, and embed sessions; redacted bodies; per-tenant retention (default 30 days). See §13.
 
-**Webhooks (Foundryx → your https URL):** `message.inbound`, `message.status`, `message.reaction`, `contact.updated` - signed with `X-Fx-Signature`.
+**Webhooks (Foundryx → your https URL):** `message.inbound`, `message.outbound`, `message.status`, `message.reaction`, `contact.updated` - signed with `X-Fx-Signature`.
 
 **Web chat widget on your public site (§12a) - identity assertion signed with** `**widgetSecret**`**:** paste one `<script src=".../omnichannel/widget/<widgetKey>.js">` tag; the loader calls `POST /public/omnichannel/webchat/{widgetKey}/session` for you. Nothing else to build.
 

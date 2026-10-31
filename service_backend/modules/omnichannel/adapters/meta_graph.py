@@ -13,6 +13,7 @@ imports ``GraphCall``/``GraphRecorder`` straight off ``whatsapp_cloud``) - is
 byte-identical to before this move (AC-CHN-15, F8: if this stopped being a
 pure move the slice should have stopped and re-planned).
 """
+import re
 import logging
 import time
 from dataclasses import dataclass
@@ -74,6 +75,36 @@ def is_rate_limited_error(resp: "httpx.Response") -> bool:
     except ValueError:
         return False
     return code in _RATE_LIMIT_ERROR_CODES
+
+
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"\S{24,}")
+ERROR_TEXT_CAP = 300
+
+
+def provider_error_text(text: str, limit: int = ERROR_TEXT_CAP) -> str:
+    """Provider error text as kept on a row, event or log: links removed, long
+    opaque tokens (24+ characters mixing letters and digits, or 40+ characters
+    of any kind) removed, whitespace collapsed, capped at ``limit``. Ordinary
+    words and short messages pass through unchanged."""
+    out = _URL_RE.sub("", text or "")
+
+    def _opaque(m: "re.Match[str]") -> str:
+        tok = m.group(0)
+        mixed = any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok)
+        return "" if (mixed or len(tok) >= 40) else tok
+
+    out = _TOKEN_RE.sub(_opaque, out)
+    return re.sub(r"\s+", " ", out).strip()[:limit]
+
+
+def meta_error_code(resp: "httpx.Response") -> Optional[str]:
+    """Meta's own ``error.code`` as text, or None (never raises)."""
+    try:
+        code = ((resp.json() or {}).get("error") or {}).get("code")
+    except (ValueError, AttributeError):
+        return None
+    return str(code) if code else None
 
 
 def _meta_error_detail(resp: "httpx.Response") -> str:

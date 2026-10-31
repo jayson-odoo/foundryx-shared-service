@@ -2,7 +2,7 @@
 
 The canonical event contract a consumer (e.g. the EMS module in `dreamz_ems`) subscribes to. Endpoints are registered per channel with an opt-in `events[]` list; each delivery is HMAC-signed (`X-Fx-Signature`) and carries a stable `event_id` for dedup across our retries.
 
-**Subscribable event types** (`webhook_service.EVENT_TYPES`): `message.inbound`, `message.status`, `contact.updated`, `message.reaction`.
+**Subscribable event types** (`webhook_service.EVENT_TYPES`): `message.inbound`, `message.outbound`, `message.status`, `contact.updated`, `message.reaction`.
 
 Every envelope: `{ type, channelId, eventId, timestamp, data }`. All fields below are additive/back-compat - a consumer built before Slice 1/2/3 keeps working.
 

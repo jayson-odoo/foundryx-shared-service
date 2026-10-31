@@ -15,12 +15,13 @@ import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 from sqlalchemy.orm import Session
 
-from ..models import Channel, WebhookDelivery, WebhookEndpoint
+from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
+from ..schemas import MessageItem
 from ..security import decrypt_secret
 from .webhook_service import AUTO_DISABLE_THRESHOLD, WebhookError, assert_deliverable
 
@@ -69,13 +70,15 @@ def sign_body(secret: str, timestamp: str, body: bytes) -> str:
     return "sha256=" + mac.hexdigest()
 
 
-def _active_endpoints(
-    db: Session, channel_id: str, event_type: str
-) -> List[WebhookEndpoint]:
+def _active_endpoints(db: Session, channel: Channel, event_type: str) -> List[WebhookEndpoint]:
+    """Subscribed ACTIVE endpoints of this channel, filtered by the channel's
+    tenant and workspace as well as its id."""
     rows = (
         db.query(WebhookEndpoint)
         .filter(
-            WebhookEndpoint.channel_id == channel_id,
+            WebhookEndpoint.tenant_id == channel.tenant_id,
+            WebhookEndpoint.workspace_id == channel.workspace_id,
+            WebhookEndpoint.channel_id == channel.id,
             WebhookEndpoint.status == "ACTIVE",
         )
         .all()
@@ -83,21 +86,40 @@ def _active_endpoints(
     return [r for r in rows if event_type in (r.events_json or [])]
 
 
+def consumer_message_payload(item: MessageItem, row: ConversationMessage) -> Dict[str, Any]:
+    """The consumer-facing message object shared by `message.inbound` and
+    `message.outbound`: media rides an ABSOLUTE, API-key-authed gateway URL
+    (plan 12 AC-12-11) and uses mimeType/filename/size, distinct from the
+    internal FE naming."""
+    from app.config import settings
+
+    payload = item.model_dump(mode="json")
+    if row.media_key:
+        payload["mediaUrl"] = f"{settings.public_base_url}/omnichannel/media/{row.id}"
+        payload["mimeType"] = payload.pop("mediaMime", None)
+        payload["filename"] = payload.pop("mediaFilename", None)
+        payload["size"] = payload.pop("mediaSize", None)
+    return payload
+
+
 def enqueue_event(
     db: Session,
     channel: Channel,
     event_type: str,
     event_id: str,
-    data: Dict[str, Any],
+    data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
 ) -> int:
     """Fan an event to the channel's subscribed endpoints. Creates durable
     delivery rows + queues each POST. Fully failure-isolated: returns the number
-    queued, never raises into the inbound pipeline."""
+    queued, never raises into the inbound pipeline. ``data`` may be a callable:
+    it runs only when at least one endpoint subscribes, so a channel with no
+    subscriber pays nothing to build the payload."""
+    channel_id = channel.id  # plain local: the session may need a rollback in the handler
     try:
-        endpoints = _active_endpoints(db, channel.id, event_type)
+        endpoints = _active_endpoints(db, channel, event_type)
         if not endpoints:
             return 0
-        envelope = build_envelope(event_type, channel, event_id, data)
+        envelope = build_envelope(event_type, channel, event_id, data() if callable(data) else data)
         delivery_ids: List[str] = []
         for ep in endpoints:
             row = WebhookDelivery(
@@ -114,8 +136,11 @@ def enqueue_event(
             delivery_ids.append(row.id)
         db.commit()
     except Exception:  # noqa: BLE001 - forwarding must never break inbound
-        logger.exception("webhook enqueue failed for channel %s (%s)", channel.id, event_type)
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.exception("webhook enqueue failed for channel %s (%s)", channel_id, event_type)
         return 0
 
     # Queue the POSTs out-of-band (eager dev runs them inline).

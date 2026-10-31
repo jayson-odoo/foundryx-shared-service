@@ -787,14 +787,20 @@ def test_dev_safe_rate_limit_magic_recipient_raises_transient():
     assert exc.value.transient is True
 
 
-def test_send_runner_requeues_transient_rate_limit(session_factory):
+def test_send_runner_requeues_transient_rate_limit(session_factory, caplog):
     """AC-CHN-51 end to end: `send_runner`'s EXISTING bounded-backoff path
     (`TransientSendError` -> row reset to QUEUED, never FAILED) applies to
     the Messenger rate-limit magic recipient exactly as it would a real
     Meta 613/429."""
     from modules.omnichannel.models import Contact, ConversationMessage, Workspace
     from modules.omnichannel.services import statuses
-    from modules.omnichannel.services.send_runner import TransientSendError, run_send
+    import logging
+
+    from modules.omnichannel.services.send_runner import (
+        TRANSIENT_ERROR_TEXT,
+        TransientSendError,
+        run_send,
+    )
 
     channel_id = _fb_channel(session_factory, external_account_id="pg-run-rl")
     contact_id = _fb_contact_with_identity(
@@ -807,11 +813,13 @@ def test_send_runner_requeues_transient_rate_limit(session_factory):
     )
     db.add(row)
     db.commit()
-    with pytest.raises(TransientSendError):
+    with caplog.at_level(logging.DEBUG), pytest.raises(TransientSendError):
         run_send(db, row.id)
     db.refresh(row)
     assert row.delivery_status == "QUEUED"  # requeued for backoff, never FAILED
-    assert "rate limit" in (row.error_message or "").lower()
+    # The row stores only the generic text; the real reason went to the log.
+    assert row.error_message == TRANSIENT_ERROR_TEXT
+    assert "rate limit" in caplog.text.lower()
     db.close()
 
 
