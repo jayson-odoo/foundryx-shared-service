@@ -11,6 +11,7 @@
 > | Date | Change |
 > |----|----|
 > | **2026-11-01** | **Mark a contact read** (`POST /contacts/{identifier}/read`, section 6a). Resets `unreadCount` and sends a WhatsApp read receipt per channel; each receipt answers `sent`, `already_sent`, `failed`, `channel_unavailable` or `not_supported`. Only this route sends a read receipt. Additive: no existing shape changes. |
+> | **2026-11-01** | **`GET /api/v1/omnichannel/channels`** (§5a). Lists the channels your API key can send on, so you can map a `channelId` to a number. Each item carries `isDefault`, the channel `POST /messages` uses when `channelId` is omitted. Also, an API key now stops working while its tenant is suspended or archived or the key's workspace is trashed (`403 service_not_enabled`, see §3 and §10), and works again once restored. |
 > | **2026-11-01** | **`message.outbound` webhook event + sender-side `message.status`** (§7). New opt-in event type `message.outbound` fires once for every message Foundryx sends on your channel, whichever path created it (your `POST /messages`, a workflow, an inbox agent, a broadcast); `data` is `{ message, contact, source }` and `source` says which path. Separately, `message.status` now also fires for `SENT` (Meta accepted the send) and `FAILED` (a synchronous send failure), not only for `DELIVERED`/`READ`/receipt-driven `FAILED`; **existing `message.status` subscribers receive these new deliveries with no opt-in**, so make sure your handler accepts `SENT` and does not move a status backward. Non-breaking for a consumer that does not subscribe to `message.outbound` - every existing field and event keeps its meaning. |
 > | **2026-09-09** | **Web chat widget section + `visitorProfile`** (plan 34 / A7b, review round 1). New **§12a** documents the visitor-facing widget end to end: the install snippet, allowed origins, the exact host-identity recipe `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))`, `window.fxChatIdentity` / `fxWebchat.identify()`, and what a visitor can and cannot do. The `webchat:` `to` row in §4.1 now points there instead of at §12 (the agent-facing embed, which uses a different secret and a different HMAC input). `ThreadItem`/`ContactObject` gain **`visitorProfile`** (§9.1/9.2) - the `{name?, email?, phone?}` a visitor typed into the pre-chat form, UNVERIFIED and deliberately NOT written onto the contact's own `phone`/`email` (those are matching keys); `null` on every channel type but `WEBCHAT`. Non-breaking - no existing field changed meaning. |
 > | **2026-09-08** | **Web chat channel** (plan 34 / A7b). `channelType` now also takes `WEBCHAT` on every contact/message shape (§9). Sending: `to` gains a `webchat:<value>` prefix (§4.1), following the identical `psid:`/`igsid:` rule - an EXISTING identity on the chosen channel only, never created. `ThreadItem`/`ContactObject` gain `visitorLastSeenAt` (§9.1/9.2) - a presence fact (the visitor's last session/message/socket-connect instant), `null` on every channel type but `WEBCHAT`. A web chat channel has **no messaging window at all** - `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null` for a web chat contact, and a send via this Gateway API is never refused for window reasons on that channel type. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never uses `webchat:` and never reads `visitorLastSeenAt` sees byte-identical behaviour. |
@@ -107,7 +108,7 @@ Authorization: Bearer fxw_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 * The key **encodes the tenant + workspace** - you never send a tenant or workspace id in the body or query. All data is scoped to the key.
 * Keys are stored hashed; the plaintext is shown **once** at mint time. If lost, revoke and mint a new one.
-* Errors are uniform and give away nothing: missing/malformed/unknown/revoked key → `401 invalid_api_key`. If the omnichannel service is not enabled for your tenant → `403 service_not_enabled`.
+* Errors are uniform and give away nothing: missing/malformed/unknown/revoked key → `401 invalid_api_key`. If the omnichannel service is not enabled for your tenant, your tenant is suspended or archived, or the key's workspace is trashed → `403 service_not_enabled`; the key works again once restored.
 
 All errors on `/api/v1/*` use one envelope:
 
@@ -316,6 +317,40 @@ Only **APPROVED** templates on the workspace's active channel.
 ```
 
 Use `name` (or `id`) + fill `variableCount` values in `template.variables` when sending (§4.1). Templates are authored + submitted to Meta by the Foundryx admin in the dashboard; you only consume the approved ones.
+
+
+---
+
+## 5a. Listing channels
+
+### `GET /api/v1/omnichannel/channels`
+
+The channels of your API key's workspace, oldest first. No pagination (a workspace has only a handful).
+
+```json
+{ "data": [
+  { "id": "…", "channelType": "WHATSAPP", "name": "Support", "status": "ACTIVE",
+    "isActive": true, "isDefault": true,
+    "displayPhoneNumber": "+60 11-111 0000", "verifiedName": "Example Co",
+    "createdAt": "2026-01-01T00:00:00Z" }
+] }
+```
+
+| Field | Notes |
+|----|----|
+| `id` | Pass as `channelId` on `POST /messages` (§4). |
+| `channelType` | `WHATSAPP`, `FACEBOOK`, `INSTAGRAM` or `WEBCHAT`. |
+| `name` | A free-text label set by the workspace. It is `WhatsApp channel` when the channel has no label beyond the provider's internal number id. |
+| `status` | `ACTIVE`, `PENDING`, `INACTIVE` or `ERROR`. |
+| `isActive` | `false` for a paused channel, which is still listed with its real `status`, so you can see a number that stopped working. A disconnected channel leaves the list. |
+| `isDefault` | `true` on exactly the channel `POST /messages` uses when you omit `channelId`; `false` on the rest. When no channel is active, none is default. |
+| `displayPhoneNumber` | The number as shown to people; `null` on channels with no phone number or whose number is not available yet. |
+| `verifiedName` | The business name verified by Meta; `null` until the channel's details sync, and on channels that have none. |
+| `createdAt` | When the channel was added, ISO-8601 UTC (`Z`). The list is ordered by it, oldest first. |
+
+Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number. The one exception is a reaction, which goes out on the contact's own channel.
+
+An API key works only while its tenant is active and its workspace is not trashed. Otherwise the gateway routes answer `403 service_not_enabled` (§10), and the media route (§8) refuses with its own `403` body. The key works again once the tenant or workspace is restored.
 
 
 ---
@@ -694,7 +729,7 @@ curl -L https://YOUR-FOUNDRYX-HOST/omnichannel/media/8dbc5265-… \
 ```
 
 * Response headers: `Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=300`.
-* Unknown message / no media → `404`. No/invalid auth → `401`. Service disabled → `403`.
+* Unknown message / no media → `404`. No/invalid auth → `401`. Service disabled, or an API key whose tenant is suspended or archived or whose workspace is trashed → `403` with a plain `{"detail": "..."}` body (not the `/api/v1` error envelope). A session user of a suspended tenant also gets `403`. During that time a `mediaUrl` fetch with your key fails the same way, even for media you already received a link to; a signed link (below) keeps working until it expires.
 * In a `message.inbound` webhook the media message's `mediaUrl` is already the absolute form of this URL - just add your `Authorization` header when you fetch it.
 
 ### Two ways in: Bearer, or a signed link
@@ -961,7 +996,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | Code | HTTP | Meaning / fix |
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
-| `service_not_enabled` | 403 | Omnichannel not active for your tenant - contact the operator. |
+| `service_not_enabled` | 403 | Omnichannel not active for your tenant, the tenant is suspended or archived, or the key's workspace is trashed - contact the operator. The key works again once restored. |
 | `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
 | `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
@@ -1136,6 +1171,8 @@ Message types:
 
 `theme` = whitelisted brand primitives (`{ primary, surface, text, bubbleIn, bubbleOut, radius, … }`); `colorScheme` = `"light" | "dark"`.
 
+While your tenant is suspended or archived, new embed sessions and requests are refused (`403`). A socket that is already open keeps running until it reconnects. Everything works again once the tenant is restored.
+
 ### 12.5 Scopes - the widget only ever sees what you signed
 
 * `**thread:<contactId>**` - the widget can read/act on **only that contact**. Any attempt (via the UI or a hand-crafted API call with the token) to read another contact's thread, or to list the workspace, returns `**403**`. The live WebSocket is filtered server-side too - it only receives that contact's events.
@@ -1185,6 +1222,7 @@ Everything else (conversation reads/sends, templates, quick-replies, members, We
 | `401 invalid_assertion` | Bad signature (wrong `embedSecret`), wrong `aud`, malformed JWT, or unknown `iss`. |
 | `401 replayed` | You reused an assertion. Mint a fresh one per `ready`/`needToken` (§12.4). |
 | `401 expired` | Assertion older than 15 min, or clocks skewed >60s. |
+| `403 tenant_suspended` | Your tenant is suspended or archived. |
 | `403 origin_not_allowed` | The parent origin you're embedding from isn't in the connection's `allowedOrigins`. |
 | Browser refuses to frame it ("refused to display / frame-ancestors") | Your origin isn't in `allowedOrigins`, or you didn't pass `?c=<connectionId>`. |
 | `403` on a reply/assign | The token's `caps` don't include that action (or it's `read_only`). |
@@ -1330,6 +1368,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | Method | Path | Purpose | Returns |
 |----|----|----|----|
 | POST | `/api/v1/omnichannel/messages` | Send a message (all types) | `202 {id, status, idempotencyReplay}` |
+| GET | `/api/v1/omnichannel/channels` | List the workspace's channels (`isDefault` marks the implicit send channel) | `{data[]}` of channel items (§5a) |
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
 | GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |

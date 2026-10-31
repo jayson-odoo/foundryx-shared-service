@@ -31,6 +31,7 @@ from app.dependencies import (
     _maybe_apply_impersonation,
     _resolve_user,
     effective_permission_keys,
+    tenant_signin_allowed,
 )
 from app.models.user import User
 from app.repositories.module_repository import ModuleRepository
@@ -47,6 +48,12 @@ _CREDENTIALS_EXC = HTTPException(
 )
 _MODULE_EXC = HTTPException(
     status_code=status.HTTP_403_FORBIDDEN, detail="Module not installed"
+)
+
+
+_TENANT_EXC = HTTPException(
+    status_code=status.HTTP_403_FORBIDDEN,
+    detail="This tenant is suspended. Contact support.",
 )
 
 
@@ -199,6 +206,9 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
     connection_id = payload.get("connection_id")
     if not (tenant_id and workspace_id and agent_id and connection_id):
         raise _CREDENTIALS_EXC
+    # The tenant must still be allowed to sign in (not suspended or archived).
+    if not tenant_signin_allowed(db, tenant_id):
+        raise _TENANT_EXC
     # Module must be active for the tenant (mounted public - re-apply the gate).
     if not ModuleRepository(db).is_active(tenant_id, MODULE_NAME):
         raise _MODULE_EXC

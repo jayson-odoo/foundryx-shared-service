@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.database import get_db
+from app.models.tenant import Tenant
 from app.repositories.module_repository import ModuleRepository
 
+from .repositories.workspace_repository import WorkspaceRepository
 from .services.api_key_service import ApiKeyService
 
 MODULE_NAME = "omnichannel"
@@ -39,6 +41,20 @@ def _parse_bearer(authorization: Optional[str]) -> Optional[str]:
     return parts[1].strip() or None
 
 
+def gateway_key_enabled(db: Session, tenant_id: str, workspace_id: str) -> bool:
+    """True while a resolved gateway key may be used: its tenant may sign in
+    (not suspended or archived), the module is active for the tenant, and the
+    key's workspace exists and is not trashed. Every lookup is tenant-scoped.
+    One predicate shared by every API-key entry point of this module."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None or not tenant.signin_allowed:
+        return False
+    if not ModuleRepository(db).is_active(tenant_id, MODULE_NAME):
+        return False
+    workspace = WorkspaceRepository(db).get_by_id(workspace_id, tenant_id)
+    return workspace is not None and not workspace.is_trashed
+
+
 def get_api_workspace(
     request: Request,
     authorization: Optional[str] = Header(default=None),
@@ -56,8 +72,9 @@ def get_api_workspace(
     # Stash for the activity-log middleware (sprint-4/12) - set as soon as the
     # key resolves so even a 403 service_not_enabled below is attributable.
     request.state.api_workspace = workspace
-    # Service binding (AC-01-15): the key's service must be ACTIVE for its tenant.
-    if not ModuleRepository(db).is_active(row.tenant_id, MODULE_NAME):
+    # Service binding (AC-01-15): the tenant may sign in, the service is ACTIVE
+    # for it and the key's workspace is not trashed.
+    if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
         raise ApiError(
             403, "service_not_enabled", "This service is not enabled for the workspace."
         )

@@ -14,7 +14,7 @@ from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.tenant import DEFAULT_TENANT_ID
+from app.models.tenant import DEFAULT_TENANT_ID, Tenant
 from app.models.user import User, UserStatus
 from app.repositories.user_repository import UserRepository
 from app.security import decode_access_token
@@ -36,6 +36,33 @@ _TENANT_INACTIVE_EXC = HTTPException(
 )
 
 
+def assert_staff_token(payload: dict) -> None:
+    """Refuse token types that must never authenticate a staff session route:
+    Profile-portal tokens (kind="profile") and omnichannel embed access tokens
+    (typ="embed"), whose `sub` is not a staff user id. Staff tokens carry
+    neither claim."""
+    if payload.get("kind") == "profile":
+        raise _CREDENTIALS_EXC
+    if payload.get("typ") == "embed":
+        raise _CREDENTIALS_EXC
+
+
+def tenant_signin_allowed(db: Session, tenant_id: str) -> bool:
+    """True while the tenant exists and may sign in (not suspended or archived).
+    The lifecycle check for token types that do not load a user row."""
+    tenant = db.get(Tenant, tenant_id)
+    return tenant is not None and tenant.signin_allowed
+
+
+def assert_tenant_signin_allowed(user: User) -> None:
+    """The per-request tenant lifecycle check (suspended or archived tenants are
+    refused with 403). Shared by every route that authenticates a user token."""
+    # user.tenant (and its status) ride the user query via lazy="joined" - the
+    # lifecycle re-check costs no extra round-trip.
+    if user.tenant is None or not user.tenant.signin_allowed:
+        raise _TENANT_INACTIVE_EXC
+
+
 def _resolve_user(token: str, db: Session) -> User:
     """Decode the JWT and load the real user (tenant-scoped). No impersonation.
 
@@ -51,29 +78,14 @@ def _resolve_user(token: str, db: Session) -> User:
     if not user_id:
         raise _CREDENTIALS_EXC
 
-    # A Profile-portal token (kind="profile") must NEVER authenticate a staff
-    # endpoint - defense-in-depth so the staff/portal boundary doesn't rely on
-    # id-space disjointness alone (plan sprint-4/06 AC-06-11). Staff tokens carry
-    # no `kind` claim (None).
-    if payload.get("kind") == "profile":
-        raise _CREDENTIALS_EXC
-
-    # An omnichannel embed access token (typ="embed", plan 11H) authenticates ONLY
-    # the embed principal on the omnichannel conversation API/WS - it must never
-    # authenticate a staff endpoint (defense-in-depth: the boundary can't rely on
-    # id-space disjointness alone; its `sub` is an external-agent id).
-    if payload.get("typ") == "embed":
-        raise _CREDENTIALS_EXC
+    assert_staff_token(payload)
 
     tenant_id: str = payload.get("tenant_id") or DEFAULT_TENANT_ID
     user = UserRepository(db).get_by_id(user_id, tenant_id)
     if user is None:
         raise _CREDENTIALS_EXC
 
-    # user.tenant (and its status) ride the user query via lazy="joined" - the
-    # lifecycle re-check costs no extra round-trip.
-    if user.tenant is None or not user.tenant.signin_allowed:
-        raise _TENANT_INACTIVE_EXC
+    assert_tenant_signin_allowed(user)
     return user
 
 
