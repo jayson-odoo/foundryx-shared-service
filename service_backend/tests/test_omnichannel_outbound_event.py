@@ -1750,7 +1750,7 @@ def test_receipt_path_caps_the_error_message_at_300(client, session_factory, mon
                 {
                     "id": "wamid.fake-sec",
                     "status": "failed",
-                    "errors": [{"code": 131047, "title": "E" * 50 + "x" * 700}],
+                    "errors": [{"code": 131047, "title": "Everything " + "word " * 80}],
                 }
             ]
         ),
@@ -1759,7 +1759,42 @@ def test_receipt_path_caps_the_error_message_at_300(client, session_factory, mon
     assert len(failed) == 1  # control: the receipt produced the event
     msg = failed[0]["payload"]["data"]["errorMessage"]
     assert msg and len(msg) <= 300, len(msg or "")
-    assert msg.startswith("E" * 50)
+    assert msg.startswith("Everything word")
+
+
+def test_receipt_failed_with_only_an_opaque_token_keeps_a_generic_message(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456832", events=("message.status",))
+    _use_adapter(monkeypatch, None)
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    _process(
+        session_factory,
+        r["channel_id"],
+        _wa_payload(
+            statuses=[
+                {"id": "wamid.fake-sec", "status": "failed", "errors": [{"code": 131047, "title": FAKE_OPAQUE}]}
+            ]
+        ),
+    )
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1  # control: the receipt produced the event
+    status, _code, message = _row(session_factory, mid)
+    assert status == "FAILED"
+    assert message and FAKE_OPAQUE not in message, message
+    event_text = failed[0]["payload"]["data"]["errorMessage"]
+    assert event_text and FAKE_OPAQUE not in event_text, event_text
+
+
+def test_send_failed_with_only_an_opaque_token_keeps_a_generic_message(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456833", events=("message.status",))
+    _real_adapter_with_provider_reply(monkeypatch, session_factory, r["channel_id"], FAKE_OPAQUE)
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    status, _code, message = _row(session_factory, mid)
+    assert status == "FAILED"  # control: a permanent provider rejection
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1
+    event_text = failed[0]["payload"]["data"]["errorMessage"]
+    assert message and FAKE_OPAQUE not in message, message
+    assert event_text and FAKE_OPAQUE not in event_text, event_text
 
 
 def test_generic_transient_text_is_pinned(client, session_factory, monkeypatch):
