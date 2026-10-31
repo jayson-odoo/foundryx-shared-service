@@ -96,14 +96,19 @@ docker compose pull worker_workflow worker_jobs worker_omni beat
 #     continue the normal blue/green flow. A brief full outage, only on the
 #     deploy that changes the network; later deploys never enter this branch.
 #     Any other failure still aborts here, before a color is touched.
+#
+#     Redis is started with --no-recreate: a running redis is left exactly as it
+#     is until the clients have moved to the password URL (steps 2-7); it is then
+#     recreated with its password in step 7b. db and pgbackups behave as before.
 echo "==> Ensuring infra (db/redis/pgbackups) is up"
 NETWORK_RECREATE_SIGNATURE='has active endpoints|is not connected to the network|needs to be recreated'
-if ! infra_out=$(docker compose up -d db redis pgbackups 2>&1); then
+if ! infra_out=$({ docker compose up -d db pgbackups && docker compose up -d --no-recreate redis; } 2>&1); then
   echo "$infra_out"
   if grep -qE "$NETWORK_RECREATE_SIGNATURE" <<<"$infra_out"; then
     echo "==> Network recreate pending: taking the whole stack down once (brief full outage)"
     docker compose --profile blue --profile green down --remove-orphans
-    docker compose up -d db redis pgbackups
+    docker compose up -d db pgbackups
+    docker compose up -d --no-recreate redis
   else
     echo "::error::infra up failed for a reason other than a pending network recreate - aborting before touching any color"
     exit 1
@@ -254,8 +259,51 @@ echo "==> Stopping ${OLD} color"
 docker compose stop "backend_${OLD}" "frontend_${OLD}" || true
 docker compose rm -f "backend_${OLD}" "frontend_${OLD}" || true
 
-# 8. Persist new active color + prune dangling images.
+# 7a. Persist the new active color NOW. The swap already happened (step 4) and
+#     the old color is gone, so ${NEW} is what is really serving. Writing it
+#     after the Redis check instead would leave a stale file on a failed check,
+#     and the next deploy would target the live color in place instead of
+#     swapping.
 echo "${NEW}" > .active_color
+
+# 7b. Apply the Redis password. Only now: every client already uses the
+#     `redis://default:<password>@` URL, which works with or without a password
+#     on the server, so recreating redis here cannot lock anyone out. Clients
+#     reconnect within seconds; the append-only file keeps queued tasks.
+echo "==> Recreating redis with its password"
+docker compose up -d redis
+
+# 7c. Prove it. Authenticated PING must return PONG and an unauthenticated one
+#     must be refused. The password travels in REDISCLI_AUTH (never on a command
+#     line, never echoed): taken from the environment, else from .env.
+REDIS_PW="${REDIS_PASSWORD:-}"
+if [ -z "$REDIS_PW" ] && [ -f .env ]; then
+  REDIS_PW=$(grep -E '^REDIS_PASSWORD=' .env | tail -n 1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//" || true)
+fi
+if [ -z "$REDIS_PW" ]; then
+  echo "::error::REDIS_PASSWORD is not set in the environment or .env - cannot verify redis authentication" >&2
+  exit 1
+fi
+REDIS_WAIT_TICKS="${REDIS_WAIT_TICKS:-15}"   # 15 * 2s = 30s for redis to load its AOF and answer
+echo "==> Verifying redis authentication"
+auth_reply=""; i=0
+while [ "$i" -lt "$REDIS_WAIT_TICKS" ]; do
+  auth_reply=$(REDISCLI_AUTH="$REDIS_PW" docker compose exec -T -e REDISCLI_AUTH redis redis-cli ping 2>&1 || true)
+  if grep -q 'PONG' <<<"$auth_reply"; then break; fi
+  sleep $TICK_SECONDS; i=$((i + 1))
+done
+if ! grep -q 'PONG' <<<"$auth_reply"; then
+  echo "::error::DEPLOY FAILED AFTER SWAP (redis did not answer an authenticated PING with PONG within $((REDIS_WAIT_TICKS * TICK_SECONDS))s). ${NEW} is serving; check redis logs and REDIS_PASSWORD." >&2
+  exit 1
+fi
+noauth_reply=$(docker compose exec -T redis redis-cli ping 2>&1 || true)
+if ! grep -q 'NOAUTH' <<<"$noauth_reply"; then
+  echo "::error::DEPLOY FAILED AFTER SWAP (redis accepted an unauthenticated PING, so its password is not applied). ${NEW} is serving." >&2
+  exit 1
+fi
+echo "    redis authenticated PING ok, unauthenticated refused"
+
+# 8. Prune dangling images.
 docker image prune -f >/dev/null || true
 
 echo "==> Deploy complete. Active=${NEW}"

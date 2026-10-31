@@ -46,7 +46,7 @@ would collide with frontend pages on a shared root - the prefix is what avoids i
 
 This platform **shares the host with the dreamz EMS stack** (the fork origin),
 so every identifier is namespaced away from it: containers `foundryx_ss_*`,
-volumes `foundryx_ss_pg`/`_redis`, network `foundryx_ss_network`, image
+volumes `foundryx_ss_pg`/`_redis`, networks `foundryx_ss_network` and `foundryx_ss_edge`, image
 `foundryx-shared-service`, DB host port `5433` (`POSTGRES_PORT` var), Caddy
 fragment `/etc/caddy/foundryx-ss.caddy` (`CADDY_SITE_FILE` var), and the
 loopback port range below (dreamz owns 8000/8010/3001/3011).
@@ -58,6 +58,33 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 | db / redis / pgbackups | - | - | infra, not blue/green; db host port `5433` |
 | worker_workflow / worker_jobs / worker_omni / beat | - | - | Celery; recreated in place each deploy |
 | code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
+
+**Networks.** `foundryx_ss_network` (pinned subnet `172.21.0.0/16`, gateway
+`172.21.0.1`, relied on by a host firewall rule: never change it) carries db,
+redis, the Celery workers, beat and the backend colors. `foundryx_ss_edge` is a
+second bridge network, not `internal` (the frontend still needs egress and its
+published port), carrying only the frontend colors and the backend colors. The
+backend colors answer to the alias `backend` on the edge network, so the
+frontend's `BACKEND_API_URL=http://backend:8001` is all it needs; the frontend
+cannot reach db or redis.
+
+**Redis password.** Redis runs with `--requirepass` taken from `REDIS_PASSWORD`
+(GitHub secret, rendered into the server `.env` by CI; compose stops with "set
+in .env" if it is missing). Use a hex value (`openssl rand -hex 24`) because it
+is embedded in a URL. Every client uses
+`REDIS_URL=redis://default:<REDIS_PASSWORD>@redis:6379/0`. Keep the
+two-argument `default:` form: it authenticates against Redis both before and
+after the password is applied, whereas `redis://:<password>@` is refused while
+Redis is still open.
+
+Deploy order (`scripts/blue_green_deploy.sh`): infra up with `--no-recreate` for
+redis (a running redis is untouched), new color, cutover, workers and beat
+recreated with the new URL, old color removed, then `docker compose up -d redis`
+applies the password and the script requires an authenticated `PING` to return
+`PONG` and an unauthenticated one to be refused, otherwise the deploy fails.
+`.active_color` is written just before the Redis step, since the swap is done
+by then. Set the `REDIS_PASSWORD` secret before the first deploy of this
+change.
 
 **Code runner** (`service_backend/code_runner/`, image tag `code-runner-<tag>`): the
 ONLY process that executes builder-authored Python (workflow `code.run`). It is
@@ -246,7 +273,7 @@ Settings → Secrets and variables → Actions.
 **Secrets** (sensitive - masked in logs, used to render the server `.env`):
 - Pipeline: `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `SSH_HOST`, `SSH_USER`,
   `SSH_PRIVATE_KEY`, `DEPLOY_PATH` (e.g. `/opt/foundryx-ems`).
-- App: `POSTGRES_PASSWORD`, `JWT_SECRET`, `FERNET_KEY`, `OMNICHANNEL_FERNET_KEY`,
+- App: `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `JWT_SECRET`, `FERNET_KEY`, `OMNICHANNEL_FERNET_KEY`,
   `NEXTAUTH_SECRET`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`,
   `PLATFORM_SMTP_USERNAME`, `PLATFORM_SMTP_PASSWORD`.
 - Optional email notify: `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USERNAME`,
@@ -581,7 +608,7 @@ ssh -L 6379:127.0.0.1:6379 -L 5433:127.0.0.1:5433 user@host -N
 (`6379` = redis, loopback-published in `docker-compose.yml` for exactly this;
 `5433` = the `POSTGRES_PORT` mapping from "Topology" above - the Mini's stt
 worker still needs `DATABASE_URL` to write transcript rows.) With the tunnel up,
-point the Mini's `.env` at `REDIS_URL=redis://127.0.0.1:6379/0` and the tunneled
+point the Mini's `.env` at `REDIS_URL=redis://default:<REDIS_PASSWORD>@127.0.0.1:6379/0` (same secret as the server; keep the `default:` form) and the tunneled
 Postgres port, then start each worker (both need the macOS fork-safety prefix -
 see `modules/meetings/worker.py`'s module docstring for why):
 
