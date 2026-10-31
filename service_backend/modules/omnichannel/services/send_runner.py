@@ -106,39 +106,59 @@ def _emit_status_webhook(
 
 
 def _publish_status(db: Session, row: ConversationMessage) -> None:
-    contact = ContactRepository(db).get_by_id(row.contact_id, row.tenant_id)
-    if contact is None:
-        return
-    realtime.publish(
-        contact.workspace_id,
-        {
-            "type": "message.status",
-            "messageId": row.id,
-            "contactId": row.contact_id,
-            "deliveryStatus": row.delivery_status,
-            "externalMessageId": row.external_message_id,
-            "errorMessage": row.error_message,
-        },
-    )
+    """Realtime `message.status`; a failure is logged and never stops the send
+    path (a database error also rolls the session back so it stays usable)."""
+    row_id = row.id  # plain local: the session may need a rollback in the handler
+    try:
+        contact = ContactRepository(db).get_by_id(row.contact_id, row.tenant_id)
+        if contact is None:
+            return
+        realtime.publish(
+            contact.workspace_id,
+            {
+                "type": "message.status",
+                "messageId": row.id,
+                "contactId": row.contact_id,
+                "deliveryStatus": row.delivery_status,
+                "externalMessageId": row.external_message_id,
+                "errorMessage": row.error_message,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.exception("realtime status publish failed for message %s", row_id)
 
 
 class TransientSendError(Exception):
     """A retryable send failure (network/5xx/storage blip). The Celery task
     re-raises this so ``autoretry_for`` applies bounded backoff; eager dev leaves
     the row QUEUED for a later manual retry (dev uses the stub adapter - no
-    transient failures)."""
+    transient failures). ``code`` is the provider's error code when it gave one."""
+
+    def __init__(self, message: str = "", *, code: Optional[str] = None):
+        super().__init__(message)
+        self.code = code
 
 
 def _record_broadcast_receipt(db: Session, row: ConversationMessage) -> None:
     """Plan 29 S2b (D-A4-10) - a lazily-imported, fully failure-isolated hook
     into `broadcast_receipts.record_delivery`. A broadcast bug must NEVER
-    break an outbound send; called AFTER the row's own commit."""
+    break an outbound send; called AFTER the row's own commit. A failure rolls
+    the session back so the following steps still work."""
+    row_id = row.id  # plain local: the session may need a rollback in the handler
     try:
         from .broadcast_receipts import record_delivery
 
         record_delivery(db, row)
     except Exception:  # noqa: BLE001 - never let a broadcast bug break a send
-        logger.exception("broadcast receipt hook failed for message %s", row.id)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.exception("broadcast receipt hook failed for message %s", row_id)
 
 
 ERROR_MESSAGE_CAP = 300
@@ -157,17 +177,20 @@ def _fail(db: Session, row: ConversationMessage, message: str, code: Optional[st
     return "FAILED"
 
 
-def _requeue_transient(db: Session, row: ConversationMessage, message: str) -> None:
+def _requeue_transient(
+    db: Session, row: ConversationMessage, message: str, code: Optional[str] = None
+) -> None:
     """Reset a claimed row to QUEUED so a retry re-sends (the send did NOT reach
     the contact), then raise for backoff. Only reached BEFORE ``adapter.send``
-    returns - a post-success commit failure leaves the row SENDING (never re-sent)."""
+    returns. The provider's code is kept so the last one survives to the final
+    outcome if retries run out."""
     # Log the detail, store only generic text (AC-38-14).
     logger.warning("transient send failure for message %s: %s", row.id, message)
     row.delivery_status = "QUEUED"
     row.error_message = TRANSIENT_ERROR_TEXT
-    row.error_code = None
+    row.error_code = str(code) if code else None
     db.commit()
-    raise TransientSendError(message)
+    raise TransientSendError(message, code=str(code) if code else None)
 
 
 UNEXPECTED_ERROR_TEXT = "The message could not be sent"
@@ -201,19 +224,24 @@ def fail_unfinished(db: Session, message_id: str, reason: str) -> str:
         return row.delivery_status or "MISSING"
     db.refresh(row)
     logger.warning("send for message %s ended without an outcome: %s", message_id, reason)
-    return _fail(db, row, UNEXPECTED_ERROR_TEXT)
+    return _fail(db, row, UNEXPECTED_ERROR_TEXT, code=row.error_code)
 
 
 def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> str:
     """Execute a QUEUED outbound row; any unexpected error after the row is
-    claimed ends it FAILED (generic text, real error logged) rather than
-    leaving it SENDING. A retryable failure still raises ``TransientSendError``."""
+    claimed but before the provider accepted the message ends it FAILED
+    (generic text, real error logged) rather than leaving it SENDING. Once the
+    provider has accepted the message the row is never failed: its success is
+    recorded instead. A retryable failure still raises ``TransientSendError``."""
+    progress: dict = {}
     try:
-        return _run_send(db, message_id, trace_id)
+        return _run_send(db, message_id, trace_id, progress)
     except TransientSendError:
         raise
     except Exception:  # noqa: BLE001 - see docstring
         logger.exception("unexpected error sending message %s", message_id)
+        if progress.get("accepted"):
+            return _record_sent_by_id(db, message_id, progress.get("external_id"))
         try:
             db.rollback()
             row = (
@@ -228,14 +256,74 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
         raise
 
 
-def _run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> str:
+def _record_sent_by_id(db: Session, message_id: str, external_id: Optional[str]) -> str:
+    """Move a row the provider accepted to SENT with its external id, through a
+    guarded UPDATE (only from QUEUED or SENDING), then announce it once. If this
+    fails too the row is left as it is and the ids are logged: the message
+    reached the contact, so it is never marked FAILED and never re-sent."""
+    try:
+        db.rollback()
+        probe = (
+            db.query(ConversationMessage.tenant_id)
+            .filter(ConversationMessage.id == message_id)
+            .first()
+        )
+        if probe is None:
+            return "MISSING"
+        claimed = (
+            db.query(ConversationMessage)
+            .filter(
+                ConversationMessage.id == message_id,
+                ConversationMessage.tenant_id == probe[0],
+                ConversationMessage.delivery_status.in_(("QUEUED", "SENDING")),
+            )
+            .update(
+                {
+                    "delivery_status": "SENT",
+                    "external_message_id": external_id,
+                    "error_message": None,
+                    "error_code": None,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        row = (
+            db.query(ConversationMessage)
+            .filter(ConversationMessage.id == message_id)
+            .first()
+        )
+        if row is None:
+            return "MISSING"
+        if not claimed:
+            return row.delivery_status or "SENT"
+        _record_broadcast_receipt(db, row)
+        _publish_status(db, row)
+        _emit_status_webhook(db, row, "SENT")
+        return "SENT"
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "could not record the accepted send of message %s (external id %s)",
+            message_id,
+            external_id,
+        )
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return "SENDING"
+
+
+def _run_send(
+    db: Session, message_id: str, trace_id: Optional[str] = None, progress: Optional[dict] = None
+) -> str:
     """Execute a QUEUED outbound row. Returns the final delivery status.
 
     IDEMPOTENT double-send guard (plan 12 review): the row is CLAIMED (QUEUED →
     SENDING, committed) BEFORE ``adapter.send`` touches Meta. A row not in QUEUED
-    is a no-op - so if the post-send commit fails and Celery retries, the retry
-    sees SENDING and never re-calls ``adapter.send`` (the contact can't get it
-    twice). A transient failure (network/5xx/storage) raises ``TransientSendError``
+    is a no-op, so a retry never re-calls ``adapter.send`` (the contact can't get
+    it twice). If recording the success fails, the row is moved to SENT by a
+    guarded update instead (see ``_record_sent_by_id``). A transient failure (network/5xx/storage) raises ``TransientSendError``
     for backoff; a permanent Meta rejection / transcode error stamps FAILED.
 
     ``trace_id`` (sprint-4/12 Slice 2) carries the inbound gateway request's
@@ -431,17 +519,26 @@ def _run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> s
         return _fail(db, row, exc.message)
     except SendError as exc:
         if getattr(exc, "transient", False):
-            _requeue_transient(db, row, str(exc))
+            _requeue_transient(db, row, str(exc), code=getattr(exc, "code", None))
         return _fail(db, row, str(exc), code=getattr(exc, "code", None))
     except (httpx.HTTPError, OSError) as exc:
         # Transport / stored-media read blip - retryable with backoff.
         _requeue_transient(db, row, str(exc))
 
-    row.external_message_id = result.get("external_message_id")
+    external_id = result.get("external_message_id")
+    # From here the provider has the message: the fail path must never run.
+    if progress is not None:
+        progress["accepted"] = True
+        progress["external_id"] = external_id
+    row.external_message_id = external_id
     row.delivery_status = "SENT"
     row.error_message = None  # clear any earlier transient-failure text
     row.error_code = None
-    db.commit()
+    try:
+        db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("recording the SENT outcome of message %s failed", message_id)
+        return _record_sent_by_id(db, message_id, external_id)
     _record_broadcast_receipt(db, row)
     _publish_status(db, row)
     _emit_status_webhook(db, row, "SENT")
