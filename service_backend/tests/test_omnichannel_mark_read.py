@@ -96,6 +96,8 @@ class FakeProvider:
             return httpx.Response(
                 action[1], json={"error": {"message": action[2], "code": 100}}
             )
+        if action[0] == "json":
+            return httpx.Response(action[1], json=action[2])
         if action[0] == "body":
             return httpx.Response(action[1], content=action[2])
         if action[0] == "h11":
@@ -1302,7 +1304,7 @@ def test_ac53_a_200_without_success_true_fails_stores_no_marker_and_retries(rig,
 
 
 # AC-38-56: an unusable phone number id makes the channel unavailable, no call
-@pytest.mark.parametrize("pn", ["", None, "../../../me", "123#frag", "a/b", "a?b"])
+@pytest.mark.parametrize("pn", ["", None, "../../../me", "123#frag", "a/b", "a?b", "123\n", "123\r"])
 def test_ac56_unusable_phone_number_id_is_unavailable_with_no_call(rig, pn):
     bad = rig.channel(pn, token="tok-x", created=0)
     good = rig.channel("pn-good", token="tok-good", created=10)
@@ -1484,3 +1486,69 @@ def test_ac56_paused_channel_with_an_already_sent_target_is_unavailable(rig, ses
     db.close()
     assert rig.receipts()[ch]["status"] == "channel_unavailable"
     assert len(rig.provider.calls) == 1
+
+
+# ═══ AC-38-59, record content: only status, numeric code and fixed wording ══
+def _token_forms(token):
+    import base64
+    from urllib.parse import quote
+
+    return {
+        "literal": token,
+        "url_encoded": quote(token, safe=""),
+        "base64": base64.b64encode(token.encode()).decode(),
+        "reversed": token[::-1],
+    }
+
+
+def test_ac59_record_holds_no_provider_text_in_any_form_but_keeps_the_status(
+    rig, session_factory
+):
+    token = "FAKE tok/9f2c1d+x="
+    distinct = "ZZ-distinct-text-77aa"
+    forms = _token_forms(token)
+    ch = rig.channel("pn-A", token=token)
+    rig.msg(ch, wamid="wamid.in-1", when=1)
+    message = distinct + " " + " ".join(forms.values())
+    rig.provider.behaviour["pn-A"] = (
+        "json", 400, {"error": {"message": message, "code": token, "type": distinct}}
+    )
+    r = rig.read()
+    assert r.status_code == 200, r.text
+    assert r.json()["receipts"][0]["status"] == "failed"
+    assert len(rig.provider.calls) == 1, "the fake was never reached"
+    rows = _activity(session_factory)
+    assert len(rows) == 1  # control: the call was recorded
+    stored = _everything_stored(session_factory)
+    assert distinct not in stored, "provider text found in the activity record"
+    for name, form in forms.items():
+        assert form not in stored, f"token ({name}) found in the activity record"
+    assert rows[0]["status_code"] == 400
+    assert distinct not in r.text and token not in r.text
+
+
+def test_ac59_numeric_provider_error_code_survives_in_the_record(rig, session_factory):
+    ch = rig.channel("pn-A")
+    rig.msg(ch, wamid="wamid.in-1", when=1)
+    rig.provider.behaviour["pn-A"] = (
+        "json", 400, {"error": {"message": SECRET_PROVIDER_TEXT, "code": 131026}}
+    )
+    assert rig.receipts()[ch]["status"] == "failed"
+    rows = _activity(session_factory)
+    assert len(rows) == 1 and rows[0]["status_code"] == 400
+    text = f"{rows[0]['error_code'] or ''} {rows[0]['error_message'] or ''}"
+    assert "131026" in text, "the numeric provider code must be kept"
+    assert SECRET_PROVIDER_TEXT not in _everything_stored(session_factory)
+
+
+def test_ac59_a_400_without_a_json_body_records_the_status_and_answers_failed(
+    rig, session_factory
+):
+    ch = rig.channel("pn-A")
+    rig.msg(ch, wamid="wamid.in-1", when=1)
+    rig.provider.behaviour["pn-A"] = ("body", 400, b"upstream says no")
+    assert rig.receipts()[ch]["status"] == "failed"
+    rows = _activity(session_factory)
+    assert len(rows) == 1 and rows[0]["status"] == "error"
+    assert rows[0]["status_code"] == 400
+    assert "upstream says no" not in _everything_stored(session_factory)
