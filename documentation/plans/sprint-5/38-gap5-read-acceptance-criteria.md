@@ -1,0 +1,41 @@
+# Plan 38 gap 5 acceptance criteria: `POST /api/v1/omnichannel/contacts/{identifier}/read`
+
+A consumer that never logs in to SS needs its staff opening a conversation to show as read: unread resets, and the customer sees blue ticks on WhatsApp. Today nothing sends a read receipt to the provider, and only the internal thread read resets unread.
+
+## Rules
+
+| AC | Rule |
+|---|---|
+| AC-38-50 | `POST /api/v1/omnichannel/contacts/{identifier}/read` under the API key takes no body and uses the `{identifier}` convention of the other contact routes. Tenant and workspace come only from the key. An unknown contact, or one in another workspace or tenant, gets the same `404 contact_not_found` as the other contact routes. A missing or invalid key, or an inactive module, gets the same error as the other gateway routes |
+| AC-38-51 | A found contact always answers `200` with `{"contactId": "<id>", "receipts": [...]}`. Afterwards `unreadCount` on `GET /contacts/{identifier}` reads `0`, even when every receipt failed. A customer message arriving later counts as unread again |
+| AC-38-52 | `receipts` has one item per channel the contact has written in on, each exactly `{"channelId", "messageId", "status"}`. `messageId` is the SS message id, the same `id` as on `MessageItem`. The target on each channel is the customer's latest message there that has a provider id and was not imported. Agent, system and note rows are never a target. A contact with no such message answers `"receipts": []` |
+| AC-38-53 | On a WhatsApp channel the provider call is `POST /{phone_number_id}/messages` with exactly `messaging_product: "whatsapp"`, `status: "read"`, `message_id: <the target's provider id>`, using that channel's own phone number id and credentials, never the workspace default channel's. A provider `200` gives status `sent` |
+| AC-38-54 | A second call with no new customer message makes no provider call and answers `already_sent` for that channel. A new customer message makes a new provider call on the new message. Channels are independent. The stored marker appears in no read shape or webhook |
+| AC-38-55 | A provider refusal, a provider that cannot be reached, unreadable channel credentials or an unexpected adapter error gives status `failed` on that channel only: the route still answers `200`, other channels are still attempted, no marker is stored so the next call tries again, and no provider text reaches the response |
+| AC-38-56 | A paused or disconnected channel in the key's workspace answers `channel_unavailable` with no provider call. A channel row outside the key's tenant or workspace is never used for a provider call and is left out of `receipts` |
+| AC-38-57 | A Messenger, Instagram or web chat channel answers `not_supported` with no provider call. A channel with dev credentials, or with the provider app unconfigured, makes no network call and answers `sent`, as sends do on such channels |
+| AC-38-58 | The unread reset is committed before the first provider call, and no database transaction stays open across a provider call |
+| AC-38-59 | Each provider call is recorded in the channel's activity log the way a send is, and no token appears in that record |
+| AC-38-60 | The route creates no message row and fires no webhook, workflow trigger or `message.status` event |
+| AC-38-61 | Every query is tenant scoped. A foreign tenant's rows with the same contact id, workspace id or channel id neither change the answer nor receive a provider call |
+| AC-38-62 | `documentation/omnichannel/consumer-integration-guide.md` documents the route in section 6a and the appendix index, with every `status` value and what to do about it (`failed` is safe to call again), states that only this route sends a read receipt, and has a changelog row |
+
+## Build notes
+
+Paths are under `service_backend/modules/omnichannel/`.
+
+- Route in `routers/api_v1.py` beside `add_comment`, HTTP and Pydantic only. Service method in `services/public_gateway_service.py`, resolving the contact through `_resolve_contact`. Queries live in `repositories/contact_repository.py`.
+- `mark_read` on the adapter in `adapters/whatsapp_cloud.py`, wrapped in `_graph_call` with its own label, and following `send`'s dev and unconfigured handling. Its response has no `messages` array, so it does not reuse `_send_impl`.
+- The adapter is built with `build_meta_recorder`, as at `services/message_service.py:830`.
+- Marker: a key in the target message's `metadata_json`, reassigned as a fresh dict. No migration, so no backfill: old messages simply have no marker.
+- Latest message per channel must be one bounded query, not a load of the contact's history.
+- Inbound reactions never become message rows (`adapters/whatsapp_cloud.py:668`), so they need no exclusion.
+
+## Decisions
+
+- Receipts go per channel, because a customer can write to two numbers in one workspace, and a receipt on one does not tick the other.
+- Failure answers `200` per channel: unread is SS's own state and has already changed, so a whole-request error would misreport it.
+- Messenger and Instagram read receipts are out of scope, BL-SS-320. The partner inbox is WhatsApp only.
+- The internal inbox keeps resetting unread without a receipt. Changing that is a product decision for SS staff, not part of this gap.
+
+Not verified against live Meta here: `documentation/plans/sprint-5/38-partner-inbox-readiness.md` Phase 3 covers that, and it waits on the owner's environment decision.
