@@ -1097,19 +1097,28 @@ class PublicGatewayService:
         )
         try:
             default_id: Optional[str] = self._workspace_channel(tenant_id, workspace_id).id
-        except ApiError:
+        except ApiError as exc:
+            if exc.code != "no_active_channel":
+                raise
             default_id = None
         smap = statuses.id_to_key_map(self.db, tenant_id)
+        def _is_provider_id(value: Optional[str], c: Channel) -> bool:
+            # A display field that holds (or is built from) the provider's internal
+            # number id, because details were not available at connect, is not shown.
+            return bool(value) and bool(c.phone_number_id) and c.phone_number_id in value
+
         return [
             PublicChannelItem(
                 id=c.id,
                 channelType=c.channel_type,
-                name=c.name,
+                name="WhatsApp channel" if _is_provider_id(c.name, c) else c.name,
                 status=smap.get(c.status_id, "ACTIVE"),
                 isActive=c.is_active,
                 isDefault=c.id == default_id,
-                displayPhoneNumber=c.display_phone_number,
-                verifiedName=c.verified_name,
+                displayPhoneNumber=(
+                    None if _is_provider_id(c.display_phone_number, c) else c.display_phone_number
+                ),
+                verifiedName=None if _is_provider_id(c.verified_name, c) else c.verified_name,
                 createdAt=c.created_at,
             )
             for c in rows

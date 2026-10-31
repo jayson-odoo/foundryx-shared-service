@@ -338,11 +338,17 @@ The channels of your API key's workspace, oldest first. No pagination (a workspa
 |----|----|
 | `id` | Pass as `channelId` on `POST /messages` (§4). |
 | `channelType` | `WHATSAPP`, `FACEBOOK`, `INSTAGRAM` or `WEBCHAT`. |
-| `status` / `isActive` | A disconnected or inactive channel is still listed, with its real `status` and `isActive: false`, so you can see a number that stopped working. A removed channel is not listed. |
+| `name` | A free-text label set by the workspace. It is `WhatsApp channel` when the channel has no label beyond the provider's internal number id. |
+| `status` | `ACTIVE`, `PENDING`, `INACTIVE` or `ERROR`. |
+| `isActive` | `false` for a paused channel, which is still listed with its real `status`, so you can see a number that stopped working. A disconnected channel leaves the list. |
 | `isDefault` | `true` on exactly the channel `POST /messages` uses when you omit `channelId`; `false` on the rest. When no channel is active, none is default. |
-| `displayPhoneNumber`, `verifiedName` | `null` on channels that have no phone number. |
+| `displayPhoneNumber` | The number as shown to people; `null` on channels with no phone number or whose number is not available yet. |
+| `verifiedName` | The business name verified by Meta; `null` until the channel's details sync, and on channels that have none. |
+| `createdAt` | When the channel was added, ISO-8601 UTC (`Z`). The list is ordered by it, oldest first. |
 
-Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number.
+Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number. The one exception is a reaction, which follows the channel of the original message it reacts to.
+
+An API key works only while its tenant is active and its workspace is not trashed. Otherwise every gateway route answers `403 service_not_enabled` (§10), and the key works again once the tenant or workspace is restored.
 
 
 ---
@@ -942,7 +948,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | Code | HTTP | Meaning / fix |
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
-| `service_not_enabled` | 403 | Omnichannel not active for your tenant - contact the operator. |
+| `service_not_enabled` | 403 | Omnichannel not active for your tenant, the tenant is suspended or archived, or the key's workspace is trashed - contact the operator. The key works again once restored. |
 | `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
 | `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
@@ -1311,6 +1317,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | Method | Path | Purpose | Returns |
 |----|----|----|----|
 | POST | `/api/v1/omnichannel/messages` | Send a message (all types) | `202 {id, status, idempotencyReplay}` |
+| GET | `/api/v1/omnichannel/channels` | List the workspace's channels (`isDefault` marks the implicit send channel) | `{data[]}` of channel items (§5a) |
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
 | GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |

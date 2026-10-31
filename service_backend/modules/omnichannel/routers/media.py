@@ -26,12 +26,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import effective_permission_keys
 from app.models.tenant import DEFAULT_TENANT_ID
-from app.repositories.module_repository import ModuleRepository
 from app.repositories.user_repository import UserRepository
 from app.security import decode_access_token
 from app.services.storage import UnresolvableKey, storage_for_tenant
 
-from ..api_auth import MODULE_NAME, _parse_bearer
+from ..api_auth import _parse_bearer, gateway_key_enabled
 from ..repositories.contact_repository import ContactRepository
 from ..security import verify_media_sig
 from ..services.api_key_service import ApiKeyService
@@ -61,8 +60,8 @@ def _resolve_principal(
         row = ApiKeyService(db).resolve(token)
         if row is None:
             raise HTTPException(status_code=401, detail="Invalid API key.")
-        # Re-check the service is active for the key's tenant (mirror get_api_workspace).
-        if not ModuleRepository(db).is_active(row.tenant_id, MODULE_NAME):
+        # Same key rule as get_api_workspace (tenant, module and workspace state).
+        if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
             raise HTTPException(status_code=403, detail="This service is not enabled.")
         return row.tenant_id, row.workspace_id
     # Session JWT (agent path).
