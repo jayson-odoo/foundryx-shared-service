@@ -24,7 +24,7 @@ DEPLOY_MD_PATH = REPO_ROOT / "DEPLOY.md"
 CONFIG_PATH = REPO_ROOT / "service_backend" / "app" / "config.py"
 
 NET = "foundryx_ss_network"
-EDGE = "foundryx_ss_edge"
+EDGE = "foundryx_ss_web"
 
 
 @pytest.fixture(scope="module")
@@ -80,10 +80,12 @@ def test_ac_39_01_no_literal_password_in_repo_files():
 
 # ── AC-39-02 ─────────────────────────────────────────────────────────────────
 def test_ac_39_02_redis_url_uses_two_argument_default_user_form(compose):
-    # WHY `default:` and not the bare `redis://:pw@`: while Redis is still open
-    # (deploy steps 1-5) it refuses the ONE-argument `AUTH <pw>` but accepts the
-    # TWO-argument `AUTH default <pw>`. A `redis://:` URL would break every
-    # client during the rollout window, so it must fail this test.
+    # WHY `default:` and not the bare `redis://:pw@`: while no password is set
+    # the server refuses the ONE-argument `AUTH <pw>` on the wire but accepts
+    # the TWO-argument `AUTH default <pw>`. Client behaviour is version
+    # dependent (current redis-py sends `HELLO 3 AUTH default`), so the
+    # one-argument URL is not safe to rely on across the rollout window and
+    # must fail this test.
     url = compose["x-backend-env"]["REDIS_URL"]
     assert not url.startswith("redis://:"), "one-argument AUTH form breaks the rollout"
     assert url.startswith("redis://default:${REDIS_PASSWORD"), url
@@ -109,12 +111,12 @@ def test_ac_39_03_deploy_workflow_renders_redis_password_secret():
 
 # ── AC-39-04 / 05 ────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("name", ["frontend_blue", "frontend_green"])
-def test_ac_39_04_frontends_are_on_the_edge_network_only(compose, name):
+def test_ac_39_04_frontends_are_on_the_web_network_only(compose, name):
     assert _net_names(compose["services"][name]) == {EDGE}
 
 
 @pytest.mark.parametrize("name", ["backend_blue", "backend_green"])
-def test_ac_39_05_backends_on_both_networks_with_backend_alias_on_edge(compose, name):
+def test_ac_39_05_backends_on_both_networks_with_backend_alias_on_web(compose, name):
     nets = compose["services"][name]["networks"]
     assert isinstance(nets, dict), "aliases require the mapping form"
     assert set(nets) == {NET, EDGE}
@@ -122,16 +124,37 @@ def test_ac_39_05_backends_on_both_networks_with_backend_alias_on_edge(compose, 
 
 
 @pytest.mark.parametrize("name", ["db", "redis", "pgbackups", "worker_workflow", "worker_jobs", "worker_omni", "beat"])
-def test_ac_39_05_infra_and_workers_stay_off_the_edge_network(compose, name):
+def test_ac_39_05_infra_and_workers_stay_off_the_web_network(compose, name):
     assert _net_names(compose["services"][name]) == {NET}
 
 
 def test_ac_39_05_network_definitions(compose):
     nets = compose["networks"]
-    assert EDGE in nets, "edge network must be declared"
-    assert not nets[EDGE].get("internal"), "edge must not be internal: published ports need it"
+    assert EDGE in nets, "web network must be declared"
+    assert not nets[EDGE].get("internal"), "web network must not be internal: published ports need it"
     pinned = nets[NET]["ipam"]["config"][0]
     assert pinned == {"subnet": "172.21.0.0/16", "gateway": "172.21.0.1"}
+    web_cfg = nets[EDGE]["ipam"]["config"][0]
+    assert web_cfg["subnet"] == "10.250.21.0/24"
+
+
+def test_ac_39_05_web_network_sorts_after_the_main_network(compose):
+    # Docker orders a container's default route by network name; the backend
+    # must keep its default route on foundryx_ss_network.
+    nets = compose["networks"]
+    names = [nets[k].get("name", k) for k in (NET, EDGE)]
+    assert sorted(names)[-1] == names[1], names
+
+
+def test_ac_39_05_web_subnet_is_inside_default_trusted_proxies(compose):
+    import ipaddress
+
+    raw = compose["x-backend-env"]["TRUSTED_PROXIES"]
+    m = re.search(r":-([^}]*)\}", raw)
+    assert m, f"control: default TRUSTED_PROXIES not parsed from {raw!r}"
+    proxies = [ipaddress.ip_network(x.strip(), strict=False) for x in m.group(1).split(",") if "/" in x]
+    web = ipaddress.ip_network(compose["networks"][EDGE]["ipam"]["config"][0]["subnet"])
+    assert any(web.subnet_of(p) for p in proxies), (web, proxies)
 
 
 # ── AC-39-06 / 07 (script ordering, by line position) ────────────────────────
@@ -202,3 +225,14 @@ def test_ac_39_11_local_dev_default_redis_url_stays_passwordless():
     m = re.search(r'redis_url:\s*str\s*=\s*"([^"]+)"', text)
     assert m, "control: redis_url default must be found"
     assert m.group(1) == "redis://localhost:6379/0"
+
+
+# ── X5: the primary-branch infra command never starts redis without --no-recreate
+def test_x5_primary_infra_command_starts_redis_only_with_no_recreate():
+    line = next((s for _, s in _script_lines() if "infra_out=$(" in s), None)
+    assert line is not None, "control: primary-branch infra command not found"
+    segments = [seg for seg in re.split(r"&&|;|\|\||\}", line) if "compose up -d" in seg]
+    redis_segments = [seg for seg in segments if re.search(r"\bredis\b", seg)]
+    assert redis_segments, "control: redis must be started in the primary infra command"
+    for seg in redis_segments:
+        assert "--no-recreate" in seg, f"primary infra command would recreate redis: {seg.strip()}"

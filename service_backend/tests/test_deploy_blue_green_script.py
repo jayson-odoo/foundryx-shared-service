@@ -24,13 +24,29 @@ FAKE_DOCKER = r"""#!/usr/bin/env bash
 echo "docker $*" >> "$FAKE_LOG"
 args="$*"
 case "$args" in
+  *"compose up -d db pgbackups"*)
+    if [ -n "$FAKE_DB_FAIL_MSG" ] && [ ! -e "$FAKE_LOG.db_failed" ]; then
+      touch "$FAKE_LOG.db_failed"; echo "$FAKE_DB_FAIL_MSG" >&2; exit 1
+    fi
+    exit 0 ;;
+  *"compose up -d --no-recreate redis"*)
+    if [ -n "$FAKE_REDIS_FAIL_MSG" ] && [ ! -e "$FAKE_LOG.redis_failed" ]; then
+      touch "$FAKE_LOG.redis_failed"; echo "$FAKE_REDIS_FAIL_MSG" >&2; exit 1
+    fi
+    exit 0 ;;
   *"compose exec"*"redis-cli ping"*)
-    # Plan 39: authenticated ping carries the password ONLY via the
-    # REDISCLI_AUTH env var (never an -a argument). Never echo the value.
+    # Plan 39: auth is honoured ONLY when the exec forwards it with
+    # `-e REDISCLI_AUTH` (a real container sees no host env otherwise), AND the
+    # env var is set. Never echo the value.
     case "$args" in
       *" -a "*|*"--pass"*) echo "docker-stub: password on a command line" >> "$FAKE_LOG" ;;
     esac
-    if [ -n "$REDISCLI_AUTH" ]; then
+    if [ -n "$REDISCLI_AUTH" ] && [[ " $args " == *" -e REDISCLI_AUTH "* ]]; then
+      n=0; [ -f "$FAKE_LOG.authn" ] && n=$(cat "$FAKE_LOG.authn"); n=$((n + 1)); echo "$n" > "$FAKE_LOG.authn"
+      if [ "$n" = "1" ] && [ -n "$FAKE_REDIS_FIRST_REPLY" ]; then
+        echo "stub: authenticated ping #1" >> "$FAKE_LOG"
+        printf '%b\n' "$FAKE_REDIS_FIRST_REPLY"; exit 0
+      fi
       if [ "$REDISCLI_AUTH" = "$FAKE_EXPECTED_PW" ]; then
         echo "stub: authenticated ping, REDISCLI_AUTH matched" >> "$FAKE_LOG"
       fi
@@ -74,7 +90,7 @@ def _exe(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-FAKE_REDIS_PW = "fake-redis-pw-for-tests-0001"  # obvious fake, never a real secret
+FAKE_REDIS_PW = "deadbeef" * 8  # obvious fake (64 hex chars, valid form), never a real secret
 
 
 def _run(tmp_path, dotenv=None, **env_over):
@@ -260,3 +276,104 @@ def test_plan39_password_never_logged_and_reaches_the_stub_only_via_env(tmp_path
     assert FAKE_REDIS_PW not in calls
     assert "password on a command line" not in calls
     assert not any("redis-cli" in ln and " -a " in ln for ln in calls.splitlines())
+
+
+# ── AC-39-13: REDIS_PASSWORD is validated before the first compose call ──────
+BAD_PASSWORDS = [
+    pytest.param("", id="missing"),
+    pytest.param("abc123", id="too_short"),
+    pytest.param("ab%41cd" + "a" * 30, id="percent_padded"),
+    pytest.param("a" * 20 + "/" + "b" * 20, id="slash"),
+    pytest.param("a" * 20 + "#" + "b" * 20, id="hash"),
+    pytest.param("a" * 20 + "?" + "b" * 20, id="question"),
+    pytest.param("$(touch PWNED)" + "a" * 30, id="command_substitution"),
+]
+
+
+@pytest.mark.parametrize("bad", BAD_PASSWORDS)
+def test_ac_39_13_bad_password_rejected_before_any_compose_call(tmp_path, bad):
+    dotenv = f"REDIS_PASSWORD={bad}\n" if bad else ""
+    cwd_before = set(os.listdir(os.getcwd()))
+    result, calls, active = _run(tmp_path, dotenv=dotenv)
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "::error::" in out, out
+    assert "docker compose" not in calls, f"something was touched:\n{calls}"
+    if bad:
+        assert bad not in out, "the bad value was printed"
+    assert active is None
+    # no command substitution ever ran
+    assert not (tmp_path / "deploy" / "PWNED").exists()
+    assert not (tmp_path / "PWNED").exists()
+    assert "PWNED" not in set(os.listdir(os.getcwd())) - cwd_before
+
+
+def test_ac_39_13_control_good_64_hex_password_runs_the_deploy(tmp_path):
+    good = "0123456789abcdef" * 4
+    result, calls, active = _run(tmp_path, dotenv=f"REDIS_PASSWORD={good}\n", FAKE_EXPECTED_PW=good)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "docker compose" in calls
+    assert active == "green"
+
+
+# ── AC-39-14: wrong password on live redis stops the deploy before anything moves
+def test_ac_39_14_wrongpass_aborts_before_new_color_and_names_rotation(tmp_path):
+    result, calls, active = _run(
+        tmp_path, FAKE_REDIS_FIRST_REPLY="WRONGPASS invalid username-password pair", REDIS_WAIT_TICKS="2"
+    )
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "::error::" in out
+    assert "ACL SETUSER" in out or "rotat" in out.lower(), out
+    # control: the infra step did run and the authenticated ping was attempted
+    assert "compose up -d --no-recreate redis" in calls
+    assert "stub: authenticated ping #1" in calls
+    # nothing moved
+    assert "up -d --no-deps" not in calls, "new color was started"
+    assert "stop backend_blue" not in calls and "rm -f backend_blue" not in calls
+    assert "sudo" not in calls
+    assert active is None
+
+
+def test_ac_39_14_open_server_auth_failed_then_pong_continues(tmp_path):
+    first = "AUTH failed: ERR AUTH <password> called without any password configured for the default user.\\nPONG"
+    result, calls, active = _run(tmp_path, FAKE_REDIS_FIRST_REPLY=first)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "stub: authenticated ping #1" in calls  # control: the open-server reply was served
+    assert "up -d --no-deps" in calls and active == "green"
+
+
+# ── Fallback branch (X6/X7/X8), run for real through the stub ────────────────
+SIGNATURE_MSG = "network foundryx_ss_network has active endpoints"
+
+
+def test_x6_x8_infra_failure_with_signature_takes_the_network_recreate_fallback(tmp_path):
+    result, calls, active = _run(tmp_path, FAKE_REDIS_FAIL_MSG=SIGNATURE_MSG)
+    assert result.returncode == 0, result.stdout + result.stderr
+    down = _line_index(calls, "compose --profile blue --profile green down --remove-orphans")
+    redis_after = _line_index(calls, "compose up -d --no-recreate redis", last=True)
+    assert down < redis_after, "redis must be started after the stack down"
+    assert active == "green"
+
+
+def test_x7_db_pgbackups_failure_with_signature_also_enters_the_fallback(tmp_path):
+    # `a && b` -> `a ; b` would swallow the first failure: redis would start,
+    # the group would succeed and `down` would never run.
+    result, calls, active = _run(tmp_path, FAKE_DB_FAIL_MSG=SIGNATURE_MSG)
+    assert result.returncode == 0, result.stdout + result.stderr
+    down = _line_index(calls, "compose --profile blue --profile green down --remove-orphans")
+    redis_after = _line_index(calls, "compose up -d --no-recreate redis", last=True)
+    assert down < redis_after
+    assert active == "green"
+
+
+@pytest.mark.parametrize("which", ["FAKE_DB_FAIL_MSG", "FAKE_REDIS_FAIL_MSG"])
+def test_x8_non_signature_infra_failure_aborts_before_any_color_starts(tmp_path, which):
+    result, calls, active = _run(tmp_path, **{which: "no space left on device"})
+    out = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "::error::infra up failed" in out
+    assert "down --remove-orphans" not in calls
+    assert "up -d --no-deps" not in calls, "a color was started"
+    assert "sudo" not in calls
+    assert active is None
