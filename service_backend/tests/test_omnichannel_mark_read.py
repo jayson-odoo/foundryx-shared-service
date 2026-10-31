@@ -1676,3 +1676,18 @@ def test_ac55_a_budget_skip_logs_a_warning_with_the_channel_id(rig, monkeypatch,
     recs = [r for r in caplog.records if r.levelno >= logging.WARNING and skipped in r.getMessage()]
     assert recs, "no warning names the skipped channel id"
     assert TOKEN_FRAGMENT not in caplog.text
+
+
+@pytest.mark.parametrize("meta", [["x"], "plain text", 7])
+def test_ac54_odd_metadata_becomes_a_dict_with_the_marker_and_repeat_is_already_sent(
+    rig, meta
+):
+    ch = rig.channel("pn-A")
+    mid, _w = rig.msg(ch, wamid="wamid.in-1", when=1, metadata=meta)
+    assert rig.receipts()[ch]["status"] == "sent"
+    assert len(rig.provider.calls) == 1
+    stored = rig.metadata(mid)
+    assert isinstance(stored, dict) and len(stored) == 1, "a dict holding the marker"
+    again = rig.receipts()
+    assert again[ch]["status"] == "already_sent"
+    assert len(rig.provider.calls) == 1, "no new provider call"
