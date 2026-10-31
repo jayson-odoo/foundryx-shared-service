@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from app.config import settings
-from .base import CodeExchangeError, ConnectionStatus, SendError
+from .base import CodeExchangeError, ConnectionStatus, SendError, UnexpectedSendError
 # Shared Meta Graph plumbing (plan 32 / A7a, D-A7-1/D-A7-9): GraphCall/
 # GraphRecorder/_meta_error_detail/MetaGraphMixin moved OUT to meta_graph.py
 # verbatim; re-imported here so every existing import site of these names off
@@ -425,12 +425,15 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 f"Could not reach Meta: {type(exc).__name__}", transient=True
             ) from None
         except Exception as exc:  # noqa: BLE001 - never let request text escape.
-            raise SendError(
+            raise UnexpectedSendError(
                 f"Could not send the read receipt: {type(exc).__name__}"
             ) from None
         finally:
             if client is not None and self._client is None:
-                client.close()
+                try:
+                    client.close()
+                except Exception:  # noqa: BLE001 - a close failure must not replace the result.
+                    pass
 
     def fetch_waba_details(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
         """Fetch the WABA's business account name. Instrumented once → a

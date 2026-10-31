@@ -711,7 +711,7 @@ class PublicGatewayService:
         The reset is committed before the first provider call and no transaction
         stays open across any provider call: everything needed is copied into
         plain values first. A failure on one channel never affects another."""
-        from ..adapters.base import SendError
+        from ..adapters.base import SendError, UnexpectedSendError
         from ..schemas import ContactReadResponse, ReadReceiptItem
         from ..security import decrypt_credentials
         from .activity import build_meta_recorder
@@ -760,6 +760,9 @@ class PublicGatewayService:
             elif p["marked"]:
                 status = "already_sent"
             elif time.monotonic() - started > READ_RECEIPT_BUDGET_SECONDS:
+                logger.warning(
+                    "read receipt skipped on channel %s: time budget used", p["channel_id"]
+                )
                 status = "failed"
             else:
                 status = "sent"
@@ -770,6 +773,11 @@ class PublicGatewayService:
                         recorder=build_meta_recorder(self.db, tenant_id, workspace_id),
                     )
                     adapter.mark_read(credentials, p["sender_ref"], p["wamid"])
+                except UnexpectedSendError as exc:
+                    logger.warning(
+                        "read receipt failed on channel %s: %s", p["channel_id"], exc
+                    )
+                    status = "failed"
                 except SendError:
                     status = "failed"
                 except Exception:  # noqa: BLE001 - one channel never stops the others.

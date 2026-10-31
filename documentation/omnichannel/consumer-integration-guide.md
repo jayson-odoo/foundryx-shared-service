@@ -446,7 +446,7 @@ Returns the created `MessageItem` with `senderType: "SYSTEM"`.
 
 ### Mark a contact read - `POST /api/v1/omnichannel/contacts/{identifier}/read`
 
-Call this when one of your staff opens the conversation. It takes no body. It does two things: the contact's `unreadCount` goes to `0`, and a WhatsApp read receipt (blue ticks) is sent to the customer for their latest message on each channel they have written to. **Only this route sends a read receipt**: reading history, fetching the contact or replying never does. A customer message that arrives later counts as unread again.
+Call this when one of your staff opens the conversation. It takes no body. It does two things: the contact's `unreadCount` goes to `0`, and a WhatsApp read receipt (blue ticks) is sent to the customer for their latest message on each channel they have written to. **Only this route sends a read receipt**: reading history, fetching the contact or replying never does. The call waits for the provider, so allow up to 30 seconds. A customer message that arrives later counts as unread again.
 
 ```json
 {
@@ -463,8 +463,8 @@ A contact that exists always answers `200`, and `unreadCount` is `0` afterwards 
 |----|----|----|
 | `sent` | The read receipt went out for that message. | Nothing. |
 | `already_sent` | That message was already acknowledged by an earlier call. No new call was made. | Nothing. |
-| `failed` | The receipt could not be sent. | Safe to call again, and the next call tries that channel again. It can repeat on every call, for example on a very old message, so do not alert or loop on it. |
-| `channel_unavailable` | The channel is paused or disconnected, or has no usable number. | Nothing, unless you still use that channel: after it resumes, the next call tries again. This item stays until then. |
+| `failed` | The receipt could not be sent. | Safe to call again, and the next call tries that channel again. It can repeat on every call, for example on a message older than 30 days, so do not alert or loop on it. |
+| `channel_unavailable` | The channel is paused or disconnected, or has no usable number. | Nothing, unless you still use that channel: after it resumes, the next call answers for it again. This item stays until then. |
 | `not_supported` | The channel type does not support read receipts (Messenger, Instagram, web chat). | Nothing. |
 
 Each channel is handled on its own, so one `failed` never blocks another channel. This route creates no message and fires no webhook.
