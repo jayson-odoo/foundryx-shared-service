@@ -157,3 +157,114 @@ def test_ac_40_06_deploy_md_documents_known_hosts_and_readonly_frontend():
     assert "SSH_KNOWN_HOSTS" in text
     assert "/app/.next/cache" in text
     assert "StrictHostKeyChecking=no" not in text
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Review round (AC-40-07, AC-40-08 and mutation guards)
+# ═════════════════════════════════════════════════════════════════════════════
+import os
+import stat
+import subprocess
+
+
+def _first_connection_script() -> str:
+    """The sync step's shell up to and including its first `ssh $O ...` line,
+    with Actions templating replaced by plain placeholders."""
+    lines = _wf_lines()
+    start = next(i for i, ln in enumerate(lines) if "Sync compose + deploy script" in ln)
+    cmd = next(i for i in range(start, len(lines)) if lines[i].strip() == "command: |")
+    indent = len(lines[cmd + 1]) - len(lines[cmd + 1].lstrip())
+    out = []
+    for ln in lines[cmd + 1 :]:
+        out.append(ln[indent:])
+        if re.match(r"\s*ssh \$O\b", ln):
+            break
+    text = "\n".join(out)
+    return re.sub(r"\$\{\{[^}]*\}\}", "x", text)
+
+
+def _run_first_connection(tmp_path, ssh_exit: int):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (
+        ("ssh", f"#!/bin/sh\nexit {ssh_exit}\n"),
+        ("timeout", "#!/bin/sh\nexit 0\n"),  # the TCP probe succeeds
+        ("sleep", "#!/bin/sh\nexit 0\n"),
+    ):
+        f = bin_dir / name
+        f.write_text(body)
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    script = tmp_path / "step.sh"
+    script.write_text(_first_connection_script() + "\n")
+    env = {"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}", "HOME": str(tmp_path)}
+    return subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, timeout=30)
+
+
+def test_ac_40_07_exit_255_at_first_connection_points_at_the_known_hosts_secret(tmp_path):
+    res = _run_first_connection(tmp_path, 255)
+    out = res.stdout + res.stderr
+    assert res.returncode != 0
+    errs = [ln for ln in out.splitlines() if "::error::" in ln]
+    assert errs, out
+    assert any("SSH_KNOWN_HOSTS" in ln for ln in errs), errs
+    assert any("re-run" in ln.lower() for ln in errs), errs
+
+
+def test_ac_40_07_remote_command_failure_keeps_the_permissions_message(tmp_path):
+    res = _run_first_connection(tmp_path, 1)
+    out = res.stdout + res.stderr
+    assert res.returncode != 0
+    assert "::error::cannot mkdir" in out and "sudo chown" in out, out
+    assert "SSH_KNOWN_HOSTS" not in out, out
+
+
+# ── AC-40-08 ─────────────────────────────────────────────────────────────────
+def test_ac_40_08_deploy_md_documents_the_scan_command_with_matching_host_and_port():
+    text = DEPLOY_MD_PATH.read_text()
+    assert "ssh-keyscan -t ed25519 -p" in text
+    i = text.index("ssh-keyscan -t ed25519 -p")
+    window = text[max(0, i - 600) : i + 900]
+    assert "SSH_HOST" in window and "SSH_PORT" in window
+    assert "unedited" in window.lower()
+
+
+# ── mutation guards ──────────────────────────────────────────────────────────
+@pytest.mark.parametrize("name", FRONTENDS)
+def test_cache_tmpfs_is_owned_by_the_image_user(compose, name):
+    entries = {str(e).partition(":")[0]: str(e).partition(":")[2] for e in compose["services"][name]["tmpfs"]}
+    opts = entries["/app/.next/cache"]
+    assert "uid=1001" in opts and "gid=1001" in opts, opts
+
+
+def test_env_write_only_sets_the_mode_when_the_write_succeeded():
+    line = next(ln for ln in _wf_lines() if "cat > $D/.env" in ln)
+    assert re.search(r"cat > \$D/\.env\s*&&\s*chmod 600 \$D/\.env", line), line.strip()
+    assert not re.search(r"cat > \$D/\.env\s*;\s*chmod", line), line.strip()
+
+
+def _normalize(path: str) -> str:
+    return path.strip("\"'").replace("${HOME}", "~").replace("$HOME", "~")
+
+
+def test_known_hosts_file_written_is_the_file_every_ssh_option_string_reads():
+    _, _, block = _known_hosts_step()
+    text = "\n".join(block)
+    written = {_normalize(m) for m in re.findall(r">\s*(\S*known_hosts\S*)", text)}
+    assert len(written) == 1, written
+    read = set()
+    opt_lines = [ln for ln in _wf_lines() if re.search(r'\bO="', ln)]
+    assert len(opt_lines) >= 3
+    for ln in opt_lines:
+        m = re.search(r"UserKnownHostsFile=(\S+)", ln)
+        assert m, ln.strip()
+        read.add(_normalize(m.group(1)))
+    assert read == written, (read, written)
+
+
+def test_known_hosts_file_gets_mode_600():
+    _, _, block = _known_hosts_step()
+    text = "\n".join(block)
+    written = re.findall(r">\s*(\S*known_hosts\S*)", text)
+    assert written
+    for path in written:
+        assert re.search(r"chmod 600 %s\b" % re.escape(path), text), path
