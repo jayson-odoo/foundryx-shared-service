@@ -60,10 +60,10 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 | code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
 
 **Networks.** `foundryx_ss_network` (pinned subnet `172.21.0.0/16`, gateway
-`172.21.0.1`, relied on by a host firewall rule: never change it) carries db,
+`172.21.0.1`, relied on by host-side services: never change it) carries db,
 redis, the Celery workers, beat and the backend colors. `foundryx_ss_web` is a
 second bridge network pinned to `10.250.21.0/24` (outside Docker's default pools,
-inside the default `TRUSTED_PROXIES`, so logins keep their real client IP; the
+and logins keep their real client IP; the
 name sorts after `foundryx_ss_network` so a backend keeps its default route
 there), not `internal` (the frontend still needs egress and its published port), carrying only the frontend colors and the backend colors. The
 backend colors answer to the alias `backend` on `foundryx_ss_web`, so the

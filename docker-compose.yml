@@ -361,8 +361,7 @@ networks:
   # The name must sort AFTER foundryx_ss_network: Docker orders a container's
   # networks by name, and a dual-homed backend must keep its default route on
   # foundryx_ss_network. The subnet is pinned outside Docker's default address
-  # pools and inside the default TRUSTED_PROXIES (10.0.0.0/8), so the backend
-  # still trusts the forwarded client IP and logins keep their real address.
+  # pools, and logins keep their real client address.
   foundryx_ss_web:
     driver: bridge
     ipam:

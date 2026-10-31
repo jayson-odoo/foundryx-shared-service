@@ -42,8 +42,7 @@ read_redis_password() {
 
 # Pre-flight, before the first docker compose call: the value is embedded in
 # REDIS_URL, so it must be present, at least 32 characters, and URL-safe
-# ([A-Za-z0-9_-]). A bad value would otherwise fail after the swap, or leak part
-# of itself into a log. The value is never echoed.
+# ([A-Za-z0-9_-]). The value is never echoed.
 REDIS_PW=$(read_redis_password)
 if [ -z "$REDIS_PW" ]; then
   echo "::error::REDIS_PASSWORD is not set in the environment or .env - aborting before any container is touched" >&2
