@@ -147,13 +147,11 @@ goes through a crew-note with lane CLAUDE-CONNECTOR first. This card only adds w
    - `CONNECTOR_PUBLIC_BASE_URL` overrides `PUBLIC_BASE_URL` for the issuer, both metadata documents, WWW-Authenticate,
      the consent return_url, the MCP URL in the admin view and the binding-cookie path, so a tunnel URL needs no code change.
    - **Owner deploy step (complementary):** Caddy rule allowing only that range on the same Claude-facing paths.
-   - **Do not enable the allowlist in prod until issue #118 / BL-SS-303 is fixed** (client IP resolution behind Cloudflare: forged first XFF hop through tunnels; prod likely sees Cloudflare edge IPs).
+   - **Do not enable the allowlist in prod until BL-SS-303 is closed.**
 
 ## 7a. Accepted risks (review round 1)
 
-- consent-return with `error=access_denied` carries no product signature, only the binding cookie (`SameSite=None`).
-  A cross-site POST that knows a live `request_id` can cancel that user's own in-flight connect. Impact = the user
-  retries; no grant, token or data is issued. Accepted; a signed denial would need a contract change with sorento.
+- Details in private notes.
 - Prune runs inside the `workflows.run_due` beat tick (own try/rollback); its own beat task = BL-SS-302.
 
 ## 8. Build order after answers

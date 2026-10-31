@@ -54,7 +54,7 @@ duration when it must actually start a new extraction.
   session). `stock_balance` entity (already `deliveryMode: "pull"` by default, combine preset
   pre-seeded) was Tested (preview succeeded) then Activated.
 - db2 connection created fresh: `provider: "autocount"`, `auth: "none"`,
-  `baseUrl: https://hapi.sorento.cc.cd/api/db2`, name `S40 db2 MCH 20260920T094731Z`. Test:
+  `baseUrl: https://autocount-wrapper.example/api/db2`, name `S40 db2 MCH 20260920T094731Z`. Test:
   `{"ok":true,"message":"Reachable - 21 row(s) returned from /location."}`.
 - Company `Mocha MCH S40 20260920T094731Z` created (`cdf1c397-20fe-4a78-b335-bfeaf6bd9b27`),
   `databaseName` discovered as `MOCHA`. Sink set to `sorento` + the SAME `.invalid` fixture
@@ -350,7 +350,7 @@ snapshots end to end, repeatably, deterministically.
 ### Connection sizing (AC-10-85)
 
 - `PATCH /integrations/connections/{MCH connection id}` `{"config":{"auth":"none","baseUrl":
-  "https://hapi.sorento.cc.cd/api/db2","pageSize":"300","requestTimeoutSeconds":"90"}}` -> `200`,
+  "https://autocount-wrapper.example/api/db2","pageSize":"300","requestTimeoutSeconds":"90"}}` -> `200`,
   GET echoes both fields back verbatim. **No 422** - the confirm-3 egress-guard change (scheme-
   configurable `validate_public_url`) does not affect this https base URL at all; not blocked.
 - `POST .../test` (body `{}`) -> `{"ok":true,"message":"Reached in 0.55 s, 21 locations.",

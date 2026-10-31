@@ -28,7 +28,7 @@ surface the plan's section 7 runbook calls "the Mapping tab" for the prod `SRT` 
 ## Fixture setup (NOT feature verification)
 
 Built through the UI with real clicks: the `autocount` integration (`Mocha REST (s50)`,
-`https://hapi.sorento.cc.cd/api/db2`, no auth), the company `Mocha s50`, the `product` and
+`https://autocount-wrapper.example/api/db2`, no auth), the company `Mocha s50`, the `product` and
 `customer` entity tasks, each Tested on the Source tab against the LIVE vendor API (product:
 19 raw columns + the preset `uom` lookup alias `BaseUOMPrice` = 20 `acFields`; customer:
 `/debtorbypage`).

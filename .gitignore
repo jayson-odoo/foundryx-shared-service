@@ -75,3 +75,6 @@ Thumbs.db
 
 # test-runner artifacts
 .vite/
+
+# Redis dumps
+*.rdb

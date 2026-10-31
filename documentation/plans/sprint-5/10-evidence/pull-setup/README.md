@@ -95,7 +95,7 @@ superseded by this run).
 | Product, SRT (gateway, triggered by the grace-window probe, see Finding B) | Public gateway | 12:57:46 | 13:03:15 | 5m 29s | 11,840 |
 | Product, SRT (1280 run) | Operator | 13:11:42 | 13:17:15 | 5m 33s | 11,840 |
 
-All four builds against `db1` (`AED_SORENTO`) via the live `https://hapi.sorento.cc.cd/api/db1`
+All four builds against `db1` (`AED_SORENTO`) via the live `https://autocount-wrapper.example/api/db1`
 wrapper completed in 5-6 minutes this session - faster than the S6 live-replay evidence's own
 9-minute baseline (likely wrapper-load variance; every OTHER number - record counts, zero/negative
 counts, content hash - is byte-identical across all four runs, confirming the extraction itself is

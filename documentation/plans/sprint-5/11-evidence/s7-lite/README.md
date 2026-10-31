@@ -32,7 +32,7 @@ where relevant, the delta between them is not itself a bug this run investigated
 - Login: `demo@example.com` / `demo1234`, tenant `default`, Admin. `DELETE FROM auth_throttle`
   run pre-emptively on the lane DB (0 rows - no throttle hit this run).
 - Company: `AUTOCOUNT` (`228f0f18-1ca3-4ee8-874d-83789cf560f0`), connection `AutoCount`
-  (`698813e4-0479-4d5a-a9c3-0b4d33e0ce20`, `baseUrl: https://hapi.sorento.cc.cd/api/db1` = book
+  (`698813e4-0479-4d5a-a9c3-0b4d33e0ce20`, `baseUrl: https://autocount-wrapper.example/api/db1` = book
   `SRT`, `auth: none`). No `product` entity task existed yet on this fresh lane DB - created via
   real clicks (AutoCount -> Companies -> AUTOCOUNT -> Entities -> Add entity -> Product ->
   Configure), which seeded the same HTTP preset used in earlier plan-10/11 evidence

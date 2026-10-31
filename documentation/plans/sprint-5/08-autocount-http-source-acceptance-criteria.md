@@ -4,8 +4,8 @@ Plan: `08-autocount-http-source.md`. Lane `sprint-5/08-autocount-http-source`
 (worktree `.claude/worktrees/s37`, off `origin/main` 1028bda2, module 0.9.0, module Alembic
 head 0019). Lane ports backend :8007 / frontend :3007, DB `foundryx_service_s37`.
 
-Source: a second AutoCount API generation, an open (unauthenticated) REST wrapper at
-`https://hapi.sorento.cc.cd/api/db1` (Sorento) and `.../api/db2` (Mocha). Probed 2026-09-11,
+Source: a second AutoCount API generation, a REST wrapper at
+`https://autocount-wrapper.example/api/db1` (Sorento) and `.../api/db2` (Mocha). Probed 2026-09-11,
 read-only: `GET /location`, `/ItemGroup`, `/ItemType`, `/ItemBrand`, `/ItemCategory`,
 `/ItemClass` return a bare JSON array (no timestamps); `GET /itembypage?page=N&pageSize=1000`
 and `/debtorbypage?...` return `{TotalCount, Page, PageSize, TotalPages, Data[]}` with
@@ -29,7 +29,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 - **source kind** - `api` (an `autocount` connection) or `db` (a `sql_database` connection).
   The operator's two words (plan review 2026-09-11); every picker uses them.
 - **open connection** - an `api` connection with `config.auth == "none"`. Config = `baseUrl`
-  only; the base URL INCLUDES the company segment (`https://hapi.sorento.cc.cd/api/db1`). No
+  only; the base URL INCLUDES the company segment (`https://autocount-wrapper.example/api/db1`). No
   credentials.
 - **basic connection** - an `api` connection with `config.auth == "basic"` (or absent = legacy
   rows): today's AppId / User ID / Password, login test, unchanged fetch grammar
@@ -97,7 +97,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 - **AC-08-10 [FE]** Company detail Integration row reads "API (no auth)" for `sourceKind ==
   "http"` and "API (basic auth)" for `api`; `edit-lookback` / `change-source` / GRN entity actions are hidden for it (same
   predicate that hides them for `db`).
-- **AC-08-11 [E2E]** Settings -> Integrations -> add AutoCount connection, Auth "No auth", base URL `https://hapi.sorento.cc.cd/api/db2`, Test -> success naming the
+- **AC-08-11 [E2E]** Settings -> Integrations -> add AutoCount connection, Auth "No auth", base URL `https://autocount-wrapper.example/api/db2`, Test -> success naming the
   location count; AutoCount -> Companies -> Connect -> "API" -> that connection (badge "No auth") ->
   label `Mocha <ts>`, prefix auto `MOCHA_<TS>` -> Create -> detail shows Integration "API (no
   auth)" and the reference prefix. 375 + 1280, evidence dir `08-evidence/open-company/`.
@@ -278,7 +278,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   requests = 12, rows scanned 11,826 -> Review shows staged records with refs `AED_SORENTO:<ItemGroup>`. Then the
   SQL PO task's Runs tab still shows its own last run unchanged. 375 + 1280, evidence
   `08-evidence/sorento-mixed/`.
-- **AC-08-37 [T]** Live replay on the lane DB against `https://hapi.sorento.cc.cd/api/db2`
+- **AC-08-37 [T]** Live replay on the lane DB against `https://autocount-wrapper.example/api/db2`
   (Mocha): product (paged, all pages), customer (paged), warehouse, product_category, brand,
   unit_of_measure - each task Test -> Activate -> Run now with the LOGGING sink (no Sorento
   push from the lane): run rows record request counts, rows scanned = `TotalCount`, zero

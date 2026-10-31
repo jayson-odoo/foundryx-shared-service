@@ -72,8 +72,8 @@
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
-[2026-09-21 23:09:34,772: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
-[2026-09-21 23:09:34,908: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:09:34,772: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:09:34,908: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
@@ -94,8 +94,8 @@
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
-[2026-09-21 23:11:22,645: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
-[2026-09-21 23:11:22,757: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:11:22,645: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:11:22,757: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
@@ -116,8 +116,8 @@
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
-[2026-09-21 23:12:55,807: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
-[2026-09-21 23:12:55,914: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:12:55,807: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:12:55,914: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
@@ -138,8 +138,8 @@
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
-[2026-09-21 23:13:20,732: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
-[2026-09-21 23:13:20,970: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:13:20,732: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:13:20,970: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
@@ -160,8 +160,8 @@
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
-[2026-09-21 23:16:24,171: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
-[2026-09-21 23:16:24,303: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:16:24,171: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:16:24,303: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
@@ -182,8 +182,8 @@
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s
-[2026-09-21 23:17:04,766: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
-[2026-09-21 23:17:04,902: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:17:04,766: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:17:04,902: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
  LIMIT %(param_1)s
  LIMIT %(param_1)s
  LIMIT %(param_1)s

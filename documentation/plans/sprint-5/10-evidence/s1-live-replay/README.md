@@ -7,7 +7,7 @@ DB `foundryx_service_s40` (native Postgres). All timestamps UTC.
 Nothing in this run was ever delivered to a real Sorento endpoint: the AutoCount company's
 `sinkImpl` stayed `logging` (the slice-1 no-op sink, `modules/autocount/sinks.py`) throughout -
 never touched. The only outbound network calls this run ever made were READ-ONLY `GET`s against
-the live, read-only `https://hapi.sorento.cc.cd/api/db1` wrapper.
+the live, read-only `https://autocount-wrapper.example/api/db1` wrapper.
 
 ## Environment
 
@@ -19,7 +19,7 @@ the live, read-only `https://hapi.sorento.cc.cd/api/db1` wrapper.
   first login this session), so `auth_throttle` was never touched.
 - Credentials: NONE needed. The db1 wrapper is reached through an `autocount` connection with
   `auth: "none"` (the "No auth" open-REST mode `modules/autocount/provider.py` registers for
-  AC-08-01/02) - base URL only, `https://hapi.sorento.cc.cd/api/db1`. The `AUTOCOUNT_DEMO_USERNAME`/
+  AC-08-01/02) - base URL only, `https://autocount-wrapper.example/api/db1`. The `AUTOCOUNT_DEMO_USERNAME`/
   `AUTOCOUNT_DEMO_PASSWORD` values present in the lane `.env` are not referenced anywhere in the
   codebase (confirmed by grep) and were not needed for this replay.
 
@@ -46,7 +46,7 @@ diff).
 ### Setup (via the operator API, real backend, real network to the wrapper)
 
 1. `POST /integrations/connections` - `provider: "autocount"`, `config: {auth: "none", baseUrl:
-   "https://hapi.sorento.cc.cd/api/db1"}`, name `S40 db1 SRT 20260919T183336Z` (timestamped).
+   "https://autocount-wrapper.example/api/db1"}`, name `S40 db1 SRT 20260919T183336Z` (timestamped).
    `POST .../test` -> `{"ok": true, "message": "Reachable - 154 row(s) returned from /location."}`
    (154 matches the plan's documented `/location` row count exactly).
 2. `POST /autocount/companies` - `connectionId`, `name: "Sorento SRT S40"`, `refPrefix:

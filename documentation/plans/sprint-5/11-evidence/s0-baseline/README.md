@@ -8,7 +8,7 @@ confirmed free throughout.
 
 ## (a) AC-11-13 - the mandated probe: `page=2&pageSize=1000` on db1, 5x serial
 
-Raw file: `ac-11-13-probe.txt`. `https://hapi.sorento.cc.cd/api/db1/itembypage?page=2&pageSize=1000`,
+Raw file: `ac-11-13-probe.txt`. `https://autocount-wrapper.example/api/db1/itembypage?page=2&pageSize=1000`,
 `curl/8`, no auth header (db1 is an `auth=none` connection), `--max-time 40`, requests spaced 5 s.
 
 | Attempt | Timestamp (UTC) | Status | Bytes | Latency (s) |
@@ -174,7 +174,7 @@ anywhere (grepped, zero matches) - worker sessions have no bound today, matching
 - No server was started (not needed for any S0 item); no `[E2E]` evidence run in this slice
   (S0 has none).
 - The db2/`MCH` probe (page=2 style) was not repeated - BL-SS-251 names db1 only, and the
-  brief's matrix instruction named db1 (`hapi.sorento.cc.cd/api/db1`) explicitly.
+  brief's matrix instruction named db1 (`autocount-wrapper.example/api/db1`) explicitly.
 
 ## Housekeeping
 

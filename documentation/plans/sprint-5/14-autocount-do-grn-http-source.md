@@ -27,7 +27,7 @@ calls the doors with `?dry_run=true` and never advances cursors or ledgers.
 ## 1. Vendor and CRM surfaces (quoted exactly)
 
 Vendor (open REST wrapper, the feed connection's base URL already ends in the book, plan 08 D2 -
-`https://hapi.sorento.cc.cd/api/db1`). Casing differs per door; these strings are constants in
+`https://autocount-wrapper.example/api/db1`). Casing differs per door; these strings are constants in
 `doc_feed/constants.py` and pinned by a test:
 
 | Use | GET (relative to base URL) |
@@ -570,7 +570,7 @@ Steps (log in as the tenant Admin on `localhost:3014`):
 1. Settings > Integrations > the Sorento connection (or add one): Base URL
    `http://localhost:8107`, API key = the supplied key, Save, Test = passes.
 2. Settings > Integrations: an AutoCount connection with Auth = No auth and Base URL
-   `https://hapi.sorento.cc.cd/api/db1` exists (add it if not).
+   `https://autocount-wrapper.example/api/db1` exists (add it if not).
 3. AutoCount > Companies > the Sorento company > Overview > Edit: push target = the :8107
    connection, company code `SRT`, Save.
 4. Document feeds tab > Branches > Configure: that AutoCount connection (book `db1`), Mode Dry run,

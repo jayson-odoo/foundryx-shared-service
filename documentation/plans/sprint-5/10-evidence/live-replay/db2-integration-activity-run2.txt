@@ -81,6 +81,6 @@
  MOCHA        | GET /itemuombypage?page=7&pageSize=300          | success |     3 |    183 |    368
  MOCHA        | GET /itemuombypage?page=8&pageSize=300          | success |     3 |    188 |    368
  MOCHA        | GET /itemuombypage?page=9&pageSize=300          | success |     3 |    188 |    368
- MOCHA        | NOTE https://hapi.sorento.cc.cd/api/db2         | error   |     3 |      0 |      0
+ MOCHA        | NOTE https://autocount-wrapper.example/api/db2         | error   |     3 |      0 |      0
 (82 rows)
 
