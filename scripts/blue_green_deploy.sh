@@ -28,6 +28,46 @@ cd "$(dirname "$0")/.."   # repo root containing docker-compose.yml
 BACKEND_PATH="${BACKEND_PATH:-/be}"   # path prefix the backend is served under
 export IMAGE_TAG
 
+# REDIS_PASSWORD: ONE reader used by the pre-flight check below and by the Redis
+# authentication steps. Environment first (as compose resolves it), else the last
+# REDIS_PASSWORD= line of .env. It is only ever read as text, never evaluated, and
+# never printed. Prints nothing when unset.
+read_redis_password() {
+  local v="${REDIS_PASSWORD:-}"
+  if [ -z "$v" ] && [ -f .env ]; then
+    v=$(grep -E '^REDIS_PASSWORD=' .env | tail -n 1 | cut -d= -f2- | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//" || true)
+  fi
+  printf '%s' "$v"
+}
+
+# Pre-flight, before the first docker compose call: the value is embedded in
+# REDIS_URL, so it must be present, at least 32 characters, and URL-safe
+# ([A-Za-z0-9_-]). A bad value would otherwise fail after the swap, or leak part
+# of itself into a log. The value is never echoed.
+REDIS_PW=$(read_redis_password)
+if [ -z "$REDIS_PW" ]; then
+  echo "::error::REDIS_PASSWORD is not set in the environment or .env - aborting before any container is touched" >&2
+  exit 1
+fi
+if [ "${#REDIS_PW}" -lt 32 ]; then
+  echo "::error::REDIS_PASSWORD is shorter than 32 characters - use: openssl rand -hex 32 (aborting before any container is touched)" >&2
+  exit 1
+fi
+if ! [[ "$REDIS_PW" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "::error::REDIS_PASSWORD contains characters outside [A-Za-z0-9_-] (it is embedded in a URL) - use: openssl rand -hex 32 (aborting before any container is touched)" >&2
+  exit 1
+fi
+REDIS_WAIT_TICKS="${REDIS_WAIT_TICKS:-15}"   # 15 * 2s = 30s for redis to load its AOF and answer
+
+# `docker compose exec ... redis-cli ping`, bounded by `timeout` when the host
+# has it. Authenticated ping, password via REDISCLI_AUTH (never a command-line
+# argument). Always exits 0; the caller inspects the reply.
+_exec_timeout=()
+if command -v timeout >/dev/null 2>&1; then _exec_timeout=(timeout 15); fi
+redis_ping() {
+  REDISCLI_AUTH="$REDIS_PW" ${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T -e REDISCLI_AUTH redis redis-cli ping 2>&1 || true
+}
+
 # Caddy: the script rewrites CADDY_SITE_FILE (a self-contained fragment with both
 # site blocks pointing at the active color) then reloads CADDY_CONFIG. The main
 # Caddyfile must `import` the fragment (see DEPLOY.md). If foundryx is the ONLY site,
@@ -115,6 +155,25 @@ if ! infra_out=$({ docker compose up -d db pgbackups && docker compose up -d --n
   fi
 else
   echo "$infra_out"
+fi
+
+# 1c. Rotation guard. The infra step never recreates a running redis, so if the
+#     REDIS_PASSWORD secret was changed, redis still holds the previous value and
+#     every client on the new URL would be refused. An authenticated ping that
+#     is answered WRONGPASS stops the deploy here, before any color moves (see
+#     DEPLOY.md "Rotating REDIS_PASSWORD"). An open server (no password yet)
+#     answers PONG and passes. Redis still starting is waited for; any other
+#     failure does not abort here, the later steps catch a dead redis.
+echo "==> Checking the redis password"
+chk_reply=""; chk_i=0
+while [ "$chk_i" -lt "$REDIS_WAIT_TICKS" ]; do
+  chk_reply=$(redis_ping)
+  if grep -qE 'PONG|WRONGPASS' <<<"$chk_reply"; then break; fi
+  sleep $TICK_SECONDS; chk_i=$((chk_i + 1))
+done
+if grep -q 'WRONGPASS' <<<"$chk_reply"; then
+  echo "::error::DEPLOY ABORTED (the running redis rejected REDIS_PASSWORD with WRONGPASS). No color was touched. Add the new password to the live redis first: see DEPLOY.md 'Rotating REDIS_PASSWORD' (ACL SETUSER default >NEW), then redeploy." >&2
+  exit 1
 fi
 
 # 2. Bring up the new color. The API container's start.sh runs
@@ -275,20 +334,16 @@ docker compose up -d redis
 
 # 7c. Prove it. Authenticated PING must return PONG and an unauthenticated one
 #     must be refused. The password travels in REDISCLI_AUTH (never on a command
-#     line, never echoed): taken from the environment, else from .env.
-REDIS_PW="${REDIS_PASSWORD:-}"
-if [ -z "$REDIS_PW" ] && [ -f .env ]; then
-  REDIS_PW=$(grep -E '^REDIS_PASSWORD=' .env | tail -n 1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//" || true)
-fi
+#     line, never echoed), read by the same helper as the pre-flight check.
+REDIS_PW=$(read_redis_password)
 if [ -z "$REDIS_PW" ]; then
   echo "::error::REDIS_PASSWORD is not set in the environment or .env - cannot verify redis authentication" >&2
   exit 1
 fi
-REDIS_WAIT_TICKS="${REDIS_WAIT_TICKS:-15}"   # 15 * 2s = 30s for redis to load its AOF and answer
-echo "==> Verifying redis authentication"
+echo "==> Verifying redis authentication "
 auth_reply=""; i=0
 while [ "$i" -lt "$REDIS_WAIT_TICKS" ]; do
-  auth_reply=$(REDISCLI_AUTH="$REDIS_PW" docker compose exec -T -e REDISCLI_AUTH redis redis-cli ping 2>&1 || true)
+  auth_reply=$(REDISCLI_AUTH="$REDIS_PW" ${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T -e REDISCLI_AUTH redis redis-cli ping 2>&1 || true)
   if grep -q 'PONG' <<<"$auth_reply"; then break; fi
   sleep $TICK_SECONDS; i=$((i + 1))
 done
@@ -296,9 +351,13 @@ if ! grep -q 'PONG' <<<"$auth_reply"; then
   echo "::error::DEPLOY FAILED AFTER SWAP (redis did not answer an authenticated PING with PONG within $((REDIS_WAIT_TICKS * TICK_SECONDS))s). ${NEW} is serving; check redis logs and REDIS_PASSWORD." >&2
   exit 1
 fi
-noauth_reply=$(docker compose exec -T redis redis-cli ping 2>&1 || true)
-if ! grep -q 'NOAUTH' <<<"$noauth_reply"; then
+noauth_reply=$(${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T redis redis-cli ping 2>&1 || true)
+if grep -q 'PONG' <<<"$noauth_reply"; then
   echo "::error::DEPLOY FAILED AFTER SWAP (redis accepted an unauthenticated PING, so its password is not applied). ${NEW} is serving." >&2
+  exit 1
+fi
+if ! grep -q 'NOAUTH' <<<"$noauth_reply"; then
+  echo "::error::DEPLOY FAILED AFTER SWAP (the unauthenticated redis check could not run: no NOAUTH refusal was returned). ${NEW} is serving; check redis logs." >&2
   exit 1
 fi
 echo "    redis authenticated PING ok, unauthenticated refused"

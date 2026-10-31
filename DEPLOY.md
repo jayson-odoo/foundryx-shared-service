@@ -46,7 +46,7 @@ would collide with frontend pages on a shared root - the prefix is what avoids i
 
 This platform **shares the host with the dreamz EMS stack** (the fork origin),
 so every identifier is namespaced away from it: containers `foundryx_ss_*`,
-volumes `foundryx_ss_pg`/`_redis`, networks `foundryx_ss_network` and `foundryx_ss_edge`, image
+volumes `foundryx_ss_pg`/`_redis`, networks `foundryx_ss_network` and `foundryx_ss_web`, image
 `foundryx-shared-service`, DB host port `5433` (`POSTGRES_PORT` var), Caddy
 fragment `/etc/caddy/foundryx-ss.caddy` (`CADDY_SITE_FILE` var), and the
 loopback port range below (dreamz owns 8000/8010/3001/3011).
@@ -61,21 +61,26 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 
 **Networks.** `foundryx_ss_network` (pinned subnet `172.21.0.0/16`, gateway
 `172.21.0.1`, relied on by a host firewall rule: never change it) carries db,
-redis, the Celery workers, beat and the backend colors. `foundryx_ss_edge` is a
-second bridge network, not `internal` (the frontend still needs egress and its
-published port), carrying only the frontend colors and the backend colors. The
+redis, the Celery workers, beat and the backend colors. `foundryx_ss_web` is a
+second bridge network pinned to `10.250.21.0/24` (outside Docker's default pools,
+inside the default `TRUSTED_PROXIES`, so logins keep their real client IP; the
+name sorts after `foundryx_ss_network` so a backend keeps its default route
+there), not `internal` (the frontend still needs egress and its published port), carrying only the frontend colors and the backend colors. The
 backend colors answer to the alias `backend` on the edge network, so the
 frontend's `BACKEND_API_URL=http://backend:8001` is all it needs; the frontend
 cannot reach db or redis.
 
 **Redis password.** Redis runs with `--requirepass` taken from `REDIS_PASSWORD`
 (GitHub secret, rendered into the server `.env` by CI; compose stops with "set
-in .env" if it is missing). Use a hex value (`openssl rand -hex 24`) because it
-is embedded in a URL. Every client uses
+in .env" if it is missing). Use `openssl rand -hex 32`: the deploy script rejects
+a value shorter than 32 characters or with anything outside `[A-Za-z0-9_-]`
+before touching a container, because it is embedded in a URL. Every client uses
 `REDIS_URL=redis://default:<REDIS_PASSWORD>@redis:6379/0`. Keep the
 two-argument `default:` form: it authenticates against Redis both before and
-after the password is applied, whereas `redis://:<password>@` is refused while
-Redis is still open.
+after the password is applied. While no password is set the server refuses the
+one-argument `AUTH <password>` on the wire; whether a client library sends that
+form for `redis://:<password>@` depends on its version, so always use
+`default:`.
 
 Deploy order (`scripts/blue_green_deploy.sh`): infra up with `--no-recreate` for
 redis (a running redis is untouched), new color, cutover, workers and beat
@@ -85,6 +90,21 @@ applies the password and the script requires an authenticated `PING` to return
 `.active_color` is written just before the Redis step, since the swap is done
 by then. Set the `REDIS_PASSWORD` secret before the first deploy of this
 change.
+
+### Rotating REDIS_PASSWORD
+
+The infra step never recreates a running Redis, so changing the secret alone
+leaves Redis on the old value, and the deploy stops early (before any color
+moves) with a `WRONGPASS` error. To rotate:
+
+1. Set the new value in the `REDIS_PASSWORD` GitHub secret (`openssl rand -hex 32`).
+2. On the server, add the new password to the live Redis next to the old one,
+   authenticating with the current value through the environment (never `-a`):
+   `REDISCLI_AUTH=<current> docker compose exec -T -e REDISCLI_AUTH redis redis-cli ACL SETUSER default ">NEW"`
+   (Redis accepts both until it restarts).
+3. Run the deploy. The clients move to the new URL, then the final
+   `docker compose up -d redis` recreates Redis with only the new password.
+4. Update the Mac Mini `REDIS_URL` to the new value.
 
 **Code runner** (`service_backend/code_runner/`, image tag `code-runner-<tag>`): the
 ONLY process that executes builder-authored Python (workflow `code.run`). It is
@@ -608,7 +628,7 @@ ssh -L 6379:127.0.0.1:6379 -L 5433:127.0.0.1:5433 user@host -N
 (`6379` = redis, loopback-published in `docker-compose.yml` for exactly this;
 `5433` = the `POSTGRES_PORT` mapping from "Topology" above - the Mini's stt
 worker still needs `DATABASE_URL` to write transcript rows.) With the tunnel up,
-point the Mini's `.env` at `REDIS_URL=redis://default:<REDIS_PASSWORD>@127.0.0.1:6379/0` (same secret as the server; keep the `default:` form) and the tunneled
+point the Mini's `.env` at `REDIS_URL=redis://default:<REDIS_PASSWORD>@127.0.0.1:6379/0` (same secret as the server; keep the `default:` form; the file holding it should be `chmod 600`) and the tunneled
 Postgres port, then start each worker (both need the macOS fork-safety prefix -
 see `modules/meetings/worker.py`'s module docstring for why):
 

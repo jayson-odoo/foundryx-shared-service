@@ -8,7 +8,7 @@
 # they are recreated in place each deploy. Only the API + frontend swap colors.
 #
 # Secrets (JWT_SECRET, FERNET_KEY, OMNICHANNEL_FERNET_KEY, POSTGRES_PASSWORD,
-# NEXTAUTH_SECRET, META_*, SMTP_*) come from a server-side .env file at the repo
+# NEXTAUTH_SECRET, REDIS_PASSWORD, META_*, SMTP_*) come from a server-side .env file at the repo
 # root - see .env.example. No secret carries an inline default here.
 
 x-backend-env: &backend-env
@@ -268,7 +268,7 @@ services:
       foundryx_ss_network:
         aliases:
           - backend
-      foundryx_ss_edge:
+      foundryx_ss_web:
         aliases:
           - backend
     ports:
@@ -283,7 +283,7 @@ services:
       foundryx_ss_network:
         aliases:
           - backend
-      foundryx_ss_edge:
+      foundryx_ss_web:
         aliases:
           - backend
     ports:
@@ -312,7 +312,7 @@ services:
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set in .env}
     restart: unless-stopped
     networks:
-      - foundryx_ss_edge
+      - foundryx_ss_web
     ports:
       - "127.0.0.1:3200:3001"
 
@@ -331,7 +331,7 @@ services:
     environment: *frontend-env
     restart: unless-stopped
     networks:
-      - foundryx_ss_edge
+      - foundryx_ss_web
     ports:
       - "127.0.0.1:3210:3001"
 
@@ -357,5 +357,14 @@ networks:
   # Frontend-to-backend only. The frontend colors join this network (not the
   # db/redis one); the backend colors join both and answer to `backend` here.
   # Not `internal`: the frontend still needs outbound access and published ports.
-  foundryx_ss_edge:
+  #
+  # The name must sort AFTER foundryx_ss_network: Docker orders a container's
+  # networks by name, and a dual-homed backend must keep its default route on
+  # foundryx_ss_network. The subnet is pinned outside Docker's default address
+  # pools and inside the default TRUSTED_PROXIES (10.0.0.0/8), so the backend
+  # still trusts the forwarded client IP and logins keep their real address.
+  foundryx_ss_web:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 10.250.21.0/24
