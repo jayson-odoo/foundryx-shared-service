@@ -66,15 +66,16 @@ second bridge network pinned to `10.250.21.0/24` (outside Docker's default pools
 inside the default `TRUSTED_PROXIES`, so logins keep their real client IP; the
 name sorts after `foundryx_ss_network` so a backend keeps its default route
 there), not `internal` (the frontend still needs egress and its published port), carrying only the frontend colors and the backend colors. The
-backend colors answer to the alias `backend` on the edge network, so the
+backend colors answer to the alias `backend` on `foundryx_ss_web`, so the
 frontend's `BACKEND_API_URL=http://backend:8001` is all it needs; the frontend
 cannot reach db or redis.
 
 **Redis password.** Redis runs with `--requirepass` taken from `REDIS_PASSWORD`
 (GitHub secret, rendered into the server `.env` by CI; compose stops with "set
-in .env" if it is missing). Use `openssl rand -hex 32`: the deploy script rejects
-a value shorter than 32 characters or with anything outside `[A-Za-z0-9_-]`
-before touching a container, because it is embedded in a URL. Every client uses
+in .env" if it is missing). Use `openssl rand -hex 32`: the deploy script's format
+check stops a missing value, one shorter than 32 characters or one with anything
+outside `[A-Za-z0-9_-]` first, before touching a container, because it is
+embedded in a URL; compose's own `:?` check is the backstop. Every client uses
 `REDIS_URL=redis://default:<REDIS_PASSWORD>@redis:6379/0`. Keep the
 two-argument `default:` form: it authenticates against Redis both before and
 after the password is applied. While no password is set the server refuses the

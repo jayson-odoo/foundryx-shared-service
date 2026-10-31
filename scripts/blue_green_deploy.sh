@@ -35,7 +35,7 @@ export IMAGE_TAG
 read_redis_password() {
   local v="${REDIS_PASSWORD:-}"
   if [ -z "$v" ] && [ -f .env ]; then
-    v=$(grep -E '^REDIS_PASSWORD=' .env | tail -n 1 | cut -d= -f2- | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//" || true)
+    v=$(grep -E '^REDIS_PASSWORD=' .env | tail -n 1 | cut -d= -f2- | tr -d '\r' | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" || true)
   fi
   printf '%s' "$v"
 }
@@ -65,7 +65,7 @@ REDIS_WAIT_TICKS="${REDIS_WAIT_TICKS:-15}"   # 15 * 2s = 30s for redis to load i
 _exec_timeout=()
 if command -v timeout >/dev/null 2>&1; then _exec_timeout=(timeout 15); fi
 redis_ping() {
-  REDISCLI_AUTH="$REDIS_PW" ${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T -e REDISCLI_AUTH redis redis-cli ping 2>&1 || true
+  REDISCLI_AUTH="$REDIS_PW" ${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T -e REDISCLI_AUTH redis redis-cli ping </dev/null 2>&1 || true
 }
 
 # Caddy: the script rewrites CADDY_SITE_FILE (a self-contained fragment with both
@@ -174,6 +174,9 @@ done
 if grep -q 'WRONGPASS' <<<"$chk_reply"; then
   echo "::error::DEPLOY ABORTED (the running redis rejected REDIS_PASSWORD with WRONGPASS). No color was touched. Add the new password to the live redis first: see DEPLOY.md 'Rotating REDIS_PASSWORD' (ACL SETUSER default >NEW), then redeploy." >&2
   exit 1
+fi
+if ! grep -q 'PONG' <<<"$chk_reply"; then
+  echo "::warning::redis did not answer within $((REDIS_WAIT_TICKS * TICK_SECONDS))s - the early password check could not run; continuing (later steps verify redis)" >&2
 fi
 
 # 2. Bring up the new color. The API container's start.sh runs
@@ -340,10 +343,10 @@ if [ -z "$REDIS_PW" ]; then
   echo "::error::REDIS_PASSWORD is not set in the environment or .env - cannot verify redis authentication" >&2
   exit 1
 fi
-echo "==> Verifying redis authentication "
+echo "==> Verifying redis authentication"
 auth_reply=""; i=0
 while [ "$i" -lt "$REDIS_WAIT_TICKS" ]; do
-  auth_reply=$(REDISCLI_AUTH="$REDIS_PW" ${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T -e REDISCLI_AUTH redis redis-cli ping 2>&1 || true)
+  auth_reply=$(REDISCLI_AUTH="$REDIS_PW" ${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T -e REDISCLI_AUTH redis redis-cli ping </dev/null 2>&1 || true)
   if grep -q 'PONG' <<<"$auth_reply"; then break; fi
   sleep $TICK_SECONDS; i=$((i + 1))
 done
@@ -351,7 +354,7 @@ if ! grep -q 'PONG' <<<"$auth_reply"; then
   echo "::error::DEPLOY FAILED AFTER SWAP (redis did not answer an authenticated PING with PONG within $((REDIS_WAIT_TICKS * TICK_SECONDS))s). ${NEW} is serving; check redis logs and REDIS_PASSWORD." >&2
   exit 1
 fi
-noauth_reply=$(${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T redis redis-cli ping 2>&1 || true)
+noauth_reply=$(${_exec_timeout[@]+"${_exec_timeout[@]}"} docker compose exec -T redis redis-cli ping </dev/null 2>&1 || true)
 if grep -q 'PONG' <<<"$noauth_reply"; then
   echo "::error::DEPLOY FAILED AFTER SWAP (redis accepted an unauthenticated PING, so its password is not applied). ${NEW} is serving." >&2
   exit 1
