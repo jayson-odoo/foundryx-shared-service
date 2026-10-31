@@ -1036,7 +1036,8 @@ def test_ac60_creates_no_message_row_and_fires_no_webhook_or_workflow_run(
             json={
                 "name": "w",
                 "url": "https://hooks.example.com/w",
-                "events": ["message.inbound", "message.status", "contact.updated", "message.reaction"],
+                "events": ["message.inbound", "message.status", "contact.updated", "message.reaction",
+                           "message.outbound"],
             },
             headers=rig.hdr,
         )
@@ -1254,7 +1255,12 @@ def _everything_stored(session_factory):
 # AC-38-59: no token in the record or the response, whatever the error text says
 @pytest.mark.parametrize(
     "cause",
-    ["provider_text_with_token", "transport_text_with_token", "illegal_header_value"],
+    [
+        "provider_text_with_token",
+        "transport_text_with_token",
+        "illegal_header_value",
+        "unexpected_error_with_token",
+    ],
 )
 def test_ac59_no_token_in_the_activity_record_or_the_response(rig, session_factory, cause):
     token = "FAKE-tok\n9f2c1d" if cause == "illegal_header_value" else FAKE_TOKEN
@@ -1264,6 +1270,7 @@ def test_ac59_no_token_in_the_activity_record_or_the_response(rig, session_facto
         "provider_text_with_token": ("http", 400, f"Malformed access token {FAKE_TOKEN}"),
         "transport_text_with_token": ("raise", httpx.ConnectError(f"no route using {FAKE_TOKEN}")),
         "illegal_header_value": ("h11",),
+        "unexpected_error_with_token": ("raise", RuntimeError(f"boom {FAKE_TOKEN}")),
     }[cause]
     r = rig.read()
     assert r.status_code == 200, r.text
@@ -1354,24 +1361,35 @@ def test_ac63_each_provider_call_carries_connect_3_read_5_write_5(rig):
     assert (t.get("connect"), t.get("read"), t.get("write")) == (3.0, 5.0, 5.0)
 
 
+def test_ac63_the_overall_budget_is_12_seconds():
+    import modules.omnichannel.services.public_gateway_service as pgs
+
+    assert pgs.READ_RECEIPT_BUDGET_SECONDS == 12.0
+
+
 def test_ac63_a_channel_reached_after_the_budget_answers_failed_with_no_call(
     rig, monkeypatch
 ):
-    import modules.omnichannel.services.public_gateway_service as pgs
-
     a, b, _ma, _mb = _fresh_unread(rig)
-    # control (default budget): the first call is slow, yet both are called
-    rig.provider.sleep_on_first = 0.3
+    clock = _fake_clock(monkeypatch)
+    original = rig.provider.handler
+    advance = {"by": 11.0}  # control: stays inside the 12 second budget
+
+    def handler(request):
+        clock["t"] += advance["by"]
+        return original(request)
+
+    rig.provider.handler = handler
     got = rig.receipts()
     assert {x["status"] for x in got.values()} == {"sent"}
-    assert len(rig.provider.calls) == 2
+    assert len(rig.provider.calls) == 2, "control: inside the budget both are called"
 
-    # new customer messages on both channels, tiny budget, slow first call
+    # new customer messages on both channels; now one call uses up the budget
     rig.msg(a, wamid="wamid.in-A2", when=20)
     rig.msg(b, wamid="wamid.in-B2", when=21)
     rig.provider.calls.clear()
-    rig.provider._slept = False
-    monkeypatch.setattr(pgs, "READ_RECEIPT_BUDGET_SECONDS", 0.1)
+    clock["t"] = 0.0
+    advance["by"] = 13.0
     got = rig.receipts()
     assert len(rig.provider.calls) == 1, "the second channel must not be called"
     called_pn = rig.provider.calls[0]["pn"]
@@ -1379,6 +1397,23 @@ def test_ac63_a_channel_reached_after_the_budget_answers_failed_with_no_call(
     assert got[called]["status"] == "sent"
     assert got[skipped]["status"] == "failed"
     assert rig.unread() == 0
+
+
+@pytest.mark.parametrize("marked_first", [True, False])
+def test_ac63_a_channel_needing_no_call_keeps_already_sent_after_the_budget(
+    rig, monkeypatch, marked_first
+):
+    a, b, _ma, _mb = _fresh_unread(rig)
+    assert {x["status"] for x in rig.receipts().values()} == {"sent"}  # both marked
+    marked, fresh = (a, b) if marked_first else (b, a)
+    rig.msg(fresh, wamid="wamid.in-new", when=30)
+    rig.provider.calls.clear()
+    clock = _fake_clock(monkeypatch)
+    clock["step"] = 20.0  # every look at the clock is past the budget
+    got = rig.receipts()
+    assert got[marked]["status"] == "already_sent"
+    assert got[fresh]["status"] == "failed"
+    assert rig.provider.calls == [], "no provider call after the budget has gone"
 
 
 # ═══ Review round, group B: guards for behaviour that is already right ═══════
@@ -1406,7 +1441,7 @@ def test_ac60_read_fires_no_contact_updated_even_when_the_endpoint_follows_the_l
     reg = rig.client.post(
         "/api/v1/omnichannel/webhooks",
         json={"name": "w", "url": "https://hooks.example.com/w",
-              "events": ["contact.updated", "message.status", "message.inbound"]},
+              "events": ["contact.updated", "message.status", "message.inbound", "message.outbound"]},
         headers=rig.hdr,
     )
     assert reg.status_code == 201, reg.text
