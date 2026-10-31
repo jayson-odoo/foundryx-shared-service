@@ -457,6 +457,40 @@ def test_embed_exchange_is_refused_for_an_archived_tenant(client, session_factor
     assert "accessToken" not in refused.text
 
 
+def test_ac_38_29_invalid_assertion_gets_the_same_answer_whatever_the_tenant_state(client, session_factory):
+    from tests.test_omnichannel_embed import SECRET_B, _assertion, _exchange
+
+    conn, wid = _embed_exchange_rig(session_factory)
+    wrong_key = _assertion(iss=conn, workspace_id=wid, secret=SECRET_B)
+    live = _exchange(client, wrong_key)
+    live_body = live.json()
+    assert live.status_code in (400, 401, 403), live.text
+
+    _suspend(session_factory)
+    try:
+        suspended = _exchange(client, _assertion(iss=conn, workspace_id=wid, secret=SECRET_B))
+        # control: a validly signed assertion is refused while suspended
+        control = _exchange(client, _assertion(iss=conn, workspace_id=wid))
+        assert control.status_code == 403 and "tenant_suspended" in control.text
+        assert (suspended.status_code, suspended.json()) == (live.status_code, live_body)
+    finally:
+        _reactivate(session_factory)
+    # control: the same valid assertion succeeds while live
+    ok = _exchange(client, _assertion(iss=conn, workspace_id=wid))
+    assert ok.status_code == 200, ok.text
+
+
+def test_ac_38_29_guide_lists_tenant_suspended_and_the_reconnect_note():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "documentation/omnichannel/consumer-integration-guide.md").read_text()
+    start = text.index("## 12. Embedding the conversation UI")
+    nxt = text.find("\n## ", start + 5)
+    section = text[start : nxt if nxt != -1 else len(text)]
+    assert "tenant_suspended" in section
+    assert "reconnect" in section.lower()
+
+
 def test_native_staff_websocket_is_refused_while_the_tenant_is_suspended(client, session_factory):
     import fakeredis
     import fakeredis.aioredis
