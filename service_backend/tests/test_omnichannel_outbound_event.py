@@ -316,6 +316,106 @@ def test_ac_38_02_workflow_send_node_source_workflow(client, session_factory):
     assert row["payload"]["data"]["message"]["body"] == "from workflow"
 
 
+PDF = b"%PDF-1.4\n" + b"0" * 128
+
+
+@pytest.mark.parametrize(
+    "kind,payload_bytes,mime_fragment",
+    [("voice", WEBM, None), ("document", PDF, "pdf")],
+)
+def test_ac_38_02_api_voice_and_document_media(
+    client, session_factory, monkeypatch, kind, payload_bytes, mime_fragment
+):
+    from modules.omnichannel.services.public_gateway_service import PublicGatewayService
+
+    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url: payload_bytes)
+    monkeypatch.setattr(
+        "modules.omnichannel.services.send_runner.transcode_voice",
+        lambda content: b"OggS" + b"\x00" * 64,
+    )
+    phone = "+60380000071" if kind == "voice" else "+60380000072"
+    r = _rig(client, session_factory, phone)
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": phone, "type": kind, "media": {"url": "https://files.example.com/f"}},
+        headers=r["hdr"],
+    )
+    assert res.status_code == 202, res.text
+    mid = res.json()["id"]
+    row = _only_outbound(session_factory)
+    msg = row["payload"]["data"]["message"]
+    assert row["event_id"] == f"{mid}:outbound"
+    assert row["payload"]["data"]["source"] == "api"
+    assert msg["mediaUrl"].startswith("http") and f"/omnichannel/media/{mid}" in msg["mediaUrl"]
+    if mime_fragment:
+        assert mime_fragment in msg["mimeType"]
+
+
+def test_ac_38_02_api_interactive(client, session_factory):
+    r = _rig(client, session_factory, "+60380000073")
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={
+            "to": "+60380000073",
+            "type": "interactive",
+            "interactive": {"kind": "buttons", "body": "Pick", "buttons": [{"id": "a", "title": "A"}]},
+        },
+        headers=r["hdr"],
+    )
+    assert res.status_code == 202, res.text
+    row = _only_outbound(session_factory)
+    assert row["event_id"] == f"{res.json()['id']}:outbound"
+    assert row["payload"]["data"]["source"] == "api"
+
+
+def test_ac_38_02_api_contacts(client, session_factory):
+    r = _rig(client, session_factory, "+60380000074")
+    res = client.post(
+        "/api/v1/omnichannel/messages",
+        json={
+            "to": "+60380000074",
+            "type": "contacts",
+            "contacts": [{"name": "Jane Doe", "phones": [{"phone": "+60123", "type": "CELL"}]}],
+        },
+        headers=r["hdr"],
+    )
+    assert res.status_code == 202, res.text
+    row = _only_outbound(session_factory)
+    assert row["event_id"] == f"{res.json()['id']}:outbound"
+    assert row["payload"]["data"]["source"] == "api"
+
+
+def test_ac_38_05_sandbox_row_emits_no_outbound_and_no_status(client, session_factory):
+    from modules.omnichannel.services.workflow_actions import omnichannel_send_message
+
+    r = _rig(client, session_factory, "+60380000075", events=(OUTBOUND, "message.status"))
+    # control: a normal workflow send emits outbound AND a SENT status
+    db = session_factory()
+    try:
+        real = omnichannel_send_message(
+            db, DEFAULT_TENANT_ID, {"contactId": r["cid"], "mode": "text", "message": "real"}, {}
+        )
+    finally:
+        db.close()
+    assert [x["event_id"] for x in _deliveries(session_factory)] == [f"{real['messageId']}:outbound"]
+    assert f"{real['messageId']}:SENT" in [x["event_id"] for x in _deliveries(session_factory, "message.status")]
+
+    db = session_factory()
+    try:
+        sb = omnichannel_send_message(
+            db,
+            DEFAULT_TENANT_ID,
+            {"contactId": r["cid"], "mode": "text", "message": "sandbox"},
+            {"_workflow.sandboxOnly": True},
+        )
+    finally:
+        db.close()
+    sid = sb["messageId"]
+    assert sid != real["messageId"]
+    assert [x["event_id"] for x in _deliveries(session_factory)] == [f"{real['messageId']}:outbound"]
+    assert [x for x in _status_rows(session_factory, sid)] == []
+
+
 def test_ac_38_02_inbox_text_source_inbox(client, session_factory):
     r = _rig(client, session_factory, "+60380000016")
     res = client.post(
@@ -350,7 +450,7 @@ def test_ac_38_02_inbox_structured_location(client, session_factory):
     r = _rig(client, session_factory, "+60380000018")
     res = client.post(
         f"/omnichannel/contacts/{r['cid']}/location",
-        json={"latitude": 3.1, "longitude": 101.6, "name": "HQ"},
+        json={"lat": 3.1, "lng": 101.6, "name": "HQ"},
         headers=_auth(client),
     )
     assert res.status_code == 201, res.text
