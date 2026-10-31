@@ -60,11 +60,12 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 | code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
 
 **Frontend container.** `frontend_blue`/`frontend_green` run with all Linux
-capabilities dropped, `no-new-privileges`, and a read-only root filesystem. The
-only writable paths are two size-limited tmpfs mounts: `/tmp` (64 MB) and
-`/app/.next/cache` (128 MB, owned by uid/gid 1001, the user the image runs as).
-Anything else the app tries to write fails; add a mount in `docker-compose.yml`
-(`x-frontend-hardening`) if a new feature needs one.
+capabilities dropped, `no-new-privileges`, and a read-only root filesystem, so
+`/app` and the rest of the image filesystem are read-only. `/tmp` (64 MB) and
+`/app/.next/cache` (128 MB, owned by uid/gid 1001, the user the image runs as)
+are size-limited tmpfs mounts. Other writes to the image filesystem fail; add a
+mount in `docker-compose.yml` (`x-frontend-hardening`) if a new feature needs
+one.
 
 **Code runner** (`service_backend/code_runner/`, image tag `code-runner-<tag>`): the
 ONLY process that executes builder-authored Python (workflow `code.run`). It is
@@ -268,16 +269,17 @@ value:
 
 1. On the host, read its public key fingerprint:
    `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
-2. From a trusted machine, scan the host: `ssh-keyscan -p <port> <host>`, and
-   compare the fingerprint of the scanned line (`ssh-keygen -lf` on it) with
-   step 1.
-3. Only when they match, store the scanned line (`<host> ssh-ed25519 ...`) as
-   the `SSH_KNOWN_HOSTS` secret.
+2. From a trusted machine, scan the host:
+   `ssh-keyscan -t ed25519 -p <SSH_PORT> <SSH_HOST>`, using the same value as the
+   `SSH_HOST` secret (hostname or IP) and the `SSH_PORT` variable, and compare
+   the fingerprint of the scanned line (`ssh-keygen -lf` on it) with step 1.
+3. Only when they match, store the scanned line as the `SSH_KNOWN_HOSTS` secret,
+   unedited: the host name and port in it must match the connection exactly.
 
 A host move, rebuild or host-key rotation needs the secret updated the same way.
-Do not re-run a failing deploy repeatedly against a mismatch: fix the secret
-first, since repeated failed SSH attempts can get the runner's address blocked
-by the host's provider. The rendered server `.env` is written with mode 600.
+If the first connection fails with ssh exit 255, the workflow error points at
+this secret: check it before running the deploy again, and do not re-run it
+repeatedly. The rendered server `.env` is written with mode 600.
 
 **Variables** (non-sensitive). Caddy/deploy: `APP_DOMAIN` (e.g.
 `icp-demo.foundryx.my`), `TLS_EMAIL` (required); `BACKEND_PATH` (default `/be`),

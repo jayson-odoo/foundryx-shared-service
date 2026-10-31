@@ -346,13 +346,13 @@ jobs:
             # a cheap /dev/tcp probe polls until it's back). ~5 min budget.
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts" || { echo "::error::cannot mkdir $D/scripts - the deploy user cannot write DEPLOY_PATH. On the host run: sudo chown -R $U $D"; exit 1; }
+            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts" || { rc=$?; if [ "$rc" -eq 255 ]; then echo "::error::ssh could not connect or verify the host (exit 255). Check the SSH_KNOWN_HOSTS secret (see DEPLOY.md) and the SSH_HOST, SSH_PORT and SSH_PRIVATE_KEY values. Do not re-run this deploy until they are checked."; exit 1; fi; echo "::error::cannot mkdir $D/scripts - the deploy user cannot write DEPLOY_PATH. On the host run: sudo chown -R $U $D"; exit 1; }
             scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/" || { echo "::error::scp deploy script failed - DEPLOY_PATH not writable by $U (sudo chown -R $U $D on the host)"; exit 1; }
             # Compose MUST land or the host keeps a stale compose - fatal + diagnostic.
             scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml" || { echo "::error::scp docker-compose.yml failed - $D/docker-compose.yml not writable by $U. Fix on the host: sudo chown $U $D/docker-compose.yml (or sudo chown -R $U $D)"; exit 1; }
             # .env: warn but do not block - the host keeps its existing .env if this
             # write is refused (e.g. a root-owned .env from an earlier run).
-            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env && chmod 600 $D/.env" || echo "::warning::.env write refused (permission) - host keeps its existing .env. Fix: sudo chown $U $D/.env on the host"
+            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env && chmod 600 $D/.env" || echo "::warning::.env write or chmod refused (permission) - the host .env may be unchanged or keep its old mode. Fix: sudo chown $U $D/.env on the host"
             echo "files synced (see any warnings above)"
 
       - name: Deploy blue/green via Caddy (retry)

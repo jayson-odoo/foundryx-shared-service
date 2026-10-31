@@ -454,4 +454,4 @@ consciously defers something; close it when a later plan/sprint picks it up.
 | BL-SS-313 | **Review frontend container network policy** - details in private notes. | Plan 39 review | Low | Open |
 | BL-SS-314 | **Review shared Redis resource limits** - details in private notes. | Plan 39 review | Low | Open |
 | BL-SS-315 | **Defence in depth for internal task queue inputs** - details in private notes. | Plan 39 review | Medium | Open |
-| BL-SS-316 | **`tests/test_deploy_module_bootstrap_wiring.py` is test-order dependent** - it passes serially and with `--dist loadfile` (what CI uses) but fails under plain `-n 2`, even alone (`8 failed, 37 passed`, `DID NOT RAISE ModuleSchemaForeign`). Tests rely on state from earlier tests in the file. Fix so the file passes under any distribution. | Plan 39 | Low | Open |
+| BL-SS-316 | **`tests/test_deploy_module_bootstrap_wiring.py` is test-order dependent** - it passes serially and with `--dist loadfile` (what CI uses) but fails under plain `-n 2`, even alone (`DID NOT RAISE ModuleSchemaForeign`). Tests rely on state from earlier tests in the file. Fix so the file passes under any distribution. | Plan 39 | Low | Open |
