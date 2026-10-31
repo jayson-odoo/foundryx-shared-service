@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from app.config import settings
-from .base import CodeExchangeError, ConnectionStatus, SendError
+from .base import CodeExchangeError, ConnectionStatus, SendError, UnexpectedSendError
 # Shared Meta Graph plumbing (plan 32 / A7a, D-A7-1/D-A7-9): GraphCall/
 # GraphRecorder/_meta_error_detail/MetaGraphMixin moved OUT to meta_graph.py
 # verbatim; re-imported here so every existing import site of these names off
@@ -361,6 +361,79 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
         finally:
             if self._client is None:
                 client.close()
+
+    def mark_read(
+        self, credentials: Dict[str, Any], phone_number_id: str, message_id: str
+    ) -> None:
+        """Send a read receipt for one inbound message. Instrumented once as
+        ``graph:mark_read`` with the target's provider id as its reference. The
+        200 body carries no ``messages`` array, so this does not go through
+        ``_send_impl``. Dev or unconfigured: no network call. Every error text
+        raised here is token-free, because ``_graph_call`` stores it."""
+        self._graph_call(
+            "graph:mark_read",
+            lambda: self._mark_read_impl(credentials, phone_number_id, message_id),
+            ref=message_id,
+        )
+
+    def _mark_read_impl(
+        self, credentials: Dict[str, Any], phone_number_id: str, message_id: str
+    ) -> None:
+        if not self._configured or credentials.get("dev"):
+            return None
+        token = str(credentials.get("access_token", "") or "")
+
+        client = None
+        try:
+            client = self._http()
+            resp = client.post(
+                f"{self._base}/{phone_number_id}/messages",
+                json={
+                    "messaging_product": "whatsapp",
+                    "status": "read",
+                    "message_id": message_id,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=3.0),
+            )
+            self._last_http_status = resp.status_code
+            if resp.status_code != 200:
+                code = None
+                try:
+                    err = resp.json()
+                    err = err.get("error") if isinstance(err, dict) else None
+                    raw = err.get("code") if isinstance(err, dict) else None
+                    if isinstance(raw, int) and not isinstance(raw, bool):
+                        code = raw
+                except ValueError:
+                    pass
+                text = f"Meta refused the read receipt: HTTP {resp.status_code}"
+                if code is not None:
+                    text += f", code {code}"
+                raise SendError(text + ".", transient=resp.status_code >= 500)
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            if not (isinstance(body, dict) and body.get("success") is True):
+                raise SendError("Meta did not confirm the read receipt.")
+            return None
+        except SendError:
+            raise
+        except httpx.HTTPError as exc:
+            raise SendError(
+                f"Could not reach Meta: {type(exc).__name__}", transient=True
+            ) from None
+        except Exception as exc:  # noqa: BLE001 - never let request text escape.
+            raise UnexpectedSendError(
+                f"Could not send the read receipt: {type(exc).__name__}"
+            ) from None
+        finally:
+            if client is not None and self._client is None:
+                try:
+                    client.close()
+                except Exception:  # noqa: BLE001 - a close failure must not replace the result.
+                    pass
 
     def fetch_waba_details(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
         """Fetch the WABA's business account name. Instrumented once → a

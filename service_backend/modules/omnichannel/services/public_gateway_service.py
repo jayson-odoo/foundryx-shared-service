@@ -6,6 +6,9 @@ pipeline: resolve/create the contact from the raw `to` phone, reuse
 translate rejections into the structured `/api/v1/*` error envelope. Idempotency
 dedup is workspace-scoped with a 24h TTL.
 """
+import logging
+import re
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -53,6 +56,10 @@ from . import event_service, idempotency, messaging_policy, statuses
 if TYPE_CHECKING:  # forward ref used in a signature below
     from ..schemas import ThreadItem
 
+logger = logging.getLogger(__name__)
+READ_RECEIPT_MARKER = "read_receipt_sent_at"
+READ_RECEIPT_BUDGET_SECONDS = 12.0
+_PHONE_NUMBER_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 # Wire-format switch on the read endpoints (`?format=`). GUIDE is the DEFAULT
@@ -698,6 +705,106 @@ class PublicGatewayService:
         if not (body or "").strip():
             raise ApiError(422, "invalid_request", "Comment body is required.")
         return self.messages.add_internal_note(contact.id, tenant_id, None, body)
+
+    def mark_contact_read(self, tenant_id: str, workspace_id: str, identifier: str):
+        """Reset the contact's unread count and send a WhatsApp read receipt for
+        the customer's latest provider-identified message on each channel.
+
+        The reset is committed before the first provider call and no transaction
+        stays open across any provider call: everything needed is copied into
+        plain values first. A failure on one channel never affects another."""
+        from ..adapters.base import SendError, UnexpectedSendError
+        from ..schemas import ContactReadResponse, ReadReceiptItem
+        from ..security import decrypt_credentials
+        from .activity import build_meta_recorder
+        from ..adapters import get_adapter
+        from . import channel_addressing
+
+        started = time.monotonic()
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+        contact_id = contact.id
+        targets = self.contacts.latest_customer_messages_by_channel(contact_id, tenant_id)
+        channels = {
+            c.id: c
+            for c in self.contacts.channels_in_workspace(
+                [t[1] for t in targets], tenant_id, workspace_id
+            )
+        }
+        plan = []
+        for message_id, channel_id, wamid, meta in targets:
+            ch = channels.get(channel_id)
+            if ch is None:
+                continue  # outside the key's tenant or workspace: left out
+            plan.append(
+                {
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "wamid": wamid,
+                    "marked": isinstance(meta, dict) and bool(meta.get(READ_RECEIPT_MARKER)),
+                    "type": ch.channel_type,
+                    "available": bool(ch.is_active) and not ch.is_trashed,
+                    "sender_ref": channel_addressing.sender_ref(ch),
+                    "credentials_json": ch.credentials_json,
+                }
+            )
+
+        self.contacts.mark_read(contact)
+        self.db.commit()  # nothing below touches an ORM object before a provider call
+
+        receipts = []
+        for p in plan:
+            if not p["available"] or (
+                p["type"] == "WHATSAPP" and not _PHONE_NUMBER_ID_RE.fullmatch(p["sender_ref"] or "")
+            ):
+                status = "channel_unavailable"
+            elif p["type"] != "WHATSAPP":
+                status = "not_supported"
+            elif p["marked"]:
+                status = "already_sent"
+            elif time.monotonic() - started > READ_RECEIPT_BUDGET_SECONDS:
+                logger.warning(
+                    "read receipt skipped on channel %s: time budget used", p["channel_id"]
+                )
+                status = "failed"
+            else:
+                status = "sent"
+                try:
+                    credentials = decrypt_credentials(p["credentials_json"])
+                    adapter = get_adapter(
+                        p["type"],
+                        recorder=build_meta_recorder(self.db, tenant_id, workspace_id),
+                    )
+                    adapter.mark_read(credentials, p["sender_ref"], p["wamid"])
+                except UnexpectedSendError as exc:
+                    logger.warning(
+                        "read receipt failed on channel %s: %s", p["channel_id"], exc
+                    )
+                    status = "failed"
+                except SendError:
+                    status = "failed"
+                except Exception:  # noqa: BLE001 - one channel never stops the others.
+                    logger.warning("read receipt failed on channel %s", p["channel_id"])
+                    status = "failed"
+                if status == "failed":
+                    self.db.rollback()
+                else:
+                    try:
+                        self.contacts.set_message_metadata_key(
+                            p["message_id"],
+                            tenant_id,
+                            READ_RECEIPT_MARKER,
+                            datetime.now(timezone.utc).isoformat(),
+                        )
+                        self.db.commit()
+                    except Exception:  # noqa: BLE001 - the receipt itself already went out.
+                        logger.warning("read receipt marker not stored on %s", p["channel_id"])
+                        self.db.rollback()
+            receipts.append(
+                ReadReceiptItem(
+                    channelId=p["channel_id"], messageId=p["message_id"], status=status
+                )
+            )
+        return ContactReadResponse(contactId=contact_id, receipts=receipts)
 
     def _resolve_or_create_contact(
         self, tenant_id: str, workspace_id: str, phone: str

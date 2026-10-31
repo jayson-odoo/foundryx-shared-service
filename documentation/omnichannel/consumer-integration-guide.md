@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-01** | **Mark a contact read** (`POST /contacts/{identifier}/read`, section 6a). Resets `unreadCount` and sends a WhatsApp read receipt per channel; each receipt answers `sent`, `already_sent`, `failed`, `channel_unavailable` or `not_supported`. Only this route sends a read receipt. Additive: no existing shape changes. |
 > | **2026-11-01** | **`GET /api/v1/omnichannel/channels`** (§5a). Lists the channels your API key can send on, so you can map a `channelId` to a number. Each item carries `isDefault`, the channel `POST /messages` uses when `channelId` is omitted. Also, an API key now stops working while its tenant is suspended or archived or the key's workspace is trashed (`403 service_not_enabled`, see §3 and §10), and works again once restored. |
 > | **2026-11-01** | **`message.outbound` webhook event + sender-side `message.status`** (§7). New opt-in event type `message.outbound` fires once for every message Foundryx sends on your channel, whichever path created it (your `POST /messages`, a workflow, an inbox agent, a broadcast); `data` is `{ message, contact, source }` and `source` says which path. Separately, `message.status` now also fires for `SENT` (Meta accepted the send) and `FAILED` (a synchronous send failure), not only for `DELIVERED`/`READ`/receipt-driven `FAILED`; **existing `message.status` subscribers receive these new deliveries with no opt-in**, so make sure your handler accepts `SENT` and does not move a status backward. Non-breaking for a consumer that does not subscribe to `message.outbound` - every existing field and event keeps its meaning. |
 > | **2026-09-09** | **Web chat widget section + `visitorProfile`** (plan 34 / A7b, review round 1). New **§12a** documents the visitor-facing widget end to end: the install snippet, allowed origins, the exact host-identity recipe `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))`, `window.fxChatIdentity` / `fxWebchat.identify()`, and what a visitor can and cannot do. The `webchat:` `to` row in §4.1 now points there instead of at §12 (the agent-facing embed, which uses a different secret and a different HMAC input). `ThreadItem`/`ContactObject` gain **`visitorProfile`** (§9.1/9.2) - the `{name?, email?, phone?}` a visitor typed into the pre-chat form, UNVERIFIED and deliberately NOT written onto the contact's own `phone`/`email` (those are matching keys); `null` on every channel type but `WEBCHAT`. Non-breaking - no existing field changed meaning. |
@@ -477,6 +478,31 @@ Returns `201` with the created note.
 Returns the created `MessageItem` with `senderType: "SYSTEM"`.
 
 > **A note looks like an outbound message when you read history back.** In the default shape check **`senderType === "SYSTEM"`**; under `?format=rio` it arrives as `traffic: "outgoing"` with **`sender.source === "system"`** (respond.io has no third traffic value). Either way, check it before rendering anything as "sent to the customer", or your agents will see internal notes presented as delivered WhatsApp messages.
+
+### Mark a contact read - `POST /api/v1/omnichannel/contacts/{identifier}/read`
+
+Call this when one of your staff opens the conversation. It takes no body. It does two things: the contact's `unreadCount` goes to `0`, and a WhatsApp read receipt (blue ticks) is sent to the customer for their latest message on each channel they have written to. **Only this route sends a read receipt**: reading history, fetching the contact or replying never does. The call waits for the provider, so allow up to 30 seconds. A customer message that arrives later counts as unread again.
+
+```json
+{
+  "contactId": "c_123",
+  "receipts": [
+    { "channelId": "ch_1", "messageId": "m_456", "status": "sent" }
+  ]
+}
+```
+
+A contact that exists always answers `200`, and `unreadCount` is `0` afterwards even when a receipt failed. `messageId` is the same `id` as on `MessageItem`. `receipts` has one item per channel the customer has written on, and is `[]` when there is nothing to acknowledge. An unknown contact answers `404 contact_not_found`, like the other contact routes.
+
+| `status` | Meaning | What to do |
+|----|----|----|
+| `sent` | The read receipt went out for that message. | Nothing. |
+| `already_sent` | That message was already acknowledged by an earlier call. No new call was made. | Nothing. |
+| `failed` | The receipt could not be sent. | Safe to call again, and the next call tries that channel again. It can repeat on every call, for example on a message older than 30 days, so do not alert or loop on it. |
+| `channel_unavailable` | The channel is paused or disconnected, or has no usable number. | Nothing, unless you still use that channel: after it resumes, the next call answers for it again. This item stays until then. |
+| `not_supported` | The channel type does not support read receipts (Messenger, Instagram, web chat). | Nothing. |
+
+Each channel is handled on its own, so one `failed` never blocks another channel. This route creates no message and fires no webhook.
 
 
 ---
@@ -1352,6 +1378,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/open` | Open conversation | `ThreadItem` |
 | POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/close` | Close conversation | `ThreadItem` |
 | POST | `/api/v1/omnichannel/contacts/{identifier}/comments` | Add internal note | `201` `MessageItem` |
+| POST | `/api/v1/omnichannel/contacts/{identifier}/read` | Mark read (unread to 0, WhatsApp read receipt per channel) | `{contactId, receipts[]}` |
 | GET | `/api/v1/omnichannel/webhooks` | List your webhook endpoints | `{data[]}` |
 | POST | `/api/v1/omnichannel/webhooks` | Register one (secret shown once) | `201 {endpoint, signingSecret}` |
 | PATCH | `/api/v1/omnichannel/webhooks/{id}` | Update name/url/events | `WebhookEndpoint` |

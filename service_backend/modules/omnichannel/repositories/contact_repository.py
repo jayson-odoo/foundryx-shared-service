@@ -243,6 +243,79 @@ class ContactRepository:
         contact.agent_last_read_at = datetime.now(timezone.utc)
         self.db.flush()
 
+    def latest_customer_messages_by_channel(
+        self, contact_id: str, tenant_id: str
+    ) -> List[Tuple[str, str, str, Optional[dict]]]:
+        """One bounded query: per channel, the customer's latest message that has
+        a provider id, was not imported and sits on a channel. Ordered like the
+        thread (``created_at`` desc, then id desc). Returns
+        ``(message_id, channel_id, external_message_id, metadata_json)``."""
+        M = ConversationMessage
+        ranked = (
+            self.db.query(
+                M.id.label("id"),
+                M.channel_id.label("channel_id"),
+                M.external_message_id.label("external_message_id"),
+                M.metadata_json.label("metadata_json"),
+                func.row_number()
+                .over(
+                    partition_by=M.channel_id,
+                    order_by=(M.created_at.desc(), M.id.desc()),
+                )
+                .label("rn"),
+            )
+            .filter(
+                M.tenant_id == tenant_id,
+                M.contact_id == contact_id,
+                M.sender_type == "CONTACT",
+                M.channel_id.isnot(None),
+                M.external_message_id.isnot(None),
+                M.external_message_id != "",
+                M.migrated_from.is_(None) | (M.migrated_from == ""),
+            )
+            .subquery()
+        )
+        rows = (
+            self.db.query(
+                ranked.c.id,
+                ranked.c.channel_id,
+                ranked.c.external_message_id,
+                ranked.c.metadata_json,
+            )
+            .filter(ranked.c.rn == 1)
+            .order_by(ranked.c.channel_id)
+            .all()
+        )
+        return [tuple(r) for r in rows]
+
+    def channels_in_workspace(
+        self, channel_ids: List[str], tenant_id: str, workspace_id: str
+    ) -> List[Channel]:
+        """Channels resolved WITH tenant and workspace; any other id is absent."""
+        if not channel_ids:
+            return []
+        return (
+            self.db.query(Channel)
+            .filter(
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id == workspace_id,
+                Channel.id.in_(channel_ids),
+            )
+            .all()
+        )
+
+    def set_message_metadata_key(
+        self, message_id: str, tenant_id: str, key: str, value
+    ) -> None:
+        """Add one key to a message's ``metadata_json`` by reassigning a fresh
+        dict (in-place JSON mutation is invisible to SQLAlchemy)."""
+        msg = self.get_message(message_id, tenant_id)
+        if msg is None:
+            return
+        current = msg.metadata_json if isinstance(msg.metadata_json, dict) else {}
+        msg.metadata_json = {**current, key: value}
+        self.db.flush()
+
     # ── Messages ─────────────────────────────────────────────────────────────
     def list_messages(self, contact_id: str, tenant_id: str) -> List[ConversationMessage]:
         return (
