@@ -12,6 +12,8 @@ Small hardening PR, no application behaviour changes. The frontend container run
 | AC-40-04 | If `SSH_KNOWN_HOSTS` is empty, the workflow fails with `::error::` before any connection to the host |
 | AC-40-05 | After writing `.env`, the deploy sets mode 600 on it, so an older file with a wider mode is corrected. A refused write still only warns, as today |
 | AC-40-06 | `DEPLOY.md` documents `SSH_KNOWN_HOSTS`: how to get the value and verify it against the host, and that a host move or rebuild needs it updated. It also documents the frontend's read-only filesystem and where it may write |
+| AC-40-07 | When a host connection fails with ssh's exit 255 at the first connection step, the error names `SSH_KNOWN_HOSTS` and says not to re-run until checked. A remote command failing still gets today's permissions message |
+| AC-40-08 | `DEPLOY.md` says to keep the unedited line from `ssh-keyscan -t ed25519 -p <SSH_PORT> <SSH_HOST>`, using the same host value as `SSH_HOST`, because the stored name and port must match the connection. It says what stays writable accurately |
 
 ## Before merge
 
