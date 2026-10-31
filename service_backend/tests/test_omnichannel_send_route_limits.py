@@ -483,3 +483,282 @@ def test_ac_41_07_changelog_has_a_row_for_the_limit():
     rows = [l for l in lines[:first_section] if l.startswith("> |")]
     assert len(rows) > 5  # control: the changelog table was found
     assert any(_SIXTY.search(r) and "media" in r.lower() for r in rows), "no changelog row mentions the limit"
+
+
+# ══ Behaviour to keep (these pass before the change and must still pass) ═════
+def test_rig_heartbeat_sees_a_blocked_loop():
+    """Control for the AC-41-01 tests: a handler that blocks the loop DOES show
+    up as a large heartbeat gap and a cheap request that waits."""
+
+    async def blocking_send(ac):
+        time.sleep(1.0)  # blocks the whole loop
+        return httpx.Response(202)
+
+    out = asyncio.run(_drive(blocking_send))
+    assert out.max_gap >= 0.9
+    assert out.cheap_before_send_by <= 0.1
+
+
+# ── AC-41-02: nothing else on the wire changes ───────────────────────────────
+def test_ac_41_02_text_send_success_body(client, session_factory):
+    headers, _cid, _ch = _setup(client, session_factory, phone="+60700700711")
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60700700711", "type": "text", "text": {"body": "hi"}},
+        headers=headers,
+    )
+    assert r.status_code == 202
+    body = r.json()
+    assert set(body) == {"id", "status", "idempotencyReplay"}
+    assert body["status"] == "queued" and body["idempotencyReplay"] is False and body["id"]
+
+
+def test_ac_41_02_media_by_url_success_body(client, session_factory, monkeypatch):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700712")
+    rig = _install(monkeypatch, media=_pdf_media)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700712"), headers=headers)
+    assert rig.media_calls == 1
+    assert r.status_code == 202, r.text
+    assert set(r.json()) == {"id", "status", "idempotencyReplay"}
+    assert _message_count(session_factory, cid) == 1
+
+
+def test_ac_41_02_multipart_success_body(client, session_factory, monkeypatch):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700713", token="tkn-live-02")
+    rig = _install(monkeypatch)
+    r = client.post("/api/v1/omnichannel/messages", headers=headers, **_multipart("+60700700713"))
+    assert rig.graph_calls, "the provider fake was never hit"
+    assert r.status_code == 202, r.text
+    assert set(r.json()) == {"id", "status", "idempotencyReplay"}
+    assert _message_count(session_factory, cid) == 1
+
+
+def test_ac_41_02_api_error_body_shape(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60700700714", open_window=False)
+    key = _mint(client, ws).json()["fullKey"]
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60700700714", "type": "text", "text": {"body": "late"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert r.status_code == 409
+    assert set(r.json()) == {"error"}
+    assert r.json()["error"]["code"] == "csw_window_closed"
+    assert r.json()["error"]["message"]
+
+
+def test_ac_41_02_unsupported_type_and_missing_key(client, session_factory):
+    headers, _cid, _ch = _setup(client, session_factory, phone="+60700700715")
+    r = client.post("/api/v1/omnichannel/messages", json={"to": "+60700700715", "type": "carousel"}, headers=headers)
+    assert (r.status_code, _error_code(r)) == (400, "unsupported_type")
+    denied = client.post("/api/v1/omnichannel/messages", json={"to": "+60700700715", "type": "text"})
+    assert denied.status_code == 401
+
+
+def test_ac_41_02_validation_errors_keep_their_codes(client, session_factory):
+    headers, _cid, _ch = _setup(client, session_factory, phone="+60700700716")
+    bad_json = client.post(
+        "/api/v1/omnichannel/messages", content=b"{not json", headers={**headers, "Content-Type": "application/json"}
+    )
+    assert (bad_json.status_code, _error_code(bad_json)) == (422, "invalid_request")
+    no_body = client.post(
+        "/api/v1/omnichannel/messages", json={"to": "+60700700716", "type": "text"}, headers=headers
+    )
+    assert (no_body.status_code, _error_code(no_body)) == (422, "invalid_request")
+    only_payload = client.post(
+        "/api/v1/omnichannel/messages", data={"payload": "{}"}, files={"other": ("x", b"y")}, headers=headers
+    )
+    assert (only_payload.status_code, _error_code(only_payload)) == (422, "invalid_request")
+    bad_payload = client.post(
+        "/api/v1/omnichannel/messages",
+        data={"payload": "{not json"},
+        files={"file": ("doc.pdf", PDF, "application/pdf")},
+        headers=headers,
+    )
+    assert (bad_payload.status_code, _error_code(bad_payload)) == (422, "invalid_request")
+
+
+def test_ac_41_02_idempotency_replay_returns_the_original_and_sends_once(client, session_factory, monkeypatch):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700717")
+    rig = _install(monkeypatch, media=_pdf_media)
+    hdr = {**headers, "Idempotency-Key": "plan41-a"}
+    first = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700717"), headers=hdr)
+    again = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700717"), headers=hdr)
+    assert first.status_code == again.status_code == 202
+    assert first.json()["idempotencyReplay"] is False and again.json()["idempotencyReplay"] is True
+    assert first.json()["id"] == again.json()["id"]
+    assert rig.media_calls == 1  # the replay did not fetch again
+    assert _message_count(session_factory, cid) == 1
+
+
+def test_ac_41_02_a_failed_send_releases_its_idempotency_key(client, session_factory, monkeypatch):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700718")
+    state = {"status": 404}
+
+    def media(request):
+        if state["status"] == 404:
+            return httpx.Response(404, request=request)
+        return _pdf_media(request)
+
+    _install(monkeypatch, media=media)
+    hdr = {**headers, "Idempotency-Key": "plan41-b"}
+    failed = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700718"), headers=hdr)
+    assert (failed.status_code, _error_code(failed)) == (422, "media_fetch_failed")
+    state["status"] = 200
+    retry = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700718"), headers=hdr)
+    assert retry.status_code == 202 and retry.json()["idempotencyReplay"] is False
+    assert _message_count(session_factory, cid) == 1
+
+
+def test_ac_41_02_database_session_is_closed_after_the_request(client, session_factory):
+    """Counts open and close on the session the route was handed. This rig can
+    prove the session is closed once per request; it cannot prove the session
+    is never used by two threads at once (sqlite runs with
+    check_same_thread=False and a single shared connection)."""
+    from app.database import get_db
+
+    headers, _cid, _ch = _setup(client, session_factory, phone="+60700700719")
+    opened, closed = [], []
+
+    def counting_override():
+        db = session_factory()
+        opened.append(db)
+        real_close = db.close
+
+        def close():
+            closed.append(db)
+            real_close()
+
+        db.close = close
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = counting_override
+    # control: a plain read is counted, so the counter sees requests
+    assert client.get("/api/v1/omnichannel/channels", headers=headers).status_code == 200
+    seen = len(opened)
+    assert seen >= 1 and [id(d) for d in closed] == [id(d) for d in opened]
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": "+60700700719", "type": "text", "text": {"body": "hi"}},
+        headers=headers,
+    )
+    assert r.status_code == 202
+    assert len(opened) > seen
+    assert [id(d) for d in closed] == [id(d) for d in opened]
+
+
+# ── AC-41-03 controls: inside the limit works ────────────────────────────────
+@pytest.mark.parametrize("path", ["media", "header"])
+def test_ac_41_03_drip_inside_the_total_limit_succeeds(client, session_factory, monkeypatch, path):
+    phone = "+60700700720" if path == "media" else "+60700700721"
+    headers, cid, _ch = _setup(client, session_factory, phone=phone, token="tkn-live-03")
+    skew = _skewed_clock(monkeypatch)
+    streams = []
+
+    def drip(request):
+        stream = _Stream(_pdf_chunks(5), on_chunk=lambda: skew.__setitem__(0, skew[0] + 10.0))  # 50 s
+        streams.append(stream)
+        return httpx.Response(200, headers={"Content-Type": "application/pdf"}, stream=stream, request=request)
+
+    rig = _install(monkeypatch, media=drip)
+    url, body = _PATHS[path](phone)
+    r = client.post(url, json=body, headers=headers)
+    assert r.status_code == 202, r.text
+    assert streams[0].consumed == 5  # the whole body was read
+    assert rig.graph_calls, "the provider fake was never hit"
+    assert _message_count(session_factory, cid) == 1
+    assert skew[0] >= 50.0  # control: the fake clock really moved
+
+
+# ── AC-41-04 controls ────────────────────────────────────────────────────────
+def test_ac_41_04_no_declared_length_over_the_cap_is_still_refused_while_reading(
+    client, session_factory, monkeypatch
+):
+    from modules.omnichannel.services.public_gateway_service import _MEDIA_HARD_CAP
+
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700722", token="tkn-live-04")
+    big = b"x" * (30 * 1024 * 1024)
+    streams = []
+
+    def undeclared_big(request):
+        stream = _Stream([PDF] + [big] * 6)  # well over the cap in total, no length header
+        assert _MEDIA_HARD_CAP < 4 * len(big) < 6 * len(big)
+        streams.append(stream)
+        return httpx.Response(200, headers={"Content-Type": "application/pdf"}, stream=stream, request=request)
+
+    rig = _install(monkeypatch, media=undeclared_big)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700722"), headers=headers)
+    assert (r.status_code, _error_code(r)) == (422, "oversize")
+    assert streams[0].iterated is True  # control: the rig does see a read
+    assert streams[0].consumed < 7, "the body was read to the end instead of stopping at the cap"
+    assert rig.graph_calls == []
+    assert _message_count(session_factory, cid) == 0
+
+
+def test_ac_41_04_a_normal_declared_length_succeeds(client, session_factory, monkeypatch):
+    headers, _cid, _ch = _setup(client, session_factory, phone="+60700700723")
+
+    def sized(request):
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/pdf", "Content-Length": str(len(PDF))},
+            stream=_Stream([PDF]),
+            request=request,
+        )
+
+    _install(monkeypatch, media=sized)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700723"), headers=headers)
+    assert r.status_code == 202, r.text
+
+
+# ── AC-41-05: the fetch's existing rules ─────────────────────────────────────
+def _refused(client, session_factory, monkeypatch, *, phone, url, resolve_to=None):
+    headers, cid, _ch = _setup(client, session_factory, phone=phone)
+    rig = _install(monkeypatch, media=_pdf_media)
+    if resolve_to:
+        monkeypatch.setattr(
+            "app.services.url_guard.socket.getaddrinfo",
+            lambda host, port, *a, **k: [(2, 1, 6, "", (resolve_to, 0))],
+        )
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body(phone, url), headers=headers)
+    return r, rig, _message_count(session_factory, cid)
+
+
+@pytest.mark.parametrize(
+    "case,url,resolve_to",
+    [
+        ("http", f"http://{MEDIA_HOST}/doc.pdf", None),
+        ("loopback literal", "https://127.0.0.1/doc.pdf", None),
+        ("host resolving to a private address", f"https://{MEDIA_HOST}/doc.pdf", "10.0.0.5"),
+    ],
+)
+def test_ac_41_05_unsafe_urls_are_refused_before_any_fetch(client, session_factory, monkeypatch, case, url, resolve_to):
+    r, rig, rows = _refused(client, session_factory, monkeypatch, phone="+60700700724", url=url, resolve_to=resolve_to)
+    assert (r.status_code, _error_code(r)) == (422, "invalid_media_url"), case
+    assert rig.media_calls == 0
+    assert rows == 0
+
+
+def test_ac_41_05_a_redirect_is_refused_not_followed(client, session_factory, monkeypatch):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700725")
+    rig = _install(
+        monkeypatch,
+        media=lambda request: httpx.Response(302, headers={"Location": "https://127.0.0.1/secret"}, request=request),
+    )
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700725"), headers=headers)
+    assert (r.status_code, _error_code(r)) == (422, "invalid_media_url")
+    assert rig.media_calls == 1  # control: it was fetched once and not followed
+    assert _message_count(session_factory, cid) == 0
+
+
+def test_ac_41_05_a_public_https_url_is_accepted(client, session_factory, monkeypatch):
+    r, rig, rows = _refused(
+        client, session_factory, monkeypatch, phone="+60700700726", url=MEDIA_URL
+    )
+    assert r.status_code == 202, r.text
+    assert rig.media_calls == 1 and rows == 1
