@@ -409,3 +409,78 @@ def test_ac_38_29_embed_websocket_is_refused_while_the_tenant_is_suspended(clien
         realtime.set_client(None)
         ws_module.set_async_redis(None)
         ws_module.set_session_factory(ws_module.SessionLocal)
+
+
+# ── Embed exchange and native websocket follow the tenant lifecycle ─────────
+def _embed_exchange_rig(session_factory):
+    from tests.test_omnichannel_embed import _make_connection, _workspace_id
+
+    return _make_connection(session_factory), _workspace_id(session_factory)
+
+
+def test_embed_exchange_follows_the_tenant_lifecycle_and_keeps_the_assertion_unconsumed(client, session_factory):
+    from tests.test_omnichannel_embed import _assertion, _exchange
+
+    conn, wid = _embed_exchange_rig(session_factory)
+    live = _exchange(client, _assertion(iss=conn, workspace_id=wid))
+    assert live.status_code == 200 and live.json()["accessToken"]  # control: a live tenant gets a session
+
+    held_back = _assertion(iss=conn, workspace_id=wid)
+    _suspend(session_factory)
+    refused = _exchange(client, held_back)
+    assert refused.status_code == 403, refused.text
+    assert "tenant_suspended" in refused.text
+    assert "accessToken" not in refused.text  # no session issued
+
+    _reactivate(session_factory)
+    # the refused assertion was not consumed: it still exchanges once the tenant is back
+    again = _exchange(client, held_back)
+    assert again.status_code == 200, again.text
+    fresh = _exchange(client, _assertion(iss=conn, workspace_id=wid))
+    assert fresh.status_code == 200, fresh.text
+
+
+def test_embed_exchange_is_refused_for_an_archived_tenant(client, session_factory):
+    from tests.test_omnichannel_embed import _assertion, _exchange
+
+    conn, wid = _embed_exchange_rig(session_factory)
+    assert _exchange(client, _assertion(iss=conn, workspace_id=wid)).status_code == 200  # control
+    db = session_factory()
+    try:
+        svc = TenantService(db)
+        svc.suspend(DEFAULT_TENANT_ID)
+        svc.archive(DEFAULT_TENANT_ID)
+    finally:
+        db.close()
+    refused = _exchange(client, _assertion(iss=conn, workspace_id=wid))
+    assert refused.status_code == 403, refused.text
+    assert "accessToken" not in refused.text
+
+
+def test_native_staff_websocket_is_refused_while_the_tenant_is_suspended(client, session_factory):
+    import fakeredis
+    import fakeredis.aioredis
+    from starlette.websockets import WebSocketDisconnect
+
+    from modules.omnichannel.routers import ws as ws_module
+    from modules.omnichannel.services import realtime
+
+    server = fakeredis.FakeServer()
+    realtime.set_client(fakeredis.FakeRedis(server=server, decode_responses=True))
+    ws_module.set_async_redis(fakeredis.aioredis.FakeRedis(server=server, decode_responses=True))
+    ws_module.set_session_factory(session_factory)
+    try:
+        wid = _default_workspace_id(session_factory)
+        staff_token = _session_headers(client)["Authorization"].split(" ", 1)[1]
+        url = f"/omnichannel/ws?workspaceId={wid}&token={staff_token}"
+        with client.websocket_connect(url):
+            pass  # control: connects while the tenant is live
+
+        _suspend(session_factory)
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(url):
+                pass
+    finally:
+        realtime.set_client(None)
+        ws_module.set_async_redis(None)
+        ws_module.set_session_factory(ws_module.SessionLocal)
