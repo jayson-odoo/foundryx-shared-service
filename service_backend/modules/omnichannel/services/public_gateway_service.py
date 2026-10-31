@@ -6,6 +6,7 @@ pipeline: resolve/create the contact from the raw `to` phone, reuse
 translate rejections into the structured `/api/v1/*` error envelope. Idempotency
 dedup is workspace-scoped with a 24h TTL.
 """
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -54,6 +55,8 @@ if TYPE_CHECKING:  # forward ref used in a signature below
     from ..schemas import ThreadItem
 
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+# Total time one media fetch may take (connect, headers and body together).
+MEDIA_FETCH_TOTAL_SECONDS = 60.0
 
 # Wire-format switch on the read endpoints (`?format=`). GUIDE is the DEFAULT
 # and the documented contract (`MessageItem`/`ThreadItem`, the richer flat
@@ -876,9 +879,17 @@ class PublicGatewayService:
             safe = validate_callback_url(url)
         except WebhookError as exc:
             raise ApiError(422, "invalid_media_url", str(exc)) from exc
+        started = time.monotonic()
+
+        def _check_time() -> None:
+            if time.monotonic() - started > MEDIA_FETCH_TOTAL_SECONDS:
+                raise ApiError(422, "media_fetch_failed", "Fetching the media url took too long.")
+
         try:
+            _check_time()
             with httpx.Client(timeout=15.0, follow_redirects=False) as client:
                 with client.stream("GET", safe) as resp:
+                    _check_time()
                     if resp.is_redirect:
                         raise ApiError(
                             422, "invalid_media_url", "Redirects are not allowed for media URLs."
@@ -887,9 +898,13 @@ class PublicGatewayService:
                         raise ApiError(
                             422, "media_fetch_failed", f"Media url returned {resp.status_code}."
                         )
+                    declared = resp.headers.get("content-length", "")
+                    if declared.strip().isdigit() and int(declared) > _MEDIA_HARD_CAP:
+                        raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
                     chunks: list[bytes] = []
                     total = 0
                     for chunk in resp.iter_bytes():
+                        _check_time()
                         total += len(chunk)
                         if total > _MEDIA_HARD_CAP:
                             raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")

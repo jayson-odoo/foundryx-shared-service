@@ -24,6 +24,18 @@ from .meta_graph import GraphCall, GraphRecorder, MetaGraphMixin, _meta_error_de
 logger = logging.getLogger(__name__)
 
 
+def _scrub_credential(text: str, token: str) -> str:
+    """Remove the channel's literal token, and its whitespace-split pieces of
+    4+ characters, from provider text before it is stored. The provider's own
+    reason stays, because the composer shows it."""
+    out = text or ""
+    if not token:
+        return out
+    for piece in [token] + [p for p in token.split() if len(p) >= 4]:
+        out = out.replace(piece, "")
+    return out
+
+
 class WhatsAppCloudAdapter(MetaGraphMixin):
     channel_type = "WHATSAPP"
 
@@ -200,7 +212,8 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 except ValueError:
                     detail = ""
                 raise SendError(
-                    provider_error_text(detail) or f"Media upload failed ({resp.status_code}).",
+                    provider_error_text(_scrub_credential(detail, str(token)))
+                    or f"Media upload failed ({resp.status_code}).",
                     transient=resp.status_code >= 500,
                     code=meta_error_code(resp),
                 )
@@ -210,7 +223,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             return media_id
         except httpx.HTTPError as exc:
             raise SendError(
-                provider_error_text(f"Could not reach Meta: {exc}"), transient=True
+                f"Could not reach Meta: {type(exc).__name__}", transient=True
             ) from exc
         finally:
             if self._client is None:
@@ -347,7 +360,10 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 except ValueError:
                     detail = ""
                 raise SendError(
-                    provider_error_text(detail) or f"Meta returned {resp.status_code}.",
+                    provider_error_text(
+                        _scrub_credential(detail, str(credentials.get("access_token", "") or ""))
+                    )
+                    or f"Meta returned {resp.status_code}.",
                     transient=resp.status_code >= 500,
                     code=meta_error_code(resp),
                 )
@@ -356,7 +372,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             return {"external_message_id": wamid}
         except httpx.HTTPError as exc:
             raise SendError(
-                provider_error_text(f"Could not reach Meta: {exc}"), transient=True
+                f"Could not reach Meta: {type(exc).__name__}", transient=True
             ) from exc
         finally:
             if self._client is None:

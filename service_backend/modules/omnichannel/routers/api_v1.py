@@ -10,6 +10,7 @@ import json
 from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
@@ -108,7 +109,11 @@ async def send_message(
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
-        message_id, replay = svc.send_multipart(
+        # The blocking work (database, media fetch, provider call) runs on a worker
+        # thread; the body reads above stay on the loop, and nothing on the loop
+        # touches `svc` or `db` while the thread holds them.
+        message_id, replay = await run_in_threadpool(
+            svc.send_multipart,
             api_ws.tenant_id,
             api_ws.workspace_id,
             api_ws.key_id,
@@ -126,8 +131,13 @@ async def send_message(
         except (ValueError, TypeError):
             raise ApiError(422, "invalid_request", "Request body must be valid JSON.")
         payload = PublicSendRequest(**body)
-        message_id, replay = svc.send(
-            api_ws.tenant_id, api_ws.workspace_id, api_ws.key_id, payload, idempotency_key
+        message_id, replay = await run_in_threadpool(
+            svc.send,
+            api_ws.tenant_id,
+            api_ws.workspace_id,
+            api_ws.key_id,
+            payload,
+            idempotency_key,
         )
     # A replay is still 202 with the ORIGINAL message id (idempotent).
     return PublicSendResponse(id=message_id, status="queued", idempotencyReplay=replay)

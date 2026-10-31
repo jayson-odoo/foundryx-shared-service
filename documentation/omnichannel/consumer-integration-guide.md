@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-01** | **Media fetch limit** (`POST /messages`, section 4.2). Fetching a media URL now has a total limit of 60 seconds; over it answers `422 media_fetch_failed` and sends nothing. A response declaring a size over the ceiling answers `422 oversize` before its body is read. No other contract change. |
 > | **2026-11-01** | **`GET /api/v1/omnichannel/channels`** (§5a). Lists the channels your API key can send on, so you can map a `channelId` to a number. Each item carries `isDefault`, the channel `POST /messages` uses when `channelId` is omitted. Also, an API key now stops working while its tenant is suspended or archived or the key's workspace is trashed (`403 service_not_enabled`, see §3 and §10), and works again once restored. |
 > | **2026-11-01** | **`message.outbound` webhook event + sender-side `message.status`** (§7). New opt-in event type `message.outbound` fires once for every message Foundryx sends on your channel, whichever path created it (your `POST /messages`, a workflow, an inbox agent, a broadcast); `data` is `{ message, contact, source }` and `source` says which path. Separately, `message.status` now also fires for `SENT` (Meta accepted the send) and `FAILED` (a synchronous send failure), not only for `DELIVERED`/`READ`/receipt-driven `FAILED`; **existing `message.status` subscribers receive these new deliveries with no opt-in**, so make sure your handler accepts `SENT` and does not move a status backward. Non-breaking for a consumer that does not subscribe to `message.outbound` - every existing field and event keeps its meaning. |
 > | **2026-09-09** | **Web chat widget section + `visitorProfile`** (plan 34 / A7b, review round 1). New **§12a** documents the visitor-facing widget end to end: the install snippet, allowed origins, the exact host-identity recipe `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))`, `window.fxChatIdentity` / `fxWebchat.identify()`, and what a visitor can and cannot do. The `webchat:` `to` row in §4.1 now points there instead of at §12 (the agent-facing embed, which uses a different secret and a different HMAC input). `ThreadItem`/`ContactObject` gain **`visitorProfile`** (§9.1/9.2) - the `{name?, email?, phone?}` a visitor typed into the pre-chat form, UNVERIFIED and deliberately NOT written onto the contact's own `phone`/`email` (those are matching keys); `null` on every channel type but `WEBCHAT`. Non-breaking - no existing field changed meaning. |
@@ -228,7 +229,7 @@ Give a public **https** URL; Foundryx fetches the bytes, validates them, and upl
   "media": { "url": "https://cdn.example.com/receipt.png", "caption": "Your receipt" } }
 ```
 
-The URL is SSRF-guarded: **https only**, no redirects, no private/loopback/reserved hosts. Fetch problems → `422 invalid_media_url` / `422 media_fetch_failed` / `422 oversize`.
+The URL is SSRF-guarded: **https only**, no redirects, no private/loopback/reserved hosts. Fetch problems → `422 invalid_media_url` / `422 media_fetch_failed` / `422 oversize`. The whole fetch (connect, headers and body) must finish within **60 seconds**, otherwise `422 media_fetch_failed` and nothing is sent. A response that declares a size over the ceiling is refused as `422 oversize` before its body is read.
 
 **Size ceilings & accepted MIME types** (Meta's fixed limits):
 
@@ -986,7 +987,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `contact_not_found` | 404 | Contact not found / not in your workspace. |
 | `message_not_found` | 404 | Message id not on that contact's thread. |
 | `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing. |
-| `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). |
+| `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`. |
 
 
 ---
