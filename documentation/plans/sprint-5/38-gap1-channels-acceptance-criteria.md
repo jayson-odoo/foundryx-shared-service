@@ -9,7 +9,7 @@ A consumer that never logs in to SS needs to see which numbers its API key can u
 | AC-38-22 | `isDefault` is true on exactly the channel `POST /messages` uses when `channelId` is omitted, resolved through the same code path, and false on the others. No active channel means none is default |
 | AC-38-23 | A disconnected or inactive channel is listed with its real `status` and `isActive: false`, because a consumer must be able to see a number that stopped working. A trashed channel is not listed |
 | AC-38-24 | A channel in another workspace or another tenant is never returned. A missing or invalid key gets the same error as the other gateway routes, and so does a workspace whose module is inactive |
-| AC-38-25 | The response shape follows the gateway's existing list convention, and the route passes `tests/test_list_pagination_limit.py` and `tests/test_schema_uuid_id_principle.py` |
+| AC-38-25 | The response shape follows the gateway's existing list convention, `{"data": [...]}` as on `GET /templates`, with no pagination: a workspace has only a handful of channels |
 | AC-38-26 | `documentation/omnichannel/consumer-integration-guide.md` documents the route, the fields and what `isDefault` means, with a changelog entry, and notes that `POST /messages` without `channelId` uses the default channel even if the contact last wrote on another number |
 
 No migration. No new permission: a key can already send on these channels.
