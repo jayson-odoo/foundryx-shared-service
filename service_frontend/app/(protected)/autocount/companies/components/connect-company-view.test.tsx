@@ -378,7 +378,8 @@ describe('ConnectCompanyView - open (no-auth) API connection (sprint-5/08, AC-08
     fireEvent.click(screen.getByRole('combobox', { name: 'AutoCount connection' }));
     fireEvent.click(await screen.findByRole('option', { name: 'Sorento REST (No auth)' }));
     await screen.findByLabelText('Reference prefix');
-    fireEvent.click(segment('SQL database'));
+    // The picker's Popover closes on a spring, and the page stays aria-hidden until it has gone (see the note in `switching source clears the picked connection`).
+    fireEvent.click(await screen.findByRole('radio', { name: 'SQL database' }));
     expect(screen.queryByLabelText('Reference prefix')).not.toBeInTheDocument();
   });
 });
