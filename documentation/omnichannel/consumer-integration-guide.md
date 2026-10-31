@@ -1123,7 +1123,7 @@ Message types:
 
 `theme` = whitelisted brand primitives (`{ primary, surface, text, bubbleIn, bubbleOut, radius, … }`); `colorScheme` = `"light" | "dark"`.
 
-While your tenant is suspended or archived, new embed sessions are refused and existing embed sessions stop working (`403`); they work again once the tenant is restored.
+While your tenant is suspended or archived, new embed sessions and requests are refused (`403`). A socket that is already open keeps running until it reconnects. Everything works again once the tenant is restored.
 
 ### 12.5 Scopes - the widget only ever sees what you signed
 
@@ -1174,6 +1174,7 @@ Everything else (conversation reads/sends, templates, quick-replies, members, We
 | `401 invalid_assertion` | Bad signature (wrong `embedSecret`), wrong `aud`, malformed JWT, or unknown `iss`. |
 | `401 replayed` | You reused an assertion. Mint a fresh one per `ready`/`needToken` (§12.4). |
 | `401 expired` | Assertion older than 15 min, or clocks skewed >60s. |
+| `403 tenant_suspended` | Your tenant is suspended or archived. |
 | `403 origin_not_allowed` | The parent origin you're embedding from isn't in the connection's `allowedOrigins`. |
 | Browser refuses to frame it ("refused to display / frame-ancestors") | Your origin isn't in `allowedOrigins`, or you didn't pass `?c=<connectionId>`. |
 | `403` on a reply/assign | The token's `caps` don't include that action (or it's `read_only`). |
