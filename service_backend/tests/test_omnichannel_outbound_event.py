@@ -782,3 +782,246 @@ def test_ac_38_12_guide_and_frontend_type_list_message_outbound():
     fe = (REPO_ROOT / "service_frontend/types/whatsapp-webhook.ts").read_text()
     assert OUTBOUND in guide
     assert OUTBOUND in fe
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Security round (AC-38-14..19). Fake values only.
+# ═════════════════════════════════════════════════════════════════════════════
+RAW_TRANSIENT = (
+    "GET https://store.invalid/x?RAWDETAIL=FAKE "
+    "failed at /internal/x"
+)
+
+
+class _FakeAdapter:
+    """Patched at the send_runner boundary (`get_adapter`)."""
+
+    def __init__(self, exc=None):
+        self.exc = exc
+
+    def upload_media(self, *a, **k):
+        return "media-fake"
+
+    def send(self, *a, **k):
+        if self.exc is not None:
+            raise self.exc
+        return {"external_message_id": "wamid.fake-sec"}
+
+
+def _use_adapter(monkeypatch, exc=None):
+    adapter = _FakeAdapter(exc)
+    monkeypatch.setattr(
+        "modules.omnichannel.services.send_runner.get_adapter", lambda *a, **k: adapter
+    )
+    return adapter
+
+
+def _provider_error(message, code=None, transient=False):
+    from modules.omnichannel.adapters.base import SendError
+
+    exc = SendError(message, transient=transient)
+    if code is not None:
+        # the exact attribute is the coder's choice; set the likely spellings
+        exc.code = code
+        exc.error_code = code
+    return exc
+
+
+def _inbox_text(client, cid, body="sec round"):
+    return client.post(
+        f"/omnichannel/contacts/{cid}/messages",
+        json={"messageType": "TEXT", "body": body},
+        headers=_auth(client),
+    )
+
+
+def _row(session_factory, mid):
+    db = session_factory()
+    try:
+        r = db.query(ConversationMessage).filter(ConversationMessage.id == mid).first()
+        return r.delivery_status, r.error_code, r.error_message
+    finally:
+        db.close()
+
+
+def _set_row_error(session_factory, mid, code, message):
+    db = session_factory()
+    try:
+        r = db.query(ConversationMessage).filter(ConversationMessage.id == mid).first()
+        r.error_code, r.error_message = code, message
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_ac_38_14_transient_error_text_never_stored_cleared_on_success_and_logged(
+    client, session_factory, monkeypatch, caplog
+):
+    import logging
+
+    from modules.omnichannel.services.send_runner import run_send
+
+    r = _rig(client, session_factory, "+60380000080", events=("message.status",))
+    _use_adapter(monkeypatch, _provider_error(RAW_TRANSIENT, transient=True))
+    with caplog.at_level(logging.DEBUG):
+        res = _inbox_text(client, r["cid"])
+    assert res.status_code == 201, res.text
+    mid = res.json()["id"]
+
+    status, _code, message = _row(session_factory, mid)
+    assert status == "QUEUED"  # control: it really was a requeued transient failure
+    for raw in ("RAWDETAIL", "/internal", "store.invalid"):
+        assert raw not in (message or ""), f"raw transient error stored on the row: {message!r}"
+    assert "RAWDETAIL=FAKE" in caplog.text, "the real error must reach the log"
+
+    _use_adapter(monkeypatch, None)
+    db = session_factory()
+    try:
+        assert run_send(db, mid) == "SENT"
+    finally:
+        db.close()
+    status, _code, message = _row(session_factory, mid)
+    assert status == "SENT" and message is None, message
+    blob = str(_deliveries(session_factory, "message.status"))
+    assert "RAWDETAIL" not in blob and "/internal" not in blob
+
+
+def test_ac_38_15_sent_and_delivered_carry_null_error_fields_failed_carries_them(
+    client, session_factory, monkeypatch
+):
+    from modules.omnichannel.services.send_runner import run_send
+
+    r = _rig(client, session_factory, "+60380000081", events=("message.status",))
+    # first attempt requeues (transient), then a stale error is planted, then success
+    _use_adapter(monkeypatch, _provider_error("blip", transient=True))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    _set_row_error(session_factory, mid, "131000", "stale boom")
+    _use_adapter(monkeypatch, None)
+    db = session_factory()
+    try:
+        assert run_send(db, mid) == "SENT"
+    finally:
+        db.close()
+    sent = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:SENT"]
+    assert len(sent) == 1
+    assert sent[0]["payload"]["data"]["errorCode"] is None
+    assert sent[0]["payload"]["data"]["errorMessage"] is None
+
+    # receipt path: a stale error on the row must not ride DELIVERED either
+    _set_row_error(session_factory, mid, "131000", "stale boom")
+    ext = _external_id(session_factory, mid)
+    _process(
+        session_factory,
+        r["channel_id"],
+        _wa_payload(statuses=[{"id": ext, "status": "delivered", "timestamp": "1717550003"}]),
+    )
+    delivered = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:DELIVERED"]
+    assert len(delivered) == 1  # control: the receipt produced its event
+    assert delivered[0]["payload"]["data"]["errorCode"] is None
+    assert delivered[0]["payload"]["data"]["errorMessage"] is None
+
+    # control: FAILED does carry them
+    mid2 = None
+    _use_adapter(monkeypatch, _provider_error("Re-engagement message", code="131047"))
+    mid2 = _inbox_text(client, r["cid"], body="will fail").json()["id"]
+    failed = [x for x in _status_rows(session_factory, mid2) if x["event_id"] == f"{mid2}:FAILED"]
+    assert len(failed) == 1
+    assert failed[0]["payload"]["data"]["errorMessage"]
+
+
+def test_ac_38_16_failed_event_uses_provider_code_when_there_is_one(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60380000082", events=("message.status",))
+    _use_adapter(monkeypatch, _provider_error("Re-engagement message", code="131047"))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1
+    assert str(failed[0]["payload"]["data"]["errorCode"]) == "131047"
+    assert failed[0]["payload"]["data"]["errorMessage"] == "Re-engagement message"
+
+
+def test_ac_38_16_long_provider_error_is_capped_at_300_characters(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60380000083", events=("message.status",))
+    long_text = "E" * 50 + "x" * 700
+    _use_adapter(monkeypatch, _provider_error(long_text, code="100"))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1
+    msg = failed[0]["payload"]["data"]["errorMessage"]
+    assert msg and len(msg) <= 300, len(msg or "")
+    assert msg.startswith("E" * 50)  # control: capped, not replaced
+
+
+def test_ac_38_16_local_failure_has_null_error_code(client, session_factory, monkeypatch):
+    from modules.omnichannel.services.media_pipeline import MediaRejected
+
+    monkeypatch.setattr(
+        "modules.omnichannel.services.send_runner.transcode_voice",
+        lambda content: (_ for _ in ()).throw(MediaRejected("transcode_failed", "bad audio")),
+    )
+    r = _rig(client, session_factory, "+60380000084", events=("message.status",))
+    res = client.post(
+        f"/omnichannel/contacts/{r['cid']}/media",
+        files={"file": ("v.webm", WEBM, "audio/webm")},
+        data={"kind": "voice"},
+        headers=_auth(client),
+    )
+    mid = res.json()["id"]
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1  # control
+    assert failed[0]["payload"]["data"]["errorCode"] is None
+    assert failed[0]["payload"]["data"]["errorMessage"]
+
+
+def test_ac_38_17_reply_target_must_be_a_message(
+    client, session_factory
+):
+    r = _rig(client, session_factory, "+60380000085")
+    h = _auth(client)
+    normal = _inbox_text(client, r["cid"], body="normal one").json()["id"]
+    note = client.post(
+        f"/omnichannel/contacts/{r['cid']}/notes", json={"body": "NOTE-SECRET-FAKE refund abuse"}, headers=h
+    )
+    assert note.status_code == 201, note.text
+    note_id = note.json()["id"]
+
+    def reply_to(target):
+        return client.post(
+            f"/omnichannel/contacts/{r['cid']}/messages",
+            json={"messageType": "TEXT", "body": "replying", "replyToMessageId": target},
+            headers=h,
+        )
+
+    ok = reply_to(normal)
+    assert ok.status_code == 201, ok.text  # control: replying to a normal message works
+    unknown = reply_to("00000000-0000-0000-0000-000000000000")
+    assert unknown.status_code >= 400  # control: unknown id is an error
+    to_note = reply_to(note_id)
+    assert to_note.status_code == unknown.status_code
+    assert to_note.json() == unknown.json()
+    assert "NOTE-SECRET-FAKE" not in str(_deliveries(session_factory))
+
+
+def test_ac_38_18_same_channel_id_under_another_tenant_or_workspace_gets_nothing(client, session_factory):
+    r = _rig(client, session_factory, "+60380000086")
+    for tenant_id, workspace_id in (
+        ("other-tenant-id", "other-tenant-ws"),
+        (DEFAULT_TENANT_ID, "other-workspace-id"),
+    ):
+        _insert_foreign_endpoint(
+            session_factory,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            channel_id=r["channel_id"],
+            events=[OUTBOUND],
+        )
+    assert _api_text(client, r["hdr"], "+60380000086").status_code == 202
+    rows = _deliveries(session_factory)
+    assert [x["endpoint_id"] for x in rows] == [r["ep"]]  # right endpoint got it, nobody else
+
+
+def test_ac_38_19_guide_states_sender_fields_and_apikey_sender_id():
+    guide = (REPO_ROOT / "documentation/omnichannel/consumer-integration-guide.md").read_text()
+    assert "apikey:" in guide
+    i = guide.index("apikey:")
+    window = guide[max(0, i - 800) : i + 800].lower()
+    assert "sender" in window and "message.outbound" in guide
