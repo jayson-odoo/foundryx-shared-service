@@ -8,11 +8,15 @@ task owns parse → resolve → persist → broadcast. DB down → autoretry wit
 backoff (≈5s/10s/.../10m, spec §3.3); the payload stays safe in Redis until
 the task succeeds or exhausts retries.
 """
+import logging
 from typing import Optional
 
 from celery import Celery
 
 from app.config import settings
+
+# Request URLs are not logged at INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 celery_app = Celery(
     "omnichannel",

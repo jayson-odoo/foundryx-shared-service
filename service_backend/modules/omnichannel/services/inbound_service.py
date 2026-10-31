@@ -19,6 +19,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from ..adapters import get_adapter
+from ..adapters.meta_graph import provider_error_text
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
 from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
@@ -715,7 +716,7 @@ class InboundService:
         if new_status == "FAILED":
             msg.delivery_status = "FAILED"
             msg.error_code = event.get("error_code")
-            msg.error_message = (event.get("error_message") or None) and str(event.get("error_message"))[:300]
+            msg.error_message = provider_error_text(str(event.get("error_message") or "")) or None
         else:
             current = _STATUS_RANK.get(msg.delivery_status or "SENT", 0)
             if _STATUS_RANK[new_status] <= current and msg.delivery_status:
@@ -726,23 +727,34 @@ class InboundService:
         # Broadcast receipt hook (plan 29 S2b, D-A4-10) - AFTER this commit,
         # BEFORE the consumer-webhook enqueue below. A broadcast bug must
         # NEVER break the inbound webhook pipeline.
+        # Plain locals first: the rollback below expires ORM attributes.
+        msg_id = msg.id
+        contact_id = msg.contact_id
+        status_now = msg.delivery_status
+        error_now = msg.error_message
+        error_code_now = msg.error_code
+        ext_id = msg.external_message_id
         try:
             from .broadcast_receipts import record_delivery
 
             record_delivery(self.db, msg)
         except Exception:  # noqa: BLE001
-            logger.exception("broadcast receipt hook failed for message %s", msg.id)
+            try:
+                self.db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            logger.exception("broadcast receipt hook failed for message %s", msg_id)
 
-        contact = self.repo.get_by_id(msg.contact_id, channel.tenant_id)
+        contact = self.repo.get_by_id(contact_id, channel.tenant_id)
         if contact is not None:
             realtime.publish(
                 contact.workspace_id,
                 {
                     "type": "message.status",
-                    "messageId": msg.id,
-                    "contactId": msg.contact_id,
-                    "deliveryStatus": msg.delivery_status,
-                    "errorMessage": msg.error_message,
+                    "messageId": msg_id,
+                    "contactId": contact_id,
+                    "deliveryStatus": status_now,
+                    "errorMessage": error_now,
                 },
             )
         # Fan out the receipt to consumer webhooks (Slice 4). event_id per status
@@ -753,15 +765,15 @@ class InboundService:
             self.db,
             channel,
             "message.status",
-            f"{msg.id}:{msg.delivery_status}",
+            f"{msg_id}:{status_now}",
             {
-                "messageId": msg.id,
-                "externalMessageId": msg.external_message_id,
-                "contactId": msg.contact_id,
-                "deliveryStatus": msg.delivery_status,
+                "messageId": msg_id,
+                "externalMessageId": ext_id,
+                "contactId": contact_id,
+                "deliveryStatus": status_now,
                 # Error fields ride FAILED only (AC-38-15).
-                "errorCode": msg.error_code if msg.delivery_status == "FAILED" else None,
-                "errorMessage": msg.error_message if msg.delivery_status == "FAILED" else None,
+                "errorCode": error_code_now if status_now == "FAILED" else None,
+                "errorMessage": error_now if status_now == "FAILED" else None,
             },
         )
         return True
