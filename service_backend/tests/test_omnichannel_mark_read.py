@@ -34,7 +34,7 @@ from modules.omnichannel.services import idempotency
 from tests.test_omnichannel_api_gateway import _default_workspace_id, _mint
 
 FOREIGN_TENANT = "tenant-foreign-gap5"
-PHONE = "+60123456789"
+PHONE = "+60700700701"
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 SECRET_PROVIDER_TEXT = "ZZ-provider-detail-7f3a"
@@ -280,7 +280,7 @@ def test_ac50_unknown_contact_is_404_contact_not_found_with_positive_control(rig
     ok = rig.read()
     assert ok.status_code == 200, ok.text  # the route exists and answers a real contact
 
-    for ident in ("does-not-exist", "id:does-not-exist", "phone:+60999000111"):
+    for ident in ("does-not-exist", "id:does-not-exist", "phone:+60700700702"):
         r = rig.read(ident)
         assert r.status_code == 404, (ident, r.text)
         assert r.json()["error"]["code"] == "contact_not_found", (ident, r.text)
@@ -308,8 +308,8 @@ def test_ac50_contact_in_another_workspace_or_tenant_is_404_with_control(rig, se
     db.commit()
     ws2_id = ws2.id
     db.close()
-    other_ws_contact = rig.contact(workspace=ws2_id, phone="+60111222333")
-    foreign_contact = rig.contact(tenant=FOREIGN_TENANT, phone="+60444555666")
+    other_ws_contact = rig.contact(workspace=ws2_id, phone="+60700700703")
+    foreign_contact = rig.contact(tenant=FOREIGN_TENANT, phone="+60700700704")
 
     for cid in (other_ws_contact, foreign_contact):
         r = rig.read(cid)
@@ -623,9 +623,9 @@ def test_ac54_marker_appears_in_no_read_shape(rig):
             before_json = {**before_json, "unreadCount": after_json["unreadCount"]}
         assert after_json == before_json, f"{u} changed after a read"
         for key, val in added.items():
-            assert key not in resp.text, f"marker key {key!r} leaked on {u}"
+            assert key not in resp.text, f"marker key {key!r} appears on {u}"
             if isinstance(val, str) and val:
-                assert val not in resp.text, f"marker value leaked on {u}"
+                assert val not in resp.text, f"marker value appears on {u}"
 
 
 # ═══ AC-38-55 failure per channel ═══════════════════════════════════════════
@@ -944,46 +944,128 @@ def test_ac59_no_provider_call_means_no_record(rig, session_factory):
 
 
 # ═══ AC-38-60 no message row, no webhook, no workflow trigger ═══════════════
+def _publish_workflow(session_factory, trigger_type, config=None):
+    from app.services.workflow_service import WorkflowService
+
+    doc = {
+        "schemaVersion": 2,
+        "nodes": [
+            {"id": "trg", "kind": "trigger", "type": trigger_type, "config": config or {}},
+            {
+                "id": "get_1",
+                "kind": "action",
+                "type": "omnichannel.get_contact",
+                "config": {"contactId": "{{ trigger.contact.id }}"},
+            },
+        ],
+        "edges": [{"id": "e1", "source": "trg", "target": "get_1"}],
+    }
+    db = session_factory()
+    try:
+        svc = WorkflowService(db)
+        wf = svc.create(
+            DEFAULT_TENANT_ID, name=f"gap5 {trigger_type}", description="", draft=doc, actor_id=None
+        )
+        svc.set_active(wf.id, DEFAULT_TENANT_ID, True)
+        svc.publish(wf.id, DEFAULT_TENANT_ID, actor_id=None)
+        return wf.id
+    finally:
+        db.close()
+
+
+def _runs(rig, wf_id):
+    from app.models.workflow import WorkflowRun
+
+    return rig.count(WorkflowRun, workflow_id=wf_id)
+
+
 def test_ac60_creates_no_message_row_and_fires_no_webhook_or_workflow_run(
-    rig, monkeypatch
+    rig, monkeypatch, session_factory
 ):
+    import fakeredis
+
     import modules.omnichannel.services.webhook_delivery as wd
     from app.models.workflow import WorkflowRun
     from modules.omnichannel.models import ConversationMessage, WebhookDelivery
+    from modules.omnichannel.services import realtime
+    from tests.test_omnichannel_webhooks import _process, _wa_payload
 
-    # keep the delivery worker off the network; rows are what we observe
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: httpx.Response(200))
-    a, b, _ma, _mb = _fresh_unread(rig)
-    reg = rig.client.post(
-        "/api/v1/omnichannel/webhooks",
-        json={
-            "name": "w",
-            "url": "https://hooks.example.com/w",
-            "events": ["message.inbound", "message.status", "contact.updated", "message.reaction"],
-        },
-        headers=rig.hdr,
-    )
-    assert reg.status_code == 201, reg.text
-    messages_before = rig.count(ConversationMessage)
-    deliveries_before = rig.count(WebhookDelivery)
-    runs_before = rig.count(WorkflowRun)
+    realtime.set_client(fakeredis.FakeRedis(decode_responses=True))
+    try:
+        # keep the delivery worker off the network; rows are what we observe
+        monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: httpx.Response(200))
+        a, b, _ma, _mb = _fresh_unread(rig)
+        reg = rig.client.post(
+            "/api/v1/omnichannel/webhooks",
+            json={
+                "name": "w",
+                "url": "https://hooks.example.com/w",
+                "events": ["message.inbound", "message.status", "contact.updated", "message.reaction"],
+            },
+            headers=rig.hdr,
+        )
+        assert reg.status_code == 201, reg.text
 
-    r = rig.read()
-    assert r.status_code == 200 and len(r.json()["receipts"]) == 2
-    assert len(rig.provider.calls) == 2
+        # Published workflows on the inbound-message trigger and on contact-change
+        # triggers (conversation opened/closed, field changed, lifecycle changed).
+        from modules.omnichannel.models import ContactField
 
-    assert rig.count(ConversationMessage) == messages_before
-    assert rig.count(WebhookDelivery) == deliveries_before
-    assert rig.count(WorkflowRun) == runs_before
+        db = session_factory()
+        db.add(ContactField(tenant_id=DEFAULT_TENANT_ID, workspace_id=rig.ws,
+                            key="gap5", label="Gap5", type="text"))
+        db.commit()
+        db.close()
+        wf_received = _publish_workflow(session_factory, "omnichannel.message_received")
+        wf_opened = _publish_workflow(session_factory, "omnichannel.conversation_opened")
+        wf_closed = _publish_workflow(session_factory, "omnichannel.conversation_closed")
+        wf_field = _publish_workflow(
+            session_factory, "omnichannel.contact_field_changed", {"fieldKey": "gap5"}
+        )
+        wf_life = _publish_workflow(session_factory, "omnichannel.lifecycle_changed")
+        watched = [wf_received, wf_opened, wf_closed, wf_field, wf_life]
 
-    # control: the same rig does record a delivery row for a real event
-    patched = rig.client.patch(
-        f"/api/v1/omnichannel/contacts/{rig.contact_id}",
-        json={"priority": "HIGH"},
-        headers=rig.hdr,
-    )
-    assert patched.status_code == 200, patched.text
-    assert rig.count(WebhookDelivery) > deliveries_before
+        # Positive control: a real inbound through the normal path makes the
+        # message_received and conversation_opened workflows run.
+        _process(
+            session_factory,
+            a,
+            _wa_payload(wamid="wamid.ctl-1", from_="60700700799", text="control"),
+        )
+        assert _runs(rig, wf_received) == 1, "control: message_received did not fire"
+        assert _runs(rig, wf_opened) == 1, "control: conversation_opened did not fire"
+        # Positive control for a contact-change trigger: a real field change.
+        rig.client.patch(
+            f"/api/v1/omnichannel/contacts/{rig.contact_id}",
+            json={"customFields": {"gap5": "x"}},
+            headers=rig.hdr,
+        )
+        assert _runs(rig, wf_field) >= 1, "control: contact_field_changed did not fire"
+
+        messages_before = rig.count(ConversationMessage)
+        deliveries_before = rig.count(WebhookDelivery)
+        runs_before = {w: _runs(rig, w) for w in watched}
+        total_runs_before = rig.count(WorkflowRun)
+        calls_before = len(rig.provider.calls)
+
+        r = rig.read()
+        assert r.status_code == 200 and len(r.json()["receipts"]) >= 2
+        assert len(rig.provider.calls) > calls_before
+
+        assert rig.count(ConversationMessage) == messages_before
+        assert rig.count(WebhookDelivery) == deliveries_before
+        assert {w: _runs(rig, w) for w in watched} == runs_before
+        assert rig.count(WorkflowRun) == total_runs_before
+
+        # control: the same rig does record a delivery row for a real event
+        patched = rig.client.patch(
+            f"/api/v1/omnichannel/contacts/{rig.contact_id}",
+            json={"priority": "HIGH"},
+            headers=rig.hdr,
+        )
+        assert patched.status_code == 200, patched.text
+        assert rig.count(WebhookDelivery) > deliveries_before
+    finally:
+        realtime.set_client(None)
 
 
 # ═══ AC-38-61 tenant scope ═══════════════════════════════════════════════════
@@ -1017,7 +1099,7 @@ def test_ac61_foreign_customer_messages_do_not_count_as_unread_or_move_state(rig
 
     ch = rig.channel("pn-A")
     rig.msg(ch, wamid="wamid.mine", when=1)
-    foreign_contact = rig.contact(tenant=FOREIGN_TENANT, phone="+60700800900")
+    foreign_contact = rig.contact(tenant=FOREIGN_TENANT, phone="+60700700705")
     rig.msg(ch, wamid="wamid.foreign-new", when=9, tenant=FOREIGN_TENANT, contact_id=foreign_contact)
     db = rig.sf()
     before = db.query(Contact.agent_last_read_at).filter(Contact.id == foreign_contact).scalar()
