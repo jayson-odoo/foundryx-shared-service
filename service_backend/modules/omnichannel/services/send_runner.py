@@ -50,7 +50,9 @@ def _read_media(db: Session, tenant_id: str, media_key: str) -> bytes:
     return resp.content
 
 
-def _emit_status_webhook(db: Session, row: ConversationMessage) -> None:
+def _emit_status_webhook(
+    db: Session, row: ConversationMessage, outcome: Optional[str] = None
+) -> None:
     """Consumer `message.status` for the sender-side SENT / FAILED outcome (plan
     38 AC-38-09/10): one event per status (`<id>:<STATUS>`), same data shape as
     the receipt path. Sandbox rows skip. Failure-isolated; the row is already
@@ -67,19 +69,23 @@ def _emit_status_webhook(db: Session, row: ConversationMessage) -> None:
         )
         if channel is None:
             return
+        outcome = outcome or row.delivery_status
+        failed = outcome == "FAILED"
+        # `outcome` is what this sender reached; the row may already have moved
+        # on (a receipt can land between the commit and this call).
         enqueue_event(
             db,
             channel,
             "message.status",
-            f"{row.id}:{row.delivery_status}",
-            {
+            f"{row.id}:{outcome}",
+            lambda: {
                 "messageId": row.id,
                 "externalMessageId": row.external_message_id,
                 "contactId": row.contact_id,
-                "deliveryStatus": row.delivery_status,
-                # Error fields ride FAILED only (AC-38-15): never a stale value.
-                "errorCode": row.error_code if row.delivery_status == "FAILED" else None,
-                "errorMessage": row.error_message if row.delivery_status == "FAILED" else None,
+                "deliveryStatus": outcome,
+                # Error fields ride FAILED only (AC-38-15).
+                "errorCode": row.error_code if failed else None,
+                "errorMessage": row.error_message if failed else None,
             },
         )
     except Exception:  # noqa: BLE001 - a webhook bug must never break a send
@@ -138,7 +144,7 @@ def _fail(db: Session, row: ConversationMessage, message: str, code: Optional[st
     db.commit()
     _record_broadcast_receipt(db, row)
     _publish_status(db, row)
-    _emit_status_webhook(db, row)
+    _emit_status_webhook(db, row, "FAILED")
     return "FAILED"
 
 
@@ -155,7 +161,65 @@ def _requeue_transient(db: Session, row: ConversationMessage, message: str) -> N
     raise TransientSendError(message)
 
 
+UNEXPECTED_ERROR_TEXT = "The message could not be sent"
+
+
+def fail_unfinished(db: Session, message_id: str, reason: str) -> str:
+    """Move a row that is still QUEUED or SENDING to FAILED with generic text
+    (one `FAILED` status event). Used when retries run out and when an
+    unexpected error stops a send after the claim. The transition is a guarded
+    UPDATE, so a row that already reached another outcome (or that a concurrent
+    attempt finished) is never overwritten or announced twice."""
+    row = (
+        db.query(ConversationMessage)
+        .filter(ConversationMessage.id == message_id)
+        .first()
+    )
+    if row is None:
+        return "MISSING"
+    claimed = (
+        db.query(ConversationMessage)
+        .filter(
+            ConversationMessage.id == message_id,
+            ConversationMessage.tenant_id == row.tenant_id,
+            ConversationMessage.delivery_status.in_(("QUEUED", "SENDING")),
+        )
+        .update({"delivery_status": "FAILED"}, synchronize_session=False)
+    )
+    if not claimed:
+        db.rollback()
+        db.refresh(row)
+        return row.delivery_status or "MISSING"
+    db.refresh(row)
+    logger.warning("send for message %s ended without an outcome: %s", message_id, reason)
+    return _fail(db, row, UNEXPECTED_ERROR_TEXT)
+
+
 def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> str:
+    """Execute a QUEUED outbound row; any unexpected error after the row is
+    claimed ends it FAILED (generic text, real error logged) rather than
+    leaving it SENDING. A retryable failure still raises ``TransientSendError``."""
+    try:
+        return _run_send(db, message_id, trace_id)
+    except TransientSendError:
+        raise
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.exception("unexpected error sending message %s", message_id)
+        try:
+            db.rollback()
+            row = (
+                db.query(ConversationMessage)
+                .filter(ConversationMessage.id == message_id)
+                .first()
+            )
+            if row is not None and row.delivery_status == "SENDING":
+                return fail_unfinished(db, message_id, "unexpected error")
+        except Exception:  # noqa: BLE001
+            logger.exception("could not record the failure of message %s", message_id)
+        raise
+
+
+def _run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> str:
     """Execute a QUEUED outbound row. Returns the final delivery status.
 
     IDEMPOTENT double-send guard (plan 12 review): the row is CLAIMED (QUEUED →
@@ -371,5 +435,5 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     db.commit()
     _record_broadcast_receipt(db, row)
     _publish_status(db, row)
-    _emit_status_webhook(db, row)
+    _emit_status_webhook(db, row, "SENT")
     return "SENT"

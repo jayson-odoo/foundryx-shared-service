@@ -18,7 +18,6 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-
 from ..adapters import get_adapter
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
 from ..phone import digits_only

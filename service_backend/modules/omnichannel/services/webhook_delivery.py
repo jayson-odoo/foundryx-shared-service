@@ -15,12 +15,13 @@ import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 from sqlalchemy.orm import Session
 
-from ..models import Channel, WebhookDelivery, WebhookEndpoint
+from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
+from ..schemas import MessageItem
 from ..security import decrypt_secret
 from .webhook_service import AUTO_DISABLE_THRESHOLD, WebhookError, assert_deliverable
 
@@ -85,7 +86,7 @@ def _active_endpoints(db: Session, channel: Channel, event_type: str) -> List[We
     return [r for r in rows if event_type in (r.events_json or [])]
 
 
-def consumer_message_payload(item: Any, row: Any) -> Dict[str, Any]:
+def consumer_message_payload(item: MessageItem, row: ConversationMessage) -> Dict[str, Any]:
     """The consumer-facing message object shared by `message.inbound` and
     `message.outbound`: media rides an ABSOLUTE, API-key-authed gateway URL
     (plan 12 AC-12-11) and uses mimeType/filename/size, distinct from the
@@ -106,16 +107,18 @@ def enqueue_event(
     channel: Channel,
     event_type: str,
     event_id: str,
-    data: Dict[str, Any],
+    data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
 ) -> int:
     """Fan an event to the channel's subscribed endpoints. Creates durable
     delivery rows + queues each POST. Fully failure-isolated: returns the number
-    queued, never raises into the inbound pipeline."""
+    queued, never raises into the inbound pipeline. ``data`` may be a callable:
+    it runs only when at least one endpoint subscribes, so a channel with no
+    subscriber pays nothing to build the payload."""
     try:
         endpoints = _active_endpoints(db, channel, event_type)
         if not endpoints:
             return 0
-        envelope = build_envelope(event_type, channel, event_id, data)
+        envelope = build_envelope(event_type, channel, event_id, data() if callable(data) else data)
         delivery_ids: List[str] = []
         for ep in endpoints:
             row = WebhookDelivery(

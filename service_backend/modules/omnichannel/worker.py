@@ -60,6 +60,7 @@ def process_inbound_webhook(channel_id: str, payload: dict) -> dict:
 
 
 @celery_app.task(
+    bind=True,
     name="omnichannel.send_message",
     autoretry_for=(Exception,),
     retry_backoff=5,
@@ -67,7 +68,7 @@ def process_inbound_webhook(channel_id: str, payload: dict) -> dict:
     retry_jitter=True,
     max_retries=3,
 )
-def omnichannel_send_message(message_id: str, trace_id: Optional[str] = None) -> str:
+def omnichannel_send_message(self, message_id: str, trace_id: Optional[str] = None) -> str:
     """Execute one QUEUED outbound message (plan 12 AC-12-03): transcode/upload/
     ``adapter.send`` → SENT/FAILED + WS status. Runs on a FRESH session (a worker
     process has its own DB engine); in eager dev the service calls ``run_send``
@@ -78,11 +79,17 @@ def omnichannel_send_message(message_id: str, trace_id: Optional[str] = None) ->
     ``trace_id_var`` defaults to None, so without this the outbound Meta row would
     lose the trace in prod. ``run_send`` re-seeds the contextvar from it."""
     from app.database import SessionLocal
-    from modules.omnichannel.services.send_runner import run_send
+    from modules.omnichannel.services.send_runner import fail_unfinished, run_send
 
     db = SessionLocal()
     try:
         return run_send(db, message_id, trace_id=trace_id)
+    except Exception:
+        # Last attempt: end the row FAILED (one status event) instead of
+        # leaving it QUEUED. Earlier attempts just let Celery retry.
+        if self.request.retries >= self.max_retries:
+            fail_unfinished(db, message_id, "retries exhausted")
+        raise
     finally:
         db.close()
 

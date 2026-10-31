@@ -32,6 +32,7 @@ from ..schemas import (
     QuickReplyUpdate,
     SendMessageRequest,
     TemplateItem,
+    ThreadItem,
 )
 from ..security import decrypt_credentials
 from . import channel_addressing, event_service, messaging_policy, realtime
@@ -309,13 +310,18 @@ class MessageService:
             return "api"
         return "inbox"
 
-    def _emit_outbound(self, row: ConversationMessage, contact: Contact, item: MessageItem) -> None:
+    def _emit_outbound(
+        self,
+        row: ConversationMessage,
+        contact: Contact,
+        item: MessageItem,
+        thread: Optional[ThreadItem] = None,
+    ) -> None:
         """Fan `message.outbound` to the channel's subscribed endpoints. The row
         and thread are already committed, so a failure here (Python or DB) is
         swallowed and the session rolled back to a clean state: the send itself
-        is never failed or undone (AC-38-07). Workflow test sandbox rows skip."""
-        from .send_runner import SANDBOX_ONLY_KEY, WORKFLOW_TEST_METADATA_KEY
-
+        is never failed or undone (AC-38-07). Workflow test sandbox rows skip.
+        The payload is built only when an endpoint subscribes to the event."""
         try:
             meta = row.metadata_json or {}
             if (meta.get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
@@ -329,17 +335,19 @@ class MessageService:
             )
             if channel is None:
                 return
-            enqueue_event(
-                self.db,
-                channel,
-                "message.outbound",
-                f"{row.id}:outbound",
-                {
-                    "message": consumer_message_payload(item, row),
-                    "contact": self.conversations.thread_item(contact).model_dump(mode="json"),
+
+            def build() -> Dict[str, Any]:
+                message = consumer_message_payload(item, row)
+                if row.message_type == "VOICE" and message.get("mimeType"):
+                    # The stored blob is converted before sending; report the sent type.
+                    message["mimeType"] = "audio/ogg"
+                return {
+                    "message": message,
+                    "contact": (thread or self.conversations.thread_item(contact)).model_dump(mode="json"),
                     "source": self._outbound_source(row),
-                },
-            )
+                }
+
+            enqueue_event(self.db, channel, "message.outbound", f"{row.id}:outbound", build)
         except Exception:  # noqa: BLE001 - a webhook bug must never break a send
             logger.exception("message.outbound enqueue failed for message %s", row.id)
             try:
@@ -361,9 +369,10 @@ class MessageService:
                 "thread": thread.model_dump(mode="json"),
             },
         )
-        # Consumer webhook `message.outbound` (plan 38 gap 3): BEFORE dispatch so
-        # it always precedes the SENT/FAILED `message.status`. Never fails a send.
-        self._emit_outbound(row, contact, item)
+        # Consumer webhook `message.outbound` (plan 38 gap 3): enqueued before
+        # the send is dispatched, so its delivery row is created ahead of any
+        # `message.status` row. Never fails a send.
+        self._emit_outbound(row, contact, item, thread)
         if settings.celery_task_always_eager:
             # Same session - see send_runner docstring. A transient failure leaves
             # the row QUEUED for a later retry; eager dev uses the stub adapter
