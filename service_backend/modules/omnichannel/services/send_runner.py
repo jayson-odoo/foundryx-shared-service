@@ -43,10 +43,18 @@ def _read_media(db: Session, tenant_id: str, media_key: str) -> bytes:
 
     kind, value = storage_for_tenant(db, tenant_id).resolve(media_key)
     if kind == "path":
-        with open(value, "rb") as fh:
-            return fh.read()
-    resp = httpx.get(value, timeout=15.0)
-    resp.raise_for_status()
+        try:
+            with open(value, "rb") as fh:
+                return fh.read()
+        except OSError:
+            raise OSError("Stored media could not be read") from None
+    # Errors carry the status only: the address is never part of the text.
+    try:
+        resp = httpx.get(value, timeout=15.0)
+    except httpx.HTTPError as exc:
+        raise OSError(f"Media read failed ({type(exc).__name__})") from None
+    if not resp.is_success:
+        raise OSError(f"Media read failed with status {resp.status_code}") from None
     return resp.content
 
 
@@ -57,6 +65,7 @@ def _emit_status_webhook(
     38 AC-38-09/10): one event per status (`<id>:<STATUS>`), same data shape as
     the receipt path. Sandbox rows skip. Failure-isolated; the row is already
     committed so a rollback here loses nothing."""
+    row_id = row.id  # plain local: the session may need a rollback in the handler
     try:
         if ((row.metadata_json or {}).get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
             return
@@ -89,11 +98,11 @@ def _emit_status_webhook(
             },
         )
     except Exception:  # noqa: BLE001 - a webhook bug must never break a send
-        logger.exception("message.status webhook failed for message %s", row.id)
         try:
             db.rollback()
         except Exception:  # noqa: BLE001
             pass
+        logger.exception("message.status webhook failed for message %s", row_id)
 
 
 def _publish_status(db: Session, row: ConversationMessage) -> None:

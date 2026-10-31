@@ -269,8 +269,8 @@ class MessageService:
         if not reply_to_message_id:
             return None, None
         quoted = self.repo.get_message(reply_to_message_id, tenant_id)
-        # A SYSTEM row (an internal note) is not a reply target: same error as
-        # an unknown id, so note text can never reach `message.replyTo`.
+        # Only conversation messages can be replied to: an internal note (a
+        # SYSTEM row) gets the same error as an unknown id.
         if quoted is None or quoted.contact_id != contact.id or quoted.sender_type == "SYSTEM":
             raise SendRejected("The message you are replying to was not found.")
         sender_name = None
@@ -322,6 +322,7 @@ class MessageService:
         swallowed and the session rolled back to a clean state: the send itself
         is never failed or undone (AC-38-07). Workflow test sandbox rows skip.
         The payload is built only when an endpoint subscribes to the event."""
+        row_id = row.id  # plain local: the session may need a rollback in the handler
         try:
             meta = row.metadata_json or {}
             if (meta.get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
@@ -349,11 +350,11 @@ class MessageService:
 
             enqueue_event(self.db, channel, "message.outbound", f"{row.id}:outbound", build)
         except Exception:  # noqa: BLE001 - a webhook bug must never break a send
-            logger.exception("message.outbound enqueue failed for message %s", row.id)
             try:
                 self.db.rollback()
             except Exception:  # noqa: BLE001
                 logger.exception("rollback after message.outbound failure failed")
+            logger.exception("message.outbound enqueue failed for message %s", row_id)
 
     def _enqueue_and_finalize(self, row: ConversationMessage, contact: Contact) -> MessageItem:
         """Publish the optimistic ``message.created`` then dispatch the send

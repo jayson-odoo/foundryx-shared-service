@@ -71,8 +71,8 @@ def sign_body(secret: str, timestamp: str, body: bytes) -> str:
 
 
 def _active_endpoints(db: Session, channel: Channel, event_type: str) -> List[WebhookEndpoint]:
-    """Subscribed ACTIVE endpoints of THIS channel, scoped by the channel row's
-    own tenant and workspace too (never by channel id alone)."""
+    """Subscribed ACTIVE endpoints of this channel, filtered by the channel's
+    tenant and workspace as well as its id."""
     rows = (
         db.query(WebhookEndpoint)
         .filter(
@@ -114,6 +114,7 @@ def enqueue_event(
     queued, never raises into the inbound pipeline. ``data`` may be a callable:
     it runs only when at least one endpoint subscribes, so a channel with no
     subscriber pays nothing to build the payload."""
+    channel_id = channel.id  # plain local: the session may need a rollback in the handler
     try:
         endpoints = _active_endpoints(db, channel, event_type)
         if not endpoints:
@@ -135,8 +136,11 @@ def enqueue_event(
             delivery_ids.append(row.id)
         db.commit()
     except Exception:  # noqa: BLE001 - forwarding must never break inbound
-        logger.exception("webhook enqueue failed for channel %s (%s)", channel.id, event_type)
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.exception("webhook enqueue failed for channel %s (%s)", channel_id, event_type)
         return 0
 
     # Queue the POSTs out-of-band (eager dev runs them inline).

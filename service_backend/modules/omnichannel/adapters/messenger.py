@@ -59,7 +59,7 @@ import httpx
 from app.config import settings
 from app.services.url_guard import UrlGuardError, assert_deliverable
 from .base import CodeExchangeError, ConnectionStatus, SendError
-from .meta_graph import MetaGraphMixin, _meta_error_detail, is_rate_limited_error, meta_error_code
+from .meta_graph import MetaGraphMixin, _meta_error_detail, is_rate_limited_error, meta_error_code, provider_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +370,7 @@ class MessengerAdapter(MetaGraphMixin):
             self._last_http_status = resp.status_code
             if resp.status_code != 200:
                 raise SendError(
-                    _error_detail_with_usage(resp),
+                    provider_error_text(_error_detail_with_usage(resp)),
                     transient=resp.status_code >= 500 or is_rate_limited_error(resp),
                     code=meta_error_code(resp),
                 )
@@ -379,7 +379,9 @@ class MessengerAdapter(MetaGraphMixin):
                 raise SendError("Attachment upload returned no id.")
             return attachment_id
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+            raise SendError(
+                provider_error_text(f"Could not reach Meta: {exc}"), transient=True
+            ) from exc
         finally:
             if self._client is None:
                 client.close()
@@ -487,14 +489,16 @@ class MessengerAdapter(MetaGraphMixin):
                 # `send_runner` requeues it for bounded backoff instead of
                 # stamping FAILED.
                 raise SendError(
-                    _error_detail_with_usage(resp),
+                    provider_error_text(_error_detail_with_usage(resp)),
                     transient=resp.status_code >= 500 or is_rate_limited_error(resp),
                     code=meta_error_code(resp),
                 )
             data = resp.json()
             return {"external_message_id": data.get("message_id", "")}
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+            raise SendError(
+                provider_error_text(f"Could not reach Meta: {exc}"), transient=True
+            ) from exc
         finally:
             if self._client is None:
                 client.close()

@@ -19,7 +19,7 @@ from .base import CodeExchangeError, ConnectionStatus, SendError
 # verbatim; re-imported here so every existing import site of these names off
 # ``whatsapp_cloud`` (``services/activity.py`` imports GraphCall/GraphRecorder
 # directly from this module) keeps working with zero churn (AC-CHN-15).
-from .meta_graph import GraphCall, GraphRecorder, MetaGraphMixin, _meta_error_detail, meta_error_code  # noqa: F401
+from .meta_graph import GraphCall, GraphRecorder, MetaGraphMixin, _meta_error_detail, meta_error_code, provider_error_text  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 except ValueError:
                     detail = ""
                 raise SendError(
-                    detail or f"Media upload failed ({resp.status_code}).",
+                    provider_error_text(detail) or f"Media upload failed ({resp.status_code}).",
                     transient=resp.status_code >= 500,
                     code=meta_error_code(resp),
                 )
@@ -209,7 +209,9 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 raise SendError("Media upload returned no id.")
             return media_id
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+            raise SendError(
+                provider_error_text(f"Could not reach Meta: {exc}"), transient=True
+            ) from exc
         finally:
             if self._client is None:
                 client.close()
@@ -345,7 +347,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 except ValueError:
                     detail = ""
                 raise SendError(
-                    detail or f"Meta returned {resp.status_code}.",
+                    provider_error_text(detail) or f"Meta returned {resp.status_code}.",
                     transient=resp.status_code >= 500,
                     code=meta_error_code(resp),
                 )
@@ -353,7 +355,9 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             wamid = (data.get("messages") or [{}])[0].get("id", "")
             return {"external_message_id": wamid}
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+            raise SendError(
+                provider_error_text(f"Could not reach Meta: {exc}"), transient=True
+            ) from exc
         finally:
             if self._client is None:
                 client.close()
