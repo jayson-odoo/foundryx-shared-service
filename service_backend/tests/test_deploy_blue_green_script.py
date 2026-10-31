@@ -24,6 +24,22 @@ FAKE_DOCKER = r"""#!/usr/bin/env bash
 echo "docker $*" >> "$FAKE_LOG"
 args="$*"
 case "$args" in
+  *"compose exec"*"redis-cli ping"*)
+    # Plan 39: authenticated ping carries the password ONLY via the
+    # REDISCLI_AUTH env var (never an -a argument). Never echo the value.
+    case "$args" in
+      *" -a "*|*"--pass"*) echo "docker-stub: password on a command line" >> "$FAKE_LOG" ;;
+    esac
+    if [ -n "$REDISCLI_AUTH" ]; then
+      if [ "$REDISCLI_AUTH" = "$FAKE_EXPECTED_PW" ]; then
+        echo "stub: authenticated ping, REDISCLI_AUTH matched" >> "$FAKE_LOG"
+      fi
+      echo "${FAKE_REDIS_AUTH_REPLY:-PONG}"
+    else
+      echo "stub: unauthenticated ping" >> "$FAKE_LOG"
+      echo "${FAKE_REDIS_NOAUTH_REPLY:-NOAUTH Authentication required.}"
+    fi
+    exit 0 ;;
   *"compose ps -q "*)
     echo "cid_${args##* }"; exit 0 ;;
   *"inspect --format={{.State.Health.Status}} "*)
@@ -58,13 +74,18 @@ def _exe(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _run(tmp_path, **env_over):
+FAKE_REDIS_PW = "fake-redis-pw-for-tests-0001"  # obvious fake, never a real secret
+
+
+def _run(tmp_path, dotenv=None, **env_over):
     if shutil.which("bash") is None:
         pytest.skip("bash not available")
     root = tmp_path / "deploy"
     (root / "scripts").mkdir(parents=True)
     shutil.copy(SCRIPT, root / "scripts" / "blue_green_deploy.sh")
-    (root / ".env").write_text("")
+    (root / ".env").write_text(
+        f"REDIS_PASSWORD={FAKE_REDIS_PW}\n" if dotenv is None else dotenv
+    )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "calls.log"
@@ -86,6 +107,7 @@ def _run(tmp_path, **env_over):
         "FAKE_BACKEND_STATUS": "running",
         "FAKE_WORKERS_READY": "1",
         "FAKE_LONG_LOGS": "0",
+        "FAKE_EXPECTED_PW": FAKE_REDIS_PW,
     }
     env.update(env_over)
     result = subprocess.run(
@@ -180,3 +202,61 @@ def test_bootstrap_attempts_fit_the_health_budget():
     start_sh = (REPO / "service_backend" / "start.sh").read_text()
     assert 'BOOTSTRAP_ATTEMPTS="${BOOTSTRAP_ATTEMPTS:-4}"' in start_sh
     assert "BOOTSTRAP_ATTEMPTS: ${BOOTSTRAP_ATTEMPTS:-4}" in (REPO / "docker-compose.yml").read_text()
+
+
+# ── Plan 39: Redis password step (7a-7c) ─────────────────────────────────────
+def _line_index(calls: str, needle: str, *, last=False) -> int:
+    lines = calls.splitlines()
+    hits = [i for i, ln in enumerate(lines) if needle in ln]
+    assert hits, f"control: {needle!r} not found in recorded calls:\n{calls}"
+    return hits[-1] if last else hits[0]
+
+
+def test_plan39_healthy_deploy_recreates_redis_after_old_color_then_checks(tmp_path):
+    result, calls, active = _run(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert active == "green"
+    rm_old = _line_index(calls, "compose rm -f backend_blue frontend_blue")
+    redis_up = _line_index(calls, "docker compose up -d redis", last=True)
+    authed = _line_index(calls, "stub: authenticated ping, REDISCLI_AUTH matched")
+    unauthed = _line_index(calls, "stub: unauthenticated ping")
+    assert rm_old < redis_up < authed < unauthed
+    # the infra step did not recreate redis (the only plain `up -d redis` is the late one)
+    assert sum(1 for ln in calls.splitlines() if ln.endswith("compose up -d redis")) == 1
+    assert "--no-recreate redis" in calls
+
+
+@pytest.mark.parametrize(
+    "case,kwargs,message",
+    [
+        ("missing_password", {"dotenv": ""}, "REDIS_PASSWORD is not set"),
+        ("auth_ping_not_pong", {"FAKE_REDIS_AUTH_REPLY": "ERR invalid password", "REDIS_WAIT_TICKS": "2"}, "did not answer an authenticated PING"),
+        ("unauth_not_refused", {"FAKE_REDIS_NOAUTH_REPLY": "PONG"}, "accepted an unauthenticated PING"),
+    ],
+)
+def test_plan39_redis_check_failures_exit_nonzero_with_new_color_already_active(
+    tmp_path, case, kwargs, message
+):
+    result, calls, active = _run(tmp_path, **kwargs)
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, f"{case}: {out}"
+    assert message in out, f"{case}: {out}"
+    # the swap already happened, so the file must already say green
+    assert active == "green", case
+    # control: it really got past the swap and the old-color removal
+    assert "sudo caddy reload" in calls
+    assert "compose rm -f backend_blue frontend_blue" in calls
+    assert FAKE_REDIS_PW not in out
+
+
+def test_plan39_password_never_logged_and_reaches_the_stub_only_via_env(tmp_path):
+    result, calls, active = _run(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    # control: the fake value really was set in the fixture and DID reach the stub (env path)
+    assert FAKE_REDIS_PW in (tmp_path / "deploy" / ".env").read_text()
+    assert "stub: authenticated ping, REDISCLI_AUTH matched" in calls
+    # ... but is never printed, nor recorded in any stub call line
+    assert FAKE_REDIS_PW not in result.stdout + result.stderr
+    assert FAKE_REDIS_PW not in calls
+    assert "password on a command line" not in calls
+    assert not any("redis-cli" in ln and " -a " in ln for ln in calls.splitlines())
