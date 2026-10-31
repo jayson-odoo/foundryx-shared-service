@@ -351,11 +351,14 @@ def test_ac_38_21_real_labels_survive_and_short_blank_or_missing_ids_change_noth
     blank = _channel(session_factory, ws, name="Blank id", age_rank=4)
     spaces = _channel(session_factory, ws, name="Spaces id", age_rank=5)
     noid = _channel(session_factory, ws, name="No id", age_rank=6)
-    fb = _channel(session_factory, ws, name="123456", age_rank=7, channel_type="FACEBOOK")
+    fb = _channel(session_factory, ws, name="Page 123456", age_rank=7, channel_type="FACEBOOK")
     _set_fields(session_factory, blank, phone_number_id="")
     _set_fields(session_factory, spaces, phone_number_id="   ")
     _set_fields(session_factory, noid, phone_number_id=None)
-    _set_fields(session_factory, fb, external_account_id="123456", display_phone_number="123456")
+    _set_fields(
+        session_factory, fb, phone_number_id="123456", external_account_id="123456",
+        display_phone_number="123456", verified_name="Page 123456",
+    )
 
     by_id = {i["id"]: i for i in _list(client, _hdr(client, ws))}
     assert by_id[normal]["name"] == "Front desk" and by_id[normal]["displayPhoneNumber"] == "+60 11-111 0000"
@@ -364,7 +367,8 @@ def test_ac_38_21_real_labels_survive_and_short_blank_or_missing_ids_change_noth
         assert item["name"] == expected, item
         assert item["displayPhoneNumber"] == "+60 11-111 0000", item
         assert item["verifiedName"] is not None, item
-    assert by_id[fb]["name"] == "123456" and by_id[fb]["displayPhoneNumber"] == "123456"
+    assert by_id[fb]["name"] == "Page 123456" and by_id[fb]["displayPhoneNumber"] == "123456"
+    assert by_id[fb]["verifiedName"] == "Page 123456"
 
 
 def test_ac_38_23_paused_channel_without_a_status_row_shows_inactive(client, session_factory):

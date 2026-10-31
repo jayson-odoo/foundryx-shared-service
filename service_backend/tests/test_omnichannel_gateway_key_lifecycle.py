@@ -329,3 +329,83 @@ def test_refused_gateway_call_still_writes_an_attributed_activity_row(client, se
     assert any(r.api_key_id == key_id and r.status_code == 403 for r in rows), [
         (r.api_key_id, r.status_code) for r in rows
     ]
+
+
+# ── Token types and embed sessions ───────────────────────────────────────────
+def test_ac_38_28_media_route_refuses_embed_token_type(client, session_factory):
+    from app.security import create_access_token, decode_access_token
+
+    ws, mid, _hdr, _kid = _media_rig(client, session_factory)
+    session = _session_headers(client)
+    user_id = decode_access_token(session["Authorization"].split(" ", 1)[1])["sub"]
+    assert client.get(f"/omnichannel/media/{mid}", headers=session).status_code == 200  # control
+
+    embed_typed = create_access_token({"sub": user_id, "tenant_id": DEFAULT_TENANT_ID, "typ": "embed"})
+    bad = {"Authorization": f"Bearer {embed_typed}"}
+    reference = client.get("/auth/me", headers=bad)  # a session route behind get_current_user
+    assert reference.status_code in (401, 403), reference.status_code
+    media = client.get(f"/omnichannel/media/{mid}", headers=bad)
+    assert media.status_code == reference.status_code, media.status_code
+
+
+def _embed_session(client, session_factory):
+    from tests.test_omnichannel_embed import _assertion, _exchange, _make_connection, _workspace_id
+
+    conn = _make_connection(session_factory)
+    wid = _workspace_id(session_factory)
+    _seed_channel(session_factory, wid, phone_number_id="pn-embed-life")
+    _seed_open_contact(session_factory, wid, phone="+6012345672", open_window=True)
+    token = _exchange(client, _assertion(iss=conn, workspace_id=wid)).json()["accessToken"]
+    return wid, token, {"Authorization": f"Bearer {token}"}
+
+
+def test_ac_38_29_embed_session_follows_the_tenant_lifecycle(client, session_factory):
+    wid, _token, hdr = _embed_session(client, session_factory)
+    assert client.get("/omnichannel/contacts", headers=hdr).status_code == 200  # control
+
+    _suspend(session_factory)
+    assert client.get("/omnichannel/contacts", headers=hdr).status_code in (401, 403)
+
+    _reactivate(session_factory)
+    assert client.get("/omnichannel/contacts", headers=hdr).status_code == 200
+
+
+def test_ac_38_29_embed_session_is_refused_for_an_archived_tenant(client, session_factory):
+    wid, _token, hdr = _embed_session(client, session_factory)
+    assert client.get("/omnichannel/contacts", headers=hdr).status_code == 200  # control
+    db = session_factory()
+    try:
+        svc = TenantService(db)
+        svc.suspend(DEFAULT_TENANT_ID)
+        svc.archive(DEFAULT_TENANT_ID)
+    finally:
+        db.close()
+    assert client.get("/omnichannel/contacts", headers=hdr).status_code in (401, 403)
+
+
+def test_ac_38_29_embed_websocket_is_refused_while_the_tenant_is_suspended(client, session_factory):
+    import fakeredis
+    import fakeredis.aioredis
+    from starlette.websockets import WebSocketDisconnect
+
+    from modules.omnichannel.routers import ws as ws_module
+    from modules.omnichannel.services import realtime
+
+    server = fakeredis.FakeServer()
+    realtime.set_client(fakeredis.FakeRedis(server=server, decode_responses=True))
+    ws_module.set_async_redis(fakeredis.aioredis.FakeRedis(server=server, decode_responses=True))
+    ws_module.set_session_factory(session_factory)
+    try:
+        wid, token, _hdr = _embed_session(client, session_factory)
+        url = f"/omnichannel/ws?workspaceId={wid}&token={token}"
+        with client.websocket_connect(url):
+            pass  # control: connects while the tenant is live
+
+        _suspend(session_factory)
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(url):
+                pass
+    finally:
+        realtime.set_client(None)
+        ws_module.set_async_redis(None)
+        ws_module.set_session_factory(ws_module.SessionLocal)
