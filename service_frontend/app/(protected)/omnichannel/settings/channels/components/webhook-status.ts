@@ -33,6 +33,7 @@ export const WEBHOOK_DELIVERY_STATUS_REGISTRY: StatusRegistry<WebhookDeliverySta
 /** Friendly labels for the three event kinds (shared by pills + the picker). */
 export const WEBHOOK_EVENT_LABELS: Record<WebhookEventType, string> = {
   'message.inbound': 'Inbound messages',
+  'message.outbound': 'Outbound messages',
   'message.status': 'Delivery receipts',
   'contact.updated': 'Contact updates',
   'message.reaction': 'Reactions',

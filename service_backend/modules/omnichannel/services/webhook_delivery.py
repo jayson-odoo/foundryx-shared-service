@@ -83,6 +83,22 @@ def _active_endpoints(
     return [r for r in rows if event_type in (r.events_json or [])]
 
 
+def consumer_message_payload(item: Any, row: Any) -> Dict[str, Any]:
+    """The consumer-facing message object shared by `message.inbound` and
+    `message.outbound`: media rides an ABSOLUTE, API-key-authed gateway URL
+    (plan 12 AC-12-11) and uses mimeType/filename/size, distinct from the
+    internal FE naming."""
+    from app.config import settings
+
+    payload = item.model_dump(mode="json")
+    if row.media_key:
+        payload["mediaUrl"] = f"{settings.public_base_url}/omnichannel/media/{row.id}"
+        payload["mimeType"] = payload.pop("mediaMime", None)
+        payload["filename"] = payload.pop("mediaFilename", None)
+        payload["size"] = payload.pop("mediaSize", None)
+    return payload
+
+
 def enqueue_event(
     db: Session,
     channel: Channel,

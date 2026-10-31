@@ -8,9 +8,10 @@
  * framework-agnostic so the service + UI share one source.
  */
 
-/** The three event kinds an endpoint may subscribe to. */
+/** The event kinds an endpoint may subscribe to. */
 export type WebhookEventType =
   | 'message.inbound'
+  | 'message.outbound'
   | 'message.status'
   | 'contact.updated'
   | 'message.reaction';

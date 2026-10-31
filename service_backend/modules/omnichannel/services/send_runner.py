@@ -50,6 +50,45 @@ def _read_media(db: Session, tenant_id: str, media_key: str) -> bytes:
     return resp.content
 
 
+def _emit_status_webhook(db: Session, row: ConversationMessage) -> None:
+    """Consumer `message.status` for the sender-side SENT / FAILED outcome (plan
+    38 AC-38-09/10): one event per status (`<id>:<STATUS>`), same data shape as
+    the receipt path. Sandbox rows skip. Failure-isolated; the row is already
+    committed so a rollback here loses nothing."""
+    if ((row.metadata_json or {}).get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
+        return
+    try:
+        from .webhook_delivery import enqueue_event
+
+        channel = (
+            db.query(Channel)
+            .filter(Channel.id == row.channel_id, Channel.tenant_id == row.tenant_id)
+            .first()
+        )
+        if channel is None:
+            return
+        enqueue_event(
+            db,
+            channel,
+            "message.status",
+            f"{row.id}:{row.delivery_status}",
+            {
+                "messageId": row.id,
+                "externalMessageId": row.external_message_id,
+                "contactId": row.contact_id,
+                "deliveryStatus": row.delivery_status,
+                "errorCode": row.error_code,
+                "errorMessage": row.error_message,
+            },
+        )
+    except Exception:  # noqa: BLE001 - a webhook bug must never break a send
+        logger.exception("message.status webhook failed for message %s", row.id)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _publish_status(db: Session, row: ConversationMessage) -> None:
     contact = ContactRepository(db).get_by_id(row.contact_id, row.tenant_id)
     if contact is None:
@@ -92,6 +131,7 @@ def _fail(db: Session, row: ConversationMessage, message: str) -> str:
     db.commit()
     _record_broadcast_receipt(db, row)
     _publish_status(db, row)
+    _emit_status_webhook(db, row)
     return "FAILED"
 
 
@@ -319,4 +359,5 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     db.commit()
     _record_broadcast_receipt(db, row)
     _publish_status(db, row)
+    _emit_status_webhook(db, row)
     return "SENT"

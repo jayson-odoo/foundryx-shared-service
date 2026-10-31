@@ -18,7 +18,6 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.config import settings
 
 from ..adapters import get_adapter
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
@@ -330,20 +329,13 @@ class InboundService:
         )
         # Fan out to consumer webhooks (Slice 4). event_id = wamid so the consumer
         # dedups across our retries. Failure-isolated inside enqueue_event.
-        from .webhook_delivery import enqueue_event
+        from .webhook_delivery import consumer_message_payload, enqueue_event
 
         # The consumer (EMS) fetches media bytes from an ABSOLUTE, API-key-authed
         # gateway URL (plan 12 AC-12-11) - override the inbox-relative mediaUrl.
         # The consumer-facing envelope uses mimeType/filename/size (the EMS
         # integration ticket + UAC), distinct from the internal FE naming.
-        message_payload = item.model_dump(mode="json")
-        if row.media_key:
-            message_payload["mediaUrl"] = (
-                f"{settings.public_base_url}/omnichannel/media/{row.id}"
-            )
-            message_payload["mimeType"] = message_payload.pop("mediaMime", None)
-            message_payload["filename"] = message_payload.pop("mediaFilename", None)
-            message_payload["size"] = message_payload.pop("mediaSize", None)
+        message_payload = consumer_message_payload(item, row)
 
         # Resume a run PARKED on an Ask-a-question step for this contact
         # (plan sprint-4/31 S4, AC-WFP-45, D-A5-8/F2). This runs BEFORE the

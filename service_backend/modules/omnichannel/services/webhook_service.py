@@ -36,7 +36,13 @@ from ..security import encrypt_secret
 SECRET_SCHEME = "whsec_"
 
 # The event types a consumer can subscribe to (mirrors the forwarder + FE).
-EVENT_TYPES = ("message.inbound", "message.status", "contact.updated", "message.reaction")
+EVENT_TYPES = (
+    "message.inbound",
+    "message.outbound",
+    "message.status",
+    "contact.updated",
+    "message.reaction",
+)
 
 # Auto-disable after this many consecutive dead-lettered deliveries.
 AUTO_DISABLE_THRESHOLD = 10
