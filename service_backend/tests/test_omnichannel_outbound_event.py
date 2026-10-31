@@ -167,7 +167,7 @@ def _insert_foreign_endpoint(session_factory, *, tenant_id, workspace_id, channe
 # AC-38-01 - the event type is valid, opt-in
 # ═════════════════════════════════════════════════════════════════════════════
 def test_ac_38_01_public_route_accepts_message_outbound(client, session_factory):
-    r = _rig(client, session_factory, "+60380000001", events=())
+    r = _rig(client, session_factory, "+601234567801", events=())
     reg = _register(client, r["hdr"], [OUTBOUND, "message.inbound"])
     assert reg.status_code == 201, reg.text
     assert set(reg.json()["endpoint"]["events"]) == {OUTBOUND, "message.inbound"}
@@ -177,7 +177,7 @@ def test_ac_38_01_public_route_accepts_message_outbound(client, session_factory)
 
 
 def test_ac_38_01_session_route_accepts_message_outbound(client, session_factory):
-    r = _rig(client, session_factory, "+60380000002", events=())
+    r = _rig(client, session_factory, "+601234567802", events=())
     res = client.post(
         f"/omnichannel/channels/{r['channel_id']}/webhooks",
         headers=_auth(client),
@@ -194,10 +194,10 @@ def test_ac_38_01_session_route_accepts_message_outbound(client, session_factory
 
 
 def test_ac_38_01_opt_in_unsubscribed_endpoint_gets_nothing(client, session_factory):
-    r = _rig(client, session_factory, "+60380000003", events=("message.inbound", "message.status"))
+    r = _rig(client, session_factory, "+601234567803", events=("message.inbound", "message.status"))
     # a second endpoint DOES subscribe: proves the send emitted at all (control)
     assert _register(client, r["hdr"], [OUTBOUND], name="opt-in").status_code == 201
-    assert _api_text(client, r["hdr"], "+60380000003").status_code == 202
+    assert _api_text(client, r["hdr"], "+601234567803").status_code == 202
 
     rows = _deliveries(session_factory)
     assert len(rows) == 1
@@ -208,12 +208,12 @@ def test_ac_38_01_opt_in_unsubscribed_endpoint_gets_nothing(client, session_fact
 # AC-38-02 / AC-38-03 - one delivery per ACTIVE subscribed endpoint, envelope
 # ═════════════════════════════════════════════════════════════════════════════
 def test_ac_38_02_03_api_text_one_per_active_endpoint_envelope_and_source(client, session_factory):
-    r = _rig(client, session_factory, "+60380000010")
+    r = _rig(client, session_factory, "+601234567810")
     ep2 = _register(client, r["hdr"], [OUTBOUND], name="second").json()["endpoint"]["id"]
     off = _register(client, r["hdr"], [OUTBOUND], name="off").json()["endpoint"]["id"]
     assert client.post(f"/api/v1/omnichannel/webhooks/{off}/disable", headers=r["hdr"]).status_code == 200
 
-    sent = _api_text(client, r["hdr"], "+60380000010", body="Hi envelope")
+    sent = _api_text(client, r["hdr"], "+601234567810", body="Hi envelope")
     assert sent.status_code == 202, sent.text
     mid = sent.json()["id"]
 
@@ -234,20 +234,20 @@ def test_ac_38_02_03_api_text_one_per_active_endpoint_envelope_and_source(client
 
 
 def test_ac_38_03_event_id_stable_across_two_sends_is_per_message(client, session_factory):
-    r = _rig(client, session_factory, "+60380000011")
-    a = _api_text(client, r["hdr"], "+60380000011", body="one").json()["id"]
-    b = _api_text(client, r["hdr"], "+60380000011", body="two").json()["id"]
+    r = _rig(client, session_factory, "+601234567811")
+    a = _api_text(client, r["hdr"], "+601234567811", body="one").json()["id"]
+    b = _api_text(client, r["hdr"], "+601234567811", body="two").json()["id"]
     ids = sorted(x["event_id"] for x in _deliveries(session_factory))
     assert ids == sorted([f"{a}:outbound", f"{b}:outbound"])
 
 
 def test_ac_38_02_api_template(client, session_factory):
-    r = _rig(client, session_factory, "+60380000012")
+    r = _rig(client, session_factory, "+601234567812")
     _ensure_template(session_factory, r["channel_id"], name="tpl_out")
     res = client.post(
         "/api/v1/omnichannel/messages",
         json={
-            "to": "+60380000012",
+            "to": "+601234567812",
             "type": "template",
             "template": {"name": "tpl_out", "variables": ["Sam", "shipped"]},
         },
@@ -264,11 +264,11 @@ def test_ac_38_02_04_api_media_has_absolute_media_url(client, session_factory, m
     from modules.omnichannel.services.public_gateway_service import PublicGatewayService
 
     monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url: PNG)
-    r = _rig(client, session_factory, "+60380000013")
+    r = _rig(client, session_factory, "+601234567813")
     res = client.post(
         "/api/v1/omnichannel/messages",
         json={
-            "to": "+60380000013",
+            "to": "+601234567813",
             "type": "image",
             "media": {"url": "https://files.example.com/a.png", "caption": "pic"},
         },
@@ -287,10 +287,10 @@ def test_ac_38_02_04_api_media_has_absolute_media_url(client, session_factory, m
 
 
 def test_ac_38_02_api_structured_location(client, session_factory):
-    r = _rig(client, session_factory, "+60380000014")
+    r = _rig(client, session_factory, "+601234567814")
     res = client.post(
         "/api/v1/omnichannel/messages",
-        json={"to": "+60380000014", "type": "location", "location": {"lat": 3.1, "lng": 101.6, "name": "HQ"}},
+        json={"to": "+601234567814", "type": "location", "location": {"lat": 3.1, "lng": 101.6, "name": "HQ"}},
         headers=r["hdr"],
     )
     assert res.status_code == 202, res.text
@@ -302,7 +302,7 @@ def test_ac_38_02_api_structured_location(client, session_factory):
 def test_ac_38_02_workflow_send_node_source_workflow(client, session_factory):
     from modules.omnichannel.services.workflow_actions import omnichannel_send_message
 
-    r = _rig(client, session_factory, "+60380000015")
+    r = _rig(client, session_factory, "+601234567815")
     db = session_factory()
     try:
         out = omnichannel_send_message(
@@ -333,7 +333,7 @@ def test_ac_38_02_api_voice_and_document_media(
         "modules.omnichannel.services.send_runner.transcode_voice",
         lambda content: b"OggS" + b"\x00" * 64,
     )
-    phone = "+60380000071" if kind == "voice" else "+60380000072"
+    phone = "+601234567871" if kind == "voice" else "+601234567872"
     r = _rig(client, session_factory, phone)
     res = client.post(
         "/api/v1/omnichannel/messages",
@@ -352,11 +352,11 @@ def test_ac_38_02_api_voice_and_document_media(
 
 
 def test_ac_38_02_api_interactive(client, session_factory):
-    r = _rig(client, session_factory, "+60380000073")
+    r = _rig(client, session_factory, "+601234567873")
     res = client.post(
         "/api/v1/omnichannel/messages",
         json={
-            "to": "+60380000073",
+            "to": "+601234567873",
             "type": "interactive",
             "interactive": {"kind": "buttons", "body": "Pick", "buttons": [{"id": "a", "title": "A"}]},
         },
@@ -369,11 +369,11 @@ def test_ac_38_02_api_interactive(client, session_factory):
 
 
 def test_ac_38_02_api_contacts(client, session_factory):
-    r = _rig(client, session_factory, "+60380000074")
+    r = _rig(client, session_factory, "+601234567874")
     res = client.post(
         "/api/v1/omnichannel/messages",
         json={
-            "to": "+60380000074",
+            "to": "+601234567874",
             "type": "contacts",
             "contacts": [{"name": "Jane Doe", "phones": [{"phone": "+60123", "type": "CELL"}]}],
         },
@@ -388,7 +388,7 @@ def test_ac_38_02_api_contacts(client, session_factory):
 def test_ac_38_05_sandbox_row_emits_no_outbound_and_no_status(client, session_factory):
     from modules.omnichannel.services.workflow_actions import omnichannel_send_message
 
-    r = _rig(client, session_factory, "+60380000075", events=(OUTBOUND, "message.status"))
+    r = _rig(client, session_factory, "+601234567875", events=(OUTBOUND, "message.status"))
     # control: a normal workflow send emits outbound AND a SENT status
     db = session_factory()
     try:
@@ -417,7 +417,7 @@ def test_ac_38_05_sandbox_row_emits_no_outbound_and_no_status(client, session_fa
 
 
 def test_ac_38_02_inbox_text_source_inbox(client, session_factory):
-    r = _rig(client, session_factory, "+60380000016")
+    r = _rig(client, session_factory, "+601234567816")
     res = client.post(
         f"/omnichannel/contacts/{r['cid']}/messages",
         json={"messageType": "TEXT", "body": "from inbox"},
@@ -431,7 +431,7 @@ def test_ac_38_02_inbox_text_source_inbox(client, session_factory):
 
 
 def test_ac_38_02_04_inbox_media_source_inbox_and_media_url(client, session_factory):
-    r = _rig(client, session_factory, "+60380000017")
+    r = _rig(client, session_factory, "+601234567817")
     res = client.post(
         f"/omnichannel/contacts/{r['cid']}/media",
         files={"file": ("a.png", PNG, "image/png")},
@@ -447,7 +447,7 @@ def test_ac_38_02_04_inbox_media_source_inbox_and_media_url(client, session_fact
 
 
 def test_ac_38_02_inbox_structured_location(client, session_factory):
-    r = _rig(client, session_factory, "+60380000018")
+    r = _rig(client, session_factory, "+601234567818")
     res = client.post(
         f"/omnichannel/contacts/{r['cid']}/location",
         json={"lat": 3.1, "lng": 101.6, "name": "HQ"},
@@ -502,7 +502,7 @@ def test_ac_38_02_broadcast_send_source_broadcast(client, session_factory):
 def test_ac_38_05_note_reaction_inbound_sandbox_do_not_emit(client, session_factory):
     from modules.omnichannel.services.workflow_actions import omnichannel_send_message
 
-    r = _rig(client, session_factory, "+60380000020")
+    r = _rig(client, session_factory, "+601234567820")
     h = _auth(client)
     # control: a normal send DOES emit exactly once
     sent = client.post(
@@ -524,7 +524,7 @@ def test_ac_38_05_note_reaction_inbound_sandbox_do_not_emit(client, session_fact
     )
     assert reacted.status_code == 200, reacted.text
     # inbound message
-    _process(session_factory, r["channel_id"], _wa_payload(wamid="wamid.in-x", from_="60380000020", text="yo"))
+    _process(session_factory, r["channel_id"], _wa_payload(wamid="wamid.in-x", from_="601234567820", text="yo"))
     # workflow test sandbox row
     db = session_factory()
     try:
@@ -554,7 +554,7 @@ def test_ac_38_05_migration_import_does_not_emit(session_factory, monkeypatch):
 
     ws = _default_workspace_id(session_factory)
     channel_id = _ensure_channel(session_factory, ws)
-    cid = _seed_contact(session_factory, ws, first="Mig", last="Rated", phone="+60 38-000 0021")
+    cid = _seed_contact(session_factory, ws, first="Mig", last="Rated", phone="+60 12-345 6781")
     db = session_factory()
     try:
         WebhookService(db).create(DEFAULT_TENANT_ID, channel_id, "EMS", HOOK_URL, [OUTBOUND], created_by=None)
@@ -581,10 +581,10 @@ def test_ac_38_05_migration_import_does_not_emit(session_factory, monkeypatch):
 # AC-38-06 - idempotent replay
 # ═════════════════════════════════════════════════════════════════════════════
 def test_ac_38_06_idempotent_replay_emits_once(client, session_factory):
-    r = _rig(client, session_factory, "+60380000030")
+    r = _rig(client, session_factory, "+601234567830")
     hdr = {"Idempotency-Key": "outbound-replay-1"}
-    r1 = _api_text(client, r["hdr"], "+60380000030", extra_headers=hdr)
-    r2 = _api_text(client, r["hdr"], "+60380000030", extra_headers=hdr)
+    r1 = _api_text(client, r["hdr"], "+601234567830", extra_headers=hdr)
+    r2 = _api_text(client, r["hdr"], "+601234567830", extra_headers=hdr)
     assert r1.status_code == 202 and r2.status_code == 202
     assert r2.json()["idempotencyReplay"] is True
     assert r1.json()["id"] == r2.json()["id"]
@@ -597,7 +597,7 @@ def test_ac_38_06_idempotent_replay_emits_once(client, session_factory):
 # AC-38-07 - enqueue failure never fails or rolls back the send
 # ═════════════════════════════════════════════════════════════════════════════
 def test_ac_38_07_enqueue_failure_does_not_fail_send(client, session_factory, monkeypatch):
-    r = _rig(client, session_factory, "+60380000040")
+    r = _rig(client, session_factory, "+601234567840")
     real = wd.enqueue_event
     attempts = {"outbound": 0}
 
@@ -609,7 +609,7 @@ def test_ac_38_07_enqueue_failure_does_not_fail_send(client, session_factory, mo
 
     monkeypatch.setattr(wd, "enqueue_event", boom)
 
-    res = _api_text(client, r["hdr"], "+60380000040", body="still sent")
+    res = _api_text(client, r["hdr"], "+601234567840", body="still sent")
     assert res.status_code == 202, res.text
     mid = res.json()["id"]
     inbox = client.post(
@@ -637,7 +637,7 @@ def test_ac_38_07_enqueue_failure_does_not_fail_send(client, session_factory, mo
 # AC-38-08 - isolation: other channel / workspace / tenant never receives
 # ═════════════════════════════════════════════════════════════════════════════
 def test_ac_38_08_other_channel_workspace_tenant_get_nothing(client, session_factory):
-    r = _rig(client, session_factory, "+60380000050")
+    r = _rig(client, session_factory, "+601234567850")
     ws = r["ws"]
     # another channel in the SAME workspace + endpoint subscribed to outbound
     other_channel = _seed_channel(session_factory, ws, phone_number_id="pn-other")
@@ -679,7 +679,7 @@ def test_ac_38_08_other_channel_workspace_tenant_get_nothing(client, session_fac
     res = client.post(
         "/api/v1/omnichannel/messages",
         json={
-            "to": "+60380000050",
+            "to": "+601234567850",
             "channelId": r["channel_id"],
             "type": "text",
             "text": {"body": "isolated"},
@@ -701,8 +701,8 @@ def _status_rows(session_factory, mid):
 
 
 def test_ac_38_09_meta_accept_emits_sent_and_late_sent_receipt_adds_none(client, session_factory):
-    r = _rig(client, session_factory, "+60380000060", events=("message.status",))
-    sent = _api_text(client, r["hdr"], "+60380000060")
+    r = _rig(client, session_factory, "+601234567860", events=("message.status",))
+    sent = _api_text(client, r["hdr"], "+601234567860")
     assert sent.status_code == 202, sent.text
     mid = sent.json()["id"]
 
@@ -727,7 +727,7 @@ def test_ac_38_10_sync_failure_emits_failed_with_error_fields(client, session_fa
         "modules.omnichannel.services.send_runner.transcode_voice",
         lambda content: (_ for _ in ()).throw(MediaRejected("transcode_failed", "bad audio")),
     )
-    r = _rig(client, session_factory, "+60380000061", events=("message.status",))
+    r = _rig(client, session_factory, "+601234567861", events=("message.status",))
     res = client.post(
         f"/omnichannel/contacts/{r['cid']}/media",
         files={"file": ("v.webm", WEBM, "audio/webm")},
@@ -747,8 +747,8 @@ def test_ac_38_10_sync_failure_emits_failed_with_error_fields(client, session_fa
 
 
 def test_ac_38_11_delivered_read_unchanged_and_never_backward(client, session_factory):
-    r = _rig(client, session_factory, "+60380000062", events=("message.status",))
-    mid = _api_text(client, r["hdr"], "+60380000062").json()["id"]
+    r = _rig(client, session_factory, "+601234567862", events=("message.status",))
+    mid = _api_text(client, r["hdr"], "+601234567862").json()["id"]
     ext = _external_id(session_factory, mid)
     assert ext
 
@@ -861,7 +861,7 @@ def test_ac_38_14_transient_error_text_never_stored_cleared_on_success_and_logge
 
     from modules.omnichannel.services.send_runner import run_send
 
-    r = _rig(client, session_factory, "+60380000080", events=("message.status",))
+    r = _rig(client, session_factory, "+601234567880", events=("message.status",))
     _use_adapter(monkeypatch, _provider_error(RAW_TRANSIENT, transient=True))
     with caplog.at_level(logging.DEBUG):
         res = _inbox_text(client, r["cid"])
@@ -891,7 +891,7 @@ def test_ac_38_15_sent_and_delivered_carry_null_error_fields_failed_carries_them
 ):
     from modules.omnichannel.services.send_runner import run_send
 
-    r = _rig(client, session_factory, "+60380000081", events=("message.status",))
+    r = _rig(client, session_factory, "+601234567881", events=("message.status",))
     # first attempt requeues (transient), then a stale error is planted, then success
     _use_adapter(monkeypatch, _provider_error("blip", transient=True))
     mid = _inbox_text(client, r["cid"]).json()["id"]
@@ -930,7 +930,7 @@ def test_ac_38_15_sent_and_delivered_carry_null_error_fields_failed_carries_them
 
 
 def test_ac_38_16_failed_event_uses_provider_code_when_there_is_one(client, session_factory, monkeypatch):
-    r = _rig(client, session_factory, "+60380000082", events=("message.status",))
+    r = _rig(client, session_factory, "+601234567882", events=("message.status",))
     _use_adapter(monkeypatch, _provider_error("Re-engagement message", code="131047"))
     mid = _inbox_text(client, r["cid"]).json()["id"]
     failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
@@ -940,7 +940,7 @@ def test_ac_38_16_failed_event_uses_provider_code_when_there_is_one(client, sess
 
 
 def test_ac_38_16_long_provider_error_is_capped_at_300_characters(client, session_factory, monkeypatch):
-    r = _rig(client, session_factory, "+60380000083", events=("message.status",))
+    r = _rig(client, session_factory, "+601234567883", events=("message.status",))
     long_text = "E" * 50 + "x" * 700
     _use_adapter(monkeypatch, _provider_error(long_text, code="100"))
     mid = _inbox_text(client, r["cid"]).json()["id"]
@@ -958,7 +958,7 @@ def test_ac_38_16_local_failure_has_null_error_code(client, session_factory, mon
         "modules.omnichannel.services.send_runner.transcode_voice",
         lambda content: (_ for _ in ()).throw(MediaRejected("transcode_failed", "bad audio")),
     )
-    r = _rig(client, session_factory, "+60380000084", events=("message.status",))
+    r = _rig(client, session_factory, "+601234567884", events=("message.status",))
     res = client.post(
         f"/omnichannel/contacts/{r['cid']}/media",
         files={"file": ("v.webm", WEBM, "audio/webm")},
@@ -975,7 +975,7 @@ def test_ac_38_16_local_failure_has_null_error_code(client, session_factory, mon
 def test_ac_38_17_reply_target_must_be_a_message(
     client, session_factory
 ):
-    r = _rig(client, session_factory, "+60380000085")
+    r = _rig(client, session_factory, "+601234567885")
     h = _auth(client)
     normal = _inbox_text(client, r["cid"], body="normal one").json()["id"]
     note = client.post(
@@ -1002,7 +1002,7 @@ def test_ac_38_17_reply_target_must_be_a_message(
 
 
 def test_ac_38_18_same_channel_id_under_another_tenant_or_workspace_gets_nothing(client, session_factory):
-    r = _rig(client, session_factory, "+60380000086")
+    r = _rig(client, session_factory, "+601234567886")
     for tenant_id, workspace_id in (
         ("other-tenant-id", "other-tenant-ws"),
         (DEFAULT_TENANT_ID, "other-workspace-id"),
@@ -1014,7 +1014,7 @@ def test_ac_38_18_same_channel_id_under_another_tenant_or_workspace_gets_nothing
             channel_id=r["channel_id"],
             events=[OUTBOUND],
         )
-    assert _api_text(client, r["hdr"], "+60380000086").status_code == 202
+    assert _api_text(client, r["hdr"], "+601234567886").status_code == 202
     rows = _deliveries(session_factory)
     assert [x["endpoint_id"] for x in rows] == [r["ep"]]  # right endpoint got it, nobody else
 
@@ -1025,3 +1025,235 @@ def test_ac_38_19_guide_states_sender_fields_and_apikey_sender_id():
     i = guide.index("apikey:")
     window = guide[max(0, i - 800) : i + 800].lower()
     assert "sender" in window and "message.outbound" in guide
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Code review round (AC-38-30..33)
+# ═════════════════════════════════════════════════════════════════════════════
+def _drive_worker(monkeypatch, session_factory, mid):
+    """Run the Celery task the way the worker does (autoretry up to
+    max_retries), on the test engine."""
+    import app.database as appdb
+    from modules.omnichannel.worker import omnichannel_send_message
+
+    monkeypatch.setattr(appdb, "SessionLocal", session_factory)
+    try:
+        return omnichannel_send_message.apply(args=[mid])
+    except Exception:  # noqa: BLE001 - eager Celery re-raises Retry/the last error; the outcome is what counts
+        return None
+
+
+def test_ac_38_30a_retries_exhausted_ends_failed_with_one_failed_event(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456780", events=("message.status",))
+    _use_adapter(monkeypatch, _provider_error(RAW_TRANSIENT, transient=True))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    # control: a transient error with retries remaining emits NOTHING yet
+    assert _row(session_factory, mid)[0] == "QUEUED"
+    assert _status_rows(session_factory, mid) == []
+
+    _drive_worker(monkeypatch, session_factory, mid)
+
+    status, _code, message = _row(session_factory, mid)
+    assert status == "FAILED", status
+    failed = [x["event_id"] for x in _status_rows(session_factory, mid)]
+    assert failed == [f"{mid}:FAILED"], failed
+    assert "RAWDETAIL" not in str(_deliveries(session_factory, "message.status"))
+
+
+def test_ac_38_30b_unexpected_adapter_error_ends_failed_with_generic_text(client, session_factory, monkeypatch):
+    from modules.omnichannel.services.send_runner import run_send
+
+    r = _rig(client, session_factory, "+60123456781", events=("message.status",))
+    _use_adapter(monkeypatch, _provider_error("blip", transient=True))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    assert _row(session_factory, mid)[0] == "QUEUED"  # control
+
+    _use_adapter(monkeypatch, RuntimeError("secret detail"))
+    db = session_factory()
+    try:
+        try:
+            run_send(db, mid)
+        except Exception:  # noqa: BLE001 - the contract is the outcome, not whether it re-raises
+            pass
+    finally:
+        db.close()
+
+    status, _code, message = _row(session_factory, mid)
+    assert status == "FAILED", f"row left in {status}"
+    assert "secret detail" not in (message or "")
+    failed = [x["event_id"] for x in _status_rows(session_factory, mid)]
+    assert failed == [f"{mid}:FAILED"], failed
+    assert "secret detail" not in str(_deliveries(session_factory, "message.status"))
+
+
+def test_ac_38_31_receipt_right_after_commit_still_gives_one_sent_and_no_duplicate_delivered(
+    client, session_factory, monkeypatch
+):
+    from modules.omnichannel.services import realtime
+
+    r = _rig(client, session_factory, "+60123456782", events=("message.status",))
+    _use_adapter(monkeypatch, None)  # external id "wamid.fake-sec"
+    real_publish = realtime.publish
+    state = {"fired": False}
+
+    def publish_then_receipt(workspace_id, event):
+        real_publish(workspace_id, event)
+        if event.get("type") == "message.status" and not state["fired"]:
+            state["fired"] = True
+            _process(
+                session_factory,
+                r["channel_id"],
+                _wa_payload(statuses=[{"id": "wamid.fake-sec", "status": "delivered", "timestamp": "1717550009"}]),
+            )
+
+    monkeypatch.setattr(realtime, "publish", publish_then_receipt)
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    assert state["fired"], "control: the receipt really arrived between the commit and the emit"
+    ids = [x["event_id"] for x in _status_rows(session_factory, mid)]
+    assert ids.count(f"{mid}:SENT") == 1, ids
+    assert ids.count(f"{mid}:DELIVERED") == 1, ids  # only the receipt path produced it
+
+
+def test_ac_38_32_voice_outbound_reports_the_transcoded_type_and_matches_get(client, session_factory, monkeypatch):
+    monkeypatch.setattr(
+        "modules.omnichannel.services.send_runner.transcode_voice",
+        lambda content: b"OggS" + b"\x00" * 64,
+    )
+    r = _rig(client, session_factory, "+60123456783")
+    res = client.post(
+        f"/omnichannel/contacts/{r['cid']}/media",
+        files={"file": ("v.webm", WEBM, "audio/webm")},
+        data={"kind": "voice"},
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    mid = res.json()["id"]
+    msg = _only_outbound(session_factory)["payload"]["data"]["message"]
+    got = [m for m in client.get(f"/omnichannel/contacts/{r['cid']}/messages", headers=_auth(client)).json() if m["id"] == mid][0]
+    assert got["mediaMime"] == "audio/ogg"  # control: what GET reports afterwards
+    assert msg["mimeType"] == "audio/ogg"
+
+
+def test_ac_38_33_no_subscriber_builds_no_outbound_payload(client, session_factory, monkeypatch):
+    calls = {"n": 0}
+    real = wd.consumer_message_payload
+
+    def spy(item, row):
+        calls["n"] += 1
+        return real(item, row)
+
+    monkeypatch.setattr(wd, "consumer_message_payload", spy)
+
+    # no endpoint at all, and an endpoint that does not subscribe to message.outbound
+    r = _rig(client, session_factory, "+60123456784", events=())
+    assert _inbox_text(client, r["cid"]).status_code == 201
+    assert calls["n"] == 0
+    assert _register(client, r["hdr"], ["message.inbound", "message.status"]).status_code == 201
+    assert _inbox_text(client, r["cid"], body="still none").status_code == 201
+    assert calls["n"] == 0
+
+    # control: with a subscriber the payload IS built, exactly once per send
+    assert _register(client, r["hdr"], [OUTBOUND], name="sub").status_code == 201
+    assert _inbox_text(client, r["cid"], body="now built").status_code == 201
+    assert calls["n"] == 1
+
+
+# ── kill-test gaps ───────────────────────────────────────────────────────────
+def test_embed_agent_send_reports_source_inbox(client, session_factory):
+    from tests.test_omnichannel_embed import (
+        _assertion,
+        _bearer,
+        _channel_in_workspace,
+        _exchange,
+        _make_connection,
+        _seed_contact,
+        _workspace_id,
+    )
+
+    conn = _make_connection(session_factory)
+    wid = _workspace_id(session_factory)
+    contact_id = _seed_contact(session_factory, workspace_id=wid)
+    channel_id = _channel_in_workspace(session_factory, wid)
+    db = session_factory()
+    try:
+        WebhookService(db).create(DEFAULT_TENANT_ID, channel_id, "EMS", HOOK_URL, [OUTBOUND], created_by=None)
+    finally:
+        db.close()
+    token = _exchange(client, _assertion(iss=conn, workspace_id=wid, name="Alice Agent")).json()["accessToken"]
+    send = client.post(
+        f"/omnichannel/contacts/{contact_id}/messages",
+        json={"body": "from the widget"},
+        headers=_bearer(token),
+    )
+    assert send.status_code == 201, send.text
+    assert send.json()["senderExternalAgentId"]  # control: it is a real embed-agent send
+    row = _only_outbound(session_factory)
+    assert row["payload"]["data"]["source"] == "inbox"
+    assert row["payload"]["data"]["message"]["id"] == send.json()["id"]
+
+
+def test_emit_helpers_never_resolve_a_channel_of_another_tenant(client, session_factory):
+    from modules.omnichannel.services.message_service import MessageService
+    from modules.omnichannel.services.send_runner import _emit_status_webhook
+
+    r = _rig(client, session_factory, "+60123456785", events=())
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    # a foreign tenant's channel with an endpoint subscribed to both events
+    db = session_factory()
+    try:
+        foreign = Channel(
+            tenant_id="other-tenant-id",
+            workspace_id="other-tenant-ws",
+            channel_type="WHATSAPP",
+            name="foreign",
+            phone_number_id="pn-foreign-emit",
+            is_active=True,
+        )
+        db.add(foreign)
+        db.commit()
+        foreign_id = foreign.id
+    finally:
+        db.close()
+    _insert_foreign_endpoint(
+        session_factory,
+        tenant_id="other-tenant-id",
+        workspace_id="other-tenant-ws",
+        channel_id=foreign_id,
+        events=[OUTBOUND, "message.status"],
+    )
+    # craft: our tenant's message row now points at the foreign tenant's channel
+    db = session_factory()
+    try:
+        row = db.query(ConversationMessage).filter(ConversationMessage.id == mid).first()
+        row.channel_id = foreign_id
+        db.commit()
+        svc = MessageService(db)
+        from modules.omnichannel.models import Contact
+
+        contact = db.query(Contact).filter(Contact.id == r["cid"]).first()
+        item = svc.conversations.message_items([row])[0]
+        svc._emit_outbound(row, contact, item)
+        row.delivery_status = "SENT"
+        _emit_status_webhook(db, row)
+    finally:
+        db.close()
+    assert _deliveries(session_factory, OUTBOUND) == []
+    assert _deliveries(session_factory, "message.status") == []
+
+
+def test_status_emit_enqueue_failure_does_not_fail_the_send(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456786", events=("message.status",))
+    real = wd.enqueue_event
+    attempts = {"status": 0}
+
+    def boom(db, channel, event_type, event_id, data):
+        if event_type == "message.status":
+            attempts["status"] += 1
+            raise RuntimeError("status enqueue exploded")
+        return real(db, channel, event_type, event_id, data)
+
+    monkeypatch.setattr(wd, "enqueue_event", boom)
+    res = _inbox_text(client, r["cid"])
+    assert res.status_code == 201, res.text
+    assert attempts["status"] >= 1  # control: the emit was genuinely attempted
+    assert _row(session_factory, res.json()["id"])[0] == "SENT"
