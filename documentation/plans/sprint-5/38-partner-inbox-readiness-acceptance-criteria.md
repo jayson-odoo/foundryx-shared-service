@@ -51,7 +51,7 @@ Message status events reach external systems, so what they carry is a contract.
 
 | AC | Rule |
 |---|---|
-| AC-38-30 | Every send ends in a visible outcome. When retries run out, or an unexpected error stops a send, the row becomes `FAILED` and one `message.status` `FAILED` goes out, with generic text for anything unexpected. A row never stays `QUEUED` or `SENDING` with no event |
+| AC-38-30 | When retries run out, or an unexpected error stops a send before the provider accepted it, the row becomes `FAILED` and one `message.status` `FAILED` goes out, with generic text for anything unexpected. A worker killed outright is not covered here: see the backlog |
 | AC-38-31 | The sender-side event reports the outcome the sender reached, not the row's current status. A receipt arriving right after the commit still gives one `{id}:SENT`, and no duplicate `{id}:DELIVERED` |
 | AC-38-32 | `message.outbound` for a voice message reports the type that will be sent, `audio/ogg`, the same as `GET` messages returns afterwards |
 | AC-38-33 | A send on a channel with no endpoint subscribed to the event builds no payload, so sends without subscribers do not pay for webhooks |
@@ -64,3 +64,12 @@ Message status events reach external systems, so what they carry is a contract.
 | AC-38-35 | A media read failure carries only its status, in the error and in the log |
 | AC-38-36 | A broadcast recipient's error text follows the same rule: generic text stored, detail logged |
 | AC-38-37 | A database failure while enqueueing a webhook never fails or blocks a send, including a failed insert that leaves the session needing a rollback. The message is still sent and the caller gets its normal response |
+
+## Gap 3 outcome accuracy
+
+| AC | Rule |
+|---|---|
+| AC-38-38 | A message the provider accepted is never reported `FAILED`. If recording success fails, the row is still moved to `SENT` with its external id, and one `SENT` goes out, so later receipts match |
+| AC-38-39 | The provider's error code survives retries: a send that exhausts retries reports the last provider code on `FAILED` |
+| AC-38-40 | A failure in the broadcast hook or the realtime publish does not stop the `message.status` event, and leaves the session usable |
+| AC-38-41 | The guide describes delivery honestly: normally one `SENT` or `FAILED`, delivery is at-least-once so consumers dedupe on the event id, and `GET` can show generic text on a message still being retried |
