@@ -22,9 +22,11 @@ from ..models import (
     WhatsappTemplate,
 )
 from ..phone import digits_only
+from ..repositories.channel_repository import ChannelRepository
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
     PublicSendRequest,
+    PublicChannelItem,
     PublicTemplateItem,
     RioAssignee,
     RioContactItem,
@@ -1081,6 +1083,55 @@ class PublicGatewayService:
         if reserved:
             store.finalize(workspace_id, idempotency_key, message_id)
         return message_id, False
+
+    # ── Channels (read-only) ─────────────────────────────────────────────────
+    def list_channels(self, tenant_id: str, workspace_id: str) -> list[PublicChannelItem]:
+        """The workspace's channels, oldest first. Paused (inactive) rows are
+        listed with their real status (a consumer must see a number that
+        stopped working); disconnected (trashed) rows are not. ``isDefault`` is the channel
+        ``_workspace_channel`` returns for an omitted ``channelId`` - the SAME
+        resolver, so the flag can never drift from what a send does; with no
+        active channel nothing is default."""
+        rows = ChannelRepository(self.db).list_by_workspace(
+            workspace_id, tenant_id, oldest_first=True
+        )
+        try:
+            default_id: Optional[str] = self._workspace_channel(tenant_id, workspace_id).id
+        except ApiError as exc:
+            if exc.code != "no_active_channel":
+                raise
+            default_id = None
+        smap = statuses.id_to_key_map(self.db, tenant_id)
+
+        def _is_provider_id(value: Optional[str], c: Channel) -> bool:
+            # On a WhatsApp channel, a display field that holds (or is built
+            # from) the provider's number id, because details were not available
+            # at connect, is not shown. Short, blank or missing ids change nothing.
+            if c.channel_type != "WHATSAPP" or not value:
+                return False
+            pid = (c.phone_number_id or "").strip()
+            return len(pid) >= 6 and pid in value
+
+        def _status(c: Channel) -> str:
+            # A missing status row reads ACTIVE only for an active channel.
+            return smap.get(c.status_id) or ("ACTIVE" if c.is_active else "INACTIVE")
+
+        return [
+            PublicChannelItem(
+                id=c.id,
+                channelType=c.channel_type,
+                name="WhatsApp channel" if _is_provider_id(c.name, c) else c.name,
+                status=_status(c),
+                isActive=c.is_active,
+                isDefault=c.id == default_id,
+                displayPhoneNumber=(
+                    None if _is_provider_id(c.display_phone_number, c) else c.display_phone_number
+                ),
+                verifiedName=None if _is_provider_id(c.verified_name, c) else c.verified_name,
+                createdAt=c.created_at,
+            )
+            for c in rows
+        ]
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
     def list_templates(

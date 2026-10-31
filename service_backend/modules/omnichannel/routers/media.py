@@ -6,8 +6,9 @@ manifest - auth is enforced INSIDE):
 ``GET /omnichannel/media/{message_id}`` (plan 12 AC-12-05): blob-fetch a message's
 stored media, authed by **either** a session JWT (agent browser via
 ``apiFetchBlob``) **or** a workspace API key (EMS). Both paths are tenant-scoped;
-the API-key path is additionally workspace-scoped + re-checks the module is active
-(mirrors ``api_auth.get_api_workspace``); the session path requires the
+the API-key path is additionally workspace-scoped and follows the same key rule as
+``api_auth.get_api_workspace`` (tenant may sign in, module active, workspace not
+trashed); the session path re-checks the tenant lifecycle and requires the
 ``conversations.read`` permission (the same gate that exposes the mediaUrl on
 ``/contacts/{id}/messages``). ``Content-Security-Policy: sandbox`` + nosniff.
 No auth → 401; a message id the caller can't reach → 404.
@@ -24,14 +25,17 @@ from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import effective_permission_keys
+from app.dependencies import (
+    assert_staff_token,
+    assert_tenant_signin_allowed,
+    effective_permission_keys,
+)
 from app.models.tenant import DEFAULT_TENANT_ID
-from app.repositories.module_repository import ModuleRepository
 from app.repositories.user_repository import UserRepository
 from app.security import decode_access_token
 from app.services.storage import UnresolvableKey, storage_for_tenant
 
-from ..api_auth import MODULE_NAME, _parse_bearer
+from ..api_auth import _parse_bearer, gateway_key_enabled
 from ..repositories.contact_repository import ContactRepository
 from ..security import verify_media_sig
 from ..services.api_key_service import ApiKeyService
@@ -50,8 +54,8 @@ def _resolve_principal(
     authorization: Optional[str], db: Session
 ) -> Tuple[str, Optional[str]]:
     """Resolve either auth path → (tenant_id, workspace_id | None). API-key auth
-    is workspace-scoped (+ module-active re-check); session auth is tenant-scoped
-    (workspace None) and gated by ``conversations.read``. Raises 401 on any miss
+    is workspace-scoped and follows ``gateway_key_enabled``; session auth is
+    tenant-scoped (workspace None), refused for a tenant that may not sign in, and gated by ``conversations.read``. Raises 401 on any miss
     (uniform - no enumeration)."""
     token = _parse_bearer(authorization)
     if not token:
@@ -61,8 +65,8 @@ def _resolve_principal(
         row = ApiKeyService(db).resolve(token)
         if row is None:
             raise HTTPException(status_code=401, detail="Invalid API key.")
-        # Re-check the service is active for the key's tenant (mirror get_api_workspace).
-        if not ModuleRepository(db).is_active(row.tenant_id, MODULE_NAME):
+        # Same key rule as get_api_workspace (tenant, module and workspace state).
+        if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
             raise HTTPException(status_code=403, detail="This service is not enabled.")
         return row.tenant_id, row.workspace_id
     # Session JWT (agent path).
@@ -71,12 +75,16 @@ def _resolve_principal(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid credentials.")
     user_id = payload.get("sub")
-    if not user_id or payload.get("kind") == "profile":
+    if not user_id:
         raise HTTPException(status_code=401, detail="Invalid credentials.")
+    # Same accepted token types as every other session route.
+    assert_staff_token(payload)
     tenant_id = payload.get("tenant_id") or DEFAULT_TENANT_ID
     user = UserRepository(db).get_by_id(user_id, tenant_id)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid credentials.")
+    # Same tenant lifecycle check as every other session route.
+    assert_tenant_signin_allowed(user)
     # Permission gate: only a conversations reader may fetch media (the same gate
     # that exposes the mediaUrl on /contacts/{id}/messages). Read fresh, not from
     # the JWT (RBAC edits apply immediately).
@@ -95,7 +103,8 @@ def serve_message_media(
 ) -> Response:
     # Signed-URL path (public gateway, respond.io parity): a valid HMAC signature
     # over (message_id, exp) IS the authorization - no header needed, so the link
-    # opens on a raw browser click. Resolved GLOBALLY (the signature already binds
+    # opens on a raw browser click. Signed links are deliberately not gated on
+    # tenant or workspace state here; they expire on their own. Resolved GLOBALLY (the signature already binds
     # this exact message id; it can't be pointed at another).
     if exp is not None and sig is not None:
         if not verify_media_sig(message_id, exp, sig):

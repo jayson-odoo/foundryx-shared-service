@@ -144,7 +144,6 @@ class EmbedSessionService:
         # Tenant is now attributable - every subsequent failure lands on the
         # connection's tenant console (AC-DLC-20).
         ctx["tenant_id"] = conn.tenant_id
-
         embed_secret = self._embed_secret(conn)
 
         # 3) Verify signature + audience + expiry. A rotated embedSecret makes an
@@ -160,6 +159,12 @@ class EmbedSessionService:
             raise EmbedError(401, "expired", "Assertion has expired.")
         except (JWTClaimsError, JWTError):
             raise EmbedError(401, "invalid_assertion", "Assertion verification failed.")
+
+        # A tenant that may not sign in (suspended or archived) gets no new session; checked once the assertion is verified and before it is consumed.
+        from app.dependencies import tenant_signin_allowed
+
+        if not tenant_signin_allowed(self.db, conn.tenant_id):
+            raise EmbedError(403, "tenant_suspended", "This tenant is suspended.")
 
         # 4) iat skew - reject a token minted "in the future" (jose validates exp
         #    but not a future iat).

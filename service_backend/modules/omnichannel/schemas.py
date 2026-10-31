@@ -1467,6 +1467,26 @@ class PublicTemplateListResponse(ApiModel):
     data: List[PublicTemplateItem]
 
 
+class PublicChannelItem(ApiModel):
+    """One channel as the consumer API shows it: only what a consumer needs to
+    map a `channelId` to a number. Deliberately NOT derived from `ChannelItem`
+    (tenant/workspace ids, WABA / phone-number ids and widget keys stay
+    internal)."""
+    id: str
+    channelType: str
+    name: str
+    status: str  # ACTIVE | PENDING | INACTIVE | ERROR
+    isActive: bool
+    isDefault: bool  # the channel `POST /messages` uses when `channelId` is omitted
+    displayPhoneNumber: Optional[str] = None
+    verifiedName: Optional[str] = None
+    createdAt: datetime
+
+
+class PublicChannelListResponse(ApiModel):
+    data: List[PublicChannelItem]
+
+
 class PublicMessageListResponse(ApiModel):
     """A contact's message history for the consumer API - full-fidelity
     ``MessageItem`` (every message type). ``nextBefore`` = pass back as

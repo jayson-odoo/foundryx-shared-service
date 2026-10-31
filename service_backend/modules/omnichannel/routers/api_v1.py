@@ -24,6 +24,7 @@ from ..schemas import (
     PublicContactUpdateRequest,
     PublicSendRequest,
     PublicSendResponse,
+    PublicChannelListResponse,
     PublicTemplateListResponse,
     RioContactItem,
     RioContactListResponse,
@@ -130,6 +131,15 @@ async def send_message(
         )
     # A replay is still 202 with the ORIGINAL message id (idempotent).
     return PublicSendResponse(id=message_id, status="queued", idempotencyReplay=replay)
+
+
+@router.get("/channels", response_model=PublicChannelListResponse)
+def list_channels(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicChannelListResponse:
+    items = PublicGatewayService(db).list_channels(api_ws.tenant_id, api_ws.workspace_id)
+    return PublicChannelListResponse(data=items)
 
 
 @router.get("/templates", response_model=PublicTemplateListResponse)

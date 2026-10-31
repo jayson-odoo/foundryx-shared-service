@@ -75,7 +75,10 @@ class ChannelRepository:
             .first()
         )
 
-    def list_by_workspace(self, workspace_id: str, tenant_id: str) -> List[Channel]:
+    def list_by_workspace(
+        self, workspace_id: str, tenant_id: str, *, oldest_first: bool = False
+    ) -> List[Channel]:
+        order = Channel.created_at.asc() if oldest_first else Channel.created_at.desc()
         return (
             self.db.query(Channel)
             .filter(
@@ -83,7 +86,7 @@ class ChannelRepository:
                 Channel.workspace_id == workspace_id,
                 Channel.is_trashed.is_(False),
             )
-            .order_by(Channel.created_at.desc(), Channel.id.asc())
+            .order_by(order, Channel.id.asc())
             .all()
         )
 

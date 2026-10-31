@@ -148,8 +148,11 @@ def _authorize(
             token_ws = payload.get("workspaceId")
             if not (agent_id and tenant_id and token_ws) or token_ws != workspace_id:
                 return None
+            from app.dependencies import tenant_signin_allowed
             from app.repositories.module_repository import ModuleRepository
 
+            if not tenant_signin_allowed(db, tenant_id):
+                return None
             if not ModuleRepository(db).is_active(tenant_id, "omnichannel"):
                 return None
             ws = (
