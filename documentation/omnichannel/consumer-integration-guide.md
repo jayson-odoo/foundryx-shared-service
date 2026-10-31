@@ -10,7 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
-> | **2026-11-01** | **`GET /api/v1/omnichannel/channels`** (§5a). Lists the channels your API key can send on, so you can map a `channelId` to a number. Each item carries `isDefault`, the channel `POST /messages` uses when `channelId` is omitted. Additive and non-breaking. |
+> | **2026-11-01** | **`GET /api/v1/omnichannel/channels`** (§5a). Lists the channels your API key can send on, so you can map a `channelId` to a number. Each item carries `isDefault`, the channel `POST /messages` uses when `channelId` is omitted. Also, an API key now stops working while its tenant is suspended or archived or the key's workspace is trashed (`403 service_not_enabled`, see §3 and §10), and works again once restored. |
 > | **2026-09-09** | **Web chat widget section + `visitorProfile`** (plan 34 / A7b, review round 1). New **§12a** documents the visitor-facing widget end to end: the install snippet, allowed origins, the exact host-identity recipe `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))`, `window.fxChatIdentity` / `fxWebchat.identify()`, and what a visitor can and cannot do. The `webchat:` `to` row in §4.1 now points there instead of at §12 (the agent-facing embed, which uses a different secret and a different HMAC input). `ThreadItem`/`ContactObject` gain **`visitorProfile`** (§9.1/9.2) - the `{name?, email?, phone?}` a visitor typed into the pre-chat form, UNVERIFIED and deliberately NOT written onto the contact's own `phone`/`email` (those are matching keys); `null` on every channel type but `WEBCHAT`. Non-breaking - no existing field changed meaning. |
 > | **2026-09-08** | **Web chat channel** (plan 34 / A7b). `channelType` now also takes `WEBCHAT` on every contact/message shape (§9). Sending: `to` gains a `webchat:<value>` prefix (§4.1), following the identical `psid:`/`igsid:` rule - an EXISTING identity on the chosen channel only, never created. `ThreadItem`/`ContactObject` gain `visitorLastSeenAt` (§9.1/9.2) - a presence fact (the visitor's last session/message/socket-connect instant), `null` on every channel type but `WEBCHAT`. A web chat channel has **no messaging window at all** - `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null` for a web chat contact, and a send via this Gateway API is never refused for window reasons on that channel type. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never uses `webchat:` and never reads `visitorLastSeenAt` sees byte-identical behaviour. |
 > | **2026-09-07** | **Messenger + Instagram channels** (plan 32 / A7a). `channelType` now also takes `FACEBOOK`/`INSTAGRAM` on every contact/message shape (§9). Sending: `POST /messages` accepts an optional `channelId` selector (§4); the implicit channel choice (no `channelId`) now PREFERS an active `WHATSAPP` channel, so a workspace that connects a second channel type never re-points an existing integration's sends (§2). `to` gains three new prefixes - `psid:<id>` / `igsid:<id>` (resolve an EXISTING contact identity on the CHOSEN channel only, never create) and `id:<contactId>` (§4.1); a bare value or `phone:` is unchanged. Two new error codes (§10): `messaging_window_closed` (409, Messenger/Instagram's own re-engagement window closed - `csw_window_closed` keeps its exact WhatsApp-only meaning) and `channel_not_available_for_contact` (422, the resolved contact has no identity on the chosen channel). `ThreadItem`/`ContactObject` gain `windowExpiresAt`/`humanAgentExpiresAt` (§9.1/9.2) - the per-channel-type messaging window; `cswExpiresAt` keeps its documented WhatsApp-only meaning verbatim (reads `null` for a Messenger/Instagram contact). `MessageItem`/`MessageObject` gain `channelType` and `mediaUnavailable` (§9.1/9.2) - a Messenger/Instagram inbound attachment whose CDN link expired before Foundryx could fetch it; the message still lands, render a muted placeholder. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never sets `channelId` and never uses the new `to` prefixes sees byte-identical behaviour. |
@@ -106,7 +106,7 @@ Authorization: Bearer fxw_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 * The key **encodes the tenant + workspace** - you never send a tenant or workspace id in the body or query. All data is scoped to the key.
 * Keys are stored hashed; the plaintext is shown **once** at mint time. If lost, revoke and mint a new one.
-* Errors are uniform and give away nothing: missing/malformed/unknown/revoked key → `401 invalid_api_key`. If the omnichannel service is not enabled for your tenant → `403 service_not_enabled`.
+* Errors are uniform and give away nothing: missing/malformed/unknown/revoked key → `401 invalid_api_key`. If the omnichannel service is not enabled for your tenant, your tenant is suspended or archived, or the key's workspace is trashed → `403 service_not_enabled`; the key works again once restored.
 
 All errors on `/api/v1/*` use one envelope:
 
@@ -346,9 +346,9 @@ The channels of your API key's workspace, oldest first. No pagination (a workspa
 | `verifiedName` | The business name verified by Meta; `null` until the channel's details sync, and on channels that have none. |
 | `createdAt` | When the channel was added, ISO-8601 UTC (`Z`). The list is ordered by it, oldest first. |
 
-Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number. The one exception is a reaction, which follows the channel of the original message it reacts to.
+Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number. The one exception is a reaction, which goes out on the contact's own channel.
 
-An API key works only while its tenant is active and its workspace is not trashed. Otherwise every gateway route answers `403 service_not_enabled` (§10), and the key works again once the tenant or workspace is restored.
+An API key works only while its tenant is active and its workspace is not trashed. Otherwise the gateway routes answer `403 service_not_enabled` (§10), and the media route (§8) refuses with its own `403` body. The key works again once the tenant or workspace is restored.
 
 
 ---
@@ -681,7 +681,7 @@ curl -L https://YOUR-FOUNDRYX-HOST/omnichannel/media/8dbc5265-… \
 ```
 
 * Response headers: `Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=300`.
-* Unknown message / no media → `404`. No/invalid auth → `401`. Service disabled → `403`.
+* Unknown message / no media → `404`. No/invalid auth → `401`. Service disabled, or an API key whose tenant is suspended or archived or whose workspace is trashed → `403` with a plain `{"detail": "..."}` body (not the `/api/v1` error envelope). A session user of a suspended tenant also gets `403`. During that time a `mediaUrl` fetch with your key fails the same way, even for media you already received a link to; a signed link (below) keeps working until it expires.
 * In a `message.inbound` webhook the media message's `mediaUrl` is already the absolute form of this URL - just add your `Authorization` header when you fetch it.
 
 ### Two ways in: Bearer, or a signed link

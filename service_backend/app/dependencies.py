@@ -36,6 +36,15 @@ _TENANT_INACTIVE_EXC = HTTPException(
 )
 
 
+def assert_tenant_signin_allowed(user: User) -> None:
+    """The per-request tenant lifecycle check (suspended or archived tenants are
+    refused with 403). Shared by every route that authenticates a user token."""
+    # user.tenant (and its status) ride the user query via lazy="joined" - the
+    # lifecycle re-check costs no extra round-trip.
+    if user.tenant is None or not user.tenant.signin_allowed:
+        raise _TENANT_INACTIVE_EXC
+
+
 def _resolve_user(token: str, db: Session) -> User:
     """Decode the JWT and load the real user (tenant-scoped). No impersonation.
 
@@ -70,10 +79,7 @@ def _resolve_user(token: str, db: Session) -> User:
     if user is None:
         raise _CREDENTIALS_EXC
 
-    # user.tenant (and its status) ride the user query via lazy="joined" - the
-    # lifecycle re-check costs no extra round-trip.
-    if user.tenant is None or not user.tenant.signin_allowed:
-        raise _TENANT_INACTIVE_EXC
+    assert_tenant_signin_allowed(user)
     return user
 
 

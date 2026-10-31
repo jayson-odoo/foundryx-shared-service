@@ -1086,9 +1086,9 @@ class PublicGatewayService:
 
     # ── Channels (read-only) ─────────────────────────────────────────────────
     def list_channels(self, tenant_id: str, workspace_id: str) -> list[PublicChannelItem]:
-        """The workspace's channels, oldest first. Inactive / disconnected rows
-        are listed with their real status (a consumer must see a number that
-        stopped working); trashed rows are not. ``isDefault`` is the channel
+        """The workspace's channels, oldest first. Paused (inactive) rows are
+        listed with their real status (a consumer must see a number that
+        stopped working); disconnected (trashed) rows are not. ``isDefault`` is the channel
         ``_workspace_channel`` returns for an omitted ``channelId`` - the SAME
         resolver, so the flag can never drift from what a send does; with no
         active channel nothing is default."""
@@ -1102,17 +1102,26 @@ class PublicGatewayService:
                 raise
             default_id = None
         smap = statuses.id_to_key_map(self.db, tenant_id)
+
         def _is_provider_id(value: Optional[str], c: Channel) -> bool:
-            # A display field that holds (or is built from) the provider's internal
-            # number id, because details were not available at connect, is not shown.
-            return bool(value) and bool(c.phone_number_id) and c.phone_number_id in value
+            # On a WhatsApp channel, a display field that holds (or is built
+            # from) the provider's number id, because details were not available
+            # at connect, is not shown. Short, blank or missing ids change nothing.
+            if c.channel_type != "WHATSAPP" or not value:
+                return False
+            pid = (c.phone_number_id or "").strip()
+            return len(pid) >= 6 and pid in value
+
+        def _status(c: Channel) -> str:
+            # A missing status row reads ACTIVE only for an active channel.
+            return smap.get(c.status_id) or ("ACTIVE" if c.is_active else "INACTIVE")
 
         return [
             PublicChannelItem(
                 id=c.id,
                 channelType=c.channel_type,
                 name="WhatsApp channel" if _is_provider_id(c.name, c) else c.name,
-                status=smap.get(c.status_id, "ACTIVE"),
+                status=_status(c),
                 isActive=c.is_active,
                 isDefault=c.id == default_id,
                 displayPhoneNumber=(
