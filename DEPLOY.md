@@ -70,6 +70,14 @@ backend colors answer to the alias `backend` on `foundryx_ss_web`, so the
 frontend's `BACKEND_API_URL=http://backend:8001` is all it needs; the frontend
 cannot reach db or redis.
 
+**Frontend container.** `frontend_blue`/`frontend_green` run with all Linux
+capabilities dropped, `no-new-privileges`, and a read-only root filesystem, so
+`/app` and the rest of the image filesystem are read-only. `/tmp` (64 MB) and
+`/app/.next/cache` (128 MB, owned by uid/gid 1001, the user the image runs as)
+are size-limited tmpfs mounts. Other writes to the image filesystem fail; add a
+mount in `docker-compose.yml` (`x-frontend-hardening`) if a new feature needs
+one.
+
 **Redis password.** Redis runs with `--requirepass` taken from `REDIS_PASSWORD`
 (GitHub secret, rendered into the server `.env` by CI; compose stops with "set
 in .env" if it is missing). Use `openssl rand -hex 32`: the deploy script's format
@@ -293,12 +301,33 @@ Settings → Secrets and variables → Actions.
 
 **Secrets** (sensitive - masked in logs, used to render the server `.env`):
 - Pipeline: `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `SSH_HOST`, `SSH_USER`,
-  `SSH_PRIVATE_KEY`, `DEPLOY_PATH` (e.g. `/opt/foundryx-ems`).
+  `SSH_PRIVATE_KEY`, `SSH_KNOWN_HOSTS`, `DEPLOY_PATH` (e.g. `/opt/foundryx-ems`).
 - App: `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `JWT_SECRET`, `FERNET_KEY`, `OMNICHANNEL_FERNET_KEY`,
   `NEXTAUTH_SECRET`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`,
   `PLATFORM_SMTP_USERNAME`, `PLATFORM_SMTP_PASSWORD`.
 - Optional email notify: `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USERNAME`,
   `SMTP_PASSWORD`, `OWNER_EMAIL`.
+
+**`SSH_KNOWN_HOSTS`** pins the deploy host's SSH key. Every `ssh`/`scp` in
+`.github/workflows/deploy.yml` runs with `StrictHostKeyChecking=yes` against a
+known-hosts file the workflow writes from this secret, so a changed or wrong
+host key stops the deploy at the connection, before anything is sent. An empty
+secret fails the workflow with an `::error::` before any connection. To get the
+value:
+
+1. On the host, read its public key fingerprint:
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
+2. From a trusted machine, scan the host:
+   `ssh-keyscan -t ed25519 -p <SSH_PORT> <SSH_HOST>`, using the same value as the
+   `SSH_HOST` secret (hostname or IP) and the `SSH_PORT` variable, and compare
+   the fingerprint of the scanned line (`ssh-keygen -lf` on it) with step 1.
+3. Only when they match, store the scanned line as the `SSH_KNOWN_HOSTS` secret,
+   unedited: the host name and port in it must match the connection exactly.
+
+A host move, rebuild or host-key rotation needs the secret updated the same way.
+If the first connection fails with ssh exit 255, the workflow error points at
+this secret: check it before running the deploy again, and do not re-run it
+repeatedly. The rendered server `.env` is written with mode 600.
 
 **Variables** (non-sensitive). Caddy/deploy: `APP_DOMAIN` (e.g.
 `icp-demo.foundryx.my`), `TLS_EMAIL` (required); `BACKEND_PATH` (default `/be`),

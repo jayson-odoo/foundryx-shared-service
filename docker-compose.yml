@@ -104,6 +104,19 @@ x-backend-base: &backend-base
   networks:
     - foundryx_ss_network
 
+# Frontend least-privilege (both colors): no capabilities, no privilege gain, a
+# read-only root filesystem with two small writable tmpfs mounts (/tmp and the
+# Next.js cache; the image runs as uid/gid 1001).
+x-frontend-hardening: &frontend-hardening
+  cap_drop:
+    - ALL
+  security_opt:
+    - "no-new-privileges:true"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m
+    - /app/.next/cache:size=128m,uid=1001,gid=1001,mode=0755
+
 services:
   # ---------------- Infra (NOT blue/green) ----------------
   db:
@@ -302,6 +315,7 @@ services:
         NEXT_PUBLIC_META_GRAPH_VERSION: ${NEXT_PUBLIC_META_GRAPH_VERSION:-v19.0}
     container_name: foundryx_ss_frontend_blue
     profiles: ["blue"]
+    <<: *frontend-hardening
     environment: &frontend-env
       NODE_ENV: production
       PORT: 3001
@@ -328,6 +342,7 @@ services:
         NEXT_PUBLIC_META_GRAPH_VERSION: ${NEXT_PUBLIC_META_GRAPH_VERSION:-v19.0}
     container_name: foundryx_ss_frontend_green
     profiles: ["green"]
+    <<: *frontend-hardening
     environment: *frontend-env
     restart: unless-stopped
     networks:
