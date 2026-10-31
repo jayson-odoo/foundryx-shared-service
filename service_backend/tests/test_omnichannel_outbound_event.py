@@ -935,7 +935,10 @@ def test_ac_38_15_sent_and_delivered_carry_null_error_fields_failed_carries_them
 
 def test_ac_38_16_failed_event_uses_provider_code_when_there_is_one(client, session_factory, monkeypatch):
     r = _rig(client, session_factory, "+601234567882", events=("message.status",))
-    _use_adapter(monkeypatch, _provider_error("Re-engagement message", code="131047"))
+    # the real WhatsApp adapter at the HTTP boundary, so the code wiring is exercised
+    _real_adapter_with_provider_reply(
+        monkeypatch, session_factory, r["channel_id"], "Re-engagement message", code=131047
+    )
     mid = _inbox_text(client, r["cid"]).json()["id"]
     failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
     assert len(failed) == 1
@@ -1009,6 +1012,7 @@ def test_ac_38_18_same_channel_id_under_another_tenant_or_workspace_gets_nothing
     r = _rig(client, session_factory, "+601234567886")
     for tenant_id, workspace_id in (
         ("other-tenant-id", "other-tenant-ws"),
+        ("other-tenant-id", r["ws"]),  # same workspace id as the key's, other tenant
         (DEFAULT_TENANT_ID, "other-workspace-id"),
     ):
         _insert_foreign_endpoint(
@@ -1065,7 +1069,7 @@ def test_ac_38_30a_retries_exhausted_ends_failed_with_one_failed_event(client, s
 
     before = adapter.sends
     _drive_worker(monkeypatch, session_factory, mid)
-    assert adapter.sends - before > 1, "control: the task must have run more than one attempt"
+    assert adapter.sends - before == 4, "the task must run the first attempt plus all three retries"
 
     status, _code, message = _row(session_factory, mid)
     assert status == "FAILED", status
@@ -1103,24 +1107,25 @@ def test_ac_38_30b_unexpected_adapter_error_ends_failed_with_generic_text(client
 def test_ac_38_31_receipt_right_after_commit_still_gives_one_sent_and_no_duplicate_delivered(
     client, session_factory, monkeypatch
 ):
-    from modules.omnichannel.services import realtime
+    from modules.omnichannel.services import broadcast_receipts
 
     r = _rig(client, session_factory, "+60123456782", events=("message.status",))
     _use_adapter(monkeypatch, None)  # external id "wamid.fake-sec"
-    real_publish = realtime.publish
+    real_hook = broadcast_receipts.record_delivery
     state = {"fired": False}
 
-    def publish_then_receipt(workspace_id, event):
-        real_publish(workspace_id, event)
-        if event.get("type") == "message.status" and not state["fired"]:
+    def hook_then_receipt(db, row):
+        # First thing after the SENT commit, before the row is read again.
+        if not state["fired"]:
             state["fired"] = True
             _process(
                 session_factory,
                 r["channel_id"],
                 _wa_payload(statuses=[{"id": "wamid.fake-sec", "status": "delivered", "timestamp": "1717550009"}]),
             )
+        return real_hook(db, row)
 
-    monkeypatch.setattr(realtime, "publish", publish_then_receipt)
+    monkeypatch.setattr(broadcast_receipts, "record_delivery", hook_then_receipt)
     mid = _inbox_text(client, r["cid"]).json()["id"]
     assert state["fired"], "control: the receipt really arrived between the commit and the emit"
     ids = [x["event_id"] for x in _status_rows(session_factory, mid)]
@@ -1146,6 +1151,23 @@ def test_ac_38_32_voice_outbound_reports_the_transcoded_type_and_matches_get(cli
     got = [m for m in client.get(f"/omnichannel/contacts/{r['cid']}/messages", headers=_auth(client)).json() if m["id"] == mid][0]
     assert got["mediaMime"] == "audio/ogg"  # control: what GET reports afterwards
     assert msg["mimeType"] == "audio/ogg"
+
+
+def test_ac_38_32_plain_audio_keeps_its_own_type(client, session_factory):
+    r = _rig(client, session_factory, "+60123456799")
+    mp3 = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" + b"\x00" * 128
+    res = client.post(
+        f"/omnichannel/contacts/{r['cid']}/media",
+        files={"file": ("a.mp3", mp3, "audio/mpeg")},
+        data={"kind": "audio"},
+        headers=_auth(client),
+    )
+    assert res.status_code == 201, res.text
+    mid = res.json()["id"]
+    msg = _only_outbound(session_factory)["payload"]["data"]["message"]
+    got = [m for m in client.get(f"/omnichannel/contacts/{r['cid']}/messages", headers=_auth(client)).json() if m["id"] == mid][0]
+    assert msg["mimeType"] == got["mediaMime"]
+    assert msg["mimeType"] != "audio/ogg" or got["mediaMime"] == "audio/ogg"
 
 
 def test_ac_38_33_no_subscriber_builds_no_outbound_payload(client, session_factory, monkeypatch):
@@ -1281,7 +1303,7 @@ FAKE_OPAQUE = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789FAKEOPAQUE"
 PROVIDER_BODY_LONG = f"Invalid parameter, see {FAKE_URL} for token {FAKE_OPAQUE} details"
 
 
-def _real_adapter_with_provider_reply(monkeypatch, session_factory, channel_id, message, status=400):
+def _real_adapter_with_provider_reply(monkeypatch, session_factory, channel_id, message, status=400, code=100):
     """Exercise the real WhatsApp adapter against a mocked HTTP boundary."""
     import httpx
 
@@ -1299,7 +1321,7 @@ def _real_adapter_with_provider_reply(monkeypatch, session_factory, channel_id, 
         db.close()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(status, json={"error": {"message": message, "code": 100}})
+        return httpx.Response(status, json={"error": {"message": message, "code": code}})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(
@@ -1511,3 +1533,224 @@ def test_ac_38_37_failed_status_insert_after_the_send_keeps_the_send_result(
     status, _code, _msg = _row(session_factory, mid)
     assert status == "SENT", status
     assert res.json()["deliveryStatus"] == "SENT"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Outcome accuracy round (AC-38-38..41)
+# ═════════════════════════════════════════════════════════════════════════════
+@pytest.fixture
+def _failing_sent_commit():
+    """The first commit that carries a message row set to SENT fails at the
+    session boundary (a real exception out of commit); later commits work."""
+    from sqlalchemy import event
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.orm import Session
+
+    state = {"fired": 0}
+
+    def before_commit(session):
+        if state["fired"]:
+            return
+        for obj in list(session.dirty):
+            if isinstance(obj, ConversationMessage) and obj.delivery_status == "SENT":
+                state["fired"] += 1
+                raise OperationalError("COMMIT", {}, Exception("database failure"))
+
+    event.listen(Session, "before_commit", before_commit)
+    yield state
+    event.remove(Session, "before_commit", before_commit)
+
+
+def test_ac_38_38_accepted_send_is_recorded_sent_even_when_the_sent_commit_fails_once(
+    client, session_factory, monkeypatch, _failing_sent_commit
+):
+    r = _rig(client, session_factory, "+60123456800", events=("message.status",))
+    adapter = _use_adapter(monkeypatch, None)  # provider accepts, external id "wamid.fake-sec"
+    res = _inbox_text(client, r["cid"])
+    assert res.status_code == 201, res.text
+    mid = res.json()["id"]
+    assert _failing_sent_commit["fired"] == 1, "control: the SENT commit really failed once"
+    assert adapter.sends == 1, "the provider is called once"
+
+    status, _code, _msg = _row(session_factory, mid)
+    assert status == "SENT", status
+    assert _external_id(session_factory, mid) == "wamid.fake-sec"
+    ids = [x["event_id"] for x in _status_rows(session_factory, mid)]
+    assert ids == [f"{mid}:SENT"], ids
+
+    _process(
+        session_factory,
+        r["channel_id"],
+        _wa_payload(statuses=[{"id": "wamid.fake-sec", "status": "delivered", "timestamp": "1717550011"}]),
+    )
+    ids = [x["event_id"] for x in _status_rows(session_factory, mid)]
+    assert f"{mid}:DELIVERED" in ids, ids  # the receipt matched the row
+
+
+def test_ac_38_39_exhausted_retries_report_the_last_provider_code(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456801", events=("message.status",))
+    _use_adapter(monkeypatch, _provider_error("temporary provider failure", code="131000", transient=True))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    assert _row(session_factory, mid)[0] == "QUEUED"  # control
+    _drive_worker(monkeypatch, session_factory, mid)
+    status, code, _msg = _row(session_factory, mid)
+    assert status == "FAILED", status
+    assert str(code) == "131000", code
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1
+    assert str(failed[0]["payload"]["data"]["errorCode"]) == "131000"
+
+
+def _poisoning_broadcast_hook(db, row):
+    """A real database error inside the hook: the failed flush leaves the
+    session needing a rollback."""
+    db.add(WebhookEndpoint(tenant_id=None, workspace_id=None, channel_id=None, name=None, url=None, secret_encrypted=None))
+    db.flush()
+
+
+@pytest.mark.parametrize("hook", ["broadcast_db_error", "publish_error"])
+@pytest.mark.parametrize("outcome", ["SENT", "FAILED"])
+def test_ac_38_40_status_event_survives_hook_failures_and_session_stays_usable(
+    client, session_factory, monkeypatch, hook, outcome
+):
+    from modules.omnichannel.services import broadcast_receipts, realtime
+
+    n = {"SENT": {"broadcast_db_error": 2, "publish_error": 3}, "FAILED": {"broadcast_db_error": 4, "publish_error": 5}}
+    phone = f"+6012345681{n[outcome][hook]}"
+    r = _rig(client, session_factory, phone, events=("message.status",))
+    if outcome == "SENT":
+        _use_adapter(monkeypatch, None)
+    else:
+        _use_adapter(monkeypatch, _provider_error("Re-engagement message", code="131047"))
+
+    hits = {"n": 0}
+    if hook == "broadcast_db_error":
+        def poison(db, row):
+            hits["n"] += 1
+            _poisoning_broadcast_hook(db, row)
+
+        monkeypatch.setattr(broadcast_receipts, "record_delivery", poison)
+    else:
+        real_publish = realtime.publish
+
+        def publish(workspace_id, ev):
+            if ev.get("type") == "message.status":
+                hits["n"] += 1
+                raise RuntimeError("realtime unavailable")
+            return real_publish(workspace_id, ev)
+
+        monkeypatch.setattr(realtime, "publish", publish)
+
+    res = _inbox_text(client, r["cid"])
+    assert res.status_code == 201, res.text
+    mid = res.json()["id"]
+    assert hits["n"] >= 1, "control: the hook really failed"
+    ids = [x["event_id"] for x in _status_rows(session_factory, mid)]
+    assert ids == [f"{mid}:{outcome}"], ids
+    assert _row(session_factory, mid)[0] == outcome
+    # the session is usable afterwards
+    follow = _inbox_text(client, r["cid"], body="after the failure")
+    assert follow.status_code == 201, follow.text
+
+
+def test_ac_38_41_guide_describes_delivery_honestly():
+    guide = (REPO_ROOT / "documentation/omnichannel/consumer-integration-guide.md").read_text()
+    assert "exactly one `SENT`" not in guide
+    i = guide.index("`deliveryStatus` is one of")
+    window = guide[i : i + 2500].lower()
+    assert "at-least-once" in window or "at least once" in window
+    assert "event id" in window or "dedupe" in window or "idempotent" in window
+    assert "generic" in window
+
+
+# ── controls for mutation guards ─────────────────────────────────────────────
+def test_fail_unfinished_on_a_finished_row_changes_and_emits_nothing(client, session_factory, monkeypatch):
+    from modules.omnichannel.services.send_runner import fail_unfinished
+
+    r = _rig(client, session_factory, "+60123456820", events=("message.status",))
+    _use_adapter(monkeypatch, None)
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    before = [x["event_id"] for x in _status_rows(session_factory, mid)]
+    assert before == [f"{mid}:SENT"]  # control: finished as SENT
+    db = session_factory()
+    try:
+        assert fail_unfinished(db, mid, "late call") == "SENT"
+    finally:
+        db.close()
+    assert _row(session_factory, mid)[0] == "SENT"
+    assert [x["event_id"] for x in _status_rows(session_factory, mid)] == before
+
+
+def test_stale_error_code_is_cleared_when_a_retry_succeeds(client, session_factory, monkeypatch):
+    from modules.omnichannel.services.send_runner import run_send
+
+    r = _rig(client, session_factory, "+60123456821", events=("message.status",))
+    _use_adapter(monkeypatch, _provider_error("blip", transient=True))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    _set_row_error(session_factory, mid, "131000", "stale")
+    _use_adapter(monkeypatch, None)
+    db = session_factory()
+    try:
+        assert run_send(db, mid) == "SENT"
+    finally:
+        db.close()
+    status, code, message = _row(session_factory, mid)
+    assert status == "SENT" and code is None and message is None, (status, code, message)
+
+
+def test_error_before_the_claim_retries_instead_of_failing_at_once(client, session_factory, monkeypatch):
+    from modules.omnichannel.repositories.contact_repository import ContactRepository
+    from modules.omnichannel.services.send_runner import run_send
+
+    r = _rig(client, session_factory, "+60123456822", events=("message.status",))
+    _use_adapter(monkeypatch, _provider_error("blip", transient=True))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    assert _row(session_factory, mid)[0] == "QUEUED"  # control
+
+    def broken(self, *a, **k):
+        raise RuntimeError("lookup unavailable")
+
+    monkeypatch.setattr(ContactRepository, "get_by_id", broken)
+    db = session_factory()
+    try:
+        try:
+            run_send(db, mid)
+        except Exception:  # noqa: BLE001 - the contract is the row state, not the exception type
+            pass
+    finally:
+        db.close()
+    assert _row(session_factory, mid)[0] == "QUEUED"
+    assert _status_rows(session_factory, mid) == []
+
+
+def test_receipt_path_caps_the_error_message_at_300(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456823", events=("message.status",))
+    _use_adapter(monkeypatch, None)
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    _process(
+        session_factory,
+        r["channel_id"],
+        _wa_payload(
+            statuses=[
+                {
+                    "id": "wamid.fake-sec",
+                    "status": "failed",
+                    "errors": [{"code": 131047, "title": "E" * 50 + "x" * 700}],
+                }
+            ]
+        ),
+    )
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1  # control: the receipt produced the event
+    msg = failed[0]["payload"]["data"]["errorMessage"]
+    assert msg and len(msg) <= 300, len(msg or "")
+    assert msg.startswith("E" * 50)
+
+
+def test_generic_transient_text_is_pinned(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456824", events=("message.status",))
+    _use_adapter(monkeypatch, _provider_error("provider detail", transient=True))
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    status, _code, message = _row(session_factory, mid)
+    assert status == "QUEUED"
+    assert message == "Temporary send failure, retrying"
