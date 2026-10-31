@@ -268,7 +268,9 @@ class MessageService:
         if not reply_to_message_id:
             return None, None
         quoted = self.repo.get_message(reply_to_message_id, tenant_id)
-        if quoted is None or quoted.contact_id != contact.id:
+        # A SYSTEM row (an internal note) is not a reply target: same error as
+        # an unknown id, so note text can never reach `message.replyTo`.
+        if quoted is None or quoted.contact_id != contact.id or quoted.sender_type == "SYSTEM":
             raise SendRejected("The message you are replying to was not found.")
         sender_name = None
         if quoted.sender_id:
@@ -314,10 +316,10 @@ class MessageService:
         is never failed or undone (AC-38-07). Workflow test sandbox rows skip."""
         from .send_runner import SANDBOX_ONLY_KEY, WORKFLOW_TEST_METADATA_KEY
 
-        meta = row.metadata_json or {}
-        if (meta.get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
-            return
         try:
+            meta = row.metadata_json or {}
+            if (meta.get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
+                return
             from .webhook_delivery import consumer_message_payload, enqueue_event
 
             channel = (

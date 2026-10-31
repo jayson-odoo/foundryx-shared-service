@@ -69,13 +69,15 @@ def sign_body(secret: str, timestamp: str, body: bytes) -> str:
     return "sha256=" + mac.hexdigest()
 
 
-def _active_endpoints(
-    db: Session, channel_id: str, event_type: str
-) -> List[WebhookEndpoint]:
+def _active_endpoints(db: Session, channel: Channel, event_type: str) -> List[WebhookEndpoint]:
+    """Subscribed ACTIVE endpoints of THIS channel, scoped by the channel row's
+    own tenant and workspace too (never by channel id alone)."""
     rows = (
         db.query(WebhookEndpoint)
         .filter(
-            WebhookEndpoint.channel_id == channel_id,
+            WebhookEndpoint.tenant_id == channel.tenant_id,
+            WebhookEndpoint.workspace_id == channel.workspace_id,
+            WebhookEndpoint.channel_id == channel.id,
             WebhookEndpoint.status == "ACTIVE",
         )
         .all()
@@ -110,7 +112,7 @@ def enqueue_event(
     delivery rows + queues each POST. Fully failure-isolated: returns the number
     queued, never raises into the inbound pipeline."""
     try:
-        endpoints = _active_endpoints(db, channel.id, event_type)
+        endpoints = _active_endpoints(db, channel, event_type)
         if not endpoints:
             return 0
         envelope = build_envelope(event_type, channel, event_id, data)

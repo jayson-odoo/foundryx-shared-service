@@ -529,6 +529,8 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
   | `broadcast` | Sent as part of a broadcast |
   | `workflow` | Sent by automation with no user attached (a workflow send node or any other automated send) |
 
+  Unlike an inbound message, an outbound message has a sender, so `message.senderType`, `message.senderId` and `message.senderName` can be filled on `message.outbound`. For a send made with your API key, `senderId` is an `apikey:<id>` value (the key's id, not a person); for an inbox agent it is that user's id; for a workflow or broadcast it can be `null`. Do not assume a user id.
+
   One event per new outbound message. It does **not** fire for internal notes, reactions (those stay `message.reaction`), inbound messages, migrated/imported history, or workflow test sandbox sends. An idempotent `POST /messages` replay creates no new message and so no second event. A problem enqueueing this event never fails or undoes the send.
 * `**message.status**` - `id` = `{messageId}:{deliveryStatus}` (one per transition).
 
@@ -537,7 +539,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
     "deliveryStatus":"DELIVERED", "errorCode":null, "errorMessage":null }
   ```
 
-  `deliveryStatus` is one of `SENT`, `DELIVERED`, `READ`, `FAILED`. `SENT` is emitted when Meta accepts the send and `FAILED` on a synchronous failure (Meta rejection or a local failure such as a media transcode error), with `errorCode`/`errorMessage` filled for `FAILED`. Each status is its own event (`{messageId}:SENT`, `{messageId}:FAILED`, ...); a later Meta `sent` receipt for the same message adds no second `SENT`. **If you already subscribe to `message.status` you now also receive `SENT` and sender-side `FAILED` events.** Delivery order across events is not guaranteed (each event is delivered and retried independently), so a `DELIVERED` can arrive before the `SENT` for the same message: never move a stored status backward (rank `SENT` < `DELIVERED` < `READ`), and treat `FAILED` as a terminal outcome.
+  `deliveryStatus` is one of `SENT`, `DELIVERED`, `READ`, `FAILED`. `SENT` is emitted when Meta accepts the send and `FAILED` on a synchronous failure (Meta rejection or a local failure such as a media transcode error), with `errorCode`/`errorMessage` filled for `FAILED` only (both are `null` on `SENT`, `DELIVERED` and `READ`). On `FAILED`, `errorCode` is the provider's own code when it gave one (for example a Meta error code) and `null` otherwise, such as a local media failure; `errorMessage` is at most 300 characters. A temporary failure that Foundryx retries is not reported as `FAILED` and carries no error text to you. Ignore any `deliveryStatus` value you do not recognise rather than failing the delivery. Each status is its own event (`{messageId}:SENT`, `{messageId}:FAILED`, ...); a later Meta `sent` receipt for the same message adds no second `SENT`. **If you already subscribe to `message.status` you now also receive `SENT` and sender-side `FAILED` events.** Delivery order across events is not guaranteed (each event is delivered and retried independently), so a `DELIVERED` can arrive before the `SENT` for the same message: never move a stored status backward (rank `SENT` < `DELIVERED` < `READ`), and treat `FAILED` as a terminal outcome.
 * `**message.reaction**`
 
   ```json
@@ -714,7 +716,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "channelId": "…",
   "channelType": "WHATSAPP",    // WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT (plan 32 / A7a, plan 34 / A7b)
   "senderType": "CONTACT",      // AGENT | CONTACT | SYSTEM
-  "senderId": null,
+  "senderId": null,             // outbound: a user id, or "apikey:<id>" for an API send (also on message.outbound)
   "senderName": null,
   "messageType": "IMAGE",       // TEXT|TEMPLATE|IMAGE|VIDEO|AUDIO|VOICE|DOCUMENT|
                                 //   STICKER|INTERACTIVE|LOCATION|CONTACTS|UNSUPPORTED

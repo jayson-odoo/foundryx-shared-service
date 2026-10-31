@@ -19,7 +19,7 @@ from .base import CodeExchangeError, ConnectionStatus, SendError
 # verbatim; re-imported here so every existing import site of these names off
 # ``whatsapp_cloud`` (``services/activity.py`` imports GraphCall/GraphRecorder
 # directly from this module) keeps working with zero churn (AC-CHN-15).
-from .meta_graph import GraphCall, GraphRecorder, MetaGraphMixin, _meta_error_detail  # noqa: F401
+from .meta_graph import GraphCall, GraphRecorder, MetaGraphMixin, _meta_error_detail, meta_error_code  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +202,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 raise SendError(
                     detail or f"Media upload failed ({resp.status_code}).",
                     transient=resp.status_code >= 500,
+                    code=meta_error_code(resp),
                 )
             media_id = resp.json().get("id", "")
             if not media_id:
@@ -346,6 +347,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 raise SendError(
                     detail or f"Meta returned {resp.status_code}.",
                     transient=resp.status_code >= 500,
+                    code=meta_error_code(resp),
                 )
             data = resp.json()
             wamid = (data.get("messages") or [{}])[0].get("id", "")

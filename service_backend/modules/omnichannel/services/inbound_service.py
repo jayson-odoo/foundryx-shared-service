@@ -716,7 +716,7 @@ class InboundService:
         if new_status == "FAILED":
             msg.delivery_status = "FAILED"
             msg.error_code = event.get("error_code")
-            msg.error_message = event.get("error_message")
+            msg.error_message = (event.get("error_message") or None) and str(event.get("error_message"))[:300]
         else:
             current = _STATUS_RANK.get(msg.delivery_status or "SENT", 0)
             if _STATUS_RANK[new_status] <= current and msg.delivery_status:
@@ -760,8 +760,9 @@ class InboundService:
                 "externalMessageId": msg.external_message_id,
                 "contactId": msg.contact_id,
                 "deliveryStatus": msg.delivery_status,
-                "errorCode": msg.error_code,
-                "errorMessage": msg.error_message,
+                # Error fields ride FAILED only (AC-38-15).
+                "errorCode": msg.error_code if msg.delivery_status == "FAILED" else None,
+                "errorMessage": msg.error_message if msg.delivery_status == "FAILED" else None,
             },
         )
         return True

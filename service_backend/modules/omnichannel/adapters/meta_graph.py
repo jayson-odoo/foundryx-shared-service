@@ -76,6 +76,15 @@ def is_rate_limited_error(resp: "httpx.Response") -> bool:
     return code in _RATE_LIMIT_ERROR_CODES
 
 
+def meta_error_code(resp: "httpx.Response") -> Optional[str]:
+    """Meta's own ``error.code`` as text, or None (never raises)."""
+    try:
+        code = ((resp.json() or {}).get("error") or {}).get("code")
+    except (ValueError, AttributeError):
+        return None
+    return str(code) if code else None
+
+
 def _meta_error_detail(resp: "httpx.Response") -> str:
     """Assemble the most specific message Meta gives. ``error.message`` alone is
     often the generic title ("Invalid parameter"); the real reason lives in

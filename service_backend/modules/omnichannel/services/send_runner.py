@@ -55,9 +55,9 @@ def _emit_status_webhook(db: Session, row: ConversationMessage) -> None:
     38 AC-38-09/10): one event per status (`<id>:<STATUS>`), same data shape as
     the receipt path. Sandbox rows skip. Failure-isolated; the row is already
     committed so a rollback here loses nothing."""
-    if ((row.metadata_json or {}).get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
-        return
     try:
+        if ((row.metadata_json or {}).get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
+            return
         from .webhook_delivery import enqueue_event
 
         channel = (
@@ -77,8 +77,9 @@ def _emit_status_webhook(db: Session, row: ConversationMessage) -> None:
                 "externalMessageId": row.external_message_id,
                 "contactId": row.contact_id,
                 "deliveryStatus": row.delivery_status,
-                "errorCode": row.error_code,
-                "errorMessage": row.error_message,
+                # Error fields ride FAILED only (AC-38-15): never a stale value.
+                "errorCode": row.error_code if row.delivery_status == "FAILED" else None,
+                "errorMessage": row.error_message if row.delivery_status == "FAILED" else None,
             },
         )
     except Exception:  # noqa: BLE001 - a webhook bug must never break a send
@@ -125,9 +126,15 @@ def _record_broadcast_receipt(db: Session, row: ConversationMessage) -> None:
         logger.exception("broadcast receipt hook failed for message %s", row.id)
 
 
-def _fail(db: Session, row: ConversationMessage, message: str) -> str:
+ERROR_MESSAGE_CAP = 300
+TRANSIENT_ERROR_TEXT = "Temporary send failure, retrying"
+
+
+def _fail(db: Session, row: ConversationMessage, message: str, code: Optional[str] = None) -> str:
     row.delivery_status = "FAILED"
-    row.error_message = message
+    # Capped on the row itself so GET agrees with the consumer event (AC-38-16).
+    row.error_message = (message or "")[:ERROR_MESSAGE_CAP] or None
+    row.error_code = str(code) if code else None
     db.commit()
     _record_broadcast_receipt(db, row)
     _publish_status(db, row)
@@ -139,8 +146,11 @@ def _requeue_transient(db: Session, row: ConversationMessage, message: str) -> N
     """Reset a claimed row to QUEUED so a retry re-sends (the send did NOT reach
     the contact), then raise for backoff. Only reached BEFORE ``adapter.send``
     returns - a post-success commit failure leaves the row SENDING (never re-sent)."""
+    # Log the detail, store only generic text (AC-38-14).
+    logger.warning("transient send failure for message %s: %s", row.id, message)
     row.delivery_status = "QUEUED"
-    row.error_message = message
+    row.error_message = TRANSIENT_ERROR_TEXT
+    row.error_code = None
     db.commit()
     raise TransientSendError(message)
 
@@ -349,13 +359,15 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     except SendError as exc:
         if getattr(exc, "transient", False):
             _requeue_transient(db, row, str(exc))
-        return _fail(db, row, str(exc))
+        return _fail(db, row, str(exc), code=getattr(exc, "code", None))
     except (httpx.HTTPError, OSError) as exc:
         # Transport / stored-media read blip - retryable with backoff.
         _requeue_transient(db, row, str(exc))
 
     row.external_message_id = result.get("external_message_id")
     row.delivery_status = "SENT"
+    row.error_message = None  # clear any earlier transient-failure text
+    row.error_code = None
     db.commit()
     _record_broadcast_receipt(db, row)
     _publish_status(db, row)

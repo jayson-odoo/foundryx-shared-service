@@ -59,7 +59,7 @@ import httpx
 from app.config import settings
 from app.services.url_guard import UrlGuardError, assert_deliverable
 from .base import CodeExchangeError, ConnectionStatus, SendError
-from .meta_graph import MetaGraphMixin, _meta_error_detail, is_rate_limited_error
+from .meta_graph import MetaGraphMixin, _meta_error_detail, is_rate_limited_error, meta_error_code
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +372,7 @@ class MessengerAdapter(MetaGraphMixin):
                 raise SendError(
                     _error_detail_with_usage(resp),
                     transient=resp.status_code >= 500 or is_rate_limited_error(resp),
+                    code=meta_error_code(resp),
                 )
             attachment_id = resp.json().get("attachment_id", "")
             if not attachment_id:
@@ -488,6 +489,7 @@ class MessengerAdapter(MetaGraphMixin):
                 raise SendError(
                     _error_detail_with_usage(resp),
                     transient=resp.status_code >= 500 or is_rate_limited_error(resp),
+                    code=meta_error_code(resp),
                 )
             data = resp.json()
             return {"external_message_id": data.get("message_id", "")}
