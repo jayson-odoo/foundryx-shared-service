@@ -73,3 +73,10 @@ Message status events reach external systems, so what they carry is a contract.
 | AC-38-39 | The provider's error code survives retries: a send that exhausts retries reports the last provider code on `FAILED` |
 | AC-38-40 | A failure in the broadcast hook or the realtime publish does not stop the `message.status` event, and leaves the session usable |
 | AC-38-41 | The guide describes delivery honestly: normally one `SENT` or `FAILED`, delivery is at-least-once so consumers dedupe on the event id, and `GET` can show generic text on a message still being retried |
+
+## Gap 3 last round
+
+| AC | Rule |
+|---|---|
+| AC-38-42 | Worker logs do not record the request URLs of media reads |
+| AC-38-43 | Receipt error text is normalised the same way as send error text. A failure in the broadcast hook on the receipt path rolls back and does not stop the `message.status` event |
