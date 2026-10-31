@@ -377,12 +377,6 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             return None
         token = str(credentials.get("access_token", "") or "")
 
-        def _safe(text: str) -> str:
-            clean = text.replace(token, "***") if token else text
-            for part in token.split() if token else []:
-                clean = clean.replace(part, "***")
-            return clean[:200]
-
         client = None
         try:
             client = self._http()
@@ -398,14 +392,19 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             )
             self._last_http_status = resp.status_code
             if resp.status_code != 200:
+                code = None
                 try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except (ValueError, AttributeError):
-                    detail = ""
-                raise SendError(
-                    _safe(str(detail)) or f"Meta returned {resp.status_code}.",
-                    transient=resp.status_code >= 500,
-                )
+                    err = resp.json()
+                    err = err.get("error") if isinstance(err, dict) else None
+                    raw = err.get("code") if isinstance(err, dict) else None
+                    if isinstance(raw, int) and not isinstance(raw, bool):
+                        code = raw
+                except ValueError:
+                    pass
+                text = f"Meta refused the read receipt: HTTP {resp.status_code}"
+                if code is not None:
+                    text += f", code {code}"
+                raise SendError(text + ".", transient=resp.status_code >= 500)
             try:
                 body = resp.json()
             except ValueError:

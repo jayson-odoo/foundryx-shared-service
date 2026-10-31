@@ -57,7 +57,7 @@ if TYPE_CHECKING:  # forward ref used in a signature below
 logger = logging.getLogger(__name__)
 READ_RECEIPT_MARKER = "read_receipt_sent_at"
 READ_RECEIPT_BUDGET_SECONDS = 12.0
-_PHONE_NUMBER_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_PHONE_NUMBER_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 # Wire-format switch on the read endpoints (`?format=`). GUIDE is the DEFAULT
@@ -752,7 +752,7 @@ class PublicGatewayService:
         receipts = []
         for p in plan:
             if not p["available"] or (
-                p["type"] == "WHATSAPP" and not _PHONE_NUMBER_ID_RE.match(p["sender_ref"] or "")
+                p["type"] == "WHATSAPP" and not _PHONE_NUMBER_ID_RE.fullmatch(p["sender_ref"] or "")
             ):
                 status = "channel_unavailable"
             elif p["type"] != "WHATSAPP":
