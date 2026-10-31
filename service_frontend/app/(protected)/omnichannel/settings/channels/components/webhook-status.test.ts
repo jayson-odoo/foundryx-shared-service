@@ -29,14 +29,26 @@ describe('webhook event-type labels', () => {
     expect(WEBHOOK_EVENT_LABELS['message.reaction']).toBe('Reactions');
   });
 
-  it('exposes the four events as picker options in label/value shape', () => {
-    expect(WEBHOOK_EVENT_OPTIONS).toHaveLength(4);
+  it('exposes the five events as picker options in label/value shape (AC-38-13)', () => {
+    expect(WEBHOOK_EVENT_OPTIONS).toHaveLength(5);
     expect(WEBHOOK_EVENT_OPTIONS.map((o) => o.value)).toEqual([
       'message.inbound',
+      'message.outbound',
       'message.status',
       'contact.updated',
       'message.reaction',
     ]);
+    expect(WEBHOOK_EVENT_OPTIONS.find((o) => o.value === 'message.outbound')?.label).toBe(
+      'Outbound messages',
+    );
+  });
+
+  it('drift guard: every labelled event is offered in the picker (AC-38-13)', () => {
+    const offered = WEBHOOK_EVENT_OPTIONS.map((o) => o.value);
+    for (const key of Object.keys(WEBHOOK_EVENT_LABELS)) {
+      expect(offered, `${key} missing from WEBHOOK_EVENT_OPTIONS`).toContain(key);
+    }
+    expect(WEBHOOK_EVENT_LABELS['message.outbound']).toBe('Outbound messages');
   });
 
   it('eventLabel degrades unknown keys to the raw value', () => {

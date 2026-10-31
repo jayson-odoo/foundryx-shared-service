@@ -328,13 +328,13 @@ def _process_recipient(
         recipient.error_text = str(exc)
         db.commit()
         return "failed"
-    except Exception as exc:  # noqa: BLE001 - a bad recipient never aborts the run
+    except Exception:  # noqa: BLE001 - a bad recipient never aborts the run
         logger.exception("broadcast %s recipient %s send crashed", broadcast.id, recipient_id)
         db.rollback()
         recipient = repo.get_recipient(broadcast.tenant_id, recipient_id)
         recipient.state = "failed"
         recipient.error_code = "unexpected_error"
-        recipient.error_text = str(exc)[:500]
+        recipient.error_text = "The message could not be sent"
         db.commit()
         return "failed"
 

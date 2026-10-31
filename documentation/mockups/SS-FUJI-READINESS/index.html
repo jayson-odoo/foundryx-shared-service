@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webhook endpoint events picker: Outbound messages (plan 38 gap 3)</title>
+<style>
+  :root { --primary:#FF5A00; --border:#E4E4E7; --muted:#71717A; --fg:#18181B; --accent:#FFF3EC; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px 16px; background:#F4F4F5; color:var(--fg); font:14px/1.5 Inter,system-ui,sans-serif; }
+  .wrap { max-width:1040px; margin:0 auto; display:grid; gap:24px; grid-template-columns:minmax(0,440px) minmax(0,1fr); align-items:start; }
+  @media (max-width:800px) { .wrap { grid-template-columns:minmax(0,1fr); } }
+  h1 { font:600 16px/1.4 Poppins,Inter,sans-serif; margin:0 0 16px; }
+  h2 { font:600 14px/1.4 Poppins,Inter,sans-serif; margin:0 0 8px; }
+  .dialog, .notes { background:#fff; border:1px solid var(--border); border-radius:12px; padding:20px; }
+  label { display:block; font-weight:500; margin:12px 0 4px; }
+  .input { border:1px solid var(--border); border-radius:6px; padding:8px 12px; }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; }
+  .chip { background:#F4F4F5; border-radius:4px; padding:2px 8px; font-size:12px; }
+  .chip.new, .opt.new { background:var(--accent); }
+  .panel { border:1px solid var(--border); border-radius:6px; margin-top:4px; }
+  .bar { display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 8px; font-size:12px; color:var(--muted); }
+  .bar b { color:var(--primary); font-weight:500; }
+  .search { border-bottom:1px solid var(--border); padding:8px; color:var(--muted); }
+  .opt { display:flex; gap:8px; align-items:center; padding:8px; }
+  .box { width:16px; height:16px; border:1px solid var(--border); border-radius:4px; flex:none; text-align:center; line-height:14px; font-size:11px; }
+  .box.on { background:var(--primary); border-color:var(--primary); color:#fff; }
+  .tag { margin-left:auto; color:var(--primary); font-size:11px; font-weight:600; }
+  .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+  .btn { border:1px solid var(--border); border-radius:6px; padding:6px 14px; background:#fff; }
+  .btn.primary { background:var(--primary); border-color:var(--primary); color:#fff; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  td, th { text-align:left; padding:6px 8px 6px 0; border-bottom:1px solid var(--border); vertical-align:top; }
+  code { font-size:12px; overflow-wrap:anywhere; }
+  ul { margin:0 0 16px; padding-left:18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="dialog" aria-label="Mock of the Edit endpoint dialog">
+    <h1>Edit endpoint</h1>
+    <label>Name</label>
+    <div class="input">e.g. CRM sync</div>
+    <label>Endpoint URL</label>
+    <div class="input">https://hooks.example.com/whatsapp</div>
+    <label>Events</label>
+    <div class="input chips">
+      <span class="chip">Inbound messages</span>
+      <span class="chip new">Outbound messages</span>
+      <span class="chip">Delivery receipts</span>
+    </div>
+    <div class="panel">
+      <div class="bar"><span>3 selected</span><b>Select all</b></div>
+      <div class="search">Search events…</div>
+      <div class="opt"><span class="box on">&#10003;</span>Inbound messages</div>
+      <div class="opt new"><span class="box on">&#10003;</span>Outbound messages<span class="tag">NEW</span></div>
+      <div class="opt"><span class="box on">&#10003;</span>Delivery receipts</div>
+      <div class="opt"><span class="box"></span>Contact updates</div>
+      <div class="opt"><span class="box"></span>Reactions</div>
+    </div>
+    <div class="actions"><span class="btn">Cancel</span><span class="btn primary">Save</span></div>
+  </section>
+
+  <section class="notes">
+    <h2>What changes</h2>
+    <ul>
+      <li>One new row, "Outbound messages", in the existing Events picker. The NEW tag and tint are for this mock only and do not ship.</li>
+      <li>No layout change, no new component, no new screen. The picker now has 5 rows instead of 4.</li>
+      <li>The same picker appears in Add endpoint and Edit endpoint.</li>
+    </ul>
+    <h2>Why it cannot stay API only</h2>
+    <ul>
+      <li>An endpoint created through the API can subscribe to this event. The picker hides values it does not list (<code>multi-select.tsx:74</code>), and "Select all" replaces the whole selection (<code>multi-select.tsx:148</code>), so an admin editing that endpoint could silently drop the event.</li>
+    </ul>
+    <h2>Reused components</h2>
+    <table>
+      <tr><th>Element</th><th>Existing source</th></tr>
+      <tr><td>Dialog, Name, Endpoint URL, Cancel, Save</td><td><code>service_frontend/app/(protected)/omnichannel/settings/channels/components/webhook-endpoint-dialog.tsx</code></td></tr>
+      <tr><td>Events picker, chips, search, Select all</td><td><code>service_frontend/components/platform/multi-select/multi-select.tsx</code></td></tr>
+      <tr><td>Row labels, the new row</td><td><code>WEBHOOK_EVENT_OPTIONS</code> and <code>WEBHOOK_EVENT_LABELS</code> in <code>webhook-status.ts</code> (same folder as the dialog)</td></tr>
+    </table>
+    <p>Name and URL show the dialog's real placeholders. No customer data: this dialog holds none, and the repo is public.</p>
+  </section>
+</div>
+</body>
+</html>

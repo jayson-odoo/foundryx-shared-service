@@ -4,6 +4,7 @@ template mirror (read-only sync from Meta), quick replies.
 Security invariant: outbound writes are attributed to the ACTOR (real agent),
 never the impersonation target or client input.
 """
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,6 +32,7 @@ from ..schemas import (
     QuickReplyUpdate,
     SendMessageRequest,
     TemplateItem,
+    ThreadItem,
 )
 from ..security import decrypt_credentials
 from . import channel_addressing, event_service, messaging_policy, realtime
@@ -49,6 +51,8 @@ from .send_runner import (
     TransientSendError,
     run_send,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SendRejected(Exception):
@@ -265,7 +269,9 @@ class MessageService:
         if not reply_to_message_id:
             return None, None
         quoted = self.repo.get_message(reply_to_message_id, tenant_id)
-        if quoted is None or quoted.contact_id != contact.id:
+        # Only conversation messages can be replied to: an internal note (a
+        # SYSTEM row) gets the same error as an unknown id.
+        if quoted is None or quoted.contact_id != contact.id or quoted.sender_type == "SYSTEM":
             raise SendRejected("The message you are replying to was not found.")
         sender_name = None
         if quoted.sender_id:
@@ -288,6 +294,68 @@ class MessageService:
         }
         return metadata, quoted.external_message_id
 
+    @staticmethod
+    def _outbound_source(row: ConversationMessage) -> str:
+        """api | workflow | inbox | broadcast, derived from what the row already
+        stores (no column): broadcast marker, federated/native agent, the
+        gateway's `apikey:<id>` attribution, else automation (workflow)."""
+        meta = row.metadata_json or {}
+        if meta.get("broadcast"):
+            return "broadcast"
+        if row.sender_external_agent_id:
+            return "inbox"
+        if row.sender_id is None:
+            return "workflow"
+        if str(row.sender_id).startswith("apikey:"):
+            return "api"
+        return "inbox"
+
+    def _emit_outbound(
+        self,
+        row: ConversationMessage,
+        contact: Contact,
+        item: MessageItem,
+        thread: Optional[ThreadItem] = None,
+    ) -> None:
+        """Fan `message.outbound` to the channel's subscribed endpoints. The row
+        and thread are already committed, so a failure here (Python or DB) is
+        swallowed and the session rolled back to a clean state: the send itself
+        is never failed or undone (AC-38-07). Workflow test sandbox rows skip.
+        The payload is built only when an endpoint subscribes to the event."""
+        row_id = row.id  # plain local: the session may need a rollback in the handler
+        try:
+            meta = row.metadata_json or {}
+            if (meta.get(WORKFLOW_TEST_METADATA_KEY) or {}).get(SANDBOX_ONLY_KEY) is True:
+                return
+            from .webhook_delivery import consumer_message_payload, enqueue_event
+
+            channel = (
+                self.db.query(Channel)
+                .filter(Channel.id == row.channel_id, Channel.tenant_id == row.tenant_id)
+                .first()
+            )
+            if channel is None:
+                return
+
+            def build() -> Dict[str, Any]:
+                message = consumer_message_payload(item, row)
+                if row.message_type == "VOICE" and message.get("mimeType"):
+                    # The stored blob is converted before sending; report the sent type.
+                    message["mimeType"] = "audio/ogg"
+                return {
+                    "message": message,
+                    "contact": (thread or self.conversations.thread_item(contact)).model_dump(mode="json"),
+                    "source": self._outbound_source(row),
+                }
+
+            enqueue_event(self.db, channel, "message.outbound", f"{row.id}:outbound", build)
+        except Exception:  # noqa: BLE001 - a webhook bug must never break a send
+            try:
+                self.db.rollback()
+            except Exception:  # noqa: BLE001
+                logger.exception("rollback after message.outbound failure failed")
+            logger.exception("message.outbound enqueue failed for message %s", row_id)
+
     def _enqueue_and_finalize(self, row: ConversationMessage, contact: Contact) -> MessageItem:
         """Publish the optimistic ``message.created`` then dispatch the send
         (inline in eager dev/tests, Celery ``omni`` queue in prod) and return the
@@ -302,6 +370,10 @@ class MessageService:
                 "thread": thread.model_dump(mode="json"),
             },
         )
+        # Consumer webhook `message.outbound` (plan 38 gap 3): enqueued before
+        # the send is dispatched, so its delivery row is created ahead of any
+        # `message.status` row. Never fails a send.
+        self._emit_outbound(row, contact, item, thread)
         if settings.celery_task_always_eager:
             # Same session - see send_runner docstring. A transient failure leaves
             # the row QUEUED for a later retry; eager dev uses the stub adapter
