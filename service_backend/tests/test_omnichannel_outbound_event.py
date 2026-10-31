@@ -1037,18 +1037,21 @@ def _drive_worker(monkeypatch, session_factory, mid):
     """Run the Celery task the way the worker does (autoretry up to
     max_retries), on the test engine."""
     import app.database as appdb
-    from modules.omnichannel.worker import omnichannel_send_message
-
-    from modules.omnichannel.worker import celery_app
+    from modules.omnichannel.worker import celery_app, omnichannel_send_message
 
     monkeypatch.setattr(appdb, "SessionLocal", session_factory)
     # The omni app propagates eager errors, so the first Retry would escape
-    # `apply`; let every retry run, as the worker does.
-    monkeypatch.setattr(celery_app.conf, "task_eager_propagates", False)
+    # `apply`; let every retry run, as the worker does. Explicit save and
+    # restore (the key may be absent from the conf view in some environments,
+    # which a monkeypatch undo cannot handle).
+    previous = celery_app.conf.get("task_eager_propagates", True)
+    celery_app.conf.update(task_eager_propagates=False)
     try:
         return omnichannel_send_message.apply(args=[mid])
     except Exception:  # noqa: BLE001 - eager Celery may still re-raise the last error; the outcome is what counts
         return None
+    finally:
+        celery_app.conf.update(task_eager_propagates=previous)
 
 
 def test_ac_38_30a_retries_exhausted_ends_failed_with_one_failed_event(client, session_factory, monkeypatch):
