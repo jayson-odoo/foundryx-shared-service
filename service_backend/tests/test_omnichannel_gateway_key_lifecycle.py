@@ -169,3 +169,163 @@ def test_ac_38_27_intake_route_refuses_a_suspended_tenant(ideation_client):
     res = ideation_client.get("/ideation/intake/products", headers=_key_auth(key))
     assert res.status_code == 403, res.text
     assert res.json()["error"]["code"] == "service_not_enabled"
+
+
+# ── Media route, activity attribution, workspace lookup scope ────────────────
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 128
+
+
+@pytest.fixture(autouse=True)
+def _tmp_media(tmp_path):
+    from app.config import settings
+    from app.services.storage import set_storage
+
+    prev = settings.media_root
+    settings.media_root = str(tmp_path)
+    set_storage(None)
+    yield
+    settings.media_root = prev
+    set_storage(None)
+
+
+def _session_headers(client):
+    from tests.test_omnichannel_api_gateway import _auth
+
+    return _auth(client)
+
+
+def _media_message(client, session_factory, ws, phone):
+    """A real outbound media message in workspace `ws`; returns (contact, message id)."""
+    cid = _seed_open_contact(session_factory, ws, phone=phone, open_window=True)
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/media",
+        files={"file": ("a.png", PNG, "image/png")},
+        data={"kind": "image"},
+        headers=_session_headers(client),
+    )
+    assert res.status_code == 201, res.text
+    return cid, res.json()["id"]
+
+
+def _media_rig(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-media")
+    _cid, mid = _media_message(client, session_factory, ws, "+6012345670")
+    key_resp = _mint(client, ws).json()
+    return ws, mid, {"Authorization": f"Bearer {key_resp['fullKey']}"}, key_resp["key"]["id"]
+
+
+def test_ac_38_27_media_route_with_a_key_follows_tenant_state(client, session_factory):
+    ws, mid, hdr, _kid = _media_rig(client, session_factory)
+    live = client.get(f"/omnichannel/media/{mid}", headers=hdr)
+    assert live.status_code == 200, live.text  # control: a live key gets the media
+
+    _suspend(session_factory)
+    refused = client.get(f"/omnichannel/media/{mid}", headers=hdr)
+    assert refused.status_code == 403, refused.status_code
+    # the media route has its own 403 body, not the gateway envelope
+    assert "error" not in refused.json()
+
+    _reactivate(session_factory)
+    assert client.get(f"/omnichannel/media/{mid}", headers=hdr).status_code == 200
+
+
+def test_ac_38_27_media_route_with_a_key_follows_workspace_state(client, session_factory):
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services.workspace_service import WorkspaceService
+
+    db = session_factory()
+    ws2 = Workspace(tenant_id=DEFAULT_TENANT_ID, name="Second", is_default=False)
+    db.add(ws2)
+    db.commit()
+    ws2_id = ws2.id
+    db.close()
+    _seed_channel(session_factory, ws2_id, phone_number_id="pn-media-2")
+    _cid, mid = _media_message(client, session_factory, ws2_id, "+6012345671")
+    hdr = {"Authorization": f"Bearer {_mint(client, ws2_id).json()['fullKey']}"}
+    assert client.get(f"/omnichannel/media/{mid}", headers=hdr).status_code == 200  # control
+
+    db = session_factory()
+    WorkspaceService(db).trash([ws2_id], DEFAULT_TENANT_ID)
+    db.close()
+    assert client.get(f"/omnichannel/media/{mid}", headers=hdr).status_code == 403
+
+    db = session_factory()
+    WorkspaceService(db).restore([ws2_id], DEFAULT_TENANT_ID)
+    db.close()
+    assert client.get(f"/omnichannel/media/{mid}", headers=hdr).status_code == 200
+
+
+def test_ac_38_27_media_route_with_a_session_user_on_a_suspended_tenant_is_refused(client, session_factory):
+    ws, mid, _hdr, _kid = _media_rig(client, session_factory)
+    session = _session_headers(client)
+    assert client.get(f"/omnichannel/media/{mid}", headers=session).status_code == 200  # control
+    other_route = client.get("/omnichannel/contacts", headers=session)
+    assert other_route.status_code == 200  # control: the token works elsewhere while live
+
+    _suspend(session_factory)
+    other_refused = client.get("/omnichannel/contacts", headers=session)
+    media_refused = client.get(f"/omnichannel/media/{mid}", headers=session)
+    assert other_refused.status_code in (401, 403)
+    assert media_refused.status_code == 403
+    assert media_refused.status_code == other_refused.status_code or other_refused.status_code == 401
+
+
+def test_signed_media_link_is_still_served_for_a_suspended_tenant(client, session_factory):
+    from modules.omnichannel.security import signed_media_url
+
+    ws, mid, _hdr, _kid = _media_rig(client, session_factory)
+    url = signed_media_url(mid)
+    path = url[url.index("/omnichannel/media/") :]
+    assert client.get(path).status_code == 200  # control: live
+    _suspend(session_factory)
+    assert client.get(path).status_code == 200
+
+
+def test_key_workspace_lookup_is_scoped_to_the_key_tenant(client, session_factory):
+    """A key row whose workspace id belongs to another tenant (and is not
+    trashed there) must not pass the gateway check."""
+    from modules.omnichannel.models import Workspace, WorkspaceApiKey
+
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws, phone_number_id="pn-scope")
+    mint = _mint(client, ws).json()
+    hdr = {"Authorization": f"Bearer {mint['fullKey']}"}
+    assert client.get("/api/v1/omnichannel/channels", headers=hdr).status_code == 200  # control
+
+    db = session_factory()
+    foreign = Workspace(tenant_id="other-tenant-id", name="Elsewhere", is_default=False)
+    db.add(foreign)
+    db.flush()
+    row = db.query(WorkspaceApiKey).filter(WorkspaceApiKey.id == mint["key"]["id"]).first()
+    row.workspace_id = foreign.id
+    db.commit()
+    db.close()
+    refused = client.get("/api/v1/omnichannel/channels", headers=hdr)
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["error"]["code"] == "service_not_enabled"
+
+
+def test_refused_gateway_call_still_writes_an_attributed_activity_row(client, session_factory):
+    from app.models.integration_activity import IntegrationActivity
+
+    ws, _mid, hdr, key_id = _media_rig(client, session_factory)
+    _suspend(session_factory)
+    res = client.get("/api/v1/omnichannel/channels", headers=hdr)
+    assert res.status_code == 403
+    db = session_factory()
+    try:
+        rows = (
+            db.query(IntegrationActivity)
+            .filter(
+                IntegrationActivity.tenant_id == DEFAULT_TENANT_ID,
+                IntegrationActivity.operation.like("%/channels"),
+            )
+            .all()
+        )
+    finally:
+        db.close()
+    assert rows, "the refused call must be recorded"
+    assert any(r.api_key_id == key_id and r.status_code == 403 for r in rows), [
+        (r.api_key_id, r.status_code) for r in rows
+    ]

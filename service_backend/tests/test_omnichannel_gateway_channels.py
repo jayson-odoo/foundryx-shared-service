@@ -4,6 +4,7 @@ RED tests written before the route exists. Everything is asserted at the HTTP
 route (plus the already-existing `POST /messages` for the isDefault parity
 check). Every test seeds its own channels; numbers are obvious fakes.
 """
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -324,6 +325,69 @@ def test_ac_38_26_guide_has_the_appendix_index_row_and_the_reaction_exception():
     appendix = text[text.index("## Appendix - quick endpoint index") :]
     assert "/api/v1/omnichannel/channels" in appendix
     flat = text.lower()
-    assert "reaction" in flat and "original message" in flat and "channel" in flat
     i = flat.index("without `channelid`") if "without `channelid`" in flat else flat.index("channelid")
-    assert "reaction" in flat[max(0, i - 1500) : i + 1500]
+    window = flat[max(0, i - 1500) : i + 1500]
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", window) if "reaction" in x]
+    assert any("own channel" in x for x in sentences), sentences
+
+
+# ── Last round ───────────────────────────────────────────────────────────────
+def _set_fields(session_factory, channel_id, **fields):
+    db = session_factory()
+    try:
+        row = db.query(Channel).filter(Channel.id == channel_id).first()
+        for k, v in fields.items():
+            setattr(row, k, v)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_ac_38_21_real_labels_survive_and_short_blank_or_missing_ids_change_nothing(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    normal = _channel(session_factory, ws, name="Front desk", age_rank=1)
+    two = _channel(session_factory, ws, name="Desk 11", age_rank=2, pn="11")
+    one = _channel(session_factory, ws, name="1", age_rank=3, pn="1")
+    blank = _channel(session_factory, ws, name="Blank id", age_rank=4)
+    spaces = _channel(session_factory, ws, name="Spaces id", age_rank=5)
+    noid = _channel(session_factory, ws, name="No id", age_rank=6)
+    fb = _channel(session_factory, ws, name="123456", age_rank=7, channel_type="FACEBOOK")
+    _set_fields(session_factory, blank, phone_number_id="")
+    _set_fields(session_factory, spaces, phone_number_id="   ")
+    _set_fields(session_factory, noid, phone_number_id=None)
+    _set_fields(session_factory, fb, external_account_id="123456", display_phone_number="123456")
+
+    by_id = {i["id"]: i for i in _list(client, _hdr(client, ws))}
+    assert by_id[normal]["name"] == "Front desk" and by_id[normal]["displayPhoneNumber"] == "+60 11-111 0000"
+    for cid, expected in ((two, "Desk 11"), (one, "1"), (blank, "Blank id"), (spaces, "Spaces id"), (noid, "No id")):
+        item = by_id[cid]
+        assert item["name"] == expected, item
+        assert item["displayPhoneNumber"] == "+60 11-111 0000", item
+        assert item["verifiedName"] is not None, item
+    assert by_id[fb]["name"] == "123456" and by_id[fb]["displayPhoneNumber"] == "123456"
+
+
+def test_ac_38_23_paused_channel_without_a_status_row_shows_inactive(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    live = _channel(session_factory, ws, name="livewa", age_rank=1)
+    paused = _channel(session_factory, ws, name="pausedwa", age_rank=2, active=False, status_key="INACTIVE")
+    _set_fields(session_factory, paused, status_id=None)
+    by_id = {i["id"]: i for i in _list(client, _hdr(client, ws))}
+    assert by_id[paused]["status"] == "INACTIVE"
+    assert by_id[paused]["isActive"] is False
+    assert by_id[live]["status"] == "ACTIVE"  # control
+
+
+def test_ac_38_26_guide_reaction_media_refusal_and_changelog_wording():
+    text = GUIDE.read_text()
+    flat = text.lower()
+    # reactions go out on the contact's own channel
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", flat) if "reaction" in x and "channel" in x]
+    assert any("contact's own channel" in x for x in sentences), sentences
+    # the media route states its own refusal, different from service_not_enabled
+    start = text.index("### `GET /omnichannel/media/{messageId}`")
+    section = text[start : text.index("\n### ", start + 10)]
+    assert "403" in section and "detail" in section, section[:400]
+    # the changelog row does not call the change only additive without the key rule
+    row = next(ln for ln in text.splitlines()[:40] if ln.startswith("> |") and "/channels" in ln)
+    assert "suspended" in row.lower() and "trashed" in row.lower(), row
