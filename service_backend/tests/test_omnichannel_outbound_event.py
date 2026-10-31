@@ -1107,15 +1107,15 @@ def test_ac_38_30b_unexpected_adapter_error_ends_failed_with_generic_text(client
 def test_ac_38_31_receipt_right_after_commit_still_gives_one_sent_and_no_duplicate_delivered(
     client, session_factory, monkeypatch
 ):
-    from modules.omnichannel.services import broadcast_receipts
+    from modules.omnichannel.services import send_runner
 
     r = _rig(client, session_factory, "+60123456782", events=("message.status",))
     _use_adapter(monkeypatch, None)  # external id "wamid.fake-sec"
-    real_hook = broadcast_receipts.record_delivery
     state = {"fired": False}
 
-    def hook_then_receipt(db, row):
-        # First thing after the SENT commit, before the row is read again.
+    def receipt_instead_of_hook(db, row):
+        # Replaces the post-commit hook without touching the row, so the row
+        # is only re-read after the receipt committed.
         if not state["fired"]:
             state["fired"] = True
             _process(
@@ -1123,11 +1123,11 @@ def test_ac_38_31_receipt_right_after_commit_still_gives_one_sent_and_no_duplica
                 r["channel_id"],
                 _wa_payload(statuses=[{"id": "wamid.fake-sec", "status": "delivered", "timestamp": "1717550009"}]),
             )
-        return real_hook(db, row)
 
-    monkeypatch.setattr(broadcast_receipts, "record_delivery", hook_then_receipt)
+    monkeypatch.setattr(send_runner, "_record_broadcast_receipt", receipt_instead_of_hook)
     mid = _inbox_text(client, r["cid"]).json()["id"]
     assert state["fired"], "control: the receipt really arrived between the commit and the emit"
+    assert _row(session_factory, mid)[0] == "DELIVERED"  # control: the row had moved on
     ids = [x["event_id"] for x in _status_rows(session_factory, mid)]
     assert ids.count(f"{mid}:SENT") == 1, ids
     assert ids.count(f"{mid}:DELIVERED") == 1, ids  # only the receipt path produced it
@@ -1365,6 +1365,21 @@ def test_ac_38_34_send_path_provider_text_is_normalised_in_row_event_and_activit
     for text in [message or "", event_text or "", *activity]:
         _assert_normalised(text)
     assert "Invalid parameter" in (message or "")  # readable words survive
+
+
+def test_ac_38_34_short_url_in_provider_text_is_removed(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456794", events=("message.status",))
+    _real_adapter_with_provider_reply(
+        monkeypatch, session_factory, r["channel_id"], "Invalid parameter, see https://a.example/x for details"
+    )
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    status, _code, message = _row(session_factory, mid)
+    assert status == "FAILED"
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1
+    for text in [message or "", failed[0]["payload"]["data"]["errorMessage"] or "", *_activity_errors(session_factory)]:
+        assert "https://" not in text and "a.example" not in text, text
+    assert "Invalid parameter" in (message or "")
 
 
 def test_ac_38_34_short_provider_message_keeps_its_words(client, session_factory, monkeypatch):
@@ -1754,3 +1769,120 @@ def test_generic_transient_text_is_pinned(client, session_factory, monkeypatch):
     status, _code, message = _row(session_factory, mid)
     assert status == "QUEUED"
     assert message == "Temporary send failure, retrying"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Last round (AC-38-35 transport branch, AC-38-42, AC-38-43). Fake values only.
+# ═════════════════════════════════════════════════════════════════════════════
+FAKE_READ_URL = "https://bucket.invalid/o/a.png?X-Amz-Signature=FAKESIG&X-Amz-Credential=FAKECRED"
+
+
+def _fake_storage_url(monkeypatch):
+    import app.services.storage as st
+
+    real_for = st.storage_for_tenant
+
+    class _Wrap:
+        def __init__(self, real):
+            self._real = real
+
+        def resolve(self, key):
+            return ("presigned", FAKE_READ_URL)
+
+    monkeypatch.setattr(st, "storage_for_tenant", lambda db, tid: _Wrap(real_for(db, tid)))
+
+
+def test_ac_38_35_storage_transport_failure_error_holds_no_query_string(session_factory, monkeypatch):
+    import httpx
+
+    from modules.omnichannel.services.send_runner import _read_media
+
+    _fake_storage_url(monkeypatch)
+
+    def boom(self, request):
+        raise httpx.ConnectError(f"cannot reach {request.url}", request=request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", boom)
+    db = session_factory()
+    try:
+        with pytest.raises(OSError) as exc:
+            _read_media(db, DEFAULT_TENANT_ID, "any-key")
+    finally:
+        db.close()
+    text = str(exc.value)
+    assert "Media read failed" in text  # control: the transport branch ran
+    assert "FAKESIG" not in text and "FAKECRED" not in text and "X-Amz" not in text, text
+
+
+def test_ac_38_42_media_read_request_url_is_not_in_worker_logs(session_factory, monkeypatch, caplog):
+    import logging
+
+    import httpx
+
+    import modules.omnichannel.worker  # noqa: F401  (its setup applies to logging)
+    from modules.omnichannel.services.send_runner import _read_media
+
+    _fake_storage_url(monkeypatch)
+    monkeypatch.setattr(
+        httpx.HTTPTransport, "handle_request", lambda self, request: httpx.Response(200, content=b"data", request=request)
+    )
+    db = session_factory()
+    try:
+        with caplog.at_level(logging.INFO):
+            content = _read_media(db, DEFAULT_TENANT_ID, "any-key")
+    finally:
+        db.close()
+    assert content == b"data"  # control: the read went through the real client
+    assert "FAKESIG" not in caplog.text and "FAKECRED" not in caplog.text and "X-Amz" not in caplog.text, caplog.text
+
+
+def test_ac_38_43_receipt_error_text_is_normalised_in_row_and_event(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "+60123456830", events=("message.status",))
+    _use_adapter(monkeypatch, None)
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    _process(
+        session_factory,
+        r["channel_id"],
+        _wa_payload(
+            statuses=[
+                {
+                    "id": "wamid.fake-sec",
+                    "status": "failed",
+                    "errors": [{"code": 131047, "title": f"Invalid parameter, see {FAKE_URL} for token {FAKE_OPAQUE} details"}],
+                }
+            ]
+        ),
+    )
+    failed = [x for x in _status_rows(session_factory, mid) if x["event_id"] == f"{mid}:FAILED"]
+    assert len(failed) == 1  # control: the receipt produced the event
+    _status, _code, message = _row(session_factory, mid)
+    for text in [message or "", failed[0]["payload"]["data"]["errorMessage"] or ""]:
+        _assert_normalised(text)
+    assert "Invalid parameter" in (message or "")
+
+
+def test_ac_38_43_receipt_path_hook_db_error_keeps_session_usable_and_delivery_event(
+    client, session_factory, monkeypatch
+):
+    from modules.omnichannel.services import broadcast_receipts
+
+    r = _rig(client, session_factory, "+60123456831", events=("message.status",))
+    _use_adapter(monkeypatch, None)
+    mid = _inbox_text(client, r["cid"]).json()["id"]
+    hits = {"n": 0}
+
+    def poison(db, row):
+        hits["n"] += 1
+        _poisoning_broadcast_hook(db, row)
+
+    monkeypatch.setattr(broadcast_receipts, "record_delivery", poison)
+    _process(
+        session_factory,
+        r["channel_id"],
+        _wa_payload(statuses=[{"id": "wamid.fake-sec", "status": "delivered", "timestamp": "1717550009"}]),
+    )
+    assert hits["n"] >= 1, "control: the hook really failed on the receipt path"
+    ids = [x["event_id"] for x in _status_rows(session_factory, mid)]
+    assert f"{mid}:DELIVERED" in ids, ids
+    follow = _inbox_text(client, r["cid"], body="after the failure")
+    assert follow.status_code == 201, follow.text
