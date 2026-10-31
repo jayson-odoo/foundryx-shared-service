@@ -1127,21 +1127,31 @@ def test_ac61_foreign_customer_messages_do_not_count_as_unread_or_move_state(rig
     from modules.omnichannel.models import Contact
 
     ch = rig.channel("pn-A")
-    rig.msg(ch, wamid="wamid.mine", when=1)
+    mine_id, mine_wamid = rig.msg(ch, wamid="wamid.mine", when=1)
     foreign_contact = rig.contact(tenant=FOREIGN_TENANT, phone="+60700700705")
-    rig.msg(ch, wamid="wamid.foreign-new", when=9, tenant=FOREIGN_TENANT, contact_id=foreign_contact)
+    rig.msg(ch, wamid="wamid.foreign-own", when=9, tenant=FOREIGN_TENANT, contact_id=foreign_contact)
+    # A foreign customer row planted on OUR contact id and OUR channel id, dated
+    # after the moment of the read: if any query lost its tenant filter it would
+    # become the target and count as unread again.
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    rig.msg(ch, wamid="wamid.foreign-on-ours", tenant=FOREIGN_TENANT, created=future)
     db = rig.sf()
     before = db.query(Contact.agent_last_read_at).filter(Contact.id == foreign_contact).scalar()
     db.close()
     assert before is None
-    rig.read()
+    got = rig.receipts()
+    assert got[ch]["messageId"] == mine_id
+    assert [c["body"]["message_id"] for c in rig.provider.calls] == [mine_wamid]
     db = rig.sf()
     after = db.query(Contact.agent_last_read_at).filter(Contact.id == foreign_contact).scalar()
     mine = db.query(Contact.agent_last_read_at).filter(Contact.id == rig.contact_id).scalar()
     db.close()
     assert mine is not None, "control: our contact was marked read"
     assert after is None, "a foreign tenant's contact must not change"
-    assert len(rig.provider.calls) == 1
+    assert rig.unread() == 0, "a foreign row counted as unread"
+    # control: the same unread query does count a row of OUR tenant at that time
+    rig.msg(ch, wamid="wamid.mine-future", created=future)
+    assert rig.unread() == 1
 
 
 # ═══ AC-38-62 consumer guide ═════════════════════════════════════════════════
@@ -1355,3 +1365,122 @@ def test_ac63_a_channel_reached_after_the_budget_answers_failed_with_no_call(
     assert got[called]["status"] == "sent"
     assert got[skipped]["status"] == "failed"
     assert rig.unread() == 0
+
+
+# ═══ Review round, group B: guards for behaviour that is already right ═══════
+def test_ac52_another_contact_in_the_tenant_with_a_newer_message_is_not_a_target(rig):
+    ch = rig.channel("pn-A")
+    mine_id, mine_wamid = rig.msg(ch, wamid="wamid.mine", when=1)
+    other = rig.contact(phone="+60700700706")
+    rig.msg(ch, wamid="wamid.other-contact", when=9, contact_id=other)
+    got = rig.receipts()
+    assert got[ch]["messageId"] == mine_id
+    assert [c["body"]["message_id"] for c in rig.provider.calls] == [mine_wamid]
+
+
+def test_ac60_read_fires_no_contact_updated_even_when_the_endpoint_follows_the_latest_channel(
+    rig, monkeypatch
+):
+    import modules.omnichannel.services.webhook_delivery as wd
+    from modules.omnichannel.models import WebhookDelivery
+
+    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: httpx.Response(200))
+    a = rig.channel("pn-A", token="tok-A", created=0, cid=LOW_ID)  # the endpoint's channel
+    b = rig.channel("pn-B", token="tok-B", created=10, cid=HIGH_ID)
+    rig.msg(b, wamid="wamid.in-B1", when=1)
+    rig.msg(a, wamid="wamid.in-A1", when=5)  # A holds the latest message
+    reg = rig.client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "w", "url": "https://hooks.example.com/w",
+              "events": ["contact.updated", "message.status", "message.inbound"]},
+        headers=rig.hdr,
+    )
+    assert reg.status_code == 201, reg.text
+    # control: a real contact change reaches this endpoint on this rig
+    start = rig.count(WebhookDelivery)
+    assert rig.client.patch(
+        f"/api/v1/omnichannel/contacts/{rig.contact_id}", json={"priority": "HIGH"}, headers=rig.hdr
+    ).status_code == 200
+    assert rig.count(WebhookDelivery) > start, "control: contact.updated made no delivery row"
+    before = rig.count(WebhookDelivery)
+    got = rig.receipts()
+    assert len(got) == 2 and len(rig.provider.calls) == 2
+    assert rig.count(WebhookDelivery) == before, "the read produced a delivery row"
+
+
+def test_ac54_other_metadata_keys_survive_the_marker_write(rig):
+    ch = rig.channel("pn-A")
+    reply = {"id": "wamid.quoted", "preview": "earlier text"}
+    mid, _w = rig.msg(ch, wamid="wamid.in-1", when=1, metadata={"reply_to": reply, "k": 1})
+    assert rig.receipts()[ch]["status"] == "sent"
+    after = rig.metadata(mid)
+    assert after.get("reply_to") == reply and after.get("k") == 1
+    assert len(after) == 3, "control: the marker was added next to the existing keys"
+
+
+def test_ac55_marker_commit_failure_after_a_provider_200_stays_sent_and_retries(rig):
+    from sqlalchemy.exc import OperationalError
+
+    a, b, (ida, _wa), (idb, _wb) = _fresh_unread(rig)
+    state = {"routes": set(), "started": False, "pending": False, "raised": 0}
+    original_commit = Session.commit
+    original_handler = rig.provider.handler
+
+    def handler(request):
+        if not state["started"]:
+            state["started"] = True
+        if request.url.path.strip("/").split("/")[-2] == "pn-A" and not state["raised"]:
+            state["pending"] = True
+        return original_handler(request)
+
+    def commit(self):
+        if not state["started"]:
+            state["routes"].add(self)  # sessions that commit before any provider call
+        elif state["pending"] and self in state["routes"]:
+            state["pending"] = False
+            state["raised"] += 1
+            raise OperationalError("UPDATE", {}, Exception("storage unavailable"))
+        return original_commit(self)
+
+    rig.provider.handler = handler
+    Session.commit = commit
+    try:
+        meta_a = rig.metadata(ida)
+        r = rig.read()
+    finally:
+        Session.commit = original_commit
+    assert state["raised"] == 1, "control: the marker commit really failed once"
+    assert r.status_code == 200, r.text
+    got = {x["channelId"]: x for x in r.json()["receipts"]}
+    assert got[a]["status"] == "sent" and got[b]["status"] == "sent"
+    assert len(rig.provider.for_pn("pn-A")) == 1 and len(rig.provider.for_pn("pn-B")) == 1
+    assert rig.metadata(ida) == meta_a, "no marker where the commit failed"
+    assert rig.unread() == 0
+    again = rig.receipts()
+    assert again[a]["status"] == "sent", "the next call must send again"
+    assert again[b]["status"] == "already_sent"
+    assert len(rig.provider.for_pn("pn-A")) == 2 and len(rig.provider.for_pn("pn-B")) == 1
+
+
+def test_ac52_newest_customer_row_with_empty_provider_id_falls_back_to_older(rig):
+    ch = rig.channel("pn-A")
+    older_id, older_wamid = rig.msg(ch, wamid="wamid.older", when=1)
+    rig.msg(ch, wamid="", when=5)
+    got = rig.receipts()
+    assert got[ch]["messageId"] == older_id
+    assert [c["body"]["message_id"] for c in rig.provider.calls] == [older_wamid]
+
+
+def test_ac56_paused_channel_with_an_already_sent_target_is_unavailable(rig, session_factory):
+    from modules.omnichannel.models import Channel
+
+    ch = rig.channel("pn-A")
+    rig.msg(ch, wamid="wamid.in-1", when=1)
+    assert rig.receipts()[ch]["status"] == "sent"  # now carries a marker
+    assert len(rig.provider.calls) == 1
+    db = session_factory()
+    db.query(Channel).filter(Channel.id == ch).update({"is_active": False})
+    db.commit()
+    db.close()
+    assert rig.receipts()[ch]["status"] == "channel_unavailable"
+    assert len(rig.provider.calls) == 1
