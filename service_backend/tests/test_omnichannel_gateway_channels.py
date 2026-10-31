@@ -14,6 +14,7 @@ from modules.omnichannel.models import Channel, ConversationMessage
 from modules.omnichannel.security import encrypt_credentials
 from modules.omnichannel.services import idempotency, statuses
 from tests.test_omnichannel_api_gateway import (
+    _auth,
     _default_workspace_id,
     _mint,
     _seed_open_contact,
@@ -148,10 +149,10 @@ def test_ac_38_22_is_default_matches_the_channel_post_messages_uses(client, sess
     # An OLDER Messenger channel and a NEWER WhatsApp one: WhatsApp is preferred.
     fb = _channel(session_factory, ws, name="fbold", age_rank=1, channel_type="FACEBOOK")
     wa = _channel(session_factory, ws, name="wanew", age_rank=2)
-    _seed_open_contact(session_factory, ws, phone="+60381000001", open_window=True)
+    _seed_open_contact(session_factory, ws, phone="+601234567801", open_window=True)
     hdr = _hdr(client, ws)
 
-    sent = _post_without_channel_id(client, hdr, "+60381000001")
+    sent = _post_without_channel_id(client, hdr, "+601234567801")
     assert sent.status_code == 202, sent.text
     used = _sent_channel_id(session_factory, sent.json()["id"])
     assert used == wa  # control: the real send went out on the WhatsApp channel
@@ -165,9 +166,9 @@ def test_ac_38_22_older_inactive_whatsapp_is_not_the_default(client, session_fac
     ws = _default_workspace_id(session_factory)
     dead = _channel(session_factory, ws, name="deadwa", age_rank=1, active=False, status_key="INACTIVE")
     live = _channel(session_factory, ws, name="livewa", age_rank=2)
-    _seed_open_contact(session_factory, ws, phone="+60381000002", open_window=True)
+    _seed_open_contact(session_factory, ws, phone="+601234567802", open_window=True)
     hdr = _hdr(client, ws)
-    sent = _post_without_channel_id(client, hdr, "+60381000002")
+    sent = _post_without_channel_id(client, hdr, "+601234567802")
     assert sent.status_code == 202, sent.text
     assert _sent_channel_id(session_factory, sent.json()["id"]) == live
     flags = {i["id"]: i["isDefault"] for i in _list(client, hdr)}
@@ -178,7 +179,7 @@ def test_ac_38_22_no_active_channel_means_none_is_default(client, session_factor
     ws = _default_workspace_id(session_factory)
     only = _channel(session_factory, ws, name="offwa", age_rank=1, active=False, status_key="INACTIVE")
     hdr = _hdr(client, ws)
-    sent = _post_without_channel_id(client, hdr, "+60381000003")
+    sent = _post_without_channel_id(client, hdr, "+601234567803")
     assert sent.status_code == 409  # control: send really has no default channel
     assert sent.json()["error"]["code"] == "no_active_channel"
     items = _list(client, hdr)
@@ -208,13 +209,16 @@ def test_ac_38_24_other_workspace_and_other_tenant_channels_never_appear(client,
     ws = _default_workspace_id(session_factory)
     mine = _channel(session_factory, ws, name="mine", age_rank=1)
     other_ws = _seed_second_workspace(session_factory)
+    # same workspace id as the key's: only the tenant filter can exclude it
     foreign_tenant = _channel(
-        session_factory, "other-tenant-ws", name="alien", age_rank=1, tenant_id="other-tenant-id"
+        session_factory, ws, name="alien", age_rank=1, tenant_id="other-tenant-id"
     )
     # control: both foreign channels really exist
     db = session_factory()
     assert db.query(Channel).filter(Channel.workspace_id == other_ws).count() >= 1
-    assert db.query(Channel).filter(Channel.id == foreign_tenant).count() == 1
+    foreign_row = db.query(Channel).filter(Channel.id == foreign_tenant).first()
+    assert foreign_row is not None and foreign_row.workspace_id == ws
+    assert foreign_row.tenant_id != DEFAULT_TENANT_ID
     db.close()
 
     ids = [i["id"] for i in _list(client, _hdr(client, ws))]
@@ -255,3 +259,71 @@ def test_ac_38_26_guide_documents_the_route_is_default_and_changelog():
     changelog = [ln for ln in text.splitlines()[:40] if ln.startswith("> |")]
     assert any("/channels" in ln for ln in changelog), "changelog needs a row for GET /channels"
     assert "without `channelId`" in text or "omit" in text.lower()
+
+
+# ── Review round ─────────────────────────────────────────────────────────────
+def test_ac_38_21_provider_id_in_display_fields_is_not_exposed(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    raw_id = "pn-provider-id-8841"
+    bare = _channel(session_factory, ws, name=raw_id, age_rank=1, pn=raw_id)
+    normal = _channel(session_factory, ws, name="Front desk", age_rank=2)
+    db = session_factory()
+    row = db.query(Channel).filter(Channel.id == bare).first()
+    row.display_phone_number = raw_id  # details were never synced at connect
+    db.commit()
+    db.close()
+
+    r = client.get(ROUTE, headers=_hdr(client, ws))
+    assert r.status_code == 200, r.text
+    assert raw_id not in r.text
+    by_id = {i["id"]: i for i in r.json()["data"]}
+    assert by_id[bare]["displayPhoneNumber"] is None
+    assert by_id[bare]["name"] == "WhatsApp channel"
+    # control: a normal channel keeps its values
+    assert by_id[normal]["name"] == "Front desk"
+    assert by_id[normal]["displayPhoneNumber"] == "+60 11-111 0000"
+
+
+def test_ac_38_23_paused_channel_is_listed_disconnected_channel_is_not(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    live = _channel(session_factory, ws, name="livewa", age_rank=1)
+    paused = _channel(session_factory, ws, name="pausedwa", age_rank=2, active=False, status_key="INACTIVE")
+    gone = _channel(session_factory, ws, name="gonewa", age_rank=3)
+    hdr = _hdr(client, ws)
+    before = {i["id"]: i for i in _list(client, hdr)}
+    assert set(before) == {live, paused, gone}  # control: listed before disconnect
+    assert before[paused]["isActive"] is False
+
+    res = client.post("/omnichannel/channels/disconnect", json={"ids": [gone]}, headers=_auth(client))
+    assert res.status_code == 204, res.text
+    after = {i["id"]: i for i in _list(client, hdr)}
+    assert set(after) == {live, paused}
+    assert after[paused]["isActive"] is False
+
+
+def test_ac_38_22_other_resolver_errors_are_not_reported_as_no_default(client, session_factory, monkeypatch):
+    from app.api_errors import ApiError
+    from modules.omnichannel.services.public_gateway_service import PublicGatewayService
+
+    ws = _default_workspace_id(session_factory)
+    _channel(session_factory, ws, name="resolverwa", age_rank=1)
+    hdr = _hdr(client, ws)
+    assert client.get(ROUTE, headers=hdr).status_code == 200  # control: healthy before the patch
+
+    def broken(self, *a, **k):
+        raise ApiError(500, "resolver_unavailable", "resolver failed")
+
+    monkeypatch.setattr(PublicGatewayService, "_workspace_channel", broken)
+    r = client.get(ROUTE, headers=hdr)
+    assert r.status_code == 500, r.text
+    assert r.json()["error"]["code"] == "resolver_unavailable"
+
+
+def test_ac_38_26_guide_has_the_appendix_index_row_and_the_reaction_exception():
+    text = GUIDE.read_text()
+    appendix = text[text.index("## Appendix - quick endpoint index") :]
+    assert "/api/v1/omnichannel/channels" in appendix
+    flat = text.lower()
+    assert "reaction" in flat and "original message" in flat and "channel" in flat
+    i = flat.index("without `channelid`") if "without `channelid`" in flat else flat.index("channelid")
+    assert "reaction" in flat[max(0, i - 1500) : i + 1500]
