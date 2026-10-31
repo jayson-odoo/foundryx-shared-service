@@ -48,12 +48,13 @@ def _memory_idempotency():
 
 
 # ── rig ──────────────────────────────────────────────────────────────────────
-class _Stream(httpx.SyncByteStream):
-    """A response body that records whether and how far it was read."""
+class _Stream(httpx.SyncByteStream, httpx.AsyncByteStream):
+    """A response body (readable by a sync or an async client) that records
+    whether and how far it was read. `delay` is the pause before each chunk."""
 
-    def __init__(self, chunks, on_chunk=None):
+    def __init__(self, chunks, delay=0.0):
         self._chunks = chunks
-        self._on_chunk = on_chunk
+        self._delay = delay
         self.iterated = False
         self.consumed = 0
         self.closed = False
@@ -61,12 +62,23 @@ class _Stream(httpx.SyncByteStream):
     def __iter__(self):
         self.iterated = True
         for chunk in self._chunks:
-            if self._on_chunk:
-                self._on_chunk()
+            if self._delay:
+                time.sleep(self._delay)
+            self.consumed += 1
+            yield chunk
+
+    async def __aiter__(self):
+        self.iterated = True
+        for chunk in self._chunks:
+            if self._delay:
+                await asyncio.sleep(self._delay)
             self.consumed += 1
             yield chunk
 
     def close(self):
+        self.closed = True
+
+    async def aclose(self):
         self.closed = True
 
 
@@ -81,23 +93,39 @@ def _default_graph(request):
     return httpx.Response(200, json={"messages": [{"id": "wamid.T1"}]}, request=request)
 
 
-def _install(monkeypatch, *, media=None, graph=None):
-    """Fake every outbound call. `rig.media_calls` counts fetches of the media
-    host; `rig.graph_calls` lists the provider paths hit."""
+def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=None):
+    """Fake every outbound call, for a sync or an async client. `rig.media_calls`
+    counts fetches of the media host; `rig.graph_calls` lists the provider paths
+    hit. `header_delay` pauses before the media response headers are returned."""
     rig = SimpleNamespace(media_calls=0, graph_calls=[], graph_auth=[])
 
-    def fake(self, request):
+    def route(request):
         host = request.url.host
         if host == GRAPH_HOST:
             rig.graph_calls.append(request.url.path)
             rig.graph_auth.append(request.headers.get("authorization", ""))
-            return (graph or _default_graph)(request)
+            return (graph or _default_graph)(request), 0.0
         if host == MEDIA_HOST:
             rig.media_calls += 1
-            return media(request)
+            if on_fetch:
+                on_fetch()
+            return media(request), header_delay
         raise AssertionError(f"unexpected outbound call to {host}")
 
+    def fake(self, request):
+        resp, delay = route(request)
+        if delay:
+            time.sleep(delay)
+        return resp
+
+    async def fake_async(self, request):
+        resp, delay = route(request)
+        if delay:
+            await asyncio.sleep(delay)
+        return resp
+
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", fake_async)
     # The URL guard resolves hostnames; answer with a public address, offline.
     monkeypatch.setattr(
         "app.services.url_guard.socket.getaddrinfo",
@@ -112,15 +140,6 @@ def _pdf_media(request):
     return httpx.Response(
         200, headers={"Content-Type": "application/pdf"}, stream=_Stream([PDF]), request=request
     )
-
-
-def _skewed_clock(monkeypatch):
-    """`time.monotonic` plus a skew a fake stream advances, so a "minute" costs
-    no real time. Still monotonic and still moving in real time."""
-    skew = [0.0]
-    real = time.monotonic
-    monkeypatch.setattr(time, "monotonic", lambda: real() + skew[0])
-    return skew
 
 
 def _live_credentials(session_factory, channel_id, token):
@@ -218,18 +237,15 @@ async def _drive(send):
 
 
 def _error_code(resp):
-    return resp.json()["error"]["code"]
+    body = resp.json()
+    return body["error"]["code"] if isinstance(body, dict) and "error" in body else f"no error body: {resp.status_code} {resp.text[:80]}"
 
 
 # ══ AC-41-01: other requests are answered while a send waits ═════════════════
 def test_ac_41_01_json_media_send_leaves_the_loop_free(client, session_factory, monkeypatch):
     headers, _cid, _ch = _setup(client, session_factory, phone="+60700700701")
 
-    def slow_media(request):
-        time.sleep(SLEEP)
-        return _pdf_media(request)
-
-    _install(monkeypatch, media=slow_media)
+    _install(monkeypatch, media=_pdf_media, header_delay=SLEEP)
 
     async def send(ac):
         return await ac.post("/api/v1/omnichannel/messages", json=_media_body("+60700700701"), headers=headers)
@@ -280,44 +296,49 @@ _PATHS = {
 
 @pytest.mark.parametrize("path", ["media", "header"])
 def test_ac_41_03_drip_over_the_total_limit_is_refused(client, session_factory, monkeypatch, path):
+    from modules.omnichannel.services import public_gateway_service as pgs
+
     phone = "+60700700703" if path == "media" else "+60700700704"
     headers, cid, _ch = _setup(client, session_factory, phone=phone, token="tkn-live-03")
-    skew = _skewed_clock(monkeypatch)
+    monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.5)
     streams = []
 
     def drip(request):
-        # every chunk arrives instantly in real time (inside the 15 s per-read
-        # timeout) but the fake clock moves 10 s per chunk: 12 chunks = 120 s
-        stream = _Stream(_pdf_chunks(12), on_chunk=lambda: skew.__setitem__(0, skew[0] + 10.0))
+        # every chunk arrives well inside the per-read timeout, but 12 of them
+        # take 2.4 s against a 0.5 s total limit
+        stream = _Stream(_pdf_chunks(12), delay=0.2)
         streams.append(stream)
         return httpx.Response(200, headers={"Content-Type": "application/pdf"}, stream=stream, request=request)
 
     rig = _install(monkeypatch, media=drip)
     before = _message_count(session_factory, cid)
     url, body = _PATHS[path](phone)
+    started = time.monotonic()
     r = client.post(url, json=body, headers=headers)
+    elapsed = time.monotonic() - started
     assert rig.media_calls == 1, "the fetch never happened"
     assert r.status_code == 422, r.text
     assert _error_code(r) == "media_fetch_failed"
+    assert elapsed < 1.8, f"the fetch ran for {elapsed:.1f}s"
     assert streams[0].consumed < 12, "the fetch kept reading past the limit"
     assert rig.graph_calls == []
     assert _message_count(session_factory, cid) == before
 
 
 def test_ac_41_03_slow_headers_over_the_total_limit_are_refused(client, session_factory, monkeypatch):
+    from modules.omnichannel.services import public_gateway_service as pgs
+
     headers, cid, _ch = _setup(client, session_factory, phone="+60700700705", token="tkn-live-03")
-    skew = _skewed_clock(monkeypatch)
-
-    def slow_headers(request):
-        skew[0] += 70.0  # connect and headers alone used up the whole budget
-        return _pdf_media(request)
-
-    rig = _install(monkeypatch, media=slow_headers)
+    monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.5)
+    rig = _install(monkeypatch, media=_pdf_media, header_delay=1.5)
     before = _message_count(session_factory, cid)
+    started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700705"), headers=headers)
+    elapsed = time.monotonic() - started
     assert rig.media_calls == 1
     assert r.status_code == 422, r.text
     assert _error_code(r) == "media_fetch_failed"
+    assert elapsed < 1.2, f"the fetch ran for {elapsed:.1f}s"
     assert rig.graph_calls == []
     assert _message_count(session_factory, cid) == before
 
@@ -655,13 +676,15 @@ def test_ac_41_02_database_session_is_closed_after_the_request(client, session_f
 # ── AC-41-03 controls: inside the limit works ────────────────────────────────
 @pytest.mark.parametrize("path", ["media", "header"])
 def test_ac_41_03_drip_inside_the_total_limit_succeeds(client, session_factory, monkeypatch, path):
+    from modules.omnichannel.services import public_gateway_service as pgs
+
     phone = "+60700700720" if path == "media" else "+60700700721"
     headers, cid, _ch = _setup(client, session_factory, phone=phone, token="tkn-live-03")
-    skew = _skewed_clock(monkeypatch)
+    monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 5.0)
     streams = []
 
     def drip(request):
-        stream = _Stream(_pdf_chunks(5), on_chunk=lambda: skew.__setitem__(0, skew[0] + 10.0))  # 50 s
+        stream = _Stream(_pdf_chunks(5), delay=0.1)
         streams.append(stream)
         return httpx.Response(200, headers={"Content-Type": "application/pdf"}, stream=stream, request=request)
 
@@ -672,7 +695,6 @@ def test_ac_41_03_drip_inside_the_total_limit_succeeds(client, session_factory, 
     assert streams[0].consumed == 5  # the whole body was read
     assert rig.graph_calls, "the provider fake was never hit"
     assert _message_count(session_factory, cid) == 1
-    assert skew[0] >= 50.0  # control: the fake clock really moved
 
 
 # ── AC-41-04 controls ────────────────────────────────────────────────────────
@@ -762,3 +784,592 @@ def test_ac_41_05_a_public_https_url_is_accepted(client, session_factory, monkey
     )
     assert r.status_code == 202, r.text
     assert rig.media_calls == 1 and rows == 1
+
+
+# ══ Review round: the deadline holds against a real peer ═════════════════════
+DRIP_SECONDS = 6.0  # how long a peer drips if nothing stops it
+
+
+def _frame(data: bytes) -> bytes:
+    return b"%x\r\n%s\r\n" % (len(data), data)
+
+
+def _drip(conn, stop, piece):
+    end = time.monotonic() + DRIP_SECONDS
+    while time.monotonic() < end and not stop.is_set():
+        conn.sendall(piece)
+        time.sleep(0.1)
+
+
+_CHUNKED_PDF_HEAD = b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nTransfer-Encoding: chunked\r\n"
+
+
+def _peer_header_drip(conn, stop):
+    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nX-Pad: ")
+    _drip(conn, stop, b"a")
+    conn.sendall(b"\r\nTransfer-Encoding: chunked\r\n\r\n" + _frame(PDF) + b"0\r\n\r\n")
+
+
+def _peer_empty_gzip(conn, stop):
+    conn.sendall(_CHUNKED_PDF_HEAD + b"Content-Encoding: gzip\r\n\r\n")
+    conn.sendall(_frame(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03"))
+    _drip(conn, stop, _frame(b"\x00\x00\x00\xff\xff"))
+    conn.sendall(b"0\r\n\r\n")
+
+
+def _peer_body_drip(conn, stop):
+    conn.sendall(_CHUNKED_PDF_HEAD + b"\r\n" + _frame(PDF))
+    _drip(conn, stop, _frame(b"x"))
+    conn.sendall(b"0\r\n\r\n")
+
+
+def _peer_trailer_drip(conn, stop):
+    conn.sendall(_CHUNKED_PDF_HEAD + b"Trailer: X-T\r\n\r\n" + _frame(PDF) + b"0\r\nX-T: ")
+    _drip(conn, stop, b"a")
+    conn.sendall(b"\r\n\r\n")
+
+
+def _peer_stall_then_end(conn, stop):
+    conn.sendall(_CHUNKED_PDF_HEAD + b"\r\n" + _frame(PDF))
+    stop.wait(1.5)
+    conn.sendall(b"0\r\n\r\n")
+
+
+@pytest.fixture
+def local_peer(monkeypatch):
+    """Start real listening sockets on 127.0.0.1 (ephemeral ports) and allow
+    local http URLs in the fetch's URL check, for this test only. Everything is
+    shut down afterwards."""
+    import socket
+    import threading
+
+    from modules.omnichannel.services import webhook_service
+
+    monkeypatch.setattr(webhook_service, "validate_callback_url", lambda url, **k: url)
+    stop = threading.Event()
+    listeners = []
+
+    def start(handler):
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(5)
+        srv.settimeout(0.2)
+        listeners.append(srv)
+
+        def serve(conn):
+            try:
+                conn.settimeout(10)
+                conn.recv(65536)
+                handler(conn, stop)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+        def accept_loop():
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                threading.Thread(target=serve, args=(conn,), daemon=True).start()
+
+        threading.Thread(target=accept_loop, daemon=True).start()
+        return f"http://127.0.0.1:{srv.getsockname()[1]}/file"
+
+    yield start
+    stop.set()
+    for srv in listeners:
+        srv.close()
+
+
+_PEERS = {
+    "headers-dripped": (_peer_header_drip, 3.0),
+    "empty-compressed-body": (_peer_empty_gzip, 3.0),  # refused early now: still fast
+    "trailers-dripped": (_peer_trailer_drip, 3.0),
+    "plain-body-dripped": (_peer_body_drip, 3.0),
+    "clean-end-after-the-limit": (_peer_stall_then_end, 1.2),
+}
+
+
+@pytest.mark.parametrize("path", ["media", "header"])
+@pytest.mark.parametrize("peer", sorted(_PEERS))
+def test_ac_41_03_real_peer_cannot_extend_the_total_limit(client, session_factory, monkeypatch, local_peer, peer, path):
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    handler, max_elapsed = _PEERS[peer]
+    phone = "+60700700730" if path == "media" else "+60700700731"
+    headers, cid, _ch = _setup(client, session_factory, phone=phone)
+    monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.5)
+    url = local_peer(handler)
+    body = _media_body(phone, url) if path == "media" else _header_body(phone, url)
+    started = time.monotonic()
+    r = client.post("/api/v1/omnichannel/messages", json=body, headers=headers)
+    elapsed = time.monotonic() - started
+    assert r.status_code == 422, f"{r.status_code} {r.text} after {elapsed:.1f}s"
+    assert _error_code(r) == "media_fetch_failed", f"{r.text} after {elapsed:.1f}s"
+    assert elapsed < max_elapsed, f"the fetch ran for {elapsed:.1f}s against a 0.5 s limit"
+    assert _message_count(session_factory, cid) == 0
+
+
+# ── AC-41-08: no transaction is held while the fetch runs ────────────────────
+@pytest.mark.parametrize("path", ["media", "header"])
+def test_ac_41_08_no_transaction_is_open_while_the_fetch_runs(client, session_factory, monkeypatch, path):
+    import weakref
+
+    from sqlalchemy import event, text
+    from sqlalchemy.orm import Session
+
+    phone = "+60700700732" if path == "media" else "+60700700733"
+    headers, cid, _ch = _setup(client, session_factory, phone=phone)
+    seen = weakref.WeakSet()
+
+    def track(session, transaction, connection):
+        seen.add(session)
+
+    def open_now():
+        return [s for s in list(seen) if s.in_transaction()]
+
+    event.listen(Session, "after_begin", track)
+    try:
+        # control: the tracker sees a session that is in a transaction, and
+        # stops seeing it once it is closed
+        probe = session_factory()
+        probe.execute(text("select 1"))
+        assert len(open_now()) == 1
+        probe.close()
+        assert open_now() == []
+
+        at_fetch = []
+        rig = _install(monkeypatch, media=_pdf_media, on_fetch=lambda: at_fetch.append(len(open_now())))
+        url, body = _PATHS[path](phone)
+        r = client.post(url, json=body, headers=headers)
+    finally:
+        event.remove(Session, "after_begin", track)
+    assert r.status_code == 202, r.text
+    assert rig.media_calls == 1 and len(at_fetch) == 1, "the fetch hook never ran"
+    assert at_fetch == [0], f"{at_fetch[0]} session(s) held a transaction during the fetch"
+
+
+# ── AC-41-09: an address the client cannot process is a typed 422 ────────────
+@pytest.mark.parametrize(
+    "case,url",
+    [
+        ("invalid idna label", "https://xn--a.b/"),
+        ("url too long", f"https://{MEDIA_HOST}/" + "a" * 70000),
+    ],
+)
+def test_ac_41_09_unprocessable_media_url_is_media_fetch_failed(client, session_factory, monkeypatch, case, url):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700734")
+    _install(monkeypatch, media=_pdf_media)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700734", url), headers=headers)
+    assert r.status_code == 422, f"{case}: {r.status_code}"
+    assert _error_code(r) == "media_fetch_failed", case
+    assert _message_count(session_factory, cid) == 0
+
+
+def test_ac_41_09_unprocessable_redirect_target_is_a_typed_422(client, session_factory, monkeypatch):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700735")
+    _install(
+        monkeypatch,
+        media=lambda request: httpx.Response(302, headers={"Location": "https://xn--a.b/"}, request=request),
+    )
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700735"), headers=headers)
+    assert r.status_code == 422, r.status_code
+    assert _error_code(r) in ("invalid_media_url", "media_fetch_failed")
+    assert _message_count(session_factory, cid) == 0
+
+
+# ── AC-41-07: the guide states the 100 MB early refusal ──────────────────────
+def test_ac_41_07_section_4_2_states_the_early_refusal_ceiling():
+    lines = _guide_lines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("### 4.2"))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("### ") or lines[i].startswith("## "))
+    declared = [l for l in lines[start:end] if "before its body" in l]
+    assert declared, "section 4.2 lost the early refusal sentence"  # control
+    assert any(re.search(r"100\s?MB", l) for l in declared), declared
+
+
+# ── AC-41-04: a non-ASCII digit in Content-Length never raises ───────────────
+def test_ac_41_04_non_ascii_digits_in_the_declared_length_stay_typed(client, session_factory, monkeypatch):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700736")
+
+    def odd_length(request):
+        return httpx.Response(
+            200,
+            headers=[(b"content-type", b"application/pdf"), (b"content-length", b"\xc2\xb2")],
+            stream=_Stream([PDF]),
+            request=request,
+        )
+
+    rig = _install(monkeypatch, media=odd_length)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700736"), headers=headers)
+    assert rig.media_calls == 1
+    assert r.status_code == 202, r.status_code
+    assert _message_count(session_factory, cid) == 1
+
+
+# ── Idempotency: the in-memory claim is atomic ───────────────────────────────
+class _RendezvousDict(dict):
+    """A dict whose reads wait (up to 1 s) for a second reader, so two threads
+    that both read before either writes are forced to overlap. A store that
+    locks its check-then-set times the wait out and stays correct."""
+
+    def __init__(self):
+        super().__init__()
+        import threading
+
+        self._barrier = threading.Barrier(2, timeout=1.0)
+
+    def _meet(self):
+        import threading
+
+        try:
+            self._barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+
+    def __contains__(self, key):
+        found = super().__contains__(key)
+        self._meet()
+        return found
+
+    def get(self, key, default=None):
+        value = super().get(key, default)
+        self._meet()
+        return value
+
+    def setdefault(self, key, default=None):
+        value = super().setdefault(key, default)
+        self._meet()
+        return value
+
+
+def _race(store):
+    import threading
+
+    results = []
+    lock = threading.Lock()
+
+    def claim():
+        got = store.reserve("ws-race", "same-key")
+        with lock:
+            results.append(got)
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    return results
+
+
+def test_idempotency_memory_claim_is_atomic_under_two_threads():
+    store = idempotency.MemoryIdempotencyStore()
+    store._memory = _RendezvousDict()
+    results = _race(store)
+    assert len(results) == 2
+    assert results.count(None) == 1, f"both threads claimed the key: {results}"
+    assert idempotency.PENDING in results
+
+
+def test_idempotency_race_rig_sees_a_non_atomic_claim():
+    """Control: the same rig catches a claim that checks and sets separately."""
+
+    class NaiveStore(idempotency.MemoryIdempotencyStore):
+        def reserve(self, workspace_id, idem_key):
+            k = idempotency._key(workspace_id, idem_key)
+            if k in self._memory:
+                return self._memory[k]
+            self._memory[k] = idempotency.PENDING
+            return None
+
+    store = NaiveStore()
+    store._memory = _RendezvousDict()
+    results = _race(store)
+    assert results.count(None) == 2
+
+
+# ══ Review round 2 ═══════════════════════════════════════════════════════════
+# ── AC-41-10: fetch slots ────────────────────────────────────────────────────
+def test_ac_41_10_limits_are_four_and_two():
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    assert pgs.MEDIA_FETCH_MAX_CONCURRENT == 4
+    assert pgs.MEDIA_FETCH_MAX_PER_KEY == 2
+
+
+def _gate_world(client, session_factory, *, contacts):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    phones = [f"+607007009{i:02d}" for i in range(contacts)]
+    cids = {ph: _seed_open_contact(session_factory, ws, phone=ph, open_window=True) for ph in phones}
+    keys = {n: {"Authorization": "Bearer " + _mint(client, ws, n).json()["fullKey"]} for n in ("a", "b", "c")}
+    return phones, cids, keys
+
+
+async def _wait_for(predicate, seconds=5.0):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+def _post_media(ac, headers, phone, *, header_path=False, idem=None):
+    body = _header_body(phone) if header_path else _media_body(phone)
+    h = dict(headers)
+    if idem:
+        h["Idempotency-Key"] = idem
+    return ac.post("/api/v1/omnichannel/messages", json=body, headers=h)
+
+
+@pytest.mark.parametrize("held_path", ["media", "header"])
+def test_ac_41_10_per_key_and_process_limits(client, session_factory, monkeypatch, held_path):
+    import threading
+
+    phones, cids, keys = _gate_world(client, session_factory, contacts=10)
+    release = threading.Event()
+    started = []
+
+    def hold():
+        started.append(1)
+        release.wait(15)
+
+    rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
+    hp = held_path == "header"
+
+    async def scenario():
+        out = {}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
+            held = []
+            try:
+                # key a takes its 2 slots, then key b takes 2: the process is full
+                for i, name in enumerate(["a", "a", "b", "b"]):
+                    held.append(asyncio.create_task(_post_media(ac, keys[name], phones[i], header_path=hp)))
+                    assert await _wait_for(lambda n=i + 1: len(started) >= n), f"fetch {i + 1} never started"
+                calls_when_full = rig.media_calls
+
+                t0 = time.monotonic()
+                out["third_on_a"] = await _post_media(ac, keys["a"], phones[4], idem="retry-me")
+                out["third_secs"] = time.monotonic() - t0
+                out["fifth_on_c"] = await _post_media(ac, keys["c"], phones[5])
+                out["text_on_c"] = await ac.post(
+                    "/api/v1/omnichannel/messages",
+                    json={"to": phones[6], "type": "text", "text": {"body": "hi"}},
+                    headers=keys["c"],
+                )
+                out["extra_fetches"] = rig.media_calls - calls_when_full
+            finally:
+                release.set()
+            out["held"] = [await t for t in held]
+            out["retry"] = await _post_media(ac, keys["a"], phones[4], idem="retry-me")
+        return out
+
+    out = asyncio.run(scenario())
+    assert [r.status_code for r in out["held"]] == [202] * 4
+    third = out["third_on_a"]
+    assert (third.status_code, _error_code(third)) == (429, "media_fetch_busy")
+    assert out["third_secs"] < 1.0, "the busy answer was not immediate"
+    fifth = out["fifth_on_c"]
+    assert (fifth.status_code, _error_code(fifth)) == (429, "media_fetch_busy")
+    assert out["extra_fetches"] == 0, "a refused send still fetched"
+    assert out["text_on_c"].status_code == 202
+    assert _message_count(session_factory, cids[phones[5]]) == 0
+    assert out["retry"].status_code == 202 and out["retry"].json()["idempotencyReplay"] is False
+    assert _message_count(session_factory, cids[phones[4]]) == 1
+
+
+def test_ac_41_10_a_slot_is_freed_on_every_outcome(client, session_factory, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    phones, cids, keys = _gate_world(client, session_factory, contacts=14)
+    mode = {"v": "ok"}
+
+    def media(request):
+        if mode["v"] == "404":
+            return httpx.Response(404, request=request)
+        if mode["v"] == "boom":
+            raise RuntimeError("unexpected")
+        return _pdf_media(request)
+
+    monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.4)
+    rig = _install(monkeypatch, media=media)
+    lenient = TestClient(app, raise_server_exceptions=False)
+    statuses_seen = []
+    # 3 rounds x 4 outcomes = 12 fetches on one key: more than 4 in total and
+    # more than 2 for the key, so a slot that was not freed would show as a 429
+    for rnd in range(3):
+        for outcome in ("ok", "404", "slow", "boom"):
+            mode["v"] = "ok" if outcome == "slow" else outcome
+            rig_delay = 1.2 if outcome == "slow" else 0.0
+            monkeypatch.undo()
+            monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.4)
+            rig = _install(monkeypatch, media=media, header_delay=rig_delay)
+            r = lenient.post(
+                "/api/v1/omnichannel/messages", json=_media_body(phones[rnd * 4]), headers=keys["a"]
+            )
+            assert r.status_code != 429, f"round {rnd} {outcome}: a slot was not freed"
+            statuses_seen.append(r.status_code)
+    mode["v"] = "ok"
+    monkeypatch.undo()
+    rig = _install(monkeypatch, media=media)
+    final = client.post("/api/v1/omnichannel/messages", json=_media_body(phones[13]), headers=keys["a"])
+    assert final.status_code == 202, final.text
+    assert 202 in statuses_seen and 422 in statuses_seen  # control: outcomes really differed
+
+
+# ── AC-41-04: no compression ─────────────────────────────────────────────────
+def _gzip(data: bytes) -> bytes:
+    import gzip
+
+    return gzip.compress(data)
+
+
+@pytest.mark.parametrize("encoding,wrap", [("gzip", 1), ("gzip, gzip", 2)])
+def test_ac_41_04_compressed_responses_are_refused_and_none_is_asked_for(
+    client, session_factory, monkeypatch, encoding, wrap
+):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700740")
+    asked = []
+    payload = PDF
+    for _ in range(wrap):
+        payload = _gzip(payload)
+
+    def compressed(request):
+        asked.append(request.headers.get("accept-encoding"))
+        return httpx.Response(
+            200,
+            headers=[(b"content-type", b"application/pdf"), (b"content-encoding", encoding.encode())],
+            stream=_Stream([payload]),
+            request=request,
+        )
+
+    _install(monkeypatch, media=compressed)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700740"), headers=headers)
+    assert asked == ["identity"], asked
+    assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
+    assert _message_count(session_factory, cid) == 0
+
+
+def test_ac_41_04_small_double_compressed_body_is_never_decoded(client, session_factory, monkeypatch, local_peer):
+    import httpx._decoders as decoders
+
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700741")
+    payload = _gzip(_gzip(b"\0" * (60 * 1024 * 1024)))
+    assert len(payload) < 200_000  # control: it really is small
+    decoded = [0]
+    real_decode = decoders.GZipDecoder.decode
+
+    def counting(self, data):
+        out = real_decode(self, data)
+        decoded[0] += len(out)
+        return out
+
+    monkeypatch.setattr(decoders.GZipDecoder, "decode", counting)
+
+    def peer(conn, stop):
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Encoding: gzip, gzip\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(payload)
+        )
+        conn.sendall(payload)
+
+    url = local_peer(peer)
+    started = time.monotonic()
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700741", url), headers=headers)
+    assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
+    assert decoded[0] == 0, f"{decoded[0]} decoded bytes were produced"
+    assert time.monotonic() - started < 3.0
+    assert _message_count(session_factory, cid) == 0
+
+
+# ── AC-41-09: more unprocessable addresses, and fixed wording ────────────────
+@pytest.mark.parametrize(
+    "case,url",
+    [
+        ("unclosed ipv6 bracket", "https://[::1/x"),
+        ("port is not a number", f"https://{MEDIA_HOST}:abc/x"),
+        ("control character", f"https://{MEDIA_HOST}/a\x01b"),
+    ],
+)
+def test_ac_41_09_more_unprocessable_addresses(client, session_factory, monkeypatch, case, url):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700742")
+    _install(monkeypatch, media=_pdf_media)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700742", url), headers=headers)
+    assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed"), case
+    assert _message_count(session_factory, cid) == 0
+
+
+def test_ac_41_09_remote_bytes_do_not_reach_the_answer(client, session_factory, monkeypatch, local_peer):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700743")
+
+    def peer(conn, stop):
+        conn.sendall(b"HTTP/1.1 200 OK\r\nBad Header REMOTEMARK7Q\r\n\r\n")
+
+    url = local_peer(peer)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700743", url), headers=headers)
+    assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
+    assert "REMOTEMARK7Q" not in r.text
+    assert "127.0.0.1" not in r.text
+
+
+# ── AC-41-06: exception chain and a None token ───────────────────────────────
+def _adapter(handler):
+    from modules.omnichannel.adapters.whatsapp_cloud import WhatsAppCloudAdapter
+
+    return WhatsAppCloudAdapter(client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def _call(adapter, path, creds):
+    if path == "send":
+        return adapter.send(creds, "pn-1", "60700700701", text="hi")
+    return adapter.upload_media(creds, "pn-1", PDF, "application/pdf")
+
+
+@pytest.mark.parametrize("path", ["send", "upload"])
+def test_ac_41_06_exception_chain_holds_no_token(monkeypatch, path):
+    import traceback
+
+    from modules.omnichannel.adapters.base import SendError
+
+    monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
+    monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
+    token = "tkn-chain-81f2\n"
+
+    def refuse(request):
+        raise httpx.ConnectError(f"refused {request.headers['authorization']!r} {request.headers['authorization']}")
+
+    with pytest.raises(SendError) as info:
+        _call(_adapter(refuse), path, {"access_token": token})
+    exc = info.value
+    assert "ConnectError" in str(exc)
+    assert exc.transient is True
+    rendered = "".join(traceback.format_exception(exc))
+    assert "ConnectError" in rendered  # control: the chain is part of the rendered text
+    assert "tkn-chain-81f2" not in rendered
+    chain = [exc.__cause__, exc.__context__]
+    assert all("tkn-chain-81f2" not in repr(getattr(c, "args", "")) for c in chain if c is not None)
+
+
+def test_ac_41_06_upload_with_no_token_leaves_ordinary_words_alone(monkeypatch):
+    from modules.omnichannel.adapters.base import SendError
+
+    monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
+    monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
+
+    def reject(request):
+        return httpx.Response(
+            400, json={"error": {"message": "None of the files was valid: reason-NN", "code": 100}}, request=request
+        )
+
+    with pytest.raises(SendError) as info:
+        _call(_adapter(reject), "upload", {"access_token": None})
+    assert "None of the files was valid" in str(info.value)
+    assert "reason-NN" in str(info.value)
