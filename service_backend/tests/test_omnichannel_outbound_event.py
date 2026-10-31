@@ -802,7 +802,10 @@ class _FakeAdapter:
     def upload_media(self, *a, **k):
         return "media-fake"
 
+    sends = 0
+
     def send(self, *a, **k):
+        self.sends += 1
         if self.exc is not None:
             raise self.exc
         return {"external_message_id": "wamid.fake-sec"}
@@ -1036,22 +1039,29 @@ def _drive_worker(monkeypatch, session_factory, mid):
     import app.database as appdb
     from modules.omnichannel.worker import omnichannel_send_message
 
+    from modules.omnichannel.worker import celery_app
+
     monkeypatch.setattr(appdb, "SessionLocal", session_factory)
+    # The omni app propagates eager errors, so the first Retry would escape
+    # `apply`; let every retry run, as the worker does.
+    monkeypatch.setattr(celery_app.conf, "task_eager_propagates", False)
     try:
         return omnichannel_send_message.apply(args=[mid])
-    except Exception:  # noqa: BLE001 - eager Celery re-raises Retry/the last error; the outcome is what counts
+    except Exception:  # noqa: BLE001 - eager Celery may still re-raise the last error; the outcome is what counts
         return None
 
 
 def test_ac_38_30a_retries_exhausted_ends_failed_with_one_failed_event(client, session_factory, monkeypatch):
     r = _rig(client, session_factory, "+60123456780", events=("message.status",))
-    _use_adapter(monkeypatch, _provider_error(RAW_TRANSIENT, transient=True))
+    adapter = _use_adapter(monkeypatch, _provider_error(RAW_TRANSIENT, transient=True))
     mid = _inbox_text(client, r["cid"]).json()["id"]
     # control: a transient error with retries remaining emits NOTHING yet
     assert _row(session_factory, mid)[0] == "QUEUED"
     assert _status_rows(session_factory, mid) == []
 
+    before = adapter.sends
     _drive_worker(monkeypatch, session_factory, mid)
+    assert adapter.sends - before > 1, "control: the task must have run more than one attempt"
 
     status, _code, message = _row(session_factory, mid)
     assert status == "FAILED", status
