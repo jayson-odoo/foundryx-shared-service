@@ -716,7 +716,10 @@ class InboundService:
         if new_status == "FAILED":
             msg.delivery_status = "FAILED"
             msg.error_code = event.get("error_code")
-            msg.error_message = provider_error_text(str(event.get("error_message") or "")) or None
+            msg.error_message = (
+                provider_error_text(str(event.get("error_message") or ""))
+                or "The provider could not deliver this message"
+            )
         else:
             current = _STATUS_RANK.get(msg.delivery_status or "SENT", 0)
             if _STATUS_RANK[new_status] <= current and msg.delivery_status:
