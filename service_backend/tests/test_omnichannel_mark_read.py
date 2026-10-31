@@ -19,6 +19,7 @@ Rig notes
   channel id (message rows have no key that forbids it).
 """
 import json
+import time
 import types
 from datetime import datetime, timedelta, timezone
 
@@ -64,6 +65,8 @@ class FakeProvider:
         self.calls = []
         self.behaviour = {}
         self.default = "ok"
+        self.sleep_on_first = 0.0  # seconds the first call of a phase sleeps
+        self._slept = False
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         segs = request.url.path.strip("/").split("/")
@@ -80,8 +83,12 @@ class FakeProvider:
                 "last": segs[-1],
                 "body": body,
                 "auth": request.headers.get("authorization"),
+                "timeout": dict(request.extensions.get("timeout") or {}),
             }
         )
+        if self.sleep_on_first and not self._slept:
+            self._slept = True
+            time.sleep(self.sleep_on_first)
         action = self.behaviour.get(pn, self.default)
         if action == "ok":
             return httpx.Response(200, json={"success": True})
@@ -89,6 +96,22 @@ class FakeProvider:
             return httpx.Response(
                 action[1], json={"error": {"message": action[2], "code": 100}}
             )
+        if action[0] == "body":
+            return httpx.Response(action[1], content=action[2])
+        if action[0] == "h11":
+            # Real HTTP/1.1 request validation, as a live connection does it: an
+            # illegal header value raises with the value in the text.
+            import h11
+
+            try:
+                h11.Request(
+                    method=request.method,
+                    target=request.url.raw_path,
+                    headers=list(request.headers.raw),
+                )
+            except h11.LocalProtocolError as exc:
+                raise httpx.LocalProtocolError(str(exc)) from exc
+            return httpx.Response(200, json={"success": True})
         raise action[1]
 
     def for_pn(self, pn):
@@ -105,7 +128,7 @@ def provider(monkeypatch):
         **{k: getattr(httpx, k) for k in dir(httpx) if not k.startswith("__")}
     )
     ns.Client = lambda *a, **k: real_client(
-        transport=httpx.MockTransport(prov.handler), timeout=10.0
+        transport=httpx.MockTransport(prov.handler), timeout=k.get("timeout", 10.0)
     )
     monkeypatch.setattr(meta_graph, "httpx", ns)
     monkeypatch.setattr(whatsapp_cloud, "httpx", ns)
@@ -199,6 +222,7 @@ class Rig:
         contact_id=None,
         mtype="TEXT",
         created=None,
+        metadata=None,
     ):
         from modules.omnichannel.models import ConversationMessage
 
@@ -215,6 +239,7 @@ class Rig:
             external_message_id=wamid,
             delivery_status="DELIVERED" if sender != "CONTACT" else None,
             migrated_from=migrated,
+            metadata_json=metadata,
             created_at=created or at(when),
         )
         db.add(m)
@@ -1178,3 +1203,155 @@ def test_ac62_changelog_has_a_row_for_the_read_route():
     assert any(
         ("/read" in ln or "read receipt" in ln.lower()) for ln in rows
     ), "no changelog row mentions the read route"
+
+
+# ═══ Review round, group A: rules added after the first green run ═══════════
+FAKE_TOKEN = "FAKE-tok-9f2c1d"
+TOKEN_FRAGMENT = "9f2c1d"
+
+
+def _everything_stored(session_factory):
+    """Every column of every activity row of the default tenant, as one string."""
+    from app.models.integration_activity import IntegrationActivity
+
+    db = session_factory()
+    try:
+        rows = db.query(IntegrationActivity).filter(
+            IntegrationActivity.tenant_id == DEFAULT_TENANT_ID
+        ).all()
+        return json.dumps(
+            [{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in rows],
+            default=str,
+        )
+    finally:
+        db.close()
+
+
+# AC-38-59: no token in the record or the response, whatever the error text says
+@pytest.mark.parametrize(
+    "cause",
+    ["provider_text_with_token", "transport_text_with_token", "illegal_header_value"],
+)
+def test_ac59_no_token_in_the_activity_record_or_the_response(rig, session_factory, cause):
+    token = "FAKE-tok\n9f2c1d" if cause == "illegal_header_value" else FAKE_TOKEN
+    ch = rig.channel("pn-A", token=token)
+    rig.msg(ch, wamid="wamid.in-1", when=1)
+    rig.provider.behaviour["pn-A"] = {
+        "provider_text_with_token": ("http", 400, f"Malformed access token {FAKE_TOKEN}"),
+        "transport_text_with_token": ("raise", httpx.ConnectError(f"no route using {FAKE_TOKEN}")),
+        "illegal_header_value": ("h11",),
+    }[cause]
+    r = rig.read()
+    assert r.status_code == 200, r.text
+    assert r.json()["receipts"][0]["status"] == "failed"
+    assert len(rig.provider.calls) == 1, "the fake was never reached"
+    stored = _everything_stored(session_factory)
+    # control: the call WAS recorded, so the absence below is about content
+    rows = _activity(session_factory)
+    assert len(rows) == 1 and rows[0]["status"] == "error"
+    assert TOKEN_FRAGMENT not in stored, "token text found in the activity record"
+    assert TOKEN_FRAGMENT not in r.text
+    assert "FAKE-tok" not in stored and "FAKE-tok" not in r.text
+
+
+# AC-38-59: the record carries the target's provider id and the HTTP status
+def test_ac59_activity_row_has_provider_id_reference_and_http_status(rig, session_factory):
+    a, b, (_ia, wa), (_ib, wb) = _fresh_unread(rig)
+    rig.provider.behaviour["pn-B"] = ("http", 400, SECRET_PROVIDER_TEXT)
+    rig.receipts()
+    rows = {r["external_ref"]: r for r in _activity(session_factory)}
+    assert set(rows) == {wa, wb}, "reference must be the target's provider id"
+    assert rows[wa]["status"] == "success" and rows[wa]["status_code"] == 200
+    assert rows[wb]["status"] == "error" and rows[wb]["status_code"] == 400
+
+
+# AC-38-53: a 200 that is not {"success": true} is a refusal
+BAD_200_BODIES = {
+    "success_false": b'{"success": false}',
+    "empty_object": b"{}",
+    "error_object": b'{"error": {"code": 4}}',
+    "not_json": b"<html>ok</html>",
+    "json_array": b"[1]",
+}
+
+
+@pytest.mark.parametrize("name", sorted(BAD_200_BODIES))
+def test_ac53_a_200_without_success_true_fails_stores_no_marker_and_retries(rig, name):
+    ch = rig.channel("pn-A")
+    mid, _w = rig.msg(ch, wamid="wamid.in-1", when=1)
+    before = rig.metadata(mid)
+    rig.provider.behaviour["pn-A"] = ("body", 200, BAD_200_BODIES[name])
+    got = rig.receipts()
+    assert got[ch]["status"] == "failed"
+    assert len(rig.provider.calls) == 1, "the fake was never reached"
+    assert rig.metadata(mid) == before, "no marker on a refused receipt"
+    rig.provider.behaviour["pn-A"] = "ok"
+    again = rig.receipts()
+    assert again[ch]["status"] == "sent", "the next call must try again"
+    assert len(rig.provider.calls) == 2
+
+
+# AC-38-56: an unusable phone number id makes the channel unavailable, no call
+@pytest.mark.parametrize("pn", ["", None, "../../../me", "123#frag", "a/b", "a?b"])
+def test_ac56_unusable_phone_number_id_is_unavailable_with_no_call(rig, pn):
+    bad = rig.channel(pn, token="tok-x", created=0)
+    good = rig.channel("pn-good", token="tok-good", created=10)
+    rig.msg(bad, wamid="wamid.in-bad", when=1)
+    rig.msg(good, wamid="wamid.in-good", when=2)
+    got = rig.receipts()
+    assert got[bad]["status"] == "channel_unavailable"
+    assert got[good]["status"] == "sent"
+    assert [c["pn"] for c in rig.provider.calls] == ["pn-good"]  # control: fake counts
+    assert rig.unread() == 0
+
+
+# AC-38-51: any stored metadata shape still gives 200, unread 0 and a call
+@pytest.mark.parametrize("meta", [["x"], "plain text", 7])
+def test_ac51_odd_metadata_shapes_still_answer_200_and_reset_unread(rig, meta):
+    ch = rig.channel("pn-A")
+    rig.msg(ch, wamid="wamid.in-1", when=1, metadata=meta)
+    assert rig.unread() == 1
+    r = rig.read()
+    assert r.status_code == 200, r.text
+    assert r.json()["receipts"][0]["status"] == "sent"
+    assert len(rig.provider.calls) == 1
+    assert rig.unread() == 0
+    again = rig.read()
+    assert again.status_code == 200, again.text
+
+
+# AC-38-63: per call limits and the overall budget
+def test_ac63_each_provider_call_carries_connect_3_read_5_write_5(rig):
+    ch = rig.channel("pn-A")
+    rig.msg(ch, wamid="wamid.in-1", when=1)
+    assert rig.receipts()[ch]["status"] == "sent"
+    assert len(rig.provider.calls) == 1, "the fake was never reached"
+    t = rig.provider.calls[0]["timeout"]
+    assert (t.get("connect"), t.get("read"), t.get("write")) == (3.0, 5.0, 5.0)
+
+
+def test_ac63_a_channel_reached_after_the_budget_answers_failed_with_no_call(
+    rig, monkeypatch
+):
+    import modules.omnichannel.services.public_gateway_service as pgs
+
+    a, b, _ma, _mb = _fresh_unread(rig)
+    # control (default budget): the first call is slow, yet both are called
+    rig.provider.sleep_on_first = 0.3
+    got = rig.receipts()
+    assert {x["status"] for x in got.values()} == {"sent"}
+    assert len(rig.provider.calls) == 2
+
+    # new customer messages on both channels, tiny budget, slow first call
+    rig.msg(a, wamid="wamid.in-A2", when=20)
+    rig.msg(b, wamid="wamid.in-B2", when=21)
+    rig.provider.calls.clear()
+    rig.provider._slept = False
+    monkeypatch.setattr(pgs, "READ_RECEIPT_BUDGET_SECONDS", 0.1)
+    got = rig.receipts()
+    assert len(rig.provider.calls) == 1, "the second channel must not be called"
+    called_pn = rig.provider.calls[0]["pn"]
+    called, skipped = (a, b) if called_pn == "pn-A" else (b, a)
+    assert got[called]["status"] == "sent"
+    assert got[skipped]["status"] == "failed"
+    assert rig.unread() == 0
