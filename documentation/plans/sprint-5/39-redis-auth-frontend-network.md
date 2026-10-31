@@ -32,12 +32,18 @@ If a deploy fails before step 6, Redis stays open and everything still works. If
 | AC-39-01 | `redis` runs with `--requirepass` from `${REDIS_PASSWORD}`, using the `:?` form so a missing value stops compose. No password value exists anywhere in the repo |
 | AC-39-02 | `REDIS_URL` for backend colors, workers and beat is `redis://default:${REDIS_PASSWORD...}@redis:6379/0` |
 | AC-39-03 | `.github/workflows/deploy.yml` writes `REDIS_PASSWORD` from `secrets.REDIS_PASSWORD` into the server `.env` |
-| AC-39-04 | `frontend_blue` and `frontend_green` are on `foundryx_ss_edge` only, not on `foundryx_ss_network` |
-| AC-39-05 | `backend_blue` and `backend_green` are on both networks, with alias `backend` on the edge network. `db`, `redis`, workers and `beat` are not on the edge network. `foundryx_ss_network` keeps its pinned subnet and gateway |
+| AC-39-04 | `frontend_blue` and `frontend_green` are on `foundryx_ss_web` only, not on `foundryx_ss_network` |
+| AC-39-05 | `backend_blue` and `backend_green` are on both networks, with alias `backend` on `foundryx_ss_web`. `db`, `redis`, workers and `beat` are not on it. `foundryx_ss_network` keeps its pinned subnet and gateway. `foundryx_ss_web` sorts after `foundryx_ss_network`, so a backend's default route does not move and host services keyed on `172.21.0.0/16` keep working. It is pinned to `10.250.21.0/24`, which is outside Docker's default pools and inside the default `TRUSTED_PROXIES`, so logins keep their real client IP |
 | AC-39-06 | The infra step never recreates a running `redis` before the clients have moved, using `--no-recreate` for `redis`. `db` and `pgbackups` behave as before. The network-recreate fallback branch still works |
 | AC-39-07 | After the old color is removed, the script runs `docker compose up -d redis`, then requires an authenticated `PING` to return `PONG` and an unauthenticated one to be refused. Otherwise it exits non-zero with a clear message. The password is passed through `REDISCLI_AUTH`, never on a command line or in the log |
 | AC-39-08 | Live proof on a real `redis-server`, posted on the PR: with redis-py sync, redis-py asyncio and a Celery or kombu connection, the `default:` URL connects to both an open server and a `--requirepass` server. A wrong password fails on the protected server. On the wire, one-argument `AUTH` is refused on the open server. Run on Redis 8.4, prod is 7-alpine |
 | AC-39-09 | After a Redis restart, Celery workers and the inbox websocket subscriber recover without an app restart. Verified in code and live where possible. If a path does not recover, fix it or report it |
 | AC-39-10 | No code path logs or returns `settings.redis_url` or the password, including ops pages and error messages |
 | AC-39-11 | `DEPLOY.md` documents the secret, the networks, the deploy order and the Mac Mini `REDIS_URL` form. Local dev defaults are unchanged and still need no password |
+| AC-39-13 | Before the first compose call, the script rejects a `REDIS_PASSWORD` that is missing, shorter than 32 characters, or has anything outside `[A-Za-z0-9_-]`, with `::error::` and without printing the value. It sits inside a URL, so `%`, `/`, `#` and `?` would otherwise fail after the swap or put part of the value in a log |
+| AC-39-14 | After the infra step and before the new color starts, an authenticated ping aborts the deploy on `WRONGPASS`, pointing at the rotation steps, with the live color untouched. An open server's reply is not a failure. `DEPLOY.md` documents rotation: add the new password with `ACL SETUSER default >NEW` on live Redis, then deploy |
 | AC-39-12 | `tests/test_deploy_blue_green_script.py` and `tests/test_s11_compose_worker_jobs.py` still pass |
+
+## Later password rotation
+
+The `default:` URL only bridges no password to password. Changing the secret alone leaves Redis on the old value, because the infra step does not recreate it, so AC-39-14 stops that deploy before anything moves. Add the new password to live Redis first, then deploy. `DEPLOY.md` has the steps.
