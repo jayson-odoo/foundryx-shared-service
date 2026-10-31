@@ -462,8 +462,8 @@ A contact that exists always answers `200`, and `unreadCount` is `0` afterwards 
 |----|----|----|
 | `sent` | The read receipt went out for that message. | Nothing. |
 | `already_sent` | That message was already acknowledged by an earlier call. No new call was made. | Nothing. |
-| `failed` | The receipt could not be sent now. Nothing is stored for it. | Safe to call again; the next call tries that channel again. |
-| `channel_unavailable` | The channel is paused or disconnected. | Reconnect or resume the channel, then call again. |
+| `failed` | The receipt could not be sent. | Safe to call again, and the next call tries that channel again. It can repeat on every call, for example on a very old message, so do not alert or loop on it. |
+| `channel_unavailable` | The channel is paused or disconnected, or has no usable number. | Nothing, unless you still use that channel: after it resumes, the next call tries again. This item stays until then. |
 | `not_supported` | The channel type does not support read receipts (Messenger, Instagram, web chat). | Nothing. |
 
 Each channel is handled on its own, so one `failed` never blocks another channel. This route creates no message and fires no webhook.

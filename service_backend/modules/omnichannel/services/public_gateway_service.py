@@ -7,6 +7,8 @@ translate rejections into the structured `/api/v1/*` error envelope. Idempotency
 dedup is workspace-scoped with a 24h TTL.
 """
 import logging
+import re
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -54,6 +56,8 @@ if TYPE_CHECKING:  # forward ref used in a signature below
 
 logger = logging.getLogger(__name__)
 READ_RECEIPT_MARKER = "read_receipt_sent_at"
+READ_RECEIPT_BUDGET_SECONDS = 12.0
+_PHONE_NUMBER_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 # Wire-format switch on the read endpoints (`?format=`). GUIDE is the DEFAULT
@@ -714,6 +718,7 @@ class PublicGatewayService:
         from ..adapters import get_adapter
         from . import channel_addressing
 
+        started = time.monotonic()
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         contact_id = contact.id
         targets = self.contacts.latest_customer_messages_by_channel(contact_id, tenant_id)
@@ -733,7 +738,7 @@ class PublicGatewayService:
                     "channel_id": channel_id,
                     "message_id": message_id,
                     "wamid": wamid,
-                    "marked": bool((meta or {}).get(READ_RECEIPT_MARKER)),
+                    "marked": isinstance(meta, dict) and bool(meta.get(READ_RECEIPT_MARKER)),
                     "type": ch.channel_type,
                     "available": bool(ch.is_active) and not ch.is_trashed,
                     "sender_ref": channel_addressing.sender_ref(ch),
@@ -746,12 +751,16 @@ class PublicGatewayService:
 
         receipts = []
         for p in plan:
-            if not p["available"]:
+            if not p["available"] or (
+                p["type"] == "WHATSAPP" and not _PHONE_NUMBER_ID_RE.match(p["sender_ref"] or "")
+            ):
                 status = "channel_unavailable"
             elif p["type"] != "WHATSAPP":
                 status = "not_supported"
             elif p["marked"]:
                 status = "already_sent"
+            elif time.monotonic() - started > READ_RECEIPT_BUDGET_SECONDS:
+                status = "failed"
             else:
                 status = "sent"
                 try:

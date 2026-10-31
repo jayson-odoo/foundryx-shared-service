@@ -312,7 +312,8 @@ class ContactRepository:
         msg = self.get_message(message_id, tenant_id)
         if msg is None:
             return
-        msg.metadata_json = {**(msg.metadata_json or {}), key: value}
+        current = msg.metadata_json if isinstance(msg.metadata_json, dict) else {}
+        msg.metadata_json = {**current, key: value}
         self.db.flush()
 
     # ── Messages ─────────────────────────────────────────────────────────────

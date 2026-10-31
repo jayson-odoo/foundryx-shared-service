@@ -125,6 +125,7 @@ class MetaGraphMixin:
         fn: Callable[[], Any],
         *,
         extract_ref: Optional[Callable[[Any], Optional[str]]] = None,
+        ref: Optional[str] = None,
     ) -> Any:
         """Time + record ONE Graph call (AC-DLC-14). With no recorder this is a
         transparent pass-through (existing behaviour, tests unaffected). The
@@ -137,7 +138,7 @@ class MetaGraphMixin:
         status = "success"
         error_code: Optional[str] = None
         error_message: Optional[str] = None
-        external_ref: Optional[str] = None
+        external_ref: Optional[str] = ref  # known up front: kept on a failed call too
         try:
             result = fn()
             if extract_ref is not None:

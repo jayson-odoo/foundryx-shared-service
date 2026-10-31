@@ -360,11 +360,14 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
         self, credentials: Dict[str, Any], phone_number_id: str, message_id: str
     ) -> None:
         """Send a read receipt for one inbound message. Instrumented once as
-        ``graph:mark_read``. The 200 body carries no ``messages`` array, so this
-        does not go through ``_send_impl``. Dev or unconfigured: no network call."""
+        ``graph:mark_read`` with the target's provider id as its reference. The
+        200 body carries no ``messages`` array, so this does not go through
+        ``_send_impl``. Dev or unconfigured: no network call. Every error text
+        raised here is token-free, because ``_graph_call`` stores it."""
         self._graph_call(
             "graph:mark_read",
             lambda: self._mark_read_impl(credentials, phone_number_id, message_id),
+            ref=message_id,
         )
 
     def _mark_read_impl(
@@ -372,8 +375,17 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
     ) -> None:
         if not self._configured or credentials.get("dev"):
             return None
-        client = self._http()
+        token = str(credentials.get("access_token", "") or "")
+
+        def _safe(text: str) -> str:
+            clean = text.replace(token, "***") if token else text
+            for part in token.split() if token else []:
+                clean = clean.replace(part, "***")
+            return clean[:200]
+
+        client = None
         try:
+            client = self._http()
             resp = client.post(
                 f"{self._base}/{phone_number_id}/messages",
                 json={
@@ -381,23 +393,38 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                     "status": "read",
                     "message_id": message_id,
                 },
-                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=3.0),
             )
             self._last_http_status = resp.status_code
             if resp.status_code != 200:
                 try:
                     detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
+                except (ValueError, AttributeError):
                     detail = ""
                 raise SendError(
-                    detail or f"Meta returned {resp.status_code}.",
+                    _safe(str(detail)) or f"Meta returned {resp.status_code}.",
                     transient=resp.status_code >= 500,
                 )
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            if not (isinstance(body, dict) and body.get("success") is True):
+                raise SendError("Meta did not confirm the read receipt.")
             return None
+        except SendError:
+            raise
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+            raise SendError(
+                f"Could not reach Meta: {type(exc).__name__}", transient=True
+            ) from None
+        except Exception as exc:  # noqa: BLE001 - never let request text escape.
+            raise SendError(
+                f"Could not send the read receipt: {type(exc).__name__}"
+            ) from None
         finally:
-            if self._client is None:
+            if client is not None and self._client is None:
                 client.close()
 
     def fetch_waba_details(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
