@@ -1373,3 +1373,113 @@ def test_ac_41_06_upload_with_no_token_leaves_ordinary_words_alone(monkeypatch):
         _call(_adapter(reject), "upload", {"access_token": None})
     assert "None of the files was valid" in str(info.value)
     assert "reason-NN" in str(info.value)
+
+
+# ══ Review round guards (these pass before the next change and must keep passing)
+def _meta_on(monkeypatch):
+    monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
+    monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
+
+
+def _reply_400(text):
+    return lambda request: httpx.Response(400, json={"error": {"message": text, "code": 100}}, request=request)
+
+
+def _refuse_with_header(request):
+    raise httpx.ConnectError(f"refused {request.headers['authorization']}")
+
+
+@pytest.mark.parametrize("path", ["send", "upload"])
+def test_guard_ac_41_06_provider_text_keeps_reason_and_loses_token(monkeypatch, path):
+    from modules.omnichannel.adapters.base import SendError
+
+    _meta_on(monkeypatch)
+    token = "tkn-up-81f2c9"
+    with pytest.raises(SendError) as info:
+        _call(_adapter(_reply_400(f"Rejected {token} reason-UP1")), path, {"access_token": token})
+    assert "reason-UP1" in str(info.value)
+    assert token not in str(info.value)
+    assert info.value.transient is False
+
+
+@pytest.mark.parametrize("path", ["send", "upload"])
+def test_guard_ac_41_06_transport_error_stores_class_name_only(monkeypatch, path):
+    from modules.omnichannel.adapters.base import SendError
+
+    _meta_on(monkeypatch)
+    token = "tkn-tr-4471d0"
+    with pytest.raises(SendError) as info:
+        _call(_adapter(_refuse_with_header), path, {"access_token": token})
+    assert "ConnectError" in str(info.value)
+    assert token not in str(info.value)
+    assert info.value.transient is True  # keeps its retry behaviour
+
+
+@pytest.mark.parametrize("path", ["send", "upload"])
+def test_guard_ac_41_06_token_pieces_are_removed_where_they_stand_apart(monkeypatch, path):
+    from modules.omnichannel.adapters.base import SendError
+
+    _meta_on(monkeypatch)
+    token = "alpha-9x beta-4y"
+    text = "first alpha-9x then reason-QRS and beta-4y later"
+    with pytest.raises(SendError) as info:
+        _call(_adapter(_reply_400(text)), path, {"access_token": token})
+    assert "reason-QRS" in str(info.value)  # control: the text is kept
+    assert "alpha-9x" not in str(info.value)
+    assert "beta-4y" not in str(info.value)
+
+
+@pytest.mark.parametrize("path", ["send", "upload"])
+def test_guard_ac_41_06_short_pieces_do_not_mangle_ordinary_words(monkeypatch, path):
+    from modules.omnichannel.adapters.base import SendError
+
+    _meta_on(monkeypatch)
+    token = "tkn-77ab9 to"
+    with pytest.raises(SendError) as info:
+        _call(_adapter(_reply_400("Failed to deliver to the number: reason-SH")), path, {"access_token": token})
+    assert str(info.value) == "Failed to deliver to the number: reason-SH"
+
+
+@pytest.mark.parametrize("path", ["send", "upload"])
+def test_guard_ac_41_06_token_is_removed_before_the_text_is_capped(monkeypatch, path):
+    from modules.omnichannel.adapters.base import SendError
+
+    _meta_on(monkeypatch)
+    token = "tkn-7f3a9c1e2b"
+    text = "reason-B6 " + "word " * 56 + token  # the token straddles the 300 character cap
+    with pytest.raises(SendError) as info:
+        _call(_adapter(_reply_400(text)), path, {"access_token": token})
+    assert "reason-B6" in str(info.value)
+    assert "tkn-" not in str(info.value)
+
+
+def test_guard_ac_41_02_multipart_replay_returns_the_original_and_sends_once(client, session_factory, monkeypatch):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700750", token="tkn-live-b4")
+    rig = _install(monkeypatch)
+    hdr = {**headers, "Idempotency-Key": "plan41-multipart"}
+    first = client.post("/api/v1/omnichannel/messages", headers=hdr, **_multipart("+60700700750"))
+    uploads_after_first = rig.graph_calls.count(rig.graph_calls[0]) if rig.graph_calls else 0
+    again = client.post("/api/v1/omnichannel/messages", headers=hdr, **_multipart("+60700700750"))
+    assert first.status_code == again.status_code == 202
+    assert first.json()["idempotencyReplay"] is False and again.json()["idempotencyReplay"] is True
+    assert first.json()["id"] == again.json()["id"]
+    assert uploads_after_first >= 1  # control: the provider fake saw the first send
+    assert len(rig.graph_calls) == 2  # one upload and one send in total, none for the replay
+    assert _message_count(session_factory, cid) == 1
+
+
+def test_guard_ac_41_04_a_404_with_a_large_declared_length_stays_a_fetch_failure(client, session_factory, monkeypatch):
+    from modules.omnichannel.services.public_gateway_service import _MEDIA_HARD_CAP
+
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700751")
+
+    def big_404(request):
+        return httpx.Response(
+            404, headers={"Content-Length": str(_MEDIA_HARD_CAP + 1000)}, stream=_Stream([b"nope"]), request=request
+        )
+
+    rig = _install(monkeypatch, media=big_404)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700751"), headers=headers)
+    assert rig.media_calls == 1
+    assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
+    assert _message_count(session_factory, cid) == 0
