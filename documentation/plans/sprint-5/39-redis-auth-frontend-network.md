@@ -21,7 +21,7 @@ Do not use `redis://:<password>@...`. On the wire, one-argument `AUTH <password>
 | 6 Redis recreated | `up -d redis` applies `--requirepass`. Clients reconnect within seconds, the append-only file keeps queued tasks | Password on | Short blip |
 | 7 Check | Authenticated ping must pass and unauthenticated must get `NOAUTH`, or the deploy fails loudly | Password on | New color |
 
-If the secret is missing, compose stops at its first interpolation with "set in .env", before the live color is touched.
+Two checks run before the table above. Before any compose call, the script rejects a missing or malformed password (AC-39-13). After step 1 and before step 2, an authenticated ping aborts on `WRONGPASS` (AC-39-14). Both leave the live color untouched. Compose's own "set in .env" check remains as a backstop.
 
 If a deploy fails before step 6, Redis stays open and everything still works. If it fails at step 6 or 7, the new URL works in either Redis state.
 
