@@ -43,6 +43,10 @@ case "$args" in
     esac
     if [ -n "$REDISCLI_AUTH" ] && [[ " $args " == *" -e REDISCLI_AUTH "* ]]; then
       n=0; [ -f "$FAKE_LOG.authn" ] && n=$(cat "$FAKE_LOG.authn"); n=$((n + 1)); echo "$n" > "$FAKE_LOG.authn"
+      if [ -n "$FAKE_REDIS_REFUSED_COUNT" ] && [ "$n" -le "$FAKE_REDIS_REFUSED_COUNT" ]; then
+        echo "stub: authenticated ping #$n refused" >> "$FAKE_LOG"
+        echo "Could not connect to Redis at redis:6379: Connection refused"; exit 0
+      fi
       if [ "$n" = "1" ] && [ -n "$FAKE_REDIS_FIRST_REPLY" ]; then
         echo "stub: authenticated ping #1" >> "$FAKE_LOG"
         printf '%b\n' "$FAKE_REDIS_FIRST_REPLY"; exit 0
@@ -380,3 +384,46 @@ def test_x8_non_signature_infra_failure_aborts_before_any_color_starts(tmp_path,
     assert "up -d --no-deps" not in calls, "a color was started"
     assert "sudo" not in calls
     assert active is None
+
+
+# ── Plan 39 re-review round ──────────────────────────────────────────────────
+def test_ac_39_14_refused_first_then_wrongpass_still_aborts_before_new_color(tmp_path):
+    # Closes the mutation "a single ping with no wait": the first reply is a
+    # connection refusal (redis still starting), WRONGPASS only comes later.
+    result, calls, active = _run(
+        tmp_path,
+        FAKE_REDIS_REFUSED_COUNT="1",
+        FAKE_REDIS_AUTH_REPLY="WRONGPASS invalid username-password pair",
+        REDIS_WAIT_TICKS="5",
+    )
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "::error::" in out
+    assert "stub: authenticated ping #1 refused" in calls  # control: the refusal was served
+    assert "up -d --no-deps" not in calls, "new color started despite WRONGPASS"
+    assert "sudo" not in calls
+    assert active is None
+
+
+def test_ac_39_14_redis_never_answers_early_check_warns_and_continues(tmp_path):
+    result, calls, active = _run(
+        tmp_path, FAKE_REDIS_REFUSED_COUNT="3", REDIS_WAIT_TICKS="3"
+    )
+    out = result.stdout + result.stderr
+    assert "stub: authenticated ping #3 refused" in calls  # control: pings were refused
+    warn = [ln for ln in out.splitlines() if "::warning::" in ln and "password" in ln.lower()]
+    assert warn, f"no ::warning:: about the password check could not run:\n{out}"
+    assert "up -d --no-deps backend_green" in calls, "must not become a silent abort"
+    assert result.returncode == 0, out
+    assert active == "green"
+
+
+def test_every_redis_cli_exec_in_the_script_reads_stdin_from_dev_null():
+    lines = [
+        (n, ln)
+        for n, ln in enumerate(SCRIPT.read_text().splitlines(), start=1)
+        if "docker compose exec" in ln and "redis-cli" in ln and not ln.strip().startswith("#")
+    ]
+    assert len(lines) >= 3, f"control: expected at least 3 redis-cli exec lines, got {lines}"
+    for n, ln in lines:
+        assert "</dev/null" in ln, f"line {n} lets redis-cli swallow the script's stdin: {ln.strip()}"

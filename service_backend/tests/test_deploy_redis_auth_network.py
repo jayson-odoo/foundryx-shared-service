@@ -236,3 +236,9 @@ def test_x5_primary_infra_command_starts_redis_only_with_no_recreate():
     assert redis_segments, "control: redis must be started in the primary infra command"
     for seg in redis_segments:
         assert "--no-recreate" in seg, f"primary infra command would recreate redis: {seg.strip()}"
+
+
+def test_ac_39_11_deploy_md_uses_the_web_network_name_only():
+    text = DEPLOY_MD_PATH.read_text()
+    assert "edge network" not in text.lower()
+    assert "foundryx_ss_web" in text
