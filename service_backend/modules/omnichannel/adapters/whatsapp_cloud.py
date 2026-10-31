@@ -356,6 +356,50 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             if self._client is None:
                 client.close()
 
+    def mark_read(
+        self, credentials: Dict[str, Any], phone_number_id: str, message_id: str
+    ) -> None:
+        """Send a read receipt for one inbound message. Instrumented once as
+        ``graph:mark_read``. The 200 body carries no ``messages`` array, so this
+        does not go through ``_send_impl``. Dev or unconfigured: no network call."""
+        self._graph_call(
+            "graph:mark_read",
+            lambda: self._mark_read_impl(credentials, phone_number_id, message_id),
+        )
+
+    def _mark_read_impl(
+        self, credentials: Dict[str, Any], phone_number_id: str, message_id: str
+    ) -> None:
+        if not self._configured or credentials.get("dev"):
+            return None
+        client = self._http()
+        try:
+            resp = client.post(
+                f"{self._base}/{phone_number_id}/messages",
+                json={
+                    "messaging_product": "whatsapp",
+                    "status": "read",
+                    "message_id": message_id,
+                },
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            self._last_http_status = resp.status_code
+            if resp.status_code != 200:
+                try:
+                    detail = resp.json().get("error", {}).get("message", "")
+                except ValueError:
+                    detail = ""
+                raise SendError(
+                    detail or f"Meta returned {resp.status_code}.",
+                    transient=resp.status_code >= 500,
+                )
+            return None
+        except httpx.HTTPError as exc:
+            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+        finally:
+            if self._client is None:
+                client.close()
+
     def fetch_waba_details(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
         """Fetch the WABA's business account name. Instrumented once → a
         ``graph:sync`` activity row (AC-DLC-14). Dev stub: canned name."""

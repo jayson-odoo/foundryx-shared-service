@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-01** | **Mark a contact read** (`POST /contacts/{identifier}/read`, section 6a). Resets `unreadCount` and sends a WhatsApp read receipt per channel; each receipt answers `sent`, `already_sent`, `failed`, `channel_unavailable` or `not_supported`. Only this route sends a read receipt. Additive: no existing shape changes. |
 > | **2026-09-09** | **Web chat widget section + `visitorProfile`** (plan 34 / A7b, review round 1). New **§12a** documents the visitor-facing widget end to end: the install snippet, allowed origins, the exact host-identity recipe `hex(HMAC-SHA256(key = widgetSecret, msg = userRef))`, `window.fxChatIdentity` / `fxWebchat.identify()`, and what a visitor can and cannot do. The `webchat:` `to` row in §4.1 now points there instead of at §12 (the agent-facing embed, which uses a different secret and a different HMAC input). `ThreadItem`/`ContactObject` gain **`visitorProfile`** (§9.1/9.2) - the `{name?, email?, phone?}` a visitor typed into the pre-chat form, UNVERIFIED and deliberately NOT written onto the contact's own `phone`/`email` (those are matching keys); `null` on every channel type but `WEBCHAT`. Non-breaking - no existing field changed meaning. |
 > | **2026-09-08** | **Web chat channel** (plan 34 / A7b). `channelType` now also takes `WEBCHAT` on every contact/message shape (§9). Sending: `to` gains a `webchat:<value>` prefix (§4.1), following the identical `psid:`/`igsid:` rule - an EXISTING identity on the chosen channel only, never created. `ThreadItem`/`ContactObject` gain `visitorLastSeenAt` (§9.1/9.2) - a presence fact (the visitor's last session/message/socket-connect instant), `null` on every channel type but `WEBCHAT`. A web chat channel has **no messaging window at all** - `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null` for a web chat contact, and a send via this Gateway API is never refused for window reasons on that channel type. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never uses `webchat:` and never reads `visitorLastSeenAt` sees byte-identical behaviour. |
 > | **2026-09-07** | **Messenger + Instagram channels** (plan 32 / A7a). `channelType` now also takes `FACEBOOK`/`INSTAGRAM` on every contact/message shape (§9). Sending: `POST /messages` accepts an optional `channelId` selector (§4); the implicit channel choice (no `channelId`) now PREFERS an active `WHATSAPP` channel, so a workspace that connects a second channel type never re-points an existing integration's sends (§2). `to` gains three new prefixes - `psid:<id>` / `igsid:<id>` (resolve an EXISTING contact identity on the CHOSEN channel only, never create) and `id:<contactId>` (§4.1); a bare value or `phone:` is unchanged. Two new error codes (§10): `messaging_window_closed` (409, Messenger/Instagram's own re-engagement window closed - `csw_window_closed` keeps its exact WhatsApp-only meaning) and `channel_not_available_for_contact` (422, the resolved contact has no identity on the chosen channel). `ThreadItem`/`ContactObject` gain `windowExpiresAt`/`humanAgentExpiresAt` (§9.1/9.2) - the per-channel-type messaging window; `cswExpiresAt` keeps its documented WhatsApp-only meaning verbatim (reads `null` for a Messenger/Instagram contact). `MessageItem`/`MessageObject` gain `channelType` and `mediaUnavailable` (§9.1/9.2) - a Messenger/Instagram inbound attachment whose CDN link expired before Foundryx could fetch it; the message still lands, render a muted placeholder. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never sets `channelId` and never uses the new `to` prefixes sees byte-identical behaviour. |
@@ -441,6 +442,31 @@ Returns `201` with the created note.
 Returns the created `MessageItem` with `senderType: "SYSTEM"`.
 
 > **A note looks like an outbound message when you read history back.** In the default shape check **`senderType === "SYSTEM"`**; under `?format=rio` it arrives as `traffic: "outgoing"` with **`sender.source === "system"`** (respond.io has no third traffic value). Either way, check it before rendering anything as "sent to the customer", or your agents will see internal notes presented as delivered WhatsApp messages.
+
+### Mark a contact read - `POST /api/v1/omnichannel/contacts/{identifier}/read`
+
+Call this when one of your staff opens the conversation. It takes no body. It does two things: the contact's `unreadCount` goes to `0`, and a WhatsApp read receipt (blue ticks) is sent to the customer for their latest message on each channel they have written to. **Only this route sends a read receipt**: reading history, fetching the contact or replying never does. A customer message that arrives later counts as unread again.
+
+```json
+{
+  "contactId": "c_123",
+  "receipts": [
+    { "channelId": "ch_1", "messageId": "m_456", "status": "sent" }
+  ]
+}
+```
+
+A contact that exists always answers `200`, and `unreadCount` is `0` afterwards even when a receipt failed. `messageId` is the same `id` as on `MessageItem`. `receipts` has one item per channel the customer has written on, and is `[]` when there is nothing to acknowledge. An unknown contact answers `404 contact_not_found`, like the other contact routes.
+
+| `status` | Meaning | What to do |
+|----|----|----|
+| `sent` | The read receipt went out for that message. | Nothing. |
+| `already_sent` | That message was already acknowledged by an earlier call. No new call was made. | Nothing. |
+| `failed` | The receipt could not be sent now. Nothing is stored for it. | Safe to call again; the next call tries that channel again. |
+| `channel_unavailable` | The channel is paused or disconnected. | Reconnect or resume the channel, then call again. |
+| `not_supported` | The channel type does not support read receipts (Messenger, Instagram, web chat). | Nothing. |
+
+Each channel is handled on its own, so one `failed` never blocks another channel. This route creates no message and fires no webhook.
 
 
 ---
@@ -1291,6 +1317,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/open` | Open conversation | `ThreadItem` |
 | POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/close` | Close conversation | `ThreadItem` |
 | POST | `/api/v1/omnichannel/contacts/{identifier}/comments` | Add internal note | `201` `MessageItem` |
+| POST | `/api/v1/omnichannel/contacts/{identifier}/read` | Mark read (unread to 0, WhatsApp read receipt per channel) | `{contactId, receipts[]}` |
 | GET | `/api/v1/omnichannel/webhooks` | List your webhook endpoints | `{data[]}` |
 | POST | `/api/v1/omnichannel/webhooks` | Register one (secret shown once) | `201 {endpoint, signingSecret}` |
 | PATCH | `/api/v1/omnichannel/webhooks/{id}` | Update name/url/events | `WebhookEndpoint` |
