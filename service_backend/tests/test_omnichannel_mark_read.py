@@ -37,6 +37,8 @@ FOREIGN_TENANT = "tenant-foreign-gap5"
 PHONE = "+60700700701"
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
+LOW_ID = "00000000-0000-4000-8000-00000000000a"
+HIGH_ID = "ffffffff-ffff-4fff-8fff-fffffffffffb"
 SECRET_PROVIDER_TEXT = "ZZ-provider-detail-7f3a"
 RECEIPT_KEYS = {"channelId", "messageId", "status"}
 
@@ -155,6 +157,7 @@ class Rig:
         active=True,
         trashed=False,
         created=0,
+        cid=None,
     ):
         from modules.omnichannel.models import Channel
         from modules.omnichannel.security import encrypt_credentials
@@ -164,6 +167,7 @@ class Rig:
             creds = encrypt_credentials({"access_token": token or f"tok-{pn}"})
         db = self.sf()
         ch = Channel(
+            **({"id": cid} if cid else {}),
             tenant_id=tenant,
             workspace_id=workspace or self.ws,
             channel_type=ctype,
@@ -266,8 +270,11 @@ def rig(client, session_factory, provider):
 def _fresh_unread(rig):
     """Seed two WhatsApp channels (A older = the workspace's default pick) and one
     customer message on each. Returns (chA, chB, (idA, wamidA), (idB, wamidB))."""
-    a = rig.channel("pn-A", token="tok-A", created=0)
-    b = rig.channel("pn-B", token="tok-B", created=10)
+    # Ids are pinned: A has the LOWEST channel id, B the HIGHEST, so a test that
+    # fails A (or B) covers the failing channel being first or last under any
+    # id, creation or message ordering the implementation might use.
+    a = rig.channel("pn-A", token="tok-A", created=0, cid=LOW_ID)
+    b = rig.channel("pn-B", token="tok-B", created=10, cid=HIGH_ID)
     ma = rig.msg(a, wamid="wamid.in-A1", when=1)
     mb = rig.msg(b, wamid="wamid.in-B1", when=2)
     return a, b, ma, mb
@@ -673,26 +680,19 @@ def test_ac55_unreadable_credentials_fail_that_channel_only_and_retry_after_repa
     from modules.omnichannel.models import Channel
     from modules.omnichannel.security import encrypt_credentials
 
-    a = rig.channel("pn-A", creds="not-a-valid-credential-blob", token=None, created=0)
-    b = rig.channel("pn-B", token="tok-B", created=10)
-    if not fail_first:
-        a, b = b, a
-        # swap which one is unreadable: A readable, B unreadable
-        db = session_factory()
-        db.query(Channel).filter(Channel.id == b).update(
-            {"credentials_json": "not-a-valid-credential-blob"}
-        )
-        db.query(Channel).filter(Channel.id == a).update(
-            {"credentials_json": encrypt_credentials({"access_token": "tok-A"})}
-        )
-        db.commit()
-        db.close()
-        a, b = b, a  # a = unreadable channel id again
-    # a = unreadable channel, b = readable channel
-    mid_a, _ = rig.msg(a, wamid="wamid.in-bad", when=1)
-    rig.msg(b, wamid="wamid.in-good", when=2)
-    bad_pn = "pn-A" if fail_first else "pn-B"
-    good_pn = "pn-B" if fail_first else "pn-A"
+    # a = the unreadable channel. fail_first=True: it is pn-A with the LOWEST id;
+    # fail_first=False: it is pn-B with the HIGHEST id (readable one is the other).
+    blob = "not-a-valid-credential-blob"
+    if fail_first:
+        a = rig.channel("pn-A", creds=blob, created=0, cid=LOW_ID)
+        b = rig.channel("pn-B", token="tok-B", created=10, cid=HIGH_ID)
+        bad_pn, good_pn = "pn-A", "pn-B"
+    else:
+        b = rig.channel("pn-A", token="tok-A", created=0, cid=LOW_ID)
+        a = rig.channel("pn-B", creds=blob, created=10, cid=HIGH_ID)
+        bad_pn, good_pn = "pn-B", "pn-A"
+    rig.msg(a, wamid="wamid.in-bad", when=1 if fail_first else 2)
+    rig.msg(b, wamid="wamid.in-good", when=2 if fail_first else 1)
 
     r = rig.read()
     assert r.status_code == 200, r.text
@@ -1026,10 +1026,14 @@ def test_ac60_creates_no_message_row_and_fires_no_webhook_or_workflow_run(
 
         # Positive control: a real inbound through the normal path makes the
         # message_received and conversation_opened workflows run.
+        deliveries_start = rig.count(WebhookDelivery)
         _process(
             session_factory,
             a,
             _wa_payload(wamid="wamid.ctl-1", from_="60700700799", text="control"),
+        )
+        assert rig.count(WebhookDelivery) > deliveries_start, (
+            "control: the first inbound event made no delivery row"
         )
         assert _runs(rig, wf_received) == 1, "control: message_received did not fire"
         assert _runs(rig, wf_opened) == 1, "control: conversation_opened did not fire"
@@ -1056,13 +1060,13 @@ def test_ac60_creates_no_message_row_and_fires_no_webhook_or_workflow_run(
         assert {w: _runs(rig, w) for w in watched} == runs_before
         assert rig.count(WorkflowRun) == total_runs_before
 
-        # control: the same rig does record a delivery row for a real event
-        patched = rig.client.patch(
-            f"/api/v1/omnichannel/contacts/{rig.contact_id}",
-            json={"priority": "HIGH"},
-            headers=rig.hdr,
+        # control: a second real inbound on the endpoint's own channel still
+        # records a delivery row after the read
+        _process(
+            session_factory,
+            a,
+            _wa_payload(wamid="wamid.ctl-2", from_="60700700799", text="control two"),
         )
-        assert patched.status_code == 200, patched.text
         assert rig.count(WebhookDelivery) > deliveries_before
     finally:
         realtime.set_client(None)
@@ -1168,7 +1172,9 @@ def test_ac62_changelog_has_a_row_for_the_read_route():
     text = _guide()
     head = text[: text.index("## 1. The big picture")]
     assert "read" in head.lower()
-    rows = [ln for ln in head.splitlines() if ln.lstrip().startswith("|")]
+    rows = [
+        ln for ln in head.splitlines() if ln.lstrip().lstrip(">").lstrip().startswith("|")
+    ]
     assert any(
         ("/read" in ln or "read receipt" in ln.lower()) for ln in rows
     ), "no changelog row mentions the read route"
