@@ -19,6 +19,7 @@ Rig notes
   channel id (message rows have no key that forbids it).
 """
 import json
+import logging
 import time
 import types
 from datetime import datetime, timedelta, timezone
@@ -126,10 +127,18 @@ def provider(monkeypatch):
     monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
     monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
     real_client = httpx.Client
+    prov.close_error = None
+
+    class _Client(real_client):
+        def close(self):
+            if prov.close_error is not None:
+                raise prov.close_error
+            return super().close()
+
     ns = types.SimpleNamespace(
         **{k: getattr(httpx, k) for k in dir(httpx) if not k.startswith("__")}
     )
-    ns.Client = lambda *a, **k: real_client(
+    ns.Client = lambda *a, **k: _Client(
         transport=httpx.MockTransport(prov.handler), timeout=k.get("timeout", 10.0)
     )
     monkeypatch.setattr(meta_graph, "httpx", ns)
@@ -1185,6 +1194,9 @@ def test_ac62_guide_documents_the_route_in_section_6a_with_every_status():
     low = s6a.lower()
     assert "safe to call again" in low or "safe to retry" in low
     assert "only" in low and "read receipt" in low
+    assert "do not alert or loop" in low, "failed row must say not to alert or loop"
+    assert "unless you still use that channel" in low
+    assert "30 seconds" in low, "section 6a must state the call can take up to 30 seconds"
 
 
 def test_ac62_guide_states_that_only_this_route_sends_a_read_receipt():
@@ -1552,3 +1564,80 @@ def test_ac59_a_400_without_a_json_body_records_the_status_and_answers_failed(
     assert len(rows) == 1 and rows[0]["status"] == "error"
     assert rows[0]["status_code"] == 400
     assert "upstream says no" not in _everything_stored(session_factory)
+
+
+# ═══ Final review round, group A ═════════════════════════════════════════════
+def _fake_clock(monkeypatch):
+    """Replace the `time` the service module uses with one whose monotonic clock
+    only moves when the test moves it. Returns the mutable state."""
+    import modules.omnichannel.services.public_gateway_service as pgs
+
+    state = {"t": 0.0, "step": 0.0}
+
+    def mono():
+        v = state["t"]
+        state["t"] += state["step"]
+        return v
+
+    ns = types.SimpleNamespace(**{k: getattr(time, k) for k in dir(time) if not k.startswith("__")})
+    ns.monotonic = mono
+    monkeypatch.setattr(pgs, "time", ns)
+    return state
+
+
+def test_ac55_a_failure_closing_the_connection_after_a_200_changes_nothing(
+    rig, session_factory
+):
+    ch = rig.channel("pn-A", token=FAKE_TOKEN)
+    mid, _w = rig.msg(ch, wamid="wamid.in-1", when=1)
+    before = rig.metadata(mid)
+    rig.provider.close_error = RuntimeError("ZZ-close-text " + FAKE_TOKEN)
+    got = rig.receipts()
+    assert len(rig.provider.calls) == 1, "the fake was never reached"
+    assert got[ch]["status"] == "sent"
+    assert rig.metadata(mid) != before, "the marker must be stored"
+    stored = _everything_stored(session_factory)
+    assert "ZZ-close-text" not in stored and TOKEN_FRAGMENT not in stored
+    rows = _activity(session_factory)
+    assert len(rows) == 1 and rows[0]["status"] == "success"
+    assert not rows[0]["error_message"] and not rows[0]["error_code"]
+    again = rig.receipts()
+    assert again[ch]["status"] == "already_sent"
+    assert len(rig.provider.calls) == 1
+
+
+def test_ac55_unexpected_adapter_error_logs_a_warning_with_channel_id_and_class_only(
+    rig, caplog
+):
+    caplog.set_level(logging.WARNING)
+    ch = rig.channel("pn-A", token=FAKE_TOKEN)
+    rig.msg(ch, wamid="wamid.in-1", when=1)
+    rig.provider.behaviour["pn-A"] = ("raise", TypeError("ZZ-type-text " + FAKE_TOKEN))
+    got = rig.receipts()
+    assert got[ch]["status"] == "failed"
+    assert len(rig.provider.calls) == 1, "the fake was never reached"
+    recs = [r for r in caplog.records if r.levelno >= logging.WARNING and ch in r.getMessage()]
+    assert recs, "no warning names the channel id"
+    assert any("TypeError" in r.getMessage() for r in recs), "warning lacks the error class"
+    assert "ZZ-type-text" not in caplog.text and TOKEN_FRAGMENT not in caplog.text
+
+
+def test_ac55_a_budget_skip_logs_a_warning_with_the_channel_id(rig, monkeypatch, caplog):
+    caplog.set_level(logging.WARNING)
+    a, b, _ma, _mb = _fresh_unread(rig)
+    clock = _fake_clock(monkeypatch)
+    original = rig.provider.handler
+
+    def handler(request):
+        clock["t"] += 20.0
+        return original(request)
+
+    rig.provider.handler = handler
+    got = rig.receipts()
+    assert len(rig.provider.calls) == 1, "the fake must be called exactly once"
+    called_pn = rig.provider.calls[0]["pn"]
+    skipped = b if called_pn == "pn-A" else a
+    assert got[skipped]["status"] == "failed"
+    recs = [r for r in caplog.records if r.levelno >= logging.WARNING and skipped in r.getMessage()]
+    assert recs, "no warning names the skipped channel id"
+    assert TOKEN_FRAGMENT not in caplog.text
