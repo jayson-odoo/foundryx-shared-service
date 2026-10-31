@@ -279,15 +279,23 @@ jobs:
 
       # Native ssh/scp wrapped in retries - the server's SSH dial is
       # intermittently flaky (i/o timeout), so each remote step auto-retries
-      # instead of failing the whole deploy. SSH opts skip host-key prompts
-      # (StrictHostKeyChecking=no) since runner IPs rotate.
+      # instead of failing the whole deploy. The host key is pinned: ssh runs
+      # with StrictHostKeyChecking=yes against a known-hosts file written from
+      # the SSH_KNOWN_HOSTS secret, so a changed or wrong host key fails fast.
       - name: Configure SSH key
         env:
           DEPLOY_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          if [ -z "$KNOWN_HOSTS" ]; then
+            echo "::error::SSH_KNOWN_HOSTS secret is empty - add the verified host key line (see DEPLOY.md 'SSH_KNOWN_HOSTS'); not connecting"
+            exit 1
+          fi
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts
+          chmod 600 ~/.ssh/deploy_known_hosts
 
       - name: Sync compose + deploy script, render .env (retry)
         uses: nick-fields/retry@v3
@@ -332,7 +340,7 @@ jobs:
           retry_wait_seconds: 10
           command: |
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
-            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
             # Wait for the SSH port to accept TCP before dialing - survives a
             # server reboot mid-deploy (a full ssh dial burns 20s per timeout;
             # a cheap /dev/tcp probe polls until it's back). ~5 min budget.
@@ -344,7 +352,7 @@ jobs:
             scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml" || { echo "::error::scp docker-compose.yml failed - $D/docker-compose.yml not writable by $U. Fix on the host: sudo chown $U $D/docker-compose.yml (or sudo chown -R $U $D)"; exit 1; }
             # .env: warn but do not block - the host keeps its existing .env if this
             # write is refused (e.g. a root-owned .env from an earlier run).
-            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env" || echo "::warning::.env write refused (permission) - host keeps its existing .env. Fix: sudo chown $U $D/.env on the host"
+            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env && chmod 600 $D/.env" || echo "::warning::.env write refused (permission) - host keeps its existing .env. Fix: sudo chown $U $D/.env on the host"
             echo "files synced (see any warnings above)"
 
       - name: Deploy blue/green via Caddy (retry)
@@ -361,7 +369,7 @@ jobs:
           retry_wait_seconds: 15
           command: |
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
-            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
             ssh $O -p "$P" "$U@$H" "cd $D && chmod +x scripts/blue_green_deploy.sh && IMAGE_TAG='${{ github.sha }}' APP_DOMAIN='$APP_DOMAIN' BACKEND_PATH='$BACKEND_PATH' TLS_EMAIL='$TLS_EMAIL' CADDY_SITE_FILE='$CADDY_SITE_FILE' CADDY_CONFIG='$CADDY_CONFIG' ./scripts/blue_green_deploy.sh"
@@ -377,7 +385,7 @@ jobs:
           command: |
             set -eo pipefail
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
-            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
             [ -n "$APP_DOMAIN" ] || { echo "APP_DOMAIN repository variable is not set"; exit 1; }
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }

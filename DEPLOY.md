@@ -59,6 +59,13 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 | worker_workflow / worker_jobs / worker_omni / beat | - | - | Celery; recreated in place each deploy |
 | code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
 
+**Frontend container.** `frontend_blue`/`frontend_green` run with all Linux
+capabilities dropped, `no-new-privileges`, and a read-only root filesystem. The
+only writable paths are two size-limited tmpfs mounts: `/tmp` (64 MB) and
+`/app/.next/cache` (128 MB, owned by uid/gid 1001, the user the image runs as).
+Anything else the app tries to write fails; add a mount in `docker-compose.yml`
+(`x-frontend-hardening`) if a new feature needs one.
+
 **Code runner** (`service_backend/code_runner/`, image tag `code-runner-<tag>`): the
 ONLY process that executes builder-authored Python (workflow `code.run`). It is
 a separate image with no application code, no pip packages and no secrets;
@@ -245,12 +252,32 @@ Settings → Secrets and variables → Actions.
 
 **Secrets** (sensitive - masked in logs, used to render the server `.env`):
 - Pipeline: `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `SSH_HOST`, `SSH_USER`,
-  `SSH_PRIVATE_KEY`, `DEPLOY_PATH` (e.g. `/opt/foundryx-ems`).
+  `SSH_PRIVATE_KEY`, `SSH_KNOWN_HOSTS`, `DEPLOY_PATH` (e.g. `/opt/foundryx-ems`).
 - App: `POSTGRES_PASSWORD`, `JWT_SECRET`, `FERNET_KEY`, `OMNICHANNEL_FERNET_KEY`,
   `NEXTAUTH_SECRET`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`,
   `PLATFORM_SMTP_USERNAME`, `PLATFORM_SMTP_PASSWORD`.
 - Optional email notify: `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USERNAME`,
   `SMTP_PASSWORD`, `OWNER_EMAIL`.
+
+**`SSH_KNOWN_HOSTS`** pins the deploy host's SSH key. Every `ssh`/`scp` in
+`.github/workflows/deploy.yml` runs with `StrictHostKeyChecking=yes` against a
+known-hosts file the workflow writes from this secret, so a changed or wrong
+host key stops the deploy at the connection, before anything is sent. An empty
+secret fails the workflow with an `::error::` before any connection. To get the
+value:
+
+1. On the host, read its public key fingerprint:
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
+2. From a trusted machine, scan the host: `ssh-keyscan -p <port> <host>`, and
+   compare the fingerprint of the scanned line (`ssh-keygen -lf` on it) with
+   step 1.
+3. Only when they match, store the scanned line (`<host> ssh-ed25519 ...`) as
+   the `SSH_KNOWN_HOSTS` secret.
+
+A host move, rebuild or host-key rotation needs the secret updated the same way.
+Do not re-run a failing deploy repeatedly against a mismatch: fix the secret
+first, since repeated failed SSH attempts can get the runner's address blocked
+by the host's provider. The rendered server `.env` is written with mode 600.
 
 **Variables** (non-sensitive). Caddy/deploy: `APP_DOMAIN` (e.g.
 `icp-demo.foundryx.my`), `TLS_EMAIL` (required); `BACKEND_PATH` (default `/be`),
