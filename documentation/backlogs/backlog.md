@@ -455,3 +455,6 @@ consciously defers something; close it when a later plan/sprint picks it up.
 | BL-SS-314 | **Review shared Redis resource limits** - details in private notes. | Plan 39 review | Low | Open |
 | BL-SS-315 | **Defence in depth for internal task queue inputs** - details in private notes. | Plan 39 review | Medium | Open |
 | BL-SS-316 | **`tests/test_deploy_module_bootstrap_wiring.py` is test-order dependent** - it passes serially and with `--dist loadfile` (what CI uses) but fails under plain `-n 2`, even alone (`DID NOT RAISE ModuleSchemaForeign`). Tests rely on state from earlier tests in the file. Fix so the file passes under any distribution. | Plan 39 | Low | Open |
+| BL-SS-317 | **Recover sends left in progress after a worker is killed** - a periodic sweep for outbound rows stuck mid-send, so each ends in a visible outcome. | Plan 38 | Medium | Open |
+| BL-SS-318 | **Review receipt ordering rules for failed and queued rows** - details in private notes. | Plan 38 | Low | Open |
+| BL-SS-319 | **Review send retry behaviour after a provider timeout** - avoid duplicate messages to a customer, details in private notes. | Plan 38 | Medium | Open |

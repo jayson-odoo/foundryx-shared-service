@@ -249,11 +249,22 @@ def test_gateway_rio_schemas_carry_no_broadcast_field() -> None:
             assert "broadcast" not in line.lower(), f"Rio* schema mentions broadcast: {line!r}"
 
 
-def test_consumer_integration_guide_carries_no_broadcast_mention() -> None:
-    """The published consumer contract (`documentation/omnichannel/
-    consumer-integration-guide.md`) must not mention broadcasts - there is
-    nothing there for an external API-key integrator to read about, because
-    v1 exposes no such endpoint."""
+def test_consumer_gateway_exposes_no_broadcast_route_but_documents_the_source_value() -> None:
+    """Broadcasts have no public API: the guide documents no `/broadcasts`
+    route and `api_v1.py` registers none. A consumer can however SEE that a
+    message came from one, because `message.outbound` carries
+    `source: "broadcast"`, so the word legitimately appears in the guide's
+    source table (the control below proves the right file was read)."""
     guide = _repo_root() / "documentation" / "omnichannel" / "consumer-integration-guide.md"
     assert guide.exists()
-    assert "broadcast" not in guide.read_text().lower()
+    text = guide.read_text()
+    assert "/broadcasts" not in text.lower()
+
+    from modules.omnichannel.routers.api_v1 import router
+
+    paths = [getattr(r, "path", "") for r in router.routes]
+    assert paths, "control: the api_v1 router must have registered routes"
+    assert not [p for p in paths if "broadcast" in p.lower()], paths
+
+    rows = [ln for ln in text.splitlines() if ln.strip().startswith("| `broadcast` |")]
+    assert len(rows) == 1, "control: the `broadcast` source value must be documented exactly once"

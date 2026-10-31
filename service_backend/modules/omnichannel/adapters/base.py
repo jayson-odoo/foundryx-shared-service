@@ -25,9 +25,11 @@ class SendError(Exception):
     Meta 5xx → the send task retries with backoff) from a permanent rejection
     (bad number, 4xx, template issue → stamp FAILED, plan 12 review)."""
 
-    def __init__(self, message: str, *, transient: bool = False):
+    def __init__(self, message: str, *, transient: bool = False, code: Optional[str] = None):
         super().__init__(message)
         self.transient = transient
+        # The provider's own error code (e.g. Meta `error.code`) when it gave one.
+        self.code = code
 
 
 class ChannelAdapter(Protocol):
