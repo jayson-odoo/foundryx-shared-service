@@ -1419,8 +1419,8 @@ def test_ac_43_09_a_second_key_changing_a_row_takes_it_over(client, session_fact
     k2, hdr2 = _key(client, ws, "Second key")
     ep = _register_as(client, r["hdr"])
     assert _created_by(session_factory, ep) == _by(k1)  # control: register records the key
-    if action == "enable":  # enabling an ACTIVE row changes nothing, so pause it first
-        assert client.post(f"{STAFF}/webhooks/{ep}/disable", headers=_auth(client)).status_code == 200
+    if action == "enable":  # enabling an ACTIVE row changes nothing, so the key pauses it first
+        assert client.post(f"{BASE}/webhooks/{ep}/disable", headers=r["hdr"]).status_code == 200
         assert _counts(client, ws, k1, k2) == [0, 0]  # control
     else:
         assert _counts(client, ws, k1, k2) == [1, 0]  # control
@@ -1444,7 +1444,7 @@ def test_ac_43_09_resuming_a_row_after_its_old_key_was_revoked_without_pausing_g
     ep = _register_as(client, r["hdr"])
     assert _revoke(client, ws, k1, {"pauseEndpoints": False}).status_code == 200
     assert _state(session_factory, ep)["status"] == "ACTIVE"  # control: left running
-    assert client.post(f"{STAFF}/webhooks/{ep}/disable", headers=_auth(client)).status_code == 200
+    assert client.post(f"{BASE}/webhooks/{ep}/disable", headers=hdr2).status_code == 200  # a key's own pause
 
     res = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
 
@@ -1668,7 +1668,7 @@ def test_ac_43_09_enabling_an_active_row_by_another_key_moves_nothing(client, se
     assert res.status_code == 200, res.text
     assert _created_by(session_factory, ep) == _by(k1)
     assert _counts(client, ws, k1, k2) == [1, 0]
-    assert client.post(f"{STAFF}/webhooks/{ep}/disable", headers=_auth(client)).status_code == 200
+    assert client.post(f"{BASE}/webhooks/{ep}/disable", headers=hdr2).status_code == 200  # a key's own pause
     resumed = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
     assert resumed.status_code == 200, resumed.text  # control: a real change still moves it
     assert _created_by(session_factory, ep) == _by(k2)
