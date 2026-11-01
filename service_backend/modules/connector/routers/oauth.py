@@ -6,10 +6,11 @@ from typing import Dict
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, release_read_transactions
 from app.services.throttle import ThrottleService, Throttled, client_ip
 
 from ..services.oauth_service import (
@@ -138,14 +139,22 @@ async def token(request: Request, svc: OAuthService = Depends(oauth_service),
     require_method(request, "POST")
     throttle = ThrottleService(db)
     key = f"tok:{client_ip(request)}"
-    try:
+
+    def _precheck() -> None:
         throttle.enforce_connector(key=key)
+        release_read_transactions()
+
+    # Database work runs on a worker thread; the connection is returned before the
+    # body is read, and nothing on the loop touches `db` or a service meanwhile.
+    try:
+        await run_in_threadpool(_precheck)
     except Throttled as exc:
         return _throttled(exc)
+    form = await _form(request)
     try:
-        return JSONResponse(svc.token(await _form(request)), headers=_NO_STORE)
+        return JSONResponse(await run_in_threadpool(svc.token, form), headers=_NO_STORE)
     except TokenError as exc:
-        throttle.record_connector(key=key)
+        await run_in_threadpool(throttle.record_connector, key=key)
         return _oauth_error(exc.error)
 
 

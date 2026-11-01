@@ -17,11 +17,13 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import release_read_transactions
 from app.dependencies import (
     effective_permission_keys,
     get_current_user,
@@ -394,10 +396,15 @@ async def submit_form(
     current_user: User = Depends(get_current_user),  # any authed user (D19)
     db: Session = Depends(get_db),
 ) -> FormSubmissionOut:
+    # End the sign-in read transaction before waiting for the body; all session
+    # work (here and below) runs on a worker thread, never on the loop.
+    await run_in_threadpool(release_read_transactions)
     answers, _honeypot, uploads = await _read_submission(request)
     service = FormService(db)
     try:
-        submission = service.submit(current_user.tenant_id, form_id, current_user, answers, uploads)
+        submission = await run_in_threadpool(
+            service.submit, current_user.tenant_id, form_id, current_user, answers, uploads
+        )
     except FormNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Form not found.")
     except FormSubmitInvalid as exc:
@@ -407,7 +414,9 @@ async def submit_form(
     except FormClosed as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return FormSubmissionOut(
-        **service.get_submission(current_user.tenant_id, submission.id, current_user)
+        **await run_in_threadpool(
+            service.get_submission, current_user.tenant_id, submission.id, current_user
+        )
     )
 
 
@@ -614,11 +623,17 @@ async def resubmit_revision(
     db: Session = Depends(get_db),
 ) -> FormSubmissionOut:
     """Save edited answers into a Draft revision + fire its Submit edge (R3)."""
+    # End the sign-in read transaction before waiting for the body; all session
+    # work (here and below) runs on a worker thread, never on the loop.
+    await run_in_threadpool(release_read_transactions)
     answers, _honeypot, uploads = await _read_submission(request)
     service = FormService(db)
-    can_manage = "submissions.manage" in effective_permission_keys(current_user)
+    can_manage = "submissions.manage" in await run_in_threadpool(
+        effective_permission_keys, current_user
+    )
     try:
-        submission = service.resubmit_revision(
+        submission = await run_in_threadpool(
+            service.resubmit_revision,
             current_user.tenant_id,
             submission_id,
             current_user,
@@ -637,7 +652,9 @@ async def resubmit_revision(
     except FormRevisionBlocked as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return FormSubmissionOut(
-        **service.get_submission(current_user.tenant_id, submission.id, current_user)
+        **await run_in_threadpool(
+            service.get_submission, current_user.tenant_id, submission.id, current_user
+        )
     )
 
 

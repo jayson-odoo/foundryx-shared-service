@@ -23,11 +23,12 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from pydantic import BaseModel
 
-from app.database import get_db
+from app.database import get_db, release_read_transactions
 from app.services.status_machine import (
     TransitionConditionsNotMet,
     TransitionForbidden,
@@ -600,6 +601,13 @@ def send_message(
         raise HTTPException(status_code=422, detail=exc.message)
 
 
+def _thread_precheck(db: Session, principal: ConversationPrincipal, contact_id: str) -> None:
+    """Thread-scope check, then end the read transaction (one worker-thread hop)
+    so nothing is held open while the request body is awaited."""
+    enforce_thread_access(db, principal, contact_id)
+    release_read_transactions()
+
+
 @router.post("/{contact_id}/template", response_model=MessageItem, status_code=201)
 async def send_template(
     contact_id: str,
@@ -613,7 +621,7 @@ async def send_template(
     header media (AC-12-22). The header-less/text path also works via
     ``POST /{contact_id}/messages``."""
     principal.require(native_perm="conversations.reply", embed_cap="send_template")
-    enforce_thread_access(db, principal, contact_id)
+    await run_in_threadpool(_thread_precheck, db, principal, contact_id)
     header_content: Optional[bytes] = None
     header_filename: Optional[str] = None
     if request.headers.get("content-type", "").startswith("multipart/"):
@@ -642,7 +650,8 @@ async def send_template(
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="Invalid template request.")
     try:
-        return MessageService(db).send_message(
+        return await run_in_threadpool(
+            MessageService(db).send_message,
             contact_id,
             principal.tenant_id,
             principal.actor_user_id,
@@ -710,7 +719,7 @@ async def send_interactive(
     Accepts JSON (the interactive definition) OR multipart (``file`` media header
     + a ``payload`` JSON part)."""
     principal.require(native_perm="conversations.reply", embed_cap="reply")
-    enforce_thread_access(db, principal, contact_id)
+    await run_in_threadpool(_thread_precheck, db, principal, contact_id)
     header_content: Optional[bytes] = None
     header_filename: Optional[str] = None
     reply_to: Optional[str] = None
@@ -736,7 +745,8 @@ async def send_interactive(
         raise HTTPException(status_code=422, detail="Invalid interactive definition.")
     reply_to = defn.pop("replyToMessageId", None)
     try:
-        return MessageService(db).send_interactive(
+        return await run_in_threadpool(
+            MessageService(db).send_interactive,
             contact_id,
             principal.tenant_id,
             principal.actor_user_id,
