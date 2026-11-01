@@ -42,7 +42,7 @@ No mock: one choice in a dialog on an existing screen, one existing list on one 
 
 ## Traps
 
-- A key is checked once at the start of a request, so `ApiKeyService.revoke` locks the key row `FOR UPDATE`, and each key write re-reads it with `with_for_update(key_share=True)` after its URL check and before its own commit, answering 401 when revoked. No network call under either lock.
+- A key is checked once at the start of a request, so `ApiKeyService.revoke` locks the key row `FOR UPDATE`, and each key write re-reads it with `with_for_update(key_share=True)`, which renders `FOR NO KEY UPDATE`, after its URL check and before its own commit, answering 401 when revoked. No network call under either lock.
 
 - `revoke` is deferred with an undo window and today has no dialog (`use-api-key-list.tsx:87-90`). Check how `ResourceAction.deferred` takes a payload before designing the `run`; extend the shell's type if it cannot, do not hand-roll.
 - The tab can show a stale count: after a revoke, reload the list.
@@ -52,6 +52,8 @@ No mock: one choice in a dialog on an existing screen, one existing list on one 
 - Tests through real routes and the real `dispatch`. `test_omnichannel_gateway_key_lifecycle.py` already covers revoke: read it first.
 - SQLite cannot show the commit being one: test by forcing the pause to raise and asserting the key is not revoked.
 - Public repo: neutral wording in code, tests, commits and PR.
+
+- Rows disabled by a key before this change read "Disabled by user.", the staff reason, so they count as staff pauses until staff resume them. State it on the PR.
 
 ## Slices
 
