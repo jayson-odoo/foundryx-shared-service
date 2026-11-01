@@ -635,3 +635,34 @@ def test_markup_is_not_a_sniffed_type_and_stays_an_opaque_download(local_world, 
     assert detect_upload_mime(content, filename) is None
     res = _serve_entry_on_local_disk(w, "text/html", name=filename)
     assert res.headers["content-type"].split(";")[0] == "application/octet-stream"
+
+
+# ---- stored type and name values of any form ---------------------------------------------
+
+def _serve_raw_entry(w, **overrides):
+    rel = f"forms/{w.form}/{w.sub}/resume/0-x.bin"
+    _file(w.media, rel, b"hello")
+    entry = {"key": rel, "name": "n.txt", "size": 1, "mime": "text/plain", **overrides}
+    _set_answer(w.sf, w.sub, "resume", [entry])
+    return _serve(w.client, w.headers, w.sub, "resume")
+
+
+@pytest.mark.parametrize("mime", ["text/plain; charset=utf-8", "TEXT/PLAIN"])
+def test_a_text_type_with_parameters_or_capitals_is_served_as_text_plain(local_world, mime):
+    res = _serve_raw_entry(local_world, mime=mime)
+    assert res.status_code == 200
+    assert res.headers["content-type"].split(";")[0] == "text/plain"
+
+
+@pytest.mark.parametrize("mime", [5, [1], None], ids=["number", "list", "null"])
+def test_a_stored_type_that_is_not_a_string_is_served_as_an_opaque_download(local_world, mime):
+    res = _serve_raw_entry(local_world, mime=mime)
+    assert res.status_code == 200
+    assert res.headers["content-type"].split(";")[0] == "application/octet-stream"
+
+
+@pytest.mark.parametrize("name", [5, [1]], ids=["number", "list"])
+def test_a_stored_name_that_is_not_a_string_falls_back_to_file(local_world, name):
+    res = _serve_raw_entry(local_world, name=name)
+    assert res.status_code == 200
+    assert 'filename="file"' in res.headers["content-disposition"]
