@@ -971,10 +971,7 @@ def _media_refused(target, net, bucket, canary_dir, db):
         assert net.listener.connections == 0
 
 
-MEDIA_TARGETS = [
-    "http", "http_upper", "https_loopback", "https_private_name",
-    "https_link_local_name", "https_localhost",
-]
+MEDIA_TARGETS = list(TARGETS)
 
 
 @pytest.mark.parametrize("target", MEDIA_TARGETS)
@@ -983,4 +980,74 @@ def test_media_reads_refuse_stored_urls_that_are_not_public_https(
 ):
     db = session_factory()
     _media_refused(target, net, bucket, canary_dir, db)
+    db.close()
+
+
+def test_media_read_does_not_follow_a_redirect(net, bucket, session_factory):
+    db = session_factory()
+    net.start(tls=True, mode="redirect")
+    conn = _connect(db, "https://cdn.storage.test")
+    out, exc = read_media(db, conn)
+    assert not out.ok
+    assert net.listener.connections == 1
+    db.close()
+
+
+def test_media_read_carries_a_timeout(net, bucket, session_factory):
+    db = session_factory()
+    net.start(tls=True)
+    conn = _connect(db, "https://cdn.storage.test")
+    read_media(db, conn)
+    assert net.attempts
+    for _host, _port, timeout in net.attempts:
+        assert timeout is not None and 0 < timeout <= 60
+    db.close()
+
+
+def test_media_read_from_a_public_https_cdn(net, bucket, session_factory):
+    db = session_factory()
+    net.start(tls=True)
+    out, _ = read_media(db, _connect(db, "https://cdn.storage.test"))
+    assert out.ok and out.data == CANARY_BYTES
+    db.close()
+
+
+def test_media_read_from_a_presigned_https_url(net, bucket, session_factory):
+    db = session_factory()
+    net.start(tls=True)
+    out, _ = read_media(db, _connect(db, ""))
+    assert out.ok and out.data == CANARY_BYTES
+    db.close()
+
+
+def test_media_read_from_local_storage(tmp_path, monkeypatch, session_factory):
+    from app.config import settings
+    from modules.omnichannel.services.send_runner import _read_media
+
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "local.bin").write_bytes(CANARY_BYTES)
+    monkeypatch.setattr(settings, "media_root", str(media))
+    db = session_factory()
+    assert _read_media(db, DEFAULT_TENANT_ID, "local.bin") == CANARY_BYTES
+    db.close()
+
+
+def test_media_read_from_platform_storage_on_a_private_address(
+    net, bucket, monkeypatch, session_factory
+):
+    db = session_factory()
+    net.start(tls=True)
+    platform = _seed_platform_storage(db, monkeypatch, "https://internal.storage.test")
+    out, _ = read_media(db, platform)
+    assert out.ok and out.data == CANARY_BYTES
+    db.close()
+
+
+def test_media_read_reports_the_status_of_a_failed_response(net, bucket, session_factory):
+    db = session_factory()
+    net.start(tls=True, mode="notfound")
+    out, exc = read_media(db, _connect(db, "https://cdn.storage.test"))
+    assert not out.ok
+    assert str(exc) == "Media read failed with status 404"
     db.close()
