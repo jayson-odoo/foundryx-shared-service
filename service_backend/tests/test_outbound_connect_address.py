@@ -135,6 +135,7 @@ class Rig:
         self.accepted = {ALLOWED_ADDR: [], BLOCKED_ADDR: []}
         self.sentinels = set()
         self.requests = []  # (address, Host header) seen by the TLS responder
+        self.release = threading.Event()  # lets a "block" resolver answer return
         self.raw_requests = []  # (header map, body bytes) seen by the TLS responder
         self.tls_hostnames = []  # server_hostname values reaching a client TLS start
         self.scripts = {}
@@ -255,6 +256,11 @@ class Rig:
                 n = rig.calls.get(key, 0)
                 rig.calls[key] = n + 1
             step = script[min(n, len(script) - 1)]
+            if step == "block":
+                rig.release.wait(5.0)
+                raise socket.gaierror(socket.EAI_NONAME, "scripted: released")
+            if step == "timeout":
+                raise TimeoutError("scripted: timed out")
             if step == "oserror":
                 raise OSError("scripted: resolver input/output error")
             if step == "fail":
@@ -1164,3 +1170,112 @@ def test_the_sync_path_tries_the_next_address_after_a_connect_timeout(rig, env, 
     outcome = PATHS["workflow_action"][0](env, rig.base())
     assert outcome.kind == "completed", f"the second address was not tried: {outcome!r}"
     assert rig.count(BLOCKED_ADDR, only=True) >= 1
+
+
+# ── The async transport, directly ─────────────────────────────────────────────
+def test_an_immediate_connect_timeout_on_the_first_address_is_not_an_error_group(rig, monkeypatch):
+    import asyncio
+
+    import httpcore
+
+    _two_addresses(rig, monkeypatch)
+    real = httpcore.AnyIOBackend.connect_tcp
+
+    async def wrapped(self, host, port, timeout=None, local_address=None, socket_options=None):
+        if host == ALLOWED_ADDR:
+            raise httpcore.ConnectTimeout("scripted: no answer")
+        return await real(self, host, port, timeout, local_address, socket_options)
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", wrapped)
+
+    async def go():
+        async with httpx.AsyncClient(transport=url_guard.GuardedAsyncTransport(), timeout=BUDGET) as client:
+            return (await client.get(rig.base() + "/x")).status_code
+
+    try:
+        status = asyncio.run(asyncio.wait_for(go(), WAIT_SECONDS))
+    except BaseException as exc:  # noqa: BLE001 - the type is the point of the test
+        pytest.fail(f"the request failed with {type(exc).__name__}: {exc}", pytrace=False)
+    assert status == 200
+
+
+def test_a_late_second_connection_is_closed_and_one_stream_stays_in_use(rig, monkeypatch):
+    import asyncio
+
+    import anyio
+    import httpcore
+
+    _two_addresses(rig, monkeypatch)
+    real = httpcore.AnyIOBackend.connect_tcp
+    streams = []
+    closed = []
+
+    async def wrapped(self, host, port, timeout=None, local_address=None, socket_options=None):
+        if host == ALLOWED_ADDR:
+            # Slower than the delay before the next attempt starts, and finishing
+            # even though the other attempt has already won.
+            with anyio.CancelScope(shield=True):
+                await anyio.sleep(url_guard._CONNECT_ATTEMPT_DELAY + 0.3)
+                stream = await real(self, host, port, timeout, local_address, socket_options)
+        else:
+            stream = await real(self, host, port, timeout, local_address, socket_options)
+        original = stream.aclose
+
+        async def spy_aclose():
+            closed.append(host)
+            await original()
+
+        stream.aclose = spy_aclose
+        streams.append(host)
+        return stream
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", wrapped)
+
+    async def go():
+        async with httpx.AsyncClient(transport=url_guard.GuardedAsyncTransport(), timeout=BUDGET) as client:
+            status = (await client.get(rig.base() + "/x")).status_code
+            return status, list(streams), list(closed)
+
+    status, made, shut = asyncio.run(asyncio.wait_for(go(), WAIT_SECONDS))
+    assert status == 200
+    assert sorted(made) == sorted([ALLOWED_ADDR, BLOCKED_ADDR]), f"both attempts should have connected: {made}"
+    assert shut == [ALLOWED_ADDR], f"the losing stream was not closed: closed={shut}"
+    assert len(made) - len(shut) == 1, "exactly one stream should stay in use"
+
+
+def test_the_async_budget_covers_resolving(rig):
+    import asyncio
+
+    rig.script(NAME, ["block"])
+    outcome = {}
+
+    async def go():
+        started = time.monotonic()
+        try:
+            async with httpx.AsyncClient(transport=url_guard.GuardedAsyncTransport(), timeout=0.3) as client:
+                await client.get(rig.base() + "/x")
+        except BaseException as exc:  # noqa: BLE001
+            outcome["error"] = exc
+        finally:
+            outcome["elapsed"] = time.monotonic() - started
+            rig.release.set()  # let the resolver thread finish so nothing is left running
+
+    asyncio.run(asyncio.wait_for(go(), WAIT_SECONDS))
+    assert isinstance(outcome.get("error"), httpx.ConnectTimeout), f"got {outcome.get('error')!r}"
+    assert outcome["elapsed"] < 3.0, f"took {outcome['elapsed']:.2f}s for a 0.3s budget"
+    assert rig.count(ALLOWED_ADDR) == 0 and rig.count(BLOCKED_ADDR) == 0
+
+
+# ── The sync transport: resolver time outs and errors ─────────────────────────
+@pytest.mark.parametrize(
+    "step, expected", [("timeout", httpx.ConnectTimeout), ("oserror", httpx.ConnectError)]
+)
+def test_the_sync_transport_maps_resolver_timeouts_and_errors(rig, step, expected):
+    rig.script(NAME, [step])
+    client = httpx.Client(transport=url_guard.GuardedTransport(), timeout=5.0)
+    try:
+        with pytest.raises(expected) as info:
+            client.get(rig.base() + "/x")
+    finally:
+        client.close()
+    assert type(info.value) is expected, f"got {type(info.value).__name__}"
