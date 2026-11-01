@@ -1002,3 +1002,132 @@ def test_ac_38_97_channel_list_has_own_rows_plus_null_rows_of_its_tenant_and_wor
 
     ids_b = {i["id"] for i in client.get(f"/omnichannel/channels/{b}/webhooks", headers=_auth(client)).json()["data"]}
     assert ids_b == {other_channel, allc}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AC-38-101 - a reaction names no default channel, so it is not refused
+# ═════════════════════════════════════════════════════════════════════════════
+def _reaction_rig(session_factory, ws, channel_id):
+    """A contact whose identity (and last message) sits on `channel_id`, with a
+    delivered message to react to."""
+    from modules.omnichannel.models import ContactChannelIdentity
+
+    phone = "+60111777101"
+    cid = _seed_open_contact(session_factory, ws, phone=phone, open_window=True)
+    db = session_factory()
+    try:
+        db.add(
+            ConversationMessage(
+                tenant_id=DEFAULT_TENANT_ID,
+                contact_id=cid,
+                channel_id=channel_id,
+                sender_type="CONTACT",
+                message_type="TEXT",
+                body="target",
+                external_message_id="wamid.101-target",
+                delivery_status="DELIVERED",
+            )
+        )
+        db.add(
+            ContactChannelIdentity(
+                tenant_id=DEFAULT_TENANT_ID,
+                contact_id=cid,
+                channel_id=channel_id,
+                external_user_id=phone,
+            )
+        )
+        db.commit()
+        mid = db.query(ConversationMessage).filter(ConversationMessage.external_message_id == "wamid.101-target").one().id
+    finally:
+        db.close()
+    return cid, mid
+
+
+def _react(client, hdr, message_id, channel_id=None):
+    body = {"to": "+60111777101", "type": "reaction", "reaction": {"messageId": message_id, "emoji": "👍"}}
+    if channel_id:
+        body["channelId"] = channel_id
+    return client.post(f"{BASE}/messages", json=body, headers=hdr)
+
+
+def _reaction_count(session_factory):
+    from modules.omnichannel.models import MessageReaction
+
+    db = session_factory()
+    try:
+        return db.query(MessageReaction).count()
+    finally:
+        db.close()
+
+
+def test_ac_38_101_reaction_without_channel_id_sends_on_the_contacts_own_channel(client, session_factory):
+    # Control, passes today. It guards the exemption: `_do_send` resolves the
+    # channel before the type branch, so a resolver that refuses a real guess
+    # there would answer this request 422 channel_required (two active WhatsApp
+    # channels, no channelId) instead of 202.
+    ws = _default_workspace_id(session_factory)
+    a, b = _two_wa(session_factory, ws)
+    _cid, mid = _reaction_rig(session_factory, ws, b)  # own channel is the SECOND one
+    db = session_factory()
+    try:
+        per_a = WebhookService(db).create(DEFAULT_TENANT_ID, a, "pa", HOOK, ["message.reaction"], created_by=None)[0].id
+        per_b = WebhookService(db).create(DEFAULT_TENANT_ID, b, "pb", HOOK, ["message.reaction"], created_by=None)[0].id
+    finally:
+        db.close()
+    res = _react(client, _hdr(client, ws), mid)
+    assert res.status_code == 202, res.text
+    assert _reaction_count(session_factory) == 1
+    assert len(_rows(session_factory, per_b, "message.reaction")) == 1  # went out on its own channel
+    assert _rows(session_factory, per_a) == []
+
+
+def test_ac_38_101_reaction_with_foreign_or_unknown_channel_id_is_invalid_channel(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    a, b = _two_wa(session_factory, ws)
+    _cid, mid = _reaction_rig(session_factory, ws, b)
+    other_ws = _seed_second_workspace(session_factory)
+    db = session_factory()
+    try:
+        sibling = db.query(Channel).filter(Channel.workspace_id == other_ws).first().id
+    finally:
+        db.close()
+    alien = _channel(session_factory, ws, name="alien", age_rank=1, tenant_id=FOREIGN_TENANT)
+    hdr = _hdr(client, ws)
+    for bad in ("no-such-channel", sibling, alien):
+        res = _react(client, hdr, mid, channel_id=bad)
+        assert res.status_code == 422, (bad, res.text)
+        assert res.json()["error"]["code"] == "invalid_channel", (bad, res.text)
+    assert _reaction_count(session_factory) == 0
+
+
+def test_ac_38_101_reaction_with_no_active_channel_stays_409(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    off = _channel(session_factory, ws, name="paused", age_rank=1, active=False, status_key="INACTIVE")
+    _cid, mid = _reaction_rig(session_factory, ws, off)
+    res = _react(client, _hdr(client, ws), mid)
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "no_active_channel"
+
+
+_NON_TEXT = {
+    "template": {"template": {"name": "tpl_101", "variables": []}},
+    "interactive": {"interactive": {"type": "button", "body": {"text": "Pick"}, "buttons": [{"id": "1", "title": "One"}]}},
+    "location": {"location": {"lat": 3.1, "lng": 101.6, "name": "HQ"}},
+    "contacts": {"contacts": [{"name": {"formatted_name": "Sam"}, "phones": [{"phone": "+60111000000"}]}]},
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_NON_TEXT))
+def test_ac_38_101_other_types_are_still_refused_on_a_real_guess(client, session_factory, kind):
+    ws = _default_workspace_id(session_factory)
+    a, _b = _two_wa(session_factory, ws)
+    _ensure_template(session_factory, a, name="tpl_101")
+    _seed_open_contact(session_factory, ws, phone="+60111777102", open_window=True)
+    before = _counts(session_factory)
+    res = client.post(
+        f"{BASE}/messages",
+        json={"to": "+60111777102", "type": kind, **_NON_TEXT[kind]},
+        headers=_hdr(client, ws),
+    )
+    _assert_channel_required(res)
+    assert _counts(session_factory) == before
