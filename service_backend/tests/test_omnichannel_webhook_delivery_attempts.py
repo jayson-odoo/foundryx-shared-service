@@ -464,3 +464,123 @@ def test_run_due_deliveries_continues_after_a_row_leaves_the_session_failed(
     finally:
         db.close()
     assert len(calls) == 1
+
+
+# ── time budget of a due run ─────────────────────────────────────────────────
+def _budget():
+    return getattr(wd, "DUE_RUN_BUDGET_SECONDS", 240)
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    """``time.monotonic`` as the delivery module reads it: real time plus an offset
+    the tests move forward."""
+    import time as time_mod
+
+    real = time_mod.monotonic
+    state = {"offset": 0.0}
+    monkeypatch.setattr("time.monotonic", lambda: real() + state["offset"])
+    return state
+
+
+def _three_due(session_factory, tag):
+    ep = _stored_endpoint(session_factory, f"pn-{tag}", "https://consumer.example/hook")
+    ids = [
+        _stored_delivery(session_factory, ep, f"evt-{tag}-{i}", minutes_ago=30 - i) for i in range(3)
+    ]
+    db = session_factory()
+    try:
+        before = {
+            i: _aware(db.query(WebhookDelivery).filter(WebhookDelivery.id == i).one().next_attempt_at)
+            for i in ids
+        }
+    finally:
+        db.close()
+    return ids, before
+
+
+def test_due_run_budget_default_is_below_the_worker_soft_limit():
+    from modules.omnichannel.services.webhook_delivery import DUE_RUN_BUDGET_SECONDS
+
+    assert 0 < DUE_RUN_BUDGET_SECONDS < 300
+
+
+def test_due_run_stops_taking_rows_after_its_budget(session_factory, _capture_post, monkeypatch, fake_clock):
+    calls, _state = _capture_post
+    ids, before = _three_due(session_factory, "bud1")
+    real = wd.dispatch
+
+    def slow_first(db, delivery_id):
+        result = real(db, delivery_id)
+        fake_clock["offset"] += _budget() + 1  # the budget passes during the first row
+        return result
+
+    monkeypatch.setattr(wd, "dispatch", slow_first)
+    db = session_factory()
+    try:
+        wd.run_due_deliveries(db)  # returns normally
+        rows = {i: db.query(WebhookDelivery).filter(WebhookDelivery.id == i).one() for i in ids}
+        for r in rows.values():
+            db.refresh(r)
+        attempted = [i for i in ids if rows[i].attempt_count > 0]
+        assert attempted == [ids[0]]
+        assert rows[ids[0]].status == "SUCCESS"  # the row in flight finished normally
+        for i in ids[1:]:
+            assert rows[i].status == "PENDING"
+            assert rows[i].attempt_count == 0
+            assert _aware(rows[i].next_attempt_at) == before[i]
+    finally:
+        db.close()
+    assert len(calls) == 1
+
+
+def test_due_run_within_budget_attempts_every_row(session_factory, _capture_post, monkeypatch, fake_clock):
+    # control: passes today
+    calls, _state = _capture_post
+    ids, _before = _three_due(session_factory, "bud2")
+    real = wd.dispatch
+
+    def quick(db, delivery_id):
+        fake_clock["offset"] += 1
+        return real(db, delivery_id)
+
+    monkeypatch.setattr(wd, "dispatch", quick)
+    db = session_factory()
+    try:
+        wd.run_due_deliveries(db)
+        for i in ids:
+            row = db.query(WebhookDelivery).filter(WebhookDelivery.id == i).one()
+            db.refresh(row)
+            assert row.status == "SUCCESS" and row.attempt_count == 1
+    finally:
+        db.close()
+    assert len(calls) == 3
+
+
+def test_soft_time_limit_in_a_send_is_a_failed_attempt_and_the_run_ends(
+    session_factory, monkeypatch, fake_clock
+):
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    ep = _stored_endpoint(session_factory, "pn-bud3", "https://consumer.example/hook")
+    first = _stored_delivery(session_factory, ep, "evt-bud3-0", minutes_ago=30)
+    second = _stored_delivery(session_factory, ep, "evt-bud3-1", minutes_ago=20)
+
+    def limit_hit(*_a, **_k):
+        fake_clock["offset"] += _budget() + 1
+        raise SoftTimeLimitExceeded(MARKER)
+
+    monkeypatch.setattr(wd.httpx, "post", limit_hit)
+    db = session_factory()
+    try:
+        wd.run_due_deliveries(db)
+        a = db.query(WebhookDelivery).filter(WebhookDelivery.id == first).one()
+        b = db.query(WebhookDelivery).filter(WebhookDelivery.id == second).one()
+        db.refresh(a)
+        db.refresh(b)
+        assert a.attempt_count == 1
+        assert a.error and MARKER not in a.error
+        assert a.status == "PENDING" and a.next_attempt_at is not None
+        assert b.attempt_count == 0 and b.status == "PENDING"
+    finally:
+        db.close()
