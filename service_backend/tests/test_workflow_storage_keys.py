@@ -194,8 +194,8 @@ REFUSED_KEYS = [
     pytest.param("conn:{P}:workflows/{A}", id="prefix_lookalike_no_trailing_part"),
     pytest.param("conn:{P}:Workflows/{A}/x", id="prefix_lookalike_capitalised"),
     pytest.param("conn:{P}:/workflows/{A}/x", id="prefix_lookalike_leading_slash"),
-    pytest.param("conn:{P}:workflows/{A}/../{B}/x", id="traversal_inside_prefix"),
-    pytest.param("conn:{P}:workflows\\{A}\\..\\{B}\\x", id="traversal_inside_prefix_backslashes"),
+    pytest.param("conn:{P}:workflows/{A}/../{B}/x", id="parent_segment_inside_prefix"),
+    pytest.param("conn:{P}:workflows\\{A}\\..\\{B}\\x", id="parent_segment_inside_prefix_backslashes"),
     pytest.param("conn:{BC}:anything", id="other_tenants_connection"),
     pytest.param("conn:{MISSING}:anything", id="connection_that_does_not_exist"),
     pytest.param("documents/x", id="bare_key_outside_prefix"),
@@ -640,3 +640,28 @@ def test_put_with_a_forms_looking_key_is_stored_under_the_workflow_prefix(reques
     assert not raw.startswith("forms/")
     if world == "local":
         assert not (media / "forms").exists()
+
+
+# ---- put never writes a key those nodes refuse ------------------------------------------
+
+@pytest.mark.parametrize("world", ["local", "shared"])
+@pytest.mark.parametrize(
+    "key",
+    ["reports//x.txt", "reports/{{ trigger.input.empty }}/x.txt"],
+    ids=["double_slash", "merged_empty_segment"],
+)
+def test_a_key_put_writes_is_accepted_by_get_and_delete(request, world, key):
+    w = request.getfixturevalue(world)
+    client = request.getfixturevalue("client")
+    media = request.getfixturevalue("media")
+    out = storage_actions.storage_put(
+        w.db, w.a, {"key": key, "content": "hello"}, {"trigger.input.empty": ""}
+    )
+    client.presigned.clear()
+    got = _run(w, "get", w.a, out["key"])
+    assert got["url"]
+    _run(w, "delete", w.a, out["key"])
+    if world == "local":
+        assert not (media / out["key"]).exists()
+    else:
+        assert client.deleted == [out["key"].split(":", 2)[2]]
