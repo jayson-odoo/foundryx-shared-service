@@ -1099,15 +1099,71 @@ def test_ac_41_10_limits_are_four_and_two():
     from modules.omnichannel.services import public_gateway_service as pgs
 
     assert pgs.MEDIA_FETCH_MAX_CONCURRENT == 4
-    assert pgs.MEDIA_FETCH_MAX_PER_KEY == 2
+    assert pgs.MEDIA_FETCH_MAX_PER_TENANT == 2
 
 
-def _gate_world(client, session_factory, *, contacts):
-    ws = _default_workspace_id(session_factory)
-    _seed_channel(session_factory, ws)
-    phones = [f"+607007009{i:02d}" for i in range(contacts)]
-    cids = {ph: _seed_open_contact(session_factory, ws, phone=ph, open_window=True) for ph in phones}
-    keys = {n: {"Authorization": "Bearer " + _mint(client, ws, n).json()["fullKey"]} for n in ("a", "b", "c")}
+def _tenant_login(client, session_factory, slug):
+    from app.services.app_store_service import AppStoreService
+    from app.services.tenant_service import TenantService
+
+    db = session_factory()
+    tenant = TenantService(db).provision(
+        name=f"Tenant {slug}", slug=slug, admin_email=f"admin-{slug}@example.com",
+        admin_password="Password123!", admin_name="Admin",
+    )
+    db.flush()
+    AppStoreService(db).install(tenant.id, "omnichannel")
+    db.commit()
+    tenant_id = tenant.id
+    db.close()
+    res = client.post(
+        "/auth/login",
+        json={"email": f"admin-{slug}@example.com", "password": "Password123!", "tenantSlug": slug},
+    )
+    return tenant_id, {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+def _gate_world(client, session_factory, *, contacts, slug=None):
+    """Channel, open-window contacts and three API keys (a, b, c) in one tenant:
+    the default tenant, or a freshly provisioned one named `slug`."""
+    from modules.omnichannel.models import Channel, Contact, Workspace
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+
+    if slug is None:
+        ws = _default_workspace_id(session_factory)
+        _seed_channel(session_factory, ws)
+        tenant_id, admin = DEFAULT_TENANT_ID, None
+        phones = [f"+607007009{i:02d}" for i in range(contacts)]
+        cids = {ph: _seed_open_contact(session_factory, ws, phone=ph, open_window=True) for ph in phones}
+        keys = {n: {"Authorization": "Bearer " + _mint(client, ws, n).json()["fullKey"]} for n in ("a", "b", "c")}
+        return phones, cids, keys
+    tenant_id, admin = _tenant_login(client, session_factory, slug)
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.tenant_id == tenant_id, Workspace.is_default.is_(True)).first().id
+    db.add(Channel(
+        tenant_id=tenant_id, workspace_id=ws, channel_type="WHATSAPP", name=f"{slug} WA",
+        credentials_json=encrypt_credentials({"dev": True}), phone_number_id=f"pn-{slug}"[:30],
+        display_phone_number="+60 11-111 1111", is_active=True,
+        status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+    ))
+    phones = [f"+607008{abs(hash(slug)) % 100:02d}{i:02d}" for i in range(contacts)]
+    cids = {}
+    for ph in phones:
+        c = Contact(
+            tenant_id=tenant_id, workspace_id=ws, first_name="Sam", phone=ph,
+            status_id=statuses.status_id_for(db, tenant_id, "THREAD", "OPEN"), priority="MEDIUM",
+            csw_expires_at=datetime.now(timezone.utc) + timedelta(hours=20),
+        )
+        db.add(c)
+        db.flush()
+        cids[ph] = c.id
+    db.commit()
+    db.close()
+    keys = {}
+    for n in ("a", "b", "c"):
+        res = client.post(f"/omnichannel/workspaces/{ws}/api-keys", json={"name": n}, headers=admin)
+        keys[n] = {"Authorization": "Bearer " + res.json()["fullKey"]}
     return phones, cids, keys
 
 
@@ -1129,16 +1185,18 @@ def _post_media(ac, headers, phone, *, header_path=False, idem=None):
 
 
 @pytest.mark.parametrize("held_path", ["media", "header"])
-def test_ac_41_10_per_key_and_process_limits(client, session_factory, monkeypatch, held_path):
+def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeypatch, held_path):
     import threading
 
-    phones, cids, keys = _gate_world(client, session_factory, contacts=10)
+    phones, cids, keys = _gate_world(client, session_factory, contacts=8)
+    phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=4, slug="gate-two")
+    phones3, cids3, keys3 = _gate_world(client, session_factory, contacts=4, slug="gate-three")
     release = threading.Semaphore(0)  # one permit lets one held fetch finish
     started = []
 
     def hold():
         started.append(1)
-        release.acquire(timeout=15)
+        release.acquire(timeout=6)
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
     hp = held_path == "header"
@@ -1148,47 +1206,53 @@ def test_ac_41_10_per_key_and_process_limits(client, session_factory, monkeypatc
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
             held = []
             try:
-                # key a takes its 2 slots, then key b takes 2: the process is full
-                for i, name in enumerate(["a", "a", "b", "b"]):
-                    held.append(asyncio.create_task(_post_media(ac, keys[name], phones[i], header_path=hp)))
+                # two DIFFERENT keys of one tenant share its 2 slots; a second tenant
+                # then takes 2 more: the process is full
+                plan = [
+                    (keys["a"], phones[0]), (keys["b"], phones[1]),
+                    (keys2["a"], phones2[0]), (keys2["b"], phones2[1]),
+                ]
+                for i, (key, phone) in enumerate(plan):
+                    held.append(asyncio.create_task(_post_media(ac, key, phone, header_path=hp)))
                     assert await _wait_for(lambda n=i + 1: len(started) >= n), f"fetch {i + 1} never started"
+                    if i == 1:
+                        # the tenant is full while the process still has room
+                        t0 = time.monotonic()
+                        out["third_in_tenant"] = await _post_media(
+                            ac, keys["c"], phones[2], header_path=hp, idem="retry-me"
+                        )
+                        out["third_secs"] = time.monotonic() - t0
+                        assert len(started) == 2, "a send over the tenant limit started a fetch"
                 calls_when_full = rig.media_calls
-
-                t0 = time.monotonic()
-                out["third_on_a"] = await _post_media(ac, keys["a"], phones[4], idem="retry-me")
-                out["third_secs"] = time.monotonic() - t0
-                out["fifth_on_c"] = await _post_media(ac, keys["c"], phones[5])
-                out["text_on_c"] = await ac.post(
+                out["third_tenant"] = await _post_media(ac, keys3["a"], phones3[0], header_path=hp)
+                out["text_in_full_process"] = await ac.post(
                     "/api/v1/omnichannel/messages",
-                    json={"to": phones[6], "type": "text", "text": {"body": "hi"}},
-                    headers=keys["c"],
+                    json={"to": phones3[1], "type": "text", "text": {"body": "hi"}},
+                    headers=keys3["a"],
                 )
                 out["extra_fetches"] = rig.media_calls - calls_when_full
-                # finish the held fetches one at a time: the test database is a
-                # single shared connection, so sends that finish together would
-                # trample each other's open sessions
                 out["held"] = []
                 for t in held:
                     release.release()
                     out["held"].append(await t)
             finally:
-                for _ in range(len(held)):
-                    release.release()  # never leave a held fetch waiting
-            out["retry"] = await _post_media(ac, keys["a"], phones[4], idem="retry-me")
+                for _ in range(len(held) + 2):
+                    release.release()
+            out["retry"] = await _post_media(ac, keys["c"], phones[2], header_path=hp, idem="retry-me")
         return out
 
     out = asyncio.run(scenario())
     assert [r.status_code for r in out["held"]] == [202] * 4
-    third = out["third_on_a"]
+    third = out["third_in_tenant"]
     assert (third.status_code, _error_code(third)) == (429, "media_fetch_busy")
     assert out["third_secs"] < 1.0, "the busy answer was not immediate"
-    fifth = out["fifth_on_c"]
-    assert (fifth.status_code, _error_code(fifth)) == (429, "media_fetch_busy")
+    other = out["third_tenant"]
+    assert (other.status_code, _error_code(other)) == (429, "media_fetch_busy")
     assert out["extra_fetches"] == 0, "a refused send still fetched"
-    assert out["text_on_c"].status_code == 202
-    assert _message_count(session_factory, cids[phones[5]]) == 0
+    assert out["text_in_full_process"].status_code == 202
+    assert _message_count(session_factory, cids3[phones3[0]]) == 0
     assert out["retry"].status_code == 202 and out["retry"].json()["idempotencyReplay"] is False
-    assert _message_count(session_factory, cids[phones[4]]) == 1
+    assert _message_count(session_factory, cids[phones[2]]) == 1
 
 
 def test_ac_41_10_a_slot_is_freed_on_every_outcome(client, session_factory, monkeypatch):
@@ -1561,28 +1625,37 @@ def test_ac_41_07_error_table_states_the_size_refusal_and_the_compression_rule()
     assert any(re.search(r"compress|Content-Encoding", r, re.IGNORECASE) for r in rows), "no table row names compression"
 
 
-def test_ac_41_07_busy_row_and_changelog_name_both_limits():
+_PER_TENANT = re.compile(r"per[ -]tenant", re.IGNORECASE)
+
+
+def test_ac_41_07_busy_answer_is_described_per_tenant_everywhere():
     lines = _guide_lines()
-    busy = [l for l in lines if l.startswith("| `media_fetch_busy`")]
-    assert busy, "the error row is missing"
-    assert "process" in busy[0].lower() and _PER_KEY.search(busy[0]), busy[0]
+    start = next(i for i, l in enumerate(lines) if l.startswith("### 4.2"))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("### ") or lines[i].startswith("## "))
     first_section = next(i for i, l in enumerate(lines) if l.startswith("## 1."))
-    log = [l for l in lines[:first_section] if l.startswith("> |") and "media_fetch_busy" in l]
-    assert log, "no changelog row mentions the busy answer"
-    assert "process" in log[0].lower() and _PER_KEY.search(log[0]), "changelog row names only one limit"
+    places = {
+        "section 4.2": [l for l in lines[start:end] if "media_fetch_busy" in l],
+        "error table": [l for l in lines if l.startswith("| `media_fetch_busy`")],
+        "changelog": [l for l in lines[:first_section] if l.startswith("> |") and "media_fetch_busy" in l],
+    }
+    for where, found in places.items():
+        assert found, f"{where}: the busy answer is not described"
+        assert any(_PER_TENANT.search(l) for l in found), f"{where} does not say per tenant"
+        assert not any(_PER_KEY.search(l) for l in found), f"{where} still says per key"
 
 
 # ══ Gate guards ══════════════════════════════════════════════════════════════
-def test_guard_ac_41_10_the_per_key_limit_alone_refuses_a_third_fetch(client, session_factory, monkeypatch):
+def test_guard_ac_41_10_the_per_tenant_limit_alone_refuses_a_third_fetch(client, session_factory, monkeypatch):
     import threading
 
     phones, cids, keys = _gate_world(client, session_factory, contacts=6)
+    phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=2, slug="gate-guard")
     release = threading.Semaphore(0)
     started = []
 
     def hold():
         started.append(1)
-        release.acquire(timeout=15)
+        release.acquire(timeout=6)
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
 
@@ -1591,13 +1664,13 @@ def test_guard_ac_41_10_the_per_key_limit_alone_refuses_a_third_fetch(client, se
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
             held = []
             try:
-                for i in range(2):  # two slots in use, the process is far from full
-                    held.append(asyncio.create_task(_post_media(ac, keys["a"], phones[i])))
+                for i, name in enumerate(["a", "b"]):  # two keys, two slots: the process is far from full
+                    held.append(asyncio.create_task(_post_media(ac, keys[name], phones[i])))
                     assert await _wait_for(lambda n=i + 1: len(started) >= n)
-                out["third_on_a"] = await _post_media(ac, keys["a"], phones[2])
+                out["third_on_c"] = await _post_media(ac, keys["c"], phones[2])
                 out["fetches_after_refusal"] = rig.media_calls
-                held.append(asyncio.create_task(_post_media(ac, keys["b"], phones[3])))
-                assert await _wait_for(lambda: len(started) >= 3), "another key was refused"
+                held.append(asyncio.create_task(_post_media(ac, keys2["a"], phones2[0])))
+                assert await _wait_for(lambda: len(started) >= 3), "another tenant was refused"
                 out["held"] = []
                 for t in held:
                     release.release()
@@ -1608,11 +1681,19 @@ def test_guard_ac_41_10_the_per_key_limit_alone_refuses_a_third_fetch(client, se
         return out
 
     out = asyncio.run(scenario())
-    third = out["third_on_a"]
+    third = out["third_on_c"]
     assert (third.status_code, _error_code(third)) == (429, "media_fetch_busy")
     assert out["fetches_after_refusal"] == 2
     assert [r.status_code for r in out["held"]] == [202, 202, 202]
     assert _message_count(session_factory, cids[phones[2]]) == 0
+
+
+def _gate_state(gate):
+    """Name-agnostic view of the gate: (sum of its counters, number of dict entries)."""
+    values = list(vars(gate).values())
+    counters = sum(v for v in values if isinstance(v, int) and not isinstance(v, bool))
+    entries = sum(len(v) for v in values if isinstance(v, dict))
+    return counters, entries
 
 
 def test_guard_ac_41_10_the_gate_keeps_no_entry_once_fetches_end(client, session_factory, monkeypatch):
@@ -1627,15 +1708,168 @@ def test_guard_ac_41_10_the_gate_keeps_no_entry_once_fetches_end(client, session
             return httpx.Response(404, request=request)
         return _pdf_media(request)
 
-    _install(
-        monkeypatch,
-        media=media,
-        on_fetch=lambda: during.append((pgs._FETCH_GATE._total, dict(pgs._FETCH_GATE._per_key))),
-    )
+    _install(monkeypatch, media=media, on_fetch=lambda: during.append(_gate_state(pgs._FETCH_GATE)))
     for i, outcome in enumerate(["ok", "404", "ok"]):
         state["v"] = outcome
         client.post("/api/v1/omnichannel/messages", json=_media_body(phones[i]), headers=keys["a"])
     assert len(during) == 3
-    assert all(total == 1 and len(per_key) == 1 for total, per_key in during)  # control: the gate is seen in use
-    assert pgs._FETCH_GATE._total == 0
-    assert pgs._FETCH_GATE._per_key == {}
+    assert all(counters >= 1 and entries >= 1 for counters, entries in during)  # control: the gate is seen in use
+    assert _gate_state(pgs._FETCH_GATE) == (0, 0)
+
+# ══ The slot covers the lookup and the store ═════════════════════════════════
+def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(client, session_factory, monkeypatch):
+    import threading
+
+    from modules.omnichannel.services import webhook_service
+
+    phones, cids, keys = _gate_world(client, session_factory, contacts=4)
+    phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=4, slug="gate-lookup-two")
+    phones3, cids3, keys3 = _gate_world(client, session_factory, contacts=2, slug="gate-lookup-three")
+    release = threading.Semaphore(0)
+    in_lookup = []
+    rig = _install(monkeypatch, media=_pdf_media)
+
+    def slow_lookup(url, **kwargs):
+        in_lookup.append(url)
+        release.acquire(timeout=6)
+        return url
+
+    monkeypatch.setattr(webhook_service, "validate_callback_url", slow_lookup)
+
+    async def scenario():
+        out = {}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
+            held = []
+            try:
+                plan = [(keys["a"], phones[0]), (keys["b"], phones[1]), (keys2["a"], phones2[0]), (keys2["b"], phones2[1])]
+                for i, (key, phone) in enumerate(plan):
+                    held.append(asyncio.create_task(_post_media(ac, key, phone)))
+                    assert await _wait_for(lambda n=i + 1: len(in_lookup) >= n), f"send {i + 1} never reached the lookup"
+                try:
+                    out["tenant_full"] = await asyncio.wait_for(_post_media(ac, keys["c"], phones[2]), 3.0)
+                    out["process_full"] = await asyncio.wait_for(_post_media(ac, keys3["a"], phones3[0]), 3.0)
+                except asyncio.TimeoutError:
+                    out["queued_into_lookup"] = True
+                out["lookups_started"] = len(in_lookup)
+                if "queued_into_lookup" not in out:
+                    out["held"] = []
+                    for t in held:  # one at a time: the test database is one shared connection
+                        release.release()
+                        out["held"].append(await t)
+            finally:
+                for _ in range(12):
+                    release.release()
+        return out
+
+    out = asyncio.run(scenario())
+    assert "queued_into_lookup" not in out, "a send over the limit waited in the lookup instead of being refused"
+    for which in ("tenant_full", "process_full"):
+        assert (out[which].status_code, _error_code(out[which])) == (429, "media_fetch_busy"), which
+    assert out["lookups_started"] == 4, "a refused send still reached the lookup"
+    assert [r.status_code for r in out["held"]] == [202] * 4
+    assert _message_count(session_factory, cids[phones[2]]) == 0
+    assert _message_count(session_factory, cids3[phones3[0]]) == 0
+
+
+def _hold_storage_writes(monkeypatch, *, release=None, on_save=None):
+    """Wrap the storage object `storage_for_tenant` returns so `save` can be
+    observed and held; everything else passes straight through."""
+    import app.services.storage as storage
+
+    real = storage.storage_for_tenant
+    calls = []
+
+    class Wrapped:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def save(self, *args, **kwargs):
+            calls.append(1)
+            if on_save:
+                on_save()
+            if release is not None:
+                release.acquire(timeout=6)
+            return self._inner.save(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(storage, "storage_for_tenant", lambda db, tenant_id: Wrapped(real(db, tenant_id)))
+    return calls
+
+
+@pytest.mark.parametrize("path", ["media", "header"])
+def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_factory, monkeypatch, path):
+    import threading
+
+    phones, cids, keys = _gate_world(client, session_factory, contacts=6)
+    release = threading.Semaphore(0)
+    _install(monkeypatch, media=_pdf_media)
+    saves = _hold_storage_writes(monkeypatch, release=release)
+    hp = path == "header"
+
+    async def scenario():
+        out = {}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
+            held = []
+            try:
+                for i, name in enumerate(["a", "b"]):  # fetched, now waiting to be stored
+                    held.append(asyncio.create_task(_post_media(ac, keys[name], phones[i], header_path=hp)))
+                    assert await _wait_for(lambda n=i + 1: len(saves) >= n), f"send {i + 1} never reached the store"
+                t0 = time.monotonic()
+                out["while_storing"] = await _post_media(ac, keys["c"], phones[2], header_path=hp)
+                out["busy_secs"] = time.monotonic() - t0
+                out["held"] = []
+                for t in held:
+                    release.release()
+                    out["held"].append(await t)
+            finally:
+                for _ in range(8):
+                    release.release()
+            out["after_store"] = await _post_media(ac, keys["c"], phones[2], header_path=hp)
+        return out
+
+    out = asyncio.run(scenario())
+    busy = out["while_storing"]
+    assert (busy.status_code, _error_code(busy)) == (429, "media_fetch_busy"), "the slot was freed before the store"
+    assert out["busy_secs"] < 1.0
+    assert [r.status_code for r in out["held"]] == [202, 202]
+    assert out["after_store"].status_code == 202, out["after_store"].text  # the slot is free again
+    assert _message_count(session_factory, cids[phones[2]]) == 1
+
+
+@pytest.mark.parametrize("path", ["media", "header"])
+def test_ac_41_08_no_transaction_is_open_while_the_media_is_stored(client, session_factory, monkeypatch, path):
+    import weakref
+
+    from sqlalchemy import event, text
+    from sqlalchemy.orm import Session
+
+    phone = "+60700700770" if path == "media" else "+60700700771"
+    headers, cid, _ch = _setup(client, session_factory, phone=phone)
+    seen = weakref.WeakSet()
+
+    def track(session, transaction, connection):
+        seen.add(session)
+
+    def open_now():
+        return [s for s in list(seen) if s.in_transaction()]
+
+    event.listen(Session, "after_begin", track)
+    try:
+        probe = session_factory()
+        probe.execute(text("select 1"))
+        assert len(open_now()) == 1  # control: the tracker sees an open transaction
+        probe.close()
+        assert open_now() == []
+
+        at_store = []
+        _install(monkeypatch, media=_pdf_media)
+        saves = _hold_storage_writes(monkeypatch, on_save=lambda: at_store.append(len(open_now())))
+        url, body = _PATHS[path](phone)
+        r = client.post(url, json=body, headers=headers)
+    finally:
+        event.remove(Session, "after_begin", track)
+    assert r.status_code == 202, r.text
+    assert len(saves) == 1 and len(at_store) == 1, "the storage hook never ran"
+    assert at_store == [0], f"{at_store[0]} session(s) held a transaction during the store"
