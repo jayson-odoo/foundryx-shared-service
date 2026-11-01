@@ -2096,6 +2096,23 @@ def test_a_stored_endpoint_with_a_host_that_is_not_plain_is_not_used(
 
 
 @pytest.mark.parametrize("form", list(HOST_FORMS))
+def test_a_stored_cdn_with_a_host_that_is_not_plain_is_not_read(form, session_factory, bucket, net):
+    net.start(tls=True)
+    db = session_factory()
+    assert not read_blob(db, _connect(db, HOST_FORMS[form])).ok
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("form", list(HOST_FORMS))
+def test_read_url_refuses_a_host_that_is_not_plain(form, net):
+    net.start(tls=True)
+    with pytest.raises(StorageReadError):
+        read_url(HOST_FORMS[form] + "/obj.bin", timeout=5)
+    assert net.attempts == []
+
+
+@pytest.mark.parametrize("form", list(HOST_FORMS))
 def test_a_meeting_does_not_receive_an_endpoint_with_a_host_that_is_not_plain(
     form, session_factory, bucket, local_media, net
 ):
@@ -2106,6 +2123,33 @@ def test_a_meeting_does_not_receive_an_endpoint_with_a_host_that_is_not_plain(
     env, _volumes, _artifacts = build_output(db, _meeting())
     assert "BOT_S3_ENDPOINT" not in env
     db.close()
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("form", list(GOOD_HOSTS))
+def test_a_plain_public_host_is_saved(field, form, client, session_factory, net):
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, **{field: GOOD_HOSTS[form]}),
+        headers=_admin(client),
+    )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.parametrize("form", list(GOOD_HOSTS))
+def test_a_plain_public_host_is_a_usable_endpoint(form):
+    from app.services.storage import endpoint_is_usable
+
+    assert endpoint_is_usable("s3", {"endpointUrl": GOOD_HOSTS[form]}) is True
+
+
+def test_a_cdn_base_with_a_percent_sign_in_its_path_is_saved(client, session_factory, net):
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, cdnBaseUrl="https://cdn.storage.test/base%20dir"),
+        headers=_admin(client),
+    )
+    assert res.status_code == 201, res.text
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2262,3 +2306,10 @@ def test_read_url_reads_an_object_labelled_aws_chunked(net):
     listener.extra_headers = b"Content-Encoding: aws-chunked\r\n"
     assert read_url("https://cdn.storage.test/obj.bin", timeout=5) == CANARY_BYTES
 
+
+@pytest.mark.parametrize("label", ["aws-chunked, gzip", "gzip, aws-chunked", "br", "compress"])
+def test_a_stored_object_with_another_encoding_label_is_still_refused(label, net):
+    listener = net.start(tls=True)
+    listener.extra_headers = b"Content-Encoding: " + label.encode() + b"\r\n"
+    with pytest.raises(StorageReadError):
+        read_url("https://cdn.storage.test/obj.bin", timeout=5)
