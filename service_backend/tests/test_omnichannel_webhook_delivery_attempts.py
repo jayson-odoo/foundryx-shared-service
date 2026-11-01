@@ -428,3 +428,39 @@ def test_control_blocked_host_is_a_refused_attempt_with_no_post(session_factory,
     finally:
         db.close()
     assert calls == []
+
+
+def test_run_due_deliveries_continues_after_a_row_leaves_the_session_failed(
+    session_factory, _capture_post, monkeypatch
+):
+    calls, _state = _capture_post
+    ep_a = _stored_endpoint(session_factory, "pn-fail-a", "https://consumer.example/a")
+    ep_c = _stored_endpoint(
+        session_factory, "pn-fail-c", "https://consumer.example/c", tenant_id="tenant-other"
+    )
+    bad = _stored_delivery(session_factory, ep_a, "evt-fail-bad", minutes_ago=30)
+    other_tenant = _stored_delivery(
+        session_factory, ep_c, "evt-fail-other", tenant_id="tenant-other", minutes_ago=10
+    )
+
+    real = wd.dispatch
+
+    def breaks_session(db, delivery_id):
+        if delivery_id == bad:
+            # a flush that violates NOT NULL: the session cannot be used until rolled back
+            db.add(WebhookDelivery(tenant_id=DEFAULT_TENANT_ID, event_id="x", event_type="y"))
+            db.flush()
+        return real(db, delivery_id)
+
+    monkeypatch.setattr(wd, "dispatch", breaks_session)
+
+    db = session_factory()
+    try:
+        wd.run_due_deliveries(db)  # must return normally
+        row = db.query(WebhookDelivery).filter(WebhookDelivery.id == other_tenant).one()
+        assert row.status == "SUCCESS"
+        assert row.attempt_count == 1
+        assert db.query(WebhookDelivery).count() == 2  # session still usable, bad row not stored
+    finally:
+        db.close()
+    assert len(calls) == 1
