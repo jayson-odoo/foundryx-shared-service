@@ -990,7 +990,7 @@ class PublicGatewayService:
                 raise ApiError(409, code, messaging_policy.closed_window_message(channel.channel_type))
             # The slot covers the URL lookup, the fetch and the store.
             with _FETCH_GATE.slot(tenant_id):
-                content = self._fetch_url(req.media.url, key_id)
+                content = self._fetch_url(req.media.url)
                 return self._send_media(
                     tenant_id,
                     workspace_id,
@@ -1026,7 +1026,7 @@ class PublicGatewayService:
             raise self._map_send_rejected(exc) from exc
         return item.id
 
-    def _fetch_url(self, url: str, key_id: str) -> bytes:
+    def _fetch_url(self, url: str) -> bytes:
         """Fetch a media URL so it can be re-uploaded by id (plan 12 review - SSRF).
 
         Reuses the consumer-webhook address guard (``validate_callback_url``): https
@@ -1038,8 +1038,7 @@ class PublicGatewayService:
         The fetch runs on its own short event loop under one hard deadline
         (``MEDIA_FETCH_TOTAL_SECONDS``), after the session's read transactions are
         released. The caller holds the fetch slot (``_FETCH_GATE.slot``) around
-        the lookup, this fetch and the store. ``key_id`` is kept for the callers'
-        signature and is not used here."""
+        the lookup, this fetch and the store."""
         from app.database import release_read_transactions
 
         from .webhook_service import WebhookError, validate_callback_url
@@ -1174,7 +1173,7 @@ class PublicGatewayService:
                     if str(header.get("type") or "") in ("image", "video", "document") and header.get("url"):
                         # The slot covers the lookup, the fetch and the store.
                         stack.enter_context(_FETCH_GATE.slot(tenant_id))
-                        header_content = self._fetch_url(header["url"], key_id)
+                        header_content = self._fetch_url(header["url"])
                         header_filename = header.get("filename")
                     item = messages.send_interactive(
                         contact.id,

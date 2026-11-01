@@ -411,7 +411,7 @@ def test_gateway_media_by_url(client, session_factory, monkeypatch):
     _seed_channel(session_factory, ws)
     _seed_contact(session_factory, ws, phone="+60123456702")
     key = _mint_key(client, ws)
-    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url, key_id: PNG)
+    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url: PNG)
     res = client.post(
         "/api/v1/omnichannel/messages",
         json={
@@ -1133,7 +1133,7 @@ def test_gateway_interactive_bad_media_header_is_422(client, session_factory, mo
     _seed_contact(session_factory, ws, phone="+60123456682")
     key = _mint_key(client, ws)
     # Fetched bytes are HTML, not an image → sniff rejects.
-    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url, key_id: b"<html>nope</html>")
+    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url: b"<html>nope</html>")
     res = client.post(
         "/api/v1/omnichannel/messages",
         json={

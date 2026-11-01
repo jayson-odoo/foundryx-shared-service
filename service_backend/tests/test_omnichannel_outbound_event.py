@@ -264,7 +264,7 @@ def test_ac_38_02_api_template(client, session_factory):
 def test_ac_38_02_04_api_media_has_absolute_media_url(client, session_factory, monkeypatch):
     from modules.omnichannel.services.public_gateway_service import PublicGatewayService
 
-    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url, key_id: PNG)
+    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url: PNG)
     r = _rig(client, session_factory, "+601234567813")
     res = client.post(
         "/api/v1/omnichannel/messages",
@@ -329,7 +329,7 @@ def test_ac_38_02_api_voice_and_document_media(
 ):
     from modules.omnichannel.services.public_gateway_service import PublicGatewayService
 
-    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url, key_id: payload_bytes)
+    monkeypatch.setattr(PublicGatewayService, "_fetch_url", lambda self, url: payload_bytes)
     monkeypatch.setattr(
         "modules.omnichannel.services.send_runner.transcode_voice",
         lambda content: b"OggS" + b"\x00" * 64,
