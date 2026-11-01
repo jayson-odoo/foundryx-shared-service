@@ -1262,7 +1262,7 @@ def _write_call(name, client, r, ep):
 
 
 @pytest.mark.parametrize("name", ["register", "patch", "rotate", "enable"])
-def test_ac_43_08_each_key_write_rereads_the_key_row_with_a_share_lock(
+def test_ac_43_08_each_key_write_rereads_the_key_row_under_a_key_row_lock(
     client, session_factory, monkeypatch, lock_spy, name
 ):
     r = _rig(client, session_factory)
@@ -1312,7 +1312,7 @@ def test_ac_43_08_revoke_locks_the_key_row_before_it_updates_it(client, session_
     locks = _key_locks(lock_spy)
     assert locks, "revoke took no lock on the key row"
     assert locks[0][0] < update_at[0], lock_spy
-    assert not locks[0][1][2].get("key_share"), locks[0]  # an exclusive lock, not a share lock
+    assert not locks[0][1][2].get("key_share"), locks[0]  # the revoke takes the plain row lock, not the lighter key-row lock the key writes take
 
 
 @pytest.mark.parametrize("name", ["register", "patch", "rotate", "enable"])
@@ -1419,7 +1419,11 @@ def test_ac_43_09_a_second_key_changing_a_row_takes_it_over(client, session_fact
     k2, hdr2 = _key(client, ws, "Second key")
     ep = _register_as(client, r["hdr"])
     assert _created_by(session_factory, ep) == _by(k1)  # control: register records the key
-    assert _counts(client, ws, k1, k2) == [1, 0]  # control
+    if action == "enable":  # enabling an ACTIVE row changes nothing, so pause it first
+        assert client.post(f"{STAFF}/webhooks/{ep}/disable", headers=_auth(client)).status_code == 200
+        assert _counts(client, ws, k1, k2) == [0, 0]  # control
+    else:
+        assert _counts(client, ws, k1, k2) == [1, 0]  # control
 
     res = _key_write(client, hdr2, action, ep)
 
@@ -1440,6 +1444,7 @@ def test_ac_43_09_resuming_a_row_after_its_old_key_was_revoked_without_pausing_g
     ep = _register_as(client, r["hdr"])
     assert _revoke(client, ws, k1, {"pauseEndpoints": False}).status_code == 200
     assert _state(session_factory, ep)["status"] == "ACTIVE"  # control: left running
+    assert client.post(f"{STAFF}/webhooks/{ep}/disable", headers=_auth(client)).status_code == 200
 
     res = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
 
@@ -1599,3 +1604,182 @@ def test_ac_43_50_engineering_doc_mentions_the_key_row_lock_and_the_ownership_ru
     assert "_hold_live_key" in text or "key row lock" in text or "lock on the key row" in text
     assert any("last" in x and "changed" in x and ("owns" in x or "owner" in x or "created_by" in x)
                for x in text.split(". ")), "the engineering doc must state the ownership rule"
+
+
+def test_ac_43_09_a_write_that_lands_last_owns_the_row(client, session_factory, monkeypatch):
+    """K1 owns the row and PATCHes it. While K1's URL check runs, K2 PATCHes the
+    same row; K1's write is the last to land, so K1 owns the row afterwards."""
+    from modules.omnichannel.services import webhook_service as ws_mod
+
+    r = _rig(client, session_factory)
+    ws, k1 = r["ws"], r["key"]
+    k2, hdr2 = _key(client, ws, "Second key")
+    ep = _register_as(client, r["hdr"])
+    real = ws_mod.validate_callback_url
+    inner = {"done": False}
+
+    def check_with_other_write(url, **kw):
+        clean = real(url, **kw)
+        if not inner["done"]:
+            inner["done"] = True
+            res = client.patch(
+                f"{BASE}/webhooks/{ep}", headers=hdr2, json={"name": "second key name", "url": "https://hooks.example.com/second"}
+            )
+            assert res.status_code == 200, res.text  # control: the other write landed
+        return clean
+
+    monkeypatch.setattr(ws_mod, "validate_callback_url", check_with_other_write)
+
+    res = client.patch(f"{BASE}/webhooks/{ep}", headers=r["hdr"], json={"url": NEW_HOOK})
+
+    assert res.status_code == 200, res.text
+    assert inner["done"] is True
+    assert _url_of(session_factory, ep) == NEW_HOOK
+    assert _created_by(session_factory, ep) == _by(k1)
+    assert _revoke(client, ws, k1).status_code == 200
+    assert _state(session_factory, ep)["status"] == "DISABLED"
+
+
+def test_ac_43_09_an_empty_patch_by_another_key_moves_nothing(client, session_factory):
+    r = _rig(client, session_factory)
+    ws, k1 = r["ws"], r["key"]
+    k2, hdr2 = _key(client, ws, "Second key")
+    ep = _register_as(client, r["hdr"])
+
+    res = client.patch(f"{BASE}/webhooks/{ep}", headers=hdr2, json={})
+
+    assert res.status_code == 200, res.text
+    assert _created_by(session_factory, ep) == _by(k1)
+    assert _counts(client, ws, k1, k2) == [1, 0]
+    real_change = client.patch(f"{BASE}/webhooks/{ep}", headers=hdr2, json={"name": "a real change"})
+    assert real_change.status_code == 200, real_change.text  # control: a real change still moves it
+    assert _created_by(session_factory, ep) == _by(k2)
+
+
+def test_ac_43_09_enabling_an_active_row_by_another_key_moves_nothing(client, session_factory):
+    r = _rig(client, session_factory)
+    ws, k1 = r["ws"], r["key"]
+    k2, hdr2 = _key(client, ws, "Second key")
+    ep = _register_as(client, r["hdr"])
+    assert _state(session_factory, ep)["status"] == "ACTIVE"  # control
+
+    res = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
+
+    assert res.status_code == 200, res.text
+    assert _created_by(session_factory, ep) == _by(k1)
+    assert _counts(client, ws, k1, k2) == [1, 0]
+    assert client.post(f"{STAFF}/webhooks/{ep}/disable", headers=_auth(client)).status_code == 200
+    resumed = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
+    assert resumed.status_code == 200, resumed.text  # control: a real change still moves it
+    assert _created_by(session_factory, ep) == _by(k2)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AC-43-12 - a pause set by staff holds against keys
+# ═════════════════════════════════════════════════════════════════════════════
+STAFF_REASON = "Disabled by user."
+
+
+def _row_snapshot(session_factory, endpoint_id):
+    db = session_factory()
+    try:
+        r = db.query(WebhookEndpoint).filter(WebhookEndpoint.id == endpoint_id).one()
+        return {
+            "status": r.status,
+            "url": r.url,
+            "name": r.name,
+            "secret": r.secret_encrypted,
+            "reason": r.disabled_reason,
+            "created_by": r.created_by,
+        }
+    finally:
+        db.close()
+
+
+def _staff_paused_row(client, r):
+    ep = _register_as(client, r["hdr"])
+    res = client.post(f"{STAFF}/webhooks/{ep}/disable", headers=_auth(client))
+    assert res.status_code == 200 and res.json()["status"] == "DISABLED", res.text
+    return ep
+
+
+@pytest.mark.parametrize("action", ["patch", "rotate", "enable"])
+def test_ac_43_12_a_key_write_on_a_row_staff_paused_answers_409_and_changes_nothing(
+    client, session_factory, action
+):
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    ep = _staff_paused_row(client, r)
+    before = _row_snapshot(session_factory, ep)
+    assert before["reason"] == STAFF_REASON and before["status"] == "DISABLED"  # control
+
+    if action == "patch":
+        res = client.patch(f"{BASE}/webhooks/{ep}", headers=hdr2, json={"url": NEW_HOOK, "name": "other"})
+    else:
+        res = client.post(f"{BASE}/webhooks/{ep}/{action}", headers=hdr2)
+
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "endpoint_paused_by_staff", res.text
+    assert "signingSecret" not in res.text
+    assert _row_snapshot(session_factory, ep) == before
+
+
+def test_ac_43_12_after_staff_resume_a_key_write_works_again(client, session_factory):
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    ep = _staff_paused_row(client, r)
+    assert client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2).status_code == 409  # control
+
+    resumed = client.post(f"{STAFF}/webhooks/{ep}/enable", headers=_auth(client))
+    assert resumed.status_code == 200 and resumed.json()["status"] == "ACTIVE", resumed.text
+
+    patched = client.patch(f"{BASE}/webhooks/{ep}", headers=hdr2, json={"name": "after resume"})
+    assert patched.status_code == 200, patched.text
+    assert _row_snapshot(session_factory, ep)["status"] == "ACTIVE"
+
+
+def test_ac_43_12_control_a_row_paused_by_a_revoke_is_resumed_by_another_live_key(client, session_factory):
+    """Passes today (AC-43-07 behaviour) and must keep passing."""
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    ep = _register_as(client, r["hdr"])
+    assert _revoke(client, r["ws"], r["key"]).status_code == 200
+    assert _state(session_factory, ep)["status"] == "DISABLED"
+
+    res = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
+
+    assert res.status_code == 200 and res.json()["status"] == "ACTIVE", res.text
+
+
+def test_ac_43_12_a_keys_own_disable_stores_a_reason_other_than_the_staff_one_and_keys_can_resume_it(
+    client, session_factory
+):
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    ep = _register_as(client, r["hdr"])
+
+    paused = client.post(f"{BASE}/webhooks/{ep}/disable", headers=r["hdr"])
+    assert paused.status_code == 200 and paused.json()["status"] == "DISABLED", paused.text  # control
+
+    reason = _row_snapshot(session_factory, ep)["reason"]
+    assert reason and reason != STAFF_REASON, reason
+    resumed = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
+    assert resumed.status_code == 200 and resumed.json()["status"] == "ACTIVE", resumed.text
+
+
+def test_ac_43_12_control_a_key_patch_on_a_row_paused_by_a_key_or_a_revoke_works_and_stays_paused(
+    client, session_factory
+):
+    """Pins today's answer: PATCH is not a resume."""
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    own = _register_as(client, r["hdr"], "paused by its key")
+    assert client.post(f"{BASE}/webhooks/{own}/disable", headers=r["hdr"]).status_code == 200
+    by_revoke = _register_as(client, hdr2, "paused by a revoke")
+    assert _revoke(client, r["ws"], k2).status_code == 200
+    k3, hdr3 = _key(client, r["ws"], "Third key")
+
+    for ep in (own, by_revoke):
+        res = client.patch(f"{BASE}/webhooks/{ep}", headers=r["hdr"] if ep == own else hdr3, json={"name": f"renamed {ep[:4]}"})
+        assert res.status_code == 200, res.text
+        assert _state(session_factory, ep)["status"] == "DISABLED"
