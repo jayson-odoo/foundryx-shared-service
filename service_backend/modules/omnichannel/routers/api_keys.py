@@ -1,7 +1,7 @@
 """Workspace API-key management (internal, session-authed).
 
 Mint / list / revoke the public-gateway keys for a workspace. Revoke can also
-pause the webhook endpoints the key registered. Gated by the
+pause the webhook endpoints the key owns. Gated by the
 module `api_keys.read` / `api_keys.manage` permissions (and the loader's
 `require_module` gate). The full plaintext key is returned ONCE at mint.
 """

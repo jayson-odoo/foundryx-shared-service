@@ -308,6 +308,18 @@ def dispatch(db: Session, delivery_id: str) -> str:
     # Dead-letter: attempts preserved, endpoint failure counter bumped.
     delivery.status = "FAILED"
     delivery.next_attempt_at = None
+    # Re-read under lock: staff may have paused or deleted the endpoint while
+    # the send was under way; only an ACTIVE one is counted and auto-disabled.
+    endpoint = (
+        db.query(WebhookEndpoint)
+        .filter(WebhookEndpoint.id == endpoint.id, WebhookEndpoint.tenant_id == endpoint.tenant_id)
+        .with_for_update(key_share=True)
+        .populate_existing()
+        .first()
+    )
+    if endpoint is None or endpoint.status != "ACTIVE":
+        db.commit()
+        return "dead"
     endpoint.consecutive_failures += 1
     if endpoint.consecutive_failures >= AUTO_DISABLE_THRESHOLD:
         endpoint.status = "AUTO_DISABLED"

@@ -1389,7 +1389,7 @@ class ApiKeyItem(ApiModel):
     lastUsedAt: Optional[datetime] = None
     revokedAt: Optional[datetime] = None
     createdAt: datetime
-    webhookEndpointCount: int = 0  # ACTIVE webhook endpoints this key registered
+    webhookEndpointCount: int = 0  # ACTIVE webhook endpoints this key owns
 
 
 class ApiKeyListResponse(ApiModel):

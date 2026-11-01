@@ -73,7 +73,7 @@ class ApiKeyService:
         pause_endpoints: bool = True,
     ) -> WorkspaceApiKey:
         """Revoke a key; with ``pause_endpoints`` also pause the webhook endpoints
-        it registered, in the same commit. Repeating it changes nothing."""
+        it owns, in the same commit. Repeating it changes nothing."""
         row = (
             self.db.query(WorkspaceApiKey)
             .filter(
@@ -111,7 +111,7 @@ class ApiKeyService:
         )
 
     def active_endpoint_counts(self, tenant_id: str, workspace_id: str) -> Dict[str, int]:
-        """ACTIVE webhook endpoints per registering key id, one grouped query."""
+        """ACTIVE webhook endpoints per owning key id, one grouped query."""
         rows = (
             self.db.query(WebhookEndpoint.created_by, func.count(WebhookEndpoint.id))
             .filter(

@@ -42,7 +42,7 @@ def _to_item(row: WebhookEndpoint) -> WebhookEndpointItem:
 def _to_staff_items(
     db: Session, tenant_id: str, rows: List[WebhookEndpoint]
 ) -> WebhookEndpointStaffListResponse:
-    """Rows with the name of the API key that registered each, one lookup per list."""
+    """Rows with the name of the API key that owns each, one lookup per list."""
     keys = ApiKeyService(db).names_for_creators(tenant_id, (r.created_by for r in rows))
     items = []
     for r in rows:

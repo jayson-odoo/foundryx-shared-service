@@ -359,7 +359,7 @@ class WebhookService:
             raise WebhookNotFound("Workspace not found.")
 
     def pause_for_key(self, tenant_id: str, workspace_id: str, key_id: str) -> int:
-        """Pause the ACTIVE endpoints one API key registered (``created_by`` is
+        """Pause the ACTIVE endpoints one API key owns (``created_by`` is
         exactly ``apikey:<key_id>``). Does not commit: the caller commits it
         together with the key's own change. Returns the number paused."""
         return (
@@ -412,14 +412,32 @@ class WebhookService:
             self.db.rollback()
             raise WebhookPausedByStaff("This endpoint was paused by staff.")
 
-    def _hold_key_write(self, row: WebhookEndpoint, key_id: Optional[str]) -> None:
-        """Re-read the key (refused if revoked) and then the row, since staff
-        may have paused it during a slow check. Call before changing the row."""
+    def _hold_key_write(
+        self, row: WebhookEndpoint, key_id: Optional[str], refuse: bool = True
+    ) -> WebhookEndpoint:
+        """Lock the key row (refused if revoked), then the endpoint row, since
+        staff may have paused or deleted it during a slow check. Lock order:
+        key row, workspace row if taken, endpoint row. Call before changing
+        the row; with ``refuse=False`` a staff pause is left for the caller."""
         if key_id is None:
-            return
+            return row
         self._hold_live_key(row.tenant_id, row.workspace_id, key_id)
-        self.db.refresh(row)
-        self._refuse_if_staff_paused(row, key_id)
+        fresh = (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.id == row.id,
+                WebhookEndpoint.tenant_id == row.tenant_id,
+            )
+            .with_for_update(key_share=True)
+            .populate_existing()
+            .first()
+        )
+        if fresh is None:
+            self.db.rollback()
+            raise WebhookNotFound("Webhook endpoint not found.")
+        if refuse:
+            self._refuse_if_staff_paused(fresh, key_id)
+        return fresh
 
     def update(
         self,
@@ -485,15 +503,21 @@ class WebhookService:
         row = self._get(tenant_id, endpoint_id)
         if active:
             self._refuse_if_staff_paused(row, key_id)
-            self._hold_key_write(row, key_id)
-            if row.status != "ACTIVE":
-                self._own_by_key(row, key_id)
+            row = self._hold_key_write(row, key_id)
+            if key_id is not None and row.status == "ACTIVE":
+                self.db.commit()  # nothing to change; release the locks
+                self.db.refresh(row)
+                return row
+            self._own_by_key(row, key_id)
             row.status = "ACTIVE"
             row.consecutive_failures = 0
             row.disabled_at = None
             row.disabled_reason = None
         else:
+            row = self._hold_key_write(row, key_id, refuse=False)
             if key_id is not None and row.disabled_reason == STAFF_DISABLED_REASON:
+                self.db.commit()
+                self.db.refresh(row)
                 return row  # a key never rewrites staff's pause
             row.status = "DISABLED"
             row.disabled_at = datetime.now(timezone.utc)
@@ -504,8 +528,26 @@ class WebhookService:
         self.db.refresh(row)
         return row
 
-    def delete(self, tenant_id: str, endpoint_id: str) -> None:
+    def delete(self, tenant_id: str, endpoint_id: str, key_id: Optional[str] = None) -> None:
+        """A key's delete is refused on a row staff paused; it does not check
+        whether the key itself is revoked."""
         row = self._get(tenant_id, endpoint_id)
+        if key_id is not None:
+            locked = (
+                self.db.query(WebhookEndpoint)
+                .filter(
+                    WebhookEndpoint.id == row.id,
+                    WebhookEndpoint.tenant_id == tenant_id,
+                )
+                .with_for_update(key_share=True)
+                .populate_existing()
+                .first()
+            )
+            if locked is None:
+                self.db.rollback()
+                raise WebhookNotFound("Webhook endpoint not found.")
+            self._refuse_if_staff_paused(locked, key_id)
+            row = locked
         self.db.query(WebhookDelivery).filter(
             WebhookDelivery.endpoint_id == row.id,
             WebhookDelivery.tenant_id == tenant_id,

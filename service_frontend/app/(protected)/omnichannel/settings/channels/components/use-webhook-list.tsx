@@ -25,7 +25,7 @@ import {
 /** The reason the server stores when staff pause a row; nothing new to show for it. */
 const STAFF_DISABLED_REASON = 'Disabled by user.';
 
-const stop =(e: React.MouseEvent) => e.stopPropagation();
+const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 /** Endpoint-list action callbacks the tab wires to its dialogs. */
 export interface WebhookListCallbacks {
