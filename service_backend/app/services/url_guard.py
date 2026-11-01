@@ -33,6 +33,10 @@ class UrlGuardError(Exception):
     ``strict_dns=True``)."""
 
 
+class UnparseableUrlError(UrlGuardError):
+    """The URL text cannot be parsed at all (as opposed to being refused)."""
+
+
 def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
     return (
         ip.is_private
@@ -66,10 +70,16 @@ def validate_public_https_url(
     offline CI. The authoritative guard is ``assert_deliverable``, which runs
     before EVERY delivery/request attempt."""
     url = (url or "").strip()
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
+    try:
+        parsed = urlparse(url)
+        scheme = parsed.scheme
+        host = parsed.hostname
+        if scheme == "https" and host:
+            httpx.URL(url)
+    except (ValueError, httpx.InvalidURL):
+        raise UnparseableUrlError(f"{subject} is not a valid URL.")
+    if scheme != "https":
         raise UrlGuardError(f"{subject} must use https://.")
-    host = parsed.hostname
     if not host:
         raise UrlGuardError(f"{subject} is missing a host.")
     lowered = host.lower()

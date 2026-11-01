@@ -1040,6 +1040,8 @@ class PublicGatewayService:
         the lookup, this fetch and the store."""
         from app.database import release_read_transactions
 
+        from app.services.url_guard import UnparseableUrlError
+
         from .webhook_service import WebhookError, validate_callback_url
 
         if not isinstance(url, str):
@@ -1049,6 +1051,8 @@ class PublicGatewayService:
         try:
             safe = validate_callback_url(url)
         except WebhookError as exc:
+            if isinstance(exc.__cause__, UnparseableUrlError):
+                raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
             raise ApiError(422, "invalid_media_url", str(exc)) from exc
         except ValueError as exc:
             raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
