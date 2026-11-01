@@ -20,15 +20,25 @@ Two usage styles:
   ``save`` returns an opaque storage key persisted in the DB; ``resolve``
   turns it back into a local path or a remote URL to stream/redirect.
 """
+import ipaddress
 import mimetypes
 import re
 import uuid
 from pathlib import Path
 from typing import Dict, Optional, Protocol, Tuple
+from urllib.parse import urlsplit
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import release_read_transactions
+from app.services.url_guard import (
+    GuardedTransport,
+    UrlGuardError,
+    assert_deliverable,
+    validate_public_https_url,
+)
 
 
 class StorageService(Protocol):
@@ -164,7 +174,201 @@ class LocalDiskStorage:
 
 class UnresolvableKey(Exception):
     """A ``conn:``-prefixed key whose connection is gone or belongs to another
-    tenant (defense-in-depth - the polymorphic target_id rule)."""
+    tenant (defense-in-depth - the polymorphic target_id rule), or whose
+    connection carries an endpoint that is not a public https address."""
+
+
+class StorageReadError(Exception):
+    """A stored object could not be read. The message is fixed and carries no
+    address or content; the underlying cause is chained. ``status`` is the HTTP
+    status when the server answered with a non-2xx one."""
+
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
+
+
+# Hard ceiling for a stored object read that has no tighter limit (200 MiB).
+READ_CAP_BYTES = 200 * 1024 * 1024
+_READ_FAILED = "The stored file could not be read."
+_CHUNK = 64 * 1024
+
+
+_HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+
+def storage_url_is_plain(value: str) -> bool:
+    """True only for a URL every parser reads the same way: printable ASCII with
+    no backslash, ``@`` or whitespace, a parseable port, and a host that is a
+    plain name, a dotted IPv4 address or a bracketed IPv6 address. A name whose
+    last label looks numeric must be a complete dotted IPv4 address."""
+    if not value or any(not 0x21 <= ord(c) <= 0x7E or c in "\\@" for c in value):
+        return False
+    try:
+        parts = urlsplit(value)
+        parts.port  # noqa: B018 - raises ValueError for a bad port
+        host = parts.hostname
+    except ValueError:
+        return False
+    if not host or "%" in parts.netloc:
+        return False
+    if parts.netloc.startswith("["):
+        if parts.netloc.count("[") != 1:
+            return False
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return False
+        return True
+    if "[" in value or "]" in value or len(host) > 253:
+        return False
+    labels = host.split(".")
+    if not all(_HOST_LABEL.match(label) for label in labels):
+        return False
+    last = labels[-1].lower()
+    if last.isdigit() or last.startswith("0x"):
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            return False
+    return True
+
+
+def read_url(
+    url: str,
+    *,
+    operator_owned: bool = False,
+    timeout: float = 30,
+    max_bytes: Optional[int] = None,
+    headers: Optional[Dict[str, str]] = None,
+    subject: str = "Storage URL",
+) -> bytes:
+    """The one place a storage URL is opened.
+
+    Storage URLs must be public https. The scheme is checked on the raw string
+    before any network use; the connection goes only to checked public
+    addresses; redirects are not followed; any non-2xx answer is a failed read;
+    ``max_bytes`` stops the read. An operator-owned URL (the platform storage
+    row) may use ``http`` and any address, nothing else.
+    """
+    allowed = ("http://", "https://") if operator_owned else ("https://",)
+    release_read_transactions()  # before any lookup or connection
+    try:
+        if not storage_url_is_plain(url):
+            raise StorageReadError(_READ_FAILED)
+        if not url.startswith(allowed) or not urlsplit(url).hostname:
+            raise StorageReadError(_READ_FAILED)
+        if operator_owned:
+            transport: Optional[httpx.BaseTransport] = None
+        else:
+            assert_deliverable(url, subject=subject)
+            transport = GuardedTransport(subject=subject)
+        chunks = []
+        total = 0
+        with httpx.Client(
+            transport=transport, timeout=timeout, follow_redirects=False
+        ) as client:
+            request_headers = {**(headers or {}), "Accept-Encoding": "identity"}
+            with client.stream("GET", url, headers=request_headers) as resp:
+                if not 200 <= resp.status_code < 300:
+                    raise StorageReadError(_READ_FAILED, status=resp.status_code)
+                encoding = resp.headers.get("content-encoding", "").strip().lower()
+                # aws-chunked is a label storage clients write on stored objects;
+                # raw reads never decode, so the stored bytes come back as written.
+                if encoding and encoding not in ("identity", "aws-chunked"):
+                    raise StorageReadError(_READ_FAILED)
+                declared = resp.headers.get("content-length", "").strip()
+                if (
+                    max_bytes is not None
+                    and declared.isascii()
+                    and declared.isdigit()
+                    and int(declared) > max_bytes
+                ):
+                    raise StorageReadError(_READ_FAILED)
+                for chunk in resp.iter_raw(_CHUNK):
+                    total += len(chunk)
+                    if max_bytes is not None and total > max_bytes:
+                        raise StorageReadError(_READ_FAILED)
+                    chunks.append(chunk)
+        return b"".join(chunks)
+    except StorageReadError:
+        raise
+    except (UrlGuardError, httpx.HTTPError, httpx.InvalidURL, OSError, ValueError) as exc:
+        raise StorageReadError(_READ_FAILED) from exc
+
+
+def read_object(
+    storage,
+    key: str,
+    *,
+    timeout: float = 30,
+    max_bytes: Optional[int] = None,
+) -> bytes:
+    """Bytes of a stored object, whatever the backend. Local files are read as
+    before; a URL goes through ``read_url`` with the ownership of the
+    connection that holds the key."""
+    from botocore.exceptions import EndpointResolutionError, ParamValidationError
+
+    try:
+        resolver = getattr(storage, "resolve_with_ownership", None)
+        if resolver is not None:
+            kind, value, operator_owned = resolver(key)
+        else:
+            kind, value = storage.resolve(key)
+            operator_owned = False
+    except (UnresolvableKey, ValueError, EndpointResolutionError, ParamValidationError) as exc:
+        raise StorageReadError(_READ_FAILED) from exc
+    if kind == "path":
+        with open(value, "rb") as fh:
+            return fh.read()
+    return read_url(
+        value, operator_owned=operator_owned, timeout=timeout, max_bytes=max_bytes
+    )
+
+
+def endpoint_is_usable(provider: str, config: Dict[str, object]) -> bool:
+    """True when a tenant-owned connection's endpoint is empty or a public https
+    URL. boto3 resolves names itself, so this runs once when a client is built."""
+    from app.integrations.s3_provider import derive_endpoint
+
+    from app.integrations.s3_provider import R2_ACCOUNT_ID
+
+    if provider == "r2":
+        account_id = str(config.get("accountId", "")).strip()
+        if account_id and not R2_ACCOUNT_ID.match(account_id):
+            return False
+    endpoint = derive_endpoint(provider, config)
+    if not endpoint:
+        return True
+    if not storage_url_is_plain(endpoint) or "?" in endpoint or "#" in endpoint:
+        return False
+    try:
+        validate_public_https_url(endpoint, strict_dns=False, subject="Endpoint URL")
+    except (UrlGuardError, ValueError):
+        return False
+    return True
+
+
+def usable_storage_connection(db: Session, tenant_id: str):
+    """The storage connection a tenant writes to: its own, else the platform's.
+    A tenant-owned connection whose endpoint is not usable is skipped like an
+    ERROR row, so the platform connection (or local disk, None) serves."""
+    from app.models.connection import CONNECTION_STATUS_ERROR
+    from app.models.tenant import PLATFORM_TENANT_ID
+    from app.repositories.connection_repository import ConnectionRepository
+
+    repo = ConnectionRepository(db)
+    connection = repo.resolve_for_type(tenant_id, "storage")
+    if (
+        connection is not None
+        and connection.tenant_id != PLATFORM_TENANT_ID
+        and not endpoint_is_usable(connection.provider, connection.config_json or {})
+    ):
+        platform = repo.get_by_type(PLATFORM_TENANT_ID, "storage")
+        if platform is not None and platform.status != CONNECTION_STATUS_ERROR:
+            return platform
+        return None
+    return connection
 
 
 _KEY_PREFIX = "conn:"
@@ -186,10 +390,19 @@ def _adapter_for(connection) -> "StorageService":
     from app.integrations.s3_provider import S3CompatibleAdapter
     from app.secrets import decrypt_secret
 
+    from app.models.tenant import PLATFORM_TENANT_ID
+
     stamp = str(connection.updated_at)
     cached = _adapters.get(connection.id)
     if cached is not None and cached[0] == stamp:
         return cached[1]  # type: ignore[return-value]
+    operator_owned = connection.tenant_id == PLATFORM_TENANT_ID
+    # The cache is keyed on updated_at, so an edited endpoint is checked again
+    # here; a tenant-owned connection needs a public https endpoint.
+    if not operator_owned and not endpoint_is_usable(
+        connection.provider, connection.config_json or {}
+    ):
+        raise UnresolvableKey(connection.id)
     credentials = decrypt_secret(connection.credentials_json) if connection.credentials_json else {}
     adapter = S3CompatibleAdapter.from_connection(
         connection.provider, connection.config_json or {}, credentials
@@ -213,9 +426,7 @@ class TenantStorage:
         self._local = LocalDiskStorage()
 
     def _write_connection(self):
-        from app.repositories.connection_repository import ConnectionRepository
-
-        return ConnectionRepository(self.db).resolve_for_type(self.tenant_id, "storage")
+        return usable_storage_connection(self.db, self.tenant_id)
 
     def _connection_for_key(self, connection_id: str):
         from app.models.tenant import PLATFORM_TENANT_ID
@@ -259,6 +470,20 @@ class TenantStorage:
             return self._local.resolve(key)
         connection_id, raw = parts
         return _adapter_for(self._connection_for_key(connection_id)).resolve(raw)
+
+    def resolve_with_ownership(self, key: str) -> Tuple[str, str, bool]:
+        """``resolve`` plus whether the connection that holds the key belongs to
+        the platform (operator-owned), decided from the connection row."""
+        from app.models.tenant import PLATFORM_TENANT_ID
+
+        parts = self._split(key)
+        if parts is None:
+            kind, value = self._local.resolve(key)
+            return kind, value, False
+        connection_id, raw = parts
+        connection = self._connection_for_key(connection_id)
+        kind, value = _adapter_for(connection).resolve(raw)
+        return kind, value, connection.tenant_id == PLATFORM_TENANT_ID
 
     def fetch(self, key: str) -> Tuple[bytes, Optional[str]]:
         parts = self._split(key)

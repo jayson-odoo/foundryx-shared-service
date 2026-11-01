@@ -74,6 +74,7 @@ from app.services.document_service import (
     DocumentService,
     JobNotReady,
     QuotaExceeded,
+    READ_CAP_BYTES,
     UploadConflict,
     UploadRejected,
 )
@@ -90,9 +91,6 @@ from app.services.share_service import (
 router = APIRouter()
 public_router = APIRouter()
 
-# Hard read cap (a generous ceiling so an oversize body is never buffered whole;
-# the per-type / tenant-default policy cap is enforced in the service).
-READ_CAP_BYTES = 200 * 1024 * 1024
 
 
 def _none_if_blank(value: Optional[str]) -> Optional[str]:
