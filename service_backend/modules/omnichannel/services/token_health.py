@@ -231,13 +231,14 @@ def replace_token(
         channel.status_id = statuses.status_id_for(db, tenant_id, "CHANNEL", key)
     db.commit()
 
-    # A token minted under another app cannot renew this app's webhook.
+    # Renew only with a token known to be this app's: an unreadable or foreign
+    # app id skips the POST (`subscribed` false); no WABA id leaves it null.
     token_app = details.get("app_id")
     own_app = settings.meta_app_id
-    other_app = bool(token_app and own_app and str(token_app) != str(own_app))
+    ours = bool(token_app and own_app and str(token_app) == str(own_app))
     subscribed: Optional[bool] = None
     if waba_id:
-        if other_app:
+        if not ours:
             subscribed = False
         else:
             try:

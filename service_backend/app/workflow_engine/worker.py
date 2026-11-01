@@ -17,6 +17,10 @@ from app.ops_liveness import KNOWN_QUEUES
 
 logger = logging.getLogger("foundryx.workflows")
 
+# Request URLs (which can carry query secrets) must never reach INFO logs, whatever
+# the root level becomes (same pin as app/main.py).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Review round 1 (B2) - the stable sentence stamped on a run this app's
 # `workflows.run_workflow` / `workflows.wake_serialized` tasks stop
 # cooperatively at their own soft time limit (`settings.
