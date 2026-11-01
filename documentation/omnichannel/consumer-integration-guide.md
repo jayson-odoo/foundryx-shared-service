@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-02** | **Revoking a key and pausing an endpoint** (section 7, section 10). An endpoint belongs to the key that last changed it. When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` says the key was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key. A pause set by staff cannot be undone with a key: enable, PATCH and rotate answer `409 endpoint_paused_by_staff`. While a workspace is trashed, its tenant is suspended or the service is off, no event is queued and those events are not sent later. Additive: no existing field changes. |
 > | **2026-11-02** | **Breaking: `channel_required` on send, one callback for all channels** (sections 2, 4, 5, 5a, 7, 10). A `POST /messages` or `GET /templates` with no `channelId` now answers `422 channel_required` when the workspace has more than one active WhatsApp channel, or no active WhatsApp channel and more than one other active channel. Nothing is sent, and the same `Idempotency-Key` can be retried with `channelId`. `isDefault` is `false` on every channel in that case. This is breaking for an integration that omits `channelId`: connecting a second WhatsApp number makes its sends start getting `422`, so pass `channelId` on every send (message events carry it). One active WhatsApp channel plus web chat, Messenger or Instagram keeps sending on WhatsApp. A reaction goes out on the channel of the message it reacts to. `POST /webhooks` now registers a callback that covers every channel of the workspace, including channels connected later; its `channelId` reads `null`, `contact.updated` can carry `channelId: null`, and registering with no active channel answers `409 no_active_channel`. Existing endpoints keep their `channelId` and are not converted. |
 > | **2026-11-01** | **Media fetch limits** (`POST /messages`, section 4.2). A media URL fetch has a total limit of 60 seconds (`422 media_fetch_failed`), a response declaring over 100 MB is refused as `422 oversize` before its body is read, compressed responses are refused, and a send over the fetch limit (4 at once in a server process, 2 per tenant) answers `429 media_fetch_busy` (safe to retry shortly with the same `Idempotency-Key`). Nothing is sent in any of these cases. Other contract details are unchanged. |
 > | **2026-11-01** | **Mark a contact read** (`POST /contacts/{identifier}/read`, section 6a). Resets `unreadCount` and sends a WhatsApp read receipt per channel; each receipt answers `sent`, `already_sent`, `failed`, `channel_unavailable` or `not_supported`. Only this route sends a read receipt. Additive: no existing shape changes. |
@@ -682,6 +683,7 @@ async def receive(request: Request):
 * **At-least-once**: retries mean you may see the same event `id` more than once - **be idempotent**.
 * **Retry backoff**: \~1m, 5m, 25m, 1h, 6h (max **6 attempts**) then dead-letter.
 * **Auto-disable**: after 10 consecutive dead-lettered events the endpoint flips to `AUTO_DISABLED`; a Foundryx admin must re-enable it (which resets the counter).
+* While a workspace is trashed, its tenant is suspended or the service is off for it, no event is queued, and queued retries end failed. Those events are not sent later, even after the workspace is back.
 * Webhook delivery is fully isolated - a slow/broken consumer never blocks an inbound WhatsApp message.
 * A **delivery log** is available in the dashboard (per-attempt status, response code, latency, error) for debugging.
 
@@ -695,7 +697,7 @@ async def receive(request: Request):
 | POST | `/api/v1/omnichannel/webhooks` | Register one for all channels → returns the signing secret **once** |
 | PATCH | `/api/v1/omnichannel/webhooks/{id}` | Change name / url / events |
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret (returned once) |
-| POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume delivery |
+| POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume delivery (`409 endpoint_paused_by_staff` on enable when staff paused it) |
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove it |
 
 ```bash
@@ -718,6 +720,10 @@ The URL is validated at registration: **https only**, no `localhost`, no private
 **All channels, one URL.** The registration has no channel field (a `channelId` in the body is ignored). The endpoint reads `channelId: null` and receives the events of every channel of your workspace, of every channel type, including anonymous web chat text and the unverified `visitorProfile` (§9.1). Use the envelope's `channelId` to tell numbers apart. Registering needs at least one active channel, otherwise `409 no_active_channel` and nothing is saved. A workspace holds at most 10 all-channels endpoints (an 11th is `422 invalid_request`); the per-channel limit is unchanged, so one event reaches at most 20 endpoints. An endpoint created per channel in the Foundryx dashboard keeps its `channelId` and receives only that channel's events. Two endpoints with the same URL are two registrations: an event both cover is delivered once to each, with that endpoint's own signature. `GET /webhooks` with your key lists both kinds. Existing endpoints are not converted: to cover all channels, delete it and register again, which gives a new secret.
 
 `contact.updated` goes once to an all-channels endpoint for each change, and its envelope `channelId` is the contact's latest channel, or `null` when the contact has no current channel, because it has never messaged or that channel no longer exists. In that case the contact's `channelType` still reads `WHATSAPP`, so do not rely on it, and do not send with a `null` `channelId`: take one from `GET /channels`. A per-channel endpoint receives `contact.updated` only for the contact's latest channel.
+
+**Which key owns an endpoint.** The key that last changed an endpoint owns it: registering, a PATCH with a real change, a rotation, or enabling a paused one makes that key the owner. A disable, a delete and every action by staff leave the owner alone, and a request that changes nothing moves nothing.
+
+**When a key is revoked.** When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` on each paused endpoint says the API key that registered it was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key, and resume only the endpoints you recognise. After a rotation, do this with the new key. A key's own disable can be resumed by a key. A pause set by staff cannot be undone with a key: enable, PATCH and rotate answer `409 endpoint_paused_by_staff`, and only staff resume it. A write made with a key that is revoked meanwhile answers `401` and changes nothing.
 
 An operator can also manage these from the Foundryx dashboard, where a per-attempt **delivery log** is available for debugging.
 
@@ -1007,6 +1013,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
 | `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
 | `channel_required` | 422 | `channelId` was omitted and the workspace has more than one active WhatsApp channel (or no active WhatsApp channel and more than one other active channel), on `POST /messages` and `GET /templates`. Nothing is sent; pass `channelId` (see `GET /channels`) and retry with the same `Idempotency-Key`. |
+| `endpoint_paused_by_staff` | 409 | Staff paused this webhook endpoint, so enable, PATCH and rotate with an API key are refused and nothing changes. Only staff resume it. |
 | `no_active_channel` | 409 | The workspace has no connected number, on a send or when registering a webhook. |
 | `channel_not_available_for_contact` | 422 | (plan 32 / A7a) The resolved contact has no identity on the chosen channel (e.g. a WhatsApp-only contact addressed on a Messenger `channelId`). |
 | `template_not_found` | 422 | No APPROVED template matches `name`/`id`. |
@@ -1391,7 +1398,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/webhooks` | Register one for all channels, `channelId` null (secret shown once; `409 no_active_channel` with no active channel) | `201 {endpoint, signingSecret}` |
 | PATCH | `/api/v1/omnichannel/webhooks/{id}` | Update name/url/events | `WebhookEndpoint` |
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret | `{signingSecret}` |
-| POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume | `WebhookEndpoint` |
+| POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume (`409 endpoint_paused_by_staff` on enable when staff paused it) | `WebhookEndpoint` |
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove | `204` |
 | GET | `/omnichannel/media/{messageId}` | Fetch media bytes | binary |
 
