@@ -9,7 +9,6 @@ test releases the body, so the wait is real whatever a client transport buffers.
 """
 import asyncio
 import json
-import time
 import weakref
 
 import httpx
@@ -27,7 +26,7 @@ from tests.test_omnichannel_api_gateway import (
     _seed_open_contact,
 )
 
-BOUND = 10.0  # generous upper bound for every wait; nothing here sleeps for it
+BOUND = 60.0  # only a real hang reaches this; every wait returns as soon as its event fires
 
 
 @pytest.fixture(autouse=True)
@@ -85,11 +84,10 @@ async def _post_with_held_body(headers, payload, sample, session_factory, key_id
     body = json.dumps(payload).encode()
     release = asyncio.Event()
     sent = []
-    first_receive = []
+    first_receive = asyncio.Event()
 
     async def receive():
-        if not first_receive:
-            first_receive.append(time.monotonic())
+        first_receive.set()
         await release.wait()
         if sent:
             await asyncio.Event().wait()  # no disconnect during the test
@@ -122,15 +120,14 @@ async def _post_with_held_body(headers, payload, sample, session_factory, key_id
     }
     task = asyncio.create_task(app(scope, receive, send))
     try:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + BOUND
-        loop_ = loop
-        while _last_used(session_factory, key_id) is None:  # the key check has really run
-            assert loop_.time() < deadline, "the key check never ran"
-            assert not task.done(), "the request ended before the body was released"
-            await asyncio.sleep(0.05)
-        await asyncio.sleep(0.5)  # margin: the route is now parked on the withheld body
-        assert not task.done()
+        # The route awaits its body only after every dependency (the key check)
+        # has finished, so the app calling `receive` means it is parked on it.
+        waiter = asyncio.ensure_future(first_receive.wait())
+        await asyncio.wait({waiter, task}, timeout=BOUND, return_when=asyncio.FIRST_COMPLETED)
+        waiter.cancel()
+        assert first_receive.is_set(), "the app never asked for the request body"
+        assert not task.done(), "the request ended before the body was released"
+        assert _last_used(session_factory, key_id) is not None, "the body was requested before the key check ran"
         sampled = sample()
         release.set()
         await asyncio.wait_for(task, BOUND)
