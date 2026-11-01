@@ -459,3 +459,250 @@ def test_session_work_runs_off_the_event_loop(scenario, spies, tracker):
     for label, thread in spies.calls:
         assert thread != run.loop_thread, f"{label} ran on the event loop thread"
     assert run.status == scenario.status, run.body
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Answers that must not change (B3 ordering, B4 responses, B5 real flow)
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+# ── B3: sign-in and pre-checks still answer before the body is requested ────
+@pytest.mark.parametrize("scenario", SIGNED_IN_SCENARIOS, indirect=True)
+@pytest.mark.parametrize("sign_in", ["missing", "invalid"])
+def test_a_request_without_valid_sign_in_is_refused_before_the_body_is_read(scenario, sign_in):
+    headers = {} if sign_in == "missing" else {"Authorization": "Bearer not-a-real-token"}
+    run = asyncio.run(_drive(scenario, hold=False, headers=headers))
+    assert run.status == 401, run.body
+    assert run.receive_calls == 0, "the body was requested before sign-in was checked"
+
+
+@pytest.mark.parametrize("scenario", CONVERSATION_SCENARIOS, indirect=True)
+def test_a_token_without_access_to_the_thread_is_refused_before_the_body_is_read(scenario):
+    from tests.test_omnichannel_embed import _assertion, _bearer, _exchange, _make_connection
+
+    ctx = scenario.ctx
+    other = _seed_contact(ctx["sf"], ctx["ws"], phone="+60190000002")
+    connection = _make_connection(ctx["sf"])
+    token = _exchange(
+        ctx["client"],
+        _assertion(iss=connection, workspace_id=ctx["ws"], scope=f"thread:{other}"),
+    ).json()["accessToken"]
+    run = asyncio.run(_drive(scenario, hold=False, headers=_bearer(token)))
+    assert run.status == 403, run.body
+    assert run.receive_calls == 0, "the body was requested before thread access was checked"
+
+
+def test_a_throttled_client_is_refused_before_the_token_body_is_read(connector_client):
+    from app.config import settings
+    from app.services.throttle import Throttled, ThrottleService
+
+    scn = _token_scenario_for(connector_client)
+    db = connector_client._factory()
+    try:
+        throttle = ThrottleService(db)
+        for _ in range(settings.throttle_connector_max_fails):
+            throttle.record_connector(key="tok:testclient")
+        with pytest.raises(Throttled):  # control: the bucket really is full
+            throttle.enforce_connector(key="tok:testclient")
+    finally:
+        db.close()
+    run = asyncio.run(_drive(scn, hold=False))
+    assert run.status == 429, run.body
+    assert int(run.headers["retry-after"]) > 0
+    assert run.headers["cache-control"] == "no-store"
+    assert run.headers["pragma"] == "no-cache"
+    assert run.json() == {"error": "too_many_requests"}
+    assert run.receive_calls == 0, "the body was requested for a throttled client"
+
+
+def _token_scenario_for(connector_client) -> Scenario:
+    form = {"grant_type": "authorization_code", "code": "c", "code_verifier": "v" * 50,
+            "client_id": "x", "redirect_uri": REDIRECT}
+    return Scenario("token_throttled", "/mcp/acme/oauth/token", {}, urlencode(form).encode(),
+                    "application/x-www-form-urlencoded", 429, [], [], lambda run: None, scheme="https")
+
+
+def test_control_an_unthrottled_token_request_does_read_the_body(connector_client):
+    scn = _token_scenario_for(connector_client)
+    run = asyncio.run(_drive(scn, hold=False))
+    assert run.status == 400, run.body  # unknown code: refused, but only after the body was read
+    assert run.receive_calls >= 1
+
+
+# ── B5: the real flow still works after the transaction ends ────────────────
+@pytest.mark.parametrize("scenario", SCENARIOS, indirect=True)
+def test_the_route_answers_correctly_once_the_body_arrives(scenario, spies, tracker):
+    _arm(scenario, spies)
+    run = _run_held(scenario, tracker)
+    assert run.receive_calls >= 1
+    assert run.status == scenario.status, run.body
+    scenario.check(run)
+
+
+# ── B4: token route (gaps in test_connector_oauth.py) ───────────────────────
+def test_a_bad_grant_is_refused_and_counted_once(connector_client, spies):
+    from app.services.throttle import ThrottleService
+
+    spies.watch("record_connector", [(ThrottleService, "record_connector")])
+    res = connector_client.post("/mcp/acme/oauth/token", data={
+        "grant_type": "authorization_code", "code": "nope", "code_verifier": "v" * 50,
+        "client_id": "nope", "redirect_uri": REDIRECT})
+    assert res.status_code == 400
+    assert res.json() == {"error": "invalid_grant"}
+    assert res.headers["cache-control"] == "no-store"
+    assert spies.labels().count("record_connector") == 1
+
+
+def test_a_malformed_token_body_is_treated_as_an_empty_form(connector_client, spies):
+    from app.services.throttle import ThrottleService
+
+    spies.watch("record_connector", [(ThrottleService, "record_connector")])
+    res = connector_client.post(
+        "/mcp/acme/oauth/token", content=b"--garbage--",
+        headers={"content-type": "multipart/form-data; boundary=missing"})
+    assert res.status_code == 400
+    assert res.json() == {"error": "unsupported_grant_type"}
+    assert spies.labels().count("record_connector") == 1
+
+
+# ── B4: form submit and resubmit (gaps in test_form_*.py) ───────────────────
+def test_submit_to_an_unknown_form_is_404(client):
+    headers = _forms_admin(client)
+    res = client.post("/forms/no-such-form/submissions", json={"answers": {}}, headers=headers)
+    assert res.status_code == 404
+
+
+@pytest.mark.parametrize("body", [b"{not json", b"[1, 2]", b"\"text\""])
+def test_submit_with_a_malformed_json_body_is_422(client, body):
+    headers = _forms_admin(client)
+    form = _published_form(client, headers)
+    res = client.post(f"/forms/{form['id']}/submissions", content=body,
+                      headers={**headers, "content-type": "application/json"})
+    assert res.status_code == 422
+    assert res.json()["detail"] == "Malformed request body."
+
+
+def test_submit_with_a_malformed_multipart_payload_is_422(client):
+    headers = _forms_admin(client)
+    form = _published_form(client, headers)
+    res = client.post(f"/forms/{form['id']}/submissions",
+                      files={"payload": (None, "{not json")}, headers=headers)
+    assert res.status_code == 422
+    assert res.json()["detail"] == "Malformed submission payload."
+
+
+def test_submit_with_an_oversize_file_is_413(client, monkeypatch):
+    from app.config import settings
+
+    headers = _forms_admin(client)
+    form = _publish(client, headers, _file_doc(
+        {"id": "f1", "type": "file", "key": "resume", "label": "Resume", "required": True}))
+    monkeypatch.setattr(settings, "form_upload_max_file_mb", 0.001)  # about 1 KB
+    res = client.post(
+        f"/forms/{form['id']}/submissions",
+        data={"payload": json.dumps({"answers": {}})},
+        files=[("file:resume", ("big.png", _PNG + b"\x00" * 4096, "image/png"))],
+        headers=headers,
+    )
+    assert res.status_code == 413
+    assert res.json()["detail"] == "A file is too large."
+
+
+def test_submit_json_with_a_honeypot_field_is_still_parsed(client):
+    headers = _forms_admin(client)
+    form = _published_form(client, headers)
+    res = client.post(f"/forms/{form['id']}/submissions",
+                      json={"answers": {"name": "Alice"}, "honeypot": "filled"}, headers=headers)
+    assert res.status_code == 201, res.text
+    assert res.json()["answers"] == {"name": "Alice"}
+
+
+def test_submit_to_a_form_that_is_not_open_is_409(client):
+    headers = _forms_admin(client)
+    form = _published_form(client, headers)
+    assert client.patch(f"/forms/{form['id']}", json={"maxSubmissions": 1}, headers=headers).status_code == 200
+    assert client.post(f"/forms/{form['id']}/submissions", json={"answers": {"name": "A"}},
+                       headers=headers).status_code == 201
+    res = client.post(f"/forms/{form['id']}/submissions", json={"answers": {"name": "B"}}, headers=headers)
+    assert res.status_code == 409
+
+
+def test_resubmit_of_an_unknown_submission_is_404(client):
+    headers = _forms_admin(client)
+    res = client.post("/submissions/no-such-submission/resubmit", json={"answers": {}}, headers=headers)
+    assert res.status_code == 404
+
+
+def test_resubmit_by_someone_who_does_not_own_it_is_403(client, session_factory):
+    from tests.connector_support import seed_user_with_perms
+    from tests.test_form_revisions import _login
+
+    headers = _forms_admin(client)
+    form = _published_form(client, headers)
+    original = _submit(client, headers, form["id"], {"name": "Alice"})
+    draft = client.post(f"/submissions/{original['id']}/revise", headers=headers).json()
+    seed_user_with_perms(session_factory, "bystander@example.com", [])
+    other = _login(client, "bystander@example.com", "Passw0rd!x")
+    res = client.post(f"/submissions/{draft['id']}/resubmit",
+                      json={"answers": {"name": "Mallory"}}, headers=other)
+    assert res.status_code == 403
+    # control: the owner can edit the same draft
+    ok = client.post(f"/submissions/{draft['id']}/resubmit",
+                     json={"answers": {"name": "Alice 2"}}, headers=headers)
+    assert ok.status_code == 200, ok.text
+
+
+@pytest.mark.parametrize("body", [b"{not json", b"[1]"])
+def test_resubmit_with_a_malformed_json_body_is_422(client, body):
+    headers = _forms_admin(client)
+    form = _published_form(client, headers)
+    original = _submit(client, headers, form["id"], {"name": "Alice"})
+    draft = client.post(f"/submissions/{original['id']}/revise", headers=headers).json()
+    res = client.post(f"/submissions/{draft['id']}/resubmit", content=body,
+                      headers={**headers, "content-type": "application/json"})
+    assert res.status_code == 422
+
+
+# ── B4: conversation template and interactive sends ─────────────────────────
+@pytest.mark.parametrize("route,body", [
+    ("template", {"templateId": "x"}),
+    ("interactive", {"kind": "buttons", "body": "b", "buttons": [{"id": "a", "title": "A"}]}),
+])
+def test_send_to_an_unknown_conversation_is_404(client, session_factory, route, body):
+    _seed_channel(session_factory, _default_workspace_id(session_factory))
+    res = client.post(f"/omnichannel/contacts/no-such-contact/{route}", json=body, headers=_auth(client))
+    assert res.status_code == 404
+    assert res.json()["detail"] == "Conversation not found"
+
+
+@pytest.mark.parametrize("route", ["template", "interactive"])
+def test_a_multipart_send_without_a_payload_part_is_422(client, session_factory, route):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(f"/omnichannel/contacts/{cid}/{route}",
+                      files={"file": ("a.png", PNG, "image/png")}, headers=_auth(client))
+    assert res.status_code == 422
+    assert res.json()["detail"] == "A payload part is required."
+
+
+@pytest.mark.parametrize("route", ["template", "interactive"])
+def test_a_multipart_send_with_bad_payload_json_is_422(client, session_factory, route):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(f"/omnichannel/contacts/{cid}/{route}",
+                      files={"payload": (None, "{not json")}, headers=_auth(client))
+    assert res.status_code == 422
+    assert res.json()["detail"] == "payload must be valid JSON."
+
+
+@pytest.mark.parametrize("route", ["template", "interactive"])
+def test_a_json_send_with_a_malformed_body_is_422(client, session_factory, route):
+    ws = _default_workspace_id(session_factory)
+    _seed_channel(session_factory, ws)
+    cid = _seed_contact(session_factory, ws)
+    res = client.post(f"/omnichannel/contacts/{cid}/{route}", content=b"{not json",
+                      headers={**_auth(client), "content-type": "application/json"})
+    assert res.status_code == 422
+    assert res.json()["detail"] == "Request body must be valid JSON."
