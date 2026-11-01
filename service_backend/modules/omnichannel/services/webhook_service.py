@@ -32,7 +32,7 @@ from app.services.url_guard import UrlGuardError
 from app.services.url_guard import assert_deliverable as _core_assert_deliverable
 from app.services.url_guard import validate_public_https_url as _core_validate_url
 
-from ..models import Channel, WebhookDelivery, WebhookEndpoint, Workspace
+from ..models import Channel, WebhookDelivery, WebhookEndpoint, Workspace, WorkspaceApiKey
 from ..security import encrypt_secret
 
 SECRET_SCHEME = "whsec_"
@@ -67,6 +67,10 @@ class WebhookNoActiveChannel(WebhookError):
 
 class WebhookNotFound(Exception):
     pass
+
+
+class WebhookKeyRevoked(Exception):
+    """The API key making a write was revoked before the write committed."""
 
 
 def _new_secret() -> str:
@@ -158,6 +162,26 @@ class WebhookService:
             raise WebhookNotFound("Webhook endpoint not found.")
         return row
 
+    def _hold_live_key(self, tenant_id: str, workspace_id: str, key_id: str) -> None:
+        """Re-read the writing key's row under a share lock, so a revoke (which
+        takes the exclusive lock) either finishes first, and this write is
+        refused, or waits for this write to commit and then pauses its row.
+        Lock order wherever both are taken: the key row, then the workspace row."""
+        key = (
+            self.db.query(WorkspaceApiKey)
+            .filter(
+                WorkspaceApiKey.id == key_id,
+                WorkspaceApiKey.tenant_id == tenant_id,
+                WorkspaceApiKey.workspace_id == workspace_id,
+            )
+            .with_for_update(key_share=True)
+            .populate_existing()
+            .first()
+        )
+        if key is None or key.revoked_at is not None:
+            self.db.rollback()
+            raise WebhookKeyRevoked("API key is revoked.")
+
     # ── CRUD ─────────────────────────────────────────────────────────────────
     def create(
         self,
@@ -223,11 +247,15 @@ class WebhookService:
         events: List[str],
         created_by: Optional[str],
         strict_dns: bool = False,
+        key_id: Optional[str] = None,
     ) -> Tuple[WebhookEndpoint, str]:
         """Register an endpoint that covers every channel of the workspace
-        (``channel_id`` NULL). Returns (row, plaintext_secret)."""
+        (``channel_id`` NULL). Returns (row, plaintext_secret). With ``key_id``
+        the write is refused (``WebhookKeyRevoked``) if that key is revoked."""
         clean_url = validate_callback_url(url, strict_dns=strict_dns)
         clean_events = _validate_events(events)
+        if key_id is not None:
+            self._hold_live_key(tenant_id, workspace_id, key_id)
         # Serialise registrations in this workspace so the count below stays true.
         self.db.query(Workspace).filter(
             Workspace.id == workspace_id, Workspace.tenant_id == tenant_id
@@ -309,29 +337,15 @@ class WebhookService:
             .all()
         )
 
-    def list_all_channels_for_workspace(
-        self, tenant_id: str, workspace_id: str
-    ) -> List[WebhookEndpoint]:
-        """The all-channels endpoints (``channel_id`` NULL) of one workspace, for
-        staff. Needs no live channel. Raises ``WebhookNotFound`` when the
-        workspace is not the tenant's own."""
-        workspace = (
+    def require_workspace(self, tenant_id: str, workspace_id: str) -> None:
+        """Raises ``WebhookNotFound`` unless the workspace is the tenant's own."""
+        found = (
             self.db.query(Workspace.id)
             .filter(Workspace.id == workspace_id, Workspace.tenant_id == tenant_id)
             .first()
         )
-        if workspace is None:
+        if found is None:
             raise WebhookNotFound("Workspace not found.")
-        return (
-            self.db.query(WebhookEndpoint)
-            .filter(
-                WebhookEndpoint.tenant_id == tenant_id,
-                WebhookEndpoint.workspace_id == workspace_id,
-                WebhookEndpoint.channel_id.is_(None),
-            )
-            .order_by(WebhookEndpoint.created_at.desc())
-            .all()
-        )
 
     def pause_for_key(self, tenant_id: str, workspace_id: str, key_id: str) -> int:
         """Pause the ACTIVE endpoints one API key registered (``created_by`` is
@@ -386,7 +400,10 @@ class WebhookService:
         url: Optional[str] = None,
         events: Optional[List[str]] = None,
         strict_dns: bool = False,
+        key_id: Optional[str] = None,
     ) -> WebhookEndpoint:
+        """``key_id`` (an API key making the change) makes that key the row's
+        owner, and refuses the write (``WebhookKeyRevoked``) if it is revoked."""
         row = self._get(tenant_id, endpoint_id)
         if name is not None:
             row.name = name.strip() or row.name
@@ -394,23 +411,36 @@ class WebhookService:
             row.url = validate_callback_url(url, strict_dns=strict_dns)
         if events is not None:
             row.events_json = _validate_events(events)
+        self._own_by_key(row, key_id)
         self.db.commit()
         self.db.refresh(row)
         return row
 
-    def rotate_secret(self, tenant_id: str, endpoint_id: str) -> Tuple[WebhookEndpoint, str]:
+    def _own_by_key(self, row: WebhookEndpoint, key_id: Optional[str]) -> None:
+        if key_id is not None:
+            self._hold_live_key(row.tenant_id, row.workspace_id, key_id)
+            row.created_by = f"apikey:{key_id}"
+
+    def rotate_secret(
+        self, tenant_id: str, endpoint_id: str, key_id: Optional[str] = None
+    ) -> Tuple[WebhookEndpoint, str]:
         row = self._get(tenant_id, endpoint_id)
         secret = _new_secret()
         row.secret_encrypted = encrypt_secret(secret)
+        self._own_by_key(row, key_id)
         self.db.commit()
         self.db.refresh(row)
         return row, secret
 
-    def set_status(self, tenant_id: str, endpoint_id: str, active: bool) -> WebhookEndpoint:
+    def set_status(
+        self, tenant_id: str, endpoint_id: str, active: bool, key_id: Optional[str] = None
+    ) -> WebhookEndpoint:
         """Manual enable/disable. Re-enabling clears the auto-disable state +
-        resets the consecutive-failure counter."""
+        resets the consecutive-failure counter. ``key_id`` (enable only) makes
+        that key the owner and refuses the write if it is revoked."""
         row = self._get(tenant_id, endpoint_id)
         if active:
+            self._own_by_key(row, key_id)
             row.status = "ACTIVE"
             row.consecutive_failures = 0
             row.disabled_at = None

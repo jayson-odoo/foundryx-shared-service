@@ -460,7 +460,11 @@ def create_webhook(
 ) -> WebhookEndpointMintResponse:
     """Register a callback that covers every channel of your workspace. The
     signing secret is returned ONCE - store it; it is never shown again."""
-    from ..services.webhook_service import WebhookError, WebhookNoActiveChannel
+    from ..services.webhook_service import (
+        WebhookError,
+        WebhookKeyRevoked,
+        WebhookNoActiveChannel,
+    )
 
     try:
         _webhook_service(db).require_active_channel(api_ws.tenant_id, api_ws.workspace_id)
@@ -470,12 +474,20 @@ def create_webhook(
             # `apikey:<id>` actor convention used elsewhere in this service.
             # The activity log is pruned per tenant; this row is permanent.
             created_by=f"apikey:{api_ws.key_id}",
+            key_id=api_ws.key_id,
         )
     except WebhookNoActiveChannel as exc:
         raise ApiError(409, "no_active_channel", str(exc)) from exc
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
     return WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret)
+
+
+def _key_revoked() -> ApiError:
+    """The gateway's answer for a key revoked while its write was under way."""
+    return ApiError(401, "invalid_api_key", "Invalid API key.")
 
 
 def _own_endpoint(db: Session, api_ws: ApiWorkspace, endpoint_id: str):
@@ -499,14 +511,17 @@ def update_webhook(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookEndpointItem:
-    from ..services.webhook_service import WebhookError
+    from ..services.webhook_service import WebhookError, WebhookKeyRevoked
 
     _own_endpoint(db, api_ws, endpoint_id)
     try:
         row = _webhook_service(db).update(
             api_ws.tenant_id, endpoint_id,
             name=payload.name, url=payload.url, events=payload.events,
+            key_id=api_ws.key_id,
         )
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
     return _wh_item(row)
@@ -521,7 +536,14 @@ def rotate_webhook_secret(
     """New signing secret, returned ONCE. The old one stops verifying at once -
     deploy the new secret before rotating."""
     _own_endpoint(db, api_ws, endpoint_id)
-    _row, secret = _webhook_service(db).rotate_secret(api_ws.tenant_id, endpoint_id)
+    from ..services.webhook_service import WebhookKeyRevoked
+
+    try:
+        _row, secret = _webhook_service(db).rotate_secret(
+            api_ws.tenant_id, endpoint_id, key_id=api_ws.key_id
+        )
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
     return WebhookSecretResponse(signingSecret=secret)
 
 
@@ -532,8 +554,16 @@ def enable_webhook(
     db: Session = Depends(get_db),
 ) -> WebhookEndpointItem:
     """Re-enable a disabled endpoint (also clears an AUTO_DISABLED strike count)."""
+    from ..services.webhook_service import WebhookKeyRevoked
+
     _own_endpoint(db, api_ws, endpoint_id)
-    return _wh_item(_webhook_service(db).set_status(api_ws.tenant_id, endpoint_id, True))
+    try:
+        row = _webhook_service(db).set_status(
+            api_ws.tenant_id, endpoint_id, True, key_id=api_ws.key_id
+        )
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
+    return _wh_item(row)
 
 
 @router.post("/webhooks/{endpoint_id}/disable", response_model=WebhookEndpointItem)

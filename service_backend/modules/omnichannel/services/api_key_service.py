@@ -81,6 +81,10 @@ class ApiKeyService:
                 WorkspaceApiKey.tenant_id == tenant_id,
                 WorkspaceApiKey.workspace_id == workspace_id,
             )
+            # Exclusive lock: a key write under way holds a share lock, so this
+            # waits for it to commit and then pauses its row too.
+            .with_for_update()
+            .populate_existing()
             .first()
         )
         if row is None:
