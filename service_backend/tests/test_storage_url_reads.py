@@ -217,6 +217,11 @@ class Listener:
                     b"Content-Length: 0\r\nConnection: close\r\n\r\n"
                 )
                 return
+            if self.mode == "notfound":
+                conn.sendall(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                return
             if self.mode == "big":
                 conn.sendall(
                     b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n"
@@ -935,3 +940,47 @@ def test_a_public_https_storage_url_is_saved(field, client, session_factory, net
         headers=headers,
     )
     assert patched.status_code == 200, patched.text
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# omnichannel outbound media read (`send_runner._read_media`)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def read_media(db, conn, raw="obj.bin"):
+    """Returns (Outcome, exception or None)."""
+    from modules.omnichannel.services.send_runner import _read_media
+
+    try:
+        return Outcome(True, _read_media(db, DEFAULT_TENANT_ID, f"conn:{conn.id}:{raw}")), None
+    except Exception as exc:  # noqa: BLE001 - the shape of the failure is asserted by the callers
+        return Outcome(False), exc
+
+
+def _media_refused(target, net, bucket, canary_dir, db):
+    cdn = TARGETS[target](net, canary_dir, bucket)
+    conn = _connect(db, cdn)
+    out, exc = read_media(db, conn)
+    assert not out.ok, f"media read reported a successful read of {cdn!r}"
+    assert isinstance(exc, OSError), f"failure was {exc!r}"
+    text = str(exc)
+    for forbidden in ("127.0.0.1", "10.0.0.5", "169.254", "storage.test", "localhost", CANARY, str(canary_dir)):
+        assert forbidden not in text, f"message {text!r} carries {forbidden!r}"
+    assert net.attempts == [], f"media read connected out for {cdn!r}: {net.attempts}"
+    if net.listener is not None:
+        assert net.listener.connections == 0
+
+
+MEDIA_TARGETS = [
+    "http", "http_upper", "https_loopback", "https_private_name",
+    "https_link_local_name", "https_localhost",
+]
+
+
+@pytest.mark.parametrize("target", MEDIA_TARGETS)
+def test_media_reads_refuse_stored_urls_that_are_not_public_https(
+    target, net, bucket, canary_dir, session_factory
+):
+    db = session_factory()
+    _media_refused(target, net, bucket, canary_dir, db)
+    db.close()
