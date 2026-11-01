@@ -129,6 +129,9 @@ def assert_deliverable(url: str, *, subject: str = "URL") -> None:
 # opened to one of those checked addresses. TLS and the Host header keep using
 # the name from the URL (httpcore starts TLS with the origin host).
 
+# Delay before the next address is tried while an earlier attempt is pending.
+_CONNECT_ATTEMPT_DELAY = 0.25
+
 HostExemption = typing.Optional[typing.Callable[[str], bool]]
 
 
@@ -204,26 +207,53 @@ class _GuardedAsyncBackend(httpcore.AnyIOBackend):
     async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
         if self._exempt_host is not None and self._exempt_host(host):
             return await super().connect_tcp(host, port, timeout, local_address, socket_options)
-        literal = _literal_ip(host)
-        if literal is not None:
-            addresses = _literal_addresses(host, literal, self._subject)
-        else:
+        try:
+            # One budget covers resolving and connecting.
+            with anyio.fail_after(timeout):
+                literal = _literal_ip(host)
+                if literal is not None:
+                    addresses = _literal_addresses(host, literal, self._subject)
+                else:
+                    try:
+                        infos = await anyio.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                    except (OSError, UnicodeError) as exc:
+                        raise httpcore.ConnectError(str(exc)) from exc
+                    addresses = _checked_addresses(host, infos, self._subject)
+                return await self._connect_any(addresses, port, timeout, local_address, socket_options)
+        except TimeoutError as exc:
+            raise httpcore.ConnectTimeout(str(exc)) from exc
+
+    async def _connect_any(self, addresses, port, timeout, local_address, socket_options):
+        """Start an attempt per checked address (the next one at once when the
+        previous failed, otherwise after a short delay); the first connection
+        wins and the rest are cancelled."""
+        connect_one = super().connect_tcp
+        winner: typing.List[typing.Any] = []
+        errors: typing.List[Exception] = []
+
+        async def attempt(address: str, done: anyio.Event) -> None:
             try:
-                with anyio.fail_after(timeout):
-                    infos = await anyio.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-            except TimeoutError as exc:
-                raise httpcore.ConnectTimeout(str(exc)) from exc
-            except (OSError, UnicodeError) as exc:
-                raise httpcore.ConnectError(str(exc)) from exc
-            addresses = _checked_addresses(host, infos, self._subject)
-        last: typing.Optional[Exception] = None
-        for address in addresses:
-            try:
-                return await super().connect_tcp(address, port, timeout, local_address, socket_options)
+                stream = await connect_one(address, port, timeout, local_address, socket_options)
             except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
-                last = exc
-        assert last is not None
-        raise last
+                errors.append(exc)
+                return
+            finally:
+                done.set()
+            if winner:
+                await stream.aclose()
+                return
+            winner.append(stream)
+            group.cancel_scope.cancel()
+
+        async with anyio.create_task_group() as group:
+            for address in addresses:
+                done = anyio.Event()
+                group.start_soon(attempt, address, done)
+                with anyio.move_on_after(_CONNECT_ATTEMPT_DELAY):
+                    await done.wait()
+        if winner:
+            return winner[0]
+        raise errors[-1]
 
 
 def _default_limits() -> httpx.Limits:

@@ -203,7 +203,7 @@ def http_request(
             truncated = False
             for chunk in resp.iter_bytes():
                 # Wall-clock deadline (plan 31 review S3): `timeout=` on
-                # `httpx.stream` is a PER-OPERATION budget (connect/read/write/
+                # the client is a PER-OPERATION budget (connect/read/write/
                 # pool), not a cap on total elapsed time - a hostile endpoint
                 # drip-feeding one byte every few seconds under the read
                 # timeout would otherwise hold this worker slot indefinitely
