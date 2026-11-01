@@ -2053,6 +2053,10 @@ DEFAULT_CUSTOMER_MAPPING: Tuple[MappingRow, ...] = _MASTER_COMMON + (
     # every row; existing tasks get this row from
     # ``backfill_customer_sales_agent`` (module Alembic 0029).
     MappingRow("SalesAgent", "sales_agent_code", "string", SCOPE_HEADER),
+    # SS-DEBTOR-TYPE - the vendor Debtor payload carries ``DebtorType`` on
+    # every row; existing tasks get this row from
+    # ``backfill_customer_debtor_type`` (module Alembic 0035).
+    MappingRow("DebtorType", "market_segment_code", "string", SCOPE_HEADER),
 )
 
 DEFAULT_MAPPINGS: Dict[str, Tuple[MappingRow, ...]] = {

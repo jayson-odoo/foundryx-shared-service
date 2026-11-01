@@ -370,7 +370,7 @@ _MASTER_COMMON_SOURCES: Tuple[str, ...] = (
 
 AC_SOURCE_FIELDS: Dict[str, Tuple[str, ...]] = {
     ENTITY_SUPPLIER: _MASTER_COMMON_SOURCES,
-    ENTITY_CUSTOMER: _MASTER_COMMON_SOURCES + ("Mobile", "TIN", "SalesAgent"),
+    ENTITY_CUSTOMER: _MASTER_COMMON_SOURCES + ("Mobile", "TIN", "SalesAgent", "DebtorType"),
 }
 
 

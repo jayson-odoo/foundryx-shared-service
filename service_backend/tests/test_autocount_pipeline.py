@@ -2676,6 +2676,9 @@ def test_every_field_we_send_is_one_sorento_defines():
         # SS-DEBTOR-AGENT - declared by the partner sorento lane
         # CUSTOMER-SALES-AGENT (`CanonicalCustomer.sales_agent_code`).
         "sales_agent_code",
+        # SS-DEBTOR-TYPE - already in the CRM customer contract (AutoCount
+        # `Debtor.DebtorType`, `CanonicalCustomer.market_segment_code`).
+        "market_segment_code",
     }
     assert set(CanonicalSupplier.SINK_FIELDS) <= sorento_supplier
     assert set(CanonicalCustomer.SINK_FIELDS) <= sorento_customer
