@@ -8,13 +8,17 @@
 # they are recreated in place each deploy. Only the API + frontend swap colors.
 #
 # Secrets (JWT_SECRET, FERNET_KEY, OMNICHANNEL_FERNET_KEY, POSTGRES_PASSWORD,
-# NEXTAUTH_SECRET, META_*, SMTP_*) come from a server-side .env file at the repo
+# NEXTAUTH_SECRET, REDIS_PASSWORD, META_*, SMTP_*) come from a server-side .env file at the repo
 # root - see .env.example. No secret carries an inline default here.
 
 x-backend-env: &backend-env
   DATABASE_URL: postgresql://${POSTGRES_USER:-foundryx}:${POSTGRES_PASSWORD:?set in .env}@db:5432/${POSTGRES_DB:-foundryx_service}
   POSTGRES_ADMIN_URL: postgresql://${POSTGRES_USER:-foundryx}:${POSTGRES_PASSWORD:?set in .env}@db:5432/postgres
-  REDIS_URL: redis://redis:6379/0
+  # Two-argument form (`default:`) on purpose: it authenticates against a Redis
+  # with or without a password, so the same URL works before and after the redis
+  # container is recreated with its password (see scripts/blue_green_deploy.sh).
+  # REDIS_PASSWORD must be URL-safe (hex).
+  REDIS_URL: redis://default:${REDIS_PASSWORD:?set in .env}@redis:6379/0
   CELERY_TASK_ALWAYS_EAGER: "false"          # prod runs the real workers below
   JWT_SECRET: ${JWT_SECRET:?set in .env}
   JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
@@ -143,7 +147,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: foundryx_ss_redis
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --requirepass "${REDIS_PASSWORD:?set in .env}"
     # Loopback-only, for the SSH-tunneled pilot stt/bots workers (Mac Mini) -
     # see DEPLOY.md; never expose publicly.
     ports:
@@ -277,6 +281,9 @@ services:
       foundryx_ss_network:
         aliases:
           - backend
+      foundryx_ss_web:
+        aliases:
+          - backend
     ports:
       - "127.0.0.1:8200:8001"
 
@@ -287,6 +294,9 @@ services:
     environment: *backend-env
     networks:
       foundryx_ss_network:
+        aliases:
+          - backend
+      foundryx_ss_web:
         aliases:
           - backend
     ports:
@@ -316,7 +326,7 @@ services:
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set in .env}
     restart: unless-stopped
     networks:
-      - foundryx_ss_network
+      - foundryx_ss_web
     ports:
       - "127.0.0.1:3200:3001"
 
@@ -336,7 +346,7 @@ services:
     environment: *frontend-env
     restart: unless-stopped
     networks:
-      - foundryx_ss_network
+      - foundryx_ss_web
     ports:
       - "127.0.0.1:3210:3001"
 
@@ -358,3 +368,17 @@ networks:
       config:
         - subnet: 172.21.0.0/16
           gateway: 172.21.0.1
+
+  # Frontend-to-backend only. The frontend colors join this network (not the
+  # db/redis one); the backend colors join both and answer to `backend` here.
+  # Not `internal`: the frontend still needs outbound access and published ports.
+  #
+  # The name must sort AFTER foundryx_ss_network: Docker orders a container's
+  # networks by name, and a dual-homed backend must keep its default route on
+  # foundryx_ss_network. The subnet is pinned outside Docker's default address
+  # pools, and logins keep their real client address.
+  foundryx_ss_web:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.250.21.0/24

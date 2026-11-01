@@ -306,6 +306,7 @@ jobs:
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             POSTGRES_DB=${{ vars.POSTGRES_DB || 'foundryx_service' }}
             POSTGRES_PORT=${{ vars.POSTGRES_PORT || '5432' }}
+            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             JWT_ALGORITHM=${{ vars.JWT_ALGORITHM || 'HS256' }}
             ACCESS_TOKEN_EXPIRE_MINUTES=${{ vars.ACCESS_TOKEN_EXPIRE_MINUTES || '1440' }}
