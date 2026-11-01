@@ -1,7 +1,8 @@
 """Storage actions (plan sprint-2/09 D8) - push / resolve / delete a file via
 ``storage_for_tenant``. ``storage.get`` resolves a key to a URL + metadata ONLY
 (never loads bytes into the run context - the binary-in-JSON trap). The run owns
-the transaction; these touch the storage backend, not the DB.
+the transaction; these touch the storage backend and read the connection row
+behind a `conn:` key to check its owner and type.
 """
 import mimetypes
 import os
@@ -52,7 +53,7 @@ def _check_key_reach(db: Session, tenant_id: str, key: str) -> None:
         if len(parts) != 3 or not all(parts):
             raise refused
         connection = ConnectionRepository(db).get_by_id(parts[1])
-        if connection is None:
+        if connection is None or connection.type != "storage":
             raise refused
         if connection.tenant_id == tenant_id:
             return
@@ -98,5 +99,8 @@ def storage_get(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[s
 def storage_delete(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     key = _resolve_key(config, ctx)
     _check_key_reach(db, tenant_id, key)
-    storage_for_tenant(db, tenant_id).delete(key)
+    try:
+        storage_for_tenant(db, tenant_id).delete(key)
+    except OSError:
+        raise ActionError("The stored file could not be deleted.") from None
     return {"deleted": True}
