@@ -1581,6 +1581,12 @@ def test_every_storage_read_refuses_an_encoded_response(reader, encoding, net, b
     db.close()
 
 
+def test_a_response_labelled_identity_is_read(net):
+    listener = net.start(tls=True)
+    listener.extra_headers = b"Content-Encoding: identity\r\n"
+    assert read_url("https://cdn.storage.test/obj.bin", timeout=5) == CANARY_BYTES
+
+
 DECLARED_OVER_LIMIT = {
     "document_blob": 201 * MIB,  # READ_CAP_BYTES is 200 MiB
     "media_read": 101 * MIB,  # the largest META_CEILINGS entry is 100 MiB
@@ -1843,6 +1849,20 @@ def test_starting_a_migration_with_a_bad_url_stores_nothing_and_keeps_the_connec
     db.close()
 
 
+def test_the_migration_test_step_accepts_a_public_https_bucket(
+    client, session_factory, bucket, client_builds, net
+):
+    listener = net.start(tls=True)
+    _mirror_into_listener(bucket, listener)
+    res = client.post(
+        "/storage/migrations/test",
+        json=_migration_body(cdnBaseUrl="https://cdn.storage.test"),
+        headers=_admin(client),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True
+
+
 def test_the_platform_migration_test_step_accepts_a_private_cdn_and_an_http_endpoint(
     client, session_factory, bucket, client_builds, net
 ):
@@ -1927,3 +1947,36 @@ def test_a_meeting_falls_back_to_platform_storage_when_the_endpoint_is_bad(
     assert volumes == {}
     db.close()
 
+
+def test_a_meeting_uses_a_tenant_connection_with_a_public_endpoint(session_factory, bucket, local_media):
+    from modules.meetings.services.bot_runner import build_output
+
+    db = session_factory()
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), "https://s3.storage.test")
+    env, volumes, _artifacts = build_output(db, _meeting())
+    assert env["BOT_OUT"].startswith("s3://assets/")
+    assert env["BOT_S3_ENDPOINT"] == "https://s3.storage.test"
+    assert volumes == {}
+    db.close()
+
+
+def test_a_meeting_uses_the_platform_connection_with_a_private_endpoint(session_factory, bucket, local_media):
+    from modules.meetings.services.bot_runner import build_output
+
+    db = session_factory()
+    _with_endpoint(
+        db, _connect(db, "https://cdn.storage.test", PLATFORM_TENANT_ID), "http://10.0.0.5:9000"
+    )
+    env, _volumes, _artifacts = build_output(db, _meeting())
+    assert env["BOT_S3_ENDPOINT"] == "http://10.0.0.5:9000"
+    db.close()
+
+
+def test_a_meeting_without_storage_writes_locally(session_factory, local_media):
+    from modules.meetings.services.bot_runner import build_output
+
+    db = session_factory()
+    env, volumes, _artifacts = build_output(db, _meeting())
+    assert env == {"BOT_OUT": "/out"}
+    assert len(volumes) == 1
+    db.close()
