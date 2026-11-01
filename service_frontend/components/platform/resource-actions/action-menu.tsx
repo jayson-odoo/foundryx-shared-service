@@ -165,6 +165,21 @@ export function ActionMenu<T>({
         onDeferredStart(action, entityIds);
         return;
       }
+      if (action.deferred.intercept?.(rows, (extra) => parkDeferred(action, entityIds, extra))) {
+        return;
+      }
+      await parkDeferred(action, entityIds);
+      return;
+    }
+    await action.run(rows, runtime);
+  }
+
+  async function parkDeferred(
+    action: ResourceAction<T>,
+    entityIds: string[],
+    extraPayload?: Record<string, unknown>,
+  ) {
+    if (action.deferred) {
       const label = typeof action.label === 'function' ? action.label(rows) : action.label;
       const entityType = action.deferred.entityType;
       trackPendingEntities(entityIds);
@@ -173,7 +188,9 @@ export function ActionMenu<T>({
           await deferred.start(
             action.deferred.actionKey,
             entityIds.map((id) => ({ entityType, entityId: id })),
-            action.deferred.payload?.(rows),
+            extraPayload
+              ? { ...action.deferred.payload?.(rows), ...extraPayload }
+              : action.deferred.payload?.(rows),
           );
         untrackPendingEntities(entityIds.filter((id) => !parkedIds.includes(id)));
         const toastId = `pending-action-${entityIds[0]}`;
@@ -203,9 +220,7 @@ export function ActionMenu<T>({
         untrackPendingEntities(entityIds);
         toast.error(error instanceof Error ? error.message : 'Could not start that action.');
       }
-      return;
     }
-    await action.run(rows, runtime);
   }
 
   return (
