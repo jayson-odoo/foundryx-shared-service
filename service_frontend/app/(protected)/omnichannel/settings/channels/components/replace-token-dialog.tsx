@@ -85,7 +85,7 @@ export function ReplaceTokenDialog({ channel, open, onOpenChange, onReplaced }: 
             Cancel
           </Button>
           <Button onClick={save} disabled={!canSave}>
-            Save
+            Save token
           </Button>
         </DialogFooter>
       </DialogContent>
