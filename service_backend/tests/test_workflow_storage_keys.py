@@ -417,3 +417,65 @@ def test_tenant_storage_still_serves_a_server_written_key_on_the_platform_row(sh
     assert kind == "presigned"
     assert client.presigned == ["documents/x"]
     assert url.startswith("https://signed.example/")
+
+
+# ---- additional coverage: real connections, prefix-only keys, colons in raw ------
+
+def _assert_adapter_not_reached(client):
+    assert client.presigned == []
+    assert client.deleted == []
+
+
+@both
+@pytest.mark.parametrize("template", ["conn:{AC}", "conn:{AC}:", "conn:{P}", "conn:{P}:"])
+def test_a_malformed_key_naming_a_real_connection_is_an_action_error(own, client, media, node, template):
+    _seed_everything(own, client, media)
+    with pytest.raises(ActionError) as info:
+        _run(own, node, own.a, own.fmt(template))
+    assert type(info.value) is ActionError
+    _assert_adapter_not_reached(client)
+
+
+@both
+def test_another_tenants_connection_with_a_raw_under_the_callers_prefix_is_refused(own, client, media, node):
+    raw = f"workflows/{own.a}/x"
+    client.objects[raw] = b"data"
+    with pytest.raises(ActionError) as info:
+        _run(own, node, own.a, f"conn:{own.b_conn}:{raw}")
+    with pytest.raises(ActionError) as other:
+        _run(own, node, own.a, f"conn:{own.platform_conn}:documents/x")
+    assert str(info.value) == str(other.value)
+    _assert_adapter_not_reached(client)
+    assert raw in client.objects
+
+
+@both
+def test_the_prefix_alone_on_the_platform_row_is_refused(shared, client, media, node):
+    with pytest.raises(ActionError):
+        _run(shared, node, shared.a, f"conn:{shared.platform_conn}:workflows/{shared.a}/")
+    _assert_adapter_not_reached(client)
+
+
+@both
+def test_the_prefix_alone_as_a_bare_key_is_refused_and_the_directory_stays(local, client, media, node):
+    directory = media / "workflows" / local.a
+    directory.mkdir(parents=True)
+    with pytest.raises(ActionError):
+        _run(local, node, local.a, f"workflows/{local.a}/")
+    assert directory.is_dir()
+    _assert_adapter_not_reached(client)
+
+
+@both
+def test_a_raw_containing_a_colon_is_one_raw_on_the_tenants_own_connection(own, client, media, node):
+    client.objects["a:b"] = b"data"
+    _run(own, node, own.a, f"conn:{own.a_conn}:a:b")
+    assert (client.presigned if node == "get" else client.deleted) == ["a:b"]
+
+
+@both
+def test_a_raw_containing_a_colon_is_one_raw_under_the_prefix_on_the_platform_row(shared, client, media, node):
+    raw = f"workflows/{shared.a}/a:b"
+    client.objects[raw] = b"data"
+    _run(shared, node, shared.a, f"conn:{shared.platform_conn}:{raw}")
+    assert (client.presigned if node == "get" else client.deleted) == [raw]
