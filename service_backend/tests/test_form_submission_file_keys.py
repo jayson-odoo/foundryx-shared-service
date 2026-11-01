@@ -45,14 +45,14 @@ def media(monkeypatch, tmp_path):
     return tmp_path
 
 
-def _connection(session_factory, tenant_id):
+def _connection(session_factory, tenant_id, cdn=""):
     db = session_factory()
     row = Connection(
         tenant_id=tenant_id,
         provider="s3",
         type="storage",
         name="Bucket",
-        config_json={"bucket": "assets", "region": "auto", "cdnBaseUrl": ""},
+        config_json={"bucket": "assets", "region": "auto", "cdnBaseUrl": cdn},
         credentials_json=encrypt_secret({"accessKeyId": "ak", "secretAccessKey": "sk"}),
         status=CONNECTION_STATUS_UNVERIFIED,
     )
@@ -104,8 +104,8 @@ def _set_answer(session_factory, submission_id, field, value):
     db.close()
 
 
-def _entry(key):
-    return {"key": key, "name": "n.txt", "size": 1, "mime": "text/plain"}
+def _entry(key, mime="text/plain", name="n.txt"):
+    return {"key": key, "name": name, "size": 1, "mime": mime}
 
 
 def _file(media, rel, content=SECRET):
@@ -182,16 +182,22 @@ REFUSED = [
     pytest.param("conn:{P}:forms/{O}/x", id="platform_row_another_forms_prefix"),
     pytest.param("conn:{P}:x", id="platform_row_bare_raw"),
     pytest.param("documents/x", id="bare_outside_the_form_prefix"),
-    pytest.param("workflows/{T}/x", id="bare_another_tenants_workflow_prefix"),
+    pytest.param("workflows/{T}/x", id="bare_workflow_prefix_of_a_different_id"),
     pytest.param("forms/{O}/x", id="bare_another_forms_prefix"),
     pytest.param("forms/{F}x/y", id="lookalike_form_id_plus_chars"),
     pytest.param("forms/{F}", id="lookalike_prefix_without_slash"),
     pytest.param("forms/{F}/", id="lookalike_prefix_alone"),
     pytest.param("Forms/{F}/x", id="lookalike_capitalised"),
     pytest.param("/forms/{F}/x", id="lookalike_leading_slash"),
-    pytest.param("forms/{F}/../{O}/x", id="traversal_inside_the_prefix"),
-    pytest.param("forms/{F}/..\\{O}\\x", id="traversal_inside_the_prefix_backslashes"),
-    pytest.param("conn:{P}:forms/{F}/../{O}/x", id="traversal_inside_the_prefix_on_the_platform_row"),
+    pytest.param("forms/{F}/../{O}/x", id="dotdot_segments_inside_the_prefix"),
+    pytest.param("forms/{F}/..\\{O}\\x", id="dotdot_segments_inside_the_prefix_backslashes"),
+    pytest.param("conn:{P}:forms/{F}/../{O}/x", id="dotdot_segments_inside_the_prefix_on_the_platform_row"),
+    pytest.param("conn:{P}:forms/{F}/..\\{O}\\x", id="dotdot_segments_backslashes_on_the_platform_row"),
+    pytest.param("conn:{P}:forms/{F}/%2e%2e/%2e%2e/documents/x", id="percent_encoded_dots_on_the_platform_row"),
+    pytest.param("conn:{P}:forms/{F}/.%2e/x", id="dot_then_percent_encoded_dot_on_the_platform_row"),
+    pytest.param("conn:{P}:forms/{F}/%2E./x", id="percent_encoded_dot_then_dot_on_the_platform_row"),
+    pytest.param("conn:{P}:forms/{F}/a b", id="space_on_the_platform_row"),
+    pytest.param("forms/{F}/a?b", id="question_mark_in_a_bare_key"),
     pytest.param("conn:", id="malformed_empty"),
     pytest.param("conn:x", id="malformed_two_parts_made_up_id"),
     pytest.param("conn:{P}:", id="malformed_empty_raw"),
@@ -210,6 +216,7 @@ def _make_real_files(world):
         "hello",
         f"CONN:{world.platform}:forms/{world.form}/x",
         f"forms/{world.form}/x",
+        f"forms/{world.form}/a?b",
     ]:
         _file(world.media, rel)
     (world.media / "x").write_bytes(SECRET)
@@ -372,7 +379,7 @@ def test_a_key_written_before_a_storage_migration_on_the_platform_row_is_served(
 
 # ---- requirement 4: tenant isolation ------------------------------------------------
 
-def test_another_tenants_user_gets_not_found_for_the_submission(client, session_factory, stub, media):
+def test_a_user_of_a_different_tenant_gets_not_found_for_the_submission(client, session_factory, stub, media):
     headers = _headers(client)
     form = _form(client, headers, FILE_FIELD)
     sub = _upload(client, headers, form["id"])
@@ -395,3 +402,118 @@ def test_another_tenants_user_gets_not_found_for_the_submission(client, session_
     res = _serve(client, other_headers, sub["id"], "resume")
     assert res.status_code == 404
     assert _serve(client, headers, sub["id"], "resume").status_code == 200
+
+
+# ---- more refused shapes on a connection that has a CDN ------------------------------
+
+@pytest.mark.parametrize("template", ["conn:{P}:forms/{F}/a b", "conn:{P}:x", "conn:{P}:other/x", "conn:{P}:forms/{F}/%2e%2e/x"])
+def test_on_a_connection_with_a_cdn_a_stored_key_the_form_did_not_write_is_not_found(
+    client, session_factory, stub, media, template
+):
+    w = World(client, _headers(client), session_factory, media, stub, platform=False)
+    w.platform = _connection(session_factory, PLATFORM_TENANT_ID, cdn="https://cdn.example")
+    res = w.serve("list", w.fmt(template))
+    assert res.status_code == 404, (res.status_code, res.headers.get("location"))
+    assert res.json() == {"detail": "File not found."}
+
+
+def test_control_on_a_connection_with_a_cdn_a_key_under_the_forms_prefix_redirects_to_the_cdn(
+    client, session_factory, stub, media
+):
+    w = World(client, _headers(client), session_factory, media, stub, platform=False)
+    w.platform = _connection(session_factory, PLATFORM_TENANT_ID, cdn="https://cdn.example")
+    res = w.serve("list", f"conn:{w.platform}:forms/{w.form}/{w.sub}/resume/0-x.txt")
+    assert res.status_code in (302, 307)
+    assert res.headers["location"].startswith("https://cdn.example/")
+
+
+# ---- the content type is not taken from the answer -----------------------------------
+
+def _serve_entry_on_local_disk(w, mime, name="n.txt"):
+    rel = f"forms/{w.form}/{w.sub}/resume/0-x.bin"
+    _file(w.media, rel, b"hello")
+    _set_answer(w.sf, w.sub, "resume", [_entry(rel, mime=mime, name=name)])
+    return _serve(w.client, w.headers, w.sub, "resume")
+
+
+@pytest.mark.parametrize(
+    "mime",
+    ["text/html", "image/svg+xml", "application/xhtml+xml", "text/xml", "text/html; charset=utf-8"],
+)
+def test_an_entry_declaring_a_markup_type_is_served_as_an_opaque_download(local_world, mime):
+    res = _serve_entry_on_local_disk(local_world, mime)
+    assert res.status_code == 200
+    assert res.headers["content-type"].split(";")[0] == "application/octet-stream"
+
+
+@pytest.mark.parametrize(
+    "mime",
+    ["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain"],
+)
+def test_control_an_entry_declaring_a_plain_content_type_keeps_it(local_world, mime):
+    res = _serve_entry_on_local_disk(local_world, mime)
+    assert res.status_code == 200
+    assert res.headers["content-type"].split(";")[0] == mime
+
+
+def test_a_signature_string_is_served_as_png(local_world):
+    w = local_world
+    rel = f"forms/{w.form}/{w.sub}/sign/0-x.png"
+    _file(w.media, rel, _PNG)
+    res = w.serve("string", rel)
+    assert res.status_code == 200
+    assert res.headers["content-type"].split(";")[0] == "image/png"
+
+
+# ---- the file name header is well formed ---------------------------------------------
+
+def test_a_name_with_a_quote_gives_a_well_formed_header(local_world):
+    from urllib.parse import quote
+
+    name = 'a"b.png'
+    res = _serve_entry_on_local_disk(local_world, "image/png", name=name)
+    assert res.status_code == 200
+    header = res.headers["content-disposition"]
+    assert header.count('"') == 2, header
+    assert f"filename*=UTF-8''{quote(name, safe='')}" in header
+
+
+def test_a_non_ascii_name_gives_a_header_carrying_the_real_name(local_world):
+    from urllib.parse import quote
+
+    name = "\u7b80\u5386.png"
+    res = _serve_entry_on_local_disk(local_world, "image/png", name=name)
+    assert res.status_code == 200
+    assert f"filename*=UTF-8''{quote(name, safe='')}" in res.headers["content-disposition"]
+
+
+def test_an_upload_named_with_non_ascii_characters_opens(client, session_factory, stub, media):
+    headers = _headers(client)
+    form = _form(client, headers, FILE_FIELD)
+    res = client.post(
+        f"/forms/{form['id']}/submissions",
+        data={"payload": json.dumps({"answers": {}})},
+        files=[("file:resume", ("\u7b80\u5386.png", _PNG, "image/png"))],
+        headers=headers,
+    )
+    assert res.status_code == 201, res.text
+    served = _serve(client, headers, res.json()["id"], "resume")
+    assert served.status_code == 200
+    assert served.content == _PNG
+
+
+# ---- a key under the prefix whose file is not there ----------------------------------
+
+def test_a_key_under_the_prefix_whose_local_file_is_missing_is_not_found(local_world):
+    w = local_world
+    res = w.serve("list", f"forms/{w.form}/{w.sub}/resume/missing.txt")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "File not found."}
+
+
+def test_a_key_under_the_prefix_that_is_a_directory_is_not_found(local_world):
+    w = local_world
+    (w.media / "forms" / w.form / "dirx").mkdir(parents=True)
+    res = w.serve("list", f"forms/{w.form}/dirx")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "File not found."}
