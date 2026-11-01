@@ -224,6 +224,27 @@ function isAddress(value: FormAnswerValue | undefined): value is FormAddressAnsw
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+const SERVED_FILE_TYPES: readonly string[] = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+  'text/plain',
+  'image/x-icon',
+  'application/zip',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+];
+
+/** The type a fetched file is opened with: a listed base type, else a download. */
+function openedType(rawType: string): string {
+  const base = rawType.toLowerCase().split(';')[0].trim();
+  if (base === 'text/plain') return 'text/plain;charset=utf-8';
+  return SERVED_FILE_TYPES.includes(base) ? base : 'application/octet-stream';
+}
+
 function isFileList(value: FormAnswerValue | undefined): value is FormFileAnswer[] {
   return Array.isArray(value) && value.every((v) => !!v && typeof v === 'object' && 'key' in v && 'name' in v);
 }
@@ -253,7 +274,7 @@ function FileChip({ fieldKey, index, label }: { fieldKey: string; index: number;
       const blob = await fetchFile(
         `/submissions/${submissionId}/files/${encodeURIComponent(fieldKey)}/${index}`,
       );
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(new Blob([blob], { type: openedType(blob.type) }));
       window.open(url, '_blank', 'noopener');
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch {
