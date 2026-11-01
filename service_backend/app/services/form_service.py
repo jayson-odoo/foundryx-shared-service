@@ -205,7 +205,19 @@ def _is_form_key(key: Any, form_id: str) -> bool:
 
 
 _SERVED_TYPES = frozenset(
-    {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain"}
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/x-icon",
+        "application/pdf",
+        "text/plain",
+        "application/zip",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
 )
 
 
