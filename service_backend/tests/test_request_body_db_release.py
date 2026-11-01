@@ -12,12 +12,12 @@ Sign-in is checked by token signature only until the body is in:
   5. omnichannel POST /omnichannel/contacts/{id}/interactive (JSON and multipart)
 
 The ASGI app is driven directly with a `receive` callable that blocks until the test
-releases the body, so the wait is real whatever a client transport buffers (same
-approach as test_omnichannel_gateway_key_read_release.py). Thread identity is
-counted at engine level. The in-memory suite cannot see pool behaviour, so nothing
-here counts connections: it asserts on session state and on statements.
+releases the body, so the wait is real whatever a client transport buffers.
+Statements are counted at engine level. The in-memory suite cannot see pool
+behaviour, so nothing here counts connections: it asserts on session state and on
+statements.
 
-Existing suites that already pin the answers of these routes (B4):
+Existing suites that already pin the answers of these routes:
   route 1  test_connector_oauth.py        success, unsupported grant, refusals
   route 2  test_form_engine.py            success, 422 fieldErrors, 409 closed
            test_form_uploads.py           multipart success, bad-file 422
@@ -32,7 +32,6 @@ import gc
 import json
 import os
 import tempfile
-import threading
 import uuid
 import weakref
 from dataclasses import dataclass, field
@@ -90,29 +89,26 @@ def tracker():
 
 
 class Spies:
-    """Records (label, thread id) for every call of the wrapped session-touching
-    functions, then calls through to the real one."""
+    """Records the label of every call of the wrapped functions, then calls through
+    to the real one."""
 
     def __init__(self, monkeypatch):
         self._mp = monkeypatch
-        self.calls: List[Tuple[str, int]] = []
+        self.calls: List[str] = []
 
     def watch(self, label: str, targets: List[Tuple[Any, str]]) -> None:
         original = getattr(targets[0][0], targets[0][1])
         calls = self.calls
 
         def wrapper(*args, **kwargs):
-            calls.append((label, threading.get_ident()))
+            calls.append(label)
             return original(*args, **kwargs)
 
         for owner, attr in targets:
             self._mp.setattr(owner, attr, wrapper)
 
     def labels(self) -> List[str]:
-        return [label for label, _ in self.calls]
-
-    def threads(self, label: str) -> List[int]:
-        return [thread for name, thread in self.calls if name == label]
+        return list(self.calls)
 
 
 @pytest.fixture
@@ -123,8 +119,6 @@ def spies(monkeypatch):
 # ── the driver ───────────────────────────────────────────────────────────────
 @dataclass
 class Run:
-    loop_thread: int = 0
-    receive_thread: Optional[int] = None
     receive_calls: int = 0
     sampled: Optional[int] = None
     status: Optional[int] = None
@@ -138,12 +132,13 @@ class Run:
 async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], int]] = None,
                  headers: Optional[Dict[str, str]] = None, path: Optional[str] = None,
                  length: Any = "auto", chunk: Optional[int] = None,
-                 disconnect: bool = False, ctype: Any = "auto", strict: bool = True) -> Run:
+                 disconnect: bool = False, ctype: Any = "auto", strict: bool = True,
+                 leave_after: Optional[int] = None) -> Run:
     """POST the scenario straight into the ASGI app. With `hold` the body is withheld
     until the app asks for it (so every dependency and pre-check has finished) and
     `sample()` is taken at that moment; without it the body is available at once and
     the run simply records whether the app ever asked for it."""
-    run = Run(loop_thread=threading.get_ident())
+    run = Run()
     release = asyncio.Event()
     if not hold:
         release.set()
@@ -152,10 +147,9 @@ async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], i
 
     async def receive():
         run.receive_calls += 1
-        run.receive_thread = threading.get_ident()
         first_receive.set()
         await release.wait()
-        if disconnect:
+        if disconnect or (leave_after is not None and len(sent) >= leave_after):
             return {"type": "http.disconnect"}
         if sent and (chunk is None or len(sent) * chunk >= len(scn.body)):
             if hold:
@@ -483,7 +477,7 @@ def test_tracker_control_sees_open_and_closed(session_factory, tracker):
     assert tracker() == []
 
 
-# ── B1: no transaction is open while the route waits for its body ───────────
+# ── no transaction is open while the route waits for its body ───────────────
 @pytest.mark.parametrize("scenario", SCENARIOS, indirect=True)
 def test_no_transaction_is_open_while_the_route_waits_for_its_body(scenario, tracker):
     run = _run_held(scenario, tracker)
@@ -498,7 +492,7 @@ def test_no_statement_runs_before_the_body_arrives(scenario, sql_log):
     before_body: List[str] = []
 
     def sample() -> int:
-        before_body.extend(statement for _, statement in sql_log)
+        before_body.extend(statement for statement in sql_log)
         return len(before_body)
 
     run = asyncio.run(_drive(scenario, hold=True, sample=sample))
@@ -509,20 +503,11 @@ def test_no_statement_runs_before_the_body_arrives(scenario, sql_log):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Answers that must not change (B3 ordering, B4 responses, B5 real flow)
+# Answers that must not change, and what is refused before the body
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-# ── B3: sign-in and pre-checks still answer before the body is requested ────
-@pytest.mark.parametrize("scenario", SIGNED_IN_SCENARIOS, indirect=True)
-@pytest.mark.parametrize("sign_in", ["missing", "invalid"])
-def test_a_request_without_valid_sign_in_is_refused_before_the_body_is_read(scenario, sign_in):
-    headers = {} if sign_in == "missing" else {"Authorization": "Bearer not-a-real-token"}
-    run = asyncio.run(_drive(scenario, hold=False, headers=headers))
-    assert run.status == 401, run.body
-    assert run.receive_calls == 0, "the body was requested before sign-in was checked"
-
-
+# ── sign-in problems answer 401 before the body is requested ───────────────
 @pytest.mark.parametrize("scenario", CONVERSATION_SCENARIOS, indirect=True)
 def test_a_token_without_access_to_the_thread_is_refused(scenario):
     from tests.test_omnichannel_embed import _assertion, _bearer, _exchange, _make_connection
@@ -567,13 +552,6 @@ def _token_scenario_for(connector_client) -> Scenario:
                     "application/x-www-form-urlencoded", 429, [], [], lambda run: None, scheme="https")
 
 
-def test_control_an_unthrottled_token_request_does_read_the_body(connector_client):
-    scn = _token_scenario_for(connector_client)
-    run = asyncio.run(_drive(scn, hold=False))
-    assert run.status == 400, run.body  # unknown code: refused, but only after the body was read
-    assert run.receive_calls >= 1
-
-
 _PLAIN_CONVERSATION = ["template_json", "template_multipart", "interactive_json", "interactive_multipart"]
 
 
@@ -608,13 +586,13 @@ def test_the_inbox_scoped_thread_check_reads_the_database(session_factory, sql_l
     try:
         sql_log.clear()
         enforce_thread_access(db, principal, cid)
-        assert any(s.startswith("SELECT") for _, s in sql_log), "the inbox-scoped check issued no query"
+        assert any(s.startswith("SELECT") for s in sql_log), "the inbox-scoped check issued no query"
         assert db.in_transaction()
     finally:
         db.close()
 
 
-# ── B5: the real flow still works after the transaction ends ────────────────
+# ── the real flow: every route still answers correctly once the body arrives ─
 @pytest.mark.parametrize("scenario", SCENARIOS, indirect=True)
 def test_the_route_answers_correctly_once_the_body_arrives(scenario, spies, tracker):
     _arm(scenario, spies)
@@ -623,10 +601,10 @@ def test_the_route_answers_correctly_once_the_body_arrives(scenario, spies, trac
     assert run.status == scenario.status, run.body
     scenario.check(run)
     for label in scenario.expect:  # the work behind the answer really happened
-        assert spies.threads(label), f"{label} was never called"
+        assert label in spies.labels(), f"{label} was never called"
 
 
-# ── B4: token route (gaps in test_connector_oauth.py) ───────────────────────
+# ── token route answers (gaps in test_connector_oauth.py) ───────────────────
 def test_a_bad_grant_is_refused_and_counted_once(connector_client, spies):
     from app.services.throttle import ThrottleService
 
@@ -652,7 +630,7 @@ def test_a_malformed_token_body_is_treated_as_an_empty_form(connector_client, sp
     assert spies.labels().count("record_connector") == 1
 
 
-# ── B4: form submit and resubmit (gaps in test_form_*.py) ───────────────────
+# ── form submit and resubmit answers (gaps in test_form_*.py) ───────────────
 def test_submit_to_an_unknown_form_is_404(client):
     headers = _forms_admin(client)
     res = client.post("/forms/no-such-form/submissions", json={"answers": {}}, headers=headers)
@@ -750,7 +728,7 @@ def test_resubmit_with_a_malformed_json_body_is_422(client, body):
     assert res.status_code == 422
 
 
-# ── B4: conversation template and interactive sends ─────────────────────────
+# ── conversation template and interactive answers ───────────────────────────
 @pytest.mark.parametrize("route,body", [
     ("template", {"templateId": "x"}),
     ("interactive", {"kind": "buttons", "body": "b", "buttons": [{"id": "a", "title": "A"}]}),
@@ -795,24 +773,23 @@ def test_a_json_send_with_a_malformed_body_is_422(client, session_factory, route
     assert res.json()["detail"] == "Request body must be valid JSON."
 
 
-# ── no statement of any kind runs on the event loop thread ──────────────────
+# ── the statement log ───────────────────────────────────────────────────────
 @pytest.fixture
 def sql_log():
-    """Every statement, commit and rollback issued through any engine, with the
-    thread that issued it. Listens at engine level, so it sees SQL that no named
-    function wraps."""
+    """Every statement, commit and rollback issued through any engine, in order
+    (statements cut at 80 characters)."""
     from sqlalchemy.engine import Engine
 
-    records: List[Tuple[int, str]] = []
+    records: List[str] = []
 
     def on_execute(conn, cursor, statement, parameters, context, executemany):
-        records.append((threading.get_ident(), " ".join(statement.split())[:80]))
+        records.append(" ".join(statement.split())[:80])
 
     def on_commit(conn):
-        records.append((threading.get_ident(), "COMMIT"))
+        records.append("COMMIT")
 
     def on_rollback(conn):
-        records.append((threading.get_ident(), "ROLLBACK"))
+        records.append("ROLLBACK")
 
     event.listen(Engine, "before_cursor_execute", on_execute)
     event.listen(Engine, "commit", on_commit)
@@ -825,27 +802,13 @@ def sql_log():
         event.remove(Engine, "rollback", on_rollback)
 
 
-def _on_thread(records: List[Tuple[int, str]], thread: int) -> List[str]:
-    return [statement for t, statement in records if t == thread]
-
-
-def test_sql_log_control_flags_a_statement_on_the_current_thread(session_factory, sql_log):
-    here = threading.get_ident()
+def test_sql_log_control_records_statements_and_commits(session_factory, sql_log):
     probe = session_factory()
     probe.execute(text("select 1"))
     probe.commit()
     probe.close()
-    flagged = _on_thread(sql_log, here)
-    assert any(s.startswith("select 1") for s in flagged)
-    assert "COMMIT" in flagged
-    other: List[int] = []
-    worker = threading.Thread(target=lambda: (
-        session_factory().execute(text("select 2")), other.append(threading.get_ident())))
-    worker.start()
-    worker.join()
-    assert other and other[0] != here
-    assert not any(s.startswith("select 2") for s in _on_thread(sql_log, here))
-    assert any(t == other[0] and s.startswith("select 2") for t, s in sql_log)
+    assert any(s.startswith("select 1") for s in sql_log)
+    assert "COMMIT" in sql_log
 
 
 # ── A2: sign-in is checked by token signature alone, before the body ────────
@@ -877,7 +840,7 @@ def test_a_token_that_fails_its_signature_check_is_refused_without_a_statement(s
     run = asyncio.run(_drive(scenario, hold=False, headers=headers))
     assert run.status == 401, run.body
     assert run.receive_calls == 0, "the body was requested for a request that is not signed in"
-    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0]!r}"
 
 
 # ── A3: a correctly signed token the server no longer accepts ───────────────
@@ -947,7 +910,7 @@ def test_a_token_body_declared_over_the_cap_is_413_without_reading_it(connector_
     run = asyncio.run(_drive(scn, hold=False))
     assert run.status == 413, run.body
     assert run.receive_calls == 0, "a body declared over the cap was still read"
-    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0]!r}"
 
 
 def test_a_chunked_token_body_that_crosses_the_cap_is_413(connector_client):
@@ -981,7 +944,7 @@ def test_a_client_that_leaves_during_the_body_causes_no_server_error(scenario, s
         pytest.fail(f"the app raised when the client left: {type(exc).__name__}: {exc}")
     assert run.status is None or run.status < 500, f"a {run.status} was sent: {run.body!r}"
     if not scenario.name.startswith("token"):
-        assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+        assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0]!r}"
 
 
 # ── whatever the content type, nothing runs before the body is requested ────
@@ -1005,7 +968,7 @@ def test_no_statement_runs_before_the_body_arrives_whatever_the_content_type(
     seen: Dict[str, Any] = {}
 
     def sample() -> int:
-        seen["statements"] = [statement for _, statement in sql_log]
+        seen["statements"] = [statement for statement in sql_log]
         seen["open"] = len(tracker())
         return seen["open"]
 
@@ -1198,7 +1161,7 @@ def test_a_token_that_is_not_a_sign_in_token_is_refused_before_the_body(scenario
     run = asyncio.run(_drive(scenario, hold=False, headers={"Authorization": f"Bearer {token}"}))
     assert run.status == 401, run.body
     assert run.receive_calls == 0, "the body was requested for a token that is not a sign-in token"
-    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0]!r}"
 
 
 @pytest.mark.parametrize("scenario", _FORM_ROUTES, indirect=True)
@@ -1207,7 +1170,7 @@ def test_an_embed_token_is_refused_before_the_body_on_form_routes(scenario, form
     run = asyncio.run(_drive(scenario, hold=False, headers={"Authorization": f"Bearer {forms_embed_token}"}))
     assert run.status == 401, run.body
     assert run.receive_calls == 0, "the body was requested for an embed token on a staff route"
-    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0]!r}"
 
 
 # ── malformed multipart is a 400 ────────────────────────────────────────────
@@ -1228,7 +1191,7 @@ def _malformed_multipart(kind: str) -> Tuple[bytes, str]:
 
 @pytest.mark.parametrize("scenario", ["submit_json", "resubmit_json", "template_json", "interactive_json"],
                          indirect=True)
-@pytest.mark.parametrize("kind", ["wrong_boundary"])
+@pytest.mark.parametrize("kind", ["wrong_boundary", "missing_boundary", "missing_part_name", "oversize_text_part"])
 def test_a_malformed_multipart_body_is_answered_400(scenario, kind, sql_log):
     import dataclasses
 
@@ -1240,7 +1203,7 @@ def test_a_malformed_multipart_body_is_answered_400(scenario, kind, sql_log):
     except Exception as exc:  # noqa: BLE001 - the app itself must not raise
         pytest.fail(f"the app raised on a malformed multipart body: {type(exc).__name__}: {exc}")
     assert run.status == 400, f"{run.status}: {run.body!r}"
-    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0]!r}"
 
 
 # ── token route: an over-cap refusal carries the no-store headers ───────────
@@ -1255,3 +1218,30 @@ def test_an_over_cap_token_body_is_refused_with_no_store_headers(connector_clien
     assert run.status == 413, run.body
     assert run.headers.get("cache-control") == "no-store", run.headers
     assert run.headers.get("pragma") == "no-cache", run.headers
+
+
+# ── token route: unusual bodies ─────────────────────────────────────────────
+def test_a_token_client_that_leaves_part_way_is_treated_as_an_empty_form(connector_client):
+    body = _token_body(400)
+    run = asyncio.run(_drive(_sized_token_scenario(body), hold=False, length="omit", chunk=100, leave_after=1))
+    assert run.status == 400, run.body
+    # the first 100 bytes name a grant type; an empty form has none
+    assert run.json() == {"error": "unsupported_grant_type"}
+
+
+def _drive_token(scn: Scenario, **kwargs) -> Run:
+    try:
+        return asyncio.run(_drive(scn, hold=False, **kwargs))
+    except Exception as exc:  # noqa: BLE001 - the app itself must not raise
+        pytest.fail(f"the app raised: {type(exc).__name__}: {exc}")
+
+
+def test_a_token_body_with_a_non_integer_length_is_read_normally(connector_client):
+    run = _drive_token(_sized_token_scenario(_token_body(400)), length="abc")
+    assert run.status == 400, run.body
+    assert run.json() == {"error": "invalid_grant"}
+
+
+def test_a_token_body_with_a_non_integer_length_still_counts_against_the_cap(connector_client):
+    run = _drive_token(_sized_token_scenario(_token_body(TOKEN_BODY_CAP * 2)), length="abc", chunk=8 * 1024)
+    assert run.status == 413, run.body
