@@ -728,7 +728,10 @@ def test_ac_42_11_token_never_in_response_logs_or_activity(client, session_facto
     ids=["true", "false", "raises"],
 )
 def test_ac_42_12_subscribed_reflects_the_renewal_and_token_stays_saved(client, session_factory, monkeypatch, subscribe, expected):
-    st = _stub(monkeypatch, check="ok", subscribe=subscribe)
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
+    st = _stub(monkeypatch, check="ok", subscribe=subscribe, app_id="test-app-id")
     cid = _wa_channel(session_factory)
     res = _replace(client, _auth(client), cid)
     assert res.status_code == 200, res.text
