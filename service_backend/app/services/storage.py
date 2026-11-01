@@ -21,6 +21,7 @@ Two usage styles:
   turns it back into a local path or a remote URL to stream/redirect.
 """
 import mimetypes
+import re
 import uuid
 from pathlib import Path
 from typing import Dict, Optional, Protocol, Tuple
@@ -71,6 +72,14 @@ def _ext_for(mime_type: str) -> str:
 
 def _safe(key_hint: str) -> str:
     return "".join(c if c.isalnum() or c in "-_/" else "-" for c in key_hint)
+
+
+_MINTED_RAW = re.compile(r"(?:[\w-]+/)*[\w-]+(?:\.[\w-]+)?")
+
+
+def is_minted_raw_key(raw: str) -> bool:
+    """True for a raw key with the shape `_safe` plus `_ext_for` produce."""
+    return _MINTED_RAW.fullmatch(raw) is not None
 
 
 def _safe_read_path(root: Path, key: str) -> Path:

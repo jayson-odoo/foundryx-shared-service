@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.tenant import PLATFORM_TENANT_ID
 from app.repositories.connection_repository import ConnectionRepository
-from app.services.storage import _KEY_PREFIX, storage_for_tenant
+from app.services.storage import _KEY_PREFIX, is_minted_raw_key, storage_for_tenant
 from app.workflow_engine.context import render_field
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,10 @@ def _tenant_prefix(tenant_id: str) -> str:
     return f"workflows/{tenant_id}/"
 
 
+def _under_prefix(raw: str, prefix: str) -> bool:
+    return raw.startswith(prefix) and is_minted_raw_key(raw[len(prefix):])
+
+
 def _check_key_reach(db: Session, tenant_id: str, key: str) -> None:
     """Workflow storage nodes reach only the tenant's own connection keys or
     keys under `workflows/<tenant_id>/` (also on the platform connection)."""
@@ -60,10 +64,10 @@ def _check_key_reach(db: Session, tenant_id: str, key: str) -> None:
             raise refused
         if connection.tenant_id == tenant_id:
             return
-        if connection.tenant_id == PLATFORM_TENANT_ID and parts[2].startswith(prefix) and len(parts[2]) > len(prefix):
+        if connection.tenant_id == PLATFORM_TENANT_ID and _under_prefix(parts[2], prefix):
             return
         raise refused
-    if not (key.startswith(prefix) and len(key) > len(prefix)):
+    if not _under_prefix(key, prefix):
         raise refused
 
 
