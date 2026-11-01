@@ -1839,38 +1839,199 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
     assert _message_count(session_factory, cids[phones[2]]) == 1
 
 
-@pytest.mark.parametrize("path", ["media", "header"])
-def test_ac_41_08_no_transaction_is_open_while_the_media_is_stored(client, session_factory, monkeypatch, path):
+def _tracker():
+    """Track sessions that began a transaction; `open_now()` lists those still in one."""
     import weakref
 
-    from sqlalchemy import event, text
+    from sqlalchemy import event
     from sqlalchemy.orm import Session
 
-    phone = "+60700700770" if path == "media" else "+60700700771"
-    headers, cid, _ch = _setup(client, session_factory, phone=phone)
     seen = weakref.WeakSet()
 
     def track(session, transaction, connection):
         seen.add(session)
 
-    def open_now():
-        return [s for s in list(seen) if s.in_transaction()]
-
     event.listen(Session, "after_begin", track)
+    return seen, lambda: [x for x in list(seen) if x.in_transaction()], lambda: event.remove(Session, "after_begin", track)
+
+
+class _FakeStorageAdapter:
+    """A connection-backed storage adapter that writes under a temp directory."""
+
+    def __init__(self, root, on_write):
+        self._root = root
+        self._on_write = on_write
+
+    def save(self, key_hint, content, mime_type):
+        self._on_write()
+        name = f"fake-{abs(hash(key_hint))}-{len(content)}"
+        (self._root / name).write_bytes(content)
+        return name
+
+    def resolve(self, key):
+        return ("path", str(self._root / key))
+
+
+def _storage_connection(session_factory):
+    from app.models.connection import Connection
+    from app.secrets import encrypt_secret
+
+    db = session_factory()
+    db.add(Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="s3", type="storage", name="Fake store",
+        config_json={"bucket": "b", "region": "auto"},
+        credentials_json=encrypt_secret({"accessKeyId": "ak", "secretAccessKey": "sk"}),
+        status="ACTIVE", is_active=True,
+    ))
+    db.commit()
+    db.close()
+
+
+@pytest.mark.parametrize("variant", ["local-disk", "connection-row"])
+@pytest.mark.parametrize("path", ["media", "header"])
+def test_ac_41_08_no_transaction_is_open_while_the_media_is_stored(
+    client, session_factory, monkeypatch, tmp_path, path, variant
+):
+    from sqlalchemy import text
+
+    import app.services.storage as storage
+
+    phone = "+60700700770" if path == "media" else "+60700700771"
+    headers, cid, _ch = _setup(client, session_factory, phone=phone)
+    seen, open_now, untrack = _tracker()
     try:
+        # control: the tracker sees an open transaction, then none after close
         probe = session_factory()
         probe.execute(text("select 1"))
-        assert len(open_now()) == 1  # control: the tracker sees an open transaction
+        assert len(open_now()) == 1
         probe.close()
         assert open_now() == []
 
-        at_store = []
+        at_write = []
         _install(monkeypatch, media=_pdf_media)
-        saves = _hold_storage_writes(monkeypatch, on_save=lambda: at_store.append(len(open_now())))
+        if variant == "local-disk":
+            real = storage.LocalDiskStorage.save
+
+            def sampled(self, *args, **kwargs):  # the REAL write, after the storage layer's own lookups
+                at_write.append(len(open_now()))
+                return real(self, *args, **kwargs)
+
+            monkeypatch.setattr(storage.LocalDiskStorage, "save", sampled)
+        else:
+            _storage_connection(session_factory)
+            adapter = _FakeStorageAdapter(tmp_path, lambda: at_write.append(len(open_now())))
+            monkeypatch.setattr(storage, "_adapter_for", lambda connection: adapter)
         url, body = _PATHS[path](phone)
         r = client.post(url, json=body, headers=headers)
     finally:
-        event.remove(Session, "after_begin", track)
+        untrack()
     assert r.status_code == 202, r.text
-    assert len(saves) == 1 and len(at_store) == 1, "the storage hook never ran"
-    assert at_store == [0], f"{at_store[0]} session(s) held a transaction during the store"
+    assert len(at_write) == 1, "the real write never ran"
+    assert at_write == [0], f"{at_write[0]} session(s) held a transaction at the write"
+
+
+# ── AC-41-08 at the storage layer ────────────────────────────────────────────
+@pytest.mark.parametrize("variant", ["local-disk", "connection-row"])
+def test_ac_41_08_storage_save_ends_read_transactions_and_keeps_pending_work(
+    session_factory, monkeypatch, tmp_path, variant
+):
+    import app.services.storage as storage
+    from modules.omnichannel.models import Workspace
+
+    if variant == "connection-row":
+        _storage_connection(session_factory)
+    reader = session_factory()
+    reader.query(Workspace).filter(Workspace.tenant_id == DEFAULT_TENANT_ID).first()  # a plain read
+    assert reader.in_transaction()  # control: it is in a read transaction before the write
+
+    adder = session_factory()
+    pending = Workspace(tenant_id=DEFAULT_TENANT_ID, name="Pending workspace", is_default=False)
+    adder.add(pending)  # unflushed work
+    assert pending in adder.new
+
+    editor = session_factory()
+    existing = editor.query(Workspace).filter(Workspace.tenant_id == DEFAULT_TENANT_ID).first()
+    original_name = existing.name
+    existing.name = "Renamed workspace"  # dirty work
+    assert existing in editor.dirty
+
+    at_write = {}
+
+    def sample():
+        at_write["reader_in_txn"] = reader.in_transaction()
+        at_write["pending_kept"] = pending in adder.new
+        at_write["dirty_kept"] = existing in editor.dirty
+
+    if variant == "local-disk":
+        real = storage.LocalDiskStorage.save
+
+        def sampled(self, *args, **kwargs):
+            sample()
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(storage.LocalDiskStorage, "save", sampled)
+    else:
+        adapter = _FakeStorageAdapter(tmp_path, sample)
+        monkeypatch.setattr(storage, "_adapter_for", lambda connection: adapter)
+
+    key = storage.TenantStorage(reader, DEFAULT_TENANT_ID).save("omnichannel/test/outbound", PDF, "application/pdf")
+    assert key
+    assert at_write, "the real write never ran"
+    assert at_write["reader_in_txn"] is False, "a read transaction was still open at the write"
+    assert at_write["pending_kept"] is True, "unflushed work was discarded or committed early"
+    assert at_write["dirty_kept"] is True, "dirty work was discarded or committed early"
+    # the owners can still finish their own work
+    adder.commit()
+    editor.commit()
+    check = session_factory()
+    assert check.query(Workspace).filter(Workspace.name == "Pending workspace").count() == 1
+    assert check.query(Workspace).filter(Workspace.name == "Renamed workspace").count() == 1
+    assert original_name != "Renamed workspace"
+    for s_ in (reader, adder, editor, check):
+        s_.close()
+
+
+# ── AC-41-09: a media url that is not text, and other malformed bodies ───────
+_NOT_TEXT = [123, [1, 2], {"a": 1}, True, 1.5]
+_NOT_TEXT_IDS = ["int", "list", "dict", "bool", "float"]
+
+
+@pytest.mark.parametrize("value", _NOT_TEXT, ids=_NOT_TEXT_IDS)
+def test_ac_41_09_a_json_media_url_that_is_not_text_is_refused(client, session_factory, monkeypatch, value):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700780", token="tkn-live-09")
+    rig = _install(monkeypatch, media=_pdf_media)
+    body = _media_body("+60700700780")
+    body["media"]["url"] = value
+    r = client.post("/api/v1/omnichannel/messages", json=body, headers=headers)
+    assert (r.status_code, _error_code(r)) == (422, "invalid_media_url")
+    assert rig.media_calls == 0 and rig.graph_calls == []
+    assert _message_count(session_factory, cid) == 0
+
+
+@pytest.mark.parametrize("value", _NOT_TEXT, ids=_NOT_TEXT_IDS)
+def test_ac_41_09_a_multipart_media_url_that_is_not_text_is_refused(client, session_factory, monkeypatch, value):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700781", token="tkn-live-09")
+    rig = _install(monkeypatch)
+    payload = {"to": "+60700700781", "type": "document", "media": {"filename": "doc.pdf", "url": value}}
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        headers=headers,
+        files={"file": ("doc.pdf", PDF, "application/pdf")},
+        data={"payload": json.dumps(payload)},
+    )
+    assert (r.status_code, _error_code(r)) == (422, "invalid_media_url")
+    assert rig.graph_calls == []
+    assert _message_count(session_factory, cid) == 0
+
+
+def test_ac_41_09_a_recipient_that_is_a_number_is_a_typed_422(client, session_factory):
+    # Chosen code: the same envelope every other body-validation failure on this
+    # route already answers (`422 invalid_request`).
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700782")
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json={"to": 60700700782, "type": "text", "text": {"body": "hi"}},
+        headers=headers,
+    )
+    assert (r.status_code, _error_code(r)) == (422, "invalid_request")
+    assert _message_count(session_factory, cid) == 0
