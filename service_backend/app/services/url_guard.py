@@ -180,7 +180,9 @@ class _GuardedSyncBackend(httpcore.SyncBackend):
         else:
             try:
                 infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-            except (socket.gaierror, UnicodeError) as exc:
+            except TimeoutError as exc:
+                raise httpcore.ConnectTimeout(str(exc)) from exc
+            except (OSError, UnicodeError) as exc:
                 raise httpcore.ConnectError(str(exc)) from exc
             addresses = _checked_addresses(host, infos, self._subject)
         last: typing.Optional[Exception] = None
@@ -211,7 +213,7 @@ class _GuardedAsyncBackend(httpcore.AnyIOBackend):
                     infos = await anyio.getaddrinfo(host, port, type=socket.SOCK_STREAM)
             except TimeoutError as exc:
                 raise httpcore.ConnectTimeout(str(exc)) from exc
-            except (socket.gaierror, UnicodeError) as exc:
+            except (OSError, UnicodeError) as exc:
                 raise httpcore.ConnectError(str(exc)) from exc
             addresses = _checked_addresses(host, infos, self._subject)
         last: typing.Optional[Exception] = None
@@ -243,10 +245,11 @@ class GuardedTransport(httpx.HTTPTransport):
         limits: typing.Optional[httpx.Limits] = None,
     ) -> None:
         limits = limits or _default_limits()
-        super().__init__(verify=verify, trust_env=trust_env, limits=limits)
+        ctx = httpx.create_ssl_context(verify=verify, trust_env=trust_env)
+        super().__init__(verify=ctx, trust_env=trust_env, limits=limits)
         self._pool.close()
         self._pool = httpcore.ConnectionPool(
-            ssl_context=httpx.create_ssl_context(verify=verify, trust_env=trust_env),
+            ssl_context=ctx,
             max_connections=limits.max_connections,
             max_keepalive_connections=limits.max_keepalive_connections,
             keepalive_expiry=limits.keepalive_expiry,
@@ -270,9 +273,10 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
         limits: typing.Optional[httpx.Limits] = None,
     ) -> None:
         limits = limits or _default_limits()
-        super().__init__(verify=verify, trust_env=trust_env, limits=limits)
+        ctx = httpx.create_ssl_context(verify=verify, trust_env=trust_env)
+        super().__init__(verify=ctx, trust_env=trust_env, limits=limits)
         self._pool = httpcore.AsyncConnectionPool(
-            ssl_context=httpx.create_ssl_context(verify=verify, trust_env=trust_env),
+            ssl_context=ctx,
             max_connections=limits.max_connections,
             max_keepalive_connections=limits.max_keepalive_connections,
             keepalive_expiry=limits.keepalive_expiry,
