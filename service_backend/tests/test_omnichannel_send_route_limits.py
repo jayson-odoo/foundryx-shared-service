@@ -1490,3 +1490,83 @@ def test_guard_ac_41_04_a_404_with_a_large_declared_length_stays_a_fetch_failure
     assert rig.media_calls == 1
     assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
     assert _message_count(session_factory, cid) == 0
+
+
+# ══ Fetch errors ═════════════════════════════════════════════════════════════
+def _raise_ssl(request):
+    import ssl
+
+    raise ssl.SSLError("BADTLSMARK1 record layer failure")
+
+
+def _raise_group(request):
+    raise ExceptionGroup("grouped", [OSError("BADTLSMARK2 connection detail")])
+
+
+def _raise_runtime(request):
+    raise RuntimeError("BADTLSMARK3 unexpected")
+
+
+@pytest.mark.parametrize("path", ["media", "header"])
+@pytest.mark.parametrize(
+    "raiser,marker", [(_raise_ssl, "BADTLSMARK1"), (_raise_group, "BADTLSMARK2"), (_raise_runtime, "BADTLSMARK3")]
+)
+def test_ac_41_09_any_error_during_the_fetch_is_a_fixed_422(client, session_factory, monkeypatch, path, raiser, marker):
+    phone = "+60700700760" if path == "media" else "+60700700761"
+    headers, cid, _ch = _setup(client, session_factory, phone=phone, token="tkn-live-09")
+    rig = _install(monkeypatch, media=raiser)
+    url, body = _PATHS[path](phone)
+    r = client.post(url, json=body, headers=headers)
+    assert rig.media_calls == 1, "the fetch never happened"
+    assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
+    assert marker not in r.text
+    assert rig.graph_calls == []
+    assert _message_count(session_factory, cid) == 0
+
+
+def test_ac_41_09_real_client_on_an_impossible_port_is_a_422(client, session_factory, monkeypatch, local_peer):
+    # `local_peer` only allows local http URLs through the URL check here; no
+    # server is started and nothing outside this machine is contacted
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700762")
+    r = client.post(
+        "/api/v1/omnichannel/messages",
+        json=_media_body("+60700700762", "http://127.0.0.1:99999/x"),
+        headers=headers,
+    )
+    assert r.status_code == 422, r.status_code
+    assert _error_code(r) in ("media_fetch_failed", "invalid_media_url")
+    assert _message_count(session_factory, cid) == 0
+
+
+@pytest.mark.parametrize("value", [123, [1, 2], {"a": 1}, True, 1.5], ids=["int", "list", "dict", "bool", "float"])
+def test_ac_41_09_a_header_url_that_is_not_text_is_refused(client, session_factory, monkeypatch, value):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700763", token="tkn-live-09")
+    rig = _install(monkeypatch, media=_pdf_media)
+    body = _header_body("+60700700763")
+    body["interactive"]["header"]["url"] = value
+    r = client.post("/api/v1/omnichannel/messages", json=body, headers=headers)
+    assert (r.status_code, _error_code(r)) == (422, "invalid_media_url")
+    assert rig.media_calls == 0 and rig.graph_calls == []
+    assert _message_count(session_factory, cid) == 0
+
+
+# ══ Guide: error table and limits ════════════════════════════════════════════
+_PER_KEY = re.compile(r"per[ -](?:API[ -])?key", re.IGNORECASE)
+
+
+def test_ac_41_07_error_table_states_the_size_refusal_and_the_compression_rule():
+    rows = [l for l in _guide_lines() if l.startswith("|")]
+    assert any("`oversize`" in r for r in rows)  # control: the table was found
+    assert any("oversize" in r and re.search(r"100\s?MB", r) for r in rows), "no table row names the 100 MB refusal"
+    assert any(re.search(r"compress|Content-Encoding", r, re.IGNORECASE) for r in rows), "no table row names compression"
+
+
+def test_ac_41_07_busy_row_and_changelog_name_both_limits():
+    lines = _guide_lines()
+    busy = [l for l in lines if l.startswith("| `media_fetch_busy`")]
+    assert busy, "the error row is missing"
+    assert "process" in busy[0].lower() and _PER_KEY.search(busy[0]), busy[0]
+    first_section = next(i for i, l in enumerate(lines) if l.startswith("## 1."))
+    log = [l for l in lines[:first_section] if l.startswith("> |") and "media_fetch_busy" in l]
+    assert log, "no changelog row mentions the busy answer"
+    assert "process" in log[0].lower() and _PER_KEY.search(log[0]), "changelog row names only one limit"
