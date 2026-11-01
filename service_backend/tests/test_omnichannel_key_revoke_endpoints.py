@@ -11,6 +11,7 @@ Controls (tests that pass today, kept so a red test cannot be red for the wrong
 reason) say so in their name or docstring.
 """
 import re
+from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -1525,3 +1526,76 @@ def test_ac_43_09_control_registering_records_the_registering_key(client, sessio
     r = _rig(client, session_factory)
     ep = _register_as(client, r["hdr"])
     assert _created_by(session_factory, ep) == _by(r["key"])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AC-43-50 - the guide and the engineering doc state what revoking a key does
+# ═════════════════════════════════════════════════════════════════════════════
+_REPO = Path(__file__).resolve().parents[2]
+_GUIDE = _REPO / "documentation/omnichannel/consumer-integration-guide.md"
+_ENG = _REPO / "documentation/engineering/omnichannel-service.md"
+
+
+def _doc_section(text, start, end):
+    i = text.index(start)
+    j = text.index(end, i + len(start))
+    return " ".join(text[i:j].split()).lower()
+
+
+def _first_changelog_row():
+    lines = _GUIDE.read_text().splitlines()[:40]
+    rows = [
+        ln for ln in lines
+        if ln.startswith("> |") and "| Date |" not in ln and not ln.startswith("> |--")
+    ]
+    return rows[0]
+
+
+def test_ac_43_50_guide_first_changelog_row_is_for_the_revoke_change():
+    row = _first_changelog_row()
+    assert "disabledReason" in row or "revoked key" in row.lower() or "key is revoked" in row.lower(), row
+    assert "/channels" not in row, "keep this row apart from the GET /channels row"
+
+
+def test_ac_43_50_guide_section_7_says_what_staff_may_do_with_a_revoked_keys_endpoints():
+    sec = _doc_section(_GUIDE.read_text(), "## 7. Receiving events", "## 8. ")
+    assert any("revoked" in x and "pause" in x and "staff" in x for x in sec.split(". ")), (
+        "section 7 must say staff may pause a revoked key's endpoints"
+    )
+    assert any("disabledreason" in x and "revoked" in x for x in sec.split(". ")), (
+        "section 7 must say disabledReason says the key was revoked"
+    )
+    assert "post /webhooks/{id}/enable" in sec and "resume" in sec
+    assert any("recogni" in x and "resume" in x for x in sec.split(". ")), (
+        "section 7 must say to resume only endpoints you recognise"
+    )
+
+
+def test_ac_43_50_guide_section_7_says_the_key_that_last_changed_an_endpoint_owns_it():
+    sec = _doc_section(_GUIDE.read_text(), "## 7. Receiving events", "## 8. ")
+    assert any(
+        "last" in x and "changed" in x and ("owns" in x or "owner" in x) for x in sec.split(". ")
+    ), "section 7 must say the key that last changed an endpoint owns it"
+
+
+def test_ac_43_50_guide_at_least_once_statement_covers_a_workspace_or_tenant_that_is_off():
+    sec = _doc_section(_GUIDE.read_text(), "### Delivery guarantees", "### Registering")
+    parts = [x for x in sec.split(". ") if "workspace" in x and "tenant" in x]
+    assert parts, "the delivery guarantees must name a workspace or tenant that is off"
+    flat = " ".join(parts)
+    assert "no event is queued" in flat or "not queued" in flat or "nothing is queued" in flat, flat
+    assert "failed" in sec and "retr" in sec
+    assert "not sent later" in sec or "not sent afterwards" in sec or "never sent later" in sec, sec
+
+
+def test_ac_43_50_guide_says_a_write_refused_because_the_key_was_revoked_is_401():
+    sec = _doc_section(_GUIDE.read_text(), "## 7. Receiving events", "## 8. ")
+    assert any("revoked" in x and "401" in x and ("write" in x or "register" in x or "change" in x)
+               for x in sec.split(". ")), "section 7 must say a refused write from a revoked key is 401"
+
+
+def test_ac_43_50_engineering_doc_mentions_the_key_row_lock_and_the_ownership_rule():
+    text = " ".join(_ENG.read_text().split()).lower()
+    assert "_hold_live_key" in text or "key row lock" in text or "lock on the key row" in text
+    assert any("last" in x and "changed" in x and ("owns" in x or "owner" in x or "created_by" in x)
+               for x in text.split(". ")), "the engineering doc must state the ownership rule"
