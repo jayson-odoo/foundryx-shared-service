@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.tenant import DEFAULT_TENANT_ID
-from app.services.storage import storage_for_tenant
+from app.services.storage import _KEY_PREFIX, is_minted_raw_key, storage_for_tenant
 from ..adapters.base import SendError
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, WhatsappTemplate
@@ -40,6 +40,30 @@ _EDIT_RESUBMIT = {"APPROVED", "REJECTED", "PAUSED"}
 _EDIT_LOCAL = {"LOCAL_DRAFT"}
 # Statuses where editing is blocked entirely.
 _EDIT_BLOCKED = {"PENDING", "DISABLED"}
+
+
+_SAMPLE_REFUSED = "This sample file is not available for this channel. Upload it again."
+
+
+def _is_channel_sample_key(key: Optional[str], channel_id: str) -> bool:
+    """True when `key` is a sample this channel's upload route wrote: after an
+    optional well-formed `conn:<id>:` the raw sits under
+    `omni/templates/<channel_id>/` and has the shape the storage layer mints."""
+    if not isinstance(key, str):
+        return False
+    raw = key
+    if key.startswith(_KEY_PREFIX):
+        parts = key.split(":", 2)
+        if len(parts) != 3 or not all(parts):
+            return False
+        raw = parts[2]
+    prefix = f"omni/templates/{channel_id}/"
+    return raw.startswith(prefix) and is_minted_raw_key(raw[len(prefix):])
+
+
+def _check_sample_key(key: Optional[str], channel_id: str) -> None:
+    if key and not _is_channel_sample_key(key, channel_id):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, _SAMPLE_REFUSED)
 
 
 class TemplateNotFound(Exception):
@@ -167,6 +191,8 @@ class TemplateManagementService:
     def save_draft(self, channel_id: str, doc: WaTemplateDoc, tenant_id: str = DEFAULT_TENANT_ID) -> TemplateDetail:
         self._channel(channel_id, tenant_id)
         validate_doc(doc, existing_names=self._existing_names(channel_id, tenant_id))
+        if doc.header and doc.header.format != "TEXT":
+            _check_sample_key(doc.header.sampleKey, channel_id)
         row = WhatsappTemplate(
             tenant_id=tenant_id, channel_id=channel_id, name=doc.name,
             language=doc.language, category=doc.category,
@@ -185,6 +211,8 @@ class TemplateManagementService:
         if cur_status in _EDIT_BLOCKED:
             raise HTTPException(status.HTTP_409_CONFLICT, "This template can't be edited in its current state.")
         validate_doc(doc, existing_names=self._existing_names(channel_id, tenant_id, exclude_id=template_id))
+        if doc.header and doc.header.format != "TEXT":
+            _check_sample_key(doc.header.sampleKey, channel_id)
         t.name = doc.name
         t.language = doc.language
         t.category = doc.category
@@ -209,6 +237,7 @@ class TemplateManagementService:
         a resumable-upload handle (T10)."""
         components = to_meta_components(doc)
         if doc.header and doc.header.format != "TEXT" and t.media_sample_key:
+            _check_sample_key(t.media_sample_key, channel_id)
             handle = self._upload_sample(t.media_sample_key, creds, tenant_id)
             for comp in components:
                 if comp.get("type") == "HEADER" and comp.get("format") != "TEXT":
