@@ -120,6 +120,10 @@ async def lifespan(_: FastAPI):
         stop_dispatcher()
 
 
+# Request URLs (which can carry query secrets) must never reach INFO logs, whatever
+# the root level becomes.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 app = FastAPI(title="Foundryx Shared Service API", debug=settings.debug, lifespan=lifespan)
 
 # Structured error envelope for the public gateway API (`/api/v1/*`, AC-01-36).

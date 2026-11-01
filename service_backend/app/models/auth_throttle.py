@@ -67,6 +67,9 @@ THROTTLE_SCOPE_IDEA_COMMENT_IP = "idea_comment_ip"
 # signed-in principal (key = sha256 of tenant + voter id).
 THROTTLE_SCOPE_IDEA_PORTAL_COMMENT = "idea_portal_comment"
 THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT = "idea_portal_submit"
+# Omnichannel replace-token attempts per channel (plan 42): every attempt counts,
+# refused ones included (key = channel id).
+THROTTLE_SCOPE_CHANNEL_TOKEN = "channel_token"
 
 
 class AuthThrottle(Base):

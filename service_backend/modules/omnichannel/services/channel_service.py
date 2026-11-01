@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from app.models.tenant import DEFAULT_TENANT_ID
+from app.schemas.filters import FilterGroup
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import (
     Channel,
@@ -81,10 +82,12 @@ class ChannelService:
         sort_by: Optional[str] = None,
         sort_dir: str = "asc",
         status_view: str = "active",
+        filter_group: Optional[FilterGroup] = None,
     ) -> Tuple[List[ChannelItem], int]:
         rows, total = self.repo.paginate(
             tenant_id, page=page, page_size=page_size, search=search,
             sort_by=sort_by, sort_dir=sort_dir, trashed=status_view == "trashed",
+            filter_group=filter_group,
         )
         return self._items(rows, tenant_id), total
 
@@ -97,10 +100,12 @@ class ChannelService:
     def get_at(
         self, index: int, tenant_id: str = DEFAULT_TENANT_ID, *, status_view: str = "active",
         search: Optional[str] = None, sort_by: Optional[str] = None, sort_dir: str = "asc",
+        filter_group: Optional[FilterGroup] = None,
     ) -> Tuple[Optional[ChannelItem], int]:
         rows, total = self.repo.paginate(
             tenant_id, page=0, page_size=10_000, search=search, sort_by=sort_by,
             sort_dir=sort_dir, trashed=status_view == "trashed",
+            filter_group=filter_group,
         )
         if index < 0 or index >= len(rows):
             return None, total
@@ -118,10 +123,16 @@ class ChannelService:
             raise ChannelNotFound()
         if payload.name is not None:
             c.name = payload.name.strip()
-        if payload.isActive is not None:
+        if payload.isActive is not None and payload.isActive != c.is_active:
+            # ERROR is a health label owned by the token check (plan 42): a
+            # pause or resume changes the flag and leaves the label alone.
+            statuses.ensure_statuses(self.db, tenant_id)
+            error_id = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ERROR")
+            was_error = error_id is not None and c.status_id == error_id
             c.is_active = payload.isActive
-            key = "ACTIVE" if payload.isActive else "INACTIVE"
-            c.status_id = statuses.status_id_for(self.db, tenant_id, "CHANNEL", key)
+            if not was_error:
+                key = "ACTIVE" if payload.isActive else "INACTIVE"
+                c.status_id = statuses.status_id_for(self.db, tenant_id, "CHANNEL", key)
         self.db.commit()
         self.db.refresh(c)
         return self._items([c], tenant_id)[0]
@@ -144,19 +155,26 @@ class ChannelService:
         return TestConnectionResult(ok=status.ok, message=status.message, checkedAt=now)
 
     def disconnect(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:
+        statuses.ensure_statuses(self.db, tenant_id)
         inactive = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "INACTIVE")
+        error = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ERROR")
         for c in self.repo.get_many(ids, tenant_id):
             c.is_trashed = True
             c.is_active = False
-            c.status_id = inactive
+            # ERROR is the token check's label (plan 42): a disconnect leaves it.
+            if c.status_id != error:
+                c.status_id = inactive
         self.db.commit()
 
     def restore(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:
+        statuses.ensure_statuses(self.db, tenant_id)
         active = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ACTIVE")
+        error = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ERROR")
         for c in self.repo.get_many(ids, tenant_id):
             c.is_trashed = False
             c.is_active = True
-            c.status_id = active
+            if c.status_id != error:
+                c.status_id = active
         self.db.commit()
 
     def remove(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:

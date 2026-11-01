@@ -48,16 +48,27 @@ function toFormValues(
   };
 }
 
+export interface UseChannelFormOptions {
+  /** Open the Replace token dialog (the view owns the dialog state). */
+  onReplaceToken?: (channel: Channel) => void;
+}
+
 export interface UseChannelFormResult {
   config: ResourceFormConfig<Channel> | null;
   form: UseFormReturn<ChannelDetailValues>;
   isLoading: boolean;
   notFound: boolean;
+  /** Re-read the channel (after a token replace) so the badge follows. */
+  reloadChannel: () => void;
 }
 
 /** Loads the channel + profile, wires one RHF form, assembles the 3-tab config. */
-export function useChannelForm(channelId: string, initialEditing: boolean): UseChannelFormResult {
-  const actions = useChannelActions();
+export function useChannelForm(
+  channelId: string,
+  initialEditing: boolean,
+  { onReplaceToken }: UseChannelFormOptions = {},
+): UseChannelFormResult {
+  const actions = useChannelActions({ onReplaceToken });
   const { can } = useCan();
   const canReadWebhooks = can('webhooks.read');
   const [channel, setChannel] = useState<Channel | null>(null);
@@ -104,6 +115,14 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId]);
+
+  // Re-read the record after a Replace token so the badge and reason follow.
+  const reloadChannel = useCallback(() => {
+    channelService
+      .get(channelId)
+      .then(setChannel)
+      .catch(() => undefined);
   }, [channelId]);
 
   // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
@@ -326,6 +345,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
       isDirty: form.formState.isDirty,
       onSave,
       onCancel,
+      onReload: reloadChannel,
       recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
@@ -341,7 +361,8 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
     canReadWebhooks,
     fetchRecordAt,
     buildRecordHref,
+    reloadChannel,
   ]);
 
-  return { config, form, isLoading, notFound };
+  return { config, form, isLoading, notFound, reloadChannel };
 }

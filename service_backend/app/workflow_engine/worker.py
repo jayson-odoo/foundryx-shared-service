@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 
 from celery import Celery
+from celery.schedules import crontab
 from celery.exceptions import SoftTimeLimitExceeded
 
 from app.config import settings
@@ -15,6 +16,10 @@ from app.lazy_registry import lazy_once
 from app.ops_liveness import KNOWN_QUEUES
 
 logger = logging.getLogger("foundryx.workflows")
+
+# Request URLs (which can carry query secrets) must never reach INFO logs, whatever
+# the root level becomes (same pin as app/main.py).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Review round 1 (B2) - the stable sentence stamped on a run this app's
 # `workflows.run_workflow` / `workflows.wake_serialized` tasks stop
@@ -109,6 +114,10 @@ celery_app.conf.beat_schedule = {
     # broadcast stuck in SENDING. Same module-absence guard as the webhook
     # retry tick above (this worker is the sole beat host).
     "broadcasts-due": {"task": "omnichannel.broadcasts_due", "schedule": 60.0},
+    # WhatsApp token health scan (plan 42) - queues one check per live channel
+    # onto the omni queue every 6 hours on the wall clock (00, 06, 12, 18: a deploy does not
+    # restart the clock); makes no Meta call itself.
+    "omnichannel-token-health": {"task": "omnichannel.token_checks_due", "schedule": crontab(minute=0, hour="*/6")},
     # Meetings calendar sync (sprint-5 S0) - a new event with a conference link
     # must surface within 60 s, so this is a minute tick like the rest. It only
     # enqueues for tenants that have the module active AND someone opted in.
@@ -357,6 +366,28 @@ def broadcasts_due_task() -> dict:
         logger.exception("broadcasts-due tick failed")
         db.rollback()
         return {"started": 0, "reconciled": 0, "finalized": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="omnichannel.token_checks_due")
+def token_checks_due_task() -> dict:
+    """WhatsApp token health beat tick (plan 42). Failure-isolated; a no-op when
+    the omnichannel module is absent."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.omnichannel.services.token_health import run_channel_token_checks
+    except ImportError:
+        return {"queued": 0}
+
+    db = SessionLocal()
+    try:
+        return {"queued": run_channel_token_checks(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("token health tick failed")
+        db.rollback()
+        return {"queued": 0}
     finally:
         db.close()
 

@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     throttle_idea_portal_comment_window_minutes: int = 60
     throttle_idea_portal_submit_max: int = 10
     throttle_pull_key_window_minutes: int = 5
+    # Omnichannel replace-token attempts per channel (plan 42).
+    throttle_channel_token_max: int = 10
+    throttle_channel_token_window_minutes: int = 10
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10
     # Form upload caps (D12). Per-file hard ceiling (DoS guard - capped reads
