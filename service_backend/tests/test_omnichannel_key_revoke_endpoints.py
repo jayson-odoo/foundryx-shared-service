@@ -1783,3 +1783,20 @@ def test_ac_43_12_control_a_key_patch_on_a_row_paused_by_a_key_or_a_revoke_works
         res = client.patch(f"{BASE}/webhooks/{ep}", headers=r["hdr"] if ep == own else hdr3, json={"name": f"renamed {ep[:4]}"})
         assert res.status_code == 200, res.text
         assert _state(session_factory, ep)["status"] == "DISABLED"
+
+
+def test_ac_43_12_a_keys_disable_cannot_turn_a_staff_pause_into_its_own(client, session_factory):
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    ep = _staff_paused_row(client, r)
+    before = _row_snapshot(session_factory, ep)
+    assert before["reason"] == STAFF_REASON  # control
+
+    res = client.post(f"{BASE}/webhooks/{ep}/disable", headers=hdr2)
+
+    assert res.status_code == 200 and res.json()["status"] == "DISABLED", res.text  # pinned: the row comes back as it was
+    assert _row_snapshot(session_factory, ep) == before
+    assert _row_snapshot(session_factory, ep)["reason"] == STAFF_REASON
+    enabled = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
+    assert enabled.status_code == 409, enabled.text
+    assert enabled.json()["error"]["code"] == "endpoint_paused_by_staff"
