@@ -915,3 +915,126 @@ def test_a_connect_time_refusal_on_the_attachment_path_is_not_logged_as_an_error
     assert outcome.kind == "none"
     assert guarded.count(BLOCKED_ADDR) == 0
     assert not [r for r in caplog.records if "media URL fetch failed" in r.getMessage()]
+
+
+# ── Several checked addresses: the async path behaves like the plain client ───
+# One address of the name never answers; the other is the live listener. The
+# wrapped backend call stands in for a host that does not respond, without any
+# traffic leaving the machine.
+class _Attempts:
+    def __init__(self):
+        self.started = []
+        self.cancelled = []
+        self.timed_out = []
+
+
+def _make_unanswered(monkeypatch, unanswered):
+    import anyio
+    import httpcore
+
+    attempts = _Attempts()
+    real = httpcore.AnyIOBackend.connect_tcp
+
+    async def wrapped(self, host, port, timeout=None, local_address=None, socket_options=None):
+        attempts.started.append(host)
+        if host in unanswered:
+            try:
+                with anyio.move_on_after(timeout):
+                    await anyio.sleep_forever()
+            except BaseException:
+                attempts.cancelled.append(host)
+                raise
+            attempts.timed_out.append(host)
+            raise httpcore.ConnectTimeout("scripted: no answer")
+        return await real(self, host, port, timeout, local_address, socket_options)
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", wrapped)
+    return attempts
+
+
+def _two_addresses(rig, monkeypatch):
+    monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)
+    rig.script(NAME, ["two_loopback"])  # 127.0.0.1 first, ::1 second
+    rig.respond("ok")
+
+
+BUDGET = 3.0
+
+
+def _timed_get(rig, budget=BUDGET, after=None):
+    import asyncio
+
+    async def go():
+        started = time.monotonic()
+        result = None
+        error = None
+        async with httpx.AsyncClient(
+            transport=url_guard.GuardedAsyncTransport(), timeout=budget
+        ) as client:
+            try:
+                result = (await client.get(rig.base() + "/x")).status_code
+            except httpx.HTTPError as exc:
+                error = exc
+        elapsed = time.monotonic() - started
+        if after is not None:
+            await after()
+        return result, error, elapsed
+
+    return asyncio.run(asyncio.wait_for(go(), WAIT_SECONDS))
+
+
+def test_an_unanswered_first_address_does_not_hold_back_a_live_second_one(rig, monkeypatch):
+    _two_addresses(rig, monkeypatch)
+    _make_unanswered(monkeypatch, {ALLOWED_ADDR})
+    status, error, elapsed = _timed_get(rig)
+    assert error is None and status == 200, f"the request did not complete: {error!r}"
+    assert elapsed < 1.5, f"took {elapsed:.2f}s of a {BUDGET:.0f}s budget with a live second address"
+
+
+def test_every_address_unanswered_fails_within_one_budget(rig, monkeypatch):
+    _two_addresses(rig, monkeypatch)
+    _make_unanswered(monkeypatch, {ALLOWED_ADDR, BLOCKED_ADDR})
+    status, error, elapsed = _timed_get(rig)
+    assert isinstance(error, httpx.ConnectTimeout), f"expected a connect timeout, got {error!r} / {status}"
+    assert 2.0 <= elapsed < 4.5, f"took {elapsed:.2f}s for a {BUDGET:.0f}s budget over two addresses"
+
+
+def test_the_losing_attempt_is_cancelled_and_nothing_is_left_running(rig, monkeypatch):
+    import asyncio
+
+    _two_addresses(rig, monkeypatch)
+    attempts = _make_unanswered(monkeypatch, {ALLOWED_ADDR})
+
+    async def settled():
+        deadline = time.monotonic() + 5.0
+        while len(asyncio.all_tasks()) > 1 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        assert len(asyncio.all_tasks()) == 1, f"tasks left running: {asyncio.all_tasks()}"
+
+    status, error, _elapsed = _timed_get(rig, after=settled)
+    assert error is None and status == 200, f"the request did not complete: {error!r}"
+    assert attempts.cancelled == [ALLOWED_ADDR], (
+        f"the unanswered attempt was not cancelled (cancelled={attempts.cancelled}, "
+        f"timed_out={attempts.timed_out})"
+    )
+
+
+def test_the_gateway_fetch_is_not_held_back_by_an_unanswered_first_address(rig, env, monkeypatch):
+    from app.api_errors import ApiError
+    from modules.omnichannel.services.public_gateway_service import PublicGatewayService
+
+    _two_addresses(rig, monkeypatch)
+    _make_unanswered(monkeypatch, {ALLOWED_ADDR})
+    db = env.session_factory()
+    started = time.monotonic()
+    body = None
+    failure = None
+    try:
+        body = PublicGatewayService(db)._fetch_url(rig.base() + "/m/img.png")
+    except ApiError as exc:
+        failure = exc
+    finally:
+        db.close()
+    elapsed = time.monotonic() - started
+    assert failure is None and body == b"ok", f"the fetch did not complete: {failure and failure.message}"
+    assert elapsed < 5.0, f"the fetch took {elapsed:.2f}s with a live second address"
