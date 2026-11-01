@@ -133,7 +133,8 @@ class Run:
 
 async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], int]] = None,
                  headers: Optional[Dict[str, str]] = None, path: Optional[str] = None,
-                 length: Any = "auto", chunk: Optional[int] = None) -> Run:
+                 length: Any = "auto", chunk: Optional[int] = None,
+                 disconnect: bool = False) -> Run:
     """POST the scenario straight into the ASGI app. With `hold` the body is withheld
     until the app asks for it (so every dependency and pre-check has finished) and
     `sample()` is taken at that moment; without it the body is available at once and
@@ -150,6 +151,8 @@ async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], i
         run.receive_thread = threading.get_ident()
         first_receive.set()
         await release.wait()
+        if disconnect:
+            return {"type": "http.disconnect"}
         if sent and (chunk is None or len(sent) * chunk >= len(scn.body)):
             if hold:
                 await asyncio.Event().wait()  # no disconnect during the test
@@ -958,3 +961,16 @@ def test_a_chunked_token_body_of_exactly_the_cap_is_processed_normally(connector
                              length="omit", chunk=8 * 1024))
     assert run.status == 400, run.body
     assert run.json() == {"error": "invalid_grant"}
+
+
+# ── a client that leaves during the body ────────────────────────────────────
+@pytest.mark.parametrize("scenario", SCENARIOS, indirect=True)
+def test_a_client_that_leaves_during_the_body_causes_no_server_error(scenario, sql_log):
+    sql_log.clear()
+    try:
+        run = asyncio.run(_drive(scenario, hold=False, disconnect=True))
+    except Exception as exc:  # noqa: BLE001 - the app itself must not raise
+        pytest.fail(f"the app raised when the client left: {type(exc).__name__}: {exc}")
+    assert run.status is None or run.status < 500, f"a {run.status} was sent: {run.body!r}"
+    if not scenario.name.startswith("token"):
+        assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
