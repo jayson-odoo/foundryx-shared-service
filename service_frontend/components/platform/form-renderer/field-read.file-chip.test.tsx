@@ -46,19 +46,38 @@ describe('FileChip content type', () => {
     expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe('application/octet-stream');
   });
 
-  it.each(['image/png', 'application/pdf', 'text/plain'])('keeps the %s type of a fetched blob', async (type) => {
+  it.each(['image/png', 'application/pdf'])('keeps the %s type of a fetched blob', async (type) => {
     renderChip(async () => new Blob(['x'], { type }));
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
     expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe(type);
   });
 
   it.each([
-    ['text/plain; charset=utf-8', 'text/plain'],
-    ['IMAGE/PNG', 'image/png'],
+    ['text/plain', 'text/plain;charset=utf-8'],
+    ['text/plain; charset=utf-8', 'text/plain;charset=utf-8'],
   ])('opens a fetched %j blob as exactly %s', async (type, expected) => {
     renderChip(async () => new Blob(['x'], { type }));
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    // jsdom lowercases a Blob type verbatim and keeps the exact string given.
     expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe(expected);
+  });
+
+  it('opens a fetched IMAGE/PNG blob as exactly image/png', async () => {
+    renderChip(async () => new Blob(['x'], { type: 'IMAGE/PNG' }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe('image/png');
+  });
+
+  it.each([
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/zip',
+    'image/x-icon',
+  ])('keeps the %s type of a fetched blob', async (type) => {
+    renderChip(async () => new Blob(['x'], { type }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe(type);
   });
 
   it('a failed fetch still shows the existing toast', async () => {

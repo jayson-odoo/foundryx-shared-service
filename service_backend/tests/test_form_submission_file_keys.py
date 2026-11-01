@@ -581,3 +581,57 @@ def test_control_content_disposition_helper_keeps_plain_and_real_names():
     assert _content_disposition("inline", "report.pdf").startswith('inline; filename="report.pdf"')
     real = "简历.png"
     assert f"filename*=UTF-8''{quote(real, safe='')}" in _content_disposition("inline", real)
+
+
+# ---- every type a real upload can have keeps its type at the route ----------------------
+
+_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+_ZIP_BYTES = b"PK\x03\x04" + b"\x00" * 24
+
+# (sample bytes, filename, the type detect_upload_mime must report)
+SNIFFED_SAMPLES = [
+    pytest.param(_PNG, "a.png", "image/png", id="png"),
+    pytest.param(b"\xff\xd8\xff\xe0" + b"\x00" * 16, "a.jpg", "image/jpeg", id="jpeg"),
+    pytest.param(b"GIF89a" + b"\x00" * 16, "a.gif", "image/gif", id="gif"),
+    pytest.param(b"RIFF\x00\x00\x00\x00WEBPVP8 ", "a.webp", "image/webp", id="webp"),
+    pytest.param(b"\x00\x00\x01\x00" + b"\x00" * 16, "a.ico", "image/x-icon", id="icon"),
+    pytest.param(b"%PDF-1.4\n", "a.pdf", "application/pdf", id="pdf"),
+    pytest.param(_ZIP_BYTES, "a.zip", "application/zip", id="zip"),
+    pytest.param(_ZIP_BYTES, "a.docx", _DOCX, id="docx"),
+    pytest.param(_ZIP_BYTES, "a.xlsx", _XLSX, id="xlsx"),
+    pytest.param(_ZIP_BYTES, "a.pptx", _PPTX, id="pptx"),
+    pytest.param("plain text, café".encode("utf-8"), "a.txt", "text/plain", id="text"),
+]
+
+
+@pytest.mark.parametrize("content,filename,expected", SNIFFED_SAMPLES)
+def test_a_sniffed_upload_type_is_served_with_the_same_type(local_world, content, filename, expected):
+    from app.uploads import detect_upload_mime
+
+    w = local_world
+    sniffed = detect_upload_mime(content, filename)
+    assert sniffed == expected  # guard: the sample really sniffs to this type
+    rel = f"forms/{w.form}/{w.sub}/resume/0-x.bin"
+    _file(w.media, rel, content)
+    _set_answer(w.sf, w.sub, "resume", [_entry(rel, mime=sniffed, name=filename)])
+    res = _serve(w.client, w.headers, w.sub, "resume")
+    assert res.status_code == 200
+    assert res.headers["content-type"].split(";")[0] == expected
+
+
+@pytest.mark.parametrize(
+    "content,filename",
+    [
+        pytest.param(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>", "a.svg", id="svg"),
+        pytest.param(b"<!doctype html><p>x</p>", "a.html", id="html"),
+    ],
+)
+def test_markup_is_not_a_sniffed_type_and_stays_an_opaque_download(local_world, content, filename):
+    from app.uploads import detect_upload_mime
+
+    w = local_world
+    assert detect_upload_mime(content, filename) is None
+    res = _serve_entry_on_local_disk(w, "text/html", name=filename)
+    assert res.headers["content-type"].split(";")[0] == "application/octet-stream"
