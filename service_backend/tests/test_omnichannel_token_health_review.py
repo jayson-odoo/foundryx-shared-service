@@ -184,7 +184,7 @@ def test_replace_requires_messaging_scope_when_readable(client, session_factory,
 # ── 6. app id ────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "details_app,called,subscribed",
-    [("other-app", False, False), ("test-app-id", True, True), (None, True, True)],
+    [("other-app", False, False), ("test-app-id", True, True), (None, False, False)],
     ids=["different app", "same app", "unreadable"],
 )
 def test_replace_renews_webhook_only_for_this_app(client, session_factory, monkeypatch, details_app, called, subscribed):
@@ -198,6 +198,24 @@ def test_replace_renews_webhook_only_for_this_app(client, session_factory, monke
     assert _read(session_factory, cid)[3]["access_token"] == TOKEN_NEW
     assert bool(st.subscribe_calls) is called
     assert res.json()["subscribed"] is subscribed
+
+
+@pytest.mark.parametrize(
+    "details",
+    [None, RuntimeError("debug refused")],
+    ids=["details unreadable", "details raises"],
+)
+def test_replace_skips_renewal_when_token_details_cannot_be_read(client, session_factory, monkeypatch, details):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
+    st = _stub(monkeypatch, check="ok", details=details, subscribe=True)
+    cid, h = _channel_and_headers(session_factory, client)
+    res = _replace(client, h, cid)
+    assert res.status_code == 200, res.text
+    assert _read(session_factory, cid)[3]["access_token"] == TOKEN_NEW
+    assert st.subscribe_calls == []
+    assert res.json()["subscribed"] is False
 
 
 # ── 7. no phone number ───────────────────────────────────────────────────────
