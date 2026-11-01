@@ -163,9 +163,9 @@ def bot_credentials(db: Session, tenant_id: str) -> Tuple[str, str]:
 
 
 def storage_connection(db: Session, tenant_id: str) -> Optional[Connection]:
-    from app.repositories.connection_repository import ConnectionRepository
+    from app.services.storage import usable_storage_connection
 
-    return ConnectionRepository(db).resolve_for_type(tenant_id, "storage")
+    return usable_storage_connection(db, tenant_id)
 
 
 def build_output(

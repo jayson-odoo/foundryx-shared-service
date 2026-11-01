@@ -558,7 +558,15 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
             # sweep and the soft-time-limit path both close; mirror that
             # shape here so a generic crash never leaves a run "in progress"
             # forever.
-            service.finish(job, status=JOB_FAILED, error=f"Job crashed: {exc}")
+            from app.services.storage import UnresolvableKey
+
+            # An unusable storage connection reads as fixed text: its id stays out.
+            error = (
+                "Job stopped: a storage connection is not usable."
+                if isinstance(exc, UnresolvableKey)
+                else f"Job crashed: {exc}"
+            )
+            service.finish(job, status=JOB_FAILED, error=error)
             close_module_bookkeeping(db, job, now=job.finished_at)
             db.commit()
     return repo.get_unscoped(job_id)

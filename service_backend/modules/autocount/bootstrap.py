@@ -216,6 +216,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_billing_do_link_queries,
         backfill_billing_preset_fix,
         backfill_consignment_transferred_qty,
+        backfill_customer_debtor_type,
         backfill_customer_sales_agent,
         backfill_product_item_class,
         backfill_product_item_type,
@@ -334,6 +335,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # 0034 runs the same repair once on deploy.
     if parse_version(from_version) < (0, 20, 0):
         backfill_product_item_class(db, schema=schema, tenant_id=tenant_id)
+    # 0.20.0 -> 0.21.0 (SS-DEBTOR-TYPE, partner of sorento-crm
+    # SALES-ACCOUNT-TYPE): every existing `customer` task gets a
+    # `DebtorType -> market_segment_code` row. Version-GATED and tenant-scoped
+    # like the SalesAgent pass. Module Alembic 0035 runs the same repair once
+    # on deploy.
+    if parse_version(from_version) < (0, 21, 0):
+        backfill_customer_debtor_type(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0
