@@ -96,9 +96,11 @@ def list_workspace_webhooks(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("webhooks.read")),
 ) -> WebhookEndpointStaffListResponse:
-    """The all-channels endpoints of a workspace; needs no live channel."""
+    """Every endpoint of a workspace, per-channel and all-channels; needs no live channel."""
+    service = WebhookService(db)
     try:
-        rows = WebhookService(db).list_all_channels_for_workspace(user.tenant_id, workspace_id)
+        service.require_workspace(user.tenant_id, workspace_id)
+        rows = service.list_for_workspace(user.tenant_id, workspace_id)
     except WebhookNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     return _to_staff_items(db, user.tenant_id, rows)
