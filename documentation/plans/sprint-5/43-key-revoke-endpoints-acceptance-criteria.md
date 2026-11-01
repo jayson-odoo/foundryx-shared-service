@@ -30,7 +30,8 @@ A consumer rotating its key resumes a paused endpoint with its new key: `POST /w
 
 | AC | Rule |
 |---|---|
-| AC-43-10 | [BE] Staff webhook lists carry `registeredByKeyName`: the key's name when an API key made the row, revoked or not, else null. The public API's endpoint item is unchanged |
+| AC-43-09 | [BE] The key that last changed a row owns it: register, PATCH, rotate and enable by a key set `created_by` to `apikey:<that key>`. Disable and delete by a key, and every staff action, leave it alone. So after a rotation, or a key's PATCH of a staff-made row, the count moves to that key and revoking it pauses the row |
+| AC-43-10 | [BE] Staff webhook lists carry `registeredByKeyName`: the key's name when an API key owns the row, revoked or not, else null. The public API's endpoint item is unchanged |
 | AC-43-11 | [BE] The name is resolved with tenant and workspace, without a query per row. A row whose key no longer exists reads null |
 
 ## Workspace list
