@@ -49,11 +49,17 @@ def _resolve(value, *args):
     return value
 
 
+_UNSET = object()
+
+
 class _Stub:
     def __init__(self):
         self.check = "ok"
         self.subscribe = True
         self.expiry = None
+        self.scopes = None
+        self.app_id = None
+        self.details = _UNSET
         self.check_calls = []
         self.subscribe_calls = []
         self.expiry_calls = []
@@ -75,13 +81,15 @@ def _stub(monkeypatch, **kw):
         st.subscribe_calls.append((dict(credentials), waba_id))
         return _resolve(st.subscribe, credentials, waba_id)
 
-    def token_expiry(self, token):
+    def token_details(self, token):
         st.expiry_calls.append(token)
-        return _resolve(st.expiry, token)
+        if st.details is not _UNSET:
+            return _resolve(st.details, token)
+        return {"expires_at": _resolve(st.expiry, token), "scopes": st.scopes, "app_id": st.app_id}
 
     monkeypatch.setattr(WhatsAppCloudAdapter, "check_token", check_token, raising=False)
     monkeypatch.setattr(WhatsAppCloudAdapter, "subscribe_app_checked", subscribe_app_checked, raising=False)
-    monkeypatch.setattr(WhatsAppCloudAdapter, "token_expiry", token_expiry, raising=False)
+    monkeypatch.setattr(WhatsAppCloudAdapter, "token_details", token_details, raising=False)
     return st
 
 
@@ -249,12 +257,12 @@ def _activity_dump(session_factory):
 
 
 # ── AC-42-01 classifier table (check_token against a faked Graph response) ──
-def _graph_adapter(monkeypatch, handler):
+def _graph_adapter(monkeypatch, handler, *, app_configured=True):
     from app.config import settings
     from modules.omnichannel.adapters.whatsapp_cloud import WhatsAppCloudAdapter
 
-    monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
-    monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
+    monkeypatch.setattr(settings, "meta_app_id", "test-app-id" if app_configured else "")
+    monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret" if app_configured else "")
     return WhatsAppCloudAdapter(client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 
@@ -354,7 +362,10 @@ def test_ac_42_02_beat_schedule_runs_the_scan_every_six_hours():
 
     entries = [e for e in celery_app.conf.beat_schedule.values() if "token" in str(e.get("task", ""))]
     assert entries, "beat_schedule has no token-health entry"
-    assert entries[0]["schedule"] == 6 * 3600.0
+    from celery.schedules import crontab
+
+    # a fixed-interval float restarts its clock on every deploy; a crontab does not
+    assert entries[0]["schedule"] == crontab(minute=0, hour="*/6")
 
 
 # ── AC-42-03 dead -> ERROR, is_active untouched, inbound and send still work ─

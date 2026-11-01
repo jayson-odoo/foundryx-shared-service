@@ -158,3 +158,23 @@ describe('ReplaceTokenDialog - AC-42-22 refusal', () => {
     expect(toastSuccess).not.toHaveBeenCalled();
   });
 });
+
+describe('ReplaceTokenDialog - dismissal during a save (review round)', () => {
+  it('Esc or an outside click during a save does not close; after the save ends Esc closes', async () => {
+    let rejectSave: (e: Error) => void = () => undefined;
+    replaceChannelToken.mockReturnValue(new Promise((_, reject) => { rejectSave = reject; }));
+    const { onOpenChange } = await mountDialog();
+    type(TOKEN);
+    save();
+    await waitFor(() => expect(replaceChannelToken).toHaveBeenCalled());
+
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
+    fireEvent.pointerDown(document.body);
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+
+    rejectSave(Object.assign(new Error('That token was not accepted.'), { status: 422 }));
+    expect(await screen.findByText(/That token was not accepted\./)).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+});
