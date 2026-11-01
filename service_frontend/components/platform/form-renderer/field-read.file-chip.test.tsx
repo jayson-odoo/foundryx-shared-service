@@ -52,6 +52,15 @@ describe('FileChip content type', () => {
     expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe(type);
   });
 
+  it.each([
+    ['text/plain; charset=utf-8', 'text/plain'],
+    ['IMAGE/PNG', 'image/png'],
+  ])('opens a fetched %j blob as exactly %s', async (type, expected) => {
+    renderChip(async () => new Blob(['x'], { type }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe(expected);
+  });
+
   it('a failed fetch still shows the existing toast', async () => {
     renderChip(async () => {
       throw new Error('boom');

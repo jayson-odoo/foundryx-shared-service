@@ -517,3 +517,67 @@ def test_a_key_under_the_prefix_that_is_a_directory_is_not_found(local_world):
     res = w.serve("list", f"forms/{w.form}/dirx")
     assert res.status_code == 404
     assert res.json() == {"detail": "File not found."}
+
+
+# ---- the file name header is well formed for any stored name --------------------------
+
+CONTROL_NAMES = ["a\x00b.png", "a\x01b.png", "a\x0bb.png", "a\x0cb.png", "a\x1bb.png", "a\x7fb.png"]
+
+
+def _ascii_part(header: str) -> str:
+    import re
+
+    match = re.search(r'filename="(.*?)"; filename\*=', header)
+    assert match, header
+    return match.group(1)
+
+
+def _assert_plain_ascii_name(part: str):
+    assert all(0x20 <= ord(c) < 0x7F for c in part), repr(part)
+    assert '"' not in part and "\\" not in part, repr(part)
+
+
+@pytest.mark.parametrize("name", CONTROL_NAMES, ids=lambda n: f"byte_{ord(n[1]):02x}")
+def test_a_stored_name_with_control_bytes_gives_a_clean_header(local_world, name):
+    res = _serve_entry_on_local_disk(local_world, "image/png", name=name)
+    assert res.status_code == 200
+    _assert_plain_ascii_name(_ascii_part(res.headers["content-disposition"]))
+
+
+def test_a_stored_name_with_a_lone_surrogate_gives_a_pure_ascii_header(local_world):
+    res = _serve_entry_on_local_disk(local_world, "image/png", name="a\ud800b.png")
+    assert res.status_code == 200
+    raw = dict(res.headers.raw)[b"content-disposition"]
+    assert raw.isascii()
+
+
+def test_control_a_non_ascii_name_keeps_its_real_name_and_a_plain_name_is_unchanged(local_world):
+    from urllib.parse import quote
+
+    res = _serve_entry_on_local_disk(local_world, "image/png", name="简历.png")
+    assert f"filename*=UTF-8''{quote(chr(0x7b80) + chr(0x5386) + '.png', safe='')}" in res.headers["content-disposition"]
+    res = _serve_entry_on_local_disk(local_world, "application/pdf", name="report.pdf")
+    assert res.headers["content-disposition"].startswith('inline; filename="report.pdf"')
+
+
+@pytest.mark.parametrize("name", CONTROL_NAMES, ids=lambda n: f"byte_{ord(n[1]):02x}")
+def test_content_disposition_helper_strips_control_bytes(name):
+    from app.api.v1.documents import _content_disposition
+
+    _assert_plain_ascii_name(_ascii_part(_content_disposition("inline", name)))
+
+
+def test_content_disposition_helper_accepts_a_lone_surrogate():
+    from app.api.v1.documents import _content_disposition
+
+    assert _content_disposition("inline", "a\ud800b.png").isascii()
+
+
+def test_control_content_disposition_helper_keeps_plain_and_real_names():
+    from urllib.parse import quote
+
+    from app.api.v1.documents import _content_disposition
+
+    assert _content_disposition("inline", "report.pdf").startswith('inline; filename="report.pdf"')
+    real = "简历.png"
+    assert f"filename*=UTF-8''{quote(real, safe='')}" in _content_disposition("inline", real)
