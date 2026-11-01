@@ -45,7 +45,7 @@ def fake_http(monkeypatch):
     calls = []
     state = {"responses": [], "raise": None}
 
-    def fake_stream(method, url, *, headers=None, content=None, timeout=None, follow_redirects=None):
+    def fake_stream(_client, method, url, *, headers=None, content=None):
         calls.append(
             {"method": method, "url": url, "headers": dict(headers or {}), "content": content}
         )
@@ -55,7 +55,7 @@ def fake_http(monkeypatch):
             return state["responses"].pop(0)
         return _FakeStream(status_code=200, headers={"content-type": "text/plain"}, body=b"ok")
 
-    monkeypatch.setattr(http_actions.httpx, "stream", fake_stream)
+    monkeypatch.setattr(http_actions.httpx.Client, "stream", fake_stream)
     return calls, state
 
 
