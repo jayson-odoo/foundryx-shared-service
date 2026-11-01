@@ -32,7 +32,7 @@ from app.services.url_guard import UrlGuardError
 from app.services.url_guard import assert_deliverable as _core_assert_deliverable
 from app.services.url_guard import validate_public_https_url as _core_validate_url
 
-from ..models import Channel, WebhookDelivery, WebhookEndpoint
+from ..models import Channel, WebhookDelivery, WebhookEndpoint, Workspace
 from ..security import encrypt_secret
 
 SECRET_SCHEME = "whsec_"
@@ -59,6 +59,10 @@ MAX_ENDPOINTS_PER_WORKSPACE = 10
 
 class WebhookError(Exception):
     """Validation failure (bad URL, unknown event, channel not found)."""
+
+
+class WebhookNoActiveChannel(WebhookError):
+    """The workspace has no active channel to register an all-channels endpoint on."""
 
 
 class WebhookNotFound(Exception):
@@ -168,6 +172,14 @@ class WebhookService:
         """Register an endpoint. Returns (row, plaintext_secret) - the secret is
         shown ONCE for the consumer to configure signature verification."""
         channel = self._channel(tenant_id, channel_id)
+        # Validate first: the URL check can touch the network, which must not run
+        # while the row lock below is held.
+        clean_url = validate_callback_url(url, strict_dns=strict_dns)
+        clean_events = _validate_events(events)
+        # Serialise registrations on this channel so the count below stays true.
+        self.db.query(Channel).filter(
+            Channel.id == channel.id, Channel.tenant_id == tenant_id
+        ).with_for_update().first()
         existing = (
             self.db.query(WebhookEndpoint)
             .filter(
@@ -177,13 +189,30 @@ class WebhookService:
             .count()
         )
         if existing >= MAX_ENDPOINTS_PER_CHANNEL:
+            self.db.rollback()
             raise WebhookError(
                 f"This channel already has the maximum of {MAX_ENDPOINTS_PER_CHANNEL} "
                 "webhook endpoints. Delete one before adding another."
             )
         return self._insert(
-            tenant_id, channel.workspace_id, channel.id, name, url, events, created_by, strict_dns
+            tenant_id, channel.workspace_id, channel.id, name, clean_url, clean_events, created_by
         )
+
+    def require_active_channel(self, tenant_id: str, workspace_id: str) -> None:
+        """Public registration needs one active channel (``is_active`` and not
+        trashed), so staff can always see the row on a channel's tab."""
+        found = (
+            self.db.query(Channel.id)
+            .filter(
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id == workspace_id,
+                Channel.is_active.is_(True),
+                Channel.is_trashed.is_(False),
+            )
+            .first()
+        )
+        if found is None:
+            raise WebhookNoActiveChannel("No active channel is connected to this workspace.")
 
     def create_for_workspace(
         self,
@@ -197,6 +226,12 @@ class WebhookService:
     ) -> Tuple[WebhookEndpoint, str]:
         """Register an endpoint that covers every channel of the workspace
         (``channel_id`` NULL). Returns (row, plaintext_secret)."""
+        clean_url = validate_callback_url(url, strict_dns=strict_dns)
+        clean_events = _validate_events(events)
+        # Serialise registrations in this workspace so the count below stays true.
+        self.db.query(Workspace).filter(
+            Workspace.id == workspace_id, Workspace.tenant_id == tenant_id
+        ).with_for_update().first()
         existing = (
             self.db.query(WebhookEndpoint)
             .filter(
@@ -207,12 +242,13 @@ class WebhookService:
             .count()
         )
         if existing >= MAX_ENDPOINTS_PER_WORKSPACE:
+            self.db.rollback()
             raise WebhookError(
                 f"This workspace already has the maximum of {MAX_ENDPOINTS_PER_WORKSPACE} "
                 "all-channels webhook endpoints. Delete one before adding another."
             )
         return self._insert(
-            tenant_id, workspace_id, None, name, url, events, created_by, strict_dns
+            tenant_id, workspace_id, None, name, clean_url, clean_events, created_by
         )
 
     def _insert(
@@ -221,13 +257,11 @@ class WebhookService:
         workspace_id: str,
         channel_id: Optional[str],
         name: str,
-        url: str,
-        events: List[str],
+        clean_url: str,
+        clean_events: List[str],
         created_by: Optional[str],
-        strict_dns: bool,
     ) -> Tuple[WebhookEndpoint, str]:
-        clean_url = validate_callback_url(url, strict_dns=strict_dns)
-        clean_events = _validate_events(events)
+        """Insert and commit (releases the registration lock)."""
         secret = _new_secret()
         row = WebhookEndpoint(
             tenant_id=tenant_id,

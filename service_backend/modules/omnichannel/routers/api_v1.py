@@ -460,9 +460,10 @@ def create_webhook(
 ) -> WebhookEndpointMintResponse:
     """Register a callback that covers every channel of your workspace. The
     signing secret is returned ONCE - store it; it is never shown again."""
-    from ..services.webhook_service import WebhookError
+    from ..services.webhook_service import WebhookError, WebhookNoActiveChannel
 
     try:
+        _webhook_service(db).require_active_channel(api_ws.tenant_id, api_ws.workspace_id)
         row, secret = _webhook_service(db).create_for_workspace(
             api_ws.tenant_id, api_ws.workspace_id, payload.name, payload.url, payload.events,
             # No user behind an API key - record WHICH key, matching the
@@ -470,6 +471,8 @@ def create_webhook(
             # The activity log is pruned per tenant; this row is permanent.
             created_by=f"apikey:{api_ws.key_id}",
         )
+    except WebhookNoActiveChannel as exc:
+        raise ApiError(409, "no_active_channel", str(exc)) from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
     return WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret)
