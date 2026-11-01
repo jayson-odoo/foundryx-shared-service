@@ -412,6 +412,23 @@ class WebhookService:
             self.db.rollback()
             raise WebhookPausedByStaff("This endpoint was paused by staff.")
 
+    def _lock_endpoint(self, tenant_id: str, endpoint_id: str) -> WebhookEndpoint:
+        """Fresh read of the endpoint row under a FOR NO KEY UPDATE lock."""
+        row = (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.id == endpoint_id,
+                WebhookEndpoint.tenant_id == tenant_id,
+            )
+            .with_for_update(key_share=True)
+            .populate_existing()
+            .first()
+        )
+        if row is None:
+            self.db.rollback()
+            raise WebhookNotFound("Webhook endpoint not found.")
+        return row
+
     def _hold_key_write(
         self, row: WebhookEndpoint, key_id: Optional[str], refuse: bool = True
     ) -> WebhookEndpoint:
@@ -422,19 +439,7 @@ class WebhookService:
         if key_id is None:
             return row
         self._hold_live_key(row.tenant_id, row.workspace_id, key_id)
-        fresh = (
-            self.db.query(WebhookEndpoint)
-            .filter(
-                WebhookEndpoint.id == row.id,
-                WebhookEndpoint.tenant_id == row.tenant_id,
-            )
-            .with_for_update(key_share=True)
-            .populate_existing()
-            .first()
-        )
-        if fresh is None:
-            self.db.rollback()
-            raise WebhookNotFound("Webhook endpoint not found.")
+        fresh = self._lock_endpoint(row.tenant_id, row.id)
         if refuse:
             self._refuse_if_staff_paused(fresh, key_id)
         return fresh
@@ -501,6 +506,8 @@ class WebhookService:
         key the owner when the row was not already ACTIVE. On disable it only
         records the key's own pause reason."""
         row = self._get(tenant_id, endpoint_id)
+        if key_id is None:
+            row = self._lock_endpoint(tenant_id, endpoint_id)  # staff: the last write wins on a fresh row
         if active:
             self._refuse_if_staff_paused(row, key_id)
             row = self._hold_key_write(row, key_id)
