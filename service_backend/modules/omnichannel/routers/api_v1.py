@@ -111,6 +111,9 @@ async def send_message(
         if not isinstance(payload_obj, dict) or not isinstance(payload_obj.get("media") or {}, dict):
             raise ApiError(422, "invalid_request", "payload must be a JSON object.")
         media = payload_obj.get("media") or {}
+        channel_id = payload_obj.get("channelId")
+        if channel_id is not None and not isinstance(channel_id, str):
+            raise ApiError(422, "invalid_channel", "channelId must be a string.")
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
@@ -128,7 +131,7 @@ async def send_message(
             caption=media.get("caption"),
             to=str(payload_obj.get("to") or ""),
             idempotency_key=idempotency_key,
-            channel_id=payload_obj.get("channelId"),
+            channel_id=channel_id,
         )
     else:
         try:

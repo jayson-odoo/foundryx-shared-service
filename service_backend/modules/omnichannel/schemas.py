@@ -1429,10 +1429,10 @@ class PublicReactionBody(ApiModel):
 class PublicSendRequest(ApiModel):
     to: str
     # Optional explicit channel selector (plan 32 / A7a, D-A7-18, AC-CHN-53) -
-    # an ACTIVE channel of THIS workspace. Omitted → prefer an active
-    # WHATSAPP channel, else the oldest active channel of any type (byte-
-    # identical to every pre-slice consumer). An unknown/foreign/inactive id
-    # is a typed `422 invalid_channel`, never a silent fallback.
+    # an ACTIVE channel of THIS workspace. Omitted → the only active WHATSAPP
+    # channel, else the only active channel; `422 channel_required` when that
+    # pool holds several. An unknown/foreign/inactive id is a typed
+    # `422 invalid_channel`, never a silent fallback.
     channelId: Optional[str] = None
     # text | template | image | video | audio | voice | document | sticker |
     # interactive | location | contacts | reaction

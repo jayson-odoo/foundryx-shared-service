@@ -968,8 +968,9 @@ class PublicGatewayService:
         try:
             channel = self._workspace_channel(tenant_id, workspace_id, channel_id=req.channelId)
         except ApiError as exc:
-            # A reaction goes out on the contact's own channel and uses no
-            # default, so an ambiguous default does not stop it (AC-38-101).
+            # A reaction goes out on the channel of the message it targets and
+            # uses no default, so an ambiguous default does not stop it
+            # (AC-38-101).
             if exc.code != "channel_required" or msg_type != "reaction":
                 raise
             channel = None
@@ -1266,7 +1267,6 @@ class PublicGatewayService:
             raise ApiError(400, "unsupported_type", f"Unknown media type '{kind}'.")
         if not (to or "").strip():
             raise ApiError(422, "invalid_recipient", "A recipient phone number is required.")
-        channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
         store = idempotency.get_store()
         reserved = False
         if idempotency_key:
@@ -1281,6 +1281,8 @@ class PublicGatewayService:
                 return claimed, True
             reserved = True
         try:
+            # After the replay check, as the JSON path does; a refusal releases the key.
+            channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
             message_id = self._send_media(
                 tenant_id,
                 workspace_id,
@@ -1361,7 +1363,8 @@ class PublicGatewayService:
         category: Optional[str] = None,
     ) -> list[PublicTemplateItem]:
         """Approved templates for the workspace. ``channel_id`` targets a specific
-        channel (default = the workspace's active channel); a channel in another
+        channel (omitted: the workspace's only default channel, else
+        ``422 channel_required``); a channel in another
         workspace/tenant is a uniform 404. ``search`` filters by name substring
         (case-insensitive); ``category`` filters by Meta category (UTILITY|…)."""
         if channel_id:
