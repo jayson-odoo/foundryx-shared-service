@@ -1709,3 +1709,77 @@ def test_ac_38_101_control_message_with_no_channel_keeps_todays_choice(client, s
     )
     assert (first.status_code, second.status_code) == (202, 200), (first.text, second.text)
     assert [(c["mark"], c["sender"]) for c in sent_via] == [("A", "pn-wa-first")] * 2
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AC-38-100 - the guide and the engineering doc state the channel rules
+# ═════════════════════════════════════════════════════════════════════════════
+_REPO = Path(__file__).resolve().parents[2]
+_GUIDE = _REPO / "documentation/omnichannel/consumer-integration-guide.md"
+_ENG = _REPO / "documentation/engineering/omnichannel-service.md"
+
+
+def _section(text, start, end):
+    """Text from the heading starting with `start` up to the heading starting with `end`."""
+    i = text.index(start)
+    j = text.index(end, i + len(start))
+    return text[i:j]
+
+
+def test_ac_38_100_guide_error_table_lists_channel_required_with_422():
+    text = _GUIDE.read_text()
+    errors = _section(text, "## 10. Error reference", "## 11.")
+    rows = [ln for ln in errors.splitlines() if ln.startswith("|") and "`channel_required`" in ln]
+    assert rows, "error table needs a channel_required row"
+    assert any("422" in ln for ln in rows), rows
+
+
+def test_ac_38_100_guide_changelog_has_a_breaking_row_for_channel_required():
+    lines = [ln for ln in _GUIDE.read_text().splitlines()[:40] if ln.startswith("> |")]
+    rows = [ln for ln in lines if "channel_required" in ln and "breaking" in ln.lower()]
+    assert rows, "changelog needs a row naming channel_required and saying breaking"
+    # An existing test takes the first changelog row holding this text.
+    assert all("/channels" not in ln for ln in rows), "keep this row apart from the GET /channels row"
+
+
+def test_ac_38_100_guide_section_4_states_when_channel_id_is_needed():
+    sec = _section(_GUIDE.read_text(), "## 4. Sending messages", "## 5. ").lower()
+    assert "channel_required" in sec
+    assert "channelid" in sec and "more than one active whatsapp" in sec
+    assert "another" in sec and "default" in sec and "whatsapp" in sec
+    # one WhatsApp plus another type keeps the default
+    assert any(
+        "one" in ln and "whatsapp" in ln and ("another" in ln or "other" in ln) and "default" in ln
+        for ln in sec.replace("\n", " ").split(". ")
+    ), "section 4 must say one WhatsApp plus another type keeps today's default"
+
+
+def test_ac_38_100_guide_section_5a_says_no_default_when_the_choice_is_a_guess():
+    sec = _section(_GUIDE.read_text(), "## 5a. Listing channels", "## 6. ")
+    rows = [ln for ln in sec.splitlines() if ln.startswith("|") and "`isDefault`" in ln]
+    assert rows, "5a needs an isDefault row"
+    row = rows[0].lower()
+    assert "none" in row and "more than one" in row and "whatsapp" in row, rows[0]
+
+
+def test_ac_38_100_guide_section_7_registration_covers_all_channels_and_channel_id_can_be_null():
+    sec = _section(_GUIDE.read_text(), "## 7. Receiving events", "## 8. ").lower()
+    flat = " ".join(sec.split())
+    assert "every channel" in flat or "all channels" in flat, "registration must cover all channels"
+    assert "channelid" in flat and "null" in flat
+    assert "contact.updated" in flat
+    assert any("contact.updated" in s and "null" in s for s in flat.split(". ")), (
+        "section 7 must say contact.updated can carry a null channelId"
+    )
+
+
+def test_ac_38_100_guide_reaction_follows_the_channel_of_its_message():
+    text = _GUIDE.read_text().lower()
+    assert "contact's own channel" not in text and "contact’s own channel" not in text
+    assert "channel of the message it reacts to" in text or "channel of the message" in text
+
+
+def test_ac_38_100_engineering_doc_mentions_channel_required_and_all_channels_endpoint():
+    text = _ENG.read_text().lower()
+    assert "channel_required" in text
+    assert "all-channels endpoint" in text or "all-channels webhook" in text or "all channels endpoint" in text
