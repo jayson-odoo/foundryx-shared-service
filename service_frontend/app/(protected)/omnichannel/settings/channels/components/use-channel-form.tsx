@@ -48,16 +48,27 @@ function toFormValues(
   };
 }
 
+export interface UseChannelFormOptions {
+  /** Open the Replace token dialog (the view owns the dialog state). */
+  onReplaceToken?: (channel: Channel) => void;
+}
+
 export interface UseChannelFormResult {
   config: ResourceFormConfig<Channel> | null;
   form: UseFormReturn<ChannelDetailValues>;
   isLoading: boolean;
   notFound: boolean;
+  /** Re-read the channel (after a token replace) so the badge follows. */
+  reloadChannel: () => void;
 }
 
 /** Loads the channel + profile, wires one RHF form, assembles the 3-tab config. */
-export function useChannelForm(channelId: string, initialEditing: boolean): UseChannelFormResult {
-  const actions = useChannelActions();
+export function useChannelForm(
+  channelId: string,
+  initialEditing: boolean,
+  { onReplaceToken }: UseChannelFormOptions = {},
+): UseChannelFormResult {
+  const actions = useChannelActions({ onReplaceToken });
   const { can } = useCan();
   const canReadWebhooks = can('webhooks.read');
   const [channel, setChannel] = useState<Channel | null>(null);
@@ -353,5 +364,5 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
     reloadChannel,
   ]);
 
-  return { config, form, isLoading, notFound };
+  return { config, form, isLoading, notFound, reloadChannel };
 }

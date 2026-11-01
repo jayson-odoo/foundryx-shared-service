@@ -8,14 +8,18 @@ import type { ResourceAction } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import type { Channel } from '@/types/omnichannel';
 import { channelFormHref } from './paths';
-import { openReplaceToken } from './replace-token-store';
 
 /**
  * The Channel action registry - one set surfaced in the row "…" menu, the bulk
  * toolbar, and the form "…" menu (plan 04 §7). Channels are CREATED via the
  * Connect wizard, not an action; here we edit / test / disconnect.
  */
-export function useChannelActions(): ResourceAction<Channel>[] {
+export interface UseChannelActionsOptions {
+  /** Open the Replace token dialog for a channel (the parent owns the dialog state). */
+  onReplaceToken?: (channel: Channel) => void;
+}
+
+export function useChannelActions({ onReplaceToken }: UseChannelActionsOptions = {}): ResourceAction<Channel>[] {
   const router = useRouter();
 
   return useMemo<ResourceAction<Channel>[]>(() => {
@@ -55,11 +59,10 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         surfaces: { row: true, form: true },
         isVisible: (rows) =>
           rows.length === 1 && rows.every((r) => r.channelType === 'WHATSAPP' && !r.isTrashed),
-        // Opens the dialog (a `run`, not a confirm): the host beside the list or
-        // the record renders it.
-        run: ([channel], rt) => {
-          if (!channel) return;
-          openReplaceToken({ channel, onReplaced: rt.reload });
+        // Opens the dialog (a `run`, not a confirm): the list page or the record
+        // owns the dialog, like `onConnect` on the list config.
+        run: ([channel]) => {
+          if (channel) onReplaceToken?.(channel);
         },
       },
       {
@@ -104,5 +107,5 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         deferred: { actionKey: 'channels.delete', entityType: 'channel' },
       },
     ];
-  }, [router]);
+  }, [router, onReplaceToken]);
 }

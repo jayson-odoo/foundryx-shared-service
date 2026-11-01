@@ -54,7 +54,7 @@ export function ReplaceTokenDialog({ channel, open, onOpenChange, onReplaced }: 
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => !(saving && !next) && onOpenChange(next)}>
       <DialogContent className="w-full max-w-[460px]">
         <DialogHeader>
           <DialogTitle>Replace token</DialogTitle>

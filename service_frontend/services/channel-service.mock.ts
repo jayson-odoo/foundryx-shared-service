@@ -356,7 +356,13 @@ export const mockChannelService: ChannelService = {
       ...current,
       name: input.name ?? current.name,
       isActive: input.isActive ?? current.isActive,
-      status: input.isActive === false ? 'INACTIVE' : input.isActive === true ? 'ACTIVE' : current.status,
+      // ERROR is the token check's label: a pause or resume leaves it (plan 42).
+      status:
+        current.status === 'ERROR' || input.isActive === undefined
+          ? current.status
+          : input.isActive
+            ? 'ACTIVE'
+            : 'INACTIVE',
       updatedAt: new Date(EPOCH).toISOString(),
     };
     rows[idx] = updated;
