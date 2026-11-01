@@ -22,7 +22,10 @@ import {
   eventLabel,
 } from './webhook-status';
 
-const stop = (e: React.MouseEvent) => e.stopPropagation();
+/** The reason the server stores when staff pause a row; nothing new to show for it. */
+const STAFF_DISABLED_REASON = 'Disabled by user.';
+
+const stop =(e: React.MouseEvent) => e.stopPropagation();
 
 /** Endpoint-list action callbacks the tab wires to its dialogs. */
 export interface WebhookListCallbacks {
@@ -251,7 +254,7 @@ export function useWebhookList(
                   {e.consecutiveFailures} consecutive failures
                 </span>
               )}
-              {e.status === 'AUTO_DISABLED' && e.disabledReason && (
+              {e.status !== 'ACTIVE' && e.disabledReason && e.disabledReason !== STAFF_DISABLED_REASON && (
                 <ClampedText
                   text={e.disabledReason}
                   lines={2}
