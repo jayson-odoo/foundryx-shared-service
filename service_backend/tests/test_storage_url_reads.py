@@ -1,4 +1,4 @@
-"""Storage URL reads (hardening slice over `app/integrations/s3_provider.py`).
+"""Storage URL reads (`app/integrations/s3_provider.py` and `app/services/storage.py`).
 
 A tenant's storage connection carries an editable `cdnBaseUrl` / `endpointUrl`.
 `S3CompatibleAdapter.resolve(key)` turns it into `("url", ...)` or
@@ -51,7 +51,7 @@ from app.models.import_job import ImportJob
 from app.models.tenant import DEFAULT_TENANT_ID, PLATFORM_TENANT_ID
 from app.services import storage as storage_module
 from app.services.document_service import DocumentService
-from app.services.storage import StorageReadError, read_object, read_url, storage_for_tenant
+from app.services.storage import StorageReadError, read_url, storage_for_tenant
 from app.import_engine.service import ImportService
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 from tests.test_storage_providers import StubS3Client
@@ -313,6 +313,7 @@ class Net:
         self.tmp_path = tmp_path
         self.listener: Optional[Listener] = None
         self.attempts: List[tuple] = []  # (host, port, socket timeout at connect)
+        self.lookups: List[str] = []  # names that were looked up
         self.sequences: Dict[str, List[str]] = {}  # name -> answers, one per lookup
         ca, chain, key = tls_files
         self.ca = ca
@@ -352,6 +353,7 @@ def net(tmp_path, monkeypatch, _tls_files):
             return real_getaddrinfo(name, port, family, type, proto, flags)
         except OSError:
             pass
+        n.lookups.append(name)
         ip = HOSTS.get(name.lower())
         answers = n.sequences.get(name.lower())
         if answers:
@@ -1200,17 +1202,6 @@ def test_read_url_returns_a_body_within_the_limit(framing, net):
     listener = net.start(tls=True, mode="framed", big_bytes=512 * 1024)
     listener.framing = framing
     assert len(read_url("https://cdn.storage.test/obj.bin", timeout=10, max_bytes=1 * MIB)) == 512 * 1024
-
-
-def test_an_import_error_report_read_stops_at_the_import_size_limit(net, bucket, session_factory):
-    db = session_factory()
-    ImportService(db).set_settings(DEFAULT_TENANT_ID, None, 1)
-    listener = net.start(tls=True, mode="big", big_bytes=64 * MIB)
-    conn = _connect(db, "https://cdn.storage.test")
-    out = read_errors(db, conn)
-    assert not out.ok or len(out.data) <= 1 * MIB
-    assert listener.bytes_sent < 32 * MIB, f"server sent {listener.bytes_sent} bytes"
-    db.close()
 
 
 def test_an_import_error_report_within_the_limit_is_read(net, bucket, session_factory):
@@ -2198,19 +2189,6 @@ def test_import_error_file_fails_cleanly_when_the_client_library_rejects_the_end
     db.close()
 
 
-def test_an_upload_does_not_fail_when_the_client_library_rejects_the_endpoint(
-    session_factory, rejecting_client, net, local_media
-):
-    db = session_factory()
-    _presigned_connection(db)
-    key = _call(
-        lambda: storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png"),
-        "the upload",
-    )
-    assert isinstance(key, str) and key
-    db.close()
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # migrating away from a connection that holds a bad URL
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2313,3 +2291,185 @@ def test_a_stored_object_with_another_encoding_label_is_still_refused(label, net
     listener.extra_headers = b"Content-Encoding: " + label.encode() + b"\r\n"
     with pytest.raises(StorageReadError):
         read_url("https://cdn.storage.test/obj.bin", timeout=5)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R2 account ids with surrounding whitespace
+# ═══════════════════════════════════════════════════════════════════════════
+
+PADDED_ACCOUNT_IDS = ["23f8c4ed ", " 23f8c4ed", " 23f8c4ed  "]
+
+
+@pytest.mark.parametrize("account_id", PADDED_ACCOUNT_IDS)
+def test_an_r2_account_id_with_surrounding_whitespace_is_saved(account_id, client, session_factory, net):
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(R2_PAYLOAD, accountId=account_id),
+        headers=_admin(client),
+    )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.parametrize("account_id", PADDED_ACCOUNT_IDS)
+def test_an_r2_account_id_with_surrounding_whitespace_is_usable(account_id):
+    from app.services.storage import endpoint_is_usable
+
+    assert endpoint_is_usable("r2", {"accountId": account_id}) is True
+
+
+def _padded_r2_connection(db, account_id: str) -> Connection:
+    conn = _storage_connection(db, DEFAULT_TENANT_ID, cdn="https://cdn.storage.test", provider="r2")
+    conn.config_json = {**conn.config_json, "accountId": account_id}
+    conn.updated_at = datetime.now(timezone.utc) + timedelta(seconds=5)
+    db.commit()
+    storage_module.clear_adapter_cache()
+    return conn
+
+
+@pytest.mark.parametrize("account_id", PADDED_ACCOUNT_IDS)
+def test_writes_go_to_an_r2_connection_whose_account_id_has_surrounding_whitespace(
+    account_id, session_factory, bucket, client_builds, local_media, net
+):
+    db = session_factory()
+    conn = _padded_r2_connection(db, account_id)
+    key = storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png")
+    assert key.startswith(f"conn:{conn.id}:")
+    assert list(bucket.objects.values()) == [b"BYTES"]
+    assert client_builds == ["https://23f8c4ed.r2.cloudflarestorage.com"]
+    db.close()
+
+
+@pytest.mark.parametrize("account_id", PADDED_ACCOUNT_IDS)
+def test_an_existing_key_resolves_through_an_r2_connection_whose_account_id_has_surrounding_whitespace(
+    account_id, session_factory, bucket, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _padded_r2_connection(db, account_id)
+    out = read_blob(db, conn)
+    assert out.ok and out.data == CANARY_BYTES
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# the import error report is produced by the server
+# ═══════════════════════════════════════════════════════════════════════════
+
+ERROR_REPORT_CEILING = 200 * MIB
+
+
+def test_an_import_error_report_over_the_tenant_upload_limit_is_read(net, bucket, session_factory):
+    db = session_factory()
+    ImportService(db).set_settings(DEFAULT_TENANT_ID, None, 1)
+    listener = net.start(tls=True, mode="framed", big_bytes=3 * MIB)
+    listener.framing = "exact"
+    out = read_errors(db, _connect(db, "https://cdn.storage.test"))
+    assert out.ok
+    assert len(out.data) == 3 * MIB
+    db.close()
+
+
+def test_an_import_error_report_with_a_declared_length_over_the_ceiling_is_refused_at_once(
+    net, bucket, session_factory
+):
+    import time
+
+    db = session_factory()
+    ImportService(db).set_settings(DEFAULT_TENANT_ID, None, 1000)
+    listener = net.start(tls=True, mode="framed", big_bytes=ERROR_REPORT_CEILING + MIB)
+    listener.framing = "stall"
+    conn = _connect(db, "https://cdn.storage.test")
+    started = time.monotonic()
+    out = read_errors(db, conn)
+    assert not out.ok
+    assert time.monotonic() - started < 5
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# read transactions end before network use
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def release_spy(monkeypatch, net):
+    import app.database as database
+
+    calls: List[tuple] = []
+
+    def spy(*args, **kwargs):
+        calls.append((len(net.attempts), len(net.lookups)))
+        return 0
+
+    monkeypatch.setattr(database, "release_read_transactions", spy)
+    monkeypatch.setattr(storage_module, "release_read_transactions", spy, raising=False)
+    return calls
+
+
+def test_read_url_ends_read_transactions_before_any_network_use(net, release_spy):
+    net.start(tls=True)
+    assert read_url("https://cdn.storage.test/obj.bin", timeout=5) == CANARY_BYTES
+    assert release_spy, "release_read_transactions was not called"
+    assert release_spy[0] == (0, 0)
+
+
+def test_an_operator_read_ends_read_transactions_before_any_network_use(net, release_spy):
+    net.start(tls=True)
+    assert read_url("https://internal.storage.test/obj.bin", operator_owned=True, timeout=5) == CANARY_BYTES
+    assert release_spy, "release_read_transactions was not called"
+    assert release_spy[0] == (0, 0)
+
+
+def test_endpoint_is_usable_ends_read_transactions_before_its_name_lookup(release_spy, net):
+    from app.services.storage import endpoint_is_usable
+
+    assert endpoint_is_usable("s3", {"endpointUrl": "https://cdn.storage.test"}) is True
+    assert release_spy, "release_read_transactions was not called"
+    assert release_spy[0][1] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# a client library error on upload surfaces
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_client_library_error_on_upload_surfaces_and_writes_nothing_locally(
+    session_factory, rejecting_client, net, local_media
+):
+    db = session_factory()
+    _presigned_connection(db)
+    with pytest.raises(ValueError):
+        storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png")
+    assert list(local_media.rglob("*")) == []
+    db.close()
+
+
+def test_a_mistyped_region_on_upload_surfaces_and_writes_nothing_locally(
+    session_factory, net, local_media
+):
+    db = session_factory()
+    conn = _connect(db, "")
+    conn.config_json = {**conn.config_json, "region": "not a region!"}
+    conn.updated_at = datetime.now(timezone.utc) + timedelta(seconds=5)
+    db.commit()
+    storage_module.clear_adapter_cache()
+    with pytest.raises(ValueError):
+        storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png")
+    assert list(local_media.rglob("*")) == []
+    assert net.attempts == []
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# behaviours that must hold
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _platform_update(db, connection_id: str, **config):
+    from app.schemas.integration import ConnectionUpdateRequest
+    from app.services.integration_service import IntegrationService
+
+    return IntegrationService(db).update(
+        PLATFORM_TENANT_ID, connection_id, ConnectionUpdateRequest(config=config)
+    )
+
