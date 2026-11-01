@@ -31,6 +31,7 @@ from app.dependencies import (
     _maybe_apply_impersonation,
     _resolve_user,
     effective_permission_keys,
+    read_request_body,
     tenant_signin_allowed,
 )
 from app.models.user import User
@@ -234,6 +235,22 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
         caps=[c for c in caps if isinstance(c, str)],
         connection_id=connection_id,
     )
+
+
+async def read_body_after_bearer_check(
+    request: Request, authorization: Optional[str] = Header(default=None)
+) -> None:
+    """Route-level dependency: no query runs before the body has arrived. Native and
+    embed tokens verify with the same signature check (no database); the principal
+    lookup in ``get_conversation_principal`` stays after the body."""
+    token = _parse_bearer(authorization)
+    if token is None:
+        raise _CREDENTIALS_EXC
+    try:
+        decode_access_token(token)
+    except JWTError:
+        raise _CREDENTIALS_EXC
+    await read_request_body(request)
 
 
 def get_conversation_principal(

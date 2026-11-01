@@ -12,6 +12,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
+from starlette.requests import ClientDisconnect
 
 from app.database import get_db
 from app.models.tenant import DEFAULT_TENANT_ID, Tenant
@@ -61,6 +62,30 @@ def assert_tenant_signin_allowed(user: User) -> None:
     # lifecycle re-check costs no extra round-trip.
     if user.tenant is None or not user.tenant.signin_allowed:
         raise _TENANT_INACTIVE_EXC
+
+
+async def read_request_body(request: Request) -> None:
+    """Receive the whole request body and cache it on the request, so the route's own
+    ``request.form()`` / ``request.json()`` return the cached result. A client that
+    leaves mid-body answers 400. Multipart keeps whatever ``request.form()`` raises."""
+    try:
+        if request.headers.get("content-type", "").startswith("multipart/"):
+            await request.form()
+        else:
+            await request.body()
+    except ClientDisconnect:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Request body was not received.")
+
+
+async def read_body_after_token_check(request: Request, token: str = Depends(oauth2_scheme)) -> None:
+    """Route-level dependency: no query runs before the body has arrived. Only the
+    token signature is checked here (no database); user, tenant and permission
+    checks stay in ``get_current_user``, after the body."""
+    try:
+        decode_access_token(token)
+    except JWTError:
+        raise _CREDENTIALS_EXC
+    await read_request_body(request)
 
 
 def _resolve_user(token: str, db: Session) -> User:

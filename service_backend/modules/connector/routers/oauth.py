@@ -5,12 +5,12 @@ from typing import Dict
 
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.concurrency import run_in_threadpool
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
+from starlette.requests import ClientDisconnect
 
-from app.database import get_db, release_read_transactions
+from app.database import get_db
 from app.services.throttle import ThrottleService, Throttled, client_ip
 
 from ..services.oauth_service import (
@@ -25,6 +25,8 @@ from ..services.oauth_service import (
 from ._common import oauth_service, require_allowed_client, require_method
 
 router = APIRouter()
+
+TOKEN_BODY_MAX_BYTES = 64 * 1024
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _ERROR_HTML = (
@@ -132,29 +134,45 @@ async def consent_return(request: Request, svc: OAuthService = Depends(oauth_ser
     return RedirectResponse(url, status_code=302, headers=_NO_STORE)
 
 
+async def read_token_body(request: Request) -> None:
+    """Route-level dependency: no query runs before the body has arrived. The body
+    is read with a size cap (413 beyond it) and cached for ``_form``."""
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            too_big = int(declared) > TOKEN_BODY_MAX_BYTES
+        except ValueError:
+            too_big = False
+        if too_big:
+            raise HTTPException(413, "Request body too large.")
+    chunks = []
+    size = 0
+    try:
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > TOKEN_BODY_MAX_BYTES:
+                raise HTTPException(413, "Request body too large.")
+            chunks.append(chunk)
+    except ClientDisconnect:
+        chunks = []
+    request._body = b"".join(chunks)
+
+
 @router.api_route("/{p}/oauth/token", methods=["GET", "POST"], include_in_schema=False,
-                  dependencies=[Depends(require_allowed_client)])
+                  dependencies=[Depends(read_token_body), Depends(require_allowed_client)])
 async def token(request: Request, svc: OAuthService = Depends(oauth_service),
                 db: Session = Depends(get_db)) -> Response:
     require_method(request, "POST")
     throttle = ThrottleService(db)
     key = f"tok:{client_ip(request)}"
-
-    def _precheck() -> None:
-        throttle.enforce_connector(key=key)
-        release_read_transactions()
-
-    # Database work runs on a worker thread; the connection is returned before the
-    # body is read, and nothing on the loop touches `db` or a service meanwhile.
     try:
-        await run_in_threadpool(_precheck)
+        throttle.enforce_connector(key=key)
     except Throttled as exc:
         return _throttled(exc)
-    form = await _form(request)
     try:
-        return JSONResponse(await run_in_threadpool(svc.token, form), headers=_NO_STORE)
+        return JSONResponse(svc.token(await _form(request)), headers=_NO_STORE)
     except TokenError as exc:
-        await run_in_threadpool(throttle.record_connector, key=key)
+        throttle.record_connector(key=key)
         return _oauth_error(exc.error)
 
 
