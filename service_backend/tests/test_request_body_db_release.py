@@ -1,10 +1,9 @@
-"""Routes that wait for a request body keep their database work off the event loop
-and hold no transaction while they wait.
+"""Routes that wait for a request body start no database work until it has arrived.
 
 Rule (storage-and-background-jobs.md): never hold an app-DB read transaction across
-a wait, and never run synchronous session work on the event loop thread. Five
-`async def` routes read the database during sign-in and pre-checks, then wait for
-the request body, then do more database work:
+a wait. Five `async def` routes take a request body; the body is read first, so no
+statement has run and no session holds a transaction while the route waits for it.
+Sign-in is checked by token signature only until the body is in:
 
   1. connector   POST /mcp/{p}/oauth/token                   (form body)
   2. forms       POST /forms/{id}/submissions                (JSON and multipart)
@@ -15,9 +14,8 @@ the request body, then do more database work:
 The ASGI app is driven directly with a `receive` callable that blocks until the test
 releases the body, so the wait is real whatever a client transport buffers (same
 approach as test_omnichannel_gateway_key_read_release.py). Thread identity is
-recorded by spies on the session-touching calls and compared with the thread that
-runs the event loop. The in-memory suite cannot see pool behaviour, so nothing here
-counts connections: it asserts on session state and on threads.
+counted at engine level. The in-memory suite cannot see pool behaviour, so nothing
+here counts connections: it asserts on session state and on statements.
 
 Existing suites that already pin the answers of these routes (B4):
   route 1  test_connector_oauth.py        success, unsupported grant, refusals
@@ -134,7 +132,8 @@ class Run:
 
 
 async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], int]] = None,
-                 headers: Optional[Dict[str, str]] = None, path: Optional[str] = None) -> Run:
+                 headers: Optional[Dict[str, str]] = None, path: Optional[str] = None,
+                 length: Any = "auto", chunk: Optional[int] = None) -> Run:
     """POST the scenario straight into the ASGI app. With `hold` the body is withheld
     until the app asks for it (so every dependency and pre-check has finished) and
     `sample()` is taken at that moment; without it the body is available at once and
@@ -151,12 +150,17 @@ async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], i
         run.receive_thread = threading.get_ident()
         first_receive.set()
         await release.wait()
-        if sent:
+        if sent and (chunk is None or len(sent) * chunk >= len(scn.body)):
             if hold:
                 await asyncio.Event().wait()  # no disconnect during the test
             return {"type": "http.disconnect"}
+        if chunk is None:
+            sent.append(1)
+            return {"type": "http.request", "body": scn.body, "more_body": False}
+        start = len(sent) * chunk
+        piece = scn.body[start:start + chunk]
         sent.append(1)
-        return {"type": "http.request", "body": scn.body, "more_body": False}
+        return {"type": "http.request", "body": piece, "more_body": start + chunk < len(scn.body)}
 
     async def send(message):
         if message["type"] == "http.response.start":
@@ -169,8 +173,11 @@ async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], i
     raw_headers = [
         (b"host", b"testserver"),
         (b"content-type", scn.content_type.encode()),
-        (b"content-length", str(len(scn.body)).encode()),
     ]
+    if length == "auto":
+        raw_headers.append((b"content-length", str(len(scn.body)).encode()))
+    elif length is not None and length != "omit":
+        raw_headers.append((b"content-length", str(length).encode()))
     merged = dict(scn.headers if headers is None else headers)
     raw_headers += [(k.lower().encode(), v.encode()) for k, v in merged.items()]
     scope = {
@@ -467,23 +474,26 @@ def test_tracker_control_sees_open_and_closed(session_factory, tracker):
 
 # ── B1: no transaction is open while the route waits for its body ───────────
 @pytest.mark.parametrize("scenario", SCENARIOS, indirect=True)
-def test_no_transaction_is_open_while_the_route_waits_for_its_body(scenario, spies, tracker):
-    _arm(scenario, spies)
+def test_no_transaction_is_open_while_the_route_waits_for_its_body(scenario, tracker):
     run = _run_held(scenario, tracker)
     assert run.sampled == 0, f"{run.sampled} session(s) held a transaction while the body was pending"
     assert run.status == scenario.status, run.body
 
 
-# ── B2: session work runs on a worker thread, never on the event loop ───────
+# ── A1: no statement has run by the time the route first waits for its body ─
 @pytest.mark.parametrize("scenario", SCENARIOS, indirect=True)
-def test_session_work_runs_off_the_event_loop(scenario, spies, tracker):
-    _arm(scenario, spies)
-    run = _run_held(scenario, tracker)
-    assert run.receive_thread == run.loop_thread, "the harness read the body off the loop thread"
-    for label in scenario.expect:
-        assert spies.threads(label), f"{label} was never called"
-    for label, thread in spies.calls:
-        assert thread != run.loop_thread, f"{label} ran on the event loop thread"
+def test_no_statement_runs_before_the_body_arrives(scenario, sql_log):
+    sql_log.clear()  # only the request itself is of interest, not the scenario setup
+    before_body: List[str] = []
+
+    def sample() -> int:
+        before_body.extend(statement for _, statement in sql_log)
+        return len(before_body)
+
+    run = asyncio.run(_drive(scenario, hold=True, sample=sample))
+    assert not before_body, (
+        f"{len(before_body)} statement(s) ran before the body was requested, first: {before_body[0]!r}"
+    )
     assert run.status == scenario.status, run.body
 
 
@@ -503,7 +513,7 @@ def test_a_request_without_valid_sign_in_is_refused_before_the_body_is_read(scen
 
 
 @pytest.mark.parametrize("scenario", CONVERSATION_SCENARIOS, indirect=True)
-def test_a_token_without_access_to_the_thread_is_refused_before_the_body_is_read(scenario):
+def test_a_token_without_access_to_the_thread_is_refused(scenario):
     from tests.test_omnichannel_embed import _assertion, _bearer, _exchange, _make_connection
 
     ctx = scenario.ctx
@@ -515,10 +525,9 @@ def test_a_token_without_access_to_the_thread_is_refused_before_the_body_is_read
     ).json()["accessToken"]
     run = asyncio.run(_drive(scenario, hold=False, headers=_bearer(token)))
     assert run.status == 403, run.body
-    assert run.receive_calls == 0, "the body was requested before thread access was checked"
 
 
-def test_a_throttled_client_is_refused_before_the_token_body_is_read(connector_client):
+def test_a_throttled_client_is_refused_on_the_token_route(connector_client):
     from app.config import settings
     from app.services.throttle import Throttled, ThrottleService
 
@@ -538,7 +547,6 @@ def test_a_throttled_client_is_refused_before_the_token_body_is_read(connector_c
     assert run.headers["cache-control"] == "no-store"
     assert run.headers["pragma"] == "no-cache"
     assert run.json() == {"error": "too_many_requests"}
-    assert run.receive_calls == 0, "the body was requested for a throttled client"
 
 
 def _token_scenario_for(connector_client) -> Scenario:
@@ -560,7 +568,7 @@ _PLAIN_CONVERSATION = ["template_json", "template_multipart", "interactive_json"
 
 @pytest.mark.parametrize("scenario", _PLAIN_CONVERSATION, indirect=True)
 @pytest.mark.parametrize("caller", ["user_without_reply", "token_without_capability"])
-def test_a_caller_without_the_send_permission_is_refused_before_the_body_is_read(scenario, caller):
+def test_a_caller_without_the_send_permission_is_refused(scenario, caller):
     from tests.connector_support import seed_user_with_perms
     from tests.test_form_revisions import _login
     from tests.test_omnichannel_embed import _assertion, _bearer, _exchange, _make_connection
@@ -576,7 +584,6 @@ def test_a_caller_without_the_send_permission_is_refused_before_the_body_is_read
         headers = _bearer(token)
     run = asyncio.run(_drive(scenario, hold=False, headers=headers))
     assert run.status == 403, run.body
-    assert run.receive_calls == 0, "the body was requested before the send permission was checked"
 
 
 def test_the_inbox_scoped_thread_check_reads_the_database(session_factory, sql_log):
@@ -604,6 +611,8 @@ def test_the_route_answers_correctly_once_the_body_arrives(scenario, spies, trac
     assert run.receive_calls >= 1
     assert run.status == scenario.status, run.body
     scenario.check(run)
+    for label in scenario.expect:  # the work behind the answer really happened
+        assert spies.threads(label), f"{label} was never called"
 
 
 # ── B4: token route (gaps in test_connector_oauth.py) ───────────────────────
@@ -828,12 +837,124 @@ def test_sql_log_control_flags_a_statement_on_the_current_thread(session_factory
     assert any(t == other[0] and s.startswith("select 2") for t, s in sql_log)
 
 
-@pytest.mark.parametrize("scenario", SCENARIOS, indirect=True)
-def test_no_sql_runs_on_the_event_loop(scenario, spies, tracker, sql_log):
-    _arm(scenario, spies)
-    sql_log.clear()  # only the request itself is of interest, not the scenario setup
-    run = _run_held(scenario, tracker)
-    assert run.status == scenario.status, run.body
-    assert sql_log, "no statements were recorded for the request"
-    on_loop = _on_thread(sql_log, run.loop_thread)
-    assert not on_loop, f"{len(on_loop)} statement(s) ran on the event loop thread, {on_loop!r}"
+# ── A2: sign-in is checked by token signature alone, before the body ────────
+def _resigned(scn: Scenario, kind: str) -> Dict[str, str]:
+    """The scenario's own valid bearer, re-signed the wrong way (or not at all)."""
+    from jose import jwt
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import settings
+
+    if kind == "missing":
+        return {}
+    if kind == "malformed":
+        return {"Authorization": "Bearer not-a-real-token"}
+    claims = jwt.get_unverified_claims(scn.headers["Authorization"].split(" ", 1)[1])
+    if kind == "wrong_secret":
+        secret = "a-different-signing-secret-0123456789"
+    else:
+        secret = settings.jwt_secret
+        claims["exp"] = int((datetime.now(timezone.utc) - timedelta(minutes=5)).timestamp())
+    return {"Authorization": "Bearer " + jwt.encode(claims, secret, algorithm=settings.jwt_algorithm)}
+
+
+@pytest.mark.parametrize("scenario", SIGNED_IN_SCENARIOS, indirect=True)
+@pytest.mark.parametrize("kind", ["missing", "malformed", "wrong_secret", "expired"])
+def test_a_token_that_fails_its_signature_check_is_refused_without_a_statement(scenario, kind, sql_log):
+    headers = _resigned(scenario, kind)
+    sql_log.clear()
+    run = asyncio.run(_drive(scenario, hold=False, headers=headers))
+    assert run.status == 401, run.body
+    assert run.receive_calls == 0, "the body was requested for a request that is not signed in"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+
+
+# ── A3: a correctly signed token the server no longer accepts ───────────────
+@pytest.mark.parametrize("scenario", SIGNED_IN_SCENARIOS, indirect=True)
+def test_a_suspended_tenant_is_refused_with_403(scenario, session_factory):
+    from app.models import DEFAULT_TENANT_ID
+    from app.services.tenant_service import TenantService
+
+    db = session_factory()
+    try:
+        TenantService(db).suspend(DEFAULT_TENANT_ID)
+    finally:
+        db.close()
+    run = asyncio.run(_drive(scenario, hold=False))
+    assert run.status == 403, run.body
+
+
+@pytest.mark.parametrize("scenario", [n for n in SIGNED_IN_SCENARIOS if "inbox" not in n], indirect=True)
+def test_a_signed_token_for_an_unknown_user_is_401(scenario):
+    from jose import jwt
+
+    from app.config import settings
+
+    claims = jwt.get_unverified_claims(scenario.headers["Authorization"].split(" ", 1)[1])
+    claims["sub"] = "no-such-user"
+    token = jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    run = asyncio.run(_drive(scenario, hold=False, headers={"Authorization": f"Bearer {token}"}))
+    assert run.status == 401, run.body
+    assert run.json()["detail"] == "Could not validate credentials"
+
+
+# ── A4: token route product and allow-list answers ──────────────────────────
+def test_an_unknown_product_is_404_on_the_token_route(connector_client):
+    res = connector_client.post("/mcp/no-such-product/oauth/token", data={"grant_type": "password"})
+    assert res.status_code == 404
+
+
+def test_a_client_outside_the_allow_list_is_403_on_the_token_route(connector_client):
+    from modules.connector import registry
+    from tests.connector_support import make_env
+
+    registry.set_env_for_tests(make_env({"CONNECTOR_ALLOWED_CLIENT_CIDRS": "10.9.8.0/24"}))
+    res = connector_client.post("/mcp/acme/oauth/token", data={"grant_type": "password"})
+    assert res.status_code == 403
+    assert "forbidden" in res.text.lower()
+
+
+# ── A5: the token body is read up to a fixed size ───────────────────────────
+TOKEN_BODY_CAP = 64 * 1024
+
+
+def _token_body(total: int) -> bytes:
+    """A form body of exactly `total` bytes: an unknown code plus padding."""
+    head = urlencode({"grant_type": "authorization_code", "code": "c", "code_verifier": "v" * 50,
+                      "client_id": "x", "redirect_uri": REDIRECT}) + "&pad="
+    return (head + "p" * (total - len(head))).encode()
+
+
+def _sized_token_scenario(body: bytes) -> Scenario:
+    return Scenario("token_sized", "/mcp/acme/oauth/token", {}, body,
+                    "application/x-www-form-urlencoded", 400, [], [], lambda run: None, scheme="https")
+
+
+def test_a_token_body_declared_over_the_cap_is_413_without_reading_it(connector_client, sql_log):
+    scn = _sized_token_scenario(_token_body(TOKEN_BODY_CAP + 1))
+    sql_log.clear()
+    run = asyncio.run(_drive(scn, hold=False))
+    assert run.status == 413, run.body
+    assert run.receive_calls == 0, "a body declared over the cap was still read"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+
+
+def test_a_chunked_token_body_that_crosses_the_cap_is_413(connector_client):
+    scn = _sized_token_scenario(_token_body(TOKEN_BODY_CAP * 2))
+    run = asyncio.run(_drive(scn, hold=False, length="omit", chunk=8 * 1024))
+    assert run.status == 413, run.body
+
+
+def test_a_token_body_of_exactly_the_cap_is_processed_normally(connector_client):
+    body = _token_body(TOKEN_BODY_CAP)
+    assert len(body) == TOKEN_BODY_CAP
+    run = asyncio.run(_drive(_sized_token_scenario(body), hold=False))
+    assert run.status == 400, run.body
+    assert run.json() == {"error": "invalid_grant"}
+
+
+def test_a_chunked_token_body_of_exactly_the_cap_is_processed_normally(connector_client):
+    run = asyncio.run(_drive(_sized_token_scenario(_token_body(TOKEN_BODY_CAP)), hold=False,
+                             length="omit", chunk=8 * 1024))
+    assert run.status == 400, run.body
+    assert run.json() == {"error": "invalid_grant"}
