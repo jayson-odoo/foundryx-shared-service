@@ -498,7 +498,11 @@ class ConversationService:
             if item.channelId:
                 channel = (
                     self.db.query(Channel)
-                    .filter(Channel.id == item.channelId, Channel.tenant_id == tenant_id)
+                    .filter(
+                        Channel.id == item.channelId,
+                        Channel.tenant_id == tenant_id,
+                        Channel.workspace_id == c.workspace_id,
+                    )
                     .first()
                 )
             # `{contactId}:{...}` per the guide (§7) - the suffix used to be
