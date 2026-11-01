@@ -1,6 +1,6 @@
 /**
  * AC-43-41: the workspace form has a Webhooks tab gated by `webhooks.read`,
- * listing the all-channels rows from the workspace route with no Add button and
+ * listing the rows of the workspace (per-channel and all-channels) from the workspace route with no Add button and
  * the same row actions as the channel tab. Both webhook lists show "Registered
  * by" with the key's name on a key's row and nothing on a staff row.
  */
@@ -186,6 +186,56 @@ describe('AC-43-41 workspace Webhooks list', () => {
     await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
     await waitFor(() => expect(park).toHaveBeenCalledTimes(1));
     expect(park).toHaveBeenCalledWith('webhooks.delete', 'webhook_endpoint', 'wh-key', undefined);
+  });
+});
+
+const PER_CHANNEL = row({ id: 'wh-chan', name: 'Channel feed', channelId: 'chn-1' });
+const PAUSED_BY_REVOKE = row({
+  id: 'wh-revoked',
+  name: 'Paused feed',
+  status: 'DISABLED',
+  disabledAt: '2026-07-05T00:00:00Z',
+  disabledReason: 'The API key that registered it was revoked.',
+});
+const PAUSED_BY_STAFF = row({
+  id: 'wh-user',
+  name: 'Stopped feed',
+  status: 'DISABLED',
+  disabledAt: '2026-07-05T00:00:00Z',
+  disabledReason: 'Disabled by user.',
+});
+
+describe('AC-43-41 per-channel rows and the paused reason', () => {
+  it('AC-43-41: control, a per-channel row is listed on the workspace tab with no "All channels" label, an all-channels row keeps it', async () => {
+    apiFetch.mockImplementation(async () => ({ data: [BY_KEY, PER_CHANNEL] }));
+    await renderWorkspaceTab();
+    const chan = await rowFor('Channel feed');
+    const all = await rowFor('Order feed');
+    expect(within(all).getByText('All channels')).toBeInTheDocument(); // control
+    expect(within(chan).queryByText('All channels')).not.toBeInTheDocument();
+  });
+
+  it('AC-43-41: a row paused by a revoke shows why', async () => {
+    apiFetch.mockImplementation(async () => ({ data: [PAUSED_BY_REVOKE] }));
+    await renderWorkspaceTab();
+    const tr = await rowFor('Paused feed');
+    expect(within(tr).getByText('The API key that registered it was revoked.')).toBeInTheDocument();
+  });
+
+  it('AC-43-41: control, an auto-disabled row shows its reason', async () => {
+    apiFetch.mockImplementation(async () => ({
+      data: [{ ...PAUSED_BY_REVOKE, id: 'wh-auto', name: 'Auto feed', status: 'AUTO_DISABLED', disabledReason: 'Too many failures.' }],
+    }));
+    await renderWorkspaceTab();
+    const tr = await rowFor('Auto feed');
+    expect(within(tr).getByText('Too many failures.')).toBeInTheDocument();
+  });
+
+  it('AC-43-41: control, a row a staff user disabled shows no reason text, as today', async () => {
+    apiFetch.mockImplementation(async () => ({ data: [PAUSED_BY_STAFF] }));
+    await renderWorkspaceTab();
+    const tr = await rowFor('Stopped feed');
+    expect(within(tr).queryByText('Disabled by user.')).not.toBeInTheDocument();
   });
 });
 
