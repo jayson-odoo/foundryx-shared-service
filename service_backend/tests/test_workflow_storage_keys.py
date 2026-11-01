@@ -541,3 +541,28 @@ def test_a_delete_the_filesystem_refuses_is_an_action_error_without_the_server_p
     assert str(media) not in str(info.value)
     assert directory.is_dir()
     assert (directory / "inner.txt").exists()
+
+
+def test_a_refused_delete_records_its_cause_in_the_server_log(local, client, media, caplog):
+    import logging
+
+    directory = media / "workflows" / local.a / "sub"
+    directory.mkdir(parents=True)
+    (directory / "inner.txt").write_bytes(b"data")
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ActionError):
+            _run(local, "delete", local.a, f"workflows/{local.a}/sub")
+    records = [r for r in caplog.records if r.levelno >= logging.WARNING and r.exc_info]
+    assert records, "no WARNING record with exc_info was logged"
+
+
+def test_control_a_successful_delete_logs_no_warning(local, client, media, caplog):
+    import logging
+
+    rel = f"workflows/{local.a}/note.txt"
+    (media / rel).parent.mkdir(parents=True, exist_ok=True)
+    (media / rel).write_bytes(b"data")
+    with caplog.at_level(logging.WARNING):
+        _run(local, "delete", local.a, rel)
+    assert not (media / rel).exists()
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
