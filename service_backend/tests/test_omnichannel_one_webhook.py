@@ -214,7 +214,9 @@ def test_ac_38_80_register_with_two_active_channels_has_null_channel(client, ses
         db.close()
 
 
-def test_ac_38_80_register_with_no_active_channel_is_201(client, session_factory):
+def test_ac_38_80_register_with_no_active_channel_is_409_and_saves_nothing(client, session_factory):
+    # One channel, paused: none active. Staff must always be able to see the row
+    # on a channel's tab, so a workspace with no active channel cannot register.
     ws = _default_workspace_id(session_factory)
     _channel(session_factory, ws, name="paused", age_rank=1, active=False, status_key="INACTIVE")
     hdr = _hdr(client, ws)
@@ -223,8 +225,24 @@ def test_ac_38_80_register_with_no_active_channel_is_201(client, session_factory
         json={"name": "all", "url": HOOK, "events": ["message.inbound"]},
         headers=hdr,
     )
-    assert res.status_code == 201, res.text
-    assert res.json()["endpoint"]["channelId"] is None
+    observed = {
+        "status": res.status_code,
+        "code": res.json().get("error", {}).get("code") if res.status_code != 201 else None,
+    }
+    db = session_factory()
+    try:
+        observed["rows"] = db.query(WebhookEndpoint).filter(WebhookEndpoint.workspace_id == ws).count()
+    finally:
+        db.close()
+    assert observed == {"status": 409, "code": "no_active_channel", "rows": 0}, (observed, res.text)
+
+
+def test_ac_38_80_control_register_with_one_active_channel_is_201(client, session_factory):
+    # Control, passes today: the refusal above is about "no active channel" only.
+    ws = _default_workspace_id(session_factory)
+    _channel(session_factory, ws, name="live", age_rank=1)
+    _channel(session_factory, ws, name="paused", age_rank=2, active=False, status_key="INACTIVE")
+    _register_all(client, _hdr(client, ws), ["message.inbound"], expect_null=True)
 
 
 def test_ac_38_80_channel_id_in_body_is_not_honoured(client, session_factory):
@@ -1212,3 +1230,482 @@ def test_ac_38_82_limit_ignores_all_channels_rows_of_another_tenant_with_same_wo
             events=["message.inbound"],
         )
     _register_all(client, _hdr(client, ws), ["message.inbound"], expect_null=True)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Review round - AC-38-82 order, 88 foreign workspace, 90 non-text channelId,
+# 91 replay, 101 reactions follow their message
+# ═════════════════════════════════════════════════════════════════════════════
+def _slow_url_check(monkeypatch, nested_call):
+    """Make the URL check slow: the FIRST time it runs, `nested_call` (a parallel
+    registration through the same service) completes before it returns."""
+    from modules.omnichannel.services import webhook_service as ws_mod
+
+    real = ws_mod.validate_callback_url
+    state = {"fired": False, "nested": False}
+
+    def slow(url, **kw):
+        if not state["fired"]:
+            state["fired"] = True
+            nested_call()
+            state["nested"] = True
+        return real(url, **kw)
+
+    monkeypatch.setattr(ws_mod, "validate_callback_url", slow)
+    return state
+
+
+def _seed_via_service(session_factory, fn_name, n, *args):
+    db = session_factory()
+    try:
+        svc = WebhookService(db)
+        for i in range(n):
+            getattr(svc, fn_name)(DEFAULT_TENANT_ID, *args, f"seed{i}", HOOK, ["message.inbound"], created_by=None)
+    finally:
+        db.close()
+
+
+def test_ac_38_82_all_channels_limit_holds_when_the_url_check_is_slow(session_factory, monkeypatch):
+    from modules.omnichannel.services.webhook_service import WebhookError
+
+    ws = _default_workspace_id(session_factory)
+    _seed_via_service(session_factory, "create_for_workspace", 9, ws)
+
+    def parallel():
+        db = session_factory()
+        try:
+            WebhookService(db).create_for_workspace(
+                DEFAULT_TENANT_ID, ws, "parallel", HOOK, ["message.inbound"], created_by=None
+            )
+        finally:
+            db.close()
+
+    state = _slow_url_check(monkeypatch, parallel)
+    err = None
+    db = session_factory()
+    try:
+        try:
+            WebhookService(db).create_for_workspace(
+                DEFAULT_TENANT_ID, ws, "tenth", HOOK, ["message.inbound"], created_by=None
+            )
+        except WebhookError as exc:
+            err = exc
+    finally:
+        db.close()
+    db = session_factory()
+    try:
+        total = (
+            db.query(WebhookEndpoint)
+            .filter(WebhookEndpoint.workspace_id == ws, WebhookEndpoint.channel_id.is_(None))
+            .count()
+        )
+    finally:
+        db.close()
+    observed = {"parallel_finished": state["nested"], "total": total, "limit_error": err is not None}
+    assert observed == {"parallel_finished": True, "total": 10, "limit_error": True}, observed
+    assert "maximum" in str(err)
+
+
+def test_ac_38_82_per_channel_limit_holds_when_the_url_check_is_slow(session_factory, monkeypatch):
+    from modules.omnichannel.services.webhook_service import WebhookError
+
+    ws = _default_workspace_id(session_factory)
+    a, _b = _two_wa(session_factory, ws)
+    _seed_via_service(session_factory, "create", 9, a)
+
+    def parallel():
+        db = session_factory()
+        try:
+            WebhookService(db).create(
+                DEFAULT_TENANT_ID, a, "parallel", HOOK, ["message.inbound"], created_by=None
+            )
+        finally:
+            db.close()
+
+    state = _slow_url_check(monkeypatch, parallel)
+    err = None
+    db = session_factory()
+    try:
+        try:
+            WebhookService(db).create(DEFAULT_TENANT_ID, a, "tenth", HOOK, ["message.inbound"], created_by=None)
+        except WebhookError as exc:
+            err = exc
+    finally:
+        db.close()
+    db = session_factory()
+    try:
+        total = db.query(WebhookEndpoint).filter(WebhookEndpoint.channel_id == a).count()
+    finally:
+        db.close()
+    observed = {"parallel_finished": state["nested"], "total": total, "limit_error": err is not None}
+    assert observed == {"parallel_finished": True, "total": 10, "limit_error": True}, observed
+    assert "maximum" in str(err)
+
+
+def test_ac_38_82_control_slow_url_check_below_the_limit_saves_both(session_factory, monkeypatch):
+    # Control, passes today: with room to spare the interleave harness lets both through.
+    ws = _default_workspace_id(session_factory)
+    _seed_via_service(session_factory, "create_for_workspace", 5, ws)
+
+    def parallel():
+        db = session_factory()
+        try:
+            WebhookService(db).create_for_workspace(
+                DEFAULT_TENANT_ID, ws, "parallel", HOOK, ["message.inbound"], created_by=None
+            )
+        finally:
+            db.close()
+
+    state = _slow_url_check(monkeypatch, parallel)
+    db = session_factory()
+    try:
+        WebhookService(db).create_for_workspace(
+            DEFAULT_TENANT_ID, ws, "outer", HOOK, ["message.inbound"], created_by=None
+        )
+        total = db.query(WebhookEndpoint).filter(WebhookEndpoint.workspace_id == ws).count()
+    finally:
+        db.close()
+    assert state["nested"] is True and total == 7
+
+
+# ── AC-38-88 - a latest channel of another workspace counts as no channel ────
+def test_ac_38_88_latest_channel_in_another_workspace_counts_as_no_channel(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    a, b = _two_wa(session_factory, ws)
+    other_ws = _seed_second_workspace(session_factory)
+    db = session_factory()
+    try:
+        sibling = db.query(Channel).filter(Channel.workspace_id == other_ws).first().id
+    finally:
+        db.close()
+    cid = _seed_open_contact(session_factory, ws, phone="+60111000094")
+    _add_message(session_factory, cid, a, minutes_ago=30)
+    _add_message(session_factory, cid, sibling, minutes_ago=2)  # latest, but another workspace's
+    hdr = _hdr(client, ws)
+    mine, _ = _register_all(client, hdr, ["contact.updated"], expect_null=True)
+    db = session_factory()
+    try:
+        per_a = WebhookService(db).create(DEFAULT_TENANT_ID, a, "pa", HOOK, ["contact.updated"], created_by=None)[0].id
+        per_b = WebhookService(db).create(DEFAULT_TENANT_ID, b, "pb", HOOK, ["contact.updated"], created_by=None)[0].id
+    finally:
+        db.close()
+    other_all = _insert_endpoint(
+        session_factory, tenant_id=DEFAULT_TENANT_ID, workspace_id=other_ws, channel_id=None, events=["contact.updated"]
+    )
+    other_per = _insert_endpoint(
+        session_factory, tenant_id=DEFAULT_TENANT_ID, workspace_id=other_ws, channel_id=sibling, events=["contact.updated"]
+    )
+
+    assert _patch_priority(client, cid).status_code == 200
+    mine_rows = _rows(session_factory, mine, "contact.updated")
+    observed = {
+        "mine": [r["payload"]["channelId"] for r in mine_rows],
+        "mine_workspace": [r["payload"]["workspaceId"] for r in mine_rows],
+        "others": {
+            name: len(_rows(session_factory, eid))
+            for name, eid in {"per_a": per_a, "per_b": per_b, "other_all": other_all, "other_per": other_per}.items()
+        },
+    }
+    assert observed == {
+        "mine": [None],
+        "mine_workspace": [ws],
+        "others": {"per_a": 0, "per_b": 0, "other_all": 0, "other_per": 0},
+    }, observed
+
+
+# ── AC-38-90 - a channelId that is not text is invalid_channel ───────────────
+@pytest.mark.parametrize("bad", [7, 0, False, ["x"], {"id": "x"}], ids=["number", "zero", "false", "list", "object"])
+def test_ac_38_90_multipart_channel_id_that_is_not_text_is_invalid_channel(client, session_factory, tmp_path, bad):
+    ws = _default_workspace_id(session_factory)
+    _two_wa(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60111555910", open_window=True)
+    hdr = _hdr(client, ws)
+    before = _counts(session_factory)
+    try:
+        res = client.post(
+            f"{BASE}/messages",
+            files={"file": ("a.png", PNG, "image/png")},
+            data={"payload": json.dumps({"to": "+60111555910", "type": "image", "channelId": bad})},
+            headers=hdr,
+        )
+        observed = {
+            "status": res.status_code,
+            "code": res.json().get("error", {}).get("code") if res.status_code >= 400 else None,
+        }
+    except Exception as exc:  # noqa: BLE001 - an unhandled error is the failure being pinned
+        observed = {"status": f"raised {type(exc).__name__}", "code": None}
+    observed["stored_files"] = len([p for p in tmp_path.rglob("*") if p.is_file()])
+    observed["counts_unchanged"] = _counts(session_factory) == before
+    assert observed == {"status": 422, "code": "invalid_channel", "stored_files": 0, "counts_unchanged": True}, observed
+
+
+def test_ac_38_90_control_multipart_text_channel_id_unknown_is_invalid_channel(client, session_factory, tmp_path):
+    # Control, passes today: a text id that names nothing is already invalid_channel.
+    ws = _default_workspace_id(session_factory)
+    _two_wa(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60111555911", open_window=True)
+    res = client.post(
+        f"{BASE}/messages",
+        files={"file": ("a.png", PNG, "image/png")},
+        data={"payload": json.dumps({"to": "+60111555911", "type": "image", "channelId": "no-such"})},
+        headers=_hdr(client, ws),
+    )
+    assert res.status_code == 422 and res.json()["error"]["code"] == "invalid_channel", res.text
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+# ── AC-38-91 - a completed send replays after the default became a guess ─────
+def test_ac_38_91_json_completed_send_replays_after_a_second_channel_appears(client, session_factory):
+    # May pass today (the slot is claimed before the channel is resolved): the
+    # JSON half of the contract, kept as a guard next to the multipart half.
+    ws = _default_workspace_id(session_factory)
+    _channel(session_factory, ws, name="wa-first", age_rank=1)
+    _seed_open_contact(session_factory, ws, phone="+60111555912", open_window=True)
+    hdr = _hdr(client, ws)
+    key = {"Idempotency-Key": "replay-json"}
+    first = _send(client, hdr, "+60111555912", extra_headers=key)
+    assert first.status_code == 202, first.text
+    _channel(session_factory, ws, name="wa-second", age_rank=2)
+    before = _counts(session_factory)
+    again = _send(client, hdr, "+60111555912", extra_headers=key)
+    observed = {"status": again.status_code, "same_id": again.json().get("id") == first.json()["id"]}
+    observed["replay"] = again.json().get("idempotencyReplay")
+    assert observed == {"status": 202, "same_id": True, "replay": True}, (observed, again.text)
+    assert _counts(session_factory) == before
+
+
+def test_ac_38_91_multipart_completed_send_replays_after_a_second_channel_appears(client, session_factory, tmp_path):
+    ws = _default_workspace_id(session_factory)
+    _channel(session_factory, ws, name="wa-first", age_rank=1)
+    _seed_open_contact(session_factory, ws, phone="+60111555913", open_window=True)
+    hdr = _hdr(client, ws)
+    key = {**hdr, "Idempotency-Key": "replay-multipart"}
+
+    def post():
+        return client.post(
+            f"{BASE}/messages",
+            files={"file": ("a.png", PNG, "image/png")},
+            data={"payload": json.dumps({"to": "+60111555913", "type": "image"})},
+            headers=key,
+        )
+
+    first = post()
+    assert first.status_code == 202, first.text  # control: one channel, no channelId, sends
+    _channel(session_factory, ws, name="wa-second", age_rank=2)
+    before = _counts(session_factory)
+    files_before = len([p for p in tmp_path.rglob("*") if p.is_file()])
+    again = post()
+    observed = {
+        "status": again.status_code,
+        "same_id": again.json().get("id") == first.json()["id"],
+        "replay": again.json().get("idempotencyReplay"),
+    }
+    assert observed == {"status": 202, "same_id": True, "replay": True}, (observed, again.text)
+    assert _counts(session_factory) == before
+    assert len([p for p in tmp_path.rglob("*") if p.is_file()]) == files_before
+
+
+# ── AC-38-101 - a reaction follows its message ───────────────────────────────
+@pytest.fixture
+def sent_via(monkeypatch):
+    """Stub ONLY the provider send; record which credentials and sender it got."""
+    from modules.omnichannel.adapters.whatsapp_cloud import WhatsAppCloudAdapter
+
+    calls = []
+
+    def fake_send(self, credentials, phone_number_id, to, **kw):
+        calls.append({"mark": credentials.get("mark"), "sender": phone_number_id, "reaction": kw.get("reaction")})
+        return {"external_message_id": "wamid.stub-react"}
+
+    monkeypatch.setattr(WhatsAppCloudAdapter, "send", fake_send)
+    return calls
+
+
+def _mark(session_factory, channel_id, mark):
+    from modules.omnichannel.security import encrypt_credentials
+
+    db = session_factory()
+    try:
+        db.query(Channel).filter(Channel.id == channel_id).one().credentials_json = encrypt_credentials(
+            {"dev": True, "mark": mark}
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+PHONE_RX = "+60111777150"
+
+
+def _rx_rig(session_factory, ws, *, target_channel, identity_on):
+    """Contact with an open window, a delivered target message on `target_channel`
+    (None for a message with no channel) and identities on `identity_on`."""
+    from modules.omnichannel.models import ContactChannelIdentity
+
+    cid = _seed_open_contact(session_factory, ws, phone=PHONE_RX, open_window=True)
+    db = session_factory()
+    try:
+        msg = ConversationMessage(
+            tenant_id=DEFAULT_TENANT_ID,
+            contact_id=cid,
+            channel_id=target_channel,
+            sender_type="CONTACT",
+            message_type="TEXT",
+            body="target",
+            external_message_id="wamid.150-target",
+            delivery_status="DELIVERED",
+        )
+        db.add(msg)
+        for ch in identity_on:
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=DEFAULT_TENANT_ID, contact_id=cid, channel_id=ch, external_user_id=f"ident-{ch[:6]}"
+                )
+            )
+        db.commit()
+        mid = msg.id
+    finally:
+        db.close()
+    return cid, mid
+
+
+def _rx_endpoints(client, session_factory, ws, a, b):
+    hdr = _hdr(client, ws)
+    allc, _ = _register_all(client, hdr, ["message.reaction"], expect_null=True)
+    db = session_factory()
+    try:
+        svc = WebhookService(db)
+        per_a = svc.create(DEFAULT_TENANT_ID, a, "pa", HOOK, ["message.reaction"], created_by=None)[0].id
+        per_b = svc.create(DEFAULT_TENANT_ID, b, "pb", HOOK, ["message.reaction"], created_by=None)[0].id
+    finally:
+        db.close()
+    return hdr, allc, per_a, per_b
+
+
+def _rx_observed(session_factory, status, sent, allc, per_a, per_b):
+    return {
+        "status": status,
+        "sent_on": [(c["mark"], c["sender"]) for c in sent],
+        "envelope_channels": [r["payload"]["channelId"] for r in _rows(session_factory, allc, "message.reaction")],
+        "per_a": len(_rows(session_factory, per_a, "message.reaction")),
+        "per_b": len(_rows(session_factory, per_b, "message.reaction")),
+        "stored": _reaction_count(session_factory),
+    }
+
+
+@pytest.mark.parametrize("identity", ["none", "a_only", "both"])
+@pytest.mark.parametrize("named", [None, "b", "a"], ids=["no_channel_id", "channel_b", "channel_a"])
+def test_ac_38_101_gateway_reaction_goes_out_on_the_channel_of_its_message(
+    client, session_factory, sent_via, identity, named
+):
+    ws = _default_workspace_id(session_factory)
+    a, b = _two_wa(session_factory, ws)  # A is the older channel
+    _mark(session_factory, a, "A")
+    _mark(session_factory, b, "B")
+    ids = {"none": [], "a_only": [a], "both": [a, b]}[identity]
+    _cid, mid = _rx_rig(session_factory, ws, target_channel=b, identity_on=ids)
+    hdr, allc, per_a, per_b = _rx_endpoints(client, session_factory, ws, a, b)
+
+    res = _react(client, hdr, mid, channel_id={"b": b, "a": a}.get(named))
+    observed = _rx_observed(session_factory, res.status_code, sent_via, allc, per_a, per_b)
+    assert observed == {
+        "status": 202,
+        "sent_on": [("B", "pn-wa-second")],
+        "envelope_channels": [b],
+        "per_a": 0,
+        "per_b": 1,
+        "stored": 1,
+    }, (observed, res.text)
+
+
+@pytest.mark.parametrize("identity", ["none", "a_only", "both"])
+def test_ac_38_101_inbox_reaction_goes_out_on_the_channel_of_its_message(
+    client, session_factory, sent_via, identity
+):
+    ws = _default_workspace_id(session_factory)
+    a, b = _two_wa(session_factory, ws)
+    _mark(session_factory, a, "A")
+    _mark(session_factory, b, "B")
+    ids = {"none": [], "a_only": [a], "both": [a, b]}[identity]
+    cid, mid = _rx_rig(session_factory, ws, target_channel=b, identity_on=ids)
+    _hdr_unused, allc, per_a, per_b = _rx_endpoints(client, session_factory, ws, a, b)
+
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/messages/{mid}/react", json={"emoji": "👍"}, headers=_auth(client)
+    )
+    observed = _rx_observed(session_factory, res.status_code, sent_via, allc, per_a, per_b)
+    assert observed == {
+        "status": 200,
+        "sent_on": [("B", "pn-wa-second")],
+        "envelope_channels": [b],
+        "per_a": 0,
+        "per_b": 1,
+        "stored": 1,
+    }, (observed, res.text)
+
+
+@pytest.mark.parametrize("state", ["paused", "trashed"])
+def test_ac_38_101_gateway_reaction_to_a_message_on_an_unavailable_channel_is_refused(
+    client, session_factory, sent_via, state
+):
+    ws = _default_workspace_id(session_factory)
+    live = _channel(session_factory, ws, name="wa-live", age_rank=1)
+    gone = _channel(
+        session_factory, ws, name="wa-gone", age_rank=2,
+        active=False, status_key="INACTIVE", trashed=(state == "trashed"),
+    )
+    _cid, mid = _rx_rig(session_factory, ws, target_channel=gone, identity_on=[])
+    hdr = _hdr(client, ws)
+    allc, _ = _register_all(client, hdr, ["message.reaction"])
+
+    res = _react(client, hdr, mid)
+    code = res.json().get("error", {}).get("code") if 400 <= res.status_code < 500 else None
+    observed = {
+        "refused_4xx": 400 <= res.status_code < 500,
+        "typed": isinstance(code, str) and bool(code),
+        "sent": len(sent_via),
+        "stored": _reaction_count(session_factory),
+        "deliveries": len(_rows(session_factory, allc, "message.reaction")),
+    }
+    assert observed == {"refused_4xx": True, "typed": True, "sent": 0, "stored": 0, "deliveries": 0}, (
+        observed, res.text,
+    )
+
+
+@pytest.mark.parametrize("state", ["paused", "trashed"])
+def test_ac_38_101_inbox_reaction_to_a_message_on_an_unavailable_channel_is_refused(
+    client, session_factory, sent_via, state
+):
+    ws = _default_workspace_id(session_factory)
+    _channel(session_factory, ws, name="wa-live", age_rank=1)
+    gone = _channel(
+        session_factory, ws, name="wa-gone", age_rank=2,
+        active=False, status_key="INACTIVE", trashed=(state == "trashed"),
+    )
+    cid, mid = _rx_rig(session_factory, ws, target_channel=gone, identity_on=[])
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/messages/{mid}/react", json={"emoji": "👍"}, headers=_auth(client)
+    )
+    observed = {
+        "status": res.status_code,
+        "sent": len(sent_via),
+        "stored": _reaction_count(session_factory),
+    }
+    assert observed == {"status": 422, "sent": 0, "stored": 0}, (observed, res.text)
+
+
+def test_ac_38_101_control_message_with_no_channel_keeps_todays_choice(client, session_factory, sent_via):
+    # Control, passes today: a target with no channel_id falls back to the contact's
+    # identity channel (here A, the older one), through both surfaces.
+    ws = _default_workspace_id(session_factory)
+    a, b = _two_wa(session_factory, ws)
+    _mark(session_factory, a, "A")
+    _mark(session_factory, b, "B")
+    cid, mid = _rx_rig(session_factory, ws, target_channel=None, identity_on=[a])
+    hdr = _hdr(client, ws)
+    first = _react(client, hdr, mid)
+    second = client.post(
+        f"/omnichannel/contacts/{cid}/messages/{mid}/react", json={"emoji": "❤️"}, headers=_auth(client)
+    )
+    assert (first.status_code, second.status_code) == (202, 200), (first.text, second.text)
+    assert [(c["mark"], c["sender"]) for c in sent_via] == [("A", "pn-wa-first")] * 2
