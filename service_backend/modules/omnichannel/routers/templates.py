@@ -97,6 +97,12 @@ def upload_media_sample(
 ) -> dict:
     """Sniff-gated upload of a draft media-header sample → returns a storage key
     placed in the builder doc (`header.sampleKey`). Images + PDF only (GP-6)."""
+    try:
+        _service(db).ensure_channel(channel_id, current_user.tenant_id)
+    except TemplateNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
     raw = file.file.read(_SAMPLE_MAX_BYTES + 1)
     if len(raw) > _SAMPLE_MAX_BYTES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "File is larger than 5MB.")
