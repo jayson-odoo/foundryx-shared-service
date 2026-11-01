@@ -15,7 +15,7 @@ from app.models.tenant import DEFAULT_TENANT_ID
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel
 from ..repositories.workspace_repository import WorkspaceRepository
-from ..schemas import ChannelItem, ManualConnectRequest, OnboardingCallbackRequest
+from ..schemas import ChannelItem, ManualConnectRequest, OnboardingCallbackRequest, TokenChannelItem
 from ..security import encrypt_credentials
 from .channel_service import ChannelService
 from . import statuses
@@ -144,7 +144,7 @@ class OnboardingService:
 
     def manual_connect(
         self, payload: ManualConnectRequest, tenant_id: str = DEFAULT_TENANT_ID
-    ) -> ChannelItem:
+    ) -> TokenChannelItem:
         ws = WorkspaceRepository(self.db).get_by_id(payload.workspaceId, tenant_id)
         if ws is None:
             raise WorkspaceNotFound()
@@ -202,4 +202,9 @@ class OnboardingService:
             except Exception:  # noqa: BLE001 - subscription failure shouldn't block onboarding
                 pass
 
-        return ChannelService(self.db)._items([channel], tenant_id)[0]
+        try:
+            expires = adapter.token_expiry(payload.accessToken)
+        except Exception:  # noqa: BLE001 - an unreadable expiry never blocks a connect
+            expires = None
+        item = ChannelService(self.db)._items([channel], tenant_id)[0]
+        return TokenChannelItem(**item.model_dump(), tokenExpiresAt=expires)

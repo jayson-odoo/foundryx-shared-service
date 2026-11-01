@@ -8,6 +8,7 @@ yet) the adapter returns stub credentials so the flow runs end-to-end without a
 real Meta app. Tests inject a fake ``client`` to assert behaviour deterministically.
 """
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
@@ -148,6 +149,77 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 f"{self._base}/{waba_id}/subscribed_apps",
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
+        finally:
+            if self._client is None:
+                client.close()
+
+    def subscribe_app_checked(self, credentials: Dict[str, Any], waba_id: str) -> bool:
+        """Subscribe the app to a WABA and read Meta's answer (plan 42). True only
+        on a 200 carrying ``success``. Never raises."""
+        if not self._configured or credentials.get("dev"):
+            return False
+        client = self._http()
+        try:
+            resp = client.post(
+                f"{self._base}/{waba_id}/subscribed_apps",
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            if resp.status_code != 200:
+                return False
+            try:
+                return bool((resp.json() or {}).get("success"))
+            except ValueError:
+                return False
+        except httpx.HTTPError:
+            return False
+        finally:
+            if self._client is None:
+                client.close()
+
+    def check_token(self, credentials: Dict[str, Any], phone_number_id: str) -> str:
+        """Classify a stored token (plan 42): ``ok`` | ``dead`` | ``unknown``.
+        Only Meta ``error.code`` 190 is dead; a 5xx, a transport failure, a rate
+        limit or a permission code is unknown. Reads the number with the token,
+        never the profile."""
+        if not self._configured or credentials.get("dev"):
+            return "ok"
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/{phone_number_id}",
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            if resp.status_code == 200:
+                return "ok"
+            return "dead" if meta_error_code(resp) == "190" else "unknown"
+        except httpx.HTTPError:
+            return "unknown"
+        finally:
+            if self._client is None:
+                client.close()
+
+    def token_expiry(self, token: str) -> Optional[datetime]:
+        """When the token stops working, from ``debug_token``; None when it never
+        expires or the answer cannot be read. Never raises."""
+        if not self._configured or not token:
+            return None
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/debug_token",
+                params={
+                    "input_token": token,
+                    "access_token": f"{settings.meta_app_id}|{settings.meta_app_secret}",
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            raw = ((resp.json() or {}).get("data") or {}).get("expires_at")
+            if not isinstance(raw, (int, float)) or raw <= 0:
+                return None
+            return datetime.fromtimestamp(raw, tz=timezone.utc)
+        except (httpx.HTTPError, ValueError, OverflowError, OSError):
+            return None
         finally:
             if self._client is None:
                 client.close()

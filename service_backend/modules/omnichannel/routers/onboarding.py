@@ -10,6 +10,7 @@ from ..adapters.base import CodeExchangeError
 from ..origins import InvalidOrigin
 from ..schemas import (
     ChannelItem,
+    TokenChannelItem,
     ConnectWebchatRequest,
     ManualConnectRequest,
     MetaConnectRequest,
@@ -56,12 +57,12 @@ def oauth_callback(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
 
-@router.post("/manual-connect", response_model=ChannelItem, status_code=status.HTTP_201_CREATED)
+@router.post("/manual-connect", response_model=TokenChannelItem, status_code=status.HTTP_201_CREATED)
 def manual_connect(
     body: ManualConnectRequest,
     current_user: User = Depends(require_permission("channels.manage")),
     db: Session = Depends(get_db),
-) -> ChannelItem:
+) -> TokenChannelItem:
     try:
         return OnboardingService(db).manual_connect(body, current_user.tenant_id)
     except WorkspaceNotFound:

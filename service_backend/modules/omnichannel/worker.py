@@ -98,6 +98,24 @@ def omnichannel_send_message(self, message_id: str, trace_id: Optional[str] = No
         db.close()
 
 
+@celery_app.task(name="omnichannel.check_channel_token")
+def check_channel_token_task(channel_id: str) -> Optional[str]:
+    """One WhatsApp token health check (plan 42). Queued by the 6-hourly scan
+    onto the omni queue; failure-isolated, the verdict is the only result."""
+    from app.database import SessionLocal
+    from modules.omnichannel.services.token_health import check_channel_token
+
+    db = SessionLocal()
+    try:
+        return check_channel_token(db, channel_id)
+    except Exception:  # noqa: BLE001 - one bad check never fails the queue
+        logging.getLogger(__name__).exception("token check failed for channel %s", channel_id)
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+
 @celery_app.task(name="omnichannel.broadcast_chunk")
 def broadcast_chunk(job_id: str) -> None:
     """One CHAINED link in a broadcast send job's chunk loop (plan 29 S2,
