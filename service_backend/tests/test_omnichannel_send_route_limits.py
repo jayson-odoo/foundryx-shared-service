@@ -1133,12 +1133,12 @@ def test_ac_41_10_per_key_and_process_limits(client, session_factory, monkeypatc
     import threading
 
     phones, cids, keys = _gate_world(client, session_factory, contacts=10)
-    release = threading.Event()
+    release = threading.Semaphore(0)  # one permit lets one held fetch finish
     started = []
 
     def hold():
         started.append(1)
-        release.wait(15)
+        release.acquire(timeout=15)
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
     hp = held_path == "header"
@@ -1164,9 +1164,16 @@ def test_ac_41_10_per_key_and_process_limits(client, session_factory, monkeypatc
                     headers=keys["c"],
                 )
                 out["extra_fetches"] = rig.media_calls - calls_when_full
+                # finish the held fetches one at a time: the test database is a
+                # single shared connection, so sends that finish together would
+                # trample each other's open sessions
+                out["held"] = []
+                for t in held:
+                    release.release()
+                    out["held"].append(await t)
             finally:
-                release.set()
-            out["held"] = [await t for t in held]
+                for _ in range(len(held)):
+                    release.release()  # never leave a held fetch waiting
             out["retry"] = await _post_media(ac, keys["a"], phones[4], idem="retry-me")
         return out
 
