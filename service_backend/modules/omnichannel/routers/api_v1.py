@@ -21,6 +21,7 @@ from ..schemas import (
     MessageItem,
     PublicContactListResponse,
     PublicMessageListResponse,
+    ContactReadResponse,
     PublicCommentRequest,
     PublicContactUpdateRequest,
     PublicSendRequest,
@@ -380,6 +381,18 @@ def add_comment(
 ) -> MessageItem:
     return PublicGatewayService(db).add_comment(
         api_ws.tenant_id, api_ws.workspace_id, identifier, payload.body
+    )
+
+
+# ── Mark a contact read (resets unread; WhatsApp read receipts) ──────────────
+@router.post("/contacts/{identifier}/read", response_model=ContactReadResponse)
+def mark_contact_read(
+    identifier: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> ContactReadResponse:
+    return PublicGatewayService(db).mark_contact_read(
+        api_ws.tenant_id, api_ws.workspace_id, identifier
     )
 
 

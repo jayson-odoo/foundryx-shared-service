@@ -1533,6 +1533,19 @@ class PublicCommentRequest(ApiModel):
     body: str
 
 
+class ReadReceiptItem(ApiModel):
+    """One channel's outcome of ``POST /contacts/{identifier}/read``."""
+
+    channelId: str
+    messageId: str
+    status: Literal["sent", "already_sent", "failed", "channel_unavailable", "not_supported"]
+
+
+class ContactReadResponse(ApiModel):
+    contactId: str
+    receipts: List[ReadReceiptItem]
+
+
 # ── respond.io-parity response shapes (public gateway) ───────────────────────
 # These deliberately do NOT inherit ApiModel: they mirror respond.io's documented
 # JSON exactly - snake_case where respond.io uses it (``custom_fields``,

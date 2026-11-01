@@ -32,6 +32,10 @@ class SendError(Exception):
         self.code = code
 
 
+class UnexpectedSendError(SendError):
+    """An error the adapter did not expect, reported with fixed text and a class name only."""
+
+
 class ChannelAdapter(Protocol):
     channel_type: str
 
