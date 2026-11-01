@@ -20,7 +20,7 @@ import pytest
 
 from modules.autocount.http_source.client import HttpApiClient, HttpTransportError
 
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 def _mock_transport(handler) -> httpx.Client:

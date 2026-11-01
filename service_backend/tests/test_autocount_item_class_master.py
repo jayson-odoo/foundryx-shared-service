@@ -44,7 +44,7 @@ from modules.autocount.sinks import SINK_LOGGING
 from modules.autocount.sinks_sorento import ContractVersion, SorentoContractInfo, SorentoSink
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "autocount_http"
-VENDOR_BASE_URL = "https://hapi.sorento.cc.cd/api/db1"
+VENDOR_BASE_URL = "https://autocount-wrapper.example.com/api/db1"
 CRM_BASE_URL = "https://sorento.example.com"
 ENTITY = "item_class"
 

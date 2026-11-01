@@ -470,7 +470,7 @@ def _no_real_sleep_in_autocount_http_tests(request, monkeypatch):
 
 # sprint-5/10 confirm-3 N1 - a PUBLIC-looking stub IP for every hostname the
 # autocount test files construct a connection/task against
-# (``hapi.sorento.cc.cd``, ``autocount.example.invalid``, etc). None of these
+# (``autocount-wrapper.example.com``, ``autocount.example.invalid``, etc). None of these
 # resolve for real, and none is meant to - the egress guard
 # (``app.services.url_guard``) falls back to "allow" under a resolution
 # failure (``strict_dns=False``), so an unstubbed hostname already passed the
@@ -493,7 +493,7 @@ def _stub_dns_in_autocount_http_tests(request, monkeypatch):
     ``modules.autocount.http_client.assert_autocount_base_url_deliverable``,
     the egress guard every open-REST request re-runs) resolves a non-IP-
     literal ``baseUrl`` host via ``socket.getaddrinfo`` before deciding
-    public vs. private - a hostname test host (``hapi.sorento.cc.cd``, the
+    public vs. private - a hostname test host (``autocount-wrapper.example.com``, the
     connection-sizing suite's own ``BASE_URL``) hit a REAL resolver on every
     such test before this fixture existed. Every refusal test in this suite
     uses an IP LITERAL (``169.254.169.254``, ``127.0.0.1``, ``192.168.x.x``)
@@ -509,7 +509,7 @@ def _stub_dns_in_autocount_http_tests(request, monkeypatch):
 # OTHER s13 test, which patches `HttpApiClient` directly and never reaches
 # a real transport) - without this file in scope, the guard never engaged
 # and the fired job's real `HttpApiClient` made a real, ~multi-minute call
-# to `hapi.sorento.cc.cd`, hanging the run. Same class of incident this
+# to `autocount-wrapper.example.com`, hanging the run. Same class of incident this
 # fixture's own docstring already names for `s10_`/`s11_`.
 #
 # sprint-5/19 - `s19_` added for the same reason: `test_s19_doc_feed_schedule
@@ -535,7 +535,7 @@ def _block_live_network_in_autocount_tests(request, monkeypatch):
     their own copy of this guard under the name ``_block_live_network``,
     first added 2026-09-20 after a coordinator finding that an earlier
     revision of a delivery-mode test made a real ~8-minute call to
-    ``hapi.sorento.cc.cd``). This hoists the SAME guard so every file in the
+    ``autocount-wrapper.example.com``). This hoists the SAME guard so every file in the
     glob is covered whether or not it remembered its own copy - a file that
     already defines its own autouse ``_block_live_network`` fixture is left
     alone (this fixture no-ops for it) rather than double-patched.

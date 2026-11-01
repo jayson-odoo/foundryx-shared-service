@@ -34,7 +34,7 @@ import pytest
 from modules.autocount.provider import AutoCountProvider
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 def _login_headers(client) -> Dict[str, str]:

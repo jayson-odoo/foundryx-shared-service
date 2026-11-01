@@ -63,7 +63,7 @@ def _transport(rows, *, status: int = 200):
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-def _open_connection(db, *, tenant_id: str = DEFAULT_TENANT_ID, base_url: str = "https://hapi.sorento.cc.cd/api/db2") -> Connection:
+def _open_connection(db, *, tenant_id: str = DEFAULT_TENANT_ID, base_url: str = "https://autocount-wrapper.example.com/api/db2") -> Connection:
     conn = Connection(
         tenant_id=tenant_id, provider="autocount", type="erp", name="Mocha REST",
         config_json={"baseUrl": base_url, "auth": "none"}, credentials_json=None, is_active=True,
@@ -243,7 +243,7 @@ def test_http_task_on_db_company_may_reference_any_open_connection(db):
     db_company = CompanyService(db).create_from_sql_connection(
         DEFAULT_TENANT_ID, sql_conn, name="Sorento"
     )
-    open_conn = _open_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1")
+    open_conn = _open_connection(db, base_url="https://autocount-wrapper.example.com/api/db1")
 
     view = EtlService(db).update_task(
         DEFAULT_TENANT_ID, db_company.id, ENTITY_PRODUCT,
@@ -265,7 +265,7 @@ def test_http_task_stray_sql_keys_dropped_not_422ed(db):
 
 def test_preview_http_paged(client, headers, db):
     """B4 (sprint-5/08 review round 1): this used to reach the real
-    ``hapi.sorento.cc.cd`` on every pytest run - the route builds its OWN
+    ``autocount-wrapper.example.com`` on every pytest run - the route builds its OWN
     transport, the ``_open_company(..., transport=...)`` stub only ever
     covered the CREATE probe, never the preview call. The router's
     ``get_http_transport`` dependency override (the SAME seam

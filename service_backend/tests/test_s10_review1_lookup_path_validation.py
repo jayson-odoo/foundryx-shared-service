@@ -36,7 +36,7 @@ from modules.autocount.services.etl_service import EtlService, EtlValidationErro
 from modules.autocount.sources import SourceContext, Watermark
 
 DB_NAME = "MOCHA"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 _BAD_PATH_LOOKUP = {
     "path": "/../db2/itembypage",

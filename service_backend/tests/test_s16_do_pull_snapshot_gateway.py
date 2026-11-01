@@ -666,7 +666,7 @@ def test_ac_16_40_failed_header_carries_the_fixed_prose_scope_and_book(client, d
             "message": GATEWAY_FAILED_MESSAGES["SOURCE_PAGE_FAILED"],
         },
     }
-    assert "hapi.sorento" not in response.text, "no vendor URL may leak into a failed message"
+    assert "autocount-wrapper.example.com" not in response.text, "no vendor URL may leak into a failed message"
 
 
 # ── AC-16-41: products / stock headers untouched ─────────────────────────────

@@ -34,7 +34,7 @@ from modules.autocount.sources import SourceContext, Watermark
 from modules.autocount.http_source.client import HttpApiClient
 from modules.autocount.http_source.source import HttpApiSource
 
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 UA_PREFIX = "Foundryx-AutoCount-ESB/"
 
 

@@ -34,7 +34,7 @@ def test_ac_14_46_get_view_answers_exactly_two_feeds(client, session_factory):
 def test_ac_14_46_put_branches_feed_is_404_while_a_real_feed_still_saves(client, session_factory):
     db = session_factory()
     co = company(db)
-    conn = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none")
+    conn = autocount_connection(db, base_url="https://autocount-wrapper.example.com/api/db1", auth="none")
     db.commit()
     headers = auth_headers(client)
 

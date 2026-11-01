@@ -181,7 +181,7 @@ def resolve_vendor(db, feed_row: AcDocFeed, *, vendor_transport=None) -> Resolve
 
     sizing = connection_sizing(conn.config_json or {})
     # B1 (review round 1) - the connection's OWN `baseUrl` already ends in
-    # the book (plan 08 D2, e.g. `https://hapi.sorento.cc.cd/api/db1`); the
+    # the book (plan 08 D2, e.g. `https://autocount-wrapper.example.com/api/db1`); the
     # vendor client must be built from the FULL base URL, exactly like
     # `HttpApiSource.__init__` (`http_source/source.py:302-318`) - dropping
     # the path down to scheme+host (the former `_host_root`) sent every GET

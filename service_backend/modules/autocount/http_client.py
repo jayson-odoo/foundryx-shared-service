@@ -46,7 +46,7 @@ def get_http_transport() -> Optional[httpx.Client]:
     ``app.dependency_overrides[get_http_transport] = lambda: stub_client``
     so a ROUTE-level test (``client.post(...)``) can prove the real
     Router -> Service -> Service dispatch without EVER reaching
-    ``hapi.sorento.cc.cd`` (sprint-5/08 review round 1, B4 - a bare
+    ``autocount-wrapper.example.com`` (sprint-5/08 review round 1, B4 - a bare
     ``monkeypatch`` of the transport-building function would work too, but
     this is the SAME seam every service method already accepts
     (``transport=``), just exposed to FastAPI's own DI so a router test

@@ -1,7 +1,7 @@
 """The AutoCount "book" a vendor connection points at (sprint-5/14, D25).
 
 A book is the last path segment of an open connection's base URL
-(``https://hapi.sorento.cc.cd/api/db1`` -> ``db1``). It qualifies the
+(``https://autocount-wrapper.example.com/api/db1`` -> ``db1``). It qualifies the
 identity of the doc feed's documents (``{book}:DO:{DocKey}``) and of the
 ``branch`` master entity (``{book}:BR:{AccNo}:{BranchCode}``), and rides on
 every Sorento 2.7 ingest body as the top-level ``book``.

@@ -41,7 +41,7 @@ from app.models.connection import Connection
 from modules.autocount.canonical.masters import ENTITY_PRODUCT
 from modules.autocount.models import AcCompany
 
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 @pytest.fixture

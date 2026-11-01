@@ -32,7 +32,7 @@ from modules.autocount.canonical.masters import ENTITY_PRODUCT
 from modules.autocount.models import ETL_STATUS_ACTIVE, AcCompany, AcEntityConfig, AcFieldMapping
 
 DB_NAME = "AED_SORENTO"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db1"
+BASE_URL = "https://autocount-wrapper.example.com/api/db1"
 
 NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
 
