@@ -22,7 +22,7 @@ With no `channelId`, the default is a guess when the group it picks from has mor
 
 | AC | Rule |
 |---|---|
-| AC-38-80 | [BE] `POST /api/v1/omnichannel/webhooks` creates an endpoint with `channelId: null`, tenant and workspace taken only from the key. The request has no channel field; a `channelId` sent in the body does not bind the endpoint to a channel. A workspace with no active channel gets `409 no_active_channel` as today, nothing saved, so that staff can always see the row on a channel's tab |
+| AC-38-80 | [BE] `POST /api/v1/omnichannel/webhooks` creates an endpoint with `channelId: null`, tenant and workspace taken only from the key. The request has no channel field; a `channelId` sent in the body does not bind the endpoint to a channel. A workspace with no active channel gets `409 no_active_channel` as today, nothing saved |
 | AC-38-81 | [BE] `GET /webhooks` returns such an endpoint with `channelId: null`. PATCH, rotate, enable, disable and DELETE work on it, and each answers 404 for an endpoint of another workspace or tenant, as for a per-channel endpoint |
 | AC-38-82 | [BE] A workspace holds at most 10 all-channels endpoints. The 11th answers `422 invalid_request`, nothing saved. Per-channel endpoints do not count toward this limit, and all-channels endpoints do not count toward a channel's limit of 10. Each limit holds under parallel registration: the URL is checked before the count, and the count and insert run under a row lock |
 | AC-38-83 | [BE] `POST /omnichannel/channels/{id}/webhooks` still creates a per-channel endpoint. Existing endpoints keep their `channelId`, events, secret and status through the migration |
