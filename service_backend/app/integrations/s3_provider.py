@@ -10,7 +10,7 @@ fetch back (through the CDN when configured), byte-compare, delete. That
 verifies credentials, write access AND the CDN wiring in one pass.
 """
 import mimetypes
-import urllib.request
+import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,16 +38,22 @@ def derive_endpoint(provider: str, config: Dict[str, Any]) -> Optional[str]:
     return endpoint or None
 
 
-def _http_get(url: str, timeout: float) -> bytes:
+def _http_get(url: str, timeout: float, operator_owned: bool = False) -> bytes:
     """Probe fetch seam (tests patch this).
 
     Sends a product User-Agent - Cloudflare's WAF (Bot Fight Mode) 403s the
     default `Python-urllib/X.Y` UA, which broke the CDN probe against R2
-    custom domains even when the wiring was correct.
+    custom domains even when the wiring was correct. The read itself is the
+    shared storage URL read (public https only; platform storage excepted).
     """
-    request = urllib.request.Request(url, headers={"User-Agent": "FoundryxEMS-StorageProbe/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310 - config-provided CDN URL
-        return resp.read()
+    from app.services.storage import read_url
+
+    return read_url(
+        url,
+        operator_owned=operator_owned,
+        timeout=timeout,
+        headers={"User-Agent": "FoundryxEMS-StorageProbe/1.0"},
+    )
 
 
 class S3CompatibleAdapter:
@@ -75,6 +81,8 @@ class S3CompatibleAdapter:
         self.secret_access_key = secret_access_key
         self.cdn_base_url = cdn_base_url.rstrip("/")
         self._client = client
+        # True only for the platform's own storage row (set by the factory).
+        self.operator_owned = False
 
     @classmethod
     def from_connection(
@@ -179,7 +187,11 @@ class S3CompatibleAdapter:
         try:
             key = self.save("foundryx-probe/probe", probe_body, "text/plain")
             if self.cdn_base_url:
-                fetched = _http_get(f"{self.cdn_base_url}/{key}", _PROBE_TIMEOUT_SECONDS)
+                probe_url = f"{self.cdn_base_url}/{key}"
+                if self.operator_owned:
+                    fetched = _http_get(probe_url, _PROBE_TIMEOUT_SECONDS, operator_owned=True)
+                else:
+                    fetched = _http_get(probe_url, _PROBE_TIMEOUT_SECONDS)
                 if fetched != probe_body:
                     return TestResult(
                         ok=False,
@@ -226,17 +238,72 @@ _KEY_FIELDS = [
 ]
 
 
+_R2_ACCOUNT_ID = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+def _storage_url_error(
+    provider: str, config: Dict[str, Any], *, operator_owned: bool = False
+) -> Optional[str]:
+    """Message for the first storage URL that is not allowed, else None. Empty
+    values are allowed. An operator-owned row may use http and any address."""
+    from app.services.url_guard import UrlGuardError, validate_public_https_url
+
+    checks = [("cdnBaseUrl", "CDN base URL")]
+    if provider == "r2":
+        account_id = str(config.get("accountId", ""))
+        if account_id and not _R2_ACCOUNT_ID.match(account_id):
+            return "Account ID may contain only letters, digits and hyphens."
+    else:
+        checks.append(("endpointUrl", "Endpoint URL"))
+    for key, label in checks:
+        value = str(config.get(key, "") or "")
+        if not value:
+            continue
+        if operator_owned:
+            if not value.startswith(("http://", "https://")) or value != value.strip():
+                return f"{label} must start with http:// or https://."
+            continue
+        if value != value.strip():
+            return f"{label} must be a public https:// address."
+        try:
+            validate_public_https_url(value, strict_dns=False, subject=label)
+        except UrlGuardError as exc:
+            return str(exc)
+    return None
+
+
 class _StorageProviderBase:
     type = "storage"
     test_label = "Verify storage"
     test_target = None  # probe round-trip needs no user input
 
     provider = ""  # subclasses
+    # The test needs to know whether the platform owns the row (see test()).
+    test_needs_context = True
+
+    def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
+        """Save-time rule: storage URLs a tenant can edit must be public https."""
+        return _storage_url_error(self.provider, config)
+
+    def validate_platform_config(self, config: Dict[str, Any]) -> Optional[str]:
+        """Operator-owned row: any address, http or https."""
+        return _storage_url_error(self.provider, config, operator_owned=True)
 
     def test(
-        self, config: Dict[str, Any], credentials: Dict[str, Any], target: Optional[str] = None
+        self,
+        config: Dict[str, Any],
+        credentials: Dict[str, Any],
+        target: Optional[str] = None,
+        db: Any = None,
+        tenant_id: Optional[str] = None,
     ) -> TestResult:
+        from app.models.tenant import PLATFORM_TENANT_ID
+
+        operator_owned = tenant_id == PLATFORM_TENANT_ID
+        if not operator_owned and _storage_url_error(self.provider, config):
+            return TestResult(ok=False, message="The storage URLs must be public https addresses.")
         adapter = S3CompatibleAdapter.from_connection(self.provider, config, credentials)
+        adapter.operator_owned = operator_owned
         return adapter.run_probe()
 
 

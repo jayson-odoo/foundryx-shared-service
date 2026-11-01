@@ -39,7 +39,7 @@ from app.models.import_job import (
     STATUS_VALIDATING,
 )
 from app.repositories.import_repository import ImportRepository
-from app.services.storage import storage_for_tenant
+from app.services.storage import StorageReadError, read_object, storage_for_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -205,13 +205,13 @@ class ImportService:
 
     def _read_content(self, job: ImportJob) -> bytes:
         store = storage_for_tenant(self.db, job.tenant_id)
-        kind, value = store.resolve(job.file_storage_key)
-        if kind == "path":
-            with open(value, "rb") as fh:
-                return fh.read()
-        import urllib.request
-
-        return urllib.request.urlopen(value).read()  # noqa: S310 (own storage)
+        _, max_mb = self.caps(job.tenant_id)
+        try:
+            return read_object(store, job.file_storage_key, max_bytes=max_mb * 1024 * 1024)
+        except StorageReadError as exc:
+            raise HTTPException(
+                http_status.HTTP_502_BAD_GATEWAY, "The uploaded file could not be read."
+            ) from exc
 
     def _invert_mapping(self, importer: ImporterDef, mapping: dict):
         """columnKey → fileHeader. Map collisions DEGRADE (D4): 2 file-cols → 1
@@ -718,13 +718,13 @@ class ImportService:
         if not job.error_report_key:
             raise HTTPException(404, "No error file.")
         store = storage_for_tenant(self.db, tenant_id)
-        kind, value = store.resolve(job.error_report_key)
-        if kind == "path":
-            with open(value, "rb") as fh:
-                return fh.read(), "errors.csv"
-        import urllib.request
-
-        return urllib.request.urlopen(value).read(), "errors.csv"  # noqa: S310
+        _, max_mb = self.caps(tenant_id)
+        try:
+            return read_object(store, job.error_report_key, max_bytes=max_mb * 1024 * 1024), "errors.csv"
+        except StorageReadError as exc:
+            raise HTTPException(
+                http_status.HTTP_502_BAD_GATEWAY, "The error file could not be read."
+            ) from exc
 
     # ── mapping preview (sheets + headers + auto-map) ────────────────────────
 
