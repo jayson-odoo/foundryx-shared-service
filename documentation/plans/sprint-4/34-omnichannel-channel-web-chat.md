@@ -581,10 +581,10 @@ control that exists.
 
 | Id | Risk | Why it is accepted |
 |---|---|---|
-| RR1 | The visitor token rides the WebSocket URL query string and therefore lands in access logs and any proxy log. It is a 30-day credential | Browsers cannot set headers on a WebSocket handshake. The staff JWT on the same route has done this since plan 05, so this is precedent, not a regression; changing it is a platform-wide change to `/omnichannel/ws`, not a web chat one |
-| RR2 | **The origin allowlist is a browser-enforced control ONLY.** Any non-browser client that knows the public widget key can send `Origin: https://allowed.example` and open a full session | Inherent to an anonymous public chat widget: there is no secret a browser can hold that an attacker's script cannot also read. The allowlist stops one WEBSITE embedding another's channel; it is NOT an authorization boundary and must never be treated as one. The real controls are the throttle, the fail-closed projection, and the fact that a session grants nothing except a brand-new thread of its own |
-| RR3 | A host identity assertion has no expiry and no nonce - a leaked `{userRef, hash}` pair impersonates that customer's user until the widget secret is rotated (which invalidates every assertion at once, D-A7B-6) | Intercom and respond.io have the same property, and the dual-secret gap is already stated in `verify_host_identity`'s docstring. Adding expiry means adding a clock-skew contract to every integrator's server for a threat (a leaked per-user hash) that a rotation already answers |
-| RR4 | The dev seed ships a FIXED widget key and widget secret; a promoted dev database would carry a publicly-known identity-assertion signing key | Dev-gated on `settings.environment == "development"` in both `init_db` and `bootstrap_db`, matching the `chn-demo` precedent. Promoting a dev database to production is already a much larger incident than this |
+| RR1 | Details in private notes | Accepted |
+| RR2 | Details in private notes | Accepted |
+| RR3 | Details in private notes | Accepted |
+| RR4 | Details in private notes | Accepted |
 | RR5 | `GET /frame-policy` discloses a customer's exact allowed-origins list to anyone holding the widget key | Mirrors the plan-11H embed precedent. The list is not a secret: it is a set of public website origins, and the panel cannot render without the header |
 | RR6 | A tab left open past the token's 30-day expiry can never renew - only the LOADER mints, and it only runs on page load. The visitor sees "Could not send your message" until they reload | Decided deliberately in the BL-SS-183 fix (the loader owns minting, which is the whole reason the origin check became decidable). Backlogged as **BL-SS-184** rather than fixed here: a renewal path from inside the panel would need a second minting route whose origin check is undecidable again |
 
@@ -612,8 +612,8 @@ control that exists.
 
 | Id | Risk | Why it is accepted |
 |---|---|---|
-| RR7 | `_origins_cache` is a single unsegmented LRU pool: a sustained distinct-key probe evicts every legitimate POSITIVE entry (cap 5000, oldest-evicted), degrading real panel loads back to three queries each until the probe stops | This is the pre-bounded-cache baseline, not a regression from round 2's fix - the cache was never a rate limit, only a memory bound. Backlogged as **BL-SS-190** (separate positive/negative pools) rather than fixed here |
-| RR8 | `GET .../frame-policy` and the webchat CORS preflight are unauthenticated and, since B4 removed the route-level IP throttle, unthrottled; the cache only bounds REPEATED-key cost, never distinct-key volume | Accepted as a security matter (three indexed queries per distinct key, no information disclosed beyond what `POST /session`'s 200-vs-404 already reveals) and explicitly the honest home of **BL-SS-181** (amended this round to name both routes) rather than a gap to close here |
+| RR7 | Details in private notes | Accepted |
+| RR8 | Details in private notes | Accepted |
 
 ## 8. Backlog candidates (register on close; provisional ids from BL-SS-160)
 

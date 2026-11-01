@@ -7,7 +7,7 @@ browser tester, live-click evidence) - this is the backend-only, no-network proo
 
 ## Capture
 
-- **Date:** 2026-09-19 (UTC), against `db1` (`AED_SORENTO`), the real `hapi.sorento.cc.cd`
+- **Date:** 2026-09-19 (UTC), against `db1` (`AED_SORENTO`), the real `autocount-wrapper.example`
   open-REST wrapper, paged at 1000 rows/page.
 - **Source endpoints recorded:** `/itembatchbalqtybypage` (69 pages, `bal-1.json..bal-69.json`),
   `/itembypage` (12 pages, `itembypage-1.json..itembypage-12.json`), `/itemuombypage` (12 pages,

@@ -115,7 +115,7 @@
  AED_SORENTO  | GET /itemuombypage?page=7&pageSize=1000          | success |     5 |    134 |    144
  AED_SORENTO  | GET /itemuombypage?page=8&pageSize=1000          | success |     5 |    133 |    143
  AED_SORENTO  | GET /itemuombypage?page=9&pageSize=1000          | success |     5 |    134 |    154
- AED_SORENTO  | NOTE https://hapi.sorento.cc.cd/api/db1          | error   |     3 |      0 |      0
+ AED_SORENTO  | NOTE https://autocount-wrapper.example/api/db1          | error   |     3 |      0 |      0
  MOCHA        | discover company                                 | success |     1 |        |       
  MOCHA        | GET /itembatchbalqtybypage?page=1&pageSize=1000  | success |     1 |    234 |    234
  MOCHA        | GET /itembatchbalqtybypage?page=10&pageSize=1000 | success |     1 |    142 |    142
@@ -131,6 +131,6 @@
  MOCHA        | GET /itembypage?page=1&pageSize=1000             | error   |     4 |  30420 |  31528
  MOCHA        | GET /itembypage?page=1&pageSize=250              | error   |     4 |  30069 |  30123
  MOCHA        | GET /itembypage?page=1&pageSize=500              | error   |     4 |  30104 |  30121
- MOCHA        | NOTE https://hapi.sorento.cc.cd/api/db2          | error   |     4 |      0 |      0
+ MOCHA        | NOTE https://autocount-wrapper.example/api/db2          | error   |     4 |      0 |      0
 (132 rows)
 

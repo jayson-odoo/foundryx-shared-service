@@ -7,7 +7,7 @@ off `origin/main` 1028bda2 (module 0.9.0, module Alembic head 0019). Backend :80
 
 ## 1. Why
 
-A second AutoCount API generation exists: an open REST wrapper (`https://hapi.sorento.cc.cd/api/
+A second AutoCount API generation exists: an open REST wrapper (`https://autocount-wrapper.example/api/
 db1` for Sorento, `/api/db2` for Mocha) exposing items, debtors, locations and the item lookup
 lists (group / type / brand / category / class). The owner wants (grill 2026-09-11):
 
@@ -48,7 +48,7 @@ Why not a second provider: the owner wants one AutoCount entry in the integratio
 
 ### 2.2 Base URL carries the company (grill Q4, D2)
 
-Two connections: "Sorento REST" -> `https://hapi.sorento.cc.cd/api/db1`, "Mocha REST" ->
+Two connections: "Sorento REST" -> `https://autocount-wrapper.example/api/db1`, "Mocha REST" ->
 `.../api/db2`. No company-key field anywhere. Paths in tasks are RELATIVE (`/itembypage`).
 
 ### 2.3 Company model: no schema change (D3)
@@ -159,8 +159,7 @@ back to the logging sink by the contract check.
 
 ### 2.10 Security notes
 
-The wrapper is public and unauthenticated (4,224 debtors with phones and credit limits). Owner
-ruling: the API owner will add auth later. Our side: the `auth` select makes adding an API-key
+Source access is tracked in private notes. Our side: the `auth` select makes adding an API-key
 header a field change (`headerName` / `headerValue` secret) not a schema change; `showWhen`
 already hides it. Base-URL validation is the provider's existing rule; the ESB only ever GETs.
 
