@@ -106,6 +106,14 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId]);
 
+  // Re-read the record after a Replace token so the badge and reason follow.
+  const reloadChannel = useCallback(() => {
+    channelService
+      .get(channelId)
+      .then(setChannel)
+      .catch(() => undefined);
+  }, [channelId]);
+
   // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
   const fetchRecordAt = useCallback(
     (query: ListQuery, index: number) =>
@@ -326,6 +334,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
       isDirty: form.formState.isDirty,
       onSave,
       onCancel,
+      onReload: reloadChannel,
       recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
@@ -341,6 +350,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
     canReadWebhooks,
     fetchRecordAt,
     buildRecordHref,
+    reloadChannel,
   ]);
 
   return { config, form, isLoading, notFound };

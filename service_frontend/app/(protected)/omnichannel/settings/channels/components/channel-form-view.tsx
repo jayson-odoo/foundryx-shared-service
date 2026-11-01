@@ -6,6 +6,7 @@ import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
 import { ResourceForm } from '@/components/platform/resource-form';
+import { ReplaceTokenHost } from './replace-token-host';
 import { useChannelForm } from './use-channel-form';
 import { channelsListPath } from './paths';
 
@@ -46,6 +47,7 @@ export function ChannelFormView({ channelId, initialEditing }: ChannelFormViewPr
       <Form {...form}>
         <ResourceForm config={config} />
       </Form>
+      <ReplaceTokenHost />
     </Container>
   );
 }

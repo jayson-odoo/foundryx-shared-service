@@ -2,12 +2,13 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { PlugZap, Pencil, PowerOff, RotateCcw, Trash2 } from 'lucide-react';
+import { KeyRound, PlugZap, Pencil, PowerOff, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import type { Channel } from '@/types/omnichannel';
 import { channelFormHref } from './paths';
+import { openReplaceToken } from './replace-token-store';
 
 /**
  * The Channel action registry - one set surfaced in the row "…" menu, the bulk
@@ -44,6 +45,21 @@ export function useChannelActions(): ResourceAction<Channel>[] {
           const res = await channelService.testConnection(channel.id);
           if (res.ok) toast.success(res.message);
           else toast.error(res.message);
+        },
+      },
+      {
+        id: 'replace-token',
+        label: 'Replace token',
+        icon: KeyRound,
+        permission: 'channels.manage',
+        surfaces: { row: true, form: true },
+        isVisible: (rows) =>
+          rows.length === 1 && rows.every((r) => r.channelType === 'WHATSAPP' && !r.isTrashed),
+        // Opens the dialog (a `run`, not a confirm): the host beside the list or
+        // the record renders it.
+        run: ([channel], rt) => {
+          if (!channel) return;
+          openReplaceToken({ channel, onReplaced: rt.reload });
         },
       },
       {

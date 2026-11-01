@@ -101,6 +101,17 @@ export interface Channel {
   isTrashed: boolean;
   createdAt: string; // ISO
   updatedAt: string; // ISO
+  /**
+   * Only on a manual connect or a token replace (plan 42): when the token stops
+   * working, or null when it never expires or could not be read.
+   */
+  tokenExpiresAt?: string | null;
+}
+
+/** Response of `POST /omnichannel/channels/{id}/replace-token` (plan 42). */
+export interface ReplaceTokenResult extends Channel {
+  /** Whether Meta confirmed the webhook subscription; null without a WABA id. */
+  subscribed: boolean | null;
 }
 
 /** Mirrored WhatsApp Business Profile (plan 06 - Meta system-of-record). */

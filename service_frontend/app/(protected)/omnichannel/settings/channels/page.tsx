@@ -5,6 +5,7 @@ import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ChannelConnectWizard } from '@/components/platform/channel-connect-wizard';
 import { ResourceList } from '@/components/platform/resource-list';
+import { ReplaceTokenHost } from './components/replace-token-host';
 import { useChannelsListConfig } from './components/use-channels-list-config';
 
 export default function ChannelsPage() {
@@ -21,6 +22,8 @@ export default function ChannelsPage() {
         <Container width="fluid">
           <ResourceList key={reloadKey} config={config} />
         </Container>
+
+        <ReplaceTokenHost />
 
         <ChannelConnectWizard
           open={wizardOpen}

@@ -374,6 +374,21 @@ export const mockChannelService: ChannelService = {
     });
   },
 
+  async replaceChannelToken(id, accessToken) {
+    const idx = rows.findIndex((c) => c.id === id);
+    const current = rows[idx];
+    if (!current) throw new Error('Channel not found');
+    if (!accessToken.trim()) {
+      throw Object.assign(new Error('This token could not be verified for this number.'), { status: 422 });
+    }
+    const updated: ChannelRow = {
+      ...current,
+      status: current.status === 'ERROR' ? (current.isActive ? 'ACTIVE' : 'INACTIVE') : current.status,
+    };
+    rows[idx] = updated;
+    return delay({ ...toPublic(updated), subscribed: true, tokenExpiresAt: null });
+  },
+
   async syncConfig(id) {
     const r = rows.find((c) => c.id === id);
     if (!r) throw new Error('Channel not found');
