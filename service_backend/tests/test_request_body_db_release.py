@@ -134,7 +134,7 @@ class Run:
 async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], int]] = None,
                  headers: Optional[Dict[str, str]] = None, path: Optional[str] = None,
                  length: Any = "auto", chunk: Optional[int] = None,
-                 disconnect: bool = False) -> Run:
+                 disconnect: bool = False, ctype: Any = "auto", strict: bool = True) -> Run:
     """POST the scenario straight into the ASGI app. With `hold` the body is withheld
     until the app asks for it (so every dependency and pre-check has finished) and
     `sample()` is taken at that moment; without it the body is available at once and
@@ -175,8 +175,11 @@ async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], i
     use_path = path or scn.path
     raw_headers = [
         (b"host", b"testserver"),
-        (b"content-type", scn.content_type.encode()),
     ]
+    if ctype == "auto":
+        raw_headers.append((b"content-type", scn.content_type.encode()))
+    elif ctype is not None:
+        raw_headers.append((b"content-type", ctype.encode()))
     if length == "auto":
         raw_headers.append((b"content-length", str(len(scn.body)).encode()))
     elif length is not None and length != "omit":
@@ -203,9 +206,10 @@ async def _drive(scn: "Scenario", *, hold: bool, sample: Optional[Callable[[], i
             waiter = asyncio.ensure_future(first_receive.wait())
             await asyncio.wait({waiter, task}, timeout=BOUND, return_when=asyncio.FIRST_COMPLETED)
             waiter.cancel()
-            assert first_receive.is_set(), "the app never asked for the request body"
-            assert not task.done(), "the request ended before the body was released"
-            run.sampled = sample() if sample else None
+            if strict or first_receive.is_set():
+                assert first_receive.is_set(), "the app never asked for the request body"
+                assert not task.done(), "the request ended before the body was released"
+                run.sampled = sample() if sample else None
             release.set()
         await asyncio.wait_for(task, BOUND)
     finally:
@@ -974,3 +978,38 @@ def test_a_client_that_leaves_during_the_body_causes_no_server_error(scenario, s
     assert run.status is None or run.status < 500, f"a {run.status} was sent: {run.body!r}"
     if not scenario.name.startswith("token"):
         assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+
+
+# ── whatever the content type, nothing runs before the body is requested ────
+_CONTENT_TYPES = [
+    "multipart/mixed; boundary=x",
+    "multipart/related; boundary=x",
+    "multipart/alternative; boundary=x",
+    "text/plain",
+    "application/octet-stream",
+    None,
+    "MULTIPART/FORM-DATA; boundary=x",
+]
+
+
+@pytest.mark.parametrize("scenario", ["submit_json", "resubmit_json", "template_json", "interactive_json"],
+                         indirect=True)
+@pytest.mark.parametrize("content_type", _CONTENT_TYPES, ids=lambda c: str(c).split(";")[0].replace("/", "-"))
+def test_no_statement_runs_before_the_body_arrives_whatever_the_content_type(
+        scenario, content_type, sql_log, tracker):
+    sql_log.clear()
+    seen: Dict[str, Any] = {}
+
+    def sample() -> int:
+        seen["statements"] = [statement for _, statement in sql_log]
+        seen["open"] = len(tracker())
+        return seen["open"]
+
+    run = asyncio.run(_drive(scenario, hold=True, sample=sample, ctype=content_type, strict=False))
+    if run.receive_calls:  # when the route never asks for a body, there is no wait to inspect
+        assert not seen["statements"], (
+            f"{len(seen['statements'])} statement(s) ran before the body was requested, "
+            f"first: {seen['statements'][0]!r}"
+        )
+        assert seen["open"] == 0, f"{seen['open']} session(s) held a transaction while the body was pending"
+    assert run.status is None or run.status < 500, f"a {run.status} was sent: {run.body!r}"
