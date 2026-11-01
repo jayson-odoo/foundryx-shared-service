@@ -485,6 +485,11 @@ def create_webhook(
     return WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret)
 
 
+def _paused_by_staff() -> ApiError:
+    """The gateway's answer for a key write on an endpoint staff paused."""
+    return ApiError(409, "endpoint_paused_by_staff", "This endpoint was paused by staff.")
+
+
 def _key_revoked() -> ApiError:
     """The gateway's answer for a key revoked while its write was under way."""
     return ApiError(401, "invalid_api_key", "Invalid API key.")
@@ -511,7 +516,11 @@ def update_webhook(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookEndpointItem:
-    from ..services.webhook_service import WebhookError, WebhookKeyRevoked
+    from ..services.webhook_service import (
+        WebhookError,
+        WebhookKeyRevoked,
+        WebhookPausedByStaff,
+    )
 
     _own_endpoint(db, api_ws, endpoint_id)
     try:
@@ -522,6 +531,8 @@ def update_webhook(
         )
     except WebhookKeyRevoked as exc:
         raise _key_revoked() from exc
+    except WebhookPausedByStaff as exc:
+        raise _paused_by_staff() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
     return _wh_item(row)
@@ -536,7 +547,7 @@ def rotate_webhook_secret(
     """New signing secret, returned ONCE. The old one stops verifying at once -
     deploy the new secret before rotating."""
     _own_endpoint(db, api_ws, endpoint_id)
-    from ..services.webhook_service import WebhookKeyRevoked
+    from ..services.webhook_service import WebhookKeyRevoked, WebhookPausedByStaff
 
     try:
         _row, secret = _webhook_service(db).rotate_secret(
@@ -544,6 +555,8 @@ def rotate_webhook_secret(
         )
     except WebhookKeyRevoked as exc:
         raise _key_revoked() from exc
+    except WebhookPausedByStaff as exc:
+        raise _paused_by_staff() from exc
     return WebhookSecretResponse(signingSecret=secret)
 
 
@@ -554,7 +567,7 @@ def enable_webhook(
     db: Session = Depends(get_db),
 ) -> WebhookEndpointItem:
     """Re-enable a disabled endpoint (also clears an AUTO_DISABLED strike count)."""
-    from ..services.webhook_service import WebhookKeyRevoked
+    from ..services.webhook_service import WebhookKeyRevoked, WebhookPausedByStaff
 
     _own_endpoint(db, api_ws, endpoint_id)
     try:
@@ -563,6 +576,8 @@ def enable_webhook(
         )
     except WebhookKeyRevoked as exc:
         raise _key_revoked() from exc
+    except WebhookPausedByStaff as exc:
+        raise _paused_by_staff() from exc
     return _wh_item(row)
 
 
@@ -573,7 +588,9 @@ def disable_webhook(
     db: Session = Depends(get_db),
 ) -> WebhookEndpointItem:
     _own_endpoint(db, api_ws, endpoint_id)
-    return _wh_item(_webhook_service(db).set_status(api_ws.tenant_id, endpoint_id, False))
+    return _wh_item(_webhook_service(db).set_status(
+        api_ws.tenant_id, endpoint_id, False, key_id=api_ws.key_id
+    ))
 
 
 @router.delete("/webhooks/{endpoint_id}", status_code=204)

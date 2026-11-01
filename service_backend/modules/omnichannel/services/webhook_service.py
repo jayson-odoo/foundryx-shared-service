@@ -27,6 +27,7 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.services.url_guard import UrlGuardError
 from app.services.url_guard import assert_deliverable as _core_assert_deliverable
@@ -71,6 +72,16 @@ class WebhookNotFound(Exception):
 
 class WebhookKeyRevoked(Exception):
     """The API key making a write was revoked before the write committed."""
+
+
+class WebhookPausedByStaff(Exception):
+    """A key tried to change an endpoint that staff paused."""
+
+
+# The two stored reasons for a manual pause. A key's write is refused on a row
+# holding the staff reason; the key reason lets another key resume the row.
+STAFF_DISABLED_REASON = "Disabled by user."
+KEY_DISABLED_REASON = "Disabled with an API key."
 
 
 def _new_secret() -> str:
@@ -163,7 +174,7 @@ class WebhookService:
         return row
 
     def _hold_live_key(self, tenant_id: str, workspace_id: str, key_id: str) -> None:
-        """Re-read the writing key's row under a share lock, so a revoke (which
+        """Re-read the writing key's row under a FOR NO KEY UPDATE lock, so a revoke (which
         takes the exclusive lock) either finishes first, and this write is
         refused, or waits for this write to commit and then pauses its row.
         Lock order wherever both are taken: the key row, then the workspace row."""
@@ -203,7 +214,7 @@ class WebhookService:
         # Serialise registrations on this channel so the count below stays true.
         self.db.query(Channel).filter(
             Channel.id == channel.id, Channel.tenant_id == tenant_id
-        ).with_for_update(key_share=True).first()  # key_share: do not wait on child-row inserts
+        ).with_for_update(key_share=True).first()  # FOR NO KEY UPDATE: do not wait on child-row inserts
         existing = (
             self.db.query(WebhookEndpoint)
             .filter(
@@ -259,7 +270,7 @@ class WebhookService:
         # Serialise registrations in this workspace so the count below stays true.
         self.db.query(Workspace).filter(
             Workspace.id == workspace_id, Workspace.tenant_id == tenant_id
-        ).with_for_update(key_share=True).first()  # key_share: do not wait on child-row inserts
+        ).with_for_update(key_share=True).first()  # FOR NO KEY UPDATE: do not wait on child-row inserts
         existing = (
             self.db.query(WebhookEndpoint)
             .filter(
@@ -392,6 +403,24 @@ class WebhookService:
     def get(self, tenant_id: str, endpoint_id: str) -> WebhookEndpoint:
         return self._get(tenant_id, endpoint_id)
 
+    def _refuse_if_staff_paused(self, row: WebhookEndpoint, key_id: Optional[str]) -> None:
+        if (
+            key_id is not None
+            and row.status == "DISABLED"
+            and row.disabled_reason == STAFF_DISABLED_REASON
+        ):
+            self.db.rollback()
+            raise WebhookPausedByStaff("This endpoint was paused by staff.")
+
+    def _hold_key_write(self, row: WebhookEndpoint, key_id: Optional[str]) -> None:
+        """Re-read the key (refused if revoked) and then the row, since staff
+        may have paused it during a slow check. Call before changing the row."""
+        if key_id is None:
+            return
+        self._hold_live_key(row.tenant_id, row.workspace_id, key_id)
+        self.db.refresh(row)
+        self._refuse_if_staff_paused(row, key_id)
+
     def update(
         self,
         tenant_id: str,
@@ -403,28 +432,41 @@ class WebhookService:
         key_id: Optional[str] = None,
     ) -> WebhookEndpoint:
         """``key_id`` (an API key making the change) makes that key the row's
-        owner, and refuses the write (``WebhookKeyRevoked``) if it is revoked."""
+        owner when a value really changes, and refuses the write
+        (``WebhookKeyRevoked``) if it is revoked."""
         row = self._get(tenant_id, endpoint_id)
+        self._refuse_if_staff_paused(row, key_id)
+        clean_url = validate_callback_url(url, strict_dns=strict_dns) if url is not None else None
+        clean_events = _validate_events(events) if events is not None else None
+        self._hold_key_write(row, key_id)
+        changed = False
         if name is not None:
-            row.name = name.strip() or row.name
-        if url is not None:
-            row.url = validate_callback_url(url, strict_dns=strict_dns)
-        if events is not None:
-            row.events_json = _validate_events(events)
-        self._own_by_key(row, key_id)
+            new_name = name.strip() or row.name
+            if new_name != row.name:
+                row.name, changed = new_name, True
+        if clean_url is not None and clean_url != row.url:
+            row.url, changed = clean_url, True
+        if clean_events is not None and clean_events != row.events_json:
+            row.events_json, changed = clean_events, True
+        if changed:
+            self._own_by_key(row, key_id)
         self.db.commit()
         self.db.refresh(row)
         return row
 
     def _own_by_key(self, row: WebhookEndpoint, key_id: Optional[str]) -> None:
         if key_id is not None:
-            self._hold_live_key(row.tenant_id, row.workspace_id, key_id)
             row.created_by = f"apikey:{key_id}"
+            # The last write owns the row: force it even when the value read
+            # earlier is the same.
+            flag_modified(row, "created_by")
 
     def rotate_secret(
         self, tenant_id: str, endpoint_id: str, key_id: Optional[str] = None
     ) -> Tuple[WebhookEndpoint, str]:
         row = self._get(tenant_id, endpoint_id)
+        self._refuse_if_staff_paused(row, key_id)
+        self._hold_key_write(row, key_id)
         secret = _new_secret()
         row.secret_encrypted = encrypt_secret(secret)
         self._own_by_key(row, key_id)
@@ -436,19 +478,28 @@ class WebhookService:
         self, tenant_id: str, endpoint_id: str, active: bool, key_id: Optional[str] = None
     ) -> WebhookEndpoint:
         """Manual enable/disable. Re-enabling clears the auto-disable state +
-        resets the consecutive-failure counter. ``key_id`` (enable only) makes
-        that key the owner and refuses the write if it is revoked."""
+        resets the consecutive-failure counter. On enable, ``key_id`` refuses
+        the write if the key is revoked or staff paused the row, and makes that
+        key the owner when the row was not already ACTIVE. On disable it only
+        records the key's own pause reason."""
         row = self._get(tenant_id, endpoint_id)
         if active:
-            self._own_by_key(row, key_id)
+            self._refuse_if_staff_paused(row, key_id)
+            self._hold_key_write(row, key_id)
+            if row.status != "ACTIVE":
+                self._own_by_key(row, key_id)
             row.status = "ACTIVE"
             row.consecutive_failures = 0
             row.disabled_at = None
             row.disabled_reason = None
         else:
+            if key_id is not None and row.disabled_reason == STAFF_DISABLED_REASON:
+                return row  # a key never rewrites staff's pause
             row.status = "DISABLED"
             row.disabled_at = datetime.now(timezone.utc)
-            row.disabled_reason = "Disabled by user."
+            row.disabled_reason = (
+                KEY_DISABLED_REASON if key_id is not None else STAFF_DISABLED_REASON
+            )
         self.db.commit()
         self.db.refresh(row)
         return row
