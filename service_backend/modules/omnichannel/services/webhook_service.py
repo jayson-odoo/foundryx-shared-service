@@ -1,12 +1,13 @@
 """Consumer webhook endpoints - CRUD + signing-secret issuance (Slice 4, AC-01-22).
 
-A consumer registers one or more callback URLs per CHANNEL (number). We POST a
-signed event to each on inbound messages / delivery receipts / contact updates.
+A consumer registers one or more callback URLs per CHANNEL (number), or one
+that covers every channel of its workspace (``channel_id`` NULL). We POST a signed event to each on inbound messages / delivery receipts / contact updates.
 The signing secret is Fernet-encrypted at rest (reversible - we sign every
 delivery with it) and revealed to the consumer ONLY on create + rotate.
 
 Security invariants:
 - Every query is tenant-scoped; the channel must belong to the caller's tenant.
+  An all-channels endpoint is bounded by its tenant AND workspace only.
 - Callback URLs must be HTTPS and must not target private/loopback hosts (SSRF).
 
 SSRF guard (plan sprint-4/31 S5, D-A5-11/F5): the actual check moved VERBATIM
@@ -24,6 +25,7 @@ import socket  # noqa: F401 - `assert_deliverable`'s DNS guard is monkeypatched 
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.services.url_guard import UrlGuardError
@@ -51,6 +53,8 @@ AUTO_DISABLE_THRESHOLD = 10
 # to ALL of them, so an unbounded count is self-inflicted worker amplification
 # - and, on the key-authed public surface, an outbound-request amplifier.
 MAX_ENDPOINTS_PER_CHANNEL = 10
+# Same bound for the all-channels endpoints of one workspace (channel_id NULL).
+MAX_ENDPOINTS_PER_WORKSPACE = 10
 
 
 class WebhookError(Exception):
@@ -177,13 +181,58 @@ class WebhookService:
                 f"This channel already has the maximum of {MAX_ENDPOINTS_PER_CHANNEL} "
                 "webhook endpoints. Delete one before adding another."
             )
+        return self._insert(
+            tenant_id, channel.workspace_id, channel.id, name, url, events, created_by, strict_dns
+        )
+
+    def create_for_workspace(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        name: str,
+        url: str,
+        events: List[str],
+        created_by: Optional[str],
+        strict_dns: bool = False,
+    ) -> Tuple[WebhookEndpoint, str]:
+        """Register an endpoint that covers every channel of the workspace
+        (``channel_id`` NULL). Returns (row, plaintext_secret)."""
+        existing = (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.tenant_id == tenant_id,
+                WebhookEndpoint.workspace_id == workspace_id,
+                WebhookEndpoint.channel_id.is_(None),
+            )
+            .count()
+        )
+        if existing >= MAX_ENDPOINTS_PER_WORKSPACE:
+            raise WebhookError(
+                f"This workspace already has the maximum of {MAX_ENDPOINTS_PER_WORKSPACE} "
+                "all-channels webhook endpoints. Delete one before adding another."
+            )
+        return self._insert(
+            tenant_id, workspace_id, None, name, url, events, created_by, strict_dns
+        )
+
+    def _insert(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        channel_id: Optional[str],
+        name: str,
+        url: str,
+        events: List[str],
+        created_by: Optional[str],
+        strict_dns: bool,
+    ) -> Tuple[WebhookEndpoint, str]:
         clean_url = validate_callback_url(url, strict_dns=strict_dns)
         clean_events = _validate_events(events)
         secret = _new_secret()
         row = WebhookEndpoint(
             tenant_id=tenant_id,
-            workspace_id=channel.workspace_id,
-            channel_id=channel.id,
+            workspace_id=workspace_id,
+            channel_id=channel_id,
             name=(name or "").strip() or "Webhook",
             url=clean_url,
             secret_encrypted=encrypt_secret(secret),
@@ -227,12 +276,20 @@ class WebhookService:
         )
 
     def list_for_channel(self, tenant_id: str, channel_id: str) -> List[WebhookEndpoint]:
-        self._channel(tenant_id, channel_id)
+        """The channel's own endpoints plus the all-channels endpoints of the
+        channel's tenant and workspace."""
+        channel = self._channel(tenant_id, channel_id)
         return (
             self.db.query(WebhookEndpoint)
             .filter(
                 WebhookEndpoint.tenant_id == tenant_id,
-                WebhookEndpoint.channel_id == channel_id,
+                or_(
+                    WebhookEndpoint.channel_id == channel.id,
+                    and_(
+                        WebhookEndpoint.channel_id.is_(None),
+                        WebhookEndpoint.workspace_id == channel.workspace_id,
+                    ),
+                ),
             )
             .order_by(WebhookEndpoint.created_at.desc())
             .all()

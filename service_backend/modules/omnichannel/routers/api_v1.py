@@ -416,7 +416,7 @@ def mark_contact_read(
 # callbacks: webhooks are the intended inbound path, and until now registration
 # was dashboard-only (session JWT + `webhooks.manage`), so a key-holder could
 # neither create nor even LIST its endpoints. These mirror the operator routes
-# but are scoped to the key's workspace and its active channel - a consumer can
+# but are scoped to the key's workspace - a consumer can
 # never see or touch another workspace's endpoints.
 def _webhook_service(db: Session):
     from ..services.webhook_service import WebhookService
@@ -455,15 +455,13 @@ def create_webhook(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookEndpointMintResponse:
-    """Register a callback on your workspace's active channel. The signing
-    secret is returned ONCE - store it; it is never shown again."""
+    """Register a callback that covers every channel of your workspace. The
+    signing secret is returned ONCE - store it; it is never shown again."""
     from ..services.webhook_service import WebhookError
 
-    svc = PublicGatewayService(db)
-    channel = svc._workspace_channel(api_ws.tenant_id, api_ws.workspace_id)
     try:
-        row, secret = _webhook_service(db).create(
-            api_ws.tenant_id, channel.id, payload.name, payload.url, payload.events,
+        row, secret = _webhook_service(db).create_for_workspace(
+            api_ws.tenant_id, api_ws.workspace_id, payload.name, payload.url, payload.events,
             # No user behind an API key - record WHICH key, matching the
             # `apikey:<id>` actor convention used elsewhere in this service.
             # The activity log is pruned per tenant; this row is permanent.
