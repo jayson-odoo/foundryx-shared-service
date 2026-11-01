@@ -69,7 +69,9 @@ async def read_request_body(request: Request) -> None:
     ``request.form()`` / ``request.json()`` return the cached result. A client that
     leaves mid-body answers 400. Multipart keeps whatever ``request.form()`` raises."""
     try:
-        if request.headers.get("content-type", "").startswith("multipart/"):
+        # Starlette's form() reads the stream only for multipart/form-data and
+        # returns empty without reading for other types; body() always reads.
+        if request.headers.get("content-type", "").startswith("multipart/form-data"):
             await request.form()
         else:
             await request.body()
