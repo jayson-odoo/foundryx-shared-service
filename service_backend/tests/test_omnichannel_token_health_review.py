@@ -71,6 +71,13 @@ def test_check_200_body_decides(monkeypatch, body, expected):
     assert adapter.check_token({"access_token": TOKEN_NEW}, PN) == expected
 
 
+@pytest.mark.parametrize("status", [500, 403])
+def test_check_non_200_carrying_the_numbers_id_is_unknown(monkeypatch, status):
+    _, handler = _recorder(status, {"id": PN})
+    adapter = _graph_adapter(monkeypatch, handler)
+    assert adapter.check_token({"access_token": TOKEN_NEW}, PN) == "unknown"
+
+
 @pytest.mark.parametrize(
     "status,body,expected",
     [(200, {"id": PN}, "ok"), (400, {"error": {"code": 190}}, "dead"), (500, {}, "unknown")],
