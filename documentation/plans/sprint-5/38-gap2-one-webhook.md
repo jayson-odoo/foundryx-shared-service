@@ -80,7 +80,7 @@ Not changed: `WebhookEndpointCreateRequest` stays name, url, events, so `channel
 
 ## Checks
 
-Targeted only, at most `-n 2`. Also run because this changes a table and a list route: `tests/test_schema_uuid_id_principle.py`, `tests/test_list_pagination_limit.py`. Expected touched suites: `test_omnichannel_consumer_webhooks.py`, `test_omnichannel_api_gateway.py`, `test_omnichannel_gateway_channels.py`, `test_omnichannel_gateway_channel_selector.py`, `test_omnichannel_outbound_event.py`.
+Targeted only, at most `-n 2`. Touched suites: `test_omnichannel_consumer_webhooks.py`, `test_omnichannel_api_gateway.py`, `test_omnichannel_gateway_channels.py`, `test_omnichannel_gateway_channel_selector.py`, `test_omnichannel_outbound_event.py`, `test_omnichannel_rich_messages.py`. CI runs the full suite on the PR.
 
 ## No motion
 
