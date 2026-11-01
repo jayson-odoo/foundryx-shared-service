@@ -49,7 +49,7 @@ from app.models.import_job import ImportJob
 from app.models.tenant import DEFAULT_TENANT_ID, PLATFORM_TENANT_ID
 from app.services import storage as storage_module
 from app.services.document_service import DocumentService
-from app.services.storage import storage_for_tenant
+from app.services.storage import StorageReadError, read_object, read_url, storage_for_tenant
 from app.import_engine.service import ImportService
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 from tests.test_storage_providers import StubS3Client
@@ -67,6 +67,7 @@ HOSTS = {
     "internal.storage.test": "10.0.0.5",
     "meta.storage.test": "169.254.169.254",
     "localhost": "127.0.0.1",
+    "seq.storage.test": PUBLIC_IP,
 }
 
 
@@ -164,6 +165,7 @@ class Listener:
         self.ctx = ctx
         self.mode = mode
         self.big_bytes = big_bytes
+        self.framing = "exact"  # for mode "framed": exact | none | chunked | stall
         self.body = CANARY_BYTES
         self.objects: Dict[str, bytes] = {}
         self.requests: List[str] = []
@@ -222,6 +224,9 @@ class Listener:
                     b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 )
                 return
+            if self.mode == "framed":
+                self._send_framed(conn)
+                return
             if self.mode == "big":
                 conn.sendall(
                     b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n"
@@ -249,6 +254,34 @@ class Listener:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _send_framed(self, conn):
+        if self.framing == "stall":
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % self.big_bytes
+            )
+            self._stop.wait(8)
+            return
+        if self.framing == "exact":
+            head = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % self.big_bytes
+        elif self.framing == "chunked":
+            head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        else:
+            head = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+        conn.sendall(head)
+        piece = b"x" * 65536
+        sent = 0
+        while sent < self.big_bytes:
+            n = min(len(piece), self.big_bytes - sent)
+            if self.framing == "chunked":
+                conn.sendall(b"%x\r\n" % n + piece[:n] + b"\r\n")
+            else:
+                conn.sendall(piece[:n])
+            sent += n
+            with self._lock:
+                self.bytes_sent += n
+        if self.framing == "chunked":
+            conn.sendall(b"0\r\n\r\n")
+
     def close(self):
         self._stop.set()
         try:
@@ -262,6 +295,7 @@ class Net:
         self.tmp_path = tmp_path
         self.listener: Optional[Listener] = None
         self.attempts: List[tuple] = []  # (host, port, socket timeout at connect)
+        self.sequences: Dict[str, List[str]] = {}  # name -> answers, one per lookup
         ca, chain, key = tls_files
         self.ca = ca
         self._ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -301,6 +335,11 @@ def net(tmp_path, monkeypatch, _tls_files):
         except OSError:
             pass
         ip = HOSTS.get(name.lower())
+        answers = n.sequences.get(name.lower())
+        if answers:
+            ip = answers.pop(0) if len(answers) > 1 else answers[0]
+            if ip == "FAIL":
+                raise socket.gaierror(socket.EAI_AGAIN, "scripted: lookup failed")
         if ip is None:
             raise socket.gaierror(socket.EAI_NONAME, "scripted: unknown name")
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))]
@@ -1051,3 +1090,430 @@ def test_media_read_reports_the_status_of_a_failed_response(net, bucket, session
     assert not out.ok
     assert str(exc) == "Media read failed with status 404"
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# the address is checked again when the connection is made
+# ═══════════════════════════════════════════════════════════════════════════
+
+ANSWER_SEQUENCES = {
+    "public_then_private": [PUBLIC_IP, "10.0.0.5"],
+    "public_then_link_local": [PUBLIC_IP, "169.254.169.254"],
+    "public_then_loopback": [PUBLIC_IP, "127.0.0.1"],
+    "failure_then_private": ["FAIL", "10.0.0.5"],
+    "failure_then_link_local": ["FAIL", "169.254.169.254"],
+}
+
+
+@pytest.mark.parametrize("sequence", list(ANSWER_SEQUENCES))
+def test_read_url_connects_only_to_an_address_that_passed_the_check(sequence, net):
+    net.start(tls=True)
+    net.sequences["seq.storage.test"] = list(ANSWER_SEQUENCES[sequence])
+    with pytest.raises(StorageReadError):
+        read_url("https://seq.storage.test/obj.bin", timeout=5)
+    assert net.attempts == []
+    assert net.listener.connections == 0
+
+
+def test_read_url_reads_a_name_that_keeps_resolving_to_a_public_address(net):
+    net.start(tls=True)
+    net.sequences["seq.storage.test"] = [PUBLIC_IP]
+    assert read_url("https://seq.storage.test/obj.bin", timeout=5) == CANARY_BYTES
+
+
+@pytest.mark.parametrize("sequence", list(ANSWER_SEQUENCES))
+@pytest.mark.parametrize("reader", list(READERS))
+def test_every_storage_read_connects_only_to_an_address_that_passed_the_check(
+    reader, sequence, net, bucket, session_factory
+):
+    db = session_factory()
+    listener = net.start(tls=True)
+    _mirror_into_listener(bucket, listener)
+    net.sequences["seq.storage.test"] = list(ANSWER_SEQUENCES[sequence])
+    conn = _connect(db, "https://seq.storage.test")
+    out = READERS[reader](db, conn)
+    assert not out.ok
+    assert CANARY_BYTES not in out.data
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("sequence", list(ANSWER_SEQUENCES))
+def test_media_read_connects_only_to_an_address_that_passed_the_check(
+    sequence, net, bucket, session_factory
+):
+    db = session_factory()
+    net.start(tls=True)
+    net.sequences["seq.storage.test"] = list(ANSWER_SEQUENCES[sequence])
+    out, exc = read_media(db, _connect(db, "https://seq.storage.test"))
+    assert not out.ok
+    assert net.attempts == []
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# size limits on the read, each on its own
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_read_url_stops_on_a_declared_length_over_the_limit(net):
+    """The declared length alone refuses the read: the body never arrives, so a
+    read that waited for it would run into the timeout instead."""
+    import time
+
+    listener = net.start(tls=True, mode="framed", big_bytes=10 * MIB)
+    listener.framing = "stall"
+    started = time.monotonic()
+    with pytest.raises(StorageReadError):
+        read_url("https://cdn.storage.test/obj.bin", timeout=5, max_bytes=1 * MIB)
+    assert time.monotonic() - started < 3
+
+
+@pytest.mark.parametrize("framing", ["none", "chunked"])
+def test_read_url_stops_when_a_body_without_a_declared_length_crosses_the_limit(framing, net):
+    listener = net.start(tls=True, mode="framed", big_bytes=8 * MIB)
+    listener.framing = framing
+    with pytest.raises(StorageReadError):
+        read_url("https://cdn.storage.test/obj.bin", timeout=10, max_bytes=1 * MIB)
+
+
+@pytest.mark.parametrize("framing", ["none", "chunked", "exact"])
+def test_read_url_returns_a_body_within_the_limit(framing, net):
+    listener = net.start(tls=True, mode="framed", big_bytes=512 * 1024)
+    listener.framing = framing
+    assert len(read_url("https://cdn.storage.test/obj.bin", timeout=10, max_bytes=1 * MIB)) == 512 * 1024
+
+
+def test_an_import_error_report_read_stops_at_the_import_size_limit(net, bucket, session_factory):
+    db = session_factory()
+    ImportService(db).set_settings(DEFAULT_TENANT_ID, None, 1)
+    listener = net.start(tls=True, mode="big", big_bytes=64 * MIB)
+    conn = _connect(db, "https://cdn.storage.test")
+    out = read_errors(db, conn)
+    assert not out.ok or len(out.data) <= 1 * MIB
+    assert listener.bytes_sent < 32 * MIB, f"server sent {listener.bytes_sent} bytes"
+    db.close()
+
+
+def test_an_import_error_report_within_the_limit_is_read(net, bucket, session_factory):
+    db = session_factory()
+    ImportService(db).set_settings(DEFAULT_TENANT_ID, None, 1)
+    net.start(tls=True)
+    out = read_errors(db, _connect(db, "https://cdn.storage.test"))
+    assert out.ok and out.data == CANARY_BYTES
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# a tenant connection holding a stored bad endpoint
+# ═══════════════════════════════════════════════════════════════════════════
+
+BAD_ENDPOINTS = [
+    "http://127.0.0.1:9000",
+    "https://10.0.0.5",
+    "https://internal.storage.test",
+    "https://meta.storage.test",
+    "ftp://cdn.storage.test",
+    "file:///tmp/objects",
+]
+
+
+@pytest.fixture
+def client_builds(monkeypatch, bucket):
+    """Counts the storage clients that get built (a built client is the first
+    step towards any connection to the endpoint)."""
+    builds: List[object] = []
+
+    def build(self):
+        builds.append(self.endpoint_url)
+        return bucket
+
+    monkeypatch.setattr(S3CompatibleAdapter, "_build_client", build)
+    return builds
+
+
+def _with_endpoint(db, conn: Connection, endpoint: str) -> Connection:
+    conn.config_json = {**(conn.config_json or {}), "endpointUrl": endpoint}
+    conn.updated_at = datetime.now(timezone.utc) + timedelta(seconds=5)
+    db.commit()
+    db.refresh(conn)
+    storage_module.clear_adapter_cache()
+    return conn
+
+
+@pytest.mark.parametrize("endpoint", BAD_ENDPOINTS)
+def test_import_preview_fails_cleanly_for_a_connection_with_a_bad_endpoint(
+    endpoint, client, session_factory, bucket, client_builds, net
+):
+    listener = net.start(tls=True)
+    listener.objects["/preview.csv"] = f"{CANARY},Email\n1,a@example.com\n".encode()
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), endpoint)
+    job = _new_job(db, file_storage_key=f"conn:{conn.id}:preview.csv")
+    try:
+        res = client.get(f"/imports/{job.id}/preview", headers=_admin(client))
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"unhandled {type(exc).__name__} from the preview route")
+    assert 400 <= res.status_code < 500 or res.status_code == 502, res.text
+    assert CANARY not in res.text
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("endpoint", BAD_ENDPOINTS)
+def test_download_job_fails_cleanly_for_a_connection_with_a_bad_endpoint(
+    endpoint, client, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), endpoint)
+    try:
+        created, served = _zip_job(client, db, conn)
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"unhandled {type(exc).__name__} from the download routes")
+    assert created.status_code == 201, created.text
+    assert served is None or served.status_code < 500
+    assert CANARY_BYTES not in _everything_returned(created) + _everything_returned(served)
+    assert _zip_members(bucket) == {}
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.fixture
+def local_media(monkeypatch, tmp_path):
+    from app.config import settings
+
+    media = tmp_path / "local-media"
+    media.mkdir()
+    monkeypatch.setattr(settings, "media_root", str(media))
+    return media
+
+
+@pytest.mark.parametrize("endpoint", BAD_ENDPOINTS)
+def test_an_upload_skips_a_connection_with_a_bad_endpoint_and_uses_local_storage(
+    endpoint, session_factory, bucket, client_builds, net, local_media
+):
+    db = session_factory()
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), endpoint)
+    key = storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png")
+    assert not key.startswith("conn:")
+    assert (local_media / key).read_bytes() == b"BYTES"
+    assert bucket.objects == {}
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("endpoint", BAD_ENDPOINTS)
+def test_an_upload_skips_a_connection_with_a_bad_endpoint_and_uses_platform_storage(
+    endpoint, session_factory, bucket, client_builds, net, monkeypatch, local_media
+):
+    db = session_factory()
+    platform = _seed_platform_storage(db, monkeypatch, "https://cdn.storage.test")
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), endpoint)
+    key = storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png")
+    assert key.startswith(f"conn:{platform.id}:")
+    assert list(bucket.objects.values()) == [b"BYTES"]
+    assert endpoint not in [str(b) for b in client_builds]
+    assert net.attempts == []
+    db.close()
+
+
+def test_an_upload_uses_a_tenant_connection_with_a_public_endpoint(
+    session_factory, bucket, client_builds, net, local_media
+):
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), "https://s3.storage.test")
+    key = storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png")
+    assert key.startswith(f"conn:{conn.id}:")
+    assert list(bucket.objects.values()) == [b"BYTES"]
+    db.close()
+
+
+# ── the stored endpoint is checked again after the connection is edited ────
+
+
+def test_a_stored_bad_endpoint_is_checked_when_the_connection_is_used(
+    session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), "https://10.0.0.5")
+    assert not read_blob(db, conn).ok
+    assert net.attempts == []
+    db.close()
+
+
+def test_an_edited_endpoint_is_checked_again_after_the_adapter_was_cached(
+    session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _connect(db, "https://cdn.storage.test")
+    first = read_blob(db, conn)
+    assert first.ok and first.data == CANARY_BYTES  # adapter is now cached
+    connects_before = len(net.attempts)
+    conn.config_json = {**conn.config_json, "endpointUrl": "https://10.0.0.5"}
+    conn.updated_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+    db.commit()
+    db.refresh(conn)
+    second = read_blob(db, conn)
+    assert not second.ok
+    assert len(net.attempts) == connects_before
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# the Test button
+# ═══════════════════════════════════════════════════════════════════════════
+
+TEST_REFUSAL = "The storage URLs must be public https addresses."
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("endpointUrl", "http://127.0.0.1:9000"),
+        ("endpointUrl", "https://10.0.0.5"),
+        ("endpointUrl", "https://internal.storage.test"),
+        ("endpointUrl", "ftp://cdn.storage.test"),
+        ("endpointUrl", " https://cdn.storage.test"),
+        ("cdnBaseUrl", "http://127.0.0.1:9000"),
+        ("cdnBaseUrl", "https://meta.storage.test"),
+        ("cdnBaseUrl", "file:///tmp/objects"),
+        ("cdnBaseUrl", " https://cdn.storage.test"),
+    ],
+)
+def test_the_test_button_refuses_a_stored_bad_url_without_building_a_client(
+    field, value, client, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _connect(db, "https://cdn.storage.test")
+    conn.config_json = {**conn.config_json, field: value}
+    db.commit()
+    storage_module.clear_adapter_cache()
+    res = client.post(
+        f"/integrations/connections/{conn.id}/test", json={}, headers=_admin(client)
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is False
+    assert res.json()["message"] == TEST_REFUSAL
+    assert client_builds == []
+    assert net.attempts == []
+    assert bucket.objects == {}
+    db.close()
+
+
+def test_the_test_button_runs_for_a_public_https_connection(
+    client, session_factory, bucket, client_builds, net
+):
+    listener = net.start(tls=True)
+    _mirror_into_listener(bucket, listener)
+    db = session_factory()
+    conn = _connect(db, "https://cdn.storage.test")
+    res = client.post(
+        f"/integrations/connections/{conn.id}/test", json={}, headers=_admin(client)
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True
+    assert len(client_builds) == 1
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# saving platform storage (operator-owned) and the R2 account id
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _platform_create(db, base: dict, **config):
+    from app.schemas.integration import ConnectionCreateRequest
+    from app.services.integration_service import IntegrationService
+
+    body = ConnectionCreateRequest(**_payload(base, **config))
+    return IntegrationService(db).create(PLATFORM_TENANT_ID, body)
+
+
+def _storage_rows_for(session_factory, tenant_id):
+    db = session_factory()
+    try:
+        return db.query(Connection).filter(
+            Connection.tenant_id == tenant_id, Connection.type == "storage"
+        ).all()
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize(
+    "value", ["file:///tmp/objects", "ftp://cdn.storage.test", " https://cdn.storage.test", "cdn.storage.test"]
+)
+def test_platform_storage_refuses_a_value_that_is_not_http_or_https(field, value, session_factory):
+    from fastapi import HTTPException
+
+    db = session_factory()
+    with pytest.raises(HTTPException) as caught:
+        _platform_create(db, S3_PAYLOAD, **{field: value})
+    assert caught.value.status_code == 422
+    db.close()
+    assert _storage_rows_for(session_factory, PLATFORM_TENANT_ID) == []
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize(
+    "value", ["http://cdn.storage.test", "https://10.0.0.5", "http://127.0.0.1:9000", "https://internal.storage.test"]
+)
+def test_platform_storage_accepts_http_and_private_addresses(field, value, session_factory):
+    db = session_factory()
+    created = _platform_create(db, S3_PAYLOAD, **{field: value})
+    assert created.config[field] == value
+    db.close()
+
+
+BAD_ACCOUNT_IDS = [
+    "x.internal#",
+    "user@host",
+    "acct.example.com",
+    "acct/path",
+    "acct:443",
+    "acct id",
+    "acct?x=1",
+    "acct\\host",
+    "acct_underscore",
+]
+
+
+@pytest.mark.parametrize("account_id", BAD_ACCOUNT_IDS)
+def test_saving_an_r2_connection_requires_a_plain_account_id(
+    account_id, client, session_factory, net
+):
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(R2_PAYLOAD, accountId=account_id),
+        headers=_admin(client),
+    )
+    assert res.status_code == 422, res.text
+    assert _storage_rows(session_factory) == []
+
+
+@pytest.mark.parametrize("account_id", ["x.internal#", "user@host"])
+def test_platform_storage_requires_a_plain_r2_account_id(account_id, session_factory):
+    from fastapi import HTTPException
+
+    db = session_factory()
+    with pytest.raises(HTTPException) as caught:
+        _platform_create(db, R2_PAYLOAD, accountId=account_id)
+    assert caught.value.status_code == 422
+    db.close()
+
+
+@pytest.mark.parametrize("account_id", ["abc", "23f8c4ed", "abc-123", "ABC-def-9"])
+def test_saving_an_r2_connection_with_a_plain_account_id(account_id, client, session_factory, net):
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(R2_PAYLOAD, accountId=account_id),
+        headers=_admin(client),
+    )
+    assert res.status_code == 201, res.text
