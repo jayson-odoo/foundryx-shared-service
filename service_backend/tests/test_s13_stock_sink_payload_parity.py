@@ -399,7 +399,7 @@ def test_auto_push_delete_intent_reaches_sorento_with_chunk_restricted_pairs(
     db = session_factory()
     api_conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="api",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(api_conn)

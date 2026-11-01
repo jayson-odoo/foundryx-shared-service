@@ -16,7 +16,7 @@ vi.mock('@/services/autocount-service', () => ({
 const { useAutocountSourceConnections } = await import('./use-autocount-connections');
 
 const API = [
-  { id: 'conn-api-1', name: 'AutoCount HQ', baseUrl: 'https://hapi.sorento.cc.cd/api/db1', auth: 'none' },
+  { id: 'conn-api-1', name: 'AutoCount HQ', baseUrl: 'https://autocount-wrapper.example.com/api/db1', auth: 'none' },
   { id: 'conn-api-2', name: 'AutoCount Branch', baseUrl: 'https://api.autocountcloud.com', auth: 'basic' },
 ];
 const SQL = [

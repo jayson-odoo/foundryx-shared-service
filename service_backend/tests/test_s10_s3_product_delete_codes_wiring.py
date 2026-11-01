@@ -113,7 +113,7 @@ def sorento_consumer(monkeypatch):
 
 def _company(db, *, entity_type, key_fields) -> AcCompany:
     api = _connection(
-        db, "autocount", {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"}, {},
+        db, "autocount", {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"}, {},
     )
     sorento = _connection(db, "sorento", {"baseUrl": "https://sorento.example.com"}, {"apiKey": "k"})
     company = AcCompany(
@@ -135,7 +135,7 @@ def _company(db, *, entity_type, key_fields) -> AcCompany:
 
 def _company_logging_sink(db, *, entity_type, key_fields) -> AcCompany:
     api = _connection(
-        db, "autocount", {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"}, {},
+        db, "autocount", {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"}, {},
     )
     company = AcCompany(
         tenant_id=DEFAULT_TENANT_ID, connection_id=api.id, database_name="AED_SORENTO",

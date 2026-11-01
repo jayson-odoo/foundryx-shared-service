@@ -85,7 +85,7 @@ vi.mock('@/hooks/use-autocount-etl', async (importOriginal) => {
     }),
     useAutocountApiConnections: () => ({
       connections: [
-        { id: 'conn-api-mocha', name: 'Mocha REST', baseUrl: 'https://hapi.sorento.cc.cd/api/db2', auth: 'none' as const },
+        { id: 'conn-api-mocha', name: 'Mocha REST', baseUrl: 'https://autocount-wrapper.example.com/api/db2', auth: 'none' as const },
       ],
       isLoading: false,
       error: null,

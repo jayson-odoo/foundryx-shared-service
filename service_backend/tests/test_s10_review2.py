@@ -48,7 +48,7 @@ from modules.autocount.sources import SourceContext, Watermark
 from modules.autocount.http_source.source import HttpApiSource
 
 DB_NAME = "MOCHA"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 @pytest.fixture

@@ -33,7 +33,7 @@ from modules.autocount.models import AcCompany, SOURCE_IMPL_AUTOCOUNT_HTTP
 from modules.autocount.services.etl_service import EtlService, EtlValidationError
 
 DB_NAME = "MOCHA"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 SUPPLIER_LOOKUP = {
     "path": "/creditorbypage", "as": "supplier",

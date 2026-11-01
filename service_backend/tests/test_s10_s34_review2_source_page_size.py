@@ -29,7 +29,7 @@ from modules.autocount.services.company_service import CompanyService
 from modules.autocount.sources import SourceContext, Watermark
 
 DB_NAME = "MOCHA"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -209,7 +209,7 @@ def db(session_factory):
 def _company(db) -> AcCompany:
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="db1 REST",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(conn)

@@ -156,7 +156,7 @@ def create_company(
     ``transport`` (sprint-5/08 review round 1, B4) is the SAME dependency
     seam ``/autocount/http/preview`` uses - production leaves it ``None``
     (a real network call for the open-company reachability probe), tests
-    override it so this route never reaches ``hapi.sorento.cc.cd``.
+    override it so this route never reaches ``autocount-wrapper.example.com``.
     """
     service = CompanyService(db)
     try:

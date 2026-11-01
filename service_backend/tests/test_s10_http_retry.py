@@ -48,7 +48,7 @@ from modules.autocount.http_source.source import HttpApiSource
 from modules.autocount.http_source.errors import HttpSourceError
 
 DB_NAME = "MOCHA"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 @pytest.fixture(autouse=True)

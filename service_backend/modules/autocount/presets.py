@@ -1385,7 +1385,7 @@ def list_mapping_presets(entity_type: str, database_name: str) -> List[Dict[str,
 
 # ── open REST API presets (sprint-5/08, AC-08-16) ─────────────────────────────
 #
-# The six confirmed ``hapi.sorento.cc.cd`` entities' default task config
+# The six confirmed ``autocount-wrapper.example.com`` entities' default task config
 # (endpoint path + key/watermark/distinctOf) and seeded mapping rows - the
 # HTTP-source counterpart of ``DOCUMENT_PRESETS`` above, seeded the SAME
 # seed-if-absent way (``EtlService.update_task``'s HTTP branch), never

@@ -151,7 +151,7 @@ def test_a_db2_connection_hits_the_db2_prefixed_door_and_pushes_book_db2(session
     with ITS OWN book, never `db1`'s."""
     db = session_factory()
     ac_conn = autocount_connection(
-        db, base_url="https://hapi.sorento.cc.cd/api/db2", name="db2 open API",
+        db, base_url="https://autocount-wrapper.example.com/api/db2", name="db2 open API",
     )
     crm_conn = sorento_connection(db)
     co = company(db, sink_connection=crm_conn, ac_connection=ac_conn)

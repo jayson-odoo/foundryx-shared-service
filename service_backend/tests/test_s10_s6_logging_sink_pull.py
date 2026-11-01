@@ -119,7 +119,7 @@ def _company_on_sorento_sink(db, *, code: str = "SRT") -> AcCompany:
     the exact starting state the replay's Setup section describes (SRT
     pointed at a `.invalid` fixture connection, code 'SRT') before the
     session ever touched the sink target."""
-    api = _connection(db, "autocount", {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"})
+    api = _connection(db, "autocount", {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"})
     sorento = _connection(db, "sorento", {"baseUrl": "https://sorento.example.invalid"}, {"apiKey": "k"})
     company = AcCompany(
         tenant_id=DEFAULT_TENANT_ID, connection_id=api.id, database_name="AED_SORENTO",

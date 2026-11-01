@@ -25,7 +25,7 @@ from modules.autocount.services.company_service import CompanyService
 from modules.autocount.sources import SourceContext, Watermark
 
 DB_NAME = "AED_SORENTO"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db1"
+BASE_URL = "https://autocount-wrapper.example.com/api/db1"
 
 
 @pytest.fixture(autouse=True)

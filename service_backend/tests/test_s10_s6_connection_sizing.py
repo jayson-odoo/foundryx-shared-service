@@ -63,7 +63,7 @@ from modules.autocount.services.company_service import CompanyService
 from modules.autocount.sources import SourceContext, Watermark
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 @pytest.fixture(autouse=True)

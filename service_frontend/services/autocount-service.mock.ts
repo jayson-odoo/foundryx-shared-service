@@ -1257,13 +1257,13 @@ const HTTP_API_CONNECTIONS: AutocountApiConnection[] = [
   {
     id: 'conn-api-sorento',
     name: 'Sorento REST',
-    baseUrl: 'https://hapi.sorento.cc.cd/api/db1',
+    baseUrl: 'https://autocount-wrapper.example.com/api/db1',
     auth: 'none',
   },
   {
     id: 'conn-api-mocha',
     name: 'Mocha REST',
-    baseUrl: 'https://hapi.sorento.cc.cd/api/db2',
+    baseUrl: 'https://autocount-wrapper.example.com/api/db2',
     auth: 'none',
   },
   {

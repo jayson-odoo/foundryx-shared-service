@@ -150,7 +150,7 @@ def test_ac_16_20_reads_through_the_feed_connections_base_url(client, db, monkey
 
     (request,) = env.stub.requests
     assert str(request.url).startswith(
-        "https://hapi.sorento.cc.cd/api/db1/deliveryorderbydocdate?DocDate="
+        "https://autocount-wrapper.example.com/api/db1/deliveryorderbydocdate?DocDate="
     )
     assert request.url.params["DocDate"] == day_ago(1).strftime("%Y%m%d")
 
