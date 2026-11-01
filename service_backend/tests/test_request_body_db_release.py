@@ -28,8 +28,12 @@ Existing suites that already pin the answers of these routes (B4):
 This file adds only what those do not pin.
 """
 import asyncio
+import gc
 import json
+import os
+import tempfile
 import threading
+import uuid
 import weakref
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -1013,3 +1017,241 @@ def test_no_statement_runs_before_the_body_arrives_whatever_the_content_type(
         )
         assert seen["open"] == 0, f"{seen['open']} session(s) held a transaction while the body was pending"
     assert run.status is None or run.status < 500, f"a {run.status} was sent: {run.body!r}"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# A refused request leaves nothing behind, sign-in covers the token kind,
+# malformed multipart answers 400
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+# ── memory: a refused request does not stay reachable ───────────────────────
+def _requests_holding(marker: bytes, forms: bool = False) -> int:
+    """Live `Request` objects whose cached body contains `marker`; with `forms`, also
+    those that hold a parsed form (and so its uploaded files)."""
+    from starlette.requests import Request
+
+    gc.collect()
+    held = 0
+    for obj in gc.get_objects():
+        try:
+            if not isinstance(obj, Request):
+                continue
+            body = getattr(obj, "_body", None)
+            if (body is not None and marker in body) or (forms and getattr(obj, "_form", None) is not None):
+                held += 1
+        except ReferenceError:
+            continue
+    return held
+
+
+def _open_spooled_files() -> int:
+    gc.collect()
+    count = 0
+    for obj in gc.get_objects():
+        try:
+            if isinstance(obj, tempfile.SpooledTemporaryFile) and not obj.closed:
+                count += 1
+        except ReferenceError:
+            continue
+    return count
+
+
+def test_memory_scan_control_sees_a_live_request_and_an_open_file():
+    from starlette.requests import Request
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    base_requests = _requests_holding(b"control-marker")  # earlier tests in this process may hold some
+    base_files = _open_spooled_files()
+    request = Request({"type": "http", "method": "POST", "headers": [], "query_string": b""}, receive)
+    request._body = b"head-control-marker-tail"
+    assert _requests_holding(b"control-marker") == base_requests + 1
+    request._form = object()
+    assert _requests_holding(b"no-such-marker", forms=True) >= 1
+    spooled = tempfile.SpooledTemporaryFile(max_size=10)
+    assert _open_spooled_files() == base_files + 1
+    spooled.close()
+    assert _open_spooled_files() == base_files
+    del request
+    assert _requests_holding(b"control-marker") == base_requests
+
+
+REFUSAL_REQUESTS = 5
+
+
+def _refused_headers(scn: Scenario, kind: str, session_factory) -> Optional[Dict[str, str]]:
+    """Set up one way a correctly signed request is refused after the body; returns
+    the headers to send (None = the scenario's own)."""
+    from jose import jwt
+
+    from app.config import settings
+    from app.models import DEFAULT_TENANT_ID
+
+    if kind == "unknown_user":
+        claims = jwt.get_unverified_claims(scn.headers["Authorization"].split(" ", 1)[1])
+        claims["sub"] = "no-such-user"
+        token = jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+        return {"Authorization": f"Bearer {token}"}
+    if kind == "embed_without_workspace":
+        claims = jwt.get_unverified_claims(scn.headers["Authorization"].split(" ", 1)[1])
+        claims.pop("workspaceId")
+        token = jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+        return {"Authorization": f"Bearer {token}"}
+    db = session_factory()
+    try:
+        if kind == "suspended_tenant":
+            from app.services.tenant_service import TenantService
+
+            TenantService(db).suspend(DEFAULT_TENANT_ID)
+        elif kind == "module_off":
+            from app.services.app_store_service import AppStoreService
+
+            AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "omnichannel")
+    finally:
+        db.close()
+    return None
+
+
+_REFUSALS = [
+    ("submit_json", "unknown_user"), ("submit_json", "suspended_tenant"),
+    ("resubmit_json", "unknown_user"), ("resubmit_json", "suspended_tenant"),
+    ("template_json", "unknown_user"), ("template_json", "suspended_tenant"),
+    ("interactive_json", "unknown_user"), ("interactive_json", "suspended_tenant"),
+    ("template_inbox_json", "suspended_tenant"), ("template_inbox_json", "embed_without_workspace"),
+    ("template_inbox_json", "module_off"),
+    ("interactive_inbox_json", "suspended_tenant"), ("interactive_inbox_json", "embed_without_workspace"),
+    ("interactive_inbox_json", "module_off"),
+]
+
+
+@pytest.mark.parametrize("scenario,kind", _REFUSALS, indirect=["scenario"])
+def test_a_refused_request_does_not_stay_in_memory(scenario, kind, session_factory):
+    import dataclasses
+
+    headers = _refused_headers(scenario, kind, session_factory)
+    markers = [f"retained-{uuid.uuid4().hex}-{i}".encode() for i in range(REFUSAL_REQUESTS)]
+    statuses = set()
+    for marker in markers:
+        body = json.dumps({"filler": marker.decode() + "x" * (512 * 1024)}).encode()
+        scn = dataclasses.replace(scenario, body=body, content_type="application/json")
+        statuses.add(asyncio.run(_drive(scn, hold=False, headers=headers)).status)
+    assert statuses and all(s in (401, 403) for s in statuses), statuses  # every request was refused
+    held = sum(_requests_holding(marker) for marker in markers)
+    assert held == 0, f"{held} refused request(s) still hold their body in memory"
+
+
+@pytest.mark.parametrize("scenario,kind", _REFUSALS, indirect=["scenario"])
+def test_a_refused_upload_does_not_leave_its_file_open(scenario, kind, session_factory):
+    import dataclasses
+
+    headers = _refused_headers(scenario, kind, session_factory)
+    field_name = "file:resume" if scenario.name.startswith(("submit", "resubmit")) else "file"
+    opened_before = _open_spooled_files()
+    forms_before = _requests_holding(b"no-such-marker", forms=True)
+    statuses = set()
+    for _ in range(REFUSAL_REQUESTS):
+        body, ctype = _multipart(
+            data={"payload": json.dumps({"answers": {}})},
+            files=[(field_name, ("big.bin", os.urandom(2 * 1024 * 1024), "application/octet-stream"))],
+        )
+        scn = dataclasses.replace(scenario, body=body, content_type=ctype)
+        statuses.add(asyncio.run(_drive(scn, hold=False, headers=headers)).status)
+    assert statuses and all(s in (401, 403) for s in statuses), statuses
+    forms_after = _requests_holding(b"no-such-marker", forms=True)
+    assert forms_after - forms_before == 0, "a refused upload's parsed form is still reachable"
+    assert _open_spooled_files() - opened_before == 0, "refused uploads left temp files open"
+
+
+# ── a token of the wrong kind is refused before the body ────────────────────
+def _wrong_kind_token(kind: str) -> str:
+    from app.models import DEFAULT_TENANT_ID
+    from app.security import create_access_token
+
+    if kind == "profile":
+        return create_access_token({"sub": "someone", "tenant_id": DEFAULT_TENANT_ID, "kind": "profile"})
+    if kind == "visitor":
+        from modules.omnichannel.models import Channel
+        from modules.omnichannel.webchat_auth import mint_visitor_token
+
+        channel = Channel(id="ch-visitor", tenant_id=DEFAULT_TENANT_ID, widget_token_epoch=0)
+        return mint_visitor_token(channel)[0]
+    return create_access_token({"tenant_id": DEFAULT_TENANT_ID})  # no_subject
+
+
+@pytest.fixture
+def forms_embed_token(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    return _inbox_headers(client, session_factory, ws)["Authorization"].split(" ", 1)[1]
+
+
+_FORM_ROUTES = ["submit_json", "submit_multipart", "resubmit_json", "resubmit_multipart"]
+_CONVERSATION_ROUTES = ["template_json", "template_multipart", "interactive_json", "interactive_multipart"]
+
+
+@pytest.mark.parametrize("scenario", _FORM_ROUTES + _CONVERSATION_ROUTES, indirect=True)
+@pytest.mark.parametrize("kind", ["profile", "visitor", "no_subject"])
+def test_a_token_that_is_not_a_sign_in_token_is_refused_before_the_body(scenario, kind, sql_log):
+    token = _wrong_kind_token(kind)
+    sql_log.clear()
+    run = asyncio.run(_drive(scenario, hold=False, headers={"Authorization": f"Bearer {token}"}))
+    assert run.status == 401, run.body
+    assert run.receive_calls == 0, "the body was requested for a token that is not a sign-in token"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+
+
+@pytest.mark.parametrize("scenario", _FORM_ROUTES, indirect=True)
+def test_an_embed_token_is_refused_before_the_body_on_form_routes(scenario, forms_embed_token, sql_log):
+    sql_log.clear()
+    run = asyncio.run(_drive(scenario, hold=False, headers={"Authorization": f"Bearer {forms_embed_token}"}))
+    assert run.status == 401, run.body
+    assert run.receive_calls == 0, "the body was requested for an embed token on a staff route"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+
+
+# ── malformed multipart is a 400 ────────────────────────────────────────────
+def _malformed_multipart(kind: str) -> Tuple[bytes, str]:
+    if kind == "wrong_boundary":
+        return b'--other\r\nContent-Disposition: form-data; name="payload"\r\n\r\n{}\r\n--other--\r\n', \
+            "multipart/form-data; boundary=right"
+    if kind == "missing_boundary":
+        return b'--b\r\nContent-Disposition: form-data; name="payload"\r\n\r\n{}\r\n--b--\r\n', \
+            "multipart/form-data"
+    if kind == "missing_part_name":
+        return b"--b\r\nContent-Disposition: form-data\r\n\r\nvalue\r\n--b--\r\n", \
+            "multipart/form-data; boundary=b"
+    big = b"x" * (1024 * 1024 + 16)
+    return b'--b\r\nContent-Disposition: form-data; name="payload"\r\n\r\n' + big + b"\r\n--b--\r\n", \
+        "multipart/form-data; boundary=b"
+
+
+@pytest.mark.parametrize("scenario", ["submit_json", "resubmit_json", "template_json", "interactive_json"],
+                         indirect=True)
+@pytest.mark.parametrize("kind", ["wrong_boundary"])
+def test_a_malformed_multipart_body_is_answered_400(scenario, kind, sql_log):
+    import dataclasses
+
+    body, ctype = _malformed_multipart(kind)
+    scn = dataclasses.replace(scenario, body=body, content_type=ctype)
+    sql_log.clear()
+    try:
+        run = asyncio.run(_drive(scn, hold=False))
+    except Exception as exc:  # noqa: BLE001 - the app itself must not raise
+        pytest.fail(f"the app raised on a malformed multipart body: {type(exc).__name__}: {exc}")
+    assert run.status == 400, f"{run.status}: {run.body!r}"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0][1]!r}"
+
+
+# ── token route: an over-cap refusal carries the no-store headers ───────────
+@pytest.mark.parametrize("shape", ["declared", "chunked"])
+def test_an_over_cap_token_body_is_refused_with_no_store_headers(connector_client, shape):
+    over = _token_body(TOKEN_BODY_CAP * 2)
+    scn = _sized_token_scenario(over)
+    if shape == "declared":
+        run = asyncio.run(_drive(scn, hold=False))
+    else:
+        run = asyncio.run(_drive(scn, hold=False, length="omit", chunk=8 * 1024))
+    assert run.status == 413, run.body
+    assert run.headers.get("cache-control") == "no-store", run.headers
+    assert run.headers.get("pragma") == "no-cache", run.headers
