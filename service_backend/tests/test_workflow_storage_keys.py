@@ -474,11 +474,12 @@ def test_a_raw_containing_a_colon_is_one_raw_on_the_tenants_own_connection(own, 
 
 
 @both
-def test_a_raw_containing_a_colon_is_one_raw_under_the_prefix_on_the_platform_row(shared, client, media, node):
+def test_a_raw_containing_a_colon_under_the_prefix_on_the_platform_row_is_refused(shared, client, media, node):
     raw = f"workflows/{shared.a}/a:b"
     client.objects[raw] = b"data"
-    _run(shared, node, shared.a, f"conn:{shared.platform_conn}:{raw}")
-    assert (client.presigned if node == "get" else client.deleted) == [raw]
+    with pytest.raises(ActionError):
+        _run(shared, node, shared.a, f"conn:{shared.platform_conn}:{raw}")
+    _assert_adapter_not_reached(client)
 
 
 # ---- a connection of another type, and a refused delete ---------------------------
@@ -566,3 +567,76 @@ def test_control_a_successful_delete_logs_no_warning(local, client, media, caplo
         _run(local, "delete", local.a, rel)
     assert not (media / rel).exists()
     assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+# ---- only key shapes the storage layer mints ---------------------------------------
+
+UNMINTED_TAILS = [
+    pytest.param("%2e%2e/%2e%2e/documents/x", id="percent_encoded_dots_twice"),
+    pytest.param(".%2e/x", id="dot_then_percent_encoded_dot"),
+    pytest.param("%2E./x", id="percent_encoded_dot_then_dot"),
+    pytest.param("a b", id="space"),
+    pytest.param("a?b", id="question_mark"),
+    pytest.param("a#b", id="hash"),
+    pytest.param("a.b.c", id="two_extensions"),
+    pytest.param("./x", id="current_directory_segment"),
+    pytest.param("/x", id="empty_segment"),
+]
+
+
+@both
+@pytest.mark.parametrize("tail", UNMINTED_TAILS)
+def test_a_platform_row_key_whose_tail_is_not_a_minted_shape_is_refused(shared, client, media, node, tail):
+    raw = f"workflows/{shared.a}/{tail}"
+    client.objects[raw] = b"data"
+    with pytest.raises(ActionError):
+        _run(shared, node, shared.a, f"conn:{shared.platform_conn}:{raw}")
+    _assert_adapter_not_reached(client)
+    assert raw in client.objects
+
+
+@both
+@pytest.mark.parametrize("tail", UNMINTED_TAILS)
+def test_a_bare_key_whose_tail_is_not_a_minted_shape_is_refused(local, client, media, node, tail):
+    rel = f"workflows/{local.a}/{tail}"
+    with pytest.raises(ActionError):
+        _run(local, node, local.a, rel)
+    _assert_adapter_not_reached(client)
+
+
+@pytest.mark.parametrize("world", ["local", "shared", "own"])
+@pytest.mark.parametrize("key", ["report.txt", "r\u00e9sum\u00e9/rapport-final.txt", "dir/sub/plain"])
+def test_what_put_returns_round_trips_through_get_and_delete(request, world, key):
+    w = request.getfixturevalue(world)
+    client = request.getfixturevalue("client")
+    out = _put(w, w.a, key)
+    client.presigned.clear()
+    got = _run(w, "get", w.a, out["key"])
+    assert got["url"]
+    _run(w, "delete", w.a, out["key"])
+    if world == "local":
+        media = request.getfixturevalue("media")
+        assert not (media / out["key"]).exists()
+    else:
+        assert client.deleted == [out["key"].split(":", 2)[2]]
+
+
+def test_a_put_key_with_an_extension_is_minted_with_a_hyphenated_name(shared, client, media):
+    out = _put(shared, shared.a, "report.txt")
+    raw = out["key"].split(":", 2)[2]
+    assert raw.startswith(f"workflows/{shared.a}/report-txt-")
+    assert raw.endswith(".txt")
+
+
+@pytest.mark.parametrize("world", ["local", "shared", "own"])
+def test_put_with_a_forms_looking_key_is_stored_under_the_workflow_prefix(request, world):
+    # Likely passes on today's code: put already prepends the prefix.
+    w = request.getfixturevalue(world)
+    client = request.getfixturevalue("client")
+    media = request.getfixturevalue("media")
+    out = _put(w, w.a, f"forms/{uuid.uuid4()}/x")
+    raw = out["key"].split(":", 2)[2] if out["key"].startswith("conn:") else out["key"]
+    assert raw.startswith(f"workflows/{w.a}/forms/")
+    assert not raw.startswith("forms/")
+    if world == "local":
+        assert not (media / "forms").exists()
