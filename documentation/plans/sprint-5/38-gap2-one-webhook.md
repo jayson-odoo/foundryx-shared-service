@@ -51,7 +51,7 @@ _workspace_channel(no id)
 | FE row | `settings/channels/components/use-webhook-list.tsx:184` | "All channels" `Badge` beside the name when `channelId` is null |
 | Docs | guide and `engineering/omnichannel-service.md` | AC-38-100 |
 
-Not changed: `WebhookEndpointCreateRequest` stays name, url, events, so `channelId` in the body is ignored as any unknown field is today. `message_service.py:231` is the internal fallback for sends that name no channel, and it is not the public default. The gateway always passes its resolved channel.
+Not changed: `WebhookEndpointCreateRequest` stays name, url, events, so `channelId` in the body is ignored as any unknown field is today. `message_service.py:231` is the internal fallback for sends that name no channel, and it is not the public default. The gateway passes its resolved channel on every send type except a reaction, which follows its target.
 
 ## Traps
 
