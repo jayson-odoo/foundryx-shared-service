@@ -12,6 +12,7 @@ import json
 import time
 import weakref
 
+import httpx
 import pytest
 from sqlalchemy import event, text
 from sqlalchemy.orm import Session
@@ -160,3 +161,70 @@ def test_no_transaction_is_open_while_the_send_waits_for_its_body(client, sessio
     assert sampled == 0, f"{sampled} session(s) held a transaction while the body was pending"
     assert out["start"] == 202, out
     assert _message_count(session_factory, contact_id) == 1
+
+
+@pytest.mark.parametrize("path", ["channels", "templates"])
+def test_read_route_after_the_key_check_still_answers(client, session_factory, path):
+    from modules.omnichannel.models import WhatsappTemplate
+
+    headers, _cid, channel_id, _kid = _setup(client, session_factory, "+60700700802")
+    db = session_factory()
+    db.add(
+        WhatsappTemplate(
+            tenant_id=DEFAULT_TENANT_ID,
+            channel_id=channel_id,
+            name="welcome",
+            language="en",
+            status="APPROVED",
+            components_json=[{"type": "BODY", "text": "Hello {{1}}"}],
+        )
+    )
+    db.commit()
+    db.close()
+
+    async def go():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            return await ac.get(f"/api/v1/omnichannel/{path}", headers=headers)
+
+    r = asyncio.run(go())
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    if path == "templates":
+        assert any(t["name"] == "welcome" for t in data)
+    else:
+        assert len(data) >= 1
+
+
+# ── key rules stay intact ────────────────────────────────────────────────────
+def test_invalid_key_is_still_401(client):
+    r = client.get("/api/v1/omnichannel/channels", headers={"Authorization": "Bearer fxw_live_deadbeef"})
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "invalid_api_key"
+
+
+def test_inactive_module_is_still_service_not_enabled(client, session_factory):
+    from app.services.app_store_service import AppStoreService
+
+    headers, _cid, _ch, _kid = _setup(client, session_factory, "+60700700804")
+    db = session_factory()
+    AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "omnichannel")
+    db.close()
+    r = client.get("/api/v1/omnichannel/channels", headers=headers)
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "service_not_enabled"
+
+
+def test_suspended_tenant_is_still_refused(client, session_factory):
+    from app.services.tenant_service import TenantService
+
+    headers, _cid, _ch, _kid = _setup(client, session_factory, "+60700700805")
+    assert client.get("/api/v1/omnichannel/channels", headers=headers).status_code == 200
+    db = session_factory()
+    try:
+        TenantService(db).suspend(DEFAULT_TENANT_ID)
+    finally:
+        db.close()
+    r = client.get("/api/v1/omnichannel/channels", headers=headers)
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "service_not_enabled"
