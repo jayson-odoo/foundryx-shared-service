@@ -22,6 +22,7 @@ import httpx
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from ..api_auth import gateway_key_enabled
 from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
 from ..schemas import MessageItem
 from ..security import decrypt_secret
@@ -134,6 +135,9 @@ def _fan_out(
         endpoints = _active_endpoints(db, tenant_id, workspace_id, channel_id, event_type)
         if not endpoints:
             return 0
+        # Same state check as the key routes; an error here is logged below.
+        if not gateway_key_enabled(db, tenant_id, workspace_id):
+            return 0
         envelope = build_envelope(
             event_type, workspace_id, channel_id, event_id, data() if callable(data) else data
         )
@@ -219,6 +223,12 @@ def dispatch(db: Session, delivery_id: str) -> str:
     if endpoint is None or endpoint.status != "ACTIVE":
         delivery.status = "FAILED"
         delivery.error = "Endpoint inactive."
+        db.commit()
+        return "skip"
+    if not gateway_key_enabled(db, delivery.tenant_id, endpoint.workspace_id):
+        delivery.status = "FAILED"
+        delivery.next_attempt_at = None
+        delivery.error = "Service not enabled for this workspace."
         db.commit()
         return "skip"
 
