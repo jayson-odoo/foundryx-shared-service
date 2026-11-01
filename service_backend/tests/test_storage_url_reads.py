@@ -2541,3 +2541,133 @@ def test_editing_platform_storage_still_refuses_other_schemes(field, value, sess
         _platform_update(db, created.id, **{field: value})
     assert caught.value.status_code == 422
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# an endpoint URL carries no query or fragment
+# ═══════════════════════════════════════════════════════════════════════════
+
+ENDPOINTS_WITH_QUERY_OR_FRAGMENT = [
+    "https://cdn.storage.test?x=1",
+    "https://cdn.storage.test#x",
+    "https://cdn.storage.test/path?x=1",
+    "https://cdn.storage.test/path#frag",
+]
+
+
+@pytest.mark.parametrize("value", ENDPOINTS_WITH_QUERY_OR_FRAGMENT)
+def test_saving_a_storage_connection_refuses_an_endpoint_with_a_query_or_fragment(
+    value, client, session_factory, net
+):
+    res = _call(
+        lambda: client.post(
+            "/integrations/connections",
+            json=_payload(S3_PAYLOAD, endpointUrl=value),
+            headers=_admin(client),
+        ),
+        "the save route",
+    )
+    assert res.status_code == 422, res.text
+    assert _storage_rows(session_factory) == []
+
+
+@pytest.mark.parametrize("value", ENDPOINTS_WITH_QUERY_OR_FRAGMENT)
+def test_updating_a_storage_connection_refuses_an_endpoint_with_a_query_or_fragment(
+    value, client, session_factory, net
+):
+    headers = _admin(client)
+    created = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, cdnBaseUrl="https://cdn.storage.test"),
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    res = _call(
+        lambda: client.patch(
+            f"/integrations/connections/{created.json()['id']}",
+            json={"config": {"endpointUrl": value}},
+            headers=headers,
+        ),
+        "the update route",
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.parametrize("value", ENDPOINTS_WITH_QUERY_OR_FRAGMENT)
+def test_the_test_button_refuses_an_endpoint_with_a_query_or_fragment(
+    value, client, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _connect(db, "https://cdn.storage.test")
+    conn.config_json = {**conn.config_json, "endpointUrl": value}
+    db.commit()
+    storage_module.clear_adapter_cache()
+    res = _call(
+        lambda: client.post(
+            f"/integrations/connections/{conn.id}/test", json={}, headers=_admin(client)
+        ),
+        "the test route",
+    )
+    assert res.json()["ok"] is False
+    assert res.json()["message"] == TEST_REFUSAL
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("value", ENDPOINTS_WITH_QUERY_OR_FRAGMENT)
+def test_an_endpoint_with_a_query_or_fragment_is_not_usable(value):
+    from app.services.storage import endpoint_is_usable
+
+    assert endpoint_is_usable("s3", {"endpointUrl": value}) is False
+
+
+@pytest.mark.parametrize("value", ENDPOINTS_WITH_QUERY_OR_FRAGMENT)
+def test_a_stored_endpoint_with_a_query_or_fragment_is_not_used(
+    value, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), value)
+    assert not read_blob(db, conn).ok
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("value", ENDPOINTS_WITH_QUERY_OR_FRAGMENT)
+def test_preview_and_error_file_fail_cleanly_for_an_endpoint_with_a_query_or_fragment(
+    value, client, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, ""), value)
+    preview_job = _new_job(db, file_storage_key=f"conn:{conn.id}:preview.csv")
+    errors_job = _new_job(db, error_report_key=f"conn:{conn.id}:errors.csv")
+    headers = _admin(client)
+    for url, label in (
+        (f"/imports/{preview_job.id}/preview", "the preview route"),
+        (f"/imports/{errors_job.id}/errors-file", "the error file route"),
+    ):
+        res = _call(lambda: client.get(url, headers=headers), label)
+        assert 400 <= res.status_code < 500 or res.status_code == 502, res.text
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("value", ENDPOINTS_WITH_QUERY_OR_FRAGMENT)
+def test_an_upload_skips_a_connection_with_an_endpoint_with_a_query_or_fragment(
+    value, session_factory, bucket, client_builds, net, local_media
+):
+    db = session_factory()
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), value)
+    key = _call(
+        lambda: storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png"),
+        "the upload",
+    )
+    assert not key.startswith("conn:")
+    assert bucket.objects == {}
+    assert client_builds == []
+    db.close()
