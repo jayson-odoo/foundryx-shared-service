@@ -1106,3 +1106,20 @@ def _seed_contact(session_factory, ws, phone):
     from tests.test_omnichannel_api_gateway import _seed_open_contact
 
     return _seed_open_contact(session_factory, ws, phone=phone, open_window=True)
+
+
+def test_ac_43_11_key_name_is_not_read_from_another_tenant(client, session_factory):
+    """A key row of ANOTHER tenant that carries this workspace's id text must not
+    name a row of this tenant, even though its workspace text matches."""
+    r = _rig(client, session_factory)
+    ws, ch = r["ws"], r["ch"]
+    other_tenant_key = _foreign_key(session_factory, tenant_id=FOREIGN_TENANT, ws=ws, name="Other tenant key")
+    own = _insert(session_factory, ws=ws, created_by=_by(r["key"]))
+    named = _insert(session_factory, ws=ws, created_by=_by(other_tenant_key), channel_id=ch)
+
+    items = {i["id"]: i for i in _staff_list_channel(client, ch)}
+    observed = {
+        "own_key": items[own].get("registeredByKeyName"),
+        "other_tenant_key": items[named].get("registeredByKeyName"),
+    }
+    assert observed == {"own_key": "K", "other_tenant_key": None}, observed
