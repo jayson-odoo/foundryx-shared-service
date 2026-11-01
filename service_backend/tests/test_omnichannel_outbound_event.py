@@ -1860,7 +1860,7 @@ def test_ac_38_42_media_read_request_url_is_not_in_worker_logs(session_factory, 
 
     _fake_storage_url(monkeypatch)
     monkeypatch.setattr(
-        httpx.HTTPTransport, "handle_request", lambda self, request: httpx.Response(200, content=b"data", request=request)
+        httpx.HTTPTransport, "handle_request", lambda self, request: httpx.Response(200, stream=httpx.ByteStream(b"data"), request=request)
     )
     db = session_factory()
     try:
