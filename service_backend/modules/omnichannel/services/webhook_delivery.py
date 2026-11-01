@@ -74,36 +74,26 @@ def sign_body(secret: str, timestamp: str, body: bytes) -> str:
     return "sha256=" + mac.hexdigest()
 
 
-def _active_endpoints(db: Session, channel: Channel, event_type: str) -> List[WebhookEndpoint]:
-    """Subscribed ACTIVE endpoints covering this channel: its own, plus the
-    all-channels ones (``channel_id`` NULL). Always filtered by the channel's
-    tenant and workspace, which is the only boundary of an all-channels row."""
-    rows = (
-        db.query(WebhookEndpoint)
-        .filter(
-            WebhookEndpoint.tenant_id == channel.tenant_id,
-            WebhookEndpoint.workspace_id == channel.workspace_id,
-            or_(
-                WebhookEndpoint.channel_id == channel.id,
-                WebhookEndpoint.channel_id.is_(None),
-            ),
-            WebhookEndpoint.status == "ACTIVE",
-        )
-        .all()
-    )
-    return [r for r in rows if event_type in (r.events_json or [])]
-
-
-def _workspace_endpoints(
-    db: Session, tenant_id: str, workspace_id: str, event_type: str
+def _active_endpoints(
+    db: Session,
+    tenant_id: str,
+    workspace_id: str,
+    channel_id: Optional[str],
+    event_type: str,
 ) -> List[WebhookEndpoint]:
-    """Subscribed ACTIVE all-channels endpoints of one tenant and workspace."""
+    """Subscribed ACTIVE endpoints for an event. With a ``channel_id``: that
+    channel's own endpoints plus the all-channels ones (``channel_id`` NULL);
+    with None: the all-channels ones only. Always filtered by tenant and
+    workspace, which is the only boundary of an all-channels row."""
+    covers = WebhookEndpoint.channel_id.is_(None)
+    if channel_id is not None:
+        covers = or_(WebhookEndpoint.channel_id == channel_id, covers)
     rows = (
         db.query(WebhookEndpoint)
         .filter(
             WebhookEndpoint.tenant_id == tenant_id,
             WebhookEndpoint.workspace_id == workspace_id,
-            WebhookEndpoint.channel_id.is_(None),
+            covers,
             WebhookEndpoint.status == "ACTIVE",
         )
         .all()
@@ -129,12 +119,11 @@ def consumer_message_payload(item: MessageItem, row: ConversationMessage) -> Dic
 
 def _fan_out(
     db: Session,
-    scope: str,
-    event_type: str,
-    event_id: str,
+    tenant_id: str,
     workspace_id: str,
     channel_id: Optional[str],
-    find: Callable[[], List[WebhookEndpoint]],
+    event_type: str,
+    event_id: str,
     data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
 ) -> int:
     """Shared body of ``enqueue_event`` / ``enqueue_workspace_event``. Creates
@@ -142,7 +131,7 @@ def _fan_out(
     ``data`` may be a callable: it runs only when at least one endpoint
     subscribes, so a scope with no subscriber pays nothing to build the payload."""
     try:
-        endpoints = find()
+        endpoints = _active_endpoints(db, tenant_id, workspace_id, channel_id, event_type)
         if not endpoints:
             return 0
         envelope = build_envelope(
@@ -168,7 +157,10 @@ def _fan_out(
             db.rollback()
         except Exception:  # noqa: BLE001
             pass
-        logger.exception("webhook enqueue failed for %s (%s)", scope, event_type)
+        logger.exception(
+            "webhook enqueue failed for workspace %s channel %s (%s)",
+            workspace_id, channel_id, event_type,
+        )
         return 0
 
     # Queue the POSTs out-of-band (eager dev runs them inline).
@@ -193,10 +185,8 @@ def enqueue_event(
     (its own and the workspace's all-channels ones). Returns the number queued,
     never raises into the inbound pipeline."""
     # plain locals: the session may need a rollback in the handler
-    channel_id, workspace_id = channel.id, channel.workspace_id
     return _fan_out(
-        db, f"channel {channel_id}", event_type, event_id, workspace_id, channel_id,
-        lambda: _active_endpoints(db, channel, event_type), data,
+        db, channel.tenant_id, channel.workspace_id, channel.id, event_type, event_id, data
     )
 
 
@@ -210,10 +200,7 @@ def enqueue_workspace_event(
 ) -> int:
     """Fan an event that belongs to no channel to the workspace's all-channels
     endpoints only (envelope ``channelId`` is null). Never raises."""
-    return _fan_out(
-        db, f"workspace {workspace_id}", event_type, event_id, workspace_id, None,
-        lambda: _workspace_endpoints(db, tenant_id, workspace_id, event_type), data,
-    )
+    return _fan_out(db, tenant_id, workspace_id, None, event_type, event_id, data)
 
 
 def dispatch(db: Session, delivery_id: str) -> str:
