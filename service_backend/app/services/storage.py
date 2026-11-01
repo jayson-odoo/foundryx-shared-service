@@ -32,6 +32,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import release_read_transactions
 from app.services.url_guard import (
     GuardedTransport,
     UrlGuardError,
@@ -179,6 +180,8 @@ class StorageReadError(Exception):
         self.status = status
 
 
+# Hard ceiling for a stored object read that has no tighter limit (200 MiB).
+READ_CAP_BYTES = 200 * 1024 * 1024
 _READ_FAILED = "The stored file could not be read."
 _CHUNK = 64 * 1024
 
@@ -201,13 +204,15 @@ def storage_url_is_plain(value: str) -> bool:
         return False
     if not host or "%" in parts.netloc:
         return False
-    if "[" in parts.netloc:
+    if parts.netloc.startswith("["):
+        if parts.netloc.count("[") != 1:
+            return False
         try:
             ipaddress.IPv6Address(host)
         except ValueError:
             return False
         return True
-    if len(host) > 253:
+    if "[" in value or "]" in value or len(host) > 253:
         return False
     labels = host.split(".")
     if not all(_HOST_LABEL.match(label) for label in labels):
@@ -239,6 +244,7 @@ def read_url(
     row) may use ``http`` and any address, nothing else.
     """
     allowed = ("http://", "https://") if operator_owned else ("https://",)
+    release_read_transactions()  # before any lookup or connection
     try:
         if not storage_url_is_plain(url):
             raise StorageReadError(_READ_FAILED)
@@ -293,6 +299,8 @@ def read_object(
     """Bytes of a stored object, whatever the backend. Local files are read as
     before; a URL goes through ``read_url`` with the ownership of the
     connection that holds the key."""
+    from botocore.exceptions import EndpointResolutionError, ParamValidationError
+
     try:
         resolver = getattr(storage, "resolve_with_ownership", None)
         if resolver is not None:
@@ -300,7 +308,7 @@ def read_object(
         else:
             kind, value = storage.resolve(key)
             operator_owned = False
-    except (UnresolvableKey, ValueError) as exc:
+    except (UnresolvableKey, ValueError, EndpointResolutionError, ParamValidationError) as exc:
         raise StorageReadError(_READ_FAILED) from exc
     if kind == "path":
         with open(value, "rb") as fh:
@@ -318,13 +326,13 @@ def endpoint_is_usable(provider: str, config: Dict[str, object]) -> bool:
     from app.integrations.s3_provider import R2_ACCOUNT_ID
 
     if provider == "r2":
-        account_id = str(config.get("accountId", ""))
+        account_id = str(config.get("accountId", "")).strip()
         if account_id and not R2_ACCOUNT_ID.match(account_id):
             return False
     endpoint = derive_endpoint(provider, config)
     if not endpoint:
         return True
-    if not storage_url_is_plain(endpoint):
+    if not storage_url_is_plain(endpoint) or "?" in endpoint or "#" in endpoint:
         return False
     try:
         validate_public_https_url(endpoint, strict_dns=False, subject="Endpoint URL")
@@ -391,7 +399,6 @@ def _adapter_for(connection) -> "StorageService":
     adapter = S3CompatibleAdapter.from_connection(
         connection.provider, connection.config_json or {}, credentials
     )
-    adapter.operator_owned = operator_owned
     _adapters[connection.id] = (stamp, adapter)
     return adapter
 
@@ -446,12 +453,7 @@ class TenantStorage:
         adapter = _adapter_for(connection)
         connection_id = connection.id
         release_read_transactions()
-        try:
-            raw = adapter.save(key_hint, content, mime_type)
-        except ValueError:
-            # The client library rejected the stored address: treated like an
-            # unusable connection, the write goes to local disk.
-            return self._local.save(key_hint, content, mime_type)
+        raw = adapter.save(key_hint, content, mime_type)
         return f"{_KEY_PREFIX}{connection_id}:{raw}"
 
     def resolve(self, key: str) -> Tuple[str, str]:
@@ -506,10 +508,7 @@ class TenantStorage:
         if connection is not None:
             adapter = _adapter_for(connection)
             if getattr(adapter, "cdn_base_url", ""):
-                try:
-                    return adapter.put(key_hint, content, mime_type)
-                except ValueError:
-                    pass  # unusable connection: fall through to local disk
+                return adapter.put(key_hint, content, mime_type)
         return self._local.put(key_hint, content, mime_type)
 
 

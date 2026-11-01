@@ -45,14 +45,11 @@ from app.schemas.document import (
     FolderOut,
     TrashListingOut,
 )
-from app.services.storage import read_object, storage_for_tenant
+from app.services.storage import READ_CAP_BYTES, read_object, storage_for_tenant
 from app.uploads import detect_document_mime
 from app.workflow_engine.entity_events import emit_entity_event
 
 MB = 1024 * 1024
-# Hard read cap (a generous ceiling so an oversize body is never buffered whole);
-# shared by the upload routes and the download-job blob reads.
-READ_CAP_BYTES = 200 * MB
 
 
 # ---- service exceptions ----

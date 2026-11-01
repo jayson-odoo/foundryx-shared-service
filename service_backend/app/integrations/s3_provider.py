@@ -253,7 +253,7 @@ def _storage_url_error(
 
     checks = [("cdnBaseUrl", "CDN base URL")]
     if provider == "r2":
-        account_id = str(config.get("accountId", ""))
+        account_id = str(config.get("accountId", "")).strip()
         if account_id and not R2_ACCOUNT_ID.match(account_id):
             return "Account ID may contain only letters, digits and hyphens."
     else:
@@ -263,6 +263,8 @@ def _storage_url_error(
         if not value:
             continue
         if not storage_url_is_plain(value):
+            return f"{label} must be a valid address."
+        if key == "endpointUrl" and ("?" in value or "#" in value):
             return f"{label} must be a valid address."
         if operator_owned:
             if not value.startswith(("http://", "https://")):

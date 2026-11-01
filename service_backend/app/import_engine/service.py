@@ -39,7 +39,7 @@ from app.models.import_job import (
     STATUS_VALIDATING,
 )
 from app.repositories.import_repository import ImportRepository
-from app.services.storage import StorageReadError, read_object, storage_for_tenant
+from app.services.storage import READ_CAP_BYTES, StorageReadError, read_object, storage_for_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -718,9 +718,9 @@ class ImportService:
         if not job.error_report_key:
             raise HTTPException(404, "No error file.")
         store = storage_for_tenant(self.db, tenant_id)
-        _, max_mb = self.caps(tenant_id)
         try:
-            return read_object(store, job.error_report_key, max_bytes=max_mb * 1024 * 1024), "errors.csv"
+            # Server-generated and possibly larger than its source: a fixed ceiling.
+            return read_object(store, job.error_report_key, max_bytes=READ_CAP_BYTES), "errors.csv"
         except StorageReadError as exc:
             raise HTTPException(
                 http_status.HTTP_502_BAD_GATEWAY, "The error file could not be read."
