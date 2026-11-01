@@ -77,7 +77,7 @@ def validate_public_https_url(
         if scheme == "https" and host:
             httpx.URL(url)
     except (ValueError, httpx.InvalidURL):
-        raise UnparseableUrlError(f"{subject} is not a valid URL.")
+        raise UnparseableUrlError(f"{subject} is not a valid URL.") from None
     if scheme != "https":
         raise UrlGuardError(f"{subject} must use https://.")
     if not host:
