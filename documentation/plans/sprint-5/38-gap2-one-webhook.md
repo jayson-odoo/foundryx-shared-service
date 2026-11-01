@@ -43,8 +43,8 @@ _workspace_channel(no id)
 | Filter | `services/webhook_delivery.py:81` | `or_(channel_id == channel.id, channel_id.is_(None))`, keeping the tenant and workspace filters |
 | Envelope | `webhook_delivery.py:44` | Allow a null channel. `enqueue_workspace_event` for `contact.updated` with no channel, sharing the row and queue code with `enqueue_event` |
 | `contact.updated` | `services/conversation_service.py:494` | Remove the early return for no channel. Go to the workspace path when the channel is missing. One producer only: `conversation_service.py:517` |
-| Service | `services/webhook_service.py:155` | `create_for_workspace`, sharing the URL and event checks and the insert with `create`. `MAX_ENDPOINTS_PER_WORKSPACE = 10` counted on NULL rows of the workspace |
-| Public route | `routers/api_v1.py:463` | Call `create_for_workspace`, drop the `_workspace_channel` call |
+| Service | `services/webhook_service.py:155` | `create_for_workspace`, sharing the URL and event checks and the insert with `create`. `MAX_ENDPOINTS_PER_WORKSPACE = 10` counted on NULL rows of the workspace. URL and events checked first, then lock the workspace row (per-channel: the channel row), count, insert |
+| Public route | `routers/api_v1.py:463` | Call `create_for_workspace`, and answer `409 no_active_channel` when no channel is active |
 | Operator list | `webhook_service.py:229` | `list_for_channel` adds NULL rows of the channel's tenant and workspace |
 | Wire | `schemas.py:1723` | `channelId: Optional[str] = None` |
 | FE types | `services/whatsapp-webhook-service.ts` and `.mock.ts` | `channelId: string \| null`, one all-channels row in the mock |
@@ -57,13 +57,15 @@ Not changed: `WebhookEndpointCreateRequest` stays name, url, events, so `channel
 
 - On a NULL row, tenant and workspace are the only boundary. Tests use a foreign tenant with the same workspace id, and a second workspace in the same tenant.
 - `WebhookService._get` is tenant-scoped only. Public routes keep using `_own_endpoint` / `get_for_workspace`.
-- `_do_send` resolves the channel before it branches on type (`public_gateway_service.py:957`), but `_send_reaction` never uses it (`:1008`). A reaction makes no guess, so `channel_required` must not stop it (AC-38-101). `test_gateway_reaction_cross_workspace_404` (`test_omnichannel_rich_messages.py:1620`) stays as it is and keeps answering 404.
+- `_do_send` resolves the channel before it branches on type (`public_gateway_service.py:957`), but `_send_reaction` never uses it (`:1008`). A reaction follows its target, `_channel_for_contact(contact, target.channel_id)` in `message_service.react`, so `channel_required` must not stop it (AC-38-101). The inbox shares `react`. `test_gateway_reaction_cross_workspace_404` (`test_omnichannel_rich_messages.py:1620`) stays as it is and keeps answering 404.
 - The resolver runs before the contact is created in `_resolve_send_target`, and must stay first, so a refusal creates nothing.
 - `_do_send` runs after the idempotency reservation. A refusal must release the key: pin with a retry test against the real store.
 - A guide test takes the first changelog row holding `/channels`. The new row must not contain that text, and PR 156 also adds a row at the top of that table, so expect a small conflict there.
 - No backfill: existing per-channel endpoints stay as they are, by ruling.
 - Existing tests with two active WhatsApp channels and no `channelId` will go red. Each is reported to the lead with what it asserted before it changes.
 - Test real producers and real delivery through the HTTP seam, not a stubbed `enqueue_event`.
+
+- A rollback of the code alone would answer 500 on `GET /webhooks` once NULL rows exist, because the old item type requires a string. The migration downgrade is a no-op. State this on the PR.
 
 ## Slices
 
