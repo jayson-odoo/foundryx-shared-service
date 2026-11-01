@@ -305,6 +305,8 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
         limits = limits or _default_limits()
         ctx = httpx.create_ssl_context(verify=verify, trust_env=trust_env)
         super().__init__(verify=ctx, trust_env=trust_env, limits=limits)
+        if not hasattr(self, "_pool"):  # the pool is replaced below: fail loudly if httpx renames it
+            raise AttributeError("httpx transport has no _pool to replace")
         self._pool = httpcore.AsyncConnectionPool(
             ssl_context=ctx,
             max_connections=limits.max_connections,
