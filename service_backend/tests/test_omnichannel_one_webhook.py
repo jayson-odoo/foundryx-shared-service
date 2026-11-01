@@ -1078,14 +1078,14 @@ def _reaction_count(session_factory):
         db.close()
 
 
-def test_ac_38_101_reaction_without_channel_id_sends_on_the_contacts_own_channel(client, session_factory):
+def test_ac_38_101_reaction_without_channel_id_sends_on_the_channel_of_its_message(client, session_factory):
     # Control, passes today. It guards the exemption: `_do_send` resolves the
     # channel before the type branch, so a resolver that refuses a real guess
     # there would answer this request 422 channel_required (two active WhatsApp
     # channels, no channelId) instead of 202.
     ws = _default_workspace_id(session_factory)
     a, b = _two_wa(session_factory, ws)
-    _cid, mid = _reaction_rig(session_factory, ws, b)  # own channel is the SECOND one
+    _cid, mid = _reaction_rig(session_factory, ws, b)  # the message sits on the SECOND channel
     db = session_factory()
     try:
         per_a = WebhookService(db).create(DEFAULT_TENANT_ID, a, "pa", HOOK, ["message.reaction"], created_by=None)[0].id
@@ -1783,3 +1783,93 @@ def test_ac_38_100_engineering_doc_mentions_channel_required_and_all_channels_en
     text = _ENG.read_text().lower()
     assert "channel_required" in text
     assert "all-channels endpoint" in text or "all-channels webhook" in text or "all channels endpoint" in text
+
+
+# ── AC-38-90 / 91 - a refused multipart send releases its key ────────────────
+def test_ac_38_91_refused_multipart_send_releases_its_key_and_the_retry_sends_once(client, session_factory, tmp_path):
+    ws = _default_workspace_id(session_factory)
+    a, b = _two_wa(session_factory, ws)
+    _seed_open_contact(session_factory, ws, phone="+60111555920", open_window=True)
+    hdr = {**_hdr(client, ws), "Idempotency-Key": "multipart-refusal-key"}
+
+    def post(channel_id=None):
+        payload = {"to": "+60111555920", "type": "image"}
+        if channel_id:
+            payload["channelId"] = channel_id
+        return client.post(
+            f"{BASE}/messages",
+            files={"file": ("a.png", PNG, "image/png")},
+            data={"payload": json.dumps(payload)},
+            headers=hdr,
+        )
+
+    def err(res):
+        return (res.status_code, res.json().get("error", {}).get("code"))
+
+    refused_1 = post()
+    refused_2 = post()  # the key must not be stuck on "in progress" after the first refusal
+    sent = post(b)
+    replay = post(b)
+    db = session_factory()
+    try:
+        rows = db.query(ConversationMessage).count()
+    finally:
+        db.close()
+    observed = {
+        "refused_1": err(refused_1),
+        "refused_2": err(refused_2),
+        "sent": sent.status_code,
+        "replay": (replay.status_code, replay.json().get("id") == sent.json().get("id")),
+        "replay_flag": replay.json().get("idempotencyReplay"),
+        "messages": rows,
+    }
+    assert observed == {
+        "refused_1": (422, "channel_required"),
+        "refused_2": (422, "channel_required"),
+        "sent": 202,
+        "replay": (202, True),
+        "replay_flag": True,
+        "messages": 1,
+    }, observed
+
+
+# ── AC-38-82 - both create paths take the row lock, after the URL check ──────
+def test_ac_38_82_creates_take_the_row_lock_once_after_the_url_check(session_factory, monkeypatch):
+    # This guards the CALL only. SQLite drops FOR UPDATE, so the lock's effect (a
+    # parallel registration waiting for the first to commit) is visible on
+    # Postgres alone and is checked there.
+    from sqlalchemy.orm import Query
+
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services import webhook_service as ws_mod
+
+    ws = _default_workspace_id(session_factory)
+    a, _b = _two_wa(session_factory, ws)
+    log = []
+    real_lock = Query.with_for_update
+    real_url = ws_mod.validate_callback_url
+
+    def spy_lock(self, *args, **kwargs):
+        log.append(("lock", self.column_descriptions[0]["entity"]))
+        return real_lock(self, *args, **kwargs)
+
+    def spy_url(url, **kw):
+        log.append(("url", None))
+        return real_url(url, **kw)
+
+    monkeypatch.setattr(Query, "with_for_update", spy_lock)
+    monkeypatch.setattr(ws_mod, "validate_callback_url", spy_url)
+
+    db = session_factory()
+    try:
+        WebhookService(db).create(DEFAULT_TENANT_ID, a, "per", HOOK, ["message.inbound"], created_by=None)
+        per_channel = list(log)
+        log.clear()
+        WebhookService(db).create_for_workspace(
+            DEFAULT_TENANT_ID, ws, "all", HOOK, ["message.inbound"], created_by=None
+        )
+        per_workspace = list(log)
+    finally:
+        db.close()
+    assert per_channel == [("url", None), ("lock", Channel)], per_channel
+    assert per_workspace == [("url", None), ("lock", Workspace)], per_workspace
