@@ -28,6 +28,7 @@ from app.dependencies import (
     effective_permission_keys,
     get_current_user,
     get_db,
+    read_body_after_token_check,
     require_permission,
 )
 from app.models.user import User
@@ -389,7 +390,12 @@ def fill_form(
 # ---- submit (D14/D19) ----
 
 
-@router.post("/{form_id}/submissions", response_model=FormSubmissionOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{form_id}/submissions",
+    response_model=FormSubmissionOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(read_body_after_token_check)],
+)
 async def submit_form(
     form_id: str,
     request: Request,
@@ -610,7 +616,11 @@ def revise_submission(
     )
 
 
-@submissions_router.post("/{submission_id}/resubmit", response_model=FormSubmissionOut)
+@submissions_router.post(
+    "/{submission_id}/resubmit",
+    response_model=FormSubmissionOut,
+    dependencies=[Depends(read_body_after_token_check)],
+)
 async def resubmit_revision(
     submission_id: str,
     request: Request,
