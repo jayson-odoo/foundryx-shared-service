@@ -24,14 +24,14 @@ A consumer rotating its key resumes a paused endpoint with its new key: `POST /w
 | AC-43-05 | [BE] The deferred action `api_keys.revoke` carries `pauseEndpoints` in its payload. Cancelling during the undo window changes neither the key nor any endpoint. Repeating a revoke on a revoked key changes nothing, and pauses nothing further |
 | AC-43-06 | [BE] Revoke finds endpoints by tenant, workspace and exact `apikey:<id>`. A key of the same name or a foreign tenant's row with the same creator text is untouched |
 | AC-43-07 | [BE] A paused endpoint receives no event, and the new key can resume it with `POST /webhooks/{id}/enable`. Resuming clears the reason |
-| AC-43-08 | [BE] A key write that is under way when the key is revoked either lands before the revoke, and is then paused with the rest, or answers 401 and changes nothing. Covers register, PATCH, rotate and enable, including a slow URL check. Revoke takes a lock on the key row; each key write re-reads the key under a lock after its URL check |
+| AC-43-08 | [BE] A key write that is under way when the key is revoked either lands before the revoke, and is then paused with the rest, or answers 401 and changes nothing. Covers register, PATCH, rotate, enable and disable, including a slow URL check. A row deleted meanwhile answers 404. Revoke takes a lock on the key row; each key write re-reads the key under a lock after its URL check |
 
 ## Who made it
 
 | AC | Rule |
 |---|---|
 | AC-43-09 | [BE] The key that last changed a row owns it: register, PATCH, rotate and enable by a key set `created_by` to `apikey:<that key>`. Disable and delete by a key, and every staff action, leave it alone. So after a rotation, or a key's PATCH of a staff-made row, the count moves to that key and revoking it pauses the row. The write that lands last owns the row. A request that changes nothing moves nothing |
-| AC-43-12 | [BE] A pause set by staff holds against keys: a key's enable, PATCH or rotate on that row answers `409 endpoint_paused_by_staff`, changes nothing and moves no owner. Only staff resume it. A pause from a revoke stays resumable by another live key (AC-43-07), and a key's own disable stays resumable by keys. A key's disable stores a reason of its own, so the two can be told apart |
+| AC-43-12 | [BE] A pause set by staff holds against keys: a key's enable, PATCH, rotate or delete on that row answers `409 endpoint_paused_by_staff`, changes nothing and moves no owner, also when staff pause it while the key's request is under way. A key's disable leaves it as it is. The last attempt of a failing delivery does not turn it into an auto-disabled row. Only staff resume it. A pause from a revoke stays resumable by another live key (AC-43-07), and a key's own disable stays resumable by keys. A key's disable stores a reason of its own, so the two can be told apart |
 | AC-43-10 | [BE] Staff webhook lists carry `registeredByKeyName`: the key's name when an API key owns the row, revoked or not, else null. The public API's endpoint item is unchanged |
 | AC-43-11 | [BE] The name is resolved with tenant and workspace, without a query per row. A row whose key no longer exists reads null |
 
