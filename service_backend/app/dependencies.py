@@ -11,7 +11,9 @@ from typing import Callable, Optional, Set
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
+from python_multipart.exceptions import ParseError
 from sqlalchemy.orm import Session
+from starlette.formparsers import MultiPartException
 from starlette.requests import ClientDisconnect
 
 from app.database import get_db
@@ -25,16 +27,21 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=True)
 IMPERSONATE_HEADER = "X-Impersonate-User-Id"
 IMPERSONATE_PERMISSION = "users.impersonate"
 
-_CREDENTIALS_EXC = HTTPException(
-    status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Could not validate credentials",
-    headers={"WWW-Authenticate": "Bearer"},
-)
+def _credentials_exc() -> HTTPException:
+    # A new instance per raise: a shared instance would keep appending to one
+    # traceback, whose frames hold the request.
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
-_TENANT_INACTIVE_EXC = HTTPException(
-    status_code=status.HTTP_403_FORBIDDEN,
-    detail="This tenant is suspended. Contact support.",
-)
+
+def _tenant_inactive_exc() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="This tenant is suspended. Contact support.",
+    )
 
 
 def assert_staff_token(payload: dict) -> None:
@@ -43,9 +50,9 @@ def assert_staff_token(payload: dict) -> None:
     (typ="embed"), whose `sub` is not a staff user id. Staff tokens carry
     neither claim."""
     if payload.get("kind") == "profile":
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
     if payload.get("typ") == "embed":
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
 
 
 def tenant_signin_allowed(db: Session, tenant_id: str) -> bool:
@@ -61,13 +68,13 @@ def assert_tenant_signin_allowed(user: User) -> None:
     # user.tenant (and its status) ride the user query via lazy="joined" - the
     # lifecycle re-check costs no extra round-trip.
     if user.tenant is None or not user.tenant.signin_allowed:
-        raise _TENANT_INACTIVE_EXC
+        raise _tenant_inactive_exc()
 
 
 async def read_request_body(request: Request) -> None:
     """Receive the whole request body and cache it on the request, so the route's own
     ``request.form()`` / ``request.json()`` return the cached result. A client that
-    leaves mid-body answers 400. Multipart keeps whatever ``request.form()`` raises."""
+    leaves mid-body, or a multipart body the parser refuses, answers 400."""
     try:
         # Starlette's form() reads the stream only for multipart/form-data and
         # returns empty without reading for other types; body() always reads.
@@ -77,6 +84,11 @@ async def read_request_body(request: Request) -> None:
             await request.body()
     except ClientDisconnect:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Request body was not received.")
+    except MultiPartException as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.message)
+    except ParseError:
+        # The parser library's own error (for example a boundary that does not match).
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Malformed multipart body.")
 
 
 async def read_body_after_token_check(request: Request, token: str = Depends(oauth2_scheme)) -> None:
@@ -84,9 +96,14 @@ async def read_body_after_token_check(request: Request, token: str = Depends(oau
     token signature is checked here (no database); user, tenant and permission
     checks stay in ``get_current_user``, after the body."""
     try:
-        decode_access_token(token)
+        payload = decode_access_token(token)
     except JWTError:
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
+    # Same refusals as _resolve_user that need no database: token kind and subject.
+    # Staff sign-in tokens carry no `typ` claim; any typed token (visitor, portal) is not one.
+    if not payload.get("sub") or payload.get("typ"):
+        raise _credentials_exc()
+    assert_staff_token(payload)
     await read_request_body(request)
 
 
@@ -99,18 +116,18 @@ def _resolve_user(token: str, db: Session) -> User:
     try:
         payload = decode_access_token(token)
     except JWTError:
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
 
     user_id: Optional[str] = payload.get("sub")
     if not user_id:
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
 
     assert_staff_token(payload)
 
     tenant_id: str = payload.get("tenant_id") or DEFAULT_TENANT_ID
     user = UserRepository(db).get_by_id(user_id, tenant_id)
     if user is None:
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
 
     assert_tenant_signin_allowed(user)
     return user

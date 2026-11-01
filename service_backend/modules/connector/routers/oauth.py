@@ -144,14 +144,14 @@ async def read_token_body(request: Request) -> None:
         except ValueError:
             too_big = False
         if too_big:
-            raise HTTPException(413, "Request body too large.")
+            raise HTTPException(413, "Request body too large.", headers=_NO_STORE)
     chunks = []
     size = 0
     try:
         async for chunk in request.stream():
             size += len(chunk)
             if size > TOKEN_BODY_MAX_BYTES:
-                raise HTTPException(413, "Request body too large.")
+                raise HTTPException(413, "Request body too large.", headers=_NO_STORE)
             chunks.append(chunk)
     except ClientDisconnect:
         chunks = []
