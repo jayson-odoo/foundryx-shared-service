@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-02** | **Breaking: `channel_required` on send, one callback for all channels** (sections 2, 4, 5, 5a, 7, 10). A `POST /messages` or `GET /templates` with no `channelId` now answers `422 channel_required` when the workspace has more than one active WhatsApp channel, or no active WhatsApp channel and more than one other active channel. Nothing is sent, and the same `Idempotency-Key` can be retried with `channelId`. This is breaking for an integration that omits `channelId`: connecting a second WhatsApp number makes its sends start getting `422`, so pass `channelId` on every send (every webhook event carries the `channelId`). One active WhatsApp channel plus web chat, Messenger or Instagram keeps sending on WhatsApp. `isDefault` is `false` on every channel in that case. A reaction goes out on the channel of the message it reacts to. `POST /webhooks` now registers a callback that covers every channel of the workspace, including channels connected later; its `channelId` reads `null`, `contact.updated` can carry `channelId: null`, and registering with no active channel answers `409 no_active_channel`. Existing endpoints keep their `channelId` and are not converted. |
 > | **2026-11-01** | **Media fetch limits** (`POST /messages`, section 4.2). A media URL fetch has a total limit of 60 seconds (`422 media_fetch_failed`), a response declaring over 100 MB is refused as `422 oversize` before its body is read, compressed responses are refused, and a send over the fetch limit (4 at once in a server process, 2 per tenant) answers `429 media_fetch_busy` (safe to retry shortly with the same `Idempotency-Key`). Nothing is sent in any of these cases. Other contract details are unchanged. |
 > | **2026-11-01** | **Mark a contact read** (`POST /contacts/{identifier}/read`, section 6a). Resets `unreadCount` and sends a WhatsApp read receipt per channel; each receipt answers `sent`, `already_sent`, `failed`, `channel_unavailable` or `not_supported`. Only this route sends a read receipt. Additive: no existing shape changes. |
 > | **2026-11-01** | **`GET /api/v1/omnichannel/channels`** (§5a). Lists the channels your API key can send on, so you can map a `channelId` to a number. Each item carries `isDefault`, the channel `POST /messages` uses when `channelId` is omitted. Also, an API key now stops working while its tenant is suspended or archived or the key's workspace is trashed (`403 service_not_enabled`, see §3 and §10), and works again once restored. |
@@ -94,7 +95,7 @@ After step 3 + 4 you have everything your system needs:
    * responds `2xx` quickly (do heavy work async - Foundryx times out at 10s and retries),
    * is **idempotent** on the event `id` (retries and at-least-once delivery mean you can see the same event twice).
 
-> A workspace must have **at least one active channel**. If none is connected, every send returns `409 no_active_channel`. A workspace CAN have more than one (WhatsApp + Messenger + Instagram) - when you don't pass an explicit `channelId` (§4), the send targets an active **WhatsApp** channel if one exists, else the oldest active channel of any type. This means connecting a Messenger or Instagram channel never changes where an existing integration's sends go - pass `channelId` explicitly to target a specific channel, including a non-WhatsApp one.
+> A workspace must have **at least one active channel**. If none is connected, every send returns `409 no_active_channel`. A workspace CAN have more than one (WhatsApp + Messenger + Instagram) - when you don't pass an explicit `channelId` (§4), the send targets the active **WhatsApp** channel if there is exactly one, else the only active channel of any type. This means connecting a Messenger, Instagram or web chat channel never changes where an existing integration's sends go. If there is more than one active WhatsApp channel, or no active WhatsApp channel and more than one other active channel, the send is refused `422 channel_required`: nothing is sent, and you can retry with the same `Idempotency-Key` and a `channelId`. **Connecting a second WhatsApp number therefore makes an integration that omits `channelId` start getting `422`.** Pass `channelId` on every send; every webhook event (§7) tells you the `channelId`, and `GET /channels` (§5a) lists them.
 
 
 ---
@@ -161,7 +162,7 @@ The JSON body always has `to` + `type`, plus one type-specific object:
 }
 ```
 
-**Choosing a channel (plan 32 / A7a).** `channelId` is optional - an ACTIVE channel of your workspace. Omitted, the send targets an active **WhatsApp** channel if one exists, else the oldest active channel of any type (§2). An unknown, inactive or foreign `channelId` is a typed `422 invalid_channel` - never a silent fallback to a different channel.
+**Choosing a channel (plan 32 / A7a).** `channelId` is optional - an ACTIVE channel of your workspace. Omitted, the send targets the active **WhatsApp** channel if there is exactly one, else the only active channel of any type (§2). If more than one active WhatsApp channel exists, or no active WhatsApp channel and more than one other active channel, an omitted `channelId` is refused `422 channel_required`: nothing is sent, no message or contact is created, and the `Idempotency-Key` is not used up, so retry with the same key and a `channelId`. One active WhatsApp channel plus another channel type (web chat, Messenger or Instagram) is not ambiguous: the default stays the WhatsApp channel and the send keeps going out on it. An unknown, inactive or foreign `channelId` is a typed `422 invalid_channel` - never a silent fallback to a different channel.
 
 **`to` formats:**
 
@@ -173,7 +174,7 @@ The JSON body always has `to` + `type`, plus one type-specific object:
 | `"igsid:<IGSID>"` | An existing contact by its Instagram-Scoped id **on the chosen channel** | Same rule as `psid:` above. |
 | `"webchat:<value>"` | An existing contact by its web chat visitor identity **on the chosen channel** (plan 34 / A7b) | `value` is the identity's own stored form - `visitor:<visitorId>` for an anonymous visitor or `host:<userRef>` once a host identity assertion has verified (**§12a**, which is where the widget, the allowed origins and the exact HMAC recipe live - NOT §12, which is the agent-facing embed and uses a different secret). Same never-creates rule as `psid:`/`igsid:` above - there is no external provider to fabricate an identity against, so a value that resolves nothing is `422 invalid_recipient`. Web chat has no other addressable identifier (no phone, no PSID) - a workspace automating replies to web chat visitors needs `id:<contactId>` or `webchat:<value>`. |
 
-Whichever `to` format you use, the message still goes out on the channel resolved above (`channelId` or the WhatsApp-preferred default) - if the resolved contact has no identity there (e.g. a WhatsApp-only contact addressed with an explicit Messenger `channelId`), the send is refused `422 channel_not_available_for_contact` before anything is queued.
+`id:` and phone are recipients, not channels: `channelId` picks the number, so `"to":"id:<contactId>"` with no `channelId` is refused `422 channel_required` in the same cases. Whichever `to` format you use, the message still goes out on the channel resolved above (`channelId` or the WhatsApp-preferred default) - if the resolved contact has no identity there (e.g. a WhatsApp-only contact addressed with an explicit Messenger `channelId`), the send is refused `422 channel_not_available_for_contact` before anything is queued.
 
 | `type` | Body key | Window rule | Shape |
 |----|----|----|----|
@@ -307,7 +308,7 @@ Each contact needs a name and ≥1 phone. Phone `type` ∈ `CELL|HOME|WORK|MAIN|
 
 ### `GET /api/v1/omnichannel/templates`
 
-Only **APPROVED** templates on the workspace's active channel.
+Only **APPROVED** templates on the workspace's active channel. When the workspace has more than one active WhatsApp channel (the same cases as `422 channel_required` in §4), pass `channelId`; without it the call answers `422 channel_required`.
 
 ```json
 { "data": [
@@ -344,12 +345,12 @@ The channels of your API key's workspace, oldest first. No pagination (a workspa
 | `name` | A free-text label set by the workspace. It is `WhatsApp channel` when the channel has no label beyond the provider's internal number id. |
 | `status` | `ACTIVE`, `PENDING`, `INACTIVE` or `ERROR`. |
 | `isActive` | `false` for a paused channel, which is still listed with its real `status`, so you can see a number that stopped working. A disconnected channel leaves the list. |
-| `isDefault` | `true` on exactly the channel `POST /messages` uses when you omit `channelId`; `false` on the rest. When no channel is active, none is default. |
+| `isDefault` | `true` on exactly the channel `POST /messages` uses when you omit `channelId`; `false` on the rest. When no channel is active, none is default, and when there is more than one active WhatsApp channel (or no active WhatsApp channel and more than one other active channel) there is none: `isDefault` is `false` on every channel, because omitting `channelId` is refused `422 channel_required` (§4). |
 | `displayPhoneNumber` | The number as shown to people; `null` on channels with no phone number or whose number is not available yet. |
 | `verifiedName` | The business name verified by Meta; `null` until the channel's details sync, and on channels that have none. |
 | `createdAt` | When the channel was added, ISO-8601 UTC (`Z`). The list is ordered by it, oldest first. |
 
-Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number. The one exception is a reaction, which goes out on the contact's own channel.
+Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number. The one exception is a reaction, which goes out on the channel of the message it reacts to, whichever `channelId` is passed, and is refused if that channel is paused or disconnected.
 
 An API key works only while its tenant is active and its workspace is not trashed. Otherwise the gateway routes answer `403 service_not_enabled` (§10), and the media route (§8) refuses with its own `403` body. The key works again once the tenant or workspace is restored.
 
@@ -686,12 +687,12 @@ async def receive(request: Request):
 
 ### Registering your callbacks - `/api/v1/omnichannel/webhooks`
 
-**You can manage your own endpoints with just your API key.** They are scoped to your workspace's active channel; you can never see or touch another workspace's.
+**You can manage your own endpoints with just your API key.** An endpoint you register with your API key covers **every channel of your workspace**, including channels connected later; you can never see or touch another workspace's.
 
 | Method | Path | Purpose |
 |----|----|----|
 | GET | `/api/v1/omnichannel/webhooks` | List your endpoints (secrets never echoed) |
-| POST | `/api/v1/omnichannel/webhooks` | Register one → returns the signing secret **once** |
+| POST | `/api/v1/omnichannel/webhooks` | Register one for all channels → returns the signing secret **once** |
 | PATCH | `/api/v1/omnichannel/webhooks/{id}` | Change name / url / events |
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret (returned once) |
 | POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume delivery |
@@ -713,6 +714,10 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/webhooks \
 > **`signingSecret` is shown once.** Store it before you close the response - there is no endpoint that returns it again, only `/rotate`, which invalidates the old one immediately. Deploy the new secret **before** rotating or you will reject your own deliveries.
 
 The URL is validated at registration: **https only**, no `localhost`, no private/reserved IPs (including anything a hostname resolves to). A rejection is `422 invalid_request` with the reason. Unknown event names are rejected the same way.
+
+**All channels, one URL.** The registration has no channel field (a `channelId` in the body is ignored). The endpoint reads `channelId: null` and receives the events of every channel of your workspace, of every channel type, including anonymous web chat text and the unverified `visitorProfile` (§9.1). Use the envelope's `channelId` to tell numbers apart. Registering needs at least one active channel, otherwise `409 no_active_channel` and nothing is saved. A workspace holds at most 10 all-channels endpoints (an 11th is `422 invalid_request`); the per-channel limit is unchanged, so one event reaches at most 20 endpoints. An endpoint created per channel in the Foundryx dashboard keeps its `channelId` and receives only that channel's events. `GET /webhooks` with your key lists both kinds. Existing endpoints are not converted: to cover all channels, delete it and register again, which gives a new secret.
+
+`contact.updated` goes once to an all-channels endpoint for each change, and its envelope `channelId` is the contact's latest channel, or `null` when the contact has never messaged; in that case the contact's `channelType` still reads `WHATSAPP`, so do not rely on it until a first message. A per-channel endpoint receives `contact.updated` only for the contact's latest channel.
 
 An operator can also manage these from the Foundryx dashboard, where a per-attempt **delivery log** is available for debugging.
 
@@ -1001,7 +1006,8 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
 | `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
-| `no_active_channel` | 409 | The workspace has no connected number. |
+| `channel_required` | 422 | `channelId` was omitted and the workspace has more than one active WhatsApp channel (or no active WhatsApp channel and more than one other active channel), on `POST /messages` and `GET /templates`. Nothing is sent; pass `channelId` (see `GET /channels`) and retry with the same `Idempotency-Key`. |
+| `no_active_channel` | 409 | The workspace has no connected number, on a send or when registering a webhook. |
 | `channel_not_available_for_contact` | 422 | (plan 32 / A7a) The resolved contact has no identity on the chosen channel (e.g. a WhatsApp-only contact addressed on a Messenger `channelId`). |
 | `template_not_found` | 422 | No APPROVED template matches `name`/`id`. |
 | `csw_window_closed` | 409 | WhatsApp's 24h window closed - send an approved template instead. Unchanged, WhatsApp-only meaning (plan 32 / A7a). |
@@ -1370,7 +1376,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | Method | Path | Purpose | Returns |
 |----|----|----|----|
 | POST | `/api/v1/omnichannel/messages` | Send a message (all types) | `202 {id, status, idempotencyReplay}` |
-| GET | `/api/v1/omnichannel/channels` | List the workspace's channels (`isDefault` marks the implicit send channel) | `{data[]}` of channel items (§5a) |
+| GET | `/api/v1/omnichannel/channels` | List the workspace's channels (`isDefault` marks the implicit send channel, none when `channelId` is required) | `{data[]}` of channel items (§5a) |
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
 | GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |
@@ -1382,7 +1388,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/contacts/{identifier}/comments` | Add internal note | `201` `MessageItem` |
 | POST | `/api/v1/omnichannel/contacts/{identifier}/read` | Mark read (unread to 0, WhatsApp read receipt per channel) | `{contactId, receipts[]}` |
 | GET | `/api/v1/omnichannel/webhooks` | List your webhook endpoints | `{data[]}` |
-| POST | `/api/v1/omnichannel/webhooks` | Register one (secret shown once) | `201 {endpoint, signingSecret}` |
+| POST | `/api/v1/omnichannel/webhooks` | Register one for all channels, `channelId` null (secret shown once; `409 no_active_channel` with no active channel) | `201 {endpoint, signingSecret}` |
 | PATCH | `/api/v1/omnichannel/webhooks/{id}` | Update name/url/events | `WebhookEndpoint` |
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret | `{signingSecret}` |
 | POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume | `WebhookEndpoint` |
