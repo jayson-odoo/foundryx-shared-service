@@ -246,6 +246,8 @@ class Rig:
                 n = rig.calls.get(key, 0)
                 rig.calls[key] = n + 1
             step = script[min(n, len(script) - 1)]
+            if step == "oserror":
+                raise OSError("scripted: resolver input/output error")
             if step == "fail":
                 raise socket.gaierror(socket.EAI_NONAME, "scripted: no answer")
             addr = ALLOWED_ADDR if step == "allowed" else BLOCKED_ADDR
@@ -744,3 +746,17 @@ def test_development_does_not_exempt_a_name_that_resolves_to_a_blocked_address(g
     outcome = _run(guarded, env, driver_name, SEQ_BLOCKED)
     assert outcome.kind == "refused", f"{driver_name}: {outcome!r}"
     assert guarded.count(BLOCKED_ADDR) == 0
+
+
+# ── A resolver error that is not a name failure is still a connection failure ─
+@pytest.mark.parametrize("path", sorted(PATHS))
+@pytest.mark.parametrize(
+    "steps", [["allowed", "fail"], ["allowed", "oserror"]], ids=["allowed_then_failure", "allowed_then_oserror"]
+)
+def test_a_later_resolver_error_is_the_normal_connection_failure(guarded, env, path, steps):
+    try:
+        outcome = _run(guarded, env, path, steps)
+    except OSError as exc:
+        pytest.fail(f"{path}: the resolver error escaped as {type(exc).__name__}: {exc}", pytrace=False)
+    assert outcome.kind == PATHS[path][2], f"{path}: expected the connection failure outcome, got {outcome!r}"
+    assert guarded.count(ALLOWED_ADDR) == 0 and guarded.count(BLOCKED_ADDR) == 0
