@@ -509,3 +509,26 @@ def test_scoped_backfill_touches_only_that_tenant(db):
     db.expire_all()
     assert len(_rows(db, mine.id)) == 1
     assert _rows(db, other.id) == []
+
+
+# ═════════════════════════ Group C - CRM `segment_unknown` warning ══════════
+
+
+@pytest.mark.parametrize("outcome", ["created", "updated", "unchanged"])
+def test_a_segment_unknown_warning_still_counts_as_delivered(outcome):
+    """The CRM answers ``segment_unknown`` for every DebtorType that is not
+    one of its market segments (most customers). A warning rides only on a
+    DELIVERED verdict: the row is ok, not failed, so it is marked pushed and
+    lands in the run's ``warningCounts``, never in ``failures`` / the push
+    ``error`` the integration alert reads."""
+    from modules.autocount.sinks_sorento import sorento_sink_from_connection
+
+    sink = sorento_sink_from_connection(
+        {"baseUrl": "https://sorento.example.com"}, {"apiKey": "k"},
+        entity_type=ENTITY_CUSTOMER, company_code="SRT",
+    )
+    verdict = {"source_ref": "AED_SORENTO:300-X001", "outcome": outcome,
+               "entity_id": "cust-1", "warnings": ["segment_unknown"]}
+    result = sink._result_for("AED_SORENTO:300-X001", verdict)
+    assert result.ok is True and result.delivered is True
+    assert result.warnings == ("segment_unknown",)
