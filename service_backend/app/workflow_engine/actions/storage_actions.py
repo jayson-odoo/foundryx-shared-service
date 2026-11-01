@@ -7,6 +7,7 @@ behind a `conn:` key to check its owner and type.
 import logging
 import mimetypes
 import os
+import re
 from typing import Any, Dict
 
 from sqlalchemy.orm import Session
@@ -88,7 +89,7 @@ def _url_and_meta(storage, key: str) -> Dict[str, Any]:
 
 
 def storage_put(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
-    key = _tenant_prefix(tenant_id) + _resolve_key(config, ctx)
+    key = _tenant_prefix(tenant_id) + re.sub(r"/{2,}", "/", _resolve_key(config, ctx))
     content = render_field(config.get("content"), ctx).encode("utf-8")
     mime = _mime_for(key)
     storage = storage_for_tenant(db, tenant_id)
