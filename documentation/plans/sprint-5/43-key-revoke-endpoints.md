@@ -30,7 +30,7 @@ dispatch: endpoint ACTIVE? gateway_key_enabled? else FAILED, fixed text, counter
 | Key list | `services/api_key_service.py`, `routers/api_keys.py`, `schemas.py` | `webhookEndpointCount`, one grouped count per list |
 | Revoke | `api_key_service.py:66`, `routers/api_keys.py:67` | Optional body `pauseEndpoints`, default true. Commit once: `revoke` must not commit before the pause |
 | Deferred | `deferred_actions.py:234` | Read `payload.get("pauseEndpoints")`, anything but `False` means true |
-| Webhook service | `services/webhook_service.py` | `pause_for_key` without its own commit, `list_for_workspace` reused by the new staff route |
+| Webhook service | `services/webhook_service.py` | `pause_for_key` without its own commit, `list_for_workspace` reused by the new staff route, which first checks the workspace is the tenant's |
 | Staff items | `routers/webhooks_subs.py` | `registeredByKeyName`, a staff item type so the public `WebhookEndpointItem` stays as it is. One key lookup per list |
 | Workspace route | `routers/webhooks_subs.py` | `GET /workspaces/{id}/webhooks`, workspace looked up with tenant |
 | Delivery | `services/webhook_delivery.py` | `gateway_key_enabled` in `_fan_out` after endpoints are found, and in `dispatch`. Import it where no cycle forms: `api_auth.py` imports FastAPI, so consider moving the predicate to the service layer with `api_auth` re-exporting it |
@@ -41,6 +41,8 @@ dispatch: endpoint ACTIVE? gateway_key_enabled? else FAILED, fixed text, counter
 No mock: one choice in a dialog on an existing screen, one existing list on one more tab, "simple reuse" rule. No new permission: `api_keys.manage`, `webhooks.read`, `webhooks.manage` cover it. No motion beyond the dialog's existing one.
 
 ## Traps
+
+- A key is checked once at the start of a request, so `ApiKeyService.revoke` locks the key row `FOR UPDATE`, and each key write re-reads it with `with_for_update(key_share=True)` after its URL check and before its own commit, answering 401 when revoked. No network call under either lock.
 
 - `revoke` is deferred with an undo window and today has no dialog (`use-api-key-list.tsx:87-90`). Check how `ResourceAction.deferred` takes a payload before designing the `run`; extend the shell's type if it cannot, do not hand-roll.
 - The tab can show a stale count: after a revoke, reload the list.

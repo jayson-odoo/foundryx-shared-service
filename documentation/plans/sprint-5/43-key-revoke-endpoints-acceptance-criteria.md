@@ -9,7 +9,7 @@ A workspace admin opens the workspace's API Keys tab.
 1. Each key shows how many active webhook endpoints it registered.
 2. They choose Revoke on a key. With no endpoints, it behaves as today. With some, a dialog names the count and offers "Also pause them", on by default. Revoking during a rotation, they switch it off; revoking a key that should stop, they leave it on.
 3. They confirm. The usual undo window runs, and undo cancels both.
-4. On the workspace's Webhooks tab they see every all-channels endpoint, whichever channels are live, with the key that registered it, and can pause, edit or delete it there. A channel's Webhooks tab shows the same "registered by".
+4. On the workspace's Webhooks tab they see every endpoint of the workspace, whichever channels are live, with the key that registered it, and can pause, edit or delete it there. A channel's Webhooks tab shows the same "registered by".
 
 A consumer rotating its key resumes a paused endpoint with its new key: `POST /webhooks/{id}/enable`.
 
@@ -24,6 +24,7 @@ A consumer rotating its key resumes a paused endpoint with its new key: `POST /w
 | AC-43-05 | [BE] The deferred action `api_keys.revoke` carries `pauseEndpoints` in its payload. Cancelling during the undo window changes neither the key nor any endpoint. Repeating a revoke on a revoked key changes nothing, and pauses nothing further |
 | AC-43-06 | [BE] Revoke finds endpoints by tenant, workspace and exact `apikey:<id>`. A key of the same name or a foreign tenant's row with the same creator text is untouched |
 | AC-43-07 | [BE] A paused endpoint receives no event, and the new key can resume it with `POST /webhooks/{id}/enable`. Resuming clears the reason |
+| AC-43-08 | [BE] A key write that is under way when the key is revoked either lands before the revoke, and is then paused with the rest, or answers 401 and changes nothing. Covers register, PATCH, rotate and enable, including a slow URL check. Revoke takes a lock on the key row; each key write re-reads the key under a lock after its URL check |
 
 ## Who made it
 
@@ -36,7 +37,7 @@ A consumer rotating its key resumes a paused endpoint with its new key: `POST /w
 
 | AC | Rule |
 |---|---|
-| AC-43-20 | [BE] `GET /omnichannel/workspaces/{id}/webhooks`, gated by `webhooks.read`, returns the all-channels endpoints of that tenant and workspace, also when every channel is disconnected. Another tenant's workspace id answers 404 |
+| AC-43-20 | [BE] `GET /omnichannel/workspaces/{id}/webhooks`, gated by `webhooks.read`, returns every endpoint of that tenant and workspace, per-channel and all-channels, also when every channel is disconnected. Another tenant's workspace id answers 404 |
 | AC-43-21 | [BE] Staff edit, rotate, pause, resume, delete and delivery log work on those rows with no live channel |
 
 ## When the workspace or tenant is off
@@ -52,11 +53,11 @@ A consumer rotating its key resumes a paused endpoint with its new key: `POST /w
 | AC | Rule |
 |---|---|
 | AC-43-40 | [FE] API Keys tab: a key with endpoints shows the count. Revoke on it opens the dialog with the count and "Also pause them" on by default. Confirm runs the undo window with the choice. A key with none runs the undo window directly, as today |
-| AC-43-41 | [FE] Workspace form has a Webhooks tab, gated by `webhooks.read`, reusing the webhook list with no Add button. Both lists show "Registered by" |
-| AC-43-42 | [E2E] Recorded real-click run at 1280 and 375: revoke with the choice on, then off; undo; a row seen on the workspace tab with every channel disconnected, then paused there |
+| AC-43-41 | [FE] Workspace form has a Webhooks tab, gated by `webhooks.read`, reusing the webhook list with no Add button. Both lists show "Registered by". A row paused by a revoke shows why, as an auto-disabled row does |
+| AC-43-42 | [E2E] Recorded real-click run at 1280 and 375: revoke with the choice on, then off; undo; a row seen on the workspace tab with every channel disconnected, then paused there; a key with a very long unbroken name in the dialog at 375 |
 
 ## Contract
 
 | AC | Rule |
 |---|---|
-| AC-43-50 | [T] Guide section 7: a revoked key's endpoints may be paused by the workspace's staff; `disabledReason` says so; resume with `POST /webhooks/{id}/enable`. Changelog row. `documentation/engineering/omnichannel-service.md` is updated |
+| AC-43-50 | [T] Guide section 7: a revoked key's endpoints may be paused by the workspace's staff; `disabledReason` says so; resume with `POST /webhooks/{id}/enable`, and resume only the endpoints you recognise. The at-least-once statement says that while a workspace or tenant is off, no event is queued, queued retries end failed, and those events are not sent later. Changelog row. `documentation/engineering/omnichannel-service.md` is updated |
