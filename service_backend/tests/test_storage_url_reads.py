@@ -1918,7 +1918,7 @@ MEETING_BAD_ENDPOINTS = [*BAD_ENDPOINTS, "https://user@cdn.storage.test/", "http
 
 @pytest.mark.parametrize("endpoint", MEETING_BAD_ENDPOINTS)
 def test_a_meeting_does_not_use_a_connection_with_a_bad_endpoint_and_writes_locally(
-    endpoint, session_factory, bucket, local_media
+    endpoint, session_factory, bucket, local_media, net
 ):
     from modules.meetings.services.bot_runner import build_output
 
@@ -1933,7 +1933,7 @@ def test_a_meeting_does_not_use_a_connection_with_a_bad_endpoint_and_writes_loca
 
 @pytest.mark.parametrize("endpoint", MEETING_BAD_ENDPOINTS)
 def test_a_meeting_falls_back_to_platform_storage_when_the_endpoint_is_bad(
-    endpoint, session_factory, bucket, local_media, monkeypatch
+    endpoint, session_factory, bucket, local_media, monkeypatch, net
 ):
     from modules.meetings.services.bot_runner import build_output
 
