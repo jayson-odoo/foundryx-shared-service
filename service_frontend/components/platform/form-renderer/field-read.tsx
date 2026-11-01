@@ -263,10 +263,8 @@ function FileChip({ fieldKey, index, label }: { fieldKey: string; index: number;
         `/submissions/${submissionId}/files/${encodeURIComponent(fieldKey)}/${index}`,
       );
       const base = blob.type.toLowerCase().split(';')[0].trim();
-      const shown = SERVED_FILE_TYPES.includes(base)
-        ? blob
-        : new Blob([blob], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(shown);
+      const type = SERVED_FILE_TYPES.includes(base) ? base : 'application/octet-stream';
+      const url = URL.createObjectURL(new Blob([blob], { type }));
       window.open(url, '_blank', 'noopener');
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch {
