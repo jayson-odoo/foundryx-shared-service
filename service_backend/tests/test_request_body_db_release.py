@@ -1245,3 +1245,32 @@ def test_a_token_body_with_a_non_integer_length_is_read_normally(connector_clien
 def test_a_token_body_with_a_non_integer_length_still_counts_against_the_cap(connector_client):
     run = _drive_token(_sized_token_scenario(_token_body(TOKEN_BODY_CAP * 2)), length="abc", chunk=8 * 1024)
     assert run.status == 413, run.body
+
+
+# ── an embed token missing a required claim is refused before the body ──────
+@pytest.mark.parametrize("scenario", ["template_inbox_json", "template_inbox_multipart",
+                                      "interactive_inbox_json", "interactive_inbox_multipart"], indirect=True)
+@pytest.mark.parametrize("shape", ["tenant_id", "workspaceId", "external_agent_id", "connection_id",
+                                   "ideation_claims"])
+def test_an_embed_token_missing_a_required_claim_is_refused_before_the_body(scenario, shape, sql_log):
+    from jose import jwt
+
+    from app.config import settings
+    from app.models import DEFAULT_TENANT_ID
+    from app.security import create_access_token
+
+    if shape == "ideation_claims":  # the claim set of an ideation embed token
+        token = create_access_token({
+            "sub": "viewer-1", "typ": "embed", "tenant_id": DEFAULT_TENANT_ID,
+            "connection_id": "conn-1", "product_id": None, "idea_id": "idea-1",
+            "email": None, "name": None, "phone": None, "ideas_manage": None, "scope": "ideation",
+        })
+    else:
+        claims = jwt.get_unverified_claims(scenario.headers["Authorization"].split(" ", 1)[1])
+        assert claims.pop(shape)  # control: the real token carries the claim
+        token = jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    sql_log.clear()
+    run = asyncio.run(_drive(scenario, hold=False, headers={"Authorization": f"Bearer {token}"}))
+    assert run.status == 401, run.body
+    assert run.receive_calls == 0, "the body was requested for an embed token missing a required claim"
+    assert sql_log == [], f"{len(sql_log)} statement(s) ran, first: {sql_log[0]!r}"
