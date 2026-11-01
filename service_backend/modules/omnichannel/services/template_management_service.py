@@ -23,6 +23,7 @@ from ..schemas import TemplateDetail, TemplateManageItem
 from ..security import decrypt_credentials
 from .channel_guards import assert_whatsapp
 from ..template_schemas import (
+    _err,
     TEMPLATE_STATUSES,
     WaTemplateDoc,
     distinct_var_count,
@@ -59,6 +60,15 @@ def _is_channel_sample_key(key: Optional[str], channel_id: str) -> bool:
         raw = parts[2]
     prefix = f"omni/templates/{channel_id}/"
     return raw.startswith(prefix) and is_minted_raw_key(raw[len(prefix):])
+
+
+def _stored_handle(components: Optional[list]) -> Optional[str]:
+    """The header handle already stored in a template's components, if any."""
+    for comp in components or []:
+        if isinstance(comp, dict) and comp.get("type") == "HEADER":
+            handles = (comp.get("example") or {}).get("header_handle") or []
+            return handles[0] if handles and isinstance(handles[0], str) else None
+    return None
 
 
 def _check_sample_key(key: Optional[str], channel_id: str) -> None:
@@ -187,12 +197,17 @@ class TemplateManagementService:
         self._channel(channel_id, tenant_id)
         return self._detail(self._row(channel_id, template_id, tenant_id))
 
+    def ensure_channel(self, channel_id: str, tenant_id: str) -> None:
+        """Resolve a channel of this tenant or raise TemplateNotFound."""
+        self._channel(channel_id, tenant_id)
+
     # ── writes ───────────────────────────────────────────────────────────────
     def save_draft(self, channel_id: str, doc: WaTemplateDoc, tenant_id: str = DEFAULT_TENANT_ID) -> TemplateDetail:
         self._channel(channel_id, tenant_id)
         validate_doc(doc, existing_names=self._existing_names(channel_id, tenant_id))
-        if doc.header and doc.header.format != "TEXT":
-            _check_sample_key(doc.header.sampleKey, channel_id)
+        key = doc.header.sampleKey if doc.header and doc.header.format != "TEXT" else None
+        if key and not _is_channel_sample_key(key, channel_id):
+            raise _err("header", _SAMPLE_REFUSED)
         row = WhatsappTemplate(
             tenant_id=tenant_id, channel_id=channel_id, name=doc.name,
             language=doc.language, category=doc.category,
@@ -211,13 +226,21 @@ class TemplateManagementService:
         if cur_status in _EDIT_BLOCKED:
             raise HTTPException(status.HTTP_409_CONFLICT, "This template can't be edited in its current state.")
         validate_doc(doc, existing_names=self._existing_names(channel_id, tenant_id, exclude_id=template_id))
-        if doc.header and doc.header.format != "TEXT":
-            _check_sample_key(doc.header.sampleKey, channel_id)
+        key = doc.header.sampleKey if doc.header and doc.header.format != "TEXT" else None
+        stored_handle = _stored_handle(t.components_json)
+        if key and _is_channel_sample_key(key, channel_id):
+            sample_key = key
+        elif key and key == stored_handle:
+            sample_key = None  # unchanged handle: kept through the components
+        elif key:
+            raise _err("header", _SAMPLE_REFUSED)
+        else:
+            sample_key = None
         t.name = doc.name
         t.language = doc.language
         t.category = doc.category
         t.components_json = to_meta_components(doc)
-        t.media_sample_key = doc.header.sampleKey if doc.header and doc.header.format != "TEXT" else None
+        t.media_sample_key = sample_key
         if cur_status in _EDIT_RESUBMIT:
             # Synced template edited → re-enters Meta review.
             ch = self._channel(channel_id, tenant_id)
