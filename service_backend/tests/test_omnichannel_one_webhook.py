@@ -1131,3 +1131,84 @@ def test_ac_38_101_other_types_are_still_refused_on_a_real_guess(client, session
     )
     _assert_channel_required(res)
     assert _counts(session_factory) == before
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AC-38-86 / 82 - boundaries of the no-channel event path and of the limit
+# ═════════════════════════════════════════════════════════════════════════════
+def _no_channel_event_rig(client, session_factory):
+    """A never-messaged contact and a subscribed all-channels endpoint of ours."""
+    ws = _default_workspace_id(session_factory)
+    _two_wa(session_factory, ws)
+    cid = _seed_open_contact(session_factory, ws, phone="+60111888101")
+    mine, _ = _register_all(client, _hdr(client, ws), ["contact.updated"], expect_null=True)
+    return ws, cid, mine
+
+
+def _assert_only_mine_got_the_event(client, session_factory, cid, mine, others):
+    assert _patch_priority(client, cid).status_code == 200
+    rows = _rows(session_factory, mine, "contact.updated")
+    assert len(rows) == 1 and rows[0]["payload"]["channelId"] is None  # positive control
+    for other in others:
+        assert _rows(session_factory, other) == []
+
+
+def test_ac_38_86_no_channel_event_skips_other_tenant_with_same_workspace_id(client, session_factory):
+    ws, cid, mine = _no_channel_event_rig(client, session_factory)
+    foreign = _insert_endpoint(
+        session_factory, tenant_id=FOREIGN_TENANT, workspace_id=ws, channel_id=None, events=["contact.updated"]
+    )
+    _assert_only_mine_got_the_event(client, session_factory, cid, mine, [foreign])
+
+
+def test_ac_38_86_no_channel_event_skips_other_workspace_of_the_same_tenant(client, session_factory):
+    ws, cid, mine = _no_channel_event_rig(client, session_factory)
+    other_ws = _seed_second_workspace(session_factory)
+    sibling = _insert_endpoint(
+        session_factory, tenant_id=DEFAULT_TENANT_ID, workspace_id=other_ws, channel_id=None, events=["contact.updated"]
+    )
+    _assert_only_mine_got_the_event(client, session_factory, cid, mine, [sibling])
+
+
+def test_ac_38_86_no_channel_event_skips_disabled_and_auto_disabled(client, session_factory):
+    ws, cid, mine = _no_channel_event_rig(client, session_factory)
+    off = _insert_endpoint(
+        session_factory, tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, channel_id=None,
+        events=["contact.updated"], status="DISABLED",
+    )
+    auto = _insert_endpoint(
+        session_factory, tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, channel_id=None,
+        events=["contact.updated"], status="AUTO_DISABLED",
+    )
+    _assert_only_mine_got_the_event(client, session_factory, cid, mine, [off, auto])
+
+
+def test_ac_38_86_no_channel_event_skips_an_endpoint_not_subscribed_to_it(client, session_factory):
+    ws, cid, mine = _no_channel_event_rig(client, session_factory)
+    other_event = _insert_endpoint(
+        session_factory, tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, channel_id=None, events=["message.inbound"]
+    )
+    _assert_only_mine_got_the_event(client, session_factory, cid, mine, [other_event])
+
+
+def test_ac_38_82_limit_ignores_all_channels_rows_of_another_workspace(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _two_wa(session_factory, ws)
+    other_ws = _seed_second_workspace(session_factory)
+    for _ in range(10):
+        _insert_endpoint(
+            session_factory, tenant_id=DEFAULT_TENANT_ID, workspace_id=other_ws, channel_id=None,
+            events=["message.inbound"],
+        )
+    _register_all(client, _hdr(client, ws), ["message.inbound"], expect_null=True)
+
+
+def test_ac_38_82_limit_ignores_all_channels_rows_of_another_tenant_with_same_workspace_id(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    _two_wa(session_factory, ws)
+    for _ in range(10):
+        _insert_endpoint(
+            session_factory, tenant_id=FOREIGN_TENANT, workspace_id=ws, channel_id=None,
+            events=["message.inbound"],
+        )
+    _register_all(client, _hdr(client, ws), ["message.inbound"], expect_null=True)
