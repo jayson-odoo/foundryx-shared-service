@@ -2035,3 +2035,23 @@ def test_ac_41_09_a_recipient_that_is_a_number_is_a_typed_422(client, session_fa
     )
     assert (r.status_code, _error_code(r)) == (422, "invalid_request")
     assert _message_count(session_factory, cid) == 0
+
+
+# ══ Compression guard ════════════════════════════════════════════════════════
+@pytest.mark.parametrize("encoding", ["identity", "Identity"])
+def test_guard_ac_41_04_content_encoding_identity_is_accepted(client, session_factory, monkeypatch, encoding):
+    headers, cid, _ch = _setup(client, session_factory, phone="+60700700790")
+
+    def plain(request):
+        return httpx.Response(
+            200,
+            headers=[(b"content-type", b"application/pdf"), (b"content-encoding", encoding.encode())],
+            stream=_Stream([PDF]),
+            request=request,
+        )
+
+    rig = _install(monkeypatch, media=plain)
+    r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700790"), headers=headers)
+    assert rig.media_calls == 1
+    assert r.status_code == 202, r.text
+    assert _message_count(session_factory, cid) == 1
