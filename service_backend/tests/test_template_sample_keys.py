@@ -344,7 +344,7 @@ def test_unchanged_old_style_handle_never_reads_its_file(client, ctx, session_fa
     res = client.patch(f"{base}/{rid}", headers=h, json=_same_doc(client, h, base, rid))
     assert res.status_code == 200, res.text
     assert MARKER not in spy.uploads
-    assert all(MARKER not in str(e) for e in spy.edits)
+    assert all(MARKER.decode() not in str(e) for e in spy.edits)
 
 
 @pytest.mark.parametrize("new_value", ["https://provider.example/other", "documents/x"])
