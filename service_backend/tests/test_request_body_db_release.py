@@ -706,3 +706,67 @@ def test_a_json_send_with_a_malformed_body_is_422(client, session_factory, route
                       headers={**_auth(client), "content-type": "application/json"})
     assert res.status_code == 422
     assert res.json()["detail"] == "Request body must be valid JSON."
+
+
+# ── no statement of any kind runs on the event loop thread ──────────────────
+@pytest.fixture
+def sql_log():
+    """Every statement, commit and rollback issued through any engine, with the
+    thread that issued it. Listens at engine level, so it sees SQL that no named
+    function wraps."""
+    from sqlalchemy.engine import Engine
+
+    records: List[Tuple[int, str]] = []
+
+    def on_execute(conn, cursor, statement, parameters, context, executemany):
+        records.append((threading.get_ident(), " ".join(statement.split())[:80]))
+
+    def on_commit(conn):
+        records.append((threading.get_ident(), "COMMIT"))
+
+    def on_rollback(conn):
+        records.append((threading.get_ident(), "ROLLBACK"))
+
+    event.listen(Engine, "before_cursor_execute", on_execute)
+    event.listen(Engine, "commit", on_commit)
+    event.listen(Engine, "rollback", on_rollback)
+    try:
+        yield records
+    finally:
+        event.remove(Engine, "before_cursor_execute", on_execute)
+        event.remove(Engine, "commit", on_commit)
+        event.remove(Engine, "rollback", on_rollback)
+
+
+def _on_thread(records: List[Tuple[int, str]], thread: int) -> List[str]:
+    return [statement for t, statement in records if t == thread]
+
+
+def test_sql_log_control_flags_a_statement_on_the_current_thread(session_factory, sql_log):
+    here = threading.get_ident()
+    probe = session_factory()
+    probe.execute(text("select 1"))
+    probe.commit()
+    probe.close()
+    flagged = _on_thread(sql_log, here)
+    assert any(s.startswith("select 1") for s in flagged)
+    assert "COMMIT" in flagged
+    other: List[int] = []
+    worker = threading.Thread(target=lambda: (
+        session_factory().execute(text("select 2")), other.append(threading.get_ident())))
+    worker.start()
+    worker.join()
+    assert other and other[0] != here
+    assert not any(s.startswith("select 2") for s in _on_thread(sql_log, here))
+    assert any(t == other[0] and s.startswith("select 2") for t, s in sql_log)
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS, indirect=True)
+def test_no_sql_runs_on_the_event_loop(scenario, spies, tracker, sql_log):
+    _arm(scenario, spies)
+    sql_log.clear()  # only the request itself is of interest, not the scenario setup
+    run = _run_held(scenario, tracker)
+    assert run.status == scenario.status, run.body
+    assert sql_log, "no statements were recorded for the request"
+    on_loop = _on_thread(sql_log, run.loop_thread)
+    assert not on_loop, f"{len(on_loop)} statement(s) ran on the event loop thread, {on_loop!r}"
