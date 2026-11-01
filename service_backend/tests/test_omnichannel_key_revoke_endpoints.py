@@ -1548,12 +1548,17 @@ def _doc_section(text, start, end):
 
 
 def _first_changelog_row():
+    """The changelog row for this change, found by its words among the rows."""
     lines = _GUIDE.read_text().splitlines()[:40]
     rows = [
         ln for ln in lines
         if ln.startswith("> |") and "| Date |" not in ln and not ln.startswith("> |--")
     ]
-    return rows[0]
+    mine = [
+        ln for ln in rows
+        if "disabledReason" in ln or "revoked key" in ln.lower() or "key is revoked" in ln.lower()
+    ]
+    return mine[0] if mine else rows[0]
 
 
 def test_ac_43_50_guide_first_changelog_row_is_for_the_revoke_change():
@@ -1800,3 +1805,282 @@ def test_ac_43_12_a_keys_disable_cannot_turn_a_staff_pause_into_its_own(client, 
     enabled = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
     assert enabled.status_code == 409, enabled.text
     assert enabled.json()["error"]["code"] == "endpoint_paused_by_staff"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Final review round: a staff pause under way, a revoke under way on disable, a
+# row deleted under way, and requests that change nothing
+# ═════════════════════════════════════════════════════════════════════════════
+def _staff_pause_in_another_session(session_factory, endpoint_id):
+    from modules.omnichannel.services.webhook_service import WebhookService
+
+    other = session_factory()
+    try:
+        WebhookService(other).set_status(DEFAULT_TENANT_ID, endpoint_id, False)
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("action", ["patch", "rotate", "enable"])
+def test_ac_43_12_a_staff_pause_during_a_key_write_answers_409_and_changes_nothing(
+    client, session_factory, monkeypatch, action
+):
+    from modules.omnichannel.services import webhook_service as ws_mod
+
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    ep = _register_as(client, r["hdr"])
+    if action == "enable":
+        assert client.post(f"{BASE}/webhooks/{ep}/disable", headers=r["hdr"]).status_code == 200
+    start = _row_snapshot(session_factory, ep)
+    fired = {"n": 0}
+
+    def pause_once():
+        if not fired["n"]:
+            fired["n"] += 1
+            _staff_pause_in_another_session(session_factory, ep)
+
+    if action == "patch":
+        real = ws_mod.validate_callback_url
+
+        def slow_check(url, **kw):
+            clean = real(url, **kw)
+            pause_once()
+            return clean
+
+        monkeypatch.setattr(ws_mod, "validate_callback_url", slow_check)
+    else:
+        real_hold = ws_mod.WebhookService._hold_live_key
+
+        def hold_after_pause(self, *a, **k):
+            pause_once()
+            return real_hold(self, *a, **k)
+
+        monkeypatch.setattr(ws_mod.WebhookService, "_hold_live_key", hold_after_pause)
+
+    if action == "patch":
+        res = client.patch(f"{BASE}/webhooks/{ep}", headers=hdr2, json={"url": NEW_HOOK, "name": "other"})
+    else:
+        res = client.post(f"{BASE}/webhooks/{ep}/{action}", headers=hdr2)
+
+    assert fired["n"] == 1  # control: staff paused during the request
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "endpoint_paused_by_staff", res.text
+    assert "signingSecret" not in res.text
+    after = _row_snapshot(session_factory, ep)
+    assert after["status"] == "DISABLED" and after["reason"] == STAFF_REASON
+    assert {k: after[k] for k in ("url", "name", "secret", "created_by")} == {
+        k: start[k] for k in ("url", "name", "secret", "created_by")
+    }
+
+
+@pytest.mark.parametrize("action", ["patch", "rotate", "enable", "disable"])
+def test_ac_43_12_each_key_write_rereads_the_endpoint_row_under_a_lock_after_the_key_row(
+    client, session_factory, lock_spy, action
+):
+    r = _rig(client, session_factory)
+    ep = _register_as(client, r["hdr"])
+    if action == "enable":
+        assert client.post(f"{BASE}/webhooks/{ep}/disable", headers=r["hdr"]).status_code == 200
+    lock_spy.clear()
+
+    if action == "patch":
+        res = client.patch(f"{BASE}/webhooks/{ep}", headers=r["hdr"], json={"name": "renamed"})
+    else:
+        res = client.post(f"{BASE}/webhooks/{ep}/{action}", headers=r["hdr"])
+
+    assert res.status_code == 200, res.text  # control: a live key still writes
+    key_at = [i for i, e in enumerate(lock_spy) if e[0] == "lock" and e[1] == "WorkspaceApiKey"]
+    row_at = [
+        i for i, e in enumerate(lock_spy)
+        if e[0] == "lock" and e[1] == "WebhookEndpoint" and e[2].get("key_share") is True
+    ]
+    assert key_at, "no lock on the key row"
+    assert row_at, "the endpoint row was not re-read under a lock"
+    assert min(row_at) > min(key_at), lock_spy
+
+
+def test_ac_43_12_a_keys_delete_of_a_staff_paused_row_answers_409_and_keeps_row_and_log(client, session_factory):
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    ep = _staff_paused_row(client, r)
+    db = session_factory()
+    try:
+        db.add(
+            WebhookDelivery(
+                tenant_id=DEFAULT_TENANT_ID, endpoint_id=ep, event_id="evt-keep", event_type="message.inbound",
+                payload_json={"id": "evt-keep"}, status="FAILED",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+    before = _row_snapshot(session_factory, ep)
+
+    res = client.delete(f"{BASE}/webhooks/{ep}", headers=hdr2)
+
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "endpoint_paused_by_staff", res.text
+    assert _row_snapshot(session_factory, ep) == before
+    assert [d[1] for d in _deliveries(session_factory, ep)] == ["evt-keep"]
+
+
+def _failing_endpoint(client, session_factory, r):
+    """A key-owned row at one failure short of the threshold, with a delivery on
+    its last attempt. Returns (endpoint id, delivery id)."""
+    ep = _insert(session_factory, ws=r["ws"], created_by=_by(r["key"]), failures=9)
+    from modules.omnichannel.services.webhook_service import encrypt_secret
+
+    db = session_factory()
+    try:
+        db.query(WebhookEndpoint).filter(WebhookEndpoint.id == ep).update(
+            {WebhookEndpoint.secret_encrypted: encrypt_secret("whsec_test")}
+        )
+        d = WebhookDelivery(
+            tenant_id=DEFAULT_TENANT_ID, endpoint_id=ep, event_id="evt-last", event_type="message.inbound",
+            payload_json={"id": "evt-last"}, status="PENDING", attempt_count=wd.MAX_ATTEMPTS - 1,
+        )
+        db.add(d)
+        db.commit()
+        return ep, d.id
+    finally:
+        db.close()
+
+
+def _dispatch_failing(session_factory, delivery_id, monkeypatch, *, on_post=None):
+    import httpx
+
+    def failing_post(*a, **k):
+        if on_post:
+            on_post()
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(wd.httpx, "post", failing_post)
+    monkeypatch.setattr(wd, "assert_deliverable", lambda url: None)
+    db = session_factory()
+    try:
+        return wd.dispatch(db, delivery_id)
+    finally:
+        db.close()
+
+
+def test_ac_43_12_control_the_last_failing_attempt_auto_disables_at_the_threshold(
+    client, session_factory, monkeypatch
+):
+    r = _rig(client, session_factory)
+    ep, d = _failing_endpoint(client, session_factory, r)
+
+    assert _dispatch_failing(session_factory, d, monkeypatch) == "dead"
+
+    assert _state(session_factory, ep)["status"] == "AUTO_DISABLED"
+
+
+def test_ac_43_12_the_last_failing_attempt_does_not_turn_a_staff_pause_into_an_auto_disable(
+    client, session_factory, monkeypatch
+):
+    r = _rig(client, session_factory)
+    k2, hdr2 = _key(client, r["ws"], "Second key")
+    ep, d = _failing_endpoint(client, session_factory, r)
+
+    _dispatch_failing(
+        session_factory, d, monkeypatch, on_post=lambda: _staff_pause_in_another_session(session_factory, ep)
+    )
+
+    state = _state(session_factory, ep)
+    assert state["status"] == "DISABLED" and state["reason"] == STAFF_REASON, state
+    res = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "endpoint_paused_by_staff"
+
+
+def test_ac_43_08_a_key_disable_with_the_key_revoked_under_way_answers_401_and_changes_nothing(
+    client, session_factory, monkeypatch
+):
+    from modules.omnichannel.routers import api_v1
+
+    r = _rig(client, session_factory)
+    real_own = api_v1._own_endpoint
+
+    def seam(db, api_ws, endpoint_id):
+        _revoke_on_another_session(session_factory, r["ws"], r["key"])
+        return real_own(db, api_ws, endpoint_id)
+
+    monkeypatch.setattr(api_v1, "_own_endpoint", seam)
+    # A staff-made row, so that the revoke itself leaves it alone.
+    other = _insert(session_factory, ws=r["ws"], created_by="a-staff-user-id")
+    before = _row_snapshot(session_factory, other)
+
+    res = client.post(f"{BASE}/webhooks/{other}/disable", headers=r["hdr"])
+
+    assert _revoked(session_factory, r["key"]) is True  # control: the revoke ran
+    assert res.status_code == 401, res.text
+    assert _row_snapshot(session_factory, other) == before
+
+
+def test_ac_43_08_a_row_deleted_during_the_url_check_answers_404_in_the_gateway_envelope(
+    client, session_factory, monkeypatch
+):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from modules.omnichannel.services import webhook_service as ws_mod
+    from modules.omnichannel.services.webhook_service import WebhookService
+
+    r = _rig(client, session_factory)
+    ep = _register_as(client, r["hdr"])
+    real = ws_mod.validate_callback_url
+
+    def check_then_delete(url, **kw):
+        clean = real(url, **kw)
+        other = session_factory()
+        try:
+            WebhookService(other).delete(DEFAULT_TENANT_ID, ep)
+        finally:
+            other.close()
+        return clean
+
+    monkeypatch.setattr(ws_mod, "validate_callback_url", check_then_delete)
+
+    with TestClient(app, raise_server_exceptions=False) as quiet:
+        res = quiet.patch(f"{BASE}/webhooks/{ep}", headers=r["hdr"], json={"url": NEW_HOOK})
+
+    assert res.status_code == 404, res.text
+    assert res.json()["error"]["code"] == "not_found", res.text
+
+
+def test_ac_43_09_enabling_an_active_row_with_failures_changes_nothing(client, session_factory):
+    r = _rig(client, session_factory)
+    ws, k1 = r["ws"], r["key"]
+    k2, hdr2 = _key(client, ws, "Second key")
+    ep = _insert(session_factory, ws=ws, created_by=_by(k1), failures=3)
+
+    res = client.post(f"{BASE}/webhooks/{ep}/enable", headers=hdr2)
+
+    assert res.status_code == 200, res.text
+    assert _state(session_factory, ep)["failures"] == 3
+    assert _created_by(session_factory, ep) == _by(k1)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"name": "  direct  "},
+        {"url": f"  {HOOK}  "},
+        {"url": HOOK},
+        {"events": ["message.inbound", "message.inbound", "message.outbound"]},
+        {"events": ["message.outbound", "message.inbound"]},
+    ],
+    ids=["padded_name", "padded_url", "same_url", "duplicate_events", "events_in_another_order"],
+)
+def test_ac_43_09_a_patch_with_the_same_values_moves_nothing(client, session_factory, body):
+    r = _rig(client, session_factory)
+    ws, k1 = r["ws"], r["key"]
+    k2, hdr2 = _key(client, ws, "Second key")
+    ep = _insert(session_factory, ws=ws, created_by=_by(k1), events=("message.inbound", "message.outbound"))
+    before = _row_snapshot(session_factory, ep)
+
+    res = client.patch(f"{BASE}/webhooks/{ep}", headers=hdr2, json=body)
+
+    assert res.status_code == 200, res.text
+    assert _created_by(session_factory, ep) == _by(k1)
+    assert _row_snapshot(session_factory, ep) == before
