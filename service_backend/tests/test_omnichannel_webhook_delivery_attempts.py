@@ -309,15 +309,19 @@ def test_other_send_error_is_a_failed_attempt_without_echo(session_factory, monk
     eid = _stored_endpoint(session_factory, "pn-err-1", "https://consumer.example/hook")
     did = _stored_delivery(session_factory, eid, "evt-err-1")
 
-    def boom(*_a, **_k):
+    reached = []
+
+    def boom(url, *, content, headers, timeout):
+        reached.append(url)
         raise make_error()
 
-    monkeypatch.setattr(wd.httpx, "post", boom)
+    monkeypatch.setattr(wd, "_post", boom)
     before = _now()
 
     db = session_factory()
     try:
         outcome = wd.dispatch(db, did)  # must not raise
+        assert reached, "the stubbed send was reached"
         row = db.query(WebhookDelivery).filter(WebhookDelivery.id == did).one()
         db.refresh(row)
         assert outcome == "retry"
@@ -566,14 +570,18 @@ def test_soft_time_limit_in_a_send_is_a_failed_attempt_and_the_run_ends(
     first = _stored_delivery(session_factory, ep, "evt-bud3-0", minutes_ago=30)
     second = _stored_delivery(session_factory, ep, "evt-bud3-1", minutes_ago=20)
 
-    def limit_hit(*_a, **_k):
+    reached = []
+
+    def limit_hit(url, *, content, headers, timeout):
+        reached.append(url)
         fake_clock["offset"] += _budget() + 1
         raise SoftTimeLimitExceeded(MARKER)
 
-    monkeypatch.setattr(wd.httpx, "post", limit_hit)
+    monkeypatch.setattr(wd, "_post", limit_hit)
     db = session_factory()
     try:
         wd.run_due_deliveries(db)
+        assert reached, "the stubbed send was reached"
         a = db.query(WebhookDelivery).filter(WebhookDelivery.id == first).one()
         b = db.query(WebhookDelivery).filter(WebhookDelivery.id == second).one()
         db.refresh(a)
