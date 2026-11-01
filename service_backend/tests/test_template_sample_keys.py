@@ -30,6 +30,8 @@ REFUSED = [
     "omni/templates/{cid}/%2e%2e/x",
     "conn:",
     "conn:x",
+    "conn:omni/templates/{cid}/sample.png",
+    "conn::omni/templates/{cid}/sample.png",
     "CONN:{plat}:omni/templates/{cid}/a.png",
 ]
 
