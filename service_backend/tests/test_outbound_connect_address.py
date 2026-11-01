@@ -126,6 +126,11 @@ def tls_material(tmp_path_factory):
 
 
 # ── The rig: listeners, scripted resolver, spies ──────────────────────────────
+def _as_text(value):
+    """Some library versions hand the server name over as bytes; record it as text."""
+    return value.decode("ascii") if isinstance(value, bytes) else value
+
+
 class Rig:
     def __init__(self, tls_material, monkeypatch):
         self._tls = tls_material
@@ -291,12 +296,12 @@ class Rig:
 
         def spy_wrap_socket(self_ctx, sock, *args, **kwargs):
             if not kwargs.get("server_side", False) and not (args and args[0]):
-                rig.tls_hostnames.append(kwargs.get("server_hostname"))
+                rig.tls_hostnames.append(_as_text(kwargs.get("server_hostname")))
             return real_wrap_socket(self_ctx, sock, *args, **kwargs)
 
         def spy_wrap_bio(self_ctx, incoming, outgoing, *args, **kwargs):
             if not kwargs.get("server_side", False) and not (args and args[0]):
-                rig.tls_hostnames.append(kwargs.get("server_hostname"))
+                rig.tls_hostnames.append(_as_text(kwargs.get("server_hostname")))
             return real_wrap_bio(self_ctx, incoming, outgoing, *args, **kwargs)
 
         mp.setattr(ssl.SSLContext, "wrap_socket", spy_wrap_socket)
@@ -342,6 +347,19 @@ class Rig:
         self.settle((addr,) if only else (ALLOWED_ADDR, BLOCKED_ADDR))
         with self.cond:
             return len([p for p in self.accepted[addr] if (addr, p) not in self.sentinels])
+
+    def refuse_first(self):
+        """Make the first listener (127.0.0.1) really refuse: shut it down, close it
+        and wait for its accept thread to end, so no later connect is still accepted
+        by a thread blocked inside accept() (that happens on Linux)."""
+        sock = self._socks[0]
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        sock.close()
+        self.threads[0].join(5)
+        assert not self.threads[0].is_alive(), "the first listener's accept thread did not stop"
 
     def close(self):
         self.stop.set()
@@ -814,7 +832,14 @@ def test_an_answer_with_a_blocked_address_among_allowed_ones_connects_to_none(gu
 def test_the_next_allowed_address_is_tried_when_the_first_refuses(rig, env, path):
     rig.block_by_address()
     env.monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)  # both loopbacks allowed
-    rig._socks[0].close()  # nothing listens on 127.0.0.1 now: that connection is refused
+    rig.refuse_first()  # nothing listens on 127.0.0.1 now: that connection is refused
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(2)
+    try:
+        with pytest.raises(ConnectionRefusedError):
+            probe.connect((ALLOWED_ADDR, rig.port))
+    finally:
+        probe.close()
     rig.script(NAME, ["two_loopback"])
     PATHS[path][0](env, rig.base())
     assert rig.count(BLOCKED_ADDR, only=True) >= 1, f"{path}: never reached the second address"
