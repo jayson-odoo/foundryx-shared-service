@@ -33,15 +33,29 @@ REFUSED = [
     "CONN:{plat}:omni/templates/{cid}/a.png",
 ]
 
+SMALL = ["documents/x", "omni/templates/{other}/" + TAIL, "omni/templates/{cid}/../../documents/x"]
+CASES = [("IMAGE", k) for k in REFUSED] + [(f, k) for f in ("VIDEO", "DOCUMENT") for k in SMALL]
+
+
+def _field_error(res):
+    """The builder reads detail.fieldErrors.<field> as text."""
+    detail = res.json()["detail"]
+    assert isinstance(detail, dict), detail
+    assert isinstance(detail["fieldErrors"]["header"], str) and detail["fieldErrors"]["header"]
+
 
 class SpyAdapter:
     def __init__(self):
         self.uploads = []
         self.created = []
+        self.edits = []
 
     def upload_resumable(self, creds, app_id, data, mime):
         self.uploads.append(data)
         return "handle-1"
+
+    def edit_template(self, creds, meta_id, payload):
+        self.edits.append((meta_id, payload))
 
     def create_template(self, creds, waba_id, payload):
         self.created.append(payload)
@@ -77,8 +91,8 @@ def _live(monkeypatch, session_factory, cid):
     db.close()
 
 
-def _doc(name, key=None):
-    header = {"format": "IMAGE"}
+def _doc(name, key=None, fmt="IMAGE"):
+    header = {"format": fmt}
     if key is not None:
         header["sampleKey"] = key
     return {**_DRAFT, "name": name, "header": header}
@@ -109,26 +123,28 @@ def ctx(client):
 
 
 # ── 1. create / update ──────────────────────────────────────────────────────
-@pytest.mark.parametrize("tpl", REFUSED)
-def test_create_refuses_foreign_sample_key(client, ctx, backend, tpl):
+@pytest.mark.parametrize("fmt,tpl", CASES)
+def test_create_refuses_foreign_sample_key(client, ctx, backend, fmt, tpl):
     h, cid, base = ctx
     good = _upload(client, h, cid)
     assert (good.startswith("conn:")) == (backend["mode"] == "bucket")
-    assert client.post(base, headers=h, json=_doc("good_one", good)).status_code == 201
+    assert client.post(base, headers=h, json=_doc("good_one", good, fmt)).status_code == 201
     before = _total(client, h, cid)
-    res = client.post(base, headers=h, json=_doc("bad_one", _bad(tpl, cid, backend["plat"])))
+    res = client.post(base, headers=h, json=_doc("bad_one", _bad(tpl, cid, backend["plat"]), fmt))
     assert res.status_code == 422, res.text
+    _field_error(res)
     assert _total(client, h, cid) == before
 
 
-@pytest.mark.parametrize("tpl", REFUSED)
-def test_update_refuses_foreign_sample_key(client, ctx, session_factory, backend, tpl):
+@pytest.mark.parametrize("fmt,tpl", CASES)
+def test_update_refuses_foreign_sample_key(client, ctx, session_factory, backend, fmt, tpl):
     h, cid, base = ctx
     good = _upload(client, h, cid)
-    tid = client.post(base, headers=h, json=_doc("good_one", good)).json()["id"]
-    assert client.patch(f"{base}/{tid}", headers=h, json=_doc("good_one", good)).status_code == 200
-    res = client.patch(f"{base}/{tid}", headers=h, json=_doc("good_one", _bad(tpl, cid, backend["plat"])))
+    tid = client.post(base, headers=h, json=_doc("good_one", good, fmt)).json()["id"]
+    assert client.patch(f"{base}/{tid}", headers=h, json=_doc("good_one", good, fmt)).status_code == 200
+    res = client.patch(f"{base}/{tid}", headers=h, json=_doc("good_one", _bad(tpl, cid, backend["plat"]), fmt))
     assert res.status_code == 422, res.text
+    _field_error(res)
     db = session_factory()
     assert db.get(WhatsappTemplate, tid).media_sample_key == good
     db.close()
@@ -140,8 +156,8 @@ def test_create_without_sample_key_works(client, ctx, backend):
 
 
 # ── 2. submit ───────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("tpl", REFUSED)
-def test_submit_refuses_foreign_sample_key(client, ctx, session_factory, local_media, backend, spy, monkeypatch, tpl):
+@pytest.mark.parametrize("fmt,tpl", CASES)
+def test_submit_refuses_foreign_sample_key(client, ctx, session_factory, local_media, backend, spy, monkeypatch, fmt, tpl):
     h, cid, base = ctx
     _live(monkeypatch, session_factory, cid)
     (local_media / "documents").mkdir(exist_ok=True)
@@ -149,18 +165,20 @@ def test_submit_refuses_foreign_sample_key(client, ctx, session_factory, local_m
 
     # control on the same backend: a key the route wrote goes through
     good = _upload(client, h, cid)
-    gid = client.post(base, headers=h, json=_doc("good_one", good)).json()["id"]
+    gid = client.post(base, headers=h, json=_doc("good_one", good, fmt)).json()["id"]
     assert client.post(f"{base}/{gid}/submit", headers=h).status_code == 200
     assert spy.uploads == [PNG if backend["mode"] == "local" else b""]
     assert len(spy.created) == 1
 
-    tid = client.post(base, headers=h, json=_doc("bad_one")).json()["id"]
+    tid = client.post(base, headers=h, json=_doc("bad_one", fmt=fmt)).json()["id"]
     db = session_factory()
     db.get(WhatsappTemplate, tid).media_sample_key = _bad(tpl, cid, backend["plat"])
     db.commit()
     db.close()
     res = client.post(f"{base}/{tid}/submit", headers=h)
     assert res.status_code == 422, res.text
+    # submit errors reach the builder as a toast of the plain-text detail
+    assert isinstance(res.json()["detail"], str) and res.json()["detail"]
     assert MARKER not in spy.uploads
     assert len(spy.uploads) == 1
     assert len(spy.created) == 1
@@ -206,6 +224,13 @@ def test_key_with_migrated_connection_id_is_accepted(client, ctx, local_media, s
         assert res.status_code == 201, res.text
 
 
+@pytest.mark.parametrize("fmt", ["VIDEO", "DOCUMENT"])
+def test_route_key_accepted_for_other_media_formats(client, ctx, fmt):
+    h, cid, base = ctx
+    key = _upload(client, h, cid)
+    assert client.post(base, headers=h, json=_doc("fmt_flow", key, fmt)).status_code == 201
+
+
 def test_dev_mode_submit_behaves_as_before(client, ctx, local_media, spy):
     h, cid, base = ctx
     assert not settings.meta_app_id
@@ -237,3 +262,145 @@ def test_other_tenant_cannot_reach_this_channel(client, ctx, session_factory, lo
     assert client.post(base, headers=h2, json=_doc("theirs", key)).status_code == 404
     assert client.post(f"{base}/{tid}/submit", headers=h2).status_code == 404
     assert spy.created == []
+
+
+# ── provider handles stored by sync ─────────────────────────────────────────
+HANDLE = "https://provider.example/handle"
+
+
+def _seed(session_factory, cid, handle, status, meta_id):
+    db = session_factory()
+    row = WhatsappTemplate(
+        tenant_id=DEFAULT_TENANT_ID, channel_id=cid, name="synced_one", language="en_US",
+        category="UTILITY", status=status, meta_template_id=meta_id,
+        components_json=[
+            {"type": "HEADER", "format": "IMAGE", "example": {"header_handle": [handle]}},
+            {"type": "BODY", "text": "Order {{1}} is ready.", "example": {"body_text": [["A1"]]}},
+        ],
+    )
+    db.add(row)
+    db.commit()
+    rid = row.id
+    db.close()
+    return rid
+
+
+def _row_state(session_factory, rid):
+    db = session_factory()
+    r = db.get(WhatsappTemplate, rid)
+    out = (r.media_sample_key, r.components_json, r.status)
+    db.close()
+    return out
+
+
+@pytest.fixture
+def storage_touched(monkeypatch):
+    from app.services.storage import TenantStorage
+
+    calls = []
+    real_resolve, real_save = TenantStorage.resolve, TenantStorage.save
+    monkeypatch.setattr(TenantStorage, "resolve", lambda self, k: (calls.append(k), real_resolve(self, k))[1])
+    monkeypatch.setattr(TenantStorage, "save", lambda self, *a: (calls.append(a), real_save(self, *a))[1])
+    return calls
+
+
+def _same_doc(client, h, base, rid):
+    return client.get(f"{base}/manage/{rid}", headers=h).json()["doc"]
+
+
+def test_unchanged_handle_edit_keeps_it_without_provider_call(client, ctx, session_factory, spy, storage_touched, monkeypatch):
+    h, cid, base = ctx
+    _live(monkeypatch, session_factory, cid)
+    rid = _seed(session_factory, cid, HANDLE, "APPROVED", None)
+    res = client.patch(f"{base}/{rid}", headers=h, json=_same_doc(client, h, base, rid))
+    assert res.status_code == 200, res.text
+    key, comps, _ = _row_state(session_factory, rid)
+    assert key is None
+    assert comps[0]["example"]["header_handle"] == [HANDLE]
+    assert storage_touched == [] and spy.uploads == [] and spy.edits == []
+
+
+def test_unchanged_handle_edit_sends_same_handle_to_provider(client, ctx, session_factory, spy, storage_touched, monkeypatch):
+    h, cid, base = ctx
+    _live(monkeypatch, session_factory, cid)
+    rid = _seed(session_factory, cid, HANDLE, "APPROVED", "meta-9")
+    res = client.patch(f"{base}/{rid}", headers=h, json=_same_doc(client, h, base, rid))
+    assert res.status_code == 200, res.text
+    assert _row_state(session_factory, rid)[0] is None
+    assert storage_touched == [] and spy.uploads == []
+    assert len(spy.edits) == 1
+    meta_id, payload = spy.edits[0]
+    assert meta_id == "meta-9"
+    header = next(c for c in payload["components"] if c["type"] == "HEADER")
+    assert header["example"]["header_handle"] == [HANDLE]
+
+
+def test_unchanged_old_style_handle_never_reads_its_file(client, ctx, session_factory, local_media, spy, monkeypatch):
+    h, cid, base = ctx
+    _live(monkeypatch, session_factory, cid)
+    (local_media / "documents").mkdir(exist_ok=True)
+    (local_media / "documents" / "x").write_bytes(MARKER)
+    rid = _seed(session_factory, cid, "documents/x", "APPROVED", "meta-9")
+    res = client.patch(f"{base}/{rid}", headers=h, json=_same_doc(client, h, base, rid))
+    assert res.status_code == 200, res.text
+    assert MARKER not in spy.uploads
+    assert all(MARKER not in str(e) for e in spy.edits)
+
+
+@pytest.mark.parametrize("new_value", ["https://provider.example/other", "documents/x"])
+def test_changed_handle_is_refused_and_row_unchanged(client, ctx, session_factory, spy, monkeypatch, new_value):
+    h, cid, base = ctx
+    _live(monkeypatch, session_factory, cid)
+    rid = _seed(session_factory, cid, HANDLE, "APPROVED", "meta-9")
+    before = _row_state(session_factory, rid)
+    doc = _same_doc(client, h, base, rid)
+    before = _row_state(session_factory, rid)
+    doc["header"]["sampleKey"] = new_value
+    res = client.patch(f"{base}/{rid}", headers=h, json=doc)
+    assert res.status_code == 422, res.text
+    _field_error(res)
+    assert _row_state(session_factory, rid) == before
+
+
+# ── upload route needs this tenant's channel ────────────────────────────────
+def _png_post(client, h, cid):
+    return client.post(
+        f"/omnichannel/channels/{cid}/templates/upload-sample", headers=h,
+        files={"file": ("a.png", PNG, "image/png")},
+    )
+
+
+def test_upload_for_other_tenants_channel_is_404_and_stores_nothing(client, ctx, session_factory, local_media, storage_touched):
+    from app.services.app_store_service import AppStoreService
+    from app.services.tenant_service import TenantService
+
+    h, cid, base = ctx
+    db = session_factory()
+    other = TenantService(db).provision(
+        name="Other", slug="otherco-up", admin_email="other-up@example.com",
+        admin_password="Password123!", admin_name="O",
+    )
+    db.flush()
+    AppStoreService(db).install(other.id, "omnichannel")
+    db.commit()
+    db.close()
+    assert _png_post(client, h, cid).status_code == 200  # control: owner succeeds
+    storage_touched.clear()
+    files_before = sorted(p for p in local_media.rglob("*") if p.is_file())
+    h2 = _auth(client, email="other-up@example.com", password="Password123!", tenant_slug="otherco-up")
+    assert _png_post(client, h2, cid).status_code == 404
+    assert storage_touched == []
+    assert sorted(p for p in local_media.rglob("*") if p.is_file()) == files_before
+
+
+def test_upload_for_missing_channel_is_404(client, ctx, local_media):
+    h, cid, base = ctx
+    assert _png_post(client, h, cid).status_code == 200
+    assert _png_post(client, h, "no-such-channel").status_code == 404
+
+
+def test_upload_for_own_channel_gives_key_create_accepts(client, ctx, local_media):
+    h, cid, base = ctx
+    res = _png_post(client, h, cid)
+    assert res.status_code == 200
+    assert client.post(base, headers=h, json=_doc("own_up", res.json()["sampleKey"])).status_code == 201
