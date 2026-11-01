@@ -4,6 +4,7 @@
 the transaction; these touch the storage backend and read the connection row
 behind a `conn:` key to check its owner and type.
 """
+import logging
 import mimetypes
 import os
 from typing import Any, Dict
@@ -14,6 +15,8 @@ from app.models.tenant import PLATFORM_TENANT_ID
 from app.repositories.connection_repository import ConnectionRepository
 from app.services.storage import _KEY_PREFIX, storage_for_tenant
 from app.workflow_engine.context import render_field
+
+logger = logging.getLogger(__name__)
 
 
 class ActionError(Exception):
@@ -102,5 +105,6 @@ def storage_delete(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dic
     try:
         storage_for_tenant(db, tenant_id).delete(key)
     except OSError:
+        logger.warning("Workflow storage delete failed", exc_info=True)
         raise ActionError("The stored file could not be deleted.") from None
     return {"deleted": True}
