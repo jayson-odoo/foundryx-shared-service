@@ -179,7 +179,7 @@ class WebhookService:
         # Serialise registrations on this channel so the count below stays true.
         self.db.query(Channel).filter(
             Channel.id == channel.id, Channel.tenant_id == tenant_id
-        ).with_for_update().first()
+        ).with_for_update(key_share=True).first()  # key_share: do not wait on child-row inserts
         existing = (
             self.db.query(WebhookEndpoint)
             .filter(
@@ -200,7 +200,7 @@ class WebhookService:
 
     def require_active_channel(self, tenant_id: str, workspace_id: str) -> None:
         """Public registration needs one active channel (``is_active`` and not
-        trashed), so staff can always see the row on a channel's tab."""
+        trashed), so the endpoint shows on that channel's tab when it is registered."""
         found = (
             self.db.query(Channel.id)
             .filter(
@@ -231,7 +231,7 @@ class WebhookService:
         # Serialise registrations in this workspace so the count below stays true.
         self.db.query(Workspace).filter(
             Workspace.id == workspace_id, Workspace.tenant_id == tenant_id
-        ).with_for_update().first()
+        ).with_for_update(key_share=True).first()  # key_share: do not wait on child-row inserts
         existing = (
             self.db.query(WebhookEndpoint)
             .filter(

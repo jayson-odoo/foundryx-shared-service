@@ -1125,9 +1125,8 @@ class PublicGatewayService:
         to: str,
         channel: Optional[Channel] = None,
     ) -> str:
-        # `channel` is None only for the legacy `send_multipart` call path
-        # that predates the explicit selector (plan 32 / A7a S6) - resolve
-        # the same implicit channel there (refused when it would be a guess).
+        # Callers pass the resolved channel; `None` resolves the implicit one
+        # (refused when it would be a guess).
         channel = channel or self._workspace_channel(tenant_id, workspace_id)
         contact = self._resolve_send_target(tenant_id, workspace_id, channel, to)
         self._assert_channel_identity(tenant_id, channel, contact)

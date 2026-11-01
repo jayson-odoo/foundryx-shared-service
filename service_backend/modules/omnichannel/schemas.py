@@ -1477,7 +1477,7 @@ class PublicChannelItem(ApiModel):
     name: str
     status: str  # ACTIVE | PENDING | INACTIVE | ERROR
     isActive: bool
-    isDefault: bool  # the channel `POST /messages` uses when `channelId` is omitted
+    isDefault: bool  # false on every channel when the default would be a guess or none is active
     displayPhoneNumber: Optional[str] = None
     verifiedName: Optional[str] = None
     createdAt: datetime
