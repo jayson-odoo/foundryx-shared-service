@@ -169,7 +169,12 @@ class UnresolvableKey(Exception):
 
 class StorageReadError(Exception):
     """A stored object could not be read. The message is fixed and carries no
-    address or content; the underlying cause is chained."""
+    address or content; the underlying cause is chained. ``status`` is the HTTP
+    status when the server answered with a non-2xx one."""
+
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
 
 
 _READ_FAILED = "The stored file could not be read."
@@ -211,7 +216,7 @@ def read_url(
         ) as client:
             with client.stream("GET", url, headers=headers) as resp:
                 if not 200 <= resp.status_code < 300:
-                    raise StorageReadError(_READ_FAILED)
+                    raise StorageReadError(_READ_FAILED, status=resp.status_code)
                 declared = resp.headers.get("content-length", "")
                 if max_bytes is not None and declared.isdigit() and int(declared) > max_bytes:
                     raise StorageReadError(_READ_FAILED)

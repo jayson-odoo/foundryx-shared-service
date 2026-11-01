@@ -39,23 +39,26 @@ SANDBOX_CHANNEL_ERROR = (
 
 def _read_media(db: Session, tenant_id: str, media_key: str) -> bytes:
     """Read a stored media blob back by key (local path or remote URL)."""
-    from app.services.storage import storage_for_tenant
+    from app.services.storage import (
+        StorageReadError,
+        UnresolvableKey,
+        read_object,
+        storage_for_tenant,
+    )
 
-    kind, value = storage_for_tenant(db, tenant_id).resolve(media_key)
-    if kind == "path":
-        try:
-            with open(value, "rb") as fh:
-                return fh.read()
-        except OSError:
-            raise OSError("Stored media could not be read") from None
     # Errors carry the status only: the address is never part of the text.
     try:
-        resp = httpx.get(value, timeout=15.0)
-    except httpx.HTTPError as exc:
-        raise OSError(f"Media read failed ({type(exc).__name__})") from None
-    if not resp.is_success:
-        raise OSError(f"Media read failed with status {resp.status_code}") from None
-    return resp.content
+        return read_object(storage_for_tenant(db, tenant_id), media_key, timeout=15.0)
+    except StorageReadError as exc:
+        if isinstance(exc.__cause__, UnresolvableKey):
+            raise exc.__cause__ from None
+        if exc.status is not None:
+            raise OSError(f"Media read failed with status {exc.status}") from None
+        if isinstance(exc.__cause__, httpx.HTTPError):
+            raise OSError(f"Media read failed ({type(exc.__cause__).__name__})") from None
+        raise OSError("Stored media could not be read") from None
+    except OSError:
+        raise OSError("Stored media could not be read") from None
 
 
 def _emit_status_webhook(
