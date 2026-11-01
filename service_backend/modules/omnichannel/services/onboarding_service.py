@@ -203,7 +203,7 @@ class OnboardingService:
                 pass
 
         try:
-            expires = adapter.token_expiry(payload.accessToken)
+            expires = (adapter.token_details(payload.accessToken) or {}).get("expires_at")
         except Exception:  # noqa: BLE001 - an unreadable expiry never blocks a connect
             expires = None
         item = ChannelService(self.db)._items([channel], tenant_id)[0]

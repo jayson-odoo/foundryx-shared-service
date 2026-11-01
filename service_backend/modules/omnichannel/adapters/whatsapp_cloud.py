@@ -178,47 +178,68 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
 
     def check_token(self, credentials: Dict[str, Any], phone_number_id: str) -> str:
         """Classify a stored token (plan 42): ``ok`` | ``dead`` | ``unknown``.
-        Only Meta ``error.code`` 190 is dead; a 5xx, a transport failure, a rate
-        limit or a permission code is unknown. Reads the number with the token,
-        never the profile."""
-        if not self._configured or credentials.get("dev"):
+        ``ok`` only when Meta answers 200 with the number's own id; ``dead`` only
+        for Meta ``error.code`` 190 (read from the body on any status); anything
+        else, including a 5xx, a transport failure, a rate limit or a permission
+        code, is ``unknown``. Only dev credentials skip the call."""
+        if credentials.get("dev"):
             return "ok"
         client = self._http()
         try:
             resp = client.get(
                 f"{self._base}/{phone_number_id}",
+                params={"fields": "id"},
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
-            if resp.status_code == 200:
-                return "ok"
-            return "dead" if meta_error_code(resp) == "190" else "unknown"
+            if meta_error_code(resp) == "190":
+                return "dead"
+            if resp.status_code != 200:
+                return "unknown"
+            try:
+                body_id = (resp.json() or {}).get("id")
+            except (ValueError, AttributeError):
+                return "unknown"
+            return "ok" if body_id and str(body_id) == str(phone_number_id) else "unknown"
         except httpx.HTTPError:
             return "unknown"
         finally:
             if self._client is None:
                 client.close()
 
-    def token_expiry(self, token: str) -> Optional[datetime]:
-        """When the token stops working, from ``debug_token``; None when it never
-        expires or the answer cannot be read. Never raises."""
+    def token_details(self, token: str) -> Optional[Dict[str, Any]]:
+        """What Meta's ``debug_token`` says about a token (plan 42):
+        ``{"expires_at", "scopes", "app_id"}``, each None when absent
+        (``expires_at`` 0 means it never expires), or None when the answer cannot
+        be read. The app token rides the Authorization header; ``input_token``
+        has to stay in the query. Never raises."""
         if not self._configured or not token:
             return None
         client = self._http()
         try:
             resp = client.get(
                 f"{self._base}/debug_token",
-                params={
-                    "input_token": token,
-                    "access_token": f"{settings.meta_app_id}|{settings.meta_app_secret}",
-                },
+                params={"input_token": token},
+                headers={"Authorization": f"Bearer {settings.meta_app_id}|{settings.meta_app_secret}"},
             )
             if resp.status_code != 200:
                 return None
-            raw = ((resp.json() or {}).get("data") or {}).get("expires_at")
-            if not isinstance(raw, (int, float)) or raw <= 0:
+            data = (resp.json() or {}).get("data")
+            if not isinstance(data, dict):
                 return None
-            return datetime.fromtimestamp(raw, tz=timezone.utc)
-        except (httpx.HTTPError, ValueError, OverflowError, OSError):
+            raw = data.get("expires_at")
+            expires_at = (
+                datetime.fromtimestamp(raw, tz=timezone.utc)
+                if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0
+                else None
+            )
+            scopes = data.get("scopes")
+            app_id = data.get("app_id")
+            return {
+                "expires_at": expires_at,
+                "scopes": scopes if isinstance(scopes, list) else None,
+                "app_id": str(app_id) if app_id else None,
+            }
+        except (httpx.HTTPError, ValueError, OverflowError, OSError, AttributeError):
             return None
         finally:
             if self._client is None:

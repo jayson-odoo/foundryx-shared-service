@@ -13,6 +13,7 @@ from app.database import get_db
 from app.dependencies import require_permission
 from app.models.user import User
 from app.schemas.filters import FilterGroup
+from app.services.throttle import Throttled
 from app.services.filter_translator import FilterError
 from ..origins import InvalidOrigin
 from ..schemas import (
@@ -144,10 +145,14 @@ def export_channels(
     current_user: User = Depends(require_permission("channels.read")),
     db: Session = Depends(get_db),
 ) -> str:
-    items, _ = ChannelService(db).list(
-        current_user.tenant_id, page=0, page_size=10_000, search=body.search,
-        sort_by=body.sortBy, sort_dir=body.sortDir or "asc", status_view=body.statusView or "active",
-    )
+    try:
+        items, _ = ChannelService(db).list(
+            current_user.tenant_id, page=0, page_size=10_000, search=body.search,
+            sort_by=body.sortBy, sort_dir=body.sortDir or "asc", status_view=body.statusView or "active",
+            filter_group=body.filter,
+        )
+    except FilterError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid filter.") from exc
     if body.ids:
         keep = set(body.ids)
         items = [c for c in items if c.id in keep]
@@ -218,6 +223,12 @@ def replace_channel_token(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
     except ChannelTypeUnsupported as exc:
         raise _unsupported(exc)
+    except Throttled as exc:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many attempts. Try again shortly.",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
     except TokenRefused:
         # A plain string so the api-client surfaces it as the error message.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, REFUSAL_MESSAGE)

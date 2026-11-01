@@ -1,16 +1,42 @@
 """Channel repository - tenant-scoped channel queries. Pure SQLAlchemy."""
 from typing import List, Optional, Tuple
 
-from sqlalchemy import or_, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.tenant import DEFAULT_TENANT_ID
 from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
 from app.models.tenant import Tenant
+from app.schemas.filters import FilterCondition, FilterGroup
+from app.services.filter_translator import FilterError, translate_filter
 from app.models.permission import Permission
 from app.models.role import Role
 from app.models.user import User
-from ..models import Channel
+from ..models import Channel, Status
+
+# Whitelist of filterable fields (the screen's filter bar sends these names).
+_FILTER_COLUMNS = {
+    "name": Channel.name,
+    "displayPhoneNumber": Channel.display_phone_number,
+    "channelType": Channel.channel_type,
+    "type": Channel.channel_type,
+    "created": Channel.created_at,
+}
+_SCALARS = (str, int, float, bool, type(None))
+
+
+def _check_scalars(group: FilterGroup) -> None:
+    """A condition value is a scalar or a list of scalars; anything else is the
+    existing filter error, never a database error."""
+    for rule in group.rules:
+        if isinstance(rule, FilterGroup):
+            _check_scalars(rule)
+            continue
+        value = rule.value
+        values = value if isinstance(value, list) else [value]
+        if not all(isinstance(v, _SCALARS) for v in values):
+            raise FilterError(f"invalid value for {rule.field}")
+
 
 _SORT = {
     "name": Channel.name,
@@ -33,7 +59,7 @@ class ChannelRepository:
         sort_by: Optional[str] = None,
         sort_dir: str = "asc",
         trashed: bool = False,
-        filter_clause=None,
+        filter_group: Optional[FilterGroup] = None,
     ) -> Tuple[List[Channel], int]:
         q = self.db.query(Channel).filter(
             Channel.tenant_id == tenant_id, Channel.is_trashed.is_(trashed)
@@ -41,13 +67,37 @@ class ChannelRepository:
         if search and search.strip():
             term = f"%{search.strip()}%"
             q = q.filter(or_(Channel.name.ilike(term), Channel.display_phone_number.ilike(term)))
-        if filter_clause is not None:
-            q = q.filter(filter_clause)
+        clause = self._filter_clause(filter_group, tenant_id)
+        if clause is not None:
+            q = q.filter(clause)
         total = q.count()
         col = _SORT.get(sort_by or "", Channel.created_at)
         q = q.order_by(col.desc() if sort_dir == "desc" else col.asc(), Channel.id.asc())
         rows = q.offset(page * page_size).limit(page_size).all()
         return rows, total
+
+    @staticmethod
+    def _filter_clause(group: Optional[FilterGroup], tenant_id: str):
+        """List filter over the whitelisted columns; ``status`` compares the
+        tenant's own CHANNEL status keys."""
+        if group is None:
+            return None
+        _check_scalars(group)
+
+        def status_clause(cond: FilterCondition):
+            if cond.field != "status":
+                return None
+            values = cond.value if isinstance(cond.value, list) else [cond.value]
+            ids = select(Status.id).where(
+                Status.tenant_id == tenant_id, Status.scope == "CHANNEL", Status.key.in_(values)
+            )
+            if cond.operator in ("eq", "in"):
+                return Channel.status_id.in_(ids)
+            if cond.operator in ("neq", "nin"):
+                return or_(Channel.status_id.is_(None), Channel.status_id.notin_(ids))
+            raise FilterError(f"unknown operator: {cond.operator}")
+
+        return translate_filter(group, _FILTER_COLUMNS, status_clause)
 
     def all_scoped(self, tenant_id: str, *, trashed: bool = False) -> List[Channel]:
         return (

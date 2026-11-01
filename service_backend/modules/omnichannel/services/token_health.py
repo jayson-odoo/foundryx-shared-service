@@ -18,7 +18,9 @@ from typing import Optional
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.tenant import DEFAULT_TENANT_ID
+from app.services.throttle import ThrottleService
 from app.services.email_service import OutboxEmailService
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel
@@ -171,6 +173,9 @@ def _notify_dead(db: Session, channel: Channel) -> None:
 
 
 # ── replace ──────────────────────────────────────────────────────────────────
+MESSAGING_SCOPE = "whatsapp_business_messaging"
+
+
 def replace_token(
     db: Session, channel_id: str, access_token: str, tenant_id: str = DEFAULT_TENANT_ID
 ) -> ReplaceTokenResult:
@@ -181,13 +186,19 @@ def replace_token(
     assert_whatsapp(channel)
 
     token = (access_token or "").strip()
-    if not token:
+    phone_number_id = channel.phone_number_id
+    if not token or not phone_number_id:
         raise TokenRefused()
+
+    # Every attempt counts, refused ones included; checked before any Graph call.
+    throttle = ThrottleService(db)
+    throttle.enforce_channel_token(channel_id=channel_id)  # raises Throttled
+    throttle.record_channel_token(channel_id=channel_id)
+
     creds = _credentials(channel) or {}
     creds.pop("dev", None)
     creds["access_token"] = token
     adapter = get_adapter("WHATSAPP")
-    phone_number_id = channel.phone_number_id or ""
     waba_id = channel.waba_id
     db.rollback()  # no transaction held open across the Meta calls
 
@@ -197,6 +208,16 @@ def replace_token(
         logger.warning("replace token check failed for channel %s", channel_id)
         verdict = "unknown"
     if verdict != "ok":
+        raise TokenRefused()
+
+    # One read of the token's details, before the save.
+    try:
+        details = adapter.token_details(token)
+    except Exception:  # noqa: BLE001
+        details = None
+    details = details or {}
+    scopes = details.get("scopes")
+    if scopes is not None and MESSAGING_SCOPE not in scopes:
         raise TokenRefused()
 
     statuses.ensure_statuses(db, tenant_id)
@@ -210,20 +231,23 @@ def replace_token(
         channel.status_id = statuses.status_id_for(db, tenant_id, "CHANNEL", key)
     db.commit()
 
+    # A token minted under another app cannot renew this app's webhook.
+    token_app = details.get("app_id")
+    own_app = settings.meta_app_id
+    other_app = bool(token_app and own_app and str(token_app) != str(own_app))
     subscribed: Optional[bool] = None
     if waba_id:
-        try:
-            subscribed = bool(adapter.subscribe_app_checked(creds, waba_id))
-        except Exception:  # noqa: BLE001
-            logger.warning("webhook renewal failed for channel %s", channel_id)
+        if other_app:
             subscribed = False
-    expires: Optional[datetime] = None
-    try:
-        expires = adapter.token_expiry(token)
-        if expires is not None and expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-    except Exception:  # noqa: BLE001
-        expires = None
+        else:
+            try:
+                subscribed = bool(adapter.subscribe_app_checked(creds, waba_id))
+            except Exception:  # noqa: BLE001
+                logger.warning("webhook renewal failed for channel %s", channel_id)
+                subscribed = False
+    expires: Optional[datetime] = details.get("expires_at")
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
 
     db.refresh(channel)
     item: ChannelItem = ChannelService(db)._items([channel], tenant_id)[0]

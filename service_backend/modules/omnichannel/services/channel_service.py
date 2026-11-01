@@ -3,31 +3,22 @@ Test Connection call via the channel adapter."""
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.tenant import DEFAULT_TENANT_ID
-from app.schemas.filters import FilterCondition, FilterGroup
-from app.services.filter_translator import FilterError, translate_filter
+from app.schemas.filters import FilterGroup
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import (
     Channel,
     ContactChannelIdentity,
     ConversationMessage,
     WhatsappTemplate,
-    Status,
     Workspace,
 )
 from ..repositories.channel_repository import ChannelRepository
 from ..schemas import ChannelItem, ChannelUpdate, TestConnectionResult
 from ..security import decrypt_credentials
 from . import statuses
-
-
-_FILTER_COLUMNS = {
-    "type": Channel.channel_type,
-    "created": Channel.created_at,
-}
 
 
 class ChannelNotFound(Exception):
@@ -80,26 +71,6 @@ class ChannelService:
             for c in rows
         ]
 
-    def _filter_clause(self, group: Optional[FilterGroup], tenant_id: str):
-        """The list filter over whitelisted columns; ``status`` compares the
-        tenant's own CHANNEL status keys."""
-
-        def status_clause(cond: FilterCondition):
-            if cond.field != "status":
-                return None
-            values = cond.value if isinstance(cond.value, list) else [cond.value]
-            ids = (
-                select(Status.id)
-                .where(Status.tenant_id == tenant_id, Status.scope == "CHANNEL", Status.key.in_(values))
-            )
-            if cond.operator in ("eq", "in"):
-                return Channel.status_id.in_(ids)
-            if cond.operator in ("neq", "nin"):
-                return or_(Channel.status_id.is_(None), Channel.status_id.notin_(ids))
-            raise FilterError(f"unknown operator: {cond.operator}")
-
-        return translate_filter(group, _FILTER_COLUMNS, status_clause)
-
     # ---- reads ----
     def list(
         self,
@@ -116,7 +87,7 @@ class ChannelService:
         rows, total = self.repo.paginate(
             tenant_id, page=page, page_size=page_size, search=search,
             sort_by=sort_by, sort_dir=sort_dir, trashed=status_view == "trashed",
-            filter_clause=self._filter_clause(filter_group, tenant_id),
+            filter_group=filter_group,
         )
         return self._items(rows, tenant_id), total
 
@@ -134,7 +105,7 @@ class ChannelService:
         rows, total = self.repo.paginate(
             tenant_id, page=0, page_size=10_000, search=search, sort_by=sort_by,
             sort_dir=sort_dir, trashed=status_view == "trashed",
-            filter_clause=self._filter_clause(filter_group, tenant_id),
+            filter_group=filter_group,
         )
         if index < 0 or index >= len(rows):
             return None, total
@@ -184,19 +155,26 @@ class ChannelService:
         return TestConnectionResult(ok=status.ok, message=status.message, checkedAt=now)
 
     def disconnect(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:
+        statuses.ensure_statuses(self.db, tenant_id)
         inactive = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "INACTIVE")
+        error = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ERROR")
         for c in self.repo.get_many(ids, tenant_id):
             c.is_trashed = True
             c.is_active = False
-            c.status_id = inactive
+            # ERROR is the token check's label (plan 42): a disconnect leaves it.
+            if c.status_id != error:
+                c.status_id = inactive
         self.db.commit()
 
     def restore(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:
+        statuses.ensure_statuses(self.db, tenant_id)
         active = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ACTIVE")
+        error = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ERROR")
         for c in self.repo.get_many(ids, tenant_id):
             c.is_trashed = False
             c.is_active = True
-            c.status_id = active
+            if c.status_id != error:
+                c.status_id = active
         self.db.commit()
 
     def remove(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:

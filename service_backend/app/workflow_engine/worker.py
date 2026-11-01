@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 
 from celery import Celery
+from celery.schedules import crontab
 from celery.exceptions import SoftTimeLimitExceeded
 
 from app.config import settings
@@ -110,8 +111,9 @@ celery_app.conf.beat_schedule = {
     # retry tick above (this worker is the sole beat host).
     "broadcasts-due": {"task": "omnichannel.broadcasts_due", "schedule": 60.0},
     # WhatsApp token health scan (plan 42) - queues one check per live channel
-    # onto the omni queue every 6 hours; makes no Meta call itself.
-    "omnichannel-token-health": {"task": "omnichannel.token_checks_due", "schedule": 6 * 3600.0},
+    # onto the omni queue every 6 hours on the wall clock (00, 06, 12, 18: a deploy does not
+    # restart the clock); makes no Meta call itself.
+    "omnichannel-token-health": {"task": "omnichannel.token_checks_due", "schedule": crontab(minute=0, hour="*/6")},
     # Meetings calendar sync (sprint-5 S0) - a new event with a conference link
     # must surface within 60 s, so this is a minute tick like the rest. It only
     # enqueues for tenants that have the module active AND someone opted in.
