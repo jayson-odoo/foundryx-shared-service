@@ -345,8 +345,7 @@ Backend (`service_backend/modules/omnichannel/`):
   `:139` `_http`, `:290` `upload_media`, `:328` `send`, `:365` `_send_impl`, `:699` `fetch_media`,
   `:720` `parse_inbound`, `:875` `test_connection`, `:903` `get_adapter` (WhatsApp only, raises
   otherwise)
-- `routers/webhooks.py:24` `verify_handshake`, `:37` `_signature_valid` (fail-open only in
-  development with no secret), `:54` `receive_webhook` (1MB cap, fast-ACK)
+- `routers/webhooks.py:24` `verify_handshake`, `:37` `_signature_valid`, `:54` `receive_webhook` (1MB cap, fast-ACK)
 - `services/inbound_service.py:28` `_payload_phone_number_id`, `:44` `_STATUS_RANK`, `:53`
   `process_payload`, `:74` `get_adapter(channel.channel_type)`, `:103` `_resolve_channel`, `:121`
   `_handle_message`, `:198` CSW re-open block, `:213` `csw_expires_at = now + CSW_WINDOW`, `:293`

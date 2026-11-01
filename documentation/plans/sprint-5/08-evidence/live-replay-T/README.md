@@ -10,7 +10,7 @@ re-run. Run date 2026-09-12 (UTC). See the Test Execution Report
 (`08-autocount-http-source-test-report.md`) for the full verdicts; this folder holds the
 scripts, screenshots and captured output the report cites.
 
-## AC-08-37 - live replay against `https://hapi.sorento.cc.cd/api/db2` (Mocha), re-run at HEAD `d696daba`
+## AC-08-37 - live replay against `https://autocount-wrapper.example/api/db2` (Mocha), re-run at HEAD `d696daba`
 
 **Fix verified live from the UI first**: on the SAME logging-sink Mocha company
 (`d0b58883-...`, `sinkImpl: logging`, no Sorento code) used throughout this plan's evidence,
@@ -38,7 +38,7 @@ Reproduced independently with raw `curl` (bypassing our app entirely): `.../item
 pageSize=10` returns in 0.1s, but `pageSize=100` and `pageSize=1000` (what our page-walk
 always requests) both hang with NO response for 15-60s straight, three separate times over a
 ~15 minute span. The backend correctly surfaces this as `lastRunErrorCode: "TRANSPORT"`,
-`lastRunError: "https://hapi.sorento.cc.cd/api/db2/itembypage did not respond within 30s."`,
+`lastRunError: "https://autocount-wrapper.example/api/db2/itembypage did not respond within 30s."`,
 Runs tab shows "Last run failed" + the URL (screenshots `d696-product-runs-1280.png` /
 `d696-product-runs-375.png`) - this IS the AC-08-23/38 timeout-handling behaviour working
 correctly on a REAL failure, a useful bonus confirmation, but it means product's own

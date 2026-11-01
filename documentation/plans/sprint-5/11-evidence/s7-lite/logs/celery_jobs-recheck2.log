@@ -118,7 +118,7 @@ WHERE background_jobs.id = %(id_1)s AND background_jobs.status = %(status_1)s FO
 [2026-09-21 23:58:04,337: INFO/ForkPoolWorker-2] [generated in 0.00031s] {'cursor_json': '{"stage": "source"}', 'progress_done': 1, 'heartbeat_at': datetime.datetime(2026, 9, 21, 15, 58, 4, 336153, tzinfo=datetime.timezone.utc), 'id_1': '954245eb-a4f6-4dbd-9cc4-fee7214ad0e0', 'status_1': 'running'}
 2026-09-21 23:58:04,337 INFO sqlalchemy.engine.Engine COMMIT
 [2026-09-21 23:58:04,337: INFO/ForkPoolWorker-2] COMMIT
-[2026-09-21 23:58:05,349: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:58:05,349: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
 2026-09-21 23:58:05,359 INFO sqlalchemy.engine.Engine BEGIN (implicit)
 [2026-09-21 23:58:05,359: INFO/ForkPoolWorker-2] BEGIN (implicit)
 2026-09-21 23:58:05,359 INFO sqlalchemy.engine.Engine SELECT background_jobs.cursor_json 
@@ -139,7 +139,7 @@ WHERE background_jobs.id = %(id_1)s AND background_jobs.status = %(status_1)s FO
 [2026-09-21 23:58:05,361: INFO/ForkPoolWorker-2] [cached since 1.024s ago] {'cursor_json': '{"stage": "lookup:uom"}', 'progress_done': 1, 'heartbeat_at': datetime.datetime(2026, 9, 21, 15, 58, 5, 360692, tzinfo=datetime.timezone.utc), 'id_1': '954245eb-a4f6-4dbd-9cc4-fee7214ad0e0', 'status_1': 'running'}
 2026-09-21 23:58:05,361 INFO sqlalchemy.engine.Engine COMMIT
 [2026-09-21 23:58:05,361: INFO/ForkPoolWorker-2] COMMIT
-[2026-09-21 23:58:05,489: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:58:05,489: INFO/ForkPoolWorker-2] HTTP Request: GET https://autocount-wrapper.example/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
 2026-09-21 23:58:05,493 INFO sqlalchemy.engine.Engine SELECT app_autocount.ac_company.id AS app_autocount_ac_company_id, app_autocount.ac_company.tenant_id AS app_autocount_ac_company_tenant_id, app_autocount.ac_company.connection_id AS app_autocount_ac_company_connection_id, app_autocount.ac_company.database_name AS app_autocount_ac_company_database_name, app_autocount.ac_company.company_name AS app_autocount_ac_company_company_name, app_autocount.ac_company.name AS app_autocount_ac_company_name, app_autocount.ac_company.is_active AS app_autocount_ac_company_is_active, app_autocount.ac_company.sink_impl AS app_autocount_ac_company_sink_impl, app_autocount.ac_company.sink_connection_id AS app_autocount_ac_company_sink_connection_id, app_autocount.ac_company.sorento_company_code AS app_autocount_ac_company_sorento_company_code, app_autocount.ac_company.created_at AS app_autocount_ac_company_created_at, app_autocount.ac_company.updated_at AS app_autocount_ac_company_updated_at 
 FROM app_autocount.ac_company 
 WHERE app_autocount.ac_company.tenant_id = %(tenant_id_1)s AND app_autocount.ac_company.id = %(id_1)s 

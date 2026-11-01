@@ -131,7 +131,7 @@ Reported for the coder; not fixed here.
 
 ## Wrapper / live-call timing observed
 
-Both the 1280px and 375px Test runs against the live `https://hapi.sorento.cc.cd` wrapper (via the
+Both the 1280px and 375px Test runs against the live `https://autocount-wrapper.example` wrapper (via the
 lane's `db1` connection) completed in a few seconds - well inside the "~20-60s" budget flagged in
 the brief; no retry was needed either time.
 

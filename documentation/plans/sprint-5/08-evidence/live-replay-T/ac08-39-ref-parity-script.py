@@ -1,7 +1,7 @@
 """AC-08-39 ref-parity proof (tester-owned [T], recorded stub) - run against
 the REAL lane Postgres DB (foundryx_service_s37), using the production
 HttpApiSource + RowHashRepository + row_hash code paths directly (the same
-primitives sinks_sorento/sync.py use), never the live hapi.sorento.cc.cd
+primitives sinks_sorento/sync.py use), never the live autocount-wrapper.example
 network, never a Sorento push.
 
 Scenario: a product task's ac_row_hash table is first seeded as if 20 rows
@@ -37,7 +37,7 @@ try:
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp",
         name=f"AC-08-39 stub conn {TS}",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db2", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example/api/db2", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(conn)

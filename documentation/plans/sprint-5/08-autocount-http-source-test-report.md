@@ -143,7 +143,7 @@ only the pid whose `cwd` was `s37/service_frontend`, confirmed via `lsof`).
 | ID | Tag | Status | Evidence |
 |----|-----|--------|----------|
 | AC-08-01 | BE | PASS | Live at `1181e5df`+: Settings -> Integrations -> Connect -> Provider "AutoCount" -> `Auth` select renders exactly `"Basic auth (AppId + user + password)"` / `"No auth"`, no default selected. `tests/test_autocount_http_provider.py` (in the 129-passed run). |
-| AC-08-02 | BE | PASS | Live: "No auth" + `https://hapi.sorento.cc.cd/api/db2` -> row Action "Test connection" -> toast **"Reachable - 21 row(s) returned from /location."** (real network call). `test_autocount_http_provider.py`. |
+| AC-08-02 | BE | PASS | Live: "No auth" + `https://autocount-wrapper.example/api/db2` -> row Action "Test connection" -> toast **"Reachable - 21 row(s) returned from /location."** (real network call). `test_autocount_http_provider.py`. |
 | AC-08-03 | BE | PASS | `test_autocount_http_provider.py` (base-URL scheme/trailing-slash rules), in the 129-passed run. |
 | AC-08-04 | FE | PASS | Live: picking "No auth" hid AppId/User ID/Password instantly; picking "Basic auth" would restore them (not re-toggled live, but `connection-schema.test.ts` + `connection-form-fields.test.tsx` cover the round trip, both passing in the 545). |
 | AC-08-05 | T | PASS | `documentation/engineering/integrations-email.md` line 8 documents `showWhen` next to `defaultsFrom` as a `ProviderField` key, naming this plan's `auth` select as the example. |

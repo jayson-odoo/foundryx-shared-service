@@ -23,7 +23,7 @@ URL". Reported to the parent agent as a tooling note, not a product defect.
    `auth` select renders with the exact AC-08-01 labels ("Basic auth (AppId + user +
    password)" / "No auth"), default unset. Picked "No auth" -> AppId/User ID/Password fields
    never appeared (AC-08-04, `showWhen` live). Name "Mocha REST 20260912T004004Z", base URL
-   `https://hapi.sorento.cc.cd/api/db2` -> Create integration.
+   `https://autocount-wrapper.example/api/db2` -> Create integration.
 3. On the connection detail, row Actions -> "Test connection" -> toast **"Reachable - 21
    row(s) returned from /location."** (AC-08-02, exact wording, real network call to the live
    wrapper) -> Status flipped to "Connected". Screenshot `01-connection-test-success-1280.png`.
@@ -50,4 +50,4 @@ URL". Reported to the parent agent as a tooling note, not a product defect.
 PASS - every sub-assertion (auth select labels, `showWhen`, Test naming the row count, picker
 excluding bound connections, prefix pre-fill + exact helper text + "cannot be changed later",
 detail badge "API (no auth)") verified live against the real backend and the real
-`hapi.sorento.cc.cd/api/db2` wrapper, at both 1280 and 375.
+`autocount-wrapper.example/api/db2` wrapper, at both 1280 and 375.

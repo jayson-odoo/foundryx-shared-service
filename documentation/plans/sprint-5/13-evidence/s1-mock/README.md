@@ -31,7 +31,7 @@ run (see "Deferred" below).
 - `SRT` company created against a REAL `sql_database` connection pointed at the lane's
   own Postgres (`foundryx_service_s51`) - a genuine, reachable connection, not a fixture.
 - A `stock_balance` task added via the real "Add entity" picker (real click), Source tab
-  connection = a REAL `autocount` (no-auth) connection at `https://hapi.sorento.cc.cd/api/db1`
+  connection = a REAL `autocount` (no-auth) connection at `https://autocount-wrapper.example/api/db1`
   (the same open REST API this repo's other AutoCount evidence runs use) - Test on the
   main endpoint and both lookups genuinely succeeded (68,830 rows, 69 pages) before Save
   unlocked (AC-08-20's existing save gate, unaffected by this plan).

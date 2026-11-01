@@ -15,7 +15,7 @@ the doc-feed rows/runs/issues/backfills themselves are in-memory mock state.
 2. App Store > AutoCount ESB > Actions > Install (module was not installed on this lane's
    fresh DB).
 3. Settings > Integrations > Connect integration > provider `AutoCount`, name
-   "AutoCount open API", auth "No auth", base URL `https://hapi.sorento.cc.cd/api/db1`
+   "AutoCount open API", auth "No auth", base URL `https://autocount-wrapper.example/api/db1`
    (the live vendor wrapper, per plan section 1) - Create.
 4. Settings > Integrations > Connect integration > provider `Sorento`, name "Sorento CRM",
    base URL `http://localhost:8107` (not actually reachable in this mock run - the S1

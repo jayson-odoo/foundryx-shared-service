@@ -538,7 +538,7 @@ preset text byte-for-byte and 0018 rewrote it automatically (confirmed live, sec
   place; safe for the operator to purge, keep as a standing live-proof fixture, or reuse.
 - **`connections` row `0f2f5c5e-793f-4012-b89f-e1a77b77a9a4`** (`SQL Database`, the ORIGINAL
   restored connection with the undecryptable ciphertext, section 4b): `config_json.host` was
-  re-pointed from `192.168.196.185` to `127.0.0.1` earlier in this session (a no-op once the
+  re-pointed from `<sql-host>` to `127.0.0.1` earlier in this session (a no-op once the
   real host is reachable again) - left as-is, still on the `default` tenant, still
   undecryptable, and NEVER used for the actual live proof (a NEW connection was created
   instead, per the coordinator's instruction not to reuse it). `credentials_json` on this row

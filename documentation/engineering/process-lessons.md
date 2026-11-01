@@ -98,7 +98,7 @@ options.
 ### Gotcha: `pageSize` above ~1000 silently clamps, trust the ECHOED paging fields
 
 `autocount_http`'s page walk REQUESTS `pageSize=1000` (`http_source/source.py:
-DEFAULT_PAGE_SIZE`), but the live wrapper (`hapi.sorento.cc.cd`) has been observed CLAMPING a
+DEFAULT_PAGE_SIZE`), but the live wrapper (`autocount-wrapper.example`) has been observed CLAMPING a
 larger request (5000 tried live) down to roughly 200 with no error status at all - it just
 echoes the CLAMPED `PageSize`/`TotalPages`/`Page` back in the response body. The walk loop
 must therefore trust the ECHOED values on every page, never the value it requested, and must

@@ -91,7 +91,7 @@ to 0 and applies `int()`; product review/apply goes through the INGEST path (`dr
 then the same `MasterIngestService` on Confirm), never their Excel bulk-import path; their
 product matching is case-insensitive but does NOT trim.
 
-Live wrapper facts (probed 2026-09-19, `https://hapi.sorento.cc.cd/api/db1`, read-only):
+Live wrapper facts (probed 2026-09-19, `https://autocount-wrapper.example/api/db1`, read-only):
 `/itemuombypage` rows `{ItemCode, UOM, Rate, Price}`, 11,852 rows for 11,840 items, every item
 has a row whose `UOM` equals its `BaseUOM`, 11 multi-UOM items, some junk rows with `UOM: ""`,
 every `Rate` is 1.0, zero duplicate `(ItemCode, UOM)`, no timestamps. `/itembatchbalqtybypage`
@@ -855,7 +855,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   their saved values -> Save -> the Runs tab shows the schedule armed -> the consumer's pull now
   answers 409 `PUSH_ACTIVE` (proved by the curl transcript in the evidence README).
 - **AC-10-53 [T]** Live replay, lane DB, LOGGING sink, BOTH books: against
-  `https://hapi.sorento.cc.cd/api/db1` and `/api/db2` - build a product snapshot and a stock
+  `https://autocount-wrapper.example/api/db1` and `/api/db2` - build a product snapshot and a stock
   snapshot per book, record `record_count`, `complete`, `content_hash`, the build duration and
   the request count; prove the db1 product snapshot is `ready` and reports roughly 11,830 rows with
   `zeroListPriceCount` about 5,129 (5,008 already zero plus 121 clamped), `negativeListPriceCount`

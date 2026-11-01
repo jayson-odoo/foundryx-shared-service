@@ -23,7 +23,7 @@ Keyed to `13-autocount-stock-push-acceptance-criteria.md` (AC-13-01..06, 10..16,
   Sorento connection `12c4075d-a4e8-4f39-af5a-479c7a273f14` at
   `baseUrl=https://sorento.example.invalid` (unreachable by design - gate shut by contract). Stock
   task `095233c3-...` on `delivery_mode=pull`, `etl_status=draft`, real `autocount_http` source
-  against `hapi.sorento.cc.cd/api/db1`.
+  against `autocount-wrapper.example/api/db1`.
 - Browser evidence: `agent-browser` CLI only, `--session s51`, real clicks from the sidebar, never
   a direct URL, widths 1280x900 and 375x800. No Playwright anywhere.
 - Evidence dirs: `13-evidence/s1-mock/` (S1, mock phase, pre-existing, 12 shots) and

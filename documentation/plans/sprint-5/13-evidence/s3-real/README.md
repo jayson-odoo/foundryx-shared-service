@@ -22,7 +22,7 @@ All times UTC, 2026-09-26.
   gate is shut by contract).
 - Stock task (`095233c3-c233-46cc-b1dd-da24ee1ee829`): `delivery_mode=pull`, `etl_status=draft`,
   `source_impl=autocount_http` against a real, reachable AutoCount Open API connection
-  (`hapi.sorento.cc.cd/api/db1`).
+  (`autocount-wrapper.example/api/db1`).
 
 ## What was captured (real backend, real clicks)
 

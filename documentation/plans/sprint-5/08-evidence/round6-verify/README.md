@@ -54,7 +54,7 @@ mode, path `/itembypage` locked, `Test` button available).
 7. **Unsaved edit survives a Test**: back on the Source tab, clicked **Edit**, changed the
    path from `/itembypage` to `/itembypage/` (a real, curl-verified 200 variant of the same
    endpoint - confirmed independently: `curl -s -o /dev/null -w '%{http_code}' https://
-   hapi.sorento.cc.cd/api/db2/itembypage/` -> `200`), clicked **Test**: succeeded (preview
+   autocount-wrapper.example/api/db2/itembypage/` -> `200`), clicked **Test**: succeeded (preview
    grid re-populated with `UNIT`/`DZ`/`SET`, `last_preview_at` advanced again in `psql` to
    `2026-09-12 12:57:27+09`, confirming `onHttpPreviewSuccess`'s `reload()` fired) - **the
    input still shows the edited `/itembypage/` after the Test completed, not reseeded back to

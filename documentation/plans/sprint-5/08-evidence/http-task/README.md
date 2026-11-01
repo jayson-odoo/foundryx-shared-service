@@ -33,7 +33,7 @@ tooling note (CDP mouse dispatch did not register on several Radix controls in t
 7. Add entity **Brand** -> Configure -> path pre-filled `/ItemBrand`, key `ItemBrand`, no
    watermark row (list has none) -> Test -> **"List - 0 rows - one request"**, "Query returned
    no rows." Screenshot `06-brand-test-list-envelope-empty-1280.png`. Verified independently
-   against the live wrapper (`curl https://hapi.sorento.cc.cd/api/db2/ItemBrand` ->  `[]`) -
+   against the live wrapper (`curl https://autocount-wrapper.example/api/db2/ItemBrand` ->  `[]`) -
    Mocha genuinely carries zero AutoCount brands today; not a defect, the list-envelope
    handling (AC-08-14/22) is proven correct either way. Not saved (left as a reachable draft,
    proving "Add entity" never force-saves - mirrors the S1 mock evidence's own choice).

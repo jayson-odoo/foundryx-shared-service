@@ -12,7 +12,7 @@ to what a snapshot contains.
 
 ## 0. Baseline this plan is measured against (recorded 2026-09-21)
 
-- Vendor wrapper `https://hapi.sorento.cc.cd/api/db1/itembypage?page=N&pageSize=1000` answers in
+- Vendor wrapper `https://autocount-wrapper.example/api/db1/itembypage?page=N&pageSize=1000` answers in
   about 21 s per 1000-row page. `itemuombypage` answers a page in about 0.18 s.
 - `SRT` product = 11,840 rows = 12 pages; measured full pull build 9m00s. `db2` (Mocha, 3,445
   rows, slow wrapper) 8m01s.
