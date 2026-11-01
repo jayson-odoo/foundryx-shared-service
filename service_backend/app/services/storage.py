@@ -241,10 +241,7 @@ def read_url(
                     and int(declared) > max_bytes
                 ):
                     raise StorageReadError(_READ_FAILED)
-                # Raw bytes: a wire body is never decoded. A response whose body
-                # a transport already supplied in full has nothing left to stream.
-                pieces = resp.iter_bytes(_CHUNK) if resp.is_stream_consumed else resp.iter_raw(_CHUNK)
-                for chunk in pieces:
+                for chunk in resp.iter_raw(_CHUNK):
                     total += len(chunk)
                     if max_bytes is not None and total > max_bytes:
                         raise StorageReadError(_READ_FAILED)
