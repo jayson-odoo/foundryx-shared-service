@@ -31,11 +31,13 @@ Test doubles (no outside network, no real system files):
   * boto3 is stubbed at the adapter `_build_client` seam, as in
     `tests/test_storage_resolution.py`.
 """
+import gzip
 import io
 import socket
 import ssl
 import threading
 import zipfile
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -169,6 +171,9 @@ class Listener:
         self.body = CANARY_BYTES
         self.objects: Dict[str, bytes] = {}
         self.requests: List[str] = []
+        self.request_headers: List[str] = []
+        self.encoding = "gzip"  # for mode "compressed": gzip | deflate
+        self.extra_headers = b""  # added to a plain served answer
         self.connections = 0
         self.bytes_sent = 0
         self._lock = threading.Lock()
@@ -213,6 +218,17 @@ class Listener:
             with self._lock:
                 self.requests.append(path)
             bare = path.split("?")[0]
+            with self._lock:
+                self.request_headers.append(data.split(b"\r\n\r\n")[0].decode("latin-1").lower())
+            if self.mode == "compressed":
+                raw = self.objects.get(bare, b"A" * (4 * MIB))
+                body = gzip.compress(raw) if self.encoding == "gzip" else zlib.compress(raw)
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Encoding: %s\r\nContent-Length: %d\r\n"
+                    b"Connection: close\r\n\r\n" % (self.encoding.encode(), len(body))
+                    + body
+                )
+                return
             if self.mode == "redirect" and bare != "/landing":
                 conn.sendall(
                     b"HTTP/1.1 302 Found\r\nLocation: https://other.storage.test/landing\r\n"
@@ -243,7 +259,9 @@ class Listener:
                 return
             body = self.objects.get(bare, self.body)
             conn.sendall(
-                b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(body)
+                b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n" % len(body)
+                + self.extra_headers
+                + b"Connection: close\r\n\r\n"
                 + body
             )
         except Exception:  # noqa: BLE001 - a client that hangs up mid-send is expected
@@ -1517,3 +1535,395 @@ def test_saving_an_r2_connection_with_a_plain_account_id(account_id, client, ses
         headers=_admin(client),
     )
     assert res.status_code == 201, res.text
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# encodings and per-reader size limits
+# ═══════════════════════════════════════════════════════════════════════════
+
+ALL_READERS = [*READERS, "media_read"]
+
+
+def run_any(name, db, conn) -> Outcome:
+    if name == "media_read":
+        return read_media(db, conn)[0]
+    return READERS[name](db, conn)
+
+
+def test_read_url_asks_for_the_identity_encoding(net):
+    listener = net.start(tls=True)
+    assert read_url("https://cdn.storage.test/obj.bin", timeout=5) == CANARY_BYTES
+    assert any("accept-encoding: identity" in h for h in listener.request_headers), (
+        listener.request_headers
+    )
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+def test_read_url_refuses_an_encoded_response(encoding, net):
+    listener = net.start(tls=True, mode="compressed")
+    listener.encoding = encoding
+    with pytest.raises(StorageReadError):
+        read_url("https://cdn.storage.test/obj.bin", timeout=5)
+    assert any("accept-encoding: identity" in h for h in listener.request_headers)
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+@pytest.mark.parametrize("reader", ALL_READERS)
+def test_every_storage_read_refuses_an_encoded_response(reader, encoding, net, bucket, session_factory):
+    db = session_factory()
+    listener = net.start(tls=True, mode="compressed")
+    listener.encoding = encoding
+    _mirror_into_listener(bucket, listener)
+    out = run_any(reader, db, _connect(db, "https://cdn.storage.test"))
+    assert not out.ok
+    assert out.data == b""
+    assert any("accept-encoding: identity" in h for h in listener.request_headers)
+    db.close()
+
+
+DECLARED_OVER_LIMIT = {
+    "document_blob": 201 * MIB,  # READ_CAP_BYTES is 200 MiB
+    "media_read": 101 * MIB,  # the largest META_CEILINGS entry is 100 MiB
+    "connection_probe": 16 * MIB,  # the probe object is tiny
+}
+
+
+@pytest.mark.parametrize("reader", list(DECLARED_OVER_LIMIT))
+def test_a_declared_length_over_the_reader_limit_is_refused_at_once(reader, net, bucket, session_factory):
+    import time
+
+    db = session_factory()
+    listener = net.start(tls=True, mode="framed", big_bytes=DECLARED_OVER_LIMIT[reader])
+    listener.framing = "stall"
+    conn = _connect(db, "https://cdn.storage.test")
+    started = time.monotonic()
+    out = run_any(reader, db, conn)
+    assert not out.ok
+    assert time.monotonic() - started < 5
+    db.close()
+
+
+def test_the_probe_stops_reading_a_body_without_a_declared_length(net, bucket, session_factory):
+    db = session_factory()
+    listener = net.start(tls=True, mode="framed", big_bytes=16 * MIB)
+    listener.framing = "none"
+    out = read_probe(db, _connect(db, "https://cdn.storage.test"))
+    assert not out.ok
+    assert listener.bytes_sent < 12 * MIB, f"server sent {listener.bytes_sent} bytes"
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# URL forms that parsers read differently
+# ═══════════════════════════════════════════════════════════════════════════
+
+AMBIGUOUS_URLS = [
+    "https://127.0.0.1:9000\\@cdn.storage.test/",
+    "https://cdn.storage.test\\@127.0.0.1/",
+    "https://user@cdn.storage.test/",
+    "https://cdn.storage.test\\x/",
+    "https://[bad",
+    "https://[::1",
+]
+
+
+def _call(fn, label):
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"unhandled {type(exc).__name__} from {label}")
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("value", AMBIGUOUS_URLS)
+def test_saving_a_storage_connection_refuses_an_ambiguous_url(field, value, client, session_factory, net):
+    res = _call(
+        lambda: client.post(
+            "/integrations/connections",
+            json=_payload(S3_PAYLOAD, **{field: value}),
+            headers=_admin(client),
+        ),
+        "the save route",
+    )
+    assert res.status_code == 422, res.text
+    assert _storage_rows(session_factory) == []
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("value", AMBIGUOUS_URLS)
+def test_updating_a_storage_connection_refuses_an_ambiguous_url(field, value, client, session_factory, net):
+    headers = _admin(client)
+    created = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, cdnBaseUrl="https://cdn.storage.test"),
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    res = _call(
+        lambda: client.patch(
+            f"/integrations/connections/{created.json()['id']}",
+            json={"config": {field: value}},
+            headers=headers,
+        ),
+        "the update route",
+    )
+    assert res.status_code == 422, res.text
+    rows = _storage_rows(session_factory)
+    assert rows[0].config_json.get(field, "") in ("", "https://cdn.storage.test")
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("value", AMBIGUOUS_URLS)
+def test_the_test_button_refuses_an_ambiguous_url(
+    field, value, client, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _connect(db, "https://cdn.storage.test")
+    conn.config_json = {**conn.config_json, field: value}
+    db.commit()
+    storage_module.clear_adapter_cache()
+    res = _call(
+        lambda: client.post(
+            f"/integrations/connections/{conn.id}/test", json={}, headers=_admin(client)
+        ),
+        "the test route",
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is False
+    assert res.json()["message"] == TEST_REFUSAL
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("value", AMBIGUOUS_URLS)
+def test_an_ambiguous_endpoint_is_not_usable(value):
+    from app.services.storage import endpoint_is_usable
+
+    assert endpoint_is_usable("s3", {"endpointUrl": value}) is False
+
+
+@pytest.mark.parametrize("account_id", ["x.internal#", "user@host", "acct\\host", "x.internal/", "a b"])
+def test_an_r2_account_id_with_other_characters_is_not_usable(account_id):
+    from app.services.storage import endpoint_is_usable
+
+    assert endpoint_is_usable("r2", {"accountId": account_id}) is False
+
+
+@pytest.mark.parametrize("value", AMBIGUOUS_URLS)
+def test_a_stored_ambiguous_endpoint_is_not_used(value, session_factory, bucket, client_builds, net):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), value)
+    assert not read_blob(db, conn).ok
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("value", AMBIGUOUS_URLS)
+def test_a_stored_ambiguous_cdn_url_is_not_read(value, session_factory, bucket, net):
+    net.start(tls=True)
+    db = session_factory()
+    out = read_blob(db, _connect(db, value))
+    assert not out.ok
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("account_id", ["x.internal#", "user@host", "acct\\host"])
+def test_a_stored_r2_account_id_with_other_characters_is_not_used(
+    account_id, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _storage_connection(db, DEFAULT_TENANT_ID, cdn="https://cdn.storage.test", provider="r2")
+    conn.config_json = {**conn.config_json, "accountId": account_id}
+    conn.updated_at = datetime.now(timezone.utc) + timedelta(seconds=5)
+    db.commit()
+    storage_module.clear_adapter_cache()
+    assert not read_blob(db, conn).ok
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("value", ["https://[bad", "https://[::1"])
+def test_platform_storage_refuses_an_unparseable_url(field, value, session_factory):
+    from fastapi import HTTPException
+
+    db = session_factory()
+    with pytest.raises(HTTPException) as caught:
+        _platform_create(db, S3_PAYLOAD, **{field: value})
+    assert caught.value.status_code == 422
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# the storage migration wizard
+# ═══════════════════════════════════════════════════════════════════════════
+
+MIGRATION_BAD_VALUES = [
+    ("endpointUrl", "http://cdn.storage.test"),
+    ("endpointUrl", "https://10.0.0.5"),
+    ("endpointUrl", "https://user@cdn.storage.test/"),
+    ("endpointUrl", "https://[bad"),
+    ("cdnBaseUrl", "http://127.0.0.1:9000"),
+    ("cdnBaseUrl", "file:///tmp/objects"),
+    ("cdnBaseUrl", "https://meta.storage.test"),
+    ("cdnBaseUrl", "https://cdn.storage.test\\@127.0.0.1/"),
+]
+
+
+def _migration_body(**config) -> dict:
+    from tests.test_storage_migration import _NEW_BUCKET
+
+    return {**_NEW_BUCKET, "config": {**_NEW_BUCKET["config"], **config}}
+
+
+def _platform_headers(client):
+    from tests.conftest import PLATFORM_EMAIL, PLATFORM_PASSWORD
+
+    res = client.post(
+        "/auth/login",
+        json={"email": PLATFORM_EMAIL, "password": PLATFORM_PASSWORD, "tenantSlug": "platform"},
+    )
+    assert res.status_code == 200, res.text
+    return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+def _refused(res) -> bool:
+    return 400 <= res.status_code < 500 or (res.status_code == 200 and res.json().get("ok") is False)
+
+
+@pytest.mark.parametrize("field,value", MIGRATION_BAD_VALUES)
+def test_the_migration_test_step_refuses_a_bad_url(
+    field, value, client, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    res = _call(
+        lambda: client.post(
+            "/storage/migrations/test", json=_migration_body(**{field: value}), headers=_admin(client)
+        ),
+        "the migration test route",
+    )
+    assert _refused(res), res.text
+    assert client_builds == []
+    assert net.attempts == []
+
+
+@pytest.mark.parametrize("field,value", MIGRATION_BAD_VALUES)
+def test_starting_a_migration_with_a_bad_url_stores_nothing_and_keeps_the_connection(
+    field, value, client, session_factory, bucket, client_builds, net
+):
+    from app.models.background_job import BackgroundJob
+
+    net.start(tls=True)
+    db = session_factory()
+    current = _connect(db, "https://cdn.storage.test")
+    current_id = current.id
+    res = _call(
+        lambda: client.post(
+            "/storage/migrations", json=_migration_body(**{field: value}), headers=_admin(client)
+        ),
+        "the migration start route",
+    )
+    assert 400 <= res.status_code < 500, res.text
+    db.expire_all()
+    rows = _storage_rows(session_factory)
+    assert [r.id for r in rows] == [current_id]
+    assert rows[0].is_active
+    check = session_factory()
+    assert check.query(BackgroundJob).filter(BackgroundJob.tenant_id == DEFAULT_TENANT_ID).count() == 0
+    check.close()
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+def test_the_platform_migration_test_step_accepts_a_private_cdn_and_an_http_endpoint(
+    client, session_factory, bucket, client_builds, net
+):
+    listener = net.start(tls=True)
+    _mirror_into_listener(bucket, listener)
+    res = client.post(
+        "/storage/migrations/test",
+        json=_migration_body(
+            cdnBaseUrl="https://internal.storage.test", endpointUrl="http://127.0.0.1:9000"
+        ),
+        headers=_platform_headers(client),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True, res.text
+    assert client_builds == ["http://127.0.0.1:9000"]
+
+
+def test_the_platform_migration_stores_a_private_cdn_and_an_http_endpoint(
+    client, session_factory, bucket, client_builds, net, monkeypatch
+):
+    listener = net.start(tls=True)
+    _mirror_into_listener(bucket, listener)
+    db = session_factory()
+    _seed_platform_storage(db, monkeypatch, "https://cdn.storage.test")
+    res = client.post(
+        "/storage/migrations",
+        json=_migration_body(
+            cdnBaseUrl="https://internal.storage.test", endpointUrl="http://127.0.0.1:9000"
+        ),
+        headers=_platform_headers(client),
+    )
+    assert res.status_code == 201, res.text
+    stored = [
+        r for r in _storage_rows_for(session_factory, PLATFORM_TENANT_ID) if r.is_active
+    ]
+    assert [r.config_json.get("endpointUrl") for r in stored] == ["http://127.0.0.1:9000"]
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# meetings: where the bot container writes
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _meeting():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(tenant_id=DEFAULT_TENANT_ID, id="meeting-1")
+
+
+MEETING_BAD_ENDPOINTS = [*BAD_ENDPOINTS, "https://user@cdn.storage.test/", "https://cdn.storage.test\\@127.0.0.1/"]
+
+
+@pytest.mark.parametrize("endpoint", MEETING_BAD_ENDPOINTS)
+def test_a_meeting_does_not_use_a_connection_with_a_bad_endpoint_and_writes_locally(
+    endpoint, session_factory, bucket, local_media
+):
+    from modules.meetings.services.bot_runner import build_output
+
+    db = session_factory()
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), endpoint)
+    env, volumes, _artifacts = build_output(db, _meeting())
+    assert env == {"BOT_OUT": "/out"}
+    assert len(volumes) == 1
+    assert endpoint not in repr(env)
+    db.close()
+
+
+@pytest.mark.parametrize("endpoint", MEETING_BAD_ENDPOINTS)
+def test_a_meeting_falls_back_to_platform_storage_when_the_endpoint_is_bad(
+    endpoint, session_factory, bucket, local_media, monkeypatch
+):
+    from modules.meetings.services.bot_runner import build_output
+
+    db = session_factory()
+    _seed_platform_storage(db, monkeypatch, "https://cdn.storage.test")
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), endpoint)
+    env, volumes, _artifacts = build_output(db, _meeting())
+    assert env["BOT_OUT"].startswith("s3://platform-assets/")
+    assert env["BOT_S3_ENDPOINT"] == "https://acct1.r2.cloudflarestorage.com"
+    assert endpoint not in repr(env)
+    assert volumes == {}
+    db.close()
+
