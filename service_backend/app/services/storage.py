@@ -181,6 +181,18 @@ _READ_FAILED = "The stored file could not be read."
 _CHUNK = 64 * 1024
 
 
+def storage_url_is_plain(value: str) -> bool:
+    """False for a value that parsers read differently: a backslash, an ``@``,
+    whitespace or control characters, or an address ``urlsplit`` cannot parse."""
+    if any(c in "\\@" or c.isspace() or ord(c) < 32 for c in value):
+        return False
+    try:
+        urlsplit(value).port  # noqa: B018 - raises ValueError for a bad port
+    except ValueError:
+        return False
+    return True
+
+
 def read_url(
     url: str,
     *,
@@ -200,7 +212,7 @@ def read_url(
     """
     allowed = ("http://", "https://") if operator_owned else ("https://",)
     try:
-        if url != url.strip() or any(c.isspace() or ord(c) < 32 for c in url):
+        if not storage_url_is_plain(url):
             raise StorageReadError(_READ_FAILED)
         if not url.startswith(allowed) or not urlsplit(url).hostname:
             raise StorageReadError(_READ_FAILED)
@@ -214,13 +226,25 @@ def read_url(
         with httpx.Client(
             transport=transport, timeout=timeout, follow_redirects=False
         ) as client:
-            with client.stream("GET", url, headers=headers) as resp:
+            request_headers = {**(headers or {}), "Accept-Encoding": "identity"}
+            with client.stream("GET", url, headers=request_headers) as resp:
                 if not 200 <= resp.status_code < 300:
                     raise StorageReadError(_READ_FAILED, status=resp.status_code)
-                declared = resp.headers.get("content-length", "")
-                if max_bytes is not None and declared.isdigit() and int(declared) > max_bytes:
+                encoding = resp.headers.get("content-encoding", "").strip().lower()
+                if encoding and encoding != "identity":
                     raise StorageReadError(_READ_FAILED)
-                for chunk in resp.iter_bytes(_CHUNK):
+                declared = resp.headers.get("content-length", "").strip()
+                if (
+                    max_bytes is not None
+                    and declared.isascii()
+                    and declared.isdigit()
+                    and int(declared) > max_bytes
+                ):
+                    raise StorageReadError(_READ_FAILED)
+                # Raw bytes: a wire body is never decoded. A response whose body
+                # a transport already supplied in full has nothing left to stream.
+                pieces = resp.iter_bytes(_CHUNK) if resp.is_stream_consumed else resp.iter_raw(_CHUNK)
+                for chunk in pieces:
                     total += len(chunk)
                     if max_bytes is not None and total > max_bytes:
                         raise StorageReadError(_READ_FAILED)
@@ -264,14 +288,44 @@ def endpoint_is_usable(provider: str, config: Dict[str, object]) -> bool:
     URL. boto3 resolves names itself, so this runs once when a client is built."""
     from app.integrations.s3_provider import derive_endpoint
 
+    from app.integrations.s3_provider import R2_ACCOUNT_ID
+
+    if provider == "r2":
+        account_id = str(config.get("accountId", ""))
+        if account_id and not R2_ACCOUNT_ID.match(account_id):
+            return False
     endpoint = derive_endpoint(provider, config)
     if not endpoint:
         return True
+    if not storage_url_is_plain(endpoint):
+        return False
     try:
         validate_public_https_url(endpoint, strict_dns=False, subject="Endpoint URL")
-    except UrlGuardError:
+    except (UrlGuardError, ValueError):
         return False
-    return endpoint == endpoint.strip()
+    return True
+
+
+def usable_storage_connection(db: Session, tenant_id: str):
+    """The storage connection a tenant writes to: its own, else the platform's.
+    A tenant-owned connection whose endpoint is not usable is skipped like an
+    ERROR row, so the platform connection (or local disk, None) serves."""
+    from app.models.connection import CONNECTION_STATUS_ERROR
+    from app.models.tenant import PLATFORM_TENANT_ID
+    from app.repositories.connection_repository import ConnectionRepository
+
+    repo = ConnectionRepository(db)
+    connection = repo.resolve_for_type(tenant_id, "storage")
+    if (
+        connection is not None
+        and connection.tenant_id != PLATFORM_TENANT_ID
+        and not endpoint_is_usable(connection.provider, connection.config_json or {})
+    ):
+        platform = repo.get_by_type(PLATFORM_TENANT_ID, "storage")
+        if platform is not None and platform.status != CONNECTION_STATUS_ERROR:
+            return platform
+        return None
+    return connection
 
 
 _KEY_PREFIX = "conn:"
@@ -330,24 +384,7 @@ class TenantStorage:
         self._local = LocalDiskStorage()
 
     def _write_connection(self):
-        from app.repositories.connection_repository import ConnectionRepository
-
-        from app.models.connection import CONNECTION_STATUS_ERROR
-        from app.models.tenant import PLATFORM_TENANT_ID
-
-        repo = ConnectionRepository(self.db)
-        connection = repo.resolve_for_type(self.tenant_id, "storage")
-        if (
-            connection is not None
-            and connection.tenant_id != PLATFORM_TENANT_ID
-            and not endpoint_is_usable(connection.provider, connection.config_json or {})
-        ):
-            # Same as an ERROR row: skipped, the next storage in the chain serves.
-            platform = repo.get_by_type(PLATFORM_TENANT_ID, "storage")
-            if platform is not None and platform.status != CONNECTION_STATUS_ERROR:
-                return platform
-            return None
-        return connection
+        return usable_storage_connection(self.db, self.tenant_id)
 
     def _connection_for_key(self, connection_id: str):
         from app.models.tenant import PLATFORM_TENANT_ID

@@ -56,6 +56,7 @@ def test_storage_migration_bucket(
     """Non-destructive probe of a candidate new bucket (wizard Test step) -
     nothing is persisted; Start stays disabled until this passes."""
     ok, message = StorageMigrationService(db).test_bucket(
+        tenant_id=user.tenant_id,
         provider=payload.provider,
         config=payload.config,
         credentials=payload.credentials,

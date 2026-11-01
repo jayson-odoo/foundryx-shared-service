@@ -50,6 +50,9 @@ from app.uploads import detect_document_mime
 from app.workflow_engine.entity_events import emit_entity_event
 
 MB = 1024 * 1024
+# Hard read cap (a generous ceiling so an oversize body is never buffered whole);
+# shared by the upload routes and the download-job blob reads.
+READ_CAP_BYTES = 200 * MB
 
 
 # ---- service exceptions ----
@@ -572,7 +575,7 @@ class DocumentService:
     @staticmethod
     def _read_blob(storage, key: str) -> Optional[bytes]:
         try:
-            return read_object(storage, key, timeout=30)
+            return read_object(storage, key, timeout=30, max_bytes=READ_CAP_BYTES)
         except Exception:  # noqa: BLE001 - a failed read is skipped by the caller
             return None
 

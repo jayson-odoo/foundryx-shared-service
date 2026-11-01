@@ -19,6 +19,7 @@ from app.integrations.base import TestResult
 
 PRESIGN_TTL_SECONDS = 3600  # resolved per request - never persisted (D4)
 _PROBE_TIMEOUT_SECONDS = 10
+_PROBE_MAX_BYTES = 1024 * 1024  # the probe object is tiny
 
 
 def _ext_for(mime_type: str) -> str:
@@ -52,6 +53,7 @@ def _http_get(url: str, timeout: float, operator_owned: bool = False) -> bytes:
         url,
         operator_owned=operator_owned,
         timeout=timeout,
+        max_bytes=_PROBE_MAX_BYTES,
         headers={"User-Agent": "FoundryxEMS-StorageProbe/1.0"},
     )
 
@@ -238,7 +240,7 @@ _KEY_FIELDS = [
 ]
 
 
-_R2_ACCOUNT_ID = re.compile(r"^[A-Za-z0-9-]+$")
+R2_ACCOUNT_ID = re.compile(r"^[A-Za-z0-9-]+$")
 
 
 def _storage_url_error(
@@ -246,12 +248,13 @@ def _storage_url_error(
 ) -> Optional[str]:
     """Message for the first storage URL that is not allowed, else None. Empty
     values are allowed. An operator-owned row may use http and any address."""
+    from app.services.storage import storage_url_is_plain
     from app.services.url_guard import UrlGuardError, validate_public_https_url
 
     checks = [("cdnBaseUrl", "CDN base URL")]
     if provider == "r2":
         account_id = str(config.get("accountId", ""))
-        if account_id and not _R2_ACCOUNT_ID.match(account_id):
+        if account_id and not R2_ACCOUNT_ID.match(account_id):
             return "Account ID may contain only letters, digits and hyphens."
     else:
         checks.append(("endpointUrl", "Endpoint URL"))
@@ -259,16 +262,18 @@ def _storage_url_error(
         value = str(config.get(key, "") or "")
         if not value:
             continue
+        if not storage_url_is_plain(value):
+            return f"{label} must be a valid address."
         if operator_owned:
-            if not value.startswith(("http://", "https://")) or value != value.strip():
+            if not value.startswith(("http://", "https://")):
                 return f"{label} must start with http:// or https://."
             continue
-        if value != value.strip():
-            return f"{label} must be a public https:// address."
         try:
             validate_public_https_url(value, strict_dns=False, subject=label)
         except UrlGuardError as exc:
             return str(exc)
+        except ValueError:
+            return f"{label} must be a valid address."
     return None
 
 

@@ -23,7 +23,7 @@ from ..repositories.contact_repository import ContactRepository
 from ..security import decrypt_credentials
 from . import realtime
 from .channel_addressing import NoChannelIdentity, recipient_ref, sender_ref
-from .media_pipeline import MediaRejected, transcode_voice
+from .media_pipeline import META_CEILINGS, MediaRejected, transcode_voice
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,12 @@ def _read_media(db: Session, tenant_id: str, media_key: str) -> bytes:
 
     # Errors carry the status only: the address is never part of the text.
     try:
-        return read_object(storage_for_tenant(db, tenant_id), media_key, timeout=15.0)
+        return read_object(
+            storage_for_tenant(db, tenant_id),
+            media_key,
+            timeout=15.0,
+            max_bytes=max(META_CEILINGS.values()),
+        )
     except StorageReadError as exc:
         if isinstance(exc.__cause__, UnresolvableKey):
             raise exc.__cause__ from None

@@ -26,7 +26,7 @@ from fastapi import HTTPException, status as http_status
 from sqlalchemy.orm import Session
 
 from app.integrations import get_provider
-from app.integrations.s3_provider import S3CompatibleAdapter
+from app.models.tenant import PLATFORM_TENANT_ID
 from app.jobs.registry import JobHandlerDef, handler_for, register_job_handler
 from app.jobs.service import JobService
 from app.models.background_job import (
@@ -125,7 +125,7 @@ class StorageMigrationService:
 
         # 3. validate provider + TEST the new bucket B before committing to it
         #    (the SAME probe the non-destructive wizard Test step runs).
-        ok, message = self._probe_bucket(provider, new_config, new_credentials)
+        ok, message = self._probe_bucket(tenant_id, provider, new_config, new_credentials)
         if not ok:
             raise HTTPException(
                 http_status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -165,6 +165,7 @@ class StorageMigrationService:
     def test_bucket(
         self,
         *,
+        tenant_id: str,
         provider: str,
         config: Dict[str, Any],
         credentials: Dict[str, str],
@@ -173,10 +174,10 @@ class StorageMigrationService:
         SAME ``run_probe`` (head_bucket + round-trip) that ``start`` runs and
         that the connect wizard's Test uses. Backs the wizard's Test step so
         Start is disabled until a bucket verifies (foolproof-UI, AC-10-18)."""
-        return self._probe_bucket(provider, config, credentials)
+        return self._probe_bucket(tenant_id, provider, config, credentials)
 
     def _probe_bucket(
-        self, provider: str, config: Dict[str, Any], credentials: Dict[str, str]
+        self, tenant_id: str, provider: str, config: Dict[str, Any], credentials: Dict[str, str]
     ) -> tuple[bool, str]:
         prov = get_provider(provider)
         if prov is None or getattr(prov, "type", None) != STORAGE_TYPE:
@@ -184,9 +185,16 @@ class StorageMigrationService:
                 http_status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f'Unknown or non-storage provider "{provider}".',
             )
-        probe = S3CompatibleAdapter.from_connection(
-            provider, dict(config), dict(credentials)
-        ).run_probe()
+        # The same storage URL rule as saving a connection: a tenant's bucket
+        # needs public https URLs; the platform's own may use http and any
+        # address. Checked before any client is built.
+        validate = getattr(prov, "validate_config", None)
+        if tenant_id == PLATFORM_TENANT_ID:
+            validate = getattr(prov, "validate_platform_config", validate)
+        error = validate(dict(config)) if validate is not None else None
+        if error:
+            return False, error
+        probe = prov.test(dict(config), dict(credentials), None, db=self.db, tenant_id=tenant_id)
         return probe.ok, probe.message
 
     # ── job control ──────────────────────────────────────────────────────────
