@@ -2465,6 +2465,52 @@ def test_a_mistyped_region_on_upload_surfaces_and_writes_nothing_locally(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def test_a_media_read_through_an_unusable_endpoint_ends_the_row_instead_of_retrying(
+    session_factory, bucket, net
+):
+    from app.services.storage import UnresolvableKey
+
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), "https://10.0.0.5")
+    out, exc = read_media(db, conn)
+    assert not out.ok
+    assert isinstance(exc, UnresolvableKey)
+    assert not isinstance(exc, OSError)  # an OSError is requeued and retried
+    db.close()
+
+
+def test_a_tenants_bad_row_falls_back_to_a_platform_row_that_is_in_error_state_to_nothing(
+    session_factory, bucket, client_builds, net, monkeypatch, local_media
+):
+    from app.models.connection import CONNECTION_STATUS_ERROR
+
+    db = session_factory()
+    platform = _seed_platform_storage(db, monkeypatch, "https://cdn.storage.test")
+    platform.status = CONNECTION_STATUS_ERROR
+    db.commit()
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), "https://10.0.0.5")
+    key = storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png")
+    assert not key.startswith("conn:")
+    assert bucket.objects == {}
+    db.close()
+
+
+def test_a_meeting_does_not_fall_back_to_a_platform_row_in_error_state(
+    session_factory, bucket, net, monkeypatch, local_media
+):
+    from app.models.connection import CONNECTION_STATUS_ERROR
+    from modules.meetings.services.bot_runner import build_output
+
+    db = session_factory()
+    platform = _seed_platform_storage(db, monkeypatch, "https://cdn.storage.test")
+    platform.status = CONNECTION_STATUS_ERROR
+    db.commit()
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), "https://10.0.0.5")
+    env, _volumes, _artifacts = build_output(db, _meeting())
+    assert env == {"BOT_OUT": "/out"}
+    db.close()
+
+
 def _platform_update(db, connection_id: str, **config):
     from app.schemas.integration import ConnectionUpdateRequest
     from app.services.integration_service import IntegrationService
@@ -2473,3 +2519,25 @@ def _platform_update(db, connection_id: str, **config):
         PLATFORM_TENANT_ID, connection_id, ConnectionUpdateRequest(config=config)
     )
 
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("value", ["http://cdn.storage.test", "https://10.0.0.5", "http://127.0.0.1:9000"])
+def test_editing_platform_storage_keeps_the_operator_rule(field, value, session_factory):
+    db = session_factory()
+    created = _platform_create(db, S3_PAYLOAD, cdnBaseUrl="https://cdn.storage.test")
+    updated = _platform_update(db, created.id, **{field: value})
+    assert updated.config[field] == value
+    db.close()
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("value", ["file:///tmp/objects", "ftp://cdn.storage.test", " https://cdn.storage.test"])
+def test_editing_platform_storage_still_refuses_other_schemes(field, value, session_factory):
+    from fastapi import HTTPException
+
+    db = session_factory()
+    created = _platform_create(db, S3_PAYLOAD, cdnBaseUrl="https://cdn.storage.test")
+    with pytest.raises(HTTPException) as caught:
+        _platform_update(db, created.id, **{field: value})
+    assert caught.value.status_code == 422
+    db.close()
