@@ -553,6 +553,54 @@ def _assert_refused_as_today(path, outcome, tail):
 
 
 # ── Controls: prove the rig itself works ──────────────────────────────────────
+def test_control_a_direct_connection_to_each_listener_is_recorded(guarded):
+    assert guarded.count(ALLOWED_ADDR) == 0 and guarded.count(BLOCKED_ADDR) == 0
+    for addr in (ALLOWED_ADDR, BLOCKED_ADDR):
+        sock = socket.create_connection((addr, guarded.port), timeout=5)
+        sock.close()
+    assert guarded.count(ALLOWED_ADDR) == 1, "direct connection to the allowed address not recorded"
+    assert guarded.count(BLOCKED_ADDR) == 1, "direct connection to the blocked address not recorded"
+
+
+def test_control_the_predicate_patch_and_the_scripted_resolver_work(guarded):
+    assert url_guard._is_blocked_ip(ipaddress.ip_address(BLOCKED_ADDR)) is True
+    assert url_guard._is_blocked_ip(ipaddress.ip_address(ALLOWED_ADDR)) is False
+    guarded.script(NAME, SEQ_ALLOWED)
+    url_guard.assert_deliverable(guarded.base())  # allowed answer: no refusal
+    guarded.script(NAME, SEQ_BLOCKED)
+    with pytest.raises(url_guard.UrlGuardError) as info:
+        url_guard.assert_deliverable(guarded.base())
+    assert str(info.value) == f"URL {NAME_TAIL}"
+    assert guarded.calls[NAME] == 1
+
+
+def test_control_the_scripted_resolver_reaches_the_async_path(guarded):
+    import asyncio
+
+    guarded.script(NAME, SEQ_ALLOWED)
+
+    async def go():
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.get(guarded.base() + "/x")
+        except httpx.HTTPError:
+            pass  # the listener closes without a handshake: that is fine here
+
+    asyncio.run(asyncio.wait_for(go(), WAIT_SECONDS))
+    assert guarded.calls[NAME] >= 1, "the async client did not resolve through socket.getaddrinfo"
+    assert guarded.count(ALLOWED_ADDR) >= 1, "the async client did not connect to the scripted address"
+    assert guarded.count(BLOCKED_ADDR) == 0
+
+
+def test_control_the_sync_client_resolves_through_the_scripted_resolver(guarded):
+    guarded.script(NAME, SEQ_ALLOWED)
+    try:
+        httpx.get(guarded.base() + "/x", timeout=10.0)
+    except httpx.HTTPError:
+        pass
+    assert guarded.calls[NAME] >= 1
+    assert guarded.count(ALLOWED_ADDR) >= 1
+    assert guarded.count(BLOCKED_ADDR) == 0
 
 
 # ── C1/C2: the connection goes only to an allowed address ─────────────────────
@@ -565,16 +613,92 @@ def test_connection_goes_only_to_an_allowed_address(guarded, env, path, steps):
     assert guarded.count(BLOCKED_ADDR) == 0, f"{path}: connected to the blocked address, answers {steps}"
 
 
+@pytest.mark.parametrize("path", sorted(PATHS))
+def test_a_third_answer_that_is_blocked_is_never_connected_to(guarded, env, path):
+    _run(guarded, env, path, SEQ_ALLOWED_ALLOWED_BLOCKED)
+    assert guarded.count(BLOCKED_ADDR) == 0, f"{path}: connected to the blocked address"
+
+
+@pytest.mark.parametrize("path", sorted(PATHS))
+def test_a_resolver_failure_is_not_a_refusal(guarded, env, path):
+    outcome = _run(guarded, env, path, SEQ_FAILURE_THEN_ALLOWED)
+    assert outcome.kind != "refused", f"{path}: a failed first lookup was treated as a refusal: {outcome!r}"
+    assert guarded.count(ALLOWED_ADDR) >= 1, f"{path}: never connected to the allowed address"
+    assert guarded.count(BLOCKED_ADDR) == 0
+
+
+@pytest.mark.parametrize("path", sorted(PATHS))
+def test_an_allowed_address_is_connected_to(guarded, env, path):
+    outcome = _run(guarded, env, path, SEQ_ALLOWED)
+    assert outcome.kind != "refused", f"{path}: an allowed address was refused: {outcome!r}"
+    assert guarded.count(ALLOWED_ADDR) >= 1, f"{path}: never connected to the allowed address"
+    assert guarded.count(BLOCKED_ADDR) == 0
+
+
 # ── C3: no answer at all is the path's normal connection failure ──────────────
+@pytest.mark.parametrize("path", sorted(PATHS))
+def test_a_name_with_no_answer_fails_through_normal_connection_handling(guarded, env, path):
+    outcome = _run(guarded, env, path, SEQ_FAILURE)
+    assert outcome.kind == PATHS[path][2], f"{path}: expected the connection failure outcome, got {outcome!r}"
+    assert guarded.count(ALLOWED_ADDR) == 0 and guarded.count(BLOCKED_ADDR) == 0
 
 
 # ── C4: blocked on the first check is refused as today, never connected to ────
+@pytest.mark.parametrize("path", sorted(PATHS))
+def test_a_name_blocked_on_the_first_check_is_refused_as_today(guarded, env, path):
+    outcome = _run(guarded, env, path, SEQ_BLOCKED)
+    _assert_refused_as_today(path, outcome, NAME_TAIL)
+    assert guarded.count(BLOCKED_ADDR) == 0 and guarded.count(ALLOWED_ADDR) == 0
+
+
+@pytest.mark.parametrize("path", sorted(PATHS))
+def test_a_blocked_ip_literal_is_refused_as_today_and_never_connected_to(guarded, env, path):
+    driver = PATHS[path][0]
+    outcome = driver(env, f"https://[{BLOCKED_ADDR}]:{guarded.port}")
+    if path == "messenger_attachment":
+        assert outcome.kind == "none"
+    else:
+        _assert_refused_as_today(path, outcome, LITERAL_TAIL)
+    assert guarded.count(BLOCKED_ADDR) == 0
 
 
 # ── C5: the name stays the name ───────────────────────────────────────────────
+@pytest.mark.parametrize("path", sorted(PATHS))
+def test_the_host_header_and_tls_server_name_are_the_url_hostname(guarded, env, path):
+    guarded.respond("ok")
+    outcome = _run(guarded, env, path, SEQ_ALLOWED)
+    assert outcome.kind != "refused", f"{path}: {outcome!r}"
+    assert guarded.tls_hostnames, f"{path}: no TLS start was observed"
+    assert set(guarded.tls_hostnames) == {NAME}, f"{path}: TLS server name was {guarded.tls_hostnames}"
+    assert guarded.requests, f"{path}: the server saw no request"
+    assert {host for _addr, host in guarded.requests} == {f"{NAME}:{guarded.port}"}, guarded.requests
 
 
 # ── C6: redirects are never followed automatically ────────────────────────────
+@pytest.mark.parametrize(
+    "path",
+    sorted(set(PATHS) - {"messenger_attachment", "migration_media"}),
+)
+def test_a_redirect_is_not_followed_automatically(guarded, env, path):
+    guarded.script(HOP_NAME, SEQ_ALLOWED)
+    guarded.respond("redirect", redirect_to=f"https://{HOP_NAME}:{guarded.port}/next")
+    _run(guarded, env, path, SEQ_ALLOWED)
+    assert guarded.requests, f"{path}: the first request was never answered"
+    assert {host for _addr, host in guarded.requests} == {f"{NAME}:{guarded.port}"}, (
+        f"{path}: followed a redirect: {guarded.requests}"
+    )
+    assert guarded.calls[HOP_NAME] == 0, f"{path}: looked up the redirect target"
+
+
+@pytest.mark.parametrize("path", ["messenger_attachment", "migration_media"])
+def test_a_hand_followed_redirect_is_checked_again_and_a_blocked_hop_is_not_connected_to(guarded, env, path):
+    guarded.script(HOP_NAME, SEQ_BLOCKED)
+    guarded.respond("redirect", redirect_to=f"https://{HOP_NAME}:{guarded.port}/next")
+    outcome = _run(guarded, env, path, SEQ_ALLOWED)
+    assert guarded.requests, f"{path}: the first hop was never requested"
+    assert outcome.kind != "completed"
+    assert guarded.count(BLOCKED_ADDR) == 0, f"{path}: connected to a blocked redirect target"
+    assert {host for _addr, host in guarded.requests} == {f"{NAME}:{guarded.port}"}
 
 
 @pytest.mark.parametrize("path", ["messenger_attachment", "migration_media"])
@@ -596,5 +720,27 @@ def test_a_hand_followed_hop_connects_only_to_an_allowed_address(guarded, env, p
 
 
 # ── C7: the development carve-out for local hosts keeps working ───────────────
+@pytest.mark.parametrize("driver_name", ["autocount_probe", "autocount_paged_get"])
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+def test_development_keeps_the_local_host_exemption(rig, env, driver_name, host):
+    env.monkeypatch.setattr(settings, "environment", "development")
+    outcome = PATHS[driver_name][0](env, f"https://{host}:{rig.port}")
+    assert outcome.kind != "refused", f"{driver_name}: a local host was refused in development: {outcome!r}"
+    total = rig.count(ALLOWED_ADDR) + rig.count(BLOCKED_ADDR)
+    assert total >= 1, f"{driver_name}: no connection reached the local {host} listener in development"
 
 
+@pytest.mark.parametrize("driver_name", ["autocount_probe", "autocount_paged_get"])
+def test_outside_development_a_local_literal_is_refused_and_not_connected_to(rig, env, driver_name):
+    env.monkeypatch.setattr(settings, "environment", "production")
+    outcome = PATHS[driver_name][0](env, f"https://127.0.0.1:{rig.port}")
+    assert outcome.kind == "refused", f"{driver_name}: {outcome!r}"
+    assert rig.count(ALLOWED_ADDR) == 0 and rig.count(BLOCKED_ADDR) == 0
+
+
+@pytest.mark.parametrize("driver_name", ["autocount_probe", "autocount_paged_get"])
+def test_development_does_not_exempt_a_name_that_resolves_to_a_blocked_address(guarded, env, driver_name):
+    env.monkeypatch.setattr(settings, "environment", "development")
+    outcome = _run(guarded, env, driver_name, SEQ_BLOCKED)
+    assert outcome.kind == "refused", f"{driver_name}: {outcome!r}"
+    assert guarded.count(BLOCKED_ADDR) == 0
