@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-01** | **Channel `status: "ERROR"`** (§5a). `GET /api/v1/omnichannel/channels` can now return `ERROR` when the channel's WhatsApp access token no longer works, within about 6 hours. `isActive` is unchanged, so an `ERROR` channel can show `isActive: true`. A send to it is still accepted, and delivery fails until an admin replaces the token. Inbound is not affected. No new error code, webhook or event. |
 > | **2026-11-01** | **Media fetch limits** (`POST /messages`, section 4.2). A media URL fetch has a total limit of 60 seconds (`422 media_fetch_failed`), a response declaring over 100 MB is refused as `422 oversize` before its body is read, compressed responses are refused, and a send over the fetch limit (4 at once in a server process, 2 per tenant) answers `429 media_fetch_busy` (safe to retry shortly with the same `Idempotency-Key`). Nothing is sent in any of these cases. Other contract details are unchanged. |
 > | **2026-11-01** | **Mark a contact read** (`POST /contacts/{identifier}/read`, section 6a). Resets `unreadCount` and sends a WhatsApp read receipt per channel; each receipt answers `sent`, `already_sent`, `failed`, `channel_unavailable` or `not_supported`. Only this route sends a read receipt. Additive: no existing shape changes. |
 > | **2026-11-01** | **`GET /api/v1/omnichannel/channels`** (§5a). Lists the channels your API key can send on, so you can map a `channelId` to a number. Each item carries `isDefault`, the channel `POST /messages` uses when `channelId` is omitted. Also, an API key now stops working while its tenant is suspended or archived or the key's workspace is trashed (`403 service_not_enabled`, see §3 and §10), and works again once restored. |
@@ -342,12 +343,14 @@ The channels of your API key's workspace, oldest first. No pagination (a workspa
 | `id` | Pass as `channelId` on `POST /messages` (§4). |
 | `channelType` | `WHATSAPP`, `FACEBOOK`, `INSTAGRAM` or `WEBCHAT`. |
 | `name` | A free-text label set by the workspace. It is `WhatsApp channel` when the channel has no label beyond the provider's internal number id. |
-| `status` | `ACTIVE`, `PENDING`, `INACTIVE` or `ERROR`. |
+| `status` | `ACTIVE`, `PENDING`, `INACTIVE` or `ERROR`. `ERROR` means the channel's WhatsApp access token no longer works (see below). |
 | `isActive` | `false` for a paused channel, which is still listed with its real `status`, so you can see a number that stopped working. A disconnected channel leaves the list. |
 | `isDefault` | `true` on exactly the channel `POST /messages` uses when you omit `channelId`; `false` on the rest. When no channel is active, none is default. |
 | `displayPhoneNumber` | The number as shown to people; `null` on channels with no phone number or whose number is not available yet. |
 | `verifiedName` | The business name verified by Meta; `null` until the channel's details sync, and on channels that have none. |
 | `createdAt` | When the channel was added, ISO-8601 UTC (`Z`). The list is ordered by it, oldest first. |
+
+**A channel in `ERROR`.** The platform sets `ERROR` within about 6 hours of the channel's WhatsApp access token no longer working. `isActive` is unchanged by it, so an `ERROR` channel can show `isActive: true`. `POST /messages` does not refuse a send on it: the send is accepted as usual, but delivery fails until an admin replaces the token, so the message can end as `FAILED` (reported as in §7, `message.status`). Inbound messages are not affected. The status returns to `ACTIVE` (or `INACTIVE` for a paused channel) once the token is replaced or works again. Treat `ERROR` as "tell the operator"; you need not stop sending. There is no separate error code, webhook or event for it.
 
 Without `channelId`, `POST /messages` always uses the default channel, even if the contact last wrote on another number. The one exception is a reaction, which goes out on the contact's own channel.
 
