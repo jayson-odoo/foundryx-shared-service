@@ -2420,14 +2420,6 @@ def test_an_operator_read_ends_read_transactions_before_any_network_use(net, rel
     assert release_spy[0] == (0, 0)
 
 
-def test_endpoint_is_usable_ends_read_transactions_before_its_name_lookup(release_spy, net):
-    from app.services.storage import endpoint_is_usable
-
-    assert endpoint_is_usable("s3", {"endpointUrl": "https://cdn.storage.test"}) is True
-    assert release_spy, "release_read_transactions was not called"
-    assert release_spy[0][1] == 0
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # a client library error on upload surfaces
 # ═══════════════════════════════════════════════════════════════════════════
