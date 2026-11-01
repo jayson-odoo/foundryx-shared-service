@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.form_engine.schemas import FormDocument, FormField, validate_form_doc
 from app.form_engine.validation import validate_submission
-from app.services.storage import _KEY_PREFIX
+from app.services.storage import _KEY_PREFIX, is_minted_raw_key
 from app.uploads import detect_upload_mime
 from app.models.form import (
     ACCESS_INTERNAL,
@@ -190,7 +190,8 @@ def _decode_data_url(value: str) -> Optional[bytes]:
 
 def _is_form_key(key: Any, form_id: str) -> bool:
     """True when `key` is a storage key this form wrote: the raw part (after an
-    optional `conn:<id>:` prefix) sits under `forms/<form_id>/` with no `..`."""
+    optional `conn:<id>:` prefix) sits under `forms/<form_id>/` and has the shape
+    the storage layer mints."""
     if not isinstance(key, str):
         return False
     raw = key
@@ -200,9 +201,20 @@ def _is_form_key(key: Any, form_id: str) -> bool:
             return False
         raw = parts[2]
     prefix = f"forms/{form_id}/"
-    if not raw.startswith(prefix) or len(raw) <= len(prefix):
-        return False
-    return ".." not in raw.replace("\\", "/").split("/")
+    return raw.startswith(prefix) and is_minted_raw_key(raw[len(prefix):])
+
+
+_SERVED_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain"}
+)
+
+
+def _served_type(value: Any) -> str:
+    """A content type from the short served list; anything else is a download."""
+    if not isinstance(value, str):
+        return "application/octet-stream"
+    base = value.lower().split(";", 1)[0].strip()
+    return base if base in _SERVED_TYPES else "application/octet-stream"
 
 
 class FormService:
@@ -1238,7 +1250,7 @@ class FormService:
         """Resolve (storage_key, mime, filename) for the nth file of a field on a
         submission - tenant-scoped (never resolve a stored id unscoped). None on
         any miss. Files are objects {key,name,mime}; a signature is a bare key
-        string (index 0). Only keys under `forms/<form_id>/` are returned; any other
+        string (index 0). Only keys of the minted shape under `forms/<form_id>/` are returned, with a content type from a short list; any other
         stored key is a miss. The route serves these CSP-sandboxed (D12)."""
         submission = self.subs.get_by_id(tenant_id, submission_id)
         if submission is None:
@@ -1250,7 +1262,8 @@ class FormService:
             entry = value[index]
             if not isinstance(entry, dict) or not _is_form_key(entry.get("key"), submission.form_id):
                 return None
-            return entry["key"], entry.get("mime") or "application/octet-stream", entry.get("name") or "file"
+            name = entry.get("name")
+            return entry["key"], _served_type(entry.get("mime")), name if isinstance(name, str) and name else "file"
         if isinstance(value, str) and index == 0 and _is_form_key(value, submission.form_id):
             # A signature key string.
             return value, "image/png", "signature.png"

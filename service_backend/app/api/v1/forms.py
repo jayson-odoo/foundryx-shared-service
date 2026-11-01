@@ -14,6 +14,7 @@ publish → ``{"problems": [...]}``, submit → ``{"fieldErrors": {...}}``; 409s
 carry a plain detail string.
 """
 import json
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -21,6 +22,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.api.v1.documents import _content_disposition
 from app.config import settings
 from app.dependencies import (
     effective_permission_keys,
@@ -538,13 +540,15 @@ def submission_file(
     except Exception:  # noqa: BLE001 - unresolvable key (connection gone)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
     headers = {
-        "Content-Disposition": f'inline; filename="{filename}"',
+        "Content-Disposition": _content_disposition("inline", filename),
         "Content-Security-Policy": "default-src 'none'; sandbox",
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, max-age=300",
     }
     if location in ("presigned", "url"):
         return RedirectResponse(value, headers=headers)
+    if not os.path.isfile(value):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
     return FileResponse(value, media_type=mime, headers=headers)
 
 

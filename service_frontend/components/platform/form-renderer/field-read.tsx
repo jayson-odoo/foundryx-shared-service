@@ -224,6 +224,15 @@ function isAddress(value: FormAnswerValue | undefined): value is FormAddressAnsw
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+const SERVED_FILE_TYPES: readonly string[] = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+  'text/plain',
+];
+
 function isFileList(value: FormAnswerValue | undefined): value is FormFileAnswer[] {
   return Array.isArray(value) && value.every((v) => !!v && typeof v === 'object' && 'key' in v && 'name' in v);
 }
@@ -253,7 +262,11 @@ function FileChip({ fieldKey, index, label }: { fieldKey: string; index: number;
       const blob = await fetchFile(
         `/submissions/${submissionId}/files/${encodeURIComponent(fieldKey)}/${index}`,
       );
-      const url = URL.createObjectURL(blob);
+      const base = blob.type.toLowerCase().split(';')[0].trim();
+      const shown = SERVED_FILE_TYPES.includes(base)
+        ? blob
+        : new Blob([blob], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(shown);
       window.open(url, '_blank', 'noopener');
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch {
