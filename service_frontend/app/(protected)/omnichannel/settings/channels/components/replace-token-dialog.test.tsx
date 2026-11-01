@@ -49,18 +49,7 @@ const CHANNEL = {
 } as Channel;
 
 async function mountDialog(props: Partial<{ onOpenChange: () => void; onReplaced: () => void }> = {}) {
-  // glob, not a literal import: a missing file fails each test, never the collection
-  const glob = (import.meta as unknown as { glob: (p: string) => Record<string, () => Promise<unknown>> }).glob;
-  const loader = glob('./replace-token-dialog.tsx')['./replace-token-dialog.tsx'];
-  if (!loader) throw new Error('replace-token-dialog.tsx does not exist yet');
-  const { ReplaceTokenDialog } = (await loader()) as {
-    ReplaceTokenDialog: (props: {
-      channel: Channel;
-      open: boolean;
-      onOpenChange: (open: boolean) => void;
-      onReplaced: () => void;
-    }) => React.ReactElement;
-  };
+  const { ReplaceTokenDialog } = await import('./replace-token-dialog');
   const onOpenChange = props.onOpenChange ?? vi.fn();
   const onReplaced = props.onReplaced ?? vi.fn();
   render(<ReplaceTokenDialog channel={CHANNEL} open onOpenChange={onOpenChange} onReplaced={onReplaced} />);
