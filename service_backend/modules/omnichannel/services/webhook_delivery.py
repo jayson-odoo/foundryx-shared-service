@@ -215,6 +215,9 @@ def dispatch(db: Session, delivery_id: str) -> str:
         error = f"Delivery refused: {exc}"
     except httpx.HTTPError as exc:
         error = f"Delivery failed: {exc}"
+    except Exception:  # noqa: BLE001 - any other send error is a failed attempt
+        logger.exception("webhook delivery %s could not be attempted", delivery.id)
+        error = "Delivery could not be attempted."
 
     delivery.response_status = status_code
     delivery.response_ms = int(
@@ -307,8 +310,9 @@ def _record_webhook_activity(
 def run_due_deliveries(db: Session, limit: int = 100) -> int:
     """Re-drive PENDING deliveries whose backoff has elapsed (beat/backstop)."""
     now = datetime.now(timezone.utc)
-    due = (
-        db.query(WebhookDelivery)
+    due_ids = [
+        row_id
+        for (row_id,) in db.query(WebhookDelivery.id)
         .filter(
             WebhookDelivery.status == "PENDING",
             WebhookDelivery.next_attempt_at <= now,
@@ -316,7 +320,11 @@ def run_due_deliveries(db: Session, limit: int = 100) -> int:
         .order_by(WebhookDelivery.next_attempt_at.asc())
         .limit(limit)
         .all()
-    )
-    for row in due:
-        dispatch(db, row.id)
-    return len(due)
+    ]
+    for delivery_id in due_ids:
+        try:
+            dispatch(db, delivery_id)
+        except Exception:  # noqa: BLE001 - one bad delivery must not stop the rest
+            logger.exception("webhook delivery %s failed in the due run", delivery_id)
+            db.rollback()
+    return len(due_ids)
