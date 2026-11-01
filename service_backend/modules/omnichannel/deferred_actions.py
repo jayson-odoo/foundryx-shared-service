@@ -237,7 +237,9 @@ def _api_keys_revoke(db: Session, tenant_id: str, entity_id: str, payload: dict,
     row = _api_key_row(db, tenant_id, entity_id)
     if row is None:
         raise ValueError("API key no longer exists.")
-    ApiKeyService(db).revoke(entity_id, tenant_id, row.workspace_id)
+    # Pauses the key's webhook endpoints unless the payload says exactly `false`.
+    pause = (payload or {}).get("pauseEndpoints") is not False
+    ApiKeyService(db).revoke(entity_id, tenant_id, row.workspace_id, pause)
 
 
 API_KEYS_REVOKE = DeferredActionDef(

@@ -309,6 +309,52 @@ class WebhookService:
             .all()
         )
 
+    def list_all_channels_for_workspace(
+        self, tenant_id: str, workspace_id: str
+    ) -> List[WebhookEndpoint]:
+        """The all-channels endpoints (``channel_id`` NULL) of one workspace, for
+        staff. Needs no live channel. Raises ``WebhookNotFound`` when the
+        workspace is not the tenant's own."""
+        workspace = (
+            self.db.query(Workspace.id)
+            .filter(Workspace.id == workspace_id, Workspace.tenant_id == tenant_id)
+            .first()
+        )
+        if workspace is None:
+            raise WebhookNotFound("Workspace not found.")
+        return (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.tenant_id == tenant_id,
+                WebhookEndpoint.workspace_id == workspace_id,
+                WebhookEndpoint.channel_id.is_(None),
+            )
+            .order_by(WebhookEndpoint.created_at.desc())
+            .all()
+        )
+
+    def pause_for_key(self, tenant_id: str, workspace_id: str, key_id: str) -> int:
+        """Pause the ACTIVE endpoints one API key registered (``created_by`` is
+        exactly ``apikey:<key_id>``). Does not commit: the caller commits it
+        together with the key's own change. Returns the number paused."""
+        return (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.tenant_id == tenant_id,
+                WebhookEndpoint.workspace_id == workspace_id,
+                WebhookEndpoint.created_by == f"apikey:{key_id}",
+                WebhookEndpoint.status == "ACTIVE",
+            )
+            .update(
+                {
+                    WebhookEndpoint.status: "DISABLED",
+                    WebhookEndpoint.disabled_at: datetime.now(timezone.utc),
+                    WebhookEndpoint.disabled_reason: "The API key that registered it was revoked.",
+                },
+                synchronize_session=False,
+            )
+        )
+
     def list_for_channel(self, tenant_id: str, channel_id: str) -> List[WebhookEndpoint]:
         """The channel's own endpoints plus the all-channels endpoints of the
         channel's tenant and workspace."""

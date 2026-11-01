@@ -1389,6 +1389,7 @@ class ApiKeyItem(ApiModel):
     lastUsedAt: Optional[datetime] = None
     revokedAt: Optional[datetime] = None
     createdAt: datetime
+    webhookEndpointCount: int = 0  # ACTIVE webhook endpoints this key registered
 
 
 class ApiKeyListResponse(ApiModel):
@@ -1735,6 +1736,16 @@ class WebhookEndpointItem(ApiModel):
 
 class WebhookEndpointListResponse(ApiModel):
     data: List[WebhookEndpointItem]
+
+
+class WebhookEndpointStaffItem(WebhookEndpointItem):
+    """Staff view only; the public gateway keeps `WebhookEndpointItem`."""
+
+    registeredByKeyName: Optional[str] = None  # the API key's name, null for other creators
+
+
+class WebhookEndpointStaffListResponse(ApiModel):
+    data: List[WebhookEndpointStaffItem]
 
 
 class WebhookEndpointCreateRequest(ApiModel):
