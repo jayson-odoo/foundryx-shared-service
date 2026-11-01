@@ -156,6 +156,20 @@ def enqueue_event(
     return len(delivery_ids)
 
 
+def _post(
+    url: str, *, content: bytes, headers: Dict[str, str], timeout: float
+) -> httpx.Response:
+    """One POST on a fresh client whose connection goes only to an address that
+    passed the guard at connect time. Module-level so a test can replace the
+    outbound call."""
+    with httpx.Client(
+        transport=GuardedTransport(subject="Callback URL"),
+        timeout=timeout,
+        follow_redirects=False,
+    ) as client:
+        return client.post(url, content=content, headers=headers)
+
+
 def dispatch(db: Session, delivery_id: str) -> str:
     """Run ONE delivery attempt. Returns 'success' | 'retry' | 'dead' | 'skip'.
     Reschedules (next_attempt_at) on retry; the caller/beat re-drives due rows."""
@@ -205,12 +219,7 @@ def dispatch(db: Session, delivery_id: str) -> str:
         # externally supplied on the API-key surface). Never POST to a target
         # that resolves internally NOW.
         assert_deliverable(endpoint.url)
-        with httpx.Client(
-            transport=GuardedTransport(subject="Callback URL"),
-            timeout=DELIVERY_TIMEOUT,
-            follow_redirects=False,
-        ) as client:
-            resp = client.post(endpoint.url, content=body, headers=headers)
+        resp = _post(endpoint.url, content=body, headers=headers, timeout=DELIVERY_TIMEOUT)
         status_code = resp.status_code
         ok = 200 <= resp.status_code < 300
         if not ok:
