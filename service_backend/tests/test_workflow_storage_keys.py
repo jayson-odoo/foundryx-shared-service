@@ -479,3 +479,65 @@ def test_a_raw_containing_a_colon_is_one_raw_under_the_prefix_on_the_platform_ro
     client.objects[raw] = b"data"
     _run(shared, node, shared.a, f"conn:{shared.platform_conn}:{raw}")
     assert (client.presigned if node == "get" else client.deleted) == [raw]
+
+
+# ---- a connection of another type, and a refused delete ---------------------------
+
+def _smtp_connection(db, tenant_id: str) -> Connection:
+    row = Connection(
+        tenant_id=tenant_id,
+        provider="smtp",
+        type="smtp",
+        name="Mail",
+        config_json={"host": "mail.example", "port": 587},
+        credentials_json=encrypt_secret({"username": "u", "password": "p"}),
+        status=CONNECTION_STATUS_UNVERIFIED,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@both
+@pytest.mark.parametrize("owner", ["caller", "platform"])
+def test_a_connection_that_is_not_a_storage_connection_is_refused(own, client, media, monkeypatch, node, owner):
+    builds = []
+    monkeypatch.setattr(S3CompatibleAdapter, "_build_client", lambda self: builds.append(1) or client)
+    storage_module.clear_adapter_cache()
+    if owner == "caller":
+        key = f"conn:{_smtp_connection(own.db, own.a).id}:x"
+    else:
+        key = f"conn:{_smtp_connection(own.db, PLATFORM_TENANT_ID).id}:workflows/{own.a}/x"
+    with pytest.raises(ActionError) as info:
+        _run(own, node, own.a, key)
+    assert type(info.value) is ActionError
+    with pytest.raises(ActionError) as other:
+        _run(own, node, own.a, f"conn:{own.platform_conn}:documents/x")
+    assert str(info.value) == str(other.value)
+    assert builds == []
+    _assert_adapter_not_reached(client)
+
+
+@both
+def test_control_the_tenants_own_storage_row_is_reached_next_to_its_other_connections(own, client, media, monkeypatch, node):
+    builds = []
+    monkeypatch.setattr(S3CompatibleAdapter, "_build_client", lambda self: builds.append(1) or client)
+    storage_module.clear_adapter_cache()
+    _smtp_connection(own.db, own.a)
+    client.objects["x"] = b"data"
+    _run(own, node, own.a, f"conn:{own.a_conn}:x")
+    assert builds != []
+    assert (client.presigned if node == "get" else client.deleted) == ["x"]
+
+
+def test_a_delete_the_filesystem_refuses_is_an_action_error_without_the_server_path(local, client, media):
+    directory = media / "workflows" / local.a / "sub"
+    directory.mkdir(parents=True)
+    (directory / "inner.txt").write_bytes(b"data")
+    with pytest.raises(ActionError) as info:
+        _run(local, "delete", local.a, f"workflows/{local.a}/sub")
+    assert type(info.value) is ActionError
+    assert str(media) not in str(info.value)
+    assert directory.is_dir()
+    assert (directory / "inner.txt").exists()
