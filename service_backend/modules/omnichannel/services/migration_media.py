@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 from app.services.storage import storage_for_tenant
 from app.uploads import detect_upload_mime
 
-from app.services.url_guard import UrlGuardError, assert_deliverable
+from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
 
 from .media_pipeline import ACCEPTED_MIMES
 from .media_settings_service import MediaSettingsService
@@ -79,7 +79,11 @@ def _default_client_factory() -> httpx.Client:
     # `follow_redirects=False` (review round 1, finding B1) - see the
     # module docstring's redirect-hop paragraph; `_stream_with_guarded_
     # redirects` is what actually walks a 3xx chain, re-validating each hop.
-    return httpx.Client(timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=False)
+    return httpx.Client(
+        timeout=FETCH_TIMEOUT_SECONDS,
+        follow_redirects=False,
+        transport=GuardedTransport(),
+    )
 
 
 # The test seam - a MODULE-LEVEL name (like `RespondIoClient.from_connection`),
@@ -121,6 +125,9 @@ def _stream_with_guarded_redirects(
     for _hop in range(MAX_REDIRECT_HOPS):
         try:
             resp = client.send(client.build_request("GET", current_url), stream=True)
+        except UrlGuardError as exc:
+            prefix = "Source URL" if _hop == 0 else "Redirected source URL"
+            return None, f"{prefix} rejected: {exc}"
         except httpx.TimeoutException:
             return None, "Timed out fetching source media."
         except httpx.HTTPError as exc:

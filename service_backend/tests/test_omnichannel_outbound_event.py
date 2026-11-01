@@ -73,7 +73,7 @@ def _no_real_http(monkeypatch):
     class _Resp:
         status_code = 200
 
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: _Resp())
+    monkeypatch.setattr(wd, "_post", lambda *a, **k: _Resp())
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

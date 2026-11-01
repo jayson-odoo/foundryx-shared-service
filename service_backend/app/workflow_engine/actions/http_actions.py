@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Tuple
 import httpx
 from sqlalchemy.orm import Session
 
-from app.services.url_guard import UrlGuardError, assert_deliverable
+from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
 from app.workflow_engine.context import render_field
 
 
@@ -185,15 +185,15 @@ def http_request(
     timeout = _timeout_seconds(config)
     started = time.monotonic()
     try:
-        # Module-level `httpx.stream` (not a `Client` instance) so a test can
-        # monkeypatch `http_actions.httpx.stream` directly - the same
-        # monkeypatch shape the pre-existing webhook-delivery tests already
-        # use for `httpx.post`. `follow_redirects=False` is explicit (never
-        # inherited from a default that could change) - a 302 to an internal
-        # address must never be auto-followed past the pre-flight guard.
-        with httpx.stream(
+        # A fresh client per request whose transport connects only to an
+        # address that passed the guard at connect time. `follow_redirects=
+        # False` is explicit (never inherited from a default that could
+        # change) - a 302 to an internal address must never be auto-followed
+        # past the guard.
+        with httpx.Client(
+            transport=GuardedTransport(), timeout=timeout, follow_redirects=False,
+        ) as client, client.stream(
             method, url, headers=headers, content=body or None,
-            timeout=timeout, follow_redirects=False,
         ) as resp:
             status_code = resp.status_code
             content_type = resp.headers.get("content-type", "")
@@ -203,7 +203,7 @@ def http_request(
             truncated = False
             for chunk in resp.iter_bytes():
                 # Wall-clock deadline (plan 31 review S3): `timeout=` on
-                # `httpx.stream` is a PER-OPERATION budget (connect/read/write/
+                # the client is a PER-OPERATION budget (connect/read/write/
                 # pool), not a cap on total elapsed time - a hostile endpoint
                 # drip-feeding one byte every few seconds under the read
                 # timeout would otherwise hold this worker slot indefinitely
@@ -219,6 +219,8 @@ def http_request(
                     break
                 chunks.append(chunk)
             raw = b"".join(chunks)
+    except UrlGuardError as exc:
+        raise ActionError(f"URL refused: {exc}") from exc
     except httpx.HTTPError as exc:
         # AC-WFP-60: a transport error fails the node with its error class in
         # the message - no silent success. Scrub any CONFIGURED header value
