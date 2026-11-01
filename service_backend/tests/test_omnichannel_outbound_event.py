@@ -1437,8 +1437,9 @@ def test_ac_38_35_storage_read_failure_carries_the_status_not_the_query_string(
 
     monkeypatch.setattr(st, "storage_for_tenant", lambda db, tid: _Wrap(real_for(db, tid)))
     monkeypatch.setattr(
-        "modules.omnichannel.services.send_runner.httpx.get",
-        lambda u, timeout=None: httpx.Response(503, request=httpx.Request("GET", u)),
+        httpx.HTTPTransport,
+        "handle_request",
+        lambda self, request: httpx.Response(503, request=request),
     )
     with caplog.at_level(logging.DEBUG):
         res = client.post(
@@ -1859,7 +1860,7 @@ def test_ac_38_42_media_read_request_url_is_not_in_worker_logs(session_factory, 
 
     _fake_storage_url(monkeypatch)
     monkeypatch.setattr(
-        httpx.HTTPTransport, "handle_request", lambda self, request: httpx.Response(200, content=b"data", request=request)
+        httpx.HTTPTransport, "handle_request", lambda self, request: httpx.Response(200, stream=httpx.ByteStream(b"data"), request=request)
     )
     db = session_factory()
     try:

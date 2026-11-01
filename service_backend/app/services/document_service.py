@@ -14,7 +14,6 @@ existingFileId}, ``QuotaExceeded`` 413, ``UploadRejected`` 415, ``CycleError``
 422, ``JobNotReady`` 409.
 """
 import io
-import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -46,7 +45,7 @@ from app.schemas.document import (
     FolderOut,
     TrashListingOut,
 )
-from app.services.storage import storage_for_tenant
+from app.services.storage import READ_CAP_BYTES, read_object, storage_for_tenant
 from app.uploads import detect_document_mime
 from app.workflow_engine.entity_events import emit_entity_event
 
@@ -573,16 +572,8 @@ class DocumentService:
     @staticmethod
     def _read_blob(storage, key: str) -> Optional[bytes]:
         try:
-            location, value = storage.resolve(key)
-        except Exception:  # noqa: BLE001
-            return None
-        try:
-            if location == "path":
-                with open(value, "rb") as fh:
-                    return fh.read()
-            with urllib.request.urlopen(value, timeout=30) as resp:  # noqa: S310
-                return resp.read()
-        except Exception:  # noqa: BLE001
+            return read_object(storage, key, timeout=30, max_bytes=READ_CAP_BYTES)
+        except Exception:  # noqa: BLE001 - a failed read is skipped by the caller
             return None
 
     def list_jobs(self, tenant_id: str, user_id: str) -> List[DownloadJobOut]:

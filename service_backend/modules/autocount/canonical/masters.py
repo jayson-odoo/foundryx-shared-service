@@ -208,6 +208,12 @@ class CanonicalCustomer(CanonicalMaster):
     # person is the CRM's job. Blank -> omitted, never ``null``, so a blank
     # never clears the CRM's per-ledger agent.
     sales_agent_code: Optional[str] = None
+    # SS-DEBTOR-TYPE (partner of sorento-crm SALES-ACCOUNT-TYPE) - AutoCount
+    # Debtor ``DebtorType`` (Text, 5), sent VERBATIM under the CRM's EXISTING
+    # contract key ``market_segment_code`` (the CRM stores it as the
+    # customer's AutoCount account type). Blank -> omitted, never ``null``, so
+    # a blank never clears the CRM's value.
+    market_segment_code: Optional[str] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
@@ -218,6 +224,7 @@ class CanonicalCustomer(CanonicalMaster):
         "phone_number",
         "tax_id",
         "sales_agent_code",
+        "market_segment_code",
         "is_active",
     )
 

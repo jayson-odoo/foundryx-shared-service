@@ -20,6 +20,7 @@ from app.models.connection import (
     EXEMPT_FROM_ONE_PER_TYPE,
     Connection,
 )
+from app.models.tenant import PLATFORM_TENANT_ID
 from app.repositories.connection_repository import ConnectionRepository
 from app.schemas.integration import (
     ConnectionCreateRequest,
@@ -67,7 +68,9 @@ def _decrypt_or_none(ciphertext: str) -> Optional[Dict[str, str]]:
         return None
 
 
-def _validate_provider_config(provider: IntegrationProvider, config: Dict) -> None:
+def _validate_provider_config(
+    provider: IntegrationProvider, config: Dict, tenant_id: Optional[str] = None
+) -> None:
     """S5 (sprint-5/08 review round 1) - a save-time schema check BEYOND
     `required`, for a provider that opts in. `validate_config`, when a
     provider defines one (duck-typed - not every provider needs a format
@@ -84,6 +87,10 @@ def _validate_provider_config(provider: IntegrationProvider, config: Dict) -> No
     same method.
     """
     validate = getattr(provider, "validate_config", None)
+    if tenant_id == PLATFORM_TENANT_ID:
+        # The platform's own rows are operator-owned: a provider may relax its
+        # rule for them with `validate_platform_config`.
+        validate = getattr(provider, "validate_platform_config", validate)
     if validate is None:
         return
     error = validate(config)
@@ -279,7 +286,7 @@ class IntegrationService:
                     f'A {existing.type} connection ("{existing.name}") already exists '
                     "for this workspace - disconnect it first.",
                 )
-        _validate_provider_config(provider, dict(req.config))
+        _validate_provider_config(provider, dict(req.config), tenant_id)
         connection = Connection(
             tenant_id=tenant_id,
             provider=provider.provider,
@@ -323,7 +330,7 @@ class IntegrationService:
             merged_config = {**(connection.config_json or {}), **req.config}
             provider = get_provider(connection.provider)
             if provider is not None:
-                _validate_provider_config(provider, merged_config)
+                _validate_provider_config(provider, merged_config, tenant_id)
             connection.config_json = merged_config
         if req.rateLimitPerMinute is not None:
             connection.rate_limit_per_minute = req.rateLimitPerMinute
