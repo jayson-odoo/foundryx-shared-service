@@ -562,7 +562,7 @@ def test_a_redirect_from_a_storage_url_is_not_followed(reader, net, bucket, sess
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.parametrize("reader", ["import_content", "import_error_report"])
+@pytest.mark.parametrize("reader", list(READERS))
 def test_storage_reads_carry_a_timeout(reader, net, bucket, session_factory):
     db = session_factory()
     listener = net.start(tls=True)
@@ -594,6 +594,61 @@ def test_an_import_read_stops_at_the_import_size_limit(net, bucket, session_fact
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.parametrize("reader", CONTENT_READERS)
+def test_a_public_https_cdn_is_read(reader, net, bucket, session_factory):
+    db = session_factory()
+    net.start(tls=True)
+    conn = _connect(db, "https://cdn.storage.test")
+    out = READERS[reader](db, conn)
+    assert out.ok
+    assert out.data == CANARY_BYTES
+    assert net.listener.requests == ["/obj.bin"]
+    db.close()
+
+
+def test_the_probe_round_trips_through_a_public_https_cdn(net, bucket, session_factory):
+    db = session_factory()
+    listener = net.start(tls=True)
+    _mirror_into_listener(bucket, listener)
+    conn = _connect(db, "https://cdn.storage.test")
+    assert read_probe(db, conn).ok
+    db.close()
+
+
+@pytest.mark.parametrize("reader", CONTENT_READERS)
+def test_a_presigned_https_url_is_read(reader, net, bucket, session_factory):
+    db = session_factory()
+    net.start(tls=True)
+    conn = _connect(db, "")  # no CDN: reads go through the presigned URL
+    out = READERS[reader](db, conn)
+    assert out.ok
+    assert out.data == CANARY_BYTES
+    assert bucket.presigned == ["obj.bin"]
+    assert net.listener.requests == ["/obj.bin?sig=abc"]
+    db.close()
+
+
+@pytest.mark.parametrize("reader", CONTENT_READERS)
+def test_local_storage_is_read(reader, tmp_path, monkeypatch, session_factory):
+    from app.config import settings
+
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "local.bin").write_bytes(CANARY_BYTES)
+    monkeypatch.setattr(settings, "media_root", str(media))
+    db = session_factory()
+    if reader == "document_blob":
+        out = Outcome(True, DocumentService._read_blob(storage_for_tenant(db, DEFAULT_TENANT_ID), "local.bin"))
+    elif reader == "import_content":
+        job = _new_job(db, file_storage_key="local.bin")
+        out = Outcome(True, ImportService(db)._read_content(job))
+    else:
+        job = _new_job(db, error_report_key="local.bin")
+        out = Outcome(True, ImportService(db).error_file(DEFAULT_TENANT_ID, job.id)[0])
+    assert out.data == CANARY_BYTES
+    db.close()
+
+
 def _seed_platform_storage(db, monkeypatch, cdn: str) -> Connection:
     from cryptography.fernet import Fernet
 
@@ -613,6 +668,22 @@ def _seed_platform_storage(db, monkeypatch, cdn: str) -> Connection:
         .filter(Connection.tenant_id == PLATFORM_TENANT_ID, Connection.type == "storage")
         .one()
     )
+
+
+@pytest.mark.parametrize("reader", CONTENT_READERS)
+def test_platform_storage_on_a_private_address_is_still_read(
+    reader, net, bucket, monkeypatch, session_factory
+):
+    """The operator chose the platform storage address, so a private address
+    there is accepted for a tenant that falls back to it."""
+    db = session_factory()
+    net.start(tls=True)
+    platform = _seed_platform_storage(db, monkeypatch, "https://internal.storage.test")
+    out = READERS[reader](db, platform)
+    assert out.ok
+    assert out.data == CANARY_BYTES
+    assert net.listener.requests == ["/obj.bin"]
+    db.close()
 
 
 @pytest.mark.parametrize("target", ["file", "ftp", "data"])
@@ -666,6 +737,21 @@ def test_import_preview_does_not_return_a_file_url_target(
     db.close()
 
 
+def test_import_preview_returns_headers_from_a_public_https_cdn(
+    client, session_factory, bucket, net
+):
+    """Control for the route above: the same route does return the file's
+    headers when the CDN is a public https address."""
+    listener = net.start(tls=True)
+    listener.objects["/preview.csv"] = f"{CANARY},Email\n1,a@example.com\n".encode()
+    db = session_factory()
+    conn = _connect(db, "https://cdn.storage.test")
+    res = _preview(client, db, conn)
+    assert res is not None and res.status_code == 200, getattr(res, "text", "")
+    assert CANARY in res.text
+    db.close()
+
+
 def _zip_job(client, db, conn):
     folder_file = File(tenant_id=DEFAULT_TENANT_ID, name="doc.txt")
     db.add(folder_file)
@@ -714,6 +800,20 @@ def test_download_job_zip_does_not_contain_a_file_url_target(
     assert CANARY_BYTES not in seen
     for name, data in _zip_members(bucket).items():
         assert CANARY_BYTES not in data, f"zip member {name} carries the target bytes"
+    db.close()
+
+
+def test_download_job_zip_contains_the_file_from_a_public_https_cdn(
+    client, session_factory, bucket, net
+):
+    """Control for the route above: with a public https CDN the ZIP carries the file."""
+    net.start(tls=True)
+    db = session_factory()
+    conn = _connect(db, "https://cdn.storage.test")
+    created, _served = _zip_job(client, db, conn)
+    assert created.status_code == 201, created.text
+    assert created.json()["status"] == "ready"
+    assert _zip_members(bucket) == {"doc.txt": CANARY_BYTES}
     db.close()
 
 
@@ -803,3 +903,35 @@ def test_updating_a_storage_connection_requires_a_public_https_url(
     assert rows[0].config_json.get("cdnBaseUrl") == "https://cdn.storage.test"
     assert rows[0].config_json.get(field, "") in ("", "https://cdn.storage.test")
 
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+def test_an_empty_storage_url_is_allowed(field, client, session_factory, net):
+    headers = _admin(client)
+    res = client.post(
+        "/integrations/connections", json=_payload(S3_PAYLOAD, **{field: ""}), headers=headers
+    )
+    assert res.status_code == 201, res.text
+    patched = client.patch(
+        f"/integrations/connections/{res.json()['id']}",
+        json={"config": {field: ""}},
+        headers=headers,
+    )
+    assert patched.status_code == 200, patched.text
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+def test_a_public_https_storage_url_is_saved(field, client, session_factory, net):
+    headers = _admin(client)
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, **{field: "https://cdn.storage.test"}),
+        headers=headers,
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["config"][field] == "https://cdn.storage.test"
+    patched = client.patch(
+        f"/integrations/connections/{res.json()['id']}",
+        json={"config": {field: "https://other.storage.test"}},
+        headers=headers,
+    )
+    assert patched.status_code == 200, patched.text
