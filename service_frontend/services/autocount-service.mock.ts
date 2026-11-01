@@ -1308,6 +1308,7 @@ function itemRows(count = 30): Array<Record<string, unknown>> {
 
 // SS-DEBTOR-AGENT - level-suffixed codes for one person, as AutoCount holds them.
 const SALES_AGENTS = ['AGENT A', 'AGENT A II', 'AGENT B', 'AGENT C III'];
+const DEBTOR_TYPES = ['TYPEA', 'TYPEB', 'PROJECT'];
 
 function debtorRows(count = 30): Array<Record<string, unknown>> {
   return Array.from({ length: count }, (_, i) => ({
@@ -1315,6 +1316,7 @@ function debtorRows(count = 30): Array<Record<string, unknown>> {
     CompanyName: `Customer ${i + 1} Sdn Bhd`,
     Phone1: `03-77${String(1000 + i).slice(1)}`,
     SalesAgent: i % 7 === 3 ? '' : SALES_AGENTS[i % SALES_AGENTS.length],
+    DebtorType: i % 6 === 2 ? '' : DEBTOR_TYPES[i % DEBTOR_TYPES.length],
     IsActive: i % 13 === 6 ? 'F' : 'T',
     LastModified: isoStamp(i),
   }));
@@ -3822,6 +3824,8 @@ function masterMappingView(entityType: string): AutocountMappingView {
       { field: 'tax_id', required: false },
       // SS-DEBTOR-AGENT - customer-only (Creditor rows carry no sales agent).
       ...(entityType === 'customer' ? [{ field: 'sales_agent_code', required: false }] : []),
+      // SS-DEBTOR-TYPE - customer-only (`Debtor.DebtorType`).
+      ...(entityType === 'customer' ? [{ field: 'market_segment_code', required: false }] : []),
     ],
     acFields: [
       'AccNo',
@@ -3830,7 +3834,7 @@ function masterMappingView(entityType: string): AutocountMappingView {
       'IsActive',
       'Mobile',
       'TIN',
-      ...(entityType === 'customer' ? ['SalesAgent'] : []),
+      ...(entityType === 'customer' ? ['SalesAgent', 'DebtorType'] : []),
       'Data.0.AutoKey',
       'Data.0.LastModified',
     ],
@@ -4471,6 +4475,8 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       { sourcePath: 'Phone1', canonicalField: 'phone_number', transform: 'string', formula: null, required: false, enabled: true },
       // SS-DEBTOR-AGENT - mirrors `CUSTOMER_HTTP_PRESET`'s `SalesAgent -> sales_agent_code` row.
       { sourcePath: 'SalesAgent', canonicalField: 'sales_agent_code', transform: 'string', formula: null, required: false, enabled: true },
+      // SS-DEBTOR-TYPE - mirrors `CUSTOMER_HTTP_PRESET`'s `DebtorType -> market_segment_code` row.
+      { sourcePath: 'DebtorType', canonicalField: 'market_segment_code', transform: 'string', formula: null, required: false, enabled: true },
       { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
     ],
   },
