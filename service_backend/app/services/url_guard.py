@@ -19,7 +19,12 @@ Security invariants (unchanged from the original):
 """
 import ipaddress
 import socket
+import typing
 from urllib.parse import urlparse
+
+import anyio
+import httpcore
+import httpx
 
 
 class UrlGuardError(Exception):
@@ -115,3 +120,200 @@ def assert_deliverable(url: str, *, subject: str = "URL") -> None:
     What matters is that a host resolving to an internal address is never
     connected to."""
     validate_public_https_url(url, strict_dns=False, subject=subject)
+
+
+# ── Connect-time check ───────────────────────────────────────────────────────
+# The pre-flight above answers early with the caller's own refusal text. The
+# transports below make the connection itself the authority: the host is
+# resolved once, every returned address is checked, and the TCP connection is
+# opened to one of those checked addresses. TLS and the Host header keep using
+# the name from the URL (httpcore starts TLS with the origin host).
+
+# Delay before the next address is tried while an earlier attempt is pending.
+_CONNECT_ATTEMPT_DELAY = 0.25
+
+HostExemption = typing.Optional[typing.Callable[[str], bool]]
+
+
+def _literal_ip(host: str) -> "typing.Optional[ipaddress._BaseAddress]":
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+def _checked_addresses(host: str, infos: typing.Iterable[tuple], subject: str) -> typing.List[str]:
+    """Addresses from a resolver answer, in order and de-duplicated. Raises
+    ``UrlGuardError`` when ANY of them is blocked (same rule as
+    ``validate_public_https_url``)."""
+    addresses: typing.List[str] = []
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if _is_blocked_ip(ip):
+            raise UrlGuardError(f"{subject} resolves to a private or reserved IP.")
+        if addr not in addresses:
+            addresses.append(addr)
+    if not addresses:
+        raise httpcore.ConnectError(f"No usable address for {host}")
+    return addresses
+
+
+def _literal_addresses(host: str, ip: "ipaddress._BaseAddress", subject: str) -> typing.List[str]:
+    if _is_blocked_ip(ip):
+        raise UrlGuardError(f"{subject} cannot target a private or reserved IP.")
+    return [host]
+
+
+class _GuardedSyncBackend(httpcore.SyncBackend):
+    def __init__(self, subject: str, exempt_host: HostExemption) -> None:
+        super().__init__()
+        self._subject = subject
+        self._exempt_host = exempt_host
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        if self._exempt_host is not None and self._exempt_host(host):
+            return super().connect_tcp(host, port, timeout, local_address, socket_options)
+        literal = _literal_ip(host)
+        if literal is not None:
+            addresses = _literal_addresses(host, literal, self._subject)
+        else:
+            try:
+                infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            except TimeoutError as exc:
+                raise httpcore.ConnectTimeout(str(exc)) from exc
+            except (OSError, UnicodeError) as exc:
+                raise httpcore.ConnectError(str(exc)) from exc
+            addresses = _checked_addresses(host, infos, self._subject)
+        last: typing.Optional[Exception] = None
+        for address in addresses:
+            try:
+                return super().connect_tcp(address, port, timeout, local_address, socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last = exc
+        assert last is not None
+        raise last
+
+
+class _GuardedAsyncBackend(httpcore.AnyIOBackend):
+    def __init__(self, subject: str, exempt_host: HostExemption) -> None:
+        super().__init__()
+        self._subject = subject
+        self._exempt_host = exempt_host
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        if self._exempt_host is not None and self._exempt_host(host):
+            return await super().connect_tcp(host, port, timeout, local_address, socket_options)
+        try:
+            # One budget covers resolving and connecting.
+            with anyio.fail_after(timeout):
+                literal = _literal_ip(host)
+                if literal is not None:
+                    addresses = _literal_addresses(host, literal, self._subject)
+                else:
+                    try:
+                        infos = await anyio.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                    except (OSError, UnicodeError) as exc:
+                        raise httpcore.ConnectError(str(exc)) from exc
+                    addresses = _checked_addresses(host, infos, self._subject)
+                return await self._connect_any(addresses, port, timeout, local_address, socket_options)
+        except TimeoutError as exc:
+            raise httpcore.ConnectTimeout(str(exc)) from exc
+
+    async def _connect_any(self, addresses, port, timeout, local_address, socket_options):
+        """Start an attempt per checked address (the next one at once when the
+        previous failed, otherwise after a short delay); the first connection
+        wins and the rest are cancelled."""
+        connect_one = super().connect_tcp
+        winner: typing.List[typing.Any] = []
+        errors: typing.List[Exception] = []
+
+        async def attempt(address: str, done: anyio.Event) -> None:
+            try:
+                stream = await connect_one(address, port, timeout, local_address, socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                errors.append(exc)
+                return
+            finally:
+                done.set()
+            if winner:
+                await stream.aclose()
+                return
+            winner.append(stream)
+            group.cancel_scope.cancel()
+
+        async with anyio.create_task_group() as group:
+            for address in addresses:
+                done = anyio.Event()
+                group.start_soon(attempt, address, done)
+                with anyio.move_on_after(_CONNECT_ATTEMPT_DELAY):
+                    await done.wait()
+        if winner:
+            return winner[0]
+        raise errors[-1]
+
+
+def _default_limits() -> httpx.Limits:
+    return httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=5.0)
+
+
+class GuardedTransport(httpx.HTTPTransport):
+    """``httpx.HTTPTransport`` whose TCP connections go only to an address that
+    passed the block rule at connect time. ``exempt_host`` lets a caller leave
+    a host out of the check (it is called with the origin host)."""
+
+    def __init__(
+        self,
+        subject: str = "URL",
+        *,
+        exempt_host: HostExemption = None,
+        verify: typing.Union[bool, str] = True,
+        trust_env: bool = True,
+        limits: typing.Optional[httpx.Limits] = None,
+    ) -> None:
+        limits = limits or _default_limits()
+        ctx = httpx.create_ssl_context(verify=verify, trust_env=trust_env)
+        super().__init__(verify=ctx, trust_env=trust_env, limits=limits)
+        self._pool.close()
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=ctx,
+            max_connections=limits.max_connections,
+            max_keepalive_connections=limits.max_keepalive_connections,
+            keepalive_expiry=limits.keepalive_expiry,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=_GuardedSyncBackend(subject, exempt_host),
+        )
+
+
+class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
+    """Async twin of ``GuardedTransport``."""
+
+    def __init__(
+        self,
+        subject: str = "URL",
+        *,
+        exempt_host: HostExemption = None,
+        verify: typing.Union[bool, str] = True,
+        trust_env: bool = True,
+        limits: typing.Optional[httpx.Limits] = None,
+    ) -> None:
+        limits = limits or _default_limits()
+        ctx = httpx.create_ssl_context(verify=verify, trust_env=trust_env)
+        super().__init__(verify=ctx, trust_env=trust_env, limits=limits)
+        if not hasattr(self, "_pool"):  # the pool is replaced below: fail loudly if httpx renames it
+            raise AttributeError("httpx transport has no _pool to replace")
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=ctx,
+            max_connections=limits.max_connections,
+            max_keepalive_connections=limits.max_keepalive_connections,
+            keepalive_expiry=limits.keepalive_expiry,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=_GuardedAsyncBackend(subject, exempt_host),
+        )
