@@ -776,8 +776,9 @@ class WorkspaceApiKey(OmniBase):
 class WebhookEndpoint(OmniBase):
     """A consumer's webhook subscription (plan sprint-1/01 Slice 4, AC-01-22).
 
-    Scope = per CHANNEL (one WhatsApp number). A channel can have many endpoints
-    (fan-out to N consumer systems). ``secret`` is a Fernet-encrypted signing
+    Scope = one CHANNEL (``channel_id`` set), or every channel of its workspace
+    (``channel_id`` NULL). A channel can have many endpoints (fan-out to N
+    consumer systems). ``secret`` is a Fernet-encrypted signing
     secret (reversible - we HMAC-sign every delivery with it AND reveal it to the
     consumer on create/rotate). ``events`` selects which event types forward.
     Auto-disable: after ``consecutive_failures`` exhausted deliveries reach the
@@ -789,7 +790,7 @@ class WebhookEndpoint(OmniBase):
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
     workspace_id = Column(String, nullable=False, index=True)
-    channel_id = Column(String, nullable=False, index=True)
+    channel_id = Column(String, nullable=True, index=True)  # NULL = all channels
     name = Column(String, nullable=False)
     url = Column(String, nullable=False)
     secret_encrypted = Column(Text, nullable=False)  # Fernet(signing secret)

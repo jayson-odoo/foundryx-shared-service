@@ -1720,7 +1720,7 @@ class WebhookEndpointItem(ApiModel):
     id: str
     tenantId: str
     workspaceId: str
-    channelId: str
+    channelId: Optional[str] = None  # null = covers every channel of the workspace
     name: str
     url: str
     events: List[str]
