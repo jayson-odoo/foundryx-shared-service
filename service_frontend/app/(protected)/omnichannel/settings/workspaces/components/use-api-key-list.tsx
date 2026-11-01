@@ -95,6 +95,9 @@ export function useApiKeyList(
         // 15) - no confirm, no `run` (the registered `api_keys.revoke`
         // handler commits it server-side - it resolves the owning workspace
         // from the key row itself, so `entityId` stays the bare key id).
+        // `intercept` hands a key that registered endpoints to the pause
+        // dialog, which parks with `pauseEndpoints`; a key with none parks
+        // straight away.
         deferred: {
           actionKey: 'api_keys.revoke',
           entityType: 'api_key',

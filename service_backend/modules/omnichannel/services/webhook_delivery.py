@@ -4,7 +4,10 @@ The inbound pipeline calls ``enqueue_event`` after it persists a message/status/
 contact change. That fans the event to every ACTIVE endpoint that subscribed to
 the type and covers the channel (its own, or an all-channels endpoint of the
 channel's tenant and workspace), writing a durable ``webhook_deliveries`` row per endpoint
-and queuing the HTTP POST. ``dispatch`` runs one attempt with an HMAC signature;
+and queuing the HTTP POST. While the workspace is off (tenant may not sign in,
+module inactive, workspace trashed) nothing is queued, and a queued delivery that
+reaches its attempt in that state ends FAILED with no change to the endpoint's
+failure counter. ``dispatch`` runs one attempt with an HMAC signature;
 on failure it backs off, and after N dead-letters the endpoint auto-disables.
 
 Delivery NEVER runs synchronously inside inbound processing and is fully failure-

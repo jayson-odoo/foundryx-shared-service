@@ -88,7 +88,8 @@ function defaultEntityId<T>(row: T): string {
  * shared `ConfirmActionDialog` (module uninstall / tenant purge ONLY,
  * AC-DLA-47); every other destructive/reversible action carries `deferred`
  * and runs through `useDeferredAction` instead (D2, AC-DLA-43) - no confirm
- * dialog, a grace-window countdown in its place.
+ * dialog, a grace-window countdown in its place. A deferred action may carry
+ * `intercept` to collect a choice first (e.g. a dialog) and then park with it.
  */
 export function ActionMenu<T>({
   actions,
