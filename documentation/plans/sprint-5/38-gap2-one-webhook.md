@@ -57,6 +57,7 @@ Not changed: `WebhookEndpointCreateRequest` stays name, url, events, so `channel
 
 - On a NULL row, tenant and workspace are the only boundary. Tests use a foreign tenant with the same workspace id, and a second workspace in the same tenant.
 - `WebhookService._get` is tenant-scoped only. Public routes keep using `_own_endpoint` / `get_for_workspace`.
+- `_do_send` resolves the channel before it branches on type (`public_gateway_service.py:957`), but `_send_reaction` never uses it (`:1008`). A reaction makes no guess, so `channel_required` must not stop it (AC-38-101). `test_gateway_reaction_cross_workspace_404` (`test_omnichannel_rich_messages.py:1620`) stays as it is and keeps answering 404.
 - The resolver runs before the contact is created in `_resolve_send_target`, and must stay first, so a refusal creates nothing.
 - `_do_send` runs after the idempotency reservation. A refusal must release the key: pin with a retry test against the real store.
 - A guide test takes the first changelog row holding `/channels`. The new row must not contain that text, and PR 156 also adds a row at the top of that table, so expect a small conflict there.

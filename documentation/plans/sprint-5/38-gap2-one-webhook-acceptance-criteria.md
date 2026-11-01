@@ -48,6 +48,7 @@ With no `channelId`, the default is a guess when the group it picks from has mor
 | AC-38-93 | [BE] No refusal, same channel as today: one active channel; one active WhatsApp plus web chat or Messenger; two WhatsApp with one paused; two WhatsApp with one disconnected. No active channel stays `409 no_active_channel` |
 | AC-38-94 | [BE] `GET /templates` with no `channelId` answers the same `422 channel_required` when the default is a real guess. With `channelId`, and on a workspace where the default is not a guess, it answers as today |
 | AC-38-95 | [BE] `GET /channels` shows `isDefault` false on every channel when the default is a real guess, from the same resolver as the send. Amends AC-38-22, whose other clauses stand |
+| AC-38-101 | [BE] A `reaction` with no `channelId` is not refused when the default is a real guess, because it goes out on the contact's own channel and uses no default. It sends as today. A foreign or unknown `channelId` on a reaction stays `422 invalid_channel`, and no active channel stays `409 no_active_channel` |
 
 ## Schema
 
