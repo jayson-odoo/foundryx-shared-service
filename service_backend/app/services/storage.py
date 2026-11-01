@@ -20,7 +20,9 @@ Two usage styles:
   ``save`` returns an opaque storage key persisted in the DB; ``resolve``
   turns it back into a local path or a remote URL to stream/redirect.
 """
+import ipaddress
 import mimetypes
+import re
 import uuid
 from pathlib import Path
 from typing import Dict, Optional, Protocol, Tuple
@@ -181,15 +183,41 @@ _READ_FAILED = "The stored file could not be read."
 _CHUNK = 64 * 1024
 
 
+_HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+
 def storage_url_is_plain(value: str) -> bool:
-    """False for a value that parsers read differently: a backslash, an ``@``,
-    whitespace or control characters, or an address ``urlsplit`` cannot parse."""
-    if any(c in "\\@" or c.isspace() or ord(c) < 32 for c in value):
+    """True only for a URL every parser reads the same way: printable ASCII with
+    no backslash, ``@`` or whitespace, a parseable port, and a host that is a
+    plain name, a dotted IPv4 address or a bracketed IPv6 address. A name whose
+    last label looks numeric must be a complete dotted IPv4 address."""
+    if not value or any(not 0x21 <= ord(c) <= 0x7E or c in "\\@" for c in value):
         return False
     try:
-        urlsplit(value).port  # noqa: B018 - raises ValueError for a bad port
+        parts = urlsplit(value)
+        parts.port  # noqa: B018 - raises ValueError for a bad port
+        host = parts.hostname
     except ValueError:
         return False
+    if not host or "%" in parts.netloc:
+        return False
+    if "[" in parts.netloc:
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return False
+        return True
+    if len(host) > 253:
+        return False
+    labels = host.split(".")
+    if not all(_HOST_LABEL.match(label) for label in labels):
+        return False
+    last = labels[-1].lower()
+    if last.isdigit() or last.startswith("0x"):
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            return False
     return True
 
 
@@ -231,7 +259,9 @@ def read_url(
                 if not 200 <= resp.status_code < 300:
                     raise StorageReadError(_READ_FAILED, status=resp.status_code)
                 encoding = resp.headers.get("content-encoding", "").strip().lower()
-                if encoding and encoding != "identity":
+                # aws-chunked is a label storage clients write on stored objects;
+                # raw reads never decode, so the stored bytes come back as written.
+                if encoding and encoding not in ("identity", "aws-chunked"):
                     raise StorageReadError(_READ_FAILED)
                 declared = resp.headers.get("content-length", "").strip()
                 if (
@@ -270,7 +300,7 @@ def read_object(
         else:
             kind, value = storage.resolve(key)
             operator_owned = False
-    except UnresolvableKey as exc:
+    except (UnresolvableKey, ValueError) as exc:
         raise StorageReadError(_READ_FAILED) from exc
     if kind == "path":
         with open(value, "rb") as fh:
@@ -416,7 +446,12 @@ class TenantStorage:
         adapter = _adapter_for(connection)
         connection_id = connection.id
         release_read_transactions()
-        raw = adapter.save(key_hint, content, mime_type)
+        try:
+            raw = adapter.save(key_hint, content, mime_type)
+        except ValueError:
+            # The client library rejected the stored address: treated like an
+            # unusable connection, the write goes to local disk.
+            return self._local.save(key_hint, content, mime_type)
         return f"{_KEY_PREFIX}{connection_id}:{raw}"
 
     def resolve(self, key: str) -> Tuple[str, str]:
@@ -471,7 +506,10 @@ class TenantStorage:
         if connection is not None:
             adapter = _adapter_for(connection)
             if getattr(adapter, "cdn_base_url", ""):
-                return adapter.put(key_hint, content, mime_type)
+                try:
+                    return adapter.put(key_hint, content, mime_type)
+                except ValueError:
+                    pass  # unusable connection: fall through to local disk
         return self._local.put(key_hint, content, mime_type)
 
 

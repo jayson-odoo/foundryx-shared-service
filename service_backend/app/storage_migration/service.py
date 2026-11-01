@@ -116,6 +116,21 @@ class StorageMigrationService:
                 "bucket first.",
             )
 
+        # 1b. the current connection must itself hold usable URLs; otherwise the
+        #     job could not read its objects. Nothing is changed.
+        if a.tenant_id != PLATFORM_TENANT_ID:
+            from app.integrations.s3_provider import _storage_url_error
+            from app.services.storage import endpoint_is_usable
+
+            current_config = a.config_json or {}
+            if not endpoint_is_usable(a.provider, current_config) or _storage_url_error(
+                a.provider, current_config
+            ):
+                raise HTTPException(
+                    http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "The current storage address must be fixed before migrating away from it.",
+                )
+
         # 2. one active migration per connection (AC-10-14).
         if self._active_migration_for(tenant_id, a.id) is not None:
             raise HTTPException(
