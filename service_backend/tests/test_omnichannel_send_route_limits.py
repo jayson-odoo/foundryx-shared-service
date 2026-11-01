@@ -1570,3 +1570,72 @@ def test_ac_41_07_busy_row_and_changelog_name_both_limits():
     log = [l for l in lines[:first_section] if l.startswith("> |") and "media_fetch_busy" in l]
     assert log, "no changelog row mentions the busy answer"
     assert "process" in log[0].lower() and _PER_KEY.search(log[0]), "changelog row names only one limit"
+
+
+# ══ Gate guards ══════════════════════════════════════════════════════════════
+def test_guard_ac_41_10_the_per_key_limit_alone_refuses_a_third_fetch(client, session_factory, monkeypatch):
+    import threading
+
+    phones, cids, keys = _gate_world(client, session_factory, contacts=6)
+    release = threading.Semaphore(0)
+    started = []
+
+    def hold():
+        started.append(1)
+        release.acquire(timeout=15)
+
+    rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
+
+    async def scenario():
+        out = {}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
+            held = []
+            try:
+                for i in range(2):  # two slots in use, the process is far from full
+                    held.append(asyncio.create_task(_post_media(ac, keys["a"], phones[i])))
+                    assert await _wait_for(lambda n=i + 1: len(started) >= n)
+                out["third_on_a"] = await _post_media(ac, keys["a"], phones[2])
+                out["fetches_after_refusal"] = rig.media_calls
+                held.append(asyncio.create_task(_post_media(ac, keys["b"], phones[3])))
+                assert await _wait_for(lambda: len(started) >= 3), "another key was refused"
+                out["held"] = []
+                for t in held:
+                    release.release()
+                    out["held"].append(await t)
+            finally:
+                for _ in range(len(held)):
+                    release.release()
+        return out
+
+    out = asyncio.run(scenario())
+    third = out["third_on_a"]
+    assert (third.status_code, _error_code(third)) == (429, "media_fetch_busy")
+    assert out["fetches_after_refusal"] == 2
+    assert [r.status_code for r in out["held"]] == [202, 202, 202]
+    assert _message_count(session_factory, cids[phones[2]]) == 0
+
+
+def test_guard_ac_41_10_the_gate_keeps_no_entry_once_fetches_end(client, session_factory, monkeypatch):
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    phones, cids, keys = _gate_world(client, session_factory, contacts=4)
+    during = []
+    state = {"v": "ok"}
+
+    def media(request):
+        if state["v"] == "404":
+            return httpx.Response(404, request=request)
+        return _pdf_media(request)
+
+    _install(
+        monkeypatch,
+        media=media,
+        on_fetch=lambda: during.append((pgs._FETCH_GATE._total, dict(pgs._FETCH_GATE._per_key))),
+    )
+    for i, outcome in enumerate(["ok", "404", "ok"]):
+        state["v"] = outcome
+        client.post("/api/v1/omnichannel/messages", json=_media_body(phones[i]), headers=keys["a"])
+    assert len(during) == 3
+    assert all(total == 1 and len(per_key) == 1 for total, per_key in during)  # control: the gate is seen in use
+    assert pgs._FETCH_GATE._total == 0
+    assert pgs._FETCH_GATE._per_key == {}
