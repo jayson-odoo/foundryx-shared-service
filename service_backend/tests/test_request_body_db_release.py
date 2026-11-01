@@ -343,6 +343,22 @@ def _thread_watch(send_attr: str) -> List[Tuple[str, List[Tuple[Any, str]]]]:
     ]
 
 
+def _inbox_headers(client, sf, ws) -> Dict[str, str]:
+    """A bearer for an inbox-scoped embed token: the one caller whose thread
+    pre-check has to look the conversation up in the database."""
+    from tests.test_omnichannel_embed import _assertion, _bearer, _exchange, _make_connection
+
+    connection = _make_connection(sf)
+    token = _exchange(client, _assertion(iss=connection, workspace_id=ws, scope="inbox")).json()["accessToken"]
+    return _bearer(token)
+
+
+def _lookup_watch() -> List[Tuple[str, List[Tuple[Any, str]]]]:
+    from modules.omnichannel.repositories.contact_repository import ContactRepository
+
+    return [("contact_lookup", [(ContactRepository, "get_by_id")])]
+
+
 def _omni_setup(request, *, phone_number_id: str):
     client = request.getfixturevalue("client")
     sf = request.getfixturevalue("session_factory")
@@ -352,9 +368,9 @@ def _omni_setup(request, *, phone_number_id: str):
     return client, sf, ws, ch, cid
 
 
-def _template_scenario(request, *, multipart: bool) -> Scenario:
+def _template_scenario(request, *, multipart: bool, inbox: bool = False) -> Scenario:
     client, sf, ws, ch, cid = _omni_setup(request, phone_number_id="pn-body-tpl")
-    headers = _auth(client)
+    headers = _inbox_headers(client, sf, ws) if inbox else _auth(client)
     if multipart:
         tid = _seed_template(sf, ch, _MEDIA_HEADER, name="flyer_promo")
         body, ctype = _multipart(
@@ -366,19 +382,22 @@ def _template_scenario(request, *, multipart: bool) -> Scenario:
         tid = _seed_template(sf, ch, [{"type": "BODY", "text": "Hi {{1}}, thanks!"}], name="plain_body")
         body = json.dumps({"templateId": tid, "templateVariables": ["Sarah"]}).encode()
         ctype, name = "application/json", "template_json"
+    if inbox:
+        name = name.replace("template_", "template_inbox_")
 
     def check(run: Run) -> None:
         out = run.json()
         assert out["messageType"] == "TEMPLATE"
         assert out["deliveryStatus"] == "SENT"
     return Scenario(name, f"/omnichannel/contacts/{cid}/template", dict(headers), body, ctype, 201,
-                    _thread_watch("send_message"), ["enforce_thread_access", "send_message"], check,
+                    _thread_watch("send_message") + (_lookup_watch() if inbox else []),
+                    ["enforce_thread_access", "send_message"] + (["contact_lookup"] if inbox else []), check,
                     ctx={"sf": sf, "ws": ws, "cid": cid, "client": client})
 
 
-def _interactive_scenario(request, *, multipart: bool) -> Scenario:
+def _interactive_scenario(request, *, multipart: bool, inbox: bool = False) -> Scenario:
     client, sf, ws, _ch, cid = _omni_setup(request, phone_number_id="pn-body-int")
-    headers = _auth(client)
+    headers = _inbox_headers(client, sf, ws) if inbox else _auth(client)
     defn = {"kind": "buttons", "body": "Pick one",
             "buttons": [{"id": "y", "title": "Yes"}, {"id": "n", "title": "No"}]}
     if multipart:
@@ -389,13 +408,16 @@ def _interactive_scenario(request, *, multipart: bool) -> Scenario:
         name = "interactive_multipart"
     else:
         body, ctype, name = json.dumps(defn).encode(), "application/json", "interactive_json"
+    if inbox:
+        name = name.replace("interactive_", "interactive_inbox_")
 
     def check(run: Run) -> None:
         out = run.json()
         assert out["messageType"] == "INTERACTIVE"
         assert out["deliveryStatus"] == "SENT"
     return Scenario(name, f"/omnichannel/contacts/{cid}/interactive", dict(headers), body, ctype, 201,
-                    _thread_watch("send_interactive"), ["enforce_thread_access", "send_interactive"], check,
+                    _thread_watch("send_interactive") + (_lookup_watch() if inbox else []),
+                    ["enforce_thread_access", "send_interactive"] + (["contact_lookup"] if inbox else []), check,
                     ctx={"sf": sf, "ws": ws, "cid": cid, "client": client})
 
 
@@ -410,10 +432,14 @@ BUILDERS: Dict[str, Callable[[Any], Scenario]] = {
     "template_multipart": lambda r: _template_scenario(r, multipart=True),
     "interactive_json": lambda r: _interactive_scenario(r, multipart=False),
     "interactive_multipart": lambda r: _interactive_scenario(r, multipart=True),
+    "template_inbox_json": lambda r: _template_scenario(r, multipart=False, inbox=True),
+    "template_inbox_multipart": lambda r: _template_scenario(r, multipart=True, inbox=True),
+    "interactive_inbox_json": lambda r: _interactive_scenario(r, multipart=False, inbox=True),
+    "interactive_inbox_multipart": lambda r: _interactive_scenario(r, multipart=True, inbox=True),
 }
 SCENARIOS = list(BUILDERS)
 SIGNED_IN_SCENARIOS = [n for n in SCENARIOS if not n.startswith("token")]
-CONVERSATION_SCENARIOS = [n for n in SCENARIOS if n.startswith(("template", "interactive"))]
+CONVERSATION_SCENARIOS = [n for n in SCENARIOS if n.startswith(("template", "interactive")) and "inbox" not in n]
 
 
 @pytest.fixture
@@ -527,6 +553,47 @@ def test_control_an_unthrottled_token_request_does_read_the_body(connector_clien
     run = asyncio.run(_drive(scn, hold=False))
     assert run.status == 400, run.body  # unknown code: refused, but only after the body was read
     assert run.receive_calls >= 1
+
+
+_PLAIN_CONVERSATION = ["template_json", "template_multipart", "interactive_json", "interactive_multipart"]
+
+
+@pytest.mark.parametrize("scenario", _PLAIN_CONVERSATION, indirect=True)
+@pytest.mark.parametrize("caller", ["user_without_reply", "token_without_capability"])
+def test_a_caller_without_the_send_permission_is_refused_before_the_body_is_read(scenario, caller):
+    from tests.connector_support import seed_user_with_perms
+    from tests.test_form_revisions import _login
+    from tests.test_omnichannel_embed import _assertion, _bearer, _exchange, _make_connection
+
+    ctx = scenario.ctx
+    if caller == "user_without_reply":
+        seed_user_with_perms(ctx["sf"], "reader@example.com", [])
+        headers = _login(ctx["client"], "reader@example.com", "Passw0rd!x")
+    else:
+        connection = _make_connection(ctx["sf"])
+        token = _exchange(ctx["client"], _assertion(
+            iss=connection, workspace_id=ctx["ws"], scope="inbox", caps=("note",))).json()["accessToken"]
+        headers = _bearer(token)
+    run = asyncio.run(_drive(scenario, hold=False, headers=headers))
+    assert run.status == 403, run.body
+    assert run.receive_calls == 0, "the body was requested before the send permission was checked"
+
+
+def test_the_inbox_scoped_thread_check_reads_the_database(session_factory, sql_log):
+    from modules.omnichannel.embed_auth import ConversationPrincipal, enforce_thread_access
+    from app.models import DEFAULT_TENANT_ID
+
+    ws = _default_workspace_id(session_factory)
+    cid = _seed_contact(session_factory, ws)
+    principal = ConversationPrincipal(tenant_id=DEFAULT_TENANT_ID, is_embed=True, workspace_id=ws, scope="inbox")
+    db = session_factory()
+    try:
+        sql_log.clear()
+        enforce_thread_access(db, principal, cid)
+        assert any(s.startswith("SELECT") for _, s in sql_log), "the inbox-scoped check issued no query"
+        assert db.in_transaction()
+    finally:
+        db.close()
 
 
 # ── B5: the real flow still works after the transaction ends ────────────────
