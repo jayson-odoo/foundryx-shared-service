@@ -229,11 +229,20 @@ class TenantStorage:
     # ── StorageService protocol ───────────────────────────────────────────
 
     def save(self, key_hint: str, content: bytes, mime_type: str) -> str:
+        from app.database import release_read_transactions
+
+        # Resolve the connection and adapter first (they read the database), copy
+        # what the write needs, then end read-only transactions so none is held
+        # across the write itself. Nothing below touches the session.
         connection = self._write_connection()
         if connection is None:
+            release_read_transactions()
             return self._local.save(key_hint, content, mime_type)
-        raw = _adapter_for(connection).save(key_hint, content, mime_type)
-        return f"{_KEY_PREFIX}{connection.id}:{raw}"
+        adapter = _adapter_for(connection)
+        connection_id = connection.id
+        release_read_transactions()
+        raw = adapter.save(key_hint, content, mime_type)
+        return f"{_KEY_PREFIX}{connection_id}:{raw}"
 
     def resolve(self, key: str) -> Tuple[str, str]:
         parts = self._split(key)

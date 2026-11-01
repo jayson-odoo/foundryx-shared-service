@@ -6,8 +6,11 @@ pipeline: resolve/create the contact from the raw `to` phone, reuse
 translate rejections into the structured `/api/v1/*` error envelope. Idempotency
 dedup is workspace-scoped with a 24h TTL.
 """
+import asyncio
+import contextlib
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Tuple
@@ -61,6 +64,57 @@ READ_RECEIPT_MARKER = "read_receipt_sent_at"
 READ_RECEIPT_BUDGET_SECONDS = 12.0
 _PHONE_NUMBER_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+# Total time one media fetch may take (connect, headers and body together).
+MEDIA_FETCH_TOTAL_SECONDS = 60.0
+# Media fetches allowed at once in this server process, and per tenant.
+MEDIA_FETCH_MAX_CONCURRENT = 4
+MEDIA_FETCH_MAX_PER_TENANT = 2
+_FETCH_FAILED_TEXT = "The media url could not be fetched."
+
+
+class _FetchGate:
+    """Per-process counter of running media fetches. ``acquire`` never waits; a
+    tenant's entry is removed when its count returns to zero."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._total = 0
+        self._per_tenant: dict = {}
+
+    def acquire(self, tenant_id: str) -> bool:
+        with self._lock:
+            if self._total >= MEDIA_FETCH_MAX_CONCURRENT:
+                return False
+            if self._per_tenant.get(tenant_id, 0) >= MEDIA_FETCH_MAX_PER_TENANT:
+                return False
+            self._total += 1
+            self._per_tenant[tenant_id] = self._per_tenant.get(tenant_id, 0) + 1
+            return True
+
+    def release(self, tenant_id: str) -> None:
+        with self._lock:
+            self._total = max(0, self._total - 1)
+            left = self._per_tenant.get(tenant_id, 0) - 1
+            if left > 0:
+                self._per_tenant[tenant_id] = left
+            else:
+                self._per_tenant.pop(tenant_id, None)
+
+    @contextlib.contextmanager
+    def slot(self, tenant_id: str):
+        """Hold one fetch slot for the block, or answer ``429 media_fetch_busy``
+        straight away. Freed on every outcome."""
+        if not self.acquire(tenant_id):
+            raise ApiError(
+                429, "media_fetch_busy", "Too many media fetches are running. Retry shortly."
+            )
+        try:
+            yield
+        finally:
+            self.release(tenant_id)
+
+
+_FETCH_GATE = _FetchGate()
 
 # Wire-format switch on the read endpoints (`?format=`). GUIDE is the DEFAULT
 # and the documented contract (`MessageItem`/`ThreadItem`, the richer flat
@@ -934,18 +988,20 @@ class PublicGatewayService:
                     else "messaging_window_closed"
                 )
                 raise ApiError(409, code, messaging_policy.closed_window_message(channel.channel_type))
-            content = self._fetch_url(req.media.url)
-            return self._send_media(
-                tenant_id,
-                workspace_id,
-                key_id,
-                kind=msg_type.upper(),
-                content=content,
-                filename=req.media.filename,
-                caption=req.media.caption,
-                to=req.to,
-                channel=channel,
-            )
+            # The slot covers the URL lookup, the fetch and the store.
+            with _FETCH_GATE.slot(tenant_id):
+                content = self._fetch_url(req.media.url)
+                return self._send_media(
+                    tenant_id,
+                    workspace_id,
+                    key_id,
+                    kind=msg_type.upper(),
+                    content=content,
+                    filename=req.media.filename,
+                    caption=req.media.caption,
+                    to=req.to,
+                    channel=channel,
+                )
         elif msg_type in ("interactive", "location", "contacts"):
             return self._send_structured(tenant_id, workspace_id, key_id, msg_type, req, channel)
         elif msg_type == "reaction":
@@ -972,37 +1028,69 @@ class PublicGatewayService:
     def _fetch_url(self, url: str) -> bytes:
         """Fetch a media URL so it can be re-uploaded by id (plan 12 review - SSRF).
 
-        Reuses the consumer-webhook SSRF guard (``validate_callback_url``): https
-        only, blocks private/loopback/link-local/reserved/metadata targets given
+        Reuses the consumer-webhook address guard (``validate_callback_url``): https
+        only, refuses private/loopback/link-local/reserved/metadata targets given
         as a literal, numeric/hex IP, OR a hostname that resolves to one. Redirects
-        are DISABLED (a 3xx to an internal host would bypass the guard); the read
-        is streamed + capped so a hostile body can't exhaust memory."""
+        are DISABLED (a 3xx to an internal host would sidestep the guard); the read
+        is streamed + capped so an oversized body can't exhaust memory.
+
+        The fetch runs on its own short event loop under one hard deadline
+        (``MEDIA_FETCH_TOTAL_SECONDS``), after the session's read transactions are
+        released. The caller holds the fetch slot (``_FETCH_GATE.slot``) around
+        the lookup, this fetch and the store."""
+        from app.database import release_read_transactions
+
         from .webhook_service import WebhookError, validate_callback_url
 
+        if not isinstance(url, str):
+            raise ApiError(422, "invalid_media_url", "The media url must be text.")
+        # Nothing below touches the session: the caller holds what it needs.
+        release_read_transactions()
         try:
             safe = validate_callback_url(url)
         except WebhookError as exc:
             raise ApiError(422, "invalid_media_url", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
         try:
-            with httpx.Client(timeout=15.0, follow_redirects=False) as client:
-                with client.stream("GET", safe) as resp:
-                    if resp.is_redirect:
-                        raise ApiError(
-                            422, "invalid_media_url", "Redirects are not allowed for media URLs."
-                        )
-                    if resp.status_code >= 400:
-                        raise ApiError(
-                            422, "media_fetch_failed", f"Media url returned {resp.status_code}."
-                        )
-                    chunks: list[bytes] = []
-                    total = 0
-                    for chunk in resp.iter_bytes():
-                        total += len(chunk)
-                        if total > _MEDIA_HARD_CAP:
-                            raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
-                        chunks.append(chunk)
-        except httpx.HTTPError as exc:
-            raise ApiError(422, "media_fetch_failed", f"Could not fetch media url: {exc}") from exc
+            return asyncio.run(
+                asyncio.wait_for(self._fetch_url_async(safe), MEDIA_FETCH_TOTAL_SECONDS)
+            )
+        except ApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Broad on purpose: the client and the TLS layer raise many unrelated
+            # types (including exception groups) for a bad address, port or record.
+            # Whatever the cause, the answer is the same fixed text, never the
+            # remote or network detail.
+            raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
+
+    async def _fetch_url_async(self, safe: str) -> bytes:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            async with client.stream(
+                "GET", safe, headers={"Accept-Encoding": "identity"}
+            ) as resp:
+                if resp.is_redirect:
+                    raise ApiError(
+                        422, "invalid_media_url", "Redirects are not allowed for media URLs."
+                    )
+                if resp.status_code >= 400:
+                    raise ApiError(
+                        422, "media_fetch_failed", f"Media url returned {resp.status_code}."
+                    )
+                encoding = resp.headers.get("content-encoding", "").strip().lower()
+                if encoding and encoding != "identity":
+                    raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT)
+                declared = resp.headers.get("content-length", "").strip()
+                if declared.isascii() and declared.isdigit() and int(declared) > _MEDIA_HARD_CAP:
+                    raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_raw():
+                    total += len(chunk)
+                    if total > _MEDIA_HARD_CAP:
+                        raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
+                    chunks.append(chunk)
         return b"".join(chunks)
 
     def _send_media(
@@ -1078,19 +1166,22 @@ class PublicGatewayService:
                 # A media header may reference a URL - fetch it (SSRF-guarded) so it
                 # rides the upload-by-id pipeline (never a bare Meta link).
                 header = defn.get("header") or {}
-                if str(header.get("type") or "") in ("image", "video", "document") and header.get("url"):
-                    header_content = self._fetch_url(header["url"])
-                    header_filename = header.get("filename")
-                item = messages.send_interactive(
-                    contact.id,
-                    tenant_id,
-                    actor,
-                    defn=defn,
-                    header_content=header_content,
-                    header_filename=header_filename,
-                    actor_is_human=False,
-                    channel_id_override=self._override_for(channel),
-                )
+                with contextlib.ExitStack() as stack:
+                    if str(header.get("type") or "") in ("image", "video", "document") and header.get("url"):
+                        # The slot covers the lookup, the fetch and the store.
+                        stack.enter_context(_FETCH_GATE.slot(tenant_id))
+                        header_content = self._fetch_url(header["url"])
+                        header_filename = header.get("filename")
+                    item = messages.send_interactive(
+                        contact.id,
+                        tenant_id,
+                        actor,
+                        defn=defn,
+                        header_content=header_content,
+                        header_filename=header_filename,
+                        actor_is_human=False,
+                        channel_id_override=self._override_for(channel),
+                    )
             elif msg_type == "location":
                 if not req.location:
                     raise ApiError(422, "invalid_request", "location is required.")
