@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import release_read_transactions as _release_read_transactions
 
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import (
@@ -589,7 +588,6 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
         channel_id_override: Optional[str] = None,
-        release_before_store: bool = False,
     ) -> MessageItem:
         """Sniff-gate + cap-check + store an outbound media blob, create a QUEUED
         row and dispatch the async upload-by-id send (AC-12-02/03/10). Raises
@@ -625,10 +623,7 @@ class MessageService:
 
         from app.services.storage import storage_for_tenant
 
-        storage = storage_for_tenant(self.db, tenant_id)
-        if release_before_store:
-            _release_read_transactions()  # fetched media: no transaction across the write
-        media_key = storage.save(
+        media_key = storage_for_tenant(self.db, tenant_id).save(
             f"omnichannel/{tenant_id}/outbound", sniffed.content, sniffed.mime
         )
 
@@ -741,7 +736,6 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
         channel_id_override: Optional[str] = None,
-        release_before_store: bool = False,
     ) -> MessageItem:
         from .structured import StructuredError, header_media_kind, validate_interactive
 
@@ -774,10 +768,7 @@ class MessageService:
             )
             from app.services.storage import storage_for_tenant
 
-            storage = storage_for_tenant(self.db, tenant_id)
-            if release_before_store:
-                _release_read_transactions()  # fetched media: no transaction across the write
-            media_key = storage.save(
+            media_key = storage_for_tenant(self.db, tenant_id).save(
                 f"omnichannel/{tenant_id}/interactive-header", sniffed.content, sniffed.mime
             )
             media_mime = sniffed.mime

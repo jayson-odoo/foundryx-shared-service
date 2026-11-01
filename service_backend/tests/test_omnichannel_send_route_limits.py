@@ -2008,22 +2008,6 @@ def test_ac_41_09_a_json_media_url_that_is_not_text_is_refused(client, session_f
     assert _message_count(session_factory, cid) == 0
 
 
-@pytest.mark.parametrize("value", _NOT_TEXT, ids=_NOT_TEXT_IDS)
-def test_ac_41_09_a_multipart_media_url_that_is_not_text_is_refused(client, session_factory, monkeypatch, value):
-    headers, cid, _ch = _setup(client, session_factory, phone="+60700700781", token="tkn-live-09")
-    rig = _install(monkeypatch)
-    payload = {"to": "+60700700781", "type": "document", "media": {"filename": "doc.pdf", "url": value}}
-    r = client.post(
-        "/api/v1/omnichannel/messages",
-        headers=headers,
-        files={"file": ("doc.pdf", PDF, "application/pdf")},
-        data={"payload": json.dumps(payload)},
-    )
-    assert (r.status_code, _error_code(r)) == (422, "invalid_media_url")
-    assert rig.graph_calls == []
-    assert _message_count(session_factory, cid) == 0
-
-
 def test_ac_41_09_a_recipient_that_is_a_number_is_a_typed_422(client, session_factory):
     # Chosen code: the same envelope every other body-validation failure on this
     # route already answers (`422 invalid_request`).

@@ -11,6 +11,8 @@ from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
@@ -106,6 +108,8 @@ async def send_message(
             payload_obj = json.loads(raw)
         except (ValueError, TypeError):
             raise ApiError(422, "invalid_request", "payload must be valid JSON.")
+        if not isinstance(payload_obj, dict) or not isinstance(payload_obj.get("media") or {}, dict):
+            raise ApiError(422, "invalid_request", "payload must be a JSON object.")
         media = payload_obj.get("media") or {}
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
@@ -131,7 +135,18 @@ async def send_message(
             body = await request.json()
         except (ValueError, TypeError):
             raise ApiError(422, "invalid_request", "Request body must be valid JSON.")
-        payload = PublicSendRequest(**body)
+        if not isinstance(body, dict):
+            raise RequestValidationError(
+                [{"type": "dict_type", "loc": ("body",), "msg": "Input should be an object", "input": None}]
+            )
+        try:
+            payload = PublicSendRequest(**body)
+        except ValidationError as exc:
+            errors = exc.errors(include_url=False, include_context=False)
+            if any(tuple(e.get("loc", ())[:2]) == ("media", "url") for e in errors):
+                raise ApiError(422, "invalid_media_url", "The media url must be text.") from None
+            # Same answer the route's own validation handler gives.
+            raise RequestValidationError(errors) from None
         message_id, replay = await run_in_threadpool(
             svc.send,
             api_ws.tenant_id,

@@ -1001,7 +1001,6 @@ class PublicGatewayService:
                     caption=req.media.caption,
                     to=req.to,
                     channel=channel,
-                    release_before_store=True,
                 )
         elif msg_type in ("interactive", "location", "contacts"):
             return self._send_structured(tenant_id, workspace_id, key_id, msg_type, req, channel)
@@ -1106,7 +1105,6 @@ class PublicGatewayService:
         caption: Optional[str],
         to: str,
         channel: Optional[Channel] = None,
-        release_before_store: bool = False,
     ) -> str:
         # `channel` is None only for the legacy `send_multipart` call path
         # that predates the explicit selector (plan 32 / A7a S6) - resolve
@@ -1126,7 +1124,6 @@ class PublicGatewayService:
                 caption=caption,
                 actor_is_human=False,
                 channel_id_override=self._override_for(channel),
-                release_before_store=release_before_store,
             )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
@@ -1184,7 +1181,6 @@ class PublicGatewayService:
                         header_filename=header_filename,
                         actor_is_human=False,
                         channel_id_override=self._override_for(channel),
-                        release_before_store=header_content is not None,
                     )
             elif msg_type == "location":
                 if not req.location:
