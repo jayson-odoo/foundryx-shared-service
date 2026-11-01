@@ -1980,3 +1980,285 @@ def test_a_meeting_without_storage_writes_locally(session_factory, local_media):
     assert env == {"BOT_OUT": "/out"}
     assert len(volumes) == 1
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# the host of a storage URL is plain
+# ═══════════════════════════════════════════════════════════════════════════
+
+HOST_FORMS = {
+    "percent_digits": "https://%31%32%37.0.0.1:9000",
+    "percent_dots": "https://127%2e0%2e0%2e1:9000",
+    "percent_localhost": "https://%6c%6f%63%61%6c%68%6f%73%74",
+    "only_a_dot": "https://.",
+    "empty_label": "https://a..b",
+    "long_label": "https://" + "a" * 70 + ".storage.test",
+    "delete_character": "https://cdn\x7f.storage.test",
+    "fullwidth_digits": "https://１２７.0.0.1",
+    "non_ascii_name": "https://cdn.storagé.test",
+    "bracketed_version_form": "https://[v1.127.0.0.1]:9000",
+    "open_bracket": "https://[::1",
+    "octal_first_label": "https://0177.0.0.1",
+    "single_number": "https://2130706433",
+    "hex_first_label": "https://0x7f.0.0.1",
+    "short_dotted": "https://127.1",
+}
+GOOD_HOSTS = {
+    "name": "https://cdn.storage.test",
+    "name_with_port": "https://other.storage.test:8443",
+    "public_ipv4": "https://93.184.216.34",
+    "public_ipv6": "https://[2606:2800:220:1:248:1893:25c8:1946]",
+}
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("form", list(HOST_FORMS))
+def test_saving_a_storage_connection_refuses_a_host_that_is_not_plain(
+    field, form, client, session_factory, net
+):
+    res = _call(
+        lambda: client.post(
+            "/integrations/connections",
+            json=_payload(S3_PAYLOAD, **{field: HOST_FORMS[form]}),
+            headers=_admin(client),
+        ),
+        "the save route",
+    )
+    assert res.status_code == 422, res.text
+    assert _storage_rows(session_factory) == []
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("form", list(HOST_FORMS))
+def test_updating_a_storage_connection_refuses_a_host_that_is_not_plain(
+    field, form, client, session_factory, net
+):
+    headers = _admin(client)
+    created = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, cdnBaseUrl="https://cdn.storage.test"),
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    res = _call(
+        lambda: client.patch(
+            f"/integrations/connections/{created.json()['id']}",
+            json={"config": {field: HOST_FORMS[form]}},
+            headers=headers,
+        ),
+        "the update route",
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+@pytest.mark.parametrize("form", list(HOST_FORMS))
+def test_the_test_button_refuses_a_host_that_is_not_plain(
+    field, form, client, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _connect(db, "https://cdn.storage.test")
+    conn.config_json = {**conn.config_json, field: HOST_FORMS[form]}
+    db.commit()
+    storage_module.clear_adapter_cache()
+    res = _call(
+        lambda: client.post(
+            f"/integrations/connections/{conn.id}/test", json={}, headers=_admin(client)
+        ),
+        "the test route",
+    )
+    assert res.json()["ok"] is False
+    assert res.json()["message"] == TEST_REFUSAL
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("form", list(HOST_FORMS))
+def test_a_host_that_is_not_plain_is_not_a_usable_endpoint(form):
+    from app.services.storage import endpoint_is_usable
+
+    assert endpoint_is_usable("s3", {"endpointUrl": HOST_FORMS[form]}) is False
+
+
+@pytest.mark.parametrize("form", list(HOST_FORMS))
+def test_a_stored_endpoint_with_a_host_that_is_not_plain_is_not_used(
+    form, session_factory, bucket, client_builds, net
+):
+    net.start(tls=True)
+    db = session_factory()
+    conn = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), HOST_FORMS[form])
+    assert not read_blob(db, conn).ok
+    assert client_builds == []
+    assert net.attempts == []
+    db.close()
+
+
+@pytest.mark.parametrize("form", list(HOST_FORMS))
+def test_a_meeting_does_not_receive_an_endpoint_with_a_host_that_is_not_plain(
+    form, session_factory, bucket, local_media, net
+):
+    from modules.meetings.services.bot_runner import build_output
+
+    db = session_factory()
+    _with_endpoint(db, _connect(db, "https://cdn.storage.test"), HOST_FORMS[form])
+    env, _volumes, _artifacts = build_output(db, _meeting())
+    assert "BOT_S3_ENDPOINT" not in env
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# a client library that rejects a stored endpoint
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def rejecting_client(monkeypatch):
+    def build(self):
+        raise ValueError("Invalid endpoint: rejected by the client library")
+
+    monkeypatch.setattr(S3CompatibleAdapter, "_build_client", build)
+    storage_module.clear_adapter_cache()
+
+
+def _presigned_connection(db):
+    conn = _connect(db, "")
+    return _with_endpoint(db, conn, "https://s3.storage.test")
+
+
+def test_import_preview_fails_cleanly_when_the_client_library_rejects_the_endpoint(
+    client, session_factory, rejecting_client, net
+):
+    db = session_factory()
+    conn = _presigned_connection(db)
+    job = _new_job(db, file_storage_key=f"conn:{conn.id}:preview.csv")
+    res = _call(
+        lambda: client.get(f"/imports/{job.id}/preview", headers=_admin(client)), "the preview route"
+    )
+    assert 400 <= res.status_code < 500 or res.status_code == 502, res.text
+    db.close()
+
+
+def test_import_error_file_fails_cleanly_when_the_client_library_rejects_the_endpoint(
+    client, session_factory, rejecting_client, net
+):
+    db = session_factory()
+    conn = _presigned_connection(db)
+    job = _new_job(db, error_report_key=f"conn:{conn.id}:errors.csv")
+    res = _call(
+        lambda: client.get(f"/imports/{job.id}/errors-file", headers=_admin(client)),
+        "the error file route",
+    )
+    assert 400 <= res.status_code < 500 or res.status_code == 502, res.text
+    db.close()
+
+
+def test_an_upload_does_not_fail_when_the_client_library_rejects_the_endpoint(
+    session_factory, rejecting_client, net, local_media
+):
+    db = session_factory()
+    _presigned_connection(db)
+    key = _call(
+        lambda: storage_for_tenant(db, DEFAULT_TENANT_ID).save("avatars/u1", b"BYTES", "image/png"),
+        "the upload",
+    )
+    assert isinstance(key, str) and key
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# migrating away from a connection that holds a bad URL
+# ═══════════════════════════════════════════════════════════════════════════
+
+STORED_BAD_ON_CURRENT = ["https://10.0.0.5", "http://127.0.0.1:9000", "https://%31%32%37.0.0.1:9000"]
+
+
+@pytest.mark.parametrize("endpoint", STORED_BAD_ON_CURRENT)
+def test_a_migration_from_a_connection_with_a_bad_url_is_refused_and_keeps_it(
+    endpoint, client, session_factory, bucket, client_builds, net
+):
+    from app.models.background_job import BackgroundJob
+
+    listener = net.start(tls=True)
+    _mirror_into_listener(bucket, listener)
+    db = session_factory()
+    current = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), endpoint)
+    current_id = current.id
+    res = _call(
+        lambda: client.post(
+            "/storage/migrations",
+            json=_migration_body(cdnBaseUrl="https://cdn.storage.test"),
+            headers=_admin(client),
+        ),
+        "the migration start route",
+    )
+    assert 400 <= res.status_code < 500, res.text
+    assert current_id not in res.text
+    assert isinstance(res.json().get("detail"), str) and res.json()["detail"]
+    rows = _storage_rows(session_factory)
+    assert [r.id for r in rows] == [current_id]
+    assert rows[0].is_active
+    check = session_factory()
+    assert check.query(BackgroundJob).filter(BackgroundJob.tenant_id == DEFAULT_TENANT_ID).count() == 0
+    check.close()
+    db.close()
+
+
+def test_a_migration_job_that_fails_on_a_bad_connection_records_text_without_an_id(
+    session_factory, bucket, client_builds, net
+):
+    from app.jobs.service import run_job
+    from app.models.background_job import JOB_FAILED, BackgroundJob
+    from app.storage_migration.service import STORAGE_MIGRATION
+
+    db = session_factory()
+    old = _with_endpoint(db, _connect(db, "https://cdn.storage.test"), "https://10.0.0.5")
+    old.is_active = False
+    new = _storage_connection(db, PLATFORM_TENANT_ID, cdn="https://cdn.storage.test")
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID,
+        type=STORAGE_MIGRATION,
+        status="pending",
+        payload_json={"fromConnectionId": old.id, "toConnectionId": new.id},
+    )
+    db.add(job)
+    db.commit()
+    finished = run_job(db, job.id)
+    assert finished.status == JOB_FAILED
+    assert finished.error
+    assert old.id not in finished.error
+    assert new.id not in finished.error
+    db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# a label that storage clients write
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize("reader", [*CONTENT_READERS, "media_read"])
+def test_a_stored_object_labelled_aws_chunked_is_read(reader, net, bucket, session_factory):
+    db = session_factory()
+    listener = net.start(tls=True)
+    listener.extra_headers = b"Content-Encoding: aws-chunked\r\n"
+    out = run_any(reader, db, _connect(db, "https://cdn.storage.test"))
+    assert out.ok
+    assert out.data == CANARY_BYTES
+    db.close()
+
+
+def test_the_probe_round_trips_an_object_labelled_aws_chunked(net, bucket, session_factory):
+    db = session_factory()
+    listener = net.start(tls=True)
+    listener.extra_headers = b"Content-Encoding: aws-chunked\r\n"
+    _mirror_into_listener(bucket, listener)
+    assert read_probe(db, _connect(db, "https://cdn.storage.test")).ok
+    db.close()
+
+
+def test_read_url_reads_an_object_labelled_aws_chunked(net):
+    listener = net.start(tls=True)
+    listener.extra_headers = b"Content-Encoding: aws-chunked\r\n"
+    assert read_url("https://cdn.storage.test/obj.bin", timeout=5) == CANARY_BYTES
+
