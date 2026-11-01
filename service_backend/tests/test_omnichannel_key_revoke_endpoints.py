@@ -2084,3 +2084,78 @@ def test_ac_43_09_a_patch_with_the_same_values_moves_nothing(client, session_fac
     assert res.status_code == 200, res.text
     assert _created_by(session_factory, ep) == _by(k1)
     assert _row_snapshot(session_factory, ep) == before
+
+
+def test_ac_43_12_a_staff_status_change_reads_the_row_under_a_lock(client, session_factory, lock_spy):
+    r = _rig(client, session_factory)
+    ep = _insert(session_factory, ws=r["ws"], created_by=_by(r["key"]))
+    h = _auth(client)
+    db = session_factory()
+    engine = db.get_bind()
+    db.close()
+
+    def on_sql(conn, cursor, statement, params, context, executemany):
+        if statement.lstrip().upper().startswith("UPDATE") and "webhook_endpoints" in statement:
+            lock_spy.append(("update_row",))
+
+    event.listen(engine, "before_cursor_execute", on_sql)
+    try:
+        for step in ("disable", "enable"):  # a pause, then a resume
+            lock_spy.clear()
+            res = client.post(f"{STAFF}/webhooks/{ep}/{step}", headers=h)
+            assert res.status_code == 200, res.text  # control: the staff change works
+            locks = [
+                i for i, e in enumerate(lock_spy)
+                if e[0] == "lock" and e[1] == "WebhookEndpoint" and e[2].get("key_share") is True
+            ]
+            updates = [i for i, e in enumerate(lock_spy) if e[0] == "update_row"]
+            assert updates, (step, "the row was never updated")  # control
+            assert locks, (step, "the endpoint row was read without a lock")
+            assert min(locks) < min(updates), (step, lock_spy)
+    finally:
+        event.remove(engine, "before_cursor_execute", on_sql)
+
+
+def test_ac_43_12_a_staff_pause_always_writes_the_status(client, session_factory, monkeypatch):
+    """The row is read as DISABLED with a key's reason; before the pause commits,
+    another session enables it. The staff pause must still end DISABLED with the
+    staff reason. The wrapper hooks the first read `set_status` makes (today
+    `_get`); if that read moves, hook the new first read instead."""
+    from sqlalchemy import update
+
+    from modules.omnichannel.services.webhook_service import KEY_DISABLED_REASON, WebhookService
+
+    r = _rig(client, session_factory)
+    ep = _insert(
+        session_factory, ws=r["ws"], created_by=_by(r["key"]), status="DISABLED",
+        reason=KEY_DISABLED_REASON, disabled_at=OLD,
+    )
+    real_get = WebhookService._get
+    fired = {"n": 0}
+
+    def get_then_enable_elsewhere(self, tenant_id, endpoint_id):
+        row = real_get(self, tenant_id, endpoint_id)
+        if not fired["n"]:
+            fired["n"] += 1
+            other = session_factory()
+            try:
+                other.execute(
+                    update(WebhookEndpoint)
+                    .where(WebhookEndpoint.id == endpoint_id)
+                    .values(status="ACTIVE", disabled_reason=None, disabled_at=None)
+                )
+                other.commit()
+            finally:
+                other.close()
+        return row
+
+    monkeypatch.setattr(WebhookService, "_get", get_then_enable_elsewhere)
+    db = session_factory()
+    try:
+        WebhookService(db).set_status(DEFAULT_TENANT_ID, ep, False)
+    finally:
+        db.close()
+
+    assert fired["n"] == 1  # control: the other session enabled the row during the read
+    state = _state(session_factory, ep)
+    assert state["status"] == "DISABLED" and state["reason"] == STAFF_REASON, state
