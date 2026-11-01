@@ -20,6 +20,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import httpx
 from sqlalchemy.orm import Session
 
+from app.services.url_guard import GuardedTransport, UrlGuardError
+
 from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
 from ..schemas import MessageItem
 from ..security import decrypt_secret
@@ -203,14 +205,17 @@ def dispatch(db: Session, delivery_id: str) -> str:
         # externally supplied on the API-key surface). Never POST to a target
         # that resolves internally NOW.
         assert_deliverable(endpoint.url)
-        resp = httpx.post(
-            endpoint.url, content=body, headers=headers, timeout=DELIVERY_TIMEOUT
-        )
+        with httpx.Client(
+            transport=GuardedTransport(subject="Callback URL"),
+            timeout=DELIVERY_TIMEOUT,
+            follow_redirects=False,
+        ) as client:
+            resp = client.post(endpoint.url, content=body, headers=headers)
         status_code = resp.status_code
         ok = 200 <= resp.status_code < 300
         if not ok:
             error = f"Consumer returned {resp.status_code}."
-    except WebhookError as exc:
+    except (WebhookError, UrlGuardError) as exc:
         # Blocked target - a real failure, but never a network call.
         error = f"Delivery refused: {exc}"
     except httpx.HTTPError as exc:

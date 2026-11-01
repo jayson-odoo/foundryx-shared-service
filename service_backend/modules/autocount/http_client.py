@@ -19,7 +19,7 @@ import httpx
 
 from app.config import settings
 from app.database import release_read_transactions
-from app.services.url_guard import UrlGuardError, assert_deliverable
+from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
 
 # 10s per AC-08-02 - a probe, not an extraction; a slow/hung wrapper must
 # fail fast rather than hold up the Test button or the create form.
@@ -67,6 +67,21 @@ def _is_dev_local_host(host: str) -> bool:
     return lowered in ("localhost", "127.0.0.1") or lowered.startswith("127.")
 
 
+def _dev_local_exempt(host: str) -> bool:
+    return settings.environment == "development" and _is_dev_local_host(host)
+
+
+def autocount_guarded_client(timeout: float) -> httpx.Client:
+    """A fresh client for an AutoCount base URL: redirects are not followed and
+    the connection goes only to an address that passed the guard, with the same
+    development carve-out for local hosts as the pre-flight."""
+    return httpx.Client(
+        transport=GuardedTransport(subject="baseUrl", exempt_host=_dev_local_exempt),
+        timeout=timeout,
+        follow_redirects=False,
+    )
+
+
 def assert_autocount_base_url_deliverable(base_url: str) -> None:
     """AC-10-58 M2 - the outbound-egress guard: every AutoCount open-REST
     ``baseUrl`` is re-checked against the house SSRF guard
@@ -102,12 +117,11 @@ def probe_open_connection(
     """
     assert_autocount_base_url_deliverable(base_url)
     url = f"{(base_url or '').rstrip('/')}/location"
-    client = transport if transport is not None else httpx.Client(
-        timeout=OPEN_PROBE_TIMEOUT_SECONDS,
-        # S5 (sprint-5/08 review round 1) - never silently follow a redirect
-        # to a host the operator never typed (SSRF-adjacent; the base URL is
-        # the ONLY endpoint this probe is meant to reach).
-        follow_redirects=False,
+    # S5 (sprint-5/08 review round 1) - never silently follow a redirect to a
+    # host the operator never typed; the base URL is the ONLY endpoint this
+    # probe is meant to reach.
+    client = transport if transport is not None else autocount_guarded_client(
+        OPEN_PROBE_TIMEOUT_SECONDS
     )
     owns_client = transport is None
     release_read_transactions()  # plan 34 - no app-DB read txn across the probe
@@ -118,6 +132,8 @@ def probe_open_connection(
                 headers={"Accept": "application/json"},
                 timeout=OPEN_PROBE_TIMEOUT_SECONDS,
             )
+        except UrlGuardError as exc:
+            raise OpenProbeError(str(exc)) from exc
         except httpx.TimeoutException as exc:
             raise OpenProbeError(
                 f"Could not reach {base_url} - the request timed out "

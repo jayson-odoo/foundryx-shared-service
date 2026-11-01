@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.services.url_guard import UrlGuardError, assert_deliverable
+from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
 
 from .. import crypto, registry
 from ..registry import Product
@@ -38,14 +38,20 @@ def send(product: Product, *, method: str, raw_path: str, query: str, body: byte
     if body:
         headers["Content-Type"] = "application/json"
     timeout = httpx.Timeout(float(timeout_seconds or registry.call_timeout_seconds()))
-    with httpx.Client(transport=TRANSPORT, timeout=timeout, follow_redirects=False) as client:
-        with client.stream(method.upper(), url, content=body or None, headers=headers) as resp:
-            chunks, size = [], 0
-            for chunk in resp.iter_bytes():
-                size += len(chunk)
-                if size > MAX_RESPONSE_BYTES:
-                    raise httpx.TransportError("response too large")
-                chunks.append(chunk)
+    transport = TRANSPORT
+    if transport is None and product.guard_outbound:
+        transport = GuardedTransport(subject="API base URL")
+    try:
+        with httpx.Client(transport=transport, timeout=timeout, follow_redirects=False) as client:
+            with client.stream(method.upper(), url, content=body or None, headers=headers) as resp:
+                chunks, size = [], 0
+                for chunk in resp.iter_bytes():
+                    size += len(chunk)
+                    if size > MAX_RESPONSE_BYTES:
+                        raise httpx.TransportError("response too large")
+                    chunks.append(chunk)
+    except UrlGuardError:
+        raise httpx.TransportError("blocked target") from None  # nothing is sent
     kept = [(k, v) for k, v in resp.headers.items()
             if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
     return httpx.Response(resp.status_code, headers=kept, content=b"".join(chunks),

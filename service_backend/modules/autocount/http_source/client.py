@@ -22,9 +22,14 @@ import httpx
 
 from app.database import release_read_transactions
 from app.integrations.masking import mask_payload
+from app.services.url_guard import UrlGuardError
 
 from ..client import CallRecord
-from ..http_client import OpenProbeError, assert_autocount_base_url_deliverable
+from ..http_client import (
+    OpenProbeError,
+    assert_autocount_base_url_deliverable,
+    autocount_guarded_client,
+)
 from ..payloads import bound_payload, mark_truncated
 
 logger = logging.getLogger("foundryx.autocount")
@@ -219,9 +224,7 @@ class HttpApiClient:
         if self._transport is None:
             # S5 (sprint-5/08 review round 1) - never silently follow a
             # redirect off the configured base URL (SSRF-adjacent).
-            self._transport = httpx.Client(
-                timeout=self.timeout_seconds, follow_redirects=False
-            )
+            self._transport = autocount_guarded_client(self.timeout_seconds)
         return self._transport
 
     def close(self) -> None:
@@ -266,6 +269,9 @@ class HttpApiClient:
                 headers={"Accept": "application/json", "User-Agent": USER_AGENT},
                 timeout=self.timeout_seconds,
             )
+        except UrlGuardError as exc:
+            self._record_call(path, params, None, started, error=f"blocked: {exc}")
+            raise HttpTransportError(str(exc), is_timeout=False) from exc
         except httpx.TimeoutException as exc:
             self._record_call(path, params, None, started, error=f"timeout: {exc}")
             raise HttpTransportError(
