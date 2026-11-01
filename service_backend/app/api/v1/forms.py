@@ -399,12 +399,18 @@ async def submit_form(
     # End the sign-in read transaction before waiting for the body; all session
     # work (here and below) runs on a worker thread, never on the loop.
     await run_in_threadpool(release_read_transactions)
+    # Read once here: the release leaves loaded objects unexpired, while the commit
+    # inside the service call expires them, so nothing is read from the session
+    # objects on the loop afterwards.
+    tenant_id = current_user.tenant_id
     answers, _honeypot, uploads = await _read_submission(request)
     service = FormService(db)
+
+    def _submit() -> str:
+        return service.submit(tenant_id, form_id, current_user, answers, uploads).id
+
     try:
-        submission = await run_in_threadpool(
-            service.submit, current_user.tenant_id, form_id, current_user, answers, uploads
-        )
+        submission_id = await run_in_threadpool(_submit)
     except FormNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Form not found.")
     except FormSubmitInvalid as exc:
@@ -415,7 +421,7 @@ async def submit_form(
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return FormSubmissionOut(
         **await run_in_threadpool(
-            service.get_submission, current_user.tenant_id, submission.id, current_user
+            service.get_submission, tenant_id, submission_id, current_user
         )
     )
 
@@ -626,21 +632,27 @@ async def resubmit_revision(
     # End the sign-in read transaction before waiting for the body; all session
     # work (here and below) runs on a worker thread, never on the loop.
     await run_in_threadpool(release_read_transactions)
+    # Read once here (see submit_form): no session object is read on the loop after
+    # a worker hop that commits.
+    tenant_id = current_user.tenant_id
     answers, _honeypot, uploads = await _read_submission(request)
     service = FormService(db)
     can_manage = "submissions.manage" in await run_in_threadpool(
         effective_permission_keys, current_user
     )
-    try:
-        submission = await run_in_threadpool(
-            service.resubmit_revision,
-            current_user.tenant_id,
+
+    def _resubmit() -> str:
+        return service.resubmit_revision(
+            tenant_id,
             submission_id,
             current_user,
             answers,
             uploads,
             can_manage=can_manage,
-        )
+        ).id
+
+    try:
+        saved_id = await run_in_threadpool(_resubmit)
     except SubmissionNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Submission not found.")
     except FormRevisionForbidden:
@@ -653,7 +665,7 @@ async def resubmit_revision(
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return FormSubmissionOut(
         **await run_in_threadpool(
-            service.get_submission, current_user.tenant_id, submission.id, current_user
+            service.get_submission, tenant_id, saved_id, current_user
         )
     )
 
