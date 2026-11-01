@@ -115,7 +115,7 @@ function row(over: Partial<Row>): WebhookEndpoint {
     updatedAt: '2026-07-04T00:00:00Z',
     ...over,
   };
-  return base as unknown as WebhookEndpoint;
+  return base;
 }
 
 const ALL = row({ id: 'wh-all', name: 'Workspace feed', channelId: null });

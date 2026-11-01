@@ -181,7 +181,16 @@ export function useWebhookList(
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
             <Webhook className="size-4 shrink-0 text-muted-foreground" />
-            <ClampedText text={row.original.name} lines={1} className="font-medium" />
+            <ClampedText
+              text={row.original.name}
+              lines={1}
+              className="min-w-0 font-medium"
+            />
+            {row.original.channelId === null && (
+              <Badge variant="secondary" appearance="light" size="sm" className="shrink-0">
+                All channels
+              </Badge>
+            )}
           </div>
         ),
         size: 180,
