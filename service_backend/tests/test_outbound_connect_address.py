@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import datetime as _dt
 import ipaddress
-import os
 import socket
 import ssl
 import threading
@@ -136,6 +135,7 @@ class Rig:
         self.accepted = {ALLOWED_ADDR: [], BLOCKED_ADDR: []}
         self.sentinels = set()
         self.requests = []  # (address, Host header) seen by the TLS responder
+        self.raw_requests = []  # (header map, body bytes) seen by the TLS responder
         self.tls_hostnames = []  # server_hostname values reaching a client TLS start
         self.scripts = {}
         self.calls = {}
@@ -206,10 +206,19 @@ class Rig:
                 if not chunk:
                     return
                 data += chunk
-            host = ""
-            for line in data.split(b"\r\n")[1:]:
-                if line.lower().startswith(b"host:"):
-                    host = line.split(b":", 1)[1].strip().decode("latin-1")
+            head, _sep, body = data.partition(b"\r\n\r\n")
+            header_map = {}
+            for line in head.split(b"\r\n")[1:]:
+                name, _colon, value = line.partition(b":")
+                header_map[name.strip().lower().decode("latin-1")] = value.strip().decode("latin-1")
+            wanted = int(header_map.get("content-length", "0") or 0)
+            while len(body) < wanted:
+                chunk = tls.recv(65536)
+                if not chunk:
+                    break
+                body += chunk
+            host = header_map.get("host", "")
+            self.raw_requests.append((header_map, body))
             self.requests.append((addr, host))
             if self.mode == "redirect":
                 reply = (
@@ -1038,3 +1047,120 @@ def test_the_gateway_fetch_is_not_held_back_by_an_unanswered_first_address(rig, 
     elapsed = time.monotonic() - started
     assert failure is None and body == b"ok", f"the fetch did not complete: {failure and failure.message}"
     assert elapsed < 5.0, f"the fetch took {elapsed:.2f}s with a live second address"
+
+
+# ── Certificate checks are on ─────────────────────────────────────────────────
+def _issue_certs(folder, *, server_names, signed_by_trusted):
+    """A trusted CA file, plus a server certificate for ``server_names`` signed by
+    that CA (``signed_by_trusted``) or by a different CA the client does not
+    have. Returns (trusted_ca_path, cert_path, key_path)."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+
+    def make_ca(cn):
+        key = ec.generate_private_key(ec.SECP256R1())
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+        cert = (
+            x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - _dt.timedelta(days=1)).not_valid_after(now + _dt.timedelta(days=2))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True, content_commitment=False, key_encipherment=False,
+                    data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                    crl_sign=True, encipher_only=False, decipher_only=False,
+                ),
+                critical=True,
+            )
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .sign(key, hashes.SHA256())
+        )
+        return key, cert
+
+    trusted_key, trusted_cert = make_ca("trusted-test-ca")
+    other_key, other_cert = make_ca("other-test-ca")
+    issuer_key, issuer_cert = (trusted_key, trusted_cert) if signed_by_trusted else (other_key, other_cert)
+    leaf_key = ec.generate_private_key(ec.SECP256R1())
+    leaf = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, server_names[0])]))
+        .issuer_name(issuer_cert.subject).public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - _dt.timedelta(days=1)).not_valid_after(now + _dt.timedelta(days=2))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in server_names]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_key.public_key()), critical=False)
+        .sign(issuer_key, hashes.SHA256())
+    )
+    ca_path = folder / "trusted.pem"
+    cert_path = folder / "server.pem"
+    key_path = folder / "server.key"
+    ca_path.write_bytes(trusted_cert.public_bytes(serialization.Encoding.PEM))
+    cert_path.write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        leaf_key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+    return str(ca_path), str(cert_path), str(key_path)
+
+
+@pytest.mark.parametrize("path", ["workflow_action", "gateway_media_fetch"])
+@pytest.mark.parametrize("variant", ["certificate_for_another_name", "certificate_from_an_untrusted_ca"])
+def test_a_server_certificate_that_does_not_verify_is_a_connection_failure(
+    rig, env, tmp_path, monkeypatch, path, variant
+):
+    if variant == "certificate_for_another_name":
+        ca, cert, key = _issue_certs(tmp_path, server_names=["other.edge-test.example.test"], signed_by_trusted=True)
+    else:
+        ca, cert, key = _issue_certs(tmp_path, server_names=[NAME], signed_by_trusted=False)
+    rig._tls = SimpleNamespace(ca=ca, cert=cert, key=key)
+    monkeypatch.setenv("SSL_CERT_FILE", ca)
+    rig.block_by_address()
+    rig.respond("ok")
+    outcome = _run(rig, env, path, SEQ_ALLOWED)
+    assert outcome.kind == "conn_failed", f"{path}: {outcome!r}"
+    assert rig.count(ALLOWED_ADDR) >= 1, f"{path}: the listener was never reached"
+    assert rig.requests == [], f"{path}: an HTTP request reached a server whose certificate does not verify"
+
+
+# ── Webhook bytes on the wire ─────────────────────────────────────────────────
+def test_the_delivered_webhook_body_and_signature_verify_against_the_secret(guarded, env):
+    import hashlib
+    import hmac as hmac_module
+
+    guarded.respond("ok")
+    outcome = _run(guarded, env, "webhook_delivery", SEQ_ALLOWED)
+    assert outcome.kind == "completed", f"{outcome!r}"
+    assert len(guarded.raw_requests) == 1, guarded.raw_requests
+    headers, body = guarded.raw_requests[0]
+    assert body == b'{"hello":"world"}', f"unexpected body bytes: {body!r}"
+    stamp = headers["x-fx-timestamp"]
+    expected = hmac_module.new(b"signing-secret", f"{stamp}.".encode() + body, hashlib.sha256).hexdigest()
+    assert headers["x-fx-signature"] == "sha256=" + expected
+
+
+# ── Sync path: the next address is tried after a connect timeout ──────────────
+def test_the_sync_path_tries_the_next_address_after_a_connect_timeout(rig, env, monkeypatch):
+    import httpcore
+
+    _two_addresses(rig, monkeypatch)
+    real = httpcore.SyncBackend.connect_tcp
+
+    def wrapped(self, host, port, timeout=None, local_address=None, socket_options=None):
+        if host == ALLOWED_ADDR:
+            raise httpcore.ConnectTimeout("scripted: no answer")
+        return real(self, host, port, timeout, local_address, socket_options)
+
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", wrapped)
+    outcome = PATHS["workflow_action"][0](env, rig.base())
+    assert outcome.kind == "completed", f"the second address was not tried: {outcome!r}"
+    assert rig.count(BLOCKED_ADDR, only=True) >= 1
