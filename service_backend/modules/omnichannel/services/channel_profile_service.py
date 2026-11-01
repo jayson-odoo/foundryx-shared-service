@@ -129,7 +129,11 @@ class ChannelProfileService:
         c = self._channel(channel_id, tenant_id)
 
         # ── validation (422 per-field) ──
-        if payload.vertical is not None and payload.vertical not in WHATSAPP_VERTICAL_SET:
+        if (
+            payload.vertical is not None
+            and payload.vertical not in WHATSAPP_VERTICAL_SET
+            and (payload.vertical.strip() or c.profile_vertical)
+        ):
             raise _field_error("vertical", "Not a valid WhatsApp business vertical.")
         if payload.email is not None and payload.email.strip() and not _EMAIL_RE.match(payload.email.strip()):
             raise _field_error("email", "Enter a valid email address.")
