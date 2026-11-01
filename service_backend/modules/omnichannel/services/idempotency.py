@@ -5,6 +5,7 @@ store is Redis (survives across API replicas); if Redis is unreachable the store
 degrades to a process-local dict so tests/dev need no Redis. A ``set_store``
 seam lets tests inject a deterministic in-memory store.
 """
+import threading
 from typing import Dict, Optional
 
 from app.config import settings
@@ -30,6 +31,7 @@ class IdempotencyStore:
 
     def __init__(self) -> None:
         self._memory: Dict[str, str] = {}
+        self._memory_lock = threading.Lock()
 
     def _client(self):  # noqa: ANN202
         try:
@@ -62,10 +64,11 @@ class IdempotencyStore:
                 return client.get(k)
             except Exception:  # noqa: BLE001 - fall through to memory
                 pass
-        if k in self._memory:
-            return self._memory[k]
-        self._memory[k] = PENDING
-        return None
+        with self._memory_lock:
+            if k in self._memory:
+                return self._memory[k]
+            self._memory[k] = PENDING
+            return None
 
     def finalize(self, workspace_id: str, idem_key: str, message_id: str) -> None:
         """Overwrite the PENDING sentinel with the real message id (keeps TTL)."""
@@ -93,8 +96,9 @@ class IdempotencyStore:
                 return
             except Exception:  # noqa: BLE001
                 pass
-        if self._memory.get(k) == PENDING:
-            self._memory.pop(k, None)
+        with self._memory_lock:
+            if self._memory.get(k) == PENDING:
+                self._memory.pop(k, None)
 
 
 class MemoryIdempotencyStore(IdempotencyStore):

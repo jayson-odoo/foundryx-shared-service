@@ -6,7 +6,8 @@ pipeline: resolve/create the contact from the raw `to` phone, reuse
 translate rejections into the structured `/api/v1/*` error envelope. Idempotency
 dedup is workspace-scoped with a 24h TTL.
 """
-import time
+import asyncio
+import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -57,6 +58,42 @@ if TYPE_CHECKING:  # forward ref used in a signature below
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 # Total time one media fetch may take (connect, headers and body together).
 MEDIA_FETCH_TOTAL_SECONDS = 60.0
+# Media fetches allowed at once in this server process, and per API key.
+MEDIA_FETCH_MAX_CONCURRENT = 4
+MEDIA_FETCH_MAX_PER_KEY = 2
+_FETCH_FAILED_TEXT = "The media url could not be fetched."
+
+
+class _FetchGate:
+    """Per-process counter of running media fetches. ``acquire`` never waits; a
+    key's entry is removed when its count returns to zero."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._total = 0
+        self._per_key: dict = {}
+
+    def acquire(self, key_id: str) -> bool:
+        with self._lock:
+            if self._total >= MEDIA_FETCH_MAX_CONCURRENT:
+                return False
+            if self._per_key.get(key_id, 0) >= MEDIA_FETCH_MAX_PER_KEY:
+                return False
+            self._total += 1
+            self._per_key[key_id] = self._per_key.get(key_id, 0) + 1
+            return True
+
+    def release(self, key_id: str) -> None:
+        with self._lock:
+            self._total = max(0, self._total - 1)
+            left = self._per_key.get(key_id, 0) - 1
+            if left > 0:
+                self._per_key[key_id] = left
+            else:
+                self._per_key.pop(key_id, None)
+
+
+_FETCH_GATE = _FetchGate()
 
 # Wire-format switch on the read endpoints (`?format=`). GUIDE is the DEFAULT
 # and the documented contract (`MessageItem`/`ThreadItem`, the richer flat
@@ -830,7 +867,7 @@ class PublicGatewayService:
                     else "messaging_window_closed"
                 )
                 raise ApiError(409, code, messaging_policy.closed_window_message(channel.channel_type))
-            content = self._fetch_url(req.media.url)
+            content = self._fetch_url(req.media.url, key_id)
             return self._send_media(
                 tenant_id,
                 workspace_id,
@@ -865,52 +902,72 @@ class PublicGatewayService:
             raise self._map_send_rejected(exc) from exc
         return item.id
 
-    def _fetch_url(self, url: str) -> bytes:
+    def _fetch_url(self, url: str, key_id: str) -> bytes:
         """Fetch a media URL so it can be re-uploaded by id (plan 12 review - SSRF).
 
         Reuses the consumer-webhook SSRF guard (``validate_callback_url``): https
         only, blocks private/loopback/link-local/reserved/metadata targets given
         as a literal, numeric/hex IP, OR a hostname that resolves to one. Redirects
         are DISABLED (a 3xx to an internal host would bypass the guard); the read
-        is streamed + capped so a hostile body can't exhaust memory."""
+        is streamed + capped so a hostile body can't exhaust memory.
+
+        The fetch runs on its own short event loop under one hard deadline
+        (``MEDIA_FETCH_TOTAL_SECONDS``), after the session's read transactions are
+        released, and holds one slot of the per-process fetch gate."""
+        from app.database import release_read_transactions
+
         from .webhook_service import WebhookError, validate_callback_url
 
+        # Nothing below touches the session: the caller holds what it needs.
+        release_read_transactions()
         try:
             safe = validate_callback_url(url)
         except WebhookError as exc:
             raise ApiError(422, "invalid_media_url", str(exc)) from exc
-        started = time.monotonic()
-
-        def _check_time() -> None:
-            if time.monotonic() - started > MEDIA_FETCH_TOTAL_SECONDS:
-                raise ApiError(422, "media_fetch_failed", "Fetching the media url took too long.")
-
+        except ValueError as exc:
+            raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
+        if not _FETCH_GATE.acquire(key_id):
+            raise ApiError(
+                429, "media_fetch_busy", "Too many media fetches are running. Retry shortly."
+            )
         try:
-            _check_time()
-            with httpx.Client(timeout=15.0, follow_redirects=False) as client:
-                with client.stream("GET", safe) as resp:
-                    _check_time()
-                    if resp.is_redirect:
-                        raise ApiError(
-                            422, "invalid_media_url", "Redirects are not allowed for media URLs."
-                        )
-                    if resp.status_code >= 400:
-                        raise ApiError(
-                            422, "media_fetch_failed", f"Media url returned {resp.status_code}."
-                        )
-                    declared = resp.headers.get("content-length", "")
-                    if declared.strip().isdigit() and int(declared) > _MEDIA_HARD_CAP:
+            try:
+                return asyncio.run(
+                    asyncio.wait_for(self._fetch_url_async(safe), MEDIA_FETCH_TOTAL_SECONDS)
+                )
+            except asyncio.TimeoutError as exc:
+                raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
+            except (httpx.HTTPError, httpx.InvalidURL, ValueError, UnicodeError) as exc:
+                raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
+        finally:
+            _FETCH_GATE.release(key_id)
+
+    async def _fetch_url_async(self, safe: str) -> bytes:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            async with client.stream(
+                "GET", safe, headers={"Accept-Encoding": "identity"}
+            ) as resp:
+                if resp.is_redirect:
+                    raise ApiError(
+                        422, "invalid_media_url", "Redirects are not allowed for media URLs."
+                    )
+                if resp.status_code >= 400:
+                    raise ApiError(
+                        422, "media_fetch_failed", f"Media url returned {resp.status_code}."
+                    )
+                encoding = resp.headers.get("content-encoding", "").strip().lower()
+                if encoding and encoding != "identity":
+                    raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT)
+                declared = resp.headers.get("content-length", "").strip()
+                if declared.isascii() and declared.isdigit() and int(declared) > _MEDIA_HARD_CAP:
+                    raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_raw():
+                    total += len(chunk)
+                    if total > _MEDIA_HARD_CAP:
                         raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
-                    chunks: list[bytes] = []
-                    total = 0
-                    for chunk in resp.iter_bytes():
-                        _check_time()
-                        total += len(chunk)
-                        if total > _MEDIA_HARD_CAP:
-                            raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
-                        chunks.append(chunk)
-        except httpx.HTTPError as exc:
-            raise ApiError(422, "media_fetch_failed", f"Could not fetch media url: {exc}") from exc
+                    chunks.append(chunk)
         return b"".join(chunks)
 
     def _send_media(
@@ -987,7 +1044,7 @@ class PublicGatewayService:
                 # rides the upload-by-id pipeline (never a bare Meta link).
                 header = defn.get("header") or {}
                 if str(header.get("type") or "") in ("image", "video", "document") and header.get("url"):
-                    header_content = self._fetch_url(header["url"])
+                    header_content = self._fetch_url(header["url"], key_id)
                     header_filename = header.get("filename")
                 item = messages.send_interactive(
                     contact.id,

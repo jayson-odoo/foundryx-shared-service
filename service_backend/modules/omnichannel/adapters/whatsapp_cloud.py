@@ -212,7 +212,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 except ValueError:
                     detail = ""
                 raise SendError(
-                    provider_error_text(_scrub_credential(detail, str(token)))
+                    provider_error_text(_scrub_credential(detail, str(token or "")))
                     or f"Media upload failed ({resp.status_code}).",
                     transient=resp.status_code >= 500,
                     code=meta_error_code(resp),
@@ -222,12 +222,13 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 raise SendError("Media upload returned no id.")
             return media_id
         except httpx.HTTPError as exc:
-            raise SendError(
-                f"Could not reach Meta: {type(exc).__name__}", transient=True
-            ) from exc
+            reach_error = type(exc).__name__
         finally:
             if self._client is None:
                 client.close()
+        # Raised outside the handler so the new error carries no chained cause or
+        # context (the transport's own text can hold request details).
+        raise SendError(f"Could not reach Meta: {reach_error}", transient=True)
 
     def send(
         self,
@@ -371,12 +372,13 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             wamid = (data.get("messages") or [{}])[0].get("id", "")
             return {"external_message_id": wamid}
         except httpx.HTTPError as exc:
-            raise SendError(
-                f"Could not reach Meta: {type(exc).__name__}", transient=True
-            ) from exc
+            reach_error = type(exc).__name__
         finally:
             if self._client is None:
                 client.close()
+        # Raised outside the handler so the new error carries no chained cause or
+        # context (the transport's own text can hold request details).
+        raise SendError(f"Could not reach Meta: {reach_error}", transient=True)
 
     def fetch_waba_details(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
         """Fetch the WABA's business account name. Instrumented once → a
