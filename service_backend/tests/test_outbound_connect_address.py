@@ -250,11 +250,21 @@ class Rig:
                 raise OSError("scripted: resolver input/output error")
             if step == "fail":
                 raise socket.gaierror(socket.EAI_NONAME, "scripted: no answer")
-            addr = ALLOWED_ADDR if step == "allowed" else BLOCKED_ADDR
             try:
                 number = int(port) if port not in (None, "") else 0
             except (TypeError, ValueError):
                 number = 0
+            if step in ("mixed_allowed_first", "mixed_blocked_first", "two_loopback"):
+                pair = (ALLOWED_ADDR, BLOCKED_ADDR)
+                if step == "mixed_blocked_first":
+                    pair = (BLOCKED_ADDR, ALLOWED_ADDR)
+                return [
+                    (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (a, number, 0, 0))
+                    if ":" in a
+                    else (socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, number))
+                    for a in pair
+                ]
+            addr = ALLOWED_ADDR if step == "allowed" else BLOCKED_ADDR
             if ":" in addr:
                 return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (addr, number, 0, 0))]
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addr, number))]
@@ -297,8 +307,8 @@ class Rig:
         self.redirect_to = redirect_to
 
     # observation: a sentinel per listener proves every earlier connection was accepted
-    def settle(self):
-        for addr in (ALLOWED_ADDR, BLOCKED_ADDR):
+    def settle(self, addrs=(ALLOWED_ADDR, BLOCKED_ADDR)):
+        for addr in addrs:
             probe = socket.create_connection((addr, self.port), timeout=5)
             try:
                 mine = probe.getsockname()[1]
@@ -313,8 +323,8 @@ class Rig:
             finally:
                 probe.close()
 
-    def count(self, addr):
-        self.settle()
+    def count(self, addr, only=False):
+        self.settle((addr,) if only else (ALLOWED_ADDR, BLOCKED_ADDR))
         with self.cond:
             return len([p for p in self.accepted[addr] if (addr, p) not in self.sentinels])
 
@@ -760,3 +770,148 @@ def test_a_later_resolver_error_is_the_normal_connection_failure(guarded, env, p
         pytest.fail(f"{path}: the resolver error escaped as {type(exc).__name__}: {exc}", pytrace=False)
     assert outcome.kind == PATHS[path][2], f"{path}: expected the connection failure outcome, got {outcome!r}"
     assert guarded.count(ALLOWED_ADDR) == 0 and guarded.count(BLOCKED_ADDR) == 0
+
+
+# ── Mixed answers: one blocked address among the answer refuses the whole name ─
+@pytest.mark.parametrize("path", sorted(PATHS))
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ["mixed_allowed_first"],
+        ["mixed_blocked_first"],
+        ["allowed", "mixed_allowed_first"],
+        ["allowed", "mixed_blocked_first"],
+    ],
+    ids=["mixed_allowed_first", "mixed_blocked_first", "later_mixed_allowed_first", "later_mixed_blocked_first"],
+)
+def test_an_answer_with_a_blocked_address_among_allowed_ones_connects_to_none(guarded, env, path, steps):
+    outcome = _run(guarded, env, path, steps)
+    if PATHS[path][1] is None:
+        assert outcome.kind == "none", f"{path}: {outcome!r}"
+    else:
+        assert outcome.kind == "refused", f"{path}: expected a refusal for {steps}, got {outcome!r}"
+    assert guarded.count(BLOCKED_ADDR) == 0, f"{path}: connected to the blocked address, answers {steps}"
+    assert guarded.count(ALLOWED_ADDR) == 0, f"{path}: connected to the allowed address of a mixed answer {steps}"
+
+
+# ── The next address is tried when the first refuses the connection ───────────
+@pytest.mark.parametrize("path", ["workflow_action", "gateway_media_fetch"])
+def test_the_next_allowed_address_is_tried_when_the_first_refuses(rig, env, path):
+    rig.block_by_address()
+    env.monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)  # both loopbacks allowed
+    rig._socks[0].close()  # nothing listens on 127.0.0.1 now: that connection is refused
+    rig.script(NAME, ["two_loopback"])
+    PATHS[path][0](env, rig.base())
+    assert rig.count(BLOCKED_ADDR, only=True) >= 1, f"{path}: never reached the second address"
+
+
+# ── Gateway: the connect-time refusal reads like the pre-flight one ───────────
+def test_the_gateway_answers_a_connect_time_refusal_like_the_pre_flight_one(guarded, env):
+    from app.api_errors import ApiError
+    from modules.omnichannel.services.public_gateway_service import PublicGatewayService
+
+    guarded.script(NAME, SEQ_ALLOWED_THEN_BLOCKED)
+    db = env.session_factory()
+    try:
+        with pytest.raises(ApiError) as info:
+            PublicGatewayService(db)._fetch_url(guarded.base() + "/m/img.png")
+    finally:
+        db.close()
+    assert info.value.status_code == 422
+    assert info.value.code == "invalid_media_url"
+    assert info.value.message == f"Callback URL {NAME_TAIL}"
+    assert guarded.count(BLOCKED_ADDR) == 0
+
+
+# ── The development exemption depends on the environment ──────────────────────
+LOCAL_LOOKING_NAME = "127.edge-test.example.test"
+
+
+def test_a_local_looking_name_with_a_blocked_answer_is_refused_outside_development(guarded, monkeypatch):
+    from modules.autocount.http_client import autocount_guarded_client
+
+    monkeypatch.setattr(settings, "environment", "production")
+    guarded.script(LOCAL_LOOKING_NAME, SEQ_BLOCKED)
+    client = autocount_guarded_client(10.0)
+    try:
+        with pytest.raises(url_guard.UrlGuardError):
+            client.get(guarded.base(LOCAL_LOOKING_NAME) + "/x")
+    finally:
+        client.close()
+    assert guarded.count(BLOCKED_ADDR) == 0
+
+
+def test_a_local_looking_name_is_connected_to_in_development(guarded, monkeypatch):
+    from modules.autocount.http_client import autocount_guarded_client
+
+    monkeypatch.setattr(settings, "environment", "development")
+    guarded.script(LOCAL_LOOKING_NAME, SEQ_BLOCKED)
+    client = autocount_guarded_client(10.0)
+    try:
+        try:
+            client.get(guarded.base(LOCAL_LOOKING_NAME) + "/x")
+        except httpx.HTTPError:
+            pass  # the listener closes without a handshake
+    finally:
+        client.close()
+    assert guarded.count(BLOCKED_ADDR) >= 1, "the development carve-out did not connect"
+
+
+# ── The transports themselves ─────────────────────────────────────────────────
+def test_the_sync_transport_refuses_a_blocked_literal_without_connecting(guarded):
+    client = httpx.Client(transport=url_guard.GuardedTransport(), timeout=10.0)
+    try:
+        with pytest.raises(url_guard.UrlGuardError):
+            client.get(f"https://[{BLOCKED_ADDR}]:{guarded.port}/x")
+    finally:
+        client.close()
+    assert guarded.count(BLOCKED_ADDR) == 0
+
+
+def test_the_async_transport_refuses_a_blocked_literal_without_connecting(guarded):
+    import asyncio
+
+    async def go():
+        async with httpx.AsyncClient(transport=url_guard.GuardedAsyncTransport(), timeout=10.0) as client:
+            await client.get(f"https://[{BLOCKED_ADDR}]:{guarded.port}/x")
+
+    with pytest.raises(url_guard.UrlGuardError):
+        asyncio.run(asyncio.wait_for(go(), WAIT_SECONDS))
+    assert guarded.count(BLOCKED_ADDR) == 0
+
+
+@pytest.mark.parametrize("step", ["oserror", "fail"])
+def test_the_async_transport_turns_a_resolver_error_into_a_connect_error(guarded, step):
+    import asyncio
+
+    guarded.script(NAME, [step])
+
+    async def go():
+        async with httpx.AsyncClient(transport=url_guard.GuardedAsyncTransport(), timeout=10.0) as client:
+            await client.get(guarded.base() + "/x")
+
+    with pytest.raises(httpx.ConnectError):
+        asyncio.run(asyncio.wait_for(go(), WAIT_SECONDS))
+    assert guarded.count(ALLOWED_ADDR) == 0 and guarded.count(BLOCKED_ADDR) == 0
+
+
+@pytest.mark.parametrize("step", ["oserror", "fail"])
+def test_the_sync_transport_turns_a_resolver_error_into_a_connect_error(guarded, step):
+    guarded.script(NAME, [step])
+    client = httpx.Client(transport=url_guard.GuardedTransport(), timeout=10.0)
+    try:
+        with pytest.raises(httpx.ConnectError):
+            client.get(guarded.base() + "/x")
+    finally:
+        client.close()
+
+
+# ── Messenger: a connect-time refusal is not logged as a failure ──────────────
+def test_a_connect_time_refusal_on_the_attachment_path_is_not_logged_as_an_error(guarded, env, caplog):
+    import logging
+
+    caplog.set_level(logging.ERROR)
+    outcome = _run(guarded, env, "messenger_attachment", SEQ_ALLOWED_THEN_BLOCKED)
+    assert outcome.kind == "none"
+    assert guarded.count(BLOCKED_ADDR) == 0
+    assert not [r for r in caplog.records if "media URL fetch failed" in r.getMessage()]
