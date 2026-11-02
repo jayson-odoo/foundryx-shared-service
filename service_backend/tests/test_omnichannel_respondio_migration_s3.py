@@ -234,7 +234,9 @@ def _pages_handler_full(
         # bare GET /contact/{identifier} (single object, not an envelope)
         identifier = path.split("/contact/")[1]
         contact_row = (contact_pages.get(None) or ([], None))[0]
-        match = next((c for c in contact_row if f"id:{c['id']}" == identifier), None)
+        match = next(
+            (c for c in contact_row if isinstance(c, dict) and f"id:{c['id']}" == identifier), None
+        )
         return httpx.Response(200, json=match or {"id": identifier})
 
     handler.calls = calls

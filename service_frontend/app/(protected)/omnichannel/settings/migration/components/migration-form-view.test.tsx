@@ -403,7 +403,10 @@ function doneJob(mode: 'dry_run' | 'run', blockers: string[] = []): MigrationJob
 /** The select inside the row that shows `text` (walks up to the nearest
  *  ancestor holding exactly one combobox). */
 function rowSelect(text: RegExp | string): HTMLElement {
-  let node: HTMLElement | null = screen.getByText(text);
+  // The refusal message repeats the id; the id row is the other match.
+  const matches = screen.getAllByText(text).filter((el) => !/would be lost/.test(el.textContent ?? ''));
+  expect(matches).toHaveLength(1);
+  let node: HTMLElement | null = matches[0];
   while (node) {
     const boxes = within(node).queryAllByRole('combobox');
     if (boxes.length === 1) return boxes[0];
