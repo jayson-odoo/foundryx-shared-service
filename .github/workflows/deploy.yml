@@ -312,6 +312,9 @@ jobs:
             FERNET_KEY=${{ secrets.FERNET_KEY }}
             OMNICHANNEL_FERNET_KEY=${{ secrets.OMNICHANNEL_FERNET_KEY }}
             BACKEND_WORKERS=${{ vars.BACKEND_WORKERS || '4' }}
+            OMNI_KEY_MAX_IN_FLIGHT=${{ vars.OMNI_KEY_MAX_IN_FLIGHT }}
+            OMNI_KEY_MAX_PER_MINUTE=${{ vars.OMNI_KEY_MAX_PER_MINUTE }}
+            OMNI_KEY_LIMIT_OVERRIDES=${{ vars.OMNI_KEY_LIMIT_OVERRIDES }}
             TRUST_PROXY_HEADERS=true
             FRONTEND_URL=${{ vars.FRONTEND_URL }}
             CORS_ORIGINS=${{ vars.CORS_ORIGINS }}
