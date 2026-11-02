@@ -708,3 +708,48 @@ def test_ac_38_77_guide_error_table_lists_reply_channel_mismatch_with_422():
 def test_ac_38_77_guide_changelog_has_a_row_for_the_field():
     lines = [ln for ln in _GUIDE.read_text().splitlines()[:40] if ln.startswith("> |")]
     assert any("replyToMessageId" in ln for ln in lines), "changelog needs a row naming replyToMessageId"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AC-38-73 - a reply id of the wrong shape is refused before any lookup
+# ═════════════════════════════════════════════════════════════════════════════
+@pytest.fixture
+def lookups(monkeypatch):
+    from modules.omnichannel.repositories.contact_repository import ContactRepository
+
+    seen = []
+    real = ContactRepository.get_message
+
+    def spy_get(self, message_id, tenant_id):
+        seen.append(message_id)
+        return real(self, message_id, tenant_id)
+
+    monkeypatch.setattr(ContactRepository, "get_message", spy_get)
+    return seen
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["x" * 65, "x" * 500, "bad\x00id", "bad\nid", "bad\tid", "bad\x1fid", "bad\x7fid"],
+    ids=["65 chars", "500 chars", "NUL", "newline", "tab", "unit separator", "DEL"],
+)
+def test_ac_38_73_wrong_shaped_reply_id_never_reaches_a_lookup(client, session_factory, spy, lookups, bad):
+    r = _rig(client, session_factory)
+    unknown = _post(client, r, _body(r, "no-such-message-id"))
+    del lookups[:]
+    res = _post(client, r, _body(r, bad))
+    _assert_not_found(res, "json")
+    mp = _multipart(client, r, {"to": r["phone"], "type": "image", "replyToMessageId": bad})
+    _assert_not_found(mp, "multipart")
+    assert res.json() == unknown.json()
+    assert bad not in lookups, lookups
+    assert spy.sends == 0
+
+
+def test_ac_38_73_control_a_well_formed_unknown_reply_id_does_reach_the_lookup(
+    client, session_factory, spy, lookups
+):
+    r = _rig(client, session_factory)
+    _assert_not_found(_post(client, r, _body(r, "x" * 64)))
+    _assert_not_found(_post(client, r, _body(r, "no-such-message-id")))
+    assert "x" * 64 in lookups and "no-such-message-id" in lookups, lookups
