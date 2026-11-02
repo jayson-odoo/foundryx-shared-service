@@ -81,6 +81,10 @@ def _register_handlers():
     register_job_handler(_RESUME)
     register_job_handler(_QUEUED)
     yield
+    from app.jobs.registry import _REGISTRY
+
+    for d in (_COUNTING, _CRASHING, _RESUME, _QUEUED):
+        _REGISTRY.pop(d.type, None)
 
 
 # ── AC-10-01: table shape + ApiModel wire ─────────────────────────────────────
