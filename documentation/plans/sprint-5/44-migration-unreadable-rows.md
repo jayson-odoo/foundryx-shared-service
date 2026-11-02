@@ -33,7 +33,7 @@ job: channels read at create for mode run; team lookup and report use it
 
 ## Traps
 
-- `str(ValidationError)` carries `input_value`, so a name or phone reaches a stored reason today. Never format the exception.
+- A stored reason is built from field names or fixed text, never from an exception's own text: `str(ValidationError)` includes the input, and a database error's text includes its statement.
 - Reading the source at create is a network call: release the read transaction first, `app.database.release_read_transactions()`, and map a `RespondIoError` to the refusal already used there.
 - CSV mode has no channels and is unaffected.
 - A real row can have `id` of a wrong type: treat as no usable id. A string of digits parses, so check what `SpaceChannel.id: int` accepts.
