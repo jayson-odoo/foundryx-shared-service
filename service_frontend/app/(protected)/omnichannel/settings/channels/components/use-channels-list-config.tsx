@@ -50,13 +50,16 @@ const FILTER_FIELDS: FilterFieldDef[] = [
 export interface UseChannelsListConfigOptions {
   /** Triggered by the list's "Connect channel" button - opens the wizard. */
   onConnect: () => void;
+  /** Triggered by a row's Replace token action - the page owns the dialog. */
+  onReplaceToken: (channel: Channel) => void;
 }
 
 export function useChannelsListConfig({
   onConnect,
+  onReplaceToken,
 }: UseChannelsListConfigOptions): ResourceListConfig<Channel> {
   const { formatDate } = useDatetime();
-  const actions = useChannelActions();
+  const actions = useChannelActions({ onReplaceToken });
 
   return useMemo<ResourceListConfig<Channel>>(() => {
     const columns: ColumnDef<Channel>[] = [

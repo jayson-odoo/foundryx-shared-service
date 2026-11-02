@@ -13,7 +13,7 @@ from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
-from app.database import get_db
+from app.database import get_db, release_read_transactions
 from app.models.tenant import Tenant
 from app.repositories.module_repository import ModuleRepository
 
@@ -79,4 +79,7 @@ def get_api_workspace(
         raise ApiError(
             403, "service_not_enabled", "This service is not enabled for the workspace."
         )
+    # The key is fully checked and `workspace` holds plain strings: end the
+    # read-only transaction so it is not held through the endpoint's slow work.
+    release_read_transactions()
     return workspace

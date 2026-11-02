@@ -1029,7 +1029,7 @@ def test_ac60_creates_no_message_row_and_fires_no_webhook_or_workflow_run(
     realtime.set_client(fakeredis.FakeRedis(decode_responses=True))
     try:
         # keep the delivery worker off the network; rows are what we observe
-        monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: httpx.Response(200))
+        monkeypatch.setattr(wd, "_post", lambda *a, **k: httpx.Response(200))
         a, b, _ma, _mb = _fresh_unread(rig)
         reg = rig.client.post(
             "/api/v1/omnichannel/webhooks",
@@ -1433,7 +1433,7 @@ def test_ac60_read_fires_no_contact_updated_even_when_the_endpoint_follows_the_l
     import modules.omnichannel.services.webhook_delivery as wd
     from modules.omnichannel.models import WebhookDelivery
 
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: httpx.Response(200))
+    monkeypatch.setattr(wd, "_post", lambda *a, **k: httpx.Response(200))
     a = rig.channel("pn-A", token="tok-A", created=0, cid=LOW_ID)  # the endpoint's channel
     b = rig.channel("pn-B", token="tok-B", created=10, cid=HIGH_ID)
     rig.msg(b, wamid="wamid.in-B1", when=1)

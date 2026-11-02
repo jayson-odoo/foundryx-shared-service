@@ -79,7 +79,7 @@ class _Resp:
 @pytest.fixture(autouse=True)
 def _no_real_http(monkeypatch):
     """No delivery attempt may reach the network."""
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: _Resp(200))
+    monkeypatch.setattr(wd, "_post", lambda *a, **k: _Resp(200))
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -575,11 +575,11 @@ def test_ac_38_87_delivery_is_signed_succeeds_and_is_listed(client, session_fact
 
     calls = []
 
-    def fake_post(url, content=None, headers=None, timeout=None):
+    def fake_post(url, *, content, headers, timeout):
         calls.append({"url": url, "body": content, "headers": headers})
         return _Resp(200)
 
-    monkeypatch.setattr(wd.httpx, "post", fake_post)
+    monkeypatch.setattr(wd, "_post", fake_post)
     monkeypatch.setattr(wd, "assert_deliverable", lambda url: None)
 
     ws = _default_workspace_id(session_factory)
@@ -611,7 +611,13 @@ def test_ac_38_87_delivery_is_signed_succeeds_and_is_listed(client, session_fact
 def test_ac_38_87_failures_retry_count_and_auto_disable(client, session_factory, monkeypatch):
     from modules.omnichannel.services.webhook_delivery import dispatch
 
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: _Resp(500))
+    failed_calls = []
+
+    def failing_post(url, *, content, headers, timeout):
+        failed_calls.append(url)
+        return _Resp(500)
+
+    monkeypatch.setattr(wd, "_post", failing_post)
     monkeypatch.setattr(wd, "assert_deliverable", lambda url: None)
 
     ws = _default_workspace_id(session_factory)
@@ -649,6 +655,7 @@ def test_ac_38_87_failures_retry_count_and_auto_disable(client, session_factory,
         assert endpoint.consecutive_failures >= AUTO_DISABLE_THRESHOLD
     finally:
         db.close()
+    assert failed_calls, "the stubbed send was never reached"
 
 
 # ═════════════════════════════════════════════════════════════════════════════

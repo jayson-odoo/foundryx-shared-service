@@ -115,7 +115,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
     // (AC-08-13) - no locked connection, so at least one open connection
     // must exist for the Source tab to have anything to offer.
     connections: [
-      { id: 'conn-open-1', name: 'Mocha REST', baseUrl: 'https://hapi.sorento.cc.cd/api/db2', auth: 'none' as const },
+      { id: 'conn-open-1', name: 'Mocha REST', baseUrl: 'https://autocount-wrapper.example.com/api/db2', auth: 'none' as const },
     ],
     isLoading: false,
     error: null,

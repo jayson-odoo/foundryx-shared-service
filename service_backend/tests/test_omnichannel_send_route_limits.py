@@ -845,7 +845,10 @@ def local_peer(monkeypatch):
 
     from modules.omnichannel.services import webhook_service
 
+    from app.services import url_guard
+
     monkeypatch.setattr(webhook_service, "validate_callback_url", lambda url, **k: url)
+    monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)
     stop = threading.Event()
     listeners = []
 

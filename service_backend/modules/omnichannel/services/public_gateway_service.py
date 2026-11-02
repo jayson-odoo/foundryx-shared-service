@@ -19,6 +19,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
+from app.services.url_guard import GuardedAsyncTransport, UrlGuardError
 
 from ..models import (
     MEDIA_MESSAGE_TYPES,
@@ -1059,6 +1060,8 @@ class PublicGatewayService:
         the lookup, this fetch and the store."""
         from app.database import release_read_transactions
 
+        from app.services.url_guard import UnparseableUrlError
+
         from .webhook_service import WebhookError, validate_callback_url
 
         if not isinstance(url, str):
@@ -1068,6 +1071,8 @@ class PublicGatewayService:
         try:
             safe = validate_callback_url(url)
         except WebhookError as exc:
+            if isinstance(exc.__cause__, UnparseableUrlError):
+                raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
             raise ApiError(422, "invalid_media_url", str(exc)) from exc
         except ValueError as exc:
             raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
@@ -1077,6 +1082,8 @@ class PublicGatewayService:
             )
         except ApiError:
             raise
+        except UrlGuardError as exc:
+            raise ApiError(422, "invalid_media_url", str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             # Broad on purpose: the client and the TLS layer raise many unrelated
             # types (including exception groups) for a bad address, port or record.
@@ -1085,7 +1092,11 @@ class PublicGatewayService:
             raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
 
     async def _fetch_url_async(self, safe: str) -> bytes:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            follow_redirects=False,
+            transport=GuardedAsyncTransport(subject="Callback URL"),
+        ) as client:
             async with client.stream(
                 "GET", safe, headers={"Accept-Encoding": "identity"}
             ) as resp:

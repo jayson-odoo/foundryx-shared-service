@@ -26,7 +26,7 @@ describe('listApiConnections (AC-08-15)', () => {
     );
     const sorento = connections.find((c) => c.id === 'conn-api-sorento')!;
     expect(sorento.auth).toBe('none');
-    expect(sorento.baseUrl).toBe('https://hapi.sorento.cc.cd/api/db1');
+    expect(sorento.baseUrl).toBe('https://autocount-wrapper.example.com/api/db1');
     const vendor = connections.find((c) => c.id === 'conn-api-vendor')!;
     expect(vendor.auth).toBe('basic');
   });

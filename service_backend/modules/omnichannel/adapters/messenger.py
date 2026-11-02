@@ -57,7 +57,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from app.config import settings
-from app.services.url_guard import UrlGuardError, assert_deliverable
+from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
 from .base import CodeExchangeError, ConnectionStatus, SendError
 from .meta_graph import MetaGraphMixin, _meta_error_detail, is_rate_limited_error, meta_error_code, provider_error_text
 
@@ -557,7 +557,9 @@ class MessengerAdapter(MetaGraphMixin):
         self, url: str, headers: Dict[str, str], *, kind: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         current = url
-        client = self._http()
+        client = self._client or httpx.Client(
+            timeout=10.0, transport=GuardedTransport(subject="Attachment URL")
+        )
         try:
             for _hop in range(_MAX_FETCH_REDIRECTS + 1):
                 parsed = urlparse(current)
@@ -585,6 +587,8 @@ class MessengerAdapter(MetaGraphMixin):
                             if len(buf) > _MAX_FETCH_BYTES:
                                 return None  # AC-CHN-47 "capped read" - truncated, unavailable
                         content = bytes(buf)
+                except UrlGuardError:
+                    return None  # the address checked at connect time was rejected
                 except httpx.HTTPError as exc:
                     raise _TransientFetchError(str(exc)) from exc
                 mime = None

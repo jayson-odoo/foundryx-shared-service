@@ -32,7 +32,7 @@ class DocTypeRegistryError(Exception):
 class ByDocNoDoor:
     """A direct by-number door (D6). Reserved slot: no host we serve answers
     one today (crew probe 2026-10-01: ``POST .../DeliveryOrder/GetDeliveryOrder``
-    is 404 on hapi.sorento.cc.cd), so no entry sets it and the search never
+    is 404 on autocount-wrapper.example.com), so no entry sets it and the search never
     sends it. Declared so the registry shape is stable when one appears."""
 
     method: Literal["GET", "POST"]

@@ -74,7 +74,7 @@ def db(session_factory):
 def _open_connection(db) -> Connection:
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="Mocha REST",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db2", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db2", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(conn)
@@ -159,7 +159,7 @@ def test_preview_columns_rejects_another_tenants_connection_422_never_leaks(clie
         db.commit()
     other_conn = Connection(
         tenant_id=other_tenant_id, provider="autocount", type="erp", name="Other tenant conn",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(other_conn)

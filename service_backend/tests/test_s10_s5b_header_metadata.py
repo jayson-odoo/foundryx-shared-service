@@ -37,7 +37,7 @@ from app.models.connection import Connection
 
 DB_NAME = "AED_SORENTO"
 REF_PREFIX = "AED_SORENTO"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db1"
+BASE_URL = "https://autocount-wrapper.example.com/api/db1"
 NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
 
 # N1 (review round 5) - imported from the REAL preset rather than a local

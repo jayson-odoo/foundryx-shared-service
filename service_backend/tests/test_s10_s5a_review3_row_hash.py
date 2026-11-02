@@ -35,7 +35,7 @@ from modules.autocount.services.etl_service import EtlService
 from modules.autocount.sources import SourceContext, Watermark
 
 DB_NAME = "MOCHA"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 SIMPLE_COMBINE: Dict[str, Any] = {
     "computed": [],

@@ -85,12 +85,12 @@ def test_eligible_connections_only_lists_open_autocount_db1_segment_connections(
     eligible connection survives the auth/segment/tenant filters) is
     unchanged."""
     db = session_factory()
-    eligible = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none")
+    eligible = autocount_connection(db, base_url="https://autocount-wrapper.example.com/api/db1", auth="none")
     co = company(db, ac_connection=eligible)
-    autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db2", auth="basic", name="basic-auth")
-    autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/not a valid segment!!", auth="none", name="bad-segment")
+    autocount_connection(db, base_url="https://autocount-wrapper.example.com/api/db2", auth="basic", name="basic-auth")
+    autocount_connection(db, base_url="https://autocount-wrapper.example.com/api/not a valid segment!!", auth="none", name="bad-segment")
     tenant_b = other_tenant(db)
-    autocount_connection(db, tenant_id=tenant_b, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none", name="other-tenant")
+    autocount_connection(db, tenant_id=tenant_b, base_url="https://autocount-wrapper.example.com/api/db1", auth="none", name="other-tenant")
     db.commit()
 
     headers = auth_headers(client)
@@ -107,7 +107,7 @@ def test_eligible_connections_only_lists_open_autocount_db1_segment_connections(
 def test_put_sets_connection_and_derives_book(client, session_factory):
     db = session_factory()
     co = company(db)
-    conn = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none")
+    conn = autocount_connection(db, base_url="https://autocount-wrapper.example.com/api/db1", auth="none")
     db.commit()
     headers = auth_headers(client)
 
@@ -150,7 +150,7 @@ def test_put_with_an_unknown_connection_id_422s_and_stores_nothing(client, sessi
 def test_put_with_a_basic_auth_connection_422s_field_error(client, session_factory):
     db = session_factory()
     co = company(db)
-    basic_conn = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="basic")
+    basic_conn = autocount_connection(db, base_url="https://autocount-wrapper.example.com/api/db1", auth="basic")
     db.commit()
     headers = auth_headers(client)
 
@@ -438,7 +438,7 @@ def test_stock_push_gate_error_is_unchanged_by_the_contract_refusal_refactor(ses
 def test_n4_an_explicit_null_connection_clears_the_stored_connection(client, session_factory):
     db = session_factory()
     co = company(db)
-    conn = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none")
+    conn = autocount_connection(db, base_url="https://autocount-wrapper.example.com/api/db1", auth="none")
     db.commit()
     headers = auth_headers(client)
     url = f"/autocount/doc-feeds/{co.id}/delivery_orders"
@@ -457,7 +457,7 @@ def test_n4_an_explicit_null_connection_clears_the_stored_connection(client, ses
 def test_n4_an_omitted_connection_key_keeps_the_stored_connection(client, session_factory):
     db = session_factory()
     co = company(db)
-    conn = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none")
+    conn = autocount_connection(db, base_url="https://autocount-wrapper.example.com/api/db1", auth="none")
     db.commit()
     headers = auth_headers(client)
     url = f"/autocount/doc-feeds/{co.id}/delivery_orders"

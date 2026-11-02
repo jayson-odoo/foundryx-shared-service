@@ -137,7 +137,7 @@ export function sourceKindLabel(kind: string): string {
 
 /**
  * Every entity the open REST API (sprint-5/08) can extract - the six masters
- * with a confirmed `hapi.sorento.cc.cd` payload (UAC Definitions), plus
+ * with a confirmed `autocount-wrapper.example.com` payload (UAC Definitions), plus
  * `stock_balance` (sprint-5/10 S5b, AC-10-40) - a reduced (item, location)
  * balance, pull-only by default (its push gate is decided by the backend's
  * `pushGate` on the task, sprint-5/13 D18 - never a hardcoded entity list

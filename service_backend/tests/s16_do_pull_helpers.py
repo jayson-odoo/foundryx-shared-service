@@ -54,7 +54,7 @@ _PUBLIC_DNS_STUB_IP = "8.8.8.8"
 @pytest.fixture(autouse=True)
 def s16_isolation(monkeypatch):
     """No real sleep (retry ladders), a stubbed resolver (the SSRF re-check on
-    `hapi.sorento.cc.cd`), and the lane rule: no test may touch the network."""
+    `autocount-wrapper.example.com`), and the lane rule: no test may touch the network."""
     import socket
 
     monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)

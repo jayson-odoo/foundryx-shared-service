@@ -47,7 +47,7 @@ TESTS_DIR = Path(__file__).resolve().parent
 BRANCH_PAGE_FIXTURES = TESTS_DIR / "fixtures" / "autocount_http"
 _LEGACY_BRANCH_FIXTURES = TESTS_DIR / "fixtures" / "s14_doc_feed"
 
-VENDOR_BASE_URL = "https://hapi.sorento.cc.cd/api/db1"
+VENDOR_BASE_URL = "https://autocount-wrapper.example.com/api/db1"
 CRM_BASE_URL = "https://sorento.example.com"
 
 # A realistic vendor row: the three mapped keys plus the address-record keys the
@@ -425,7 +425,7 @@ def test_ac_14_42_source_ref_is_book_BR_accno_branchcode_verbatim(db):
 def test_ac_14_42_book_is_the_last_path_segment_of_the_task_connection_base_url(db):
     from modules.autocount.canonical.masters import ENTITY_BRANCH
 
-    vendor = _vendor_connection(db, base_url="https://hapi.sorento.cc.cd/api/db2")
+    vendor = _vendor_connection(db, base_url="https://autocount-wrapper.example.com/api/db2")
     company = _company(db, vendor)
     source = _http_source(db, company, vendor, ENTITY_BRANCH)
     assert source.source_ref({"AccNo": "300-A056", "BranchCode": "KUANTAN"}) == "db2:BR:300-A056:KUANTAN"
@@ -882,7 +882,7 @@ def test_b1_the_body_book_is_the_task_connections_even_when_the_company_is_on_an
     from modules.autocount.canonical.masters import ENTITY_BRANCH
     from modules.autocount.services.etl_service import EtlService
 
-    db2 = _vendor_connection(db, base_url="https://hapi.sorento.cc.cd/api/db2")
+    db2 = _vendor_connection(db, base_url="https://autocount-wrapper.example.com/api/db2")
     task_conn = _vendor_connection(db)  # db1
     company = _company(db, db2, sorento_conn=_sorento_connection(db))
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH, _branch_raw(task_conn.id))
@@ -894,7 +894,7 @@ def test_b1_no_derivable_book_fails_closed_with_a_named_error_and_posts_nothing(
     from modules.autocount.services.company_service import AutocountServiceError, CompanyService
     from modules.autocount.services.etl_service import EtlService
 
-    bookless = _vendor_connection(db, base_url="https://hapi.sorento.cc.cd")
+    bookless = _vendor_connection(db, base_url="https://autocount-wrapper.example.com")
     company = _company(db, bookless, sorento_conn=_sorento_connection(db))
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH, _branch_raw(bookless.id))
     _open_contract(monkeypatch)

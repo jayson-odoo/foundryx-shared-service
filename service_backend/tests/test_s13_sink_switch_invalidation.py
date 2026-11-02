@@ -33,7 +33,7 @@ NOW = datetime(2026, 9, 26, 12, 0, 0, tzinfo=timezone.utc)
 def _api_connection(db) -> Connection:
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="api",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(conn)

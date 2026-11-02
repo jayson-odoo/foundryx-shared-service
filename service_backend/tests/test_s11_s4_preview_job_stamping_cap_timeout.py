@@ -65,7 +65,7 @@ def _auth(client, email="demo@example.com", password="demo1234") -> Dict[str, st
 
 
 def _open_connection(db, *, timeout_seconds: str = None) -> Connection:
-    config = {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"}
+    config = {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"}
     if timeout_seconds is not None:
         config["requestTimeoutSeconds"] = timeout_seconds
     conn = Connection(

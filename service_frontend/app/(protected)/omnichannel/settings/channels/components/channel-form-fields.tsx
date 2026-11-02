@@ -196,7 +196,12 @@ export function ConfigurationTab({
         </FormRow>
 
         <FormRow label="Status">
-          <StatusBadge status={channel?.status ?? 'INACTIVE'} registry={CHANNEL_STATUS_REGISTRY} />
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+            <StatusBadge status={channel?.status ?? 'INACTIVE'} registry={CHANNEL_STATUS_REGISTRY} />
+            {channel?.status === 'ERROR' && (
+              <span className="text-xs text-muted-foreground">Access token expired or revoked</span>
+            )}
+          </div>
         </FormRow>
 
         <FormRow label="Active">

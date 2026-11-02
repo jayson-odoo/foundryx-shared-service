@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { PlugZap, Pencil, PowerOff, RotateCcw, Trash2 } from 'lucide-react';
+import { KeyRound, PlugZap, Pencil, PowerOff, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
@@ -14,7 +14,12 @@ import { channelFormHref } from './paths';
  * toolbar, and the form "…" menu (plan 04 §7). Channels are CREATED via the
  * Connect wizard, not an action; here we edit / test / disconnect.
  */
-export function useChannelActions(): ResourceAction<Channel>[] {
+export interface UseChannelActionsOptions {
+  /** Open the Replace token dialog for a channel (the parent owns the dialog state). */
+  onReplaceToken?: (channel: Channel) => void;
+}
+
+export function useChannelActions({ onReplaceToken }: UseChannelActionsOptions = {}): ResourceAction<Channel>[] {
   const router = useRouter();
 
   return useMemo<ResourceAction<Channel>[]>(() => {
@@ -44,6 +49,20 @@ export function useChannelActions(): ResourceAction<Channel>[] {
           const res = await channelService.testConnection(channel.id);
           if (res.ok) toast.success(res.message);
           else toast.error(res.message);
+        },
+      },
+      {
+        id: 'replace-token',
+        label: 'Replace token',
+        icon: KeyRound,
+        permission: 'channels.manage',
+        surfaces: { row: true, form: true },
+        isVisible: (rows) =>
+          rows.length === 1 && rows.every((r) => r.channelType === 'WHATSAPP' && !r.isTrashed),
+        // Opens the dialog (a `run`, not a confirm): the list page or the record
+        // owns the dialog, like `onConnect` on the list config.
+        run: ([channel]) => {
+          if (channel) onReplaceToken?.(channel);
         },
       },
       {
@@ -88,5 +107,5 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         deferred: { actionKey: 'channels.delete', entityType: 'channel' },
       },
     ];
-  }, [router]);
+  }, [router, onReplaceToken]);
 }

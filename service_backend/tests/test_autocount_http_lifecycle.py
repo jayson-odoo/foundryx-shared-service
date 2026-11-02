@@ -60,7 +60,7 @@ def db(session_factory):
 def _open_connection(db) -> Connection:
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="Mocha REST",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db2", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db2", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(conn)
@@ -162,7 +162,7 @@ def test_changing_connection_on_active_http_task_returns_draft_and_keeps_hashes(
 
     conn_b = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="Mocha REST 2",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db2", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db2", "auth": "none"},
         is_active=True,
     )
     db.add(conn_b)
@@ -183,7 +183,7 @@ def test_sweep_enqueues_due_sql_and_due_http(db, monkeypatch):
     HTTP task; it never has to actually RUN either job to prove that (B4,
     sprint-5/08 review round 1: this test used to run under the suite's
     always-eager job setting, which executed the enqueued job INLINE and
-    made a real network call to ``hapi.sorento.cc.cd`` on every pytest run).
+    made a real network call to ``autocount-wrapper.example.com`` on every pytest run).
     Job dispatch itself (`run_job_task.delay`/`apply_async`) is the SAME
     seam ``tests/test_background_jobs.py`` already stubs - reused here
     rather than invented fresh."""
@@ -458,7 +458,7 @@ def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeyp
     stubbed the same way ``client_from_connection`` gets stubbed elsewhere
     in this module: at the class the source builds
     (``http_source.source.HttpApiClient``), never a REAL call to
-    ``hapi.sorento.cc.cd``."""
+    ``autocount-wrapper.example.com``."""
     import modules.autocount.http_source.source as http_source_module
     from modules.autocount.http_source.client import HttpApiClient
 

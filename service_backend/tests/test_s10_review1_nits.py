@@ -33,7 +33,7 @@ from modules.autocount.http_source.client import USER_AGENT
 from modules.autocount.http_source.source import HttpApiSource
 
 DB_NAME = "MOCHA"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 # ── nit 1: a 5xx then ONE timeout must not halve ─────────────────────────────
