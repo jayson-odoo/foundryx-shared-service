@@ -31,7 +31,8 @@ from typing import Any, Dict, Iterator, List, Sequence, Tuple
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine, URL
 
-from app.database import release_read_transactions
+from app.database import release_read_transactions, scrub_error_params
+from app.db_errors import db_error_text, error_code_of
 
 from .errors import SqlConnectError, SqlGuardError, SqlQueryError, SqlSourceError
 
@@ -159,26 +160,38 @@ def secrets_of(config: Dict[str, Any], credentials: Dict[str, Any]) -> List[str]
     return out
 
 
-def sanitize_error(exc: BaseException, *, secrets: Sequence[str] = ()) -> str:
-    """Driver/SQLAlchemy exception → an operator-safe message.
+# Connection failures an operator can act on: driver code -> fixed sentence.
+# Anything else is reduced to the error class and codes by ``db_error_text``.
+_LOGIN_REFUSED = "The database refused the login. Check the username and password."
+_DATABASE_MISSING = "The database name was not found on the server."
+_HOST_UNREACHABLE = "The database server could not be reached. Check the host and port."
+_TIMED_OUT = "The database did not answer in time."
+_KNOWN_CODES = {
+    "18456": _LOGIN_REFUSED, "28P01": _LOGIN_REFUSED, "28000": _LOGIN_REFUSED,
+    "1045": _LOGIN_REFUSED,
+    "4060": _DATABASE_MISSING, "3D000": _DATABASE_MISSING, "1049": _DATABASE_MISSING,
+    "20002": _HOST_UNREACHABLE, "20009": _HOST_UNREACHABLE, "08001": _HOST_UNREACHABLE,
+    "2002": _HOST_UNREACHABLE, "2003": _HOST_UNREACHABLE, "2005": _HOST_UNREACHABLE,
+    "20003": _TIMED_OUT, "57014": _TIMED_OUT, "2013": _TIMED_OUT,
+}
 
-    Uses the DBAPI's own message (``exc.orig``) so SQLAlchemy's ``[SQL: ...]``
-    echo of the statement (tenant data) and its docs pointer never ride along;
-    redacts any ``scheme://`` fragment (a DSN carries the password) and every
-    known secret; collapses whitespace; caps the length.
+
+def sanitize_error(exc: BaseException, *, secrets: Sequence[str] = ()) -> str:
+    """Driver/SQLAlchemy exception -> an operator-safe message.
+
+    Never carries the driver's own text (it can hold table names, row values
+    or a DSN). A known connection code maps to a fixed sentence; any other
+    error becomes its class and codes through ``db_error_text``. ``secrets``
+    stays in the signature for the callers and is applied as a last guard.
     """
-    orig = getattr(exc, "orig", None)
-    raw = str(orig) if orig is not None else str(exc)
-    raw = _SQL_ECHO_RE.sub("", raw)
-    raw = _BACKGROUND_RE.sub("", raw)
-    raw = _DSN_RE.sub("[connection]", raw)
+    code = error_code_of(exc)
+    text = _KNOWN_CODES.get(code or "") or db_error_text(
+        exc, "The database returned an error"
+    )
     for secret in secrets:
         if secret:
-            raw = raw.replace(secret, "[redacted]")
-    raw = _WS_RE.sub(" ", raw).strip()
-    if len(raw) > _MESSAGE_CAP:
-        raw = raw[: _MESSAGE_CAP - 1].rstrip() + "..."
-    return raw or "The database returned an error."
+            text = text.replace(secret, "[redacted]")
+    return text
 
 
 def _fingerprint(url: URL, config: Dict[str, Any], query_timeout: int) -> str:
@@ -335,7 +348,7 @@ class SqlSourceRuntime:
             # task at a time) - `max_overflow` scales with `workers` too,
             # not a flat 3, so a second task's own worker pool never starves
             # waiting for the first task's to give connections back.
-            engine = sa.create_engine(
+            engine = scrub_error_params(sa.create_engine(
                 url,
                 pool_pre_ping=True,
                 hide_parameters=True,
@@ -346,7 +359,7 @@ class SqlSourceRuntime:
                 connect_args=connect_args_for(
                     str(config.get("dbType", "")), query_timeout=query_timeout
                 ),
-            )
+            ))
             self._engines[key] = (fingerprint, engine)
             return engine
 

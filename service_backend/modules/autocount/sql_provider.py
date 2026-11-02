@@ -27,6 +27,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
+from app.database import scrub_error_params
 from app.integrations.base import TestResult
 
 from .sql_source.errors import SqlSourceError
@@ -51,7 +52,7 @@ def _probe_engine(config: Dict[str, Any], credentials: Dict[str, Any]) -> Engine
     """A throwaway, unpooled engine for the Test button - never cached, so a
     Test never leaves a connection open and never poisons the runtime cache
     with credentials the operator is still editing."""
-    return sa.create_engine(
+    return scrub_error_params(sa.create_engine(
         build_url(config, credentials),
         poolclass=NullPool,
         hide_parameters=True,
@@ -60,7 +61,7 @@ def _probe_engine(config: Dict[str, Any], credentials: Dict[str, Any]) -> Engine
             connect_timeout=_TEST_TIMEOUT_SECONDS,
             query_timeout=_TEST_TIMEOUT_SECONDS,
         ),
-    )
+    ))
 
 
 class SqlDatabaseProvider:

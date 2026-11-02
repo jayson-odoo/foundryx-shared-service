@@ -14,6 +14,7 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.db_errors import db_error_text, is_db_error
 from app.dependencies import effective_permission_keys
 from app.deferred_actions.registry import (
     DeferredActionDef,
@@ -455,7 +456,11 @@ class PendingActionService:
             if fresh is None:
                 return row
             fresh.status = PENDING_ACTION_FAILED
-            fresh.error_text = str(exc)[:2000]
+            fresh.error_text = (
+                db_error_text(exc, "The action could not be completed")
+                if is_db_error(exc)
+                else str(exc)
+            )[:2000]
             fresh.ended_at = _now()
             db.commit()
             db.refresh(fresh)

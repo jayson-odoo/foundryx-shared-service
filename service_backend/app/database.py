@@ -6,7 +6,7 @@ import sys
 import threading
 import weakref
 from contextvars import ContextVar
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Connection, Engine
@@ -105,13 +105,33 @@ def app_connect_args() -> Dict[str, str]:
     return {"application_name": process_application_name(), **worker_connect_args()}
 
 
-engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    hide_parameters=True,
-    echo=settings.debug,
-    connect_args=app_connect_args(),
-)
+def scrub_error_params(engine: Engine) -> Engine:
+    """Drop the bound values a database error carries on ``exc.params``
+    (``hide_parameters`` only hides them from the error's text)."""
+
+    @event.listens_for(engine, "handle_error")
+    def _scrub(context) -> None:  # noqa: ANN001 - SQLAlchemy ExceptionContext
+        wrapped = context.sqlalchemy_exception
+        if wrapped is not None:
+            wrapped.params = None
+
+    return engine
+
+
+def build_engine(url: str, **extra: Any):
+    """The one engine factory. ``hide_parameters`` keeps bound values (tenant
+    data) out of every database error's text."""
+    options: Dict[str, Any] = {
+        "pool_pre_ping": True,
+        "hide_parameters": True,
+        "echo": settings.debug,
+        "connect_args": app_connect_args(),
+    }
+    options.update(extra)
+    return scrub_error_params(create_engine(url, **options))
+
+
+engine = build_engine(settings.database_url)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
