@@ -15,14 +15,15 @@ pymssql ``timeout``).
 
     !!  Nothing here ever logs or raises a credential or a DSN.  !!
 
-``sanitize_error`` is the ONE place a driver message is turned into an
-operator message - strip SQLAlchemy's ``[SQL: ...]`` echo, redact every
-``scheme://...`` fragment and every known secret, cap the length.
+``sanitize_error`` is the ONE place a driver error is turned into an
+operator message: a fixed sentence for a known code, otherwise the error class
+and code. The driver's text never reaches the message; it goes to the log.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import threading
 from contextlib import contextmanager
@@ -31,7 +32,8 @@ from typing import Any, Dict, Iterator, List, Sequence, Tuple
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine, URL
 
-from app.database import release_read_transactions
+from app.database import release_read_transactions, scrub_error_params
+from app.db_errors import db_error_text, error_code_of
 
 from .errors import SqlConnectError, SqlGuardError, SqlQueryError, SqlSourceError
 
@@ -56,6 +58,8 @@ __all__ = [
 ]
 
 # dbType → (SQLAlchemy driver name, default port, label)
+logger = logging.getLogger(__name__)
+
 DIALECTS: Dict[str, Tuple[str, int, str]] = {
     "mssql": ("mssql+pymssql", 1433, "Microsoft SQL Server"),
     "postgresql": ("postgresql+psycopg2", 5432, "PostgreSQL"),
@@ -69,14 +73,6 @@ QUERY_TIMEOUT_SECONDS = 30
 # or manual RUN) reads far more than a capped preview and must not share its
 # 30s budget (S2 review SHOULD-FIX 5) - a real table easily takes longer.
 EXTRACT_TIMEOUT_SECONDS = 300
-# Operator-facing messages are capped - a driver can dump a page of text.
-_MESSAGE_CAP = 300
-
-_DSN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S+")
-_SQL_ECHO_RE = re.compile(r"\[SQL:.*", re.S)
-_BACKGROUND_RE = re.compile(r"\(Background on this error at:.*?\)", re.S)
-_WS_RE = re.compile(r"\s+")
-
 
 def dialect_label(db_type: str) -> str:
     entry = DIALECTS.get(str(db_type or "").strip().lower())
@@ -159,26 +155,80 @@ def secrets_of(config: Dict[str, Any], credentials: Dict[str, Any]) -> List[str]
     return out
 
 
-def sanitize_error(exc: BaseException, *, secrets: Sequence[str] = ()) -> str:
-    """Driver/SQLAlchemy exception → an operator-safe message.
+# Failures an operator can act on: driver code (or libpq phrase) ->
+# fixed sentence. Anything else is reduced to the error class and code by
+# ``db_error_text``. No sentence names a host, user or identifier.
+_LOGIN_REFUSED = "The database refused the login. Check the username and password."
+_DATABASE_MISSING = "The database name was not found on the server."
+_HOST_UNREACHABLE = "The database server could not be reached. Check the host and port."
+_TIMED_OUT = "The database did not answer in time."
+_TLS_FAILED = "The secure (TLS) connection to the database could not be set up."
+_TABLE_MISSING = "A table in the query was not found."
+_COLUMN_MISSING = "A column in the query was not found."
+_KNOWN_CODES = {
+    "18456": _LOGIN_REFUSED, "28P01": _LOGIN_REFUSED, "28000": _LOGIN_REFUSED,
+    "1045": _LOGIN_REFUSED,
+    "4060": _DATABASE_MISSING, "3D000": _DATABASE_MISSING, "1049": _DATABASE_MISSING,
+    "20002": _HOST_UNREACHABLE, "20009": _HOST_UNREACHABLE, "08001": _HOST_UNREACHABLE,
+    "2002": _HOST_UNREACHABLE, "2003": _HOST_UNREACHABLE, "2005": _HOST_UNREACHABLE,
+    "20003": _TIMED_OUT, "57014": _TIMED_OUT, "2013": _TIMED_OUT,
+    "3024": _TIMED_OUT, "1969": _TIMED_OUT,
+    "2026": _TLS_FAILED, "20017": _TLS_FAILED,
+    "208": _TABLE_MISSING, "42P01": _TABLE_MISSING, "1146": _TABLE_MISSING,
+    "207": _COLUMN_MISSING, "42703": _COLUMN_MISSING, "1054": _COLUMN_MISSING,
+}
 
-    Uses the DBAPI's own message (``exc.orig``) so SQLAlchemy's ``[SQL: ...]``
-    echo of the statement (tenant data) and its docs pointer never ride along;
-    redacts any ``scheme://`` fragment (a DSN carries the password) and every
-    known secret; collapses whitespace; caps the length.
-    """
+# A psycopg2 connect failure carries no pgcode. Only then, and only on libpq's
+# own phrases (never a bare word, which a table or host name could hold), the
+# message picks the fixed sentence. First match wins; the text is never returned.
+_LIBPQ_PHRASES = (
+    (re.compile(r"could not translate host name"), _HOST_UNREACHABLE),
+    (re.compile(r"timeout expired"), _TIMED_OUT),
+    (re.compile(r"server does not support ssl|\bssl error\b|\bssl connection has been closed"), _TLS_FAILED),
+    (re.compile(r"password authentication failed|no pg_hba\.conf entry"), _LOGIN_REFUSED),
+    (re.compile(r'\bfatal:\s+role "[^"]*" does not exist'), _LOGIN_REFUSED),
+    (re.compile(r'\bfatal:\s+database "[^"]*" does not exist'), _DATABASE_MISSING),
+    (re.compile(r"connection refused|name or service not known|no route to host|network is unreachable|could not connect to server"), _HOST_UNREACHABLE),
+)
+
+
+def _libpq_sentence(exc: BaseException) -> str:
+    """A fixed sentence for a code-less psycopg2 connect failure, else ``""``.
+    An error that carries a pgcode never comes here: it goes through
+    ``db_error_text``."""
     orig = getattr(exc, "orig", None)
-    raw = str(orig) if orig is not None else str(exc)
-    raw = _SQL_ECHO_RE.sub("", raw)
-    raw = _BACKGROUND_RE.sub("", raw)
-    raw = _DSN_RE.sub("[connection]", raw)
-    for secret in secrets:
-        if secret:
-            raw = raw.replace(secret, "[redacted]")
-    raw = _WS_RE.sub(" ", raw).strip()
-    if len(raw) > _MESSAGE_CAP:
-        raw = raw[: _MESSAGE_CAP - 1].rstrip() + "..."
-    return raw or "The database returned an error."
+    if orig is None or type(orig).__module__.split(".")[0] != "psycopg2":
+        return ""
+    if getattr(orig, "pgcode", None):
+        return ""
+    try:
+        message = str(orig).lower()
+    except Exception:  # noqa: BLE001
+        return ""
+    for pattern, sentence in _LIBPQ_PHRASES:
+        if pattern.search(message):
+            return sentence
+    return ""
+
+
+def sanitize_error(exc: BaseException, *, secrets: Sequence[str] = ()) -> str:
+    """Driver/SQLAlchemy exception -> an operator-safe message.
+
+    Never carries the driver's own text (it can hold table names, row values,
+    a host, a user or a DSN). A known code, or a known libpq fragment for a
+    code-less Postgres connect failure, maps to a fixed sentence; any other
+    error becomes its class and code through ``db_error_text``. The detail
+    goes to the server log only. ``secrets`` is kept so callers do not
+    change; no output holds driver text, so there is nothing to redact.
+    """
+    logger.warning("SQL source database error", exc_info=exc)
+    code = error_code_of(exc)
+    text = (
+        _KNOWN_CODES.get(code or "")
+        or _libpq_sentence(exc)
+        or db_error_text(exc, "The database returned an error", with_constraint=False)
+    )
+    return text
 
 
 def _fingerprint(url: URL, config: Dict[str, Any], query_timeout: int) -> str:
@@ -335,9 +385,10 @@ class SqlSourceRuntime:
             # task at a time) - `max_overflow` scales with `workers` too,
             # not a flat 3, so a second task's own worker pool never starves
             # waiting for the first task's to give connections back.
-            engine = sa.create_engine(
+            engine = scrub_error_params(sa.create_engine(
                 url,
                 pool_pre_ping=True,
+                hide_parameters=True,
                 pool_size=max(2, workers),
                 max_overflow=workers + 3,
                 pool_timeout=CONNECT_TIMEOUT_SECONDS,
@@ -345,7 +396,7 @@ class SqlSourceRuntime:
                 connect_args=connect_args_for(
                     str(config.get("dbType", "")), query_timeout=query_timeout
                 ),
-            )
+            ))
             self._engines[key] = (fingerprint, engine)
             return engine
 

@@ -6,7 +6,7 @@ import sys
 import threading
 import weakref
 from contextvars import ContextVar
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Connection, Engine
@@ -96,21 +96,42 @@ def process_application_name() -> str:
     return name[:_APPLICATION_NAME_MAX]
 
 
-def app_connect_args() -> Dict[str, str]:
+def app_connect_args(url: Optional[str] = None) -> Dict[str, str]:
     """``connect_args`` for the app engine: ``worker_connect_args()`` plus
     this process's ``application_name``. Postgres-only, for the same reason
     as ``worker_connect_args`` (sqlite's DBAPI rejects unknown keys)."""
-    if not settings.database_url.startswith("postgresql"):
+    if not (url if url is not None else settings.database_url).startswith("postgresql"):
         return {}
     return {"application_name": process_application_name(), **worker_connect_args()}
 
 
-engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    echo=settings.debug,
-    connect_args=app_connect_args(),
-)
+def scrub_error_params(engine: Engine) -> Engine:
+    """Drop the bound values a database error carries on ``exc.params``
+    (``hide_parameters`` only hides them from the error's text)."""
+
+    @event.listens_for(engine, "handle_error")
+    def _scrub(context) -> None:  # noqa: ANN001 - SQLAlchemy ExceptionContext
+        wrapped = context.sqlalchemy_exception
+        if wrapped is not None:
+            wrapped.params = None
+
+    return engine
+
+
+def build_engine(url: str, **extra: Any):
+    """The one engine factory. ``hide_parameters`` keeps bound values (tenant
+    data) out of every database error's text."""
+    options: Dict[str, Any] = {
+        "pool_pre_ping": True,
+        "hide_parameters": True,
+        "echo": settings.debug,
+        "connect_args": app_connect_args(url),
+    }
+    options.update(extra)
+    return scrub_error_params(create_engine(url, **options))
+
+
+engine = build_engine(settings.database_url)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

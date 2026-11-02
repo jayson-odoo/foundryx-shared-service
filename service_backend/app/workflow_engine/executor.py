@@ -14,10 +14,13 @@ through the EXISTING dispatch, so serialized runs keep their FIFO ordering and
 Redis lease semantics unchanged.
 """
 import copy
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
+
+from app.db_errors import db_error_text, is_db_error
 
 from app.models.workflow import (
     NODE_FAILED,
@@ -43,6 +46,18 @@ from app.workflow_engine.schemas import (
     parse_definition,
     topo_order,
 )
+
+
+logger = logging.getLogger("foundryx.workflow_executor")
+
+
+def _failure_text(exc: BaseException, what: str) -> str:
+    """Stored text of a failed node: a database error is reduced to fixed text
+    (the full detail goes to the log); a node's own message is kept."""
+    if is_db_error(exc):
+        logger.exception("Workflow node failed", exc_info=exc)
+        return db_error_text(exc, what)
+    return str(exc)
 
 
 def _now() -> datetime:
@@ -406,13 +421,14 @@ def _walk(
             return False, index
         except Exception as exc:  # noqa: BLE001 - a node failure halts the run (D14)
             rn.status = NODE_FAILED
-            rn.error = str(exc)
+            node_error = _failure_text(exc, "The step could not be completed")
+            rn.error = node_error
             runtime = getattr(exc, "runtime", None)
             if isinstance(runtime, dict):
                 # Keep the bounded console/termination of a failed Code
                 # node inspectable (AC-SAR-67) without marking it "produced".
                 rn.input_json = {**(rn.input_json or {}), "runtime": runtime}
-            run.error = f"Node failed: {exc}"
+            run.error = f"Node failed: {node_error}"
             failed = True
         rn.finished_at = _now()
         db.add(rn)
@@ -762,7 +778,7 @@ def debug_execute(
                         "status": NODE_FAILED,
                         "inputJson": input_json,
                         "outputJson": None,
-                        "error": str(exc),
+                        "error": _failure_text(exc, "The step could not be completed"),
                     }
                 )
                 break
