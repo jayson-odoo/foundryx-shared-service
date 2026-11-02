@@ -55,7 +55,7 @@ export const migrationFormSchema = z
         ctx.addIssue({ code: 'custom', message: 'Choose a connection.', path: ['connectionId'] });
       }
       if (value.channelMap.length === 0) {
-        ctx.addIssue({ code: 'custom', message: 'Run preflight to load the source channels.', path: ['channelMap'] });
+        ctx.addIssue({ code: 'custom', message: 'Choose a connection and a workspace to load the source channels.', path: ['channelMap'] });
       }
     } else if (!value.contactsUploadId) {
       ctx.addIssue({ code: 'custom', message: 'Upload a contacts CSV.', path: ['contactsUploadId'] });
