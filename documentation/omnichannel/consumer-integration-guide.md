@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-03** | **Corrections: voice, interactive replies, endpoint re-enable** (sections 4.2, 7, 9.1, 10). `voice` accepts ogg and browser webm (`audio/webm`, `video/webm`) and is always sent as ogg/opus; `audio` takes no webm. The send call no longer lists `422 transcode_failed`: a voice note that cannot be converted ends as `message.status` `FAILED`. `INTERACTIVE_REPLY` is listed in `messageType` with its `payload`. Endpoint `status`, `consecutiveFailures` and `disabledReason` are documented, with the reset on success, the re-enable and no queue or replay while not `ACTIVE`. |
 > | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
 > | **2026-11-02** | **Revoking a key and pausing an endpoint** (section 7, section 10). An endpoint belongs to the key that last changed it. When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` says the key was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key. A pause set by staff cannot be undone with a key: enable, PATCH, rotate and DELETE answer `409 endpoint_paused_by_staff`. While a workspace is trashed, its tenant is suspended or the service is off, no event is queued and those events are not sent later. No field changes, but some calls that answered `200` or `204` now answer `409`, including on an endpoint a key disabled before this date, which reads as a staff pause until staff resume it. |
 > | **2026-11-02** | **Breaking: `channel_required` on send, one callback for all channels** (sections 2, 4, 5, 5a, 7, 10). A `POST /messages` or `GET /templates` with no `channelId` now answers `422 channel_required` when the workspace has more than one active WhatsApp channel, or no active WhatsApp channel and more than one other active channel. Nothing is sent, and the same `Idempotency-Key` can be retried with `channelId`. `isDefault` is `false` on every channel in that case. This is breaking for an integration that omits `channelId`: connecting a second WhatsApp number makes its sends start getting `422`, so pass `channelId` on every send (message events carry it). One active WhatsApp channel plus web chat, Messenger or Instagram keeps sending on WhatsApp. A reaction goes out on the channel of the message it reacts to. `POST /webhooks` now registers a callback that covers every channel of the workspace, including channels connected later; its `channelId` reads `null`, `contact.updated` can carry `channelId: null`, and registering with no active channel answers `409 no_active_channel`. Existing endpoints keep their `channelId` and are not converted. |
@@ -257,11 +258,11 @@ The URL is SSRF-guarded: **https only**, no redirects, no private/loopback/reser
 | image | 5 MB | jpeg, png |
 | video | 16 MB | mp4, 3gpp |
 | audio | 16 MB | aac, mpeg, mp4, amr, ogg |
-| voice | 16 MB | ogg |
+| voice | 16 MB | ogg, and webm as a browser records it (`audio/webm` or `video/webm`) |
 | document | 100 MB | pdf, zip, docx, xlsx, pptx, text/plain |
 | sticker | 500 KB | webp |
 
-Bad size/type → `422 oversize` / `422 unsupported_media` / `422 transcode_failed`.
+Bad size/type → `422 oversize` / `422 unsupported_media`. The send call answers `202` once the file passes the type and size checks. Every voice note is sent to the customer as ogg/opus, whatever you uploaded. A voice note that cannot be converted fails later: the message ends with `message.status` `FAILED`, not a `422` on the send. `audio` does not take webm.
 
 ### 4.3 Media by direct upload (multipart)
 
@@ -562,7 +563,7 @@ When you follow a `pagination.next`/`previous` URL, `format=rio` is already carr
 
 Foundryx POSTs a **signed JSON envelope** to each callback URL you registered for the channel, for each event type you subscribed to.
 
-> Webhook payloads use the **§9.1** shapes (`MessageItem`, `ThreadItem`) - the same shapes the read endpoints return by default, so one internal type covers both surfaces.
+> Webhook payloads use the **§9.1** shapes (`MessageItem`, `ThreadItem`) - the same shapes the read endpoints return by default, so one internal type covers both surfaces. An inbound WhatsApp voice note arrives as `voice` with the provider's own type, usually `audio/ogg`, and is not converted.
 
 ### Subscribable event types
 
@@ -700,7 +701,9 @@ async def receive(request: Request):
 * **Success** = your endpoint returns HTTP `2xx` within **10 seconds**.
 * **At-least-once**: retries mean you may see the same event `id` more than once - **be idempotent**.
 * **Retry backoff**: \~1m, 5m, 25m, 1h, 6h (max **6 attempts**) then dead-letter.
-* **Auto-disable**: after 10 consecutive dead-lettered events the endpoint flips to `AUTO_DISABLED`; re-enable it with `POST /webhooks/{id}/enable` or from the dashboard (which resets the counter).
+* **Auto-disable**: after 10 consecutive dead-lettered events the endpoint flips to `AUTO_DISABLED`; re-enable it with `POST /webhooks/{id}/enable` or from the dashboard, which sets `status` back to `ACTIVE`, resets `consecutiveFailures` to `0` and clears `disabledReason`.
+* One successful delivery resets `consecutiveFailures` to `0`, so only an unbroken run of failures disables an endpoint.
+* Only an `ACTIVE` endpoint gets events: while it is `DISABLED` or `AUTO_DISABLED` no event is queued for it, and none is replayed after it is re-enabled.
 * While a workspace is trashed, its tenant is suspended or the service is off for it, no event is queued, and queued retries end failed. Those events are not sent later, even after the workspace is back.
 * Webhook delivery is fully isolated - a slow/broken consumer never blocks an inbound WhatsApp message.
 * A **delivery log** is available in the dashboard (per-attempt status, response code, latency, error) for debugging.
@@ -730,6 +733,8 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/webhooks \
                 "events": ["message.inbound","…"], "status": "ACTIVE", … },
   "signingSecret": "whsec_…" }
 ```
+
+Each endpoint reads `status` (`ACTIVE`, `DISABLED` or `AUTO_DISABLED`), `consecutiveFailures` (the current run of failed events) and `disabledReason` (why it is not `ACTIVE`, `null` otherwise).
 
 > **`signingSecret` is shown once.** Store it before you close the response - there is no endpoint that returns it again, only `/rotate`, which invalidates the old one immediately. Deploy the new secret **before** rotating or you will reject your own deliveries.
 
@@ -810,7 +815,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "senderId": null,             // outbound: a user id, or "apikey:<id>" for an API send (also on message.outbound)
   "senderName": null,
   "messageType": "IMAGE",       // TEXT|TEMPLATE|IMAGE|VIDEO|AUDIO|VOICE|DOCUMENT|
-                                //   STICKER|INTERACTIVE|LOCATION|CONTACTS|UNSUPPORTED
+                                //   STICKER|INTERACTIVE|INTERACTIVE_REPLY|LOCATION|CONTACTS|UNSUPPORTED
   "body": "caption or text",
   "mediaUrl": "/omnichannel/media/…",  // absolute + authed in the inbound webhook
   "mediaMime": "image/png",     // webhook renames → mimeType
@@ -916,6 +921,7 @@ Notes that bite if you miss them:
 * **`message.type`** is lowercase. Two easily-missed values: `voice` is distinct from `audio` (a WhatsApp voice note is `"voice"`, so no separate boolean is needed), and **`interactive_reply`** is what you receive when a customer taps a quick-reply button or picks a list row - a different type from the `interactive` message you sent. Handle it explicitly; after plain text it's the most common inbound event.
 * **`message.payload`** carries what cannot survive flattening into text, by type:
   * `interactive` → `{ kind, body, header?, footer?, buttons[] | sections[] | cta }`
+  * `interactive_reply` → WhatsApp `{ kind: "button" | "list", id, title, description }`; Messenger and Instagram `{ kind: "quick_reply" | "postback", id, title }`. `body` is the tapped title. On WhatsApp `replyTo` names the message that carried the buttons.
   * `location` → `{ lat, lng, name, address }`
   * `contacts` → the contact-card array
   * `template` → the template binding
@@ -1044,7 +1050,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `contact_not_found` | 404 | Contact not found / not in your workspace. |
 | `message_not_found` | 404 | Message id not on that contact's thread. |
 | `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing. |
-| `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
+| `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
 | `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
 
