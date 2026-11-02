@@ -1466,6 +1466,8 @@ class PublicSendRequest(ApiModel):
     contacts: Optional[List[dict]] = None
     # Reaction (plan 12 Slice 3) - targets OUR durable id.
     reaction: Optional[PublicReactionBody] = None
+    # Quote one of OUR durable message ids (plan 38 gap 4).
+    replyToMessageId: Optional[str] = None
 
 
 class PublicSendResponse(ApiModel):

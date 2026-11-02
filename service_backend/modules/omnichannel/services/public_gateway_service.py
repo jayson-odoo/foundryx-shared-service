@@ -71,6 +71,7 @@ MEDIA_FETCH_TOTAL_SECONDS = 60.0
 MEDIA_FETCH_MAX_CONCURRENT = 4
 MEDIA_FETCH_MAX_PER_TENANT = 2
 _FETCH_FAILED_TEXT = "The media url could not be fetched."
+_REPLY_NOT_FOUND_TEXT = "The message you are replying to was not found."
 
 
 class _FetchGate:
@@ -922,6 +923,60 @@ class PublicGatewayService:
             raise ApiError(422, "template_not_found", "Template not found for this workspace.")
         return row.id
 
+    # ── Reply threading (plan 38 gap 4) ───────────────────────────────────────
+    def _check_reply(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        channel: Optional[Channel],
+        to: str,
+        msg_type: str,
+        reply_to: Optional[str],
+    ) -> Optional[str]:
+        """Validate ``replyToMessageId`` BEFORE anything is written or queued
+        and return it (None when absent). One helper for the JSON and the
+        multipart path. An unknown id, a message of another contact, workspace
+        or tenant, and an internal note all get the one not-found answer; a
+        quoted message on a different channel than the one sending is refused
+        with `reply_channel_mismatch`. A reply never creates a contact."""
+        if reply_to is None:
+            return None
+        if msg_type == "reaction":
+            raise ApiError(
+                422, "invalid_request", "replyToMessageId cannot be used with a reaction."
+            )
+        not_found = ApiError(422, "invalid_request", _REPLY_NOT_FOUND_TEXT)
+        if not isinstance(reply_to, str) or not reply_to.strip() or channel is None:
+            raise not_found
+        quoted = self.messages.repo.get_message(reply_to, tenant_id)
+        if quoted is None:
+            raise not_found
+        ident = (to or "").strip()
+        if ident.lower().startswith(("psid:", "igsid:", "webchat:", "id:")):
+            contact = self._resolve_send_target(tenant_id, workspace_id, channel, ident)
+        else:
+            raw = ident.split(":", 1)[1] if ident.lower().startswith("phone:") else ident
+            digits = _digits(raw)
+            if not digits:
+                raise ApiError(
+                    422, "invalid_recipient", "A valid recipient phone number is required."
+                )
+            contact = self.contacts.find_by_phone_in_workspace(digits, workspace_id, tenant_id)
+        if contact is None or contact.workspace_id != workspace_id:
+            raise not_found
+        try:
+            self.messages._reply_metadata(contact, tenant_id, reply_to)
+        except SendRejected as exc:
+            raise ApiError(422, "invalid_request", exc.message) from exc
+        if quoted.channel_id and quoted.channel_id != channel.id:
+            raise ApiError(
+                422,
+                "reply_channel_mismatch",
+                "The quoted message was sent on another channel. "
+                "Pass the quoted message's channelId to reply on that number.",
+            )
+        return reply_to
+
     # ── Send ─────────────────────────────────────────────────────────────────
     def send(
         self,
@@ -963,6 +1018,7 @@ class PublicGatewayService:
         self, tenant_id: str, workspace_id: str, key_id: str, req: PublicSendRequest
     ) -> str:
         msg_type = (req.type or "text").lower()
+        reply_to = req.replyToMessageId
         # Plan 32 / A7a (D-A7-18, AC-CHN-53): `channelId` (optional) wins over
         # the WHATSAPP-preferred implicit choice - an unknown/foreign one is a
         # typed 4xx from `_workspace_channel`, never a silent fallback.
@@ -976,16 +1032,23 @@ class PublicGatewayService:
                 raise
             channel = None
 
+        reply_to = self._check_reply(
+            tenant_id, workspace_id, channel, req.to, msg_type, reply_to
+        )
+
         if msg_type == "text":
             if req.text is None or not (req.text.body or "").strip():
                 raise ApiError(422, "invalid_request", "text.body is required.")
-            payload = SendMessageRequest(messageType="TEXT", body=req.text.body)
+            payload = SendMessageRequest(
+                messageType="TEXT", body=req.text.body, replyToMessageId=reply_to
+            )
         elif msg_type == "template":
             template_id = self._resolve_template_id(tenant_id, channel.id, req)
             payload = SendMessageRequest(
                 messageType="TEMPLATE",
                 templateId=template_id,
                 templateVariables=(req.template.variables if req.template else None) or [],
+                replyToMessageId=reply_to,
             )
         elif msg_type.upper() in MEDIA_MESSAGE_TYPES:
             # Media-by-URL (plan 12 AC-12-10): fetch the bytes + re-upload through
@@ -1021,9 +1084,13 @@ class PublicGatewayService:
                     caption=req.media.caption,
                     to=req.to,
                     channel=channel,
+                    reply_to_message_id=reply_to,
                 )
         elif msg_type in ("interactive", "location", "contacts"):
-            return self._send_structured(tenant_id, workspace_id, key_id, msg_type, req, channel)
+            return self._send_structured(
+                tenant_id, workspace_id, key_id, msg_type, req, channel,
+                reply_to_message_id=reply_to,
+            )
         elif msg_type == "reaction":
             return self._send_reaction(tenant_id, workspace_id, key_id, req)
         else:
@@ -1135,6 +1202,7 @@ class PublicGatewayService:
         caption: Optional[str],
         to: str,
         channel: Optional[Channel] = None,
+        reply_to_message_id: Optional[str] = None,
     ) -> str:
         # Callers pass the resolved channel; `None` resolves the implicit one
         # (refused when it would be a guess).
@@ -1153,6 +1221,7 @@ class PublicGatewayService:
                 caption=caption,
                 actor_is_human=False,
                 channel_id_override=self._override_for(channel),
+                reply_to_message_id=reply_to_message_id,
             )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
@@ -1169,6 +1238,7 @@ class PublicGatewayService:
         msg_type: str,
         req: PublicSendRequest,
         channel: Optional[Channel] = None,
+        reply_to_message_id: Optional[str] = None,
     ) -> str:
         # `channel` is resolved by `_do_send` (honours the explicit selector);
         # a direct legacy caller with none falls back to the implicit choice.
@@ -1210,6 +1280,7 @@ class PublicGatewayService:
                         header_filename=header_filename,
                         actor_is_human=False,
                         channel_id_override=self._override_for(channel),
+                        reply_to_message_id=reply_to_message_id,
                     )
             elif msg_type == "location":
                 if not req.location:
@@ -1217,6 +1288,7 @@ class PublicGatewayService:
                 item = messages.send_location(
                     contact.id, tenant_id, actor, defn=dict(req.location), actor_is_human=False,
                     channel_id_override=self._override_for(channel),
+                    reply_to_message_id=reply_to_message_id,
                 )
             else:  # contacts
                 if not req.contacts:
@@ -1224,6 +1296,7 @@ class PublicGatewayService:
                 item = messages.send_contacts(
                     contact.id, tenant_id, actor, defn={"contacts": req.contacts},
                     actor_is_human=False, channel_id_override=self._override_for(channel),
+                    reply_to_message_id=reply_to_message_id,
                 )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
@@ -1269,6 +1342,7 @@ class PublicGatewayService:
         to: str,
         idempotency_key: Optional[str],
         channel_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
     ) -> Tuple[str, bool]:
         """Gateway multipart media send (plan 12 AC-12-10). Same idempotency
         semantics as the JSON ``send`` path. ``channel_id`` (plan 32 / A7a S6)
@@ -1293,6 +1367,9 @@ class PublicGatewayService:
         try:
             # After the replay check, as the JSON path does; a refusal releases the key.
             channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
+            reply_to = self._check_reply(
+                tenant_id, workspace_id, channel, to, kind.lower(), reply_to_message_id
+            )
             message_id = self._send_media(
                 tenant_id,
                 workspace_id,
@@ -1303,6 +1380,7 @@ class PublicGatewayService:
                 caption=caption,
                 to=to,
                 channel=channel,
+                reply_to_message_id=reply_to,
             )
         except Exception:
             if reserved:
