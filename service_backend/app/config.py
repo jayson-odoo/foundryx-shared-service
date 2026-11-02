@@ -1,4 +1,5 @@
 """Configuration settings for the FastAPI application."""
+import logging
 from typing import List, Union
 
 from pydantic import field_validator, model_validator
@@ -369,6 +370,32 @@ class Settings(BaseSettings):
     omni_key_max_in_flight: int = 10
     omni_key_max_per_minute: int = 600
     omni_key_limit_overrides: str = "{}"
+
+    @field_validator("omni_key_max_in_flight", "omni_key_max_per_minute", mode="before")
+    @classmethod
+    def _omni_key_limit_number(cls, v, info):
+        """Empty = unset; a value that is not a whole number of at least 1 is
+        ignored with a warning and the default applies."""
+        default = 10 if info.field_name == "omni_key_max_in_flight" else 600
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return default
+        try:
+            n = int(str(v).strip())
+        except ValueError:
+            n = 0
+        if n < 1:
+            logging.getLogger(__name__).warning(
+                "%s must be a whole number of at least 1; default used", info.field_name
+            )
+            return default
+        return n
+
+    @field_validator("omni_key_limit_overrides", mode="before")
+    @classmethod
+    def _omni_key_limit_overrides_empty(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "{}"
+        return v
     # Celery eager mode runs tasks inline (tests; also a no-worker dev escape
     # hatch - real deploys run a worker process and leave this false).
     celery_task_always_eager: bool = False

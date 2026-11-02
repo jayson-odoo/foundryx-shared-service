@@ -83,16 +83,14 @@ def get_api_workspace(
         slot = key_limits.acquire(row.id)
     except key_limits.KeyLimitExceeded as exc:
         route = request.scope.get("route")
-        logger.warning(
-            "key route refused: key_id=%s limit=%s route=%s",
-            row.id,
-            exc.limit,
-            getattr(route, "name", None) or request.url.path,
+        key_limits.log_refusal(
+            row.id, exc, getattr(route, "name", None) or request.url.path
         )
         raise ApiError(
             429, "rate_limited", "Too many requests for this key."
         ).with_retry_after(exc.retry_after)
     try:
+        ApiKeyService(db).touch(row)
         # Service binding (AC-01-15): the tenant may sign in, the service is
         # ACTIVE for it and the key's workspace is not trashed.
         if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):

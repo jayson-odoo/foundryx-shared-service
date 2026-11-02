@@ -38,6 +38,7 @@ from app.services.storage import UnresolvableKey, storage_for_tenant
 from ..api_auth import _parse_bearer, gateway_key_enabled
 from ..repositories.contact_repository import ContactRepository
 from ..security import verify_media_sig
+from ..services import key_limits
 from ..services.api_key_service import ApiKeyService
 
 router = APIRouter()
@@ -52,7 +53,7 @@ _READ_PERMISSION = "conversations.read"
 
 def _resolve_principal(
     authorization: Optional[str], db: Session
-) -> Tuple[str, Optional[str]]:
+) -> Tuple[str, Optional[str], Optional[key_limits.Slot]]:
     """Resolve either auth path → (tenant_id, workspace_id | None). API-key auth
     is workspace-scoped and follows ``gateway_key_enabled``; session auth is
     tenant-scoped (workspace None), refused for a tenant that may not sign in, and gated by ``conversations.read``. Raises 401 on any miss
@@ -65,10 +66,25 @@ def _resolve_principal(
         row = ApiKeyService(db).resolve(token)
         if row is None:
             raise HTTPException(status_code=401, detail="Invalid API key.")
-        # Same key rule as get_api_workspace (tenant, module and workspace state).
-        if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
-            raise HTTPException(status_code=403, detail="This service is not enabled.")
-        return row.tenant_id, row.workspace_id
+        # Plan 50: a workspace key is counted per key like the gateway routes.
+        try:
+            slot = key_limits.acquire(row.id)
+        except key_limits.KeyLimitExceeded as exc:
+            key_limits.log_refusal(row.id, exc, "serve_message_media")
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests for this key.",
+                headers={"Retry-After": str(exc.retry_after)},
+            )
+        try:
+            ApiKeyService(db).touch(row)
+            # Same key rule as get_api_workspace (tenant, module and workspace state).
+            if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
+                raise HTTPException(status_code=403, detail="This service is not enabled.")
+        except BaseException:
+            key_limits.release(slot)
+            raise
+        return row.tenant_id, row.workspace_id, slot
     # Session JWT (agent path).
     try:
         payload = decode_access_token(token)
@@ -90,7 +106,7 @@ def _resolve_principal(
     # the JWT (RBAC edits apply immediately).
     if _READ_PERMISSION not in effective_permission_keys(user):
         raise HTTPException(status_code=403, detail=f"Missing permission: {_READ_PERMISSION}")
-    return tenant_id, None
+    return tenant_id, None, None
 
 
 @router.get("/{message_id}")
@@ -100,6 +116,22 @@ def serve_message_media(
     exp: Optional[int] = Query(default=None),
     sig: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
+) -> Response:
+    held: list = []  # the key-limit slot, once a workspace key is admitted
+    try:
+        return _serve(message_id, authorization, exp, sig, db, held)
+    finally:
+        for slot in held:
+            key_limits.release(slot)
+
+
+def _serve(
+    message_id: str,
+    authorization: Optional[str],
+    exp: Optional[int],
+    sig: Optional[str],
+    db: Session,
+    held: list,
 ) -> Response:
     # Signed-URL path (public gateway, respond.io parity): a valid HMAC signature
     # over (message_id, exp) IS the authorization - no header needed, so the link
@@ -114,7 +146,7 @@ def serve_message_media(
             raise HTTPException(status_code=404, detail="Not found")
         tenant_id = message.tenant_id
     else:
-        tenant_id, workspace_id = _resolve_principal(authorization, db)
+        tenant_id, workspace_id, slot = _resolve_principal(authorization, db)
         # Defense-in-depth: resolve the message tenant-scoped (never unscoped).
         message = ContactRepository(db).get_message(message_id, tenant_id)
         if message is None or not message.media_key:
