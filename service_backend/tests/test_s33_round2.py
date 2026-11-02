@@ -451,20 +451,20 @@ def test_ac_33_19_other_control_characters_collapse_to_single_spaces(session_fac
     db.close()
 
 
-def test_ac_33_19_tenant_and_remote_text_is_html_escaped_in_the_body(session_factory):
+def test_ac_33_19_tenant_text_is_html_escaped_and_remote_text_is_absent_from_the_body(session_factory):
     db = session_factory()
     _only_recipients(db)
     _user(db, "esc@example.com", perms=[MANAGE])
-    company = _company(db, name="<b>x</b>", database_name="ESC_DB")
+    company = _company(db, name='<b>x</b> & "q"', database_name="ESC_DB")
     _task(db, company)
     _fail(db, company, 20, error="<script>alert(1)</script>")
     _fail(db, company, 5, error="<script>alert(1)</script>")
     _evaluate(db)
     html_body = _emails(db)[0].html_body
-    assert "&lt;b&gt;x&lt;/b&gt;" in html_body
-    assert "&lt;script&gt;" in html_body
+    assert "&lt;b&gt;x&lt;/b&gt; &amp; &quot;q&quot;" in html_body
     assert "<b>x</b>" not in html_body
-    assert "<script>" not in html_body
+    assert "script" not in html_body.lower()
+    assert "alert(1)" not in html_body
     db.close()
 
 

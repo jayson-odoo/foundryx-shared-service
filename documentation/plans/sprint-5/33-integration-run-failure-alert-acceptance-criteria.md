@@ -55,7 +55,7 @@ Terms:
   (stale rule: `<Integration> (<Company>) has had no successful run since <time>`); reminder
   `Still failing: <Integration> (<Company>), <n> failed runs since <time>`; recovered
   `<Integration> (<Company>) is running again`. The body names integration, company (name and
-  database), failing-since time, failed-run count, the last error's first line, and a button to the
+  database), failing-since time, failed-run count (no error text, AC-48-01), and a button to the
   integration's Runs tab (`.../autocount/companies/<id>/entities/<type>?tab=runs`) on
   `settings.frontend_url`, the same base every account email uses (`user_service.py:278`). A
   non-default tenant's link therefore lands on the bare host: BL-SS-298 (tenant-host links) covers it.
@@ -100,8 +100,8 @@ Terms:
   alert and one recovered notice per integration per 4 h.
 - **AC-33-19 [BE][T]** Email safety. The subject has CR, LF and other control characters collapsed to
   single spaces (a tenant-typed company name can never break the outbox or the shared SMTP
-  connection). Tenant-authored and remote text (integration and company names, the error line) is
-  HTML-escaped in the body.
+  connection). Tenant-authored text (integration and company names) is HTML-escaped in the body; the
+  body carries no error text (AC-48-01).
 - **AC-33-20 [BE]** The per-integration check uses aggregate queries (count / min / latest one) on an
   index `(tenant_id, company_id, entity_type, finished_at)` of `ac_sync_run`, shipped in 0031 and the
   crew SQL; it never loads every failed run.
