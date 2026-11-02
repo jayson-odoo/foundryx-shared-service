@@ -860,3 +860,360 @@ def test_ac_44_11_a_contact_row_that_is_not_an_object_is_skipped_and_counted(ses
     ).count() == 1
     _assert_no_markers(json.dumps(job.result_json, default=str))
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Round 3 - edge cases that pin the helpers and the run-time check
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _line_for(body, label):
+    lines = [w for w in body["warnings"] if f"source {label}(s) could not be read" in w]
+    assert len(lines) == 1, body["warnings"]
+    return lines[0]
+
+
+def test_ac_44_02_rows_that_are_not_objects_are_skipped_counted_with_no_id(soft_client, monkeypatch):
+    state = _state(
+        channels=[GOOD_CHANNEL, "MARKER-STRING"],
+        users=[GOOD_USER, "MARKER-STRING"],
+        fields=[GOOD_FIELD, "MARKER-STRING"],
+    )
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+
+    res = _preflight(soft_client, h, connection_id, ws_id)
+
+    assert res.status_code == 200, res.status_code
+    body = res.json()
+    assert _line_for(body, "channel") == "1 source channel(s) could not be read and were skipped."
+    assert _line_for(body, "user") == "1 source user(s) could not be read and were skipped."
+    assert _line_for(body, "custom field") == "1 source custom field(s) could not be read and were skipped."
+    assert [c["id"] for c in body["channels"]] == ["7001"]
+    _assert_no_markers(res.text)
+
+
+def test_ac_44_03_an_id_with_trailing_text_shows_no_id(soft_client, monkeypatch):
+    bad = bad_user("7011abc")
+    state = _state(users=[GOOD_USER, bad, bad_user(7122)])
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+
+    res = _preflight(soft_client, h, connection_id, ws_id)
+
+    assert res.status_code == 200, res.status_code
+    line = _line_for(res.json(), "user")
+    assert "7122" in line, line
+    assert "7011" not in line, line
+    assert "7011abc" not in res.text
+
+
+def test_ac_44_03_an_id_of_twenty_five_digits_shows_no_id(soft_client, monkeypatch):
+    long_id = int("9" * 25)
+    state = _state(users=[GOOD_USER, bad_user(long_id), bad_user(7122)])
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+
+    res = _preflight(soft_client, h, connection_id, ws_id)
+
+    assert res.status_code == 200, res.status_code
+    line = _line_for(res.json(), "user")
+    assert "7122" in line, line
+    assert "9" * 25 not in res.text
+
+
+def test_ac_44_03_a_mix_of_rows_with_and_without_an_id_shows_both(soft_client, monkeypatch):
+    no_id = {"firstName": "MARKER-FIRST", "phone": "MARKER-PHONE"}
+    state = _state(users=[GOOD_USER, bad_user(7121), bad_user(7122), no_id])
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+
+    res = _preflight(soft_client, h, connection_id, ws_id)
+
+    assert res.status_code == 200, res.status_code
+    line = _line_for(res.json(), "user")
+    assert line == "3 source user(s) could not be read and were skipped (source ids: 7121, 7122); 1 had no readable id.", line
+
+
+def test_ac_44_11_a_reason_lists_at_most_ten_field_names():
+    from pydantic import BaseModel
+
+    from modules.omnichannel.services.migration_service import parse_rows
+
+    class Wide(BaseModel):
+        f01: int
+        f02: int
+        f03: int
+        f04: int
+        f05: int
+        f06: int
+        f07: int
+        f08: int
+        f09: int
+        f10: int
+        f11: int
+        f12: int
+
+    parsed, unreadable = parse_rows([{}], Wide)
+
+    assert parsed == []
+    assert len(unreadable) == 1
+    reason = unreadable[0].reason
+    assert reason == "could not read: " + ", ".join(f"f{i:02d}" for i in range(1, 11)), reason
+
+
+def test_ac_44_11_a_reason_for_a_failure_that_is_not_a_validation_error_keeps_its_message():
+    from modules.omnichannel.services.migration_service import _failure_reason
+
+    assert _failure_reason(RuntimeError("source went away")) == "source went away"
+
+
+def test_ac_44_11_the_event_refetch_failure_keeps_the_source_error_message(session_factory, monkeypatch):
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    good = {"id": 910001, "firstName": "Good", "phone": "+15550910001"}
+    inner = _pages_handler_full({None: ([good], None)})
+    refetched = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/contact/id:910001"):
+            refetched.append(request.url.path)
+            return httpx.Response(404, json={"code": "not_found", "message": "source contact vanished"})
+        return inner(request)
+
+    _stub_client(monkeypatch, handler)
+
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert job.status == "done", job.error
+    assert refetched, "the re-fetch stub was never reached"
+    rows = [r for r in _sample(job) if r["entity"] == "events" and r["sourceId"] == "910001"]
+    assert len(rows) == 1, _sample(job)
+    assert rows[0]["reason"].endswith("source contact vanished"), rows[0]
+    db.close()
+
+
+def test_ac_44_10_a_dry_run_blocker_and_failure_row_for_an_unreadable_custom_field(soft_client, monkeypatch):
+    state = _state(fields=[GOOD_FIELD, bad_field(7221)])
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="dry_run")
+
+    assert res.status_code == 201, res.text
+    job = res.json()
+    assert job["status"] == "done", job
+    assert "1 source custom field(s) could not be read and were skipped." in job["report"]["blockers"], job["report"]["blockers"]
+    rows = [r for r in job["failureSample"] if r["sourceId"] == "7221"]
+    assert len(rows) == 1, job["failureSample"]
+    assert rows[0]["entity"].startswith("field") and rows[0]["action"] == "skipped", rows[0]
+    _assert_no_markers(res.text)
+
+
+def test_ac_44_20_a_csv_run_with_a_connection_never_reads_or_refuses_on_channels(soft_client, monkeypatch):
+    state = _state(channels=[GOOD_CHANNEL, bad_channel(7011)])
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+    content = _csv_bytes(["First Name", "Phone"], [["Csv", "+15559990045"]])
+    up = soft_client.post(
+        "/omnichannel/migration/uploads", headers=h,
+        files={"file": ("contacts.csv", content, "text/csv")}, data={"kind": "contacts"},
+    )
+    assert up.status_code == 201, up.text
+    body = {
+        "connectionId": connection_id, "workspaceId": ws_id, "source": "csv",
+        "channelMap": [], "userMap": [], "teamMap": [], "lifecycleMap": [],
+        "contactsUploadId": up.json()["id"],
+    }
+    dry = soft_client.post("/omnichannel/migration/jobs", headers=h, json={**body, "mode": "dry_run"})
+    assert dry.status_code == 201, dry.text
+    channel_reads_before = len([p for p in state["calls"] if p.endswith("/space/channel")])
+
+    run = soft_client.post("/omnichannel/migration/jobs", headers=h, json={**body, "mode": "run"})
+
+    assert run.status_code == 201, run.text
+    channel_reads_after = len([p for p in state["calls"] if p.endswith("/space/channel")])
+    assert channel_reads_after == channel_reads_before, state["calls"]
+
+
+def test_ac_44_22_an_empty_channel_id_entry_does_not_mark_a_channel_with_no_id(soft_client, monkeypatch):
+    no_id = {"name": "MARKER-NAME", "source": "whatsapp_cloud"}
+    state = _state(channels=[GOOD_CHANNEL, no_id])
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+    empty_skip = [{"sourceChannelId": "", "targetChannelId": None}]
+    dry = _post_job(soft_client, h, connection_id, ws_id, mode="dry_run", channel_map=empty_skip)
+    assert dry.status_code == 201, dry.text
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="run", channel_map=empty_skip)
+
+    message = _channel_map_error(res)
+    assert re.search(r"\b1\b", message), message
+
+
+def test_ac_44_22_the_refusal_says_a_channel_with_no_readable_id_cannot_be_marked_skip(soft_client, monkeypatch):
+    no_id = {"name": "MARKER-NAME", "source": "whatsapp_cloud"}
+    state = _state(channels=[GOOD_CHANNEL, no_id])
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+    assert _post_job(soft_client, h, connection_id, ws_id, mode="dry_run").status_code == 201
+
+    message = _channel_map_error(_post_job(soft_client, h, connection_id, ws_id, mode="run"))
+
+    assert "A channel with no readable id cannot be marked Skip." in message, message
+
+    # Control: a channel that has an id gets no such sentence.
+    state["channels"] = [GOOD_CHANNEL, bad_channel(7011)]
+    message = _channel_map_error(_post_job(soft_client, h, connection_id, ws_id, mode="run"))
+    assert "7011" in message
+    assert "cannot be marked Skip" not in message, message
+
+
+def test_ac_44_20_a_source_error_during_the_run_check_refuses_and_creates_no_job(
+    soft_client, monkeypatch, session_factory
+):
+    from app.models.background_job import BackgroundJob
+    from modules.omnichannel.respondio.client import RespondIoClient, RespondIoError
+
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, _state())
+    assert _post_job(soft_client, h, connection_id, ws_id, mode="dry_run").status_code == 201
+    db = session_factory()
+    jobs_before = db.query(BackgroundJob).count()
+    db.close()
+    reached = []
+
+    def raiser(self):
+        reached.append(1)
+        raise RespondIoError("upstream error", status_code=500)
+
+    monkeypatch.setattr(RespondIoClient, "list_space_channels", raiser)
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="run")
+
+    assert reached, "the channel read stub was never reached"
+    _channel_map_error(res)
+    db = session_factory()
+    assert db.query(BackgroundJob).count() == jobs_before
+    db.close()
+
+
+def test_ac_44_20_the_read_transaction_is_released_before_the_channel_read(soft_client, monkeypatch):
+    from modules.omnichannel.respondio.client import RespondIoClient
+    from modules.omnichannel.services import migration_service
+
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, _state())
+    assert _post_job(soft_client, h, connection_id, ws_id, mode="dry_run").status_code == 201
+    events = []
+    real_release = migration_service.release_read_transactions
+    real_list = RespondIoClient.list_space_channels
+
+    def release_spy(*args, **kwargs):
+        events.append("release")
+        return real_release(*args, **kwargs)
+
+    def list_spy(self):
+        events.append("channels")
+        return real_list(self)
+
+    monkeypatch.setattr(migration_service, "release_read_transactions", release_spy)
+    monkeypatch.setattr(RespondIoClient, "list_space_channels", list_spy)
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="run")
+
+    assert res.status_code == 201, res.text
+    assert "channels" in events, events
+    assert "release" in events[: events.index("channels")], events
+
+
+def test_ac_44_20_credentials_that_cannot_be_decrypted_do_not_fail_the_create(
+    soft_client, monkeypatch, session_factory
+):
+    """Same as before the check existed: the run is created and the job
+    itself fails with the credentials message."""
+    from app.models.connection import Connection
+
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, _state())
+    assert _post_job(soft_client, h, connection_id, ws_id, mode="dry_run").status_code == 201
+    db = session_factory()
+    row = db.query(Connection).filter(Connection.id == connection_id).one()
+    row.credentials_json = "not-a-valid-token"
+    db.commit()
+    db.close()
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="run")
+
+    assert res.status_code == 201, res.text
+    job = res.json()
+    assert job["status"] == "failed", job
+    from app.models.background_job import BackgroundJob
+
+    db = session_factory()
+    stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+    assert "could not be decrypted" in (stored.error or ""), stored.error
+    db.close()
+
+
+def test_ac_44_12_a_source_error_reading_channels_in_the_dry_run_still_finishes_with_users_and_fields(
+    soft_client, monkeypatch
+):
+    from modules.omnichannel.respondio.client import RespondIoClient, RespondIoError
+
+    state = _state(users=[GOOD_USER, bad_user(7121)], fields=[GOOD_FIELD, bad_field(7221)])
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+    reached = []
+
+    def raiser(self):
+        reached.append(1)
+        raise RespondIoError("upstream error", status_code=500)
+
+    monkeypatch.setattr(RespondIoClient, "list_space_channels", raiser)
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="dry_run")
+
+    assert res.status_code == 201, res.text
+    assert reached, "the channel read stub was never reached"
+    job = soft_client.get(f"/omnichannel/migration/jobs/{res.json()['id']}", headers=h).json()
+    assert job["status"] == "done", job
+    ids = sorted(r["sourceId"] for r in job["failureSample"])
+    assert ids == ["7121", "7221"], job["failureSample"]
+    texts = [log.get("message", "") if isinstance(log, dict) else str(log) for log in job["logs"]]
+    assert any("channel" in t.lower() for t in texts), texts
+
+
+def test_ac_44_11_a_csv_contact_that_fails_stores_field_names_only(session_factory, monkeypatch):
+    from pydantic import BaseModel
+
+    from modules.omnichannel.services.migration_service import MigrationService, run_migration_job
+    from modules.omnichannel.services.migration_writer import MigrationWriter
+    from tests.test_omnichannel_respondio_migration_s5 import _make_csv_job, _upload_key
+
+    class Shape(BaseModel):
+        tags: list[str]
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    db.commit()
+    content = _csv_bytes(["First Name", "Phone"], [["MARKER-FIRST", "+15550000001"]])
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", content)
+    reached = []
+
+    def failing(self, source):
+        reached.append(1)
+        Shape(tags="MARKER-TAGS")
+
+    monkeypatch.setattr(MigrationWriter, "write_contact", failing)
+
+    job = _make_csv_job(db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=key, mode="run")
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert reached, "the CSV contact site never reached the failing writer"
+    assert job.status == "done", job.error
+    rows = [r for r in _sample(job) if r["entity"] == "contacts"]
+    assert len(rows) == 1, _sample(job)
+    assert rows[0]["reason"] == "could not read: tags", rows[0]
+    everything = json.dumps(
+        [job.result_json, job.cursor_json, job.logs_json, job.error,
+         MigrationService(db).failures_csv(DEFAULT_TENANT_ID, job.id)],
+        default=str,
+    )
+    _assert_no_markers(everything)
+    db.close()
