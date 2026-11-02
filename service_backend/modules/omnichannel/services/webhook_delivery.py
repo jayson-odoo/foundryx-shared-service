@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -26,6 +27,7 @@ import httpx
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.database import release_read_transactions
 from app.services.url_guard import GuardedTransport, UrlGuardError
 
 from ..api_auth import gateway_key_enabled
@@ -39,7 +41,12 @@ logger = logging.getLogger(__name__)
 # Exponential backoff between attempts (seconds): ~1m, 5m, 25m, 1h, 6h.
 _BACKOFF = [60, 300, 1500, 3600, 21600]
 MAX_ATTEMPTS = len(_BACKOFF) + 1  # 6 total attempts before dead-letter
-DELIVERY_TIMEOUT = 10.0
+# One attempt (connect, headers and body together) ends by this deadline; read
+# at call time. An httpx timeout is per read, so the total is enforced here.
+DELIVERY_DEADLINE_SECONDS = 10
+# Most response-body bytes read; the status code alone decides success.
+RESPONSE_BYTE_CAP = 65536
+DEADLINE_ERROR = "Consumer did not answer within {seconds} seconds."
 # Below the worker's 300 second soft limit (app/workflow_engine/worker.py:84-85).
 DUE_RUN_BUDGET_SECONDS = 240
 # Reject a timestamp older than this on the consumer side (advisory - documented).
@@ -214,18 +221,68 @@ def enqueue_workspace_event(
     return _fan_out(db, tenant_id, workspace_id, None, event_type, event_id, data)
 
 
-def _post(
-    url: str, *, content: bytes, headers: Dict[str, str], timeout: float
-) -> httpx.Response:
-    """One POST on a fresh client whose connection goes only to an address that
-    passed the guard at connect time. Module-level so a test can replace the
-    outbound call."""
+class DeliveryDeadlineError(Exception):
+    """The attempt ran past its total deadline."""
+
+
+class _Reply:
+    """What one attempt needs from a response."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+def _post_once(
+    url: str,
+    content: bytes,
+    headers: Dict[str, str],
+    timeout: float,
+    stop: threading.Event,
+    deadline_at: float,
+) -> _Reply:
     with httpx.Client(
         transport=GuardedTransport(subject="Callback URL"),
         timeout=timeout,
         follow_redirects=False,
     ) as client:
-        return client.post(url, content=content, headers=headers)
+        with client.stream("POST", url, content=content, headers=headers) as resp:
+            read = 0
+            for chunk in () if resp.is_stream_consumed else resp.iter_raw():
+                read += len(chunk)
+                if read >= RESPONSE_BYTE_CAP:
+                    break  # enough; the connection is closed without the rest
+                if stop.is_set() or time.monotonic() >= deadline_at:
+                    raise DeliveryDeadlineError()
+            return _Reply(resp.status_code)
+
+
+def _post(
+    url: str, *, content: bytes, headers: Dict[str, str], timeout: float
+) -> _Reply:
+    """One POST on a fresh client whose connection goes only to an address that
+    passed the guard at connect time. ``timeout`` is the TOTAL budget for the
+    attempt: the request runs on a helper thread that is abandoned at the
+    deadline (its own per-read timeouts and the stop flag end it soon after).
+    Module-level so a test can replace the outbound call."""
+    deadline_at = time.monotonic() + timeout
+    stop = threading.Event()
+    box: Dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            box["reply"] = _post_once(url, content, headers, timeout, stop, deadline_at)
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, name="webhook-post", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        stop.set()
+        raise DeliveryDeadlineError()
+    if "error" in box:
+        raise box["error"]
+    return box["reply"]
 
 
 def dispatch(db: Session, delivery_id: str) -> str:
@@ -273,6 +330,11 @@ def dispatch(db: Session, delivery_id: str) -> str:
 
     delivery.attempt_count += 1
     delivery.last_attempt_at = datetime.now(timezone.utc)
+    endpoint_url = endpoint.url
+    # The attempt is counted before the network call, and no transaction stays
+    # open across it (nothing is read from the rows until the POST returns).
+    db.commit()
+    release_read_transactions()
     started = datetime.now(timezone.utc)
     ok = False
     status_code: Optional[int] = None
@@ -282,8 +344,13 @@ def dispatch(db: Session, delivery_id: str) -> str:
         # registration, but DNS may have been re-pointed since (and the URL is
         # externally supplied on the API-key surface). Never POST to a target
         # that resolves internally NOW.
-        assert_deliverable(endpoint.url)
-        resp = _post(endpoint.url, content=body, headers=headers, timeout=DELIVERY_TIMEOUT)
+        assert_deliverable(endpoint_url)
+        resp = _post(
+            endpoint_url,
+            content=body,
+            headers=headers,
+            timeout=DELIVERY_DEADLINE_SECONDS,
+        )
         status_code = resp.status_code
         ok = 200 <= resp.status_code < 300
         if not ok:
@@ -291,6 +358,8 @@ def dispatch(db: Session, delivery_id: str) -> str:
     except (WebhookError, UrlGuardError) as exc:
         # Blocked target - a real failure, but never a network call.
         error = f"Delivery refused: {exc}"
+    except (DeliveryDeadlineError, httpx.TimeoutException):
+        error = DEADLINE_ERROR.format(seconds=DELIVERY_DEADLINE_SECONDS)
     except httpx.HTTPError as exc:
         error = f"Delivery failed: {exc}"
     except Exception:  # noqa: BLE001 - any other send error is a failed attempt
