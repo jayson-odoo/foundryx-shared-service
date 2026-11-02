@@ -169,6 +169,7 @@ The JSON body always has `to` + `type`, plus one type-specific object:
 {
   "to": "+60123456789",     // recipient - see the "to" formats table below
   "channelId": null,        // OPTIONAL - see "Choosing a channel" below
+  "replyToMessageId": null, // OPTIONAL - see "Replying to a message" below
   "type": "text",           // see the table below
   "text":        { … },
   "template":    { … },
@@ -249,9 +250,9 @@ Add `replyToMessageId` (string, optional) to quote an earlier message of the sam
   "text": { "body": "Yes, it ships today." }, "replyToMessageId": "8dbc5265-…" }
 ```
 
-* The quoted message must belong to the contact you are sending to. An unknown id, a message of another contact, workspace or tenant, and an internal note all get the same `422 invalid_request` with "The message you are replying to was not found." Nothing is sent.
+* The quoted message must belong to the contact you are sending to. An unknown id, a message of another contact, workspace or tenant, and an internal note all get the same `422 invalid_request` with "The message you are replying to was not found." So does an id longer than 64 characters or one containing a control character. Nothing is sent. The recipient is checked first: if `to` is refused, the answer is the same as for a send without `replyToMessageId`.
 * `replyToMessageId` together with `type: "reaction"` is refused `422 invalid_request` ("replyToMessageId cannot be used with a reaction."). A value that is not a string is `422 invalid_request` as well.
-* The channel is resolved first, exactly as in "Choosing a channel" above (`channel_required` and `invalid_channel` are unchanged). If the quoted message was sent on a different channel than the one resolved, the send is refused `422 reply_channel_mismatch` ("Pass the quoted message's channelId to reply on that number."). A reply never moves to another channel by itself. A quoted message that has no channel is accepted.
+* The channel is resolved first, exactly as in "Choosing a channel" above (`channel_required` and `invalid_channel` are unchanged). If the quoted message was sent on a different channel than the one resolved, the send is refused `422 reply_channel_mismatch` ("The quoted message was sent on another channel. Pass the quoted message's channelId to reply on that number."). A reply never moves to another channel by itself. A quoted message that has no channel is accepted.
 * On success the new message carries `replyTo` in history reads, in both shapes (§9.1 `replyTo`, §9.2 `replyTo`). On WhatsApp the quote is also sent to the provider; if the quoted message has no provider id, the message is sent without a quote and still shows `replyTo`.
 * `Idempotency-Key` alone identifies a send: a repeat with the same key replays the first result whatever its `replyToMessageId`. A refused send does not use up the key.
 * `message.outbound` and `message.status` events are unchanged. Provider acceptance of a quote has not been confirmed for every message type (templates in particular); if the provider refuses the send, it arrives as a `message.status` of `FAILED`.
