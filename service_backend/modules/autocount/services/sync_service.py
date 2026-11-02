@@ -25,6 +25,7 @@ import httpx
 
 from sqlalchemy.orm import Session
 
+from app.db_errors import stored_error_text
 from app.jobs.repository import BackgroundJobRepository
 from app.jobs.service import JobService
 from app.models.background_job import (
@@ -756,8 +757,9 @@ class SyncService:
             self.db.commit()
         except Exception as exc:  # noqa: BLE001 - a commit fault must never poison the caller's session
             self.db.rollback()
+            logger.exception("autocount chunk commit failed")
             self._account_failure(summary, exc, sink=sink)
-            raise _ChunkCommitFailed(str(exc)) from exc
+            raise _ChunkCommitFailed(stored_error_text(exc, "Chunk commit failed")) from exc
 
     def _chunk_beat(self, job_id: str) -> Callable[[], None]:
         """The per-chunk heartbeat for a push (fix/job-lease-orphan-sweep).

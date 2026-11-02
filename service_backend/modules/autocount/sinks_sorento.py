@@ -48,6 +48,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import httpx
 
 from app.database import release_read_transactions
+from app.db_errors import db_error_in, stored_error_text
 
 from .canonical.base import CanonicalRecord
 from .canonical.documents import (
@@ -1731,6 +1732,9 @@ def describe_consumer_failure(
     sink's own strings carry only the request PATH and this keeps a consumer
     body from re-introducing a URL.
     """
+    if db_error_in(exc) is not None:
+        line = stored_error_text(exc, "Consumer error")
+        return line, None, line
     if isinstance(exc, httpx.HTTPError):
         status: Optional[int] = None
         raw = f"{type(exc).__name__}: {exc}"

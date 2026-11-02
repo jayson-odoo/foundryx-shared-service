@@ -17,6 +17,7 @@ from fastapi import HTTPException, status as http_status
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db_errors import stored_error_text
 from app.import_engine import readers
 from app.import_engine.coerce import coerce, to_utc
 from app.import_engine.registry import (
@@ -516,11 +517,12 @@ class ImportService:
             job.validated_at = datetime.now(timezone.utc)
             db.commit()
         except Exception as exc:  # noqa: BLE001
+            logger.warning("import validation failed", exc_info=exc)
             db.rollback()
             job = ImportRepository(db).get_unscoped(job_id)
             if job:
                 job.status = STATUS_FAILED
-                job.errors_json = [{"row": 0, "column": "", "message": f"Validation failed: {exc}"}]
+                job.errors_json = [{"row": 0, "column": "", "message": stored_error_text(exc, "Validation failed")}]
                 db.commit()
 
     # ── commit (all-or-nothing) ──────────────────────────────────────────────
@@ -600,13 +602,14 @@ class ImportService:
             if job.trigger_automations:
                 self._emit_events(db, job, importer, created_ids, updated_ids, update_changes)
         except Exception as exc:  # noqa: BLE001 - D7: roll back EVERYTHING
+            logger.warning("import commit failed", exc_info=exc)
             db.rollback()
             job = repo.get_unscoped(job_id)
             if job:
                 job.status = STATUS_FAILED
                 job.finished_at = datetime.now(timezone.utc)
                 existing = job.errors_json or []
-                job.errors_json = ([{"row": 0, "column": "", "message": f"Commit failed: {exc}"}] + existing)[:ERRORS_CAP]
+                job.errors_json = ([{"row": 0, "column": "", "message": stored_error_text(exc, "Commit failed")}] + existing)[:ERRORS_CAP]
                 db.commit()
 
     def _emit_events(self, db, job, importer, created_ids, updated_ids, update_changes=None):

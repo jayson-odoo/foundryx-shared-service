@@ -34,6 +34,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
+from app.db_errors import stored_error_text
 from app.jobs.service import JobService
 from app.models.background_job import JOB_PENDING, JOB_RUNNING
 from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
@@ -425,6 +426,7 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         # connection: `db` may be left dirty by the failed flush, and the
         # caller's own `db.rollback()` on this re-raise would silently wipe
         # an error message set on `db` itself before it could be read back.
+        logger.warning("scheduled run could not be enqueued", exc_info=exc)
         fresh = Session(bind=db.get_bind())
         try:
             fresh_config = (
@@ -433,9 +435,9 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
                 .first()
             )
             if fresh_config is not None:
-                fresh_config.last_run_error = (
-                    f"Scheduled run could not be enqueued: {exc}"[:4000]
-                )
+                fresh_config.last_run_error = stored_error_text(
+                    exc, "Scheduled run could not be enqueued"
+                )[:4000]
                 fresh_config.last_run_error_code = "ENQUEUE_FAILED"
                 fresh.commit()
         finally:

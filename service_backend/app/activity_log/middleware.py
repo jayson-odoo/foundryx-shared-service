@@ -52,6 +52,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.activity_log.context import set_trace_id, trace_id_var
 from app.activity_log.service import ActivityLogService
+from app.db_errors import stored_error_text
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.models.integration_activity import (
@@ -214,7 +215,7 @@ class GatewayActivityMiddleware:
                 latency_ms = int((time.monotonic() - started) * 1000)
                 err_args = (
                     scope, trace_id, 500, latency_ms,
-                    f"{type(exc).__name__}: {exc}", occurred_at,
+                    stored_error_text(exc, "Request failed", f"{type(exc).__name__}: {exc}"), occurred_at,
                     req_tee, req_ct, resp, resp_tee_ref["tee"],
                 )
                 # Mirror the happy path: inline in eager, else threadpool so the
