@@ -18,6 +18,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.jobs.crash_text import crash_text
 from app.jobs.registry import handler_for, types_that_heartbeat
 from app.jobs.repository import BackgroundJobRepository
 from app.models.background_job import (
@@ -570,7 +571,7 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
             error = (
                 "Job stopped: a storage connection is not usable."
                 if isinstance(exc, UnresolvableKey)
-                else f"Job crashed ({type(exc).__name__})."
+                else crash_text(exc)
             )
             service.finish(job, status=JOB_FAILED, error=error)
             close_module_bookkeeping(db, job, now=job.finished_at)

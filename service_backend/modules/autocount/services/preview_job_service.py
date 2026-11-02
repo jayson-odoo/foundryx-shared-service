@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.jobs.registry import handler_for
+from app.jobs.crash_text import crash_text
 from app.jobs.service import JobService, close_module_bookkeeping
 from app.models.background_job import (
     JOB_ABORTED,
@@ -274,7 +275,7 @@ class PreviewJobService:
             self.db.rollback()
             job = self.jobs.repo.get_unscoped(job.id)
             if job is not None and job.status not in JOB_TERMINAL_STATUSES:
-                self.jobs.finish(job, status=JOB_FAILED, error=f"Job crashed: {exc}")
+                self.jobs.finish(job, status=JOB_FAILED, error=crash_text(exc))
                 close_module_bookkeeping(self.db, job, now=job.finished_at)
                 self.db.commit()
 
