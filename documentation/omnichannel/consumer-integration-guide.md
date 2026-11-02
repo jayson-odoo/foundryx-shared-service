@@ -10,7 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
-> | **2026-11-03** | **Corrections: voice, interactive replies, endpoint re-enable** (sections 4.2, 7, 9.1, 10). `voice` accepts ogg and browser webm (`audio/webm`, `video/webm`) and is always sent as ogg/opus; `audio` takes no webm. The send call no longer lists `422 transcode_failed`: a voice note that cannot be converted ends as `message.status` `FAILED`. `INTERACTIVE_REPLY` is listed in `messageType` with its `payload`. Endpoint `status`, `consecutiveFailures` and `disabledReason` are documented, with the reset on success, the re-enable and no queue or replay while not `ACTIVE`. |
+> | **2026-11-03** | **Corrections: voice, interactive replies, endpoint re-enable** (sections 4.2, 7, 9.1, 9.2, 10). `voice` accepts ogg and browser webm (`audio/webm`, `video/webm`) and is always sent as ogg/opus; `audio` takes no webm. The send call no longer lists `422 transcode_failed`: a voice note that cannot be converted ends as `message.status` `FAILED`. `INTERACTIVE_REPLY` and `BUTTON` (a template quick-reply tap, no `payload`) are listed in `messageType`, and in the `?format=rio` notes the tapped title is `text`. Endpoint `status`, `consecutiveFailures` and `disabledReason` are documented, with the reset on success, the re-enable and no queue or replay while not `ACTIVE`. |
 > | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
 > | **2026-11-02** | **Revoking a key and pausing an endpoint** (section 7, section 10). An endpoint belongs to the key that last changed it. When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` says the key was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key. A pause set by staff cannot be undone with a key: enable, PATCH, rotate and DELETE answer `409 endpoint_paused_by_staff`. While a workspace is trashed, its tenant is suspended or the service is off, no event is queued and those events are not sent later. No field changes, but some calls that answered `200` or `204` now answer `409`, including on an endpoint a key disabled before this date, which reads as a staff pause until staff resume it. |
 > | **2026-11-02** | **Breaking: `channel_required` on send, one callback for all channels** (sections 2, 4, 5, 5a, 7, 10). A `POST /messages` or `GET /templates` with no `channelId` now answers `422 channel_required` when the workspace has more than one active WhatsApp channel, or no active WhatsApp channel and more than one other active channel. Nothing is sent, and the same `Idempotency-Key` can be retried with `channelId`. `isDefault` is `false` on every channel in that case. This is breaking for an integration that omits `channelId`: connecting a second WhatsApp number makes its sends start getting `422`, so pass `channelId` on every send (message events carry it). One active WhatsApp channel plus web chat, Messenger or Instagram keeps sending on WhatsApp. A reaction goes out on the channel of the message it reacts to. `POST /webhooks` now registers a callback that covers every channel of the workspace, including channels connected later; its `channelId` reads `null`, `contact.updated` can carry `channelId: null`, and registering with no active channel answers `409 no_active_channel`. Existing endpoints keep their `channelId` and are not converted. |
@@ -563,7 +563,7 @@ When you follow a `pagination.next`/`previous` URL, `format=rio` is already carr
 
 Foundryx POSTs a **signed JSON envelope** to each callback URL you registered for the channel, for each event type you subscribed to.
 
-> Webhook payloads use the **§9.1** shapes (`MessageItem`, `ThreadItem`) - the same shapes the read endpoints return by default, so one internal type covers both surfaces. An inbound WhatsApp voice note arrives as `voice` with the provider's own type, usually `audio/ogg`, and is not converted.
+> Webhook payloads use the **§9.1** shapes (`MessageItem`, `ThreadItem`) - the same shapes the read endpoints return by default, so one internal type covers both surfaces. An inbound WhatsApp voice note arrives as `VOICE` (`voice` in the `?format=rio` shape) with the provider's own type, which starts with `audio/ogg`, and is not converted.
 
 ### Subscribable event types
 
@@ -815,7 +815,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "senderId": null,             // outbound: a user id, or "apikey:<id>" for an API send (also on message.outbound)
   "senderName": null,
   "messageType": "IMAGE",       // TEXT|TEMPLATE|IMAGE|VIDEO|AUDIO|VOICE|DOCUMENT|
-                                //   STICKER|INTERACTIVE|INTERACTIVE_REPLY|LOCATION|CONTACTS|UNSUPPORTED
+                                //   STICKER|INTERACTIVE|INTERACTIVE_REPLY|BUTTON|LOCATION|CONTACTS|UNSUPPORTED
   "body": "caption or text",
   "mediaUrl": "/omnichannel/media/…",  // absolute + authed in the inbound webhook
   "mediaMime": "image/png",     // webhook renames → mimeType
@@ -921,7 +921,8 @@ Notes that bite if you miss them:
 * **`message.type`** is lowercase. Two easily-missed values: `voice` is distinct from `audio` (a WhatsApp voice note is `"voice"`, so no separate boolean is needed), and **`interactive_reply`** is what you receive when a customer taps a quick-reply button or picks a list row - a different type from the `interactive` message you sent. Handle it explicitly; after plain text it's the most common inbound event.
 * **`message.payload`** carries what cannot survive flattening into text, by type:
   * `interactive` → `{ kind, body, header?, footer?, buttons[] | sections[] | cta }`
-  * `interactive_reply` → WhatsApp `{ kind: "button" | "list", id, title, description }`; Messenger and Instagram `{ kind: "quick_reply" | "postback", id, title }`. `body` is the tapped title. On WhatsApp `replyTo` names the message that carried the buttons.
+  * `interactive_reply` → WhatsApp `{ kind: "button" | "list", id, title, description }`; Messenger and Instagram `{ kind: "quick_reply" | "postback", id, title }`. The tapped title is `text` in the `?format=rio` shape and `body` in the default shape. On WhatsApp `replyTo` names the message that carried the buttons.
+  * `button` → `null`: a tap on a WhatsApp template quick-reply button arrives as messageType `BUTTON` (`button` in this shape) with no `payload`; the button's text is `text` here and `body` in the default shape.
   * `location` → `{ lat, lng, name, address }`
   * `contacts` → the contact-card array
   * `template` → the template binding
