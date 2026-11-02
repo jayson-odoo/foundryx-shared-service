@@ -466,3 +466,30 @@ def test_ideation_intake_route_counts_requests_per_key(ideation_client, monkeypa
     assert ideation_client.get(url, headers=h).status_code == 200
     assert ideation_client.get(url, headers=h).status_code == 429
     _reached(fake)
+
+
+def test_media_route_releases_its_slot(client, session_factory, fake, monkeypatch):
+    """AC-50-04: the media route with a key gives its slot back after a 404 and after a 200."""
+    from tests.test_omnichannel_gateway_key_lifecycle import _media_rig
+
+    monkeypatch.setitem(settings.__dict__, "omni_key_max_in_flight", 2)
+    _ws, mid, h, _kid = _media_rig(client, session_factory)
+    assert client.get("/omnichannel/media/no-such-message", headers=h).status_code == 404
+    assert _busy(fake) == 0
+    assert client.get(f"/omnichannel/media/{mid}", headers=h).status_code == 200
+    assert _busy(fake) == 0
+    _reached(fake)
+
+
+def test_sequential_media_fetches_do_not_exhaust_the_in_flight_limit(
+    client, session_factory, fake, monkeypatch
+):
+    """AC-50-04: with 2 in flight, three sequential media fetches and then a gateway call all succeed."""
+    from tests.test_omnichannel_gateway_key_lifecycle import _media_rig
+
+    monkeypatch.setitem(settings.__dict__, "omni_key_max_in_flight", 2)
+    _ws, mid, h, _kid = _media_rig(client, session_factory)
+    codes = [client.get(f"/omnichannel/media/{mid}", headers=h).status_code for _ in range(3)]
+    assert codes == [200, 200, 200]
+    assert client.get(ROUTE, headers=h).status_code == 200
+    _reached(fake)
