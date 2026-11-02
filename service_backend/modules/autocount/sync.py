@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.jobs.crash_text import failure_text
 from app.jobs.registry import JobHandlerDef, register_job_handler
 from app.jobs.service import JobService
 from app.models.background_job import (
@@ -450,7 +451,11 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             mode=mode,
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
-        _fail(db, service, job, run, watermark_row, str(exc), started, config=config)
+        logger.exception("autocount sync setup failed for job %s", job.id)
+        _fail(
+            db, service, job, run, watermark_row, failure_text("Setup failed", exc), started,
+            config=config,
+        )
         return
 
     #     !!  A WATERMARKED ``sql_db`` TASK RUNS THE PAGED LOOP (plan
@@ -712,7 +717,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             external_ref=company.database_name,
         )
         _fail(
-            db, service, job, run, watermark_row, f"Fetch failed: {exc}", started,
+            db, service, job, run, watermark_row, failure_text("Fetch failed", exc), started,
             config=config,
         )
         return
@@ -1902,9 +1907,9 @@ def _run_paged_sql_db(
                     db, source, tenant_id=tenant_id, trace_id=trace_id,
                     external_ref=company.database_name,
                 )
-                _record_error_activity(f"Fetch failed: {exc}")
+                _record_error_activity(failure_text("Fetch failed", exc))
                 _fail(
-                    db, service, job, run, watermark_row, f"Fetch failed: {exc}", started,
+                    db, service, job, run, watermark_row, failure_text("Fetch failed", exc), started,
                     config=config,
                 )
                 return
@@ -3052,8 +3057,9 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             heartbeat=_beat_and_check,
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
-        _finish_run_failed(str(exc))
-        _fail_snapshot(str(exc), ERROR_CODE_SOURCE_PAGE_FAILED)
+        logger.exception("autocount pull snapshot setup failed for job %s", job.id)
+        _finish_run_failed(failure_text("Setup failed", exc))
+        _fail_snapshot(failure_text("Setup failed", exc), ERROR_CODE_SOURCE_PAGE_FAILED)
         return
 
     try:
@@ -3090,8 +3096,9 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             db, source, tenant_id=tenant_id, trace_id=trace_id,
             external_ref=company.database_name,
         )
-        _finish_run_failed(f"Fetch failed: {exc}")
-        _fail_snapshot(f"Fetch failed: {exc}", ERROR_CODE_SOURCE_PAGE_FAILED)
+        logger.exception("autocount pull snapshot fetch failed for job %s", job.id)
+        _finish_run_failed(failure_text("Fetch failed", exc))
+        _fail_snapshot(failure_text("Fetch failed", exc), ERROR_CODE_SOURCE_PAGE_FAILED)
         return
     finally:
         source.close()
@@ -3309,7 +3316,7 @@ def register_pull_snapshot_handler() -> None:
 
 _PULL_SNAPSHOT_HANDLER_DEF = JobHandlerDef(
     AUTOCOUNT_PULL_SNAPSHOT, _run_pull_snapshot, "AutoCount pull snapshot build",
-    heartbeats=True, read_permission="autocount.pull.read",
+    heartbeats=True, module_read=True,
 )
 register_pull_snapshot_handler()
 

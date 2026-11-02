@@ -29,6 +29,7 @@ from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.jobs.crash_text import failure_text
 from app.models.background_job import JOB_DONE, JOB_FAILED, BackgroundJob
 from app.models.connection import Connection
 from app.secrets import decrypt_secret
@@ -540,7 +541,11 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
         # never looks at it again and nobody is ever told why. A storage
         # connection whose credentials no longer decrypt raises InvalidToken
         # from a different layer entirely.
-        _fail(db, service, job, meeting, f"The bot could not be prepared: {exc}", None)
+        logger.exception("meetings bot run: the bot could not be prepared for %s", meeting.id)
+        _fail(
+            db, service, job, meeting, f"The bot could not be prepared: {exc}", None,
+            job_error=failure_text("The bot could not be prepared", exc),
+        )
         return
 
     if payload.get("late"):
@@ -549,7 +554,11 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
     try:
         container, reattached = _container_for(spec)
     except Exception as exc:  # noqa: BLE001 - no container means no run
-        _fail(db, service, job, meeting, f"The bot container could not start: {exc}", artifacts)
+        logger.exception("meetings bot run: the bot container could not start for %s", meeting.id)
+        _fail(
+            db, service, job, meeting, f"The bot container could not start: {exc}", artifacts,
+            job_error=failure_text("The bot container could not start", exc),
+        )
         return
 
     service.log(
@@ -561,7 +570,11 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
             reason, started_ts, finished_ts = follow(db, meeting, container)
             exit_code = int((container.wait() or {}).get("StatusCode", 1))
     except Exception as exc:  # noqa: BLE001 - the run itself blew up
-        _fail(db, service, job, meeting, f"The bot run failed: {exc}", artifacts)
+        logger.exception("meetings bot run: the bot run failed for %s", meeting.id)
+        _fail(
+            db, service, job, meeting, f"The bot run failed: {exc}", artifacts,
+            job_error=failure_text("The bot run failed", exc),
+        )
         return
 
     reason = reason or "error:unknown"
@@ -597,7 +610,11 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
         # forever, which is what an uncaught raise here would do.
         logger.exception("meetings recording registration failed for %s", meeting.id)
         db.rollback()
-        _fail(db, service, job, meeting, f"The recording could not be stored: {exc}", artifacts)
+        logger.exception("meetings bot run: the recording could not be stored for %s", meeting.id)
+        _fail(
+            db, service, job, meeting, f"The recording could not be stored: {exc}", artifacts,
+            job_error=failure_text("The recording could not be stored", exc),
+        )
         return
     meeting.status = STATUS_PROCESSING
     meeting.status_reason = None
@@ -625,9 +642,12 @@ def _fail(
     meeting: Meeting,
     reason: str,
     artifacts: Optional[Artifacts],
+    job_error: Optional[str] = None,
 ) -> None:
     """A run that ended badly: the meeting says so, and the screenshot the bot
     left behind is kept so somebody can see what the page actually showed.
+    ``job_error`` is the job's own stored text when it must differ from the
+    meeting's ``reason``.
 
     No retry, ever. A meeting happens once; re-joining it later would join an
     empty room and report a successful capture of nothing."""
@@ -642,7 +662,9 @@ def _fail(
     meeting.status_reason = reason
     meeting.screenshot_key = screenshot
     db.commit()
-    service.finish(job, status=JOB_FAILED, error=reason, result={"screenshotKey": screenshot})
+    service.finish(
+        job, status=JOB_FAILED, error=job_error or reason, result={"screenshotKey": screenshot}
+    )
 
 
 def _mark_bot_signed_in(db: Session, tenant_id: str) -> None:

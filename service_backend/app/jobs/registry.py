@@ -41,6 +41,9 @@ class JobHandlerDef:
     # The permission key that lets a user read jobs of this type (list and
     # detail). A type naming none is readable by nobody.
     read_permission: Optional[str] = None
+    # True: jobs of this type are read only through the owning module's own
+    # routes, which check each row; the generic Jobs routes never list them.
+    module_read: bool = False
 
 
 _REGISTRY: Dict[str, JobHandlerDef] = {}
@@ -97,5 +100,5 @@ def readable_job_types(permission_keys: Collection[str]) -> Set[str]:
     """Registered job types whose read permission is among ``permission_keys``."""
     keys = set(permission_keys)
     return {
-        d.type for d in _REGISTRY.values() if d.read_permission and d.read_permission in keys
+        d.type for d in _REGISTRY.values() if not d.module_read and d.read_permission and d.read_permission in keys
     }

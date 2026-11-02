@@ -35,6 +35,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.jobs.crash_text import failure_text
 from app.jobs.registry import JobHandlerDef, register_job_handler
 from app.jobs.service import JobService
 from app.models.background_job import JOB_ABORTED, JOB_DONE, JOB_FAILED, BackgroundJob
@@ -284,7 +285,7 @@ def _run_sample(
         return
     except Exception as exc:  # noqa: BLE001 - operator-safe, never silently swallowed
         logger.exception("autocount_source_preview (sample) crashed")
-        finish(status=JOB_FAILED, error=f"The preview could not be run: {exc}")
+        finish(status=JOB_FAILED, error=failure_text("The preview could not be run", exc))
         return
 
     funnel = result.combine_funnel or {}
@@ -387,7 +388,7 @@ def _run_full(
         return
     except Exception as exc:  # noqa: BLE001 - operator-safe, never silently swallowed
         logger.exception("autocount_source_preview (full) crashed")
-        finish(status=JOB_FAILED, error=f"The dry run could not be completed: {exc}")
+        finish(status=JOB_FAILED, error=failure_text("The dry run could not be completed", exc))
         return
 
     predictions = preview.get("predictions") if isinstance(preview, dict) else None
@@ -417,5 +418,5 @@ def register_preview_job_handler() -> None:
 
 _HANDLER_DEF = JobHandlerDef(
     PREVIEW_JOB_TYPE, run_autocount_source_preview, "AutoCount source preview",
-    heartbeats=True, read_permission="autocount.companies.read",
+    heartbeats=True, module_read=True,
 )
