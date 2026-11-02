@@ -47,6 +47,8 @@ function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigration
         connectionError={formState.errors.connectionId?.message}
         preflight={hook.preflight}
         preflightLoading={hook.preflightLoading}
+        preflightError={hook.preflightError}
+        channelMapError={formState.errors.channelMap?.message}
         contactsUpload={hook.contactsUpload}
         contactsCsvHeaders={hook.contactsCsvHeaders}
         contactsCsvError={formState.errors.contactsUploadId?.message}
@@ -101,7 +103,7 @@ function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigration
         />
       )}
       <ReviewSection
-        ready={hook.ready}
+        ready={hook.canSave}
         dryRunJob={hook.dryRunJob}
         canStartMigration={hook.canStartMigration}
         submitting={hook.submitting}
@@ -143,6 +145,7 @@ export function MigrationFormView() {
       editPermission: 'omnichannel_migration.manage',
       initialEditing: true,
       isDirty: hook.form.formState.isDirty,
+      saveDisabled: !hook.canSave,
       // The shell's own Save button runs the SAME action as the Review
       // section's "Run dry run" (there is no separate "draft" entity to
       // save - a migration job IS the persisted record, plan §2). Always
