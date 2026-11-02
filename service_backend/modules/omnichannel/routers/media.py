@@ -52,12 +52,14 @@ _READ_PERMISSION = "conversations.read"
 
 
 def _resolve_principal(
-    authorization: Optional[str], db: Session
-) -> Tuple[str, Optional[str], Optional[key_limits.Slot]]:
+    authorization: Optional[str], db: Session, held: list
+) -> Tuple[str, Optional[str]]:
     """Resolve either auth path → (tenant_id, workspace_id | None). API-key auth
     is workspace-scoped and follows ``gateway_key_enabled``; session auth is
     tenant-scoped (workspace None), refused for a tenant that may not sign in, and gated by ``conversations.read``. Raises 401 on any miss
-    (uniform - no enumeration)."""
+    (uniform - no enumeration). A key-limit slot taken for a workspace key is
+    appended to ``held`` at once, so the caller's ``finally`` releases it on
+    every exit path."""
     token = _parse_bearer(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="Missing or invalid credentials.")
@@ -76,15 +78,13 @@ def _resolve_principal(
                 detail="Too many requests for this key.",
                 headers={"Retry-After": str(exc.retry_after)},
             )
-        try:
-            ApiKeyService(db).touch(row)
-            # Same key rule as get_api_workspace (tenant, module and workspace state).
-            if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
-                raise HTTPException(status_code=403, detail="This service is not enabled.")
-        except BaseException:
-            key_limits.release(slot)
-            raise
-        return row.tenant_id, row.workspace_id, slot
+        if slot is not None:
+            held.append(slot)
+        ApiKeyService(db).touch(row)
+        # Same key rule as get_api_workspace (tenant, module and workspace state).
+        if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
+            raise HTTPException(status_code=403, detail="This service is not enabled.")
+        return row.tenant_id, row.workspace_id
     # Session JWT (agent path).
     try:
         payload = decode_access_token(token)
@@ -106,7 +106,7 @@ def _resolve_principal(
     # the JWT (RBAC edits apply immediately).
     if _READ_PERMISSION not in effective_permission_keys(user):
         raise HTTPException(status_code=403, detail=f"Missing permission: {_READ_PERMISSION}")
-    return tenant_id, None, None
+    return tenant_id, None
 
 
 @router.get("/{message_id}")
