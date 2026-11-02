@@ -829,7 +829,9 @@ def test_ac_33_09_the_consecutive_alert_subject_and_body(session_factory):
         assert "foundryx" not in body.lower()
         assert "UTC" in body
     assert "foundryx" not in mail.subject.lower()
-    del config
+    # The incident keeps the FIRST line of the run error, for the in-app banner.
+    incident = _open_incidents(db, config.id)[0]
+    assert incident.last_error == "AutoCount answered HTTP 502 on page 3."
     db.close()
 
 
