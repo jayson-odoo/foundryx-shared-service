@@ -54,6 +54,7 @@ def _probe_engine(config: Dict[str, Any], credentials: Dict[str, Any]) -> Engine
     return sa.create_engine(
         build_url(config, credentials),
         poolclass=NullPool,
+        hide_parameters=True,
         connect_args=connect_args_for(
             str(config.get("dbType", "")),
             connect_timeout=_TEST_TIMEOUT_SECONDS,

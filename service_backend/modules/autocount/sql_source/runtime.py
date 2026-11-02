@@ -338,6 +338,7 @@ class SqlSourceRuntime:
             engine = sa.create_engine(
                 url,
                 pool_pre_ping=True,
+                hide_parameters=True,
                 pool_size=max(2, workers),
                 max_overflow=workers + 3,
                 pool_timeout=CONNECT_TIMEOUT_SECONDS,

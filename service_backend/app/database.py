@@ -108,6 +108,7 @@ def app_connect_args() -> Dict[str, str]:
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
+    hide_parameters=True,
     echo=settings.debug,
     connect_args=app_connect_args(),
 )
