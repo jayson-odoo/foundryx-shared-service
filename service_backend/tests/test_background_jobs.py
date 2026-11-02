@@ -273,7 +273,8 @@ def test_handler_crash_is_isolated(db):
     run_job(db, job.id)
     db.refresh(job)
     assert job.status == JOB_FAILED
-    assert "boom" in (job.error or "")
+    assert job.error == "Job crashed (RuntimeError)."
+    assert "boom" not in (job.error or "")
 
 
 # ── AC-10-03: resume + retention ──────────────────────────────────────────────

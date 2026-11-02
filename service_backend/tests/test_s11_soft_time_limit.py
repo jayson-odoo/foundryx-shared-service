@@ -185,7 +185,8 @@ def test_run_job_closes_the_open_ac_sync_run_on_a_plain_handler_crash(db, monkey
     db.expire_all()
     fresh = db.get(BackgroundJob, job.id)
     assert fresh.status == JOB_FAILED
-    assert fresh.error == "Job crashed: boom"
+    assert fresh.error == "Job crashed (RuntimeError)."
+    assert "boom" not in (fresh.error or "")
 
     closed = db.get(AcSyncRun, run.id)
     assert closed.outcome == RUN_FAILED, "the ac_sync_run row was never closed"
