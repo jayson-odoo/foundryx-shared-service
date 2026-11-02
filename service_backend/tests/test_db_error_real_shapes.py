@@ -345,3 +345,79 @@ def test_ac_46_07_an_update_action_failure_in_a_debug_rerun_returns_no_driver_me
     for item in failed:
         assert MARKER not in item["error"]
     db.close()
+
+
+# ── libpq phrases apply only to code-less psycopg2 connect failures ────────
+
+
+def _coded(base_name, code, message):
+    psycopg2 = pytest.importorskip("psycopg2")
+    base = getattr(psycopg2.errors, base_name)
+
+    class Coded(base):
+        __module__ = "psycopg2.errors"  # the module a real psycopg2 error reports
+        pgcode = code  # a hand-built psycopg2 error has pgcode None
+
+    return Coded(message)
+
+
+@pytest.mark.parametrize(
+    "base,code,message",
+    [
+        ("InvalidTextRepresentation", "22P02", 'invalid input syntax for type integer: "sslx"'),
+        ("UndefinedFunction", "42883", "function nosuchfn_46() does not exist"),
+        ("UndefinedObject", "42704", 'type "nosuchtype_46" does not exist'),
+    ],
+)
+def test_ac_46_06_a_coded_query_error_gets_the_code_text_not_a_connection_sentence(
+    base, code, message
+):
+    text = sanitize_error(_wrap(_coded(base, code, message), ProgrammingError))
+    assert code in text
+    assert text not in (runtime._TLS_FAILED, runtime._DATABASE_MISSING)
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ('connection to server at "127.0.0.1", port 5432 failed: FATAL:  '
+         'database "classloader_46" does not exist\n', "_DATABASE_MISSING"),
+        ('could not translate host name "ssl-db46.invalid" to address: '
+         "nodename nor servname provided, or not known\n", "_HOST_UNREACHABLE"),
+        ('connection to server at "127.0.0.1", port 5432 failed: FATAL:  '
+         'role "norole_46" does not exist\n', "_LOGIN_REFUSED"),
+        ('connection to server at "h", port 5432 failed: server does not support SSL, '
+         "but SSL was required\n", "_TLS_FAILED"),
+        ("SSL error: certificate verify failed\n", "_TLS_FAILED"),
+        ('connection to server at "h", port 5432 failed: Connection refused\n',
+         "_HOST_UNREACHABLE"),
+        ('connection to server at "h", port 5432 failed: FATAL:  password authentication '
+         'failed for user "u"\n', "_LOGIN_REFUSED"),
+        ('connection to server at "h", port 5432 failed: FATAL:  database "x" does not '
+         "exist\n", "_DATABASE_MISSING"),
+    ],
+)
+def test_ac_46_06_a_codeless_connect_failure_maps_by_libpq_phrase_only(message, expected):
+    assert sanitize_error(_wrap(_pg(message))) == getattr(runtime, expected)
+
+
+# ── the app text accepts only a well-formed SQLSTATE ───────────────────────
+
+
+@pytest.mark.parametrize("bad", ["X" * 64, f"{MARKER}", "abcde", "2350", "235055"])
+def test_ac_46_05_a_malformed_pgcode_is_left_out_of_the_text(bad):
+    class Coded(Exception):
+        pgcode = bad
+
+    text = db_error_text(_wrap(Coded("x"), IntegrityError), "The record could not be saved")
+    assert MARKER not in text
+    assert "code" not in text
+    assert bad not in text
+
+
+def test_ac_46_05_a_well_formed_pgcode_is_kept():
+    class Coded(Exception):
+        pgcode = "23505"
+
+    text = db_error_text(_wrap(Coded("x"), IntegrityError), "The record could not be saved")
+    assert "code 23505" in text
