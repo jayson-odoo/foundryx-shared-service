@@ -1721,6 +1721,10 @@ def describe_consumer_failure(
     * a ``SorentoSinkError`` WITHOUT the attribute but whose text names an
       ``HTTP <n>`` (an older sink, a test double) -> ``Consumer said: HTTP
       <n>`` and nothing else - the text is not trusted onto the surface;
+    * a database error (on the exception or anywhere on its cause/context
+      chain) -> ``Consumer error (<Class>, code <c>).`` from
+      ``stored_error_text``, never the driver's message; the full exception
+      is logged and ``detail`` carries the same fixed text;
     * a ``SorentoSinkError`` with no HTTP answer at all (an unroutable
       entity, a record without a projection - the sink's own key-free
       strings) -> ``Consumer error: <text>``.
@@ -1733,6 +1737,7 @@ def describe_consumer_failure(
     body from re-introducing a URL.
     """
     if db_error_in(exc) is not None:
+        logger.warning("consumer step hit a database error", exc_info=exc)
         line = stored_error_text(exc, "Consumer error")
         return line, None, line
     if isinstance(exc, httpx.HTTPError):

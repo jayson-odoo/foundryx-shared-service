@@ -76,14 +76,20 @@ def db_error_text(exc: BaseException, what: str, *, with_constraint: bool = True
 
 
 def db_error_in(exc: BaseException) -> Optional[BaseException]:
-    """The database error behind ``exc`` (itself or through ``__cause__``), else None."""
-    seen = 0
-    cur: Optional[BaseException] = exc
-    while cur is not None and seen < 8:
+    """The database error behind ``exc``: itself, or anywhere on its
+    ``__cause__`` / ``__context__`` chains (``from None`` included), else None."""
+    queue = [exc]
+    seen: set = set()
+    while queue and len(seen) < 16:
+        cur = queue.pop(0)
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
         if is_db_error(cur):
             return cur
-        cur = cur.__cause__
-        seen += 1
+        for nxt in (cur.__cause__, cur.__context__):
+            if nxt is not None:
+                queue.append(nxt)
     return None
 
 
