@@ -328,7 +328,7 @@ def test_ac_38_26_guide_has_the_appendix_index_row_and_the_reaction_exception():
     i = flat.index("without `channelid`") if "without `channelid`" in flat else flat.index("channelid")
     window = flat[max(0, i - 1500) : i + 1500]
     sentences = [x for x in re.split(r"(?<=[.!?])\s+", window) if "reaction" in x]
-    assert any("own channel" in x for x in sentences), sentences
+    assert any("channel of the message" in x for x in sentences), sentences
 
 
 # ── Last round ───────────────────────────────────────────────────────────────
@@ -385,9 +385,9 @@ def test_ac_38_23_paused_channel_without_a_status_row_shows_inactive(client, ses
 def test_ac_38_26_guide_reaction_media_refusal_and_changelog_wording():
     text = GUIDE.read_text()
     flat = text.lower()
-    # reactions go out on the contact's own channel
+    # reactions go out on the channel of the message they react to
     sentences = [x for x in re.split(r"(?<=[.!?])\s+", flat) if "reaction" in x and "channel" in x]
-    assert any("contact's own channel" in x for x in sentences), sentences
+    assert any("channel of the message" in x for x in sentences), sentences
     # the media route states its own refusal, different from service_not_enabled
     start = text.index("### `GET /omnichannel/media/{messageId}`")
     section = text[start : text.index("\n### ", start + 10)]

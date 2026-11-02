@@ -1,8 +1,9 @@
 """Consumer webhook delivery outbox (Slice 4, AC-01-23/24).
 
 The inbound pipeline calls ``enqueue_event`` after it persists a message/status/
-contact change. That fans the event to every ACTIVE endpoint on the channel that
-subscribed to the type, writing a durable ``webhook_deliveries`` row per endpoint
+contact change. That fans the event to every ACTIVE endpoint that subscribed to
+the type and covers the channel (its own, or an all-channels endpoint of the
+channel's tenant and workspace), writing a durable ``webhook_deliveries`` row per endpoint
 and queuing the HTTP POST. ``dispatch`` runs one attempt with an HMAC signature;
 on failure it backs off, and after N dead-letters the endpoint auto-disables.
 
@@ -19,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.services.url_guard import GuardedTransport, UrlGuardError
@@ -48,17 +50,19 @@ def _backoff_seconds(attempt: int) -> int:
 
 def build_envelope(
     event_type: str,
-    channel: Channel,
+    workspace_id: str,
+    channel_id: Optional[str],
     event_id: str,
     data: Dict[str, Any],
     occurred_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
+    """``channel_id`` is None for a workspace-level event with no channel."""
     when = occurred_at or datetime.now(timezone.utc)
     return {
         "id": event_id,
         "type": event_type,
-        "workspaceId": channel.workspace_id,
-        "channelId": channel.id,
+        "workspaceId": workspace_id,
+        "channelId": channel_id,
         "occurredAt": when.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         "data": data,
     }
@@ -75,15 +79,26 @@ def sign_body(secret: str, timestamp: str, body: bytes) -> str:
     return "sha256=" + mac.hexdigest()
 
 
-def _active_endpoints(db: Session, channel: Channel, event_type: str) -> List[WebhookEndpoint]:
-    """Subscribed ACTIVE endpoints of this channel, filtered by the channel's
-    tenant and workspace as well as its id."""
+def _active_endpoints(
+    db: Session,
+    tenant_id: str,
+    workspace_id: str,
+    channel_id: Optional[str],
+    event_type: str,
+) -> List[WebhookEndpoint]:
+    """Subscribed ACTIVE endpoints for an event. With a ``channel_id``: that
+    channel's own endpoints plus the all-channels ones (``channel_id`` NULL);
+    with None: the all-channels ones only. Always filtered by tenant and
+    workspace, which is the only boundary of an all-channels row."""
+    covers = WebhookEndpoint.channel_id.is_(None)
+    if channel_id is not None:
+        covers = or_(WebhookEndpoint.channel_id == channel_id, covers)
     rows = (
         db.query(WebhookEndpoint)
         .filter(
-            WebhookEndpoint.tenant_id == channel.tenant_id,
-            WebhookEndpoint.workspace_id == channel.workspace_id,
-            WebhookEndpoint.channel_id == channel.id,
+            WebhookEndpoint.tenant_id == tenant_id,
+            WebhookEndpoint.workspace_id == workspace_id,
+            covers,
             WebhookEndpoint.status == "ACTIVE",
         )
         .all()
@@ -107,24 +122,26 @@ def consumer_message_payload(item: MessageItem, row: ConversationMessage) -> Dic
     return payload
 
 
-def enqueue_event(
+def _fan_out(
     db: Session,
-    channel: Channel,
+    tenant_id: str,
+    workspace_id: str,
+    channel_id: Optional[str],
     event_type: str,
     event_id: str,
     data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
 ) -> int:
-    """Fan an event to the channel's subscribed endpoints. Creates durable
-    delivery rows + queues each POST. Fully failure-isolated: returns the number
-    queued, never raises into the inbound pipeline. ``data`` may be a callable:
-    it runs only when at least one endpoint subscribes, so a channel with no
-    subscriber pays nothing to build the payload."""
-    channel_id = channel.id  # plain local: the session may need a rollback in the handler
+    """Shared body of ``enqueue_event`` / ``enqueue_workspace_event``. Creates
+    durable delivery rows + queues each POST. Failure-isolated: never raises.
+    ``data`` may be a callable: it runs only when at least one endpoint
+    subscribes, so a scope with no subscriber pays nothing to build the payload."""
     try:
-        endpoints = _active_endpoints(db, channel, event_type)
+        endpoints = _active_endpoints(db, tenant_id, workspace_id, channel_id, event_type)
         if not endpoints:
             return 0
-        envelope = build_envelope(event_type, channel, event_id, data() if callable(data) else data)
+        envelope = build_envelope(
+            event_type, workspace_id, channel_id, event_id, data() if callable(data) else data
+        )
         delivery_ids: List[str] = []
         for ep in endpoints:
             row = WebhookDelivery(
@@ -145,7 +162,10 @@ def enqueue_event(
             db.rollback()
         except Exception:  # noqa: BLE001
             pass
-        logger.exception("webhook enqueue failed for channel %s (%s)", channel_id, event_type)
+        logger.exception(
+            "webhook enqueue failed for workspace %s channel %s (%s)",
+            workspace_id, channel_id, event_type,
+        )
         return 0
 
     # Queue the POSTs out-of-band (eager dev runs them inline).
@@ -157,6 +177,34 @@ def enqueue_event(
         except Exception:  # noqa: BLE001
             logger.exception("webhook dispatch enqueue failed for delivery %s", delivery_id)
     return len(delivery_ids)
+
+
+def enqueue_event(
+    db: Session,
+    channel: Channel,
+    event_type: str,
+    event_id: str,
+    data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
+) -> int:
+    """Fan an event on ``channel`` to the subscribed endpoints that cover it
+    (its own and the workspace's all-channels ones). Returns the number queued,
+    never raises into the inbound pipeline."""
+    return _fan_out(
+        db, channel.tenant_id, channel.workspace_id, channel.id, event_type, event_id, data
+    )
+
+
+def enqueue_workspace_event(
+    db: Session,
+    tenant_id: str,
+    workspace_id: str,
+    event_type: str,
+    event_id: str,
+    data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
+) -> int:
+    """Fan an event that belongs to no channel to the workspace's all-channels
+    endpoints only (envelope ``channelId`` is null). Never raises."""
+    return _fan_out(db, tenant_id, workspace_id, None, event_type, event_id, data)
 
 
 def _post(

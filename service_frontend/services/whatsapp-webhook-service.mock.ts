@@ -94,6 +94,22 @@ function seed(channelId: string): void {
       createdAt: iso(86_400_000 * 30),
       updatedAt: iso(3_600_000),
     },
+    {
+      id: 'wh-004',
+      tenantId: 'tnt-001',
+      workspaceId: 'wsp-001',
+      channelId: null,
+      name: 'All numbers feed',
+      url: 'https://hooks.example.com/all/events',
+      events: ['message.inbound', 'message.outbound'],
+      status: 'ACTIVE',
+      consecutiveFailures: 0,
+      lastSuccessAt: iso(120_000),
+      disabledAt: null,
+      disabledReason: null,
+      createdAt: iso(86_400_000 * 2),
+      updatedAt: iso(120_000),
+    },
   ];
   deliveries['wh-001'] = [
     {

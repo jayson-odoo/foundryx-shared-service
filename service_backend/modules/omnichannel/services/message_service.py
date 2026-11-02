@@ -186,9 +186,9 @@ class MessageService:
         self, contact: Contact, channel_id_override: Optional[str] = None
     ) -> Channel:
         """The channel this thread lives on: the identity's channel, else the
-        workspace's first active channel (plan 32 / A7a, D-A7-18: "first" here
-        means WhatsApp-preferred, matching the gateway's own implicit choice -
-        see below).
+        workspace's oldest active WhatsApp channel, else its oldest active
+        channel (see below). The public gateway no longer guesses between
+        several channels, but an internal send that names none still needs one.
 
         ``channel_id_override`` skips straight to that channel, but WhatsApp
         addresses by PHONE, never by a stored identity row (D-A7-3) - a
@@ -228,10 +228,10 @@ class MessageService:
             return via_identity
         # No identity anywhere yet (a business-initiated first send, most
         # commonly WhatsApp) - prefer an active WHATSAPP channel over the
-        # arbitrary "first row" tie-break, mirroring `PublicGatewayService.
-        # _workspace_channel`'s implicit choice (D-A7-18) so this fallback
-        # never silently re-points an existing WhatsApp-only integration the
-        # moment a tenant connects a second channel type.
+        # arbitrary "first row" tie-break, so this internal fallback never
+        # silently re-points an existing WhatsApp-only integration the moment a
+        # tenant connects a second channel type. The public gateway does not
+        # use it: it asks for ``channelId`` when the default would be a guess.
         whatsapp = (
             self.db.query(Channel)
             .filter(
@@ -880,7 +880,9 @@ class MessageService:
         contact = self.repo.get_by_id(target.contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
-        channel = self._channel_for_contact(contact)
+        # React on the channel the target message went through; a message with
+        # no channel keeps the contact's own channel choice.
+        channel = self._channel_for_contact(contact, target.channel_id or None)
         # Reactions are free-form → the channel type's window applies (Meta
         # rule, AC-12-25); outbound reactions are WhatsApp-only (capability
         # table, plan §5.5) - `authorize` refuses them elsewhere.

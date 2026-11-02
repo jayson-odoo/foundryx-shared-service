@@ -111,6 +111,9 @@ async def send_message(
         if not isinstance(payload_obj, dict) or not isinstance(payload_obj.get("media") or {}, dict):
             raise ApiError(422, "invalid_request", "payload must be a JSON object.")
         media = payload_obj.get("media") or {}
+        channel_id = payload_obj.get("channelId")
+        if channel_id is not None and not isinstance(channel_id, str):
+            raise ApiError(422, "invalid_channel", "channelId must be a string.")
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
@@ -128,7 +131,7 @@ async def send_message(
             caption=media.get("caption"),
             to=str(payload_obj.get("to") or ""),
             idempotency_key=idempotency_key,
-            channel_id=payload_obj.get("channelId"),
+            channel_id=channel_id,
         )
     else:
         try:
@@ -416,7 +419,7 @@ def mark_contact_read(
 # callbacks: webhooks are the intended inbound path, and until now registration
 # was dashboard-only (session JWT + `webhooks.manage`), so a key-holder could
 # neither create nor even LIST its endpoints. These mirror the operator routes
-# but are scoped to the key's workspace and its active channel - a consumer can
+# but are scoped to the key's workspace - a consumer can
 # never see or touch another workspace's endpoints.
 def _webhook_service(db: Session):
     from ..services.webhook_service import WebhookService
@@ -455,20 +458,21 @@ def create_webhook(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookEndpointMintResponse:
-    """Register a callback on your workspace's active channel. The signing
-    secret is returned ONCE - store it; it is never shown again."""
-    from ..services.webhook_service import WebhookError
+    """Register a callback that covers every channel of your workspace. The
+    signing secret is returned ONCE - store it; it is never shown again."""
+    from ..services.webhook_service import WebhookError, WebhookNoActiveChannel
 
-    svc = PublicGatewayService(db)
-    channel = svc._workspace_channel(api_ws.tenant_id, api_ws.workspace_id)
     try:
-        row, secret = _webhook_service(db).create(
-            api_ws.tenant_id, channel.id, payload.name, payload.url, payload.events,
+        _webhook_service(db).require_active_channel(api_ws.tenant_id, api_ws.workspace_id)
+        row, secret = _webhook_service(db).create_for_workspace(
+            api_ws.tenant_id, api_ws.workspace_id, payload.name, payload.url, payload.events,
             # No user behind an API key - record WHICH key, matching the
             # `apikey:<id>` actor convention used elsewhere in this service.
             # The activity log is pruned per tenant; this row is permanent.
             created_by=f"apikey:{api_ws.key_id}",
         )
+    except WebhookNoActiveChannel as exc:
+        raise ApiError(409, "no_active_channel", str(exc)) from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
     return WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret)

@@ -488,38 +488,42 @@ class ConversationService:
             c.workspace_id,
             {"type": "contact.updated", "thread": item.model_dump(mode="json")},
         )
-        # Endpoints are per-channel, so forward on the contact's current
-        # channel (its latest message's); skip if the contact has never
-        # messaged on a channel yet.
-        if not item.channelId:
-            return
         try:
-            from .webhook_delivery import enqueue_event
+            from .webhook_delivery import enqueue_event, enqueue_workspace_event
 
-            channel = (
-                self.db.query(Channel)
-                .filter(Channel.id == item.channelId, Channel.tenant_id == tenant_id)
-                .first()
-            )
+            # Forward on the contact's current channel (its latest message's);
+            # a contact that has never messaged has none, and then only the
+            # workspace's all-channels endpoints receive it.
+            channel = None
+            if item.channelId:
+                channel = (
+                    self.db.query(Channel)
+                    .filter(
+                        Channel.id == item.channelId,
+                        Channel.tenant_id == tenant_id,
+                        Channel.workspace_id == c.workspace_id,
+                    )
+                    .first()
+                )
+            # `{contactId}:{...}` per the guide (§7) - the suffix used to be
+            # a second-granular epoch int (`int(updated_at.timestamp())`),
+            # which collides when two `contact.updated` events for the SAME
+            # contact fire within one wall-clock second (e.g. a fast
+            # workflow doing two PATCHes back to back) - a de-duping
+            # consumer would drop the second event as a "replay" of the
+            # first (review round 2, finding M). Append a short random
+            # segment so every event gets its OWN id regardless of clock
+            # granularity; the id is generated ONCE per event and then
+            # reused for every retry attempt of that same delivery row, so
+            # retry-dedup semantics are unaffected.
+            event_suffix = uuid.uuid4().hex[:8]
+            event_id = f"{c.id}:{int(c.updated_at.timestamp())}:{event_suffix}"
+            data = {"contact": item.model_dump(mode="json")}
             if channel is not None:
-                # `{contactId}:{...}` per the guide (§7) - the suffix used to be
-                # a second-granular epoch int (`int(updated_at.timestamp())`),
-                # which collides when two `contact.updated` events for the SAME
-                # contact fire within one wall-clock second (e.g. a fast
-                # workflow doing two PATCHes back to back) - a de-duping
-                # consumer would drop the second event as a "replay" of the
-                # first (review round 2, finding M). Append a short random
-                # segment so every event gets its OWN id regardless of clock
-                # granularity; the id is generated ONCE per event and then
-                # reused for every retry attempt of that same delivery row, so
-                # retry-dedup semantics are unaffected.
-                event_suffix = uuid.uuid4().hex[:8]
-                enqueue_event(
-                    self.db,
-                    channel,
-                    "contact.updated",
-                    f"{c.id}:{int(c.updated_at.timestamp())}:{event_suffix}",
-                    {"contact": item.model_dump(mode="json")},
+                enqueue_event(self.db, channel, "contact.updated", event_id, data)
+            else:
+                enqueue_workspace_event(
+                    self.db, tenant_id, c.workspace_id, "contact.updated", event_id, data
                 )
         except Exception:  # noqa: BLE001 - forwarding never breaks the caller
             logger.exception("contact.updated webhook fan-out failed for %s", c.id)
