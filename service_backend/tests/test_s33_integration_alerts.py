@@ -814,17 +814,24 @@ def test_ac_33_09_the_consecutive_alert_subject_and_body(session_factory):
     _fail(db, company, 5, error="AutoCount answered HTTP 502 on page 3.\nstack line two")
     _evaluate(db)
     mail = _emails(db)[0]
+    from modules.autocount.alerts import ALERT_EMAIL_SENTENCE
+
     assert mail.subject == "Customer (V Soft Trading) has failed 2 runs in a row"
+    assert "HTTP 502" not in mail.subject
     for body in (mail.html_body, mail.text_body):
         assert "V Soft Trading" in body
         assert "AED_VSOFT" in body
-        assert "AutoCount answered HTTP 502 on page 3." in body
+        assert "keeps failing" in body
+        assert ALERT_EMAIL_SENTENCE in body
+        assert "HTTP 502" not in body
         assert "stack line two" not in body
         assert f"/autocount/companies/{company.id}/entities/customer?tab=runs" in body
         assert "foundryx" not in body.lower()
         assert "UTC" in body
     assert "foundryx" not in mail.subject.lower()
-    del config
+    # The incident keeps the FIRST line of the run error, for the in-app banner.
+    incident = _open_incidents(db, config.id)[0]
+    assert incident.last_error == "AutoCount answered HTTP 502 on page 3."
     db.close()
 
 
