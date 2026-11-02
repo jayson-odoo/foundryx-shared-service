@@ -48,6 +48,12 @@ describe('document drive preview blob type (AC-52-01)', () => {
         expect(created[0].type).toBe('application/octet-stream');
       });
 
+      it('one list (AC-52-05): video/mp4 keeps its type', async () => {
+        apiFetchBlob.mockResolvedValue(served('video/mp4'));
+        await call();
+        expect(created[0].type).toBe('video/mp4');
+      });
+
       it.each(ALLOWED)('control: %s still previews', async (type, expected) => {
         apiFetchBlob.mockResolvedValue(served(type));
         await call();

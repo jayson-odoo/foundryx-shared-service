@@ -80,3 +80,10 @@ describe('idea attachment PDF frame (AC-52-02)', () => {
     },
   );
 });
+
+describe('idea upload media types (AC-52-05)', () => {
+  it.each(['video/mp4', 'audio/mpeg', 'audio/ogg'])('an idea upload served as %s keeps its type', async (type) => {
+    await open(upload('clip.bin'), served(type));
+    expect(created[0].type).toBe(type);
+  });
+});

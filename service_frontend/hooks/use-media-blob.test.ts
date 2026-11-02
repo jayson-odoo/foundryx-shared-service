@@ -50,6 +50,16 @@ describe('conversation media blob type (AC-52-04)', () => {
     expect((await load(type)).type).toBe(expected);
   });
 
+  it.each([
+    ['audio/ogg; codecs=opus', 'audio/ogg'],
+    ['image/gif', 'image/gif'],
+    ['video/webm', 'video/webm'],
+    ['image/webp', 'image/webp'],
+    ['text/plain', 'text/plain;charset=utf-8'],
+  ])('one list (AC-52-05): %s gives %s', async (type, expected) => {
+    expect((await load(type)).type).toBe(expected);
+  });
+
   it('a type off the audio/video/image lists is not kept', async () => {
     expect((await load('audio/x-unlisted-test')).type).toBe('application/octet-stream');
     expect((await load('video/x-unlisted-test')).type).toBe('application/octet-stream');

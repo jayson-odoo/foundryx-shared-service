@@ -44,6 +44,14 @@ describe('public share preview blob type (AC-52-01)', () => {
   });
 });
 
+describe('public share one type list (AC-52-05)', () => {
+  it('video/mp4 keeps its type', async () => {
+    respondWith(served('video/mp4'));
+    await publicShareService.fileBlobUrl('tok', 'f1');
+    expect(created[0].type).toBe('video/mp4');
+  });
+});
+
 describe('public share download unchanged (AC-52-03)', () => {
   it('download keeps the stored bytes and type for the saved file', async () => {
     const b = served('text/html');
