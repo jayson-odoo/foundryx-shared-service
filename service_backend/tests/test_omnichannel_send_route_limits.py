@@ -1195,12 +1195,13 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
     phones, cids, keys = _gate_world(client, session_factory, contacts=8)
     phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=4, slug="gate-two")
     phones3, cids3, keys3 = _gate_world(client, session_factory, contacts=4, slug="gate-three")
-    release = threading.Semaphore(0)  # one permit lets one held fetch finish
+    gates = [threading.Event() for _ in range(16)]  # one gate per held fetch: each is released by itself
     started = []
 
     def hold():
+        i = len(started)
         started.append(1)
-        release.acquire(timeout=6)
+        gates[i].wait(timeout=6)
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
     hp = held_path == "header"
@@ -1236,12 +1237,12 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
                 )
                 out["extra_fetches"] = rig.media_calls - calls_when_full
                 out["held"] = []
-                for t in held:
-                    release.release()
+                for i, t in enumerate(held):
+                    gates[i].set()
                     out["held"].append(await t)
             finally:
-                for _ in range(len(held) + 2):
-                    release.release()
+                for g in gates:
+                    g.set()
             out["retry"] = await _post_media(ac, keys["c"], phones[2], header_path=hp, idem="retry-me")
         return out
 
@@ -1654,12 +1655,13 @@ def test_guard_ac_41_10_the_per_tenant_limit_alone_refuses_a_third_fetch(client,
 
     phones, cids, keys = _gate_world(client, session_factory, contacts=6)
     phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=2, slug="gate-guard")
-    release = threading.Semaphore(0)
+    gates = [threading.Event() for _ in range(16)]
     started = []
 
     def hold():
+        i = len(started)
         started.append(1)
-        release.acquire(timeout=6)
+        gates[i].wait(timeout=6)
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
 
@@ -1676,12 +1678,12 @@ def test_guard_ac_41_10_the_per_tenant_limit_alone_refuses_a_third_fetch(client,
                 held.append(asyncio.create_task(_post_media(ac, keys2["a"], phones2[0])))
                 assert await _wait_for(lambda: len(started) >= 3), "another tenant was refused"
                 out["held"] = []
-                for t in held:
-                    release.release()
+                for i, t in enumerate(held):
+                    gates[i].set()
                     out["held"].append(await t)
             finally:
-                for _ in range(len(held)):
-                    release.release()
+                for g in gates:
+                    g.set()
         return out
 
     out = asyncio.run(scenario())
@@ -1776,7 +1778,7 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
     assert _message_count(session_factory, cids3[phones3[0]]) == 0
 
 
-def _hold_storage_writes(monkeypatch, *, release=None, on_save=None):
+def _hold_storage_writes(monkeypatch, *, gates=None, on_save=None):
     """Wrap the storage object `storage_for_tenant` returns so `save` can be
     observed and held; everything else passes straight through."""
     import app.services.storage as storage
@@ -1789,11 +1791,12 @@ def _hold_storage_writes(monkeypatch, *, release=None, on_save=None):
             self._inner = inner
 
         def save(self, *args, **kwargs):
+            i = len(calls)
             calls.append(1)
             if on_save:
                 on_save()
-            if release is not None:
-                release.acquire(timeout=6)
+            if gates is not None:
+                gates[i].wait(timeout=6)
             return self._inner.save(*args, **kwargs)
 
         def __getattr__(self, name):
@@ -1808,9 +1811,9 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
     import threading
 
     phones, cids, keys = _gate_world(client, session_factory, contacts=6)
-    release = threading.Semaphore(0)
+    gates = [threading.Event() for _ in range(16)]
     _install(monkeypatch, media=_pdf_media)
-    saves = _hold_storage_writes(monkeypatch, release=release)
+    saves = _hold_storage_writes(monkeypatch, gates=gates)
     hp = path == "header"
 
     async def scenario():
@@ -1825,12 +1828,12 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
                 out["while_storing"] = await _post_media(ac, keys["c"], phones[2], header_path=hp)
                 out["busy_secs"] = time.monotonic() - t0
                 out["held"] = []
-                for t in held:
-                    release.release()
+                for i, t in enumerate(held):
+                    gates[i].set()
                     out["held"].append(await t)
             finally:
-                for _ in range(8):
-                    release.release()
+                for g in gates:
+                    g.set()
             out["after_store"] = await _post_media(ac, keys["c"], phones[2], header_path=hp)
         return out
 
