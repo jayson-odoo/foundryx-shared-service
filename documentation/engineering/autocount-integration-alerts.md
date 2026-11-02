@@ -32,7 +32,7 @@ Spec: `documentation/plans/sprint-5/33-integration-run-failure-alert-acceptance-
   integration name, the status, a link to the integration in the app and, for alert and reminder, the
   fixed sentence "Open the integration in the app to see the error." They never carry run, Sorento or
   record text, for every recipient including "Also email". The incident's `last_error` and the run
-  error keep the full text for the app only.
+  error keep their text for the app only (the incident keeps the first line, capped at 500 characters).
 - **Recipients.** Active users of the SAME tenant holding `autocount.companies.manage`, plus the
   integration's "Also email" list (strict ASCII, at most 10), de-duplicated. Outbox only
   (`email_service.enqueue_raw`). Each recipient sees times in their own `users.timezone`, else UTC.

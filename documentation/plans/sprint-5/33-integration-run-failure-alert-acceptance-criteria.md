@@ -100,8 +100,8 @@ Terms:
   alert and one recovered notice per integration per 4 h.
 - **AC-33-19 [BE][T]** Email safety. The subject has CR, LF and other control characters collapsed to
   single spaces (a tenant-typed company name can never break the outbox or the shared SMTP
-  connection). Tenant-authored and remote text (integration and company names, the error line) is
-  HTML-escaped in the body.
+  connection). Tenant-authored text (integration and company names) is HTML-escaped in the body; the
+  body carries no error text (AC-48-01).
 - **AC-33-20 [BE]** The per-integration check uses aggregate queries (count / min / latest one) on an
   index `(tenant_id, company_id, entity_type, finished_at)` of `ac_sync_run`, shipped in 0031 and the
   crew SQL; it never loads every failed run.
