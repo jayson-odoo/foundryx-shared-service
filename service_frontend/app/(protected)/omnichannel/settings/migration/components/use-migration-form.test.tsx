@@ -12,7 +12,11 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/lib/api-client';
 import type { MigrationJob, MigrationPreflight } from '@/types/respondio-migration';
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => '/omnichannel/settings/migration/new',
+  useSearchParams: () => new URLSearchParams(),
+}));
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock('@/services/integration-service', () => ({
@@ -408,5 +412,73 @@ describe('useMigrationForm - clearing and re-running the preflight', () => {
     const message = result.current.form.getFieldState('channelMap').error?.message ?? '';
     expect(message).not.toBe('');
     expect(message).not.toMatch(/preflight/i);
+  });
+});
+
+
+describe('useMigrationForm - unreadable source channels (AC-44-23)', () => {
+  const pf = () =>
+    preflight({
+      channels: [{ id: 'ch-1', name: 'A', source: 'whatsapp_cloud' }],
+      unreadableChannelIds: ['src-bad-1'],
+    } as Partial<MigrationPreflight>);
+
+  function choose(result: Awaited<ReturnType<typeof setup>>, workspaceId = 'wsp-1') {
+    act(() => {
+      result.current.form.setValue('connectionId', 'conn-1');
+      result.current.form.setValue('workspaceId', workspaceId);
+    });
+  }
+
+  it('seeds no map entry for an unreadable id', async () => {
+    preflightMock.mockResolvedValueOnce(pf());
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflight).not.toBeNull());
+    expect(result.current.form.getValues('channelMap').map((e) => e.sourceChannelId)).toEqual(['ch-1']);
+  });
+
+  it('a 422 channelMap refusal on the real run lands on the channelMap field, not a toast', async () => {
+    const { toast } = await import('@/lib/toast');
+    vi.mocked(toast.error).mockClear();
+    const dry = { id: 'j1', mode: 'dry_run', source: 'api', status: 'done', report: null } as unknown as MigrationJob;
+    preflightMock.mockResolvedValueOnce(pf());
+    createJobMock.mockResolvedValueOnce(dry);
+    getJobMock.mockResolvedValue(dry);
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflight).not.toBeNull());
+    await act(async () => {
+      await result.current.runDryRun();
+    });
+    await waitFor(() => expect(result.current.canStartMigration).toBe(true));
+    createJobMock.mockRejectedValueOnce(
+      new ApiError('Unprocessable', 422, null, { fieldErrors: { channelMap: 'One channel could not be read.' } }),
+    );
+    await act(async () => {
+      await result.current.startMigration();
+    });
+    expect(createJobMock).toHaveBeenCalledTimes(2);
+    expect(result.current.form.getFieldState('channelMap').error?.message).toBe('One channel could not be read.');
+    expect(toast.error).not.toHaveBeenCalledWith('One channel could not be read.');
+  });
+
+  it('a new preflight drops a chosen Skip entry', async () => {
+    preflightMock.mockResolvedValueOnce(pf());
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflight).not.toBeNull());
+    act(() => {
+      result.current.form.setValue('channelMap', [
+        ...result.current.form.getValues('channelMap'),
+        { sourceChannelId: 'src-bad-1', targetChannelId: null },
+      ]);
+    });
+    preflightMock.mockResolvedValueOnce(pf());
+    choose(result, 'wsp-2');
+    await waitFor(() => expect(preflightMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(result.current.form.getValues('channelMap').some((e) => e.sourceChannelId === 'src-bad-1')).toBe(false),
+    );
   });
 });

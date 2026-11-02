@@ -215,6 +215,8 @@ def _pages_handler_full(
             return httpx.Response(200, json={"items": custom_fields or [], "pagination": {"next": None}})
         if path.endswith("/space/user"):
             return httpx.Response(200, json={"items": space_users or [], "pagination": {"next": None}})
+        if path.endswith("/space/channel"):
+            return httpx.Response(200, json={"items": [], "pagination": {"next": None}})
         if path.endswith("/contact/list"):
             cursor = request.url.params.get("cursorId")
             items, next_cursor = contact_pages[cursor]
@@ -232,7 +234,9 @@ def _pages_handler_full(
         # bare GET /contact/{identifier} (single object, not an envelope)
         identifier = path.split("/contact/")[1]
         contact_row = (contact_pages.get(None) or ([], None))[0]
-        match = next((c for c in contact_row if f"id:{c['id']}" == identifier), None)
+        match = next(
+            (c for c in contact_row if isinstance(c, dict) and f"id:{c['id']}" == identifier), None
+        )
         return httpx.Response(200, json=match or {"id": identifier})
 
     handler.calls = calls

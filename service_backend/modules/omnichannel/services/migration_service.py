@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,9 +17,11 @@ from uuid import uuid4
 
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import release_read_transactions
 from app.import_engine import readers as csv_readers
 from app.import_engine.sanitize import sanitize_cell
 from app.jobs.registry import JobHandlerDef, register_job_handler
@@ -170,6 +173,90 @@ def _decrypt_or_none(ciphertext: str) -> Optional[Dict[str, str]]:
         return None
 
 
+@dataclass
+class UnreadableRow:
+    """A source row that does not fit the shape we read. Holds the vendor id
+    (empty when there is no usable one) and the NAMES of the failing fields,
+    never a value from the row."""
+
+    source_id: str
+    reason: str
+
+
+_MAX_LISTED_IDS = 20
+_USABLE_ID = re.compile(r"[0-9]{1,20}")
+
+
+def _usable_source_id(row: Any) -> str:
+    raw = row.get("id") if isinstance(row, dict) else None
+    text = str(raw) if isinstance(raw, int) else raw
+    return text if isinstance(text, str) and _USABLE_ID.fullmatch(text) else ""
+
+
+def _field_names_reason(exc: ValidationError) -> str:
+    names: List[str] = []
+    for err in exc.errors(include_input=False, include_url=False, include_context=False):
+        name = ".".join(str(part) for part in err.get("loc") or ()) or "row"
+        if name not in names:
+            names.append(name)
+    return "could not read: " + ", ".join(names[:10])
+
+
+def _failure_reason(exc: Exception) -> str:
+    """A stored reason. A pydantic error carries the row's values in its text,
+    so it is reduced to field names; a source-client error keeps its fixed
+    message; anything else (a database error carries the statement and its
+    parameters) is reduced to its class name."""
+    if isinstance(exc, ValidationError):
+        return _field_names_reason(exc)
+    if isinstance(exc, RespondIoError):
+        return str(exc)
+    return f"could not write this row ({type(exc).__name__})"
+
+
+def parse_rows(rows: Any, model: Any) -> Tuple[List[Any], List[UnreadableRow]]:
+    """Parse vendor rows into `model`, in source order. A row that does not fit
+    is returned as an `UnreadableRow` instead of raising; no value is kept."""
+    parsed: List[Any] = []
+    unreadable: List[UnreadableRow] = []
+    for row in rows:
+        try:
+            parsed.append(model(**row))
+        except ValidationError as exc:
+            unreadable.append(UnreadableRow(_usable_source_id(row), _field_names_reason(exc)))
+        except TypeError:
+            unreadable.append(UnreadableRow("", "could not read: row"))
+    return parsed, unreadable
+
+
+def _plural_label(label: str, count: int) -> str:
+    return f"{count} source {label}(s)"
+
+
+def _unreadable_warning(label: str, unreadable: List[UnreadableRow]) -> str:
+    ids = [u.source_id for u in unreadable if u.source_id]
+    text = f"{_plural_label(label, len(unreadable))} could not be read and were skipped"
+    if ids:
+        listed = ", ".join(ids[:_MAX_LISTED_IDS])
+        if len(ids) > _MAX_LISTED_IDS:
+            listed += f", and {len(ids) - _MAX_LISTED_IDS} more"
+        text += f" (source ids: {listed})"
+    no_id = len(unreadable) - len(ids)
+    if ids and no_id:
+        text += f"; {no_id} had no readable id"
+    return text + "."
+
+
+def _unreadable_failures(entity: str, unreadable: List[UnreadableRow]) -> List[dict]:
+    return [
+        {
+            "entity": entity, "sourceId": u.source_id, "sourceLabel": "",
+            "reason": u.reason, "action": "skipped",
+        }
+        for u in unreadable
+    ]
+
+
 class MigrationPreflightService:
     def __init__(self, db: Session, *, client_factory=None):
         self.db = db
@@ -207,17 +294,22 @@ class MigrationPreflightService:
             warnings.append(self._api_unavailable_message(exc))
             return self._unavailable(space_label, target_channels, target_stages, warnings)
 
+        source_channels, bad_channels = parse_rows(raw_channels, SpaceChannel)
         channels = [
             MigrationSourceChannel(id=str(c.id), name=c.name, source=c.source)
-            for c in (SpaceChannel(**row) for row in raw_channels)
+            for c in source_channels
         ]
+        if bad_channels:
+            warnings.append(_unreadable_warning("channel", bad_channels))
         self._warn_no_compatible_target(channels, target_channels, warnings)
 
         try:
-            raw_users = [SpaceUser(**row) for row in client.list_space_users()]
+            raw_users, bad_users = parse_rows(client.list_space_users(), SpaceUser)
         except RespondIoError as exc:
             warnings.append(f"Could not read space users: {exc.message}")
-            raw_users = []
+            raw_users, bad_users = [], []
+        if bad_users:
+            warnings.append(_unreadable_warning("user", bad_users))
         users = [
             MigrationSourceUser(
                 id=str(u.id),
@@ -237,10 +329,12 @@ class MigrationPreflightService:
         teams = sorted(teams_by_id.values(), key=lambda t: t.name.lower())
 
         try:
-            raw_fields = [CustomField(**row) for row in client.list_custom_fields()]
+            raw_fields, bad_fields = parse_rows(client.list_custom_fields(), CustomField)
         except RespondIoError as exc:
             warnings.append(f"Could not read custom fields: {exc.message}")
-            raw_fields = []
+            raw_fields, bad_fields = [], []
+        if bad_fields:
+            warnings.append(_unreadable_warning("custom field", bad_fields))
         fields = [
             MigrationSourceField(id=str(f.id), name=f.name, dataType=f.dataType)
             for f in raw_fields
@@ -259,6 +353,7 @@ class MigrationPreflightService:
             targetChannels=target_channels,
             targetStages=target_stages,
             warnings=warnings,
+            unreadableChannelIds=[b.source_id for b in bad_channels if b.source_id],
         )
 
     # ── helpers ──────────────────────────────────────────────────────────
@@ -350,6 +445,7 @@ class MigrationPreflightService:
     ) -> List[str]:
         timezone = str(config.get("timezone") or "")
         seen: Dict[str, None] = {}
+        bad_contacts: List[UnreadableRow] = []
         try:
             for contact_index, row in enumerate(client.list_contacts(timezone=timezone)):
                 if contact_index >= _MAX_LIFECYCLE_SCAN_CONTACTS:
@@ -360,12 +456,15 @@ class MigrationPreflightService:
                         "blocker on that contact's dry run."
                     )
                     break
-                contact = Contact(**row)
-                if contact.lifecycle:
-                    seen.setdefault(contact.lifecycle, None)
+                parsed, bad = parse_rows([row], Contact)
+                bad_contacts.extend(bad)
+                if parsed and parsed[0].lifecycle:
+                    seen.setdefault(parsed[0].lifecycle, None)
         except RespondIoError as exc:
             warnings.append(f"Could not preview source lifecycle labels: {exc.message}")
             return []
+        if bad_contacts:
+            warnings.append(_unreadable_warning("contact", bad_contacts))
         return sorted(seen.keys())
 
 
@@ -543,7 +642,7 @@ def _process_csv_contacts(
         failures.append(
             {
                 "entity": "contacts", "sourceId": "", "sourceLabel": "",
-                "reason": f"Could not read the uploaded contacts CSV: {exc}", "action": "skipped",
+                "reason": "Could not read the uploaded contacts CSV.", "action": "skipped",
             }
         )
         return
@@ -611,7 +710,7 @@ def _process_csv_contacts(
             failures.append(
                 {
                     "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
-                    "reason": str(exc), "action": "skipped",
+                    "reason": _failure_reason(exc), "action": "skipped",
                 }
             )
         else:
@@ -734,6 +833,7 @@ def _build_report(
     team_map_dropped: int = 0,
     lifecycle_unmapped_csv: Optional[Dict[str, int]] = None,
     pagination_blockers: Optional[List[str]] = None,
+    unreadable_sources: Optional[Dict[str, int]] = None,
 ) -> dict:
     contacts_c = counts.get("contacts") or {}
     fields_c = counts.get("fields") or {}
@@ -747,6 +847,10 @@ def _build_report(
     # mean the walk stopped before it finished, which is more consequential
     # than "N contacts have no lifecycle mapping" and the like below.
     blockers: List[str] = list(pagination_blockers or [])
+    for kind, label in (("channels", "channel"), ("users", "user"), ("fields", "custom field"), ("contacts", "contact")):
+        unreadable = (unreadable_sources or {}).get(kind)
+        if unreadable:
+            blockers.append(f"{_plural_label(label, unreadable)} could not be read and were skipped.")
     if lifecycle_unmapped_csv:
         # Defect 2 fix - CSV mode names the actual unmapped VALUE(s) and
         # their count, rather than the API-mode aggregate-only line below
@@ -1183,6 +1287,33 @@ class MigrationService:
 
         return errors, parsed_messages_since
 
+    def _require_channels_readable(self, connection: Connection, payload: MigrationJobCreate) -> None:
+        """AC-44-20/22 - a source channel we cannot read would lose its
+        messages, so a real run is refused unless the operator marked that
+        channel Skip (a map entry with a null target). Reads the source now."""
+        credentials = _decrypt_or_none(connection.credentials_json)
+        if credentials is None:
+            return  # the job itself fails with the credentials message
+        config = connection.config_json or {}
+        client = RespondIoClient.from_connection(config, credentials)
+        release_read_transactions()  # an outbound call must not hold a DB transaction
+        try:
+            _channels, unreadable = parse_rows(client.list_space_channels(), SpaceChannel)
+        except RespondIoError:
+            raise MigrationJobValidationError(
+                {"channelMap": "Could not read the source channels from respond.io. Try again."}
+            )
+        marked_skip = {e.sourceChannelId for e in payload.channelMap if e.targetChannelId is None}
+        blocking = [u for u in unreadable if not u.source_id or u.source_id not in marked_skip]
+        if not blocking:
+            return
+        message = _unreadable_warning("channel", blocking).replace(" were skipped", " would be lost", 1)
+        if any(not u.source_id for u in blocking):
+            message += " A channel with no readable id cannot be marked Skip."
+        if any(u.source_id for u in blocking):
+            message += " Mark each one Skip in the channel map to continue."
+        raise MigrationJobValidationError({"channelMap": message})
+
     def _in_progress_job(self, tenant_id: str, workspace_id: str) -> Optional[BackgroundJob]:
         for job in self.jobs.repo.active_of_type(
             tenant_id, MIGRATION_JOB_TYPE, (JOB_PENDING, JOB_RUNNING, JOB_NEEDS_REVIEW)
@@ -1261,17 +1392,21 @@ class MigrationService:
         if errors:
             raise MigrationJobValidationError(errors)
 
-        if self._in_progress_job(tenant_id, payload.workspaceId) is not None:
-            raise MigrationJobConflict(
-                "migration_in_progress", "A migration is already running for this workspace."
-            )
-
         mapping_hash = _mapping_hash(payload)
         if payload.mode == "run" and not self._has_fresh_dry_run(
             tenant_id, payload.workspaceId, mapping_hash
         ):
             raise MigrationJobConflict(
                 "dry_run_required", "Run a dry run for this exact mapping first."
+            )
+        if payload.mode == "run" and connection is not None and payload.source == "api":
+            self._require_channels_readable(connection, payload)
+
+        # The lookup sits next to the insert. The cheap refusals (field errors,
+        # dry run required) come first; the source read precedes this refusal.
+        if self._in_progress_job(tenant_id, payload.workspaceId) is not None:
+            raise MigrationJobConflict(
+                "migration_in_progress", "A migration is already running for this workspace."
             )
 
         job_payload = {
@@ -1550,7 +1685,7 @@ def _process_contact_identities(
             failures.append(
                 {
                     "entity": "identities", "sourceId": contact_external_id, "sourceLabel": "",
-                    "reason": f"malformed channel payload: {exc}", "action": "skipped",
+                    "reason": f"malformed channel payload: {_failure_reason(exc)}", "action": "skipped",
                 }
             )
             continue
@@ -1681,7 +1816,7 @@ def _process_contact_messages(
             failures.append(
                 {
                     "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
-                    "reason": f"malformed message payload: {exc}", "action": "skipped",
+                    "reason": f"malformed message payload: {_failure_reason(exc)}", "action": "skipped",
                 }
             )
 
@@ -1695,7 +1830,7 @@ def _process_contact_messages(
         failures.append(
             {
                 "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
-                "reason": f"could not resolve message timestamps: {exc}", "action": "skipped",
+                "reason": f"could not resolve message timestamps ({type(exc).__name__})", "action": "skipped",
             }
         )
         return 0, 0, 0
@@ -1734,7 +1869,7 @@ def _process_contact_messages(
             failures.append(
                 {
                     "entity": "messages", "sourceId": str(item.messageId), "sourceLabel": "",
-                    "reason": str(exc), "action": "skipped",
+                    "reason": _failure_reason(exc), "action": "skipped",
                 }
             )
             continue
@@ -1866,7 +2001,7 @@ def _process_contact_events(
         failures.append(
             {
                 "entity": "events", "sourceId": contact_external_id, "sourceLabel": "",
-                "reason": f"could not re-fetch source contact for event derivation: {exc}",
+                "reason": f"could not re-fetch source contact for event derivation: {_failure_reason(exc)}",
                 "action": "skipped",
             }
         )
@@ -1906,7 +2041,7 @@ def _process_quick_replies_csv(
         failures.append(
             {
                 "entity": "quickReplies", "sourceId": "", "sourceLabel": "",
-                "reason": f"Could not read the uploaded snippets CSV: {exc}", "action": "skipped",
+                "reason": "Could not read the uploaded snippets CSV.", "action": "skipped",
             }
         )
         return
@@ -2055,14 +2190,26 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     # actually configured, so a job with an empty `teamMap` (the common
     # case) never pays for this extra `/space/user` call.
     user_team_by_id: Dict[str, str] = {}
-    if client is not None and payload.get("teamMap"):
+    # Source rows we could not read, by kind, for the report (plan 44). A dry
+    # run reads users and channels even with no teamMap so it can list them.
+    unreadable_sources: Dict[str, List[UnreadableRow]] = {}
+    if client is not None and (payload.get("teamMap") or dry_run):
         try:
-            for raw_user in client.list_space_users():
-                parsed_user = SpaceUser(**raw_user)
+            space_users, bad_users = parse_rows(client.list_space_users(), SpaceUser)
+            for parsed_user in space_users:
                 if parsed_user.team is not None:
                     user_team_by_id[str(parsed_user.id)] = str(parsed_user.team.id)
+            if bad_users:
+                unreadable_sources["users"] = bad_users
         except RespondIoError as exc:
             service.log(job, f"Could not read source space users for team mapping: {exc.message}", level="warning")
+    if client is not None and dry_run:
+        try:
+            _channels, bad_channels = parse_rows(client.list_space_channels(), SpaceChannel)
+            if bad_channels:
+                unreadable_sources["channels"] = bad_channels
+        except RespondIoError as exc:
+            service.log(job, f"Could not read source channels: {exc.message}", level="warning")
 
     thread_open_id = status_id_for(db, tenant_id, "THREAD", "OPEN")
     thread_closed_id = status_id_for(db, tenant_id, "THREAD", "CLOSED")
@@ -2082,12 +2229,14 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     source_field_defs: Dict[str, Dict[str, Any]] = {}
     if client is not None:
         try:
-            for raw_field in client.list_custom_fields():
-                parsed = CustomField(**raw_field)
+            source_fields, bad_fields = parse_rows(client.list_custom_fields(), CustomField)
+            for parsed in source_fields:
                 source_field_defs[parsed.name.strip().lower()] = {
                     "dataType": parsed.dataType,
                     "allowedValues": parsed.allowedValues,
                 }
+            if bad_fields:
+                unreadable_sources["fields"] = bad_fields
         except RespondIoError as exc:
             service.log(job, f"Could not read source custom fields: {exc.message}", level="warning")
             source_field_defs = {}
@@ -2154,6 +2303,12 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
 
     prior_result = job.result_json or {}
     failures: List[dict] = list((prior_result.get("failures") or {}).get("rows") or [])
+    for entity, bad_rows in unreadable_sources.items():
+        failures.extend(_unreadable_failures(entity, bad_rows))
+    # Rows found by the run itself are saved (capped, like the inline sample)
+    # with each checkpoint so a resume that skips the finished walk keeps them.
+    failures_base = len(failures)
+    failures.extend(cursor.get("failureSample") or [])
     samples: List[dict] = list((prior_result.get("report") or {}).get("samples", {}).get("contacts") or [])
     message_samples: List[dict] = list(
         (prior_result.get("report") or {}).get("samples", {}).get("messages") or []
@@ -2165,6 +2320,10 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     media_ref_cursor = cursor.get("mediaCursorId")
     event_ref_cursor = cursor.get("eventCursorId")
     phase = cursor.get("phase") or "contacts"
+    # An empty saved contact cursor means both "start" and "walk finished";
+    # this flag, saved with the last page, tells them apart on resume.
+    contacts_walk_done = bool(cursor.get("contactsWalkDone"))
+    quick_replies_done = bool(cursor.get("quickRepliesDone"))
 
     def checkpoint(new_phase: str) -> None:
         counts["contacts"] = contact_counts
@@ -2223,6 +2382,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             {
                 "phase": new_phase,
                 "contactCursorId": contact_list_cursor,
+                "contactsWalkDone": contacts_walk_done,
+                "quickRepliesDone": quick_replies_done,
+                "failureSample": failures[failures_base:][:50],
                 "identityCursorId": identity_ref_cursor,
                 "messageCursorId": message_ref_cursor,
                 "mediaCursorId": media_ref_cursor,
@@ -2244,6 +2406,10 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             user_map_dropped=user_map_dropped, team_map_dropped=team_map_dropped,
             lifecycle_unmapped_csv=csv_lifecycle_unmapped if csv_mode else None,
             pagination_blockers=pagination_blockers,
+            unreadable_sources={
+                **{k: len(v) for k, v in unreadable_sources.items()},
+                "contacts": contact_counts.get("unreadable", 0),
+            },
         )
         if csv_mode:
             # AC-MIG-48 - stated UP FRONT (every CSV-mode report, dry run or
@@ -2281,12 +2447,14 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
 
     # ── phase 1 - contacts (S2 API path unchanged; S5 CSV path, AC-MIG-47) ──
     if phase == "contacts" and csv_mode:
-        _process_csv_contacts(
-            db, tenant_id, workspace_id, writer, payload,
-            contact_counts, field_counts, tag_counts, samples, failures, csv_blockers,
-            csv_lifecycle_unmapped,
-            dry_run=dry_run, service=service, job=job,
-        )
+        if not contacts_walk_done:
+            _process_csv_contacts(
+                db, tenant_id, workspace_id, writer, payload,
+                contact_counts, field_counts, tag_counts, samples, failures, csv_blockers,
+                csv_lifecycle_unmapped,
+                dry_run=dry_run, service=service, job=job,
+            )
+            contacts_walk_done = True
         checkpoint("contacts")
         if _aborted(db, job.id):
             service.log(job, f"Aborted after {contact_counts.get('fetched', 0)} contacts.")
@@ -2313,25 +2481,31 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
 
     elif phase == "contacts":
         try:
-            for page_items, next_cursor in client.list_contacts_pages(
-                timezone=space_timezone, limit=CONTACTS_PAGE_LIMIT, start_cursor=contact_list_cursor
-            ):
+            contact_pages = (
+                []
+                if contacts_walk_done
+                else client.list_contacts_pages(
+                    timezone=space_timezone, limit=CONTACTS_PAGE_LIMIT, start_cursor=contact_list_cursor
+                )
+            )
+            for page_items, next_cursor in contact_pages:
                 for raw in page_items:
-                    external_id = str(raw.get("id", ""))
                     try:
                         source_contact = Contact(**raw)
                     except Exception as exc:  # noqa: BLE001 - malformed vendor row, never abort the job
                         contact_counts["fetched"] += 1
                         contact_counts["errors"] = contact_counts.get("errors", 0) + 1
+                        contact_counts["unreadable"] = contact_counts.get("unreadable", 0) + 1
                         failures.append(
                             {
-                                "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
-                                "reason": f"malformed contact payload: {exc}", "action": "skipped",
+                                "entity": "contacts", "sourceId": _usable_source_id(raw), "sourceLabel": "",
+                                "reason": f"malformed contact payload: {_failure_reason(exc)}", "action": "skipped",
                             }
                         )
                         service.advance(job, failed=1)
                         continue
 
+                    external_id = str(raw.get("id", ""))
                     nested = db.begin_nested()
                     try:
                         outcome = writer.write_contact(source_contact)
@@ -2371,7 +2545,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                         failures.append(
                             {
                                 "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
-                                "reason": str(exc), "action": "skipped",
+                                "reason": _failure_reason(exc), "action": "skipped",
                             }
                         )
                         service.advance(job, failed=1)
@@ -2401,6 +2575,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
 
                 # Checkpoint cursor + running counts AFTER EVERY PAGE (AC-MIG-22).
                 contact_list_cursor = next_cursor
+                contacts_walk_done = next_cursor is None
                 checkpoint("contacts")
 
                 # Cooperative abort (AC-MIG-28): re-read status FRESH before the
@@ -2636,7 +2811,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             return
 
     # ── phase 6 - quick replies from a snippets CSV (S4, AC-MIG-44) ─────────
-    if phase == "quick_replies":
+    if phase == "quick_replies" and not quick_replies_done:
         # A single bounded pass (`settings.import_max_rows`, not a paginated
         # walk) - the whole point of a snippets CSV is that it is small; no
         # separate resumability is needed beyond re-running the same CSV,
@@ -2650,6 +2825,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             nested.rollback()
         else:
             nested.commit()
+        quick_replies_done = True
         checkpoint("quick_replies")
         if _aborted(db, job.id):
             service.log(job, "Aborted during the quick_replies phase.")

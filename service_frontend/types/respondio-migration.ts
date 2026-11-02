@@ -97,6 +97,8 @@ export interface MigrationPreflight {
   targetChannels: MigrationTargetChannel[];
   targetStages: MigrationTargetStage[];
   warnings: string[];
+  /** Source channel ids the server could not read; each can only be marked Skip. */
+  unreadableChannelIds?: string[];
 }
 
 export interface MigrationChannelMapEntry {
