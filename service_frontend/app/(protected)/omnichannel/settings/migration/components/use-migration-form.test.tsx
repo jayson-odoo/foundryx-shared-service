@@ -257,3 +257,156 @@ describe('useMigrationForm - Start-migration mapping hash includes CSV fields', 
     expect(result.current.canStartMigration).toBe(false);
   });
 });
+
+describe('useMigrationForm - a failed preflight is exposed, not swallowed', () => {
+  function choose(result: Awaited<ReturnType<typeof setup>>, connectionId = 'conn-1') {
+    act(() => {
+      result.current.form.setValue('connectionId', connectionId);
+      result.current.form.setValue('workspaceId', 'wsp-1');
+    });
+  }
+
+  it('exposes the error when the preflight request rejects', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 400));
+    const result = await setup();
+    expect(result.current.preflightError).toBeNull();
+    choose(result);
+    await waitFor(() => expect(result.current.preflightError).toBe('The respond.io key was refused.'));
+    expect(result.current.preflight).toBeNull();
+    expect(result.current.preflightLoading).toBe(false);
+  });
+
+  it('exposes a plain message when the rejection is not an ApiError', async () => {
+    preflightMock.mockRejectedValueOnce(new Error('socket hang up'));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflightError).toBeTruthy());
+  });
+
+  it('clears the error as soon as the next preflight starts', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 400));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflightError).not.toBeNull());
+    preflightMock.mockReturnValueOnce(new Promise(() => {}));
+    choose(result, 'conn-2');
+    await waitFor(() => expect(result.current.preflightLoading).toBe(true));
+    expect(result.current.preflightError).toBeNull();
+  });
+
+  it('clears the error when a later preflight succeeds', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 400));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflightError).not.toBeNull());
+    preflightMock.mockResolvedValueOnce(preflight());
+    choose(result, 'conn-2');
+    await waitFor(() => expect(result.current.preflight).not.toBeNull());
+    expect(result.current.preflightError).toBeNull();
+  });
+
+  it('a rejection that lands after the inputs changed (active false) sets nothing', async () => {
+    let rejectFirst: (reason: unknown) => void = () => {};
+    preflightMock.mockReturnValueOnce(new Promise((_, reject) => (rejectFirst = reject)));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(preflightMock).toHaveBeenCalledTimes(1));
+    preflightMock.mockReturnValueOnce(new Promise(() => {}));
+    choose(result, 'conn-2');
+    await waitFor(() => expect(preflightMock).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      rejectFirst(new ApiError('stale failure', 502));
+    });
+    expect(result.current.preflightError).toBeNull();
+    expect(result.current.preflightLoading).toBe(true);
+  });
+
+  it('a rejection that lands after unmount sets nothing', async () => {
+    let rejectFirst: (reason: unknown) => void = () => {};
+    preflightMock.mockReturnValueOnce(new Promise((_, reject) => (rejectFirst = reject)));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { result, unmount } = renderHook(() => useMigrationForm());
+    await waitFor(() => expect(result.current.connections).toEqual([]));
+    act(() => {
+      result.current.form.setValue('connectionId', 'conn-1');
+      result.current.form.setValue('workspaceId', 'wsp-1');
+    });
+    await waitFor(() => expect(preflightMock).toHaveBeenCalledTimes(1));
+    unmount();
+    await act(async () => {
+      rejectFirst(new ApiError('late failure', 502));
+    });
+    expect(result.current.preflightError).toBeNull();
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+});
+
+describe('useMigrationForm - clearing and re-running the preflight', () => {
+  function choose(result: Awaited<ReturnType<typeof setup>>, connectionId: string | null = 'conn-1') {
+    act(() => {
+      result.current.form.setValue('connectionId', connectionId);
+      result.current.form.setValue('workspaceId', 'wsp-1');
+    });
+  }
+
+  it('clearing the connection after a failure clears the error', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 400));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflightError).not.toBeNull());
+    choose(result, null);
+    await waitFor(() => expect(result.current.preflightError).toBeNull());
+  });
+
+  it('clearing the connection after a success clears the preflight and the maps', async () => {
+    preflightMock.mockResolvedValueOnce(preflight({ channels: [{ id: 'ch-1', name: 'A', source: 'whatsapp_cloud' }] }));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflight).not.toBeNull());
+    choose(result, null);
+    await waitFor(() => expect(result.current.preflight).toBeNull());
+    expect(result.current.form.getValues('channelMap')).toEqual([]);
+  });
+
+  it('clearing the connection while in flight stops the loading flag', async () => {
+    preflightMock.mockReturnValueOnce(new Promise(() => {}));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflightLoading).toBe(true));
+    choose(result, null);
+    await waitFor(() => expect(result.current.preflightLoading).toBe(false));
+  });
+
+  it('a second preflight after a success replaces the channel map', async () => {
+    preflightMock.mockResolvedValueOnce(preflight({ channels: [{ id: 'ch-1', name: 'A', source: 'whatsapp_cloud' }] }));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.form.getValues('channelMap')).toHaveLength(1));
+    preflightMock.mockResolvedValueOnce(preflight({ channels: [{ id: 'ch-2', name: 'B', source: 'facebook' }] }));
+    choose(result, 'conn-2');
+    await waitFor(() =>
+      expect(result.current.form.getValues('channelMap').map((c) => c.sourceChannelId)).toEqual(['ch-2']),
+    );
+  });
+
+  it('a 5xx rejection exposes the plain text, a 4xx exposes its message', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('Internal Server Error', 503));
+    const result = await setup();
+    choose(result);
+    await waitFor(() => expect(result.current.preflightError).toBe('Could not check the connection.'));
+    preflightMock.mockRejectedValueOnce(new ApiError('Bad key.', 401));
+    choose(result, 'conn-2');
+    await waitFor(() => expect(result.current.preflightError).toBe('Bad key.'));
+  });
+
+  it('the channelMap validation message does not mention a preflight', async () => {
+    const result = await setup();
+    await act(async () => {
+      await result.current.form.trigger();
+    });
+    const message = result.current.form.getFieldState('channelMap').error?.message ?? '';
+    expect(message).not.toBe('');
+    expect(message).not.toMatch(/preflight/i);
+  });
+});
