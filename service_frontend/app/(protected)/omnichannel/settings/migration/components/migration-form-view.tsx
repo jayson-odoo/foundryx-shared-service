@@ -24,7 +24,7 @@ import {
 import { migrationListPath } from './paths';
 
 function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigrationForm>; editing: boolean }) {
-  const { control, setValue, formState } = hook.form;
+  const { control, setValue, formState, clearErrors } = hook.form;
   const source = useWatch({ control, name: 'source' }) ?? 'api';
   const connectionId = useWatch({ control, name: 'connectionId' }) ?? null;
   const workspaceId = useWatch({ control, name: 'workspaceId' }) ?? '';
@@ -73,7 +73,11 @@ function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigration
         compatibleTargetIds={hook.compatibleTargetIds}
         value={channelMap}
         editing={editing}
-        onChange={(next) => setValue('channelMap', next, { shouldDirty: true })}
+        error={hook.preflight ? formState.errors.channelMap?.message : undefined}
+        onChange={(next) => {
+          setValue('channelMap', next, { shouldDirty: true });
+          clearErrors('channelMap');
+        }}
       />
       <PeopleSection
         preflight={hook.preflight}

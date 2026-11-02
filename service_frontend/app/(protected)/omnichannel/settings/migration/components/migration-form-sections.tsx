@@ -33,7 +33,7 @@ import type {
   MigrationLifecycleMapEntry,
   MigrationSourceKind,
 } from '@/types/respondio-migration';
-import { ChannelMapRow } from './channel-map-row';
+import { ChannelMapRow, UnreadableChannelRow } from './channel-map-row';
 import { UserMapRow } from './user-map-row';
 import { LifecycleMapRow } from './lifecycle-map-row';
 import { MigrationReportCard } from './migration-report-card';
@@ -121,7 +121,7 @@ export function SourceSection({
               disabled={!editing}
             />
             {connectionError && <p className="text-destructive text-xs">{connectionError}</p>}
-            {!preflightLoading && preflight?.apiAvailable && preflight.channels.length === 0 && (
+            {!preflightLoading && preflight?.apiAvailable && preflight.channels.length === 0 && !(preflight.unreadableChannelIds ?? []).length && (
               <p className="text-destructive text-xs">This space has no channels to migrate.</p>
             )}
             {preflightError && <p className="text-destructive text-xs">{preflightError}</p>}
@@ -234,11 +234,13 @@ export function ChannelsSection({
   compatibleTargetIds,
   value,
   editing,
+  error,
   onChange,
 }: {
   preflight: MigrationPreflight | null;
   compatibleTargetIds: (sourceValue: string) => string[];
   value: MigrationChannelMapEntry[];
+  error?: string;
   editing: boolean;
   onChange: (next: MigrationChannelMapEntry[]) => void;
 }) {
@@ -267,6 +269,21 @@ export function ChannelsSection({
             />
           );
         })}
+        {(preflight.unreadableChannelIds ?? []).map((id) => (
+          <UnreadableChannelRow
+            key={`unreadable-${id}`}
+            sourceChannelId={id}
+            skipped={value.some((e) => e.sourceChannelId === id)}
+            editing={editing}
+            onSkip={() =>
+              onChange([
+                ...value.filter((e) => e.sourceChannelId !== id),
+                { sourceChannelId: id, targetChannelId: null },
+              ])
+            }
+          />
+        ))}
+        {error && <p className="text-destructive text-xs">{error}</p>}
       </CardContent>
     </Card>
   );

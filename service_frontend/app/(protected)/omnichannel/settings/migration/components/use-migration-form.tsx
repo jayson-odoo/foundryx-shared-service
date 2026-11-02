@@ -62,6 +62,7 @@ const FORM_FIELD_PATHS: ReadonlySet<string> = new Set([
   'workspaceId',
   'messagesSince',
   'contactsUploadId',
+  'channelMap',
 ]);
 
 function describe(error: unknown): string {

@@ -108,6 +108,7 @@ function mockPreflight(): MigrationPreflight {
       { statusId: 'stg-churned', label: 'Churned' },
     ],
     warnings: [],
+    unreadableChannelIds: [],
   };
 }
 
