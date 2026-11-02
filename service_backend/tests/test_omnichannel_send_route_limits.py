@@ -1729,13 +1729,14 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
     phones, cids, keys = _gate_world(client, session_factory, contacts=4)
     phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=4, slug="gate-lookup-two")
     phones3, cids3, keys3 = _gate_world(client, session_factory, contacts=2, slug="gate-lookup-three")
-    release = threading.Semaphore(0)
+    gates = [threading.Event() for _ in range(8)]  # one gate per held send: each is released by itself
     in_lookup = []
     rig = _install(monkeypatch, media=_pdf_media)
 
     def slow_lookup(url, **kwargs):
+        i = len(in_lookup)
         in_lookup.append(url)
-        release.acquire(timeout=6)
+        gates[i].wait(timeout=6)
         return url
 
     monkeypatch.setattr(webhook_service, "validate_callback_url", slow_lookup)
@@ -1757,12 +1758,12 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
                 out["lookups_started"] = len(in_lookup)
                 if "queued_into_lookup" not in out:
                     out["held"] = []
-                    for t in held:  # one at a time: the test database is one shared connection
-                        release.release()
+                    for i, t in enumerate(held):  # one at a time: the test database is one shared connection
+                        gates[i].set()
                         out["held"].append(await t)
             finally:
-                for _ in range(12):
-                    release.release()
+                for g in gates:
+                    g.set()
         return out
 
     out = asyncio.run(scenario())
