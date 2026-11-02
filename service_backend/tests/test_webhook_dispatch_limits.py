@@ -833,3 +833,51 @@ def test_ac_51_01_media_fetch_deadline_holds_when_the_first_cancel_is_swallowed(
     elapsed = time.monotonic() - started
     assert elapsed < LOW_DEADLINE + 2.0, f"media fetch took {elapsed:.1f}s"
     assert swallowed["n"] == 1, "the simulated lost cancel never happened"
+
+
+def test_ac_51_01_deadline_during_anyio_connect_leaves_no_socket_open(local_server, monkeypatch):
+    """The deadline lands after anyio's connect_tcp holds its connected stream
+    but before it returns it; that stream must still be closed (no gc help)."""
+    import gc
+
+    import anyio
+    from anyio._backends._asyncio import AsyncIOBackend
+
+    monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)
+    state = {"closed": False}
+
+    def idle(conn, stop):
+        while not stop.is_set():
+            if _pause_or_closed(conn, 0.3, state):
+                return
+
+    srv = local_server(idle)
+    scopes = []
+    connected = []
+    orig = AsyncIOBackend.connect_tcp.__func__
+
+    async def connect(cls, host, port, local_address=None):
+        stream = await orig(cls, host, port, local_address)
+        connected.append(stream)
+        scopes[0].cancel()  # the deadline arrives as the connection completes
+        return stream
+
+    monkeypatch.setattr(AsyncIOBackend, "connect_tcp", classmethod(connect))
+
+    async def go():
+        backend = url_guard._GuardedAsyncBackend("Callback URL", None)
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            await backend._connect_any(["127.0.0.1"], srv.port, 5, None, None)
+        await anyio.sleep(0.5)
+
+    gc.disable()
+    try:
+        asyncio.run(go())
+        assert len(connected) == 1
+        time.sleep(0.5)
+        closed_before_gc = state["closed"]
+    finally:
+        gc.enable()
+        gc.collect()
+    assert closed_before_gc, "a connection cancelled mid-connect was left open until garbage collection"
