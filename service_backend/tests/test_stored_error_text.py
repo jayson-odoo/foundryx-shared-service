@@ -9,7 +9,6 @@ test cannot pass for the wrong reason.
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import pytest
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.models.email_outbox import EmailOutbox

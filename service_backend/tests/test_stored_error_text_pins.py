@@ -3,7 +3,6 @@ text in it, keeps its wording at every site that stores an error."""
 import dataclasses
 from datetime import timedelta
 
-import pytest
 
 PLAIN = "plain operator note 4747"
 
