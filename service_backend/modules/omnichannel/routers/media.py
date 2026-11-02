@@ -146,7 +146,7 @@ def _serve(
             raise HTTPException(status_code=404, detail="Not found")
         tenant_id = message.tenant_id
     else:
-        tenant_id, workspace_id, slot = _resolve_principal(authorization, db)
+        tenant_id, workspace_id = _resolve_principal(authorization, db, held)
         # Defense-in-depth: resolve the message tenant-scoped (never unscoped).
         message = ContactRepository(db).get_message(message_id, tenant_id)
         if message is None or not message.media_key:
