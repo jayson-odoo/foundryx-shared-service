@@ -96,11 +96,11 @@ def process_application_name() -> str:
     return name[:_APPLICATION_NAME_MAX]
 
 
-def app_connect_args() -> Dict[str, str]:
+def app_connect_args(url: Optional[str] = None) -> Dict[str, str]:
     """``connect_args`` for the app engine: ``worker_connect_args()`` plus
     this process's ``application_name``. Postgres-only, for the same reason
     as ``worker_connect_args`` (sqlite's DBAPI rejects unknown keys)."""
-    if not settings.database_url.startswith("postgresql"):
+    if not (url if url is not None else settings.database_url).startswith("postgresql"):
         return {}
     return {"application_name": process_application_name(), **worker_connect_args()}
 
@@ -125,7 +125,7 @@ def build_engine(url: str, **extra: Any):
         "pool_pre_ping": True,
         "hide_parameters": True,
         "echo": settings.debug,
-        "connect_args": app_connect_args(),
+        "connect_args": app_connect_args(url),
     }
     options.update(extra)
     return scrub_error_params(create_engine(url, **options))

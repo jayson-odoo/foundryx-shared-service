@@ -33,38 +33,41 @@ def _clean(value: object) -> Optional[str]:
 
 
 def error_code_of(exc: BaseException) -> Optional[str]:
-    orig = getattr(exc, "orig", None)
-    if orig is None:
-        return None
     try:
+        orig = getattr(exc, "orig", None)
+        if orig is None:
+            return None
         code = _clean(getattr(orig, "pgcode", None))
         if code:
             return code
         args = getattr(orig, "args", None)
-        if args and isinstance(args[0], int) and not isinstance(args[0], bool):
-            return str(args[0])
+        head = args[0] if args else None
+        if isinstance(head, (tuple, list)) and head:
+            head = head[0]  # pymssql nests (code, message)
+        if isinstance(head, int) and not isinstance(head, bool):
+            return str(head)
     except Exception:  # noqa: BLE001 - odd driver shapes never raise
         return None
     return None
 
 
 def constraint_of(exc: BaseException) -> Optional[str]:
-    orig = getattr(exc, "orig", None)
-    if orig is None:
-        return None
     try:
+        orig = getattr(exc, "orig", None)
+        if orig is None:
+            return None
         diag = getattr(orig, "diag", None)
         return _clean(getattr(diag, "constraint_name", None))
     except Exception:  # noqa: BLE001
         return None
 
 
-def db_error_text(exc: BaseException, what: str) -> str:
+def db_error_text(exc: BaseException, what: str, *, with_constraint: bool = True) -> str:
     detail = type(exc).__name__
     code = error_code_of(exc)
     if code:
         detail += f", code {code}"
-    constraint = constraint_of(exc)
+    constraint = constraint_of(exc) if with_constraint else None
     if constraint:
         detail += f", constraint {constraint}"
     return f"{what} ({detail})."

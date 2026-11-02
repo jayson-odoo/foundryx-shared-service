@@ -6,6 +6,7 @@ originating run chain (D5). The run owns the transaction (``commit=False``).
 """
 from typing import Any, Dict
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.workflow_engine.context import render_field
@@ -74,7 +75,9 @@ def entity_update(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict
     if entity.apply_update is not None:
         try:
             entity.apply_update(db, record, pending, None)
-        except ActionError:
+        except (ActionError, SQLAlchemyError):
+            # A database error is raised unwrapped: the executor reduces it to
+            # fixed text, so its driver message never becomes a node error.
             raise
         except Exception as exc:  # noqa: BLE001 - surface as a clean node failure
             raise ActionError(str(exc)) from exc
