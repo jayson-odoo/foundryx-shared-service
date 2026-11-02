@@ -168,7 +168,7 @@ def _checked_addresses(host: str, infos: typing.Iterable[tuple], subject: str) -
         if addr not in addresses:
             addresses.append(addr)
     if not addresses:
-        raise httpcore.ConnectError(f"No usable address for {host}")
+        raise httpcore.ConnectError("No usable address.")
     return addresses
 
 

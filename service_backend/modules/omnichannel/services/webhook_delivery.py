@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import logging
+import socket
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -236,16 +237,31 @@ def _post_once(
     url: str,
     content: bytes,
     headers: Dict[str, str],
-    timeout: float,
     stop: threading.Event,
     deadline_at: float,
+    sockets: List[Any],
 ) -> _Reply:
+    def trace(event: str, info: Dict[str, Any]) -> None:
+        # Keep each connection's socket so the caller can close it at the deadline.
+        if event.endswith(".complete") and event.startswith(
+            ("connection.connect_tcp", "connection.start_tls")
+        ):
+            stream = info.get("return_value")
+            sock = stream.get_extra_info("socket") if stream is not None else None
+            if sock is not None:
+                sockets.append(sock)
+
+    left = deadline_at - time.monotonic()
+    if left <= 0 or stop.is_set():
+        raise DeliveryDeadlineError()
     with httpx.Client(
         transport=GuardedTransport(subject="Callback URL"),
-        timeout=timeout,
+        timeout=left,
         follow_redirects=False,
     ) as client:
-        with client.stream("POST", url, content=content, headers=headers) as resp:
+        with client.stream(
+            "POST", url, content=content, headers=headers, extensions={"trace": trace}
+        ) as resp:
             read = 0
             for chunk in () if resp.is_stream_consumed else resp.iter_raw():
                 read += len(chunk)
@@ -256,31 +272,79 @@ def _post_once(
             return _Reply(resp.status_code)
 
 
+def _check_address(url: str, budget: float) -> float:
+    """Run the address check under the attempt's budget; return what is left.
+    The lookup cannot be interrupted, so a check that outlasts the budget is
+    abandoned on its daemon thread (it holds no connection) and the attempt ends."""
+    started = time.monotonic()
+    box: Dict[str, BaseException] = {}
+
+    def run() -> None:
+        try:
+            assert_deliverable(url)
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller
+            box["error"] = exc
+
+    checker = threading.Thread(target=run, name="webhook-check", daemon=True)
+    checker.start()
+    checker.join(budget)
+    left = budget - (time.monotonic() - started)
+    if checker.is_alive() or left <= 0:
+        raise DeliveryDeadlineError()
+    if "error" in box:
+        raise box["error"]
+    return left
+
+
+def _close_sockets(sockets: List[Any]) -> None:
+    for sock in list(sockets):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:  # noqa: BLE001 - already closed or never connected
+            pass
+        try:
+            sock.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _post(
     url: str, *, content: bytes, headers: Dict[str, str], timeout: float
 ) -> _Reply:
-    """One POST on a fresh client whose connection goes only to an address that
-    passed the guard at connect time. ``timeout`` is the TOTAL budget for the
-    attempt: the request runs on a helper thread that is abandoned at the
-    deadline (its own per-read timeouts and the stop flag end it soon after).
-    Module-level so a test can replace the outbound call."""
+    """The address check and one POST on a fresh client whose connection goes
+    only to an address that passed the guard at connect time. ``timeout`` is the
+    TOTAL budget for the attempt. The request runs on a helper thread; at the
+    deadline (or on any exception in the caller, such as a worker time limit)
+    the caller closes the connection's socket so the helper's blocking connect
+    or read fails at once and the thread ends. Module-level so a test can
+    replace the outbound call."""
     deadline_at = time.monotonic() + timeout
     stop = threading.Event()
+    sockets: List[Any] = []
     box: Dict[str, Any] = {}
 
     def run() -> None:
         try:
-            box["reply"] = _post_once(url, content, headers, timeout, stop, deadline_at)
+            box["reply"] = _post_once(url, content, headers, stop, deadline_at, sockets)
         except BaseException as exc:  # noqa: BLE001 - handed to the caller
             box["error"] = exc
 
     worker = threading.Thread(target=run, name="webhook-post", daemon=True)
     worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        stop.set()
+    try:
+        worker.join(timeout)
+    finally:
+        if worker.is_alive():
+            stop.set()
+            _close_sockets(sockets)
+            worker.join(1.0)
+    if "reply" not in box and "error" not in box:
         raise DeliveryDeadlineError()
     if "error" in box:
+        if time.monotonic() >= deadline_at and not isinstance(
+            box["error"], (WebhookError, UrlGuardError)
+        ):
+            raise DeliveryDeadlineError() from None
         raise box["error"]
     return box["reply"]
 
@@ -340,28 +404,23 @@ def dispatch(db: Session, delivery_id: str) -> str:
     status_code: Optional[int] = None
     error: Optional[str] = None
     try:
-        # SSRF guard, re-run per attempt: the URL passed validation at
+        # SSRF guard (inside _post, under the same deadline), re-run per attempt: the URL passed validation at
         # registration, but DNS may have been re-pointed since (and the URL is
         # externally supplied on the API-key surface). Never POST to a target
         # that resolves internally NOW.
-        assert_deliverable(endpoint_url)
-        resp = _post(
-            endpoint_url,
-            content=body,
-            headers=headers,
-            timeout=DELIVERY_DEADLINE_SECONDS,
-        )
+        left = _check_address(endpoint_url, DELIVERY_DEADLINE_SECONDS)
+        resp = _post(endpoint_url, content=body, headers=headers, timeout=left)
         status_code = resp.status_code
         ok = 200 <= resp.status_code < 300
         if not ok:
             error = f"Consumer returned {resp.status_code}."
     except (WebhookError, UrlGuardError) as exc:
         # Blocked target - a real failure, but never a network call.
-        error = f"Delivery refused: {exc}"
+        error = f"Delivery refused: {exc}"  # guard text names no host
     except (DeliveryDeadlineError, httpx.TimeoutException):
         error = DEADLINE_ERROR.format(seconds=DELIVERY_DEADLINE_SECONDS)
     except httpx.HTTPError as exc:
-        error = f"Delivery failed: {exc}"
+        error = f"Delivery failed: {type(exc).__name__}."
     except Exception:  # noqa: BLE001 - any other send error is a failed attempt
         logger.exception("webhook delivery %s could not be attempted", delivery.id)
         error = "Delivery could not be attempted."
