@@ -388,7 +388,8 @@ def test_a_write_path_failure_still_fails_the_meeting_not_just_the_job(db, stora
     finished = _run(db, _job(db, meeting).id)
 
     assert finished.status == JOB_FAILED
-    assert "unique constraint" in (finished.error or "")
+    assert "RuntimeError" in (finished.error or "")
+    assert "unique constraint" not in (finished.error or "")
     db.refresh(meeting)
     assert meeting.status == STATUS_FAILED
     assert "unique constraint" in (meeting.status_reason or "")
@@ -429,7 +430,8 @@ def test_an_unbuilt_provider_fails_loudly_naming_itself(db, storage, monkeypatch
     finished = _run(db, _job(db, meeting).id)
 
     assert finished.status == JOB_FAILED
-    assert "deepgram" in (finished.error or "")
+    assert "UnbuiltSttProviderError" in (finished.error or "")
+    assert "deepgram" not in (finished.error or "")
     db.refresh(meeting)
     assert meeting.status == STATUS_FAILED
     assert "deepgram" in (meeting.status_reason or "")
