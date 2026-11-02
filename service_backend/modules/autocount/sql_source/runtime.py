@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Sequence, Tuple
@@ -154,7 +155,7 @@ def secrets_of(config: Dict[str, Any], credentials: Dict[str, Any]) -> List[str]
     return out
 
 
-# Failures an operator can act on: driver code (or libpq message fragment) ->
+# Failures an operator can act on: driver code (or libpq phrase) ->
 # fixed sentence. Anything else is reduced to the error class and code by
 # ``db_error_text``. No sentence names a host, user or identifier.
 _LOGIN_REFUSED = "The database refused the login. Check the username and password."
@@ -177,36 +178,35 @@ _KNOWN_CODES = {
     "207": _COLUMN_MISSING, "42703": _COLUMN_MISSING, "1054": _COLUMN_MISSING,
 }
 
-# psycopg2 connect failures carry no pgcode: match libpq's message on the
-# server side and return only the sentence. First match wins.
-_LIBPQ_FRAGMENTS = (
-    ("timeout expired", _TIMED_OUT),
-    ("timed out", _TIMED_OUT),
-    ("ssl", _TLS_FAILED),
-    ("password authentication failed", _LOGIN_REFUSED),
-    ("no pg_hba.conf entry", _LOGIN_REFUSED),
-    ("authentication failed", _LOGIN_REFUSED),
-    ("does not exist", _DATABASE_MISSING),
-    ("connection refused", _HOST_UNREACHABLE),
-    ("could not translate host name", _HOST_UNREACHABLE),
-    ("name or service not known", _HOST_UNREACHABLE),
-    ("no route to host", _HOST_UNREACHABLE),
-    ("network is unreachable", _HOST_UNREACHABLE),
-    ("could not connect to server", _HOST_UNREACHABLE),
+# A psycopg2 connect failure carries no pgcode. Only then, and only on libpq's
+# own phrases (never a bare word, which a table or host name could hold), the
+# message picks the fixed sentence. First match wins; the text is never returned.
+_LIBPQ_PHRASES = (
+    (re.compile(r"could not translate host name"), _HOST_UNREACHABLE),
+    (re.compile(r"timeout expired"), _TIMED_OUT),
+    (re.compile(r"server does not support ssl|\bssl error\b|\bssl connection has been closed"), _TLS_FAILED),
+    (re.compile(r"password authentication failed|no pg_hba\.conf entry"), _LOGIN_REFUSED),
+    (re.compile(r'\bfatal:\s+role "[^"]*" does not exist'), _LOGIN_REFUSED),
+    (re.compile(r'\bfatal:\s+database "[^"]*" does not exist'), _DATABASE_MISSING),
+    (re.compile(r"connection refused|name or service not known|no route to host|network is unreachable|could not connect to server"), _HOST_UNREACHABLE),
 )
 
 
 def _libpq_sentence(exc: BaseException) -> str:
-    """Only for a code-less connect failure of the Postgres driver."""
+    """A fixed sentence for a code-less psycopg2 connect failure, else ``""``.
+    An error that carries a pgcode never comes here: it goes through
+    ``db_error_text``."""
     orig = getattr(exc, "orig", None)
     if orig is None or type(orig).__module__.split(".")[0] != "psycopg2":
+        return ""
+    if getattr(orig, "pgcode", None):
         return ""
     try:
         message = str(orig).lower()
     except Exception:  # noqa: BLE001
         return ""
-    for fragment, sentence in _LIBPQ_FRAGMENTS:
-        if fragment in message:
+    for pattern, sentence in _LIBPQ_PHRASES:
+        if pattern.search(message):
             return sentence
     return ""
 

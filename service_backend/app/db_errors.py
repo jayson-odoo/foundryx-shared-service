@@ -7,6 +7,7 @@ tenant data. Callers log the full exception separately.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 __all__ = ["db_error_text", "is_db_error", "error_code_of", "constraint_of"]
 
 _TOKEN_MAX = 64
+_SQLSTATE = re.compile(r"^[0-9A-Z]{5}$")
 
 
 def is_db_error(exc: BaseException) -> bool:
@@ -38,7 +40,7 @@ def error_code_of(exc: BaseException) -> Optional[str]:
         if orig is None:
             return None
         code = _clean(getattr(orig, "pgcode", None))
-        if code:
+        if code and _SQLSTATE.match(code):
             return code
         args = getattr(orig, "args", None)
         head = args[0] if args else None
