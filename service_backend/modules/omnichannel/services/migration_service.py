@@ -2658,7 +2658,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     finish_done()
 
 
-MIGRATION_JOB_HANDLER_DEF = JobHandlerDef(MIGRATION_JOB_TYPE, run_migration_job, "respond.io migration")
+MIGRATION_JOB_HANDLER_DEF = JobHandlerDef(MIGRATION_JOB_TYPE, run_migration_job, "respond.io migration",
+    read_permission="omnichannel_migration.read",
+)
 
 
 def register_migration_job_handler() -> None:

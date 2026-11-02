@@ -124,11 +124,11 @@ def run_doc_feed_backfill_job(db: Session, job: BackgroundJob, *, transport: Any
 
 _RUN_HANDLER_DEF = JobHandlerDef(
     DOC_FEED_RUN_JOB_TYPE, run_doc_feed_job, "AutoCount document feed run",
-    heartbeats=True,
+    heartbeats=True, read_permission="autocount.sync.read",
 )
 _BACKFILL_HANDLER_DEF = JobHandlerDef(
     DOC_FEED_BACKFILL_JOB_TYPE, run_doc_feed_backfill_job, "AutoCount document feed backfill",
-    heartbeats=True,
+    heartbeats=True, read_permission="autocount.companies.read",
 )
 
 

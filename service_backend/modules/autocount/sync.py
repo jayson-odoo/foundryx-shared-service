@@ -3309,7 +3309,7 @@ def register_pull_snapshot_handler() -> None:
 
 _PULL_SNAPSHOT_HANDLER_DEF = JobHandlerDef(
     AUTOCOUNT_PULL_SNAPSHOT, _run_pull_snapshot, "AutoCount pull snapshot build",
-    heartbeats=True,
+    heartbeats=True, read_permission="autocount.pull.read",
 )
 register_pull_snapshot_handler()
 
@@ -3319,7 +3319,8 @@ register_pull_snapshot_handler()
 # ``heartbeats=True``: this handler beats at every checkpoint (page / push
 # chunk), so the orphan sweep may fail a RUNNING sync whose beat went stale.
 _HANDLER_DEF = JobHandlerDef(
-    AUTOCOUNT_SYNC, run_autocount_sync, "AutoCount sync", heartbeats=True
+    AUTOCOUNT_SYNC, run_autocount_sync, "AutoCount sync", heartbeats=True,
+    read_permission="autocount.sync.read",
 )
 
 

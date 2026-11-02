@@ -1,6 +1,6 @@
 """Background-job repository (sprint-4/10) - pure SQLAlchemy, tenant-scoped."""
 from datetime import datetime, timezone
-from typing import Iterable, List, Optional, Tuple
+from typing import Collection, Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -20,12 +20,15 @@ class BackgroundJobRepository:
         self.db.flush()
         return job
 
-    def get(self, tenant_id: str, job_id: str) -> Optional[BackgroundJob]:
-        return (
-            self.db.query(BackgroundJob)
-            .filter(BackgroundJob.tenant_id == tenant_id, BackgroundJob.id == job_id)
-            .first()
+    def get(
+        self, tenant_id: str, job_id: str, *, types: Optional[Collection[str]] = None
+    ) -> Optional[BackgroundJob]:
+        q = self.db.query(BackgroundJob).filter(
+            BackgroundJob.tenant_id == tenant_id, BackgroundJob.id == job_id
         )
+        if types is not None:
+            q = q.filter(BackgroundJob.type.in_(list(types)))
+        return q.first()
 
     def get_unscoped(self, job_id: str) -> Optional[BackgroundJob]:
         """For the worker - it re-scopes inside the job's tenant."""
@@ -39,8 +42,11 @@ class BackgroundJobRepository:
         status: Optional[str] = None,
         page: int = 0,
         page_size: int = 25,
+        types: Optional[Collection[str]] = None,
     ) -> Tuple[List[BackgroundJob], int]:
         q = self.db.query(BackgroundJob).filter(BackgroundJob.tenant_id == tenant_id)
+        if types is not None:
+            q = q.filter(BackgroundJob.type.in_(list(types)))
         if job_type:
             q = q.filter(BackgroundJob.type == job_type)
         if status:

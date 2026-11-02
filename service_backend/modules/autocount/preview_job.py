@@ -417,5 +417,5 @@ def register_preview_job_handler() -> None:
 
 _HANDLER_DEF = JobHandlerDef(
     PREVIEW_JOB_TYPE, run_autocount_source_preview, "AutoCount source preview",
-    heartbeats=True,
+    heartbeats=True, read_permission="autocount.companies.read",
 )

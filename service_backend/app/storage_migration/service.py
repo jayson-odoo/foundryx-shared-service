@@ -540,7 +540,9 @@ def _aborted(db: Session, job_id: str) -> bool:
 
 # ── boot registration (idempotent) ────────────────────────────────────────────
 
-_HANDLER_DEF = JobHandlerDef(STORAGE_MIGRATION, run_storage_migration, "Storage migration")
+_HANDLER_DEF = JobHandlerDef(STORAGE_MIGRATION, run_storage_migration, "Storage migration",
+    read_permission="integrations.migrate_storage",
+)
 
 
 def register_storage_migration_handler() -> None:
