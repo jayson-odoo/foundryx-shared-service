@@ -55,7 +55,7 @@ Terms:
   (stale rule: `<Integration> (<Company>) has had no successful run since <time>`); reminder
   `Still failing: <Integration> (<Company>), <n> failed runs since <time>`; recovered
   `<Integration> (<Company>) is running again`. The body names integration, company (name and
-  database), failing-since time, failed-run count, the last error's first line, and a button to the
+  database), failing-since time, failed-run count (no error text, AC-48-01), and a button to the
   integration's Runs tab (`.../autocount/companies/<id>/entities/<type>?tab=runs`) on
   `settings.frontend_url`, the same base every account email uses (`user_service.py:278`). A
   non-default tenant's link therefore lands on the bare host: BL-SS-298 (tenant-host links) covers it.
