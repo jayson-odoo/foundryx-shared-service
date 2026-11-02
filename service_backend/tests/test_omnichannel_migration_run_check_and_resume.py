@@ -329,3 +329,386 @@ def test_ac_44_22_a_mix_of_channels_with_and_without_an_id_still_says_mark_each_
 
     assert "7011" in message and "cannot be marked Skip" in message, message
     assert "Mark each one Skip" in message, message
+
+
+# ── resume lists a row once in the CSV phases ───────────────────────────────
+
+
+class _Crash(BaseException):
+    """A process kill: passes through every `except Exception`."""
+
+
+def _rows_of(job, entity):
+    return [r for r in _sample(job) if r["entity"] == entity]
+
+
+def _resume(db, job):
+    from app.models.background_job import JOB_RUNNING
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db.rollback()
+    db.refresh(job)
+    job.status = JOB_RUNNING
+    db.commit()
+    run_migration_job(db, job)
+    db.refresh(job)
+
+
+def test_ac_44_10_a_csv_contacts_resume_lists_a_row_once(session_factory, monkeypatch):
+    from app.jobs.service import JobService
+    from modules.omnichannel.services.migration_service import run_migration_job
+    from modules.omnichannel.services.migration_writer import MigrationWriter
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    db.commit()
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", _csv_bytes(["First Name", "Phone"], [["Csv", "+15550000012"]]))
+    writer_calls = []
+
+    def failing(self, source):
+        writer_calls.append(1)
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(MigrationWriter, "write_contact", failing)
+    job = _make_csv_job(db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=key, mode="run")
+    real = JobService.set_cursor
+    state = {"crash": True, "reached": 0}
+
+    def set_cursor(self, job_, cursor, *args, **kwargs):
+        if state["crash"] and (cursor or {}).get("phase") == "quick_replies":
+            state["reached"] += 1
+            raise _Crash()
+        return real(self, job_, cursor, *args, **kwargs)
+
+    monkeypatch.setattr(JobService, "set_cursor", set_cursor)
+    with pytest.raises(_Crash):
+        run_migration_job(db, job)
+    assert state["reached"] == 1, "the crash point was never reached"
+    state["crash"] = False
+    _resume(db, job)
+
+    assert job.status == "done", job.error
+    assert len(writer_calls) >= 1
+    assert len(_rows_of(job, "contacts")) == 1, _rows_of(job, "contacts")
+    db.close()
+
+
+def test_ac_44_10_a_quick_replies_resume_lists_a_row_once(session_factory, monkeypatch):
+    from app.jobs.service import JobService
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    db.commit()
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", _csv_bytes(["First Name", "Phone"], [["Csv", "+15550000013"]]))
+    skey = _upload_key(db, DEFAULT_TENANT_ID, "snippets", _csv_bytes(["shortcut", "body"], [["hi", ""]]))
+    job = _make_csv_job(
+        db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=key, snippets_csv_key=skey, mode="run"
+    )
+    real = JobService.finish
+    state = {"crash": True, "reached": 0}
+
+    def finish(self, job_, *args, **kwargs):
+        if state["crash"]:
+            state["reached"] += 1
+            raise _Crash()
+        return real(self, job_, *args, **kwargs)
+
+    monkeypatch.setattr(JobService, "finish", finish)
+    with pytest.raises(_Crash):
+        run_migration_job(db, job)
+    assert state["reached"] == 1, "the crash point was never reached"
+    state["crash"] = False
+    _resume(db, job)
+
+    assert job.status == "done", job.error
+    rows = _rows_of(job, "quickReplies")
+    assert len(rows) == 1, rows
+    db.close()
+
+
+# ── a storage failure stores fixed text ─────────────────────────────────────
+
+STORAGE_ERROR = "storage key conn:MARKER-CONN:MARKER-KEY could not be read"
+
+
+def _failing_storage(monkeypatch, reached):
+    from modules.omnichannel.services import migration_service
+
+    real_factory = migration_service.storage_for_tenant
+
+    class Wrap:
+        def __init__(self, real):
+            self._real = real
+
+        def fetch(self, key):
+            if "MARKER" in key:
+                reached.append(key)
+                raise RuntimeError(STORAGE_ERROR)
+            return self._real.fetch(key)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(
+        migration_service, "storage_for_tenant", lambda db, tenant_id: Wrap(real_factory(db, tenant_id))
+    )
+
+
+@pytest.mark.parametrize("which", ["contacts", "snippets"])
+def test_ac_44_11_a_storage_fetch_failure_stores_fixed_text(session_factory, monkeypatch, which):
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    db.commit()
+    marked_key = "conn:MARKER-CONN:MARKER-KEY"
+    good = _upload_key(db, DEFAULT_TENANT_ID, "contacts", _csv_bytes(["First Name", "Phone"], [["Csv", "+15550000014"]]))
+    reached = []
+    _failing_storage(monkeypatch, reached)
+    if which == "contacts":
+        job = _make_csv_job(db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=marked_key, mode="run")
+        entity = "contacts"
+    else:
+        job = _make_csv_job(
+            db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=good, snippets_csv_key=marked_key, mode="run"
+        )
+        entity = "quickReplies"
+
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert reached, "the storage stub was never reached"
+    assert job.status == "done", job.error
+    rows = _rows_of(job, entity)
+    assert len(rows) == 1, _sample(job)
+    _assert_no_markers(_everything(db, job))
+    db.close()
+
+
+# ── the timestamp step stores no error text ─────────────────────────────────
+
+
+def test_ac_44_11_a_timestamp_step_failure_stores_no_error_text(session_factory, monkeypatch):
+    from modules.omnichannel.services import migration_service
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    wa_channel = _make_channel(db, DEFAULT_TENANT_ID, ws.id, channel_type="WHATSAPP")
+    db.commit()
+    contact = {"id": 940002, "firstName": "Good", "phone": "+15551234569"}
+    handler = _pages_handler_full(
+        {None: ([contact], None)},
+        channels_by_contact={"id:940002": [{"id": 601, "name": "WA", "source": "whatsapp", "meta": {"phone": "+15551234569"}}]},
+        messages_by_contact={"id:940002": {None: ([
+            {"messageId": 1, "traffic": "incoming", "channelId": 601, "message": {"type": "text", "text": "hello"}},
+        ], None)}},
+    )
+    _stub_client(monkeypatch, handler)
+    reached = []
+
+    def failing(*args, **kwargs):
+        reached.append(1)
+        raise RuntimeError("timestamps broke for MARKER-TS")
+
+    monkeypatch.setattr(migration_service, "resolve_message_timestamps", failing)
+    job = _make_full_job(
+        db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run",
+        channel_map=[{"sourceChannelId": "601", "targetChannelId": wa_channel.id}],
+    )
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert reached, "the timestamp stub was never reached"
+    assert job.status == "done", job.error
+    assert len(_rows_of(job, "messages")) == 1, _sample(job)
+    _assert_no_markers(_everything(db, job))
+    db.close()
+
+
+# ── a vendor message is capped, and only a string is kept ───────────────────
+
+LONG = "A" * 5000
+
+
+def _count_a(text):
+    return text.count("A")
+
+
+def _error_handler(body):
+    inner = _pages_handler_full({None: ([dict(GOOD_CONTACT)], None)})
+    reached = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/contact/list"):
+            reached.append(1)
+            return httpx.Response(404, json=body)
+        return inner(request)
+
+    handler.reached = reached
+    return handler
+
+
+def test_ac_44_11_a_long_vendor_message_is_capped_in_the_error_and_the_logs(session_factory, monkeypatch):
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    handler = _error_handler({"code": "x", "message": LONG})
+    _stub_client(monkeypatch, handler)
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
+
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert handler.reached, "the contact list stub was never reached"
+    assert job.status == "failed", job.status
+    assert _count_a(job.error or "") <= 300, len(job.error or "")
+    assert _count_a(json.dumps(job.logs_json, default=str)) <= 300
+    db.close()
+
+
+def test_ac_44_11_a_long_vendor_message_is_capped_in_a_stored_reason(session_factory, monkeypatch):
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    inner = _pages_handler_full({None: ([dict(GOOD_CONTACT)], None)})
+    reached = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/contact/id:7301"):
+            reached.append(1)
+            return httpx.Response(404, json={"code": "x", "message": LONG})
+        return inner(request)
+
+    _stub_client(monkeypatch, handler)
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert reached, "the re-fetch stub was never reached"
+    assert job.status == "done", job.error
+    rows = _rows_of(job, "events")
+    assert len(rows) == 1, _sample(job)
+    assert _count_a(rows[0]["reason"]) <= 300, len(rows[0]["reason"])
+    db.close()
+
+
+def test_ac_44_20_a_long_vendor_message_is_capped_in_the_422(soft_client, monkeypatch):
+    state = _state()
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+    assert _post_job(soft_client, h, connection_id, ws_id, mode="dry_run").status_code == 201
+    base = _handler(state)
+    reached = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/space/channel"):
+            reached.append(1)
+            return httpx.Response(404, json={"code": "x", "message": LONG})
+        return base(request)
+
+    _patch_client_factory(monkeypatch, handler)
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="run")
+
+    assert reached, "the channel stub was never reached"
+    assert res.status_code == 422, (res.status_code, res.text)
+    assert _count_a(res.text) <= 300, len(res.text)
+
+
+@pytest.mark.parametrize("message", [{"a": "MARKER-OBJ"}, ["MARKER-LIST"]], ids=["dict", "list"])
+def test_ac_44_11_a_vendor_message_that_is_not_a_string_gives_fixed_text(session_factory, monkeypatch, message):
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    handler = _error_handler({"code": "x", "message": message})
+    _stub_client(monkeypatch, handler)
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
+
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert handler.reached, "the contact list stub was never reached"
+    assert job.status == "failed", job.status
+    _assert_no_markers(json.dumps([job.error, job.logs_json], default=str))
+    db.close()
+
+
+# ── more odd answers become a source error ──────────────────────────────────
+
+
+def _channel_answer(state, body):
+    base = _handler(state)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/space/channel") and state.get("odd"):
+            state["odd_reached"] = state.get("odd_reached", 0) + 1
+            return httpx.Response(200, json=body)
+        return base(request)
+
+    return handler
+
+
+def test_ac_44_20_a_pagination_that_is_not_an_object_is_a_422_on_channel_map(soft_client, monkeypatch):
+    state = _state()
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+    _patch_client_factory(monkeypatch, _channel_answer(state, {"items": [], "pagination": 5}))
+    assert _post_job(soft_client, h, connection_id, ws_id, mode="dry_run").status_code == 201
+    state["odd"] = True
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="run")
+
+    assert state.get("odd_reached"), "the odd answer was never served"
+    assert res.status_code == 422, (res.status_code, res.text)
+    assert "channelMap" in res.json()["detail"]["fieldErrors"], res.text
+
+
+def test_ac_44_01_a_pagination_that_is_not_an_object_does_not_fail_preflight(soft_client, monkeypatch):
+    state = _state()
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+    _patch_client_factory(monkeypatch, _channel_answer(state, {"items": [], "pagination": 5}))
+    state["odd"] = True
+
+    res = _preflight(soft_client, h, connection_id, ws_id)
+
+    assert state.get("odd_reached"), "the odd answer was never served"
+    assert res.status_code == 200, (res.status_code, res.text)
+
+
+def test_ac_44_11_a_channels_answer_whose_items_is_not_a_list_skips_that_identity_row(session_factory, monkeypatch):
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    inner = _pages_handler_full({None: ([dict(GOOD_CONTACT)], None)})
+    reached = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/contact/id:7301/channels"):
+            reached.append(1)
+            return httpx.Response(200, json={"items": 5})
+        return inner(request)
+
+    _stub_client(monkeypatch, handler)
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
+
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert reached, "the channels stub was never reached"
+    assert job.status == "done", job.error
+    rows = _rows_of(job, "identities")
+    assert len(rows) == 1 and rows[0]["sourceId"] == "7301", _sample(job)
+    db.close()
