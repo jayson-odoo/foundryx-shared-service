@@ -556,6 +556,47 @@ describe('MigrationFormView - unreadable source channels (AC-44-23)', () => {
   });
 });
 
+describe('MigrationFormView - every source channel unreadable (AC-44-23)', () => {
+  const NO_CHANNELS = 'This space has no channels to migrate.';
+  const SCHEMA_MESSAGE = 'Choose a connection and a workspace to load the source channels.';
+
+  async function renderAllUnreadable() {
+    preflightMock.mockResolvedValueOnce(unreadablePreflight({ channels: [], targetChannels: [] }));
+    render(<MigrationFormView />);
+    await screen.findByText(new RegExp(BAD_ID));
+  }
+
+  it('"Run dry run" is enabled without choosing Skip', async () => {
+    await renderAllUnreadable();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run dry run' })).toBeEnabled());
+  });
+
+  it('clicking "Run dry run" creates a dry_run job with an empty channelMap', async () => {
+    createJobMock.mockResolvedValueOnce(doneJob('dry_run'));
+    getJobMock.mockResolvedValue(doneJob('dry_run'));
+    await renderAllUnreadable();
+    const button = screen.getByRole('button', { name: 'Run dry run' });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(createJobMock).toHaveBeenCalledTimes(1));
+    const input = createJobMock.mock.calls[0][0] as { mode: string; channelMap: unknown[] };
+    expect(input.mode).toBe('dry_run');
+    expect(input.channelMap).toEqual([]);
+  });
+
+  it('the schema message is not on screen, and neither is the no-channels line', async () => {
+    await renderAllUnreadable();
+    expect(screen.queryByText(SCHEMA_MESSAGE)).not.toBeInTheDocument();
+    expect(screen.queryByText(NO_CHANNELS)).not.toBeInTheDocument();
+  });
+
+  it('control: no channels and nothing unreadable keeps the no-channels line', async () => {
+    preflightMock.mockResolvedValueOnce(preflight({ channels: [], targetChannels: [], unreadableChannelIds: [] } as Partial<MigrationPreflight>));
+    render(<MigrationFormView />);
+    expect(await screen.findByText(NO_CHANNELS)).toBeInTheDocument();
+  });
+});
+
 describe('MigrationFormView - review shows the dry run counts before Start (AC-44-24, pin)', () => {
   it('shows all four blocker lines, before the Start button', async () => {
     const lines = [
