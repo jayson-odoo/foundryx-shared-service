@@ -15,6 +15,7 @@ import {
   Shuffle,
   Tag,
   Users as UsersIcon,
+  Webhook,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
@@ -24,6 +25,7 @@ import { workspaceService } from '@/services/workspace-service';
 import type { Workspace } from '@/types/omnichannel';
 import { SettingsTab, ChannelsTab, MembersTab } from './workspace-form-fields';
 import { ApiKeysTab } from './workspace-api-keys-tab';
+import { WorkspaceWebhooksTab } from './workspace-webhooks-tab';
 import { WorkspaceLifecycleTab } from './workspace-lifecycle-tab';
 import { WorkspaceContactFieldsTab } from './workspace-contact-fields-tab';
 import { WorkspaceTagsTab } from './workspace-tags-tab';
@@ -265,6 +267,16 @@ export function useWorkspaceForm(
               label: 'API Keys',
               icon: KeyRound,
               render: () => <ApiKeysTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+          ]
+        : []),
+      ...(can('webhooks.read') && !creating
+        ? [
+            {
+              id: 'webhooks',
+              label: 'Webhooks',
+              icon: Webhook,
+              render: () => <WorkspaceWebhooksTab workspaceId={workspace?.id ?? null} />,
             },
           ]
         : []),

@@ -58,6 +58,7 @@ export const mockApiKeysService: ApiKeysService = {
       lastUsedAt: null,
       revokedAt: null,
       createdAt: new Date().toISOString(),
+      webhookEndpointCount: 0,
     };
     store[workspaceId] = [item, ...(store[workspaceId] ?? [])];
     // fullKey rides ONLY this response - no stored copy, never re-derivable.

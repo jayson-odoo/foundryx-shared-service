@@ -131,6 +131,16 @@ export type ResourceAction<T> =
          * omit for an action that needs no payload.
          */
         payload?: (rows: T[]) => Record<string, unknown>;
+        /**
+         * Row surface only. Called before parking; return true when the caller
+         * takes over (e.g. opens a choice dialog) and will call `park` itself
+         * with the extra payload it collected, which merges over `payload`.
+         * Return false to park straight away.
+         */
+        intercept?: (
+          rows: T[],
+          park: (extraPayload?: Record<string, unknown>) => Promise<void>,
+        ) => boolean;
       };
       run?: undefined;
     });

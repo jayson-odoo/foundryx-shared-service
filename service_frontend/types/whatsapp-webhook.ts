@@ -24,7 +24,7 @@ export interface WebhookEndpoint {
   id: string;
   tenantId: string;
   workspaceId: string;
-  channelId: string;
+  channelId: string | null; // null = covers every channel of the workspace
   name: string;
   url: string;
   events: WebhookEventType[];
@@ -35,6 +35,8 @@ export interface WebhookEndpoint {
   disabledReason: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
+  /** Name of the API key that registered it; null for staff, absent on create replies. */
+  registeredByKeyName?: string | null;
 }
 
 /** Create/edit payload - a subset of the endpoint's editable fields. */

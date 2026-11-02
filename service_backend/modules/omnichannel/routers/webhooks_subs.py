@@ -4,6 +4,8 @@ Register/rotate/enable/disable a channel's consumer webhook endpoints + inspect
 the delivery log. Gated by the module `webhooks.read` / `webhooks.manage`
 permissions. The signing secret is returned ONCE on create + rotate.
 """
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -17,11 +19,13 @@ from ..schemas import (
     WebhookDeliveryListResponse,
     WebhookEndpointCreateRequest,
     WebhookEndpointItem,
-    WebhookEndpointListResponse,
     WebhookEndpointMintResponse,
+    WebhookEndpointStaffItem,
+    WebhookEndpointStaffListResponse,
     WebhookEndpointUpdateRequest,
     WebhookSecretResponse,
 )
+from ..services.api_key_service import ApiKeyService
 from ..services.webhook_service import WebhookError, WebhookNotFound, WebhookService
 
 router = APIRouter()
@@ -33,6 +37,23 @@ def _to_item(row: WebhookEndpoint) -> WebhookEndpointItem:
     from ..services.webhook_service import webhook_endpoint_item
 
     return webhook_endpoint_item(row)
+
+
+def _to_staff_items(
+    db: Session, tenant_id: str, rows: List[WebhookEndpoint]
+) -> WebhookEndpointStaffListResponse:
+    """Rows with the name of the API key that owns each, one lookup per list."""
+    keys = ApiKeyService(db).names_for_creators(tenant_id, (r.created_by for r in rows))
+    items = []
+    for r in rows:
+        key_workspace, key_name = keys.get(r.created_by, (None, None))
+        items.append(
+            WebhookEndpointStaffItem(
+                **_to_item(r).model_dump(),
+                registeredByKeyName=key_name if key_workspace == r.workspace_id else None,
+            )
+        )
+    return WebhookEndpointStaffListResponse(data=items)
 
 
 def _to_delivery(row: WebhookDelivery) -> WebhookDeliveryItem:
@@ -56,17 +77,33 @@ def _bad(exc: Exception) -> HTTPException:
 
 
 # ── Per-channel: list + create ───────────────────────────────────────────────
-@router.get("/channels/{channel_id}/webhooks", response_model=WebhookEndpointListResponse)
+@router.get("/channels/{channel_id}/webhooks", response_model=WebhookEndpointStaffListResponse)
 def list_webhooks(
     channel_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("webhooks.read")),
-) -> WebhookEndpointListResponse:
+) -> WebhookEndpointStaffListResponse:
     try:
         rows = WebhookService(db).list_for_channel(user.tenant_id, channel_id)
     except WebhookError as exc:
         raise _bad(exc)
-    return WebhookEndpointListResponse(data=[_to_item(r) for r in rows])
+    return _to_staff_items(db, user.tenant_id, rows)
+
+
+@router.get("/workspaces/{workspace_id}/webhooks", response_model=WebhookEndpointStaffListResponse)
+def list_workspace_webhooks(
+    workspace_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("webhooks.read")),
+) -> WebhookEndpointStaffListResponse:
+    """Every endpoint of a workspace, per-channel and all-channels; needs no live channel."""
+    service = WebhookService(db)
+    try:
+        service.require_workspace(user.tenant_id, workspace_id)
+        rows = service.list_for_workspace(user.tenant_id, workspace_id)
+    except WebhookNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+    return _to_staff_items(db, user.tenant_id, rows)
 
 
 @router.post(

@@ -11,11 +11,13 @@ import hashlib
 import hmac
 import secrets
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..models import WorkspaceApiKey, Workspace
+from ..models import WebhookEndpoint, WorkspaceApiKey, Workspace
+from .webhook_service import WebhookService
 
 KEY_SCHEME = "fxw_live_"
 PREFIX_LEN = 8  # chars after the scheme used for the O(1) lookup
@@ -63,7 +65,15 @@ class ApiKeyService:
         self.db.refresh(row)
         return row, full_key
 
-    def revoke(self, key_id: str, tenant_id: str, workspace_id: str) -> WorkspaceApiKey:
+    def revoke(
+        self,
+        key_id: str,
+        tenant_id: str,
+        workspace_id: str,
+        pause_endpoints: bool = True,
+    ) -> WorkspaceApiKey:
+        """Revoke a key; with ``pause_endpoints`` also pause the webhook endpoints
+        it owns, in the same commit. Repeating it changes nothing."""
         row = (
             self.db.query(WorkspaceApiKey)
             .filter(
@@ -71,12 +81,18 @@ class ApiKeyService:
                 WorkspaceApiKey.tenant_id == tenant_id,
                 WorkspaceApiKey.workspace_id == workspace_id,
             )
+            # Exclusive lock: a key write under way holds a lighter FOR NO KEY UPDATE lock, so this
+            # waits for it to commit and then pauses its row too.
+            .with_for_update()
+            .populate_existing()
             .first()
         )
         if row is None:
             raise ValueError("API key not found.")
         if row.revoked_at is None:
             row.revoked_at = datetime.now(timezone.utc)
+            if pause_endpoints:
+                WebhookService(self.db).pause_for_key(tenant_id, workspace_id, key_id)
             self.db.commit()
             self.db.refresh(row)
         return row
@@ -93,6 +109,36 @@ class ApiKeyService:
             .order_by(WorkspaceApiKey.created_at.desc())
             .all()
         )
+
+    def active_endpoint_counts(self, tenant_id: str, workspace_id: str) -> Dict[str, int]:
+        """ACTIVE webhook endpoints per owning key id, one grouped query."""
+        rows = (
+            self.db.query(WebhookEndpoint.created_by, func.count(WebhookEndpoint.id))
+            .filter(
+                WebhookEndpoint.tenant_id == tenant_id,
+                WebhookEndpoint.workspace_id == workspace_id,
+                WebhookEndpoint.status == "ACTIVE",
+                WebhookEndpoint.created_by.like("apikey:%"),
+            )
+            .group_by(WebhookEndpoint.created_by)
+            .all()
+        )
+        return {created_by[len("apikey:") :]: n for created_by, n in rows}
+
+    def names_for_creators(
+        self, tenant_id: str, created_by_values: Iterable[Optional[str]]
+    ) -> Dict[str, Tuple[str, str]]:
+        """``created_by`` text of the form ``apikey:<id>`` -> (workspace id, key
+        name), in one tenant-scoped query. Revoked keys are included."""
+        ids = {c[len("apikey:") :]: c for c in created_by_values if c and c.startswith("apikey:")}
+        if not ids:
+            return {}
+        rows = (
+            self.db.query(WorkspaceApiKey.id, WorkspaceApiKey.workspace_id, WorkspaceApiKey.name)
+            .filter(WorkspaceApiKey.tenant_id == tenant_id, WorkspaceApiKey.id.in_(list(ids)))
+            .all()
+        )
+        return {ids[key_id]: (workspace_id, name) for key_id, workspace_id, name in rows}
 
     # ── Resolution (public-gateway auth) ─────────────────────────────────────
     def resolve(self, presented_key: str) -> Optional[WorkspaceApiKey]:

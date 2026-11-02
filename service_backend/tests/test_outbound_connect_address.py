@@ -499,16 +499,31 @@ def _drive_webhook_delivery(env, base):
     from modules.omnichannel.security import encrypt_secret
     from modules.omnichannel.services import webhook_delivery
 
+    from app.models import Tenant
+    from app.services.app_store_service import AppStoreService
+    from app.services.tenant_service import TenantService
+    from modules.omnichannel.models import Workspace
+
+    # A real tenant with the module installed and its default workspace, so the
+    # delivery state check (gateway_key_enabled) accepts the delivery.
     db = env.session_factory()
+    TenantService(db).provision(
+        name="Hook", slug="hook-conn", admin_name="Olu",
+        admin_email="admin@hook-conn.example.com", admin_password="pw12345678",
+    )
+    tenant = db.query(Tenant).filter(Tenant.slug == "hook-conn").first()
+    AppStoreService(db).install(tenant.id, "omnichannel")
+    ws = db.query(Workspace).filter(Workspace.tenant_id == tenant.id, Workspace.is_default.is_(True)).first()
+    tenant_id, workspace_id = tenant.id, ws.id
     endpoint = WebhookEndpoint(
-        tenant_id=DEFAULT_TENANT_ID, workspace_id="ws-conn", channel_id="ch-conn", name="hook",
+        tenant_id=tenant_id, workspace_id=workspace_id, channel_id="ch-conn", name="hook",
         url=base + "/hook", secret_encrypted=encrypt_secret("signing-secret"),
         events_json=["message.inbound"], status="ACTIVE",
     )
     db.add(endpoint)
     db.commit()
     delivery = WebhookDelivery(
-        tenant_id=DEFAULT_TENANT_ID, endpoint_id=endpoint.id, event_id="evt-conn",
+        tenant_id=tenant_id, endpoint_id=endpoint.id, event_id="evt-conn",
         event_type="message.inbound", payload_json={"hello": "world"}, status="PENDING",
     )
     db.add(delivery)

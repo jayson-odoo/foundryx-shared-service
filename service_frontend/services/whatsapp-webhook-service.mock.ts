@@ -61,6 +61,7 @@ function seed(channelId: string): void {
       disabledReason: null,
       createdAt: iso(86_400_000 * 9),
       updatedAt: iso(60_000),
+      registeredByKeyName: null,
     },
     {
       id: 'wh-002',
@@ -77,6 +78,7 @@ function seed(channelId: string): void {
       disabledReason: null,
       createdAt: iso(86_400_000 * 20),
       updatedAt: iso(86_400_000),
+      registeredByKeyName: null,
     },
     {
       id: 'wh-003',
@@ -93,6 +95,24 @@ function seed(channelId: string): void {
       disabledReason: 'Endpoint returned HTTP 500 for 12 consecutive attempts.',
       createdAt: iso(86_400_000 * 30),
       updatedAt: iso(3_600_000),
+      registeredByKeyName: null,
+    },
+    {
+      id: 'wh-004',
+      tenantId: 'tnt-001',
+      workspaceId: 'wsp-001',
+      channelId: null,
+      name: 'All numbers feed',
+      url: 'https://hooks.example.com/all/events',
+      events: ['message.inbound', 'message.outbound'],
+      status: 'ACTIVE',
+      consecutiveFailures: 0,
+      lastSuccessAt: iso(120_000),
+      disabledAt: null,
+      disabledReason: null,
+      createdAt: iso(86_400_000 * 2),
+      updatedAt: iso(120_000),
+      registeredByKeyName: 'Order sync',
     },
   ];
   deliveries['wh-001'] = [
@@ -148,6 +168,15 @@ export const mockWhatsappWebhookService: WhatsappWebhookService = {
     );
   },
 
+  async listForWorkspace(workspaceId) {
+    seed(`ws-${workspaceId}`);
+    const rows = (endpoints[`ws-${workspaceId}`] ?? []).filter((r) => r.channelId === null);
+    return delay(
+      [...rows].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      200,
+    );
+  },
+
   async create(channelId, input) {
     seed(channelId);
     counter += 1;
@@ -167,6 +196,7 @@ export const mockWhatsappWebhookService: WhatsappWebhookService = {
       disabledReason: null,
       createdAt: nowIso,
       updatedAt: nowIso,
+      registeredByKeyName: null,
     };
     endpoints[channelId] = [endpoint, ...(endpoints[channelId] ?? [])];
     return delay({ endpoint, signingSecret: secret() } satisfies WebhookCreateResult);
