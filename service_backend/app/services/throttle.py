@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.auth_throttle import (
     THROTTLE_SCOPE_BUILD,
+    THROTTLE_SCOPE_CHANNEL_TOKEN,
     THROTTLE_SCOPE_CONNECTOR,
     THROTTLE_SCOPE_CONNECTOR_CALL,
     THROTTLE_SCOPE_DOC_SHARE,
@@ -144,6 +145,12 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_idea_portal_comment_max,
             timedelta(minutes=settings.throttle_idea_portal_comment_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_CHANNEL_TOKEN:
+        return (
+            settings.throttle_channel_token_max,
+            timedelta(minutes=settings.throttle_channel_token_window_minutes),
             None,
         )
     if scope == THROTTLE_SCOPE_PULL_KEY:
@@ -471,6 +478,16 @@ class ThrottleService:
 
     def record_pull_key_request(self, *, key_id: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_PULL_KEY, key_id)
+
+    # ---- Omnichannel replace-token (own bucket, plan 42) ----
+
+    def enforce_channel_token(self, *, channel_id: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_CHANNEL_TOKEN, channel_id)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_channel_token(self, *, channel_id: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_CHANNEL_TOKEN, channel_id)
 
     # ---- Ideation BR build write-back gateway (own bucket, AC-STB-16) ----
 

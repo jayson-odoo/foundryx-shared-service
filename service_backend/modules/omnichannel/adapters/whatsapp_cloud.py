@@ -8,6 +8,7 @@ yet) the adapter returns stub credentials so the flow runs end-to-end without a
 real Meta app. Tests inject a fake ``client`` to assert behaviour deterministically.
 """
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
@@ -148,6 +149,98 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 f"{self._base}/{waba_id}/subscribed_apps",
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
+        finally:
+            if self._client is None:
+                client.close()
+
+    def subscribe_app_checked(self, credentials: Dict[str, Any], waba_id: str) -> bool:
+        """Subscribe the app to a WABA and read Meta's answer (plan 42). True only
+        on a 200 carrying ``success``. Never raises."""
+        if not self._configured or credentials.get("dev"):
+            return False
+        client = self._http()
+        try:
+            resp = client.post(
+                f"{self._base}/{waba_id}/subscribed_apps",
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            if resp.status_code != 200:
+                return False
+            try:
+                return bool((resp.json() or {}).get("success"))
+            except ValueError:
+                return False
+        except httpx.HTTPError:
+            return False
+        finally:
+            if self._client is None:
+                client.close()
+
+    def check_token(self, credentials: Dict[str, Any], phone_number_id: str) -> str:
+        """Classify a stored token (plan 42): ``ok`` | ``dead`` | ``unknown``.
+        ``ok`` only when Meta answers 200 with the number's own id; ``dead`` only
+        for Meta ``error.code`` 190 (read from the body on any status); anything
+        else, including a 5xx, a transport failure, a rate limit or a permission
+        code, is ``unknown``. Only dev credentials skip the call."""
+        if credentials.get("dev"):
+            return "ok"
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/{phone_number_id}",
+                params={"fields": "id"},
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            if meta_error_code(resp) == "190":
+                return "dead"
+            if resp.status_code != 200:
+                return "unknown"
+            try:
+                body_id = (resp.json() or {}).get("id")
+            except (ValueError, AttributeError):
+                return "unknown"
+            return "ok" if body_id and str(body_id) == str(phone_number_id) else "unknown"
+        except httpx.HTTPError:
+            return "unknown"
+        finally:
+            if self._client is None:
+                client.close()
+
+    def token_details(self, token: str) -> Optional[Dict[str, Any]]:
+        """What Meta's ``debug_token`` says about a token (plan 42):
+        ``{"expires_at", "scopes", "app_id"}``, each None when absent
+        (``expires_at`` 0 means it never expires), or None when the answer cannot
+        be read. The app token rides the Authorization header; ``input_token``
+        has to stay in the query. Never raises."""
+        if not self._configured or not token:
+            return None
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/debug_token",
+                params={"input_token": token},
+                headers={"Authorization": f"Bearer {settings.meta_app_id}|{settings.meta_app_secret}"},
+            )
+            if resp.status_code != 200:
+                return None
+            data = (resp.json() or {}).get("data")
+            if not isinstance(data, dict):
+                return None
+            raw = data.get("expires_at")
+            expires_at = (
+                datetime.fromtimestamp(raw, tz=timezone.utc)
+                if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0
+                else None
+            )
+            scopes = data.get("scopes")
+            app_id = data.get("app_id")
+            return {
+                "expires_at": expires_at,
+                "scopes": scopes if isinstance(scopes, list) else None,
+                "app_id": str(app_id) if app_id else None,
+            }
+        except (httpx.HTTPError, ValueError, OverflowError, OSError, AttributeError):
+            return None
         finally:
             if self._client is None:
                 client.close()

@@ -4,6 +4,7 @@ import csv
 import io
 from typing import List, Optional
 
+from pydantic import ValidationError
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
@@ -11,6 +12,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import require_permission
 from app.models.user import User
+from app.schemas.filters import FilterGroup
+from app.services.throttle import Throttled
+from app.services.filter_translator import FilterError
 from ..origins import InvalidOrigin
 from ..schemas import (
     ChannelItem,
@@ -21,6 +25,8 @@ from ..schemas import (
     ChannelUpdate,
     ExportRequest,
     IdsRequest,
+    ReplaceTokenRequest,
+    ReplaceTokenResult,
     RotateWidgetSecretResult,
     SignOutVisitorsResult,
     TestConnectionResult,
@@ -30,6 +36,7 @@ from ..schemas import (
 from ..services.channel_guards import ChannelTypeUnsupported
 from ..services.channel_profile_service import ChannelProfileService
 from ..services.channel_service import ChannelNotFound, ChannelService
+from ..services.token_health import REFUSAL_MESSAGE, TokenRefused, replace_token
 from ..services.webchat_service import WebchatService
 
 router = APIRouter()
@@ -37,6 +44,15 @@ router = APIRouter()
 
 def _unsupported(exc: ChannelTypeUnsupported) -> HTTPException:
     return HTTPException(status.HTTP_409_CONFLICT, {"reason": exc.reason})
+
+
+def _parse_filter(raw: Optional[str]) -> Optional[FilterGroup]:
+    if not raw:
+        return None
+    try:
+        return FilterGroup.model_validate_json(raw)
+    except ValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid filter.") from exc
 
 
 @router.get("", response_model=ChannelListResponse)
@@ -49,11 +65,16 @@ def list_channels(
     sort_by: Optional[str] = None,
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     status_view: str = Query("active"),
+    filter: Optional[str] = None,
 ) -> ChannelListResponse:
-    items, total = ChannelService(db).list(
-        current_user.tenant_id, page=page, page_size=page_size, search=search,
-        sort_by=sort_by, sort_dir=sort_dir, status_view=status_view,
-    )
+    try:
+        items, total = ChannelService(db).list(
+            current_user.tenant_id, page=page, page_size=page_size, search=search,
+            sort_by=sort_by, sort_dir=sort_dir, status_view=status_view,
+            filter_group=_parse_filter(filter),
+        )
+    except FilterError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid filter.") from exc
     return ChannelListResponse(data=items, total=total, page=page)
 
 
@@ -66,11 +87,16 @@ def channel_at(
     sort_by: Optional[str] = None,
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     status_view: str = Query("active"),
+    filter: Optional[str] = None,
 ) -> ChannelNeighborResponse:
-    ch, total = ChannelService(db).get_at(
-        index, current_user.tenant_id, status_view=status_view,
-        search=search, sort_by=sort_by, sort_dir=sort_dir,
-    )
+    try:
+        ch, total = ChannelService(db).get_at(
+            index, current_user.tenant_id, status_view=status_view,
+            search=search, sort_by=sort_by, sort_dir=sort_dir,
+            filter_group=_parse_filter(filter),
+        )
+    except FilterError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid filter.") from exc
     return ChannelNeighborResponse(channel=ch, total=total)
 
 
@@ -119,10 +145,14 @@ def export_channels(
     current_user: User = Depends(require_permission("channels.read")),
     db: Session = Depends(get_db),
 ) -> str:
-    items, _ = ChannelService(db).list(
-        current_user.tenant_id, page=0, page_size=10_000, search=body.search,
-        sort_by=body.sortBy, sort_dir=body.sortDir or "asc", status_view=body.statusView or "active",
-    )
+    try:
+        items, _ = ChannelService(db).list(
+            current_user.tenant_id, page=0, page_size=10_000, search=body.search,
+            sort_by=body.sortBy, sort_dir=body.sortDir or "asc", status_view=body.statusView or "active",
+            filter_group=body.filter,
+        )
+    except FilterError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid filter.") from exc
     if body.ids:
         keep = set(body.ids)
         items = [c for c in items if c.id in keep]
@@ -176,6 +206,32 @@ def test_channel(
         return ChannelService(db).test_connection(channel_id, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+
+
+@router.post("/{channel_id}/replace-token", response_model=ReplaceTokenResult)
+def replace_channel_token(
+    channel_id: str,
+    body: ReplaceTokenRequest,
+    current_user: User = Depends(require_permission("channels.manage")),
+    db: Session = Depends(get_db),
+) -> ReplaceTokenResult:
+    """Try a new token on the channel's own number; save it in place only if it
+    works (plan 42). The refusal text is fixed and carries nothing from Meta."""
+    try:
+        return replace_token(db, channel_id, body.accessToken, current_user.tenant_id)
+    except ChannelNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
+    except Throttled as exc:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many attempts. Try again shortly.",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+    except TokenRefused:
+        # A plain string so the api-client surfaces it as the error message.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, REFUSAL_MESSAGE)
 
 
 # ── WABA configuration + WhatsApp Business Profile (plan 06 Slice A) ──────────

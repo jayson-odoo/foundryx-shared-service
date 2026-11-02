@@ -36,6 +36,7 @@ from app.services.status_machine import (
 from ..embed_auth import (
     ConversationPrincipal,
     enforce_thread_access,
+    read_body_after_bearer_check,
     get_conversation_principal,
     resolve_effective_actor,
     resolve_native_actor,
@@ -600,7 +601,12 @@ def send_message(
         raise HTTPException(status_code=422, detail=exc.message)
 
 
-@router.post("/{contact_id}/template", response_model=MessageItem, status_code=201)
+@router.post(
+    "/{contact_id}/template",
+    response_model=MessageItem,
+    status_code=201,
+    dependencies=[Depends(read_body_after_bearer_check)],
+)
 async def send_template(
     contact_id: str,
     request: Request,
@@ -699,7 +705,12 @@ async def send_message_media(
         raise HTTPException(status_code=422, detail=exc.message)
 
 
-@router.post("/{contact_id}/interactive", response_model=MessageItem, status_code=201)
+@router.post(
+    "/{contact_id}/interactive",
+    response_model=MessageItem,
+    status_code=201,
+    dependencies=[Depends(read_body_after_bearer_check)],
+)
 async def send_interactive(
     contact_id: str,
     request: Request,

@@ -196,6 +196,25 @@ class ManualConnectRequest(ApiModel):
     phoneNumber: Optional[str] = None
 
 
+class ReplaceTokenRequest(ApiModel):
+    """`POST /omnichannel/channels/{id}/replace-token` (plan 42)."""
+
+    accessToken: str = Field(min_length=1)
+
+
+class TokenChannelItem(ChannelItem):
+    """A channel plus what Meta said about its token. ``tokenExpiresAt`` is null
+    when the token never expires or its expiry could not be read."""
+
+    tokenExpiresAt: Optional[datetime] = None
+
+
+class ReplaceTokenResult(TokenChannelItem):
+    """``subscribed`` is null when the channel has no WABA id."""
+
+    subscribed: Optional[bool] = None
+
+
 # ── Meta connect flow: Messenger + Instagram (plan 32 S3, A7a) ───────────────
 class MetaPagesRequest(ApiModel):
     """`POST /omnichannel/onboarding/meta/pages` - exchanges the OAuth code

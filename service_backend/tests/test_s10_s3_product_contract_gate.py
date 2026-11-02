@@ -115,7 +115,7 @@ def _connection(db, provider, config, credentials=None):
 
 
 def _company(db, *, sink_impl=SINK_IMPL_LOGGING, sink_connection_id=None, sorento_company_code=None):
-    api = _connection(db, "autocount", {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"})
+    api = _connection(db, "autocount", {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"})
     company = AcCompany(
         tenant_id=DEFAULT_TENANT_ID, connection_id=api.id, database_name="AED_SORENTO",
         company_name="Sorento", name="Sorento", is_active=True,
@@ -221,7 +221,7 @@ def test_activating_a_product_push_task_is_refused_below_contract_2_4(db, monkey
     company = _company(
         db, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id, sorento_company_code="SRT",
     )
-    api = _connection(db, "autocount", {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"})
+    api = _connection(db, "autocount", {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"})
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(api.id))
     _stamp_previewed(db, company.id)
     monkeypatch.setattr(
@@ -241,7 +241,7 @@ def test_activating_a_product_push_task_succeeds_at_contract_2_4_control(db, mon
     company = _company(
         db, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id, sorento_company_code="SRT",
     )
-    api = _connection(db, "autocount", {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"})
+    api = _connection(db, "autocount", {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"})
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(api.id))
     _stamp_previewed(db, company.id)
     monkeypatch.setattr(
@@ -256,7 +256,7 @@ def test_activating_a_product_pull_task_is_never_refused_by_the_contract_gate(db
     """PULL mode gets the banner only (never blocked) even below 2.4 -
     nothing lands on the consumer until ITS OWN Confirm."""
     company = _company(db, sink_impl=SINK_IMPL_LOGGING, sorento_company_code="SRT")
-    api = _connection(db, "autocount", {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"})
+    api = _connection(db, "autocount", {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"})
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(api.id))
     _stamp_previewed(db, company.id)
     EtlService(db).set_delivery_mode(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, "pull")

@@ -15,12 +15,15 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
+
+from app.services.url_guard import GuardedTransport, UrlGuardError
 
 from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
 from ..schemas import MessageItem
@@ -33,6 +36,8 @@ logger = logging.getLogger(__name__)
 _BACKOFF = [60, 300, 1500, 3600, 21600]
 MAX_ATTEMPTS = len(_BACKOFF) + 1  # 6 total attempts before dead-letter
 DELIVERY_TIMEOUT = 10.0
+# Below the worker's 300 second soft limit (app/workflow_engine/worker.py:84-85).
+DUE_RUN_BUDGET_SECONDS = 240
 # Reject a timestamp older than this on the consumer side (advisory - documented).
 SIGNATURE_TOLERANCE_SECONDS = 300
 
@@ -184,7 +189,6 @@ def enqueue_event(
     """Fan an event on ``channel`` to the subscribed endpoints that cover it
     (its own and the workspace's all-channels ones). Returns the number queued,
     never raises into the inbound pipeline."""
-    # plain locals: the session may need a rollback in the handler
     return _fan_out(
         db, channel.tenant_id, channel.workspace_id, channel.id, event_type, event_id, data
     )
@@ -201,6 +205,20 @@ def enqueue_workspace_event(
     """Fan an event that belongs to no channel to the workspace's all-channels
     endpoints only (envelope ``channelId`` is null). Never raises."""
     return _fan_out(db, tenant_id, workspace_id, None, event_type, event_id, data)
+
+
+def _post(
+    url: str, *, content: bytes, headers: Dict[str, str], timeout: float
+) -> httpx.Response:
+    """One POST on a fresh client whose connection goes only to an address that
+    passed the guard at connect time. Module-level so a test can replace the
+    outbound call."""
+    with httpx.Client(
+        transport=GuardedTransport(subject="Callback URL"),
+        timeout=timeout,
+        follow_redirects=False,
+    ) as client:
+        return client.post(url, content=content, headers=headers)
 
 
 def dispatch(db: Session, delivery_id: str) -> str:
@@ -252,18 +270,19 @@ def dispatch(db: Session, delivery_id: str) -> str:
         # externally supplied on the API-key surface). Never POST to a target
         # that resolves internally NOW.
         assert_deliverable(endpoint.url)
-        resp = httpx.post(
-            endpoint.url, content=body, headers=headers, timeout=DELIVERY_TIMEOUT
-        )
+        resp = _post(endpoint.url, content=body, headers=headers, timeout=DELIVERY_TIMEOUT)
         status_code = resp.status_code
         ok = 200 <= resp.status_code < 300
         if not ok:
             error = f"Consumer returned {resp.status_code}."
-    except WebhookError as exc:
+    except (WebhookError, UrlGuardError) as exc:
         # Blocked target - a real failure, but never a network call.
         error = f"Delivery refused: {exc}"
     except httpx.HTTPError as exc:
         error = f"Delivery failed: {exc}"
+    except Exception:  # noqa: BLE001 - any other send error is a failed attempt
+        logger.exception("webhook delivery %s could not be attempted", delivery.id)
+        error = "Delivery could not be attempted."
 
     delivery.response_status = status_code
     delivery.response_ms = int(
@@ -354,10 +373,14 @@ def _record_webhook_activity(
 
 
 def run_due_deliveries(db: Session, limit: int = 100) -> int:
-    """Re-drive PENDING deliveries whose backoff has elapsed (beat/backstop)."""
+    """Re-drive PENDING deliveries whose backoff has elapsed (beat/backstop).
+
+    Stops starting new rows once DUE_RUN_BUDGET_SECONDS has passed; rows not
+    reached stay PENDING for the next run. Returns the number of rows attempted."""
     now = datetime.now(timezone.utc)
-    due = (
-        db.query(WebhookDelivery)
+    due_ids = [
+        row_id
+        for (row_id,) in db.query(WebhookDelivery.id)
         .filter(
             WebhookDelivery.status == "PENDING",
             WebhookDelivery.next_attempt_at <= now,
@@ -365,7 +388,16 @@ def run_due_deliveries(db: Session, limit: int = 100) -> int:
         .order_by(WebhookDelivery.next_attempt_at.asc())
         .limit(limit)
         .all()
-    )
-    for row in due:
-        dispatch(db, row.id)
-    return len(due)
+    ]
+    deadline = time.monotonic() + DUE_RUN_BUDGET_SECONDS
+    attempted = 0
+    for delivery_id in due_ids:
+        if time.monotonic() >= deadline:
+            break  # the rest stay PENDING for the next run
+        attempted += 1
+        try:
+            dispatch(db, delivery_id)
+        except Exception:  # noqa: BLE001 - one bad delivery must not stop the rest
+            logger.exception("webhook delivery %s failed in the due run", delivery_id)
+            db.rollback()
+    return attempted

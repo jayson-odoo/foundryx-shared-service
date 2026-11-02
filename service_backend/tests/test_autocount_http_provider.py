@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - expected until the coder adds it
     auth_mode = None
 
 
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 # ── AC-08-01: the auth select + showWhen on the credential fields ────────────
@@ -167,7 +167,7 @@ def test_base_url_trailing_slash_stripped_no_double_slash():
         return httpx.Response(200, json=[])
 
     AutoCountProvider().test(
-        _open_config(base_url="https://hapi.sorento.cc.cd/api/db2/"),
+        _open_config(base_url="https://autocount-wrapper.example.com/api/db2/"),
         {},
         transport=_transport(handler),
     )

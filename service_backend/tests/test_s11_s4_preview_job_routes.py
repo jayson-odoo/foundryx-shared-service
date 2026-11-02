@@ -159,7 +159,7 @@ def _other_tenant(db) -> None:
 def _open_connection(db, *, tenant_id: str = DEFAULT_TENANT_ID) -> Connection:
     conn = Connection(
         tenant_id=tenant_id, provider="autocount", type="erp", name="s11-s4 REST",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(conn)

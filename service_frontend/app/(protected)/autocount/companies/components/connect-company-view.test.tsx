@@ -294,7 +294,7 @@ describe('ConnectCompanyView - open (no-auth) API connection (sprint-5/08, AC-08
           'conn-api-open': {
             id: 'conn-api-open',
             name: 'Sorento REST',
-            baseUrl: 'https://hapi.sorento.cc.cd/api/db1',
+            baseUrl: 'https://autocount-wrapper.example.com/api/db1',
             auth: 'none',
           },
           'conn-api-basic': {

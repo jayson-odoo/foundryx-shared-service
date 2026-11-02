@@ -164,7 +164,7 @@ def test_erp_provider_allows_several_connections_per_tenant(client):
 AUTOCOUNT_OPEN_PAYLOAD = {
     "provider": "autocount",
     "name": "Mocha REST",
-    "config": {"auth": "none", "baseUrl": "https://hapi.sorento.cc.cd/api/db2"},
+    "config": {"auth": "none", "baseUrl": "https://autocount-wrapper.example.com/api/db2"},
     "credentials": {},
 }
 
@@ -189,7 +189,7 @@ def test_autocount_baseurl_scheme_rejected_at_save_not_only_at_test(client):
 def test_autocount_baseurl_good_scheme_saves_clean(client):
     h = _demo_headers(client)
     created = _create(client, h, AUTOCOUNT_OPEN_PAYLOAD)
-    assert created["config"]["baseUrl"] == "https://hapi.sorento.cc.cd/api/db2"
+    assert created["config"]["baseUrl"] == "https://autocount-wrapper.example.com/api/db2"
 
 
 def test_autocount_baseurl_scheme_rejected_on_update_too(client):
@@ -197,7 +197,7 @@ def test_autocount_baseurl_scheme_rejected_on_update_too(client):
     created = _create(client, h, AUTOCOUNT_OPEN_PAYLOAD)
     res = client.patch(
         f"/integrations/connections/{created['id']}",
-        json={"config": {"baseUrl": "ftp://hapi.sorento.cc.cd/api/db2"}},
+        json={"config": {"baseUrl": "ftp://autocount-wrapper.example.com/api/db2"}},
         headers=h,
     )
     assert res.status_code == 422, res.text

@@ -356,7 +356,13 @@ export const mockChannelService: ChannelService = {
       ...current,
       name: input.name ?? current.name,
       isActive: input.isActive ?? current.isActive,
-      status: input.isActive === false ? 'INACTIVE' : input.isActive === true ? 'ACTIVE' : current.status,
+      // ERROR is the token check's label: a pause or resume leaves it (plan 42).
+      status:
+        current.status === 'ERROR' || input.isActive === undefined
+          ? current.status
+          : input.isActive
+            ? 'ACTIVE'
+            : 'INACTIVE',
       updatedAt: new Date(EPOCH).toISOString(),
     };
     rows[idx] = updated;
@@ -372,6 +378,21 @@ export const mockChannelService: ChannelService = {
       message: `Reached ${r.displayPhoneNumber ?? 'number'} successfully.`,
       checkedAt: r.lastVerifiedAt,
     });
+  },
+
+  async replaceChannelToken(id, accessToken) {
+    const idx = rows.findIndex((c) => c.id === id);
+    const current = rows[idx];
+    if (!current) throw new Error('Channel not found');
+    if (!accessToken.trim()) {
+      throw Object.assign(new Error('This token could not be verified for this number.'), { status: 422 });
+    }
+    const updated: ChannelRow = {
+      ...current,
+      status: current.status === 'ERROR' ? (current.isActive ? 'ACTIVE' : 'INACTIVE') : current.status,
+    };
+    rows[idx] = updated;
+    return delay({ ...toPublic(updated), subscribed: true, tokenExpiresAt: null });
   },
 
   async syncConfig(id) {

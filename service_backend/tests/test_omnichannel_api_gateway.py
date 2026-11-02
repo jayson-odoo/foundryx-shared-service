@@ -1143,7 +1143,7 @@ def test_delivery_path_calls_the_ssrf_guard(client, session_factory, monkeypatch
     )
 
     posted = []
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: posted.append(a) or (_ for _ in ()).throw(AssertionError("POSTed to a blocked target")))
+    monkeypatch.setattr(wd, "_post", lambda *a, **k: posted.append(a) or (_ for _ in ()).throw(AssertionError("POSTed to a blocked target")))
     # DNS now answers with a link-local address (rebinding after registration).
     monkeypatch.setattr(ws.socket, "getaddrinfo",
                         lambda host, port: [(None, None, None, "", ("169.254.169.254", 0))])

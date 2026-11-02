@@ -15,6 +15,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SearchSelect } from '@/components/platform/search-select';
 import { useConnectChannel } from '@/hooks/use-connect-channel';
+import { useDatetime } from '@/hooks/use-datetime';
+import { tokenWarnings } from '@/lib/channel-token-warnings';
 import { workspaceService } from '@/services/workspace-service';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { isEmbeddedSignupConfigured, launchEmbeddedSignup } from '@/lib/embedded-signup';
@@ -91,6 +93,8 @@ export function ChannelConnectWizard({
   const isWebchat = channelType === 'WEBCHAT';
   const manualValid = manual.accessToken.trim().length > 0 && manual.phoneNumberId.trim().length > 0;
   const webchatValid = webchatName.trim().length > 0 && webchatOrigins.length > 0;
+  const { formatDate } = useDatetime();
+  const warnings = channel ? tokenWarnings({ tokenExpiresAt: channel.tokenExpiresAt }, formatDate) : [];
   const availablePages = pages.filter((p) => !p.connected);
   const selectedPage = availablePages.find((p) => p.id === selectedPageId) ?? null;
 
@@ -239,6 +243,15 @@ export function ChannelConnectWizard({
                   {channel.displayPhoneNumber ?? channel.externalAccountName}
                 </p>
               </div>
+              {warnings.length > 0 && (
+                <div className="flex w-full flex-col gap-1 text-left">
+                  {warnings.map((w) => (
+                    <p key={w} className="text-xs text-amber-600">
+                      {w}
+                    </p>
+                  ))}
+                </div>
+              )}
               {isWebchat && webchatSecret && (
                 <div className="w-full text-left">
                   <label className="text-xs text-muted-foreground">Widget secret</label>
@@ -365,8 +378,13 @@ export function ChannelConnectWizard({
                 </div>
               )}
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm text-muted-foreground">System User token *</label>
+                <label htmlFor="manual-access-token" className="text-sm text-muted-foreground">
+                  Permanent access token (System User)
+                </label>
                 <Input
+                  id="manual-access-token"
+                  type="password"
+                  autoComplete="off"
                   placeholder="EAAG…"
                   value={manual.accessToken}
                   onChange={(e) => setManual((m) => ({ ...m, accessToken: e.target.value }))}

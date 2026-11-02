@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover - expected until the coder adds it
     SOURCE_KIND_HTTP = "http"
 
 OTHER_TENANT = "tenant-other-open-company"
-BASE_URL = "https://hapi.sorento.cc.cd/api/db2"
+BASE_URL = "https://autocount-wrapper.example.com/api/db2"
 
 
 def _auth(client, email="demo@example.com", password="demo1234") -> Dict[str, str]:
@@ -372,7 +372,7 @@ def test_router_create_dispatches_open_connection_without_a_vendor_login(client,
     # B4 (sprint-5/08 review round 1): the reachability probe itself is a
     # REAL network call unless the router's ``get_http_transport``
     # dependency is overridden - this test used to reach
-    # ``hapi.sorento.cc.cd`` for the exact reason it exists (proving the
+    # ``autocount-wrapper.example.com`` for the exact reason it exists (proving the
     # router-level dispatch), which is precisely what must never happen in
     # the suite.
     from app.main import app

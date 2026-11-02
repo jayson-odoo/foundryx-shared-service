@@ -84,7 +84,7 @@ def _block_live_network(monkeypatch):
     and never the FastAPI ``TestClient``'s in-process ASGI transport) raises
     loudly instead of making a request. Coordinator finding 2026-09-20: an
     earlier revision of ``test_sweep_fires_only_the_push_task_...`` made a
-    real ~8-minute call to ``hapi.sorento.cc.cd``."""
+    real ~8-minute call to ``autocount-wrapper.example.com``."""
     real_send = httpx.Client.send
     real_async_send = httpx.AsyncClient.send
 
@@ -120,7 +120,7 @@ def db(session_factory):
 def _open_connection(db) -> Connection:
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="db1 REST",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(conn)
@@ -499,7 +499,7 @@ def test_sweep_fires_only_the_push_task_of_one_due_push_and_one_due_pull(db, mon
     suite's eager job setting, runs ``run_autocount_sync`` INLINE before
     ``sweep_etl_tasks`` returns - so the due PUSH task's own HTTP call must
     be stubbed here too (coordinator finding 2026-09-20: an earlier revision
-    of this test made a real, ~8-minute call to ``hapi.sorento.cc.cd``)."""
+    of this test made a real, ~8-minute call to ``autocount-wrapper.example.com``)."""
     import modules.autocount.http_source.source as http_source_module
     from modules.autocount.http_source.client import HttpApiClient
 

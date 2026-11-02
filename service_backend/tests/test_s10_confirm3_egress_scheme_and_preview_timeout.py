@@ -47,7 +47,7 @@ from modules.autocount.sources import SourceContext, Watermark
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 
 PUBLIC_HTTP_URL = "http://autocount.acme.com:8080/api"
-PUBLIC_HTTPS_URL = "https://hapi.sorento.cc.cd/api/db2"
+PUBLIC_HTTPS_URL = "https://autocount-wrapper.example.com/api/db2"
 PRIVATE_RANGE_HTTP_URL = "http://192.168.1.50:5000/api"
 METADATA_HTTP_URL = "http://169.254.169.254/latest/meta-data"
 LOCAL_HTTP_URL = "http://localhost:8011/api"
@@ -320,7 +320,7 @@ def test_run_http_preview_builds_its_client_with_the_given_timeout(monkeypatch):
     monkeypatch.setattr(preview_module, "HttpApiClient", _SpyClient)
 
     preview_module.run_http_preview(
-        "https://hapi.sorento.cc.cd/api/db2", "/itembypage",
+        "https://autocount-wrapper.example.com/api/db2", "/itembypage",
         transport=_transport(handler), timeout_seconds=33.0,
     )
 
@@ -353,7 +353,7 @@ def test_run_http_preview_defaults_to_90_seconds_when_no_timeout_is_given(monkey
     monkeypatch.setattr(preview_module, "HttpApiClient", _SpyClient)
 
     preview_module.run_http_preview(
-        "https://hapi.sorento.cc.cd/api/db2", "/itembypage", transport=_transport(handler),
+        "https://autocount-wrapper.example.com/api/db2", "/itembypage", transport=_transport(handler),
     )
 
     assert captured.get("timeout_seconds") == DEFAULT_TIMEOUT_SECONDS == 90.0

@@ -33,7 +33,7 @@ from app.security import hash_password
 OTHER_TENANT_ID = "tenant-s14-other"
 PASSWORD = "S3cret!Pa55"
 
-VENDOR_BASE_URL = "https://hapi.sorento.cc.cd/api/db1"
+VENDOR_BASE_URL = "https://autocount-wrapper.example.com/api/db1"
 CRM_BASE_URL = "http://crm.example.test"
 SORENTO_API_KEY = "sorento-doc-feed-test-key"
 SORENTO_COMPANY_CODE = "SRT"

@@ -42,7 +42,7 @@ beforeEach(() => {
 describe('useAutocountApiConnections (AC-08-15)', () => {
   it('loads and exposes every autocount connection', async () => {
     listApiConnections.mockResolvedValue([
-      { id: 'conn-1', name: 'Sorento REST', baseUrl: 'https://hapi.sorento.cc.cd/api/db1', auth: 'none' },
+      { id: 'conn-1', name: 'Sorento REST', baseUrl: 'https://autocount-wrapper.example.com/api/db1', auth: 'none' },
     ]);
     const hook = renderHook(() => useAutocountApiConnections());
     await waitFor(() => expect(hook.result.current.isLoading).toBe(false));

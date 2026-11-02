@@ -49,10 +49,11 @@ const PAGES: MetaPageOption[] = [
 
 const listMetaPages = vi.fn();
 const connectMetaChannel = vi.fn();
+const onboardingManual = vi.fn();
 vi.mock('@/services/onboarding-service', () => ({
   onboardingService: {
     completeOnboarding: vi.fn(),
-    manualConnect: vi.fn(),
+    manualConnect: (...args: unknown[]) => onboardingManual(...args),
     listMetaPages: (...args: unknown[]) => listMetaPages(...args),
     connectMetaChannel: (...args: unknown[]) => connectMetaChannel(...args),
   },
@@ -265,5 +266,56 @@ describe('ChannelConnectWizard - plan 34 / A7b Web chat (AC-WEB-01/02)', () => {
       allowedOrigins: ['https://shop.acme.test'],
     });
     expect(screen.getByDisplayValue('whsec_only_shown_once')).toBeInTheDocument();
+  });
+});
+
+// ── plan 42 / AC-42-24: manual connect token field + expiry warning ─────────
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({
+    timeZone: 'UTC',
+    formatDate: (iso: string | null | undefined) => `FMT(${iso})`,
+    formatDateTime: (iso: string | null | undefined) => `FMT(${iso})`,
+    formatTime: (iso: string | null | undefined) => `FMT(${iso})`,
+  }),
+}));
+
+const TOKEN_LABEL = 'Permanent access token (System User)';
+
+async function openManual() {
+  render(<ChannelConnectWizard open onOpenChange={vi.fn()} workspaceId="wsp-1" />);
+  await waitFor(() => expect(screen.getByText('Set up manually (paste token)')).toBeInTheDocument());
+  fireEvent.click(screen.getByText('Set up manually (paste token)'));
+}
+
+describe('ChannelConnectWizard - plan 42 / AC-42-24', () => {
+  it('the manual token field carries the shared label and is a password field', async () => {
+    await openManual();
+    const input = screen.getByLabelText(TOKEN_LABEL) as HTMLInputElement;
+    expect(input.type).toBe('password');
+  });
+
+  it('control: manual connect without tokenExpiresAt shows no expiry warning', async () => {
+    (onboardingManual as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'chn-m-1', name: 'Manual WA', displayPhoneNumber: '+60 11-111 0099', tokenExpiresAt: null,
+    } as unknown as Channel);
+    await openManual();
+    fireEvent.change(screen.getByLabelText(TOKEN_LABEL), { target: { value: 'tok-under-test-1' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. 123456789012345'), { target: { value: 'pn-m-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(screen.getByText('Sandbox channel created')).toBeInTheDocument());
+    expect(document.body.textContent ?? '').not.toMatch(/expire/i);
+  });
+
+  it('shows the expiry warning with the date when the connect response has tokenExpiresAt', async () => {
+    (onboardingManual as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'chn-m-2', name: 'Manual WA', displayPhoneNumber: '+60 11-111 0099', tokenExpiresAt: '2027-03-01T00:00:00Z',
+    } as unknown as Channel);
+    await openManual();
+    fireEvent.change(screen.getByLabelText(TOKEN_LABEL), { target: { value: 'tok-under-test-1' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. 123456789012345'), { target: { value: 'pn-m-2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(screen.getByText('Sandbox channel created')).toBeInTheDocument());
+    expect(document.body.textContent ?? '').toMatch(/expire/i);
+    expect(document.body.textContent ?? '').toContain('FMT(2027-03-01T00:00:00Z)');
   });
 });

@@ -40,7 +40,7 @@ def _capture_post(monkeypatch):
             raise state["raise"]
         return _Resp(state["status"])
 
-    monkeypatch.setattr(wd.httpx, "post", fake_post)
+    monkeypatch.setattr(wd, "_post", fake_post)
     return calls, state
 
 

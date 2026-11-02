@@ -401,7 +401,7 @@ function successHttpPreview(): UseHttpPreviewResult {
 }
 
 const API_CONNECTIONS: AutocountApiConnection[] = [
-  { id: 'conn-api-sorento', name: 'Sorento REST', baseUrl: 'https://hapi.sorento.cc.cd/api/db1', auth: 'none' },
+  { id: 'conn-api-sorento', name: 'Sorento REST', baseUrl: 'https://autocount-wrapper.example.com/api/db1', auth: 'none' },
   { id: 'conn-api-vendor', name: 'AutoCount Vendor API', baseUrl: 'https://api.autocountcloud.com', auth: 'basic' },
 ];
 

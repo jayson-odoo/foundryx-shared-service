@@ -1067,7 +1067,7 @@ class EtlService:
         never passes one (a real network call); the router injects a stub
         ONLY via the ``get_http_transport`` dependency override, so a test
         exercising the real ``POST /autocount/http/preview`` route never
-        reaches ``hapi.sorento.cc.cd`` (sprint-5/08 review round 1, B4).
+        reaches ``autocount-wrapper.example.com`` (sprint-5/08 review round 1, B4).
 
         ``combine`` (sprint-5/10 S5a follow-up, AC-10-82), when given, is
         validated against THIS preview's own sampled columns + lookup

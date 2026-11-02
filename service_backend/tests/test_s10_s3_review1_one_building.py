@@ -47,7 +47,7 @@ def _block_live_network(monkeypatch):
     """Lane rule: no test in this file may touch the network. See
     ``test_s10_s3_delivery_mode.py``'s copy of this fixture for the full
     rationale (coordinator finding 2026-09-20: an earlier revision made a
-    real ~8-minute call to ``hapi.sorento.cc.cd``)."""
+    real ~8-minute call to ``autocount-wrapper.example.com``)."""
     real_send = httpx.Client.send
     real_async_send = httpx.AsyncClient.send
 
@@ -106,7 +106,7 @@ def db(session_factory):
 def _connection(db) -> Connection:
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="db1 REST",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(conn)
@@ -289,7 +289,7 @@ def test_losing_the_race_never_discards_unrelated_pending_session_state(db, monk
     other_connection = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp",
         name="an unrelated pending connection - must survive the race",
-        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db9", "auth": "none"},
+        config_json={"baseUrl": "https://autocount-wrapper.example.com/api/db9", "auth": "none"},
         credentials_json=None, is_active=True,
     )
     db.add(other_connection)

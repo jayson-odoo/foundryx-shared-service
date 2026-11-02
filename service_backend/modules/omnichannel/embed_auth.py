@@ -30,7 +30,9 @@ from app.database import get_db
 from app.dependencies import (
     _maybe_apply_impersonation,
     _resolve_user,
+    assert_staff_token,
     effective_permission_keys,
+    read_request_body,
     tenant_signin_allowed,
 )
 from app.models.user import User
@@ -41,20 +43,28 @@ from .models import Workspace
 
 MODULE_NAME = "omnichannel"
 
-_CREDENTIALS_EXC = HTTPException(
-    status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Could not validate credentials",
-    headers={"WWW-Authenticate": "Bearer"},
-)
-_MODULE_EXC = HTTPException(
-    status_code=status.HTTP_403_FORBIDDEN, detail="Module not installed"
-)
 
 
-_TENANT_EXC = HTTPException(
-    status_code=status.HTTP_403_FORBIDDEN,
-    detail="This tenant is suspended. Contact support.",
-)
+def _credentials_exc() -> HTTPException:
+    # A new instance per raise (a shared one would accumulate request frames).
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _module_exc() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Module not installed"
+    )
+
+
+def _tenant_exc() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="This tenant is suspended. Contact support.",
+    )
 
 
 @dataclass
@@ -190,6 +200,18 @@ def _parse_bearer(authorization: Optional[str]) -> Optional[str]:
     return parts[1].strip() or None
 
 
+def _embed_claims(payload: dict):
+    """The four identity claims an embed token must carry (no database); refuses
+    a token missing any of them."""
+    tenant_id = payload.get("tenant_id")
+    workspace_id = payload.get("workspaceId")
+    agent_id = payload.get("external_agent_id")
+    connection_id = payload.get("connection_id")
+    if not (tenant_id and workspace_id and agent_id and connection_id):
+        raise _credentials_exc()
+    return tenant_id, workspace_id, agent_id, connection_id
+
+
 def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
     """Return an EmbedPrincipal iff ``token`` is a valid embed access token, else
     None (the caller falls through to the native path). A malformed/expired token
@@ -200,18 +222,13 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
         return None
     if payload.get("typ") != "embed":
         return None
-    tenant_id = payload.get("tenant_id")
-    workspace_id = payload.get("workspaceId")
-    agent_id = payload.get("external_agent_id")
-    connection_id = payload.get("connection_id")
-    if not (tenant_id and workspace_id and agent_id and connection_id):
-        raise _CREDENTIALS_EXC
+    tenant_id, workspace_id, agent_id, connection_id = _embed_claims(payload)
     # The tenant must still be allowed to sign in (not suspended or archived).
     if not tenant_signin_allowed(db, tenant_id):
-        raise _TENANT_EXC
+        raise _tenant_exc()
     # Module must be active for the tenant (mounted public - re-apply the gate).
     if not ModuleRepository(db).is_active(tenant_id, MODULE_NAME):
-        raise _MODULE_EXC
+        raise _module_exc()
     # The workspace must still belong to the tenant (a moved/trashed workspace
     # invalidates the token).
     ws = (
@@ -224,7 +241,7 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
         .first()
     )
     if ws is None:
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
     caps = payload.get("caps") or []
     return EmbedPrincipal(
         tenant_id=tenant_id,
@@ -236,6 +253,30 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
     )
 
 
+async def read_body_after_bearer_check(
+    request: Request, authorization: Optional[str] = Header(default=None)
+) -> None:
+    """Route-level dependency: no query runs before the body has arrived. Native and
+    embed tokens verify with the same signature check (no database); the principal
+    lookup in ``get_conversation_principal`` stays after the body."""
+    token = _parse_bearer(authorization)
+    if token is None:
+        raise _credentials_exc()
+    try:
+        payload = decode_access_token(token)
+    except JWTError:
+        raise _credentials_exc()
+    # Embed tokens keep their later checks in _resolve_embed; every other token
+    # takes the staff path, so it gets the same database-free refusals.
+    if payload.get("typ") == "embed":
+        _embed_claims(payload)
+    else:
+        if not payload.get("sub") or payload.get("typ"):
+            raise _credentials_exc()
+        assert_staff_token(payload)
+    await read_request_body(request)
+
+
 def get_conversation_principal(
     request: Request,
     authorization: Optional[str] = Header(default=None),
@@ -243,7 +284,7 @@ def get_conversation_principal(
 ) -> ConversationPrincipal:
     token = _parse_bearer(authorization)
     if token is None:
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
 
     embed = _resolve_embed(token, db)
     if embed is not None:
@@ -262,7 +303,7 @@ def get_conversation_principal(
     real_user = _resolve_user(token, db)
     effective = _maybe_apply_impersonation(request, db, real_user)
     if not ModuleRepository(db).is_active(effective.tenant_id, MODULE_NAME):
-        raise _MODULE_EXC
+        raise _module_exc()
     actor = getattr(request.state, "real_user", real_user)
     return ConversationPrincipal(
         tenant_id=effective.tenant_id,

@@ -198,8 +198,8 @@ def test_webhook_delivery_records_activity_on_trace(client, session_factory):
     class _Resp:
         status_code = 200
 
-    original = wd.httpx.post
-    wd.httpx.post = lambda *a, **k: _Resp()
+    original = wd._post
+    wd._post = lambda *a, **k: _Resp()
     try:
         db = session_factory()
         row = (
@@ -210,7 +210,7 @@ def test_webhook_delivery_records_activity_on_trace(client, session_factory):
         assert dispatch(db, row.id) == "success"
         db.close()
     finally:
-        wd.httpx.post = original
+        wd._post = original
 
     hooks = _rows(session_factory, SOURCE_WEBHOOK_DELIVERY)
     assert len(hooks) == 1

@@ -98,7 +98,7 @@ def _connection(db, provider, config, credentials):
 
 def _company(db) -> AcCompany:
     api = _connection(
-        db, "autocount", {"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"}, {},
+        db, "autocount", {"baseUrl": "https://autocount-wrapper.example.com/api/db1", "auth": "none"}, {},
     )
     sorento = _connection(db, "sorento", {"baseUrl": "https://sorento.example.com"}, {"apiKey": "k"})
     company = AcCompany(
