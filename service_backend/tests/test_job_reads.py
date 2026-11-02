@@ -7,6 +7,7 @@ sentence naming only the exception class.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import uuid
 from pathlib import Path
@@ -31,9 +32,6 @@ READ_PERMISSIONS = {
     "autocount_doc_feed_run": "autocount.sync.read",
     "autocount_sync": "autocount.sync.read",
     "autocount_doc_feed_backfill": "autocount.companies.read",
-    "autocount_source_preview": "autocount.companies.read",
-    "autocount_doc_lookup": "autocount.pull.read",
-    "autocount_pull_snapshot": "autocount.pull.read",
     "meetings.calendar_sync": "meetings.settings.manage",
     "meetings.bot_run": "meetings.settings.manage",
     "meetings.transcribe": "meetings.settings.manage",
@@ -42,7 +40,10 @@ READ_PERMISSIONS = {
     "omnichannel.respondio_migration": "omnichannel_migration.read",
     "omnichannel.report_export": "reports.export",
 }
-ALL_KEYS = sorted(set(READ_PERMISSIONS.values()))
+# Read only through their own module routes, which check each row.
+MODULE_READ = ("autocount_doc_lookup", "autocount_source_preview", "autocount_pull_snapshot")
+ALL_KEYS = sorted(set(READ_PERMISSIONS.values()) | {"autocount.pull.read", "autocount.companies.read"})
+_KNOWN_DEF_FIELDS = {"type", "handler", "label", "queue", "heartbeats", "read_permission"}
 NOT_FOUND = "Job not found."
 
 
@@ -104,21 +105,44 @@ def temp_handlers():
 
 
 # ── AC-45-01 / AC-45-06: the registry names a read key per type ──────────────
-def test_ac_45_01_every_registered_type_names_a_catalog_read_permission(client):
-    defs = _loaded_app_registry(client)
-    types = {d.type for d in defs}
-    assert set(READ_PERMISSIONS) <= types, sorted(set(READ_PERMISSIONS) - types)
+def _module_read_marked(def_) -> bool:
+    """True when the def carries a switch beyond the known fields that is on."""
+    extra = [f.name for f in dataclasses.fields(JobHandlerDef) if f.name not in _KNOWN_DEF_FIELDS]
+    return any(getattr(def_, name) is True for name in extra)
+
+
+def _rule_violations(defs) -> list:
     catalog = _catalog_keys()
+    bad = []
     for d in defs:
         key = getattr(d, "read_permission", None)
-        assert key, f"{d.type} names no read permission"
-        assert key in catalog, f"{d.type}: {key} is in no permissions.csv"
+        if key and key not in catalog:
+            bad.append(f"{d.type}: {key} is in no permissions.csv")
+        elif not key and not _module_read_marked(d):
+            bad.append(f"{d.type}: names no read permission and is not module-read")
+    return bad
+
+
+def test_ac_45_01_every_registered_type_names_a_key_or_is_module_read(client):
+    defs = _loaded_app_registry(client)
+    types = {d.type for d in defs}
+    expected = set(READ_PERMISSIONS) | set(MODULE_READ)
+    assert expected <= types, sorted(expected - types)
+    assert _rule_violations(defs) == []
+
+
+def test_ac_45_01_a_type_with_neither_a_key_nor_the_mark_fails_the_rule():
+    probe = JobHandlerDef("t45.neither", lambda db, job: None, "Neither")
+    assert len(_rule_violations([probe])) == 1
 
 
 def test_ac_45_06_read_permission_per_type(client):
     defs = {d.type: d for d in _loaded_app_registry(client)}
     got = {t: getattr(defs[t], "read_permission", None) for t in READ_PERMISSIONS if t in defs}
     assert got == READ_PERMISSIONS
+    for t in MODULE_READ:
+        assert getattr(defs[t], "read_permission", None) is None, t
+        assert _module_read_marked(defs[t]), t
 
 
 # ── AC-45-02: the list holds only readable types ─────────────────────────────
@@ -172,6 +196,82 @@ def test_ac_45_03_detail_of_an_unreadable_type_answers_not_found(client, session
     missing = client.get(f"/jobs/{uuid.uuid4()}", headers=a)
     assert res.status_code == 404
     assert res.json() == missing.json() == {"detail": NOT_FOUND}
+
+
+def test_ac_45_03_caller_with_no_job_keys_gets_not_found_on_detail(client, session_factory):
+    _loaded_app_registry(client)
+    job_id = _seed_job(session_factory, "autocount_sync")
+    nobody = _user(client, session_factory, [], "nokeys")
+    res = client.get(f"/jobs/{job_id}", headers=nobody)
+    missing = client.get(f"/jobs/{uuid.uuid4()}", headers=nobody)
+    assert res.status_code == 404
+    assert res.json() == missing.json() == {"detail": NOT_FOUND}
+
+
+# ── AC-45-09: module-read types are listed to nobody on the generic routes ───
+def test_ac_45_09_module_read_types_are_not_listed_even_to_the_key_holder(client, session_factory):
+    _loaded_app_registry(client)
+    keyed = _seed_job(session_factory, "autocount_sync")
+    for t in MODULE_READ:
+        _seed_job(session_factory, t)
+    admin = _user(client, session_factory, ALL_KEYS, "allkeys")
+    body = client.get("/jobs", headers=admin).json()
+    assert [i["id"] for i in body["items"]] == [keyed]
+    assert body["total"] == 1
+    for t in MODULE_READ:
+        assert client.get("/jobs", params={"type": t}, headers=admin).json() == {"items": [], "total": 0}
+
+
+@pytest.mark.parametrize("job_type", MODULE_READ)
+def test_ac_45_09_module_read_type_detail_answers_not_found(client, session_factory, job_type):
+    _loaded_app_registry(client)
+    job_id = _seed_job(session_factory, job_type)
+    admin = _user(client, session_factory, ALL_KEYS, "allkeys")
+    res = client.get(f"/jobs/{job_id}", headers=admin)
+    assert res.status_code == 404
+    assert res.json() == {"detail": NOT_FOUND}
+
+
+def test_ac_45_09_preview_job_is_still_read_by_its_module_route(client, session_factory):
+    job_id = _seed_job(session_factory, "autocount_source_preview", status="done")
+    admin = _login(client, "demo@example.com", "demo1234")
+    res = client.get(f"/autocount/previews/{job_id}", headers=admin)
+    assert res.status_code == 200, res.text
+
+
+def test_ac_45_09_doc_lookup_job_is_still_read_by_its_module_route(client, session_factory):
+    db = session_factory()
+    try:
+        job = BackgroundJob(
+            tenant_id=DEFAULT_TENANT_ID, type="autocount_doc_lookup", status="done",
+            payload_json={"docType": "delivery_order"},
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+    admin = _login(client, "demo@example.com", "demo1234")
+    res = client.get(f"/autocount/doc-lookup/jobs/{job_id}", headers=admin)
+    assert res.status_code == 200, res.text
+
+
+def test_ac_45_09_pull_snapshot_is_still_read_by_its_module_route(client, session_factory):
+    from tests.test_s10_s3_pull_operator_routes import _company, _connection, _snapshot
+
+    job_id = _seed_job(session_factory, "autocount_pull_snapshot", status="running")
+    db = session_factory()
+    try:
+        company = _company(db, _connection(db).id)
+        snap = _snapshot(db, company, status="building")
+        snap.job_id = job_id
+        db.commit()
+        snap_id = snap.id
+    finally:
+        db.close()
+    admin = _login(client, "demo@example.com", "demo1234")
+    res = client.get(f"/autocount/pull/snapshots/{snap_id}", headers=admin)
+    assert res.status_code == 200, res.text
 
 
 # ── AC-45-04: a type with no handler is listed to nobody ─────────────────────
