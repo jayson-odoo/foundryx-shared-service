@@ -7,7 +7,6 @@ sentence naming only the exception class.
 from __future__ import annotations
 
 import csv
-import dataclasses
 import json
 import uuid
 from pathlib import Path
@@ -43,7 +42,6 @@ READ_PERMISSIONS = {
 # Read only through their own module routes, which check each row.
 MODULE_READ = ("autocount_doc_lookup", "autocount_source_preview", "autocount_pull_snapshot")
 ALL_KEYS = sorted(set(READ_PERMISSIONS.values()) | {"autocount.pull.read", "autocount.companies.read"})
-_KNOWN_DEF_FIELDS = {"type", "handler", "label", "queue", "heartbeats", "read_permission"}
 NOT_FOUND = "Job not found."
 
 
@@ -106,9 +104,7 @@ def temp_handlers():
 
 # ── AC-45-01 / AC-45-06: the registry names a read key per type ──────────────
 def _module_read_marked(def_) -> bool:
-    """True when the def carries a switch beyond the known fields that is on."""
-    extra = [f.name for f in dataclasses.fields(JobHandlerDef) if f.name not in _KNOWN_DEF_FIELDS]
-    return any(getattr(def_, name) is True for name in extra)
+    return def_.module_read is True
 
 
 def _rule_violations(defs) -> list:
