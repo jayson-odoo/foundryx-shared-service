@@ -465,7 +465,7 @@ class WebhookService:
         release_read_transactions()  # the URL check resolves a host: hold no transaction
         clean_url = validate_callback_url(url, strict_dns=strict_dns) if url is not None else None
         clean_events = _validate_events(events) if events is not None else None
-        self._hold_key_write(row, key_id)
+        row = self._hold_key_write(row, key_id)
         changed = False
         if name is not None:
             new_name = name.strip() or row.name
