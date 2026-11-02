@@ -93,6 +93,22 @@ def _default_graph(request):
     return httpx.Response(200, json={"messages": [{"id": "wamid.T1"}]}, request=request)
 
 
+def _stub_media_host_resolution(monkeypatch, address):
+    """Answer only the media host with `address`; every other name (and the port)
+    goes to the real resolver, so e.g. the realtime Redis client still resolves
+    localhost normally. `socket` is one global module: patching it patches all."""
+    import socket
+
+    real = socket.getaddrinfo
+
+    def resolve(host, port, *a, **k):
+        if host == MEDIA_HOST:
+            return [(2, 1, 6, "", (address, 0))]
+        return real(host, port, *a, **k)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+
+
 def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=None):
     """Fake every outbound call, for a sync or an async client. `rig.media_calls`
     counts fetches of the media host; `rig.graph_calls` lists the provider paths
@@ -127,10 +143,7 @@ def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", fake_async)
     # The URL guard resolves hostnames; answer with a public address, offline.
-    monkeypatch.setattr(
-        "app.services.url_guard.socket.getaddrinfo",
-        lambda host, port, *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))],
-    )
+    _stub_media_host_resolution(monkeypatch, "93.184.216.34")
     monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
     monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
     return rig
@@ -756,10 +769,7 @@ def _refused(client, session_factory, monkeypatch, *, phone, url, resolve_to=Non
     headers, cid, _ch = _setup(client, session_factory, phone=phone)
     rig = _install(monkeypatch, media=_pdf_media)
     if resolve_to:
-        monkeypatch.setattr(
-            "app.services.url_guard.socket.getaddrinfo",
-            lambda host, port, *a, **k: [(2, 1, 6, "", (resolve_to, 0))],
-        )
+        _stub_media_host_resolution(monkeypatch, resolve_to)
     r = client.post("/api/v1/omnichannel/messages", json=_media_body(phone, url), headers=headers)
     return r, rig, _message_count(session_factory, cid)
 
