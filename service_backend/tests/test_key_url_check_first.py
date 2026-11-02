@@ -20,6 +20,7 @@ from tests.test_omnichannel_api_gateway import _seeded
 from tests.test_omnichannel_send_route_limits import _install, _pdf_media, _PATHS, _setup
 
 HOOKS = "/api/v1/omnichannel/webhooks"
+CHECKED_HOSTS = {"hooks.example.com", "media.example.com"}
 PUBLIC = [(2, 1, 6, "", ("93.184.216.34", 0))]
 
 
@@ -54,7 +55,9 @@ class _Rig:
         self._listeners = [(on_begin, "after_begin"), (on_end, "after_transaction_end")]
 
         def resolver(host, port=None, *a, **k):
-            if host == "localhost":  # the realtime publisher's redis connect, not a URL check
+            # Only the callback or media host the tests use is a URL check; any
+            # other lookup (a redis client resolving its own host) is not.
+            if host not in CHECKED_HOSTS:
                 return PUBLIC
             rig.events.append("url")
             rig.open_at_check.append(
