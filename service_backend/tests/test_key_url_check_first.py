@@ -187,3 +187,23 @@ def test_ac_49_03_pin_patch_without_url_still_locks(client, session_factory, rig
     r = client.patch(f"{HOOKS}/{eid}", json={"name": "renamed"}, headers=hdr)
     assert r.status_code == 200, r.text
     assert "_hold_live_key" in rig.events and "_lock_endpoint" in rig.events, rig.events
+
+
+# ── staff create (review finding) ───────────────────────────────────────────
+def test_ac_49_01_staff_create_checks_url_with_no_transaction_held(client, session_factory, rig):
+    """Staff `POST /omnichannel/channels/{id}/webhooks` resolves the callback URL
+    with no session in a transaction (WebhookService.create)."""
+    from tests.test_omnichannel_conversations import _auth
+    from tests.test_omnichannel_webhooks import _channel_id, _seed_thread
+
+    _seed_thread(session_factory, messages=[{}])
+    cid = _channel_id(session_factory)
+    h = _auth(client)
+    rig.events.clear(); rig.open_at_check.clear()
+    r = client.post(
+        f"/omnichannel/channels/{cid}/webhooks",
+        json={"name": "staff", "url": "https://hooks.example.com/s", "events": ["message.inbound"]},
+        headers=h,
+    )
+    assert r.status_code == 201, r.text
+    _assert_free_at_check(rig)
