@@ -4,7 +4,7 @@
  * Save has to be disabled, and a failed preflight / an empty-map validation
  * error must be visible under the connection field.
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/lib/api-client';
@@ -12,7 +12,8 @@ import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { MigrationPreflight } from '@/types/respondio-migration';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
-vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: toastError } }));
 
 vi.mock('@/services/integration-service', () => ({
   integrationService: { list: vi.fn(async () => ({ data: [], total: 0 })) },
@@ -55,6 +56,9 @@ vi.mock('@/components/platform/resource-form', () => ({
       <button type="button" disabled={config.saveDisabled} onClick={() => void config.onSave()}>
         Save
       </button>
+      <button type="button" onClick={() => config.onCancel()}>
+        Cancel
+      </button>
     </div>
   ),
 }));
@@ -62,7 +66,13 @@ vi.mock('@/components/platform/resource-form', () => ({
 // Drive the form values the way a user would have, without clicking through
 // the pickers: seed connection + workspace once, optionally inject a
 // channelMap validation error. Everything else is the real hook.
-const seed = { connectionId: null as string | null, workspaceId: '', channelMapError: null as string | null };
+const seed = {
+  source: 'api' as 'api' | 'csv',
+  connectionId: null as string | null,
+  workspaceId: '',
+  channelMapError: null as string | null,
+};
+let current: ReturnType<typeof import('./use-migration-form').useMigrationForm> | null = null;
 vi.mock('./use-migration-form', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./use-migration-form')>();
   return {
@@ -70,7 +80,9 @@ vi.mock('./use-migration-form', async (importOriginal) => {
     useMigrationForm: () => {
       const hook = actual.useMigrationForm();
       const { form } = hook;
+      current = hook;
       useEffect(() => {
+        if (seed.source === 'csv') form.setValue('source', 'csv');
         if (seed.connectionId) form.setValue('connectionId', seed.connectionId);
         if (seed.workspaceId) form.setValue('workspaceId', seed.workspaceId);
         if (seed.channelMapError) form.setError('channelMap', { type: 'custom', message: seed.channelMapError });
@@ -89,6 +101,9 @@ beforeAll(async () => {
 
 beforeEach(() => {
   preflightMock.mockReset();
+  toastError.mockReset();
+  current = null;
+  seed.source = 'api';
   seed.connectionId = 'conn-1';
   seed.workspaceId = 'wsp-1';
   seed.channelMapError = null;
@@ -116,7 +131,7 @@ function save() {
 
 describe('MigrationFormView - why the form cannot be saved', () => {
   it('shows the preflight failure under the connection field and disables Save', async () => {
-    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 502));
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 400));
     render(<MigrationFormView />);
     expect(await screen.findByText('The respond.io key was refused.')).toBeInTheDocument();
     expect(save()).toBeDisabled();
@@ -125,9 +140,9 @@ describe('MigrationFormView - why the form cannot be saved', () => {
   it('shows a channelMap validation error under the connection when there is no Channels card', async () => {
     // No preflight ever settles, so there is no Channels card to host the field.
     preflightMock.mockReturnValue(new Promise(() => {}));
-    seed.channelMapError = 'Run preflight to load the source channels.';
+    seed.channelMapError = 'Add a channel to map.';
     render(<MigrationFormView />);
-    expect(await screen.findByText('Run preflight to load the source channels.')).toBeInTheDocument();
+    expect(await screen.findByText('Add a channel to map.')).toBeInTheDocument();
     expect(screen.queryByText('Channels')).not.toBeInTheDocument();
   });
 
@@ -152,5 +167,169 @@ describe('MigrationFormView - why the form cannot be saved', () => {
     render(<MigrationFormView />);
     expect(await screen.findByText('Channels')).toBeInTheDocument();
     await waitFor(() => expect(save()).toBeEnabled());
+  });
+});
+
+function seedNothing() {
+  seed.connectionId = null;
+  seed.workspaceId = '';
+}
+
+describe('MigrationFormView - missing picks go back to validation', () => {
+  it('fresh form: Save is enabled and shows the fields own messages, not a bare toast', async () => {
+    seedNothing();
+    render(<MigrationFormView />);
+    expect(save()).toBeEnabled();
+    fireEvent.click(save());
+    expect(await screen.findByText('Choose a connection.')).toBeInTheDocument();
+    expect(screen.getByText('Choose a target workspace.')).toBeInTheDocument();
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('connection without workspace: Save is enabled and names the workspace', async () => {
+    seed.workspaceId = '';
+    render(<MigrationFormView />);
+    expect(save()).toBeEnabled();
+    fireEvent.click(save());
+    expect(await screen.findByText('Choose a target workspace.')).toBeInTheDocument();
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('workspace without connection: Save is enabled and names the connection', async () => {
+    seed.connectionId = null;
+    render(<MigrationFormView />);
+    expect(save()).toBeEnabled();
+    fireEvent.click(save());
+    expect(await screen.findByText('Choose a connection.')).toBeInTheDocument();
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('CSV without an upload: Save and Run dry run are enabled and name the upload', async () => {
+    seedNothing();
+    seed.source = 'csv';
+    seed.workspaceId = 'wsp-1';
+    render(<MigrationFormView />);
+    expect(save()).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Run dry run' })).toBeEnabled();
+    fireEvent.click(save());
+    expect(await screen.findByText('Upload a contacts CSV.')).toBeInTheDocument();
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('CSV with an upload: Save and Run dry run are enabled', async () => {
+    seedNothing();
+    seed.source = 'csv';
+    seed.workspaceId = 'wsp-1';
+    render(<MigrationFormView />);
+    await waitFor(() => expect(current).not.toBeNull());
+    act(() => current?.onContactsUploaded({ id: 'up-1', rowCount: 2, headers: ['Name'] }, 'contacts.csv'));
+    expect(save()).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Run dry run' })).toBeEnabled();
+  });
+
+  it('pressing Save with no channels loaded never tells the user to run a preflight', async () => {
+    seed.workspaceId = '';
+    render(<MigrationFormView />);
+    fireEvent.click(save());
+    await screen.findByText('Choose a target workspace.');
+    expect(screen.queryByText(/run preflight/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('MigrationFormView - connection and workspace chosen', () => {
+  it('Run dry run follows Save: disabled while the preflight is running', async () => {
+    preflightMock.mockReturnValue(new Promise(() => {}));
+    render(<MigrationFormView />);
+    await waitFor(() => expect(preflightMock).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Run dry run' })).toBeDisabled();
+  });
+
+  it('shows the blocked warning and disables Save and Run dry run', async () => {
+    preflightMock.mockResolvedValueOnce(
+      preflight({ apiAvailable: false, channels: [], targetChannels: [], warnings: ['Could not reach respond.io.'] }),
+    );
+    render(<MigrationFormView />);
+    expect(await screen.findByText('Could not reach respond.io.')).toBeInTheDocument();
+    expect(save()).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run dry run' })).toBeDisabled();
+  });
+
+  it('a reachable source with zero channels: Save disabled and a visible reason', async () => {
+    preflightMock.mockResolvedValueOnce(preflight({ channels: [], targetChannels: [] }));
+    render(<MigrationFormView />);
+    expect(await screen.findByText(/no channels/i)).toBeInTheDocument();
+    expect(save()).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run dry run' })).toBeDisabled();
+  });
+
+  it('a failed preflight disables Run dry run too', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 400));
+    render(<MigrationFormView />);
+    await screen.findByText('The respond.io key was refused.');
+    expect(screen.getByRole('button', { name: 'Run dry run' })).toBeDisabled();
+  });
+
+  it('control: a channel left on Skip (null target) keeps Save and Run dry run enabled', async () => {
+    preflightMock.mockResolvedValueOnce(preflight({ targetChannels: [] }));
+    render(<MigrationFormView />);
+    expect(await screen.findByText('Channels')).toBeInTheDocument();
+    await waitFor(() => expect(save()).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Run dry run' })).toBeEnabled();
+  });
+
+  it('a server error shows the plain text, not its message', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('Internal Server Error', 500));
+    render(<MigrationFormView />);
+    expect(await screen.findByText('Could not check the connection.')).toBeInTheDocument();
+    expect(screen.queryByText('Internal Server Error')).not.toBeInTheDocument();
+  });
+
+  it('a client error shows its own message', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 403));
+    render(<MigrationFormView />);
+    expect(await screen.findByText('The respond.io key was refused.')).toBeInTheDocument();
+  });
+
+  it('the same text from preflight and channelMap shows once', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('Same words.', 400));
+    seed.channelMapError = 'Same words.';
+    render(<MigrationFormView />);
+    await waitFor(() => expect(preflightMock).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.getByText('Same words.')).toBeInTheDocument();
+  });
+});
+
+describe('MigrationFormView - clearing', () => {
+  it('a failed preflight then Cancel: the error is gone', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 400));
+    render(<MigrationFormView />);
+    await screen.findByText('The respond.io key was refused.');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText('The respond.io key was refused.')).not.toBeInTheDocument());
+  });
+
+  it('a failed preflight then clearing the connection: the error is gone', async () => {
+    preflightMock.mockRejectedValueOnce(new ApiError('The respond.io key was refused.', 400));
+    render(<MigrationFormView />);
+    await screen.findByText('The respond.io key was refused.');
+    act(() => current?.form.setValue('connectionId', null));
+    await waitFor(() => expect(screen.queryByText('The respond.io key was refused.')).not.toBeInTheDocument());
+  });
+
+  it('a successful preflight then clearing the connection: the Channels card is gone', async () => {
+    preflightMock.mockResolvedValueOnce(preflight());
+    render(<MigrationFormView />);
+    await screen.findByText('Channels');
+    act(() => current?.form.setValue('connectionId', null));
+    await waitFor(() => expect(screen.queryByText('Channels')).not.toBeInTheDocument());
+  });
+
+  it('in flight then clearing the connection: no stuck spinner', async () => {
+    preflightMock.mockReturnValue(new Promise(() => {}));
+    render(<MigrationFormView />);
+    await screen.findByText(/checking the connection/i);
+    act(() => current?.form.setValue('connectionId', null));
+    await waitFor(() => expect(screen.queryByText(/checking the connection/i)).not.toBeInTheDocument());
   });
 });
