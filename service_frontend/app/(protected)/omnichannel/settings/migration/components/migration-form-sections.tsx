@@ -57,6 +57,8 @@ export function SourceSection({
   connectionError,
   preflight,
   preflightLoading,
+  preflightError,
+  channelMapError,
   contactsUpload,
   contactsCsvHeaders,
   contactsCsvError,
@@ -77,6 +79,8 @@ export function SourceSection({
   connectionError?: string;
   preflight: MigrationPreflight | null;
   preflightLoading: boolean;
+  preflightError: string | null;
+  channelMapError?: string;
   contactsUpload: CsvUploadState | null;
   contactsCsvHeaders: string[];
   contactsCsvError?: string;
@@ -117,6 +121,10 @@ export function SourceSection({
               disabled={!editing}
             />
             {connectionError && <p className="text-destructive text-xs">{connectionError}</p>}
+            {preflightError && <p className="text-destructive text-xs">{preflightError}</p>}
+            {!preflight && channelMapError && channelMapError !== preflightError && (
+              <p className="text-destructive text-xs">{channelMapError}</p>
+            )}
             {preflightLoading && (
               <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
                 <LoaderCircle className="size-3 animate-spin" /> Checking the connection…

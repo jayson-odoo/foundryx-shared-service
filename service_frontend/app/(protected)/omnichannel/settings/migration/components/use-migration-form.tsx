@@ -128,10 +128,12 @@ export interface UseMigrationFormResult {
   tenantTeams: Team[];
   preflight: MigrationPreflight | null;
   preflightLoading: boolean;
+  preflightError: string | null;
   compatibleTargetIds: (sourceValue: string) => string[];
   dryRunJob: MigrationJob | null;
   canStartMigration: boolean;
   ready: boolean;
+  canSave: boolean;
   runDryRun: () => Promise<void>;
   startMigration: () => Promise<void>;
   submitting: boolean;
@@ -158,6 +160,7 @@ export function useMigrationForm(): UseMigrationFormResult {
   const [tenantTeams, setTenantTeams] = useState<Team[]>([]);
   const [preflight, setPreflight] = useState<MigrationPreflight | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
   const [dryRunJob, setDryRunJob] = useState<MigrationJob | null>(null);
   const [dryRunHash, setDryRunHash] = useState<string | null>(null);
   const [dryRunAt, setDryRunAt] = useState<number | null>(null);
@@ -217,6 +220,7 @@ export function useMigrationForm(): UseMigrationFormResult {
     }
     let active = true;
     setPreflightLoading(true);
+    setPreflightError(null);
     respondioMigrationService
       .preflight(connectionId, workspaceId)
       .then((pf) => {
@@ -231,7 +235,11 @@ export function useMigrationForm(): UseMigrationFormResult {
         form.setValue('teamMap', seeded.teamMap ?? [], { shouldDirty: true });
         form.setValue('lifecycleMap', seeded.lifecycleMap ?? [], { shouldDirty: true });
       })
-      .catch(() => active && setPreflight(null))
+      .catch((error: unknown) => {
+        if (!active) return;
+        setPreflight(null);
+        setPreflightError(error instanceof ApiError ? error.message : 'Could not check the connection.');
+      })
       .finally(() => active && setPreflightLoading(false));
     return () => {
       active = false;
@@ -308,6 +316,13 @@ export function useMigrationForm(): UseMigrationFormResult {
 
   const ready =
     !!workspaceId && (source === 'api' ? !!connectionId && !preflightLoading : !!watchedValues.contactsUploadId);
+  // Save and the Review dry run are the same action, so one stricter flag
+  // gates both: API mode also needs a reachable preflight with a channel to
+  // map; CSV mode has a legitimately empty channelMap.
+  const canSave =
+    ready &&
+    (source === 'csv' ||
+      (!preflightError && !!preflight?.apiAvailable && (watchedValues.channelMap?.length ?? 0) > 0));
 
   const startMigration = useCallback(async () => {
     if (!canStartMigration) return;
@@ -363,10 +378,12 @@ export function useMigrationForm(): UseMigrationFormResult {
     tenantTeams,
     preflight,
     preflightLoading,
+    preflightError,
     compatibleTargetIds: (sourceValue: string) => (preflight ? compatibleTargetIds(sourceValue, preflight) : []),
     dryRunJob,
     canStartMigration,
     ready,
+    canSave,
     runDryRun,
     startMigration,
     submitting,
