@@ -12,7 +12,7 @@ from typing import Optional
 
 from sqlalchemy.exc import SQLAlchemyError
 
-__all__ = ["db_error_text", "is_db_error", "error_code_of", "constraint_of"]
+__all__ = ["db_error_text", "stored_error_text", "db_error_in", "is_db_error", "error_code_of", "constraint_of"]
 
 _TOKEN_MAX = 64
 _SQLSTATE = re.compile(r"^[0-9A-Z]{5}$")
@@ -73,3 +73,31 @@ def db_error_text(exc: BaseException, what: str, *, with_constraint: bool = True
     if constraint:
         detail += f", constraint {constraint}"
     return f"{what} ({detail})."
+
+
+def db_error_in(exc: BaseException) -> Optional[BaseException]:
+    """The database error behind ``exc``: itself, or anywhere on its
+    ``__cause__`` / ``__context__`` chains (``from None`` included), else None."""
+    queue = [exc]
+    seen: set = set()
+    while queue and len(seen) < 16:
+        cur = queue.pop(0)
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if is_db_error(cur):
+            return cur
+        for nxt in (cur.__cause__, cur.__context__):
+            if nxt is not None:
+                queue.append(nxt)
+    return None
+
+
+def stored_error_text(exc: BaseException, what: str, fallback: Optional[str] = None) -> str:
+    """Text for an error that is stored or emailed. A database error becomes
+    ``db_error_text`` under the caller's sentence; any other error keeps the
+    caller's own text (``fallback``, default ``"<what>: <exc>"``)."""
+    db_exc = db_error_in(exc)
+    if db_exc is not None:
+        return db_error_text(db_exc, what)
+    return fallback if fallback is not None else f"{what}: {exc}"
