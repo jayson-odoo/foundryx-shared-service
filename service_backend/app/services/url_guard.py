@@ -25,6 +25,9 @@ from urllib.parse import urlparse
 import anyio
 import httpcore
 import httpx
+from anyio._core._eventloop import get_async_backend
+from httpcore._backends.anyio import AnyIOStream
+from httpcore._exceptions import map_exceptions
 
 
 class UrlGuardError(Exception):
@@ -267,21 +270,31 @@ class _GuardedAsyncBackend(httpcore.AnyIOBackend):
         """Start an attempt per checked address (the next one at once when the
         previous failed, otherwise after a short delay); the first connection
         wins and the rest are cancelled."""
-        connect_one = super().connect_tcp
         winner: typing.List[typing.Any] = []
+        opened: typing.List[typing.Any] = []  # every stream made; this method owns them all
         errors: typing.List[Exception] = []
+        exc_map = {
+            TimeoutError: httpcore.ConnectTimeout,
+            OSError: httpcore.ConnectError,
+            anyio.BrokenResourceError: httpcore.ConnectError,
+        }
 
         async def attempt(address: str, done: anyio.Event) -> None:
             try:
-                stream = await connect_one(address, port, timeout, local_address, socket_options)
+                with map_exceptions(exc_map):
+                    with anyio.fail_after(timeout):
+                        raw = await get_async_backend().connect_tcp(address, port, local_address)
+                        stream = AnyIOStream(raw)
+                        opened.append(stream)  # owned from here, before any checkpoint
+                        for option in socket_options or []:
+                            raw._raw_socket.setsockopt(*option)  # type: ignore[attr-defined]
             except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
                 errors.append(exc)
                 return
             finally:
                 done.set()
             if winner:
-                await stream.aclose()
-                return
+                return  # closed with the other unreturned streams
             winner.append(stream)
             group.cancel_scope.cancel()
 
@@ -298,9 +311,10 @@ class _GuardedAsyncBackend(httpcore.AnyIOBackend):
                 return winner[0]
             raise errors[-1]
         finally:
-            if winner and not returned:  # cancelled or failed: nobody owns the winner
-                with anyio.CancelScope(shield=True):
-                    await winner[0].aclose()
+            with anyio.CancelScope(shield=True):
+                for stream in opened:
+                    if not (returned and stream is winner[0]):
+                        await stream.aclose()
 
 
 def _default_limits() -> httpx.Limits:
