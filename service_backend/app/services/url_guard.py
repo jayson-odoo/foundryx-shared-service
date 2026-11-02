@@ -285,15 +285,22 @@ class _GuardedAsyncBackend(httpcore.AnyIOBackend):
             winner.append(stream)
             group.cancel_scope.cancel()
 
-        async with anyio.create_task_group() as group:
-            for address in addresses:
-                done = anyio.Event()
-                group.start_soon(attempt, address, done)
-                with anyio.move_on_after(_CONNECT_ATTEMPT_DELAY):
-                    await done.wait()
-        if winner:
-            return winner[0]
-        raise errors[-1]
+        returned = False
+        try:
+            async with anyio.create_task_group() as group:
+                for address in addresses:
+                    done = anyio.Event()
+                    group.start_soon(attempt, address, done)
+                    with anyio.move_on_after(_CONNECT_ATTEMPT_DELAY):
+                        await done.wait()
+            if winner:
+                returned = True
+                return winner[0]
+            raise errors[-1]
+        finally:
+            if winner and not returned:  # cancelled or failed: nobody owns the winner
+                with anyio.CancelScope(shield=True):
+                    await winner[0].aclose()
 
 
 def _default_limits() -> httpx.Limits:

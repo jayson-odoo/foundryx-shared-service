@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Tuple
 
+import anyio
 import httpx
 from sqlalchemy.orm import Session
 
@@ -1077,9 +1078,7 @@ class PublicGatewayService:
         except ValueError as exc:
             raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
         try:
-            return asyncio.run(
-                asyncio.wait_for(self._fetch_url_async(safe), MEDIA_FETCH_TOTAL_SECONDS)
-            )
+            return asyncio.run(self._fetch_url_bounded(safe))
         except ApiError:
             raise
         except UrlGuardError as exc:
@@ -1090,6 +1089,11 @@ class PublicGatewayService:
             # Whatever the cause, the answer is the same fixed text, never the
             # remote or network detail.
             raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
+
+    async def _fetch_url_bounded(self, safe: str) -> bytes:
+        # Level-triggered deadline: keeps cancelling until the fetch really ends.
+        with anyio.fail_after(MEDIA_FETCH_TOTAL_SECONDS):
+            return await self._fetch_url_async(safe)
 
     async def _fetch_url_async(self, safe: str) -> bytes:
         async with httpx.AsyncClient(

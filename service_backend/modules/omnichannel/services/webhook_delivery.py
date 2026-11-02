@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
+import anyio
 import httpx
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -243,10 +244,16 @@ def _run_under_deadline(make_coro: Callable[[], Any], timeout: float) -> Any:
     interrupted and may finish on its own, but nothing is sent after the deadline."""
 
     def run() -> Any:
+        async def bounded() -> Any:
+            # Level-triggered: keeps cancelling until the work really ends, even
+            # if something inside swallows one cancellation.
+            with anyio.fail_after(timeout):
+                return await make_coro()
+
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(asyncio.wait_for(make_coro(), timeout))
-        except asyncio.TimeoutError:
+            return loop.run_until_complete(bounded())
+        except TimeoutError:
             raise DeliveryDeadlineError() from None
         finally:
             try:
