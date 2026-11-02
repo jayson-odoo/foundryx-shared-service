@@ -234,17 +234,6 @@ class _Reply:
         self.status_code = status_code
 
 
-class _SyncTransportAdapter(httpx.AsyncBaseTransport):
-    """Lets a replaced (synchronous) transport factory still serve the async
-    client; the real ``GuardedTransport`` here is already the async one."""
-
-    def __init__(self, inner: httpx.BaseTransport) -> None:
-        self._inner = inner
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        return await asyncio.to_thread(self._inner.handle_request, request)
-
-
 def _run_under_deadline(make_coro: Callable[[], Any], timeout: float) -> Any:
     """Run one coroutine on a fresh loop, cancelled at ``timeout`` (cancelling
     closes the connection in every phase). Raises DeliveryDeadlineError at the
@@ -307,11 +296,8 @@ def _check_address(url: str, budget: float) -> float:
 async def _post_async(
     url: str, content: bytes, headers: Dict[str, str], budget: float
 ) -> _Reply:
-    transport = GuardedTransport(subject="Callback URL")
-    if not isinstance(transport, httpx.AsyncBaseTransport):
-        transport = _SyncTransportAdapter(transport)
     async with httpx.AsyncClient(
-        transport=transport, timeout=budget, follow_redirects=False
+        transport=GuardedTransport(subject="Callback URL"), timeout=budget, follow_redirects=False
     ) as client:
         async with client.stream("POST", url, content=content, headers=headers) as resp:
             if not resp.is_stream_consumed:
@@ -389,7 +375,7 @@ def dispatch(db: Session, delivery_id: str) -> str:
     status_code: Optional[int] = None
     error: Optional[str] = None
     try:
-        # SSRF guard (inside _post, under the same deadline), re-run per attempt: the URL passed validation at
+        # SSRF guard, run inside the deadline and re-run per attempt: the URL passed validation at
         # registration, but DNS may have been re-pointed since (and the URL is
         # externally supplied on the API-key surface). Never POST to a target
         # that resolves internally NOW.
