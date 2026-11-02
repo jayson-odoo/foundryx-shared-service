@@ -75,6 +75,12 @@ x-backend-env: &backend-env
   # concurrency per tenant from that Sorento connection's own Push concurrency
   # field instead (feat/sink-concurrency-ui), not by editing this default.
   AUTOCOUNT_SINK_CONCURRENCY: ${AUTOCOUNT_SINK_CONCURRENCY:-1}
+  # Per-key limits on the API key routes (plan 50). Empty = the default in
+  # app/config.py (10 in flight, 600 per minute, no overrides). Overrides =
+  # JSON {"<key id>": {"max_per_minute": n, "max_in_flight": n}}.
+  OMNI_KEY_MAX_IN_FLIGHT: ${OMNI_KEY_MAX_IN_FLIGHT:-}
+  OMNI_KEY_MAX_PER_MINUTE: ${OMNI_KEY_MAX_PER_MINUTE:-}
+  OMNI_KEY_LIMIT_OVERRIDES: ${OMNI_KEY_LIMIT_OVERRIDES:-}
 
 x-backend-base: &backend-base
   image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:backend-${IMAGE_TAG:-latest}

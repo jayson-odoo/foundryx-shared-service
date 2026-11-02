@@ -834,3 +834,35 @@ def fake_product(connector_client):
     product_client.TRANSPORT = fp.transport()
     yield fp
     product_client.TRANSPORT = None
+
+
+def _reset_key_limit_state(module) -> None:
+    """Return the key limiter's process-level state to its initial values:
+    cached client, warning timers and parsed overrides. Uses the module's own
+    `reset_state()` when it has one, else clears the known private names."""
+    reset = getattr(module, "reset_state", None)
+    if callable(reset):
+        reset()
+    for name in list(vars(module)):
+        if name == "_client" or name.startswith(("_last_warn", "_warned", "_overrides_", "_parsed_")):
+            setattr(module, name, None)
+
+
+@pytest.fixture(autouse=True)
+def key_limit_redis(monkeypatch):
+    """No test touches a real Redis: the key limiter's client getter
+    (`modules.omnichannel.services.key_limits.get_redis`) returns a fresh
+    in-memory fakeredis per test, and the limiter's cached client, warning
+    timers and parsed overrides start empty. Yields the fake."""
+    import fakeredis
+
+    fake = fakeredis.FakeStrictRedis()
+    try:
+        from modules.omnichannel.services import key_limits
+    except ImportError:
+        yield fake
+        return
+    _reset_key_limit_state(key_limits)
+    monkeypatch.setattr(key_limits, "get_redis", lambda: fake, raising=False)
+    yield fake
+    _reset_key_limit_state(key_limits)

@@ -29,6 +29,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.database import release_read_transactions
 from app.services.url_guard import UrlGuardError
 from app.services.url_guard import assert_deliverable as _core_assert_deliverable
 from app.services.url_guard import validate_public_https_url as _core_validate_url
@@ -209,6 +210,7 @@ class WebhookService:
         channel = self._channel(tenant_id, channel_id)
         # Validate first: the URL check can touch the network, which must not run
         # while the row lock below is held.
+        release_read_transactions()  # the URL check resolves a host: hold no transaction
         clean_url = validate_callback_url(url, strict_dns=strict_dns)
         clean_events = _validate_events(events)
         # Serialise registrations on this channel so the count below stays true.
@@ -263,6 +265,7 @@ class WebhookService:
         """Register an endpoint that covers every channel of the workspace
         (``channel_id`` NULL). Returns (row, plaintext_secret). With ``key_id``
         the write is refused (``WebhookKeyRevoked``) if that key is revoked."""
+        release_read_transactions()  # the URL check resolves a host: hold no transaction
         clean_url = validate_callback_url(url, strict_dns=strict_dns)
         clean_events = _validate_events(events)
         if key_id is not None:
@@ -459,9 +462,10 @@ class WebhookService:
         (``WebhookKeyRevoked``) if it is revoked."""
         row = self._get(tenant_id, endpoint_id)
         self._refuse_if_staff_paused(row, key_id)
+        release_read_transactions()  # the URL check resolves a host: hold no transaction
         clean_url = validate_callback_url(url, strict_dns=strict_dns) if url is not None else None
         clean_events = _validate_events(events) if events is not None else None
-        self._hold_key_write(row, key_id)
+        row = self._hold_key_write(row, key_id)
         changed = False
         if name is not None:
             new_name = name.strip() or row.name
