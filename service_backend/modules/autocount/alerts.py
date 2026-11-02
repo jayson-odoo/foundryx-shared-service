@@ -437,6 +437,9 @@ def _runs_word(count: int) -> str:
     return f"{count} run" if count == 1 else f"{count} runs"
 
 
+ALERT_EMAIL_SENTENCE = "Open the integration in the app to see the error."
+
+
 def _duration(start: datetime, end: datetime) -> str:
     minutes = max(int((_aware(end) - _aware(start)).total_seconds() // 60), 0)
     if minutes < 60:
@@ -499,13 +502,12 @@ def _compose(
         ("No successful run since" if stale else "Failing since", _local(since, zone)),
         ("Failed runs", str(incident.failed_runs)),
     ]
-    if incident.last_error:
-        rows.append(("Last error", incident.last_error))
+    # AC-48-01: no run, Sorento or record text in a mail; the app shows it.
     lead = (
         f"{name} has not completed a successful run."
         if stale
         else f"{name} keeps failing."
-    )
+    ) + f" {ALERT_EMAIL_SENTENCE}"
     return subject, rows, lead
 
 
