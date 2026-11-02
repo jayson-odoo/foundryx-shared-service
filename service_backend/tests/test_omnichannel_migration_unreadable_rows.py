@@ -710,3 +710,153 @@ def test_ac_44_12_a_non_source_error_reading_users_never_reports_success(soft_cl
     job = _dry_run_with_user_read_raising(soft_client, monkeypatch, KeyError("boom"))
 
     assert job["status"] == "failed", job
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AC-44-10 / 11 (round 2) - contact blocker line, resume, id marker, non-object
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _full_handler(contact_pages, *, channels=None, space_users=None):
+    """`_pages_handler_full` with the channel list answered from `channels`
+    (the shared helper always answers an empty channel list)."""
+    inner = _pages_handler_full(contact_pages, space_users=space_users)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/space/channel"):
+            handler.channel_calls += 1
+            return httpx.Response(200, json={"items": channels or [], "pagination": {"next": None}})
+        return inner(request)
+
+    handler.channel_calls = 0
+    return handler
+
+
+def _sample(job):
+    return job.result_json["failures"]["sample"]
+
+
+def test_ac_44_10_a_dry_run_blocker_line_gives_the_unreadable_contact_count(session_factory, monkeypatch):
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    pages = {None: ([dict(GOOD_CONTACT), bad_contact(7321)], None)}
+    _stub_client(monkeypatch, _full_handler(pages))
+
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="dry_run")
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert job.status == "done", job.error
+    blockers = job.result_json["report"]["blockers"]
+    assert "1 source contact(s) could not be read and were skipped." in blockers, blockers
+    _assert_no_markers(json.dumps(job.result_json, default=str))
+    db.close()
+
+
+def test_ac_44_10_a_resumed_job_lists_a_row_once(session_factory, monkeypatch):
+    """A job picked up again after a crash (status running, result and cursor
+    from the first pass still stored) lists each unreadable channel and user
+    once, and the blocker counts do not grow."""
+    from modules.omnichannel.services.migration_service import MigrationService, run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    handler = _full_handler(
+        {None: ([dict(GOOD_CONTACT)], None)},
+        channels=[GOOD_CHANNEL, bad_channel(7011)],
+        space_users=[GOOD_USER, bad_user(7121)],
+    )
+    _stub_client(monkeypatch, handler)
+
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="dry_run")
+    run_migration_job(db, job)
+    db.refresh(job)
+    assert job.status == "done", job.error
+    assert handler.channel_calls >= 1, "the channel stub was never reached"
+    first_ids = [r["sourceId"] for r in _sample(job)]
+    assert "7011" in first_ids and "7121" in first_ids, first_ids
+    calls_after_first = handler.channel_calls
+
+    # The crash resume: same job, same stored result, status back to running.
+    from app.models.background_job import JOB_RUNNING
+
+    job.status = JOB_RUNNING
+    db.commit()
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert job.status == "done", job.error
+    assert handler.channel_calls > calls_after_first, "the resume never re-read the channels"
+    rows = _sample(job)
+    assert [r["sourceId"] for r in rows if r["sourceId"] == "7011"] == ["7011"], rows
+    assert [r["sourceId"] for r in rows if r["sourceId"] == "7121"] == ["7121"], rows
+    assert job.result_json["failures"]["rowCount"] == len(rows), job.result_json["failures"]
+    csv_text = MigrationService(db).failures_csv(DEFAULT_TENANT_ID, job.id)
+    assert csv_text.count("7011") == 1, csv_text
+    assert csv_text.count("7121") == 1, csv_text
+    blockers = job.result_json["report"]["blockers"]
+    assert len([b for b in blockers if "channel" in b.lower() and "could not be read" in b]) == 1, blockers
+    assert len([b for b in blockers if "user" in b.lower() and "could not be read" in b]) == 1, blockers
+    db.close()
+
+
+@pytest.mark.parametrize("marker_id", ["MARKER-NAME", "Jane Placeholder", "-5", "1e3", "12 34"])
+def test_ac_44_11_a_contact_id_that_is_not_an_id_is_stored_as_empty(session_factory, monkeypatch, marker_id):
+    from modules.omnichannel.services.migration_service import MigrationService, run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    bad = bad_contact(7321)
+    bad["id"] = marker_id
+    pages = {None: ([bad, dict(bad_contact(7322))], None)}
+    _stub_client(monkeypatch, _full_handler(pages))
+
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert job.status == "done", job.error
+    rows = [r for r in _sample(job) if r["entity"] == "contacts"]
+    assert sorted(r["sourceId"] for r in rows) == ["", "7322"], rows
+    everything = json.dumps(
+        [job.result_json, job.cursor_json, job.logs_json, job.error,
+         MigrationService(db).failures_csv(DEFAULT_TENANT_ID, job.id)],
+        default=str,
+    )
+    assert marker_id not in everything.replace("MARKER-TAGS", ""), marker_id
+    db.close()
+
+
+def test_ac_44_11_a_contact_row_that_is_not_an_object_is_skipped_and_counted(session_factory, monkeypatch):
+    from modules.omnichannel.services.migration_service import run_migration_job
+
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+    pages = {None: (["MARKER-STRING", dict(GOOD_CONTACT)], None)}
+    _stub_client(monkeypatch, _full_handler(pages))
+
+    job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
+    run_migration_job(db, job)
+    db.refresh(job)
+
+    assert job.status == "done", job.error
+    contacts = job.result_json["report"]["entities"]["contacts"]
+    assert contacts["fetched"] == 2, contacts
+    assert contacts["errors"] == 1, contacts
+    rows = [r for r in _sample(job) if r["entity"] == "contacts"]
+    assert len(rows) == 1 and rows[0]["sourceId"] == "" and rows[0]["action"] == "skipped", rows
+    assert db.query(Contact).filter(
+        Contact.tenant_id == DEFAULT_TENANT_ID, Contact.phone == GOOD_CONTACT["phone"]
+    ).count() == 1
+    _assert_no_markers(json.dumps(job.result_json, default=str))
+    db.close()

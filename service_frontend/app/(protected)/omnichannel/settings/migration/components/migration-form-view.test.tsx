@@ -4,14 +4,18 @@
  * Save has to be disabled, and a failed preflight / an empty-map validation
  * error must be visible under the connection field.
  */
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useEffect } from 'react';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/lib/api-client';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
-import type { MigrationPreflight } from '@/types/respondio-migration';
+import type { MigrationJob, MigrationPreflight } from '@/types/respondio-migration';
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => '/omnichannel/settings/migration/new',
+  useSearchParams: () => new URLSearchParams(),
+}));
 const toastError = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: toastError } }));
 
@@ -25,11 +29,13 @@ vi.mock('@/services/user-service', () => ({ userService: { list: vi.fn(async () 
 vi.mock('@/services/team-service', () => ({ teamService: { list: vi.fn(async () => ({ data: [], total: 0 })) } }));
 
 const preflightMock = vi.fn();
+const createJobMock = vi.fn();
+const getJobMock = vi.fn();
 vi.mock('@/services/respondio-migration-service', () => ({
   respondioMigrationService: {
     preflight: (...args: unknown[]) => preflightMock(...args),
-    createJob: vi.fn(),
-    getJob: vi.fn(),
+    createJob: (...args: unknown[]) => createJobMock(...args),
+    getJob: (...args: unknown[]) => getJobMock(...args),
   },
 }));
 
@@ -101,6 +107,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   preflightMock.mockReset();
+  createJobMock.mockReset();
+  getJobMock.mockReset();
   toastError.mockReset();
   current = null;
   seed.source = 'api';
@@ -331,5 +339,236 @@ describe('MigrationFormView - clearing', () => {
     await screen.findByText(/checking the connection/i);
     act(() => current?.form.setValue('connectionId', null));
     await waitFor(() => expect(screen.queryByText(/checking the connection/i)).not.toBeInTheDocument());
+  });
+});
+
+
+// ── Plan 44 - source channels that could not be read (AC-44-23 / 24) ───────
+
+const BAD_ID = 'src-bad-7011';
+
+function unreadablePreflight(overrides: Partial<MigrationPreflight> = {}): MigrationPreflight {
+  return preflight({
+    channels: [{ id: 'ch-1', name: 'Support line', source: 'whatsapp_cloud' }],
+    targetChannels: [
+      { id: 'tc-1', name: 'Main WhatsApp', channelType: 'WHATSAPP' },
+      { id: 'tc-2', name: 'Second WhatsApp', channelType: 'WHATSAPP' },
+    ],
+    unreadableChannelIds: [BAD_ID],
+    ...overrides,
+  } as Partial<MigrationPreflight>);
+}
+
+function doneJob(mode: 'dry_run' | 'run', blockers: string[] = []): MigrationJob {
+  const zero = { fetched: 0, wouldCreate: 0, wouldUpdate: 0, wouldSkip: 0, errors: 0 };
+  return {
+    id: 'mig-job-1',
+    mode,
+    source: 'api',
+    connectionId: 'conn-1',
+    spaceLabel: 'Acme Support',
+    workspaceId: 'wsp-1',
+    workspaceName: 'Main',
+    status: 'done',
+    progressTotal: 1,
+    progressDone: 1,
+    progressFailed: 0,
+    entityCounts: { contacts: 1, messages: 0 },
+    report: {
+      entities: {
+        contacts: { ...zero },
+        fields: { ...zero },
+        tags: { ...zero },
+        identities: { ...zero },
+        messages: { ...zero },
+        media: { ...zero },
+        events: { ...zero },
+        quickReplies: { ...zero },
+      },
+      messagesWithInferredTimestamp: 0,
+      messagesSkippedBeforeFloor: 0,
+      blockers,
+      samples: { contacts: [], messages: [] },
+    },
+    failureCount: 0,
+    failureSample: [],
+    startedAt: '2026-01-01T00:00:00Z',
+    finishedAt: '2026-01-01T00:00:01Z',
+    createdAt: '2026-01-01T00:00:00Z',
+    actorUserName: 'You',
+    logs: [],
+  } as MigrationJob;
+}
+
+/** The select inside the row that shows `text` (walks up to the nearest
+ *  ancestor holding exactly one combobox). */
+function rowSelect(text: RegExp | string): HTMLElement {
+  let node: HTMLElement | null = screen.getByText(text);
+  while (node) {
+    const boxes = within(node).queryAllByRole('combobox');
+    if (boxes.length === 1) return boxes[0];
+    node = node.parentElement;
+  }
+  throw new Error(`no select found near ${String(text)}`);
+}
+
+function channelEntries() {
+  return current?.form.getValues('channelMap') ?? [];
+}
+
+async function chooseSkipFor(text: RegExp | string) {
+  fireEvent.click(rowSelect(text));
+  const options = await screen.findAllByRole('option');
+  fireEvent.click(options.find((o) => o.textContent === 'Skip this channel') as HTMLElement);
+}
+
+async function renderWithUnreadable(pf: MigrationPreflight = unreadablePreflight()) {
+  preflightMock.mockResolvedValueOnce(pf);
+  render(<MigrationFormView />);
+  await screen.findByText('Channels');
+  await waitFor(() => expect(save()).toBeEnabled());
+}
+
+describe('MigrationFormView - unreadable source channels (AC-44-23)', () => {
+  it('shows a row per unreadable id whose select offers exactly "Skip this channel"', async () => {
+    await renderWithUnreadable();
+    expect(screen.getByText(new RegExp(BAD_ID))).toBeInTheDocument();
+    fireEvent.click(rowSelect(new RegExp(BAD_ID)));
+    const options = await screen.findAllByRole('option');
+    expect(options.map((o) => o.textContent)).toEqual(['Skip this channel']);
+  });
+
+  it('does not show Skip as chosen by default and the map has no entry for the id', async () => {
+    await renderWithUnreadable();
+    expect(rowSelect(new RegExp(BAD_ID))).not.toHaveTextContent('Skip this channel');
+    expect(channelEntries().map((e) => e.sourceChannelId)).toEqual(['ch-1']);
+    expect(channelEntries().some((e) => e.sourceChannelId === BAD_ID)).toBe(false);
+  });
+
+  it('choosing Skip adds the id with a null target and leaves the readable entries alone', async () => {
+    await renderWithUnreadable();
+    const before = channelEntries().filter((e) => e.sourceChannelId === 'ch-1');
+    await chooseSkipFor(new RegExp(BAD_ID));
+    await waitFor(() =>
+      expect(channelEntries()).toContainEqual({ sourceChannelId: BAD_ID, targetChannelId: null }),
+    );
+    expect(channelEntries().filter((e) => e.sourceChannelId === 'ch-1')).toEqual(before);
+    expect(rowSelect(new RegExp(BAD_ID))).toHaveTextContent('Skip this channel');
+  });
+
+  it('changing a readable channel target afterwards keeps the Skip entry', async () => {
+    await renderWithUnreadable();
+    await chooseSkipFor(new RegExp(BAD_ID));
+    await waitFor(() => expect(channelEntries().some((e) => e.sourceChannelId === BAD_ID)).toBe(true));
+    fireEvent.click(screen.getByRole('combobox', { name: 'Target channel for Support line' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Second WhatsApp' }));
+    await waitFor(() =>
+      expect(channelEntries()).toContainEqual({ sourceChannelId: 'ch-1', targetChannelId: 'tc-2' }),
+    );
+    expect(channelEntries()).toContainEqual({ sourceChannelId: BAD_ID, targetChannelId: null });
+  });
+
+  it('a dry run goes ahead with no Skip chosen and its payload has no entry for the id', async () => {
+    createJobMock.mockResolvedValue(doneJob('dry_run'));
+    getJobMock.mockResolvedValue(doneJob('dry_run'));
+    await renderWithUnreadable();
+    fireEvent.click(screen.getByRole('button', { name: 'Run dry run' }));
+    await waitFor(() => expect(createJobMock).toHaveBeenCalledTimes(1));
+    const input = createJobMock.mock.calls[0][0] as {
+      mode: string;
+      channelMap: { sourceChannelId: string }[];
+    };
+    expect(input.mode).toBe('dry_run');
+    expect(input.channelMap.some((e) => e.sourceChannelId === BAD_ID)).toBe(false);
+  });
+
+  describe('the real run is refused for an unreadable channel', () => {
+    const REFUSAL = `1 source channel(s) could not be read and would be lost (source ids: ${BAD_ID}).`;
+
+    async function refuseStart() {
+      createJobMock.mockResolvedValueOnce(doneJob('dry_run'));
+      getJobMock.mockResolvedValue(doneJob('dry_run'));
+      await renderWithUnreadable();
+      fireEvent.click(screen.getByRole('button', { name: 'Run dry run' }));
+      const start = screen.getByRole('button', { name: 'Start migration' });
+      await waitFor(() => expect(start).toBeEnabled());
+      createJobMock.mockRejectedValueOnce(new ApiError('Unprocessable', 422, null, { fieldErrors: { channelMap: REFUSAL } }));
+      fireEvent.click(start);
+      await waitFor(() => expect(createJobMock).toHaveBeenCalledTimes(2));
+      expect((createJobMock.mock.calls[1][0] as { mode: string }).mode).toBe('run');
+    }
+
+    it('shows the message under the Channels card, exactly once, with a preflight loaded', async () => {
+      await refuseStart();
+      expect(await screen.findByText(REFUSAL)).toBeInTheDocument();
+      expect(screen.getAllByText(REFUSAL)).toHaveLength(1);
+      const card = screen.getByText('Channels').closest('[data-slot="card"]') as HTMLElement;
+      expect(within(card).getByText(REFUSAL)).toBeInTheDocument();
+    });
+
+    it('choosing Skip clears that message', async () => {
+      await refuseStart();
+      await screen.findByText(REFUSAL);
+      await chooseSkipFor(new RegExp(BAD_ID));
+      await waitFor(() => expect(screen.queryByText(REFUSAL)).not.toBeInTheDocument());
+    });
+  });
+
+  it('a new preflight (changing workspace) drops the Skip choice', async () => {
+    await renderWithUnreadable();
+    await chooseSkipFor(new RegExp(BAD_ID));
+    await waitFor(() => expect(channelEntries().some((e) => e.sourceChannelId === BAD_ID)).toBe(true));
+    preflightMock.mockResolvedValueOnce(unreadablePreflight());
+    act(() => current?.form.setValue('workspaceId', 'wsp-2'));
+    await waitFor(() => expect(preflightMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(channelEntries().some((e) => e.sourceChannelId === BAD_ID)).toBe(false));
+    expect(rowSelect(new RegExp(BAD_ID))).not.toHaveTextContent('Skip this channel');
+  });
+
+  it('does not say the space has no channels while an unreadable id is listed', async () => {
+    preflightMock.mockResolvedValueOnce(unreadablePreflight({ channels: [] }));
+    render(<MigrationFormView />);
+    expect(await screen.findByText(new RegExp(BAD_ID))).toBeInTheDocument();
+    expect(screen.queryByText('This space has no channels to migrate.')).not.toBeInTheDocument();
+  });
+
+  it('control: with no channels and nothing unreadable the message still shows', async () => {
+    preflightMock.mockResolvedValueOnce(preflight({ channels: [], targetChannels: [] }));
+    render(<MigrationFormView />);
+    expect(await screen.findByText('This space has no channels to migrate.')).toBeInTheDocument();
+  });
+
+  it('control: no unreadable ids means no extra row', async () => {
+    await renderWithUnreadable(unreadablePreflight({ unreadableChannelIds: [] }));
+    expect(screen.queryByText(new RegExp(BAD_ID))).not.toBeInTheDocument();
+    expect(screen.getAllByRole('combobox', { name: /^Target channel for / })).toHaveLength(1);
+  });
+
+  it('a response from an older server without the field is treated as empty', async () => {
+    const older = unreadablePreflight() as Partial<MigrationPreflight>;
+    delete older.unreadableChannelIds;
+    await renderWithUnreadable(older as MigrationPreflight);
+    expect(screen.getAllByRole('combobox', { name: /^Target channel for / })).toHaveLength(1);
+    expect(channelEntries().map((e) => e.sourceChannelId)).toEqual(['ch-1']);
+  });
+});
+
+describe('MigrationFormView - review shows the dry run counts before Start (AC-44-24, pin)', () => {
+  it('shows all four blocker lines, before the Start button', async () => {
+    const lines = [
+      '1 source channel(s) could not be read and were skipped.',
+      '2 source user(s) could not be read and were skipped.',
+      '3 source custom field(s) could not be read and were skipped.',
+      '4 source contact(s) could not be read and were skipped.',
+    ];
+    createJobMock.mockResolvedValueOnce(doneJob('dry_run', lines));
+    getJobMock.mockResolvedValue(doneJob('dry_run', lines));
+    await renderWithUnreadable();
+    fireEvent.click(screen.getByRole('button', { name: 'Run dry run' }));
+    const start = screen.getByRole('button', { name: 'Start migration' });
+    for (const line of lines) {
+      const el = await screen.findByText(line);
+      expect(el.compareDocumentPosition(start) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
   });
 });
