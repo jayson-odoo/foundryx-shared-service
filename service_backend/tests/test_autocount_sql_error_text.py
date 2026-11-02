@@ -44,7 +44,6 @@ from tests.test_s33_integration_alerts import MANAGE, _only_recipients, _user
 
 MARKER = "zzmarker9137"
 MISSING_TABLE = f"{MARKER}_tbl"
-FAILING_QUERY = f"SELECT acc_no, company_name, email, last_modified FROM {MISSING_TABLE}"
 
 
 class PgLikeError(Exception):
@@ -125,7 +124,18 @@ def test_ac_46_06_the_preview_error_response_holds_no_driver_message(client, ses
     RUNTIME.dispose_all()
 
 
-# ── the call record ──────────────────────────────────────────────────────
+# ── the call record, run, task, incident and email ──────────────────────
+
+
+def _failing_executes(engine):
+    """Make the source's execute raise a driver error whose message holds
+    MARKER (as a driver echoes row data), while the query stays plain."""
+
+    def boom(conn, cursor, statement, parameters, context, executemany):
+        if "debtor" in statement.lower():
+            raise _wrap(IntegrityError, PgLikeError("23505"))
+
+    sa.event.listen(engine, "before_cursor_execute", boom)
 
 
 def test_ac_46_06_the_call_record_of_a_failed_query_holds_no_driver_message(session_factory):
@@ -135,31 +145,32 @@ def test_ac_46_06_the_call_record_of_a_failed_query_holds_no_driver_message(sess
 
     db = session_factory()
     try:
-        conn = _src_conn(db, _source_engine())
+        engine = _source_engine()
+        _failing_executes(engine)
+        conn = _src_conn(db, engine)
         company = _company(db)
-        config = _configure(db, company, query=FAILING_QUERY, connection_id=conn.id)
+        config = _configure(db, company, connection_id=conn.id)
         source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER)
         with pytest.raises(SqlQueryError) as caught:
             source.fetch_changes(Watermark())
         calls = source.drain_activity()
-        assert calls, "the failed query must leave a call record"
+        assert len(calls) == 1
+        assert calls[0].error_message
         assert MARKER not in repr(calls)
         assert MARKER not in str(caught.value)
+        assert calls[0].request["sql"].startswith("SELECT acc_no")
     finally:
         db.close()
         RUNTIME.dispose_all()
 
 
-# ── run + task error, incident, alert email ──────────────────────────────
-
-
 def test_ac_46_06_run_task_incident_and_email_hold_no_driver_message(session_factory, consumer):
     from modules.autocount.alerts import evaluate_integration_alerts
 
-    company_id, _sql_id, _engine = _make_rig(session_factory)
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _failing_executes(engine)
     db = session_factory()
     config = _config_row(db, company_id)
-    config.source_config = {**config.source_config, "query": FAILING_QUERY}
     config.activated_at = datetime.now(timezone.utc) - timedelta(hours=2)
     db.commit()
     _only_recipients(db)
@@ -173,14 +184,16 @@ def test_ac_46_06_run_task_incident_and_email_hold_no_driver_message(session_fac
     for run in runs:
         assert MARKER not in run.error
     db.expire_all()
-    assert MARKER not in (_config_row(db, company_id).last_run_error or "")
+    assert _config_row(db, company_id).last_run_error
+    assert MARKER not in _config_row(db, company_id).last_run_error
     assert MARKER not in (_watermark_row(db, company_id).last_error or "")
 
     evaluate_integration_alerts(db, now=datetime.now(timezone.utc) + timedelta(minutes=1))
     incidents = db.query(AcTaskIncident).all()
     assert incidents, "two failed runs must open an incident"
     for incident in incidents:
-        assert MARKER not in (incident.last_error or "")
+        assert incident.last_error
+        assert MARKER not in incident.last_error
     emails = db.query(EmailOutbox).all()
     assert emails, "the incident must send an alert email"
     for mail in emails:
