@@ -10,6 +10,9 @@ from __future__ import annotations
 
 
 class SqlSourceError(Exception):
+    # Its message is built for operators, so a stored failure may carry it.
+    operator_safe_message = True
+
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message

@@ -7,7 +7,7 @@ import { useJobsListConfig } from './use-jobs-list-config';
 
 /**
  * Jobs (sprint-4/10 AC-10-19) - the generic background-jobs history on the
- * Resource shell. Readable by any authenticated user (jobs are tenant-scoped
+ * Resource shell. Job reads follow each type's read permission (tenant-scoped
  * server-side); the migration controls in the row "…" need
  * `integrations.migrate_storage`.
  */

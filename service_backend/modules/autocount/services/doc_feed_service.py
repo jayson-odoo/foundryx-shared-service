@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.jobs.crash_text import crash_text
 from app.jobs.service import JobService
 from app.models.background_job import JOB_FAILED, JOB_TERMINAL_STATUSES
 
@@ -349,7 +350,7 @@ class DocFeedService:
             self.db.rollback()
             fresh = jobs.repo.get_unscoped(job.id)
             if fresh is not None and fresh.status not in JOB_TERMINAL_STATUSES:
-                jobs.finish(fresh, status=JOB_FAILED, error=f"Job crashed: {exc}")
+                jobs.finish(fresh, status=JOB_FAILED, error=crash_text(exc))
                 self.db.commit()
 
     # ── runs / issues (AC-14-70/71) ──────────────────────────────────────────

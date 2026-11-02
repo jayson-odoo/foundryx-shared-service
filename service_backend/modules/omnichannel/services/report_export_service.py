@@ -379,7 +379,9 @@ def run_report_export(db: Session, job: BackgroundJob) -> None:
     )
 
 
-_HANDLER_DEF = JobHandlerDef(REPORT_EXPORT_JOB_TYPE, run_report_export, "Report export")
+_HANDLER_DEF = JobHandlerDef(REPORT_EXPORT_JOB_TYPE, run_report_export, "Report export",
+    read_permission="reports.export",
+)
 
 
 def register_report_export_handler() -> None:

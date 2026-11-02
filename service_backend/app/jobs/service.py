@@ -11,13 +11,14 @@ from __future__ import annotations
 import inspect
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Optional
+from typing import Collection, Iterable, Optional
 
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.jobs.crash_text import crash_text
 from app.jobs.registry import handler_for, types_that_heartbeat
 from app.jobs.repository import BackgroundJobRepository
 from app.models.background_job import (
@@ -103,13 +104,19 @@ class JobService:
         status: Optional[str] = None,
         page: int = 0,
         page_size: int = 25,
+        types: Optional[Collection[str]] = None,
     ):
+        """``types`` limits the page to those job types; an empty collection is
+        an empty page, None is no type limit (internal callers)."""
         return self.repo.list(
-            tenant_id, job_type=job_type, status=status, page=page, page_size=page_size
+            tenant_id, job_type=job_type, status=status, page=page, page_size=page_size,
+            types=types,
         )
 
-    def get(self, tenant_id: str, job_id: str) -> Optional[BackgroundJob]:
-        return self.repo.get(tenant_id, job_id)
+    def get(
+        self, tenant_id: str, job_id: str, *, types: Optional[Collection[str]] = None
+    ) -> Optional[BackgroundJob]:
+        return self.repo.get(tenant_id, job_id, types=types)
 
     # ── claim (exactly-once) ─────────────────────────────────────────────────
 
@@ -564,7 +571,7 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
             error = (
                 "Job stopped: a storage connection is not usable."
                 if isinstance(exc, UnresolvableKey)
-                else f"Job crashed: {exc}"
+                else crash_text(exc)
             )
             service.finish(job, status=JOB_FAILED, error=error)
             close_module_bookkeeping(db, job, now=job.finished_at)

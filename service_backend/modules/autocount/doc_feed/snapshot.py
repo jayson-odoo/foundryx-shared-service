@@ -21,6 +21,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from app.jobs.crash_text import failure_text
 from app.jobs.service import JobService
 from app.models.background_job import JOB_DONE, JOB_FAILED
 
@@ -153,7 +154,8 @@ def build_doc_feed_snapshot(
         fail(exc.message, ERROR_CODE_SOURCE_PAGE_FAILED)
         return
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
-        fail(f"Fetch failed: {exc}", ERROR_CODE_SOURCE_PAGE_FAILED)
+        logger.exception("autocount doc-feed snapshot setup failed for job %s", job.id)
+        fail(failure_text("Setup failed", exc), ERROR_CODE_SOURCE_PAGE_FAILED)
         return
 
     book = resolved.book
@@ -172,10 +174,12 @@ def build_doc_feed_snapshot(
             abandon(exc)
             return
         except DocFeedVendorError as exc:
-            fail(str(exc), ERROR_CODE_SOURCE_PAGE_FAILED)
+            logger.exception("autocount doc-feed snapshot vendor error for job %s", job.id)
+            fail(failure_text("Fetch failed", exc), ERROR_CODE_SOURCE_PAGE_FAILED)
             return
         except Exception as exc:  # noqa: BLE001
-            fail(f"Fetch failed: {exc}", ERROR_CODE_SOURCE_PAGE_FAILED)
+            logger.exception("autocount doc-feed snapshot fetch failed for job %s", job.id)
+            fail(failure_text("Fetch failed", exc), ERROR_CODE_SOURCE_PAGE_FAILED)
             return
     finally:
         try:

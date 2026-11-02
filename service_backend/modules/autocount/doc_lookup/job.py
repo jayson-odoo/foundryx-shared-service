@@ -252,6 +252,7 @@ def run_doc_lookup(db: Session, job: BackgroundJob) -> None:
 
 _HANDLER_DEF = JobHandlerDef(
     DOC_LOOKUP_JOB_TYPE, run_doc_lookup, "AutoCount document search", heartbeats=True,
+    module_read=True,
 )
 
 

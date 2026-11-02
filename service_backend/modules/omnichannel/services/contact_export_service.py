@@ -334,7 +334,9 @@ def run_contacts_export(db: Session, job: BackgroundJob) -> None:
     )
 
 
-_HANDLER_DEF = JobHandlerDef(EXPORT_JOB_TYPE, run_contacts_export, "Contacts export")
+_HANDLER_DEF = JobHandlerDef(EXPORT_JOB_TYPE, run_contacts_export, "Contacts export",
+    read_permission="contacts.export",
+)
 
 
 def register_contacts_export_handler() -> None:

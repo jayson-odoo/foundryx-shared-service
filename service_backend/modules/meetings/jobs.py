@@ -41,6 +41,7 @@ from typing import List, Optional, Tuple
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
 
+from app.jobs.crash_text import failure_text
 from app.jobs.registry import JobHandlerDef, register_job_handler
 from app.models.background_job import (
     JOB_DONE,
@@ -123,7 +124,8 @@ def run_calendar_sync(db: Session, job: BackgroundJob) -> None:
     try:
         source = calendar_source_from_connection(connection.config_json or {}, credentials)
     except CalendarSourceError as exc:
-        service.finish(job, status=JOB_FAILED, error=str(exc))
+        logger.exception("meetings calendar sync source failed for %s", tenant_id)
+        service.finish(job, status=JOB_FAILED, error=failure_text("Calendar sync failed", exc))
         return
 
     result = sync_tenant(db, tenant_id, source)
@@ -429,7 +431,7 @@ def run_transcribe(db: Session, job: BackgroundJob) -> None:
             meeting.status = STATUS_FAILED
             meeting.status_reason = error
             db.commit()
-        service.finish(job, status=JOB_FAILED, error=error)
+        service.finish(job, status=JOB_FAILED, error=failure_text("Transcription failed", exc))
         return
 
     if captions_missing:
@@ -533,12 +535,20 @@ def enqueue_due_calendar_syncs(db: Session) -> int:
 
 # ── boot registration (idempotent) ────────────────────────────────────────────
 # The SAME def object re-registers cleanly (the registry tolerates identity).
-_HANDLER_DEF = JobHandlerDef(CALENDAR_SYNC, run_calendar_sync, "Meetings calendar sync")
-_BOT_RUN_DEF = JobHandlerDef(BOT_RUN, _run_bot, "Meetings bot run")
+_HANDLER_DEF = JobHandlerDef(
+    CALENDAR_SYNC, run_calendar_sync, "Meetings calendar sync",
+    read_permission="meetings.settings.manage",
+)
+_BOT_RUN_DEF = JobHandlerDef(
+    BOT_RUN, _run_bot, "Meetings bot run", read_permission="meetings.settings.manage",
+)
 # queue="stt": Metal-bound mlx STT only runs on the pilot host's dedicated
 # worker (module docstring above) - it must never land on the compose
 # ``workflow`` worker, which has no mlx venv and would fail every job instantly.
-_TRANSCRIBE_DEF = JobHandlerDef(TRANSCRIBE, run_transcribe, "Meetings transcription", queue="stt")
+_TRANSCRIBE_DEF = JobHandlerDef(
+    TRANSCRIBE, run_transcribe, "Meetings transcription", queue="stt",
+    read_permission="meetings.settings.manage",
+)
 
 
 def register_calendar_sync_handler() -> None:

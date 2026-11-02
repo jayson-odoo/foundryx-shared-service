@@ -643,7 +643,9 @@ def run_broadcast_send(db: Session, job: BackgroundJob) -> None:
         finalize_broadcast(db, broadcast, job)
 
 
-_HANDLER_DEF = JobHandlerDef(SEND_JOB_TYPE, run_broadcast_send, "Broadcast send")
+_HANDLER_DEF = JobHandlerDef(SEND_JOB_TYPE, run_broadcast_send, "Broadcast send",
+    read_permission="broadcasts.read",
+)
 
 
 def register_broadcast_send_handler() -> None:

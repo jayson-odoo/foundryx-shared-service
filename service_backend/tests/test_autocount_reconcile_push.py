@@ -712,7 +712,7 @@ def test_delete_guard_trip_is_a_distinct_error_code_unprefixed_and_no_stack(
         job = _reconcile(db, company_id)
 
     assert job.status == JOB_FAILED
-    assert not (job.error or "").startswith("Fetch failed:")
+    assert "Fetch failed" not in (job.error or "")
     assert "safety threshold" in (job.error or "").lower()
     config = (
         db.query(AcEntityConfig)

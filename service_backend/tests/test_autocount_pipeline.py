@@ -1192,7 +1192,8 @@ def test_a_handler_crash_never_propagates_to_the_caller(db, transports, monkeypa
 
     fresh = db.query(BackgroundJob).filter(BackgroundJob.id == job.id).first()
     assert fresh.status == JOB_FAILED
-    assert "vendor exploded" in (fresh.error or "")
+    assert fresh.error == "Job crashed (RuntimeError)."
+    assert "vendor exploded" not in (fresh.error or "")
 
 
 # ── module hygiene (AC-13-45) ─────────────────────────────────────────────────
