@@ -19,3 +19,23 @@ export function openedType(rawType: string): string {
   if (base === 'text/plain') return 'text/plain;charset=utf-8';
   return SERVED_FILE_TYPES.includes(base) ? base : 'application/octet-stream';
 }
+
+const MEDIA_TYPES: readonly string[] = [
+  'audio/ogg',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/aac',
+  'audio/amr',
+  'video/mp4',
+  'video/3gpp',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+];
+
+/** The type conversation media is opened with: a listed media type, else a download. */
+export function mediaType(rawType: string): string {
+  const base = rawType.toLowerCase().split(';')[0].trim();
+  return MEDIA_TYPES.includes(base) ? base : 'application/octet-stream';
+}

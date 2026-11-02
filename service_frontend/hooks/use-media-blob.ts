@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { apiFetchBlob } from '@/lib/api-client';
+import { mediaType } from '@/lib/file-display-type';
 
 export interface UseMediaBlobResult {
   url: string | null;
@@ -40,7 +41,7 @@ export function useMediaBlob(path: string | null | undefined): UseMediaBlobResul
     apiFetchBlob(path)
       .then((blob) => {
         if (cancelled) return;
-        const made = URL.createObjectURL(blob);
+        const made = URL.createObjectURL(new Blob([blob], { type: mediaType(blob.type) }));
         objectUrl.current = made;
         setUrl(made);
       })
