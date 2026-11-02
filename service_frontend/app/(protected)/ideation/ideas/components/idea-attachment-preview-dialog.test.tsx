@@ -62,13 +62,21 @@ describe('idea attachment preview blob type (AC-52-01)', () => {
 });
 
 describe('idea attachment PDF frame (AC-52-02)', () => {
-  it('renders a pdf inside a sandboxed frame with no script or same-origin grant', async () => {
+  it('a pdf is framed from a blob created as application/pdf', async () => {
     await open(upload('scan.pdf'), served('application/pdf'));
     const frame = await screen.findByTitle('scan.pdf');
     expect(frame.tagName).toBe('IFRAME');
-    expect(frame.hasAttribute('sandbox')).toBe(true);
-    const tokens = (frame.getAttribute('sandbox') ?? '').split(/\s+/);
-    expect(tokens).not.toContain('allow-scripts');
-    expect(tokens).not.toContain('allow-same-origin');
+    expect(created[0].type).toBe('application/pdf');
+    expect(frame.getAttribute('src')).toBe('blob:test');
   });
+
+  it.each(['text/html', 'image/svg+xml', 'application/xhtml+xml', 'TEXT/HTML', 'text/html;x=1'])(
+    'a stored %j type never reaches a frame, it is offered as a download',
+    async (type) => {
+      await open(upload('scan.pdf'), served(type));
+      expect(created[0].type).toBe('application/octet-stream');
+      expect(screen.queryByTitle('scan.pdf')).toBeNull();
+      expect(screen.getAllByText('Download').length).toBeGreaterThan(0);
+    },
+  );
 });
