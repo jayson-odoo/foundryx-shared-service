@@ -71,6 +71,7 @@ MEDIA_FETCH_TOTAL_SECONDS = 60.0
 MEDIA_FETCH_MAX_CONCURRENT = 4
 MEDIA_FETCH_MAX_PER_TENANT = 2
 _FETCH_FAILED_TEXT = "The media url could not be fetched."
+_REPLY_ID_MAX_LEN = 64
 _REPLY_NOT_FOUND_TEXT = "The message you are replying to was not found."
 
 
@@ -928,17 +929,17 @@ class PublicGatewayService:
         self,
         tenant_id: str,
         workspace_id: str,
-        channel: Optional[Channel],
+        channel: Channel,
         to: str,
         msg_type: str,
         reply_to: Optional[str],
     ) -> Optional[str]:
-        """Validate ``replyToMessageId`` BEFORE anything is written or queued
-        and return it (None when absent). One helper for the JSON and the
-        multipart path. An unknown id, a message of another contact, workspace
-        or tenant, and an internal note all get the one not-found answer; a
-        quoted message on a different channel than the one sending is refused
-        with `reply_channel_mismatch`. A reply never creates a contact."""
+        """Validate ``replyToMessageId`` BEFORE anything is queued and return it
+        (None when absent). One helper for the JSON and the multipart path.
+        Order: reaction rule, id shape (no lookup), the recipient through the
+        same resolver the send uses, then ONE lookup scoped by tenant and
+        contact that excludes internal notes, then the channel comparison.
+        Every miss gives the one not-found answer."""
         if reply_to is None:
             return None
         if msg_type == "reaction":
@@ -946,28 +947,17 @@ class PublicGatewayService:
                 422, "invalid_request", "replyToMessageId cannot be used with a reaction."
             )
         not_found = ApiError(422, "invalid_request", _REPLY_NOT_FOUND_TEXT)
-        if not isinstance(reply_to, str) or not reply_to.strip() or channel is None:
+        if (
+            not isinstance(reply_to, str)
+            or not reply_to.strip()
+            or len(reply_to) > _REPLY_ID_MAX_LEN
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in reply_to)
+        ):
             raise not_found
-        quoted = self.messages.repo.get_message(reply_to, tenant_id)
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, to)
+        quoted = self.messages.repo.get_reply_target(reply_to, tenant_id, contact.id)
         if quoted is None:
             raise not_found
-        ident = (to or "").strip()
-        if ident.lower().startswith(("psid:", "igsid:", "webchat:", "id:")):
-            contact = self._resolve_send_target(tenant_id, workspace_id, channel, ident)
-        else:
-            raw = ident.split(":", 1)[1] if ident.lower().startswith("phone:") else ident
-            digits = _digits(raw)
-            if not digits:
-                raise ApiError(
-                    422, "invalid_recipient", "A valid recipient phone number is required."
-                )
-            contact = self.contacts.find_by_phone_in_workspace(digits, workspace_id, tenant_id)
-        if contact is None or contact.workspace_id != workspace_id:
-            raise not_found
-        try:
-            self.messages._reply_metadata(contact, tenant_id, reply_to)
-        except SendRejected as exc:
-            raise ApiError(422, "invalid_request", exc.message) from exc
         if quoted.channel_id and quoted.channel_id != channel.id:
             raise ApiError(
                 422,
