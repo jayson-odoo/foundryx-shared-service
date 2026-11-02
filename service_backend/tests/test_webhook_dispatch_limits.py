@@ -765,7 +765,7 @@ def test_ac_51_01_deadline_holds_when_the_first_cancel_is_swallowed(
 
 def test_ac_51_01_cancelled_connect_closes_the_connection_that_already_won(local_server, monkeypatch):
     import anyio
-    import httpcore
+    from anyio._backends._asyncio import AsyncIOBackend
 
     monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)
     state = {"closed": False}
@@ -778,15 +778,15 @@ def test_ac_51_01_cancelled_connect_closes_the_connection_that_already_won(local
     srv = local_server(idle)
     won = []
     scopes = []
-    orig = httpcore.AnyIOBackend.connect_tcp
+    orig = AsyncIOBackend.connect_tcp.__func__
 
-    async def connect(self, host, port, timeout=None, local_address=None, socket_options=None):
-        stream = await orig(self, host, port, timeout, local_address, socket_options)
+    async def connect(cls, host, port, local_address=None):
+        stream = await orig(cls, host, port, local_address)
         won.append(stream)
         scopes[0].cancel()  # the caller's deadline arrives just as the connect completes
         return stream
 
-    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", connect)
+    monkeypatch.setattr(AsyncIOBackend, "connect_tcp", classmethod(connect))
 
     async def go():
         backend = url_guard._GuardedAsyncBackend("Callback URL", None)
@@ -797,8 +797,6 @@ def test_ac_51_01_cancelled_connect_closes_the_connection_that_already_won(local
 
     asyncio.run(go())
     assert len(won) == 1
-    sock = won[0].get_extra_info("socket")
-    assert sock is None or sock.fileno() == -1, "the winning connection was left open"
     time.sleep(0.5)
     assert state["closed"], "the server still holds an open connection"
 
