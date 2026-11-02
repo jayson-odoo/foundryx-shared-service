@@ -134,7 +134,9 @@ Each API key is limited to **10 requests in progress at once** and **600 request
 
 The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (a send is safe to retry with the same `Idempotency-Key`).
 
-The limits are per key, not per workspace, so two keys on one workspace are counted separately. If your integration needs more, ask support to raise the limits for a key.
+The limits are per key. If your integration needs more, ask support to raise the limits for a key.
+
+`GET /omnichannel/media/{messageId}` (§8) is counted too when you call it with your API key. Over a limit it answers `429` with a `Retry-After` header and the plain body `{"detail": "Too many requests for this key."}` (not the `/api/v1` error envelope above).
 
 ## 4. Sending messages
 

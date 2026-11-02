@@ -116,6 +116,10 @@ Existing claims unchanged. New optional claims:
 | `phone` | string | second ownership link (WhatsApp-submitted ideas) |
 | `ideas_manage` | bool | `false` = the viewer may only edit / status-move / delete / reorder / merge / unmerge / attach their OWN ideas (others = 403 `not_owner`; unmerging a survivor needs every idea in the group to be theirs); voting stays open. `true` or absent = today's behaviour. Non-bool values (e.g. the string `"false"`) are ignored = treated as absent, so send a JSON boolean. |
 
+## Limits
+
+The intake routes are limited per API key: 10 requests in progress at once and 600 started per minute. Over either limit the answer is `429` with a `Retry-After` header and `{ "error": { "code": "rate_limited", "message": "Too many requests for this key." } }`. Support can raise a key's limits on request (consumer integration guide, section 3a).
+
 ## Security notes
 
 - Every ownership query is tenant-scoped, including the contact phone lookup.

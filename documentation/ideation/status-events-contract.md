@@ -43,6 +43,12 @@ Authorization: Bearer <workspace API key>
 - Auth: the same workspace API key already used for
   `POST /ideation/intake/create-idea`. Tenant is derived from the key, never
   from the request. A missing or invalid key is `401`.
+- Limits: each API key is limited to 10 requests in progress at once and 600
+  requests started per minute (the same limits as the consumer integration
+  guide, section 3a). Over either limit the request is refused with `429`, a
+  `Retry-After` header (seconds to wait) and
+  `{ "error": { "code": "rate_limited", "message": "Too many requests for this key." } }`.
+  Support can raise a key's limits on request.
 - `after` (default `0`): only rows with `seq > after`.
 - `limit` (default `100`, max `200`).
 - `includeTest` (default `false`): excludes `is_test` rows unless `true`.

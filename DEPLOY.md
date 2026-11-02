@@ -577,6 +577,24 @@ Rejected (reason):
   here already validates (`caddy validate`) before `caddy reload`, the same
   guarantee as `nginx -t`.
 
+## Per-key request limits
+
+Each API key is limited on the gateway, ideation intake and media routes. Three
+backend variables set the limits:
+
+- `OMNI_KEY_MAX_IN_FLIGHT`: requests in progress at once per key (default 10).
+- `OMNI_KEY_MAX_PER_MINUTE`: requests started per minute per key (default 600).
+- `OMNI_KEY_LIMIT_OVERRIDES`: JSON keyed by key id, each value an object with
+  `max_in_flight` and `max_per_minute`, e.g.
+  `{"<key id>": {"max_in_flight": 20, "max_per_minute": 1200}}`.
+
+Every value is a whole number of at least 1; anything else is ignored and the
+default is used.
+
+To change them: edit the host `.env`, then recreate the backend container (a
+restart does not reload env), and set the matching repository variable so the
+next deploy keeps the value.
+
 ## Notes / gotchas
 
 - `NEXT_PUBLIC_*` are compile-time - changing the public API origin requires a
