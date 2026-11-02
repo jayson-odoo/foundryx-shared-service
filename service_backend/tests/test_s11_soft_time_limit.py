@@ -1,16 +1,14 @@
 """Sprint-5/11 S1 - RED tests for cooperative SoftTimeLimitExceeded handling
 in ``run_job`` (AC-11-83).
 
-Today (S0 baseline confirmed) ``run_job``'s handler dispatch is guarded by a
-single generic ``except Exception as exc`` that marks the job ``failed`` with
-``error=f"Job crashed: {exc}"`` and returns - it does NOT run any module
-close hook. ``celery.exceptions.SoftTimeLimitExceeded`` IS an ``Exception``
-subclass (verified: ``billiard.exceptions.SoftTimeLimitExceeded -> Exception
--> BaseException``), so it is already silently swallowed by that generic
-branch today - but with the WRONG, non-cooperative shape: no dedicated
-sentence, and critically no module bookkeeping closed (the ``ac_sync_run``
-row stays open forever, exactly like the object-level orphan case this whole
-plan exists to fix).
+``run_job``'s handler dispatch is guarded by a generic ``except Exception``
+that marks the job ``failed`` with ``Job crashed (<ClassName>).`` (the class
+name only, never the exception's text) and returns. ``celery.exceptions.
+SoftTimeLimitExceeded`` IS an ``Exception`` subclass (verified:
+``billiard.exceptions.SoftTimeLimitExceeded -> Exception -> BaseException``),
+so it must be caught BEFORE that generic branch: the cooperative path stamps
+its own dedicated sentence and closes the module bookkeeping (the
+``ac_sync_run`` row), so a wedged run never stays open.
 
 CONTRACT this file pins:
 - ``app/jobs/service.py`` gains ``JobService.SOFT_TIME_LIMIT_ERROR`` (a
@@ -23,7 +21,7 @@ CONTRACT this file pins:
   into one helper shared by all three closers").
 - ``run_job`` catches ``celery.exceptions.SoftTimeLimitExceeded`` BEFORE the
   generic ``except Exception``, stamps ``JobService.SOFT_TIME_LIMIT_ERROR``
-  (not the generic "Job crashed: ..." text), calls
+  (not the generic "Job crashed (<ClassName>)." text), calls
   ``close_module_bookkeeping(db, job)``, and does not re-raise.
 """
 from __future__ import annotations
@@ -111,7 +109,7 @@ def test_run_job_fails_cooperatively_on_a_soft_time_limit_and_never_reraises(
     fresh = db.get(BackgroundJob, job.id)
     assert fresh.status == JOB_FAILED
     assert fresh.error == JobService.SOFT_TIME_LIMIT_ERROR, (
-        f"got {fresh.error!r} - the generic 'Job crashed: ' branch must not "
+        f"got {fresh.error!r} - the generic crash branch must not "
         "be the one that catches this exception type"
     )
     assert fresh.finished_at is not None
