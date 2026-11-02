@@ -738,6 +738,19 @@ def test_ac_41_04_a_normal_declared_length_succeeds(client, session_factory, mon
     assert r.status_code == 202, r.text
 
 
+# ── the stub must not capture other names (the realtime Redis client resolves "localhost") ──
+def test_media_host_stub_leaves_other_names_to_the_real_resolver(monkeypatch):
+    import socket
+
+    _install(monkeypatch, media=_pdf_media)
+    assert socket.getaddrinfo(MEDIA_HOST, 443)[0][4][0] == "93.184.216.34"
+    local = socket.getaddrinfo("localhost", 6379, type=socket.SOCK_STREAM)
+    assert local, "localhost did not resolve"
+    for info in local:
+        assert info[4][0] in ("127.0.0.1", "::1"), info
+        assert info[4][1] == 6379, info
+
+
 # ── AC-41-05: the fetch's existing rules ─────────────────────────────────────
 def _refused(client, session_factory, monkeypatch, *, phone, url, resolve_to=None):
     headers, cid, _ch = _setup(client, session_factory, phone=phone)
