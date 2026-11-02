@@ -228,6 +228,7 @@ export function useMigrationForm(): UseMigrationFormResult {
       form.setValue('userMap', [], { shouldDirty: true });
       form.setValue('teamMap', [], { shouldDirty: true });
       form.setValue('lifecycleMap', [], { shouldDirty: true });
+      form.clearErrors('channelMap');
       return;
     }
     let active = true;
@@ -247,6 +248,7 @@ export function useMigrationForm(): UseMigrationFormResult {
         form.setValue('userMap', seeded.userMap ?? [], { shouldDirty: true });
         form.setValue('teamMap', seeded.teamMap ?? [], { shouldDirty: true });
         form.setValue('lifecycleMap', seeded.lifecycleMap ?? [], { shouldDirty: true });
+        form.clearErrors('channelMap');
       })
       .catch((error: unknown) => {
         if (!active) return;

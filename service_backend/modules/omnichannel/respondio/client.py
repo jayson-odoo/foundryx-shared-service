@@ -193,6 +193,11 @@ class RespondIoClient:
                     resp = client.request(
                         method, url, headers=headers, params=params, json=json_body
                     )
+                except httpx.InvalidURL as exc:
+                    # Deterministic: retrying cannot help. Fixed text, no URL.
+                    raise RespondIoError(
+                        "respond.io could not be reached at the saved address.", status_code=0
+                    ) from exc
                 except httpx.HTTPError as exc:
                     if attempt >= MAX_ATTEMPTS:
                         raise RespondIoError(
@@ -233,7 +238,13 @@ class RespondIoClient:
                     raise self._error_from(resp)
                 if not resp.content:
                     return {}
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except ValueError as exc:
+                    raise RespondIoError(
+                        "respond.io returned an answer that could not be read.",
+                        status_code=resp.status_code,
+                    ) from exc
                 return data if isinstance(data, dict) else {}
         finally:
             if self._client is None:
@@ -290,6 +301,10 @@ class RespondIoClient:
                 page_params["cursorId"] = cursor
             data = self._request(method, path, params=page_params, json_body=json_body)
             items = data.get("items") or []
+            if not isinstance(items, list):
+                raise RespondIoError(
+                    "respond.io returned an answer that could not be read.", status_code=0
+                )
             cursor = ((data.get("pagination") or {}).get("next")) or None
             pages += 1
 

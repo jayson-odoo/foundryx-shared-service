@@ -204,10 +204,14 @@ def _field_names_reason(exc: ValidationError) -> str:
 
 def _failure_reason(exc: Exception) -> str:
     """A stored reason. A pydantic error carries the row's values in its text,
-    so it is reduced to field names; anything else keeps its own message."""
+    so it is reduced to field names; a source-client error keeps its fixed
+    message; anything else (a database error carries the statement and its
+    parameters) is reduced to its class name."""
     if isinstance(exc, ValidationError):
         return _field_names_reason(exc)
-    return str(exc)
+    if isinstance(exc, RespondIoError):
+        return str(exc)
+    return f"could not write this row ({type(exc).__name__})"
 
 
 def parse_rows(rows: Any, model: Any) -> Tuple[List[Any], List[UnreadableRow]]:
@@ -1306,7 +1310,8 @@ class MigrationService:
         message = _unreadable_warning("channel", blocking).replace(" were skipped", " would be lost", 1)
         if any(not u.source_id for u in blocking):
             message += " A channel with no readable id cannot be marked Skip."
-        message += " Mark each one Skip in the channel map to continue."
+        if any(u.source_id for u in blocking):
+            message += " Mark each one Skip in the channel map to continue."
         raise MigrationJobValidationError({"channelMap": message})
 
     def _in_progress_job(self, tenant_id: str, workspace_id: str) -> Optional[BackgroundJob]:
@@ -1387,11 +1392,6 @@ class MigrationService:
         if errors:
             raise MigrationJobValidationError(errors)
 
-        if self._in_progress_job(tenant_id, payload.workspaceId) is not None:
-            raise MigrationJobConflict(
-                "migration_in_progress", "A migration is already running for this workspace."
-            )
-
         mapping_hash = _mapping_hash(payload)
         if payload.mode == "run" and not self._has_fresh_dry_run(
             tenant_id, payload.workspaceId, mapping_hash
@@ -1401,6 +1401,13 @@ class MigrationService:
             )
         if payload.mode == "run" and connection is not None and payload.source == "api":
             self._require_channels_readable(connection, payload)
+
+        # The lookup sits next to the insert; the cheap refusals and the
+        # source read come first so no outbound call precedes a refusal.
+        if self._in_progress_job(tenant_id, payload.workspaceId) is not None:
+            raise MigrationJobConflict(
+                "migration_in_progress", "A migration is already running for this workspace."
+            )
 
         job_payload = {
             "mode": payload.mode,
@@ -2298,6 +2305,10 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     failures: List[dict] = list((prior_result.get("failures") or {}).get("rows") or [])
     for entity, bad_rows in unreadable_sources.items():
         failures.extend(_unreadable_failures(entity, bad_rows))
+    # Rows found by the run itself are saved (capped, like the inline sample)
+    # with each checkpoint so a resume that skips the finished walk keeps them.
+    failures_base = len(failures)
+    failures.extend(cursor.get("failureSample") or [])
     samples: List[dict] = list((prior_result.get("report") or {}).get("samples", {}).get("contacts") or [])
     message_samples: List[dict] = list(
         (prior_result.get("report") or {}).get("samples", {}).get("messages") or []
@@ -2309,6 +2320,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     media_ref_cursor = cursor.get("mediaCursorId")
     event_ref_cursor = cursor.get("eventCursorId")
     phase = cursor.get("phase") or "contacts"
+    # An empty saved contact cursor means both "start" and "walk finished";
+    # this flag, saved with the last page, tells them apart on resume.
+    contacts_walk_done = bool(cursor.get("contactsWalkDone"))
 
     def checkpoint(new_phase: str) -> None:
         counts["contacts"] = contact_counts
@@ -2367,6 +2381,8 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             {
                 "phase": new_phase,
                 "contactCursorId": contact_list_cursor,
+                "contactsWalkDone": contacts_walk_done,
+                "failureSample": failures[failures_base:][:50],
                 "identityCursorId": identity_ref_cursor,
                 "messageCursorId": message_ref_cursor,
                 "mediaCursorId": media_ref_cursor,
@@ -2461,9 +2477,14 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
 
     elif phase == "contacts":
         try:
-            for page_items, next_cursor in client.list_contacts_pages(
-                timezone=space_timezone, limit=CONTACTS_PAGE_LIMIT, start_cursor=contact_list_cursor
-            ):
+            contact_pages = (
+                []
+                if contacts_walk_done
+                else client.list_contacts_pages(
+                    timezone=space_timezone, limit=CONTACTS_PAGE_LIMIT, start_cursor=contact_list_cursor
+                )
+            )
+            for page_items, next_cursor in contact_pages:
                 for raw in page_items:
                     try:
                         source_contact = Contact(**raw)
@@ -2550,6 +2571,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
 
                 # Checkpoint cursor + running counts AFTER EVERY PAGE (AC-MIG-22).
                 contact_list_cursor = next_cursor
+                contacts_walk_done = next_cursor is None
                 checkpoint("contacts")
 
                 # Cooperative abort (AC-MIG-28): re-read status FRESH before the
