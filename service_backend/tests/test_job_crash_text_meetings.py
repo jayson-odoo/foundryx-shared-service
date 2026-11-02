@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from modules.meetings.calendar.base import CalendarSourceError
 from tests.meetings_bot_fakes import FakeContainer, FakeDocker, FakeArtifacts, bot_stdout
 from tests.test_meetings_bot_runner import (  # noqa: F401 - fixtures re-exported
@@ -109,43 +107,31 @@ def test_ac_45_05_bot_recording_store_failure_stores_the_class_name_only(db, mon
     _assert_clean(job)
 
 
-# ── meetings.calendar_sync (jobs.py :126, fed by google_dwd.py :88 and :133) ──
-# Covered by unit tests of the two functions that build the stored text: the
-# job handler stores the CalendarSourceError message verbatim, and the only
-# foreign text reaches it through these two sites.
-def test_ac_45_05_calendar_credentials_failure_message_holds_the_class_name_only(monkeypatch):
-    from google.oauth2 import service_account
+# ── meetings.calendar_sync (jobs.py :126) ────────────────────────────────────
+def test_ac_45_05_calendar_sync_source_failure_stores_the_class_name_only(db, monkeypatch):
+    from app.jobs.service import JobService
+    from app.models import DEFAULT_TENANT_ID
+    from app.models.connection import Connection
+    from app.secrets import encrypt_secret
+    from modules.meetings import jobs as meetings_jobs
 
-    from modules.meetings.calendar import google_dwd
-
-    def boom(info, scopes=None):
-        raise ValueError(SECRET)
-
-    monkeypatch.setattr(service_account.Credentials, "from_service_account_info", boom)
-    with pytest.raises(CalendarSourceError) as err:
-        google_dwd._service_account_credentials('{"client_email": "a@example.com"}', [], None)
-    assert "MARKER" not in str(err.value)
-    assert "ValueError" in str(err.value)
-
-
-def test_ac_45_05_directory_listing_failure_message_holds_the_class_name_only(monkeypatch):
-    from modules.meetings.calendar import google_dwd
-
-    class _Chain:
-        def users(self):
-            return self
-
-        def list(self, **kw):
-            return self
-
-        def execute(self):
-            raise Marker(SECRET)
-
-    monkeypatch.setattr(google_dwd, "_service_account_credentials", lambda *a, **k: object())
-    monkeypatch.setattr(google_dwd, "_build", lambda *a, **k: _Chain())
-    with pytest.raises(CalendarSourceError) as err:
-        google_dwd.list_directory_users(
-            service_account_json="{}", impersonate_email="admin@example.com", limit=1
+    db.add(
+        Connection(
+            tenant_id=DEFAULT_TENANT_ID, provider=meetings_jobs.GOOGLE_DWD_PROVIDER,
+            type="calendar", name="Calendar", config_json={}, is_active=True,
+            credentials_json=encrypt_secret({"serviceAccountJson": "{}"}),
         )
-    assert "MARKER" not in str(err.value)
-    assert "Marker" in str(err.value)
+    )
+    db.commit()
+
+    def boom(config, credentials):
+        raise CalendarSourceError(SECRET)
+
+    monkeypatch.setattr(meetings_jobs, "calendar_source_from_connection", boom)
+    job = JobService(db).create(type=meetings_jobs.CALENDAR_SYNC, tenant_id=DEFAULT_TENANT_ID)
+    meetings_jobs.run_calendar_sync(db, job)
+    db.refresh(job)
+    assert job.status == "failed"
+    assert "CalendarSourceError" in (job.error or ""), job.error
+    parts = [job.error, job.result_json, job.logs_json, job.payload_json]
+    assert "MARKER" not in json.dumps(parts, default=str)
