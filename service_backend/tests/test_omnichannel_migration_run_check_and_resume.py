@@ -712,3 +712,29 @@ def test_ac_44_11_a_channels_answer_whose_items_is_not_a_list_skips_that_identit
     rows = _rows_of(job, "identities")
     assert len(rows) == 1 and rows[0]["sourceId"] == "7301", _sample(job)
     db.close()
+
+
+# ── pin: with no matching dry run, that answer wins over "in progress" ──────
+
+
+def test_ac_44_20_a_run_with_no_dry_run_while_a_job_is_in_progress_answers_dry_run_required(
+    soft_client, monkeypatch, session_factory
+):
+    from app.models.background_job import JOB_RUNNING, BackgroundJob
+    from modules.omnichannel.services.migration_service import MIGRATION_JOB_TYPE
+
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, _state())
+    db = session_factory()
+    db.add(
+        BackgroundJob(
+            tenant_id=DEFAULT_TENANT_ID, type=MIGRATION_JOB_TYPE, status=JOB_RUNNING,
+            payload_json={"workspaceId": ws_id, "mode": "dry_run"},
+        )
+    )
+    db.commit()
+    db.close()
+
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="run")
+
+    assert res.status_code == 409, (res.status_code, res.text)
+    assert res.json()["detail"]["reason"] == "dry_run_required", res.text
