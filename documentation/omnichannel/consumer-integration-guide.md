@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
 > | **2026-11-02** | **Revoking a key and pausing an endpoint** (section 7, section 10). An endpoint belongs to the key that last changed it. When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` says the key was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key. A pause set by staff cannot be undone with a key: enable, PATCH, rotate and DELETE answer `409 endpoint_paused_by_staff`. While a workspace is trashed, its tenant is suspended or the service is off, no event is queued and those events are not sent later. No field changes, but some calls that answered `200` or `204` now answer `409`, including on an endpoint a key disabled before this date, which reads as a staff pause until staff resume it. |
 > | **2026-11-02** | **Breaking: `channel_required` on send, one callback for all channels** (sections 2, 4, 5, 5a, 7, 10). A `POST /messages` or `GET /templates` with no `channelId` now answers `422 channel_required` when the workspace has more than one active WhatsApp channel, or no active WhatsApp channel and more than one other active channel. Nothing is sent, and the same `Idempotency-Key` can be retried with `channelId`. `isDefault` is `false` on every channel in that case. This is breaking for an integration that omits `channelId`: connecting a second WhatsApp number makes its sends start getting `422`, so pass `channelId` on every send (message events carry it). One active WhatsApp channel plus web chat, Messenger or Instagram keeps sending on WhatsApp. A reaction goes out on the channel of the message it reacts to. `POST /webhooks` now registers a callback that covers every channel of the workspace, including channels connected later; its `channelId` reads `null`, `contact.updated` can carry `channelId: null`, and registering with no active channel answers `409 no_active_channel`. Existing endpoints keep their `channelId` and are not converted. |
 > | **2026-11-01** | **Channel `status: "ERROR"`** (§5a). The channel list can now return `ERROR` when the channel's WhatsApp access token no longer works, within about 6 hours. `isActive` is unchanged, so an `ERROR` channel can show `isActive: true`. A send to it is still accepted, and delivery fails until an admin replaces the token. Inbound is not affected. No new error code, webhook or event. |
@@ -122,6 +123,18 @@ All errors on `/api/v1/*` use one envelope:
 
 
 ---
+
+## 3a. Limits
+
+Each API key is limited to **10 requests in progress at once** and **600 requests started per minute**. Over either limit the request is refused with `429` and nothing is done:
+
+```json
+{ "error": { "code": "rate_limited", "message": "Too many requests for this key." } }
+```
+
+The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (a send is safe to retry with the same `Idempotency-Key`).
+
+The limits are per key, not per workspace, so two keys on one workspace are counted separately. If your integration needs more, ask support to raise the limits for a key.
 
 ## 4. Sending messages
 
@@ -1031,6 +1044,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing. |
 | `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
+| `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
 
 
 ---
