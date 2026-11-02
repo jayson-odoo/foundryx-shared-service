@@ -11,6 +11,7 @@ read, so only a real slow trickle shows a missing total deadline. The guard seam
 pre-flight is skipped; ``GuardedTransport`` stays in the path.
 """
 import socket
+import ssl
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from app.services import url_guard
 from modules.omnichannel.models import WebhookDelivery, WebhookEndpoint
 from modules.omnichannel.security import encrypt_secret
 from modules.omnichannel.services import webhook_delivery as wd
+from tests.test_outbound_connect_address import NAME, tls_material  # noqa: F401 - fixture
 from tests.test_omnichannel_webhook_delivery_attempts import _stored_delivery, _stored_endpoint
 
 LOW_DEADLINE = 1.5
@@ -32,10 +34,11 @@ MARKER = b"BODY-MARKER-TEXT"
 class LocalServer:
     """One-connection-at-a-time TCP server; ``handler(conn)`` runs per accept."""
 
-    def __init__(self, handler):
+    def __init__(self, handler, host="127.0.0.1", port=0, family=socket.AF_INET, tls=None):
         self.handler = handler
-        self.sock = socket.socket()
-        self.sock.bind(("127.0.0.1", 0))
+        self.tls = tls
+        self.sock = socket.socket(family)
+        self.sock.bind((host, port))
         self.sock.listen(8)
         self.sock.settimeout(0.2)
         self.port = self.sock.getsockname()[1]
@@ -57,6 +60,8 @@ class LocalServer:
                 return
             try:
                 conn.settimeout(15)
+                if self.tls is not None:
+                    conn = self.tls.wrap_socket(conn, server_side=True)
                 self.handler(conn, self.stop)
             except OSError:
                 pass
@@ -86,8 +91,8 @@ def _read_request(conn):
 def local_server():
     servers = []
 
-    def start(handler):
-        s = LocalServer(handler)
+    def start(handler, **kw):
+        s = LocalServer(handler, **kw)
         servers.append(s)
         return s
 
@@ -455,3 +460,239 @@ def test_ac_51_01_slow_address_check_counts_inside_the_deadline(session_factory,
     assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
         seconds=wd.DELIVERY_DEADLINE_SECONDS
     )
+
+
+# ── round 2: late connects, TLS, stalled lookups ────────────────────────────
+# Behaviour only: no thread names. "Stray" = a thread started during the test
+# that is still alive, EXCLUDING a thread that is at that moment inside the fake
+# resolver (a host lookup cannot be interrupted and may finish on its own;
+# ``FakeDns.in_lookup`` holds the idents of threads currently inside it).
+STALL = LOW_DEADLINE + 1.5
+
+
+class FakeDns:
+    """Scripted ``socket.getaddrinfo`` for ``NAME``; other names resolve for real."""
+
+    def __init__(self, monkeypatch, addresses, stall=lambda n: 0.0):
+        self.addresses = addresses  # [(family, ip)]
+        self.stall = stall  # call number -> seconds to block
+        self.calls = 0
+        self.in_lookup = set()
+        real = socket.getaddrinfo
+
+        def fake(host, port, *a, **k):
+            h = host.decode() if isinstance(host, bytes) else host
+            if h != NAME:
+                return real(host, port, *a, **k)
+            n = self.calls
+            self.calls += 1
+            ident = threading.get_ident()
+            self.in_lookup.add(ident)
+            try:
+                time.sleep(self.stall(n))
+            finally:
+                self.in_lookup.discard(ident)
+            out = []
+            for fam, ip in self.addresses:
+                sa = (ip, port, 0, 0) if fam == socket.AF_INET6 else (ip, port)
+                out.append((fam, socket.SOCK_STREAM, 6, "", sa))
+            return out
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+
+
+def _strays(before, dns):
+    return [
+        t.name
+        for t in threading.enumerate()
+        if t not in before and t.is_alive() and t.ident not in dns.in_lookup
+    ]
+
+
+def _server_ctx(material):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(material.cert, material.key)
+    return ctx
+
+
+@pytest.fixture
+def https_seam(monkeypatch, tls_material):
+    """The live path: https only, the real address check, a real certificate check
+    against a throwaway CA (httpx reads SSL_CERT_FILE when it builds the SSL
+    context), and the loopback block rule lifted."""
+    monkeypatch.setenv("SSL_CERT_FILE", tls_material.ca)
+    monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)
+    return tls_material
+
+
+def _blackhole():
+    """A listener whose accept queue is full: further connects stall (dropped SYN)."""
+    lst = socket.socket()
+    lst.bind(("127.0.0.1", 0))
+    lst.listen(0)
+    port = lst.getsockname()[1]
+    held = []
+    for _ in range(256):  # until a connect stalls (queue sizes differ by OS)
+        c = socket.socket()
+        c.settimeout(0.3)
+        held.append(c)
+        try:
+            c.connect(("127.0.0.1", port))
+        except OSError:
+            break
+    return lst, held, port
+
+
+def _v6_server(local_server, handler, port, tls):
+    try:
+        return local_server(handler, host="::1", port=port, family=socket.AF_INET6, tls=tls)
+    except OSError:
+        pytest.skip("IPv6 loopback not available")
+
+
+def _logging(state, body):
+    """Record the time a full request was read, then run ``body``."""
+
+    def handler(conn, stop):
+        _read_request(conn)
+        state["requests"].append(time.monotonic())
+        body(conn, stop)
+
+    return handler
+
+
+def _slow_head_body(state):
+    def body(conn, stop):
+        head = b"HTTP/1.1 200 OK\r\nX-Pad: " + b"a" * 200
+        for i in range(len(head)):
+            if stop.is_set():
+                return
+            try:
+                conn.sendall(head[i : i + 1])
+            except OSError:
+                state["closed"] = True
+                return
+            if _pause_or_closed(conn, 0.5, state):
+                return
+
+    return body
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["http", "tls"])
+def test_ac_51_01_connect_that_completes_after_the_deadline_sends_nothing(
+    tls, session_factory, local_server, monkeypatch, request
+):
+    if tls:
+        material = request.getfixturevalue("https_seam")
+    else:
+        monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)
+        monkeypatch.setattr(wd, "assert_deliverable", lambda *a, **k: None)
+    state = {"closed": False, "requests": []}
+    hole, held, port = _blackhole()
+    try:
+        srv = _v6_server(
+            local_server,
+            _logging(state, _slow_head_body(state)),
+            port,
+            _server_ctx(material) if tls else None,
+        )
+        dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")])
+        _lower_deadline(monkeypatch)
+        before = set(threading.enumerate())
+        scheme = "https" if tls else "http"
+        _eid, did = _seed(session_factory, f"pn-d-late-{scheme}", f"{scheme}://{NAME}:{port}/hook")
+        started = time.monotonic()
+        outcome = _run(session_factory, did)
+        ended = time.monotonic()
+        assert ended - started < LOW_DEADLINE + 2.0, f"attempt took {ended - started:.1f}s"
+        assert outcome == "retry"
+        time.sleep(1.0)
+        assert _strays(before, dns) == [], "threads still working one second after the attempt"
+        time.sleep(1.5)
+        late = [round(t - ended, 2) for t in state["requests"] if t and t > ended]
+        assert late == [], f"request bytes reached the server {late} s after the attempt was recorded"
+    finally:
+        for c in held:
+            c.close()
+        hole.close()
+
+
+def test_ac_51_01_tls_handshake_stall_ends_at_the_deadline(
+    session_factory, local_server, https_seam, monkeypatch
+):
+    state = {"closed": False}
+
+    def stall(conn, stop):  # raw TCP: takes the ClientHello, never answers
+        conn.recv(4096)
+        while not stop.is_set():
+            if _pause_or_closed(conn, 0.5, state):
+                return
+
+    srv = local_server(stall)
+    dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")])
+    _lower_deadline(monkeypatch)
+    before = set(threading.enumerate())
+    _eid, did = _seed(session_factory, "pn-d-hs", f"https://{NAME}:{srv.port}/hook")
+    started = time.monotonic()
+    outcome = _run(session_factory, did)
+    elapsed = time.monotonic() - started
+    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s"
+    assert outcome == "retry"
+    assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
+        seconds=wd.DELIVERY_DEADLINE_SECONDS
+    )
+    time.sleep(1.0)
+    assert _strays(before, dns) == [], "threads still working one second after the attempt"
+    assert state["closed"], "the server never saw its connection closed"
+
+
+def test_ac_51_01_stalled_second_lookup_sends_nothing_after_the_attempt(
+    session_factory, local_server, https_seam, monkeypatch
+):
+    state = {"closed": False, "requests": []}
+    srv = local_server(_logging(state, _slow_head_body(state)), tls=_server_ctx(https_seam))
+    # call 0 is the address check (fast); the connect-time lookup stalls past the deadline
+    dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")], stall=lambda n: 0.0 if n == 0 else STALL)
+    _lower_deadline(monkeypatch)
+    before = set(threading.enumerate())
+    _eid, did = _seed(session_factory, "pn-d-lookup", f"https://{NAME}:{srv.port}/hook")
+    started = time.monotonic()
+    outcome = _run(session_factory, did)
+    ended = time.monotonic()
+    assert ended - started < LOW_DEADLINE + 2.0, f"attempt took {ended - started:.1f}s"
+    assert outcome == "retry"
+    time.sleep(started + STALL + 1.5 - time.monotonic())  # the lookup has finished by now
+    late = [round(t - ended, 2) for t in state["requests"] if t and t > ended]
+    assert late == [], f"request bytes reached the server {late} s after the attempt was recorded"
+    assert _strays(before, dns) == []
+
+
+def test_ac_51_01_body_read_stops_for_a_connection_that_completed_late(
+    session_factory, local_server, https_seam, monkeypatch
+):
+    """Kills the in-loop deadline check on its own: the connection completes
+    after the deadline, the answer is instant and the body is a slow trickle.
+    Whatever kept this thread from reading the body must still be in place once
+    the lookup is over."""
+    state = {"closed": False, "requests": []}
+
+    def body(conn, stop):
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
+        end = time.monotonic() + 8
+        while time.monotonic() < end and not stop.is_set():
+            try:
+                conn.sendall(b"x")
+            except OSError:
+                return
+            if _pause_or_closed(conn, 0.5, state):
+                return
+
+    srv = local_server(_logging(state, body), tls=_server_ctx(https_seam))
+    dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")], stall=lambda n: 0.0 if n == 0 else STALL)
+    _lower_deadline(monkeypatch)
+    before = set(threading.enumerate())
+    _eid, did = _seed(session_factory, "pn-d-k4", f"https://{NAME}:{srv.port}/hook")
+    started = time.monotonic()
+    assert _run(session_factory, did) == "retry"
+    time.sleep(started + STALL + 1.5 - time.monotonic())
+    assert _strays(before, dns) == [], "a thread is still reading a body after the deadline"
