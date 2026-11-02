@@ -753,3 +753,127 @@ def test_ac_38_73_control_a_well_formed_unknown_reply_id_does_reach_the_lookup(
     _assert_not_found(_post(client, r, _body(r, "x" * 64)))
     _assert_not_found(_post(client, r, _body(r, "no-such-message-id")))
     assert "x" * 64 in lookups and "no-such-message-id" in lookups, lookups
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AC-38-73 - a refused reply writes nothing; a reply id is a plain token
+# ═════════════════════════════════════════════════════════════════════════════
+def _written(session_factory):
+    from modules.omnichannel.models import Contact, ConversationEvent
+
+    db = session_factory()
+    try:
+        return {
+            "contacts": db.query(Contact).count(),
+            "events": db.query(ConversationEvent).count(),
+            "messages": db.query(ConversationMessage).count(),
+        }
+    finally:
+        db.close()
+
+
+NEW_PHONE = "+60111888777"
+
+
+@pytest.mark.parametrize("form", ["bare", "phone:"])
+@pytest.mark.parametrize("quoted_kind", ["unknown", "existing id of another contact"])
+def test_ac_38_73_reply_to_a_new_phone_is_refused_and_writes_nothing(
+    client, session_factory, spy, tmp_path, form, quoted_kind
+):
+    r = _rig(client, session_factory)
+    other = _seed_open_contact(session_factory, r["ws"], phone="+60111888002", open_window=True)
+    qid = "no-such-message-id" if quoted_kind == "unknown" else _quoted(session_factory, other, None, ext="wamid.oc2")
+    to = NEW_PHONE if form == "bare" else f"phone:{NEW_PHONE}"
+    before = _written(session_factory)
+    res = _post(client, r, {"to": to, "type": "text", "text": {"body": "answering"}, "replyToMessageId": qid})
+    _assert_not_found(res, "json")
+    mp = _multipart(client, r, {"to": to, "type": "image", "replyToMessageId": qid})
+    _assert_not_found(mp, "multipart")
+    assert _written(session_factory) == before
+    assert _stored_files(tmp_path) == []
+    assert spy.sends == 0
+
+
+@pytest.mark.parametrize("form", ["bare", "phone:"])
+def test_ac_38_73_control_a_new_phone_without_a_reply_id_still_creates_and_sends(
+    client, session_factory, spy, form
+):
+    r = _rig(client, session_factory)
+    to = NEW_PHONE if form == "bare" else f"phone:{NEW_PHONE}"
+    _ensure_template(session_factory, r["channels"][0], name="tpl_reply")
+    before = _written(session_factory)
+    res = _post(
+        client, r, {"to": to, "type": "template", "template": {"name": "tpl_reply", "variables": ["Sam", "shipped"]}}
+    )
+    assert res.status_code == 202, res.text
+    assert _written(session_factory)["contacts"] == before["contacts"] + 1
+    assert spy.sends == 1
+
+
+def test_ac_38_73_malformed_phone_with_a_reply_id_answers_like_without_it_and_writes_nothing(
+    client, session_factory, spy
+):
+    r = _rig(client, session_factory)
+    before = _written(session_factory)
+    base = _post(client, r, {"to": "not-a-phone", "type": "text", "text": {"body": "x"}})
+    assert base.status_code == 422 and base.json()["error"]["code"] == "invalid_recipient", base.text
+    for qid in ("no-such-message-id", _quoted(session_factory, r["cid"], None, ext="wamid.mp")):
+        res = _post(
+            client, r, {"to": "not-a-phone", "type": "text", "text": {"body": "x"}, "replyToMessageId": qid}
+        )
+        assert (res.status_code, res.json()) == (base.status_code, base.json())
+    assert _written(session_factory)["contacts"] == before["contacts"]
+    assert spy.sends == 0
+
+
+def _raw_json_post(client, r, raw: bytes):
+    return client.post(
+        f"{BASE}/messages", content=raw, headers={**r["hdr"], "Content-Type": "application/json"}
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["ab cd", "ab/cd", "ab.cd", "abécd", ""],
+    ids=["space", "slash", "dot", "non-ascii letter", "empty"],
+)
+def test_ac_38_73_reply_id_outside_the_allowlist_never_reaches_a_lookup(
+    client, session_factory, spy, lookups, bad
+):
+    r = _rig(client, session_factory)
+    before = _written(session_factory)
+    res = _post(client, r, _body(r, bad))
+    _assert_not_found(res, "json")
+    mp = _multipart(client, r, {"to": r["phone"], "type": "image", "replyToMessageId": bad})
+    _assert_not_found(mp, "multipart")
+    assert lookups == [], lookups
+    assert _written(session_factory) == before
+    assert spy.sends == 0
+
+
+def test_ac_38_73_lone_surrogate_reply_id_is_the_not_found_422_with_no_lookup(
+    client, session_factory, spy, lookups
+):
+    r = _rig(client, session_factory)
+    before = _written(session_factory)
+    raw = ('{"to":"%s","type":"text","text":{"body":"x"},"replyToMessageId":"ab\\ud800cd"}' % r["phone"]).encode()
+    res = _raw_json_post(client, r, raw)
+    _assert_not_found(res, "json")
+    mp = client.post(
+        f"{BASE}/messages",
+        files={"file": ("a.png", PNG, "image/png")},
+        data={"payload": '{"to":"%s","type":"image","replyToMessageId":"ab\\ud800cd"}' % r["phone"]},
+        headers=r["hdr"],
+    )
+    _assert_not_found(mp, "multipart")
+    assert lookups == [], lookups
+    assert _written(session_factory) == before
+    assert spy.sends == 0
+
+
+@pytest.mark.parametrize("good", ["12345678-1234-1234-1234-123456789abc", "A_b-9" * 12 + "wxyz"], ids=["uuid", "64 token"])
+def test_ac_38_73_control_allowlisted_reply_ids_reach_the_lookup(client, session_factory, spy, lookups, good):
+    assert len(good) in (36, 64)
+    r = _rig(client, session_factory)
+    _assert_not_found(_post(client, r, _body(r, good)))
+    assert good in lookups, lookups
