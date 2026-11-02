@@ -716,3 +716,120 @@ def test_ac_51_01_dispatch_inside_a_running_loop_succeeds(
     row = _row(session_factory, did)
     assert row.error is None, row.error
     assert row.status == "SUCCESS" and row.response_status == 200
+
+
+# ── a lost cancel must not lose the deadline; a cancelled connect closes its winner ──
+def _swallow_first_cancel(monkeypatch):
+    """Simulate anyio absorbing ONE cancel (as it can when the cancel lands in
+    the same loop pass as its own timer or group cancel): the first
+    ``CancelledError`` that reaches a network read is caught and the read goes
+    on. A deadline that is only an edge-triggered cancel is lost after this; a
+    level-triggered one cancels again. The real two-timer race is not forced
+    here (it depends on loop timing), only this effect of it."""
+    import httpcore._backends.anyio as hca
+
+    orig = hca.AnyIOStream.read
+    state = {"n": 0}
+
+    async def read(self, max_bytes, timeout=None):
+        try:
+            return await orig(self, max_bytes, timeout)
+        except asyncio.CancelledError:
+            if state["n"]:
+                raise
+            state["n"] += 1
+            return await orig(self, max_bytes, timeout)
+
+    monkeypatch.setattr(hca.AnyIOStream, "read", read)
+    return state
+
+
+def test_ac_51_01_deadline_holds_when_the_first_cancel_is_swallowed(
+    session_factory, local_server, allow_loopback, monkeypatch
+):
+    state = {"closed": False}
+    swallowed = _swallow_first_cancel(monkeypatch)
+    _lower_deadline(monkeypatch)
+    srv = local_server(_body_trickle(state))
+    _eid, did = _seed(session_factory, "pn-d-lostcancel", srv.url)
+    started = time.monotonic()
+    outcome = _run(session_factory, did)
+    elapsed = time.monotonic() - started
+    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s"
+    assert outcome == "retry"
+    assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
+        seconds=wd.DELIVERY_DEADLINE_SECONDS
+    )
+    assert swallowed["n"] == 1, "the simulated lost cancel never happened"
+
+
+def test_ac_51_01_cancelled_connect_closes_the_connection_that_already_won(local_server, monkeypatch):
+    import anyio
+    import httpcore
+
+    monkeypatch.setattr(url_guard, "_is_blocked_ip", lambda ip: False)
+    state = {"closed": False}
+
+    def idle(conn, stop):
+        while not stop.is_set():
+            if _pause_or_closed(conn, 0.3, state):
+                return
+
+    srv = local_server(idle)
+    won = []
+    scopes = []
+    orig = httpcore.AnyIOBackend.connect_tcp
+
+    async def connect(self, host, port, timeout=None, local_address=None, socket_options=None):
+        stream = await orig(self, host, port, timeout, local_address, socket_options)
+        won.append(stream)
+        scopes[0].cancel()  # the caller's deadline arrives just as the connect completes
+        return stream
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", connect)
+
+    async def go():
+        backend = url_guard._GuardedAsyncBackend("Callback URL", None)
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            await backend._connect_any(["127.0.0.1"], srv.port, 5, None, None)
+        await anyio.sleep(0.5)
+
+    asyncio.run(go())
+    assert len(won) == 1
+    sock = won[0].get_extra_info("socket")
+    assert sock is None or sock.fileno() == -1, "the winning connection was left open"
+    time.sleep(0.5)
+    assert state["closed"], "the server still holds an open connection"
+
+
+def test_ac_51_01_media_fetch_deadline_holds_when_the_first_cancel_is_swallowed(
+    local_server, https_seam, monkeypatch
+):
+    from app.api_errors import ApiError
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    state = {"closed": False, "requests": []}
+
+    def body(conn, stop):
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
+        end = time.monotonic() + 6
+        while time.monotonic() < end and not stop.is_set():
+            try:
+                conn.sendall(b"x")
+            except OSError:
+                return
+            if _pause_or_closed(conn, 0.5, state):
+                return
+
+    srv = local_server(_logging(state, body), tls=_server_ctx(https_seam))
+    FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")])
+    swallowed = _swallow_first_cancel(monkeypatch)
+    monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", LOW_DEADLINE)
+    svc = pgs.PublicGatewayService.__new__(pgs.PublicGatewayService)
+    started = time.monotonic()
+    with pytest.raises(ApiError):
+        svc._fetch_url(f"https://{NAME}:{srv.port}/media")
+    elapsed = time.monotonic() - started
+    assert elapsed < LOW_DEADLINE + 2.0, f"media fetch took {elapsed:.1f}s"
+    assert swallowed["n"] == 1, "the simulated lost cancel never happened"
