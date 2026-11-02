@@ -831,7 +831,9 @@ def test_ac_44_11_a_contact_id_that_is_not_an_id_is_stored_as_empty(session_fact
          MigrationService(db).failures_csv(DEFAULT_TENANT_ID, job.id)],
         default=str,
     )
-    assert marker_id not in everything.replace("MARKER-TAGS", ""), marker_id
+    # A short id such as "-5" also occurs inside uuids and timestamps, so
+    # look for it as a whole JSON string value, which is how a stored id appears.
+    assert json.dumps(marker_id) not in everything, marker_id
     db.close()
 
 
