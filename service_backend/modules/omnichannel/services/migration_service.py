@@ -642,7 +642,7 @@ def _process_csv_contacts(
         failures.append(
             {
                 "entity": "contacts", "sourceId": "", "sourceLabel": "",
-                "reason": f"Could not read the uploaded contacts CSV: {exc}", "action": "skipped",
+                "reason": "Could not read the uploaded contacts CSV.", "action": "skipped",
             }
         )
         return
@@ -1402,8 +1402,8 @@ class MigrationService:
         if payload.mode == "run" and connection is not None and payload.source == "api":
             self._require_channels_readable(connection, payload)
 
-        # The lookup sits next to the insert; the cheap refusals and the
-        # source read come first so no outbound call precedes a refusal.
+        # The lookup sits next to the insert. The cheap refusals (field errors,
+        # dry run required) come first; the source read precedes this refusal.
         if self._in_progress_job(tenant_id, payload.workspaceId) is not None:
             raise MigrationJobConflict(
                 "migration_in_progress", "A migration is already running for this workspace."
@@ -1830,7 +1830,7 @@ def _process_contact_messages(
         failures.append(
             {
                 "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
-                "reason": f"could not resolve message timestamps: {exc}", "action": "skipped",
+                "reason": f"could not resolve message timestamps ({type(exc).__name__})", "action": "skipped",
             }
         )
         return 0, 0, 0
@@ -2041,7 +2041,7 @@ def _process_quick_replies_csv(
         failures.append(
             {
                 "entity": "quickReplies", "sourceId": "", "sourceLabel": "",
-                "reason": f"Could not read the uploaded snippets CSV: {exc}", "action": "skipped",
+                "reason": "Could not read the uploaded snippets CSV.", "action": "skipped",
             }
         )
         return
@@ -2323,6 +2323,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     # An empty saved contact cursor means both "start" and "walk finished";
     # this flag, saved with the last page, tells them apart on resume.
     contacts_walk_done = bool(cursor.get("contactsWalkDone"))
+    quick_replies_done = bool(cursor.get("quickRepliesDone"))
 
     def checkpoint(new_phase: str) -> None:
         counts["contacts"] = contact_counts
@@ -2382,6 +2383,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                 "phase": new_phase,
                 "contactCursorId": contact_list_cursor,
                 "contactsWalkDone": contacts_walk_done,
+                "quickRepliesDone": quick_replies_done,
                 "failureSample": failures[failures_base:][:50],
                 "identityCursorId": identity_ref_cursor,
                 "messageCursorId": message_ref_cursor,
@@ -2445,12 +2447,14 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
 
     # ── phase 1 - contacts (S2 API path unchanged; S5 CSV path, AC-MIG-47) ──
     if phase == "contacts" and csv_mode:
-        _process_csv_contacts(
-            db, tenant_id, workspace_id, writer, payload,
-            contact_counts, field_counts, tag_counts, samples, failures, csv_blockers,
-            csv_lifecycle_unmapped,
-            dry_run=dry_run, service=service, job=job,
-        )
+        if not contacts_walk_done:
+            _process_csv_contacts(
+                db, tenant_id, workspace_id, writer, payload,
+                contact_counts, field_counts, tag_counts, samples, failures, csv_blockers,
+                csv_lifecycle_unmapped,
+                dry_run=dry_run, service=service, job=job,
+            )
+            contacts_walk_done = True
         checkpoint("contacts")
         if _aborted(db, job.id):
             service.log(job, f"Aborted after {contact_counts.get('fetched', 0)} contacts.")
@@ -2807,7 +2811,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             return
 
     # ── phase 6 - quick replies from a snippets CSV (S4, AC-MIG-44) ─────────
-    if phase == "quick_replies":
+    if phase == "quick_replies" and not quick_replies_done:
         # A single bounded pass (`settings.import_max_rows`, not a paginated
         # walk) - the whole point of a snippets CSV is that it is small; no
         # separate resumability is needed beyond re-running the same CSV,
@@ -2821,6 +2825,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             nested.rollback()
         else:
             nested.commit()
+        quick_replies_done = True
         checkpoint("quick_replies")
         if _aborted(db, job.id):
             service.log(job, "Aborted during the quick_replies phase.")
