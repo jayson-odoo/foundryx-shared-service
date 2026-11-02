@@ -215,6 +215,8 @@ def _pages_handler_full(
             return httpx.Response(200, json={"items": custom_fields or [], "pagination": {"next": None}})
         if path.endswith("/space/user"):
             return httpx.Response(200, json={"items": space_users or [], "pagination": {"next": None}})
+        if path.endswith("/space/channel"):
+            return httpx.Response(200, json={"items": [], "pagination": {"next": None}})
         if path.endswith("/contact/list"):
             cursor = request.url.params.get("cursorId")
             items, next_cursor = contact_pages[cursor]

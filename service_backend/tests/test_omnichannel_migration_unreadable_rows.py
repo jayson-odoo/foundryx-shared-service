@@ -665,3 +665,48 @@ def test_ac_44_20_control_csv_mode_never_reads_channels_and_runs(soft_client, mo
 
     assert run.status_code == 201, run.text
     assert not any(p.endswith("/space/channel") for p in state["calls"]), state["calls"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The dry run's user read: a source error is survivable, anything else is not
+# swallowed into a false success
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _dry_run_with_user_read_raising(soft_client, monkeypatch, exc):
+    from modules.omnichannel.respondio.client import RespondIoClient
+
+    def raiser(self):
+        raise exc
+
+    state = _state()
+    h, connection_id, ws_id = _setup(soft_client, monkeypatch, state)
+    monkeypatch.setattr(RespondIoClient, "list_space_users", raiser)
+    res = _post_job(soft_client, h, connection_id, ws_id, mode="dry_run")
+    assert res.status_code == 201, res.text
+    job = soft_client.get(f"/omnichannel/migration/jobs/{res.json()['id']}", headers=h)
+    assert job.status_code == 200, job.text
+    return job.json()
+
+
+def test_ac_44_12_a_source_error_reading_users_still_completes_the_dry_run_with_a_warning(
+    soft_client, monkeypatch
+):
+    from modules.omnichannel.respondio.client import RespondIoError
+
+    job = _dry_run_with_user_read_raising(
+        soft_client, monkeypatch, RespondIoError("upstream error", status_code=500)
+    )
+
+    assert job["status"] == "done", job
+    texts = [log.get("message", "") if isinstance(log, dict) else str(log) for log in job["logs"]]
+    texts += job["report"]["blockers"]
+    assert any("user" in t.lower() for t in texts), texts
+
+
+def test_ac_44_12_a_non_source_error_reading_users_never_reports_success(soft_client, monkeypatch):
+    """Pins today's behaviour for an error that is not a RespondIoError (a
+    bug or an odd payload): the job is not marked done."""
+    job = _dry_run_with_user_read_raising(soft_client, monkeypatch, KeyError("boom"))
+
+    assert job["status"] == "failed", job
