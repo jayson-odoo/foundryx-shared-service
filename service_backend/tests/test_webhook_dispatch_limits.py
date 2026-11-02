@@ -10,10 +10,12 @@ read, so only a real slow trickle shows a missing total deadline. The guard seam
 ``url_guard._is_blocked_ip`` is told loopback is allowed and the https-only
 pre-flight is skipped; ``GuardedTransport`` stays in the path.
 """
+import asyncio
 import socket
 import ssl
 import threading
 import time
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -226,13 +228,12 @@ def test_ac_51_03_no_transaction_is_open_during_the_post(session_factory, monkey
     db = session_factory()
     seen = {}
 
-    class SpyTransport(httpx.BaseTransport):
-        def handle_request(self, request):
-            seen["in_tx"] = db.in_transaction()
-            return httpx.Response(200, content=b"ok")
+    def spy(request):
+        seen["in_tx"] = db.in_transaction()
+        return httpx.Response(200, content=b"ok")
 
     monkeypatch.setattr(wd, "assert_deliverable", lambda *a, **k: None)
-    monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: SpyTransport())
+    monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: httpx.MockTransport(spy))
     _eid, did = _seed(session_factory, "pn-d-tx", "https://consumer.example/hook")
     try:
         assert wd.dispatch(db, did) == "success"
@@ -243,14 +244,13 @@ def test_ac_51_03_no_transaction_is_open_during_the_post(session_factory, monkey
 
 # ── AC-51-04 pins (pass today) ──────────────────────────────────────────────
 def _stub_status(monkeypatch, status, captured=None):
-    class Stub(httpx.BaseTransport):
-        def handle_request(self, request):
-            if captured is not None:
-                captured.append(request)
-            return httpx.Response(status, content=b"nope")
+    def stub(request):
+        if captured is not None:
+            captured.append(request)
+        return httpx.Response(status, content=b"nope")
 
     monkeypatch.setattr(wd, "assert_deliverable", lambda *a, **k: None)
-    monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: Stub())
+    monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: httpx.MockTransport(stub))
 
 
 def test_ac_51_04_pin_200_is_success_with_signed_request(session_factory, monkeypatch):
@@ -392,6 +392,7 @@ def test_ac_51_01_slow_phase_ends_at_deadline_leaves_no_thread_and_closes(
     state = {"closed": False}
     _lower_deadline(monkeypatch)
     srv = local_server(make(state))
+    before = set(threading.enumerate())
     _eid, did = _seed(session_factory, "pn-d-" + make.__name__, srv.url)
     started = time.monotonic()
     outcome = _run(session_factory, did)
@@ -402,7 +403,7 @@ def test_ac_51_01_slow_phase_ends_at_deadline_leaves_no_thread_and_closes(
     assert row.attempt_count == 1
     assert row.error == wd.DEADLINE_ERROR.format(seconds=wd.DELIVERY_DEADLINE_SECONDS)
     time.sleep(1.0)
-    alive = [t.name for t in threading.enumerate() if t.name == "webhook-post" and t.is_alive()]
+    alive = _strays(before, SimpleNamespace(in_lookup=set()))
     assert alive == [], f"threads left working on the attempt: {alive}"
     assert state["closed"], "the server never saw its connection closed"
 
@@ -444,13 +445,12 @@ def test_ac_51_01_slow_address_check_counts_inside_the_deadline(session_factory,
         time.sleep(LOW_DEADLINE + 2.5)
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
 
-    class Quick(httpx.BaseTransport):
-        def handle_request(self, request):
-            return httpx.Response(200, content=b"ok")
+    def quick(request):
+        return httpx.Response(200, content=b"ok")
 
     _lower_deadline(monkeypatch)
     monkeypatch.setattr(socket, "getaddrinfo", slow_dns)
-    monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: Quick())
+    monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: httpx.MockTransport(quick))
     _eid, did = _seed(session_factory, "pn-d-slowdns", "https://consumer.example/hook")
     started = time.monotonic()
     outcome = _run(session_factory, did)
@@ -467,7 +467,7 @@ def test_ac_51_01_slow_address_check_counts_inside_the_deadline(session_factory,
 # that is still alive, EXCLUDING a thread that is at that moment inside the fake
 # resolver (a host lookup cannot be interrupted and may finish on its own;
 # ``FakeDns.in_lookup`` holds the idents of threads currently inside it).
-STALL = LOW_DEADLINE + 1.5
+STALL = LOW_DEADLINE + 2.5  # clearly past the LOW_DEADLINE + 2.0 bound
 
 
 class FakeDns:
@@ -696,3 +696,23 @@ def test_ac_51_01_body_read_stops_for_a_connection_that_completed_late(
     assert _run(session_factory, did) == "retry"
     time.sleep(started + STALL + 1.5 - time.monotonic())
     assert _strays(before, dns) == [], "a thread is still reading a body after the deadline"
+
+
+# ── dispatch from inside a running event loop (eager mode, async route) ─────
+def test_ac_51_01_dispatch_inside_a_running_loop_succeeds(
+    session_factory, local_server, allow_loopback
+):
+    def ok(conn, stop):
+        _read_request(conn)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+
+    srv = local_server(ok)
+    _eid, did = _seed(session_factory, "pn-d-inloop", srv.url)
+
+    async def route():
+        return _run(session_factory, did)  # sync dispatch called from an async route
+
+    assert asyncio.run(route()) == "success"
+    row = _row(session_factory, did)
+    assert row.error is None, row.error
+    assert row.status == "SUCCESS" and row.response_status == 200
