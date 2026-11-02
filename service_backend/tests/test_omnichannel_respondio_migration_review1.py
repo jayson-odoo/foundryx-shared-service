@@ -456,7 +456,8 @@ def test_one_contact_with_broken_timestamp_resolution_does_not_fail_the_whole_ru
 
     failures = (job.result_json or {}).get("failures", {})
     reasons = " ".join(r.get("reason", "") for r in failures.get("sample", []))
-    assert "simulated corrupt vendor payload" in reasons
+    assert "could not resolve message timestamps (ValueError)" in reasons
+    assert "simulated corrupt vendor payload" not in reasons
     db.close()
 
 

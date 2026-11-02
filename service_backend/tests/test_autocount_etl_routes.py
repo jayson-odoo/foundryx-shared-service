@@ -376,7 +376,8 @@ def test_preview_query_failure_is_a_sanitised_400(client, session_factory):
     )
     assert response.status_code == 400, response.text
     detail = response.json()["detail"]
-    assert "no_such_table" in detail
+    assert "OperationalError" in detail
+    assert "no_such_table" not in detail
     assert "[SQL:" not in detail
     assert PASSWORD not in detail
 

@@ -81,6 +81,10 @@ def _register_handlers():
     register_job_handler(_RESUME)
     register_job_handler(_QUEUED)
     yield
+    from app.jobs.registry import _REGISTRY
+
+    for d in (_COUNTING, _CRASHING, _RESUME, _QUEUED):
+        _REGISTRY.pop(d.type, None)
 
 
 # ── AC-10-01: table shape + ApiModel wire ─────────────────────────────────────
@@ -273,7 +277,8 @@ def test_handler_crash_is_isolated(db):
     run_job(db, job.id)
     db.refresh(job)
     assert job.status == JOB_FAILED
-    assert "boom" in (job.error or "")
+    assert job.error == "Job crashed (RuntimeError)."
+    assert "boom" not in (job.error or "")
 
 
 # ── AC-10-03: resume + retention ──────────────────────────────────────────────

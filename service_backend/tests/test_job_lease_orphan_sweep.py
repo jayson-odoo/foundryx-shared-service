@@ -473,11 +473,14 @@ def test_autocount_sync_declares_heartbeats():
     assert handler_for(AUTOCOUNT_SYNC).heartbeats is True
 
 
-def test_sweep_ignores_job_types_that_do_not_declare_heartbeats(db):
+def test_sweep_ignores_job_types_that_do_not_declare_heartbeats(db, request):
     """A type that never beats (storage migration, meetings STT) has no
     liveness signal to judge - reaping it by age would kill legitimate long
     runs. Only a ``JobHandlerDef(heartbeats=True)`` type is swept."""
+    from app.jobs.registry import _REGISTRY
+
     register_job_handler(_FAKE_NO_HEARTBEAT)
+    request.addfinalizer(lambda: _REGISTRY.pop(_FAKE_NO_HEARTBEAT.type, None))
     assert getattr(_FAKE_NO_HEARTBEAT, "heartbeats", None) is False
     now = datetime.now(timezone.utc)
     fake = BackgroundJob(

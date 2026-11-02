@@ -299,8 +299,9 @@ def _jobs_complete(db: Session, tenant_id: str, entity_id: str, payload: dict, a
 
 def _jobs_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
     from app.jobs.service import JobService
+    from app.storage_migration.service import STORAGE_MIGRATION
 
-    return JobService(db).get(tenant_id, entity_id) is not None
+    return JobService(db).get(tenant_id, entity_id, types={STORAGE_MIGRATION}) is not None
 
 
 def _email_outbox_cancel(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:

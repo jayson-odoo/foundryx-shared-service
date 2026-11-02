@@ -6,7 +6,7 @@ Mirrors the engine registries (status entities / rule facts / importers): a
 for the same ``type`` is a loud error too (mirrors the capability registry).
 """
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Collection, Dict, List, Optional, Set
 
 from sqlalchemy.orm import Session
 
@@ -38,6 +38,12 @@ class JobHandlerDef:
     # type that does not beat (a 45-minute meetings transcription, an import)
     # is never swept - silence is not evidence for it.
     heartbeats: bool = False
+    # The permission key that lets a user read jobs of this type (list and
+    # detail). A type naming none is readable by nobody.
+    read_permission: Optional[str] = None
+    # True: jobs of this type are read only through the owning module's own
+    # routes, which check each row; the generic Jobs routes never list them.
+    module_read: bool = False
 
 
 _REGISTRY: Dict[str, JobHandlerDef] = {}
@@ -88,3 +94,11 @@ def types_that_heartbeat() -> List[str]:
     """Job types whose handler declared ``heartbeats=True`` - the only types
     the orphan sweep may judge by a stale heartbeat."""
     return [d.type for d in _REGISTRY.values() if d.heartbeats]
+
+
+def readable_job_types(permission_keys: Collection[str]) -> Set[str]:
+    """Registered job types whose read permission is among ``permission_keys``."""
+    keys = set(permission_keys)
+    return {
+        d.type for d in _REGISTRY.values() if not d.module_read and d.read_permission and d.read_permission in keys
+    }

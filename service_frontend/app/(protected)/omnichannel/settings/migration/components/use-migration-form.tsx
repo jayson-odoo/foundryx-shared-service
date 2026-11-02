@@ -62,6 +62,7 @@ const FORM_FIELD_PATHS: ReadonlySet<string> = new Set([
   'workspaceId',
   'messagesSince',
   'contactsUploadId',
+  'channelMap',
 ]);
 
 function describe(error: unknown): string {
@@ -106,6 +107,7 @@ function seedFromPreflight(pf: MigrationPreflight, tenantUsers: User[]): Partial
       const compatible = compatibleTargetIds(c.source, pf);
       return { sourceChannelId: c.id, targetChannelId: compatible.length === 1 ? compatible[0] : null };
     }),
+    unreadableChannelIds: pf.unreadableChannelIds ?? [],
     userMap: pf.users.map((u) => {
       const match = tenantUsers.find((tu) => tu.email.toLowerCase() === u.email.toLowerCase());
       return { sourceUserId: u.id, targetUserId: match?.id ?? null };
@@ -128,10 +130,12 @@ export interface UseMigrationFormResult {
   tenantTeams: Team[];
   preflight: MigrationPreflight | null;
   preflightLoading: boolean;
+  preflightError: string | null;
   compatibleTargetIds: (sourceValue: string) => string[];
   dryRunJob: MigrationJob | null;
   canStartMigration: boolean;
   ready: boolean;
+  canSave: boolean;
   runDryRun: () => Promise<void>;
   startMigration: () => Promise<void>;
   submitting: boolean;
@@ -158,6 +162,7 @@ export function useMigrationForm(): UseMigrationFormResult {
   const [tenantTeams, setTenantTeams] = useState<Team[]>([]);
   const [preflight, setPreflight] = useState<MigrationPreflight | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
   const [dryRunJob, setDryRunJob] = useState<MigrationJob | null>(null);
   const [dryRunHash, setDryRunHash] = useState<string | null>(null);
   const [dryRunAt, setDryRunAt] = useState<number | null>(null);
@@ -198,6 +203,7 @@ export function useMigrationForm(): UseMigrationFormResult {
     if (source === 'csv') {
       setPreflight(null);
       form.setValue('channelMap', [], { shouldDirty: true });
+      form.setValue('unreadableChannelIds', [], { shouldDirty: true });
       form.setValue('userMap', [], { shouldDirty: true });
       form.setValue('teamMap', [], { shouldDirty: true });
       form.setValue('lifecycleMap', [], { shouldDirty: true });
@@ -212,11 +218,22 @@ export function useMigrationForm(): UseMigrationFormResult {
 
   useEffect(() => {
     if (source !== 'api' || !connectionId || !workspaceId) {
-      if (source !== 'api') setPreflight(null);
+      // Nothing may outlive the inputs that produced it: drop the preflight,
+      // its error and loading flag, and the maps seeded from it.
+      setPreflight(null);
+      setPreflightError(null);
+      setPreflightLoading(false);
+      form.setValue('channelMap', [], { shouldDirty: true });
+      form.setValue('unreadableChannelIds', [], { shouldDirty: true });
+      form.setValue('userMap', [], { shouldDirty: true });
+      form.setValue('teamMap', [], { shouldDirty: true });
+      form.setValue('lifecycleMap', [], { shouldDirty: true });
+      form.clearErrors('channelMap');
       return;
     }
     let active = true;
     setPreflightLoading(true);
+    setPreflightError(null);
     respondioMigrationService
       .preflight(connectionId, workspaceId)
       .then((pf) => {
@@ -227,11 +244,20 @@ export function useMigrationForm(): UseMigrationFormResult {
         setDryRunAt(null);
         const seeded = seedFromPreflight(pf, tenantUsers);
         form.setValue('channelMap', seeded.channelMap ?? [], { shouldDirty: true });
+        form.setValue('unreadableChannelIds', seeded.unreadableChannelIds ?? [], { shouldDirty: true });
         form.setValue('userMap', seeded.userMap ?? [], { shouldDirty: true });
         form.setValue('teamMap', seeded.teamMap ?? [], { shouldDirty: true });
         form.setValue('lifecycleMap', seeded.lifecycleMap ?? [], { shouldDirty: true });
+        form.clearErrors('channelMap');
       })
-      .catch(() => active && setPreflight(null))
+      .catch((error: unknown) => {
+        if (!active) return;
+        setPreflight(null);
+        form.setValue('unreadableChannelIds', [], { shouldDirty: true });
+        setPreflightError(
+          error instanceof ApiError && error.status < 500 ? error.message : 'Could not check the connection.',
+        );
+      })
       .finally(() => active && setPreflightLoading(false));
     return () => {
       active = false;
@@ -269,10 +295,8 @@ export function useMigrationForm(): UseMigrationFormResult {
 
   const runDryRun = useCallback(async () => {
     const valid = await form.trigger();
-    if (!valid) {
-      toast.error('Please fix the highlighted fields.');
-      return;
-    }
+    // The fields show their own messages; no bare toast on top.
+    if (!valid) return;
     setSubmitting(true);
     try {
       const values = form.getValues();
@@ -308,6 +332,19 @@ export function useMigrationForm(): UseMigrationFormResult {
 
   const ready =
     !!workspaceId && (source === 'api' ? !!connectionId && !preflightLoading : !!watchedValues.contactsUploadId);
+  // Save and the Review dry run are the same action, so one stricter flag
+  // gates both: API mode also needs a reachable preflight with a channel to
+  // map; CSV mode has a legitimately empty channelMap.
+  // Disabled only where the screen says why; a missing pick stays enabled so
+  // validation shows the field's own message.
+  const canSave =
+    source !== 'api' ||
+    !connectionId ||
+    !workspaceId ||
+    (!preflightLoading &&
+      !preflightError &&
+      !!preflight?.apiAvailable &&
+      ((watchedValues.channelMap?.length ?? 0) > 0 || (watchedValues.unreadableChannelIds?.length ?? 0) > 0));
 
   const startMigration = useCallback(async () => {
     if (!canStartMigration) return;
@@ -363,10 +400,12 @@ export function useMigrationForm(): UseMigrationFormResult {
     tenantTeams,
     preflight,
     preflightLoading,
+    preflightError,
     compatibleTargetIds: (sourceValue: string) => (preflight ? compatibleTargetIds(sourceValue, preflight) : []),
     dryRunJob,
     canStartMigration,
     ready,
+    canSave,
     runDryRun,
     startMigration,
     submitting,

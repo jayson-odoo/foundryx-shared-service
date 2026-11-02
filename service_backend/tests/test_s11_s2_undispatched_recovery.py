@@ -305,7 +305,7 @@ def test_job_id_filter_narrows_the_sweep_to_one_job(db):
     )
 
 
-def test_sweep_is_not_restricted_to_heartbeat_declaring_types(db):
+def test_sweep_is_not_restricted_to_heartbeat_declaring_types(db, request):
     """AC-11-50: 'Unlike the running sweep it is NOT limited to
     heartbeats=True types - a lost message is type-agnostic.' Registers a
     type that explicitly does NOT declare heartbeats (mirrors the existing
@@ -315,7 +315,10 @@ def test_sweep_is_not_restricted_to_heartbeat_declaring_types(db):
         return None
 
     fake_type = "fake_no_heartbeat_undispatched"
+    from app.jobs.registry import _REGISTRY
+
     register_job_handler(JobHandlerDef(fake_type, _fake_handler, "Fake (no heartbeat)"))
+    request.addfinalizer(lambda: _REGISTRY.pop(fake_type, None))
     fake = _pending_job(db, created_at=NOW - timedelta(minutes=90), job_type=fake_type)
 
     count = JobService(db).fail_undispatched_pending_jobs(

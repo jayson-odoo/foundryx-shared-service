@@ -20,6 +20,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.jobs.registry import JobHandlerDef, register_job_handler
+from app.jobs.crash_text import crash_text
 from app.jobs.service import JobService
 from app.models.background_job import JOB_DONE, JOB_FAILED, BackgroundJob
 
@@ -96,7 +97,7 @@ def run_doc_feed_job(db: Session, job: BackgroundJob, *, transport: Any = None) 
     except Exception as exc:  # noqa: BLE001 - isolated, mirrors run_job
         logger.exception("doc-feed run job %s crashed", job.id)
         db.rollback()
-        service.finish(job, status=JOB_FAILED, error=f"Job crashed: {exc}")
+        service.finish(job, status=JOB_FAILED, error=crash_text(exc))
         return
     service.finish(job, status=JOB_DONE)
 
@@ -117,18 +118,18 @@ def run_doc_feed_backfill_job(db: Session, job: BackgroundJob, *, transport: Any
     except Exception as exc:  # noqa: BLE001 - isolated, mirrors run_job
         logger.exception("doc-feed backfill job %s crashed", job.id)
         db.rollback()
-        service.finish(job, status=JOB_FAILED, error=f"Job crashed: {exc}")
+        service.finish(job, status=JOB_FAILED, error=crash_text(exc))
         return
     service.finish(job, status=JOB_DONE)
 
 
 _RUN_HANDLER_DEF = JobHandlerDef(
     DOC_FEED_RUN_JOB_TYPE, run_doc_feed_job, "AutoCount document feed run",
-    heartbeats=True,
+    heartbeats=True, read_permission="autocount.sync.read",
 )
 _BACKFILL_HANDLER_DEF = JobHandlerDef(
     DOC_FEED_BACKFILL_JOB_TYPE, run_doc_feed_backfill_job, "AutoCount document feed backfill",
-    heartbeats=True,
+    heartbeats=True, read_permission="autocount.companies.read",
 )
 
 

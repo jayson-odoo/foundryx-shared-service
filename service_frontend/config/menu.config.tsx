@@ -108,8 +108,8 @@ export const MENU_SIDEBAR: MenuConfig = [
     termKey: 'import',
   },
   // Centralized background jobs (sprint-4/10) - storage migration + future async
-  // job types. Readable by any authed user (jobs are tenant-scoped server-side);
-  // the migration controls are gated separately. Sidebar-only, mirroring Imports.
+  // job types. Job reads follow each type's read permission (tenant-scoped
+  // server-side); the migration controls are gated separately. Sidebar-only, mirroring Imports.
   {
     title: 'Jobs',
     icon: Cog,

@@ -339,10 +339,13 @@ def test_mysql_timeout_stops_at_the_first_pragma_that_works():
 
 
 def test_sanitize_error_never_echoes_credentials_or_a_dsn():
+    class _LoginRefused(Exception):
+        pgcode = "28P01"
+
     raw = OperationalError(
         "SELECT 1",
         {},
-        Exception(
+        _LoginRefused(
             f"FATAL: password authentication failed for user \"ro\" "
             f"(password={PASSWORD}) at postgresql+psycopg2://ro:{PASSWORD}@10.0.0.9:5432/AED"
         ),
@@ -352,7 +355,7 @@ def test_sanitize_error_never_echoes_credentials_or_a_dsn():
     assert "://" not in message
     assert "[SQL:" not in message
     assert "Background on this error" not in message
-    assert "authentication failed" in message
+    assert message == runtime_module._LOGIN_REFUSED
 
 
 def test_sanitize_error_strips_sqlalchemy_wrapping_and_caps_length():
@@ -674,7 +677,8 @@ def test_run_preview_surfaces_a_query_error_sanitised():
     engine = _sqlite_engine()
     with pytest.raises(SqlQueryError) as excinfo:
         run_preview(engine, "SELECT nope FROM debtor", timeout_s=5)
-    assert "nope" in excinfo.value.message
+    assert "OperationalError" in excinfo.value.message
+    assert "nope" not in excinfo.value.message
     assert "[SQL:" not in excinfo.value.message
     assert "sqlite://" not in excinfo.value.message
 
@@ -977,7 +981,7 @@ def test_provider_test_succeeds_with_a_select_one_probe():
 def test_provider_test_reports_a_connect_failure_sanitised():
     def failing(cfg, creds):
         raise OperationalError(
-            "SELECT 1", {}, Exception(f"connection refused (password={PASSWORD})")
+            "SELECT 1", {}, Exception(2003, f"connection refused (password={PASSWORD})")
         )
 
     result = SqlDatabaseProvider().test(
@@ -987,7 +991,8 @@ def test_provider_test_reports_a_connect_failure_sanitised():
     )
     assert result.ok is False
     assert PASSWORD not in result.message
-    assert "refused" in result.message
+    assert runtime_module._HOST_UNREACHABLE in result.message
+    assert "refused" not in result.message
 
 
 def test_provider_test_names_missing_fields_before_connecting():
