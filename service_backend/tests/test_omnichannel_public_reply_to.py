@@ -368,6 +368,29 @@ def _unusable_quoted_ids(session_factory, r):
     }
 
 
+NOT_FOUND_MSG = "The message you are replying to was not found."
+
+
+def _multipart(client, r, payload, headers=None):
+    return client.post(
+        f"{BASE}/messages",
+        files={"file": ("a.png", PNG, "image/png")},
+        data={"payload": json.dumps(payload)},
+        headers={**r["hdr"], **(headers or {})},
+    )
+
+
+def _assert_not_found(res, label=""):
+    assert res.status_code == 422, (label, res.text)
+    err = res.json()["error"]
+    assert err["code"] == "invalid_request", (label, res.text)
+    assert err["message"] == NOT_FOUND_MSG, (label, res.text)
+
+
+def _stored_files(tmp_path):
+    return [p for p in tmp_path.rglob("*") if p.is_file()]
+
+
 def test_ac_38_73_all_unusable_quoted_ids_answer_the_same_and_send_nothing(client, session_factory, spy):
     r = _rig(client, session_factory)
     ids = _unusable_quoted_ids(session_factory, r)
@@ -375,15 +398,27 @@ def test_ac_38_73_all_unusable_quoted_ids_answer_the_same_and_send_nothing(clien
     for label, qid in ids.items():
         before = _count(session_factory)
         res = _post(client, r, _body(r, qid))
-        assert res.status_code >= 400, (label, res.text)
+        _assert_not_found(res, label)
         assert _count(session_factory) == before, label
         answers[label] = (res.status_code, res.json())
     assert spy.sends == 0
     distinct = {json.dumps(v, sort_keys=True) for v in answers.values()}
     assert len(distinct) == 1, answers
-    status, body = next(iter(answers.values()))
-    assert status in (404, 422)
-    assert body["error"]["code"]
+
+
+def test_ac_38_73_all_unusable_quoted_ids_answer_the_same_on_multipart(client, session_factory, spy, tmp_path):
+    r = _rig(client, session_factory)
+    ids = _unusable_quoted_ids(session_factory, r)
+    answers = set()
+    for label, qid in ids.items():
+        before = _count(session_factory)
+        res = _multipart(client, r, {"to": r["phone"], "type": "image", "replyToMessageId": qid})
+        _assert_not_found(res, label)
+        assert _count(session_factory) == before, label
+        answers.add(json.dumps(res.json(), sort_keys=True))
+    assert len(answers) == 1, answers
+    assert spy.sends == 0
+    assert _stored_files(tmp_path) == []
 
 
 def test_ac_38_73_control_a_valid_quoted_message_sends(client, session_factory, spy):
@@ -398,15 +433,88 @@ def test_ac_38_73_control_a_valid_quoted_message_sends(client, session_factory, 
 def test_ac_38_73_refused_multipart_stores_nothing(client, session_factory, spy, tmp_path):
     r = _rig(client, session_factory)
     before = _count(session_factory)
-    res = client.post(
-        f"{BASE}/messages",
-        files={"file": ("a.png", PNG, "image/png")},
-        data={"payload": json.dumps({"to": r["phone"], "type": "image", "replyToMessageId": "no-such-id"})},
-        headers=r["hdr"],
-    )
-    assert res.status_code >= 400, res.text
+    res = _multipart(client, r, {"to": r["phone"], "type": "image", "replyToMessageId": "no-such-id"})
+    _assert_not_found(res)
     assert _count(session_factory) == before
-    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+    assert _stored_files(tmp_path) == []
+    assert spy.sends == 0
+
+
+def _to_variants(session_factory, r):
+    import uuid
+
+    return {
+        "unknown id": f"id:{uuid.uuid4()}",
+        "unknown psid": "psid:no-such-psid-0001",
+        "malformed phone": "not-a-phone",
+    }
+
+
+@pytest.mark.parametrize("to_kind", ["unknown id", "unknown psid", "malformed phone"])
+def test_ac_38_73_unresolved_recipient_answers_the_same_with_or_without_the_reply_id(
+    client, session_factory, spy, to_kind
+):
+    r = _rig(client, session_factory)
+    ids = _unusable_quoted_ids(session_factory, r)
+    to = _to_variants(session_factory, r)[to_kind]
+    before = _count(session_factory)
+    baseline = _post(client, r, {"to": to, "type": "text", "text": {"body": "answering"}})
+    assert baseline.status_code >= 400, baseline.text  # control: the recipient itself is refused
+    for label, qid in ids.items():
+        res = _post(client, r, {"to": to, "type": "text", "text": {"body": "answering"}, "replyToMessageId": qid})
+        assert (res.status_code, res.json()) == (baseline.status_code, baseline.json()), (label, res.text)
+        mp = _multipart(client, r, {"to": to, "type": "image", "replyToMessageId": qid})
+        mp_base = _multipart(client, r, {"to": to, "type": "image"})
+        assert (mp.status_code, mp.json()) == (mp_base.status_code, mp_base.json()), (label, mp.text)
+    assert _count(session_factory) == before
+    assert spy.sends == 0
+
+
+def _count_statements(session_factory, fn):
+    from sqlalchemy import event
+
+    engine = session_factory.kw["bind"]
+    n = {"n": 0}
+
+    def _before(conn, cursor, statement, *a):
+        n["n"] += 1
+
+    event.listen(engine, "before_cursor_execute", _before)
+    try:
+        res = fn()
+    finally:
+        event.remove(engine, "before_cursor_execute", _before)
+    return n["n"], res
+
+
+def test_ac_38_73_unknown_and_foreign_ids_cost_the_same_work(client, session_factory, spy):
+    r = _rig(client, session_factory)
+    ids = _unusable_quoted_ids(session_factory, r)
+    _post(client, r, _body(r, "warm-up-id"))  # warm any per-process caches
+    counts = {}
+    for label in ("unknown", "other workspace", "other contact"):
+        n, res = _count_statements(session_factory, lambda q=ids[label]: _post(client, r, _body(r, q)))
+        _assert_not_found(res, label)
+        counts[label] = n
+    assert len(set(counts.values())) == 1, counts
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["x" * 65, "x" * 500, "bad\x00id", "bad\nid", "bad\tid", "\n", "\x00"],
+    ids=["65 chars", "500 chars", "NUL", "newline", "tab", "only newline", "only NUL"],
+)
+def test_ac_38_73_malformed_reply_id_answers_like_an_unknown_one(client, session_factory, spy, tmp_path, bad):
+    r = _rig(client, session_factory)
+    before = _count(session_factory)
+    res = _post(client, r, _body(r, bad))
+    _assert_not_found(res, "json")
+    mp = _multipart(client, r, {"to": r["phone"], "type": "image", "replyToMessageId": bad})
+    _assert_not_found(mp, "multipart")
+    unknown = _post(client, r, _body(r, "no-such-message-id"))
+    assert res.json() == unknown.json()
+    assert _count(session_factory) == before
+    assert _stored_files(tmp_path) == []
     assert spy.sends == 0
 
 
@@ -423,6 +531,21 @@ def test_ac_38_74_quoting_a_message_on_another_channel_is_refused(client, sessio
     assert res.json()["error"]["code"] == "reply_channel_mismatch"
     assert _count(session_factory) == before
     assert spy.sends == 0
+
+
+def test_ac_38_74_multipart_quoting_a_message_on_another_channel_is_refused(
+    client, session_factory, spy, tmp_path
+):
+    r = _rig(client, session_factory, channels=2)
+    a, b = r["channels"]
+    q = _quoted(session_factory, r["cid"], b)
+    before = _count(session_factory)
+    res = _multipart(client, r, {"to": r["phone"], "type": "image", "channelId": a, "replyToMessageId": q})
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "reply_channel_mismatch"
+    assert _count(session_factory) == before
+    assert spy.sends == 0
+    assert _stored_files(tmp_path) == []
 
 
 def test_ac_38_74_quoting_a_message_on_the_same_channel_sends(client, session_factory, spy):
