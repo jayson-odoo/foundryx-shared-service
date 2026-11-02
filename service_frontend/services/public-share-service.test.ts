@@ -22,10 +22,10 @@ function respondWith(blob: Blob) {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => blob }));
 }
 
-const UNSAFE = ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'TEXT/HTML', 'text/html;x=1', ''];
+const UNLISTED = ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'TEXT/HTML', 'text/html;x=1', ''];
 
 describe('public share preview blob type (AC-52-01)', () => {
-  it.each(UNSAFE)('never renders a blob typed %j', async (type) => {
+  it.each(UNLISTED)('never renders a blob typed %j', async (type) => {
     respondWith(served(type));
     await publicShareService.fileBlobUrl('tok', 'f1');
     expect(created).toHaveLength(1);

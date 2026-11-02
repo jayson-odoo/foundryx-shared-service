@@ -33,10 +33,10 @@ async function open(att: IdeaAttachment, blob: Blob) {
   await waitFor(() => expect(created).toHaveLength(1));
 }
 
-const UNSAFE = ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'TEXT/HTML', 'text/html;x=1', ''];
+const UNLISTED = ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'TEXT/HTML', 'text/html;x=1', ''];
 
 describe('idea attachment preview blob type (AC-52-01)', () => {
-  it.each(UNSAFE)('never renders a blob typed %j', async (type) => {
+  it.each(UNLISTED)('never renders a blob typed %j', async (type) => {
     await open(upload('notes.bin'), served(type));
     expect(created[0].type).toBe('application/octet-stream');
   });

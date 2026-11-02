@@ -27,7 +27,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
-const UNSAFE = ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'TEXT/HTML', 'text/html;x=1', ''];
+const UNLISTED = ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'TEXT/HTML', 'text/html;x=1', ''];
 const ALLOWED: Array<[string, string]> = [
   ['image/png', 'image/png'],
   ['image/jpeg', 'image/jpeg'],
@@ -41,7 +41,7 @@ describe('document drive preview blob type (AC-52-01)', () => {
     ['shareFileBlobUrl', () => realDocumentService.shareFileBlobUrl('tok', 'f1')],
   ] as const) {
     describe(name, () => {
-      it.each(UNSAFE)('never renders a blob typed %j', async (type) => {
+      it.each(UNLISTED)('never renders a blob typed %j', async (type) => {
         apiFetchBlob.mockResolvedValue(served(type));
         await call();
         expect(created).toHaveLength(1);
