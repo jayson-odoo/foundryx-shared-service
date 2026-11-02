@@ -4,7 +4,7 @@ UAC: `49-key-url-check-first-acceptance-criteria.md`. Size S. Branch `crew/ss-ke
 
 | Area | File | Change |
 |---|---|---|
-| Key routes | `modules/omnichannel/routers/api_v1.py` (create, PATCH), `services/webhook_service.py` (`create`, `update`) | Check the URL before the first query, or release the read transaction before the check; keep plan 43's lock order after it |
+| Key routes | `modules/omnichannel/routers/api_v1.py` (create, PATCH), `services/webhook_service.py` (`create_for_workspace` for the key create, `create` for staff, `update`) | Check the URL before the first query, or release the read transaction before the check; keep plan 43's lock order after it |
 | Tests | new test file | Spy on the URL check and assert no transaction or checked-out connection at that moment |
 | Proof | real server, slow resolver | Before and after numbers |
 
