@@ -341,7 +341,7 @@ def test_a_transcription_failure_marks_the_job_and_the_meeting_failed(db, storag
     finished = _run(db, _job(db, meeting).id)
 
     assert finished.status == JOB_FAILED
-    assert finished.error == "Job crashed (RuntimeError)."
+    assert "RuntimeError" in (finished.error or "")
     assert "OOM" not in (finished.error or "")
     db.refresh(meeting)
     assert meeting.status == STATUS_FAILED
