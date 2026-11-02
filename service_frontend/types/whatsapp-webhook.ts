@@ -24,7 +24,7 @@ export interface WebhookEndpoint {
   id: string;
   tenantId: string;
   workspaceId: string;
-  channelId: string;
+  channelId: string | null; // null = covers every channel of the workspace
   name: string;
   url: string;
   events: WebhookEventType[];

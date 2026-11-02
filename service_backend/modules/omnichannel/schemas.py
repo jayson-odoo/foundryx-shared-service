@@ -1448,10 +1448,10 @@ class PublicReactionBody(ApiModel):
 class PublicSendRequest(ApiModel):
     to: str
     # Optional explicit channel selector (plan 32 / A7a, D-A7-18, AC-CHN-53) -
-    # an ACTIVE channel of THIS workspace. Omitted → prefer an active
-    # WHATSAPP channel, else the oldest active channel of any type (byte-
-    # identical to every pre-slice consumer). An unknown/foreign/inactive id
-    # is a typed `422 invalid_channel`, never a silent fallback.
+    # an ACTIVE channel of THIS workspace. Omitted → the only active WHATSAPP
+    # channel, else the only active channel; `422 channel_required` when that
+    # pool holds several. An unknown/foreign/inactive id is a typed
+    # `422 invalid_channel`, never a silent fallback.
     channelId: Optional[str] = None
     # text | template | image | video | audio | voice | document | sticker |
     # interactive | location | contacts | reaction
@@ -1496,7 +1496,7 @@ class PublicChannelItem(ApiModel):
     name: str
     status: str  # ACTIVE | PENDING | INACTIVE | ERROR
     isActive: bool
-    isDefault: bool  # the channel `POST /messages` uses when `channelId` is omitted
+    isDefault: bool  # false on every channel when the default would be a guess or none is active
     displayPhoneNumber: Optional[str] = None
     verifiedName: Optional[str] = None
     createdAt: datetime
@@ -1739,7 +1739,7 @@ class WebhookEndpointItem(ApiModel):
     id: str
     tenantId: str
     workspaceId: str
-    channelId: str
+    channelId: Optional[str] = None  # null = covers every channel of the workspace
     name: str
     url: str
     events: List[str]

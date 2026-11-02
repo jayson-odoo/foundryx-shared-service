@@ -179,10 +179,12 @@ class PublicGatewayService:
         AC-CHN-53). ``channel_id`` (optional, ``PublicSendRequest.channelId``)
         WINS when given - an unknown id, a foreign one, or one belonging to
         another workspace/tenant is a typed 4xx, NEVER a silent fallback to a
-        different channel. With no explicit id: prefer an ACTIVE `WHATSAPP`
-        channel (byte-identical behaviour for every consumer that predates
-        this slice - the whole point of the guide being a contract), else the
-        oldest active channel of any type (unchanged tie-break)."""
+        different channel. With no explicit id the pool is the ACTIVE `WHATSAPP`
+        channels (so one WhatsApp plus web chat or Messenger keeps sending on
+        WhatsApp, as the guide promises), else every active channel. An empty
+        pool is `409 no_active_channel`; a pool of several is `422
+        channel_required`, because picking one would be a guess; exactly one is
+        used."""
         base = self.db.query(Channel).filter(
             Channel.tenant_id == tenant_id,
             Channel.workspace_id == workspace_id,
@@ -196,17 +198,26 @@ class PublicGatewayService:
                     422, "invalid_channel", "Unknown or inactive channel for this workspace."
                 )
             return channel
-        whatsapp = base.filter(Channel.channel_type == "WHATSAPP").order_by(
-            Channel.created_at.asc()
-        ).first()
-        if whatsapp is not None:
-            return whatsapp
-        channel = base.order_by(Channel.created_at.asc()).first()
-        if channel is None:
+        pool = (
+            base.filter(Channel.channel_type == "WHATSAPP")
+            .order_by(Channel.created_at.asc())
+            .limit(2)
+            .all()
+        )
+        if not pool:
+            pool = base.order_by(Channel.created_at.asc()).limit(2).all()
+        if not pool:
             raise ApiError(
                 409, "no_active_channel", "No active channel is connected to this workspace."
             )
-        return channel
+        if len(pool) > 1:
+            raise ApiError(
+                422,
+                "channel_required",
+                "This workspace has more than one active channel. Pass channelId "
+                "to choose one (see GET /channels).",
+            )
+        return pool[0]
 
     # ── Send-target ("to") resolution (plan 32 / A7a, AC-CHN-54) ─────────────
     def _resolve_send_target(
@@ -955,7 +966,15 @@ class PublicGatewayService:
         # Plan 32 / A7a (D-A7-18, AC-CHN-53): `channelId` (optional) wins over
         # the WHATSAPP-preferred implicit choice - an unknown/foreign one is a
         # typed 4xx from `_workspace_channel`, never a silent fallback.
-        channel = self._workspace_channel(tenant_id, workspace_id, channel_id=req.channelId)
+        try:
+            channel = self._workspace_channel(tenant_id, workspace_id, channel_id=req.channelId)
+        except ApiError as exc:
+            # A reaction goes out on the channel of the message it targets and
+            # uses no default, so an ambiguous default does not stop it
+            # (AC-38-101).
+            if exc.code != "channel_required" or msg_type != "reaction":
+                raise
+            channel = None
 
         if msg_type == "text":
             if req.text is None or not (req.text.body or "").strip():
@@ -1117,9 +1136,8 @@ class PublicGatewayService:
         to: str,
         channel: Optional[Channel] = None,
     ) -> str:
-        # `channel` is None only for the legacy `send_multipart` call path
-        # that predates the explicit selector (plan 32 / A7a S6) - resolve
-        # the same WHATSAPP-preferred implicit channel there.
+        # Callers pass the resolved channel; `None` resolves the implicit one
+        # (refused when it would be a guess).
         channel = channel or self._workspace_channel(tenant_id, workspace_id)
         contact = self._resolve_send_target(tenant_id, workspace_id, channel, to)
         self._assert_channel_identity(tenant_id, channel, contact)
@@ -1259,7 +1277,6 @@ class PublicGatewayService:
             raise ApiError(400, "unsupported_type", f"Unknown media type '{kind}'.")
         if not (to or "").strip():
             raise ApiError(422, "invalid_recipient", "A recipient phone number is required.")
-        channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
         store = idempotency.get_store()
         reserved = False
         if idempotency_key:
@@ -1274,6 +1291,8 @@ class PublicGatewayService:
                 return claimed, True
             reserved = True
         try:
+            # After the replay check, as the JSON path does; a refusal releases the key.
+            channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
             message_id = self._send_media(
                 tenant_id,
                 workspace_id,
@@ -1300,14 +1319,15 @@ class PublicGatewayService:
         stopped working); disconnected (trashed) rows are not. ``isDefault`` is the channel
         ``_workspace_channel`` returns for an omitted ``channelId`` - the SAME
         resolver, so the flag can never drift from what a send does; with no
-        active channel nothing is default."""
+        active channel, or when the default would be a guess
+        (``channel_required``), nothing is default."""
         rows = ChannelRepository(self.db).list_by_workspace(
             workspace_id, tenant_id, oldest_first=True
         )
         try:
             default_id: Optional[str] = self._workspace_channel(tenant_id, workspace_id).id
         except ApiError as exc:
-            if exc.code != "no_active_channel":
+            if exc.code not in ("no_active_channel", "channel_required"):
                 raise
             default_id = None
         smap = statuses.id_to_key_map(self.db, tenant_id)
@@ -1353,7 +1373,8 @@ class PublicGatewayService:
         category: Optional[str] = None,
     ) -> list[PublicTemplateItem]:
         """Approved templates for the workspace. ``channel_id`` targets a specific
-        channel (default = the workspace's active channel); a channel in another
+        channel (omitted: the workspace's only default channel, else
+        ``422 channel_required``); a channel in another
         workspace/tenant is a uniform 404. ``search`` filters by name substring
         (case-insensitive); ``category`` filters by Meta category (UTILITY|…)."""
         if channel_id:
