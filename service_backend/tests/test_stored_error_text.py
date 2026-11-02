@@ -96,12 +96,16 @@ def test_ac_47_01_a_chunk_commit_database_error_is_fixed_text_everywhere(session
     for incident in incidents:
         assert incident.last_error and MARKER not in incident.last_error
         assert "IntegrityError" in incident.last_error
+    from modules.autocount.alerts import ALERT_EMAIL_SENTENCE
+
     emails = db.query(EmailOutbox).all()
     assert emails, "the incident must send an alert email"
     for mail in emails:
         body = f"{mail.subject}{mail.html_body}{mail.text_body}"
         assert MARKER not in body
-        assert "IntegrityError" in body
+        assert "IntegrityError" not in body
+        assert "23505" not in body
+        assert ALERT_EMAIL_SENTENCE in body
     db.close()
 
 
