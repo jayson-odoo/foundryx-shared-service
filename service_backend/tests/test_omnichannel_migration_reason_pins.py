@@ -1,6 +1,6 @@
 """Plan 44 review round - pins: a malformed row at each existing site stores
 no value from the row, in the job's failures or in the stored failures file.
-Placeholder data only; every value that must not leak carries ``MARKER-``."""
+Placeholder data only; every value that must not appear in output carries ``MARKER-``."""
 import json
 
 import httpx

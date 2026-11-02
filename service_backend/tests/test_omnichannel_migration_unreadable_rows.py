@@ -7,8 +7,8 @@ tests' pattern); routes, services and the job path are real. The shared
 Python exception, so this file uses ``soft_client`` (``raise_server_exceptions
 =False``) and asserts on the status the caller would actually see.
 
-All data is placeholder. Rows we cannot read carry ``MARKER-*`` values so a
-leak of any row value into a response or a stored report is caught.
+All data is placeholder. Rows we cannot read carry ``MARKER-*`` values so
+any row value appearing in a response or a stored report is caught.
 """
 import json
 import re
@@ -157,7 +157,7 @@ def _warnings_naming(body, token):
 
 def _assert_no_markers(text):
     for marker in MARKERS:
-        assert marker not in text, f"{marker!r} leaked"
+        assert marker not in text, f"{marker!r} found in output"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

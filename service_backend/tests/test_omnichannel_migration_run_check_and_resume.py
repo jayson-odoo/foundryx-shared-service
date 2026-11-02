@@ -1,5 +1,5 @@
 """Plan 44 review round - red tests. Placeholder data only; a value that must
-not leak carries ``MARKER-``."""
+not appear in output carries ``MARKER-``."""
 import json
 import re
 
