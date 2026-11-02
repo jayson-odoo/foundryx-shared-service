@@ -2198,18 +2198,13 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                 unreadable_sources["users"] = bad_users
         except RespondIoError as exc:
             service.log(job, f"Could not read source space users for team mapping: {exc.message}", level="warning")
-        except Exception:  # noqa: BLE001 - a dry run's report-only read never fails the job
-            if not payload.get("teamMap"):
-                service.log(job, "Could not read source users for the report.", level="warning")
-            else:
-                raise
     if client is not None and dry_run:
         try:
             _channels, bad_channels = parse_rows(client.list_space_channels(), SpaceChannel)
             if bad_channels:
                 unreadable_sources["channels"] = bad_channels
-        except Exception:  # noqa: BLE001 - report-only read, never fails the dry run
-            service.log(job, "Could not read source channels for the report.", level="warning")
+        except RespondIoError as exc:
+            service.log(job, f"Could not read source channels: {exc.message}", level="warning")
 
     thread_open_id = status_id_for(db, tenant_id, "THREAD", "OPEN")
     thread_closed_id = status_id_for(db, tenant_id, "THREAD", "CLOSED")
