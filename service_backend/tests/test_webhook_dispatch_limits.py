@@ -308,3 +308,150 @@ def test_ac_51_04_pin_last_attempt_dead_letters_and_counts_once(session_factory,
         assert ep.consecutive_failures == 1
     finally:
         db.close()
+
+
+# ── review round: whole-attempt deadline, no leftover work, fixed text ──────
+def _pause_or_closed(conn, seconds, state):
+    """Wait ``seconds``; True (and note it) when the client closed the connection."""
+    conn.settimeout(seconds)
+    try:
+        if conn.recv(1) == b"":
+            state["closed"] = True
+            return True
+    except socket.timeout:
+        pass
+    except OSError:
+        state["closed"] = True
+        return True
+    return False
+
+
+def _slow_headers(state):
+    def handler(conn, stop):
+        _read_request(conn)
+        head = b"HTTP/1.1 200 OK\r\nX-Pad: " + b"a" * 200
+        end = time.monotonic() + 6
+        for i in range(len(head)):
+            if time.monotonic() > end or stop.is_set():
+                return
+            try:
+                conn.sendall(head[i : i + 1])
+            except OSError:
+                state["closed"] = True
+                return
+            if _pause_or_closed(conn, 0.5, state):
+                return
+
+    return handler
+
+
+def _continue_forever(state):
+    def handler(conn, stop):
+        _read_request(conn)
+        end = time.monotonic() + 6
+        while time.monotonic() < end and not stop.is_set():
+            try:
+                conn.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+            except OSError:
+                state["closed"] = True
+                return
+            if _pause_or_closed(conn, 0.5, state):
+                return
+
+    return handler
+
+
+def _body_trickle(state):
+    def handler(conn, stop):
+        _read_request(conn)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
+        end = time.monotonic() + 6
+        while time.monotonic() < end and not stop.is_set():
+            try:
+                conn.sendall(b"x")
+            except OSError:
+                state["closed"] = True
+                return
+            if _pause_or_closed(conn, 0.5, state):
+                return
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "make", [_slow_headers, _continue_forever, _body_trickle], ids=["slow-headers", "100-continue", "body-trickle"]
+)
+def test_ac_51_01_slow_phase_ends_at_deadline_leaves_no_thread_and_closes(
+    make, session_factory, local_server, allow_loopback, monkeypatch
+):
+    state = {"closed": False}
+    _lower_deadline(monkeypatch)
+    srv = local_server(make(state))
+    _eid, did = _seed(session_factory, "pn-d-" + make.__name__, srv.url)
+    started = time.monotonic()
+    outcome = _run(session_factory, did)
+    elapsed = time.monotonic() - started
+    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s"
+    assert outcome == "retry"
+    row = _row(session_factory, did)
+    assert row.attempt_count == 1
+    assert row.error == wd.DEADLINE_ERROR.format(seconds=wd.DELIVERY_DEADLINE_SECONDS)
+    time.sleep(1.0)
+    alive = [t.name for t in threading.enumerate() if t.name == "webhook-post" and t.is_alive()]
+    assert alive == [], f"threads left working on the attempt: {alive}"
+    assert state["closed"], "the server never saw its connection closed"
+
+
+# ── AC-51-06 ────────────────────────────────────────────────────────────────
+def test_ac_51_06_illegal_header_line_is_not_echoed(
+    session_factory, local_server, allow_loopback
+):
+    def bad(conn, stop):
+        _read_request(conn)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nBad header line " + MARKER + b"\r\n\r\n")
+
+    srv = local_server(bad)
+    _eid, did = _seed(session_factory, "pn-d-badhdr", srv.url)
+    assert _run(session_factory, did) == "retry"
+    row = _row(session_factory, did)
+    assert row.error
+    assert MARKER.decode() not in row.error
+    assert "127.0.0.1" not in row.error and str(srv.port) not in row.error
+
+
+def test_ac_51_06_unresolvable_address_is_not_echoed(session_factory, monkeypatch):
+    host = "no-such-host.consumer-test.example"
+
+    def fail(h, *a, **k):
+        raise socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail)
+    _eid, did = _seed(session_factory, "pn-d-nohost", f"https://{host}/hook")
+    assert _run(session_factory, did) == "retry"
+    row = _row(session_factory, did)
+    assert row.error and row.attempt_count == 1
+    assert host not in row.error and "consumer-test" not in row.error
+
+
+# ── AC-51-01: the address check is inside the deadline ──────────────────────
+def test_ac_51_01_slow_address_check_counts_inside_the_deadline(session_factory, monkeypatch):
+    def slow_dns(h, *a, **k):
+        time.sleep(LOW_DEADLINE + 2.5)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
+
+    class Quick(httpx.BaseTransport):
+        def handle_request(self, request):
+            return httpx.Response(200, content=b"ok")
+
+    _lower_deadline(monkeypatch)
+    monkeypatch.setattr(socket, "getaddrinfo", slow_dns)
+    monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: Quick())
+    _eid, did = _seed(session_factory, "pn-d-slowdns", "https://consumer.example/hook")
+    started = time.monotonic()
+    outcome = _run(session_factory, did)
+    elapsed = time.monotonic() - started
+    assert elapsed < LOW_DEADLINE + 1.5, f"attempt took {elapsed:.1f}s"
+    assert outcome == "retry"
+    assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
+        seconds=wd.DELIVERY_DEADLINE_SECONDS
+    )
