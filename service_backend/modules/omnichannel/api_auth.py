@@ -7,7 +7,8 @@ miss (no enumeration); 403 `service_not_enabled` if the key's service is not
 active for its tenant (the workspace→service binding, AC-01-15).
 """
 from dataclasses import dataclass
-from typing import Optional
+import logging
+from typing import Iterator, Optional
 
 from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
@@ -18,10 +19,13 @@ from app.models.tenant import Tenant
 from app.repositories.module_repository import ModuleRepository
 
 from .repositories.workspace_repository import WorkspaceRepository
+from .services import key_limits
 from .services.api_key_service import ApiKeyService
 
 MODULE_NAME = "omnichannel"
 SERVICE = "omnichannel"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,7 +64,7 @@ def get_api_workspace(
     request: Request,
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
-) -> ApiWorkspace:
+) -> Iterator[ApiWorkspace]:
     token = _parse_bearer(authorization)
     if token is None:
         raise ApiError(401, "invalid_api_key", "Missing or malformed API key.")
@@ -73,13 +77,31 @@ def get_api_workspace(
     # Stash for the activity-log middleware (sprint-4/12) - set as soon as the
     # key resolves so even a 403 service_not_enabled below is attributable.
     request.state.api_workspace = workspace
-    # Service binding (AC-01-15): the tenant may sign in, the service is ACTIVE
-    # for it and the key's workspace is not trashed.
-    if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
-        raise ApiError(
-            403, "service_not_enabled", "This service is not enabled for the workspace."
+    # Plan 50: per-key limits, before any other database work. The slot is
+    # released in `finally`, which also runs on an error or a disconnect.
+    try:
+        slot = key_limits.acquire(row.id)
+    except key_limits.KeyLimitExceeded as exc:
+        route = request.scope.get("route")
+        key_limits.log_refusal(
+            row.id, exc, getattr(route, "name", None) or request.url.path
         )
-    # The key is fully checked and `workspace` holds plain strings: end the
-    # read-only transaction so it is not held through the endpoint's slow work.
-    release_read_transactions()
-    return workspace
+        raise ApiError(
+            429, "rate_limited", "Too many requests for this key."
+        ).with_retry_after(exc.retry_after)
+    try:
+        ApiKeyService(db).touch(row)
+        # Service binding (AC-01-15): the tenant may sign in, the service is
+        # ACTIVE for it and the key's workspace is not trashed.
+        if not gateway_key_enabled(db, row.tenant_id, row.workspace_id):
+            raise ApiError(
+                403,
+                "service_not_enabled",
+                "This service is not enabled for the workspace.",
+            )
+        # The key is fully checked and `workspace` holds plain strings: end the
+        # read-only transaction so it is not held through the endpoint's slow work.
+        release_read_transactions()
+        yield workspace
+    finally:
+        key_limits.release(slot)

@@ -166,6 +166,10 @@ class ApiKeyService:
                 break
         if match is None:
             return None
-        match.last_used_at = datetime.now(timezone.utc)
-        self.db.commit()
         return match
+
+    def touch(self, row: WorkspaceApiKey) -> None:
+        """Stamp `last_used_at` for an ADMITTED request. Kept out of `resolve`
+        so a request refused by the per-key limits writes nothing (plan 50)."""
+        row.last_used_at = datetime.now(timezone.utc)
+        self.db.commit()
