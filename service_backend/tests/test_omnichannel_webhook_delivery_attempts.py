@@ -170,7 +170,36 @@ def test_operator_create_refuses_url_the_client_cannot_parse(client, soft_client
 
 
 # ── helpers for stored rows ──────────────────────────────────────────────────
-def _stored_endpoint(session_factory, phone, url, tenant_id=DEFAULT_TENANT_ID):
+def _real_other_tenant(session_factory):
+    """A second real tenant with the module installed, so `gateway_key_enabled`
+    finds an active module and its default workspace. Returns (tenant_id, workspace_id)."""
+    from app.models import Tenant
+    from app.services.app_store_service import AppStoreService
+    from app.services.tenant_service import TenantService
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    try:
+        TenantService(db).provision(
+            name="Other",
+            slug="other-due-run",
+            admin_name="Olu",
+            admin_email="admin@other-due-run.example.com",
+            admin_password="pw12345678",
+        )
+        tenant = db.query(Tenant).filter(Tenant.slug == "other-due-run").first()
+        AppStoreService(db).install(tenant.id, "omnichannel")
+        ws = (
+            db.query(Workspace)
+            .filter(Workspace.tenant_id == tenant.id, Workspace.is_default.is_(True))
+            .first()
+        )
+        return tenant.id, ws.id
+    finally:
+        db.close()
+
+
+def _stored_endpoint(session_factory, phone, url, tenant_id=DEFAULT_TENANT_ID, workspace_id="ws-other"):
     """A row inserted directly, as an older row could exist."""
     if tenant_id == DEFAULT_TENANT_ID:
         channel_id = _make_channel(session_factory, phone)
@@ -187,7 +216,7 @@ def _stored_endpoint(session_factory, phone, url, tenant_id=DEFAULT_TENANT_ID):
     try:
         ep = WebhookEndpoint(
             tenant_id=tenant_id,
-            workspace_id="ws-other",
+            workspace_id=workspace_id,
             channel_id="ch-other",
             name="Other",
             url=url,
@@ -357,13 +386,14 @@ def test_run_due_deliveries_continues_after_one_dispatch_raises(
 ):
     calls, _state = _capture_post
     ep_a = _stored_endpoint(session_factory, "pn-due-a", "https://consumer.example/a")
+    other_tid, other_ws = _real_other_tenant(session_factory)
     ep_c = _stored_endpoint(
-        session_factory, "pn-due-c", "https://consumer.example/c", tenant_id="tenant-other"
+        session_factory, "pn-due-c", "https://consumer.example/c", tenant_id=other_tid, workspace_id=other_ws
     )
     bad = _stored_delivery(session_factory, ep_a, "evt-due-bad", minutes_ago=30)
     same_tenant = _stored_delivery(session_factory, ep_a, "evt-due-same", minutes_ago=20)
     other_tenant = _stored_delivery(
-        session_factory, ep_c, "evt-due-other", tenant_id="tenant-other", minutes_ago=10
+        session_factory, ep_c, "evt-due-other", tenant_id=other_tid, minutes_ago=10
     )
 
     real = wd.dispatch
@@ -439,12 +469,13 @@ def test_run_due_deliveries_continues_after_a_row_leaves_the_session_failed(
 ):
     calls, _state = _capture_post
     ep_a = _stored_endpoint(session_factory, "pn-fail-a", "https://consumer.example/a")
+    other_tid, other_ws = _real_other_tenant(session_factory)
     ep_c = _stored_endpoint(
-        session_factory, "pn-fail-c", "https://consumer.example/c", tenant_id="tenant-other"
+        session_factory, "pn-fail-c", "https://consumer.example/c", tenant_id=other_tid, workspace_id=other_ws
     )
     bad = _stored_delivery(session_factory, ep_a, "evt-fail-bad", minutes_ago=30)
     other_tenant = _stored_delivery(
-        session_factory, ep_c, "evt-fail-other", tenant_id="tenant-other", minutes_ago=10
+        session_factory, ep_c, "evt-fail-other", tenant_id=other_tid, minutes_ago=10
     )
 
     real = wd.dispatch

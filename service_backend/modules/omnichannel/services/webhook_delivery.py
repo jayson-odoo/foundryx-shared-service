@@ -4,7 +4,10 @@ The inbound pipeline calls ``enqueue_event`` after it persists a message/status/
 contact change. That fans the event to every ACTIVE endpoint that subscribed to
 the type and covers the channel (its own, or an all-channels endpoint of the
 channel's tenant and workspace), writing a durable ``webhook_deliveries`` row per endpoint
-and queuing the HTTP POST. ``dispatch`` runs one attempt with an HMAC signature;
+and queuing the HTTP POST. While the workspace is off (tenant may not sign in,
+module inactive, workspace trashed) nothing is queued, and a queued delivery that
+reaches its attempt in that state ends FAILED with no change to the endpoint's
+failure counter. ``dispatch`` runs one attempt with an HMAC signature;
 on failure it backs off, and after N dead-letters the endpoint auto-disables.
 
 Delivery NEVER runs synchronously inside inbound processing and is fully failure-
@@ -25,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.services.url_guard import GuardedTransport, UrlGuardError
 
+from ..api_auth import gateway_key_enabled
 from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
 from ..schemas import MessageItem
 from ..security import decrypt_secret
@@ -139,6 +143,9 @@ def _fan_out(
         endpoints = _active_endpoints(db, tenant_id, workspace_id, channel_id, event_type)
         if not endpoints:
             return 0
+        # Same state check as the key routes; an error here is logged below.
+        if not gateway_key_enabled(db, tenant_id, workspace_id):
+            return 0
         envelope = build_envelope(
             event_type, workspace_id, channel_id, event_id, data() if callable(data) else data
         )
@@ -239,6 +246,12 @@ def dispatch(db: Session, delivery_id: str) -> str:
         delivery.error = "Endpoint inactive."
         db.commit()
         return "skip"
+    if not gateway_key_enabled(db, delivery.tenant_id, endpoint.workspace_id):
+        delivery.status = "FAILED"
+        delivery.next_attempt_at = None
+        delivery.error = "Service not enabled for this workspace."
+        db.commit()
+        return "skip"
 
     body = json.dumps(delivery.payload_json, separators=(",", ":")).encode("utf-8")
     timestamp = str(int(datetime.now(timezone.utc).timestamp()))
@@ -314,6 +327,18 @@ def dispatch(db: Session, delivery_id: str) -> str:
     # Dead-letter: attempts preserved, endpoint failure counter bumped.
     delivery.status = "FAILED"
     delivery.next_attempt_at = None
+    # Re-read under lock: staff may have paused or deleted the endpoint while
+    # the send was under way; only an ACTIVE one is counted and auto-disabled.
+    endpoint = (
+        db.query(WebhookEndpoint)
+        .filter(WebhookEndpoint.id == endpoint.id, WebhookEndpoint.tenant_id == endpoint.tenant_id)
+        .with_for_update(key_share=True)
+        .populate_existing()
+        .first()
+    )
+    if endpoint is None or endpoint.status != "ACTIVE":
+        db.commit()
+        return "dead"
     endpoint.consecutive_failures += 1
     if endpoint.consecutive_failures >= AUTO_DISABLE_THRESHOLD:
         endpoint.status = "AUTO_DISABLED"

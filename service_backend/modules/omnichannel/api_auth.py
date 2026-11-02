@@ -45,7 +45,8 @@ def gateway_key_enabled(db: Session, tenant_id: str, workspace_id: str) -> bool:
     """True while a resolved gateway key may be used: its tenant may sign in
     (not suspended or archived), the module is active for the tenant, and the
     key's workspace exists and is not trashed. Every lookup is tenant-scoped.
-    One predicate shared by every API-key entry point of this module."""
+    One predicate shared by every API-key entry point of this module, and by
+    webhook delivery (fan-out and dispatch)."""
     tenant = db.get(Tenant, tenant_id)
     if tenant is None or not tenant.signin_allowed:
         return False

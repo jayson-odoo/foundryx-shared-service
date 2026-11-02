@@ -4,7 +4,9 @@ import { useCallback, useState } from 'react';
 import { Info } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { ResourceList } from '@/components/platform/resource-list';
-import { useApiKeyList } from './use-api-key-list';
+import type { ApiKeyItem } from '@/types/api-keys';
+import { useApiKeyList, type RevokePark } from './use-api-key-list';
+import { RevokeApiKeyDialog } from './revoke-api-key-dialog';
 import { MintApiKeyDialog } from './mint-api-key-dialog';
 
 /**
@@ -25,7 +27,13 @@ export function ApiKeysTab({
   const onMint = useCallback(() => setDialogOpen(true), []);
   const onMinted = useCallback(() => setReloadKey((k) => k + 1), []);
 
-  const { config } = useApiKeyList(workspaceId ?? '', onMint);
+  const [revoking, setRevoking] = useState<{ key: ApiKeyItem; park: RevokePark } | null>(null);
+  const onRevokeWithEndpoints = useCallback(
+    (key: ApiKeyItem, park: RevokePark) => setRevoking({ key, park }),
+    [],
+  );
+
+  const { config } = useApiKeyList(workspaceId ?? '', onMint, onRevokeWithEndpoints);
 
   if (creating || !workspaceId) {
     return (
@@ -41,6 +49,16 @@ export function ApiKeysTab({
   return (
     <div className="flex flex-col gap-3">
       <ResourceList key={reloadKey} config={config} hideHeader />
+      <RevokeApiKeyDialog
+        keyName={revoking?.key.name ?? null}
+        endpointCount={revoking?.key.webhookEndpointCount ?? 0}
+        onCancel={() => setRevoking(null)}
+        onConfirm={(pauseEndpoints) => {
+          const park = revoking?.park;
+          setRevoking(null);
+          void park?.({ pauseEndpoints });
+        }}
+      />
       <MintApiKeyDialog
         workspaceId={workspaceId}
         open={dialogOpen}

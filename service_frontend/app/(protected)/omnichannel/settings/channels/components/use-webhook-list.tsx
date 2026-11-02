@@ -22,11 +22,15 @@ import {
   eventLabel,
 } from './webhook-status';
 
+/** The reason the server stores when staff pause a row; nothing new to show for it. */
+const STAFF_DISABLED_REASON = 'Disabled by user.';
+
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 /** Endpoint-list action callbacks the tab wires to its dialogs. */
 export interface WebhookListCallbacks {
-  onCreate: () => void;
+  /** Omit for a list with no Add button. */
+  onCreate?: () => void;
   onEdit: (endpoint: WebhookEndpoint) => void;
   onRotate: (endpoint: WebhookEndpoint) => void;
   onViewDeliveries: (endpoint: WebhookEndpoint) => void;
@@ -71,6 +75,8 @@ function sortItems(rows: WebhookEndpoint[], sort: ListQuery['sort']): WebhookEnd
   return sort.desc ? sorted.reverse() : sorted;
 }
 
+const loadChannelList = (channelId: string) => whatsappWebhookService.list(channelId);
+
 export interface UseWebhookListResult {
   config: ResourceListConfig<WebhookEndpoint>;
 }
@@ -81,10 +87,13 @@ export interface UseWebhookListResult {
  * channel is small, so the fetcher pulls it whole and applies
  * search/filter/sort/paginate client-side (mirrors the API-keys tab). No detail
  * page (`rowHref` '#'); Add = the create action, the rest are row actions.
+ * `loadList` swaps the source (the workspace tab lists by workspace id) and
+ * omitting `callbacks.onCreate` drops the Add button.
  */
 export function useWebhookList(
   channelId: string,
   callbacks: WebhookListCallbacks,
+  loadList: (scopeId: string) => Promise<WebhookEndpoint[]> = loadChannelList,
 ): UseWebhookListResult {
   const { formatDateTime } = useDatetime();
   const { onCreate, onEdit, onRotate, onViewDeliveries } = callbacks;
@@ -247,7 +256,7 @@ export function useWebhookList(
                   {e.consecutiveFailures} consecutive failures
                 </span>
               )}
-              {e.status === 'AUTO_DISABLED' && e.disabledReason && (
+              {e.status !== 'ACTIVE' && e.disabledReason && e.disabledReason !== STAFF_DISABLED_REASON && (
                 <ClampedText
                   text={e.disabledReason}
                   lines={2}
@@ -259,6 +268,21 @@ export function useWebhookList(
         },
         size: 180,
         enableSorting: true,
+      },
+      {
+        id: 'registeredBy',
+        accessorFn: (r) => r.registeredByKeyName ?? '',
+        meta: { headerTitle: 'Registered by' },
+        header: () => <span>Registered by</span>,
+        cell: ({ row }) => (
+          <ClampedText
+            text={row.original.registeredByKeyName ?? ''}
+            lines={1}
+            className="text-sm text-muted-foreground"
+          />
+        ),
+        size: 160,
+        enableSorting: false,
       },
       {
         id: 'lastSuccess',
@@ -299,7 +323,7 @@ export function useWebhookList(
     ];
 
     const fetcher = async (query: ListQuery): Promise<ListResult<WebhookEndpoint>> => {
-      const all = await whatsappWebhookService.list(channelId);
+      const all = await loadList(channelId);
       let rows = all;
       const search = query.search?.trim().toLowerCase();
       if (search) {
@@ -318,13 +342,14 @@ export function useWebhookList(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Name', 'URL', 'Events', 'Status', 'Consecutive failures', 'Last success'],
+        ['Name', 'URL', 'Events', 'Status', 'Consecutive failures', 'Registered by', 'Last success'],
         data.map((r) => [
           r.name,
           r.url,
           r.events.map(eventLabel).join('; '),
           r.status,
           String(r.consecutiveFailures),
+          r.registeredByKeyName ?? '',
           r.lastSuccessAt ?? '',
         ]),
       );
@@ -345,6 +370,7 @@ export function useWebhookList(
         { id: 'url', label: 'URL' },
         { id: 'events', label: 'Events' },
         { id: 'status', label: 'Status' },
+        { id: 'registeredBy', label: 'Registered by' },
         { id: 'lastSuccess', label: 'Last success' },
       ],
       actions,
@@ -353,11 +379,11 @@ export function useWebhookList(
       defaultSort: { id: 'name', desc: false },
       exportFilename: 'webhook-endpoints',
       enableStatusViews: false,
-      createLabel: 'Add endpoint',
-      createPermission: 'webhooks.manage',
-      onCreate,
+      ...(onCreate
+        ? { createLabel: 'Add endpoint', createPermission: 'webhooks.manage', onCreate }
+        : {}),
     };
-  }, [channelId, actions, onCreate, formatDateTime]);
+  }, [channelId, actions, onCreate, formatDateTime, loadList]);
 
   return { config };
 }

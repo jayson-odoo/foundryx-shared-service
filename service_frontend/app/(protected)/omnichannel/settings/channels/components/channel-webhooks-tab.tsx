@@ -17,7 +17,25 @@ import { WebhookDeliveriesDialog } from './webhook-deliveries-dialog';
  * Enable / disable / delete run inline from the row action menu.
  */
 export function ChannelWebhooksTab({ channelId }: { channelId: string }) {
-  const { rotate } = useWebhooks(channelId);
+  return <WebhooksPanel scopeId={channelId} channelId={channelId} />;
+}
+
+/**
+ * The shared panel behind the channel tab and the workspace tab. With a
+ * `channelId` it lists that channel's endpoints and offers Add; with a
+ * `loadList` and no `channelId` it lists that source and has no Add (a
+ * workspace-level row belongs to no one channel).
+ */
+export function WebhooksPanel({
+  scopeId,
+  channelId,
+  loadList,
+}: {
+  scopeId: string;
+  channelId: string | null;
+  loadList?: (scopeId: string) => Promise<WebhookEndpoint[]>;
+}) {
+  const { rotate } = useWebhooks(channelId ?? '');
   const [reloadKey, setReloadKey] = useState(0);
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -53,19 +71,23 @@ export function ChannelWebhooksTab({ channelId }: { channelId: string }) {
     setDeliveriesOf(endpoint);
   }, []);
 
-  const { config } = useWebhookList(channelId, {
-    onCreate,
-    onEdit,
-    onRotate,
-    onViewDeliveries,
-  });
+  const { config } = useWebhookList(
+    scopeId,
+    {
+      onCreate: channelId ? onCreate : undefined,
+      onEdit,
+      onRotate,
+      onViewDeliveries,
+    },
+    loadList,
+  );
 
   return (
     <div className="flex flex-col gap-3">
       <ResourceList key={reloadKey} config={config} hideHeader />
 
       <WebhookEndpointDialog
-        channelId={channelId}
+        channelId={channelId ?? ''}
         endpoint={editing}
         open={dialogOpen}
         onOpenChange={setDialogOpen}
