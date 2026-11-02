@@ -189,8 +189,6 @@ _USABLE_ID = re.compile(r"[0-9]{1,20}")
 
 def _usable_source_id(row: Any) -> str:
     raw = row.get("id") if isinstance(row, dict) else None
-    if isinstance(raw, bool):
-        return ""
     text = str(raw) if isinstance(raw, int) else raw
     return text if isinstance(text, str) and _USABLE_ID.fullmatch(text) else ""
 
@@ -845,7 +843,7 @@ def _build_report(
     # mean the walk stopped before it finished, which is more consequential
     # than "N contacts have no lifecycle mapping" and the like below.
     blockers: List[str] = list(pagination_blockers or [])
-    for kind, label in (("channels", "channel"), ("users", "user"), ("fields", "custom field")):
+    for kind, label in (("channels", "channel"), ("users", "user"), ("fields", "custom field"), ("contacts", "contact")):
         unreadable = (unreadable_sources or {}).get(kind)
         if unreadable:
             blockers.append(f"{_plural_label(label, unreadable)} could not be read and were skipped.")
@@ -2390,7 +2388,10 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             user_map_dropped=user_map_dropped, team_map_dropped=team_map_dropped,
             lifecycle_unmapped_csv=csv_lifecycle_unmapped if csv_mode else None,
             pagination_blockers=pagination_blockers,
-            unreadable_sources={k: len(v) for k, v in unreadable_sources.items()},
+            unreadable_sources={
+                **{k: len(v) for k, v in unreadable_sources.items()},
+                "contacts": contact_counts.get("unreadable", 0),
+            },
         )
         if csv_mode:
             # AC-MIG-48 - stated UP FRONT (every CSV-mode report, dry run or
@@ -2464,21 +2465,22 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                 timezone=space_timezone, limit=CONTACTS_PAGE_LIMIT, start_cursor=contact_list_cursor
             ):
                 for raw in page_items:
-                    external_id = str(raw.get("id", ""))
                     try:
                         source_contact = Contact(**raw)
                     except Exception as exc:  # noqa: BLE001 - malformed vendor row, never abort the job
                         contact_counts["fetched"] += 1
                         contact_counts["errors"] = contact_counts.get("errors", 0) + 1
+                        contact_counts["unreadable"] = contact_counts.get("unreadable", 0) + 1
                         failures.append(
                             {
-                                "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
+                                "entity": "contacts", "sourceId": _usable_source_id(raw), "sourceLabel": "",
                                 "reason": f"malformed contact payload: {_failure_reason(exc)}", "action": "skipped",
                             }
                         )
                         service.advance(job, failed=1)
                         continue
 
+                    external_id = str(raw.get("id", ""))
                     nested = db.begin_nested()
                     try:
                         outcome = writer.write_contact(source_contact)
