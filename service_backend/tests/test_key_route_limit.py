@@ -91,9 +91,13 @@ class Clock:
         self.now += dt
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def clock(monkeypatch):
-    return Clock(monkeypatch)
+    """Every test runs on a clock frozen 20s into a minute, so no test can
+    straddle a minute boundary. Tests that need another instant call freeze()."""
+    c = Clock(monkeypatch)
+    c.freeze(1_900_000_020.0 + 20)
+    return c
 
 
 def _reached(fake):
