@@ -452,6 +452,24 @@ def _isolate_reference_guards():
     _reference_guards._GUARDS.update({k: list(v) for k, v in snapshot.items()})
 
 
+@pytest.fixture(autouse=True)
+def _reset_activity_volume_guard():
+    """Reset the per-process activity volume guard window before each test.
+
+    The guard stamps its window from ``time.monotonic()``. A test that fakes that
+    clock forward leaves the window start in the future once the real clock is
+    back, so the window never rolls and the count climbs to the cap; after that
+    every ``ActivityLogService.record`` silently drops its row for whichever
+    later test shares the worker. Starting each test from the module's own
+    initial state keeps the tests independent of each other.
+    """
+    import app.activity_log.service as _activity_service
+
+    _activity_service._guard_window_start = 0.0
+    _activity_service._guard_window_count = 0
+    yield
+
+
 _HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_|s11_)")
 
 

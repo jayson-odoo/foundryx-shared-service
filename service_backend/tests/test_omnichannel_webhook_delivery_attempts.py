@@ -515,7 +515,13 @@ def fake_clock(monkeypatch):
     real = time_mod.monotonic
     state = {"offset": 0.0}
     monkeypatch.setattr("time.monotonic", lambda: real() + state["offset"])
-    return state
+    yield state
+    # A write made while the clock ran ahead stamps the activity volume guard
+    # window in the future; clear it so the next test does not inherit it.
+    import app.activity_log.service as activity_service
+
+    activity_service._guard_window_start = 0.0
+    activity_service._guard_window_count = 0
 
 
 def _three_due(session_factory, tag):
