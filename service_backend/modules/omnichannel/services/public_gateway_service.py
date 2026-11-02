@@ -71,7 +71,7 @@ MEDIA_FETCH_TOTAL_SECONDS = 60.0
 MEDIA_FETCH_MAX_CONCURRENT = 4
 MEDIA_FETCH_MAX_PER_TENANT = 2
 _FETCH_FAILED_TEXT = "The media url could not be fetched."
-_REPLY_ID_MAX_LEN = 64
+_REPLY_ID_SHAPE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _REPLY_NOT_FOUND_TEXT = "The message you are replying to was not found."
 
 
@@ -223,8 +223,14 @@ class PublicGatewayService:
 
     # ── Send-target ("to") resolution (plan 32 / A7a, AC-CHN-54) ─────────────
     def _resolve_send_target(
-        self, tenant_id: str, workspace_id: str, channel: Channel, to: str
-    ) -> Contact:
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        channel: Channel,
+        to: str,
+        *,
+        create: bool = True,
+    ) -> Optional[Contact]:
         """Resolve the gateway's ``to`` field against the CHOSEN channel.
 
         ``psid:``/``igsid:`` resolve an EXISTING identity's contact on THAT
@@ -276,7 +282,7 @@ class PublicGatewayService:
             if contact is None or contact.workspace_id != workspace_id:
                 raise ApiError(422, "invalid_recipient", "Contact not found for this workspace.")
             return contact
-        return self._resolve_or_create_contact(tenant_id, workspace_id, ident)
+        return self._resolve_or_create_contact(tenant_id, workspace_id, ident, create=create)
 
     @staticmethod
     def _override_for(channel: Channel) -> Optional[str]:
@@ -875,8 +881,8 @@ class PublicGatewayService:
         return ContactReadResponse(contactId=contact_id, receipts=receipts)
 
     def _resolve_or_create_contact(
-        self, tenant_id: str, workspace_id: str, phone: str
-    ) -> Contact:
+        self, tenant_id: str, workspace_id: str, phone: str, *, create: bool = True
+    ) -> Optional[Contact]:
         digits = _digits(phone)
         if not digits:
             raise ApiError(422, "invalid_recipient", "A valid recipient phone number is required.")
@@ -884,6 +890,8 @@ class PublicGatewayService:
         existing = self.contacts.find_by_phone_in_workspace(digits, workspace_id, tenant_id)
         if existing is not None:
             return existing
+        if not create:
+            return None  # find-only: a refusal path must write nothing
         from .lifecycle_service import initial_status_id
 
         contact = Contact(
@@ -949,12 +957,13 @@ class PublicGatewayService:
         not_found = ApiError(422, "invalid_request", _REPLY_NOT_FOUND_TEXT)
         if (
             not isinstance(reply_to, str)
-            or not reply_to.strip()
-            or len(reply_to) > _REPLY_ID_MAX_LEN
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in reply_to)
+            or not _REPLY_ID_SHAPE.fullmatch(reply_to)
         ):
             raise not_found
-        contact = self._resolve_send_target(tenant_id, workspace_id, channel, to)
+        # Find-only: a reply to a number with no contact yet creates nothing.
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, to, create=False)
+        if contact is None:
+            raise not_found
         quoted = self.messages.repo.get_reply_target(reply_to, tenant_id, contact.id)
         if quoted is None:
             raise not_found
