@@ -49,3 +49,38 @@ export function ChannelMapRow({
     </div>
   );
 }
+
+/**
+ * A source channel the server could not read: only the vendor id is known, so
+ * the sole choice is "Skip this channel". Nothing shows as chosen until the
+ * operator picks it, and no map entry exists before then.
+ */
+export function UnreadableChannelRow({
+  sourceChannelId,
+  skipped,
+  editing,
+  onSkip,
+}: {
+  sourceChannelId: string;
+  skipped: boolean;
+  editing: boolean;
+  onSkip: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="min-w-0">
+        <ClampedText text={sourceChannelId} lines={1} className="text-sm font-medium" />
+        <p className="text-muted-foreground text-xs">Could not be read</p>
+      </div>
+      <div className="w-full sm:max-w-xs">
+        <SearchSelect
+          ariaLabel={`Skip channel ${sourceChannelId}`}
+          options={[{ label: 'Skip this channel', value: SKIP_VALUE }]}
+          value={skipped ? SKIP_VALUE : null}
+          disabled={!editing}
+          onChange={onSkip}
+        />
+      </div>
+    </div>
+  );
+}

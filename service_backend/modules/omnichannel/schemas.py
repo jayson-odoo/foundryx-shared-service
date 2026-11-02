@@ -2066,6 +2066,7 @@ class MigrationPreflight(ApiModel):
     targetChannels: List[MigrationTargetChannel]
     targetStages: List[MigrationTargetStage]
     warnings: List[str]
+    unreadableChannelIds: List[str] = []
 
 
 # ── Plan 33 S2 - migration job (plan §5.2, AC-MIG-18..29) ───────────────────

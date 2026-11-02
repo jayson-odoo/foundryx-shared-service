@@ -40,6 +40,8 @@ export const migrationFormSchema = z
     workspaceId: z.string().min(1, 'Choose a target workspace.'),
     source: z.enum(['api', 'csv']),
     channelMap: z.array(channelMapEntrySchema),
+    // Form-only (never sent, never hashed): source channels the preflight could not read.
+    unreadableChannelIds: z.array(z.string()),
     userMap: z.array(userMapEntrySchema),
     teamMap: z.array(teamMapEntrySchema),
     lifecycleMap: z.array(lifecycleMapEntrySchema),
@@ -54,7 +56,7 @@ export const migrationFormSchema = z
       if (!value.connectionId) {
         ctx.addIssue({ code: 'custom', message: 'Choose a connection.', path: ['connectionId'] });
       }
-      if (value.channelMap.length === 0) {
+      if (value.channelMap.length === 0 && value.unreadableChannelIds.length === 0) {
         ctx.addIssue({ code: 'custom', message: 'Choose a connection and a workspace to load the source channels.', path: ['channelMap'] });
       }
     } else if (!value.contactsUploadId) {
@@ -69,6 +71,7 @@ export const EMPTY_MIGRATION_FORM_VALUES: MigrationFormValues = {
   workspaceId: '',
   source: 'api',
   channelMap: [],
+  unreadableChannelIds: [],
   userMap: [],
   teamMap: [],
   lifecycleMap: [],

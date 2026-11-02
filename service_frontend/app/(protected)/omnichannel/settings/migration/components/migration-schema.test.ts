@@ -93,3 +93,44 @@ describe('computeMappingHash', () => {
     expect(computeMappingHash(withCsv)).not.toBe(computeMappingHash(differentMap));
   });
 });
+
+describe('unreadableChannelIds (AC-44-23)', () => {
+  const apiBase = {
+    ...EMPTY_MIGRATION_FORM_VALUES,
+    connectionId: 'conn-1',
+    workspaceId: 'wsp-1',
+    source: 'api' as const,
+    channelMap: [],
+  };
+
+  function channelMapIssues(values: unknown) {
+    const result = migrationFormSchema.safeParse(values);
+    if (result.success) return [];
+    return result.error.issues.filter((i) => i.path[0] === 'channelMap');
+  }
+
+  it('an empty channelMap is accepted in api mode when an unreadable id is listed', () => {
+    const values = { ...apiBase, unreadableChannelIds: ['1'] } as unknown as MigrationFormValues;
+    expect(channelMapIssues(values)).toEqual([]);
+    expect(migrationFormSchema.safeParse(values).success).toBe(true);
+  });
+
+  it('control: an empty channelMap with no unreadable id keeps the issue', () => {
+    const values = { ...apiBase, unreadableChannelIds: [] } as unknown as MigrationFormValues;
+    expect(channelMapIssues(values)).toHaveLength(1);
+  });
+
+  it('the job input never carries unreadableChannelIds', () => {
+    const values = { ...apiBase, unreadableChannelIds: ['1'] } as unknown as MigrationFormValues;
+    const input = toCreateMigrationJobInput(values, 'dry_run');
+    expect(Object.keys(input)).not.toContain('unreadableChannelIds');
+  });
+
+  it('the mapping hash does not change with it', () => {
+    const base = {
+      connectionId: 'conn-1', workspaceId: 'wsp-1', channelMap: [], userMap: [], teamMap: [],
+      lifecycleMap: [], contactsOnly: false, messagesSince: null,
+    };
+    expect(computeMappingHash({ ...base, unreadableChannelIds: ['1'] } as never)).toBe(computeMappingHash(base));
+  });
+});

@@ -62,6 +62,7 @@ const FORM_FIELD_PATHS: ReadonlySet<string> = new Set([
   'workspaceId',
   'messagesSince',
   'contactsUploadId',
+  'channelMap',
 ]);
 
 function describe(error: unknown): string {
@@ -106,6 +107,7 @@ function seedFromPreflight(pf: MigrationPreflight, tenantUsers: User[]): Partial
       const compatible = compatibleTargetIds(c.source, pf);
       return { sourceChannelId: c.id, targetChannelId: compatible.length === 1 ? compatible[0] : null };
     }),
+    unreadableChannelIds: pf.unreadableChannelIds ?? [],
     userMap: pf.users.map((u) => {
       const match = tenantUsers.find((tu) => tu.email.toLowerCase() === u.email.toLowerCase());
       return { sourceUserId: u.id, targetUserId: match?.id ?? null };
@@ -201,6 +203,7 @@ export function useMigrationForm(): UseMigrationFormResult {
     if (source === 'csv') {
       setPreflight(null);
       form.setValue('channelMap', [], { shouldDirty: true });
+      form.setValue('unreadableChannelIds', [], { shouldDirty: true });
       form.setValue('userMap', [], { shouldDirty: true });
       form.setValue('teamMap', [], { shouldDirty: true });
       form.setValue('lifecycleMap', [], { shouldDirty: true });
@@ -221,9 +224,11 @@ export function useMigrationForm(): UseMigrationFormResult {
       setPreflightError(null);
       setPreflightLoading(false);
       form.setValue('channelMap', [], { shouldDirty: true });
+      form.setValue('unreadableChannelIds', [], { shouldDirty: true });
       form.setValue('userMap', [], { shouldDirty: true });
       form.setValue('teamMap', [], { shouldDirty: true });
       form.setValue('lifecycleMap', [], { shouldDirty: true });
+      form.clearErrors('channelMap');
       return;
     }
     let active = true;
@@ -239,13 +244,16 @@ export function useMigrationForm(): UseMigrationFormResult {
         setDryRunAt(null);
         const seeded = seedFromPreflight(pf, tenantUsers);
         form.setValue('channelMap', seeded.channelMap ?? [], { shouldDirty: true });
+        form.setValue('unreadableChannelIds', seeded.unreadableChannelIds ?? [], { shouldDirty: true });
         form.setValue('userMap', seeded.userMap ?? [], { shouldDirty: true });
         form.setValue('teamMap', seeded.teamMap ?? [], { shouldDirty: true });
         form.setValue('lifecycleMap', seeded.lifecycleMap ?? [], { shouldDirty: true });
+        form.clearErrors('channelMap');
       })
       .catch((error: unknown) => {
         if (!active) return;
         setPreflight(null);
+        form.setValue('unreadableChannelIds', [], { shouldDirty: true });
         setPreflightError(
           error instanceof ApiError && error.status < 500 ? error.message : 'Could not check the connection.',
         );
@@ -336,7 +344,7 @@ export function useMigrationForm(): UseMigrationFormResult {
     (!preflightLoading &&
       !preflightError &&
       !!preflight?.apiAvailable &&
-      (watchedValues.channelMap?.length ?? 0) > 0);
+      ((watchedValues.channelMap?.length ?? 0) > 0 || (watchedValues.unreadableChannelIds?.length ?? 0) > 0));
 
   const startMigration = useCallback(async () => {
     if (!canStartMigration) return;

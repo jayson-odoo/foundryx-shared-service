@@ -549,6 +549,8 @@ def _pages_handler(pages: dict, custom_fields: list = None):
         calls.append(request.url.path)
         if request.url.path.endswith("/space/custom_field"):
             return httpx.Response(200, json={"items": custom_fields or [], "pagination": {"next": None}})
+        if request.url.path.endswith(("/space/user", "/space/channel")):
+            return httpx.Response(200, json={"items": [], "pagination": {"next": None}})
         assert request.url.path.endswith("/contact/list")
         cursor = request.url.params.get("cursorId")
         items, next_cursor = pages[cursor]
