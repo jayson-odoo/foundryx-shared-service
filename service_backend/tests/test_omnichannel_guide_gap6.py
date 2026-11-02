@@ -1,16 +1,22 @@
 """Plan 38 gap 6 (AC-38-110..115): the consumer guide states voice, interactive
 replies and endpoint re-enable as the code does. Reads the guide, asserts per section."""
+import functools
 import re
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]
-_GUIDE = (_REPO / "documentation/omnichannel/consumer-integration-guide.md").read_text()
+_GUIDE_PATH = _REPO / "documentation/omnichannel/consumer-integration-guide.md"
+
+
+@functools.cache
+def _guide():
+    return _GUIDE_PATH.read_text()
 
 
 def _section(start, end):
-    i = _GUIDE.index(start)
-    j = _GUIDE.index(end, i + len(start))
-    return _GUIDE[i:j]
+    i = _guide().index(start)
+    j = _guide().index(end, i + len(start))
+    return _guide()[i:j]
 
 
 def _row(section, first_cell):
