@@ -7,6 +7,15 @@ const SERVED_FILE_TYPES: readonly string[] = [
   'application/pdf',
   'text/plain',
   'image/x-icon',
+  'audio/ogg',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/aac',
+  'audio/amr',
+  'audio/webm',
+  'video/mp4',
+  'video/3gpp',
+  'video/webm',
   'application/zip',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -18,24 +27,4 @@ export function openedType(rawType: string): string {
   const base = rawType.toLowerCase().split(';')[0].trim();
   if (base === 'text/plain') return 'text/plain;charset=utf-8';
   return SERVED_FILE_TYPES.includes(base) ? base : 'application/octet-stream';
-}
-
-const MEDIA_TYPES: readonly string[] = [
-  'audio/ogg',
-  'audio/mpeg',
-  'audio/mp4',
-  'audio/aac',
-  'audio/amr',
-  'video/mp4',
-  'video/3gpp',
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'application/pdf',
-];
-
-/** The type conversation media is opened with: a listed media type, else a download. */
-export function mediaType(rawType: string): string {
-  const base = rawType.toLowerCase().split(';')[0].trim();
-  return MEDIA_TYPES.includes(base) ? base : 'application/octet-stream';
 }
