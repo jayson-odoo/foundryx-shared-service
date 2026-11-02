@@ -363,6 +363,12 @@ class Settings(BaseSettings):
     # Redis = Celery broker + WS pub/sub fan-out. Local dev = native
     # redis-server (brew install redis), same no-Docker stance as Postgres.
     redis_url: str = "redis://localhost:6379/0"
+    # Plan 50: per-key limits on the API key routes. Overrides = JSON map
+    # {"<key id>": {"max_per_minute": n, "max_in_flight": n}}; invalid JSON
+    # means no overrides.
+    omni_key_max_in_flight: int = 10
+    omni_key_max_per_minute: int = 600
+    omni_key_limit_overrides: str = "{}"
     # Celery eager mode runs tasks inline (tests; also a no-worker dev escape
     # hatch - real deploys run a worker process and leave this false).
     celery_task_always_eager: bool = False
