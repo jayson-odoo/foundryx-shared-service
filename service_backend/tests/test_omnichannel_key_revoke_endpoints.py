@@ -70,7 +70,7 @@ class _Resp:
 
 @pytest.fixture(autouse=True)
 def _no_real_http(monkeypatch):
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: _Resp(200))
+    monkeypatch.setattr(wd, "_post", lambda url, *, content, headers, timeout: _Resp(200))
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -1030,7 +1030,9 @@ def test_ac_43_31_queued_delivery_is_not_sent_while_the_workspace_is_off(client,
         db.close()
 
     calls = []
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: calls.append(a) or _Resp(200))
+    monkeypatch.setattr(
+        wd, "_post", lambda url, *, content, headers, timeout: calls.append(url) or _Resp(200)
+    )
     monkeypatch.setattr(wd, "assert_deliverable", lambda url: None)
     restore = _enter_state(state, session_factory, r["ws"])
     try:
@@ -1068,7 +1070,9 @@ def test_ac_43_31_control_normal_state_dispatch_sends(client, session_factory, m
     _inbound(session_factory, r["ch"], "60111800013", "wamid.43-31-control")
     (delivery_id, *_rest) = _deliveries(session_factory, r["ep"])[0]
     calls = []
-    monkeypatch.setattr(wd.httpx, "post", lambda *a, **k: calls.append(a) or _Resp(200))
+    monkeypatch.setattr(
+        wd, "_post", lambda url, *, content, headers, timeout: calls.append(url) or _Resp(200)
+    )
     monkeypatch.setattr(wd, "assert_deliverable", lambda url: None)
     db = session_factory()
     try:
@@ -1950,18 +1954,23 @@ def _failing_endpoint(client, session_factory, r):
 def _dispatch_failing(session_factory, delivery_id, monkeypatch, *, on_post=None):
     import httpx
 
-    def failing_post(*a, **k):
+    reached = []
+
+    def failing_post(url, *, content, headers, timeout):
+        reached.append(url)
         if on_post:
             on_post()
         raise httpx.ConnectError("refused")
 
-    monkeypatch.setattr(wd.httpx, "post", failing_post)
+    monkeypatch.setattr(wd, "_post", failing_post)
     monkeypatch.setattr(wd, "assert_deliverable", lambda url: None)
     db = session_factory()
     try:
-        return wd.dispatch(db, delivery_id)
+        outcome = wd.dispatch(db, delivery_id)
     finally:
         db.close()
+    assert reached, "the stubbed send was reached"
+    return outcome
 
 
 def test_ac_43_12_control_the_last_failing_attempt_auto_disables_at_the_threshold(
