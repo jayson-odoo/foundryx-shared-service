@@ -579,7 +579,10 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
 
     reason = reason or "error:unknown"
     if exit_code != 0:
-        _fail(db, service, job, meeting, reason, artifacts)
+        _fail(
+            db, service, job, meeting, reason, artifacts,
+            job_error=_exit_job_error(reason),
+        )
         return
     if reason in NOT_ADMITTED_REASONS:
         # No files, nothing to transcribe - the bot never got into the room.
@@ -610,7 +613,6 @@ def run_bot(db: Session, job: BackgroundJob) -> None:
         # forever, which is what an uncaught raise here would do.
         logger.exception("meetings recording registration failed for %s", meeting.id)
         db.rollback()
-        logger.exception("meetings bot run: the recording could not be stored for %s", meeting.id)
         _fail(
             db, service, job, meeting, f"The recording could not be stored: {exc}", artifacts,
             job_error=failure_text("The recording could not be stored", exc),
@@ -633,6 +635,16 @@ def _duration_seconds(started_ts: Optional[float], finished_ts: Optional[float])
     if not started_ts or not finished_ts or finished_ts < started_ts:
         return None
     return int(finished_ts - started_ts)
+
+
+def _exit_job_error(reason: str) -> str:
+    """The job's stored text for a non-zero bot exit: a fixed sentence, plus
+    the class token when the bot reported ``error:<Class>:...``; never the
+    text after it or a container log line."""
+    parts = reason.split(":", 2)
+    if len(parts) >= 2 and parts[0] == "error" and parts[1].isidentifier():
+        return f"The bot run ended with an error ({parts[1]})."
+    return "The bot run ended with an error."
 
 
 def _fail(

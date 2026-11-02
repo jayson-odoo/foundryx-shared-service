@@ -1598,7 +1598,7 @@ def _run_fingerprint_sweep(
             "autocount fingerprint sweep failed for job %s (%s.%s): %s",
             job.id, entity_type, company_id, exc,
         )
-        return 0, 0, 0, 0, f"{SWEEP_NOTE_PREFIX}{exc}"[:1000]
+        return 0, 0, 0, 0, f"{SWEEP_NOTE_PREFIX}{failure_text('Sweep error', exc)}"
 
 
 # The watermark's ``cursor_json`` key caching the FAST pass's window bound -
