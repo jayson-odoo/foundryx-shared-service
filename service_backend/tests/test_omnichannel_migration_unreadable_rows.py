@@ -960,10 +960,20 @@ def test_ac_44_11_a_reason_lists_at_most_ten_field_names():
     assert reason == "could not read: " + ", ".join(f"f{i:02d}" for i in range(1, 11)), reason
 
 
-def test_ac_44_11_a_reason_for_a_failure_that_is_not_a_validation_error_keeps_its_message():
+def test_ac_44_11_a_reason_for_an_unexpected_error_names_the_class_and_never_its_text():
     from modules.omnichannel.services.migration_service import _failure_reason
 
-    assert _failure_reason(RuntimeError("source went away")) == "source went away"
+    reason = _failure_reason(RuntimeError("source went away"))
+
+    assert "RuntimeError" in reason, reason
+    assert "source went away" not in reason, reason
+
+
+def test_ac_44_11_control_a_source_error_keeps_its_message():
+    from modules.omnichannel.respondio.client import RespondIoError
+    from modules.omnichannel.services.migration_service import _failure_reason
+
+    assert _failure_reason(RespondIoError("source went away", status_code=500)) == "source went away"
 
 
 def test_ac_44_11_the_event_refetch_failure_keeps_the_source_error_message(session_factory, monkeypatch):
