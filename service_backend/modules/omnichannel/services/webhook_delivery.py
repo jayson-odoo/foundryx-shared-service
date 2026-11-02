@@ -14,11 +14,11 @@ Delivery NEVER runs synchronously inside inbound processing and is fully failure
 isolated - a broken/slow consumer can't 500 or block a WhatsApp message landing
 in the inbox.
 """
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
-import socket
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -29,7 +29,8 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import release_read_transactions
-from app.services.url_guard import GuardedTransport, UrlGuardError
+from app.services.url_guard import GuardedAsyncTransport as GuardedTransport
+from app.services.url_guard import UrlGuardError
 
 from ..api_auth import gateway_key_enabled
 from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
@@ -233,120 +234,104 @@ class _Reply:
         self.status_code = status_code
 
 
-def _post_once(
-    url: str,
-    content: bytes,
-    headers: Dict[str, str],
-    stop: threading.Event,
-    deadline_at: float,
-    sockets: List[Any],
-) -> _Reply:
-    def trace(event: str, info: Dict[str, Any]) -> None:
-        # Keep each connection's socket so the caller can close it at the deadline.
-        if event.endswith(".complete") and event.startswith(
-            ("connection.connect_tcp", "connection.start_tls")
-        ):
-            stream = info.get("return_value")
-            sock = stream.get_extra_info("socket") if stream is not None else None
-            if sock is not None:
-                sockets.append(sock)
+class _SyncTransportAdapter(httpx.AsyncBaseTransport):
+    """Lets a replaced (synchronous) transport factory still serve the async
+    client; the real ``GuardedTransport`` here is already the async one."""
 
-    left = deadline_at - time.monotonic()
-    if left <= 0 or stop.is_set():
-        raise DeliveryDeadlineError()
-    with httpx.Client(
-        transport=GuardedTransport(subject="Callback URL"),
-        timeout=left,
-        follow_redirects=False,
-    ) as client:
-        with client.stream(
-            "POST", url, content=content, headers=headers, extensions={"trace": trace}
-        ) as resp:
-            read = 0
-            for chunk in () if resp.is_stream_consumed else resp.iter_raw():
-                read += len(chunk)
-                if read >= RESPONSE_BYTE_CAP:
-                    break  # enough; the connection is closed without the rest
-                if stop.is_set() or time.monotonic() >= deadline_at:
-                    raise DeliveryDeadlineError()
-            return _Reply(resp.status_code)
+    def __init__(self, inner: httpx.BaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await asyncio.to_thread(self._inner.handle_request, request)
 
 
-def _check_address(url: str, budget: float) -> float:
-    """Run the address check under the attempt's budget; return what is left.
-    The lookup cannot be interrupted, so a check that outlasts the budget is
-    abandoned on its daemon thread (it holds no connection) and the attempt ends."""
-    started = time.monotonic()
-    box: Dict[str, BaseException] = {}
+def _run_under_deadline(make_coro: Callable[[], Any], timeout: float) -> Any:
+    """Run one coroutine on a fresh loop, cancelled at ``timeout`` (cancelling
+    closes the connection in every phase). Raises DeliveryDeadlineError at the
+    deadline. From inside a running loop (an async route reaching an eager
+    task) the same work runs on a short-lived thread with its own loop.
+    The loop's default executor is not joined: a host lookup cannot be
+    interrupted and may finish on its own, but nothing is sent after the deadline."""
 
-    def run() -> None:
+    def run() -> Any:
+        loop = asyncio.new_event_loop()
         try:
-            assert_deliverable(url)
+            return loop.run_until_complete(asyncio.wait_for(make_coro(), timeout))
+        except asyncio.TimeoutError:
+            raise DeliveryDeadlineError() from None
+        finally:
+            try:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            finally:
+                loop.close()
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return run()
+    box: Dict[str, Any] = {}
+
+    def in_thread() -> None:
+        try:
+            box["value"] = run()
         except BaseException as exc:  # noqa: BLE001 - handed to the caller
             box["error"] = exc
 
-    checker = threading.Thread(target=run, name="webhook-check", daemon=True)
-    checker.start()
-    checker.join(budget)
-    left = budget - (time.monotonic() - started)
-    if checker.is_alive() or left <= 0:
-        raise DeliveryDeadlineError()
+    worker = threading.Thread(target=in_thread, name="webhook-post", daemon=True)
+    worker.start()
+    worker.join()
     if "error" in box:
         raise box["error"]
+    return box["value"]
+
+
+def _check_address(url: str, budget: float) -> float:
+    """Run the address check inside the attempt's budget; return what is left."""
+    started = time.monotonic()
+
+    async def check() -> None:
+        await asyncio.to_thread(assert_deliverable, url)
+
+    _run_under_deadline(check, budget)
+    left = budget - (time.monotonic() - started)
+    if left <= 0:
+        raise DeliveryDeadlineError()
     return left
 
 
-def _close_sockets(sockets: List[Any]) -> None:
-    for sock in list(sockets):
-        try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except Exception:  # noqa: BLE001 - already closed or never connected
-            pass
-        try:
-            sock.close()
-        except Exception:  # noqa: BLE001
-            pass
+async def _post_async(
+    url: str, content: bytes, headers: Dict[str, str], budget: float
+) -> _Reply:
+    transport = GuardedTransport(subject="Callback URL")
+    if not isinstance(transport, httpx.AsyncBaseTransport):
+        transport = _SyncTransportAdapter(transport)
+    async with httpx.AsyncClient(
+        transport=transport, timeout=budget, follow_redirects=False
+    ) as client:
+        async with client.stream("POST", url, content=content, headers=headers) as resp:
+            if not resp.is_stream_consumed:
+                read = 0
+                async for chunk in resp.aiter_raw():
+                    read += len(chunk)
+                    if read >= RESPONSE_BYTE_CAP:
+                        break  # enough; the connection is closed without the rest
+            return _Reply(resp.status_code)
 
 
 def _post(
     url: str, *, content: bytes, headers: Dict[str, str], timeout: float
 ) -> _Reply:
-    """The address check and one POST on a fresh client whose connection goes
-    only to an address that passed the guard at connect time. ``timeout`` is the
-    TOTAL budget for the attempt. The request runs on a helper thread; at the
-    deadline (or on any exception in the caller, such as a worker time limit)
-    the caller closes the connection's socket so the helper's blocking connect
-    or read fails at once and the thread ends. Module-level so a test can
-    replace the outbound call."""
-    deadline_at = time.monotonic() + timeout
-    stop = threading.Event()
-    sockets: List[Any] = []
-    box: Dict[str, Any] = {}
-
-    def run() -> None:
-        try:
-            box["reply"] = _post_once(url, content, headers, stop, deadline_at, sockets)
-        except BaseException as exc:  # noqa: BLE001 - handed to the caller
-            box["error"] = exc
-
-    worker = threading.Thread(target=run, name="webhook-post", daemon=True)
-    worker.start()
-    try:
-        worker.join(timeout)
-    finally:
-        if worker.is_alive():
-            stop.set()
-            _close_sockets(sockets)
-            worker.join(1.0)
-    if "reply" not in box and "error" not in box:
-        raise DeliveryDeadlineError()
-    if "error" in box:
-        if time.monotonic() >= deadline_at and not isinstance(
-            box["error"], (WebhookError, UrlGuardError)
-        ):
-            raise DeliveryDeadlineError() from None
-        raise box["error"]
-    return box["reply"]
+    """One POST through the guarded transport (the connection goes only to an
+    address that passed the guard at connect time). ``timeout`` is the TOTAL
+    budget for the attempt: connect, TLS, headers and body run as one task that
+    is cancelled at the deadline. Module-level so a test can replace the
+    outbound call."""
+    return _run_under_deadline(lambda: _post_async(url, content, headers, timeout), timeout)
 
 
 def dispatch(db: Session, delivery_id: str) -> str:

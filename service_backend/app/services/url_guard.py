@@ -208,6 +208,35 @@ class _GuardedSyncBackend(httpcore.SyncBackend):
         raise last
 
 
+class _ClosingStream(httpcore.AsyncNetworkStream):
+    """Closes the raw connection when a TLS handshake is cancelled: httpcore
+    only closes it on an ``Exception``, and a cancelled handshake (a deadline)
+    would otherwise leave the socket open until it is garbage collected."""
+
+    def __init__(self, inner: httpcore.AsyncNetworkStream) -> None:
+        self._inner = inner
+
+    async def read(self, max_bytes, timeout=None):
+        return await self._inner.read(max_bytes, timeout)
+
+    async def write(self, buffer, timeout=None):
+        await self._inner.write(buffer, timeout)
+
+    async def aclose(self):
+        await self._inner.aclose()
+
+    async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+        try:
+            return await self._inner.start_tls(ssl_context, server_hostname, timeout)
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await self._inner.aclose()
+            raise
+
+    def get_extra_info(self, info):
+        return self._inner.get_extra_info(info)
+
+
 class _GuardedAsyncBackend(httpcore.AnyIOBackend):
     def __init__(self, subject: str, exempt_host: HostExemption) -> None:
         super().__init__()
@@ -229,7 +258,8 @@ class _GuardedAsyncBackend(httpcore.AnyIOBackend):
                     except (OSError, UnicodeError) as exc:
                         raise httpcore.ConnectError(str(exc)) from exc
                     addresses = _checked_addresses(host, infos, self._subject)
-                return await self._connect_any(addresses, port, timeout, local_address, socket_options)
+                stream = await self._connect_any(addresses, port, timeout, local_address, socket_options)
+                return _ClosingStream(stream)
         except TimeoutError as exc:
             raise httpcore.ConnectTimeout(str(exc)) from exc
 
