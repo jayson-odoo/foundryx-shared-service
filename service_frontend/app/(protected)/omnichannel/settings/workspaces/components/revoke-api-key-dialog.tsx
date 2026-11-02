@@ -43,7 +43,9 @@ export function RevokeApiKeyDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onCancel()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Revoke {keyName}</DialogTitle>
+          <DialogTitle className="line-clamp-2 break-all pe-8" title={`Revoke ${keyName ?? ''}`}>
+            Revoke {keyName}
+          </DialogTitle>
           <DialogDescription>
             {endpointCount} webhook {endpointCount === 1 ? 'endpoint' : 'endpoints'} registered by this key
           </DialogDescription>
