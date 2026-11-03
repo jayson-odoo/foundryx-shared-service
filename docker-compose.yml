@@ -8,15 +8,13 @@
 # they are recreated in place each deploy. Only the API + frontend swap colors.
 #
 # Secrets (JWT_SECRET, FERNET_KEY, OMNICHANNEL_FERNET_KEY, POSTGRES_PASSWORD,
-# REDIS_PASSWORD, NEXTAUTH_SECRET, META_*, SMTP_*) come from a server-side .env file at the repo
+# NEXTAUTH_SECRET, META_*, SMTP_*) come from a server-side .env file at the repo
 # root - see .env.example. No secret carries an inline default here.
 
 x-backend-env: &backend-env
   DATABASE_URL: postgresql://${POSTGRES_USER:-foundryx}:${POSTGRES_PASSWORD:?set in .env}@db:5432/${POSTGRES_DB:-foundryx_service}
   POSTGRES_ADMIN_URL: postgresql://${POSTGRES_USER:-foundryx}:${POSTGRES_PASSWORD:?set in .env}@db:5432/postgres
-  # Redis requires a password (it shares foundryx_ss_network with the frontend;
-  # incident 3 Nov). REDIS_PASSWORD must be URL-safe (e.g. `openssl rand -hex 32`).
-  REDIS_URL: redis://:${REDIS_PASSWORD:?set in .env}@redis:6379/0
+  REDIS_URL: redis://redis:6379/0
   CELERY_TASK_ALWAYS_EAGER: "false"          # prod runs the real workers below
   JWT_SECRET: ${JWT_SECRET:?set in .env}
   JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
@@ -151,8 +149,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: foundryx_ss_redis
-    # --requirepass: no unauthenticated access, even from sibling containers.
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?set in .env}
+    command: redis-server --appendonly yes
     # Loopback-only, for the SSH-tunneled pilot stt/bots workers (Mac Mini) -
     # see DEPLOY.md; never expose publicly.
     ports:
