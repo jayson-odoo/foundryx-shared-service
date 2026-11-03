@@ -147,7 +147,7 @@ describe('AC-DLA-59 role="content" removed everywhere', () => {
 describe('AC-DLA-59 skip link', () => {
   it('the protected shell renders a skip link to #main, and #main exists', () => {
     const layout = fs.readFileSync(
-      path.join(repoRoot, 'app/components/layouts/demo1/layout.tsx'),
+      path.join(repoRoot, 'app/components/layouts/demo1/demo1-layout.tsx'),
       'utf8',
     );
     expect(layout).toMatch(/href="#main"/);
