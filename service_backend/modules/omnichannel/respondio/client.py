@@ -457,17 +457,13 @@ class RespondIoClient:
         return self._request("GET", f"/contact/{identifier}")
 
     def get_contact_channels(self, identifier: str) -> List[Dict[str, Any]]:
-        """``GET /contact/{identifier}/channels`` (AC-MIG-30) - the plan's own
-        contract table lists no pagination for this call (a contact's channel
-        count is small and bounded, unlike its message history), but every
-        OTHER list call in this API answers the same ``{items,...}`` envelope,
-        so this reads through the same envelope for consistency (S1's own
-        risk note: a shape mismatch is a fix here, not a redesign)."""
-        data = self._request("GET", f"/contact/{identifier}/channels")
-        items = data.get("items") or []
-        if not isinstance(items, list):
-            raise RespondIoError("respond.io returned an answer that could not be read.", status_code=0)
-        return list(items)
+        """``GET /contact/{identifier}/channels`` (AC-MIG-30). Paginated like
+        every other list call (https://developers.respond.io/docs/api/a17bccb520d2e-list-contact-channels:
+        ``limit`` default 10, ``exclusiveMaximum: 100``, ``pagination.next`` =
+        ``https://api.respond.io/contact/{identifier}/channels?limit=10&cursorId=10``),
+        so it walks every page; reading only the first one dropped every
+        channel past the vendor's default 10 (lane SS-MIGRATION-CURSOR)."""
+        return list(self._paginated("GET", f"/contact/{identifier}/channels"))
 
     def list_messages_pages(
         self,
