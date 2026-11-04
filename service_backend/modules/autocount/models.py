@@ -730,6 +730,9 @@ class AcPullApiKey(AutocountBase):
     key_prefix = Column(String, nullable=False)
     key_hash = Column(String, nullable=False)
     company_ids = Column(_JSON, nullable=False, default=list)
+    # Plan 55: what the key may do - ``pull`` (the read gateway) and/or
+    # ``write_back`` (the db3 write routes). Every pre-0037 key reads ["pull"].
+    scopes = Column(_JSON, nullable=False, default=lambda: ["pull"])
     created_by = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     last_used_at = Column(UTCDateTime(), nullable=True)

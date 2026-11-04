@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from decimal import Decimal
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
@@ -42,6 +43,9 @@ from app.database import get_db
 from ..doc_feed.clock import myt_date
 from ..models import AcPullApiKey
 from ..pull_auth import PullGatewayError, resolve_pull_key
+from ..services.pull_key_service import SCOPE_WRITE_BACK
+from ..write_back.deps import get_write_back_service
+from ..write_back.service import WriteActionResult, WriteBackService
 from ..services.pull_gateway_service import (
     ENTITY_WIRE_TO_INTERNAL,
     PullGatewayService,
@@ -432,3 +436,161 @@ def get_snapshot_rows_route(
         return exc.to_response()
     except Exception:  # noqa: BLE001 - security round 1 HIGH 1, the last-resort net
         return _internal_error_response(db, ctx, "get_rows")
+
+
+# ── plan 55: write-back routes (AC-55-40..45) ─────────────────────────────
+# Same envelope rules as above (flat errors, no-store, manual body parsing).
+# The key must carry the ``write_back`` scope; the company resolves exactly
+# like ``/snapshots``; the service does every DB / AutoCount step.
+
+_WRITE_DISABLED_CODES = ("WRITE_DISABLED", "WRITE_NOT_ALLOWED")
+
+
+def _write_status(result: WriteActionResult) -> int:
+    """done 200, pending_verification 202, write refusals 403, other refusals
+    409, vendor_error / mismatch 502."""
+    if result.outcome == "done":
+        return 200
+    if result.outcome == "pending_verification":
+        return 202
+    if result.outcome == "refused":
+        return 403 if result.error_code in _WRITE_DISABLED_CODES else 409
+    return 502
+
+
+def _write_body(result: WriteActionResult) -> dict:
+    return {
+        "actionId": result.action_id,
+        "outcome": result.outcome,
+        "errorCode": result.error_code,
+        "document": result.document,
+    }
+
+
+def _parse_write_json(raw_bytes: bytes) -> dict:
+    """Body as a dict with JSON floats kept as ``Decimal`` (a quantity is never
+    a binary float). Anything that is not a JSON object is a 422."""
+    if len(raw_bytes) > MAX_BODY_BYTES:
+        raise PullGatewayError(413, "PAYLOAD_TOO_LARGE", "Request body is too large.")
+    try:
+        raw = json.loads(raw_bytes or b"{}", parse_float=Decimal)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raw = None
+    if not isinstance(raw, dict):
+        raise PullGatewayError(422, "INVALID_REQUEST", "A JSON object body is required.")
+    return raw
+
+
+def _int_field(raw: dict, name: str) -> int:
+    value = raw.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PullGatewayError(422, "INVALID_REQUEST", f"{name} must be an integer.")
+    return value
+
+
+def _qty_field(raw: dict) -> Decimal:
+    value = raw.get("qty")
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
+        raise PullGatewayError(422, "INVALID_REQUEST", "qty must be a number.")
+    return Decimal(value)
+
+
+def _optional_text(raw: dict, name: str) -> Optional[str]:
+    value = raw.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PullGatewayError(422, "INVALID_REQUEST", f"{name} must be a string.")
+    return value[:MAX_ECHO_LEN]
+
+
+def _write_route(
+    request: Request,
+    db: Session,
+    raw_body: bytes,
+    service: WriteBackService,
+    action: str,
+    call,
+) -> JSONResponse:
+    """The shared write-route frame. ``call(service, raw, tenant_id, company_id,
+    key_id)`` invokes the service method; everything before it is auth, scope,
+    parse and company resolution (no service call on any failure)."""
+    ctx = _CallContext()
+    company_code_hint: Optional[str] = None
+    try:
+        key_row = resolve_pull_key(request, db)
+        ctx.key_row = key_row
+        if SCOPE_WRITE_BACK not in (key_row.scopes or []):
+            raise PullGatewayError(
+                403, "SCOPE_REQUIRED", "This key is not allowed to write."
+            )
+        raw = _parse_write_json(raw_body)
+        company_code_hint = _safe_echo(raw.get("companyCode"))
+        if not company_code_hint or not company_code_hint.strip():
+            raise PullGatewayError(422, "INVALID_REQUEST", "companyCode is required.")
+        company = PullGatewayService(db).resolve_company(key_row, company_code_hint)
+        ctx.company_id = company.id
+        result = call(service, raw, key_row.tenant_id, company.id, key_row.id)
+        status_code = _write_status(result)
+        _finalize(db, ctx, action, status_code)
+        return _json_response(status_code, _write_body(result))
+    except PullGatewayError as exc:
+        _merge_error_context(ctx, exc)
+        exc.with_context(company_code=company_code_hint)
+        _finalize_quietly(db, ctx, action, exc.status_code)
+        return exc.to_response()
+    except Exception:  # noqa: BLE001 - the last-resort net, as for every route
+        return _internal_error_response(db, ctx, action, company_code=company_code_hint)
+
+
+@router.post("/po-links")
+def link_po_row(
+    request: Request,
+    db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+    service: WriteBackService = Depends(get_write_back_service),
+) -> JSONResponse:
+    def call(svc, raw, tenant_id, company_id, key_id):
+        return svc.link(
+            tenant_id=tenant_id, company_id=company_id, key_id=key_id,
+            po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
+            so_doc_key=_int_field(raw, "soDocKey"), so_dtl_key=_int_field(raw, "soDtlKey"),
+            qty=_qty_field(raw),
+            expected_last_modified=_optional_text(raw, "expectedLastModified"),
+        )
+
+    return _write_route(request, db, raw_body, service, "write_link", call)
+
+
+@router.post("/po-links/unlink")
+def unlink_po_row(
+    request: Request,
+    db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+    service: WriteBackService = Depends(get_write_back_service),
+) -> JSONResponse:
+    def call(svc, raw, tenant_id, company_id, key_id):
+        return svc.unlink(
+            tenant_id=tenant_id, company_id=company_id, key_id=key_id,
+            po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
+            expected_last_modified=_optional_text(raw, "expectedLastModified"),
+        )
+
+    return _write_route(request, db, raw_body, service, "write_unlink", call)
+
+
+@router.post("/spo-links/unlink")
+def unlink_spo_row(
+    request: Request,
+    db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+    service: WriteBackService = Depends(get_write_back_service),
+) -> JSONResponse:
+    def call(svc, raw, tenant_id, company_id, key_id):
+        return svc.spo_unlink(
+            tenant_id=tenant_id, company_id=company_id, key_id=key_id,
+            spo_doc_key=_int_field(raw, "spoDocKey"), spo_dtl_key=_int_field(raw, "spoDtlKey"),
+            expected_last_modified=_optional_text(raw, "expectedLastModified"),
+        )
+
+    return _write_route(request, db, raw_body, service, "write_spo_unlink", call)
