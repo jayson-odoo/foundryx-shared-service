@@ -24,7 +24,8 @@ import logging
 import random
 import re
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import available_timezones
 
 import httpx
@@ -330,7 +331,9 @@ class RespondIoClient:
         detail page rather than looking like a silent early stop."""
         base_params = dict(params or {})
         base_params["limit"] = max(1, min(int(limit), max_limit))
-        cursor: Optional[str] = start_cursor
+        # A checkpoint written before lane SS-MIGRATION-CURSOR holds the whole
+        # `pagination.next` URL; resume from the cursor inside it.
+        cursor, _unreadable = next_cursor_id(start_cursor)
         pages = 0
         while True:
             requested_cursor = cursor
@@ -348,9 +351,18 @@ class RespondIoClient:
                 raise RespondIoError(
                     "respond.io returned an answer that could not be read.", status_code=0
                 )
-            cursor = pagination.get("next") or None
+            cursor, unreadable = next_cursor_id(pagination.get("next"))
             pages += 1
 
+            if unreadable:
+                guard_msg = (
+                    f"respond.io returned a next-page link without a cursor on {path} - "
+                    "stopping this walk; some records may not have been read."
+                )
+                self._on_milestone(guard_msg)
+                self._on_blocker(guard_msg)
+                yield items, None
+                break
             if cursor is not None and cursor == requested_cursor:
                 guard_msg = (
                     f"respond.io returned the same pagination cursor twice on {path} - "
@@ -472,6 +484,46 @@ class RespondIoClient:
             "GET", f"/contact/{identifier}/message/list", limit=limit, start_cursor=start_cursor,
             max_limit=MAX_MESSAGE_PAGE_LIMIT,
         )
+
+
+def next_cursor_id(value: Any) -> Tuple[Optional[str], bool]:
+    """The ``cursorId`` to send for the next page, from a list response's
+    ``pagination.next`` (lane SS-MIGRATION-CURSOR). Returns
+    ``(cursor, unreadable)``.
+
+    Every respond.io v2 list endpoint documents ``pagination.next`` as a FULL
+    URL that carries the cursor in its own ``cursorId`` query parameter, e.g.
+    ``https://api.respond.io/contact/list?limit=10&cursorId=-10``
+    (https://developers.respond.io/docs/api/0759d02787ab3-list-the-contacts;
+    same shape on the message, user, custom-field and channel lists). The
+    query parameter ``cursorId`` is "Pointer to the contact id from where the
+    next batch of records should start from." Sending the whole URL back as
+    ``cursorId`` is the live 400 'Invalid cursorId'. The documented URLs carry
+    no ``/v2`` prefix (and the custom-field one names ``/space/contact_field``),
+    so the URL itself is never requested: only its ``cursorId`` is taken,
+    verbatim.
+
+    - ``None`` / empty / blank -> ``(None, False)``: the last page.
+    - a URL (or a path with a query) -> its ``cursorId``; a link with no
+      ``cursorId`` -> ``(None, True)``, the caller stops and reports it.
+    - a bare value -> sent as is (a bare cursor, or an int).
+    """
+    if value is None or isinstance(value, bool):
+        return None, False
+    if isinstance(value, int):
+        return str(value), False
+    if not isinstance(value, str):
+        return None, True
+    text = value.strip()
+    if not text:
+        return None, False
+    if "://" not in text and "?" not in text and not text.startswith("/"):
+        return text, False
+    found = parse_qs(urlsplit(text).query, keep_blank_values=True).get("cursorId") or []
+    cursor = found[0].strip() if found else ""
+    if not cursor:
+        return None, True
+    return cursor, False
 
 
 # respond.io's `POST /contact/list` body is `{search, filter, timezone}` and the
