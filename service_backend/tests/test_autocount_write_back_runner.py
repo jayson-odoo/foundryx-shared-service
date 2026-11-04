@@ -422,7 +422,9 @@ def test_vendor_c01_create_body_is_complete_and_has_no_empty_dates(db):
     assert [r["Qty"] for r in body["Details"]] == [50, 10]
     assert [r["Location"] for r in body["Details"]] == ["HQ", "HQ"]
     assert _case(res, "C01").status == "PASS"
-    assert len(s.wrapper.po("FXT-T1-1")["Details"]) == 2
+    # C01's OWN read-back shows two rows (the PO grows later, e.g. C03's split)
+    seen = [len(st.after_rows) for st in _case(res, "C01").steps if st.after_rows is not None]
+    assert (seen and seen[-1] == 2) or "2 rows" in _case(res, "C01").observed
 
 
 def test_vendor_c01_description_comes_from_the_so_row(db):
