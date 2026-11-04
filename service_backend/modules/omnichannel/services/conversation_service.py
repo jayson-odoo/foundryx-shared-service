@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.status import Status as CoreStatus
 from app.models.user import User
+from ..adapters.meta_graph import sanitise_stored_pricing
 from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
@@ -373,7 +374,7 @@ class ConversationService:
                     deliveryStatus=m.delivery_status,
                     errorCode=m.error_code,
                     errorMessage=m.error_message,
-                    pricing=pricing if isinstance(pricing, dict) else None,
+                    pricing=sanitise_stored_pricing(pricing),
                     replyTo=ReplyRefItem(**reply) if reply else None,
                     createdAt=m.created_at,
                 )

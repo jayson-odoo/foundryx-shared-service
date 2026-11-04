@@ -19,7 +19,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from ..adapters import get_adapter
-from ..adapters.meta_graph import provider_error_text
+from ..adapters.meta_graph import provider_error_text, sanitise_stored_pricing
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
 from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
@@ -715,8 +715,8 @@ class InboundService:
         message a watermark/`mids[]` receipt bulk-targets."""
         # Meta's per-message pricing (plan 56 B): the latest non-null object
         # wins and is kept even when the status itself does not move forward.
-        pricing = event.get("pricing")
-        if isinstance(pricing, dict):
+        pricing = event.get("pricing") if msg.sender_type != "CONTACT" else None
+        if isinstance(pricing, dict) and pricing:
             msg.metadata_json = {
                 **(msg.metadata_json if isinstance(msg.metadata_json, dict) else {}),
                 "pricing": dict(pricing),
@@ -747,7 +747,9 @@ class InboundService:
         error_now = msg.error_message
         error_code_now = msg.error_code
         ext_id = msg.external_message_id
-        pricing_now = (msg.metadata_json or {}).get("pricing") if isinstance(msg.metadata_json, dict) else None
+        pricing_now = sanitise_stored_pricing(
+            msg.metadata_json.get("pricing") if isinstance(msg.metadata_json, dict) else None
+        )
         try:
             from .broadcast_receipts import record_delivery
 
