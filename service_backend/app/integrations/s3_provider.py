@@ -14,9 +14,6 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from botocore.exceptions import BotoCoreError
-from urllib3.exceptions import HTTPError as Urllib3HTTPError
-
 from app.config import settings
 from app.integrations.base import TestResult
 from app.services.storage import StorageUnavailable
@@ -26,11 +23,12 @@ _PROBE_TIMEOUT_SECONDS = 10
 _PROBE_MAX_BYTES = 1024 * 1024  # the probe object is tiny
 
 
-_BODY_READ_ERRORS = (
-    OSError,
-    BotoCoreError,
-    Urllib3HTTPError,
-)
+def _body_read_errors() -> Tuple[type, ...]:
+    # Lazy like boto3 itself, so the stub seam works without it installed.
+    from botocore.exceptions import BotoCoreError
+    from urllib3.exceptions import HTTPError as Urllib3HTTPError
+
+    return (OSError, BotoCoreError, Urllib3HTTPError)
 
 
 def _ext_for(mime_type: str) -> str:
@@ -164,7 +162,11 @@ class S3CompatibleAdapter:
             raise FileNotFoundError(key) from exc
         try:
             data = obj["Body"].read()
-        except _BODY_READ_ERRORS as exc:
+        except _body_read_errors() as exc:
+            from botocore.exceptions import FlexibleChecksumError
+
+            if isinstance(exc, FlexibleChecksumError):
+                raise  # a checksum mismatch is permanent, not a retry
             raise StorageUnavailable(key) from exc
         return data, obj.get("ContentType")
 

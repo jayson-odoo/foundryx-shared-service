@@ -17,6 +17,7 @@ NOTE: the legacy unauthenticated ``GET /{path:path}`` local-disk route was remov
 (plan 12 review) - it co-served outbound blobs under ``media_root`` with no auth/
 CSP. All blobs now flow through this authed endpoint only.
 """
+import logging
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -44,6 +45,8 @@ from ..repositories.contact_repository import ContactRepository
 from ..security import verify_media_sig
 from ..services import key_limits
 from ..services.api_key_service import ApiKeyService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -171,7 +174,11 @@ def _serve(
         data, stored_mime = storage_for_tenant(db, tenant_id).fetch(message.media_key)
     except (UnresolvableKey, FileNotFoundError):
         raise HTTPException(status_code=404, detail="Not found")
-    except StorageUnavailable:
+    except StorageUnavailable as exc:
+        cause = exc.__cause__ or exc
+        logger.warning(
+            "Media read failed for message %s (%s)", message_id, type(cause).__name__
+        )
         raise HTTPException(
             status_code=503,
             detail="The file is temporarily unavailable. Please try again.",
