@@ -245,9 +245,10 @@ export function MigrationSyncCard({
       </Card>
       {result && result.failureSample.length > 0 && (
         <MigrationFailuresTable
-          jobId={sync?.sourceJobId ?? jobId}
+          jobId={jobId}
           rows={result.failureSample}
           totalFailures={result.errors}
+          hideDownload
         />
       )}
     </>

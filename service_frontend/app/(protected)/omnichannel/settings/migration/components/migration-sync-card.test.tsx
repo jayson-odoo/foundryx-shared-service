@@ -140,5 +140,6 @@ describe('MigrationSyncCard', () => {
     renderCard();
     expect(await screen.findByText('Failures (1)')).toBeInTheDocument();
     expect(screen.getByText('rio-msg-1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Download CSV/ })).not.toBeInTheDocument();
   });
 });
