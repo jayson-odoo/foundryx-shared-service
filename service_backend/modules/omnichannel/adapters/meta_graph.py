@@ -69,6 +69,23 @@ _RATE_LIMIT_ERROR_CODES = {4, 17, 32, 613}
 WHATSAPP_RATE_LIMIT_ERROR_CODES = _RATE_LIMIT_ERROR_CODES | {80007, 130429, 131056}
 
 
+def _meta_error_obj(resp: "httpx.Response") -> dict:
+    """The ``error`` object of a Graph response body, or ``{}`` when the body
+    is not JSON, not an object, or ``error`` is not an object. Never raises."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return {}
+    err = body.get("error") if isinstance(body, dict) else None
+    return err if isinstance(err, dict) else {}
+
+
+def _meta_error_text(resp: "httpx.Response", key: str = "message") -> str:
+    """``error.<key>`` only when it is a string, else ``""``. Never raises."""
+    val = _meta_error_obj(resp).get(key)
+    return val if isinstance(val, str) else ""
+
+
 def is_rate_limited_error(resp: "httpx.Response") -> bool:
     """True when this Graph response is Meta throttling the call - a raw HTTP
     429, or an `error.code` in `_RATE_LIMIT_ERROR_CODES` regardless of HTTP
@@ -76,11 +93,8 @@ def is_rate_limited_error(resp: "httpx.Response") -> bool:
     rate limit" (the caller's normal error path still fires)."""
     if resp.status_code == 429:
         return True
-    try:
-        code = ((resp.json() or {}).get("error") or {}).get("code")
-    except ValueError:
-        return False
-    return isinstance(code, int) and code in _RATE_LIMIT_ERROR_CODES
+    code = _meta_error_obj(resp).get("code")
+    return isinstance(code, int) and not isinstance(code, bool) and code in _RATE_LIMIT_ERROR_CODES
 
 
 # Longest Retry-After (seconds) ever handed on or waited: the last scheduled
@@ -92,10 +106,7 @@ RETRY_AFTER_DEFAULT = 30
 def _error_code(resp: "httpx.Response") -> Optional[int]:
     """Meta's `error.code` as an int, only when it is an int or a string of
     digits. Anything else (dict, list, bool, text) is None. Never raises."""
-    try:
-        code = ((resp.json() or {}).get("error") or {}).get("code")
-    except (ValueError, AttributeError):
-        return None
+    code = _meta_error_obj(resp).get("code")
     if isinstance(code, bool):
         return None
     if isinstance(code, int):
@@ -206,12 +217,7 @@ def provider_error_text(text: str, limit: int = ERROR_TEXT_CAP) -> str:
 
 def meta_error_code(resp: "httpx.Response") -> Optional[str]:
     """Meta's own ``error.code`` as text, or None (never raises)."""
-    try:
-        code = ((resp.json() or {}).get("error") or {}).get("code")
-    except (ValueError, AttributeError):
-        return None
-    if isinstance(code, bool) or not isinstance(code, (int, str)):
-        return None
+    code = _error_code(resp)
     return str(code) if code else None
 
 
@@ -220,20 +226,21 @@ def _meta_error_detail(resp: "httpx.Response") -> str:
     often the generic title ("Invalid parameter"); the real reason lives in
     ``error_user_title``/``error_user_msg`` and ``error_data.details``. Surface
     all of them so the operator sees WHY a template was rejected."""
-    try:
-        err = (resp.json() or {}).get("error", {}) or {}
-    except ValueError:
-        return f"Meta returned {resp.status_code}."
+    err = _meta_error_obj(resp)
     parts = []
     for key in ("error_user_title", "error_user_msg"):
-        val = (err.get(key) or "").strip()
+        raw = err.get(key)
+        val = raw.strip() if isinstance(raw, str) else ""
         if val and val not in parts:
             parts.append(val)
-    details = ((err.get("error_data") or {}).get("details") or "").strip()
+    data = err.get("error_data")
+    details = data.get("details") if isinstance(data, dict) else None
+    details = details.strip() if isinstance(details, str) else ""
     if details and details not in parts:
         parts.append(details)
     if not parts:
-        msg = (err.get("message") or "").strip()
+        raw = err.get("message")
+        msg = raw.strip() if isinstance(raw, str) else ""
         parts.append(msg or f"Meta returned {resp.status_code}.")
     return " - ".join(parts)
 
