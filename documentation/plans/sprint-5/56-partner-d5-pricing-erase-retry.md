@@ -11,6 +11,7 @@ Three PRs, in this order: A (S), B (M), C (L).
 - A1 (a), A2 (a), A3 (a): as written in section A. Build A now.
 - B1 (a), B2 (a), B3 (a), B4 (a): as written in section B. Build B after A.
 - C went to the owner. Owner, 4 Nov ("okay for all"): C1 (a), C2 (a), C3 (a), C4 (b), C5 (a). Hard delete of rows and files; every API key in its own workspace plus a staff action under the new permission `contacts.erase` with an Admin grant sweep, staff UI after a mock; the same number writing in again makes a new contact; a tombstone ref so the respond.io sync skips an erased contact, coordinated with SS-MIGRATION-SYNC; core logs rely on the 30-day purge, webhook delivery payloads are redacted to ids. C starts after A and B.
+- Owner, 4 Nov, Lavish: staff mock v1 (`documentation/mockups/SS-FUJI-READINESS/index.html`, c78a1015) approved ("ok"). Build matches it. SS merges need no owner hand test: crew merges on CI green, reviewer, security-reviewer and a crew browser pass.
 
 ## A. Meta rate-limit retry on WhatsApp sends (size S)
 
