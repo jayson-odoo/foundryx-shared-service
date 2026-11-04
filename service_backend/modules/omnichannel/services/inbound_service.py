@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..adapters import get_adapter
@@ -32,70 +33,68 @@ logger = logging.getLogger(__name__)
 CSW_WINDOW = timedelta(hours=24)
 
 
-def _payload_phone_number_id(payload: Dict[str, Any]) -> Optional[str]:
-    """Pull ``entry[].changes[].value.metadata.phone_number_id`` from a WhatsApp
-    webhook - the number the event is FOR (Meta uses one app-level callback)."""
-    try:
-        for entry in payload.get("entry", []) or []:
-            for change in entry.get("changes", []) or []:
-                meta = (change.get("value") or {}).get("metadata") or {}
-                pnid = meta.get("phone_number_id")
-                if pnid:
-                    return str(pnid)
-    except AttributeError:
-        pass
+_TEMPLATE_FIELDS = (
+    "message_template_status_update",
+    "message_template_quality_update",
+    "message_template_category_update",
+)
+_LOOKUP_CHUNK = 500
+
+# Part kinds: the identifier a webhook part names decides which channel owns it.
+_PHONE, _PAGE, _WABA = "phone", "page", "waba"
+
+RoutedPart = Tuple[Optional[str], Optional[str], Dict[str, Any]]  # (kind, identifier, part)
+
+
+def _ident(value: Any) -> Optional[str]:
+    """A usable identifier: a non-empty string or an int, anything else is none."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value:
+        return value
     return None
 
 
-def _payload_entry_id(payload: Dict[str, Any]) -> Optional[str]:
-    """Pull ``entry[].id`` (PAGE_ID or IG account id) from a Messenger/
-    Instagram webhook payload - the same "one app-level callback, the payload
-    picks the tenant" pattern as ``_payload_phone_number_id`` (D-A7-2)."""
-    try:
-        for entry in payload.get("entry", []) or []:
-            eid = entry.get("id")
-            if eid:
-                return str(eid)
-    except AttributeError:
-        pass
-    return None
-
-def _routed_parts(payload: Dict[str, Any]) -> List[Tuple[Optional[str], Dict[str, Any]]]:
-    """Split a webhook POST into ``(identifier, sub_payload)`` parts, each with
-    the original ``object``/``entry``/``changes`` shape so the adapter parses it
-    unchanged. Meta may batch several entries/changes naming different
-    numbers/pages; each part is routed by its own identifier (WhatsApp change
-    ``metadata.phone_number_id``; Messenger/Instagram entry id). A part with no
-    identifier (e.g. template events) keeps the URL-channel routing."""
+def _routed_parts(payload: Dict[str, Any]) -> List[RoutedPart]:
+    """Split a webhook POST into ``(kind, identifier, part)`` triples. Meta may
+    batch several entries/changes naming different numbers/pages, so each part
+    is routed by its own identifier: a WhatsApp change by
+    ``value.metadata.phone_number_id``, a template change by its entry id (the
+    WABA id), a Messenger/Instagram entry by its entry id. A part is minimal
+    (``object`` plus its one entry/change) so the adapter parses it unchanged.
+    Odd shapes are skipped; siblings are still processed."""
     entries = payload.get("entry")
-    if not isinstance(entries, list) or not entries:
-        return [(None, payload)]
-    parts: List[Tuple[Optional[str], Dict[str, Any]]] = []
-    is_page = payload.get("object") in ("page", "instagram")
+    if not isinstance(entries, list):
+        return []
+    obj = payload.get("object")
+    is_page = obj in ("page", "instagram")
+    parts: List[RoutedPart] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        entry_id = _ident(entry.get("id"))
         if is_page:
-            eid = entry.get("id")
-            parts.append((str(eid) if eid else None, {**payload, "entry": [entry]}))
+            parts.append((_PAGE, entry_id, {"object": obj, "entry": [entry]}))
             continue
         changes = entry.get("changes")
-        if not isinstance(changes, list) or not changes:
-            parts.append((None, {**payload, "entry": [entry]}))
+        if not isinstance(changes, list):
             continue
         for change in changes:
-            meta = (change.get("value") or {}).get("metadata") or {} if isinstance(change, dict) else {}
-            pnid = meta.get("phone_number_id") if isinstance(meta, dict) else None
-            parts.append((
-                str(pnid) if pnid else None,
-                {**payload, "entry": [{**entry, "changes": [change]}]},
-            ))
-    return parts or [(None, payload)]
-
-
-def _owns_identifier(channel: Channel, identifier: str) -> bool:
-    """A part naming a number/page only routes to the channel that owns it."""
-    return identifier in (channel.phone_number_id, channel.external_account_id)
+            if not isinstance(change, dict):
+                continue
+            value = change.get("value")
+            if not isinstance(value, dict):
+                continue
+            part = {"object": obj, "entry": [{"id": entry.get("id"), "changes": [change]}]}
+            if change.get("field") in _TEMPLATE_FIELDS:
+                parts.append((_WABA, entry_id, part))
+                continue
+            meta = value.get("metadata")
+            pnid = _ident(meta.get("phone_number_id")) if isinstance(meta, dict) else None
+            parts.append((_PHONE if pnid else None, pnid, part))
+    return parts
 
 
 # Delivery receipts only ever move forward (a late DELIVERED after READ is
@@ -110,41 +109,127 @@ class InboundService:
         self.conversations = ConversationService(db)
 
     def process_payload(self, channel_id: str, payload: Dict[str, Any]) -> Dict[str, int]:
-        """Process one raw webhook payload. The channel is resolved by the
-        payload's ``metadata.phone_number_id`` (Meta delivers ALL numbers to the
-        one app-level callback URL, so the URL's ``channel_id`` can't identify the
-        number) - falling back to the URL id for the single-channel/legacy case.
-        This is what makes multi-number correct: number #2's inbound is attributed
-        to number #2's channel, not the URL's."""
+        """Process one raw webhook payload. Meta delivers ALL numbers/pages to
+        one app-level callback URL, so the URL's ``channel_id`` can't identify
+        the target: the payload is split into parts and each part is handled
+        under the live channel that owns the identifier it names (see
+        ``_resolve_parts``). Counters are summed over the parts."""
         from app.repositories.module_repository import ModuleRepository
 
         counters = {"messages": 0, "statuses": 0, "skipped": 0}
+        if not isinstance(payload, dict):
+            return counters
         parts = _routed_parts(payload)
-        for identifier, part in parts:
-            channel = self._resolve_channel(channel_id, part)
-            # A lone part keeps the URL-id last-resort fallback; in a batched
-            # POST a part naming a number/page nobody owns is dropped on its own.
-            if channel is None or (
-                len(parts) > 1 and identifier and not _owns_identifier(channel, identifier)
-            ):
+        resolved = self._resolve_parts(channel_id, payload.get("object"), parts)
+        active: Dict[str, bool] = {}
+        for (kind, identifier, part), channels in zip(parts, resolved):
+            if not channels:
                 logger.warning("webhook part for unknown channel %s dropped", channel_id)
                 continue
-
-            # The webhook router is mounted public (no require_module gate) -
-            # re-apply the module-active check per resolved channel so a tenant
-            # that uninstalled/deactivated omnichannel doesn't get resurrected
-            # inbox rows from late webhooks.
-            if not ModuleRepository(self.db).is_active(channel.tenant_id, "omnichannel"):
-                logger.info("webhook for inactive-module tenant %s dropped", channel.tenant_id)
-                continue
-
-            self._handle_part(channel, part, counters)
+            for channel in channels:
+                # The webhook router is mounted public (no require_module gate) -
+                # re-apply the module-active check per resolved channel's tenant
+                # so a tenant that uninstalled/deactivated omnichannel doesn't
+                # get resurrected inbox rows from late webhooks.
+                if channel.tenant_id not in active:
+                    active[channel.tenant_id] = ModuleRepository(self.db).is_active(
+                        channel.tenant_id, "omnichannel"
+                    )
+                if not active[channel.tenant_id]:
+                    logger.info("webhook for inactive-module tenant %s dropped", channel.tenant_id)
+                    continue
+                self._handle_part(channel, part, counters)
         return counters
+
+    def _resolve_parts(
+        self, channel_id: str, obj: Any, parts: List[RoutedPart]
+    ) -> List[List[Channel]]:
+        """The channels each part is handled under, in part order. Identifiers
+        are looked up in bulk (one ``IN`` query per kind), so the number of
+        queries does not grow with the number of parts. A part naming an
+        identifier goes to the live channel of the right type that owns it; if
+        none does, the URL channel is used ONLY when it is live, of the same
+        type and has no identifier of its own (legacy single-channel setups).
+        Template events resolve to the live WhatsApp channel(s) of their WABA."""
+        page_type = {"page": "FACEBOOK", "instagram": "INSTAGRAM"}.get(obj)
+        channel_type = page_type or "WHATSAPP"
+        primary = _PAGE if page_type else _PHONE
+        column = Channel.external_account_id if page_type else Channel.phone_number_id
+        ids = {i for k, i, _ in parts if k == primary and i}
+        # ONE query per kind: the primary identifiers and the URL channel
+        # together (chunked), plus one for template WABAs. Query count does not
+        # grow with the number of parts.
+        owners: Dict[str, List[Channel]] = {}
+        url_channel: Optional[Channel] = None
+        values = sorted(ids)
+        for i in range(0, max(len(values), 1), _LOOKUP_CHUNK):
+            rows = (
+                self.db.query(Channel)
+                .filter(
+                    or_(column.in_(values[i : i + _LOOKUP_CHUNK]), Channel.id == channel_id),
+                    Channel.is_trashed.is_(False),
+                )
+                .order_by(Channel.created_at, Channel.id)
+                .all()
+            )
+            for ch in rows:
+                if ch.channel_type != channel_type:
+                    continue
+                if ch.id == channel_id:
+                    url_channel = ch
+                key = ch.external_account_id if page_type else ch.phone_number_id
+                if key in ids:
+                    owners.setdefault(key, []).append(ch)
+        wabas = {i for k, i, _ in parts if k == _WABA and i}
+        waba_owners = self._waba_owners(wabas)
+
+        def legacy_url_channel(names_identifier: bool) -> Optional[Channel]:
+            if url_channel is None:
+                return None
+            if not names_identifier:
+                return url_channel
+            own = url_channel.external_account_id if page_type else url_channel.phone_number_id
+            return url_channel if own is None else None
+
+        result: List[List[Channel]] = []
+        for kind, identifier, _ in parts:
+            if kind == _WABA:
+                result.append(waba_owners.get(identifier or "", []))
+            elif kind == primary and identifier and owners.get(identifier):
+                result.append(owners[identifier][:1])
+            else:
+                fallback = legacy_url_channel(bool(identifier))
+                result.append([fallback] if fallback is not None else [])
+        return result
+
+    def _waba_owners(self, ids: set) -> Dict[str, List[Channel]]:
+        """WABA id -> live WhatsApp channels of that WABA (chunked IN)."""
+        found: Dict[str, List[Channel]] = {}
+        values = sorted(ids)
+        for i in range(0, len(values), _LOOKUP_CHUNK):
+            rows = (
+                self.db.query(Channel)
+                .filter(
+                    Channel.waba_id.in_(values[i : i + _LOOKUP_CHUNK]),
+                    Channel.channel_type == "WHATSAPP",
+                    Channel.is_trashed.is_(False),
+                )
+                .order_by(Channel.created_at, Channel.id)
+                .all()
+            )
+            for ch in rows:
+                found.setdefault(ch.waba_id, []).append(ch)
+        return found
 
     def _handle_part(self, channel: Channel, payload: Dict[str, Any], counters: Dict[str, int]) -> None:
         """Handle the events of one routed part under its own channel."""
         adapter = get_adapter(channel.channel_type)
-        for event in adapter.parse_inbound(payload):
+        try:
+            events = adapter.parse_inbound(payload)
+        except Exception:  # odd shapes in one part never block its siblings
+            logger.warning("webhook part could not be parsed and was dropped")
+            return
+        for event in events:
             if event["kind"] == "message":
                 if self._handle_message(channel, event):
                     counters["messages"] += 1
@@ -169,69 +254,6 @@ class InboundService:
                     counters["templates"] = counters.get("templates", 0) + 1
                 else:
                     counters["skipped"] += 1
-
-    def _resolve_channel(self, channel_id: str, payload: Dict[str, Any]) -> Optional[Channel]:
-        """Dispatch on the payload's ``object`` field (D-A7-2): ``page``/
-        ``instagram`` resolve a live FACEBOOK/INSTAGRAM channel by
-        ``external_account_id``; ``whatsapp_business_account`` (or absent, the
-        pre-plan-32 shape) keeps today's ``phone_number_id`` path. The URL's
-        channel id is the LAST-RESORT fallback for all three - every
-        already-configured per-channel callback URL keeps working, and Meta's
-        one app-level callback delivering every tenant's traffic is exactly
-        why the payload, never the URL, is authoritative.
-
-        ``external_account_id`` carries its own service-wide PARTIAL UNIQUE
-        index over live rows (migration 0017, same design as
-        ``phone_number_id``), so this lookup - though intentionally
-        unauthenticated, the webhook has no tenant context yet - can only ever
-        resolve the ONE channel that legitimately owns that page/account id,
-        never a different tenant's."""
-        object_type = payload.get("object")
-        if object_type in ("page", "instagram"):
-            channel_type = "FACEBOOK" if object_type == "page" else "INSTAGRAM"
-            entry_id = _payload_entry_id(payload)
-            if entry_id:
-                by_account = (
-                    self.db.query(Channel)
-                    .filter(
-                        Channel.external_account_id == entry_id,
-                        Channel.channel_type == channel_type,
-                        Channel.is_trashed.is_(False),
-                    )
-                    .first()
-                )
-                if by_account is not None:
-                    return by_account
-            # URL-id fallback (nit, security review round 1) - still type-
-            # matched and live-only: after an `object` dispatch, drop rather
-            # than fall back to a channel of the WRONG type or a trashed one
-            # (a Messenger payload must never be handed to
-            # `WhatsAppCloudAdapter.parse_inbound`, and a trashed channel is
-            # not a live routing target).
-            return (
-                self.db.query(Channel)
-                .filter(
-                    Channel.id == channel_id,
-                    Channel.channel_type == channel_type,
-                    Channel.is_trashed.is_(False),
-                )
-                .first()
-            )
-
-        # whatsapp_business_account (or absent) - today's path, unchanged.
-        pnid = _payload_phone_number_id(payload)
-        if pnid:
-            by_phone = (
-                self.db.query(Channel)
-                .filter(
-                    Channel.phone_number_id == pnid,
-                    Channel.is_trashed.is_(False),
-                )
-                .first()
-            )
-            if by_phone is not None:
-                return by_phone
-        return self.db.query(Channel).filter(Channel.id == channel_id).first()
 
     # ── Inbound messages ─────────────────────────────────────────────────────
     def _handle_message(self, channel: Channel, event: Dict[str, Any]) -> bool:

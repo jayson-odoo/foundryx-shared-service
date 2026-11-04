@@ -53,9 +53,18 @@ def _signature_valid(body: bytes, header: str) -> bool:
 
 @router.post("/{channel_id}")
 async def receive_webhook(channel_id: str, request: Request) -> dict:
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
         raise HTTPException(status_code=413, detail="Payload too large")
+    # Read with a running cap: stop as soon as the body passes the limit.
+    chunks = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Payload too large")
+        chunks.append(chunk)
+    body = b"".join(chunks)
     if not _signature_valid(body, request.headers.get("X-Hub-Signature-256", "")):
         raise HTTPException(status_code=403, detail="Invalid signature")
     try:
