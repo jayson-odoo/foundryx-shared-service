@@ -105,6 +105,8 @@ Base path `/api/v1/omnichannel`, Bearer API key, camelCase, timestamps ISO 8601 
 - S3. `GET /workflows/runs/{runId}` returns a `PublicWorkflowRunItem` plus `nodes: [ { "nodeId", "nodeType", "status", "input", "output", "error" } ]`. Fields the registry marks `redacted` are masked as in the dashboard trace. A run of a workflow the key does not own answers `404 not_found` with the same body.
 - S3. `POST /workflows/{id}/runs` takes `{ "contact": "<identifier>", "inputs"?: { "<key>": "<string>" } }` and returns 202 with a `PublicWorkflowRunItem`. `404 contact_not_found` (find-only, key workspace). `409 workflow_not_runnable` with `details.reason` set to `unpublished`, `inactive` or `trigger`. `422 invalid_request` for bad `inputs` (AC-38-141). Core `run_shortcut(..., inputs=None)` writes them to the trigger payload `input`.
 - S3. `http.request` refusals surface in the run detail: the node `status` is `failed`, its `error` is the guard's message, and later nodes are `skipped`.
+- S4. `GET /business-hours` returns 200 `{ "workspaceId", "timezone" (string or null), "windows" (object), "source" ("workspace", "tenant" or "none") }`. `PUT /business-hours` takes `{ "timezone", "windows" }` (the dashboard body, `BusinessHoursUpdate`) and returns 200 in the same shape with `source` `workspace`. A bad body answers `422 invalid_request` with `details.fieldErrors` keyed `timezone` and `windows`, the dashboard's messages. The body is read with `read_capped_json` at its default cap.
+- S5. "Refusals included" (AC-38-145) means every 4xx these routes answer to a valid key. A 401 for a bad or revoked key carries no key attribution, as today.
 
 ## Security
 
@@ -153,7 +155,7 @@ Each step changes one thing, runs the named test, which must fail, and is then r
 |---|---|---|
 | K1 | Remove `assert_deliverable(url)` (`http_actions.py:175`) and replace `GuardedTransport()` with `httpx.HTTPTransport()` (`:194`) | Every case of `test_ac_38_137_key_workflow_http_request_refuses_private_targets` (the spy sees a connect) |
 | K2 | Take the shared address space rule out of the blocked set (`url_guard.py:40-48`) | The `100.64.0.1`, `100.127.255.254` and `[::ffff:100.64.0.1]` cases of the same test, and `test_ac_38_137_blocked_set_covers_listed_ranges` |
-| K3 | Remove only `GuardedTransport()`, with the resolver answering a public address first and `10.0.0.7` second | The name case of the same test |
+| K3 | Remove only `GuardedTransport()` | The name case that resolves to a public address at the pre-flight check and to `10.0.0.7` at connect (`name-rebinds-after-preflight`). A resolver that answers public first and `10.0.0.7` second is still refused by the pre-flight check, which looks at every address |
 | K4 | Do not register the module run guard | `test_ac_38_130_owned_run_refused_before_any_node`, staff-published code node case |
 | K5 | Drop the allow-list check from publish only | `test_ac_38_129_refused_on_create_update_validate_publish`, publish cases |
 | K6 | Drop the `workspace_id` filter from the owner join | `test_ac_38_122_*` and `test_ac_38_123_*`, second-workspace cases |
