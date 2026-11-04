@@ -54,6 +54,7 @@ Owner rulings C1a C2a C3a C4b C5a (4 Nov). Code pointers in plan section C.
 - AC-56-51: Staff route `DELETE /api/omnichannel/contacts/{id}` needs `contacts.erase` plus access to the contact's workspace; it runs the same erase as AC-56-41 to AC-56-49 and answers the same body. A contact of another tenant or of a workspace the user cannot see answers 404.
 - AC-56-52: "Erase contact" appears in the contacts list row menu (one row at a time, never bulk) and the contact detail menu, only for users with `contacts.erase`. It opens the typed-confirm dialog (`ConfirmActionDialog`, the tenant purge pattern) showing the contact's name and the counts that will go (messages, files); the confirm button stays disabled until the user types `ERASE`. After success the detail view returns to the list and a toast says the contact was erased.
 - AC-56-53: The menu, dialog and toast work at 375 px and 1280 px (browser pass on the crew test copy).
+- AC-56-55: The staff contacts list and the staff contact read carry `messageCount` and `fileCount`, counted by the same rules as the erase response (`messages`, `files`) and scoped to the tenant and workspace; the list adds no query per row. The API key contact routes do not change shape. The dialog's counts come from these fields.
 
 ### Contract and docs
 
