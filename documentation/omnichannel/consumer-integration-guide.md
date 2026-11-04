@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-04** | **Developer Logs body capture** (section 13.3). A request or response body that is over the capture limit, or JSON that does not parse, is now shown as a note with its size and is never stored as raw text. Additive: no API field changes. |
 > | **2026-11-04** | **Workflows and business hours under the API key** (sections 6c, 6d, 10). New routes under `/workflows` (catalog, create, list, get, edit, archive, validate, publish, unpublish, active, versions, runs, run for one contact) and `/business-hours` (get, put), all scoped to the key's workspace. New error codes `node_not_allowed`, `invalid_definition`, `workflow_not_runnable` and `edit_conflict`. Additive and not breaking: no existing route, field or code changes. |
 > | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
 > | **2026-11-02** | **Revoking a key and pausing an endpoint** (section 7, section 10). An endpoint belongs to the key that last changed it. When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` says the key was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key. A pause set by staff cannot be undone with a key: enable, PATCH, rotate and DELETE answer `409 endpoint_paused_by_staff`. While a workspace is trashed, its tenant is suspended or the service is off, no event is queued and those events are not sent later. No field changes, but some calls that answered `200` or `204` now answer `409`, including on an endpoint a key disabled before this date, which reads as a staff pause until staff resume it. |
@@ -630,6 +631,7 @@ Lists the node types a key may use, with the pickers for your workspace only.
 
 * `kind` is `trigger`, `action` or `if`. A field's `showWhen` is `null` or `{ "field", "value" }`: show and use the field only when the named field holds that value. `mergeable: true` means the value may carry a `{{ … }}` merge token that is filled in at run time.
 * The `if` entry has no fields. Its `conditionFormat` describes the `conditions` group it reads from the node's config; its `true` and `false` ports are the edge handles.
+* The `entityType` field of the `entity.shortcut` trigger has one option, `omnichannel_contact`. A member field (for example an assignee filter) lists the members of your workspace as `{value, label}` options.
 * `options` lists the ids you may put in the fields above, for **your key's workspace only**: its active channels (`{id, name}`), contact tags, contact fields, lifecycle stages, close reasons and templates.
 
 ### Create, list, get, edit, delete
@@ -642,14 +644,14 @@ Lists the node types a key may use, with the pickers for your workspace only.
 | `PATCH` | `/workflows/{id}` | `{ name?, description?, draftDefinition?, expectedUpdatedAt? }` | `200` workflow |
 | `DELETE` | `/workflows/{id}` | | `204`, empty body |
 
-* `name` is 1 to 200 characters, `description` at most 2000. A save checks the definition (see "What a key may put in a workflow" and "Workspace pinning") and answers `422` before anything is written.
+* `name` is 1 to 200 characters, `description` at most 2000. A save checks the definition and answers the **first** problem it finds (see "What a key may put in a workflow" and "Workspace pinning") and answers `422` before anything is written.
 * **Paging.** The list is newest first. `limit` is 1 to 100 (default 50). `nextCursor` is opaque: pass it back as `cursor`; `null` means the last page. A bad `limit` or `cursor` answers `422 invalid_request`.
 * **Edit conflict.** Send the `updatedAt` you read as `expectedUpdatedAt` on `PATCH`. If the workflow changed after that instant the answer is `409 edit_conflict` and nothing is written; fetch it again and re-apply. Without `expectedUpdatedAt` the edit always applies.
 * `DELETE` archives the workflow: it stops running and leaves the list, every route then answers `404` for it, and your staff can restore it from the dashboard Archived view (it is then owned by the same workspace again).
 
 ### Validate - `POST /api/v1/omnichannel/workflows/validate`
 
-Takes `{ "draftDefinition": { … } }` and saves nothing. It reports every problem a save and a publish would raise, in one pass.
+Takes `{ "draftDefinition": { … } }` and saves nothing. It reports the problems a save and a publish would raise, in one pass. If the definition has a shape problem (wrong `schemaVersion`, or more than 200 nodes) the answer holds only that issue, and the per-node checks are not run until it is fixed.
 
 ```json
 {
@@ -671,7 +673,7 @@ Takes `{ "draftDefinition": { … } }` and saves nothing. It reports every probl
 | `POST` | `/workflows/{id}/unpublish` | none | `200` workflow, `publishedVersionId` `null` |
 | `PUT` | `/workflows/{id}/active` | `{ "isActive": true }` | `200` workflow |
 
-Publish makes the draft the live version and runs the same checks as validate; the first problem is returned as `422 node_not_allowed` or `422 invalid_definition`. `isActive` must be a JSON boolean. A published and active workflow runs on its trigger; an unpublished or inactive one does not.
+Publish makes the draft the live version and runs the same checks as validate; the first problem is returned as `422 node_not_allowed` or `422 invalid_definition` (create and edit also answer the first issue only). `isActive` must be a JSON boolean. A published and active workflow runs on its trigger; an unpublished or inactive one does not.
 
 ### Versions - `GET /api/v1/omnichannel/workflows/{id}/versions?limit=&cursor=`
 
@@ -710,10 +712,10 @@ Starts the **published** version of an owned, active workflow whose trigger is t
 { "contact": "phone:+60123456789", "inputs": { "orderRef": "ORD0001", "webhookUrl": "https://example.com/hook" } }
 ```
 
-* `contact` follows the `{identifier}` convention of section 6a (`phone:<e164>`, `id:<uuid>` or a bare id). It is **find-only**: a contact that is not in your workspace answers `404 contact_not_found` and no contact is created.
+* `contact` is 1 to 200 characters and follows the `{identifier}` convention of section 6a (`phone:<e164>`, `id:<uuid>` or a bare id). It is **find-only**: a contact that is not in your workspace answers `404 contact_not_found` and no contact is created.
 * `inputs` is optional: an object of at most **20 keys**, each key matching `^[A-Za-z][A-Za-z0-9_]{0,39}$`, each value a **string of at most 1000 characters**. Each pair is available to the workflow as `trigger.input.<key>` (for the example, `trigger.input.orderRef`). Anything else answers `422 invalid_request` and no run is created.
 * Answers `202` with the run item (above, without `nodes`). The run proceeds after the answer; read it with the run routes.
-* Checks run in this order, and the first failure is the answer: the workflow is yours (`404 not_found`), `inputs` (`422 invalid_request`), the contact (`404 contact_not_found`), then whether the workflow can run now: `409 workflow_not_runnable` with `details.reason` set to `unpublished`, `inactive` or `trigger` (the trigger is not the contact shortcut).
+* Checks run in this order, and the first failure is the answer: the workflow is yours (`404 not_found`), `inputs` (`422 invalid_request`), the contact (`404 contact_not_found`), then whether the workflow can run now: `409 workflow_not_runnable` with `details.reason` set to `unpublished`, `inactive` or `trigger` (the trigger is not the contact shortcut). A workflow whose run key is built from an input or contact value that comes out empty answers `422 invalid_request` naming the missing input; send that input and retry.
 
 ### What a key may put in a workflow
 
@@ -729,7 +731,7 @@ A definition must have `schemaVersion` `1` (`422 invalid_definition` otherwise) 
 
 A workflow stays inside its owner workspace.
 
-* **At save, publish and validate:** every literal id in a node's config (channel, tag, contact field, lifecycle stage, close reason, template, contact) must belong to your workspace, else `422 invalid_definition` with `details.nodeId` and `details.field`. The workspace of a trigger is set by the server to your workspace.
+* **At save, publish and validate:** every literal id in a node's config (channel, tag, contact field, lifecycle stage, close reason, template, contact, member) must belong to your workspace, else `422 invalid_definition` with `details.nodeId` and `details.field`. The workspace of a trigger is set by the server to your workspace.
 * **At run:** an id that arrives through a merge token or a record is checked when the node runs. A record outside the workspace fails that node with an error starting `record_not_in_workspace`, and nothing is sent or written.
 * **Events:** an owned workflow fires only on events of its own workspace.
 
@@ -739,9 +741,11 @@ The `http.request` node calls a URL you control. The rule is the one the consume
 
 * `https://` only. The address is checked before the call and again when the connection is made.
 * Redirects are not followed.
-* The node has a deadline: `timeoutSeconds`, default 10 seconds, at most 30.
-* A response is read up to 256 KB.
-* A target is refused when it is, or a public-looking name resolves to, a loopback address (`127.0.0.1`, `[::1]`), an RFC 1918 private address (`10.0.0.1`, `172.16.0.1`, `192.168.0.1`), a link-local address (`169.254.169.254`, `[fe80::1]`), shared address space (`100.64.0.0/10`, for example `100.64.0.1` and `100.127.255.254`), an IPv6 unique local address (`[fd00::1]`), the IPv4-mapped forms of these (`[::ffff:10.0.0.1]`, `[::ffff:100.64.0.1]`), or another reserved, multicast or unspecified address. `localhost` and `.local` names are refused too.
+* Request headers that change the framing or route of the request are refused: `Host`, `Connection`, `Content-Length`, `Transfer-Encoding`, `TE`, `Upgrade`, `Keep-Alive`, `Trailer`, `Expect` and any `Proxy-*`. A definition that sets one is refused at save, validate and publish with `422 invalid_definition` (`details.field` `headers`), and the node refuses it at run.
+* The request asks for no content encoding. At most one `gzip` or `deflate` layer of a response is decoded, within the cap; any other encoding fails the node.
+* The node has a deadline, `timeoutSeconds` (default 10 seconds, at most 30), that covers the whole exchange including the response headers.
+* A response is read up to 256 KB; the cap counts the bytes received.
+* A target is refused when it is, or a public-looking name resolves to, a loopback address (`127.0.0.1`, `[::1]`), an RFC 1918 private address (`10.0.0.1`, `172.16.0.1`, `192.168.0.1`), a link-local address (`169.254.169.254`, `[fe80::1]`), shared address space (`100.64.0.0/10`, for example `100.64.0.1` and `100.127.255.254`), an IPv6 unique local address (`[fd00::1]`), an IPv6 site-local address (`fec0::/10`), the IPv4-mapped forms of these (`[::ffff:10.0.0.1]`, `[::ffff:100.64.0.1]`), or another reserved, multicast or unspecified address. `localhost` and `.local` names are refused too.
 * A refused target fails the node with the guard's message, the nodes after it are `skipped`, and no connection is attempted. The URL is checked when the node runs, so a URL taken from `inputs` is checked then.
 
 ---
@@ -776,7 +780,7 @@ An invalid body answers `422 invalid_request` with the problems keyed by field, 
 { "error": { "code": "invalid_request", "message": "The business hours are not valid.", "details": { "fieldErrors": { "timezone": "Unknown timezone: 'Mars/Base' (use an IANA name)." } } } }
 ```
 
-`fieldErrors` is keyed `timezone` and `windows`.
+`fieldErrors` is keyed `timezone` and `windows`. Only the first `windows` problem is reported; its message names the day and window it is about (for example `mon.0: …`).
 
 ---
 
@@ -1610,6 +1614,7 @@ Open any row → the **trace timeline** shows every leg with its status and late
 ### 13.3 Redaction & retention
 
 * **Redaction.** Request/response bodies are stored **redacted** - any `Authorization`, API key, token, secret, `assertion`, `embedSecret`, or password field is masked to `***`. WhatsApp **message text is preserved** (it's content, not a credential), so you can still see what was sent.
+* **Large or unreadable bodies.** A body over the capture limit, or JSON that does not parse, is shown as a note with its size (for example `json body (N bytes) not captured`), never as raw text. This applies to every route, including the API key routes.
 * **Retention.** Rows are pruned per tenant - default **30 days**. An admin with `integration_logs.manage` can change the window in **Developers ▸ Logs ▸ Settings**.
 
 ### 13.4 Finding things
