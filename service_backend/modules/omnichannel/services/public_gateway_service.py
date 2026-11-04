@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.api_errors import ApiError
 from app.services.url_guard import GuardedAsyncTransport, UrlGuardError
 
+from ..adapters.meta_graph import client_retry_after
 from ..models import (
     MEDIA_MESSAGE_TYPES,
     Channel,
@@ -51,6 +52,7 @@ from .media_pipeline import META_CEILINGS, MediaRejected
 from .message_service import (
     CSW_CLOSED_MESSAGE,
     MessageService,
+    MetaRateLimited,
     SendRejected,
     template_body_text,
     template_variable_count,
@@ -312,6 +314,15 @@ class PublicGatewayService:
                 422, "channel_not_available_for_contact",
                 "This contact has no identity on the selected channel.",
             )
+
+    @staticmethod
+    def _meta_rate_limited(retry_after: Optional[int]) -> ApiError:
+        """Meta throttled a call made inside the request (plan 56 A): 429
+        `meta_rate_limited` + `Retry-After` seconds, distinct from the per-key
+        limiter's own `rate_limited`."""
+        return ApiError(
+            429, "meta_rate_limited", "Meta is rate limiting this channel. Try again shortly."
+        ).with_retry_after(client_retry_after(retry_after))
 
     @staticmethod
     def _map_send_rejected(exc: "SendRejected", *, default_code: str = "send_rejected") -> ApiError:
@@ -818,6 +829,8 @@ class PublicGatewayService:
         self.db.commit()  # nothing below touches an ORM object before a provider call
 
         receipts = []
+        throttled_retry_after: Optional[int] = None
+        throttled = False
         for p in plan:
             if not p["available"] or (
                 p["type"] == "WHATSAPP" and not _PHONE_NUMBER_ID_RE.fullmatch(p["sender_ref"] or "")
@@ -846,8 +859,15 @@ class PublicGatewayService:
                         "read receipt failed on channel %s: %s", p["channel_id"], exc
                     )
                     status = "failed"
-                except SendError:
+                except SendError as exc:
                     status = "failed"
+                    if getattr(exc, "rate_limited", False):
+                        # Keep trying the other channels; the throttle is
+                        # answered after the loop (plan 56 A).
+                        throttled = True
+                        # A channel with no Meta Retry-After counts as the default.
+                        retry_after = client_retry_after(getattr(exc, "retry_after", None))
+                        throttled_retry_after = max(throttled_retry_after or 0, retry_after)
                 except Exception:  # noqa: BLE001 - one channel never stops the others.
                     logger.warning("read receipt failed on channel %s", p["channel_id"])
                     status = "failed"
@@ -870,6 +890,8 @@ class PublicGatewayService:
                     channelId=p["channel_id"], messageId=p["message_id"], status=status
                 )
             )
+        if throttled:
+            raise self._meta_rate_limited(throttled_retry_after)
         return ContactReadResponse(contactId=contact_id, receipts=receipts)
 
     def _resolve_or_create_contact(
@@ -933,30 +955,30 @@ class PublicGatewayService:
     ) -> Tuple[str, bool]:
         """Returns (our_message_id, was_idempotency_replay)."""
         store = idempotency.get_store()
-        reserved = False
+        reservation = None
         if idempotency_key:
             # Reserve-before-send: atomically claim the slot so two concurrent
             # identical requests can't both send.
-            claimed = store.reserve(workspace_id, idempotency_key)
+            reservation = store.reserve(workspace_id, idempotency_key)
+            claimed = reservation.existing
             if claimed is not None:
-                if claimed == idempotency.PENDING:
+                if idempotency.is_pending(claimed):
                     raise ApiError(
                         409,
                         "idempotency_in_progress",
                         "A request with this Idempotency-Key is still being processed.",
                     )
                 return claimed, True  # completed → replay the stored id
-            reserved = True
 
         try:
             message_id = self._do_send(tenant_id, workspace_id, key_id, req)
         except Exception:
-            if reserved:
-                store.release(workspace_id, idempotency_key)  # let a retry re-claim
+            if reservation is not None and reservation.existing is None:
+                store.release(workspace_id, idempotency_key, reservation.token)  # let a retry re-claim
             raise
 
-        if reserved:
-            store.finalize(workspace_id, idempotency_key, message_id)
+        if reservation is not None and reservation.existing is None:
+            store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
         return message_id, False
 
     def _do_send(
@@ -1251,6 +1273,8 @@ class PublicGatewayService:
                 req.reaction.messageId, tenant_id, actor, emoji=req.reaction.emoji,
                 actor_is_human=False,
             )
+        except MetaRateLimited as exc:
+            raise self._meta_rate_limited(exc.retry_after) from exc
         except SendRejected as exc:
             raise self._map_send_rejected(exc, default_code="invalid_request") from exc
         return target.id
@@ -1278,18 +1302,18 @@ class PublicGatewayService:
         if not (to or "").strip():
             raise ApiError(422, "invalid_recipient", "A recipient phone number is required.")
         store = idempotency.get_store()
-        reserved = False
+        reservation = None
         if idempotency_key:
-            claimed = store.reserve(workspace_id, idempotency_key)
+            reservation = store.reserve(workspace_id, idempotency_key)
+            claimed = reservation.existing
             if claimed is not None:
-                if claimed == idempotency.PENDING:
+                if idempotency.is_pending(claimed):
                     raise ApiError(
                         409,
                         "idempotency_in_progress",
                         "A request with this Idempotency-Key is still being processed.",
                     )
                 return claimed, True
-            reserved = True
         try:
             # After the replay check, as the JSON path does; a refusal releases the key.
             channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
@@ -1305,11 +1329,11 @@ class PublicGatewayService:
                 channel=channel,
             )
         except Exception:
-            if reserved:
-                store.release(workspace_id, idempotency_key)
+            if reservation is not None and reservation.existing is None:
+                store.release(workspace_id, idempotency_key, reservation.token)
             raise
-        if reserved:
-            store.finalize(workspace_id, idempotency_key, message_id)
+        if reservation is not None and reservation.existing is None:
+            store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
         return message_id, False
 
     # ── Channels (read-only) ─────────────────────────────────────────────────

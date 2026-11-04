@@ -40,6 +40,14 @@ class LeaseClient(Protocol):
     def release(self, key: str, token: str) -> bool: ...
 
 
+# Bounded socket waits. The read bound must ride out a short Redis stall (one
+# renew error marks the lease lost and stops the heartbeat), stays far below the
+# renew interval max(1, ttl/3), and bounds a hung connection on redis-py below 8
+# (8.x defaults to 5 s).
+_LEASE_SOCKET_CONNECT_TIMEOUT_SECONDS = 1.0
+_LEASE_SOCKET_READ_TIMEOUT_SECONDS = 5.0
+
+
 class RedisLeaseClient:
     """Token-owned Redis lease. Renew/release never affect a newer owner."""
 
@@ -62,7 +70,12 @@ class RedisLeaseClient:
 
             from app.config import settings
 
-            client = Redis.from_url(settings.redis_url, decode_responses=True)
+            client = Redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=_LEASE_SOCKET_CONNECT_TIMEOUT_SECONDS,
+                socket_timeout=_LEASE_SOCKET_READ_TIMEOUT_SECONDS,
+            )
         self.client = client
 
     def acquire(self, key: str, token: str, ttl_seconds: int) -> bool:
@@ -145,6 +158,10 @@ def touch_run_heartbeat(bind: Any, run_id: str, now: Optional[datetime] = None) 
         return conn.execute(stmt).rowcount > 0
 
 
+def _renew_interval(ttl_seconds: int) -> float:
+    return max(1.0, ttl_seconds / 3)
+
+
 class _LeaseHeartbeat:
     """Renews the Redis lease AND, while a run executes, its DB heartbeat."""
 
@@ -178,7 +195,7 @@ class _LeaseHeartbeat:
         self._thread.join(timeout=1)
 
     def _run(self) -> None:
-        interval = max(1.0, self.ttl_seconds / 3)
+        interval = _renew_interval(self.ttl_seconds)
         while not self._stop.wait(interval):
             try:
                 if not self.client.renew(

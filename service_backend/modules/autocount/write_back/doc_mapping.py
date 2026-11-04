@@ -164,6 +164,7 @@ def map_wrapper_document(
     company: AcCompany,
     doc: Doc,
     kind: Optional[str] = None,
+    replaced: Optional[Dict[int, int]] = None,
 ) -> Tuple[str, CanonicalRecord]:
     """``(entity_type, canonical record)`` for a wrapper document, or a
     ``WrapperMappingError`` naming the failing fields."""
@@ -178,4 +179,19 @@ def map_wrapper_document(
     mapped = engine.map_document(_raw_for_mapping(db, tenant_id, company, doc, resolved))
     if not mapped.ok:
         raise WrapperMappingError("; ".join(err.message() for err in mapped.errors)[:2000])
+    if replaced:
+        _mark_replaced(mapped.record, company.database_name, doc.get("DocKey"), replaced)
     return entity_type, mapped.record
+
+
+def _mark_replaced(record: CanonicalRecord, database: str, doc_key: Any, replaced: Dict[int, int]) -> None:
+    """Plan 57 S5: a line an operation re-created carries the ref of the row it
+    replaced (``{db}:{DocKey}:{old DtlKey}``); ``replaced`` maps new -> old DtlKey.
+    Only the operation's own push passes it, so a later ordinary edit never repeats it."""
+    for line in getattr(record, "lines", None) or []:
+        try:
+            dtl = int(str(line.source_ref).rsplit(":", 1)[-1])
+        except (TypeError, ValueError):
+            continue
+        if dtl in replaced and hasattr(line, "replaces_line_ref"):
+            line.replaces_line_ref = f"{database}:{doc_key}:{replaced[dtl]}"

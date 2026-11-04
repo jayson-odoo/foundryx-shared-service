@@ -10,6 +10,9 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
+> | **2026-11-04** | **Meta pricing per message** (sections 7, 9.1, 9.3). `message.status` data and the default `MessageItem` now carry `pricing` (`billable`, `pricingModel`, `category`, `type`), or `null` when Meta has not reported it; older messages answer `null`, as do inbound ones. `?format=rio` is unchanged. `GET /templates` already returns each template's `category`. |
+> | **2026-11-04** | **Meta rate-limit retry** (section 10, section 6a). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
 > | **2026-11-04** | **Developer Logs body capture** (section 13.3). A request or response body that is over the capture limit, or JSON that does not parse, is now shown as a note with its size and is never stored as raw text. Additive: no API field changes. |
 > | **2026-11-04** | **Workflows and business hours under the API key** (sections 6c, 6d, 10). New routes under `/workflows` (catalog, create, list, get, edit, archive, validate, publish, unpublish, active, versions, runs, run for one contact) and `/business-hours` (get, put), all scoped to the key's workspace. New error codes `node_not_allowed`, `invalid_definition`, `workflow_not_runnable` and `edit_conflict`. Additive and not breaking: no existing route, field or code changes. |
 > | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
@@ -152,7 +155,7 @@ Sends one message. Returns `**202 Accepted**` with your durable message id - the
 |----|----|----|
 | `Authorization: Bearer fxw_live_…` | yes |    |
 | `Content-Type: application/json` **or** `multipart/form-data` | yes | JSON for everything; multipart only to upload a media file directly (see §4.3) |
-| `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup, 24h TTL. A replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`. |
+| `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup. A completed send is remembered for 24h: a replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`, held at most 5 minutes; after that a request that never got an answer can be retried with the same key. If the first request did complete meanwhile, the retry may send again, so look the message up first (`GET /contacts/{identifier}/messages` or the `message.outbound` webhook) before retrying after the hold. |
 
 **Response** `202`:
 
@@ -515,7 +518,7 @@ Call this when one of your staff opens the conversation. It takes no body. It do
 }
 ```
 
-A contact that exists always answers `200`, and `unreadCount` is `0` afterwards even when a receipt failed. `messageId` is the same `id` as on `MessageItem`. `receipts` has one item per channel the customer has written on, and is `[]` when there is nothing to acknowledge. An unknown contact answers `404 contact_not_found`, like the other contact routes.
+A contact that exists answers `200` unless Meta rate limits a channel (see below), and `unreadCount` is `0` afterwards even when a receipt failed. `messageId` is the same `id` as on `MessageItem`. `receipts` has one item per channel the customer has written on, and is `[]` when there is nothing to acknowledge. An unknown contact answers `404 contact_not_found`, like the other contact routes.
 
 | `status` | Meaning | What to do |
 |----|----|----|
@@ -526,6 +529,8 @@ A contact that exists always answers `200`, and `unreadCount` is `0` afterwards 
 | `not_supported` | The channel type does not support read receipts (Messenger, Instagram, web chat). | Nothing. |
 
 Each channel is handled on its own, so one `failed` never blocks another channel. This route creates no message and fires no webhook.
+
+When Meta rate limits a channel's read receipt, the route answers `429 meta_rate_limited` with a `Retry-After` header (§10) after it has still tried the other channels. The body is the error envelope, with no `receipts`. By then `unreadCount` is already `0`, and every other channel was tried: a receipt that went out answers `already_sent` on a repeat call, and the others answer as in the table. When several channels are throttled, `Retry-After` is the longest of their waits (30 seconds for a channel where Meta gave none). Call again after the wait to retry the throttled channel.
 
 
 ---
@@ -848,8 +853,11 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 
   ```json
   { "messageId":"0a0d673d-…", "externalMessageId":"wamid…", "contactId":"b2ad5218-…",
-    "deliveryStatus":"DELIVERED", "errorCode":null, "errorMessage":null }
+    "deliveryStatus":"DELIVERED", "errorCode":null, "errorMessage":null,
+    "pricing":{ "billable":true, "pricingModel":"pmp", "category":"utility", "type":"regular" } }
   ```
+
+  `pricing` is Meta's pricing for that message, taken from the delivery receipt: `billable` (true/false), `pricingModel` (for example `pmp`), `category` (for example `utility`, `marketing`) and `type` (for example `regular`, `free_customer_service`); any field Meta did not send is `null`. The key is always present. It is `null` until a receipt carries pricing (so on the `SENT` event, and on every message sent before this change), and once stored it is repeated on later events for the same message. Meta may send it on a receipt that arrives late; the stored value is updated without a new event. Sum `pricing` per message yourself for usage.
 
   `deliveryStatus` is one of `SENT`, `DELIVERED`, `READ`, `FAILED`. `SENT` is emitted when Meta accepts the send and `FAILED` on a synchronous failure (Meta rejection or a local failure such as a media transcode error), with `errorCode`/`errorMessage` filled for `FAILED` only (both are `null` on `SENT`, `DELIVERED` and `READ`). On `FAILED`, `errorCode` is the provider's own code when it gave one (for example a Meta error code) and `null` otherwise, such as a local media failure; `errorMessage` is at most 300 characters. A temporary failure that Foundryx retries is not reported as `FAILED` and carries no error text to you. Normally a send ends in one `SENT` or one `FAILED` on `message.status`. Delivery is at-least-once, so the same event can arrive more than once: dedupe on the event id (`{messageId}:{deliveryStatus}`). While a message is being retried, `GET` messages can show a generic error text and an `errorCode` on it. Ignore any `deliveryStatus` value you do not recognise rather than failing the delivery. Each status is its own event (`{messageId}:SENT`, `{messageId}:FAILED`, ...); a later Meta `sent` receipt for the same message adds no second `SENT`. **If you already subscribe to `message.status` you now also receive `SENT` and sender-side `FAILED` events.** Delivery order across events is not guaranteed (each event is delivered and retried independently), so a `DELIVERED` can arrive before the `SENT` for the same message: never move a stored status backward (rank `SENT` < `DELIVERED` < `READ`), and treat `FAILED` as a terminal outcome.
 * `**message.reaction**`
@@ -1054,6 +1062,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "deliveryStatus": "DELIVERED",// QUEUED|SENT|DELIVERED|READ|FAILED
   "errorCode": null,
   "errorMessage": null,
+  "pricing": null,              // Meta pricing once a receipt carried it: { "billable": true, "pricingModel": "pmp", "category": "utility", "type": "regular" }; null for inbound and older messages (default shape only, `?format=rio` has none)
   "replyTo": { "id":"…", "body":"…", "senderType":"…", "senderName":"…" },
   "createdAt": "2026-07-09T11:02:43Z"
 }
@@ -1210,6 +1219,7 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 | `mediaMime` / `mediaFilename` / `mediaSize` | `message.mimeType` / `message.filename` / `message.size` |
 | `voice: true` | `message.type === "voice"` |
 | `payload` | `message.payload` |
+| `pricing` (object or null) | none: `?format=rio` has no `pricing` |
 | `mediaUnavailable` | `message.mediaUnavailable` (same - Foundryx extension, plan 32 / A7a) |
 | `reactions[]` | `reactions[]` (identical) |
 | `replyTo.id` / `.body` | `replyTo.messageId` / `.text` |
@@ -1277,11 +1287,15 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `invalid_definition` | 422 | A workflow definition is not valid: wrong `schemaVersion`, a structure problem, or an id that is not in your workspace. `details` names `nodeId` and `field` where it applies. On create, edit, publish, and in a validate issue (§6c). |
 | `workflow_not_runnable` | 409 | `POST /workflows/{id}/runs` on a workflow that cannot run now. `details.reason` is `unpublished`, `inactive` or `trigger` (not the contact shortcut). |
 | `edit_conflict` | 409 | `PATCH /workflows/{id}` with an `expectedUpdatedAt` older than the workflow. Nothing is written; fetch it again and re-apply. |
-| `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing. |
+| `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing (held at most 5 minutes). |
 | `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
 | `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
+| `meta_rate_limited` | 429 | Meta is rate limiting the channel for a call made inside your request: a read receipt (`POST /contacts/{id}/read`) or a reaction send. Nothing was stored for the reaction. The `Retry-After` header gives the seconds to wait (Meta's value when it sent one, never more than 600). Distinct from `rate_limited`, which is this API's own per-key limit. |
 
+### Meta rate limits on a send
+
+When Meta rate limits a WhatsApp send (HTTP 429, or error code `130429`, `131056`, `80007`, `4`, `17`, `32` or `613`) the message stays `pending` and the platform retries it itself: after 15, 60, 180 and 600 seconds, each plus up to 20% jitter, and later when Meta sends a `Retry-After` header (up to 600 seconds). That is at most 4 retries, about 14 minutes in all. The retry count is shared across causes: a Meta 5xx or network failure after rate limits uses the same count, so the total never exceeds the lower of the two budgets. No status event goes out while a retry is pending. If the retries run out the message ends `failed`, `status[].code` / `errorCode` keeps Meta's code (for example `130429`), and exactly one `failed` status event is sent. Code `131048` (spam rate limit) is never retried: the message ends `failed` on the first attempt. Other temporary failures (Meta 5xx, network) keep their own shorter retry schedule.
 
 ---
 

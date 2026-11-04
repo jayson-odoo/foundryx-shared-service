@@ -73,7 +73,7 @@ from ..services.inbox_view_service import (
 )
 from ..services.lifecycle_service import LifecycleStageNotFound
 from ..services.media_pipeline import META_CEILINGS, MediaRejected
-from ..services.message_service import MessageService, SendRejected
+from ..services.message_service import MessageService, MetaRateLimited, SendRejected
 
 router = APIRouter()
 
@@ -848,6 +848,12 @@ def react_to_message(
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Message not found")
+    except MetaRateLimited as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=exc.message,
+            headers={"Retry-After": str(exc.retry_after)},
+        )
     except SendRejected as exc:
         raise HTTPException(status_code=422, detail=exc.message)
     return ReactionResult(**result)

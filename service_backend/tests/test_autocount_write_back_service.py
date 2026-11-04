@@ -34,6 +34,7 @@ from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.service import WriteBackService
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
+from tests.write_back_live_books import live_books_open  # noqa: F401
 from tests.write_back_caps import vendor_caps_all_on  # noqa: F401
 
 FIX = Path(__file__).parent / "fixtures" / "autocount_write_back"
@@ -167,7 +168,7 @@ class Harness:
         raw["_lines"] = copy.deepcopy(doc["Details"])
         row = AcStagedRecord(
             tenant_id=tenant_id, company_id=company_id or self.company.id, entity_type=entity,
-            job_id="job-1", source_ref=f"{DBNAME}:{doc['DocKey']}", doc_no=doc["DocNo"],
+            job_id="write-back", source_ref=f"{DBNAME}:{doc['DocKey']}", doc_no=doc["DocNo"],
             raw_json=raw, canonical_json={"sourceRef": f"{DBNAME}:{doc['DocKey']}"}, status=STAGED,
         )
         self.db.add(row)
@@ -505,61 +506,23 @@ def _assert_staged_readback_queued_for_remap(h, res):
     expected = {k: v for k, v in server.items() if k != "Details"}
     expected["_lines"] = server["Details"]
     assert row.raw_json == json.loads(json.dumps(expected))
-    assert row.canonical_json is None
+    # AC-57-21: the SQL sync's canonical (with its qty) is never wiped by a write-back
+    assert row.canonical_json == {"sourceRef": f"{DBNAME}:12008"}
     assert row.status == STAGED
     assert len(h.sink_calls) == 0
 
 
-def test_ac_55_25_done_stages_readback_for_remap(h):
+def test_ac_55_25_done_stages_readback_for_remap(h, live_books_open):
     _make_po_sql_sourced(h)
     res = h.link_split()
     assert res.outcome == "done"
     _assert_staged_readback_queued_for_remap(h, res)
 
 
-def test_ac_55_12_unlink_done(h, vendor_caps_all_on):
-    _make_po_sql_sourced(h)
-    res = h.service().unlink(
-        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=12013
-    )
-    assert res.outcome == "done", res.error_code
-    body = h.ac.put_bodies[0]
-    assert [r["DtlKey"] for r in body["Details"]] == [12013]
-    rows = {r["DtlKey"]: r for r in res.document["Details"]}
-    assert rows[12013]["FromSODtlKey"] == 0
-    assert rows[12013]["FromDocType"] == ""
-    assert Decimal(str(rows[12013]["Qty"])) == 10 and rows[12013]["Location"] == "HQ"
-    assert rows[12011]["FromSODtlKey"] == 11990
-    _assert_staged_readback_queued_for_remap(h, res)
-    assert h.action(res).action == "unlink"
-
-
-def test_ac_55_15_spo_unlink_done(h, vendor_caps_all_on):
-    spo = _load("spo_db1_sample.json")
-    spo["Details"][0]["FromDocType"] = "PO"
-    spo["Details"][0]["FromDocDtlKey"] = 12013
-    h.stage_spo_pointing_at(12013)
-    h.ac.serve("purchaseorderbydocdate", spo)
-    # the fake applies edits against the SPO doc too; link fields cleared by the body
-    dtl = spo["Details"][0]["DtlKey"]
-    original_apply = h.ac._apply
-
-    def apply(body):
-        for d in h.ac.docs["purchaseorderbydocdate"]:
-            if d["DocKey"] == body["DocKey"]:
-                for r in body["Details"]:
-                    next(x for x in d["Details"] if x["DtlKey"] == r["DtlKey"]).update(r)
-                d["LastModified"] = "2026-11-05T09:00:00.00"
-                return
-        original_apply(body)
-
-    h.ac._apply = apply
-    res = h.service().spo_unlink(
-        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, spo_doc_key=spo["DocKey"], spo_dtl_key=dtl
-    )
-    assert res.outcome == "done", res.error_code
-    row = h.action(res)
-    assert row.action == "spo_unlink" and row.doc_type == "SPO" and row.doc_key == spo["DocKey"]
+# Plan 57 S4: test_ac_55_12_unlink_done and test_ac_55_15_spo_unlink_done retired. The
+# unlink routes now run the delete + add operations (AutoCount never edits a link in
+# place); their success paths are covered in tests/test_autocount_write_back_operations.py
+# (test_ac_57_31_*); the flag-off refusal stays in test_autocount_write_back_vendor_caps.py.
 
 
 # ---- step 12-13: transactions + record ---------------------------------------------

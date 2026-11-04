@@ -31,7 +31,7 @@ import logging
 import re
 from decimal import Decimal
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
@@ -44,7 +44,8 @@ from ..doc_feed.clock import myt_date
 from ..models import AcPullApiKey
 from ..pull_auth import PullGatewayError, resolve_pull_key
 from ..services.pull_key_service import SCOPE_PULL, SCOPE_WRITE_BACK
-from ..write_back.deps import get_write_back_service
+from ..write_back.deps import get_operation_service, get_write_back_service
+from ..write_back.operations import OperationService
 from ..write_back.service import WriteActionResult, WriteBackService
 from ..services.pull_gateway_service import (
     ENTITY_WIRE_TO_INTERNAL,
@@ -469,12 +470,47 @@ def _write_status(result: WriteActionResult) -> int:
 
 
 def _write_body(result: WriteActionResult) -> Dict[str, object]:
-    return {
+    body: Dict[str, object] = {
         "actionId": result.action_id,
         "outcome": result.outcome,
         "errorCode": result.error_code,
         "document": result.document,
     }
+    if result.operation_id is not None:  # plan 57: an operation answered
+        body.update(
+            operationId=result.operation_id, message=result.message, warnings=list(result.warnings),
+            docKey=result.doc_key, docNo=result.doc_no,
+            replacedLines=[{"oldDtlKey": o, "newDtlKey": n} for o, n in result.replaced_lines],
+        )
+    return body
+
+
+def optional_iso_date(raw: WriteBody, name: str) -> Optional["date"]:
+    """An optional ``YYYY-MM-DD`` field; anything else is 422 ``INVALID_REQUEST``."""
+    value = raw.get(name)
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        raise PullGatewayError(422, "INVALID_REQUEST", f"{name} must be a date (YYYY-MM-DD).") from None
+
+
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[\x20-\x7e]{1,128}$")
+
+
+def idempotency_key_header(request: Request, *, required: bool) -> Optional[str]:
+    """The ``Idempotency-Key`` header (contract section 2): 1..128 printable
+    characters. Absent = ``None`` (or 422 ``IDEMPOTENCY_KEY_REQUIRED`` when required);
+    blank, over-long or control characters = 422 ``IDEMPOTENCY_KEY_INVALID``."""
+    raw = request.headers.get("Idempotency-Key")
+    if raw is None:
+        if required:
+            raise PullGatewayError(422, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key header is required.")
+        return None
+    if not _IDEMPOTENCY_KEY_RE.match(raw) or not raw.strip():
+        raise PullGatewayError(422, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must be 1 to 128 printable characters.")
+    return raw
 
 
 WriteBody = Dict[str, object]
@@ -567,15 +603,18 @@ def link_po_row(
     db: Session = Depends(get_db),
     raw_body: bytes = Depends(_read_request_body_bytes),
     service: WriteBackService = Depends(get_write_back_service),
+    operations: OperationService = Depends(get_operation_service),
 ) -> JSONResponse:
     def call(
         svc: WriteBackService, raw: WriteBody, tenant_id: str, company_id: str, key_id: str
     ) -> WriteActionResult:
         return svc.link(
+            operations=operations, idempotency_key=idempotency_key_header(request, required=False),
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
             so_doc_key=_int_field(raw, "soDocKey"), so_dtl_key=_int_field(raw, "soDtlKey"),
-            qty=_qty_field(raw),
+            qty=_qty_field(raw), so_doc_date=optional_iso_date(raw, "soDocDate"),
+            doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
@@ -588,13 +627,16 @@ def unlink_po_row(
     db: Session = Depends(get_db),
     raw_body: bytes = Depends(_read_request_body_bytes),
     service: WriteBackService = Depends(get_write_back_service),
+    operations: OperationService = Depends(get_operation_service),
 ) -> JSONResponse:
     def call(
         svc: WriteBackService, raw: WriteBody, tenant_id: str, company_id: str, key_id: str
     ) -> WriteActionResult:
         return svc.unlink(
+            operations=operations, idempotency_key=idempotency_key_header(request, required=False),
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
+            doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
@@ -607,13 +649,16 @@ def unlink_spo_row(
     db: Session = Depends(get_db),
     raw_body: bytes = Depends(_read_request_body_bytes),
     service: WriteBackService = Depends(get_write_back_service),
+    operations: OperationService = Depends(get_operation_service),
 ) -> JSONResponse:
     def call(
         svc: WriteBackService, raw: WriteBody, tenant_id: str, company_id: str, key_id: str
     ) -> WriteActionResult:
         return svc.spo_unlink(
+            operations=operations, idempotency_key=idempotency_key_header(request, required=False),
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             spo_doc_key=_int_field(raw, "spoDocKey"), spo_dtl_key=_int_field(raw, "spoDtlKey"),
+            doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
