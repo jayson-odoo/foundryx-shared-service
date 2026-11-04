@@ -25,6 +25,8 @@ import type {
   MigrationJob,
   MigrationPreflight,
   MigrationReport,
+  MigrationSyncAction,
+  MigrationSyncItem,
   MigrationUploadResult,
 } from '@/types/respondio-migration';
 import type { ListQuery, ListResult } from '@/types/resource';
@@ -351,6 +353,9 @@ let rows: JobRow[] = seed();
 /** Reset mock state between tests / a fresh browser session. */
 export function __mockResetRespondioMigrations(): void {
   rows = seed();
+  syncStore.clear();
+  syncSeq = 1;
+  webhookSeq = 1;
 }
 
 function tick(row: JobRow): void {
@@ -418,6 +423,156 @@ const adapter: QueryAdapter<JobRow> = {
 function fieldErrorsError(message: string, fieldErrors: Record<string, string>): ApiError {
   return new ApiError(message, 422, null, { fieldErrors });
 }
+
+// ── PHASE 1 MOCK: continuous sync (plan 52) ──────────────────────────────────
+// API contract (real routes in respondio-migration-service.real.ts):
+//   GET  /omnichannel/migration/syncs?workspaceId=   -> MigrationSyncItem | null
+//   POST /omnichannel/migration/syncs {workspaceId}  -> MigrationSyncItem
+//        409 {reason: 'no_finished_migration' | 'sync_exists'}
+//   POST /syncs/{id}/run-now | pause | resume | stop -> MigrationSyncItem
+//        (run-now 409 {reason: 'tick_running'} while a tick runs)
+//   GET  /syncs/{id}/webhook, POST /syncs/{id}/webhook/rotate -> {url}
+// `__mockSetSync` forces any state (active+result, running tick, paused
+// token_rejected, stopping, stopped, none) for tuning and tests.
+
+const syncStore = new Map<string, MigrationSyncItem>();
+let syncSeq = 1;
+let webhookSeq = 1;
+const SYNC_TICK_MS = 15 * MIN;
+
+function syncResult(failures: boolean): MigrationSyncItem['lastResult'] {
+  return {
+    contactsCreated: 3,
+    contactsUpdated: 11,
+    messagesCreated: 42,
+    messagesSkipped: 5,
+    errors: failures ? MOCK_FAILURE_ROWS.length : 0,
+    failureSample: failures ? MOCK_FAILURE_ROWS : [],
+  };
+}
+
+function baseSync(workspaceId: string, over: Partial<MigrationSyncItem> = {}): MigrationSyncItem {
+  return {
+    id: `mig-sync-${String(syncSeq++).padStart(3, '0')}`,
+    workspaceId,
+    status: 'active',
+    pausedReason: null,
+    intervalMinutes: 15,
+    fullSweepHours: 6,
+    lastSyncAt: iso(4 * MIN),
+    nextSyncAt: new Date(Date.now() + 11 * MIN).toISOString(),
+    lastFullSweepAt: iso(2 * HOUR),
+    runningJobId: null,
+    lastError: null,
+    lastResult: syncResult(false),
+    totals: { contactsCreated: 9, contactsUpdated: 30, messagesCreated: 120, messagesSkipped: 14, errors: 0 },
+    sourceContactCount: 214,
+    estimatedFullSweepMinutes: 11,
+    sourceJobId: 'mig-job-002',
+    stoppedAt: null,
+    createdAt: iso(HOUR),
+    ...over,
+  };
+}
+
+/** Force the sync state of a workspace (`null` = none). */
+export function __mockSetSync(workspaceId: string, over: Partial<MigrationSyncItem> | null): void {
+  if (over === null) syncStore.delete(workspaceId);
+  else syncStore.set(workspaceId, baseSync(workspaceId, over));
+}
+
+export function __mockResetSyncs(): void {
+  syncStore.clear();
+  syncSeq = 1;
+  webhookSeq = 1;
+}
+
+function findSync(id: string): MigrationSyncItem {
+  for (const item of Array.from(syncStore.values())) if (item.id === id) return item;
+  throw new ApiError('Sync not found.', 404, null, null);
+}
+
+/** A running tick settles on the read after it was started. */
+function settleSync(item: MigrationSyncItem): void {
+  if (!item.runningJobId) return;
+  item.runningJobId = null;
+  item.lastSyncAt = new Date().toISOString();
+  item.lastResult = syncResult(false);
+  if (item.status === 'stopping') {
+    item.status = 'stopped';
+    item.stoppedAt = item.lastSyncAt;
+    item.nextSyncAt = null;
+  } else {
+    item.nextSyncAt = new Date(Date.now() + SYNC_TICK_MS).toISOString();
+  }
+}
+
+const mockSyncMethods: Pick<
+  RespondioMigrationService,
+  'getSync' | 'createSync' | 'syncAction' | 'getSyncWebhook' | 'rotateSyncWebhook'
+> = {
+  async getSync(workspaceId) {
+    const item = syncStore.get(workspaceId);
+    if (!item) return delay(null, 150);
+    const snapshot = { ...item };
+    settleSync(item);
+    return delay(snapshot, 150);
+  },
+
+  async createSync(workspaceId) {
+    const existing = syncStore.get(workspaceId);
+    if (existing && existing.status !== 'stopped') {
+      throw conflictError('sync_exists', 'A sync already exists for this workspace.');
+    }
+    const hasFinishedRun = rows.some(
+      (r) => r.workspaceId === workspaceId && r.mode === 'run' && r.source === 'api' && r.status === 'done',
+    );
+    if (!hasFinishedRun) {
+      throw conflictError('no_finished_migration', 'Finish a migration for this workspace first.');
+    }
+    const item = existing
+      ? { ...existing, status: 'active' as const, stoppedAt: null, nextSyncAt: new Date().toISOString() }
+      : baseSync(workspaceId, { lastSyncAt: null, lastResult: null, totals: null, nextSyncAt: new Date().toISOString() });
+    syncStore.set(workspaceId, item);
+    return delay({ ...item }, 250);
+  },
+
+  async syncAction(id, action: MigrationSyncAction) {
+    const item = findSync(id);
+    switch (action) {
+      case 'run-now':
+        if (item.runningJobId) throw conflictError('tick_running', 'A sync is already running.');
+        item.runningJobId = `bg-job-sync-${Date.now()}`;
+        break;
+      case 'pause':
+        item.status = 'paused';
+        item.pausedReason = 'manual';
+        break;
+      case 'resume':
+        item.status = 'active';
+        item.pausedReason = null;
+        item.lastError = null;
+        item.nextSyncAt = new Date().toISOString();
+        break;
+      case 'stop':
+        item.status = 'stopping';
+        item.runningJobId = `bg-job-sync-${Date.now()}`;
+        break;
+    }
+    return delay({ ...item }, 250);
+  },
+
+  async getSyncWebhook(id) {
+    findSync(id);
+    return delay({ url: `https://shared.example.test/omnichannel/migration-hooks/${id}/mocksecret${webhookSeq}` }, 120);
+  },
+
+  async rotateSyncWebhook(id) {
+    findSync(id);
+    webhookSeq += 1;
+    return delay({ url: `https://shared.example.test/omnichannel/migration-hooks/${id}/mocksecret${webhookSeq}` }, 200);
+  },
+};
 
 export const mockRespondioMigrationService: RespondioMigrationService = {
   async preflight(connectionId, workspaceId) {
@@ -559,4 +714,6 @@ export const mockRespondioMigrationService: RespondioMigrationService = {
     const csv = [header, ...failureRows.map((f) => `${f.entity},${f.sourceId},"${f.sourceLabel}","${f.reason}",${f.action}`)].join('\n');
     return delay(csv, 200);
   },
+
+  ...mockSyncMethods,
 };

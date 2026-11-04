@@ -146,6 +146,15 @@
       "prefix": "/omnichannel/migration"
     },
     {
+      "name": "migration_sync",
+      "prefix": "/omnichannel/migration/syncs"
+    },
+    {
+      "name": "migration_sync_hooks",
+      "prefix": "/omnichannel/migration-hooks",
+      "public": true
+    },
+    {
       "name": "webchat_widget",
       "prefix": "/omnichannel/widget",
       "public": true

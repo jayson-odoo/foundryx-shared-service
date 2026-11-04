@@ -2259,6 +2259,53 @@ class MigrationJobListResponse(ApiModel):
     page: int
 
 
+# ── Continuous respond.io sync (plan 52, lane SS-MIGRATION-SYNC) ────────────
+
+
+class MigrationSyncCreate(ApiModel):
+    workspaceId: str
+
+
+class MigrationSyncCounters(ApiModel):
+    contactsCreated: int = 0
+    contactsUpdated: int = 0
+    messagesCreated: int = 0
+    messagesSkipped: int = 0
+    errors: int = 0
+
+
+class MigrationSyncResult(MigrationSyncCounters):
+    failureSample: List[MigrationFailureRow] = []
+
+
+class MigrationSyncItem(ApiModel):
+    """Read shape of one sync (plan 52 section 3). Built by
+    `MigrationSyncService.to_item`; NEVER carries the webhook secret or URL."""
+
+    id: str
+    workspaceId: str
+    status: str
+    pausedReason: Optional[str] = None
+    intervalMinutes: int
+    fullSweepHours: int
+    lastSyncAt: Optional[datetime] = None
+    nextSyncAt: Optional[datetime] = None
+    lastFullSweepAt: Optional[datetime] = None
+    runningJobId: Optional[str] = None
+    lastError: Optional[str] = None
+    lastResult: Optional[MigrationSyncResult] = None
+    totals: Optional[MigrationSyncCounters] = None
+    sourceContactCount: Optional[int] = None
+    estimatedFullSweepMinutes: Optional[int] = None
+    sourceJobId: Optional[str] = None
+    stoppedAt: Optional[datetime] = None
+    createdAt: datetime
+
+
+class MigrationSyncWebhook(ApiModel):
+    url: str
+
+
 # ── Workflows under the API key (plan 38 gap 7) ──────────────────────────────
 # Own narrow shapes: a change to the dashboard workflow schemas cannot move
 # this public contract. Unknown body keys (tenantId, workspaceId) are ignored.

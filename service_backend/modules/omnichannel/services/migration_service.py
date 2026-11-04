@@ -85,6 +85,10 @@ logger = logging.getLogger(__name__)
 
 RESPONDIO_PROVIDER = "respondio"
 MIGRATION_JOB_TYPE = "omnichannel.respondio_migration"
+# Plan 52 - the continuous-sync tick job type. Declared HERE (not in
+# `migration_sync_service`) so `_in_progress_job` can count sync jobs without
+# a circular import.
+SYNC_JOB_TYPE = "omnichannel.respondio_sync"
 # 24h + mapping-hash gate (D-A6-14, AC-MIG-20) - a `run` needs a successful
 # `dry_run` of the SAME mapping inside this window.
 DRY_RUN_TTL_HOURS = 24
@@ -1335,6 +1339,11 @@ class MigrationService:
         ):
             if (job.payload_json or {}).get("workspaceId") == workspace_id:
                 return job
+        # Plan 52 D10 - a pending/running continuous-sync tick writes the same
+        # refs, so it blocks a new migration for the workspace too.
+        for job in self.jobs.repo.active_of_type(tenant_id, SYNC_JOB_TYPE, (JOB_PENDING, JOB_RUNNING)):
+            if (job.payload_json or {}).get("workspaceId") == workspace_id:
+                return job
         return None
 
     def _has_fresh_dry_run(self, tenant_id: str, workspace_id: str, mapping_hash: str) -> bool:
@@ -1739,6 +1748,7 @@ def _process_contact_messages(
     failures: List[dict],
     message_samples: List[dict],
     messages_since: Optional[datetime] = None,
+    prefetched_contact: Optional[dict] = None,
 ) -> Tuple[int, int, int]:
     """One contact's FULL message-history walk - buffered, sorted by
     `messageId`, timestamp-resolved as ONE unit (D-A6-9 needs the whole
@@ -1770,7 +1780,9 @@ def _process_contact_messages(
     # the contact's history outright.
     fallback_dt = local_contact.created_at
     try:
-        raw_contact = client.get_contact(identifier)
+        # Plan 52: the sync already holds the source contact row (list page or
+        # one `GET /contact/id:`) and hands it down instead of re-fetching.
+        raw_contact = prefetched_contact if prefetched_contact is not None else client.get_contact(identifier)
         source_created_at = raw_contact.get("created_at")
         if source_created_at is not None:
             # `epoch_to_dt` (review round 1, finding S2) never raises - a
@@ -1881,6 +1893,16 @@ def _process_contact_messages(
             kept_resolved.append((created_at, inferred))
         parsed_items, resolved = kept_items, kept_resolved
 
+    # Plan 52 D8 - a respond.io message whose WhatsApp id already exists as a
+    # NATIVE row in this tenant is skipped (counted `skip`), never duplicated.
+    native_ids = writer.native_message_ids(
+        [
+            str(i.channelMessageId)
+            for i in parsed_items
+            if i.channelMessageId not in (None, "") and str(i.messageId) not in already
+        ]
+    )
+
     newly_inferred = 0
     for item, (created_at, inferred) in zip(parsed_items, resolved):
         message_counts["fetched"] = message_counts.get("fetched", 0) + 1
@@ -1888,6 +1910,9 @@ def _process_contact_messages(
         if str(item.messageId) in already:
             if str(item.messageId) not in relink_source_ids:  # counted after the re-link below
                 message_counts["skip"] = message_counts.get("skip", 0) + 1
+            continue
+        if item.channelMessageId not in (None, "") and str(item.channelMessageId) in native_ids:
+            message_counts["skip"] = message_counts.get("skip", 0) + 1
             continue
         try:
             writer.write_message(
@@ -2031,6 +2056,7 @@ def _process_contact_events(
     contact_external_id: str,
     event_counts: Dict[str, int],
     failures: List[dict],
+    prefetched_contact: Optional[dict] = None,
 ) -> None:
     """One contact's derived-events pass (AC-MIG-41). Idempotent via
     `migration_refs` keyed PER CONTACT (D-A6-13) - a re-run skips the whole
@@ -2044,7 +2070,10 @@ def _process_contact_events(
         return
 
     try:
-        raw_contact = client.get_contact(f"id:{contact_external_id}")
+        raw_contact = (
+            prefetched_contact if prefetched_contact is not None
+            else client.get_contact(f"id:{contact_external_id}")
+        )
         source_contact = Contact(**raw_contact)
     except Exception as exc:  # noqa: BLE001 - never abort the job (RespondIoError or a malformed row)
         event_counts["errors"] = event_counts.get("errors", 0) + 1
@@ -2895,3 +2924,8 @@ def register_migration_job_handler() -> None:
     other job handler's own boot registration, e.g. `contact_export_service.
     register_contacts_export_handler`)."""
     register_job_handler(MIGRATION_JOB_HANDLER_DEF)
+    # Plan 52 - the continuous-sync tick handler is registered beside it, in
+    # every process that registers the migration handler.
+    from .migration_sync_service import register_sync_job_handler
+
+    register_sync_job_handler()

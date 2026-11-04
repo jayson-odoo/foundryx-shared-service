@@ -72,6 +72,20 @@ class RespondIoProvider:
             },
         ]
 
+    def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
+        """Save-time rule: the API base URL receives the access token, so it
+        must be a public https address."""
+        value = str((config or {}).get("baseUrl") or "").strip()
+        if not value:
+            return None
+        from app.services.url_guard import UrlGuardError, validate_public_https_url
+
+        try:
+            validate_public_https_url(value, strict_dns=False, subject="API base URL")
+        except (UrlGuardError, ValueError):
+            return "API base URL must be a public https address."
+        return None
+
     def test(
         self, config: Dict[str, Any], credentials: Dict[str, Any], target: Optional[str] = None
     ) -> TestResult:
