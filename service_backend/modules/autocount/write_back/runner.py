@@ -44,7 +44,7 @@ from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteNotAllowed
 from modules.autocount.write_back.payloads import header_of, so_header_of
 from modules.autocount.write_back.operations import OperationService
-from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService
+from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService, redact_text, vendor_message
 from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
     PullDocsResult,
@@ -573,6 +573,7 @@ def run_db3_suite(
     if company is None:
         raise WriteDisabled()
     base_url = write_base_url(db, company)  # resolves WITH tenant_id and runs the db3 guard
+    guard.assert_test_company(db, tenant_id, company.id)  # AC-57-22: before any request
     run = _Run(
         db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
         client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory,
@@ -643,7 +644,7 @@ def render_report(result: SuiteResult, *, run_date: date) -> str:
 # ── plan 57: Quotation / Sales Order suite (Q01..Q09) ────────────────────────
 
 _SCRUB_KEYS = re.compile(
-    r"^(DebtorName|InvAddr\d|DeliverAddr\d|Phone\d?|Fax\d?|DeliverPhone\d?|DeliverFax\d?|Attention|DeliverContact|SalesAgent|RefDocNo|ShipInfo)$"
+    r"^(DebtorName|InvAddr\d|DeliverAddr\d|Phone\d?|Fax\d?|DeliverPhone\d?|DeliverFax\d?|Attention|DeliverContact|SalesAgent|RefDocNo|ShipInfo|CreditorName|Remark\d|Note|CreatedUserID|LastModifiedUserID)$"
 )
 
 
@@ -728,6 +729,7 @@ class _QtRun:
                  run_tag: str, header_extra: Dict[str, object], client_factory, reader_factory,
                  sink_factory) -> None:
         self.db, self.tenant_id, self.company, self.debtor, self.tag = db, tenant_id, company, debtor, run_tag
+        self.base_url = base_url
         self.extra = dict(header_extra)
         self.tap = _Tap()
         wrapped_client = lambda url: _TapClient(client_factory(url), self.tap)  # noqa: E731
@@ -788,9 +790,18 @@ class _QtRun:
                 str(entry["method"]), str(entry["path"]), entry["responseStatus"],  # type: ignore[arg-type]
                 _scrub(entry["requestBody"]),  # type: ignore[arg-type]
                 _rows(before) if before else None, _rows(after) if after else None,  # type: ignore[arg-type]
-                response=_scrub(entry["responseBody"]),
+                response=self._report_answer(entry),
             ))
         case.action_id = result.action_id
+
+    def _report_answer(self, entry: Dict[str, object]) -> object:
+        """The answer shown in the report: a success as it came (scrubbed); a failure as
+        its redacted first line only (an IIS page or a stack never reaches the report)."""
+        status = entry["responseStatus"]
+        if isinstance(status, int) and 200 <= status < 300:
+            return _scrub(entry["responseBody"])
+        return vendor_message(entry["responseBody"], self.base_url) or redact_text(
+            str(entry["responseBody"]), self.base_url)
 
     def call(self, case: CaseResult, fn) -> PrimitiveResult:
         start = len(self.tap.writes)

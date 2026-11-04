@@ -18,6 +18,7 @@ import hashlib
 import html
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -30,7 +31,7 @@ from modules.autocount.alerts import _safe_subject, alert_recipients
 from modules.autocount.canonical.documents import ENTITY_SALES_ORDER, ENTITY_SHIPPING_ORDER
 from modules.autocount.models import AcCompany, AcWriteOperation
 from modules.autocount.repositories import CompanyRepository
-from modules.autocount.write_back import capabilities, guard, payloads
+from modules.autocount.write_back import capabilities, frame, guard, payloads
 from modules.autocount.write_back.guard import WriteConnectionError
 from modules.autocount.write_back.constants import EDIT_PO_PATH
 from modules.autocount.write_back.frame import (
@@ -193,6 +194,8 @@ class OperationService:
         self._warnings: List[str] = []
         self._mail_allowed = True
         self._base_url = ""
+        self._row: Optional[AcWriteOperation] = None
+        self._op_deadline = 0.0
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -241,6 +244,8 @@ class OperationService:
             return OperationResult(None, REFUSED, DOC_BUSY)  # not stored: the key stays usable
         self._steps, self._warnings = [], []
         self._mail_allowed = True
+        self._row = row
+        self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
         return self._guarded(row, company, lambda: self._execute(row, company, op, spec, params))
 
     def resume(self, *, tenant_id: str, company_id: str, operation_id: str) -> OperationResult:
@@ -265,6 +270,8 @@ class OperationService:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
         self.db.refresh(row)
         self._mail_allowed = was != NEEDS_ATTENTION  # a failed resume never mails again
+        self._row = row
+        self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
         self._steps, self._warnings = list(row.steps_json or []), []
         return self._guarded(row, company, lambda: self._resume(row, company, was), restore=was)
 
@@ -340,6 +347,16 @@ class OperationService:
     def _step(self, name: str, res: PrimitiveResult) -> None:
         self._steps.append({"step": name, "outcome": res.outcome, "code": res.error_code,
                             "actionId": res.action_id, "newDtlKey": res.new_dtl_key})
+        if self._row is not None:  # heartbeat: a live operation never looks stale (AC-57-43)
+            self._row.updated_at = datetime.now(timezone.utc)
+            self._row.steps_json = _json_safe(self._steps)
+            self.db.commit()
+
+    def _check_deadline(self) -> None:
+        """No further step past the operation-wide deadline (below the busy window,
+        read through ``time`` so a patched clock works): pending_verification, resumable."""
+        if time.monotonic() > self._op_deadline:
+            raise _Done(PENDING, "DEADLINE_EXCEEDED")
 
     # ── execute ──────────────────────────────────────────────────────────────
 
@@ -580,6 +597,7 @@ class OperationService:
                 # a timeout or a bare 5xx: the delete may have landed; resume reads AutoCount (AC-57-42)
                 raise _Done(PENDING, gone.error_code, gone.message)
             self._abort_unless_done(gone)
+        self._check_deadline()
         add = self.prims.add_line(
             **self._call(row, company, snap, "add"),
             line=self._line_of(snap, snap["newLink"], (qty - received) if partial else None),
@@ -608,6 +626,7 @@ class OperationService:
               document: Optional[Doc], location: Optional[str]) -> Doc:
         """Move the new row to ``location`` when the read-back differs (db3 forces
         HQ on a new linked row); a failed move is a warning, never a failure."""
+        self._check_deadline()
         document = document or {}
         landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
         if not location or landed.get("Location") == location:
@@ -628,6 +647,9 @@ class OperationService:
         """The add failed after step 1 landed: put the line back as it was."""
         old_key = int(snap["row"]["DtlKey"])
         if partial:
+            remainder = _dec(snap["row"].get("Qty")) - Decimal(snap["received"])
+            if not self._remove_strays(row, company, snap, remainder):
+                return self._needs_attention(row, company, snap, failed_code)
             back = self.prims.edit_doc(
                 **self._call(row, company, snap, "recover"), header_changes={},
                 line_changes=[{"DtlKey": old_key, "Qty": _dec(snap["row"].get("Qty"))}],
@@ -652,11 +674,14 @@ class OperationService:
                 return self._finish(row, RECOVERED, failed_code, replaced=[(old_key, new_key)], document=document)
         return self._needs_attention(row, company, snap, failed_code)
 
-    def _remove_strays(self, row: AcWriteOperation, company: AcCompany, snap: Doc) -> bool:
+    def _remove_strays(
+        self, row: AcWriteOperation, company: AcCompany, snap: Doc, qty: Optional[Decimal] = None
+    ) -> bool:
         """AC-57-41: a failed add may still have left a copy (link lost, or the add
         landed and answered 5xx). Delete any new row that looks like the line before
         the original is re-added, so recovery never doubles the quantity. False when
-        AutoCount cannot be read or a stray cannot be removed (needs_attention)."""
+        AutoCount cannot be read or a stray cannot be removed (needs_attention). A
+        partial operation looks for the remainder (``qty``): its add may have landed."""
         reader = self.prims._reader_factory(self._base_url)
         self.db.commit()
         try:
@@ -667,7 +692,8 @@ class OperationService:
         strays = [
             r for r in doc.get("Details") or []
             if r.get("DtlKey") not in known and r.get("ItemCode") == base.get("ItemCode")
-            and r.get("UOM") == base.get("UOM") and _dec(r.get("Qty")) == _dec(base.get("Qty"))
+            and r.get("UOM") == base.get("UOM")
+            and _dec(r.get("Qty")) == (qty if qty is not None else _dec(base.get("Qty")))
         ]
         for stray in strays:
             gone = self.prims.delete_line(**self._call(row, company, snap, "unstray"), dtl_key=int(stray["DtlKey"]))
@@ -814,6 +840,10 @@ class OperationService:
         existing = self.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
         if existing is not None:
             return replay(existing)
+        if doc_key is not None:  # a crashed run of ANY kind no longer holds the document (AC-57-43)
+            window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+            if self.ops.expire_stale_in_progress(tenant_id, company_id, kind, doc_key, window):
+                self.db.commit()
         row = AcWriteOperation(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id, idempotency_key=idempotency_key,
             request_hash=request_hash, op=label, doc_type=kind, doc_key=doc_key, status=IN_PROGRESS,
@@ -838,7 +868,10 @@ class OperationService:
             self.db.rollback()
         finally:
             row = self.ops.get(tenant_id, company_id, row.id) or row
-            row.status, row.error_code, row.result_json = status, code, _json_safe(answer)
+            if code == DOC_BUSY and status == OUTCOME_REFUSED:  # never stored: the key stays usable
+                self.ops.delete(row)
+            else:
+                row.status, row.error_code, row.result_json = status, code, _json_safe(answer)
             self.db.commit()
         return answer
 
@@ -856,6 +889,13 @@ class OperationService:
             "item": base.get("ItemCode"), "uom": base.get("UOM"), "qty": str(base.get("Qty")),
             "location": base.get("Location"), "link": text or "none", "op": row.op,
         }
+        if snap.get("mode") == "partial" and snap.get("received") is not None:
+            remainder = _dec(base.get("Qty")) - Decimal(snap["received"])
+            event.update(
+                mode="partial", cutQty=str(Decimal(snap["received"])), remainderQty=str(remainder),
+                note=f"the line was cut to the received quantity {Decimal(snap['received'])} and its "
+                     f"remainder {remainder} could not be added",
+            )
         try:
             self._notifier(event)
         except Exception:  # noqa: BLE001 - a mail fault never changes the outcome
@@ -871,6 +911,11 @@ class OperationService:
             ("Location", event["location"]), ("Linked to", event["link"]),
         ]
         lead = "A line was deleted in AutoCount and could not be re-created. Re-key it:"
+        if event.get("mode") == "partial":
+            rows[4] = ("Remainder quantity", event["remainderQty"])
+            rows.insert(5, ("Cut to (received)", event["cutQty"]))
+            lead = ("A line was cut in AutoCount to its received quantity and the remainder could not be "
+                    "added. Add the remainder:")
         text = "\n".join([lead, "", *[f"{k}: {v}" for k, v in rows]])
         cells = "".join(
             f'<tr><td style="padding:4px 16px 4px 0;color:#6b7280">{html.escape(str(k))}</td>'

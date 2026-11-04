@@ -128,6 +128,8 @@ _CUT_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"),  # IPv4
+    re.compile(r"\b(?:token|secret|api[_-]?key)\b[\"']?\s*[=:]", re.IGNORECASE),
+    re.compile(r"login failed for user|cannot open database", re.IGNORECASE),
     re.compile(r"\b[A-Za-z]:\\"),  # drive path
     re.compile(r"\\\\[A-Za-z0-9_.$-]"),  # UNC path
 )
@@ -137,6 +139,7 @@ MESSAGE_CAP = 300
 def redact_text(text: str, base_url: str = "") -> str:
     """The first line of ``text``, control characters removed, cut at the first
     internal detail (the cut list above, or the company's own write host) and capped."""
+    text = re.sub(r"<[^>]*>", " ", text)  # an HTML error page reads as its text
     text = next((line for line in text.splitlines() if line.strip()), "")
     text = "".join(" " if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else c for c in text)
     cuts = [m.start() for m in (pattern.search(text) for pattern in _CUT_PATTERNS) if m]
