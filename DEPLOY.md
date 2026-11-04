@@ -115,6 +115,14 @@ at deploy time still executes there):
   of the sweep outside app startup was the AutoCount scheduler tick -
   itself queued behind the hung job, which is why the symptom lasted 8
   hours instead of 15 minutes.
+- API lock limits (API processes only, application name `foundryx-api`):
+  `API_DB_LOCK_TIMEOUT_SECONDS` (default `10`, `0` turns the API limit off)
+  bounds how long a request waits on a row lock before it answers a clean
+  503 "busy, try again"; `API_DB_LONG_LOCK_TIMEOUT_SECONDS` (default `300`,
+  never below the first) is the per-transaction ceiling for the long locked
+  paths (module install/update/uninstall, tenant purge, storage-migration
+  Complete). `bootstrap_db`, workers and beat do not get either; bootstrap
+  keeps its own lock timeout from `PGOPTIONS`.
 - `worker_workflow` and `worker_jobs` (only - never `backend_blue`/
   `backend_green`) get three Postgres session-bound envs
   (`WORKER_DB_STATEMENT_TIMEOUT_SECONDS` / `WORKER_DB_LOCK_TIMEOUT_SECONDS` /

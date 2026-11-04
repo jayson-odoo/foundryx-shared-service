@@ -103,6 +103,12 @@ def app_connect_args(url: Optional[str] = None) -> Dict[str, str]:
     as ``worker_connect_args`` (sqlite's DBAPI rejects unknown keys)."""
     if not (url if url is not None else settings.database_url).startswith("postgresql"):
         return {}
+    # Gating uses `process_application_name()`, so `DB_APPLICATION_NAME`
+    # overrides it (setting it to `foundryx-api` opts a process in, anything
+    # else opts it out). An API process that also sets
+    # `worker_db_lock_timeout_seconds` gets the API value: it is added last and
+    # the later `-c lock_timeout` wins. A dev run via `python main.py` is not
+    # named `foundryx-api`, so it gets no API limit.
     name = process_application_name()
     args: Dict[str, str] = {"application_name": name, **worker_connect_args()}
     if name == "foundryx-api" and settings.api_db_lock_timeout_seconds > 0:

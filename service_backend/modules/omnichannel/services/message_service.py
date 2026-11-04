@@ -124,6 +124,9 @@ def fill_template(body_text: str, variables: List[str]) -> str:
 class MessageService:
     def __init__(self, db: Session):
         self.db = db
+        # Id of the last message row this service committed (see
+        # `_enqueue_and_finalize`); None until a send reaches that point.
+        self.stored_message_id: Optional[str] = None
         self.repo = ContactRepository(db)
         self.channels = ChannelRepository(db)
         self.conversations = ConversationService(db)
@@ -373,6 +376,9 @@ class MessageService:
         """Publish the optimistic ``message.created`` then dispatch the send
         (inline in eager dev/tests, Celery ``omni`` queue in prod) and return the
         current item (QUEUED optimistic, or SENT/FAILED after the inline run)."""
+        # The row is committed: record its id so a caller whose request fails
+        # after this point can keep (finalize) its idempotency reservation.
+        self.stored_message_id = row.id
         item = self.conversations.message_items([row])[0]
         thread = self.conversations.thread_item(contact)
         realtime.publish(
