@@ -203,7 +203,9 @@ class Settings(BaseSettings):
     workflow_run_retention_days: int = 30
     # Keyed workflow serialization. Redis leases are renewed while a run is
     # active; the beat backstop wakes durable Pending scopes older than the
-    # recovery age without changing their state. Lease floor 30 seconds.
+    # recovery age without changing their state. Lease floor 30 seconds: the renew
+    # thread also stamps the run heartbeat in the database before its next wait,
+    # so the lease must outlast one slow renew plus that write.
     workflow_serialized_lease_seconds: int = 120
     workflow_serialized_recovery_age_seconds: int = 60
     # Workflow Redis action (S3): every workflow-data key carries a TTL so a
@@ -594,7 +596,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "workflow_serialized_lease_seconds must be at least 30 seconds: "
                 "the lease is renewed every third of its length, so it must "
-                "outlast one slow renew."
+                "outlast one slow renew plus the run heartbeat write the renew thread "
+                "makes in the database before its next wait."
             )
         return v
 
