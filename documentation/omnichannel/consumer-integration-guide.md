@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
 > | **2026-11-05** | **Provider message id** (sections 9.1 and 9.2): `externalMessageId` is `null`, never an empty string, when the channel accepted a send without returning an id. |
 > | **2026-11-04** | **Erase a contact** (sections 6a, 7, 10). New `DELETE /contacts/{identifier}` erases one contact of the key's workspace with its messages and files, and answers what was erased. New opt-in webhook event contact.erased tells your endpoints. A later message from the same number starts a new contact. |
 > | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
@@ -158,6 +159,8 @@ Sends one message. Returns `**202 Accepted**` with your durable message id - the
 | `Authorization: Bearer fxw_live_…` | yes |    |
 | `Content-Type: application/json` **or** `multipart/form-data` | yes | JSON for everything; multipart only to upload a media file directly (see §4.3) |
 | `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup. A completed send is remembered for 24h: a replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`, held at most 5 minutes; after that a request that never got an answer can be retried with the same key. If the first request did complete meanwhile, the retry may send again, so look the message up first (`GET /contacts/{identifier}/messages` or the `message.outbound` webhook) before retrying after the hold. |
+
+A JSON body larger than 256 KiB answers `422 invalid_request` ("Request body is too large.").
 
 **Response** `202`:
 
