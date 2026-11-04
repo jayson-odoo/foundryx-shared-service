@@ -16,7 +16,7 @@ An integration erases a contact with its workspace API key by phone, exactly as 
 
 ## Today (origin/main 5d33707f)
 
-- `IntegrationActivityMiddleware._record` (`app/activity_log/middleware.py:272-320`) writes one row per attributable gateway call: `operation = f"{method} {path[len(_GATEWAY_PREFIX):]}"` (`:295-296`, prefix `/api/v1/omnichannel` at `:66`) and `request_summary_json` from `_request_summary` (`:325-344`), whose `path` is `request.url.path` (`:330`). `request.url.path` is the decoded path, so `phone%3A` arrives as `phone:`.
+- `GatewayActivityMiddleware._record` (`app/activity_log/middleware.py:272-320`) writes one row per attributable gateway call: `operation = f"{method} {path[len(_GATEWAY_PREFIX):]}"` (`:295-296`, prefix `/api/v1/omnichannel` at `:66`) and `request_summary_json` from `_request_summary` (`:325-344`), whose `path` is `request.url.path` (`:330`). `request.url.path` is the decoded path, so `phone%3A` arrives as `phone:`.
 - Erase route `modules/omnichannel/routers/api_v1.py:437-445`; identifier forms `phone:+60...` | `id:<uuid>` | `<uuid>` (`:208`); the resolver matches `phone:` case-insensitively (`services/public_gateway_service.py:371`). Error texts never echo the identifier (`:359`, `:379`).
 - Unattributable calls (bad or revoked key) write no row (`middleware.py:292-293`).
 - Shown in Developers > Logs: list column `use-integration-logs-list-config.tsx:69-76`, detail `log-detail-view.tsx:104-124`, trace timeline `trace-timeline.tsx:81`.
