@@ -145,7 +145,8 @@ const sorento: IntegrationProvider = {
 };
 
 describe('Sorento contract version on edit (fix/sorento-contract-version-field)', () => {
-  it('a connection saved before the field existed prefills the EFFECTIVE "1", not blank', () => {
+  it('a connection saved before the field existed prefills the EFFECTIVE "2", not blank', () => {
+    // INGEST-LINE-DROP-GUARD: an unset connection runs at contract 2.
     const values = valuesForConnection(sorento, {
       provider: 'sorento',
       name: 'Sorento',
@@ -153,7 +154,7 @@ describe('Sorento contract version on edit (fix/sorento-contract-version-field)'
     });
     expect(values.config).toEqual({
       baseUrl: 'https://sorento.example.com',
-      sorentoContractVersion: '1',
+      sorentoContractVersion: '2',
     });
     // The prefilled value satisfies the required check, so an unrelated
     // save of the connection is not blocked by a field the operator never set.
