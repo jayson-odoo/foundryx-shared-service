@@ -95,13 +95,15 @@ class Harness:
             self.stage(kind, doc)
         return doc
 
-    def stage(self, kind: str, doc: Dict[str, Any]) -> AcStagedRecord:
+    def stage(self, kind: str, doc: Dict[str, Any], job_id: str = "write-back") -> AcStagedRecord:
+        """Stage ``doc`` as a row created by ``job_id`` (default = the write-back job, so the
+        plan 57 staging guard treats it as ours; pass another job for a SQL-sync row)."""
         entity = {"SO": "sales_order", "PO": "purchase_order", "SPO": "shipping_order"}[kind]
         raw = {k: v for k, v in doc.items() if k != "Details"}
         raw["_lines"] = copy.deepcopy(doc["Details"])
         row = AcStagedRecord(
             tenant_id=DEFAULT_TENANT_ID, company_id=self.company.id, entity_type=entity,
-            job_id="job-1", source_ref=f"{DBNAME}:{doc['DocKey']}", doc_no=doc["DocNo"],
+            job_id=job_id, source_ref=f"{DBNAME}:{doc['DocKey']}", doc_no=doc["DocNo"],
             raw_json=raw, canonical_json={"sourceRef": f"{DBNAME}:{doc['DocKey']}"}, status=STAGED,
         )
         self.db.add(row)
