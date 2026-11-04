@@ -571,6 +571,20 @@ export const mockContactService: ContactService = {
     return delay(result, 600);
   },
 
+  async eraseContact(contactId) {
+    for (const [workspaceId, rows] of Array.from(contactsByWorkspace.entries())) {
+      const at = rows.findIndex((r) => r.id === contactId);
+      if (at === -1) continue;
+      const { messageCount = 0, fileCount = 0 } = rows[at];
+      contactsByWorkspace.set(workspaceId, rows.filter((_, i) => i !== at));
+      return delay(
+        { contactId, erasedAt: new Date().toISOString(), messages: messageCount, files: fileCount },
+        200,
+      );
+    }
+    throw new ApiError('Contact not found.', 404, null, null);
+  },
+
   async exportContacts(workspaceId, req: ContactExportRequest) {
     const rows = await ensureContacts(workspaceId);
     const segmentFilter = await resolveSegmentFilter(workspaceId, req.segment);

@@ -23,6 +23,7 @@ from ..schemas import (
     MessageItem,
     PublicContactListResponse,
     PublicMessageListResponse,
+    ContactEraseResponse,
     ContactReadResponse,
     PublicCommentRequest,
     PublicContactUpdateRequest,
@@ -428,6 +429,18 @@ def mark_contact_read(
     db: Session = Depends(get_db),
 ) -> ContactReadResponse:
     return PublicGatewayService(db).mark_contact_read(
+        api_ws.tenant_id, api_ws.workspace_id, identifier
+    )
+
+
+# ── Erase a contact (PDPA; every key has full power in its own workspace) ────
+@router.delete("/contacts/{identifier}", response_model=ContactEraseResponse)
+def erase_contact(
+    identifier: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> ContactEraseResponse:
+    return PublicGatewayService(db).erase_contact(
         api_ws.tenant_id, api_ws.workspace_id, identifier
     )
 

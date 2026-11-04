@@ -20,6 +20,7 @@ from ..schemas import (
     ContactTagRefItem,
     MessageItem,
     ReplyRefItem,
+    ThreadDetailItem,
     ThreadItem,
     VisitorProfile,
 )
@@ -439,6 +440,15 @@ class ConversationService:
         if c is None:
             raise ThreadNotFound()
         return self.thread_item(c)
+
+    def get_thread_with_counts(self, contact_id: str, tenant_id: str) -> ThreadDetailItem:
+        from ..repositories.contact_erase_repository import ContactEraseRepository
+
+        item = self.get_thread(contact_id, tenant_id)
+        messages, files = ContactEraseRepository(self.db).message_file_counts(
+            [contact_id], tenant_id
+        ).get(contact_id, (0, 0))
+        return ThreadDetailItem(**item.model_dump(), messageCount=messages, fileCount=files)
 
     def list_messages(self, contact_id: str, tenant_id: str) -> List[MessageItem]:
         c = self.repo.get_by_id(contact_id, tenant_id)

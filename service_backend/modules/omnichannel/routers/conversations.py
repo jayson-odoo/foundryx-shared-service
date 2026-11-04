@@ -28,6 +28,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
+from app.dependencies import require_module, require_permission
+from app.models.user import User
 from app.services.status_machine import (
     TransitionConditionsNotMet,
     TransitionForbidden,
@@ -43,6 +45,7 @@ from ..embed_auth import (
 )
 from ..schemas import (
     CloseThreadRequest,
+    ContactEraseResponse,
     ConversationEventListResponse,
     LifecycleMoveOption,
     LifecycleMoveRequest,
@@ -52,11 +55,13 @@ from ..schemas import (
     SendMessageRequest,
     ShortcutItem,
     ShortcutRunResponse,
+    ThreadDetailItem,
     ThreadItem,
     ThreadListResponse,
     ThreadPatch,
 )
 from ..services import event_service
+from ..services.contact_erase_service import ContactEraseService, ContactNotFound
 from ..services.close_reason_service import CloseReasonInactive, CloseReasonNotFound
 from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
@@ -242,19 +247,19 @@ def list_threads(
     return ThreadListResponse(data=items, total=total)
 
 
-@router.get("/{contact_id}", response_model=ThreadItem)
+@router.get("/{contact_id}", response_model=ThreadDetailItem)
 def get_thread(
     contact_id: str,
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
-) -> ThreadItem:
+) -> ThreadDetailItem:
     # AC-CTM-22 (phase-2 fix): a per-record read, reused by the Contacts
     # module's detail page (`contact-service.real.ts get`) - `contacts.read`
     # alone must be enough, not just `conversations.read`.
     principal.require_read_or_contacts()
     enforce_thread_access(db, principal, contact_id)
     try:
-        return ConversationService(db).get_thread(contact_id, principal.tenant_id)
+        return ConversationService(db).get_thread_with_counts(contact_id, principal.tenant_id)
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -857,6 +862,25 @@ def react_to_message(
     except SendRejected as exc:
         raise HTTPException(status_code=422, detail=exc.message)
     return ReactionResult(**result)
+
+
+@router.delete("/{contact_id}", response_model=ContactEraseResponse)
+def erase_contact(
+    contact_id: str,
+    current_user: User = Depends(require_permission("contacts.erase")),
+    _module: User = Depends(require_module("omnichannel")),
+    db: Session = Depends(get_db),
+) -> ContactEraseResponse:
+    """Erase one contact for good (plan 56 C, PDPA). A native user spans the
+    tenant; another tenant's contact and an unknown id answer the same 404."""
+    try:
+        result = ContactEraseService(db).erase_in_tenant(current_user.tenant_id, contact_id)
+    except ContactNotFound:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return ContactEraseResponse(
+        contactId=result.contact_id, erasedAt=result.erased_at,
+        messages=result.messages, files=result.files,
+    )
 
 
 class NoteRequest(BaseModel):

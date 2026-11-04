@@ -116,6 +116,24 @@ def omnichannel_send_message(self, message_id: str, trace_id: Optional[str] = No
         db.close()
 
 
+@celery_app.task(
+    name="omnichannel.purge_erased_files",
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_backoff_max=3600,
+    retry_jitter=True,
+    max_retries=6,
+)
+def purge_erased_files(tenant_id: str, keys: list) -> int:
+    """Delete the stored files of an erased contact (plan 56 C). Keys were
+    collected before the rows went; a failed delete retries with backoff and
+    never touches the already-committed erase."""
+    from modules.omnichannel.services.contact_erase_service import purge_files
+
+    purge_files(tenant_id, list(keys))
+    return len(keys)
+
+
 @celery_app.task(name="omnichannel.check_channel_token")
 def check_channel_token_task(channel_id: str) -> Optional[str]:
     """One WhatsApp token health check (plan 42). Queued by the 6-hourly scan

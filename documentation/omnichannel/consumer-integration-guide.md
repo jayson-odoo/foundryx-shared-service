@@ -11,6 +11,8 @@
 > | Date | Change |
 > |----|----|
 > | **2026-11-05** | **Media fetch retry** (section 8). `GET /omnichannel/media/{messageId}` answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` when the file cannot be read from storage for a moment; fetch again after the wait. A missing file is still `404`. Other contract details are unchanged. |
+> | **2026-11-05** | **Provider message id** (sections 9.1 and 9.2): `externalMessageId` is `null`, never an empty string, when the channel accepted a send without returning an id. |
+> | **2026-11-04** | **Erase a contact** (sections 6a, 7, 10). New `DELETE /contacts/{identifier}` erases one contact of the key's workspace with its messages and files, and answers what was erased. New opt-in webhook event contact.erased tells your endpoints. A later message from the same number starts a new contact. |
 > | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
 > | **2026-11-04** | **Meta pricing per message** (sections 7, 9.1, 9.3). `message.status` data and the default `MessageItem` now carry `pricing` (`billable`, `pricingModel`, `category`, `type`), or `null` when Meta has not reported it; older messages answer `null`, as do inbound ones. `?format=rio` is unchanged. `GET /templates` already returns each template's `category`. |
 > | **2026-11-04** | **Meta rate-limit retry** (section 10, section 6a). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
@@ -533,6 +535,25 @@ Each channel is handled on its own, so one `failed` never blocks another channel
 
 When Meta rate limits a channel's read receipt, the route answers `429 meta_rate_limited` with a `Retry-After` header (§10) after it has still tried the other channels. The body is the error envelope, with no `receipts`. By then `unreadCount` is already `0`, and every other channel was tried: a receipt that went out answers `already_sent` on a repeat call, and the others answer as in the table. When several channels are throttled, `Retry-After` is the longest of their waits (30 seconds for a channel where Meta gave none). Call again after the wait to retry the throttled channel.
 
+### Erase a contact
+
+`DELETE /api/v1/omnichannel/contacts/{identifier}` erases one contact of your key's own workspace for good. `{identifier}` is `id:<contactId>`, `phone:<number>` or a bare contact id, as on the other contact routes. Any API key of the workspace may call it. It cannot be undone.
+
+```jsonc
+// 200
+{ "contactId": "…", "erasedAt": "2026-11-04T09:30:00Z", "messages": 14, "files": 4 }
+```
+
+`messages` counts the contact's messages (internal notes included) and `files` the stored files that were removed. A contact that does not exist in your workspace, a contact of another workspace, and a second call for a contact already erased all answer `404 contact_not_found`.
+
+What goes: the contact, its messages and internal notes, their reactions, the conversation history entries, channel identities, tags on the contact, parked workflow steps (their runs end cancelled), the contact's place in broadcast audiences and recipient lists, and the stored files. The ids in earlier webhook deliveries to your endpoints are kept, but their payloads are reduced to ids only. An idea that named the contact as its submitter stays and loses that link.
+
+Subscribe an endpoint to `contact.erased` (opt-in, like every event) to be told. One event per erase, sent once to each subscribed active endpoint that covers the workspace (endpoints for all channels) or one of the channels the contact had written on, with exactly two data fields: `contactId` and `erasedAt` (the same `erasedAt` as the response). The event holds no name, phone number or message.
+
+A message from the same phone number after the erase, or a `POST /messages` to `phone:<number>`, creates a new contact with a new id and no link to the erased one. If the contact came from a respond.io import or sync, the erase leaves a marker for its respond.io id: a later one-off import or sync pass that meets that id writes nothing for it, and other respond.io contacts import as usual.
+
+What an erase cannot reach: the chat on the customer's phone, media that Meta still holds on its side, copies your own systems keep (including copies you made from webhooks and reads), exports already downloaded, and core activity logs that mention the contact, which are purged after 30 days. Files uploaded before this feature for a voice note that was converted for sending may remain until storage is cleaned.
+
 
 ---
 
@@ -808,6 +829,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 | `message.outbound` | Foundryx sends a message on your channel (your API call, a workflow, an inbox agent or a broadcast). **Opt-in**: you receive nothing new unless you subscribe to it |
 | `message.status` | A message you sent changes state (SENT/DELIVERED/READ/FAILED). `SENT` fires when Meta accepts the send and `FAILED` fires on a synchronous send failure, as well as on the later delivery receipts |
 | `message.reaction` | A reaction is added/removed on a message |
+| `contact.erased` | A contact was erased with `DELETE /contacts/{identifier}`. **Opt-in** (§6a). `data` is `{ "contactId", "erasedAt" }` and nothing else |
 | `contact.updated` | A thread is assigned (to a user and/or a **team**) / status / priority changes, or its fields / tags / lifecycle stage change |
 
 ### The envelope
@@ -861,6 +883,11 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
   `pricing` is Meta's pricing for that message, taken from the delivery receipt: `billable` (true/false), `pricingModel` (for example `pmp`), `category` (for example `utility`, `marketing`) and `type` (for example `regular`, `free_customer_service`); any field Meta did not send is `null`. The key is always present. It is `null` until a receipt carries pricing (so on the `SENT` event, and on every message sent before this change), and once stored it is repeated on later events for the same message. Meta may send it on a receipt that arrives late; the stored value is updated without a new event. Sum `pricing` per message yourself for usage.
 
   `deliveryStatus` is one of `SENT`, `DELIVERED`, `READ`, `FAILED`. `SENT` is emitted when Meta accepts the send and `FAILED` on a synchronous failure (Meta rejection or a local failure such as a media transcode error), with `errorCode`/`errorMessage` filled for `FAILED` only (both are `null` on `SENT`, `DELIVERED` and `READ`). On `FAILED`, `errorCode` is the provider's own code when it gave one (for example a Meta error code) and `null` otherwise, such as a local media failure; `errorMessage` is at most 300 characters. A temporary failure that Foundryx retries is not reported as `FAILED` and carries no error text to you. Normally a send ends in one `SENT` or one `FAILED` on `message.status`. Delivery is at-least-once, so the same event can arrive more than once: dedupe on the event id (`{messageId}:{deliveryStatus}`). While a message is being retried, `GET` messages can show a generic error text and an `errorCode` on it. Ignore any `deliveryStatus` value you do not recognise rather than failing the delivery. Each status is its own event (`{messageId}:SENT`, `{messageId}:FAILED`, ...); a later Meta `sent` receipt for the same message adds no second `SENT`. **If you already subscribe to `message.status` you now also receive `SENT` and sender-side `FAILED` events.** Delivery order across events is not guaranteed (each event is delivered and retried independently), so a `DELIVERED` can arrive before the `SENT` for the same message: never move a stored status backward (rank `SENT` < `DELIVERED` < `READ`), and treat `FAILED` as a terminal outcome.
+* `**contact.erased**` - `id` = `{contactId}:erased`. Sent once per erase to every subscribed active endpoint for all channels of the workspace, and to the subscribed endpoints of the channels the contact had written on (each endpoint receives it once); the envelope `channelId` is `null`.
+
+  ```json
+  { "contactId":"b2ad5218-…", "erasedAt":"2026-11-04T09:30:00Z" }
+  ```
 * `**message.reaction**`
 
   ```json
@@ -1060,7 +1087,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "mediaUnavailable": false,    // true = a Messenger/Instagram inbound attachment whose CDN link expired before we could fetch it (plan 32 / A7a); the message still lands, there is just no blob - render a muted placeholder, not an error
   "payload": { … },             // structured def for interactive/location/contacts/template
   "reactions": [ { "emoji":"❤️", "reactorType":"CONTACT", "reactor":"+6012…" } ],
-  "externalMessageId": "wamid…",// Meta wamid
+  "externalMessageId": "wamid…",// Meta wamid; null until the send lands, or when the channel accepted the send without returning an id
   "deliveryStatus": "DELIVERED",// QUEUED|SENT|DELIVERED|READ|FAILED
   "errorCode": null,
   "errorMessage": null,
@@ -1116,7 +1143,7 @@ Returned by `GET /contacts/{identifier}/messages?format=rio` (inside `items[]`) 
 ```jsonc
 {
   "messageId": "099e061a-…",            // Foundryx durable id (use for reactions / correlation)
-  "channelMessageId": "wamid.HBg…",     // Meta's wamid, null until the send lands
+  "channelMessageId": "wamid.HBg…",     // Meta's wamid, null until the send lands, or when the channel accepted the send without returning an id
   "contactId": "fd5d6b58-…",
   "channelId": "31c4900f-…",
   "channelType": "WHATSAPP",            // WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT (plan 32 / A7a, plan 34 / A7b)
