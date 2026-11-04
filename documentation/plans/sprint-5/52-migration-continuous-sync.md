@@ -23,7 +23,7 @@ Card + owner answers: `ss-migration-sync-card.md`. Builds on plan 33 (respond.io
 | D13 | Contact count is a dry-run measurement: `sourceContactCount` comes from the latest dry run's `report.entities.contacts.fetched` until a tick walks the list; `estimatedFullSweepMinutes = ceil(n * 3 / rps / 60)` (rps from the connection, default 4) | owner gave no count; never measured from the sandbox |
 | D14 | No new permission: reads `omnichannel_migration.read`, writes `omnichannel_migration.manage` | no grant sweep needed |
 
-## 2. Data (module `app_omnichannel`, migration `0024_omni_migration_sync`)
+## 2. Data (module `app_omnichannel`, migration `0025_omni_migration_sync`)
 
 `migration_syncs`: `id`, `tenant_id` (idx), `workspace_id` (FK workspaces), `status`
 (`active|paused|stopping|stopped`), `paused_reason` (nullable), `interval_minutes` (15),

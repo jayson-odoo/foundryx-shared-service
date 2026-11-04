@@ -6,15 +6,15 @@ Both tables are new and start empty, so no backfill is needed. Idempotent
 guards (inspector checks), same style as `0018_omni_migration_uploads`.
 Revision id <= 32 chars.
 
-Revision ID: 0024_omni_migration_sync
-Revises: 0023_omni_webhook_all_channels
+Revision ID: 0025_omni_migration_sync
+Revises: 0024_omni_workflow_owner
 Create Date: 2026-11-04
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0024_omni_migration_sync"
-down_revision = "0023_omni_webhook_all_channels"
+revision = "0025_omni_migration_sync"
+down_revision = "0024_omni_workflow_owner"
 branch_labels = None
 depends_on = None
 

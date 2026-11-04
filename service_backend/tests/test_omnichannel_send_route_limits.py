@@ -93,6 +93,22 @@ def _default_graph(request):
     return httpx.Response(200, json={"messages": [{"id": "wamid.T1"}]}, request=request)
 
 
+def _stub_media_host_resolution(monkeypatch, address):
+    """Answer only the media host with `address`; every other name (and the port)
+    goes to the real resolver, so e.g. the realtime Redis client still resolves
+    localhost normally. `socket` is one global module: patching it patches all."""
+    import socket
+
+    real = socket.getaddrinfo
+
+    def resolve(host, port, *a, **k):
+        if host == MEDIA_HOST:
+            return [(2, 1, 6, "", (address, 0))]
+        return real(host, port, *a, **k)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+
+
 def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=None):
     """Fake every outbound call, for a sync or an async client. `rig.media_calls`
     counts fetches of the media host; `rig.graph_calls` lists the provider paths
@@ -127,10 +143,7 @@ def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", fake_async)
     # The URL guard resolves hostnames; answer with a public address, offline.
-    monkeypatch.setattr(
-        "app.services.url_guard.socket.getaddrinfo",
-        lambda host, port, *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))],
-    )
+    _stub_media_host_resolution(monkeypatch, "93.184.216.34")
     monkeypatch.setattr(settings, "meta_app_id", "test-app-id")
     monkeypatch.setattr(settings, "meta_app_secret", "test-app-secret")
     return rig
@@ -738,15 +751,25 @@ def test_ac_41_04_a_normal_declared_length_succeeds(client, session_factory, mon
     assert r.status_code == 202, r.text
 
 
+# ── the stub must not capture other names (the realtime Redis client resolves "localhost") ──
+def test_media_host_stub_leaves_other_names_to_the_real_resolver(monkeypatch):
+    import socket
+
+    _install(monkeypatch, media=_pdf_media)
+    assert socket.getaddrinfo(MEDIA_HOST, 443)[0][4][0] == "93.184.216.34"
+    local = socket.getaddrinfo("localhost", 6379, type=socket.SOCK_STREAM)
+    assert local, "localhost did not resolve"
+    for info in local:
+        assert info[4][0] in ("127.0.0.1", "::1"), info
+        assert info[4][1] == 6379, info
+
+
 # ── AC-41-05: the fetch's existing rules ─────────────────────────────────────
 def _refused(client, session_factory, monkeypatch, *, phone, url, resolve_to=None):
     headers, cid, _ch = _setup(client, session_factory, phone=phone)
     rig = _install(monkeypatch, media=_pdf_media)
     if resolve_to:
-        monkeypatch.setattr(
-            "app.services.url_guard.socket.getaddrinfo",
-            lambda host, port, *a, **k: [(2, 1, 6, "", (resolve_to, 0))],
-        )
+        _stub_media_host_resolution(monkeypatch, resolve_to)
     r = client.post("/api/v1/omnichannel/messages", json=_media_body(phone, url), headers=headers)
     return r, rig, _message_count(session_factory, cid)
 
@@ -1195,12 +1218,13 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
     phones, cids, keys = _gate_world(client, session_factory, contacts=8)
     phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=4, slug="gate-two")
     phones3, cids3, keys3 = _gate_world(client, session_factory, contacts=4, slug="gate-three")
-    release = threading.Semaphore(0)  # one permit lets one held fetch finish
+    gates = [threading.Event() for _ in range(16)]  # one gate per held fetch: each is released by itself
     started = []
 
     def hold():
+        i = len(started)
         started.append(1)
-        release.acquire(timeout=6)
+        gates[i].wait(timeout=6)
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
     hp = held_path == "header"
@@ -1236,12 +1260,12 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
                 )
                 out["extra_fetches"] = rig.media_calls - calls_when_full
                 out["held"] = []
-                for t in held:
-                    release.release()
+                for i, t in enumerate(held):
+                    gates[i].set()
                     out["held"].append(await t)
             finally:
-                for _ in range(len(held) + 2):
-                    release.release()
+                for g in gates:
+                    g.set()
             out["retry"] = await _post_media(ac, keys["c"], phones[2], header_path=hp, idem="retry-me")
         return out
 
@@ -1654,12 +1678,13 @@ def test_guard_ac_41_10_the_per_tenant_limit_alone_refuses_a_third_fetch(client,
 
     phones, cids, keys = _gate_world(client, session_factory, contacts=6)
     phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=2, slug="gate-guard")
-    release = threading.Semaphore(0)
+    gates = [threading.Event() for _ in range(16)]
     started = []
 
     def hold():
+        i = len(started)
         started.append(1)
-        release.acquire(timeout=6)
+        gates[i].wait(timeout=6)
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
 
@@ -1676,12 +1701,12 @@ def test_guard_ac_41_10_the_per_tenant_limit_alone_refuses_a_third_fetch(client,
                 held.append(asyncio.create_task(_post_media(ac, keys2["a"], phones2[0])))
                 assert await _wait_for(lambda: len(started) >= 3), "another tenant was refused"
                 out["held"] = []
-                for t in held:
-                    release.release()
+                for i, t in enumerate(held):
+                    gates[i].set()
                     out["held"].append(await t)
             finally:
-                for _ in range(len(held)):
-                    release.release()
+                for g in gates:
+                    g.set()
         return out
 
     out = asyncio.run(scenario())
@@ -1729,13 +1754,14 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
     phones, cids, keys = _gate_world(client, session_factory, contacts=4)
     phones2, cids2, keys2 = _gate_world(client, session_factory, contacts=4, slug="gate-lookup-two")
     phones3, cids3, keys3 = _gate_world(client, session_factory, contacts=2, slug="gate-lookup-three")
-    release = threading.Semaphore(0)
+    gates = [threading.Event() for _ in range(8)]  # one gate per held send: each is released by itself
     in_lookup = []
     rig = _install(monkeypatch, media=_pdf_media)
 
     def slow_lookup(url, **kwargs):
+        i = len(in_lookup)
         in_lookup.append(url)
-        release.acquire(timeout=6)
+        gates[i].wait(timeout=6)
         return url
 
     monkeypatch.setattr(webhook_service, "validate_callback_url", slow_lookup)
@@ -1757,12 +1783,12 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
                 out["lookups_started"] = len(in_lookup)
                 if "queued_into_lookup" not in out:
                     out["held"] = []
-                    for t in held:  # one at a time: the test database is one shared connection
-                        release.release()
+                    for i, t in enumerate(held):  # one at a time: the test database is one shared connection
+                        gates[i].set()
                         out["held"].append(await t)
             finally:
-                for _ in range(12):
-                    release.release()
+                for g in gates:
+                    g.set()
         return out
 
     out = asyncio.run(scenario())
@@ -1775,7 +1801,7 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
     assert _message_count(session_factory, cids3[phones3[0]]) == 0
 
 
-def _hold_storage_writes(monkeypatch, *, release=None, on_save=None):
+def _hold_storage_writes(monkeypatch, *, gates=None, on_save=None):
     """Wrap the storage object `storage_for_tenant` returns so `save` can be
     observed and held; everything else passes straight through."""
     import app.services.storage as storage
@@ -1788,11 +1814,12 @@ def _hold_storage_writes(monkeypatch, *, release=None, on_save=None):
             self._inner = inner
 
         def save(self, *args, **kwargs):
+            i = len(calls)
             calls.append(1)
             if on_save:
                 on_save()
-            if release is not None:
-                release.acquire(timeout=6)
+            if gates is not None:
+                gates[i].wait(timeout=6)
             return self._inner.save(*args, **kwargs)
 
         def __getattr__(self, name):
@@ -1807,9 +1834,9 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
     import threading
 
     phones, cids, keys = _gate_world(client, session_factory, contacts=6)
-    release = threading.Semaphore(0)
+    gates = [threading.Event() for _ in range(16)]
     _install(monkeypatch, media=_pdf_media)
-    saves = _hold_storage_writes(monkeypatch, release=release)
+    saves = _hold_storage_writes(monkeypatch, gates=gates)
     hp = path == "header"
 
     async def scenario():
@@ -1824,12 +1851,12 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
                 out["while_storing"] = await _post_media(ac, keys["c"], phones[2], header_path=hp)
                 out["busy_secs"] = time.monotonic() - t0
                 out["held"] = []
-                for t in held:
-                    release.release()
+                for i, t in enumerate(held):
+                    gates[i].set()
                     out["held"].append(await t)
             finally:
-                for _ in range(8):
-                    release.release()
+                for g in gates:
+                    g.set()
             out["after_store"] = await _post_media(ac, keys["c"], phones[2], header_path=hp)
         return out
 
