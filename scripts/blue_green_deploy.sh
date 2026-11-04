@@ -96,6 +96,7 @@ if [ "${DEPLOY_FORCE:-0}" != "1" ] && [ -n "${DEPLOY_NEWER_SHAS:-}" ]; then
     for newer in $DEPLOY_NEWER_SHAS; do
       if [ "$newer" = "$running_sha" ]; then
         echo "skip: ${IMAGE_TAG} is older than the running ${running_sha}; newer deploy owns prod"
+        echo "DEPLOY_SKIPPED_STALE_SHA"   # exact marker the CI step greps for
         exit 0
       fi
     done

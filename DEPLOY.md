@@ -313,6 +313,9 @@ commit and run the workflow by hand (Actions, "Run workflow", pick that ref,
 tick **force_sha**), or on the server run
 `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh` (no `DEPLOY_NEWER_SHAS`
 set = no in-lock skip).
+Caveat: a re-run or dispatch of a commit from BEFORE the stale-sha guard
+landed uses that commit's own workflow and script, so it has no guard and
+no `force_sha` input and deploys unconditionally (the old behaviour).
 
 Schema direction on a rollback (no downgrade is ever run automatically):
 
@@ -452,6 +455,13 @@ waited for a lock on the same table.
   `workflow_dispatch` input **force_sha** (default off) bypasses both checks
   (`DEPLOY_FORCE=1` on the host) to deploy the dispatched ref's sha on
   purpose. The queue and the host flock are unchanged.
+  Trade-off (accepted): the pre-check skips whenever the sha is not main's
+  head *at that moment*, even if the head's own run has not deployed yet. If
+  that head run then fails or is cancelled, nothing newer than the previous
+  deploy reaches prod: fix forward (a green head deploys) or dispatch the
+  wanted ref with `force_sha`. The CI step detects an in-lock skip by the
+  exact marker line `DEPLOY_SKIPPED_STALE_SHA`, and a failed ssh deploy still
+  fails the step (`set -eo pipefail`) so the retry fires.
 
 ### Module schema drift guard (last line of defence)
 

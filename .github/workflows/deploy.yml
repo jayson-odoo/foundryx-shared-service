@@ -416,7 +416,9 @@ jobs:
           retry_wait_seconds: 15
           shell: bash
           command: |
-            set -o pipefail
+            # -e + pipefail: the retry action runs `bash -c` without -e, so a
+            # failed ssh deploy must stop here (non-zero = retry / red step).
+            set -eo pipefail
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
             O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
@@ -425,9 +427,9 @@ jobs:
             # shas only, from git). The host skips if the RUNNING backend is one
             # of them - i.e. a newer deploy won the race after the pre-check.
             git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main || true
-            NEWER=$(git rev-list --max-count=200 "${{ github.sha }}..refs/remotes/origin/main" 2>/dev/null | tr '\n' ' ' || true)
+            NEWER=$(git rev-list "${{ github.sha }}..refs/remotes/origin/main" 2>/dev/null | tr '\n' ' ' || true)
             ssh $O -p "$P" "$U@$H" "cd $D && chmod +x scripts/blue_green_deploy.sh && DEPLOY_NEWER_SHAS='$NEWER' DEPLOY_FORCE='${{ (github.event_name == 'workflow_dispatch' && inputs.force_sha) && '1' || '0' }}' IMAGE_TAG='${{ github.sha }}' APP_DOMAIN='$APP_DOMAIN' BACKEND_PATH='$BACKEND_PATH' TLS_EMAIL='$TLS_EMAIL' CADDY_SITE_FILE='$CADDY_SITE_FILE' CADDY_CONFIG='$CADDY_CONFIG' ./scripts/blue_green_deploy.sh" | tee "$RUNNER_TEMP/deploy.out"
-            if grep -q '^skip: ' "$RUNNER_TEMP/deploy.out"; then echo "DEPLOY_SKIPPED=1" >> "$GITHUB_ENV"; fi
+            if grep -qx 'DEPLOY_SKIPPED_STALE_SHA' "$RUNNER_TEMP/deploy.out"; then echo "DEPLOY_SKIPPED=1" >> "$GITHUB_ENV"; fi
 
       - name: Verify public endpoints (retry)
         if: steps.head.outputs.skip != 'true' && env.DEPLOY_SKIPPED != '1'

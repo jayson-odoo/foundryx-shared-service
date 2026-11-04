@@ -111,6 +111,13 @@ def test_the_deploy_step_passes_the_newer_list_and_force_to_the_host(wf):
     assert "git rev-list" in cmd and "origin/main" in cmd
     assert "DEPLOY_NEWER_SHAS=" in cmd
     assert "DEPLOY_FORCE=" in cmd
+    # The retry action runs `bash -c` WITHOUT -e: a failed ssh deploy must
+    # still fail the step (and retry), not be masked by the skip grep after it.
+    assert "set -eo pipefail" in cmd
+    assert cmd.index("set -eo pipefail") < cmd.index("blue_green_deploy.sh")
+    assert deploy["with"]["shell"] == "bash"
+    assert "grep -qx 'DEPLOY_SKIPPED_STALE_SHA'" in cmd
+    assert "--max-count" not in cmd  # a cap could drop the running sha from the list
     verify = next(s for s in steps if s.get("name", "").startswith("Verify public endpoints"))
     assert "env.DEPLOY_SKIPPED != '1'" in verify["if"]
 
@@ -124,6 +131,7 @@ def test_inside_the_lock_a_newer_running_sha_skips_the_deploy(tmp_path):
     out = result.stdout + result.stderr
     assert result.returncode == 0, out
     assert f"skip: {OLD} is older than the running {HEAD}; newer deploy owns prod" in out
+    assert "DEPLOY_SKIPPED_STALE_SHA" in result.stdout.splitlines()
     assert "pull" not in calls and "up -d" not in calls and "sudo" not in calls
     assert active is None  # .active_color untouched
 
@@ -134,9 +142,11 @@ def test_inside_the_lock_the_check_runs_after_the_flock(tmp_path):
 
 
 def test_inside_the_lock_an_older_or_same_running_sha_deploys(tmp_path):
-    # running = the sha being redeployed (a retry) -> not newer -> deploy
+    # running = the sha being redeployed (a retry) -> not newer -> deploy,
+    # even with a non-empty list (the list never names IMAGE_TAG itself, but
+    # a same-sha redeploy must not skip regardless)
     result, calls, active = _run(
-        tmp_path, IMAGE_TAG=HEAD, FAKE_RUNNING_SHA=HEAD, DEPLOY_NEWER_SHAS=""
+        tmp_path, IMAGE_TAG=HEAD, FAKE_RUNNING_SHA=HEAD, DEPLOY_NEWER_SHAS=f"{HEAD} {OLD}"
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert active == "green"
@@ -155,6 +165,16 @@ def test_inside_the_lock_force_deploys_over_a_newer_running_sha(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert active == "green"
     assert "skip:" not in result.stdout
+    assert "DEPLOY_SKIPPED_STALE_SHA" not in result.stdout
+
+
+def test_a_failed_deploy_never_prints_the_skip_marker(tmp_path):
+    result, calls, active = _run(
+        tmp_path, IMAGE_TAG=OLD, FAKE_RUNNING_SHA="", DEPLOY_NEWER_SHAS=HEAD,
+        FAKE_BACKEND_HEALTH="starting", FAKE_BACKEND_STATUS="exited",
+    )
+    assert result.returncode != 0
+    assert "DEPLOY_SKIPPED_STALE_SHA" not in result.stdout
 
 
 def test_a_partial_sha_in_the_list_never_matches_by_prefix(tmp_path):
