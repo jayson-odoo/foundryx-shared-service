@@ -52,8 +52,8 @@ def upgrade() -> None:
             sa.UniqueConstraint("tenant_id", "workspace_id", name="uq_migration_syncs_workspace"),
             schema=SCHEMA,
         )
-        op.create_index("ix_omni_migration_syncs_tenant", "migration_syncs", ["tenant_id"], schema=SCHEMA)
-        op.create_index("ix_omni_migration_syncs_next", "migration_syncs", ["next_sync_at"], schema=SCHEMA)
+        op.create_index("ix_migration_syncs_tenant_id", "migration_syncs", ["tenant_id"], schema=SCHEMA)
+        op.create_index("ix_migration_syncs_next_sync_at", "migration_syncs", ["next_sync_at"], schema=SCHEMA)
 
     if "migration_sync_hints" not in tables:
         op.create_table(
@@ -69,14 +69,14 @@ def upgrade() -> None:
             sa.UniqueConstraint("sync_id", "external_contact_id", name="uq_migration_sync_hints_contact"),
             schema=SCHEMA,
         )
-        op.create_index("ix_omni_migration_sync_hints_tenant", "migration_sync_hints", ["tenant_id"], schema=SCHEMA)
-        op.create_index("ix_omni_migration_sync_hints_sync", "migration_sync_hints", ["sync_id"], schema=SCHEMA)
+        op.create_index("ix_migration_sync_hints_tenant_id", "migration_sync_hints", ["tenant_id"], schema=SCHEMA)
+        op.create_index("ix_migration_sync_hints_sync_id", "migration_sync_hints", ["sync_id"], schema=SCHEMA)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_omni_migration_sync_hints_sync", table_name="migration_sync_hints", schema=SCHEMA)
-    op.drop_index("ix_omni_migration_sync_hints_tenant", table_name="migration_sync_hints", schema=SCHEMA)
+    op.drop_index("ix_migration_sync_hints_sync_id", table_name="migration_sync_hints", schema=SCHEMA)
+    op.drop_index("ix_migration_sync_hints_tenant_id", table_name="migration_sync_hints", schema=SCHEMA)
     op.drop_table("migration_sync_hints", schema=SCHEMA)
-    op.drop_index("ix_omni_migration_syncs_next", table_name="migration_syncs", schema=SCHEMA)
-    op.drop_index("ix_omni_migration_syncs_tenant", table_name="migration_syncs", schema=SCHEMA)
+    op.drop_index("ix_migration_syncs_next_sync_at", table_name="migration_syncs", schema=SCHEMA)
+    op.drop_index("ix_migration_syncs_tenant_id", table_name="migration_syncs", schema=SCHEMA)
     op.drop_table("migration_syncs", schema=SCHEMA)

@@ -350,8 +350,10 @@ class MigrationSyncService:
         )
         self.db.commit()
         # One final tick. When a tick is running right now the claim fails and
-        # that tick (or the next sweep) enqueues the final one when it ends.
-        _enqueue_tick(self.db, tenant_id, sync_id, KIND_FINAL)
+        # that tick (or the next sweep) enqueues the final one when it ends;
+        # while a migration job runs on the workspace the sweep waits for it.
+        if not _workspace_busy(self.db, tenant_id, sync.workspace_id):
+            _enqueue_tick(self.db, tenant_id, sync_id, KIND_FINAL)
         return self.get(tenant_id, sync_id)
 
     # -- webhook ----------------------------------------------------------------
@@ -590,6 +592,7 @@ class _Tick:
         self.jobs = JobService(db)
         self.refs = MigrationRefRepository(db)
         self.auth_rejected = False
+        self.rate_limited = False
         self.tick_error: Optional[str] = None
         self.paused_reason: Optional[str] = None
         self.failures: List[dict] = []
@@ -644,6 +647,7 @@ class _Tick:
             self.jobs.finish(self.job, status=JOB_DONE, result={"skipped": sync.status})
             return
 
+        self._beat()
         try:
             self._sync_phase()
         except _AuthRejected:
@@ -766,7 +770,8 @@ class _Tick:
                 self._hinted(contact_id)
                 self.processed_hints[contact_id] = hint_stamp[contact_id]
                 self._checkpoint()
-            if sweep_due and self.walk_complete:
+            # a sweep that hit rate limits skipped contacts: not complete
+            if sweep_due and self.walk_complete and not self.rate_limited:
                 self.sweep_completed_at = _now()
         finally:
             if self.processed_hints:
@@ -784,6 +789,8 @@ class _Tick:
             except RespondIoError as exc:
                 if exc.status_code in (401, 403):
                     self.auth_rejected = True
+                elif exc.status_code == 429:
+                    self.rate_limited = True
                 raise
 
         client._request = watched  # type: ignore[method-assign]
@@ -815,13 +822,25 @@ class _Tick:
         )
 
     def _checkpoint(self) -> None:
-        """After each contact: surface an auth rejection, honour pause/stop."""
+        """After each contact: beat, surface an auth rejection, honour pause/stop."""
+        self._beat()
         if self.auth_rejected:
             raise _AuthRejected()
         if self.kind != KIND_FINAL:
             status = self.repo.fresh_status(self.tenant_id, self.sync_id)
             if status != STATUS_ACTIVE:
                 raise _Interrupted()
+
+    def _beat(self) -> None:
+        """Liveness (fix/job-lease-orphan-sweep): a tick whose worker died is
+        failed by the orphan sweep, which lets `_reconcile_running` clear it."""
+        try:
+            alive = self.jobs.heartbeat(self.job.id)
+        except Exception:  # noqa: BLE001 - best effort, never fails the tick
+            logger.warning("sync %s: heartbeat failed", self.sync_id, exc_info=True)
+            return
+        if not alive and self.jobs.fresh_status(self.job.id) != JOB_RUNNING:
+            raise _Interrupted()  # orphan-swept under us: stop writing
 
     # -- one contact ------------------------------------------------------------
 
@@ -942,8 +961,18 @@ class _Tick:
 
         if self.auth_rejected:
             self.tick_error = "respond.io rejected the access token."
+        paused_now = False
         if reason is not None and self.kind != KIND_FINAL:
-            cols.update(status=STATUS_PAUSED, paused_reason=reason, last_error=self.tick_error)
+            # Only an ACTIVE sync pauses: a Stop (stopping) or a manual pause
+            # that landed mid-tick is never overwritten.
+            paused_now = bool(
+                self.repo.update_if(
+                    self.tenant_id, self.sync_id, [MigrationSync.status == STATUS_ACTIVE],
+                    status=STATUS_PAUSED, paused_reason=reason, last_error=self.tick_error,
+                )
+            )
+            if not paused_now:
+                cols["last_error"] = self.tick_error
         else:
             cols["last_error"] = self.tick_error
             if not self.auth_rejected and reason is None:
@@ -962,10 +991,11 @@ class _Tick:
         if self.kind == KIND_FINAL:
             cols.update(status=STATUS_STOPPED, stopped_at=now, next_sync_at=None, paused_reason=None)
 
-        self.repo.update(self.tenant_id, self.sync_id, **cols)
+        if cols:
+            self.repo.update(self.tenant_id, self.sync_id, **cols)
         self.db.commit()
 
-        if reason == PAUSE_TOKEN_REJECTED and self.kind != KIND_FINAL:
+        if paused_now and reason == PAUSE_TOKEN_REJECTED:
             self._email_creator()
 
         job_result = {"syncId": self.sync_id, "kind": self.kind, "result": result}
@@ -1025,6 +1055,18 @@ def run_sync_job(db: Session, job: BackgroundJob) -> None:
         _Tick(db, job, sync, kind).run()
     except BaseException:
         db.rollback()
+        if kind != KIND_FINAL:
+            # A crash that is not a respond.io error must not become a 60 s
+            # retry loop: back off by one interval, keep the reason fixed text.
+            try:
+                repo.update(
+                    tenant_id, sync_id,
+                    next_sync_at=_now() + timedelta(minutes=sync.interval_minutes),
+                    last_error="The sync stopped unexpectedly and will try again.",
+                )
+                db.commit()
+            except Exception:  # noqa: BLE001 - best effort
+                db.rollback()
         _release(db, tenant_id, sync_id, job.id)
         raise
     _release(db, tenant_id, sync_id, job.id)
@@ -1034,6 +1076,7 @@ def run_sync_job(db: Session, job: BackgroundJob) -> None:
 
 SYNC_JOB_HANDLER_DEF = JobHandlerDef(
     SYNC_JOB_TYPE, run_sync_job, "respond.io continuous sync", read_permission="omnichannel_migration.read",
+    heartbeats=True,
 )
 
 
