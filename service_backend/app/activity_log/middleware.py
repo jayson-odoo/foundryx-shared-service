@@ -67,6 +67,20 @@ _GATEWAY_PREFIX = "/api/v1/omnichannel"
 # Max bytes buffered per body - beyond this the copy stops + the summary marks
 # {"truncated": true}. A body is NEVER buffered unbounded.
 _BODY_CAP = 16 * 1024
+_ERASED_SEGMENT = "phone:<erased>"
+
+
+def _masked_path(method: str, path: str) -> str:
+    """The erase call (DELETE /contacts/phone:...) logs no phone number: the
+    identifier segment becomes ``phone:<erased>``. Anything else is unchanged."""
+    rest = path[len(_GATEWAY_PREFIX):] if path.startswith(_GATEWAY_PREFIX) else None
+    if method != "DELETE" or rest is None or not rest.startswith("/contacts/"):
+        return path
+    segment = rest[len("/contacts/"):]
+    # strip() mirrors the identifier resolver (public_gateway_service.py, `(identifier or "").strip()`).
+    if "/" in segment or not segment.strip().lower().startswith("phone:"):
+        return path
+    return f"{_GATEWAY_PREFIX}/contacts/{_ERASED_SEGMENT}"
 
 
 def _open_session(request: Request):
@@ -292,11 +306,11 @@ class GatewayActivityMiddleware:
         if tenant_id is None:
             return
 
-        path = request.url.path
+        path = _masked_path(request.method, request.url.path)
         operation = f"{request.method} {path[len(_GATEWAY_PREFIX):] or '/'}"
         status = ACTIVITY_SUCCESS if status_code < 400 else ACTIVITY_ERROR
 
-        req_summary = _request_summary(request, req_tee, req_ct)
+        req_summary = _request_summary(request, req_tee, req_ct, path)
         resp_summary = _response_summary(resp, resp_tee)
 
         db, close = _open_session(request)
@@ -322,12 +336,14 @@ class GatewayActivityMiddleware:
             close()
 
 
-def _request_summary(request: Request, tee: _BodyTee, content_type: Optional[str]) -> dict:
+def _request_summary(
+    request: Request, tee: _BodyTee, content_type: Optional[str], path: str
+) -> dict:
     """Metadata (headers redacted downstream) + the teed body (JSON parsed, or a
     size note for multipart/binary, or a truncation marker). The body is captured
     without consuming the stream (the handler already read the real bytes)."""
     summary: dict[str, Any] = {
-        "path": request.url.path,
+        "path": path,
         "method": request.method,
         "query": dict(request.query_params),
         "headers": dict(request.headers),

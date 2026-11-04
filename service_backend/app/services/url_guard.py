@@ -28,6 +28,9 @@ from urllib.parse import urlparse
 import anyio
 import httpcore
 import httpx
+from anyio._core._eventloop import get_async_backend
+from httpcore._backends.anyio import AnyIOStream
+from httpcore._exceptions import map_exceptions
 
 
 class UrlGuardError(Exception):
@@ -215,7 +218,7 @@ def _checked_addresses(host: str, infos: typing.Iterable[tuple], subject: str) -
         if addr not in addresses:
             addresses.append(addr)
     if not addresses:
-        raise httpcore.ConnectError(f"No usable address for {host}")
+        raise httpcore.ConnectError("No usable address.")
     return addresses
 
 
@@ -311,6 +314,35 @@ class _GuardedSyncBackend(httpcore.SyncBackend):
         return self._deadline - time.monotonic()
 
 
+class _ClosingStream(httpcore.AsyncNetworkStream):
+    """Closes the raw connection when a TLS handshake is cancelled: httpcore
+    only closes it on an ``Exception``, and a cancelled handshake (a deadline)
+    would otherwise leave the socket open until it is garbage collected."""
+
+    def __init__(self, inner: httpcore.AsyncNetworkStream) -> None:
+        self._inner = inner
+
+    async def read(self, max_bytes, timeout=None):
+        return await self._inner.read(max_bytes, timeout)
+
+    async def write(self, buffer, timeout=None):
+        await self._inner.write(buffer, timeout)
+
+    async def aclose(self):
+        await self._inner.aclose()
+
+    async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+        try:
+            return await self._inner.start_tls(ssl_context, server_hostname, timeout)
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await self._inner.aclose()
+            raise
+
+    def get_extra_info(self, info):
+        return self._inner.get_extra_info(info)
+
+
 class _GuardedAsyncBackend(httpcore.AnyIOBackend):
     def __init__(self, subject: str, exempt_host: HostExemption) -> None:
         super().__init__()
@@ -332,7 +364,8 @@ class _GuardedAsyncBackend(httpcore.AnyIOBackend):
                     except (OSError, UnicodeError) as exc:
                         raise httpcore.ConnectError(str(exc)) from exc
                     addresses = _checked_addresses(host, infos, self._subject)
-                return await self._connect_any(addresses, port, timeout, local_address, socket_options)
+                stream = await self._connect_any(addresses, port, timeout, local_address, socket_options)
+                return _ClosingStream(stream)
         except TimeoutError as exc:
             raise httpcore.ConnectTimeout(str(exc)) from exc
 
@@ -340,33 +373,51 @@ class _GuardedAsyncBackend(httpcore.AnyIOBackend):
         """Start an attempt per checked address (the next one at once when the
         previous failed, otherwise after a short delay); the first connection
         wins and the rest are cancelled."""
-        connect_one = super().connect_tcp
         winner: typing.List[typing.Any] = []
+        opened: typing.List[typing.Any] = []  # every stream made; this method owns them all
         errors: typing.List[Exception] = []
+        exc_map = {
+            TimeoutError: httpcore.ConnectTimeout,
+            OSError: httpcore.ConnectError,
+            anyio.BrokenResourceError: httpcore.ConnectError,
+        }
 
         async def attempt(address: str, done: anyio.Event) -> None:
             try:
-                stream = await connect_one(address, port, timeout, local_address, socket_options)
+                with map_exceptions(exc_map):
+                    with anyio.fail_after(timeout):
+                        raw = await get_async_backend().connect_tcp(address, port, local_address)
+                        stream = AnyIOStream(raw)
+                        opened.append(stream)  # owned from here, before any checkpoint
+                        for option in socket_options or []:
+                            raw._raw_socket.setsockopt(*option)  # type: ignore[attr-defined]
             except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
                 errors.append(exc)
                 return
             finally:
                 done.set()
             if winner:
-                await stream.aclose()
-                return
+                return  # closed with the other unreturned streams
             winner.append(stream)
             group.cancel_scope.cancel()
 
-        async with anyio.create_task_group() as group:
-            for address in addresses:
-                done = anyio.Event()
-                group.start_soon(attempt, address, done)
-                with anyio.move_on_after(_CONNECT_ATTEMPT_DELAY):
-                    await done.wait()
-        if winner:
-            return winner[0]
-        raise errors[-1]
+        returned = False
+        try:
+            async with anyio.create_task_group() as group:
+                for address in addresses:
+                    done = anyio.Event()
+                    group.start_soon(attempt, address, done)
+                    with anyio.move_on_after(_CONNECT_ATTEMPT_DELAY):
+                        await done.wait()
+            if winner:
+                returned = True
+                return winner[0]
+            raise errors[-1]
+        finally:
+            with anyio.CancelScope(shield=True):
+                for stream in opened:
+                    if not (returned and stream is winner[0]):
+                        await stream.aclose()
 
 
 def _default_limits() -> httpx.Limits:
