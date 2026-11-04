@@ -162,12 +162,12 @@ claimed here; renumber if another lane lands one first. Sorento consumption = a 
 ### 5.6 Gateway (`routers/pull_v1.py`, X-API-Key `write_back` scope)
 
 `POST /documents/{kind}` create, `PATCH /documents/{kind}/{docKey}` edit, `POST
-/documents/{kind}/{docKey}/lines` add line, `DELETE /documents/{kind}/{docKey}/lines/{dtlKey}` delete
+/documents/{kind}/{docKey}/lines` add line, `POST /documents/{kind}/{docKey}/lines/{dtlKey}/delete` delete
 line, `POST /documents/{kind}/{docKey}/cancel` cancel (`kind` in `quotations`, `sales-orders`,
 `purchase-orders`, `shipping-purchase-orders`); `POST /po-links/relink`, `POST /spo-links`,
 `POST /spo-links/relink`; existing `/po-links`, `/po-links/unlink`, `/spo-links/unlink` run the
-operations; `GET /write-operations/{id}`, `POST /write-operations/{id}/resume`. No delete-document
-route. Contract doc `57-autocount-write-qtso-contract.md` (guide-writer after review).
+operations; `GET /write-operations/{id}`, `POST /write-operations/{id}/resume`, proposed `GET /write-capabilities`
+(alignment point ii); `Idempotency-Key` header. No delete-document route. Contract doc `57-autocount-write-qtso-contract.md` (guide-writer after review).
 
 ### 5.7 Fake vendor and runner
 
