@@ -229,7 +229,8 @@ def _meta_error_detail(resp: "httpx.Response") -> str:
     err = _meta_error_obj(resp)
     parts = []
     for key in ("error_user_title", "error_user_msg"):
-        val = _meta_error_text(resp, key).strip()
+        raw = err.get(key)
+        val = raw.strip() if isinstance(raw, str) else ""
         if val and val not in parts:
             parts.append(val)
     data = err.get("error_data")
@@ -238,7 +239,8 @@ def _meta_error_detail(resp: "httpx.Response") -> str:
     if details and details not in parts:
         parts.append(details)
     if not parts:
-        msg = _meta_error_text(resp).strip()
+        raw = err.get("message")
+        msg = raw.strip() if isinstance(raw, str) else ""
         parts.append(msg or f"Meta returned {resp.status_code}.")
     return " - ".join(parts)
 

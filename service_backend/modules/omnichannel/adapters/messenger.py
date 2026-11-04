@@ -226,7 +226,7 @@ class MessengerAdapter(MetaGraphMixin):
             logger.warning(
                 "Messenger code exchange failed (redirect_uri=%r): %s", redirect_uri, err
             )
-            raise CodeExchangeError(detail or "Code exchange failed.")
+            raise CodeExchangeError(detail)
         finally:
             if self._client is None:
                 client.close()
