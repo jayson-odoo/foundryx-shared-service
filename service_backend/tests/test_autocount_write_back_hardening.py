@@ -62,6 +62,7 @@ from tests.write_back_host_pin import (  # noqa: F401
     pin_test_write_host,
 )
 from tests.write_back_caps import vendor_caps_all_on  # noqa: F401
+from tests.write_back_live_books import live_books_open  # noqa: F401
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -675,13 +676,17 @@ def test_h12_refuses_unknown_connection_id(h):
     _unchanged(h, company)
 
 
-# ---- H13 AC-55-41: no relink route -----------------------------------------------------------
+# ---- H13 (retired by plan 57): the relink route now EXISTS ---------------------------------------
 
-def test_h13_relink_route_does_not_exist(client, db):
+def test_h13_relink_route_exists_needs_the_write_back_scope_and_an_idempotency_key(client, db):
     company = gw_company(db)
+    relink = {"companyCode": "SRT", "poDocKey": 1, "poDtlKey": 2, "soDocKey": 3, "soDtlKey": 4}
+    _row, pull_only = _key(db, [company.id])  # default scope: pull
+    r = client.post(f"{PREFIX}/po-links/relink", json=relink, headers={**_hdr(pull_only), "Idempotency-Key": "k"})
+    assert r.status_code == 403 and "SCOPE_REQUIRED" in r.text
     _row, plain = _key(db, [company.id], scopes=["pull", "write_back"])
-    r = client.post(f"{PREFIX}/po-links/relink", json=LINK_BODY, headers=_hdr(plain))
-    assert r.status_code in (404, 405)
+    r = client.post(f"{PREFIX}/po-links/relink", json=relink, headers=_hdr(plain))
+    assert r.status_code == 422 and "IDEMPOTENCY_KEY_REQUIRED" in r.text  # exists (not 404 / 405)
 
 
 # ======================================================================================
@@ -797,7 +802,7 @@ def _add_old_so(h, location, created_at):
     return twin
 
 
-def test_relocate_lookup_uses_the_newest_staged_so_record(vh):
+def test_relocate_lookup_uses_the_newest_staged_so_record(vh, live_books_open):
     h = vh
     dtl = _stranded(h)
     now = datetime.now(timezone.utc)
@@ -813,7 +818,7 @@ def test_relocate_lookup_uses_the_newest_staged_so_record(vh):
     assert h.ac.put_bodies[0]["Details"][0]["Location"] == "BRW-NEW"
 
 
-def test_relocate_lookup_refuses_two_equally_new_conflicting_records(vh):
+def test_relocate_lookup_refuses_two_equally_new_conflicting_records(vh, live_books_open):
     h = vh
     dtl = _stranded(h)
     same = datetime.now(timezone.utc)
@@ -872,12 +877,14 @@ def test_malformed_base_url_through_the_gateway_is_403_with_a_recorded_code(
 
 # ---- nit 1: capabilities are read-only ------------------------------------------------------------
 
+@pytest.mark.skipif(not hasattr(_caps, "VENDOR_CAPABILITIES"), reason="plan 57 retired the legacy flags")
 def test_capabilities_mapping_is_read_only():
     assert isinstance(_caps.VENDOR_CAPABILITIES, MappingProxyType)
     with pytest.raises(TypeError):
         _caps.VENDOR_CAPABILITIES["unlink"] = True  # type: ignore[index]
 
 
+@pytest.mark.skipif(not hasattr(_caps, "VENDOR_CAPABILITIES"), reason="plan 57 retired the legacy flags")
 def test_all_on_fixture_swaps_the_whole_attribute(vendor_caps_all_on):
     assert isinstance(_caps.VENDOR_CAPABILITIES, MappingProxyType)
     assert all(_caps.VENDOR_CAPABILITIES.values())

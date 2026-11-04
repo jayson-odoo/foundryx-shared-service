@@ -18,10 +18,18 @@ def vendor_caps_all_on(monkeypatch):
     except ImportError:
         yield
         return
-    monkeypatch.setattr(
-        capabilities,
-        "VENDOR_CAPABILITIES",
-        MappingProxyType({key: True for key in capabilities.VENDOR_CAPABILITIES}),
-        raising=True,
-    )
+    # Plan 57: the plan 55 flags (link_existing_row / unlink / spo_unlink) retire; the
+    # per kind table replaces them. Flip whichever of the two exists.
+    legacy = getattr(capabilities, "VENDOR_CAPABILITIES", None)
+    if legacy is not None:
+        monkeypatch.setattr(
+            capabilities, "VENDOR_CAPABILITIES",
+            MappingProxyType({key: True for key in legacy}), raising=True,
+        )
+    table = getattr(capabilities, "CAPABILITIES", None)
+    if table is not None:
+        monkeypatch.setattr(
+            capabilities, "CAPABILITIES",
+            MappingProxyType({key: True for key in table}), raising=True,
+        )
     yield

@@ -70,3 +70,66 @@ Every observation below is from read-only GETs on 4 Nov 2026; doc numbers refer 
     500 SQL error 8178 until `CurrencyCode` / `CurrencyRate` were added, then 200 "Created Successful"
     but the document read back with no rows (our probe FXT-PROBE-1, DocKey 12023, left in place; we never delete in AutoCount).
     Which header and row fields are required, and can a POST that drops rows return an error instead?
+
+## Delete API (you told us on 4 Nov that a line's link can never be edited after it is created)
+
+We understand the way to change or remove a line's link is: delete the line, then add a new line with the
+right link (or none). We are building our side now so that your delete API plugs in. To match it:
+
+23. Endpoint, method and body for deleting one detail row, per document type (Quotation, Sales Order,
+    Purchase Order, Shipping PO): for example `DELETE /DeletePurchaseOrderDetailbydtlkey` with
+    `{DocKey, DtlKey}`, or a row flag on the existing `Edit...bydockey` PUT? And the same for a whole
+    document (we will not use document delete in normal work; cancel stays the way a document ends).
+24. (Withdrawn 4 Nov: we design for a separate delete then add, with our own recovery if the add fails.)
+25. Deleting a row that has something downstream: a PO row already received (GRN) or partially received,
+    a PO row an SPO row points at, an SO row a PO row is linked to, an SO row already delivered (DO). Is
+    the delete refused, and with what HTTP status and error text?
+26. After deleting a PO row linked to an SO row, is the SO row's transferred quantity released at once,
+    so a new PO row can link to the full SO quantity in the next call?
+27. What does the delete answer return: the remaining rows, the new `LastModified`, or only a message?
+28. Line position: can the new row take the deleted row's position (`Seq`), so printed documents keep
+    the same line order?
+29. A new row linked to an SO row comes back at location `HQ` even when we send another location (our
+    test FXT-1104d-1 row 12046), so today a link needs a second edit to move it. Can the add keep the
+    location we send?
+30. Deleting the last row of a document, or a row of a cancelled document: allowed or refused?
+
+## Found in our Quotation / Sales Order run (4 Nov 2026, db3)
+
+31. Sales Order from a Quotation row: `POST /NewSalesOrder` FXT-1104q-SO1 (DocKey 12072) sent the row with
+    `FromDocType "QT"`, `FromDocNo "FXT-1104q-QT1"`, `FromDocDtlKey 12061`, `FullTransferOption " "`,
+    `FullTransferFromDocList ""` (qty 1 of the quotation row's 2). The SO row reads back `FromDocDtlKey 0`
+    and the quotation shows `ToDocType ""`, `ToDocKey 0` on the header and every row. Your SO390188 left
+    QT-004193 with `ToDocType SO`. Is a partial transfer from a quotation row supported, and which field
+    shows the quotation row's transferred quantity?
+32. Cancel: `Cancelled "T"` in the header of `PUT /EditQuotationbydockey` (FXT-1104q-QT3, DocKey 12076) and
+    `PUT /EditSalesOrderbydockey` (FXT-1104q-SO2, DocKey 12078) answer 200 and change nothing (`Cancelled`
+    reads back "F"). Please add a cancel (and un-cancel) door, or say which field the edit door honours (AQ2).
+33. `PUT /EditSalesOrderbydockey` exists and applied qty, unit price, discount and a new `DtlKey 0` row on
+    FXT-1104q-SO1. Please confirm it is supported (it is not in your notes).
+34. Clean-up on db3: please cancel our test documents FXT-1104q-* and the quotation numbered `SO390188`
+    (DocKey 12067, Ref `P-DOC1-FXT1104q`), which our probe created by mistake with a wrong DocNo, and
+    quotation QT-000001 (DocKey 12069, Ref `P-DOC2-FXT1104q`, our test of `DocNo "<<New>>"`), and the
+    runner documents of 4 Nov: QT-000002 to QT-000005, FXT-1104r-*, FXT-1104s-* (including FXT-FXT-1104s-SO,
+    which has no row), FXT-1104t-*, FXT-1104u-*, FXT-1104v-*. We cannot
+    cancel through the API today and never delete. Your sales order SO390188 was not touched.
+
+## Sales order line with a linked purchase order line (db3, 4 Nov 2026, FXT-1104r-SO1 / FXT-1104r-PO1)
+
+35. Cutting such a line below the linked qty is refused with HTTP 500 and the clear message "The quantity of
+    the item code ... is less than the quantity it was partially transferred to Purchase Order, save
+    aborted." Will your delete API refuse deleting that sales order line the same way (status and message),
+    and refuse deleting a purchase order line that is received (GRN) or on a Shipping PO?
+36. Changing the ItemCode of that linked sales order line was ACCEPTED (200): the line now reads another item
+    while the purchase order line stays linked to it. Should AutoCount refuse an item change on a line that
+    has a linked purchase order line? (We never send item changes on existing lines.)
+37. Business refusals arrive as HTTP 500 with `ExceptionMessage` (credit limit, transferred qty). Could they
+    use 4xx, so a refusal is told apart from a server fault?
+
+## Found by our runner (4 Nov 2026, db3)
+
+38. A sales order line without the full row shape of your sample (`FullTransferOption " "`,
+    `FullTransferFromDocList ""`, `YourPONo`, `ProjNo`, `FOCQty`, `Discount`, `TaxCode`, `Desc2`) is answered 200
+    but reads back with no row. Could such a body be refused with an error instead of dropping the row?
+39. A sales order line taken from a quotation line takes that line's unit price and location whatever we send.
+    Intended? Can a different price or location be sent on the transfer?
