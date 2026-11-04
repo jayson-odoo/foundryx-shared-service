@@ -31,6 +31,7 @@ from .meta_graph import (  # noqa: F401
     _dict_items,
     _json_obj,
     _list_field,
+    _id_field,
     _str_field,
     is_whatsapp_rate_limited,
     meta_error_code,
@@ -206,7 +207,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 return "dead"
             if resp.status_code != 200:
                 return "unknown"
-            body_id = _str_field(_json_obj(resp), "id")
+            body_id = _id_field(_json_obj(resp), "id")
             return "ok" if body_id and body_id == str(phone_number_id) else "unknown"
         except httpx.HTTPError:
             return "unknown"
@@ -318,7 +319,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                     rate_limited=throttled,
                     retry_after=parse_retry_after(resp) if throttled else None,
                 )
-            media_id = _str_field(_json_obj(resp), "id")
+            media_id = _id_field(_json_obj(resp), "id")
             if not media_id:
                 raise SendError("Media upload returned no id.")
             return media_id
@@ -696,7 +697,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 raise SendError(_meta_error_detail(resp))
             data = _json_obj(resp)
             return {
-                "meta_template_id": _str_field(data, "id", None),
+                "meta_template_id": _id_field(data, "id") or None,
                 "status": (_str_field(data, "status") or "PENDING").upper(),
             }
         except httpx.HTTPError as exc:
@@ -778,7 +779,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             )
             if start.status_code != 200:
                 raise SendError(f"Upload session failed ({start.status_code}).")
-            session_id = _str_field(_json_obj(start), "id")
+            session_id = _id_field(_json_obj(start), "id")
             # 2) upload the bytes (offset 0); Meta returns {h: <handle>}
             up = client.post(
                 f"{self._base}/{session_id}",
@@ -808,7 +809,10 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             if meta.status_code != 200:
                 return None
             info = _json_obj(meta)
-            blob = client.get(_str_field(info, "url"), headers=headers)
+            url = _str_field(info, "url")
+            if not url:
+                return None
+            blob = client.get(url, headers=headers)
             if blob.status_code != 200:
                 return None
             return {"content": blob.content, "mime_type": _str_field(info, "mime_type", "application/octet-stream")}

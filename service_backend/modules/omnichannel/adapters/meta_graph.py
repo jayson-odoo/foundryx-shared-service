@@ -102,6 +102,14 @@ def _str_field(obj: dict, key: str, default=""):
     return val if isinstance(val, str) else default
 
 
+def _id_field(obj: dict, key: str) -> str:
+    """A Meta id: a string as is, a non-bool int as ``str``, else ``""``."""
+    val = obj.get(key) if isinstance(obj, dict) else None
+    if isinstance(val, str):
+        return val
+    return str(val) if isinstance(val, int) and not isinstance(val, bool) else ""
+
+
 def _list_field(obj: dict, key: str) -> list:
     """``obj[key]`` only when it is a list, else ``[]``."""
     val = obj.get(key) if isinstance(obj, dict) else None
