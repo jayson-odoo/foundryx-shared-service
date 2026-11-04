@@ -80,31 +80,62 @@ def is_rate_limited_error(resp: "httpx.Response") -> bool:
         code = ((resp.json() or {}).get("error") or {}).get("code")
     except ValueError:
         return False
-    return code in _RATE_LIMIT_ERROR_CODES
+    return isinstance(code, int) and code in _RATE_LIMIT_ERROR_CODES
 
 
-def is_whatsapp_rate_limited(resp: "httpx.Response") -> bool:
-    """`is_rate_limited_error` with the WhatsApp code set. Never raises."""
-    if resp.status_code == 429:
-        return True
+# Longest Retry-After (seconds) ever handed on or waited: the last scheduled
+# send delay. A larger Meta value counts as this.
+RETRY_AFTER_CEILING = 600
+RETRY_AFTER_DEFAULT = 30
+
+
+def _error_code(resp: "httpx.Response") -> Optional[int]:
+    """Meta's `error.code` as an int, only when it is an int or a string of
+    digits. Anything else (dict, list, bool, text) is None. Never raises."""
     try:
         code = ((resp.json() or {}).get("error") or {}).get("code")
     except (ValueError, AttributeError):
+        return None
+    if isinstance(code, bool):
+        return None
+    if isinstance(code, int):
+        return code
+    if isinstance(code, str) and code.isascii() and code.isdigit() and len(code) <= 12:
+        return int(code)
+    return None
+
+
+def is_whatsapp_rate_limited(resp: "httpx.Response") -> bool:
+    """`is_rate_limited_error` with the WhatsApp code set. 131048 (spam rate
+    limit) is never a retryable throttle, even on HTTP 429. Never raises."""
+    code = _error_code(resp)
+    if code == 131048:
         return False
+    if resp.status_code == 429:
+        return True
     return code in WHATSAPP_RATE_LIMIT_ERROR_CODES
 
 
 def parse_retry_after(resp: "httpx.Response") -> Optional[int]:
-    """Meta's `Retry-After` header as whole seconds (>= 1), or None when absent
-    or not an integer. Never raises."""
-    raw = resp.headers.get("Retry-After")
-    if raw is None:
+    """Meta's `Retry-After` header as whole seconds (1 to 600), or None when
+    absent or not a plain integer. A longer value counts as 600; the digits are
+    measured before any int() so a huge header cannot cost anything. Never
+    raises."""
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    if not raw or not raw.isascii() or not raw.isdigit():
         return None
-    try:
-        seconds = int(str(raw).strip())
-    except ValueError:
-        return None
-    return seconds if seconds >= 1 else None
+    if len(raw) > 6:
+        return RETRY_AFTER_CEILING
+    seconds = int(raw)
+    return min(seconds, RETRY_AFTER_CEILING) if seconds >= 1 else None
+
+
+def client_retry_after(seconds: Optional[int]) -> int:
+    """The `Retry-After` seconds sent to an API client: Meta's value clamped to
+    1..600, or the default when Meta sent none."""
+    if not seconds:
+        return RETRY_AFTER_DEFAULT
+    return max(1, min(int(seconds), RETRY_AFTER_CEILING))
 
 
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -133,6 +164,8 @@ def meta_error_code(resp: "httpx.Response") -> Optional[str]:
     try:
         code = ((resp.json() or {}).get("error") or {}).get("code")
     except (ValueError, AttributeError):
+        return None
+    if isinstance(code, bool) or not isinstance(code, (int, str)):
         return None
     return str(code) if code else None
 

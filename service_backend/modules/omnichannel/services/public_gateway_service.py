@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.api_errors import ApiError
 from app.services.url_guard import GuardedAsyncTransport, UrlGuardError
 
+from ..adapters.meta_graph import client_retry_after
 from ..models import (
     MEDIA_MESSAGE_TYPES,
     Channel,
@@ -321,7 +322,7 @@ class PublicGatewayService:
         limiter's own `rate_limited`."""
         return ApiError(
             429, "meta_rate_limited", "Meta is rate limiting this channel. Try again shortly."
-        ).with_retry_after(max(1, int(retry_after or 30)))
+        ).with_retry_after(client_retry_after(retry_after))
 
     @staticmethod
     def _map_send_rejected(exc: "SendRejected", *, default_code: str = "send_rejected") -> ApiError:
@@ -828,6 +829,8 @@ class PublicGatewayService:
         self.db.commit()  # nothing below touches an ORM object before a provider call
 
         receipts = []
+        throttled_retry_after: Optional[int] = None
+        throttled = False
         for p in plan:
             if not p["available"] or (
                 p["type"] == "WHATSAPP" and not _PHONE_NUMBER_ID_RE.fullmatch(p["sender_ref"] or "")
@@ -857,10 +860,13 @@ class PublicGatewayService:
                     )
                     status = "failed"
                 except SendError as exc:
-                    if getattr(exc, "rate_limited", False):
-                        self.db.rollback()
-                        raise self._meta_rate_limited(exc.retry_after) from exc
                     status = "failed"
+                    if getattr(exc, "rate_limited", False):
+                        # Keep trying the other channels; the throttle is
+                        # answered after the loop (plan 56 A).
+                        throttled = True
+                        retry_after = getattr(exc, "retry_after", None) or 0
+                        throttled_retry_after = max(throttled_retry_after or 0, retry_after) or None
                 except Exception:  # noqa: BLE001 - one channel never stops the others.
                     logger.warning("read receipt failed on channel %s", p["channel_id"])
                     status = "failed"
@@ -883,6 +889,8 @@ class PublicGatewayService:
                     channelId=p["channel_id"], messageId=p["message_id"], status=status
                 )
             )
+        if throttled:
+            raise self._meta_rate_limited(throttled_retry_after)
         return ContactReadResponse(contactId=contact_id, receipts=receipts)
 
     def _resolve_or_create_contact(
