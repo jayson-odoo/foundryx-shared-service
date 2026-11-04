@@ -58,7 +58,7 @@ def _rows(session_factory):
         db.close()
 
 
-def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None, propagate=False, root_path="", start_msgs=None):
+def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None, propagate=False, root_path="", start_msgs=None, hang_up=False):
     """Drive the app with a lazily produced body of `total` bytes in `chunk`
     pieces. `declared` is the Content-Length header (None = chunked, no header).
     Returns (status, json body or None, bytes the app pulled)."""
@@ -85,7 +85,7 @@ def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None,
         n = min(chunk, min(total, STREAM_LIMIT) - sent)
         sent += n
         pulled += n
-        more = sent < min(total, STREAM_LIMIT)
+        more = sent < min(total, STREAM_LIMIT) or hang_up
         if not more:
             done = True
         return {"type": "http.request", "body": b"x" * n, "more_body": more}
@@ -395,17 +395,45 @@ def test_multipart_payload_part_over_the_part_limit_is_an_invalid_multipart_body
     _assert_invalid_multipart(r)
 
 
-def test_refused_streamed_json_body_never_logs_a_500(client, session_factory):
+def test_refused_streamed_send_logs_its_real_answer(client, session_factory):
     from app.models.integration_activity import IntegrationActivity
 
-    hdr, cid, _eid = _rig(client, session_factory, "+60120001701")
+    hdr, _cid, _eid = _rig(client, session_factory, "+60120001701")
     db = session_factory()
     seen = {r.id for r in db.query(IntegrationActivity).all()}
     db.close()
-    st, body, pulled = _asgi("PATCH", f"{BASE}/contacts/{cid}", {**hdr, **JSON_CT},
+    # the send route, chunked JSON with no Content-Length, through the full app stack
+    st, body, pulled = _asgi("POST", f"{BASE}/messages", {**hdr, **JSON_CT},
                              total=2 * 1024 * 1024, declared=None)
     _assert_stream_refused(st, body, pulled, CAP + CHUNK)
     db = session_factory()
     new = [r for r in db.query(IntegrationActivity).all() if r.id not in seen]
     db.close()
-    assert [r.status_code for r in new if r.status_code == 500] == [], [r.status_code for r in new]
+    assert [(r.operation, r.status_code) for r in new if r.status_code != 422] == [], \
+        [(r.operation, r.status_code, r.error_message) for r in new]
+
+
+# ── guards ───────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("declared_too", [False, True])
+def test_body_of_exactly_the_cap_is_read_and_one_byte_more_is_refused(client, session_factory, declared_too):
+    hdr, cid, _eid = _rig(client, session_factory, f"+6012000180{int(declared_too)}")
+    path = f"{BASE}/contacts/{cid}"
+    h = {**hdr, **JSON_CT}
+    st, body, pulled = _asgi("PATCH", path, h, total=CAP, declared=CAP if declared_too else None)
+    too_large = isinstance(body, dict) and body.get("error", {}).get("message") == TOO_LARGE
+    assert not too_large and pulled == CAP, (st, body, pulled)
+    st, body, pulled = _asgi("PATCH", path, h, total=CAP + 1, declared=CAP + 1 if declared_too else None)
+    _assert_stream_refused(st, body, pulled, CAP + CHUNK)
+
+
+def test_a_real_disconnect_under_the_cap_is_not_hidden_by_the_cap(client, session_factory):
+    from starlette.requests import ClientDisconnect
+
+    hdr, _cid, _eid = _rig(client, session_factory, "+60120001901")
+    starts = []
+    # the client sends 100 KiB, promises more, then hangs up: the send route's own
+    # `request.json()` raises ClientDisconnect and nothing here swallows it
+    with pytest.raises(ClientDisconnect):
+        _asgi("POST", f"{BASE}/messages", {**hdr, **JSON_CT}, total=100 * 1024, declared=None,
+              starts=starts, propagate=True, hang_up=True)
+    assert starts == [500], "the server error layer answers once, then the error still escapes"
