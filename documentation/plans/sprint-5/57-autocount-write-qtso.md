@@ -124,8 +124,12 @@ kind table (`service.py:327-675`): guard -> capability -> busy -> fresh GET (rea
 stale (`DOC_STALE`) -> guards (AC-57-18) -> build -> commit the action row -> ONE vendor call -> GET back
 -> verify -> finish -> stage + push (PO / SPO / SO; QT answered only). Transfer facts for the guards:
 SO rows linked by PO rows = staged PO rows' `FromSODtlKey` (`service.py:603`); delivered / received qty
-= AutoCount `TransferedQty`, which the hapi GET does not return (AQ11) and which only SQL-sourced
-companies stage (`presets.py:275,439,509`), so for hapi documents it is UNKNOWN.
+= AutoCount `TransferedQty`: the hapi GET does not return it, the SQL sync stages it per line
+(`presets.py:275,439,509` -> `ac_staged_record.canonical_json` lines, ref `{db}:{DocKey}:{DtlKey}`), so it is
+known for SQL-sourced books (the live book per plan 55 section 3a) and unknown for HTTP-only books (db3).
+AutoCount can raise `TransferedQty` without bumping `LastModified` (`presets.py:224-231`), so the staged value
+can trail by one sync; AutoCount's own refusal is the backstop (owner). Plan 55 staging overwrote the
+SQL-staged row with the read-back (`staging.py:81-97`); AC-57-21 stops that.
 
 ### 5.3 Operations (level 2)
 
