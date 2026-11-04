@@ -1,8 +1,23 @@
 # AutoCount write-back test report 2026-11-04
 
-Book: db3 only. Two runs on 4 Nov 2026 with the same suite of 12 cases. Run 1 hit two vendor errors
-(findings 5 and 6 below). Run 2 used fixed request bodies (empty dates omitted, complete create body) and
-exposes the link and unlink behaviour of the wrapper.
+Book: db3 only. Runs on 4 Nov 2026, newest first: run 3b (self-contained suite, card 2 code, all 13 cases pass),
+run 3a (blocked by state), run 2 (fixed bodies), run 1 (first attempt), then the probes P1 to P9 that explain
+what the wrapper does not apply. Nothing was ever deleted or cancelled.
+
+## Summary: what works on db3 today and what is gated pending AutoCount
+
+| Area | Works today | Gated, pending AutoCount | Evidence |
+|---|---|---|---|
+| Create PO / SO | yes, with a complete body (header from an existing document, full rows, valid dates) | | C00, C01 (run 3b); run 1 findings |
+| Pull and stage | yes | | C02 |
+| Link a PO row to an SO row | yes, as a split through a NEW row, then a second write moves it (vendor forces HQ) | | C03, C08 (run 3b), P2, P4 |
+| Link an existing row, whole-row (Q7) | | refused `VENDOR_UNSUPPORTED`; the vendor ignores the link on an existing row | C04, P2, P5, P7a-c |
+| Unlink a PO row (Q8) | | refused `VENDOR_UNSUPPORTED`; the vendor ignores every variant | C07, P1, P1b, P8, P8b-d |
+| Unlink an SPO row | | refused `VENDOR_UNSUPPORTED` | C10, P3, P9 |
+| Replace or remove a row (Q4) | | omitted rows are kept, no removal | P6 |
+| Location on a linked row (Q9) | editable afterwards (second write) | forced to HQ on a new linked row | C03, P4 |
+| SPO create and link (Q13, Q14a) | | cannot be created: `PO is not valid value to FromDocType`; blank type makes a plain PO | P3, P9a-c |
+| Local refusals | yes (over-link, qty above free, stale, other book, relocate at location) | | C05, C06, C09, C12, C11 |
 
 ## Documents created or edited in db3
 
@@ -43,6 +58,12 @@ cancelled. Every later run appends to this table.
 | FXT-1104b-S2 | SPO | none | P9a (FromDocType key absent) | 15:47:06 | POST /NewPurchaseOrder | 400 | refused (" is not valid value to FromDocType.") | not created | PROBE, FAILED CREATE |
 | FXT-1104b-S3 | SPO (read back as PO) | 12036 | P9b (FromDocType "") | 15:47:08 | POST /NewPurchaseOrder | 200 | created, rows dropped, ShippingPO read back "F" | no rows; ShippingPO F; DisplayTerm C.O.D., CurrencyCode CNY | PROBE, FAILED CREATE |
 | FXT-1104b-S4 | SPO | none | P9c (no link keys at all) | 15:47:09 | POST /NewPurchaseOrder | 400 | refused (" is not valid value to FromDocType.") | not created | PROBE, FAILED CREATE |
+| FXT-1104d-SO | SO | 12038 | C00 (run 3b) | 15:48:24 (vendor CreatedTimeStamp 15:48:24.647) | POST /NewSalesOrder | 200 | created | 12039 SRTKT38SS 10 BRW-AM; 12040 5 BRW-AM; 12041 10 BRW-AM (12039 and 12040 now linked from PO rows) | TEST DOC |
+| FXT-1104d-1 | PO | 12042 | C01 (run 3b) | 15:48:34 (vendor CreatedTimeStamp 15:48:34.16) | POST /NewPurchaseOrder | 200 | created | see last row for this document | TEST DOC |
+| FXT-1104d-1 | PO | 12042 | C03 write 1 (run 3b) | 15:48:35 | PUT /EditPurchaseOrderbydockey | 200 | applied (split, new row linked to 12039, forced to HQ) | | TEST DOC |
+| FXT-1104d-1 | PO | 12042 | C03 write 2 (run 3b) | about 15:48:36 | PUT /EditPurchaseOrderbydockey | 200 | applied (row 12046 moved to BRW-AM, link kept) | | TEST DOC |
+| FXT-1104d-1 | PO | 12042 | C08 write 1 (run 3b) | 15:48:44 | PUT /EditPurchaseOrderbydockey | 200 | applied (second split, new row linked to 12040, forced to HQ) | | TEST DOC |
+| FXT-1104d-1 | PO | 12042 | C08 write 2 (run 3b) | about 15:48:45 (vendor LastModified 15:48:47.08) | PUT /EditPurchaseOrderbydockey | 200 | applied (row 12048 moved to BRW-AM, link kept) | 12043 SRTKT38SS 35 HQ 0; 12044 SRTKT38SS 10 HQ 0; 12046 SRTKT38SS 10 BRW-AM 12039; 12048 SRTKT38SS 5 BRW-AM 12040 | TEST DOC |
 Notes:
 
 - FXT-PROBE-1 shows a blank creditor name because our probe body sent only `CreditorCode` (400-N004) and no
@@ -50,7 +71,138 @@ Notes:
   from an existing PO (FXT-1104b-1) carry the creditor name.
 - Vendor cross-check of today's documents: FXT-PROBE-1 created 15:05:15.107; FXT-1104b-1 created 15:11:16.477,
   last modified 15:14:46.297; 202602-S0007 (created by AutoCount earlier, 13:39:22.89) last modified 15:13:25.337.
-- Left in place as test evidence: FXT-PROBE-1 and FXT-1104b-1. No SPO exists.
+- Left in place as test evidence: FXT-PROBE-1, FXT-1104b-1, FXT-1104b-S3 (empty), FXT-1104c-1, FXT-1104d-SO and FXT-1104d-1. No SPO exists.
+
+## Run 3b (self-contained suite, card 2 code)
+
+Code: the card-2 capability gate, two-write split and relocate, plus C00 (the suite creates its own test SO).
+Run tag 1104d. PASS 13, FAIL 0, SKIPPED 0.
+
+### C00 Create the test SO: PASS
+
+- Expected: test SO FXT-1104d-SO created with three SRTKT38SS rows at BRW-AM (10, 5 and 10)
+- Observed: created FXT-1104d-SO with 3 rows
+
+- GET /salesorderbydocdate -> 200 (FXT-1104d-SO absent)
+- POST /NewSalesOrder -> 200
+  - request: `{"DocNo":"FXT-1104d-SO","DocDate":"2026-11-04T00:00:00","DebtorCode":"300-S057","Details":[{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - after: `[{"DtlKey":12039,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12040,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12041,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+### C01 Create the test PO: PASS
+
+- Expected: test PO created with two SRTKT38SS rows (50 and 10 at HQ)
+- Observed: created FXT-1104d-1 with 2 rows
+
+- GET /purchaseorderbydocdate -> 200 (baseline pull docs=3)
+- GET /purchaseorderbydocdate -> 200 (FXT-1104d-1 absent)
+- POST /NewPurchaseOrder -> 200
+  - request: `{"DocNo":"FXT-1104d-1","DocDate":"2026-11-04T00:00:00","CreditorCode":"400-N004","ShippingPO":"F","Details":[{"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - after: `[{"DtlKey":12043,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12044,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+### C02 Pull SO then PO into staging: PASS
+
+- Expected: SO days then PO days pulled; the test PO is staged
+- Observed: docs_seen=6 staged=4 pushed=4
+
+- GET /purchaseorderbydocdate -> 200 (docs=6 staged=4)
+
+### C03 Link with split: PASS
+
+- Expected: split in two writes: 40 stay at HQ, a new 10 row linked to SO row 11989 and moved to BRW-AM
+- Observed: done
+- Action: f93b5c65-c22e-4a4f-8aef-39d49e386ea2
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12042,"DocNo":"FXT-1104d-1","Details":[{"DtlKey":12043,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1104d-SO","FromDocDtlKey":12039}]}`
+  - before: `[{"DtlKey":12043,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12043,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12046,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12039,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12042,"DocNo":"FXT-1104d-1","Details":[{"DtlKey":12046,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12046,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12039,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12046,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12039,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+### C04 Whole-row link refused by the capability gate: PASS
+
+- Expected: whole-row link refused: the vendor does not apply an edit of an existing row (VENDOR_UNSUPPORTED)
+- Observed: refused VENDOR_UNSUPPORTED
+- Action: 185f77c3-bb98-4ff6-b9c4-e9f041382788
+
+
+### C05 Over-link refused: PASS
+
+- Expected: link refused: the SO row is already covered (QTY_ABOVE_OUTSTANDING)
+- Observed: refused QTY_ABOVE_OUTSTANDING
+- Action: e09825d7-4e8d-42dd-9fd8-944c4e0ce94b
+
+
+### C06 Quantity above the PO row refused: PASS
+
+- Expected: link refused: quantity above the PO row (QTY_ABOVE_FREE)
+- Observed: refused QTY_ABOVE_FREE
+- Action: 9e8bc553-98bd-4ecf-a1b9-a4e643321def
+
+
+### C07 Unlink refused by the capability gate: PASS
+
+- Expected: unlink of 202602-S0007 row 12013 refused: the vendor does not apply it (VENDOR_UNSUPPORTED), nothing sent
+- Observed: refused VENDOR_UNSUPPORTED
+- Action: 61fb2268-65f0-4cd1-a9ab-ebad80673b94
+
+
+### C08 Second split of the 40 row: PASS
+
+- Expected: second split of the 40 row: 5 linked to SO row 11992 and moved to BRW-AM
+- Observed: done
+- Action: 331ce0d1-4740-45ce-a726-18b77c394479
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12042,"DocNo":"FXT-1104d-1","Details":[{"DtlKey":12043,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"SO","FromDocNo":"FXT-1104d-SO","FromDocDtlKey":12040}]}`
+  - before: `[{"DtlKey":12043,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12043,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12048,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12040,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12042,"DocNo":"FXT-1104d-1","Details":[{"DtlKey":12048,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12048,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12040,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12048,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12040,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+### C09 Stale document refused: PASS
+
+- Expected: stale document refused (DOC_STALE)
+- Observed: refused DOC_STALE
+- Action: 574e3b61-e6e1-4f34-bdb3-00640a8041dc
+
+
+### C10 SPO unlink refused by the capability gate: PASS
+
+- Expected: SPO unlink refused: the vendor does not apply it (VENDOR_UNSUPPORTED), nothing sent
+- Observed: refused VENDOR_UNSUPPORTED
+- Action: 2695e93c-9a48-4db7-bc73-1af9edcdff9a
+
+
+### C11 Relocate of a row already at its location: PASS
+
+- Expected: relocate of the C08 row, already at its SO location, is refused (ROW_ALREADY_AT_LOCATION)
+- Observed: refused ROW_ALREADY_AT_LOCATION
+- Action: 7b8fa9d4-d280-4efb-9de0-71db18310abc
+
+
+### C12 Other book refused with no request: PASS
+
+- Expected: a client for another book is refused at construction with no request (WRITE_NOT_ALLOWED)
+- Observed: refused WRITE_NOT_ALLOWED, 0 requests
+
+Read-only cross-check after the run: FXT-1104d-SO (DocKey 12038, created 15:48:24.647) holds rows 12039
+(10), 12040 (5), 12041 (10), all BRW-AM. FXT-1104d-1 (DocKey 12042, created 15:48:34.16, last modified
+15:48:47.08) holds 12043 (35 HQ, unlinked), 12044 (10 HQ, unlinked), 12046 (10 BRW-AM, `FromSODtlKey 12039`)
+and 12048 (5 BRW-AM, `FromSODtlKey 12040`). This matches the C03 and C08 after rows. No vendor surprise in this
+run: every new linked row came back at HQ (as known) and the second write moved it.
+
+## Run 3a (blocked by state, guard refused correctly)
+
+Run tag 1104c, same code, before C00 existed. C00 did not exist yet, so C03 targeted SO389293 row 11989, which
+FXT-1104b-1 row 12028 already covered (SO qty 10, linked 10); C08 would have targeted row 11992, covered by
+row 12031 (P6). C03 was refused `QTY_ABOVE_OUTSTANDING`, so C04, C05, C08 and C11 were SKIPPED. C01 created
+FXT-1104c-1 (DocKey 12032, rows 12033 50 HQ and 12034 10 HQ); C06, C07, C09, C10 and C12 passed. The guard was
+right: earlier probe rows already covered the real SO rows. Run 3b made the suite self-contained.
 
 ## Run 2 (fixed bodies)
 
