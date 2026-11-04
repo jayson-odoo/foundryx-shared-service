@@ -115,29 +115,24 @@ def test_unusable_page_id_is_skipped_when_url_channel_owns_an_account(session_fa
     assert _msg_rows(session_factory, mid) == []
 
 
-# ── 4. missing metadata uses the URL channel only if it has no number ────────
-@pytest.mark.parametrize("meta", [None, {}, {"display_phone_number": "x"}], ids=["absent", "empty", "no_number"])
-def test_message_without_a_number_is_skipped_when_url_channel_owns_one(session_factory, meta):
+# ── 4. a WhatsApp part with no number keeps the URL channel route ────────────
+NO_NUMBER = [None, {}, {"display_phone_number": "x"}]
+NO_NUMBER_IDS = ["absent", "empty", "no_number"]
+
+
+@pytest.mark.parametrize("own_number", [True, False], ids=["url_owns_number", "url_has_no_number"])
+@pytest.mark.parametrize("meta", NO_NUMBER, ids=NO_NUMBER_IDS)
+def test_message_without_a_number_is_handled_under_the_live_url_channel(session_factory, meta, own_number):
     n = next(_n)
     ws = _workspace(session_factory, DEFAULT_TENANT_ID, default=True)
-    url_ch = _channel(session_factory, DEFAULT_TENANT_ID, ws, pnid=f"pn-own-r2b-{n}")
+    url_ch = _channel(session_factory, DEFAULT_TENANT_ID, ws, pnid=f"pn-own-r2b-{n}" if own_number else None)
     mid = f"wamid.nm-{n}"
     _process(session_factory, url_ch, _wa([_raw_change(meta, messages=[_in_msg(mid, "60000000205")])]))
-    assert _msg_rows(session_factory, mid) == []
-
-
-@pytest.mark.parametrize("meta", [None, {}, {"display_phone_number": "x"}], ids=["absent", "empty", "no_number"])
-def test_message_without_a_number_is_stored_when_url_channel_has_none(session_factory, meta):
-    n = next(_n)
-    ws = _workspace(session_factory, DEFAULT_TENANT_ID, default=True)
-    url_ch = _channel(session_factory, DEFAULT_TENANT_ID, ws, pnid=None)
-    mid = f"wamid.nl-{n}"
-    _process(session_factory, url_ch, _wa([_raw_change(meta, messages=[_in_msg(mid, "60000000206")])]))
     assert _ok(_msg_rows(session_factory, mid), DEFAULT_TENANT_ID, url_ch)
 
 
 @pytest.mark.parametrize("meta", [None, {}], ids=["absent", "empty"])
-def test_status_without_a_number_follows_the_same_rule(session_factory, meta):
+def test_status_without_a_number_is_applied_under_the_live_url_channel(session_factory, meta):
     n = next(_n)
     ws = _workspace(session_factory, DEFAULT_TENANT_ID, default=True)
     owned = _channel(session_factory, DEFAULT_TENANT_ID, ws, pnid=f"pn-own-r2c-{n}")
@@ -147,8 +142,36 @@ def test_status_without_a_number_follows_the_same_rule(session_factory, meta):
     _sent_message(session_factory, DEFAULT_TENANT_ID, ws, free, w2, "60000000208")
     _process(session_factory, owned, _wa([_raw_change(meta, statuses_=[_status(w1)])]))
     _process(session_factory, free, _wa([_raw_change(meta, statuses_=[_status(w2)])]))
-    assert _stored(session_factory, w1)[0][2] == "SENT"
+    assert _stored(session_factory, w1)[0][2] == "DELIVERED"
     assert _stored(session_factory, w2)[0][2] == "DELIVERED"
+
+
+@pytest.mark.parametrize("meta", NO_NUMBER, ids=NO_NUMBER_IDS)
+def test_message_without_a_number_is_skipped_when_the_url_channel_is_trashed(session_factory, meta):
+    n = next(_n)
+    ws = _workspace(session_factory, DEFAULT_TENANT_ID, default=True)
+    url_ch = _channel(session_factory, DEFAULT_TENANT_ID, ws, pnid=None)
+    db = session_factory()
+    db.query(Channel).filter(Channel.id == url_ch).update({"is_trashed": True})
+    db.commit()
+    db.close()
+    mid = f"wamid.nt-{n}"
+    _process(session_factory, url_ch, _wa([_raw_change(meta, messages=[_in_msg(mid, "60000000209")])]))
+    assert _msg_rows(session_factory, mid) == []
+
+
+@pytest.mark.parametrize("meta", NO_NUMBER, ids=NO_NUMBER_IDS)
+def test_message_without_a_number_is_skipped_when_the_url_channel_is_another_type(session_factory, meta, monkeypatch):
+    n = next(_n)
+    ws = _workspace(session_factory, DEFAULT_TENANT_ID, default=True)
+    url_ch = _channel(session_factory, DEFAULT_TENANT_ID, ws, channel_type="FACEBOOK", account=f"acct-ot-{n}")
+    reached = []
+    real = inbound_service.get_adapter
+    monkeypatch.setattr(inbound_service, "get_adapter", lambda t: reached.append(t) or real(t))
+    mid = f"wamid.ot-{n}"
+    _process(session_factory, url_ch, _wa([_raw_change(meta, messages=[_in_msg(mid, "60000000210")])]))
+    assert _msg_rows(session_factory, mid) == []
+    assert reached == []
 
 
 # ── 5. web chat visitor message still honours the module-active check ────────
