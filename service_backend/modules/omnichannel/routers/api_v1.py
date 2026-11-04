@@ -148,6 +148,9 @@ async def send_message(
         channel_id = payload_obj.get("channelId")
         if channel_id is not None and not isinstance(channel_id, str):
             raise ApiError(422, "invalid_channel", "channelId must be a string.")
+        reply_to = payload_obj.get("replyToMessageId")
+        if reply_to is not None and not isinstance(reply_to, str):
+            raise ApiError(422, "invalid_request", "replyToMessageId must be a string.")
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
@@ -166,6 +169,7 @@ async def send_message(
             to=str(payload_obj.get("to") or ""),
             idempotency_key=idempotency_key,
             channel_id=channel_id,
+            reply_to_message_id=reply_to,
         )
     else:
         try:
