@@ -65,4 +65,4 @@ project `cHJqOjIyMDQ1OA`, node `/v2/contact-api.yml/paths/~1contact~1list/post`)
 
 - The connection form still accepts any text for the timezone (save-time validation would be a
   UI rule change, size M).
-- `GET /contact/{id}/channels` is read without `limit` (vendor default 10, `client.py:430`).
+- `GET /contact/{id}/channels` is read without `limit` (vendor default 10, `client.py:427`).
