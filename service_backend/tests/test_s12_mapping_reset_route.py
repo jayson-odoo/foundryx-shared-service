@@ -275,7 +275,9 @@ def test_ac_12_32_no_new_autocount_migration_added():
     AC-WRITE-LINK (plan 55) ships `0036_autocount_write_back`,
     `0037_autocount_key_scopes`, `0038_autocount_write_lock` and
     `0039_autocount_write_status` (write-back action log, key scopes, in-flight
-    lock, status list), moving it to 39; a
+    lock, status list), moving it to 39, and AC-WRITE-QTSO (plan 57) ships
+    `0040_autocount_write_ops` (write operation log and the action row columns),
+    moving it to 40; a
     reviewer/coder adding one beyond THAT for a schema-free slice still trips
     this guard rather than the drift going unnoticed."""
     versions_dir = (
@@ -287,8 +289,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
         match = re.match(r"^(\d+)_", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    assert highest <= 39, (
-        f"a new autocount migration (>0039) exists ({highest}) - AC-12-32 "
+    assert highest <= 40, (
+        f"a new autocount migration (>0040) exists ({highest}) - AC-12-32 "
         "says THIS plan ships no schema change (a later plan may legitimately "
         "move this ceiling again, as AC-CONSIGN-PULL just did from 29 to 30, and "
         "SS-INTEGRATION-ALERT (plan 33) did from 30 to 31)"
