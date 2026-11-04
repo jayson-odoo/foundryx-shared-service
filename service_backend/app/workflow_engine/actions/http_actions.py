@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Tuple
 import httpx
 from sqlalchemy.orm import Session
 
-from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
+from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable, call_within
 from app.workflow_engine.context import render_field
 
 
@@ -63,6 +63,8 @@ _FORBIDDEN_HEADER_NAMES = frozenset(
     {
         "host", "connection", "content-length", "transfer-encoding", "te",
         "upgrade", "keep-alive", "trailer", "expect",
+        # headers a front proxy may read to pick a route or a host
+        "forwarded", "x-forwarded-host", "x-original-url", "x-rewrite-url",
     }
 )
 
@@ -233,11 +235,16 @@ def http_request(
     url = render_field(config.get("url"), ctx).strip()
     if not url:
         raise ActionError("URL is empty after merging.")
+    timeout = _timeout_seconds(config)
+    started = time.monotonic()
     try:
-        assert_deliverable(url)
+        # The pre-flight resolves the host: it counts against the same deadline.
+        call_within(timeout, assert_deliverable, url)
     except UrlGuardError as exc:
         # AC-WFP-58: uniform refusal message, no request ever sent.
         raise ActionError(f"URL refused: {exc}") from exc
+    except TimeoutError as exc:
+        raise ActionError("Request timed out.") from exc
 
     headers = _headers(config, ctx)
     body, default_content_type = _body_and_content_type(config, ctx)
@@ -249,9 +256,8 @@ def http_request(
         del headers[existing]
     headers["Accept-Encoding"] = "identity"
 
-    timeout = _timeout_seconds(config)
-    started = time.monotonic()
-    transport = GuardedTransport()
+    # Resolving and connecting get what is left of the overall deadline.
+    transport = GuardedTransport(budget=max(timeout - (time.monotonic() - started), 0.05))
     expired = threading.Event()
 
     def _expire() -> None:
@@ -262,7 +268,7 @@ def http_request(
         if abort is not None:
             abort()
 
-    watchdog = threading.Timer(timeout, _expire)
+    watchdog = threading.Timer(max(timeout - (time.monotonic() - started), 0.05), _expire)
     watchdog.daemon = True
     status_code = 0
     content_type = ""

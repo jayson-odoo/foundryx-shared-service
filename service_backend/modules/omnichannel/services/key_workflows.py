@@ -514,11 +514,21 @@ def _owned_run_guard(db: Session, run: Any, doc: Any) -> None:
         raise RunRefused("node_not_allowed", issues[0].message)
     # A run started by another workflow (a staff `workflow.trigger` step) can
     # carry any contact of the tenant: the contact must be in the owner workspace.
-    record_id = (run.trigger_payload_json or {}).get("recordId")
-    if record_id:
+    payload = run.trigger_payload_json or {}
+    event_extra = payload.get("omnichannel") if isinstance(payload.get("omnichannel"), dict) else {}
+    facts = payload.get("recordFacts") if isinstance(payload.get("recordFacts"), dict) else {}
+    # The workspace the trigger event names must be the owner's, whoever
+    # started the run (an event, a staff test run or a parent workflow).
+    for named in (event_extra.get("workspaceId"), facts.get("record.workspaceId")):
+        if named and named != owner_ws:
+            raise RunRefused(
+                "record_not_in_workspace", "The event is outside this workflow's workspace."
+            )
+    contact_ids = {str(c) for c in (payload.get("recordId"), event_extra.get("contactId")) if c}
+    for contact_id in contact_ids:
         contact_ws = (
             db.query(Contact.workspace_id)
-            .filter(Contact.id == str(record_id), Contact.tenant_id == run.tenant_id)
+            .filter(Contact.id == contact_id, Contact.tenant_id == run.tenant_id)
             .scalar()
         )
         if contact_ws is not None and contact_ws != owner_ws:
