@@ -11,7 +11,7 @@ from app.models import DEFAULT_TENANT_ID
 from modules.omnichannel.models import ConversationMessage
 from modules.omnichannel.services.send_runner import run_send
 from tests.test_omnichannel_meta_rate_limit_retry import _env, _live_creds  # noqa: F401
-from tests.test_omnichannel_outbound_event import _rig
+from tests.test_omnichannel_outbound_event import _deliveries, _rig
 
 
 class FakeAdapter:
@@ -116,3 +116,31 @@ def test_real_id_stored_as_is_and_duplicate_real_id_still_unique(client, session
     finally:
         db.rollback()
         db.close()
+
+
+def test_sent_record_fallback_stores_null_for_empty_id_directly(client, session_factory):
+    from modules.omnichannel.services.send_runner import _record_sent_by_id
+
+    ids = _rig_rows(client, session_factory, "60120000104", 2)
+    for mid in ids:
+        db = session_factory()
+        try:
+            db.query(ConversationMessage).filter(ConversationMessage.id == mid).one().delivery_status = "SENDING"
+            db.commit()
+            assert _record_sent_by_id(db, mid, "") == "SENT"
+        finally:
+            db.close()
+    for mid in ids:
+        assert _state(session_factory, mid) == ("SENT", None)
+
+
+def test_sent_status_event_for_empty_id_carries_null_external_id(client, session_factory, monkeypatch):
+    r = _rig(client, session_factory, "60120000105", events=("message.status",))
+    _live_creds(session_factory, r["channel_id"])
+    (mid,) = _queue(session_factory, r, 1)
+    _use(monkeypatch, FakeAdapter([""]))
+    assert _run(session_factory, mid) == "SENT"
+    rows = [x for x in _deliveries(session_factory, "message.status") if x["payload"]["data"]["messageId"] == mid]
+    assert [x["event_id"] for x in rows] == [f"{mid}:SENT"]
+    data = rows[0]["payload"]["data"]
+    assert "externalMessageId" in data and data["externalMessageId"] is None
