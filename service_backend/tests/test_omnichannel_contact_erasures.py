@@ -182,7 +182,7 @@ def test_ac_58_03_migration_revision_chain_and_single_head():
             revs.add(r)
             p = _assigned(text, "down_revision")
             if p:
-                parents.add(p)
+                parents.update(p if isinstance(p, (tuple, list)) else [p])
     assert revs - parents == {"0026_omni_contact_erasures"}
 
 
