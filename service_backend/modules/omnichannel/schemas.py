@@ -2257,3 +2257,40 @@ class MigrationJobListResponse(ApiModel):
     data: List[MigrationJobItem]
     total: int
     page: int
+
+
+# ── Workflows under the API key (plan 38 gap 7) ──────────────────────────────
+# Own narrow shapes: a change to the dashboard workflow schemas cannot move
+# this public contract. Unknown body keys (tenantId, workspaceId) are ignored.
+class PublicWorkflowItem(ApiModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    isActive: bool
+    publishedVersionId: Optional[str] = None
+    triggerType: Optional[str] = None
+    draftDefinition: Dict[str, Any]
+    createdBy: str
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class PublicWorkflowListResponse(ApiModel):
+    data: List[PublicWorkflowItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    draftDefinition: Dict[str, Any]
+
+
+class PublicWorkflowUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    draftDefinition: Optional[Dict[str, Any]] = None

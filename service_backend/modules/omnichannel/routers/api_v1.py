@@ -9,7 +9,7 @@ JWT `require_module` gate - service-active is re-checked inside the dependency.
 import json
 from typing import Optional, Union
 
-from fastapi import APIRouter, Depends, Header, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
@@ -28,6 +28,10 @@ from ..schemas import (
     PublicContactUpdateRequest,
     PublicSendRequest,
     PublicSendResponse,
+    PublicWorkflowCreateRequest,
+    PublicWorkflowItem,
+    PublicWorkflowListResponse,
+    PublicWorkflowUpdateRequest,
     PublicChannelListResponse,
     PublicTemplateListResponse,
     RioContactItem,
@@ -43,6 +47,7 @@ from ..schemas import (
     WebhookEndpointUpdateRequest,
     WebhookSecretResponse,
 )
+from ..services.key_workflows import KeyWorkflowService
 from ..services.media_pipeline import META_CEILINGS
 from ..services.public_gateway_service import (
     FORMAT_GUIDE,
@@ -50,6 +55,7 @@ from ..services.public_gateway_service import (
     WIRE_FORMATS,
     PublicGatewayService,
 )
+from ..services.webchat_visitor_service import WebchatInvalidRequest, read_capped_json
 
 router = APIRouter()
 
@@ -627,3 +633,93 @@ def delete_webhook(
         raise _paused_by_staff() from exc
     except WebhookNotFound as exc:
         raise _endpoint_not_found() from exc
+
+
+# ── Workflows (plan 38 gap 7) ────────────────────────────────────────────────
+# A key configures the workflows its own workspace owns. Tenant and workspace
+# come from the key only. Specific paths (catalog, validate, runs/{runId}) are
+# registered BEFORE `/workflows/{workflow_id}` in later slices.
+_WORKFLOW_BODY_CAP = 256 * 1024
+
+
+async def _read_workflow_body(request: Request) -> dict:
+    """Capped JSON read, done on the loop with no transaction open."""
+    try:
+        return await read_capped_json(request, cap=_WORKFLOW_BODY_CAP)
+    except WebchatInvalidRequest as exc:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", exc.message)
+
+
+def _validated(model, body: dict):
+    try:
+        return model(**body)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors(include_url=False, include_context=False)) from None
+
+
+@router.get("/workflows", response_model=PublicWorkflowListResponse)
+def list_workflows(
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowListResponse:
+    return KeyWorkflowService(db).list(
+        api_ws.tenant_id, api_ws.workspace_id, limit=limit, cursor=cursor
+    )
+
+
+@router.post("/workflows", response_model=PublicWorkflowItem, status_code=status.HTTP_201_CREATED)
+async def create_workflow(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowCreateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).create,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        api_ws.key_id,
+        name=payload.name,
+        description=payload.description,
+        definition=payload.draftDefinition,
+    )
+
+
+@router.get("/workflows/{workflow_id}", response_model=PublicWorkflowItem)
+def get_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).get(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+
+
+@router.patch("/workflows/{workflow_id}", response_model=PublicWorkflowItem)
+async def update_workflow(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowUpdateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).update,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        workflow_id,
+        name=payload.name,
+        description=payload.description,
+        definition=payload.draftDefinition,
+    )
+
+
+@router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> Response:
+    KeyWorkflowService(db).archive(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
