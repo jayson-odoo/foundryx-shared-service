@@ -872,12 +872,14 @@ def test_malformed_base_url_through_the_gateway_is_403_with_a_recorded_code(
 
 # ---- nit 1: capabilities are read-only ------------------------------------------------------------
 
+@pytest.mark.skipif(not hasattr(_caps, "VENDOR_CAPABILITIES"), reason="plan 57 retired the legacy flags")
 def test_capabilities_mapping_is_read_only():
     assert isinstance(_caps.VENDOR_CAPABILITIES, MappingProxyType)
     with pytest.raises(TypeError):
         _caps.VENDOR_CAPABILITIES["unlink"] = True  # type: ignore[index]
 
 
+@pytest.mark.skipif(not hasattr(_caps, "VENDOR_CAPABILITIES"), reason="plan 57 retired the legacy flags")
 def test_all_on_fixture_swaps_the_whole_attribute(vendor_caps_all_on):
     assert isinstance(_caps.VENDOR_CAPABILITIES, MappingProxyType)
     assert all(_caps.VENDOR_CAPABILITIES.values())

@@ -517,49 +517,10 @@ def test_ac_55_25_done_stages_readback_for_remap(h):
     _assert_staged_readback_queued_for_remap(h, res)
 
 
-def test_ac_55_12_unlink_done(h, vendor_caps_all_on):
-    _make_po_sql_sourced(h)
-    res = h.service().unlink(
-        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=12013
-    )
-    assert res.outcome == "done", res.error_code
-    body = h.ac.put_bodies[0]
-    assert [r["DtlKey"] for r in body["Details"]] == [12013]
-    rows = {r["DtlKey"]: r for r in res.document["Details"]}
-    assert rows[12013]["FromSODtlKey"] == 0
-    assert rows[12013]["FromDocType"] == ""
-    assert Decimal(str(rows[12013]["Qty"])) == 10 and rows[12013]["Location"] == "HQ"
-    assert rows[12011]["FromSODtlKey"] == 11990
-    _assert_staged_readback_queued_for_remap(h, res)
-    assert h.action(res).action == "unlink"
-
-
-def test_ac_55_15_spo_unlink_done(h, vendor_caps_all_on):
-    spo = _load("spo_db1_sample.json")
-    spo["Details"][0]["FromDocType"] = "PO"
-    spo["Details"][0]["FromDocDtlKey"] = 12013
-    h.stage_spo_pointing_at(12013)
-    h.ac.serve("purchaseorderbydocdate", spo)
-    # the fake applies edits against the SPO doc too; link fields cleared by the body
-    dtl = spo["Details"][0]["DtlKey"]
-    original_apply = h.ac._apply
-
-    def apply(body):
-        for d in h.ac.docs["purchaseorderbydocdate"]:
-            if d["DocKey"] == body["DocKey"]:
-                for r in body["Details"]:
-                    next(x for x in d["Details"] if x["DtlKey"] == r["DtlKey"]).update(r)
-                d["LastModified"] = "2026-11-05T09:00:00.00"
-                return
-        original_apply(body)
-
-    h.ac._apply = apply
-    res = h.service().spo_unlink(
-        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, spo_doc_key=spo["DocKey"], spo_dtl_key=dtl
-    )
-    assert res.outcome == "done", res.error_code
-    row = h.action(res)
-    assert row.action == "spo_unlink" and row.doc_type == "SPO" and row.doc_key == spo["DocKey"]
+# Plan 57 S4: test_ac_55_12_unlink_done and test_ac_55_15_spo_unlink_done retired. The
+# unlink routes now run the delete + add operations (AutoCount never edits a link in
+# place); their success paths are covered in tests/test_autocount_write_back_operations.py
+# (test_ac_57_31_*); the flag-off refusal stays in test_autocount_write_back_vendor_caps.py.
 
 
 # ---- step 12-13: transactions + record ---------------------------------------------

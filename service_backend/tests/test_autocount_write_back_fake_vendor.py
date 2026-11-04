@@ -106,3 +106,20 @@ def test_failure_injection_is_consumed_once(v, http):
     v.drop_rows_next_create()
     http.post("/NewQuotation", json=_create_body())
     assert len(v.docs["QT"][-1]["Details"]) == 1
+
+
+def test_failure_injection_after_skips_matching_calls(v, http):
+    v.seed("PO", new_doc("PO", 400, "PO-4", "C", [{}]))
+    v.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "second", after=1)
+    assert http.put("/EditPurchaseOrderbydockey", json={"DocKey": 400}).status_code == 200
+    assert http.put("/EditPurchaseOrderbydockey", json={"DocKey": 400}).status_code == 500
+    assert http.put("/EditPurchaseOrderbydockey", json={"DocKey": 400}).status_code == 200
+
+
+def test_spo_new_linked_row_keeps_from_doc_dtl_key_and_location(v, http):
+    v.seed("PO", new_doc("SPO", 500, "SPO-5", "C", [{"Location": "BR1"}]))
+    http.put("/EditPurchaseOrderbydockey", json={"DocKey": 500, "Details": [
+        {"DtlKey": 0, "ItemCode": "A", "Location": "BR1", "Qty": 1, "UOM": "UNIT", "UnitPrice": 1.0,
+         "FromDocType": "PO", "FromDocDtlKey": 321}]})
+    row = v.rows("SPO", 500)[1]
+    assert row["FromDocDtlKey"] == 321 and row["Location"] == "BR1"

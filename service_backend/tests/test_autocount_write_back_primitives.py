@@ -109,7 +109,7 @@ class Harness:
         return row
 
     # ---- service
-    def service(self):
+    def factories(self) -> Dict[str, Any]:
         def client_factory(base_url: str):
             self.factory_urls.append(base_url)
             return AutoCountWriteClient(base_url, transport=self.vendor.transport)
@@ -131,8 +131,10 @@ class Harness:
 
             return _Sink()
 
-        return _service_cls()(self.db, client_factory=client_factory, reader_factory=reader_factory,
-                              sink_factory=sink_factory)
+        return dict(client_factory=client_factory, reader_factory=reader_factory, sink_factory=sink_factory)
+
+    def service(self):
+        return _service_cls()(self.db, **self.factories())
 
     def args(self, kind: str, **over) -> Dict[str, Any]:
         base = {"tenant_id": DEFAULT_TENANT_ID, "company_id": self.company.id, "kind": kind}
@@ -374,8 +376,8 @@ def test_ac_57_14_header_field_outside_allowlist_refused_without_write(h):
 
 def test_ac_57_14_edit_on_qt_uses_quotation_door(h):
     doc = h.seed_doc("QT", 6001, [_line("A", 1, 9.0)])
-    h.vendor.any_date = True  # a QT has no staged copy to take the DocDate from
-    res = h.edit("QT", 6001, {"Remark2": "x"}, [{"DtlKey": doc["Details"][0]["DtlKey"], "Qty": 3}])
+    res = h.edit("QT", 6001, {"Remark2": "x"}, [{"DtlKey": doc["Details"][0]["DtlKey"], "Qty": 3}],
+                 doc_date=date(2026, 11, 4))  # AC-57-20: a QT has no staged copy
     assert res.outcome == "done", res.error_code
     assert h.vendor.writes()[0].leaf == "editquotationbydockey"
 

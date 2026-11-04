@@ -59,6 +59,7 @@ class _Injection:
     mode: str  # fail | timeout | apply_then_500
     status: int = 500
     text: str = "injected failure"
+    skip: int = 0  # matching calls to let through first
 
 
 def new_doc(kind: str, doc_key: int, doc_no: str, party: str, rows: List[Dict[str, Any]], *,
@@ -134,14 +135,16 @@ class FakeAutoCountVendor:
         return not self.calls
 
     # ---- failure injection --------------------------------------------------
-    def fail_next(self, method: str, leaf: str, status: int = 500, text: str = "injected failure") -> None:
-        self._injections.append(_Injection(method.upper(), leaf.lower(), "fail", status, text))
+    def fail_next(self, method: str, leaf: str, status: int = 500, text: str = "injected failure",
+                  after: int = 0) -> None:
+        """``after`` = how many matching calls pass before the failing one."""
+        self._injections.append(_Injection(method.upper(), leaf.lower(), "fail", status, text, after))
 
-    def timeout_next(self, method: str, leaf: str) -> None:
-        self._injections.append(_Injection(method.upper(), leaf.lower(), "timeout"))
+    def timeout_next(self, method: str, leaf: str, after: int = 0) -> None:
+        self._injections.append(_Injection(method.upper(), leaf.lower(), "timeout", skip=after))
 
-    def apply_then_500_next(self, method: str, leaf: str) -> None:
-        self._injections.append(_Injection(method.upper(), leaf.lower(), "apply_then_500"))
+    def apply_then_500_next(self, method: str, leaf: str, after: int = 0) -> None:
+        self._injections.append(_Injection(method.upper(), leaf.lower(), "apply_then_500", skip=after))
 
     def drop_rows_next_create(self) -> None:
         self._drop_rows_next_create = True
@@ -150,6 +153,9 @@ class FakeAutoCountVendor:
     def _take(self, method: str, leaf: str) -> Optional[_Injection]:
         for inj in self._injections:
             if inj.method == method and inj.leaf == leaf:
+                if inj.skip > 0:
+                    inj.skip -= 1
+                    continue
                 self._injections.remove(inj)
                 return inj
         return None
@@ -239,10 +245,12 @@ class FakeAutoCountVendor:
         stored["FromDocType"] = ftype
         stored["FromDocNo"] = sent.get("FromDocNo", "")
         stored["FromDocDtlKey"] = 0  # AutoCount reads FromDocDtlKey back as 0 (P-SO0)
-        if kind in ("PO", "SPO") and ftype in ("SO", "PO"):
+        if kind == "SPO":  # an SPO row keeps FromDocDtlKey (its PO row); no forced location
+            stored["FromDocDtlKey"] = int(sent.get("FromDocDtlKey") or 0)
+        elif kind == "PO" and ftype == "SO":
             stored["FromSODtlKey"] = int(sent.get("FromDocDtlKey") or 0)
             stored["FromDocDtlKey"] = int(sent.get("FromDocDtlKey") or 0)
-            stored["Location"] = "HQ"  # db3 forces HQ on a new linked row
+            stored["Location"] = "HQ"  # db3 forces HQ on a new row linked to an SO row
 
     # ---- PUT ---------------------------------------------------------------
     def _edit(self, kind: str, body: Dict[str, Any]) -> httpx.Response:
@@ -261,7 +269,7 @@ class FakeAutoCountVendor:
                 row = new_doc(kind, 0, "", "", [{}])["Details"][0]
                 row.update({k: v for k, v in sent.items() if k not in LINK_FIELDS})
                 row.update({"DtlKey": self._next_key, "DocKey": doc["DocKey"], "Seq": 16 * (len(doc["Details"]) + 1)})
-                self._apply_new_row_link(kind, row, sent)
+                self._apply_new_row_link("SPO" if doc.get("ShippingPO") == "T" else kind, row, sent)
                 doc["Details"].append(row)
             else:
                 target = next((r for r in doc["Details"] if r["DtlKey"] == sent["DtlKey"]), None)
