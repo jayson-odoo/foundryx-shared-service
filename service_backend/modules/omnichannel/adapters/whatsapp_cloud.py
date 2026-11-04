@@ -20,7 +20,16 @@ from .base import CodeExchangeError, ConnectionStatus, SendError, UnexpectedSend
 # verbatim; re-imported here so every existing import site of these names off
 # ``whatsapp_cloud`` (``services/activity.py`` imports GraphCall/GraphRecorder
 # directly from this module) keeps working with zero churn (AC-CHN-15).
-from .meta_graph import GraphCall, GraphRecorder, MetaGraphMixin, _meta_error_detail, meta_error_code, provider_error_text  # noqa: F401
+from .meta_graph import (  # noqa: F401
+    GraphCall,
+    GraphRecorder,
+    MetaGraphMixin,
+    _meta_error_detail,
+    is_whatsapp_rate_limited,
+    meta_error_code,
+    parse_retry_after,
+    provider_error_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +309,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 headers={"Authorization": f"Bearer {token}"},
             )
             if resp.status_code != 200:
+                throttled = is_whatsapp_rate_limited(resp)
                 try:
                     detail = resp.json().get("error", {}).get("message", "")
                 except ValueError:
@@ -307,8 +317,10 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 raise SendError(
                     provider_error_text(_scrub_credential(detail, str(token or "")))
                     or f"Media upload failed ({resp.status_code}).",
-                    transient=resp.status_code >= 500,
+                    transient=resp.status_code >= 500 or throttled,
                     code=meta_error_code(resp),
+                    rate_limited=throttled,
+                    retry_after=parse_retry_after(resp) if throttled else None,
                 )
             media_id = resp.json().get("id", "")
             if not media_id:
@@ -449,6 +461,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             )
             self._last_http_status = resp.status_code
             if resp.status_code != 200:
+                throttled = is_whatsapp_rate_limited(resp)
                 try:
                     detail = resp.json().get("error", {}).get("message", "")
                 except ValueError:
@@ -458,8 +471,10 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                         _scrub_credential(detail, str(credentials.get("access_token", "") or ""))
                     )
                     or f"Meta returned {resp.status_code}.",
-                    transient=resp.status_code >= 500,
+                    transient=resp.status_code >= 500 or throttled,
                     code=meta_error_code(resp),
+                    rate_limited=throttled,
+                    retry_after=parse_retry_after(resp) if throttled else None,
                 )
             data = resp.json()
             wamid = (data.get("messages") or [{}])[0].get("id", "")
@@ -521,7 +536,13 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 text = f"Meta refused the read receipt: HTTP {resp.status_code}"
                 if code is not None:
                     text += f", code {code}"
-                raise SendError(text + ".", transient=resp.status_code >= 500)
+                throttled = is_whatsapp_rate_limited(resp)
+                raise SendError(
+                    text + ".",
+                    transient=resp.status_code >= 500,
+                    rate_limited=throttled,
+                    retry_after=parse_retry_after(resp) if throttled else None,
+                )
             try:
                 body = resp.json()
             except ValueError:

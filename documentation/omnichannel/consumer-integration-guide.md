@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-04** | **Meta rate-limit retry** (sections 7, 10). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
 > | **2026-11-04** | **Developer Logs body capture** (section 13.3). A request or response body that is over the capture limit, or JSON that does not parse, is now shown as a note with its size and is never stored as raw text. Additive: no API field changes. |
 > | **2026-11-04** | **Workflows and business hours under the API key** (sections 6c, 6d, 10). New routes under `/workflows` (catalog, create, list, get, edit, archive, validate, publish, unpublish, active, versions, runs, run for one contact) and `/business-hours` (get, put), all scoped to the key's workspace. New error codes `node_not_allowed`, `invalid_definition`, `workflow_not_runnable` and `edit_conflict`. Additive and not breaking: no existing route, field or code changes. |
 > | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
@@ -1281,7 +1282,11 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
 | `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
+| `meta_rate_limited` | 429 | Meta is rate limiting the channel for a call made inside your request: a read receipt (`POST /contacts/{id}/read`) or a reaction send. Nothing was stored for the reaction. The `Retry-After` header gives the seconds to wait (Meta's value when it sent one). Distinct from `rate_limited`, which is this API's own per-key limit. |
 
+### Meta rate limits on a send
+
+When Meta rate limits a WhatsApp send (HTTP 429, or error code `130429`, `131056`, `80007`, `4`, `17`, `32` or `613`) the message stays `pending` and the platform retries it itself: after 15, 60, 180 and 600 seconds, each plus up to 20% jitter, and later when Meta sends a `Retry-After` header (up to 600 seconds). That is at most 4 retries, about 14 minutes in all. No status event goes out while a retry is pending. If the retries run out the message ends `failed`, `status[].code` / `errorCode` keeps Meta's code (for example `130429`), and exactly one `failed` status event is sent. Code `131048` (spam rate limit) is never retried: the message ends `failed` on the first attempt. Other temporary failures (Meta 5xx, network) keep their own shorter retry schedule.
 
 ---
 

@@ -11,6 +11,7 @@ request session (a worker would open a different DB session and not see the
 in-request row - the workflow-engine eager pattern).
 """
 import logging
+import random
 from typing import Optional
 
 import httpx
@@ -146,9 +147,40 @@ class TransientSendError(Exception):
     the row QUEUED for a later manual retry (dev uses the stub adapter - no
     transient failures). ``code`` is the provider's error code when it gave one."""
 
-    def __init__(self, message: str = "", *, code: Optional[str] = None):
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        code: Optional[str] = None,
+        rate_limited: bool = False,
+        retry_after: Optional[int] = None,
+    ):
         super().__init__(message)
+        # Meta throttled the call: the worker retries on the slower rate-limit
+        # schedule (plan 56 A), raised by Meta's `Retry-After` when it sent one.
+        self.rate_limited = rate_limited
+        self.retry_after = retry_after
         self.code = code
+
+
+# Rate-limited WhatsApp sends (plan 56 A): up to 4 retries at these delays (plus
+# up to 20% jitter), about 14 minutes in all. Other transient errors keep the
+# task's own backoff.
+RATE_LIMIT_RETRY_DELAYS = (15, 60, 180, 600)
+RATE_LIMIT_MAX_RETRIES = len(RATE_LIMIT_RETRY_DELAYS)
+RATE_LIMIT_DELAY_CAP = 600
+RATE_LIMIT_JITTER = 0.2
+
+
+def rate_limit_countdown(retries: int, retry_after: Optional[int] = None) -> float:
+    """Seconds before the next attempt of a rate-limited send. Meta's
+    ``Retry-After`` raises the delay (never lowers it); Meta's value counts up
+    to the last scheduled delay."""
+    base = RATE_LIMIT_RETRY_DELAYS[min(max(retries, 0), RATE_LIMIT_MAX_RETRIES - 1)]
+    delay = base * (1 + random.uniform(0, RATE_LIMIT_JITTER))
+    if retry_after:
+        delay = max(delay, float(min(retry_after, RATE_LIMIT_DELAY_CAP)))
+    return delay
 
 
 def _record_broadcast_receipt(db: Session, row: ConversationMessage) -> None:
@@ -186,7 +218,13 @@ def _fail(db: Session, row: ConversationMessage, message: str, code: Optional[st
 
 
 def _requeue_transient(
-    db: Session, row: ConversationMessage, message: str, code: Optional[str] = None
+    db: Session,
+    row: ConversationMessage,
+    message: str,
+    code: Optional[str] = None,
+    *,
+    rate_limited: bool = False,
+    retry_after: Optional[int] = None,
 ) -> None:
     """Reset a claimed row to QUEUED so a retry re-sends (the send did NOT reach
     the contact), then raise for backoff. Only reached BEFORE ``adapter.send``
@@ -198,7 +236,12 @@ def _requeue_transient(
     row.error_message = TRANSIENT_ERROR_TEXT
     row.error_code = str(code) if code else None
     db.commit()
-    raise TransientSendError(message, code=str(code) if code else None)
+    raise TransientSendError(
+        message,
+        code=str(code) if code else None,
+        rate_limited=rate_limited,
+        retry_after=retry_after,
+    )
 
 
 UNEXPECTED_ERROR_TEXT = "The message could not be sent"
@@ -527,7 +570,14 @@ def _run_send(
         return _fail(db, row, exc.message)
     except SendError as exc:
         if getattr(exc, "transient", False):
-            _requeue_transient(db, row, str(exc), code=getattr(exc, "code", None))
+            _requeue_transient(
+                db,
+                row,
+                str(exc),
+                code=getattr(exc, "code", None),
+                rate_limited=bool(getattr(exc, "rate_limited", False)),
+                retry_after=getattr(exc, "retry_after", None),
+            )
         return _fail(db, row, str(exc), code=getattr(exc, "code", None))
     except (httpx.HTTPError, OSError) as exc:
         # Transport / stored-media read blip - retryable with backoff.

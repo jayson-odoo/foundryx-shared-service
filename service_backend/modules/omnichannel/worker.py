@@ -83,15 +83,33 @@ def omnichannel_send_message(self, message_id: str, trace_id: Optional[str] = No
     ``trace_id_var`` defaults to None, so without this the outbound Meta row would
     lose the trace in prod. ``run_send`` re-seeds the contextvar from it."""
     from app.database import SessionLocal
-    from modules.omnichannel.services.send_runner import fail_unfinished, run_send
+    from modules.omnichannel.services.send_runner import (
+        RATE_LIMIT_MAX_RETRIES,
+        TransientSendError,
+        fail_unfinished,
+        rate_limit_countdown,
+        run_send,
+    )
 
     db = SessionLocal()
     try:
         return run_send(db, message_id, trace_id=trace_id)
-    except Exception:
+    except Exception as exc:
+        retries = self.request.retries
+        # A Meta rate limit has its own, slower schedule and budget (plan 56 A).
+        if isinstance(exc, TransientSendError) and exc.rate_limited:
+            if retries < RATE_LIMIT_MAX_RETRIES:
+                raise self.retry(
+                    exc=exc,
+                    countdown=rate_limit_countdown(retries, exc.retry_after),
+                    max_retries=RATE_LIMIT_MAX_RETRIES,
+                )
+            # Budget spent: the row ends FAILED and the task ends with it (no
+            # raise, so autoretry cannot queue a further attempt).
+            return fail_unfinished(db, message_id, "retries exhausted")
         # Last attempt: end the row FAILED (one status event) instead of
         # leaving it QUEUED. Earlier attempts just let Celery retry.
-        if self.request.retries >= self.max_retries:
+        if retries >= self.max_retries:
             fail_unfinished(db, message_id, "retries exhausted")
         raise
     finally:

@@ -51,6 +51,7 @@ from .media_pipeline import META_CEILINGS, MediaRejected
 from .message_service import (
     CSW_CLOSED_MESSAGE,
     MessageService,
+    MetaRateLimited,
     SendRejected,
     template_body_text,
     template_variable_count,
@@ -312,6 +313,15 @@ class PublicGatewayService:
                 422, "channel_not_available_for_contact",
                 "This contact has no identity on the selected channel.",
             )
+
+    @staticmethod
+    def _meta_rate_limited(retry_after: Optional[int]) -> ApiError:
+        """Meta throttled a call made inside the request (plan 56 A): 429
+        `meta_rate_limited` + `Retry-After` seconds, distinct from the per-key
+        limiter's own `rate_limited`."""
+        return ApiError(
+            429, "meta_rate_limited", "Meta is rate limiting this channel. Try again shortly."
+        ).with_retry_after(max(1, int(retry_after or 30)))
 
     @staticmethod
     def _map_send_rejected(exc: "SendRejected", *, default_code: str = "send_rejected") -> ApiError:
@@ -846,7 +856,10 @@ class PublicGatewayService:
                         "read receipt failed on channel %s: %s", p["channel_id"], exc
                     )
                     status = "failed"
-                except SendError:
+                except SendError as exc:
+                    if getattr(exc, "rate_limited", False):
+                        self.db.rollback()
+                        raise self._meta_rate_limited(exc.retry_after) from exc
                     status = "failed"
                 except Exception:  # noqa: BLE001 - one channel never stops the others.
                     logger.warning("read receipt failed on channel %s", p["channel_id"])
@@ -1251,6 +1264,8 @@ class PublicGatewayService:
                 req.reaction.messageId, tenant_id, actor, emoji=req.reaction.emoji,
                 actor_is_human=False,
             )
+        except MetaRateLimited as exc:
+            raise self._meta_rate_limited(exc.retry_after) from exc
         except SendRejected as exc:
             raise self._map_send_rejected(exc, default_code="invalid_request") from exc
         return target.id

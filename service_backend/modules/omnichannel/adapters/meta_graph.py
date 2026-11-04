@@ -62,6 +62,12 @@ GraphRecorder = Callable[[GraphCall], None]
 # https://developers.facebook.com/docs/graph-api/overview/rate-limiting
 _RATE_LIMIT_ERROR_CODES = {4, 17, 32, 613}
 
+# WhatsApp Cloud API throttles (plan 56 A): the Graph set plus 80007 (WhatsApp
+# Business Account rate limit), 130429 (Cloud API throughput) and 131056
+# (pair rate limit). 131048 (spam rate limit) is deliberately NOT here:
+# retrying a number Meta flags for spam lowers its quality further.
+WHATSAPP_RATE_LIMIT_ERROR_CODES = _RATE_LIMIT_ERROR_CODES | {80007, 130429, 131056}
+
 
 def is_rate_limited_error(resp: "httpx.Response") -> bool:
     """True when this Graph response is Meta throttling the call - a raw HTTP
@@ -75,6 +81,30 @@ def is_rate_limited_error(resp: "httpx.Response") -> bool:
     except ValueError:
         return False
     return code in _RATE_LIMIT_ERROR_CODES
+
+
+def is_whatsapp_rate_limited(resp: "httpx.Response") -> bool:
+    """`is_rate_limited_error` with the WhatsApp code set. Never raises."""
+    if resp.status_code == 429:
+        return True
+    try:
+        code = ((resp.json() or {}).get("error") or {}).get("code")
+    except (ValueError, AttributeError):
+        return False
+    return code in WHATSAPP_RATE_LIMIT_ERROR_CODES
+
+
+def parse_retry_after(resp: "httpx.Response") -> Optional[int]:
+    """Meta's `Retry-After` header as whole seconds (>= 1), or None when absent
+    or not an integer. Never raises."""
+    raw = resp.headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        seconds = int(str(raw).strip())
+    except ValueError:
+        return None
+    return seconds if seconds >= 1 else None
 
 
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
