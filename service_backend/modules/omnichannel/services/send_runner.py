@@ -18,6 +18,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from ..adapters.base import SendError
+from ..adapters.meta_graph import sanitise_stored_pricing
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import MEDIA_MESSAGE_TYPES, Channel, ConversationMessage
 from ..repositories.contact_repository import ContactRepository
@@ -104,6 +105,10 @@ def _emit_status_webhook(
                 # Error fields ride FAILED only (AC-38-15).
                 "errorCode": row.error_code if failed else None,
                 "errorMessage": row.error_message if failed else None,
+                # Meta's per-message pricing when a receipt stored it (plan 56 B).
+                "pricing": sanitise_stored_pricing(
+                    row.metadata_json.get("pricing") if isinstance(row.metadata_json, dict) else None
+                ),
             },
         )
     except Exception:  # noqa: BLE001 - a webhook bug must never break a send

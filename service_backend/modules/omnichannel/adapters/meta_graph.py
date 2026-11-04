@@ -116,6 +116,51 @@ def is_whatsapp_rate_limited(resp: "httpx.Response") -> bool:
     return code in WHATSAPP_RATE_LIMIT_ERROR_CODES
 
 
+_PRICING_TEXT_RE = re.compile(r"[a-z0-9_]{1,40}")
+
+
+def _pricing_text(value: Any) -> Optional[str]:
+    """One pricing string: lower-cased, 1-40 chars of [a-z0-9_], else None."""
+    if not isinstance(value, str):
+        return None
+    low = value.lower()
+    return low if _PRICING_TEXT_RE.fullmatch(low) else None
+
+
+def _pricing_object(billable: Any, model: Any, category: Any, kind: Any) -> Optional[dict]:
+    out = {
+        "billable": billable if isinstance(billable, bool) else None,
+        "pricingModel": _pricing_text(model),
+        "category": _pricing_text(category),
+        "type": _pricing_text(kind),
+    }
+    # All four null is no pricing at all: callers store nothing.
+    return out if any(v is not None for v in out.values()) else None
+
+
+def normalise_pricing(raw: Any) -> Optional[dict]:
+    """A WhatsApp status entry's `pricing` (Meta input, snake_case) as
+    `{billable, pricingModel, category, type}` (plan 56 B), or None when it is
+    not an object or nothing in it is usable. Unknown keys are dropped. Never
+    raises."""
+    if not isinstance(raw, dict):
+        return None
+    return _pricing_object(
+        raw.get("billable"), raw.get("pricing_model"), raw.get("category"), raw.get("type")
+    )
+
+
+def sanitise_stored_pricing(raw: Any) -> Optional[dict]:
+    """The STORED shape (camelCase) re-checked by the same field rules before
+    it is read onto the wire: a non-object, or an object with no usable field,
+    is None. Never raises."""
+    if not isinstance(raw, dict):
+        return None
+    return _pricing_object(
+        raw.get("billable"), raw.get("pricingModel"), raw.get("category"), raw.get("type")
+    )
+
+
 def parse_retry_after(resp: "httpx.Response") -> Optional[int]:
     """Meta's `Retry-After` header as whole seconds (1 to 600), or None when
     absent or not a plain integer. A longer value counts as 600; the digits are

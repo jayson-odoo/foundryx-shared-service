@@ -180,3 +180,7 @@ Consumer doc: guide sections 6c and 6d (the guide is the contract).
 #### Meta rate-limit retry (plan sprint-5/56 A)
 
 A WhatsApp send Meta throttles (HTTP 429 or codes 4/17/32/613/80007/130429/131056, `WHATSAPP_RATE_LIMIT_ERROR_CODES`; 131048 stays permanent) is re-queued by the `omnichannel_send_message` task's own `self.retry(countdown=...)` at 15/60/180/600 s plus up to 20% jitter (`send_runner.rate_limit_countdown`, Meta's `Retry-After` raises it up to 600), 4 retries, then FAILED with Meta's code and one status webhook. Other transient errors keep the task backoff. Sync key routes (read receipt, reaction) answer 429 `meta_rate_limited` + `Retry-After`.
+
+#### Meta pricing per message (plan sprint-5/56 B)
+
+WhatsApp `statuses[].pricing` is normalised once (`meta_graph.normalise_pricing`: bool or null, lower-case `[a-z0-9_]{1,40}` strings or null, unknown keys dropped) and stored as `metadata_json["pricing"]` (fresh dict, latest non-null wins, committed even when the receipt does not advance the status). `pricing` (object or null, key always present) rides both `message.status` builders and the default `MessageItem`; the rio shape never has it. No backfill exists: older messages answer null.

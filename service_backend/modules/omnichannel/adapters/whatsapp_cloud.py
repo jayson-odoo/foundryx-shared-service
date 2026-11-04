@@ -27,6 +27,7 @@ from .meta_graph import (  # noqa: F401
     _meta_error_detail,
     is_whatsapp_rate_limited,
     meta_error_code,
+    normalise_pricing,
     parse_retry_after,
     provider_error_text,
 )
@@ -976,6 +977,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                             "status": (s.get("status") or "").upper(),
                             "error_code": str(err.get("code")) if err.get("code") else None,
                             "error_message": err.get("title") or err.get("message"),
+                            "pricing": normalise_pricing(s.get("pricing")),
                         }
                     )
         return events
