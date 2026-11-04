@@ -9,9 +9,7 @@ then the only PO source).
 
 from __future__ import annotations
 
-import copy
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import Any, Dict, List
 
 import pytest
