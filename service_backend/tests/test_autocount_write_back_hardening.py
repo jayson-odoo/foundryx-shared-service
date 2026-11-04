@@ -61,6 +61,7 @@ from tests.write_back_host_pin import (  # noqa: F401
     TEST_HOST_SHA256,
     pin_test_write_host,
 )
+from tests.write_back_caps import vendor_caps_all_on  # noqa: F401
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -530,7 +531,7 @@ def test_h9_spo_edit_sends_shipping_po_flag():
     assert body["ShippingPO"] == "T"
 
 
-def test_h9_spo_edit_through_service_puts_shipping_po_t(h):
+def test_h9_spo_edit_through_service_puts_shipping_po_t(h, vendor_caps_all_on):
     spo = _load("spo_db1_sample.json")
     spo["Details"][0]["FromDocType"] = "PO"
     spo["Details"][0]["FromDocDtlKey"] = 12013
@@ -546,7 +547,7 @@ def test_h9_spo_edit_through_service_puts_shipping_po_t(h):
 
 # ---- H10 DOC_KIND_MISMATCH -------------------------------------------------------------------
 
-def test_h10_po_dockey_sent_to_spo_unlink_is_kind_mismatch(h):
+def test_h10_po_dockey_sent_to_spo_unlink_is_kind_mismatch(h, vendor_caps_all_on):
     res = h.service().spo_unlink(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, spo_doc_key=12008, spo_dtl_key=12013
     )
@@ -554,7 +555,7 @@ def test_h10_po_dockey_sent_to_spo_unlink_is_kind_mismatch(h):
     assert h.ac.put_calls == []
 
 
-def test_h10_spo_dockey_sent_to_unlink_is_kind_mismatch(h):
+def test_h10_spo_dockey_sent_to_unlink_is_kind_mismatch(h, vendor_caps_all_on):
     h.stage_spo_pointing_at(12013)
     spo = _load("spo_db1_sample.json")
     res = h.service().unlink(

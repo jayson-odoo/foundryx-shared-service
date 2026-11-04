@@ -34,6 +34,7 @@ from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.service import WriteBackService
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
+from tests.write_back_caps import vendor_caps_all_on  # noqa: F401
 
 FIX = Path(__file__).parent / "fixtures" / "autocount_write_back"
 DB3 = "https://ac.example.test/api/db3"
@@ -381,7 +382,7 @@ def test_ac_55_15_spo_row_pointing_at_po_row_blocks_link(h):
     assert h.ac.put_calls == []
 
 
-def test_ac_55_15_spo_blocks_unlink(h):
+def test_ac_55_15_spo_blocks_unlink(h, vendor_caps_all_on):
     h.stage_spo_pointing_at(12013)
     res = h.service().unlink(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=12013
@@ -516,7 +517,7 @@ def test_ac_55_25_done_stages_readback_for_remap(h):
     _assert_staged_readback_queued_for_remap(h, res)
 
 
-def test_ac_55_12_unlink_done(h):
+def test_ac_55_12_unlink_done(h, vendor_caps_all_on):
     _make_po_sql_sourced(h)
     res = h.service().unlink(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=12013
@@ -533,7 +534,7 @@ def test_ac_55_12_unlink_done(h):
     assert h.action(res).action == "unlink"
 
 
-def test_ac_55_15_spo_unlink_done(h):
+def test_ac_55_15_spo_unlink_done(h, vendor_caps_all_on):
     spo = _load("spo_db1_sample.json")
     spo["Details"][0]["FromDocType"] = "PO"
     spo["Details"][0]["FromDocDtlKey"] = 12013
