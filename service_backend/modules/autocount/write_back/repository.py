@@ -159,6 +159,41 @@ class StagedDocRepository:
         )
 
 
+class CompanyDataRepository:
+    """What a company already holds that a write connection must not meet (AC-57-22)."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def has_sql_source(self, tenant_id: str, company_id: str) -> bool:
+        return (
+            self.db.query(AcEntityConfig.id)
+            .filter(
+                AcEntityConfig.tenant_id == tenant_id,
+                AcEntityConfig.company_id == company_id,
+                AcEntityConfig.source_impl == "sql_db",
+            )
+            .first()
+            is not None
+        )
+
+    def has_foreign_document_rows(
+        self, tenant_id: str, company_id: str, entity_types: "tuple[str, ...]", own_job_id: str
+    ) -> bool:
+        """A staged document row (PO / SPO / SO) of any job but ``own_job_id``."""
+        return (
+            self.db.query(AcStagedRecord.id)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.entity_type.in_(entity_types),
+                AcStagedRecord.job_id != own_job_id,
+            )
+            .first()
+            is not None
+        )
+
+
 class EntitySourceRepository:
     def __init__(self, db: Session) -> None:
         self.db = db

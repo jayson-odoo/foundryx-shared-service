@@ -140,13 +140,6 @@ class _Done(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def default_receipt_reader(kind: str, doc: Doc, row: Doc) -> Optional[Decimal]:
-    """The row's AutoCount ``TransferedQty``; the hapi GET does not return it
-    (AQ11), so a hapi document row reads as unknown (None)."""
-    value = row.get("TransferedQty")
-    return None if value is None else _dec(value)
-
-
 def primitive_answer(res: PrimitiveResult, doc_key: Optional[int] = None) -> Dict[str, Any]:
     """The gateway answer of a primitive (contract section 4)."""
     return {
@@ -187,7 +180,7 @@ class OperationService:
             db, client_factory=client_factory, reader_factory=reader_factory, sink_factory=sink_factory
         )
         self.ops = OperationRepository(db)
-        self._receipt_reader = receipt_reader or default_receipt_reader
+        self._receipt_reader = receipt_reader  # None = the default source order (frame)
         self._notifier = notifier or self._mail
         self._steps: List[Dict[str, Any]] = []
         self._warnings: List[str] = []
@@ -397,7 +390,7 @@ class OperationService:
             raise _Done(REFUSED, "ROW_NOT_LINKED")
         if defn.mode == "relink" and linked == spec.target_dtl_key:
             raise _Done(REFUSED, "NO_CHANGE")
-        mode, received = self._receipt(defn, doc, row)
+        mode, received = self._receipt(company, defn, doc, row)
         qty = _dec(row.get("Qty"))
         link_qty = qty - received if mode == "partial" else qty
         target: Optional[Doc] = None
@@ -405,10 +398,13 @@ class OperationService:
             target = self._guard_target(company, reader, defn, spec, doc, row, link_qty)
         return {"mode": mode, "received": received, "target": target, "linkQty": link_qty}
 
-    def _receipt(self, defn: _OpDef, doc: Doc, row: Doc) -> Tuple[str, Optional[Decimal]]:
+    def _receipt(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Tuple[str, Optional[Decimal]]:
         """``("delete" | "partial", received)``; an unknown received qty goes the
         delete way with a warning (owner ruling: the refusal comes from AutoCount)."""
-        received = self._receipt_reader(defn.kind, doc, row)
+        if self._receipt_reader is not None:
+            received = self._receipt_reader(defn.kind, doc, row)
+        else:
+            received = self.prims._row_received(company, defn.kind, dict(row, DocKey=doc.get("DocKey")))
         if received is None:
             self._warnings.append(TRANSFER_STATE_UNKNOWN)
             return "delete", None

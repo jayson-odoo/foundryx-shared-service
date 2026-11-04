@@ -23,7 +23,9 @@ from modules.autocount.repositories import ConnectionRepository
 from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader
+from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
 from modules.autocount.write_back.repository import (
+    EntitySourceRepository,
     StagedDocRepository,
     WriteActionRepository,
 )
@@ -190,6 +192,28 @@ class WriteFrame:
             code, message = refusal  # type: ignore[misc]
             raise self._refuse(row, code, message)
         return base_url
+
+    def _row_received(self, company: AcCompany, kind: str, row: Doc) -> Optional[Decimal]:
+        """Qty of this row already received (PO / SPO) or delivered (SO), or None when
+        unknown (AC-57-33 source order): the GET row's ``TransferedQty``; else, when the
+        company's entity config for the document type is ``sql_db``, the staged canonical
+        line's ``qty_received`` / ``qty_delivered`` of the newest staged row; else None."""
+        if row.get("TransferedQty") is not None:
+            return _dec(row.get("TransferedQty"))
+        entity = ENTITY_BY_KIND[kind]
+        if EntitySourceRepository(self.db).source_impl(company.tenant_id, company.id, entity) != "sql_db":
+            return None
+        doc_key = row.get("DocKey")
+        staged = self.staged.newest(
+            company.tenant_id, company.id, entity, f"{company.database_name}:{doc_key}"
+        )
+        wanted = f"{company.database_name}:{doc_key}:{row.get('DtlKey')}"
+        field_name = "qty_delivered" if kind == "SO" else "qty_received"
+        for line in ((staged.canonical_json or {}).get("lines") or []) if staged else []:
+            if isinstance(line, dict) and line.get("source_ref") == wanted:
+                value = line.get(field_name)
+                return None if value is None else _dec(value)
+        return None
 
     def _stage(
         self, company: AcCompany, kind: str, doc: Doc, replaced: Optional[Dict[int, int]] = None

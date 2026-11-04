@@ -69,7 +69,8 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
-from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, CompanyDataRepository
+from modules.autocount.write_back.staging import STAGING_JOB_ID
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -754,8 +755,17 @@ def set_write_connection(
     connection whose base URL passes the write guard (db3 only), else a
     ``WriteConnectionError`` with the company unchanged."""
     company = CompanyRepository(db).get(tenant_id, company_id)
+    if company is None:
+        raise WriteConnectionError("CONNECTION_NOT_FOUND")
+    # AC-57-22: company-scoped data first. A company that reads SQL, or already holds
+    # documents staged by another job, is a live book: it never gets a write connection.
+    data = CompanyDataRepository(db)
+    if data.has_sql_source(tenant_id, company.id) or data.has_foreign_document_rows(
+        tenant_id, company.id, (ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER, ENTITY_SALES_ORDER), STAGING_JOB_ID
+    ):
+        raise WriteConnectionError("WRITE_COMPANY_NOT_TEST")
     conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
-    if company is None or conn is None:
+    if conn is None:
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
     try:
         assert_write_allowed(str((conn.config_json or {}).get("baseUrl") or ""))

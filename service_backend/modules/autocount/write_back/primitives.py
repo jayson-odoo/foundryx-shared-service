@@ -71,6 +71,7 @@ FIELD_IGNORED = "FIELD_IGNORED"
 ANSWER_UNPARSEABLE = "ANSWER_UNPARSEABLE"
 QTY_BELOW_TRANSFERRED = "QTY_BELOW_TRANSFERRED"
 ROW_HAS_TRANSFERS = "ROW_HAS_TRANSFERS"
+ROW_RECEIVED = "ROW_RECEIVED"
 DOC_HAS_TRANSFERS = "DOC_HAS_TRANSFERS"
 DOC_NOT_DELETED = "DOC_NOT_DELETED"
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
@@ -371,6 +372,10 @@ class PrimitiveService(WriteFrame):
         elif call.primitive == DELETE_LINE:
             if self._so_linked_qty(company, int(call.dtl_key or 0)) > 0:
                 raise WriteRefusal(ROW_HAS_TRANSFERS, "row is linked by purchase order lines")
+            row = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == call.dtl_key), {})
+            delivered = self._row_received(company, "SO", dict(row, DocKey=doc.get("DocKey")))
+            if delivered is not None and delivered > 0:  # unknown is left to AutoCount
+                raise WriteRefusal(ROW_RECEIVED, "row has delivered quantity")
         elif call.primitive == CANCEL:
             if any(self._so_linked_qty(company, r.get("DtlKey")) > 0 for r in doc.get("Details") or []):
                 raise WriteRefusal(DOC_HAS_TRANSFERS, "lines are linked by purchase order lines")

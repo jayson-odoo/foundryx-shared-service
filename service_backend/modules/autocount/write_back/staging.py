@@ -59,6 +59,8 @@ class DocStager:
         """Never raises: the caller's own outcome (a verified write, a fetched
         day) must stand whatever happens here."""
         try:
+            if self._left_alone(company, doc, kind):
+                return StageOutcome(False, False)
             row, changed = self._stage_raw(company, doc, kind, skip_unchanged)
             self.db.commit()
             if not changed:
@@ -68,6 +70,14 @@ class DocStager:
             self.db.rollback()
             logger.exception("autocount write-back staging/push failed")
             return StageOutcome(False, False)
+
+    def _left_alone(self, company: AcCompany, doc: Doc, kind: str) -> bool:
+        """AC-57-22: the newest row of this document was staged by another job (a SQL
+        sync): it is never touched and nothing is pushed; the write still answers."""
+        newest = self.staged.newest(
+            company.tenant_id, company.id, ENTITY_BY_KIND[kind], f"{company.database_name}:{doc.get('DocKey')}"
+        )
+        return newest is not None and newest.job_id != STAGING_JOB_ID
 
     def _stage_raw(
         self, company: AcCompany, doc: Doc, kind: str, skip_unchanged: bool
@@ -92,6 +102,15 @@ class DocStager:
             )
             self.db.add(row)
         elif skip_unchanged and row.status == STAGED_PUSHED and row.raw_json == raw:
+            return row, False
+        elif EntitySourceRepository(self.db).source_impl(
+            company.tenant_id, company.id, entity_type
+        ) == SOURCE_IMPL_SQL_DB:
+            # SQL-sourced entity (AC-57-33): the sync owns the canonical (and its qty);
+            # the write keeps only the raw read-back, never wipes it.
+            row.raw_json = raw
+            row.doc_no = str(doc.get("DocNo") or row.doc_no or "")
+            self.db.flush()
             return row, False
         row.raw_json = raw
         row.doc_no = str(doc.get("DocNo") or row.doc_no or "")
