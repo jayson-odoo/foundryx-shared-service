@@ -195,6 +195,25 @@ class FromSoExternal(BaseModel):
     dtl_key: Optional[int] = None
 
 
+# Plan 57 S5: ``replaces_line_ref`` reaches Sorento only when the consumer's
+# ADVERTISED contract is at least this (major, minor); Sorento ingest uses
+# ``extra="forbid"``. ``sinks_sorento.REPLACES_LINE_REF_CONTRACT_VERSION`` is the
+# same number as a ``ContractVersion``.
+REPLACES_LINE_REF_MIN_CONTRACT: Tuple[int, int] = (2, 12)
+
+
+def advertises_replaces_line_ref(advertised: Any) -> bool:
+    """True when the advertised contract is known and >= 2.12. A
+    ``ContractVersion`` compares as (major, minor); a bare float cannot carry a
+    two-digit minor (2.10 reads as 2.1), so it only counts by its major."""
+    if advertised is None:
+        return False
+    major, minor = getattr(advertised, "major", None), getattr(advertised, "minor", None)
+    if major is None or minor is None:
+        major, minor = int(advertised), 0
+    return (int(major), int(minor)) >= REPLACES_LINE_REF_MIN_CONTRACT
+
+
 class CanonicalDocumentLine(CanonicalLine):
     """Shared line rules (mirrors Sorento's ``_CanonicalLine``).
 
@@ -239,7 +258,9 @@ class CanonicalDocumentLine(CanonicalLine):
     # signal. Empty on the shared base; PO/SPO lines populate it (Group A).
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ()
 
-    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+    def sink_payload(
+        self, *, contract_version: int = 1, advertised_contract: Any = None
+    ) -> Dict[str, Any]:
         """The wire shape for ONE line. ``contract_version`` (default 1,
         AC-02-14) is the connection's own ``sorento_contract_version``
         setting - the AUTHORITATIVE gate. It is never inferred from what
@@ -258,6 +279,8 @@ class CanonicalDocumentLine(CanonicalLine):
         for name in self.OMIT_WHEN_EMPTY_FIELDS:
             if not payload.get(name):
                 payload.pop(name, None)
+        if not advertises_replaces_line_ref(advertised_contract):
+            payload.pop("replaces_line_ref", None)  # contract gate (plan 57 S5)
         return payload
 
 
@@ -274,14 +297,20 @@ class CanonicalSalesOrderLine(CanonicalDocumentLine):
     line_remark: Optional[str] = None
     section_heading: Optional[str] = None
 
+    # Plan 57 S5: ``{db}:{DocKey}:{DtlKey}`` of the row this line replaced (delete + add
+    # of an operation); input from the write flow, wire field gated by the advertised
+    # contract (see ``sink_payload``).
+    replaces_line_ref: Optional[str] = Field(None, max_length=255)
+
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "product_ref", "warehouse_ref", "qty_ordered",
         "qty_delivered", "unit_price", "discount", "line_total", "uom",
         "required_date",
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
-        CanonicalDocumentLine.FALLBACK_FIELDS + ("line_remark", "section_heading")
+        CanonicalDocumentLine.FALLBACK_FIELDS + ("line_remark", "section_heading", "replaces_line_ref")
     )
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("replaces_line_ref",)
 
 
 class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
@@ -316,6 +345,11 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
     from_po_line_ref: Optional[str] = Field(None, max_length=255)
     from_po_number: Optional[str] = Field(None, max_length=100)
 
+    # Plan 57 S5: ``{db}:{DocKey}:{DtlKey}`` of the row this line replaced (delete + add
+    # of an operation); input from the write flow, wire field gated by the advertised
+    # contract (see ``sink_payload``).
+    replaces_line_ref: Optional[str] = Field(None, max_length=255)
+
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "product_ref", "warehouse_ref", "qty_ordered",
         "qty_received", "unit_cost", "discount", "line_total", "uom",
@@ -324,12 +358,12 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
         CanonicalDocumentLine.FALLBACK_FIELDS + (
             "from_so_numbers", "from_so_line_ref", "from_so_external",
-            "from_po_line_ref", "from_po_number",
+            "from_po_line_ref", "from_po_number", "replaces_line_ref",
         )
     )
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = (
         "from_so_numbers", "from_so_line_ref", "from_so_external",
-        "from_po_line_ref", "from_po_number",
+        "from_po_line_ref", "from_po_number", "replaces_line_ref",
     )
 
 
@@ -363,6 +397,11 @@ class CanonicalShippingOrderLine(CanonicalDocumentLine):
     from_po_line_ref: Optional[str] = Field(None, max_length=255)
     from_po_number: Optional[str] = Field(None, max_length=100)
 
+    # Plan 57 S5: ``{db}:{DocKey}:{DtlKey}`` of the row this line replaced (delete + add
+    # of an operation); input from the write flow, wire field gated by the advertised
+    # contract (see ``sink_payload``).
+    replaces_line_ref: Optional[str] = Field(None, max_length=255)
+
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "product_ref", "warehouse_ref", "qty_ordered",
         "qty_received", "unit_cost", "uom", "expected_date",
@@ -370,12 +409,12 @@ class CanonicalShippingOrderLine(CanonicalDocumentLine):
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
         CanonicalDocumentLine.FALLBACK_FIELDS + (
             "from_so_numbers", "from_so_line_ref", "from_so_external",
-            "from_po_line_ref", "from_po_number",
+            "from_po_line_ref", "from_po_number", "replaces_line_ref",
         )
     )
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = (
         "from_so_numbers", "from_so_line_ref", "from_so_external",
-        "from_po_line_ref", "from_po_number",
+        "from_po_line_ref", "from_po_number", "replaces_line_ref",
     )
 
 
@@ -438,7 +477,9 @@ class CanonicalDocument(CanonicalRecord):
             )
         return self
 
-    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+    def sink_payload(
+        self, *, contract_version: int = 1, advertised_contract: Any = None
+    ) -> Dict[str, Any]:
         """The connection's ``sorento_contract_version`` (default 1) is the
         AUTHORITATIVE gate (AC-02-14) - never Sorento's own advertised
         `/contract` version, which is advisory only."""
@@ -459,7 +500,8 @@ class CanonicalDocument(CanonicalRecord):
             if payload.get(name) is None:
                 payload.pop(name, None)
         payload["lines"] = [
-            line.sink_payload(contract_version=contract_version) for line in self.lines
+            line.sink_payload(contract_version=contract_version, advertised_contract=advertised_contract)
+            for line in self.lines
         ]
         return payload
 

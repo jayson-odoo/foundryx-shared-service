@@ -1,6 +1,6 @@
 """The one class that writes to AutoCount (plan 55 section 6b, AC-55-01..05).
 
-POST / PUT only, JSON body, the allowlist guard re-run before every request,
+POST / PUT / DELETE, JSON body, the allowlist guard re-run before every request,
 the house SSRF-guarded transport with redirects off, and never a retry (a
 ``DtlKey 0`` row would be added twice).
 """
@@ -63,6 +63,9 @@ class AutoCountWriteClient:
 
     def put(self, path: str, body: Any) -> WriteResponse:
         return self._send("PUT", path, body)
+
+    def delete(self, path: str, body: Any) -> WriteResponse:
+        return self._send("DELETE", path, body)
 
     def _http(self) -> httpx.Client:
         if self._transport is not None:

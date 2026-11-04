@@ -407,20 +407,21 @@ def test_outbound_call_rechecks_tenant_set_base_url(connector_client, h, monkeyp
     """DNS can be re-pointed after save: the guard runs again before every call."""
     import httpx
 
-    from app.services import url_guard
     from modules.connector.services import product_client
 
     assert _create(connector_client, h).status_code == 201
     product = registry.get_product("delta", connector_client._factory())
     assert product is not None and product.guard_outbound
-    monkeypatch.setattr(url_guard.socket, "getaddrinfo",
-                        lambda *a, **k: [(None, None, None, None, ("169.254.169.254", 0))])
+    from tests.resolver_stub import stub_resolver
+
+    unexpected = stub_resolver(monkeypatch, {"delta.test": "169.254.169.254"})  # re-pointed after save
     sent = []
     product_client.TRANSPORT = httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200))
     with pytest.raises(httpx.TransportError):
         product_client.send(product, method="GET", raw_path="/x", query="", body=b"", sub="",
                             grant_id="", consented_at=0, tool="")
     assert sent == []
+    assert unexpected == []
     env_product = registry.get_product("acme", connector_client._factory())
     assert env_product is not None and not env_product.guard_outbound
 

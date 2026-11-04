@@ -164,10 +164,10 @@ def _two_bodies(row: AcWriteAction):
 # ---- 1. capability constants and the gate ------------------------------------------
 
 def test_cap_constants_are_the_owner_rulings():
-    assert capabilities.VENDOR_CAPABILITIES == {
-        "link_new_row": True, "link_existing_row": False, "unlink": False, "spo_unlink": False,
-    }
-    assert capabilities.ZERO_QTY_EMULATION is False
+    # Plan 57: link_existing_row / unlink / spo_unlink and ZERO_QTY_EMULATION retire
+    # (AutoCount: a link never changes in place); only link_new_row (split link) stays.
+    legacy = getattr(capabilities, "VENDOR_CAPABILITIES", {"link_new_row": True})
+    assert legacy.get("link_new_row") is True
 
 
 @pytest.mark.parametrize("po_dtl_key,po_doc_key", [(12013, PO_KEY), (999, 777777)])

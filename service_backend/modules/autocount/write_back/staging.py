@@ -23,6 +23,7 @@ from modules.autocount.models import (
     AcCompany,
     AcStagedRecord,
 )
+from modules.autocount.write_back.constants import STAGING_JOB_ID  # noqa: F401 (re-exported)
 from modules.autocount.write_back.doc_mapping import (
     ENTITY_BY_KIND,
     WrapperMappingError,
@@ -37,7 +38,6 @@ logger = logging.getLogger("foundryx.autocount")
 
 Doc = Dict[str, Any]
 SinkFactory = Callable[..., Any]
-STAGING_JOB_ID = "write-back"
 
 
 @dataclass(frozen=True)
@@ -53,20 +53,32 @@ class DocStager:
         self._sink_factory = sink_factory or self._default_sink
 
     def stage_and_push(
-        self, company: AcCompany, doc: Doc, kind: str, *, skip_unchanged: bool = False
+        self, company: AcCompany, doc: Doc, kind: str, *, skip_unchanged: bool = False,
+        replaced: Optional[Dict[int, int]] = None,
     ) -> StageOutcome:
         """Never raises: the caller's own outcome (a verified write, a fetched
         day) must stand whatever happens here."""
         try:
+            if self._left_alone(company, doc, kind):
+                logger.info("autocount write-back left a document staged by another job alone (STAGED_BY_OTHER_JOB)")
+                return StageOutcome(False, False)
             row, changed = self._stage_raw(company, doc, kind, skip_unchanged)
             self.db.commit()
             if not changed:
                 return StageOutcome(False, False)
-            return StageOutcome(True, self._push(company, doc, kind, row))
+            return StageOutcome(True, self._push(company, doc, kind, row, replaced))
         except Exception:  # noqa: BLE001
             self.db.rollback()
             logger.exception("autocount write-back staging/push failed")
             return StageOutcome(False, False)
+
+    def _left_alone(self, company: AcCompany, doc: Doc, kind: str) -> bool:
+        """AC-57-22: the newest row of this document was staged by another job (a SQL
+        sync): it is never touched and nothing is pushed; the write still answers."""
+        newest = self.staged.newest(
+            company.tenant_id, company.id, ENTITY_BY_KIND[kind], f"{company.database_name}:{doc.get('DocKey')}"
+        )
+        return newest is not None and newest.job_id != STAGING_JOB_ID
 
     def _stage_raw(
         self, company: AcCompany, doc: Doc, kind: str, skip_unchanged: bool
@@ -92,6 +104,15 @@ class DocStager:
             self.db.add(row)
         elif skip_unchanged and row.status == STAGED_PUSHED and row.raw_json == raw:
             return row, False
+        elif EntitySourceRepository(self.db).source_impl(
+            company.tenant_id, company.id, entity_type
+        ) == SOURCE_IMPL_SQL_DB:
+            # SQL-sourced entity (AC-57-33): the sync owns the canonical (and its qty);
+            # the write keeps only the raw read-back, never wipes it.
+            row.raw_json = raw
+            row.doc_no = str(doc.get("DocNo") or row.doc_no or "")
+            self.db.flush()
+            return row, False
         row.raw_json = raw
         row.doc_no = str(doc.get("DocNo") or row.doc_no or "")
         row.canonical_json = None
@@ -103,7 +124,10 @@ class DocStager:
         self.db.flush()
         return row, True
 
-    def _push(self, company: AcCompany, doc: Doc, kind: str, row: AcStagedRecord) -> bool:
+    def _push(
+        self, company: AcCompany, doc: Doc, kind: str, row: AcStagedRecord,
+        replaced: Optional[Dict[int, int]] = None,
+    ) -> bool:
         from modules.autocount.sync import compute_diff
 
         entity_type = ENTITY_BY_KIND[kind]
@@ -114,7 +138,8 @@ class DocStager:
             return False  # SQL-sourced entity: refreshed through SQL, not here
         try:
             _entity, record = map_wrapper_document(
-                self.db, tenant_id=company.tenant_id, company=company, doc=doc, kind=kind
+                self.db, tenant_id=company.tenant_id, company=company, doc=doc, kind=kind,
+                replaced=replaced,
             )
         except WrapperMappingError as exc:
             row.error = str(exc)[:4000]
@@ -128,14 +153,34 @@ class DocStager:
         sink = self._sink_factory(tenant_id, company, entity_type)
         request_id = f"write-back:{row_id}"
         self.db.commit()
-        result = sink.write(record, request_id=request_id)
-        if getattr(result, "ok", True) is False:
+        if not self._deliver(sink, record, request_id):
             return False
         row = self.staged.newest(tenant_id, company_id, entity_type, f"{company.database_name}:{doc.get('DocKey')}") or row
         row.status = STAGED_PUSHED
         row.pushed_at = datetime.now(timezone.utc)
         self.db.commit()
         return True
+
+    @staticmethod
+    def _deliver(sink: Any, record: Any, request_id: str) -> bool:
+        """Push ONE record. A real ``SorentoSink`` has only ``write_batch``: its consumer's
+        advertised contract is probed first, once per push (unknown, unparseable or
+        unreachable = None, so ``replaces_line_ref`` is omitted), then the record goes
+        out as a batch of one. A sink with ``write`` (the logging sink, fakes) is called
+        as before. A non-ok result or any exception is not pushed (the row stays STAGED,
+        the caller's write still answers)."""
+        try:
+            if hasattr(sink, "write_batch"):
+                probe = getattr(sink, "fetch_contract_detail", None)
+                info = probe() if callable(probe) else None
+                sink.advertised_contract_version = getattr(info, "version", None)
+                results = sink.write_batch([record], request_id=request_id)
+                return bool(results) and all(getattr(r, "ok", True) is not False for r in results)
+            result = sink.write(record, request_id=request_id)
+            return getattr(result, "ok", True) is not False
+        except Exception:  # noqa: BLE001 - a push fault never changes the write's outcome
+            logger.warning("autocount write-back push failed (PUSH_FAILED)")
+            return False
 
     def _default_sink(self, tenant_id: str, company: AcCompany, entity_type: str) -> Any:
         from modules.autocount.services.company_service import CompanyService

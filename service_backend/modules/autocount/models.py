@@ -1101,9 +1101,12 @@ class AcWriteAction(AutocountBase):
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
     company_id = Column(String, nullable=False)
-    action = Column(String, nullable=False)  # link | unlink | spo_unlink
-    doc_type = Column(String, nullable=False)  # PO | SPO
-    doc_key = Column(BigInteger, nullable=False)
+    # plan 55: link | unlink | spo_unlink | relocate; plan 57: create_doc | edit_doc |
+    # add_line | delete_line | delete_doc | cancel_doc
+    action = Column(String, nullable=False)
+    doc_type = Column(String, nullable=False)  # QT | SO | PO | SPO
+    # NULL only until a create learns the new DocKey (a NULL never trips the busy lock)
+    doc_key = Column(BigInteger, nullable=True)
     dtl_key = Column(BigInteger, nullable=True)
     # in_flight | done | refused | mismatch | pending_verification | vendor_error
     outcome = Column(String, nullable=False)
@@ -1115,5 +1118,50 @@ class AcWriteAction(AutocountBase):
     before_json = Column(_JSON, nullable=True)
     after_json = Column(_JSON, nullable=True)
     key_id = Column(String, nullable=True)
+    # plan 57: the operation step this call belongs to, and the exact vendor call (no host)
+    operation_id = Column(String, nullable=True)
+    step = Column(String, nullable=True)
+    request_method = Column(String, nullable=True)
+    request_path = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+
+class AcWriteOperation(AutocountBase):
+    """One level-2 write operation (plan 57 section 5.4): the idempotent unit a
+    caller asks for, made of steps (each an ``ac_write_action`` row). The partial
+    unique index is the cross-step busy lock: one ``in_progress`` operation per
+    document."""
+
+    __tablename__ = "ac_write_operation"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "company_id", "key_id", "idempotency_key", name="uq_ac_write_operation_idem"
+        ),
+        Index(
+            "uq_ac_write_operation_one_in_progress",
+            "company_id", "doc_type", "doc_key",
+            unique=True,
+            sqlite_where=text("status = 'in_progress'"),
+            postgresql_where=text("status = 'in_progress'"),
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    company_id = Column(String, nullable=False)
+    key_id = Column(String, nullable=True)
+    idempotency_key = Column(String, nullable=False)
+    request_hash = Column(String, nullable=False)
+    op = Column(String, nullable=False)
+    doc_type = Column(String, nullable=True)
+    doc_key = Column(BigInteger, nullable=True)
+    dtl_key = Column(BigInteger, nullable=True)
+    # in_progress | done | refused | recovered | needs_attention | pending_verification
+    status = Column(String, nullable=False)
+    error_code = Column(String, nullable=True)
+    snapshot_json = Column(_JSON, nullable=True)
+    steps_json = Column(_JSON, nullable=True)
+    result_json = Column(_JSON, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

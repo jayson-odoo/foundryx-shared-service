@@ -397,6 +397,28 @@ waited for a lock on the same table.
    `DEPLOY FAILED AFTER SWAP`: the new colour serves, the old colour is left
    running for a rollback.
 
+### One deploy at a time + running commit in `/health`
+
+- **Deploys never overlap.** The `build-and-deploy` job carries
+  `concurrency: { group: deploy-prod, cancel-in-progress: false }`: a second
+  `main` push queues behind the running deploy and is never cancelled
+  mid-switch. On the host, `scripts/blue_green_deploy.sh` takes `flock` on
+  `.blue_green_deploy.lock` (in the deploy dir, override `DEPLOY_LOCK_FILE`)
+  BEFORE reading `.active_color`, so a manual run cannot overlap a CI run
+  either. The workflow's file-sync step writes the script, compose and
+  `.env` under the same lock (60s wait, then a named error), so CI never
+  rewrites files under a running manual deploy. The script waits up to
+  `DEPLOY_LOCK_TIMEOUT_SECONDS` (default 300: wait + a worst-case ~11 min
+  deploy must fit the CI step's 18 min), then
+  exits 1 with `::error::DEPLOY ABORTED (another blue/green deploy holds ...;
+  holder: pid=.. image_tag=.. started=..)` having pulled, started and swapped
+  nothing. The lock lives with the process: a killed deploy releases it.
+- **`GET /be/health` reports `git_sha`.** Every backend-image container gets
+  `GIT_SHA=${IMAGE_TAG}` (the full commit CI pushed) via `x-backend-env`; the
+  workflow's "Verify public endpoints" step fails unless the active colour's
+  `/health` reports exactly `github.sha`. The frontend has no health/version
+  route, so it carries no `GIT_SHA`.
+
 ### Module schema drift guard (last line of defence)
 
 `app/module_platform/drift_guard.py` runs at the end of `bootstrap_db`, in the
