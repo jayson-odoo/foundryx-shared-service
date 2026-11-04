@@ -108,8 +108,17 @@ def test_ig_webhook_object_dispatch_resolves_instagram_channel_by_external_accou
     db.close()
 
 
-def test_ig_webhook_url_channel_id_is_last_resort_fallback(session_factory):
+def test_ig_webhook_unmatched_account_id_is_dropped_when_url_channel_owns_another_account(session_factory):
     cid = _ig_channel(session_factory, external_account_id="ig-fallback-1")
+    counters = _process(
+        session_factory, cid, _ig_payload(ig_id="ig-does-not-exist-anywhere", mid="m.ig-drop-1")
+    )
+    assert counters["messages"] == 0
+
+
+def test_ig_webhook_url_channel_id_is_last_resort_fallback(session_factory):
+    # The URL channel is the fallback only when it has no account id of its own.
+    cid = _ig_channel(session_factory, external_account_id=None)
     counters = _process(
         session_factory, cid, _ig_payload(ig_id="ig-does-not-exist-anywhere", mid="m.ig-fb-1")
     )

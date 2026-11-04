@@ -216,11 +216,21 @@ def test_webhook_object_dispatch_malformed_payload_never_raises(session_factory)
     assert counters == {"messages": 0, "statuses": 0, "skipped": 0}
 
 
-def test_webhook_url_channel_id_is_last_resort_fallback(session_factory):
-    # A page id absent from the payload/DB falls back to the URL's channel id.
+def test_webhook_unmatched_page_id_is_dropped_when_url_channel_owns_another_page(session_factory):
+    # A page id nobody owns, sent to the URL of a channel that owns a
+    # DIFFERENT page id, is dropped (nothing stored).
     cid = _fb_channel(session_factory, external_account_id="pg-fallback-1")
     counters = _process(
-        session_factory, cid, _messenger_payload(page_id="pg-does-not-exist-anywhere")
+        session_factory, cid, _messenger_payload(page_id="pg-does-not-exist-anywhere", mid="m.drop-1")
+    )
+    assert counters["messages"] == 0
+
+
+def test_webhook_url_channel_id_is_last_resort_fallback(session_factory):
+    # The URL channel is the fallback only when it has no page id of its own.
+    cid = _fb_channel(session_factory, external_account_id=None)
+    counters = _process(
+        session_factory, cid, _messenger_payload(page_id="pg-does-not-exist-anywhere", mid="m.fb-1")
     )
     assert counters["messages"] == 1
 
