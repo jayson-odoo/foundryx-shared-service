@@ -55,6 +55,7 @@ from ..schemas import (
     SendMessageRequest,
     ShortcutItem,
     ShortcutRunResponse,
+    ThreadDetailItem,
     ThreadItem,
     ThreadListResponse,
     ThreadPatch,
@@ -246,19 +247,19 @@ def list_threads(
     return ThreadListResponse(data=items, total=total)
 
 
-@router.get("/{contact_id}", response_model=ThreadItem)
+@router.get("/{contact_id}", response_model=ThreadDetailItem)
 def get_thread(
     contact_id: str,
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
-) -> ThreadItem:
+) -> ThreadDetailItem:
     # AC-CTM-22 (phase-2 fix): a per-record read, reused by the Contacts
     # module's detail page (`contact-service.real.ts get`) - `contacts.read`
     # alone must be enough, not just `conversations.read`.
     principal.require_read_or_contacts()
     enforce_thread_access(db, principal, contact_id)
     try:
-        return ConversationService(db).get_thread(contact_id, principal.tenant_id)
+        return ConversationService(db).get_thread_with_counts(contact_id, principal.tenant_id)
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
 

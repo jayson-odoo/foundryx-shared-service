@@ -779,6 +779,16 @@ class ContactListItem(ThreadItem):
     inherited so the module never forks a second contact representation."""
 
     channels: List[ContactChannelRef] = []
+    # What an erase would remove (plan 56 C); the erase dialog shows them.
+    messageCount: int = 0
+    fileCount: int = 0
+
+
+class ThreadDetailItem(ThreadItem):
+    """`ThreadItem` + the erase counts, for the staff single-contact read."""
+
+    messageCount: int = 0
+    fileCount: int = 0
 
 
 class ContactListResponse(ApiModel):

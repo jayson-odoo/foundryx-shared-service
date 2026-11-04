@@ -18,11 +18,10 @@ from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy.orm import Session
 
-from app.config import settings
-
 from ..repositories.contact_erase_repository import (
     ENTITY_CONTACT,
     ContactEraseRepository,
+    local_key_from_url,
 )
 from . import realtime
 
@@ -30,7 +29,6 @@ logger = logging.getLogger("foundryx.omnichannel.erase")
 
 EVENT_CONTACT_ERASED = "contact.erased"
 IDEATION_CLEANUP_CAPABILITY = "contact.erase_cleanup"
-_MEDIA_PATH = "/omnichannel/media/"
 _REF_ENTITIES_TO_DELETE = ("identity", "message", "event")
 _ENVELOPE_KEYS = ("id", "type", "workspaceId", "channelId", "occurredAt")
 
@@ -49,17 +47,6 @@ class EraseResult:
 
 def _wire(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _local_key_from_url(url: Optional[str]) -> Optional[str]:
-    """A legacy `media_url` that points at our own media route holds the stored
-    key after the prefix; an external link is not a stored file."""
-    if not url:
-        return None
-    prefix = f"{settings.public_base_url}{_MEDIA_PATH}"
-    if url.startswith(prefix) and len(url) > len(prefix):
-        return url[len(prefix):]
-    return None
 
 
 def _names_contact(payload: Dict[str, Any], contact_id: str) -> bool:
@@ -124,7 +111,7 @@ class ContactEraseService:
         for _mid, media_key, media_url in msgs:
             if media_key:
                 keys.add(media_key)
-            legacy = _local_key_from_url(media_url)
+            legacy = local_key_from_url(media_url)
             if legacy:
                 keys.add(legacy)
         event_ids = repo.event_ids(contact_id, tenant_id)

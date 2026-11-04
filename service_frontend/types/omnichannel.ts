@@ -818,6 +818,17 @@ export interface ContactChannelRef {
  *  field PLUS the resolved channel identities. */
 export interface ContactListItem extends ConversationThread {
   channels: ContactChannelRef[];
+  /** What an erase would remove (plan 56 C): all messages incl. notes, and stored files. */
+  messageCount?: number;
+  fileCount?: number;
+}
+
+/** What the staff erase answers (plan 56 C). */
+export interface ContactEraseResult {
+  contactId: string;
+  erasedAt: string;
+  messages: number;
+  files: number;
 }
 
 /** A saved, named filter tree on a workspace (D-A2-3) - stores the EXACT

@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Tag, TagIcon, UserPlus2, Workflow } from 'lucide-react';
-import type { ResourceAction } from '@/components/platform/resource-list';
+import type { ResourceAction, ResourceActionRuntime } from '@/components/platform/resource-list';
 import type { ContactListItem } from '@/types/omnichannel';
+import { useContactEraseAction } from './use-contact-erase-action';
 
 /**
  * The Contact action registry (D-A2-5) - Assign / Add tags / Remove tags /
@@ -31,6 +32,8 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
   // extra network fetch per render. The caller now memoizes each callback
   // with `useCallback`, so THESE deps are actually stable.
   const { onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle } = callbacks;
+  const reloadAfterErase = useCallback((runtime: ResourceActionRuntime) => runtime.reload(), []);
+  const eraseAction = useContactEraseAction('row', reloadAfterErase);
   return useMemo<ResourceAction<ContactListItem>[]>(
     () => [
       {
@@ -66,7 +69,8 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
         surfaces: { row: true, bulk: true },
         run: (rows, rt) => onMoveLifecycle(rows, rt.reload),
       },
+      eraseAction,
     ],
-    [onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle],
+    [onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle, eraseAction],
   );
 }

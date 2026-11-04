@@ -5,7 +5,7 @@ table carries a workspace. No commit here: the service owns the transaction.
 Order of use is fixed by the service (no foreign key cascades exist)."""
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import String, cast
+from sqlalchemy import String, and_, case, cast, func, or_
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -23,9 +23,24 @@ from ..models import (
     WorkflowWait,
 )
 
+MEDIA_PATH = "/omnichannel/media/"
 TOMBSTONE_ENTITY = "contact_erased"
 TOMBSTONE_LOCAL_ID = "erased"
 ENTITY_CONTACT = "contact"
+
+
+def local_key_from_url(url: Optional[str]) -> Optional[str]:
+    """A legacy `media_url` that points at our own media route holds the stored
+    key after the prefix; an external link is not a stored file. THE one rule,
+    used by the erase and by the counts that the erase dialog shows."""
+    from app.config import settings
+
+    if not url:
+        return None
+    prefix = f"{settings.public_base_url}{MEDIA_PATH}"
+    if url.startswith(prefix) and len(url) > len(prefix):
+        return url[len(prefix):]
+    return None
 
 
 class ContactEraseRepository:
@@ -49,6 +64,42 @@ class ContactEraseRepository:
             .filter(Contact.id == contact_id, Contact.tenant_id == tenant_id)
             .first()
         )
+
+    def message_file_counts(
+        self, contact_ids: List[str], tenant_id: str
+    ) -> Dict[str, Tuple[int, int]]:
+        """`{contact_id: (messages, files)}` for a page, in ONE grouped query.
+        Every message counts (notes included); a file is a message with a
+        `media_key` or a legacy local `media_url` (same rule as the erase)."""
+        from app.config import settings
+
+        if not contact_ids:
+            return {}
+        local_prefix = f"{settings.public_base_url}{MEDIA_PATH}"
+        has_file = case(
+            (
+                or_(
+                    and_(ConversationMessage.media_key.isnot(None), ConversationMessage.media_key != ""),
+                    ConversationMessage.media_url.startswith(local_prefix, autoescape=True),
+                ),
+                1,
+            ),
+            else_=0,
+        )
+        rows = (
+            self.db.query(
+                ConversationMessage.contact_id,
+                func.count(ConversationMessage.id),
+                func.coalesce(func.sum(has_file), 0),
+            )
+            .filter(
+                ConversationMessage.tenant_id == tenant_id,
+                ConversationMessage.contact_id.in_(contact_ids),
+            )
+            .group_by(ConversationMessage.contact_id)
+            .all()
+        )
+        return {cid: (int(m), int(f)) for cid, m, f in rows}
 
     def messages(self, contact_id: str, tenant_id: str) -> List[Tuple[str, Optional[str], Optional[str]]]:
         """(id, media_key, media_url) of every message of the contact."""
