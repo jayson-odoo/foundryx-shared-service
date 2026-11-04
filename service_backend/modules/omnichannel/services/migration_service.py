@@ -1081,6 +1081,19 @@ def _list_row_fields(job: BackgroundJob) -> Dict[str, Any]:
     }
 
 
+def _respondio_job_error(exc: RespondIoError) -> str:
+    """The job error text for a respond.io failure in the contacts walk. A
+    rejected contact list request (respond.io's "Please check if filter is
+    provided") says which request failed, so it never reads like a channel or
+    mapping problem."""
+    if "filter is provided" in (exc.message or "").lower():
+        return (
+            "respond.io rejected the contact list request (no contacts were read): "
+            f"{exc.message} Nothing was imported; contact Foundryx support."
+        )
+    return f"respond.io error: {exc.message}"
+
+
 def _parse_filter_datetime(value: Any) -> Optional[datetime]:
     if value is None:
         return None
@@ -2621,8 +2634,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                     service.log(job, f"Aborted after {contact_counts.get('fetched', 0)} contacts.")
                     return
         except RespondIoError as exc:
-            service.log(job, f"respond.io error: {exc.message}", level="error")
-            service.finish(job, status=JOB_FAILED, error=f"respond.io error: {exc.message}")
+            job_error = _respondio_job_error(exc)
+            service.log(job, job_error, level="error")
+            service.finish(job, status=JOB_FAILED, error=job_error)
             return
 
         if contacts_only or dry_run:
