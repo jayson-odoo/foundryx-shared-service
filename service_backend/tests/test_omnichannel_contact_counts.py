@@ -6,6 +6,9 @@ Rules: messageCount = every message of the contact incl. internal notes (the era
 an external CDN url is not a file. Tenant scoped. One grouped query per page, not one per row.
 The API-key contact routes keep their shape (no new fields).
 """
+import re
+from collections import Counter
+
 import sqlalchemy as sa
 
 from app.models import DEFAULT_TENANT_ID
@@ -90,54 +93,42 @@ def _count_statements(sf, fn):
     return [stmt for _, stmt in seen]
 
 
+def _measured_list_request(client, rig):
+    """The ONE closure both statement checks measure: the login happens here, once,
+    outside the window; the closure is the bare list GET."""
+    headers = _auth(client)
+    return lambda: _list(client, rig, headers=headers)
+
+
+def _shape(statement):
+    return re.sub(r"IN \(\?(?:, ?\?)*\)", "IN (?)", statement)
+
+
 def test_the_list_counts_with_the_same_number_of_statements_for_3_and_10_contacts(client, rig):
     cids = [rig.footprint(f"+6010000070{i}", f"p{i}")["cid"] for i in range(3)]
-    headers = _auth(client)  # the login stays OUTSIDE the measured window
-    run = lambda: _list(client, rig, headers=headers)  # noqa: E731
+    run = _measured_list_request(client, rig)
     first = run()
     assert all(first[c]["messageCount"] == 6 for c in cids)  # control: the fields exist and are filled
-    n3 = _count_statements(rig.sf, run)
+    n3 = [_shape(x) for x in _count_statements(rig.sf, run)]
     for i in range(3, 10):
         rig.footprint(f"+6010000070{i}", f"p{i}")
     assert len(run()) == 10
-    n10 = _count_statements(rig.sf, run)
-    only3 = [x for x in n3 if x not in n10]
-    only10 = [x for x in n10 if x not in n3]
+    n10 = [_shape(x) for x in _count_statements(rig.sf, run)]
+    more, fewer = Counter(n10) - Counter(n3), Counter(n3) - Counter(n10)
     assert len(n10) == len(n3), (
-        f"statements grew with the page: {len(n3)} -> {len(n10)}; only in 3: {only3}; only in 10: {only10}"
+        f"statements grew with the page: {len(n3)} -> {len(n10)}; extra in 10: {dict(more)}; extra in 3: {dict(fewer)}"
     )
-
-
-def _window_statements(sf, fn):
-    """(thread id, statement) for every statement the engine runs while `fn` runs."""
-    import threading
-
-    engine = sf().get_bind()
-    seen = []
-
-    def hook(conn, cursor, statement, parameters, context, executemany):
-        seen.append((threading.get_ident(), " ".join(statement.split())))
-
-    sa.event.listen(engine, "before_cursor_execute", hook)
-    try:
-        fn()
-    finally:
-        sa.event.remove(engine, "before_cursor_execute", hook)
-    return seen
 
 
 def test_the_measured_window_holds_only_the_list_request(client, rig):
     """The statement count must measure the list request alone: the login (throttle
     bookkeeping + the sign-in write) must not run inside the measured closure."""
     rig.footprint("+60100000710", "w0")
-    headers = _auth(client)  # built outside the window, as the 3-vs-10 test does
-    run = lambda: _list(client, rig, headers=headers)  # noqa: E731 - the closure the 3-vs-10 test measures
+    run = _measured_list_request(client, rig)  # the same closure the 3-vs-10 test measures
     run()  # warm
-    seen = _window_statements(rig.sf, run)
-    offenders = [s[:120] for _, s in seen if "auth_throttle" in s or s.startswith("UPDATE users")]
+    seen = _count_statements(rig.sf, run)  # also fails on more than one thread
+    offenders = [s[:120] for s in seen if "auth_throttle" in s or s.startswith("UPDATE users")]
     assert not offenders, f"login statements inside the measured window: {offenders}"
-    threads = {t for t, _ in seen}
-    assert len(threads) == 1, f"statements ran on {len(threads)} threads"
 
 
 def test_api_key_contact_routes_keep_their_shape(client, rig):
