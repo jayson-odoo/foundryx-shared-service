@@ -176,7 +176,17 @@ def test_ac_38_136_http_request_runs_under_guard(client, session_factory, fake_h
         ticks["n"] += 1
         return 0.0 if ticks["n"] == 1 else 1000.0
 
-    monkeypatch.setattr(http_actions.time, "monotonic", clock)
+    import time as real_time
+
+    class _ScopedTime:
+        """Only the http action sees the fake clock; the event loop keeps the real one."""
+
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+        monotonic = staticmethod(clock)
+
+    monkeypatch.setattr(http_actions, "time", _ScopedTime())
     state["responses"] = [_Stream(200, {"content-type": "text/plain"}, b"slow-drip")]
     detail, _ = _start(client, session_factory, "https://api.example.com/slow")
     assert "(truncated)" in _node(detail, "http_1")["output"]["body"]
