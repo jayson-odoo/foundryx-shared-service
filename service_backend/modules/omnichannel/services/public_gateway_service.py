@@ -69,6 +69,8 @@ _PHONE_NUMBER_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 # Total time one media fetch may take (connect, headers and body together).
 MEDIA_FETCH_TOTAL_SECONDS = 60.0
+# The idempotency hold must outlast the media fetch plus the route's own steps.
+assert idempotency._PENDING_TTL_SECONDS >= MEDIA_FETCH_TOTAL_SECONDS + 120
 # Media fetches allowed at once in this server process, and per tenant.
 MEDIA_FETCH_MAX_CONCURRENT = 4
 MEDIA_FETCH_MAX_PER_TENANT = 2
@@ -955,30 +957,30 @@ class PublicGatewayService:
     ) -> Tuple[str, bool]:
         """Returns (our_message_id, was_idempotency_replay)."""
         store = idempotency.get_store()
-        reserved = False
+        reservation = None
         if idempotency_key:
             # Reserve-before-send: atomically claim the slot so two concurrent
             # identical requests can't both send.
-            claimed = store.reserve(workspace_id, idempotency_key)
+            reservation = store.reserve(workspace_id, idempotency_key)
+            claimed = reservation.existing
             if claimed is not None:
-                if claimed == idempotency.PENDING:
+                if idempotency.is_pending(claimed):
                     raise ApiError(
                         409,
                         "idempotency_in_progress",
                         "A request with this Idempotency-Key is still being processed.",
                     )
                 return claimed, True  # completed → replay the stored id
-            reserved = True
 
         try:
             message_id = self._do_send(tenant_id, workspace_id, key_id, req)
         except Exception:
-            if reserved:
-                store.release(workspace_id, idempotency_key)  # let a retry re-claim
+            if reservation is not None and reservation.existing is None:
+                store.release(workspace_id, idempotency_key, reservation.token)  # let a retry re-claim
             raise
 
-        if reserved:
-            store.finalize(workspace_id, idempotency_key, message_id)
+        if reservation is not None and reservation.existing is None:
+            store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
         return message_id, False
 
     def _do_send(
@@ -1302,18 +1304,18 @@ class PublicGatewayService:
         if not (to or "").strip():
             raise ApiError(422, "invalid_recipient", "A recipient phone number is required.")
         store = idempotency.get_store()
-        reserved = False
+        reservation = None
         if idempotency_key:
-            claimed = store.reserve(workspace_id, idempotency_key)
+            reservation = store.reserve(workspace_id, idempotency_key)
+            claimed = reservation.existing
             if claimed is not None:
-                if claimed == idempotency.PENDING:
+                if idempotency.is_pending(claimed):
                     raise ApiError(
                         409,
                         "idempotency_in_progress",
                         "A request with this Idempotency-Key is still being processed.",
                     )
                 return claimed, True
-            reserved = True
         try:
             # After the replay check, as the JSON path does; a refusal releases the key.
             channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
@@ -1329,11 +1331,11 @@ class PublicGatewayService:
                 channel=channel,
             )
         except Exception:
-            if reserved:
-                store.release(workspace_id, idempotency_key)
+            if reservation is not None and reservation.existing is None:
+                store.release(workspace_id, idempotency_key, reservation.token)
             raise
-        if reserved:
-            store.finalize(workspace_id, idempotency_key, message_id)
+        if reservation is not None and reservation.existing is None:
+            store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
         return message_id, False
 
     # ── Channels (read-only) ─────────────────────────────────────────────────
