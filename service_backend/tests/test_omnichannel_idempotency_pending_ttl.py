@@ -237,3 +237,24 @@ def test_control_replay_after_finalize_returns_the_id_memory(monkeypatch, clock)
     assert store.reserve("w1", "k1").existing == "msg-1"
     store.release("w1", "k1", r.token)
     assert store.reserve("w1", "k1").existing == "msg-1"
+
+
+# ---- late finalize on an empty slot ---------------------------------------
+
+def test_late_finalize_on_an_empty_slot_keeps_the_replay_redis(monkeypatch, server):
+    good = _good(server)
+    store = _store(monkeypatch, [good])
+    a = store.reserve("w1", "k1")
+    _expire(good)  # A's hold lapsed, nobody else reserved
+    store.finalize("w1", "k1", "msg-A", a.token)
+    assert DAY - 60 < good.ttl(_key("w1", "k1")) <= DAY
+    assert store.reserve("w1", "k1").existing == "msg-A"
+
+
+def test_late_finalize_on_an_empty_slot_keeps_the_replay_memory(monkeypatch, clock):
+    monkeypatch.setattr(time, "monotonic", clock)
+    store = MemoryIdempotencyStore()
+    a = store.reserve("w1", "k1")
+    clock.now += PAST_ANY_ALLOWED_PENDING_TTL
+    store.finalize("w1", "k1", "msg-A", a.token)
+    assert store.reserve("w1", "k1").existing == "msg-A"
