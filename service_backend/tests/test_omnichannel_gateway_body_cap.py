@@ -58,7 +58,7 @@ def _rows(session_factory):
         db.close()
 
 
-def _asgi(method, path, headers, total, declared=None, chunk=CHUNK):
+def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None):
     """Drive the app with a lazily produced body of `total` bytes in `chunk`
     pieces. `declared` is the Content-Length header (None = chunked, no header).
     Returns (status, json body or None, bytes the app pulled)."""
@@ -93,10 +93,19 @@ def _asgi(method, path, headers, total, declared=None, chunk=CHUNK):
     async def send(msg):
         if msg["type"] == "http.response.start":
             out["status"] = msg["status"]
+            if starts is not None:
+                starts.append(msg["status"])
         elif msg["type"] == "http.response.body":
             out["body"] += msg.get("body", b"")
 
-    asyncio.run(app(scope, receive, send))
+    from starlette.requests import ClientDisconnect
+
+    try:
+        asyncio.run(app(scope, receive, send))
+    except ClientDisconnect:
+        # the JSON send route reads the body itself and does not catch this; the
+        # client already has its single 422, so only the answer is asserted
+        pass
     try:
         parsed = json.loads(out["body"])
     except ValueError:
@@ -255,3 +264,41 @@ def test_control_routes_outside_the_prefix_are_not_capped(client, session_factor
         except (ValueError, AttributeError):
             pass
         assert not refused, (res.status_code, res.text[:200])
+
+
+# ── guards ───────────────────────────────────────────────────────────────────
+def test_core_multipart_cap_stays_above_the_largest_media_ceiling():
+    from app.gateway_body_cap import MULTIPART_BODY_CAP
+    from modules.omnichannel.routers.api_v1 import META_CEILINGS
+
+    assert MULTIPART_BODY_CAP >= max(META_CEILINGS.values())
+
+
+def test_multipart_exactly_at_the_largest_ceiling_is_not_refused_as_too_large(client, session_factory):
+    from modules.omnichannel.routers.api_v1 import META_CEILINGS
+
+    hdr, _payload = _mp_rig(client, session_factory, "+60120000801")
+    size = max(META_CEILINGS.values()) + 4096  # file at the ceiling plus form framing
+    st, body, _pulled = _asgi("POST", f"{BASE}/messages",
+                              {**hdr, "Content-Type": "multipart/form-data; boundary=xyz"},
+                              total=size, declared=size)
+    too_large = st == 422 and isinstance(body, dict) and body.get("error", {}).get("message") == TOO_LARGE
+    assert not too_large, (st, body)
+
+
+@pytest.mark.parametrize("which", [0, 1, 2, 3, 4])
+def test_refused_request_never_reaches_the_handler_and_is_answered_once(client, session_factory, which):
+    from modules.omnichannel.services import idempotency
+
+    idempotency.set_store(idempotency.MemoryIdempotencyStore())
+    hdr, cid, eid = _rig(client, session_factory, f"+6012000090{which}")
+    routes = _routes(cid, eid) + [("POST", f"{BASE}/messages")]
+    method, path = routes[which]
+    headers = {**hdr, **JSON_CT, "Idempotency-Key": f"idem-{which}"}
+    before = _rows(session_factory)
+    starts = []
+    st, body, _pulled = _asgi(method, path, headers, total=2 * 1024 * 1024, declared=None, starts=starts)
+    _assert_stream_refused(st, body, _pulled, CAP + CHUNK)
+    assert starts == [422], f"exactly one response start expected, got {starts}"
+    assert _rows(session_factory) == before
+    assert idempotency.get_store()._memory == {}, "no idempotency record for a refused request"
