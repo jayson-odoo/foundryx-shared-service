@@ -40,6 +40,9 @@ SPECS: Dict[str, Dict[str, str]] = {
 LINK_FIELDS = ("FromDocType", "FromDocNo", "FromDocDtlKey", "FromSODtlKey", "FromSODocList")
 HEADER_SKIP_ON_EDIT = ("Details", "DocKey", "DocNo", "Cancelled", "LastModified", "DocStatus")
 FAKE_HOST = "https://ac.example.test/api/db3"
+# the keys of a full vendor row (SO shape, plan 57 AC-57-45); a thinner row is dropped by the fake
+FULL_ROW_KEYS = ("FullTransferOption", "FullTransferFromDocList", "YourPONo", "ProjNo", "FOCQty",
+                 "Discount", "TaxCode", "Desc2")
 
 
 @dataclass
@@ -111,6 +114,13 @@ class FakeAutoCountVendor:
         # rows AutoCount refuses to delete because they were received / delivered; the GET
         # still hides TransferedQty (AQ11), so the caller cannot know. (doc_key, dtl_key) -> message
         self.received_rows: Dict[tuple, str] = {}
+        # plan 57 review knobs
+        self._drop_link_next = False  # the next linked row is stored WITHOUT its link
+        # kinds whose created / added rows are silently dropped unless the full vendor row shape
+        # is sent (live db3: a thin SO row is answered 200 and dropped)
+        self.require_full_row: set = set()
+        # an SO row taken from a QT row inherits that row's UnitPrice and Location (live db3)
+        self.inherit_qt_values = False
         self.transport = httpx.MockTransport(self._handle)
 
     # ---- seeding / inspection ---------------------------------------------
@@ -155,6 +165,10 @@ class FakeAutoCountVendor:
 
     def drop_rows_next_create(self) -> None:
         self._drop_rows_next_create = True
+
+    def drop_link_next_add(self) -> None:
+        """The next row that should carry a link is stored without it (answered 200)."""
+        self._drop_link_next = True
 
     # ---- transport ------------------------------------------------------------
     def _take(self, method: str, leaf: str) -> Optional[_Injection]:
@@ -234,6 +248,8 @@ class FakeAutoCountVendor:
         if self._drop_rows_next_create:
             self._drop_rows_next_create = False
             sent = sent[:1]
+        if kind in self.require_full_row:
+            sent = [r for r in sent if all(k in r for k in FULL_ROW_KEYS)]
         rows = []
         for row in sent:
             rows.append({k: v for k, v in row.items() if k not in LINK_FIELDS})
@@ -241,6 +257,8 @@ class FakeAutoCountVendor:
                       doc_date=body.get("DocDate", "2026-11-04T00:00:00"), **header)
         for stored, original in zip(doc["Details"], sent):
             self._apply_new_row_link(kind, stored, original)
+            if self.inherit_qt_values and kind == "SO" and original.get("FromDocType") == "QT":
+                self._inherit(stored, original)
         self._touch(doc)
         self.docs[spec["store"]].append(doc)
         return httpx.Response(200, text=f"DocNo={doc_no} ,DocKey={doc_key} ... Created Successful.")
@@ -249,6 +267,9 @@ class FakeAutoCountVendor:
         ftype = sent.get("FromDocType") or ""
         if not ftype:
             return
+        if self._drop_link_next:
+            self._drop_link_next = False
+            return  # the row exists, the link does not
         stored["FromDocType"] = ftype
         stored["FromDocNo"] = sent.get("FromDocNo", "")
         stored["FromDocDtlKey"] = 0  # AutoCount reads FromDocDtlKey back as 0 (P-SO0)
@@ -258,6 +279,15 @@ class FakeAutoCountVendor:
             stored["FromSODtlKey"] = int(sent.get("FromDocDtlKey") or 0)
             stored["FromDocDtlKey"] = int(sent.get("FromDocDtlKey") or 0)
             stored["Location"] = "HQ"  # db3 forces HQ on a new row linked to an SO row
+
+    def _inherit(self, stored: Dict[str, Any], sent: Dict[str, Any]) -> None:
+        for qt in self.docs["QT"]:
+            if qt["DocNo"] != sent.get("FromDocNo"):
+                continue
+            for row in qt["Details"]:
+                if row["DtlKey"] == sent.get("FromDocDtlKey"):
+                    stored["UnitPrice"] = row["UnitPrice"]
+                    stored["Location"] = row["Location"]
 
     # ---- PUT ---------------------------------------------------------------
     def _edit(self, kind: str, body: Dict[str, Any]) -> httpx.Response:
@@ -272,6 +302,8 @@ class FakeAutoCountVendor:
                 doc[key] = value
         for sent in body.get("Details") or []:
             if int(sent.get("DtlKey") or 0) == 0:
+                if kind in self.require_full_row and not all(k in sent for k in FULL_ROW_KEYS):
+                    continue  # answered 200, row dropped
                 self._next_key += 1
                 row = new_doc(kind, 0, "", "", [{}])["Details"][0]
                 row.update({k: v for k, v in sent.items() if k not in LINK_FIELDS})
