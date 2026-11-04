@@ -10,6 +10,7 @@ There is deliberately no route that deletes a document: cancel is the only way o
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -66,7 +67,9 @@ LINE_FIELDS = {
     "location": "Location", "description": "Description", "deliveryDate": "DeliveryDate",
     "taxCode": "TaxCode", "desc2": "Desc2", "projNo": "ProjNo", "focQty": "FOCQty",
 }
-_FIELD_CODES = frozenset({"FIELD_REQUIRED", "FIELD_NOT_EDITABLE", "INVALID_PARAMS", "DOCNO_REQUIRED"})
+_FIELD_CODES = frozenset({
+    "FIELD_REQUIRED", "FIELD_NOT_EDITABLE", "INVALID_PARAMS", "DOCNO_REQUIRED", "QTY_INVALID", "PRICE_INVALID",
+})
 _WRITE_DISABLED_CODES = ("WRITE_DISABLED", "WRITE_NOT_ALLOWED")
 
 
@@ -87,6 +90,18 @@ def _status_of(outcome: str, code: Optional[str]) -> int:
     return 502
 
 
+_PASCAL_TO_CAMEL = {**{v: k for k, v in HEADER_FIELDS.items()}, **{v: k for k, v in LINE_FIELDS.items()}}
+_PASCAL_NAMES = re.compile(
+    r"\b(" + "|".join(sorted((re.escape(n) for n in _PASCAL_TO_CAMEL), key=len, reverse=True)) + r")\b"
+)
+
+
+def _camel_names(text: str) -> str:
+    """AutoCount field names in ``text`` as the caller's camelCase names (the reverse
+    of the allowlist maps): the wire never speaks AutoCount's names."""
+    return _PASCAL_NAMES.sub(lambda m: _PASCAL_TO_CAMEL[m.group(1)], text)
+
+
 def _camel_message(message: str) -> str:
     """``FIELD_REQUIRED: DebtorCode`` -> ``FIELD_REQUIRED: debtorCode`` (the caller
     speaks camelCase; AutoCount's names never reach the wire)."""
@@ -97,8 +112,8 @@ def _camel_message(message: str) -> str:
 def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[str, Any]:
     return {
         "operationId": result.operation_id, "actionId": None, "outcome": result.outcome,
-        "errorCode": result.error_code, "message": _camel_message(result.message),
-        "warnings": list(result.warnings), "docKey": result.doc_key or doc_key, "docNo": result.doc_no,
+        "errorCode": result.error_code, "message": _camel_names(_camel_message(result.message)),
+        "warnings": [_camel_names(w) for w in result.warnings], "docKey": result.doc_key or doc_key, "docNo": result.doc_no,
         "replacedLines": [{"oldDtlKey": o, "newDtlKey": n} for o, n in result.replaced_lines],
         "document": result.document,
     }
@@ -107,6 +122,10 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
 def _respond(answer: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     if answer.get("errorCode") in _FIELD_CODES:
         answer = dict(answer, message=_camel_message(str(answer.get("message") or "")))
+    answer = dict(
+        answer, message=_camel_names(str(answer.get("message") or "")),
+        warnings=[_camel_names(str(w)) for w in answer.get("warnings") or []],
+    )
     return _status_of(str(answer.get("outcome")), answer.get("errorCode")), answer
 
 

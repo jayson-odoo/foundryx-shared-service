@@ -407,6 +407,18 @@ def parse_create_answer(text: object) -> Optional[Tuple[str, int]]:
     return match.group(1).strip(), int(match.group(2))
 
 
+def check_edit_values(line_changes: Sequence[Mapping[str, Any]]) -> None:
+    """``QTY_INVALID`` / ``PRICE_INVALID`` for a changed quantity or unit price, before
+    any document is read."""
+    for change in line_changes:
+        if "Qty" in change:
+            validate_qty(_dec(change["Qty"]))
+        if "UnitPrice" in change:
+            price = _num_of(change["UnitPrice"])
+            if price is None or price < 0:
+                raise WriteRefusal("PRICE_INVALID", "unit price must not be negative")
+
+
 def build_edit(
     kind_name: str,
     doc: Doc,
@@ -429,9 +441,9 @@ def build_edit(
                 raise WriteRefusal("FIELD_NOT_EDITABLE", key)
         out = _row_fields(row)
         out.update({k: _plain(v) for k, v in edits.items()})
-        qty, price = _num_of(out.get("Qty")), _num_of(out.get("UnitPrice"))
-        if "Qty" in edits and (qty is None or qty <= 0):
-            raise WriteRefusal("QTY_INVALID", "quantity must be above zero")
+        price = _num_of(out.get("UnitPrice"))
+        if "Qty" in edits:
+            validate_qty(_dec(out.get("Qty")))  # QTY_INVALID: not above zero, over 1e9 or over 8 places
         if "UnitPrice" in edits and (price is None or price < 0):
             raise WriteRefusal("PRICE_INVALID", "unit price must not be negative")
         details.append(out)

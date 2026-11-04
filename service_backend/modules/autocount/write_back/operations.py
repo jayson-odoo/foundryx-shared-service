@@ -50,7 +50,7 @@ from modules.autocount.write_back.frame import (
     _dec,
     _lines,
 )
-from modules.autocount.write_back.doc_kinds import KINDS
+from modules.autocount.write_back.doc_kinds import KINDS, WIRE_SLUGS
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.primitives import VENDOR_REFUSED, PrimitiveResult, PrimitiveService
 from modules.autocount.write_back.reader import DocReadError
@@ -777,11 +777,14 @@ class OperationService:
             sink_factory=self.prims._sink_factory,
         )
         qty = Decimal(str(params["qty"]))
+        found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))
+        if found is None and missing == frame.DOC_KIND_MISMATCH or found is None and missing:
+            raise _Done(REFUSED, missing)
         result: WriteActionResult = legacy.link(
             tenant_id=company.tenant_id, company_id=company.id, key_id=row.key_id,
             po_doc_key=spec.doc_key, po_dtl_key=spec.dtl_key, so_doc_key=int(spec.target_doc_key or 0),
             so_dtl_key=int(spec.target_dtl_key or 0), qty=qty,
-            expected_last_modified=spec.expected_last_modified, so_doc_date=_as_date(spec.target_doc_date),
+            expected_last_modified=spec.expected_last_modified, so_doc_date=_as_date(spec.target_doc_date), doc_date=found,
         )
         if result.action_id and self.prims.actions.attach_to_operation(
             company.tenant_id, result.action_id, row.id, SPLIT_LINK, "PUT", EDIT_PO_PATH
@@ -805,11 +808,13 @@ class OperationService:
 
         def entry(op: str, kind: str, enabled: bool) -> None:
             reason = off or (None if enabled else VENDOR_UNSUPPORTED)
-            items.append({"op": op, "kind": kind, "enabled": reason is None, "reasonCode": reason})
+            items.append({"op": op, "kind": WIRE_SLUGS[kind], "enabled": reason is None, "reasonCode": reason})
 
         for kind in KINDS:
             for primitive in ("create_doc", "edit_doc", "add_line", "delete_line", "cancel_doc"):
                 entry(primitive, kind, capabilities.capable(kind, primitive))
+        entry(SPLIT_LINK, "PO", capabilities.capable("PO", "edit_doc") and capabilities.capable("PO", "add_line")
+              and bool(capabilities.VENDOR_CAPABILITIES.get("link_new_row")))
         for name, defn in OPS.items():
             entry(name, defn.kind, all(
                 capabilities.capable(defn.kind, p) for p in ("delete_line", "add_line", "edit_doc")))

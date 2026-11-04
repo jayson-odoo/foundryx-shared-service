@@ -116,6 +116,7 @@ class _Plan:
     so_dtl_key: Optional[int] = None
     qty: Optional[Decimal] = None
     so_doc_date: Optional[date] = None  # AC-57-44: DocDate of an SO that is not staged
+    doc_date: Optional[date] = None  # the caller's DocDate of the PO / SPO side when it is not staged
 
 
 
@@ -237,33 +238,36 @@ class WriteBackService(WriteFrame):
         idempotency_key: Optional[str] = None,
         operations: Optional["OperationService"] = None,
         so_doc_date: Optional[date] = None,
+        doc_date: Optional[date] = None,
     ) -> WriteActionResult:
         """Part of a row: the plan 55 split link (idempotent when a key is given).
         The whole row: the ``link_row`` operation (delete + add, plan 57). The gateway
         passes ``operations`` (the plan 57 service); without it the plan 55 flow runs."""
         if operations is not None:
             op = self._link_operation(operations, tenant_id, company_id, key_id, idempotency_key,
-                                      po_doc_key, po_dtl_key, qty)
+                                      po_doc_key, po_dtl_key, qty, doc_date)
             if op == "link_row":
                 return self._operation(
                     operations, op, tenant_id, company_id, key_id, idempotency_key,
                     {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
                      "so_dtl_key": so_dtl_key, "qty": qty, "whole_row": True, "target_doc_date": so_doc_date,
+                     "doc_date": doc_date,
                      "expected_last_modified": expected_last_modified},
                 )
             if op == "split_link":
                 return self._operation(
                     operations, op, tenant_id, company_id, key_id, idempotency_key,
                     {"po_doc_key": po_doc_key, "po_dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
-                     "so_dtl_key": so_dtl_key, "qty": qty, "target_doc_date": so_doc_date,
+                     "so_dtl_key": so_dtl_key, "qty": qty, "target_doc_date": so_doc_date, "doc_date": doc_date,
                      "expected_last_modified": expected_last_modified},
                 )
-        plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty, so_doc_date)
+        plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty, so_doc_date, doc_date)
         return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
 
     def _link_operation(
         self, operations: "OperationService", tenant_id: str, company_id: str, key_id: Optional[str],
         idempotency_key: Optional[str], po_doc_key: int, po_dtl_key: int, qty: Decimal,
+        doc_date: Optional[date] = None,
     ) -> Optional[str]:
         """Which operation a link request runs (AC-57-44). A stored key keeps its
         operation (a replay must not flip because the row changed since). Else the
@@ -275,13 +279,14 @@ class WriteBackService(WriteFrame):
             stored = operations.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
             if stored is not None and stored.op in ("link_row", "split_link"):
                 return stored.op
-        fresh = self._fresh_row_qty(tenant_id, company_id, po_doc_key, po_dtl_key, qty)
+        fresh = self._fresh_row_qty(tenant_id, company_id, po_doc_key, po_dtl_key, qty, doc_date)
         if fresh is not None and fresh == qty:
             return "link_row"
         return "split_link" if idempotency_key is not None else None
 
     def _fresh_row_qty(
-        self, tenant_id: str, company_id: str, po_doc_key: int, po_dtl_key: int, qty: Decimal
+        self, tenant_id: str, company_id: str, po_doc_key: int, po_dtl_key: int, qty: Decimal,
+        doc_date: Optional[date] = None,
     ) -> Optional[Decimal]:
         try:
             payloads.validate_qty(qty)
@@ -292,7 +297,7 @@ class WriteBackService(WriteFrame):
             return None
         base_url, _refusal = self._resolve_write_base_url(company)
         staged = self.staged.newest(tenant_id, company.id, _PO[1], f"{company.database_name}:{po_doc_key}")
-        day = _doc_date(staged.raw_json if staged else None)
+        day = _doc_date(staged.raw_json if staged else None) or doc_date
         if base_url is None or day is None:
             return None
         self.db.commit()  # no transaction open during the GET
@@ -331,6 +336,7 @@ class WriteBackService(WriteFrame):
         key_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         operations: Optional["OperationService"] = None,
+        doc_date: Optional[date] = None,
     ) -> WriteActionResult:
         """With ``operations`` (the gateway): AutoCount never edits a link in place,
         so the ``unlink_row`` operation runs. Without it the plan 55 flow."""
@@ -339,7 +345,8 @@ class WriteBackService(WriteFrame):
             return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
         return self._operation(
             operations, "unlink_row", tenant_id, company_id, key_id, idempotency_key,
-            {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "expected_last_modified": expected_last_modified},
+            {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "doc_date": doc_date,
+             "expected_last_modified": expected_last_modified},
         )
 
     def spo_unlink(
@@ -353,6 +360,7 @@ class WriteBackService(WriteFrame):
         key_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         operations: Optional["OperationService"] = None,
+        doc_date: Optional[date] = None,
     ) -> WriteActionResult:
         """With ``operations``: the ``spo_unlink_row`` operation (delete + add unlinked)."""
         if operations is None:
@@ -360,7 +368,7 @@ class WriteBackService(WriteFrame):
             return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
         return self._operation(
             operations, "spo_unlink_row", tenant_id, company_id, key_id, idempotency_key,
-            {"spo_doc_key": spo_doc_key, "spo_dtl_key": spo_dtl_key,
+            {"spo_doc_key": spo_doc_key, "spo_dtl_key": spo_dtl_key, "doc_date": doc_date,
              "expected_last_modified": expected_last_modified},
         )
 
@@ -476,7 +484,7 @@ class WriteBackService(WriteFrame):
         expected_last_modified: Optional[str],
     ) -> WriteActionResult:
         reader = self._reader_factory(base_url)
-        doc = self._read_fresh(plan.kind, plan.doc_key, company, row, reader)
+        doc = self._read_fresh(plan.kind, plan.doc_key, company, row, reader, plan.doc_date)
         if expected_last_modified and doc.get("LastModified") != expected_last_modified:
             raise self._refuse(row, DOC_STALE)
         if plan.action == ACTION_LINK:

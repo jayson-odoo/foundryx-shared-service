@@ -314,6 +314,11 @@ class PrimitiveService(WriteFrame):
                 raise self._refuse(row, exc.code, str(exc)) from None
             return None, request, _doc_date(request.body)
         assert call.doc_key is not None
+        if call.primitive == EDIT:  # value checks need no document: no request on a bad number
+            try:
+                payloads.check_edit_values(call.line_changes)
+            except WriteRefusal as exc:
+                raise self._refuse(row, exc.code, str(exc)) from None
         if call.operation_id is None:  # an operation holds its own cross-step lock
             self._check_not_busy(row, call.tenant_id, company.id, call.doc_key)
         doc_date = self._resolve_date(call, kind, company, row)

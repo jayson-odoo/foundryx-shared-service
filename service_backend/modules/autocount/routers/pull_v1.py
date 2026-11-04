@@ -614,6 +614,7 @@ def link_po_row(
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
             so_doc_key=_int_field(raw, "soDocKey"), so_dtl_key=_int_field(raw, "soDtlKey"),
             qty=_qty_field(raw), so_doc_date=optional_iso_date(raw, "soDocDate"),
+            doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
@@ -635,6 +636,7 @@ def unlink_po_row(
             operations=operations, idempotency_key=idempotency_key_header(request, required=False),
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
+            doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
@@ -656,6 +658,7 @@ def unlink_spo_row(
             operations=operations, idempotency_key=idempotency_key_header(request, required=False),
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             spo_doc_key=_int_field(raw, "spoDocKey"), spo_dtl_key=_int_field(raw, "spoDtlKey"),
+            doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 

@@ -62,3 +62,9 @@ def kind_of(name: object) -> DocKind:
     if isinstance(name, str) and name in KINDS:
         return KINDS[name]
     raise ValueError("Unknown document kind.")
+
+
+# The gateway's wire name of each kind (contract section 1).
+WIRE_SLUGS: Mapping[str, str] = MappingProxyType({
+    "QT": "quotations", "SO": "sales-orders", "PO": "purchase-orders", "SPO": "shipping-purchase-orders",
+})
