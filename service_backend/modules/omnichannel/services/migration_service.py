@@ -929,7 +929,7 @@ def _build_report(
             "messages": {
                 "fetched": messages_c.get("fetched", 0),
                 "wouldCreate": messages_c.get("create", 0),
-                "wouldUpdate": 0,
+                "wouldUpdate": messages_c.get("update", 0),
                 "wouldSkip": messages_c.get("skip", 0),
                 "errors": messages_c.get("errors", 0),
             },
@@ -1849,18 +1849,26 @@ def _process_contact_messages(
             kept_resolved.append((created_at, inferred))
         parsed_items, resolved = kept_items, kept_resolved
 
-    already = refs.already_migrated(
+    already = refs.local_for(
         tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_MESSAGE,
         [str(m.messageId) for m in parsed_items],
     )
+    # Lane SS-CHANNEL-SKIP - a message imported while its source channel was
+    # skipped has `channel_id` NULL. Once that channel is connected and mapped
+    # on a re-run, the earlier message gets it (only ever a NULL -> target
+    # fill, never an overwrite), so the history lands on the connected channel.
+    relink: Dict[str, List[str]] = {}
 
     newly_inferred = 0
     for item, (created_at, inferred) in zip(parsed_items, resolved):
         message_counts["fetched"] = message_counts.get("fetched", 0) + 1
-        if str(item.messageId) in already:
-            message_counts["skip"] = message_counts.get("skip", 0) + 1
-            continue
         target_channel_id = channel_map.get(str(item.channelId)) if item.channelId is not None else None
+        if str(item.messageId) in already:
+            if target_channel_id is not None:
+                relink.setdefault(target_channel_id, []).append(already[str(item.messageId)])
+            else:
+                message_counts["skip"] = message_counts.get("skip", 0) + 1
+            continue
         try:
             writer.write_message(
                 local_contact.id, item, created_at,
@@ -1880,6 +1888,12 @@ def _process_contact_messages(
             newly_inferred += 1
         if len(message_samples) < MAX_REPORT_SAMPLES:
             message_samples.append({"type": item.message.type, "action": "create"})
+
+    relinked = 0
+    for target_channel_id, local_ids in relink.items():
+        relinked += writer.link_messages_to_channel(local_contact.id, local_ids, target_channel_id)
+    message_counts["update"] = message_counts.get("update", 0) + relinked
+    message_counts["skip"] = message_counts.get("skip", 0) + sum(len(v) for v in relink.values()) - relinked
 
     # AC-MIG-37 - exactly ONE recompute per contact, after its WHOLE message
     # phase (this call covers every page for this contact - buffered above).

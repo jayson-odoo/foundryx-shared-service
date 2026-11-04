@@ -20,6 +20,7 @@ from modules.omnichannel.models import (
     Contact,
     ContactChannelIdentity,
     ConversationMessage,
+    MigrationRef,
 )
 from modules.omnichannel.schemas import MigrationSourceChannel, SendMessageRequest
 from modules.omnichannel.services.message_service import MessageService, SendRejected
@@ -92,6 +93,18 @@ def test_ac_skip_02_dry_run_and_run_accepted_with_every_channel_skipped(client, 
     assert run.json()["status"] == "done"
 
 
+def _message_channels(db, contact_id):
+    """`{source messageId: channel_id}` for one contact's migrated history."""
+    db.expire_all()
+    rows = (
+        db.query(MigrationRef.external_id, ConversationMessage.channel_id)
+        .join(ConversationMessage, ConversationMessage.id == MigrationRef.local_id)
+        .filter(MigrationRef.entity_type == "message", ConversationMessage.contact_id == contact_id)
+        .all()
+    )
+    return {int(ext): channel_id for ext, channel_id in rows}
+
+
 def test_ac_skip_04_skip_now_then_connect_later_links_every_migrated_contact(session_factory, monkeypatch):
     db = session_factory()
     ws = _default_workspace(db, DEFAULT_TENANT_ID)
@@ -106,8 +119,19 @@ def test_ac_skip_04_skip_now_then_connect_later_links_every_migrated_contact(ses
     messages_by_contact = {
         "id:970001": {
             None: (
-                [{"messageId": 1, "traffic": "incoming", "channelId": int(SOURCE_CHANNEL_ID),
-                  "message": {"type": "text", "text": "hello"}}],
+                [
+                    {"messageId": 1, "traffic": "incoming", "channelId": int(SOURCE_CHANNEL_ID),
+                     "message": {"type": "text", "text": "hello"}},
+                    {"messageId": 2, "traffic": "outgoing", "channelId": int(SOURCE_CHANNEL_ID),
+                     "message": {"type": "text", "text": "hi back"},
+                     "status": [{"value": "sent", "timestamp": 1700000000}]},
+                    # Source channel still unmapped on every run -> stays channel-less.
+                    {"messageId": 3, "traffic": "incoming", "channelId": 702,
+                     "message": {"type": "text", "text": "other channel"}},
+                    # respond.io gave no channel at all -> nothing to match on.
+                    {"messageId": 4, "traffic": "incoming", "channelId": None,
+                     "message": {"type": "text", "text": "unknown channel"}},
+                ],
                 None,
             )
         }
@@ -133,25 +157,54 @@ def test_ac_skip_04_skip_now_then_connect_later_links_every_migrated_contact(ses
         .first()
     )
     assert contact is not None, "contacts import while the channel is skipped"
-    assert db.query(ConversationMessage).filter(ConversationMessage.contact_id == contact.id).count() == 1
+    assert db.query(ConversationMessage).filter(ConversationMessage.contact_id == contact.id).count() == 4
+    assert _message_channels(db, contact.id) == {1: None, 2: None, 3: None, 4: None}
     assert db.query(ContactChannelIdentity).filter(ContactChannelIdentity.contact_id == contact.id).count() == 0
 
     # Later: the channel is connected and the migration runs again, mapped.
     wa_channel = _make_channel(db, DEFAULT_TENANT_ID, ws.id, channel_type="WHATSAPP")
     db.commit()
+    mapped = [
+        {"sourceChannelId": SOURCE_CHANNEL_ID, "targetChannelId": wa_channel.id},
+        {"sourceChannelId": "702", "targetChannelId": None},
+    ]
+
+    # The dry run previews the re-link but writes nothing.
+    dry = _make_full_job(
+        db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="dry_run", channel_map=mapped,
+    )
+    run_migration_job(db, dry)
+    db.refresh(dry)
+    assert dry.status == "done", dry.error
+    assert dry.result_json["report"]["entities"]["messages"]["wouldUpdate"] == 2
+    assert _message_channels(db, contact.id) == {1: None, 2: None, 3: None, 4: None}
+
     job2 = _make_full_job(
-        db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run",
-        channel_map=[{"sourceChannelId": SOURCE_CHANNEL_ID, "targetChannelId": wa_channel.id}],
+        db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run", channel_map=mapped,
     )
     run_migration_job(db, job2)
     db.refresh(job2)
     assert job2.status == "done", job2.error
+    assert job2.result_json["report"]["entities"]["messages"]["wouldUpdate"] == 2
+    # Earlier messages from the now-connected source channel carry it; the
+    # still-skipped channel and the channel-less message stay empty.
+    assert _message_channels(db, contact.id) == {1: wa_channel.id, 2: wa_channel.id, 3: None, 4: None}
+
+    # A third run is a no-op: nothing re-linked, nothing duplicated.
+    job3 = _make_full_job(
+        db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run", channel_map=mapped,
+    )
+    run_migration_job(db, job3)
+    db.refresh(job3)
+    assert job3.status == "done", job3.error
+    assert job3.result_json["report"]["entities"]["messages"]["wouldUpdate"] == 0
+    assert _message_channels(db, contact.id) == {1: wa_channel.id, 2: wa_channel.id, 3: None, 4: None}
 
     identities = db.query(ContactChannelIdentity).filter(ContactChannelIdentity.contact_id == contact.id).all()
     assert [i.channel_id for i in identities] == [wa_channel.id]
     assert identities[0].external_user_id == "15557770000"
-    assert db.query(ConversationMessage).filter(ConversationMessage.contact_id == contact.id).count() == 1, (
-        "the second run must not duplicate history"
+    assert db.query(ConversationMessage).filter(ConversationMessage.contact_id == contact.id).count() == 4, (
+        "re-runs must not duplicate history"
     )
     db.close()
 
