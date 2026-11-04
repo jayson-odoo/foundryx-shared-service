@@ -6,10 +6,10 @@
  * no fetch. Times go through `useDatetime()`.
  */
 import { useState } from 'react';
-import { Copy, LoaderCircle } from 'lucide-react';
+import { Check, Copy, LoaderCircle } from 'lucide-react';
 import type { MigrationSyncItem } from '@/types/respondio-migration';
-import { toast } from '@/lib/toast';
 import { useCan } from '@/hooks/use-can';
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useMigrationSync } from '@/hooks/use-migration-sync';
 import { Button } from '@/components/ui/button';
@@ -55,20 +55,11 @@ export function MigrationSyncCard({
     canManage,
   );
   const [confirmingStop, setConfirmingStop] = useState(false);
+  const { copyToClipboard, isCopied } = useCopyToClipboard();
 
   if (!loaded) return null;
   // Read-only users see nothing to start; an existing sync is still shown.
   if (!sync && !canManage) return null;
-
-  const copyUrl = async () => {
-    if (!webhookUrl) return;
-    try {
-      await navigator.clipboard.writeText(webhookUrl);
-      toast.success('Webhook URL copied.');
-    } catch {
-      toast.error('Could not copy the webhook URL.');
-    }
-  };
 
   const running = Boolean(sync?.runningJobId);
   const result = sync?.lastResult ?? null;
@@ -169,11 +160,15 @@ export function MigrationSyncCard({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void copyUrl()}
+                onClick={() => webhookUrl && copyToClipboard(webhookUrl)}
                 aria-label="Copy webhook URL"
               >
-                <Copy className="size-4" />
-                Copy
+                {isCopied ? (
+                  <Check className="size-4" />
+                ) : (
+                  <Copy className="size-4" />
+                )}
+                {isCopied ? 'Copied' : 'Copy'}
               </Button>
             </div>
           )}
