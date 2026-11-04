@@ -65,6 +65,20 @@ Checks:
   (SRTKT38SS UNIT) to FXT-1104d-SO row 12041 (SRTKT38SS UNIT). No mismatch. (The earlier refused links that paired
   an SRTKS7090 row with an SRTKT38SS row never reached AutoCount.)
 
+## What our PUT bodies actually carry (header facts)
+
+The step bodies in this report are trimmed for privacy: they show codes and the touched rows only (for example
+`DocKey`, `DocNo` and `Details`). The bodies actually sent are larger. Every service PUT (the action log shows
+C07 at 15:04:19 and 15:11:23, C03 at 15:11:17 and 15:48:35, C08 at 15:48:44) carried 34 header fields, with the
+values of the PO's own read-back (they hold a supplier name, address and phone, which are redacted here, field
+names only): DocKey, DocNo, DocDate, CreditorCode, CreditorName, Ref, Description, DisplayTerm, PurchaseAgent,
+InvAddr1-4, Phone1, Fax1, Attention, BranchCode, DeliverAddr1-4, DeliverPhone1, DeliverFax1, DeliverContact,
+CurrencyCode, CurrencyRate, Remark1-4, RefDocNo, ShipVia, ShipInfo, InclusiveTax. `Details` held ONLY the touched
+rows: 2 for a split write, 1 for an unlink or a location move, never every row of the PO.
+The direct probes P1, P1b, P2, P4, P5.1 to P5.3, P6, P7a to P7c, P8, P8b to P8d, P7a-2 to P7c-2 and P2-2 used the
+same builder: the same 34 header fields and exactly 1 `Details` row each (P6 and the C03/C08 new row have
+`DtlKey 0`). The two P10 probes below are the only ones that sent a full body.
+
 ## Summary: what works on db3 today and what is gated pending AutoCount
 
 | Area | Works today | Gated, pending AutoCount | Evidence |
@@ -129,6 +143,8 @@ cancelled. Every later run appends to this table.
 | FXT-1104d-1 | PO | 12042 | P7b-2 (FromDocDtlKey + FromSODocList; clean pair) | 15:53:58 | PUT /EditPurchaseOrderbydockey | 200 | no change | | TEST DOC |
 | FXT-1104d-1 | PO | 12042 | P7c-2 (FromSODtlKey only; clean pair) | 15:54:01 | PUT /EditPurchaseOrderbydockey | 200 | no change | | TEST DOC |
 | FXT-1104d-1 | PO | 12042 | P2-2 (documented shape, control; clean pair) | 15:54:03 | PUT /EditPurchaseOrderbydockey | 200 | no change | 12043 SRTKT38SS 35 HQ 0; 12044 SRTKT38SS 10 HQ 0; 12046 SRTKT38SS 10 BRW-AM 12039; 12048 SRTKT38SS 5 BRW-AM 12040 | TEST DOC |
+| FXT-1104d-1 | PO | 12042 | P10a (full body link, clean pair) | 16:09:17 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12044 stays unlinked; rows 12046 and 12048 keep their links) | 12043 SRTKT38SS 35 HQ 0; 12044 SRTKT38SS 10 HQ 0; 12046 SRTKT38SS 10 BRW-AM 12039; 12048 SRTKT38SS 5 BRW-AM 12040 | TEST DOC |
+| FXT-1104d-1 | PO | 12042 | P10b (full body unlink of row 12048) | 16:09:22 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12048 stays linked to 12040) | same four rows, 4 rows total | TEST DOC |
 Notes:
 
 - FXT-PROBE-1 shows a blank creditor name because our probe body sent only `CreditorCode` (400-N004) and no
@@ -527,6 +543,31 @@ changed, and the row read back unlinked after each try. Stopped nowhere: no try 
   `FromDocDtlKey 12041`, `FullTransferOption " "`. Linked qty 0 before, 0 after. Not linked. So the original P2
   conclusion holds on a clean pair: a link on an existing row is ignored even when the SO row is uncovered.
 
+### P10a and P10b: full-body link and unlink (Q7, Q8): no change
+
+Clean pair, confirmed by GET first: PO FXT-1104d-1 (DocKey 12042) row 12044 (10 HQ, `FromSODtlKey 0`) and SO
+FXT-1104d-SO (DocKey 12038) row 12041 (10 BRW-AM), no PO row linked to 12041. Body: EVERY header key exactly as the
+PO's own GET read-back returns it, 59 keys (calculated fields included; the 34 above plus Total, NetTotal,
+LocalNetTotal, Tax, LocalTax, Cancelled, LastModified, LastModifiedUserID, CreatedTimeStamp, CreatedUserID, ExTax,
+LocalExTax, TotalExTax, TaxableAmt, IsRoundAdj, RoundAdj, FinalTotal, LocalTaxableAmt, TaxEntityID, DocStatus,
+ShippingPO, ToDocType, ToDocKey, ToDtlKey, FullTransferOption; no date before 1753 present or sent), and `Details` =
+EVERY row of the PO as read back with all 40 row fields (dates before 1753 omitted, rows 12046 and 12048 read
+`DeliveryDate 0001-01-01` so it was left out), 4 rows. Values redacted here.
+
+Before both probes, PO rows (DtlKey, Qty, Location, `FromSODtlKey`): 12043 35 HQ 0; 12044 10 HQ 0; 12046 10 BRW-AM
+12039; 12048 5 BRW-AM 12040. Four rows. SO FXT-1104d-SO linked qty: row 12039: 10, row 12040: 5, row 12041: 0.
+
+- P10a (16:09:17) link: only row 12044 changed in the body, `FromDocType "SO"`, `FromDocNo "FXT-1104d-SO"`,
+  `FromDocDtlKey 12041`; all other rows as read. Status 200, `DocNo=FXT-1104d-1 ,DocKey=12042 ... Done Edit.`
+  After: the same four rows, same quantities, locations and `FromSODtlKey` (12044 still 0). Row count 4. SO
+  linked qty after: 12039: 10, 12040: 5, 12041: 0. Not linked. Side effect on the re-sent linked rows 12046 and
+  12048: none, their links are intact.
+- P10b (16:09:22) unlink: fresh GET, then the full body with row 12048 (`FromSODtlKey 12040`) sent with
+  `FromDocType ""`, `FromDocNo ""`, `FromDocDtlKey 0`; every other row as read. Status 200 "Done Edit." After: the
+  same four rows, 12048 still 5 BRW-AM linked to 12040. Row count 4. SO linked qty unchanged (10, 5, 0). Not
+  unlinked, and no side effect on any other row.
+- The PO `Total` field (a price total; the new linked rows carry `UnitPrice 0`) read 45.0 after P10a and after P10b.
+
 ## Observations for AutoCount
 
 Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
@@ -543,7 +584,8 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
    the link is kept only in `FromSODtlKey` / `FromSODocList`. How is a PO row unlinked from its SO row
    (a different field or endpoint)? P8 (`FromSODtlKey 0` and `FromSODocList ""`
    with the From* keys absent) and P8b-d (the current link values, with or without `FromDocType`/`FromDocNo`,
-   `FromSODtlKey 0` or absent) also changed nothing (status 200, still linked). Please also return an error
+   `FromSODtlKey 0` or absent) also changed nothing (status 200, still linked). P10b repeated the unlink with the full PO body (every header key and every row as read, only row 12048's
+   From* keys cleared): status 200, still linked, no side effect. Please also return an error
    instead of 200 when an edit changes nothing.
 3. **Link on edit of an existing row (Q7): not applied.** P2 answered status 200 `Done Edit.`, applied the
    location, and ignored `FromDocType "SO"`, `FromDocNo`, `FromDocDtlKey` (row stayed `FromSODtlKey 0`).
@@ -553,7 +595,8 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
    fields directly with the From* keys absent (`FromSODtlKey` + `FromSODocList`, `FromDocDtlKey` +
    `FromSODocList`, `FromSODtlKey` alone): all status 200, none linked. Is a link on an existing row supported
    at all, and with which values? The clean re-run (P7a-2, P7b-2, P7c-2 and the documented shape P2-2, on an uncovered
-   SO row) changed nothing either, so over-coverage was not the reason.
+   SO row) changed nothing either, so over-coverage was not the reason. P10a sent a full body (every header key and every row as read, only row 12044's From* keys set to the
+   SO row): status 200, not linked, and the other rows' links stayed intact, so a thin body was not the reason either.
 4. **ShippingPO on create (Q13, Q14a).** `POST /NewPurchaseOrder` with `ShippingPO "T"` and a row
    `FromDocType "PO"` is refused: status 400 `PO is not valid value to FromDocType.` (P3). What
    `FromDocType` value links an SPO row to a PO row, and is `ShippingPO "T"` accepted on create? Run 2
