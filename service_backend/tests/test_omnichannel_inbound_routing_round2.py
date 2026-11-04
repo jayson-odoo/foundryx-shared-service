@@ -231,18 +231,30 @@ def test_template_event_does_not_touch_a_trashed_channels_template(session_facto
     assert _tpl_status(session_factory, t_gone) == "PENDING"
 
 
-@pytest.mark.parametrize("other_meta", [None, "meta-other"], ids=["null_id", "different_id"])
-def test_template_event_matches_by_meta_id_only(session_factory, other_meta):
+def test_template_event_name_match_applies_to_a_row_without_a_meta_id(session_factory):
+    n = next(_n)
+    ws = _workspace(session_factory, DEFAULT_TENANT_ID, default=True)
+    waba, mid = f"waba-legacy-{n}", f"meta-legacy-{n}"
+    ch, legacy = _tpl_channel(session_factory, DEFAULT_TENANT_ID, ws, waba, meta_id=None)
+    _process(session_factory, ch, _event_with_id(waba, mid))
+    assert _tpl_status(session_factory, legacy) == "REJECTED"
+
+
+def test_template_event_never_name_matches_a_row_with_a_different_meta_id(session_factory):
     n = next(_n)
     t2 = _tenant(session_factory, f"r2-t2-{n}")
     ws1 = _workspace(session_factory, DEFAULT_TENANT_ID, default=True)
     ws2 = _workspace(session_factory, t2, default=True)
     waba, mid = f"waba-id-{n}", f"meta-id-{n}"
     c1, tpl1 = _tpl_channel(session_factory, DEFAULT_TENANT_ID, ws1, waba, meta_id=mid)
-    _c2, tpl2 = _tpl_channel(session_factory, t2, ws2, waba, meta_id=other_meta)
+    _c2, tpl2 = _tpl_channel(session_factory, t2, ws2, waba, meta_id="meta-other")
+    c3, tpl3 = _tpl_channel(session_factory, DEFAULT_TENANT_ID, ws1, f"waba-id3-{n}", meta_id="meta-other-3")
     _process(session_factory, c1, _event_with_id(waba, mid))
     assert _tpl_status(session_factory, tpl1) == "REJECTED"
     assert _tpl_status(session_factory, tpl2) == "PENDING"
+    # same channel, same name, different Meta id: also untouched
+    _process(session_factory, c3, _event_with_id(f"waba-id3-{n}", f"meta-unrelated-{n}"))
+    assert _tpl_status(session_factory, tpl3) == "PENDING"
 
 
 # ── 10. module-active checks cached per tenant ───────────────────────────────
