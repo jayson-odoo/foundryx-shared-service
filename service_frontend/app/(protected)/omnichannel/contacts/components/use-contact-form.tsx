@@ -9,13 +9,14 @@
  * outer shell stays read-only chrome (`editable:false`) so there is only ONE
  * edit affordance per field, not a duplicate outer toggle.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { UserRound } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ResourceActionRuntime } from '@/components/platform/resource-list';
 import { ConversationDrawer } from '@/components/platform/conversation-drawer';
 import { ApiError } from '@/lib/api-client';
 import { contactService } from '@/services/contact-service';
@@ -26,6 +27,7 @@ import type { ContactListItem } from '@/types/omnichannel';
 import { ContactDetailsTab } from './contact-details-tab';
 import { ContactFormFields } from './contact-form-fields';
 import { contactFormHref, contactFormPath, contactsListPath } from './paths';
+import { useContactEraseAction } from './use-contact-erase-action';
 import { contactCreateSchema, defaultContactCreateValues, type ContactCreateValues } from './contact-schema';
 
 type CustomFieldValue = string | number | boolean | null;
@@ -91,6 +93,14 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
       active = false;
     };
   }, [creating, workspaceId, contactId]);
+
+  // Back to the list once the contact is gone (plan 56 C); the shell passes the
+  // list href with the user's list state reattached when it has one.
+  const leaveAfterErase = useCallback(
+    (runtime: ResourceActionRuntime) => router.push(runtime.backHref ?? contactsListPath),
+    [router],
+  );
+  const eraseAction = useContactEraseAction('form', leaveAfterErase);
 
   const config = useMemo<ResourceFormConfig<ContactListItem> | null>(() => {
     if (isLoading || (!creating && notFound)) return null;
@@ -202,7 +212,7 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
           ),
         },
       ],
-      actions: [],
+      actions: [eraseAction],
       actionRows: [record],
       // The reused A1 panel components (`ContactPanel` -> `ContactDetailsForm`
       // / `LifecycleMove` / `TagChips`) each own their own field-level edit
@@ -234,6 +244,7 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
     customValues,
     customErrors,
     router,
+    eraseAction,
   ]);
 
   return { config, form: createForm, isLoading, notFound };

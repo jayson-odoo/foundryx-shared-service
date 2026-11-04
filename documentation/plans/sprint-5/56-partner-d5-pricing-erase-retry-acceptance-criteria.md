@@ -1,6 +1,6 @@
 # Plan 56 acceptance criteria (partner inbox D5)
 
-Plan: `56-partner-d5-pricing-erase-retry.md`. Sections A and B are final (crew rulings A1a A2a A3a B1a B2a B3a B4a, 4 Nov). Section C is a draft: the owner ruled C1a C2a C3a C4b C5a (4 Nov); it is completed when C starts, after A and B.
+Plan: `56-partner-d5-pricing-erase-retry.md`. Sections A and B are final (crew rulings A1a A2a A3a B1a B2a B3a B4a, 4 Nov). Section C is final (owner rulings C1a C2a C3a C4b C5a, 4 Nov).
 
 ## A. Meta rate-limit retry on WhatsApp sends
 
@@ -31,10 +31,31 @@ Code today: parse `adapters/whatsapp_cloud.py:949-958`; apply `services/inbound_
 - AC-56-27: Tenant and workspace scoping are unchanged: a status webhook on channel X never writes pricing on a message of another tenant (same `external_message_id` in a foreign tenant).
 - AC-56-28: Guide: `message.status` payload section (`consumer-integration-guide.md:847-854`), MessageItem section 9.1 (`:1029-1060`), field map 9.3 (`:1193-1199`, rio has none), a note that GET /templates already returns `category`, and a changelog row.
 
-## C. Contact erase (draft)
+## C. Contact erase for PDPA
 
-- AC-56-40: `DELETE /api/v1/omnichannel/contacts/{identifier}` erases the contact and every row in plan section C.1 in one transaction, in the key's own workspace only; a contact of another workspace or tenant answers 404.
-- AC-56-41: Stored files of the erased messages are deleted after commit by a retrying background job.
-- AC-56-42: Webhook delivery rows for the contact keep id and status; their payload becomes ids only.
-- AC-56-43: Subscribed endpoints receive one `contact.erased` event with ids only.
-- AC-56-44: Staff erase needs `contacts.erase`; existing tenants' Admin role gets it by a grant sweep.
+Owner rulings C1a C2a C3a C4b C5a (4 Nov). Code pointers in plan section C.
+
+### API key route
+
+- AC-56-40: `DELETE /api/v1/omnichannel/contacts/{identifier}` (`id:<contactId>`, `phone:<number>` or a bare id, the resolver at `services/public_gateway_service.py:338`) erases the contact of the key's own workspace and answers `200` with `{contactId, erasedAt, messages, files}` (counts of what was erased). A contact of another workspace or tenant, an unknown one, and a second call for the same contact answer `404 contact_not_found`. Every API key can call it (gap 7 precedent, no per-key scope).
+- AC-56-41: In one transaction, after cancelling the contact's parked workflow waits (their runs end cancelled, as `bootstrap.py:886` does), the erase deletes: message reactions on the contact's messages, the messages (internal notes included), conversation events, channel identities, tag links, workflow waits, workflow contact fires, broadcast recipient rows, and the contact. `broadcasts.audience_contact_ids_json` drops the id (fresh list). Ideation `ideas.submitter_contact_id` is set to NULL. Nothing else of other contacts changes. A failure anywhere rolls the whole erase back and the contact stays as it was.
+- AC-56-42: After commit, every stored file of the erased messages that lives in the erasing tenant's own storage area (a key under `omnichannel/<tenant_id>/` or `omnichannel/migration/<tenant_id>/`, on local disk, on the tenant's own storage connection or on the platform default storage connection; never on another tenant's connection; legacy links on migrated rows are left alone; a server-minted bare `media_key` from the module 0006 media conversion counts as the row's own file on a native row, never on a migrated one; a legacy link counts only when it points at our own public media URL) (`media_key`, a legacy `media_url` that points at local storage, and the original upload of a transcoded voice note) is deleted by a retrying Celery task. A file that is already gone counts as deleted. A file delete that keeps failing never undoes the erase, and the log line carries the storage key's connection id only, never the file name or contact data.
+- AC-56-43: The voice transcode (`services/send_runner.py:459-463`) deletes the original upload once the converted file is stored, so no unreachable original remains for new sends.
+- AC-56-44: `webhook_deliveries` rows whose payload names the contact keep their id, event type, status and attempt fields; `payload_json` becomes ids only (`id`, `type`, `workspaceId`, `channelId`, `occurredAt`, `data.contactId`, `data.messageId` when present).
+- AC-56-45: Respond.io: the contact's migration ref of type `contact` is kept and re-keyed to `entity_type = "contact_erased"`, `local_id = "erased"`; its other refs (identities, messages, events) are deleted. A later one-off import or continuous sync pass that meets that respond.io contact id writes nothing for it: no contact, identity, message, media or event (`MigrationWriter._find_existing`, main `services/migration_writer.py:504-552`).
+- AC-56-46: After the erase, an inbound message from the same number, or `POST /messages` to `phone:<number>`, creates a new contact with a new id and no link to the erased one.
+- AC-56-47: New consumer webhook event `contact.erased`, opt-in per endpoint like every event type: `data` is `{contactId, erasedAt}` and nothing else; sent once per erase to every subscribed active endpoint that would have received this contact's events: the workspace's all-channels endpoints and the per-channel endpoints of every channel the contact had an identity on (channels collected before the delete), exactly one delivery per endpoint, under the existing gateway-key and endpoint-status rules.
+- AC-56-48: Staff inboxes get a realtime `contact.erased` event; an open thread or list row for that contact closes or disappears without a reload.
+- AC-56-49: A queued or retrying send of an erased message ends quietly: the send task finds no row, calls nothing at Meta and raises nothing.
+
+### Staff
+
+- AC-56-50: New permission `contacts.erase` (module CSV row). Existing tenants' Admin role gets it by a one-shot sweep when the key is first created (`PermissionRepository.sync()` created-keys pattern, `modules/connector/bootstrap.py:37-81`); no other role gets it. The key does not collide with a core key.
+- AC-56-51: Staff route `DELETE /api/omnichannel/contacts/{id}` needs `contacts.erase` plus access to the contact's workspace; it runs the same erase as AC-56-41 to AC-56-49 and answers the same body. A contact of another tenant or of a workspace the user cannot see answers 404.
+- AC-56-52: "Erase contact" appears in the contacts list row menu (one row at a time, never bulk) and the contact detail menu, only for users with `contacts.erase`. It opens the typed-confirm dialog (`ConfirmActionDialog`, the tenant purge pattern) showing the contact's name and the counts that will go (messages, files); the confirm button stays disabled until the user types `ERASE`. After success the detail view returns to the list and a toast says the contact was erased.
+- AC-56-53: The menu, dialog and toast work at 375 px and 1280 px (browser pass on the crew test copy).
+- AC-56-55: The staff contacts list and the staff contact read carry `messageCount` and `fileCount`, counted by the same rules as the erase response (`messages`, `files`) and scoped to the tenant and workspace; the list adds no query per row. The API key contact routes do not change shape. The dialog's counts come from these fields.
+
+### Contract and docs
+
+- AC-56-54: Consumer guide: the route, the response, `404` cases, the `contact.erased` event, the re-contact rule, the respond.io rule, and what SS cannot erase (the chat on the customer's phone, media Meta still holds, copies the consumer keeps, exports already downloaded, and core logs, which are purged after 30 days); changelog row. `documentation/engineering/omnichannel-service.md` gets the erase order.

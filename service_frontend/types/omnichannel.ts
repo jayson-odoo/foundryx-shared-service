@@ -625,6 +625,7 @@ export interface ThreadListQuery {
 /** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */
 export type ConversationSocketEvent =
   | { type: 'message.created'; message: ConversationMessage; thread: ConversationThread }
+  | { type: 'contact.erased'; contactId: string }
   | { type: 'message.status'; messageId: string; contactId: string; deliveryStatus: DeliveryStatus; errorMessage?: string }
   | { type: 'contact.updated'; thread: ConversationThread }
   | {
@@ -817,6 +818,17 @@ export interface ContactChannelRef {
  *  field PLUS the resolved channel identities. */
 export interface ContactListItem extends ConversationThread {
   channels: ContactChannelRef[];
+  /** What an erase would remove (plan 56 C): all messages incl. notes, and stored files. */
+  messageCount?: number;
+  fileCount?: number;
+}
+
+/** What the staff erase answers (plan 56 C). */
+export interface ContactEraseResult {
+  contactId: string;
+  erasedAt: string;
+  messages: number;
+  files: number;
 }
 
 /** A saved, named filter tree on a workspace (D-A2-3) - stores the EXACT

@@ -2603,7 +2603,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                         # `_process_contact_messages` are the exact same
                         # functions the real phases below call), and the
                         # whole thing rolls back together at the end.
-                        if dry_run and not contacts_only:
+                        if dry_run and not contacts_only and not outcome.skipped:
                             _process_contact_identities(
                                 client, writer, outcome.contact_id, external_id,
                                 channel_map, channel_type_by_target, source_contact.phone,

@@ -688,7 +688,60 @@ def install(engine: Engine, db: Session) -> None:
     ``install_tenant`` when a tenant actually installs the module.
     """
     create_schema_and_tables(engine)
-    PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    created = PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    # Existing tenants: their system Admin role (when it already holds
+    # contacts.manage) gets contacts.erase. ONE-SHOT: only when this very sync
+    # created the key, so a later deliberate removal is respected. No other role.
+    if ERASE_PERMISSION in created:
+        sweep_erase_grant(db)
+        db.commit()
+
+
+ERASE_PERMISSION = "contacts.erase"
+MANAGE_PERMISSION = "contacts.manage"
+
+
+def sweep_erase_grant(db: Session) -> None:
+    """Grant ``contacts.erase`` to every tenant's system Admin role that holds
+    ``contacts.manage``. Idempotent; each row carries the role's own tenant_id.
+    No commit: the caller owns the transaction."""
+    from sqlalchemy import select
+
+    from app.models import Role
+    from app.models.permission import Permission, role_permissions
+
+    ids = dict(
+        db.execute(
+            select(Permission.key, Permission.id).where(
+                Permission.key.in_([MANAGE_PERMISSION, ERASE_PERMISSION])
+            )
+        ).all()
+    )
+    manage_id, erase_id = ids.get(MANAGE_PERMISSION), ids.get(ERASE_PERMISSION)
+    if manage_id is None or erase_id is None:
+        return
+    holders = db.execute(
+        select(Role.id, Role.tenant_id)
+        .join(role_permissions, role_permissions.c.role_id == Role.id)
+        .where(
+            role_permissions.c.permission_id == manage_id,
+            Role.name == "Admin",
+            Role.is_system.is_(True),
+        )
+    ).all()
+    already = set(
+        db.execute(
+            select(role_permissions.c.role_id).where(role_permissions.c.permission_id == erase_id)
+        ).scalars()
+    )
+    new = [
+        {"role_id": rid, "permission_id": erase_id, "tenant_id": tid}
+        for rid, tid in holders
+        if rid not in already
+    ]
+    if new:
+        db.execute(role_permissions.insert(), new)
+    db.flush()
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:

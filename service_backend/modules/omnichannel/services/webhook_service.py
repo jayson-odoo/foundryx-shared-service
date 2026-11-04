@@ -46,6 +46,7 @@ EVENT_TYPES = (
     "message.status",
     "contact.updated",
     "message.reaction",
+    "contact.erased",
 )
 
 # Auto-disable after this many consecutive dead-lettered deliveries.

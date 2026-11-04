@@ -128,6 +128,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     messages,
     isLoading,
     error,
+    erased,
     isSending,
     sendError,
     send,
@@ -352,7 +353,8 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     setMatchCursor(0);
   }, []);
 
-  if (!contactId) {
+  // An erased contact (plan 56 C) leaves the same empty state as "nothing selected".
+  if (!contactId || erased) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground" data-testid="drawer-empty">
         <Inbox className="size-8" />

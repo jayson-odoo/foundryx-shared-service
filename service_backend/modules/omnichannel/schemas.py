@@ -779,6 +779,16 @@ class ContactListItem(ThreadItem):
     inherited so the module never forks a second contact representation."""
 
     channels: List[ContactChannelRef] = []
+    # What an erase would remove (plan 56 C); the erase dialog shows them.
+    messageCount: int = 0
+    fileCount: int = 0
+
+
+class ThreadDetailItem(ThreadItem):
+    """`ThreadItem` + the erase counts, for the staff single-contact read."""
+
+    messageCount: int = 0
+    fileCount: int = 0
 
 
 class ContactListResponse(ApiModel):
@@ -1576,6 +1586,16 @@ class ReadReceiptItem(ApiModel):
 class ContactReadResponse(ApiModel):
     contactId: str
     receipts: List[ReadReceiptItem]
+
+
+class ContactEraseResponse(ApiModel):
+    """What an erase removed (plan 56 C): `messages` counts the contact's
+    messages (notes included), `files` the stored files."""
+
+    contactId: str
+    erasedAt: datetime
+    messages: int
+    files: int
 
 
 # ── respond.io-parity response shapes (public gateway) ───────────────────────

@@ -68,6 +68,18 @@ def _read_media(db: Session, tenant_id: str, media_key: str) -> bytes:
         raise OSError("Stored media could not be read") from None
 
 
+def _delete_superseded_upload(db: Session, row: ConversationMessage, key: str) -> None:
+    """Remove the original voice upload once its converted copy is committed on
+    the row. A leftover file never fails a send."""
+    row_id, tenant_id = row.id, row.tenant_id
+    try:
+        from app.services.storage import storage_for_tenant
+
+        storage_for_tenant(db, tenant_id).delete(key)
+    except Exception:  # noqa: BLE001
+        logger.warning("original voice upload of message %s could not be deleted", row_id)
+
+
 def _emit_status_webhook(
     db: Session, row: ConversationMessage, outcome: Optional[str] = None
 ) -> None:
@@ -480,6 +492,7 @@ def _run_send(
     messaging_type: Optional[str] = meta_send.get("messagingType")
     send_tag: Optional[str] = meta_send.get("tag")
 
+    superseded_key: Optional[str] = None
     try:
         if row.message_type == "TEMPLATE":
             template = (row.payload_json or {}).get("template") or {}
@@ -507,11 +520,20 @@ def _run_send(
                 # agent playback + the media endpoint serve the correct type.
                 from app.services.storage import storage_for_tenant
 
-                row.media_key = storage_for_tenant(db, row.tenant_id).save(
-                    f"omnichannel/{row.tenant_id}/voice", content, mime
-                )
+                store = storage_for_tenant(db, row.tenant_id)
+                original_key = row.media_key
+                row.media_key = store.save(f"omnichannel/{row.tenant_id}/voice", content, mime)
                 row.media_mime = mime
+                # The original upload is no longer reachable from the row; it is
+                # deleted once the converted key is committed (plan 56 C, AC-56-43).
+                superseded_key = original_key if original_key != row.media_key else None
             media_id = adapter.upload_media(credentials, phone_id, content, mime)
+            if superseded_key:
+                # The converted file is accepted: keep it on the row from here on,
+                # whatever the send does next, then drop the original.
+                db.commit()
+                _delete_superseded_upload(db, row, superseded_key)
+                superseded_key = None
             result = adapter.send(
                 credentials,
                 phone_id,
