@@ -27,3 +27,4 @@ broadcasts,Broadcasts,manage,Manage,Create/edit/duplicate/delete broadcast campa
 broadcasts,Broadcasts,send,Send,Send/schedule/cancel/test-send a broadcast campaign
 omnichannel_migration,Data Migration,read,Read,View respond.io migration jobs and their reports
 omnichannel_migration,Data Migration,manage,Manage,Connect respond.io and run migration preflights/dry runs/migrations
+contacts,Contacts,erase,Erase,Erase a contact and all its messages for good

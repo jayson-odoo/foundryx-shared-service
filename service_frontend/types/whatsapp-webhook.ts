@@ -14,7 +14,8 @@ export type WebhookEventType =
   | 'message.outbound'
   | 'message.status'
   | 'contact.updated'
-  | 'message.reaction';
+  | 'message.reaction'
+  | 'contact.erased';
 
 /** Endpoint lifecycle - AUTO_DISABLED = the delivery pipeline gave up after repeated failures. */
 export type WebhookStatus = 'ACTIVE' | 'DISABLED' | 'AUTO_DISABLED';

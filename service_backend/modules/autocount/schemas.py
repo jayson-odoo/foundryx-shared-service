@@ -1191,6 +1191,7 @@ class PullApiKeyOut(ApiModel):
     id: str
     name: str
     companyIds: List[str] = Field(validation_alias="company_ids")
+    scopes: List[str] = Field(default_factory=lambda: ["pull"])
     keyPrefix: str = Field(validation_alias="key_prefix")
     createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
     lastUsedAt: Optional[datetime] = Field(default=None, validation_alias="last_used_at")
@@ -1205,6 +1206,8 @@ class PullApiKeyCreateInput(ApiModel):
 
     name: str
     companyIds: List[str] = []
+    # Plan 55: absent = ["pull"]; ``write_back`` also needs companies.manage.
+    scopes: Optional[List[Literal["pull", "write_back"]]] = None
 
 
 class PullApiKeyIssuedOut(ApiModel):

@@ -434,9 +434,19 @@ export interface ConversationMessage {
   deliveryStatus: DeliveryStatus | null;
   errorCode: string | null;
   errorMessage: string | null;
+  /** Meta's pricing for this message once a delivery receipt carried it (plan 56 B). */
+  pricing?: MessagePricing | null;
   /** Set when this message replies to another (stored in metadata_json). */
   replyTo: ReplyRef | null;
   createdAt: string; // ISO
+}
+
+/** Meta's pricing for one message, from its delivery receipt (plan 56 B). */
+export interface MessagePricing {
+  billable: boolean | null;
+  pricingModel: string | null;
+  category: string | null;
+  type: string | null;
 }
 
 /** One emoji reaction on a message (plan 12 Slice 3, AC-12-19/20). */
@@ -615,6 +625,7 @@ export interface ThreadListQuery {
 /** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */
 export type ConversationSocketEvent =
   | { type: 'message.created'; message: ConversationMessage; thread: ConversationThread }
+  | { type: 'contact.erased'; contactId: string }
   | { type: 'message.status'; messageId: string; contactId: string; deliveryStatus: DeliveryStatus; errorMessage?: string }
   | { type: 'contact.updated'; thread: ConversationThread }
   | {
@@ -807,6 +818,17 @@ export interface ContactChannelRef {
  *  field PLUS the resolved channel identities. */
 export interface ContactListItem extends ConversationThread {
   channels: ContactChannelRef[];
+  /** What an erase would remove (plan 56 C): all messages incl. notes, and stored files. */
+  messageCount?: number;
+  fileCount?: number;
+}
+
+/** What the staff erase answers (plan 56 C). */
+export interface ContactEraseResult {
+  contactId: string;
+  erasedAt: string;
+  messages: number;
+  files: number;
 }
 
 /** A saved, named filter tree on a workspace (D-A2-3) - stores the EXACT

@@ -732,6 +732,7 @@ class BroadcastService:
             emit_entity_event(
                 self.db, "omnichannel_broadcast", "completed", row, tenant_id=tenant_id,
                 extra={
+                    "workspaceId": row.workspace_id,
                     "status": "CANCELLED",
                     "counts": {
                         "total": row.total_count, "sent": row.sent_count, "delivered": row.delivered_count,

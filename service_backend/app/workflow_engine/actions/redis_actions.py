@@ -44,6 +44,10 @@ def max_ttl_seconds() -> int:
 
     return int(settings.workflow_redis_max_ttl_seconds)
 
+# Bounded socket waits for the workflow data client.
+_SOCKET_CONNECT_TIMEOUT_SECONDS = 1.0
+_SOCKET_READ_TIMEOUT_SECONDS = 2.0
+
 _client_override: Any = None
 
 
@@ -52,7 +56,12 @@ def _default_client() -> Any:
 
     from app.config import settings
 
-    return Redis.from_url(settings.redis_url, decode_responses=True)
+    return Redis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_connect_timeout=_SOCKET_CONNECT_TIMEOUT_SECONDS,
+        socket_timeout=_SOCKET_READ_TIMEOUT_SECONDS,
+    )
 
 
 def get_workflow_data_client() -> Any:

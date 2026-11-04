@@ -341,3 +341,55 @@ export function computeMappingHash(shape: MigrationMappingShape): string {
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
+
+// ── Continuous sync (plan 52, lane SS-MIGRATION-SYNC) ─────────────────────────
+
+export type MigrationSyncStatus = 'active' | 'paused' | 'stopping' | 'stopped';
+export type MigrationSyncAction = 'run-now' | 'pause' | 'resume' | 'stop';
+/** Why a sync is `paused`; anything else the backend adds renders generically. */
+export type MigrationSyncPausedReason =
+  | 'token_rejected'
+  | 'connection_missing'
+  | 'workspace_missing'
+  | 'manual';
+
+/** Counters of one tick (`lastResult`) or accumulated (`totals`). */
+export interface MigrationSyncCounters {
+  contactsCreated: number;
+  contactsUpdated: number;
+  messagesCreated: number;
+  messagesSkipped: number;
+  errors: number;
+}
+
+export interface MigrationSyncLastResult extends MigrationSyncCounters {
+  failureSample: MigrationFailureRow[];
+}
+
+/** `MigrationSyncItem` (plan 52 section 3). Never carries the webhook secret or URL. */
+export interface MigrationSyncItem {
+  id: string;
+  workspaceId: string;
+  status: MigrationSyncStatus;
+  pausedReason: MigrationSyncPausedReason | null;
+  intervalMinutes: number;
+  fullSweepHours: number;
+  lastSyncAt: string | null; // ISO Z
+  nextSyncAt: string | null; // ISO Z
+  lastFullSweepAt: string | null; // ISO Z
+  /** Set while a tick is running (drives the 5 s poll). */
+  runningJobId: string | null;
+  lastError: string | null;
+  lastResult: MigrationSyncLastResult | null;
+  totals: MigrationSyncCounters | null;
+  sourceContactCount: number | null;
+  estimatedFullSweepMinutes: number | null;
+  sourceJobId: string | null;
+  stoppedAt: string | null; // ISO Z
+  createdAt: string; // ISO Z
+}
+
+/** `GET /syncs/{id}/webhook` and `POST /syncs/{id}/webhook/rotate`. */
+export interface MigrationSyncWebhook {
+  url: string;
+}
