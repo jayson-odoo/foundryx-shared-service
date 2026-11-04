@@ -190,8 +190,11 @@ def test_other_database_errors_stay_500(probe_routes):
 
 
 class _FakeDb:
+    """Records every statement run through the session OR its connection."""
+
     def __init__(self, dialect):
         self.bind = SimpleNamespace(dialect=SimpleNamespace(name=dialect))
+        self.info: dict = {}
         self.executed: list[str] = []
 
     def get_bind(self, *a, **k):
@@ -200,24 +203,41 @@ class _FakeDb:
     def execute(self, statement, *a, **k):
         self.executed.append(" ".join(str(statement).lower().split()))
 
+    def connection(self, *a, **k):
+        return SimpleNamespace(execute=self.execute, dialect=self.bind.dialect)
 
-def test_helper_sets_then_resets_lock_timeout_on_postgres():
+
+def _assert_only_transaction_scoped(executed):
+    assert executed, "entering must raise the limit for the current transaction"
+    for sql in executed:
+        assert sql.startswith("set local lock_timeout"), sql
+        assert "reset" not in sql
+
+
+def test_helper_raises_the_limit_per_transaction_and_flags_the_session(monkeypatch):
+    from app.config import settings
     from app.database import allow_long_lock_wait
 
+    monkeypatch.setitem(settings.__dict__, "api_db_long_lock_timeout_seconds", 300)
     db = _FakeDb("postgresql")
     with allow_long_lock_wait(db):
-        assert db.executed == ["set lock_timeout = 0"]
-    assert db.executed == ["set lock_timeout = 0", "reset lock_timeout"]
+        assert db.info, "the session carries a flag while the opt-out is active"
+        _assert_only_transaction_scoped(db.executed)
+        assert "300000" in db.executed[0]
+    assert not db.info, "the flag is cleared on leaving"
+    _assert_only_transaction_scoped(db.executed)  # no session-level SET, no RESET
 
 
-def test_helper_resets_even_when_the_body_raises():
+def test_helper_clears_the_flag_even_when_the_body_raises():
     from app.database import allow_long_lock_wait
 
     db = _FakeDb("postgresql")
     with pytest.raises(RuntimeError):
         with allow_long_lock_wait(db):
+            assert db.info
             raise RuntimeError("boom")
-    assert db.executed[-1] == "reset lock_timeout"
+    assert not db.info
+    _assert_only_transaction_scoped(db.executed)
 
 
 def test_helper_is_a_noop_on_sqlite():
@@ -225,8 +245,9 @@ def test_helper_is_a_noop_on_sqlite():
 
     db = _FakeDb("sqlite")
     with allow_long_lock_wait(db):
-        pass
+        assert not db.info
     assert db.executed == []
+    assert not db.info
 
 
 # ---- d. routes use the helper ---------------------------------------------
