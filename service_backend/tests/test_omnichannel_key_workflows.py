@@ -200,6 +200,7 @@ ROUTES_120 = [
 @pytest.mark.parametrize("method,path,body", ROUTES_120, ids=[f"{m} {p}" for m, p, _ in ROUTES_120])
 def test_ac_38_120_revoked_401_and_limit_429(client, session_factory, monkeypatch, method, path, body):
     """Revoked key -> 401 invalid_api_key; over the plan 50 per-minute bound -> 429 rate_limited."""
+    _pin_limit_window(monkeypatch)
     ws = _default_workspace_id(session_factory)
     wid = _seed_wf(session_factory, owner_ws=ws)
     url = BASE + path.replace("{id}", wid)
@@ -760,8 +761,27 @@ ALL_KEY_ROUTES = [
 ]
 
 
+def _pin_limit_window(monkeypatch):
+    """Pin the clock the per-minute key limit reads, so every request of a test
+    falls in ONE minute window (a real clock can roll over between the request
+    that fills the limit and the one expected to be refused). The counter key is
+    derived from key_limits.time.time(); only that name is replaced."""
+    import time as _time
+    from types import SimpleNamespace
+
+    from modules.omnichannel.services import key_limits
+
+    base = (int(_time.time()) // 60) * 60 + 10.0
+
+    def fake_time():
+        return base
+
+    monkeypatch.setattr(key_limits, "time", SimpleNamespace(time=fake_time, monotonic=_time.monotonic))
+
+
 @pytest.mark.parametrize("method,path,body", ALL_KEY_ROUTES, ids=[f"{m} {p}" for m, p, _ in ALL_KEY_ROUTES])
 def test_ac_38_120_revoked_401_and_limit_429_every_route(client, session_factory, monkeypatch, method, path, body):
+    _pin_limit_window(monkeypatch)
     ws = _default_workspace_id(session_factory)
     wid = _seed_wf(session_factory, owner_ws=ws)
     url = BASE + path.replace("{id}", wid)

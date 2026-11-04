@@ -102,9 +102,18 @@ class S3CompatibleAdapter:
 
     def _build_client(self) -> Any:
         import boto3  # noqa: PLC0415 - imported here so the stub seam works without it
+        from botocore.config import Config  # noqa: PLC0415
 
         return boto3.client(
             "s3",
+            config=Config(
+                connect_timeout=settings.storage_s3_connect_timeout_seconds,
+                read_timeout=settings.storage_s3_read_timeout_seconds,
+                retries={
+                    "total_max_attempts": settings.storage_s3_max_attempts,
+                    "mode": "standard",
+                },
+            ),
             region_name=self.region,
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id or None,
@@ -356,7 +365,3 @@ class R2Provider(_StorageProviderBase):
             *_KEY_FIELDS,
             _CDN_FIELD,
         ]
-
-
-# settings import kept for parity with sibling providers (timeouts later).
-_ = settings
