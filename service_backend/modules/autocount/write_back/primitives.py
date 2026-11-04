@@ -441,7 +441,7 @@ class PrimitiveService(WriteFrame):
         extra["warnings"] = warnings
         if call.primitive == CREATE:
             row.doc_key = after.get("DocKey")
-        result = self._finish(row, OUTCOME_DONE, document=after)
+        result = self._finish(row, OUTCOME_DONE, document=after, message=message)
         if call.kind != "QT" and call.stage:
             self._stage(company, call.kind, after)
         return self._wrap(result, **extra)
@@ -469,7 +469,7 @@ class PrimitiveService(WriteFrame):
         """``(mismatch code | None, message, warnings, new DtlKey | None)``."""
         if call.primitive == CREATE:
             v = payloads.verify_create(call.kind, {"Details": request.body.get("Details")}, after)
-            return (v.code if v.outcome != payloads.DONE else None), "", list(v.warnings), None
+            return (v.code if v.outcome != payloads.DONE else None), v.message, list(v.warnings), None
         assert before is not None
         if call.primitive == EDIT:
             ignored = payloads.verify_edit(call.kind, before, call.header_changes, call.line_changes, after)

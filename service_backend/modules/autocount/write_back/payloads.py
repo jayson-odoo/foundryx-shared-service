@@ -272,6 +272,7 @@ class Verdict:
     outcome: str
     code: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
+    message: str = ""
 
 
 DONE = "done"
@@ -344,8 +345,22 @@ def _check_line(line: Mapping[str, Any]) -> None:
         raise WriteRefusal("FIELD_REQUIRED", "UnitPrice must not be negative")
 
 
-def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None) -> Doc:
+# AC-57-45: the vendor row shape a kind always gets (db3 answers 200 and DROPS a thin row,
+# live run 4 Nov). The caller's values win; these only fill what is absent.
+_ROW_DEFAULTS: Doc = {"ProjNo": "", "FOCQty": 0, "Discount": "", "TaxCode": "", "Desc2": ""}
+_TRANSFER_DEFAULTS: Doc = {
+    "YourPONo": "", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0,
+    "FullTransferOption": " ", "FullTransferFromDocList": "",
+}
+
+
+def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None, kind: str = "QT") -> Doc:
     out = {k: _plain(v) for k, v in _pick(dict(line), LINE_KEYS).items()}
+    defaults = dict(_ROW_DEFAULTS)
+    if kind != "QT":
+        defaults.update(_TRANSFER_DEFAULTS)
+    for key, value in defaults.items():
+        out.setdefault(key, value)
     if dtl_key is not None:
         out["DtlKey"] = dtl_key
     return out
@@ -375,7 +390,7 @@ def build_create(kind_name: str, header: Mapping[str, Any], lines: Optional[Sequ
     body: Doc = {k: _plain(v) for k, v in clean.items()}
     if kind.name in ("PO", "SPO"):
         body["ShippingPO"] = "T" if kind.name == "SPO" else "F"
-    body["Details"] = [_vendor_line(ln, None) for ln in lines]
+    body["Details"] = [_vendor_line(ln, None, kind.name) for ln in lines]
     return VendorRequest("POST", kind.new_path, body)
 
 
@@ -429,7 +444,7 @@ def build_add_line(kind_name: str, doc: Doc, line: Mapping[str, Any]) -> VendorR
     _check_kind_doc(kind, doc)
     _check_line(line)
     body = _doc_header(kind, doc)
-    body["Details"] = [_vendor_line(line, 0)]
+    body["Details"] = [_vendor_line(line, 0, kind.name)]
     return VendorRequest("PUT", kind.edit_path, body)
 
 
@@ -465,6 +480,30 @@ def _same_line(sent: Mapping[str, Any], got: Doc) -> bool:
     return all(_same(sent.get(k), got.get(k)) for k in REQUIRED_LINE)
 
 
+QT_VALUES_INHERITED = "QT_ROW_VALUES_INHERITED"
+_INHERITED_FIELDS = ("UnitPrice", "Location")
+
+
+def _link_code(kind: str, sent: Mapping[str, Any], row: Doc) -> Optional[str]:
+    """``LINK_MISMATCH`` when the link a sent row carried did not land (AC-57-41): a PO
+    row carries it as ``FromSODtlKey``, an SPO row as ``FromDocDtlKey``, an SO row taken
+    from a quotation as ``FromDocType`` + ``FromDocNo`` (AutoCount reads its row key as 0)."""
+    ftype = sent.get("FromDocType")
+    if not ftype:
+        return None
+    if kind == "PO" and ftype == "SO":
+        ok = int(row.get("FromSODtlKey") or 0) == int(sent.get("FromDocDtlKey") or 0)
+    elif kind == "SPO":
+        ok = int(row.get("FromDocDtlKey") or 0) == int(sent.get("FromDocDtlKey") or 0)
+    else:
+        ok = row.get("FromDocType") == ftype and row.get("FromDocNo") == sent.get("FromDocNo")
+    return None if ok else "LINK_MISMATCH"
+
+
+def _line_same(sent: Mapping[str, Any], row: Doc, relax: Sequence[str]) -> bool:
+    return all(_same(sent.get(k), row.get(k)) for k in REQUIRED_LINE if k not in relax)
+
+
 def verify_create(kind_name: str, sent: Mapping[str, Any], after: Doc) -> Verdict:
     kind_of(kind_name)
     want: Sequence[Mapping[str, Any]] = sent.get("Details") or []
@@ -474,17 +513,25 @@ def verify_create(kind_name: str, sent: Mapping[str, Any], after: Doc) -> Verdic
     if len(got) > len(want):
         return Verdict(MISMATCH, "ROWS_UNEXPECTED")
     warnings: List[str] = []
+    inherited: List[str] = []
     for line, row in zip(want, got):
-        if not _same_line(line, row):
+        from_qt = kind_name == "SO" and line.get("FromDocType") == "QT"
+        if not _line_same(line, row, _INHERITED_FIELDS if from_qt else ()):
             return Verdict(MISMATCH, "ROW_MISMATCH")
-        if line.get("FromDocType") and (
-            row.get("FromDocType") != line.get("FromDocType") or row.get("FromDocNo") != line.get("FromDocNo")
-        ):
+        if _link_code(kind_name, line, row):
             return Verdict(MISMATCH, "LINK_MISMATCH")
-        if line.get("FromDocDtlKey") and not _same(row.get("FromDocDtlKey"), line.get("FromDocDtlKey")):
+        if from_qt:  # AutoCount copies price and location from the quotation row (live db3)
+            inherited += [k for k in _INHERITED_FIELDS if not _same(line.get(k), row.get(k)) and k not in inherited]
+        if line.get("FromDocDtlKey") and kind_name == "SO" and not _same(
+            row.get("FromDocDtlKey"), line.get("FromDocDtlKey")
+        ):
             if LINK_UNCONFIRMED not in warnings:
                 warnings.append(LINK_UNCONFIRMED)
-    return Verdict(DONE, None, warnings)
+    message = ""
+    if inherited:
+        warnings.append(QT_VALUES_INHERITED)
+        message = "taken from the quotation row: " + ", ".join(inherited)
+    return Verdict(DONE, None, warnings, message)
 
 
 def _row_by_key(doc: Doc, dtl_key: Any) -> Optional[Doc]:
@@ -569,6 +616,8 @@ def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after:
     relaxed = dict(line, Location=added[0].get("Location")) if line.get("FromDocDtlKey") else line
     if not _same_line(relaxed, added[0]):
         return Verdict(MISMATCH, "ROW_MISMATCH")
+    if _link_code(kind_name, line, added[0]):
+        return Verdict(MISMATCH, "LINK_MISMATCH")
     if _drifted(before, after, (), []):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)

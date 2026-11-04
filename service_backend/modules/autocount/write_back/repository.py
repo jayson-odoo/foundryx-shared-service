@@ -26,22 +26,23 @@ class WriteActionRepository:
         return row
 
     def has_open(
-        self, tenant_id: str, company_id: str, doc_key: int, since: datetime
+        self, tenant_id: str, company_id: str, doc_key: int, since: datetime,
+        *, standalone_only: bool = False,
     ) -> bool:
         """True when an ``in_flight`` or ``pending_verification`` action created
-        at or after ``since`` exists for the document (the busy lock)."""
-        return (
-            self.db.query(AcWriteAction.id)
-            .filter(
-                AcWriteAction.tenant_id == tenant_id,
-                AcWriteAction.company_id == company_id,
-                AcWriteAction.doc_key == doc_key,
-                AcWriteAction.outcome.in_((OUTCOME_IN_FLIGHT, OUTCOME_PENDING)),
-                AcWriteAction.created_at >= since,
-            )
-            .first()
-            is not None
+        at or after ``since`` exists for the document (the busy lock).
+        ``standalone_only`` skips actions that belong to an operation: the operation
+        row carries its own lock and age (AC-57-43)."""
+        query = self.db.query(AcWriteAction.id).filter(
+            AcWriteAction.tenant_id == tenant_id,
+            AcWriteAction.company_id == company_id,
+            AcWriteAction.doc_key == doc_key,
+            AcWriteAction.outcome.in_((OUTCOME_IN_FLIGHT, OUTCOME_PENDING)),
+            AcWriteAction.created_at >= since,
         )
+        if standalone_only:
+            query = query.filter(AcWriteAction.operation_id.is_(None))
+        return query.first() is not None
 
     def last_confirmed_after(
         self, tenant_id: str, company_id: str, doc_type: str, doc_key: int
@@ -120,6 +121,64 @@ class OperationRepository:
         self.db.add(row)
         self.db.flush()
         return row
+
+    def delete(self, row: AcWriteOperation) -> None:
+        self.db.delete(row)
+        self.db.flush()
+
+    def expire_stale_in_progress(
+        self, tenant_id: str, company_id: str, doc_type: str, doc_key: int, before: datetime
+    ) -> int:
+        """Flip ``in_progress`` operations on a document that have not moved since
+        ``before`` to ``pending_verification`` (a crashed run must not hold the lock
+        for ever); returns how many."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.doc_type == doc_type,
+                AcWriteOperation.doc_key == doc_key,
+                AcWriteOperation.status == "in_progress",
+                AcWriteOperation.updated_at < before,
+            )
+            # updated_at stays as it was: the flip must not make the row look young
+            .update({"status": "pending_verification", "updated_at": AcWriteOperation.updated_at},
+                    synchronize_session=False)
+        )
+
+    def has_recent_pending(
+        self, tenant_id: str, company_id: str, doc_type: str, doc_key: int, since: datetime
+    ) -> bool:
+        """An operation on the document that ended ``pending_verification`` after ``since``."""
+        return (
+            self.db.query(AcWriteOperation.id)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.doc_type == doc_type,
+                AcWriteOperation.doc_key == doc_key,
+                AcWriteOperation.status == "pending_verification",
+                AcWriteOperation.updated_at >= since,
+            )
+            .first()
+            is not None
+        )
+
+    def claim(self, tenant_id: str, company_id: str, operation_id: str, from_statuses: "tuple[str, ...]") -> bool:
+        """Conditional update to ``in_progress``: True only for the one caller whose
+        update matched a row still in ``from_statuses`` (resume claims, AC-57-47)."""
+        updated = (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+                AcWriteOperation.status.in_(from_statuses),
+            )
+            .update({"status": "in_progress"}, synchronize_session=False)
+        )
+        return updated == 1
 
 
 class StagedDocRepository:

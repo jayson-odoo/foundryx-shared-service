@@ -50,7 +50,7 @@ from modules.autocount.write_back.frame import (
 )
 from modules.autocount.write_back.doc_kinds import KINDS
 from modules.autocount.write_back.payloads import WriteRefusal
-from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService
+from modules.autocount.write_back.primitives import VENDOR_REFUSED, PrimitiveResult, PrimitiveService
 from modules.autocount.write_back.reader import DocReadError
 from modules.autocount.write_back.repository import OperationRepository
 from modules.autocount.write_back.service import WriteBackService
@@ -72,7 +72,6 @@ IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
 OPERATION_IN_PROGRESS = "OPERATION_IN_PROGRESS"
 UNKNOWN_OPERATION = "UNKNOWN_OPERATION"
 INVALID_PARAMS = "INVALID_PARAMS"
-VENDOR_REFUSED = "VENDOR_REFUSED"
 ROW_RECEIVED = "ROW_RECEIVED"
 TRANSFER_STATE_UNKNOWN = "TRANSFER_STATE_UNKNOWN"
 LOCATION_NOT_MOVED = "LOCATION_NOT_MOVED"
@@ -184,6 +183,8 @@ class OperationService:
         self._notifier = notifier or self._mail
         self._steps: List[Dict[str, Any]] = []
         self._warnings: List[str] = []
+        self._mail_allowed = True
+        self._base_url = ""
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -213,6 +214,9 @@ class OperationService:
         except (KeyError, TypeError, ValueError):
             return OperationResult(None, REFUSED, INVALID_PARAMS)
         kind = OPS[op].kind if op in OPS else "PO"
+        window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+        if self.ops.expire_stale_in_progress(tenant_id, company.id, kind, spec.doc_key, window):
+            self.db.commit()  # a crashed run no longer holds the document (AC-57-43)
         row = AcWriteOperation(
             tenant_id=tenant_id, company_id=company.id, key_id=key_id, idempotency_key=idempotency_key,
             request_hash=request_hash, op=op, doc_type=kind, doc_key=spec.doc_key, dtl_key=spec.dtl_key,
@@ -226,28 +230,33 @@ class OperationService:
             raced = self.ops.by_key(tenant_id, company.id, key_id, idempotency_key)
             if raced is not None:
                 return self._replay(raced, op, request_hash)
-            return self._store_refusal(
-                tenant_id, company.id, key_id, idempotency_key, request_hash, op, kind, spec, DOC_BUSY
-            )
+            return OperationResult(None, REFUSED, DOC_BUSY)  # not stored: the key stays usable
         self._steps, self._warnings = [], []
+        self._mail_allowed = True
         return self._guarded(row, company, lambda: self._execute(row, company, op, spec, params))
 
     def resume(self, *, tenant_id: str, company_id: str, operation_id: str) -> OperationResult:
         row = self.ops.get(tenant_id, company_id, operation_id)
         if row is None:
             raise LookupError("operation not found")
+        if row.status == IN_PROGRESS:
+            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
         if row.status not in (NEEDS_ATTENTION, PENDING) or not row.snapshot_json:
             return self._from_row(row)
         company = CompanyRepository(self.db).get(tenant_id, company_id)
         if company is None:
             return OperationResult(row.id, REFUSED, WRITE_DISABLED)
         was = row.status
-        row.status = IN_PROGRESS
         try:
+            claimed = self.ops.claim(tenant_id, company_id, row.id, (NEEDS_ATTENTION, PENDING))
             self.db.commit()
-        except IntegrityError:
+        except IntegrityError:  # another operation holds the document
             self.db.rollback()
             return OperationResult(row.id, REFUSED, DOC_BUSY)
+        if not claimed:  # a concurrent resume won the conditional update
+            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
+        self.db.refresh(row)
+        self._mail_allowed = was != NEEDS_ATTENTION  # a failed resume never mails again
         self._steps, self._warnings = list(row.steps_json or []), []
         return self._guarded(row, company, lambda: self._resume(row, company, was), restore=was)
 
@@ -259,6 +268,10 @@ class OperationService:
         try:
             return body()
         except _Done as done:
+            if done.code == DOC_BUSY and restore is None:  # never stored under the key
+                self.ops.delete(row)
+                self.db.commit()
+                return OperationResult(None, REFUSED, DOC_BUSY)
             return self._finish(row, done.status, done.code, message=done.message)
         except Exception:  # noqa: BLE001 - the in_progress lock must never be stranded
             logger.exception("autocount operation failed (%s)", row.id)
@@ -282,16 +295,6 @@ class OperationService:
             int(params[names[2]]) if target else None, int(params[names[3]]) if target else None,
             params.get("doc_date"), params.get("expected_last_modified"),
         )
-
-    def _store_refusal(self, tenant_id: str, company_id: str, key_id: Optional[str], key: str,
-                       request_hash: str, op: str, kind: str, spec: _Spec, code: str) -> OperationResult:
-        row = AcWriteOperation(
-            tenant_id=tenant_id, company_id=company_id, key_id=key_id, idempotency_key=key,
-            request_hash=request_hash, op=op, doc_type=kind, doc_key=spec.doc_key, dtl_key=spec.dtl_key,
-            status=REFUSED,
-        )
-        self.ops.add(row)
-        return self._finish(row, REFUSED, code)
 
     def _replay(self, row: AcWriteOperation, op: str, request_hash: str) -> OperationResult:
         if row.op != op or row.request_hash != request_hash:
@@ -337,13 +340,14 @@ class OperationService:
         base_url, refusal = self.prims._resolve_write_base_url(company)
         if base_url is None:
             raise _Done(REFUSED, refusal[0] if refusal else WRITE_DISABLED)
+        self._base_url = base_url
         if op == SPLIT_LINK:
             return self._split_link(row, company, spec, params)
         defn = OPS[op]
         for primitive in ("delete_line", "add_line", "edit_doc"):
             if not capabilities.capable(defn.kind, primitive):
                 raise _Done(REFUSED, VENDOR_UNSUPPORTED)
-        self._check_not_busy(company, spec.doc_key)
+        self._check_not_busy(company, spec.doc_key, defn.kind)
         reader = self.prims._reader_factory(base_url)
         doc_date, doc = self._read(company, reader, defn.kind, spec.doc_key, spec.doc_date)
         if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
@@ -354,11 +358,15 @@ class OperationService:
         self.db.commit()
         return self._steps_run(row, company, op, defn, spec, snapshot)
 
-    def _check_not_busy(self, company: AcCompany, doc_key: int) -> None:
+    def _check_not_busy(self, company: AcCompany, doc_key: int, kind: str) -> None:
+        """Standalone actions and young pending operations hold the document; an
+        operation's own actions do not (the operation row carries its age, AC-57-43)."""
         window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
         if self.prims.actions.expire_stale_in_flight(company.tenant_id, company.id, doc_key, window):
             self.db.commit()
-        if self.prims.actions.has_open(company.tenant_id, company.id, doc_key, window):
+        if self.prims.actions.has_open(
+            company.tenant_id, company.id, doc_key, window, standalone_only=True
+        ) or self.ops.has_recent_pending(company.tenant_id, company.id, kind, doc_key, window):
             raise _Done(REFUSED, DOC_BUSY)
 
     def _read(self, company: AcCompany, reader: Any, kind: str, doc_key: int,
@@ -533,8 +541,11 @@ class OperationService:
         else:
             gone = self.prims.delete_line(**self._call(row, company, snap, "delete"), dtl_key=old_key)
             self._step("delete", gone)
-            if gone.outcome == OUTCOME_VENDOR_ERROR:  # AutoCount refused: the delete did not land
-                raise _Done(VENDOR_ERROR, gone.error_code, gone.message)
+            if gone.outcome == OUTCOME_VENDOR_ERROR:
+                if gone.error_code == VENDOR_REFUSED:  # AutoCount said no: the delete did not land
+                    raise _Done(VENDOR_ERROR, gone.error_code, gone.message)
+                # a timeout or a bare 5xx: the delete may have landed; resume reads AutoCount (AC-57-42)
+                raise _Done(PENDING, gone.error_code, gone.message)
             self._abort_unless_done(gone)
         add = self.prims.add_line(
             **self._call(row, company, snap, "add"),
@@ -593,6 +604,8 @@ class OperationService:
                 self.prims._stage(company, snap["kind"], back.document or {})
                 return self._finish(row, RECOVERED, failed_code, document=back.document)
         else:
+            if not self._remove_strays(row, company, snap):
+                return self._needs_attention(row, company, snap, failed_code)
             res = self.prims.add_line(
                 **self._call(row, company, snap, "recover"), line=self._line_of(snap, snap["oldLink"])
             )
@@ -606,10 +619,34 @@ class OperationService:
                 return self._finish(row, RECOVERED, failed_code, replaced=[(old_key, new_key)], document=document)
         return self._needs_attention(row, company, snap, failed_code)
 
+    def _remove_strays(self, row: AcWriteOperation, company: AcCompany, snap: Doc) -> bool:
+        """AC-57-41: a failed add may still have left a copy (link lost, or the add
+        landed and answered 5xx). Delete any new row that looks like the line before
+        the original is re-added, so recovery never doubles the quantity. False when
+        AutoCount cannot be read or a stray cannot be removed (needs_attention)."""
+        reader = self.prims._reader_factory(self._base_url)
+        self.db.commit()
+        try:
+            doc = reader.get_document(snap["kind"], int(snap["docKey"]), date.fromisoformat(snap["docDate"]))
+        except DocReadError:
+            return False
+        known, base = set(snap["knownKeys"]), snap["row"]
+        strays = [
+            r for r in doc.get("Details") or []
+            if r.get("DtlKey") not in known and r.get("ItemCode") == base.get("ItemCode")
+            and r.get("UOM") == base.get("UOM") and _dec(r.get("Qty")) == _dec(base.get("Qty"))
+        ]
+        for stray in strays:
+            gone = self.prims.delete_line(**self._call(row, company, snap, "unstray"), dtl_key=int(stray["DtlKey"]))
+            self._step("unstray", gone)
+            if gone.outcome != OUTCOME_DONE:
+                return False
+        return True
+
     def _needs_attention(self, row: AcWriteOperation, company: AcCompany, snap: Doc, code: str,
                          notify: bool = True) -> OperationResult:
         result = self._finish(row, NEEDS_ATTENTION, code)
-        if notify:
+        if notify and self._mail_allowed:
             self._notify(company, row, snap)
         return result
 
@@ -620,6 +657,7 @@ class OperationService:
         base_url, refusal = self.prims._resolve_write_base_url(company)
         if base_url is None:
             raise _Done(was, refusal[0] if refusal else WRITE_DISABLED)
+        self._base_url = base_url
         kind, doc_date = snap["kind"], date.fromisoformat(snap["docDate"])
         reader = self.prims._reader_factory(base_url)
         self.db.commit()
@@ -632,7 +670,8 @@ class OperationService:
         original = next((r for r in rows if r.get("DtlKey") == old_key), None)
         partial = snap["mode"] == "partial"
         if original is not None and not partial:
-            return self._finish(row, REFUSED, NOT_APPLIED, document=doc)  # the delete never landed
+            # the delete never landed: the line is as it was (no write)
+            return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
         known = set(snap["knownKeys"])
         fresh = [r for r in rows if r.get("DtlKey") not in known]
         base = snap["row"]
