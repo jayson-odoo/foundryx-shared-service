@@ -13,7 +13,6 @@ handler emits (app/api_errors.py).
 from typing import Optional
 
 from fastapi.responses import JSONResponse
-from starlette._utils import get_route_path
 from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -28,6 +27,20 @@ JSON_BODY_CAP = 256 * 1024
 MULTIPART_BODY_CAP = 100 * 1024 * 1024 + 1024 * 1024
 SEND_PATH = "/api/v1/omnichannel/messages"
 TOO_LARGE = "Request body is too large."
+
+
+def _route_path(scope: Scope) -> str:
+    """The request path with `root_path` stripped. Mirrors Starlette's
+    `starlette._utils.get_route_path` (a private helper, so copied, not imported)."""
+    path: str = scope["path"]
+    root_path = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    if path[len(root_path)] == "/":
+        return path[len(root_path):]
+    return path
 
 
 def is_multipart(content_type: Optional[str]) -> bool:
@@ -50,7 +63,7 @@ class GatewayBodyCapMiddleware:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
-        path = get_route_path(scope)  # root_path stripped, so a configured root cannot skip the cap
+        path = _route_path(scope)  # root_path stripped, so a configured root cannot skip the cap
         if not path.startswith(GATEWAY_PREFIX):
             await self.app(scope, receive, send)
             return
