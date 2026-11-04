@@ -12,6 +12,7 @@ from typing import Optional, Union
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -73,6 +74,7 @@ from ..services.webchat_visitor_service import WebchatInvalidRequest, read_cappe
 router = APIRouter()
 
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+_MULTIPART_MAX_FIELDS = 5  # `payload` + a little slack
 
 
 def wire_format(
@@ -118,7 +120,11 @@ async def send_message(
     content_type = request.headers.get("content-type", "")
 
     if content_type.startswith("multipart/"):
-        form = await request.form()
+        try:
+            # The send reads one file part and the `payload` part; the cap leaves slack.
+            form = await request.form(max_files=1, max_fields=_MULTIPART_MAX_FIELDS)
+        except StarletteHTTPException:
+            raise ApiError(422, "invalid_request", "The multipart body has too many parts.") from None
         upload = form.get("file")
         raw = form.get("payload")
         if upload is None or raw is None:

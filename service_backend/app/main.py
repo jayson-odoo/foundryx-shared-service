@@ -138,6 +138,14 @@ from app.activity_log.middleware import GatewayActivityMiddleware  # noqa: E402
 
 app.add_middleware(GatewayActivityMiddleware)
 
+# Body size cap for the API-key gateway. Registered right AFTER the activity
+# middleware, so it sits just outside it (a refused oversize call is not
+# buffered or logged) and inside both CORS layers (the 422 still carries CORS
+# headers); it runs before routing and the key dependency.
+from app.gateway_body_cap import GatewayBodyCapMiddleware  # noqa: E402
+
+app.add_middleware(GatewayBodyCapMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
