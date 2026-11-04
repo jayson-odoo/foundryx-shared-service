@@ -992,11 +992,15 @@ def test_ac_38_96_migration_chain_has_one_head_with_a_short_new_revision():
     downs = {d for ds in revs.values() for d in ds}
     heads = [r for r in revs if r not in downs]
     assert len(heads) == 1, heads
-    head = heads[0]
-    assert by_file[head].name.startswith("0023_"), by_file[head].name
-    assert revs[head] == ["0022_omni_webchat_profile"]
-    assert len(head) <= 32, head
-    text = by_file[head].read_text().lower()
+    assert len(heads[0]) <= 32, heads[0]
+    # plan 38 gap 2's revision stays in the chain, one file, hanging off 0022
+    ids = [r for r in revs if r.startswith("0023_")]
+    assert len(ids) == 1, ids
+    rev = ids[0]
+    assert by_file[rev].name.startswith("0023_"), by_file[rev].name
+    assert revs[rev] == ["0022_omni_webchat_profile"]
+    assert len(rev) <= 32, rev
+    text = by_file[rev].read_text().lower()
     assert "webhook_endpoints" in text and "channel_id" in text
     assert "drop not null" in text or "nullable=true" in text.replace(" ", "")
     assert len(list(VERSIONS.glob("0023_*.py"))) == 1

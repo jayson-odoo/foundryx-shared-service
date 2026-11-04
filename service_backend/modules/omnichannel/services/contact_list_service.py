@@ -14,6 +14,7 @@ from app.services.filter_translator import FilterError, translate_filter
 
 from ..models import Contact
 from ..phone import digits_only
+from ..repositories.contact_erase_repository import ContactEraseRepository
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import ContactChannelRef, ContactListItem
 from .contact_filters import CONTACT_FILTER_COLUMNS, CONTACT_SORT_COLUMNS, build_special
@@ -153,9 +154,11 @@ class ContactListService:
             return []
         thread_items = self.conv._thread_items(rows, tenant_id)
         channels_map = self.repo.channels_for_contacts([c.id for c in rows], tenant_id)
+        counts = ContactEraseRepository(self.db).message_file_counts([c.id for c in rows], tenant_id)
         out: List[ContactListItem] = []
         for t in thread_items:
             data = t.model_dump()
             data["channels"] = [ContactChannelRef(**c) for c in channels_map.get(t.id, [])]
+            data["messageCount"], data["fileCount"] = counts.get(t.id, (0, 0))
             out.append(ContactListItem(**data))
         return out

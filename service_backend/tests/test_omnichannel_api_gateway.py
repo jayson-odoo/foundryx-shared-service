@@ -1055,14 +1055,15 @@ def test_delivery_refuses_a_target_that_resolves_internally(monkeypatch):
     any API-key holder. Every attempt re-checks before the POST."""
     import modules.omnichannel.services.webhook_service as ws
 
-    monkeypatch.setattr(ws.socket, "getaddrinfo",
-                        lambda host, port: [(None, None, None, "", ("169.254.169.254", 0))])
+    from tests.resolver_stub import stub_resolver
+
+    unexpected = stub_resolver(monkeypatch, {"rebound.example.com": "169.254.169.254"})
     with pytest.raises(ws.WebhookError):
         ws.assert_deliverable("https://rebound.example.com/hook")
 
-    monkeypatch.setattr(ws.socket, "getaddrinfo",
-                        lambda host, port: [(None, None, None, "", ("93.184.216.34", 0))])
+    second = stub_resolver(monkeypatch, {"ok.example.com": "93.184.216.34"})
     ws.assert_deliverable("https://ok.example.com/hook")  # public → allowed
+    assert unexpected == [] and second == []
 
 
 def test_webhook_endpoint_cap_per_channel(client, session_factory):
@@ -1145,8 +1146,9 @@ def test_delivery_path_calls_the_ssrf_guard(client, session_factory, monkeypatch
     posted = []
     monkeypatch.setattr(wd, "_post", lambda *a, **k: posted.append(a) or (_ for _ in ()).throw(AssertionError("POSTed to a blocked target")))
     # DNS now answers with a link-local address (rebinding after registration).
-    monkeypatch.setattr(ws.socket, "getaddrinfo",
-                        lambda host, port: [(None, None, None, "", ("169.254.169.254", 0))])
+    from tests.resolver_stub import stub_resolver
+
+    unexpected = stub_resolver(monkeypatch, {"rebind.example.com": "169.254.169.254"})
 
     db = session_factory()
     ep = db.query(__import__("modules.omnichannel.models", fromlist=["WebhookEndpoint"]).WebhookEndpoint).first()
@@ -1166,6 +1168,7 @@ def test_delivery_path_calls_the_ssrf_guard(client, session_factory, monkeypatch
     row = db.query(WebhookDelivery).filter(WebhookDelivery.id == did).first()
     assert row.status != "SUCCESS" and "refused" in (row.error or "").lower()
     db.close()
+    assert unexpected == []
 
 
 # ── Contact data model on the gateway (plan 25 S3) - AC-CDM-25/26/27 ─────────

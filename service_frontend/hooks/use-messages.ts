@@ -32,6 +32,8 @@ export interface UseMessagesResult {
   messages: ConversationMessage[];
   isLoading: boolean;
   error: string | null;
+  /** True once this contact was erased (plan 56 C): thread and messages are cleared. */
+  erased: boolean;
   /** True while a send is in flight. */
   isSending: boolean;
   /** Last send failure (CSW rejection etc). Cleared on the next attempt. */
@@ -72,6 +74,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [erased, setErased] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const fetchSeq = useRef(0);
@@ -86,6 +89,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
   }, [contactId]);
 
   useEffect(() => {
+    setErased(false);
     if (!contactId) {
       setThread(null);
       setMessages([]);
@@ -129,6 +133,14 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
   const onEvent = useCallback(
     (event: ConversationSocketEvent) => {
       if (!contactId) return;
+      if (event.type === 'contact.erased') {
+        if (event.contactId === contactId) {
+          setErased(true);
+          setThread(null);
+          setMessages([]);
+        }
+        return;
+      }
       if (event.type === 'message.created' && event.message.contactId === contactId) {
         setMessages((prev) =>
           prev.some((m) => m.id === event.message.id) ? prev : [...prev, event.message],
@@ -492,5 +504,5 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId, commitThreadIfActive],
   );
 
-  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, assignTeam, setStatus, setPriority, closeThread, patchContact, moveLifecycle };
+  return { thread, messages, isLoading, error, erased, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, assignTeam, setStatus, setPriority, closeThread, patchContact, moveLifecycle };
 }

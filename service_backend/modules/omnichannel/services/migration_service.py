@@ -49,7 +49,7 @@ from ..repositories.migration_connection_repository import MigrationConnectionRe
 from ..repositories.migration_ref_repository import MigrationRefRepository
 from ..repositories.migration_upload_repository import MigrationUploadRepository
 from ..respondio.channel_map import target_channel_type_for
-from ..respondio.client import RespondIoClient, RespondIoError
+from ..respondio.client import MAX_MESSAGE_PAGE_LIMIT, MAX_PAGE_LIMIT, RespondIoClient, RespondIoError
 from ..respondio.shapes import Contact, CustomField, SpaceChannel, SpaceUser
 from ..respondio.shapes import ContactChannel as SourceContactChannel
 from ..respondio.shapes import MessageItem as SourceMessageItem
@@ -85,11 +85,18 @@ logger = logging.getLogger(__name__)
 
 RESPONDIO_PROVIDER = "respondio"
 MIGRATION_JOB_TYPE = "omnichannel.respondio_migration"
+# Plan 52 - the continuous-sync tick job type. Declared HERE (not in
+# `migration_sync_service`) so `_in_progress_job` can count sync jobs without
+# a circular import.
+SYNC_JOB_TYPE = "omnichannel.respondio_sync"
 # 24h + mapping-hash gate (D-A6-14, AC-MIG-20) - a `run` needs a successful
 # `dry_run` of the SAME mapping inside this window.
 DRY_RUN_TTL_HOURS = 24
-CONTACTS_PAGE_LIMIT = 100
-MESSAGES_PAGE_LIMIT = 100
+# respond.io's documented page sizes (`respondio/client.py` MAX_PAGE_LIMIT /
+# MAX_MESSAGE_PAGE_LIMIT): contact list `exclusiveMaximum: 100`, message list
+# `maximum: 50`.
+CONTACTS_PAGE_LIMIT = MAX_PAGE_LIMIT
+MESSAGES_PAGE_LIMIT = MAX_MESSAGE_PAGE_LIMIT
 # S3's identities/messages phases checkpoint PER CONTACT (D-A6-9's timestamp
 # interpolation needs a whole contact's message history bracketed together,
 # so buffering per-contact is a deliberate deviation from the plan's
@@ -437,7 +444,8 @@ class MigrationPreflightService:
             if mapped is None or mapped not in target_types:
                 warnings.append(
                     f'No connected channel in the target workspace matches source '
-                    f'channel "{c.name}" ({c.source}) - it will be skipped.'
+                    f'channel "{c.name}" ({c.source}). Its contacts and history import '
+                    f'without a channel.'
                 )
 
     def _distinct_lifecycles(
@@ -927,7 +935,7 @@ def _build_report(
             "messages": {
                 "fetched": messages_c.get("fetched", 0),
                 "wouldCreate": messages_c.get("create", 0),
-                "wouldUpdate": 0,
+                "wouldUpdate": messages_c.get("update", 0),
                 "wouldSkip": messages_c.get("skip", 0),
                 "errors": messages_c.get("errors", 0),
             },
@@ -1078,6 +1086,20 @@ def _list_row_fields(job: BackgroundJob) -> Dict[str, Any]:
         "startedAt": job.started_at,
         "finishedAt": job.finished_at,
     }
+
+
+def _respondio_job_error(exc: RespondIoError) -> str:
+    """The job error text for a respond.io failure in the contacts walk. A
+    rejected contact list request (respond.io's "Please check if filter is
+    provided" / "Please check if search exists") says which request failed, so
+    it never reads like a channel or mapping problem."""
+    text = (exc.message or "").lower()
+    if "filter is provided" in text or "search exists" in text:
+        return (
+            "respond.io rejected the contact list request (no contacts were read): "
+            f"{exc.message} Contact support if this keeps happening."
+        )
+    return f"respond.io error: {exc.message}"
 
 
 def _parse_filter_datetime(value: Any) -> Optional[datetime]:
@@ -1318,6 +1340,11 @@ class MigrationService:
         for job in self.jobs.repo.active_of_type(
             tenant_id, MIGRATION_JOB_TYPE, (JOB_PENDING, JOB_RUNNING, JOB_NEEDS_REVIEW)
         ):
+            if (job.payload_json or {}).get("workspaceId") == workspace_id:
+                return job
+        # Plan 52 D10 - a pending/running continuous-sync tick writes the same
+        # refs, so it blocks a new migration for the workspace too.
+        for job in self.jobs.repo.active_of_type(tenant_id, SYNC_JOB_TYPE, (JOB_PENDING, JOB_RUNNING)):
             if (job.payload_json or {}).get("workspaceId") == workspace_id:
                 return job
         return None
@@ -1724,6 +1751,7 @@ def _process_contact_messages(
     failures: List[dict],
     message_samples: List[dict],
     messages_since: Optional[datetime] = None,
+    prefetched_contact: Optional[dict] = None,
 ) -> Tuple[int, int, int]:
     """One contact's FULL message-history walk - buffered, sorted by
     `messageId`, timestamp-resolved as ONE unit (D-A6-9 needs the whole
@@ -1755,7 +1783,9 @@ def _process_contact_messages(
     # the contact's history outright.
     fallback_dt = local_contact.created_at
     try:
-        raw_contact = client.get_contact(identifier)
+        # Plan 52: the sync already holds the source contact row (list page or
+        # one `GET /contact/id:`) and hands it down instead of re-fetching.
+        raw_contact = prefetched_contact if prefetched_contact is not None else client.get_contact(identifier)
         source_created_at = raw_contact.get("created_at")
         if source_created_at is not None:
             # `epoch_to_dt` (review round 1, finding S2) never raises - a
@@ -1835,6 +1865,25 @@ def _process_contact_messages(
         )
         return 0, 0, 0
 
+    # Lane SS-CHANNEL-SKIP - a message imported while its source channel was
+    # skipped has `channel_id` NULL. Once that channel is connected and mapped
+    # on a re-run, the earlier message gets it (only ever a NULL -> target
+    # fill, never an overwrite), so the history lands on the connected channel.
+    # Collected BEFORE the `messages_since` floor: a later floor on the re-run
+    # must not strand history the first run already imported.
+    already = refs.local_for(
+        tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_MESSAGE,
+        [str(m.messageId) for m in parsed_items],
+    )
+    relink: Dict[str, List[str]] = {}
+    relink_source_ids: set = set()
+    for item in parsed_items:
+        local_id = already.get(str(item.messageId))
+        target = channel_map.get(str(item.channelId)) if item.channelId is not None else None
+        if local_id is not None and target is not None:
+            relink.setdefault(target, []).append(local_id)
+            relink_source_ids.add(str(item.messageId))
+
     skipped_before_floor = 0
     if messages_since is not None:
         kept_items: List[SourceMessageItem] = []
@@ -1847,18 +1896,27 @@ def _process_contact_messages(
             kept_resolved.append((created_at, inferred))
         parsed_items, resolved = kept_items, kept_resolved
 
-    already = refs.already_migrated(
-        tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_MESSAGE,
-        [str(m.messageId) for m in parsed_items],
+    # Plan 52 D8 - a respond.io message whose WhatsApp id already exists as a
+    # NATIVE row in this tenant is skipped (counted `skip`), never duplicated.
+    native_ids = writer.native_message_ids(
+        [
+            str(i.channelMessageId)
+            for i in parsed_items
+            if i.channelMessageId not in (None, "") and str(i.messageId) not in already
+        ]
     )
 
     newly_inferred = 0
     for item, (created_at, inferred) in zip(parsed_items, resolved):
         message_counts["fetched"] = message_counts.get("fetched", 0) + 1
+        target_channel_id = channel_map.get(str(item.channelId)) if item.channelId is not None else None
         if str(item.messageId) in already:
+            if str(item.messageId) not in relink_source_ids:  # counted after the re-link below
+                message_counts["skip"] = message_counts.get("skip", 0) + 1
+            continue
+        if item.channelMessageId not in (None, "") and str(item.channelMessageId) in native_ids:
             message_counts["skip"] = message_counts.get("skip", 0) + 1
             continue
-        target_channel_id = channel_map.get(str(item.channelId)) if item.channelId is not None else None
         try:
             writer.write_message(
                 local_contact.id, item, created_at,
@@ -1878,6 +1936,26 @@ def _process_contact_messages(
             newly_inferred += 1
         if len(message_samples) < MAX_REPORT_SAMPLES:
             message_samples.append({"type": item.message.type, "action": "create"})
+
+    if relink_source_ids:
+        try:
+            relinked = sum(
+                writer.link_messages_to_channel(local_contact.id, local_ids, target_channel_id)
+                for target_channel_id, local_ids in relink.items()
+            )
+        except Exception as exc:  # noqa: BLE001 - per-contact isolation (AC-MIG-29's pattern)
+            message_counts["errors"] = message_counts.get("errors", 0) + len(relink_source_ids)
+            failures.append(
+                {
+                    "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
+                    "reason": f"could not link earlier messages to their channel: {_failure_reason(exc)}",
+                    "action": "skipped",
+                }
+            )
+        else:
+            message_counts["update"] = message_counts.get("update", 0) + relinked
+            # Already carried a channel: nothing to do, same as any re-run skip.
+            message_counts["skip"] = message_counts.get("skip", 0) + len(relink_source_ids) - relinked
 
     # AC-MIG-37 - exactly ONE recompute per contact, after its WHOLE message
     # phase (this call covers every page for this contact - buffered above).
@@ -1981,6 +2059,7 @@ def _process_contact_events(
     contact_external_id: str,
     event_counts: Dict[str, int],
     failures: List[dict],
+    prefetched_contact: Optional[dict] = None,
 ) -> None:
     """One contact's derived-events pass (AC-MIG-41). Idempotent via
     `migration_refs` keyed PER CONTACT (D-A6-13) - a re-run skips the whole
@@ -1994,7 +2073,10 @@ def _process_contact_events(
         return
 
     try:
-        raw_contact = client.get_contact(f"id:{contact_external_id}")
+        raw_contact = (
+            prefetched_contact if prefetched_contact is not None
+            else client.get_contact(f"id:{contact_external_id}")
+        )
         source_contact = Contact(**raw_contact)
     except Exception as exc:  # noqa: BLE001 - never abort the job (RespondIoError or a malformed row)
         event_counts["errors"] = event_counts.get("errors", 0) + 1
@@ -2521,7 +2603,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                         # `_process_contact_messages` are the exact same
                         # functions the real phases below call), and the
                         # whole thing rolls back together at the end.
-                        if dry_run and not contacts_only:
+                        if dry_run and not contacts_only and not outcome.skipped:
                             _process_contact_identities(
                                 client, writer, outcome.contact_id, external_id,
                                 channel_map, channel_type_by_target, source_contact.phone,
@@ -2585,8 +2667,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                     service.log(job, f"Aborted after {contact_counts.get('fetched', 0)} contacts.")
                     return
         except RespondIoError as exc:
-            service.log(job, f"respond.io error: {exc.message}", level="error")
-            service.finish(job, status=JOB_FAILED, error=f"respond.io error: {exc.message}")
+            job_error = _respondio_job_error(exc)
+            service.log(job, job_error, level="error")
+            service.finish(job, status=JOB_FAILED, error=job_error)
             return
 
         if contacts_only or dry_run:
@@ -2844,3 +2927,8 @@ def register_migration_job_handler() -> None:
     other job handler's own boot registration, e.g. `contact_export_service.
     register_contacts_export_handler`)."""
     register_job_handler(MIGRATION_JOB_HANDLER_DEF)
+    # Plan 52 - the continuous-sync tick handler is registered beside it, in
+    # every process that registers the migration handler.
+    from .migration_sync_service import register_sync_job_handler
+
+    register_sync_job_handler()

@@ -16,10 +16,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import settings
 from app.integrations.base import TestResult
+from app.services.storage import StorageUnavailable
 
 PRESIGN_TTL_SECONDS = 3600  # resolved per request - never persisted (D4)
 _PROBE_TIMEOUT_SECONDS = 10
 _PROBE_MAX_BYTES = 1024 * 1024  # the probe object is tiny
+
+
+def _body_read_errors() -> Tuple[type, ...]:
+    # Lazy like boto3 itself, so the stub seam works without it installed.
+    from botocore.exceptions import BotoCoreError
+    from urllib3.exceptions import HTTPError as Urllib3HTTPError
+
+    return (OSError, BotoCoreError, Urllib3HTTPError)
 
 
 def _ext_for(mime_type: str) -> str:
@@ -102,9 +111,18 @@ class S3CompatibleAdapter:
 
     def _build_client(self) -> Any:
         import boto3  # noqa: PLC0415 - imported here so the stub seam works without it
+        from botocore.config import Config  # noqa: PLC0415
 
         return boto3.client(
             "s3",
+            config=Config(
+                connect_timeout=settings.storage_s3_connect_timeout_seconds,
+                read_timeout=settings.storage_s3_read_timeout_seconds,
+                retries={
+                    "total_max_attempts": settings.storage_s3_max_attempts,
+                    "mode": "standard",
+                },
+            ),
             region_name=self.region,
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id or None,
@@ -151,7 +169,15 @@ class S3CompatibleAdapter:
             obj = self.client.get_object(Bucket=self.bucket, Key=key)
         except Exception as exc:  # noqa: BLE001 - boto3 ClientError (NoSuchKey etc.)
             raise FileNotFoundError(key) from exc
-        return obj["Body"].read(), obj.get("ContentType")
+        try:
+            data = obj["Body"].read()
+        except _body_read_errors() as exc:
+            from botocore.exceptions import FlexibleChecksumError
+
+            if isinstance(exc, FlexibleChecksumError):
+                raise  # a checksum mismatch is permanent, not a retry
+            raise StorageUnavailable(key) from exc
+        return data, obj.get("ContentType")
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
@@ -356,7 +382,3 @@ class R2Provider(_StorageProviderBase):
             *_KEY_FIELDS,
             _CDN_FIELD,
         ]
-
-
-# settings import kept for parity with sibling providers (timeouts later).
-_ = settings

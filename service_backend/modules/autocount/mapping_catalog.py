@@ -138,7 +138,8 @@ _SPO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalShippingOrder.FALLBACK_FIELDS
 # `FALLBACK_FIELDS` the way the header tuples above are - `FALLBACK_FIELDS`
 # also carries the three ENGINE-MINTED linkage fields (`from_so_line_ref`,
 # `from_so_external`, `from_po_line_ref`), which the ESB composes itself
-# post-mapping (`mapping.py`) and can never be an operator-mapped target -
+# post-mapping (`mapping.py`) and can never be an operator-mapped target (nor can
+# plan 57's `replaces_line_ref`, minted by the write flow from an operation's replaced map) -
 # the legitimate, permanent gap between a line model's wire set and this
 # picker, pinned explicitly by
 # `test_line_catalog_equals_the_canonical_line_wire_set_minus_engine_derived`
@@ -157,6 +158,7 @@ _LINE_REMARK_FIELDS: Tuple[str, ...] = ("line_remark", "section_heading")
 # SAME "read straight off the model" rule `_line_fields` below applies to
 # the eight input fields, so this can never drift from the model either.
 _LINE_LINKAGE_DIRECT_WIRE_FIELDS: Tuple[str, ...] = ("from_so_numbers", "from_po_number")
+
 
 # sprint-5/02 (AC-02-02/03) - a document's LINE fields are now first-class,
 # operator-editable mapping rows (the fixed column-name convention is gone).

@@ -6,6 +6,7 @@ already-wired module boot hook (``app/module_loader.py::register_module_boot``)
 - so this module never needs a core file to import it directly (module
 governance: hook via the predefined seam, no global-store injection).
 """
+import dataclasses
 from typing import Any, Dict, Optional
 
 from app.workflow_engine.registry import ActionDef, NodeField, NodeOutput, TriggerDef, register_action, register_trigger
@@ -117,6 +118,52 @@ def _once_per_contact_fire_release_from_extra(db, wf, config: Dict[str, Any], ev
     from .services.workflow_fire_store import release_fire
 
     release_fire(db, tenant_id=wf.tenant_id, workflow_id=wf.id, contact_id=contact_id)
+
+
+def _event_workspace_id(ev: Dict[str, Any]) -> Optional[str]:
+    """The workspace an omnichannel event happened in: the contact events carry
+    it on the record, the message and broadcast events in ``extra``."""
+    if ev.get("entity_type") == "omnichannel_contact":
+        return (ev.get("record_facts") or {}).get("record.workspaceId")
+    return (ev.get("extra") or {}).get("workspaceId")
+
+
+def _owner_workspace_for(db, wf) -> Optional[str]:
+    from .models import WorkflowOwner
+
+    return (
+        db.query(WorkflowOwner.workspace_id)
+        .filter(WorkflowOwner.tenant_id == wf.tenant_id, WorkflowOwner.workflow_id == wf.id)
+        .scalar()
+    )
+
+
+def _with_owner_check(inner):
+    """Plan 38 gap 7: a workflow owned by an API key's workspace fires only on
+    events of that workspace, whatever its stored trigger config says. Fails
+    closed when the event carries no workspace. Unowned workflows are
+    untouched. Then the trigger's own guard (once-per-contact) runs."""
+
+    def guard(db, wf, config: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+        owner = _owner_workspace_for(db, wf)
+        if owner and _event_workspace_id(ev) != owner:
+            return False
+        return inner(db, wf, config, ev) if inner is not None else True
+
+    return guard
+
+
+_OWNER_CHECKED_TRIGGERS = (
+    "omnichannel.message_received",
+    "omnichannel.conversation_opened",
+    "omnichannel.conversation_closed",
+    "omnichannel.conversation_assigned",
+    "omnichannel.contact_tag_added",
+    "omnichannel.contact_tag_removed",
+    "omnichannel.contact_field_changed",
+    "omnichannel.lifecycle_changed",
+    "omnichannel.broadcast_completed",
+)
 
 
 def _delete_fires_on_workflow_deleted(db, ev: Dict[str, Any]) -> None:
@@ -832,9 +879,22 @@ def register_omnichannel_workflow_nodes() -> None:
             context_extra=_broadcast_context,
         )
     )
+    from app.workflow_engine.registry import get_trigger
+
+    for trigger_key in _OWNER_CHECKED_TRIGGERS:
+        trigger_def = get_trigger(trigger_key)
+        if trigger_def is not None:
+            register_trigger(
+                dataclasses.replace(trigger_def, fire_guard=_with_owner_check(trigger_def.fire_guard))
+            )
+
     from app.workflow_engine.entity_events import register_event_subscriber
 
     register_event_subscriber(_delete_fires_on_workflow_deleted)
+
+    from .services.key_workflows import register_key_workflow_run_guard
+
+    register_key_workflow_run_guard()
 
     # Cancelling a parked run drops its wait row (AC-WFP-52) - core calls this
     # generically through `parking.run_wait_cleanup`, never importing the module.

@@ -59,7 +59,19 @@ import httpx
 from app.config import settings
 from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
 from .base import CodeExchangeError, ConnectionStatus, SendError
-from .meta_graph import MetaGraphMixin, _meta_error_detail, is_rate_limited_error, meta_error_code, provider_error_text
+from .meta_graph import (
+    MetaGraphMixin,
+    _meta_error_detail,
+    _meta_error_obj,
+    _meta_error_text,
+    _dict_items,
+    _json_obj,
+    _list_field,
+    _str_field,
+    is_rate_limited_error,
+    meta_error_code,
+    provider_error_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,17 +224,13 @@ class MessengerAdapter(MetaGraphMixin):
             except httpx.HTTPError as exc:
                 raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
             if resp.status_code == 200:
-                return {"access_token": resp.json().get("access_token", "")}
-            try:
-                err = resp.json().get("error", {})
-                detail = err.get("message", "")
-            except ValueError:
-                err = {"raw": resp.text[:300]}
-                detail = f"Meta returned {resp.status_code}."
+                return {"access_token": _str_field(_json_obj(resp), "access_token")}
+            err = _meta_error_obj(resp) or {"raw": resp.text[:300]}
+            detail = _meta_error_text(resp) or f"Meta returned {resp.status_code}."
             logger.warning(
                 "Messenger code exchange failed (redirect_uri=%r): %s", redirect_uri, err
             )
-            raise CodeExchangeError(detail or "Code exchange failed.")
+            raise CodeExchangeError(detail)
         finally:
             if self._client is None:
                 client.close()
@@ -250,7 +258,7 @@ class MessengerAdapter(MetaGraphMixin):
                 },
             )
             if resp.status_code == 200:
-                return {"access_token": resp.json().get("access_token", token)}
+                return {"access_token": _str_field(_json_obj(resp), "access_token", token)}
             return credentials
         except httpx.HTTPError:
             return credentials
@@ -279,7 +287,7 @@ class MessengerAdapter(MetaGraphMixin):
             )
             if resp.status_code != 200:
                 raise CodeExchangeError(_meta_error_detail(resp))
-            return resp.json().get("data") or []
+            return _dict_items(_list_field(_json_obj(resp), "data"))
         except httpx.HTTPError as exc:
             raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
         finally:
@@ -326,10 +334,7 @@ class MessengerAdapter(MetaGraphMixin):
             )
             if resp.status_code == 200:
                 return ConnectionStatus(ok=True, message="Reached the page successfully.")
-            try:
-                detail = resp.json().get("error", {}).get("message", "")
-            except ValueError:
-                detail = ""
+            detail = _meta_error_text(resp)
             return ConnectionStatus(ok=False, message=detail or f"Meta returned {resp.status_code}.")
         except httpx.HTTPError as exc:
             return ConnectionStatus(ok=False, message=f"Connection error: {exc}")
@@ -374,7 +379,7 @@ class MessengerAdapter(MetaGraphMixin):
                     transient=resp.status_code >= 500 or is_rate_limited_error(resp),
                     code=meta_error_code(resp),
                 )
-            attachment_id = resp.json().get("attachment_id", "")
+            attachment_id = _str_field(_json_obj(resp), "attachment_id")
             if not attachment_id:
                 raise SendError("Attachment upload returned no id.")
             return attachment_id
@@ -493,8 +498,7 @@ class MessengerAdapter(MetaGraphMixin):
                     transient=resp.status_code >= 500 or is_rate_limited_error(resp),
                     code=meta_error_code(resp),
                 )
-            data = resp.json()
-            return {"external_message_id": data.get("message_id", "")}
+            return {"external_message_id": _str_field(_json_obj(resp), "message_id")}
         except httpx.HTTPError as exc:
             raise SendError(
                 provider_error_text(f"Could not reach Meta: {exc}"), transient=True
@@ -626,7 +630,7 @@ class MessengerAdapter(MetaGraphMixin):
                 params={"fields": "name", "access_token": credentials.get("access_token", "")},
             )
             if resp.status_code == 200:
-                return resp.json().get("name")
+                return _str_field(_json_obj(resp), "name", None)
             return None
         except httpx.HTTPError:
             return None

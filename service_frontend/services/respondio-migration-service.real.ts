@@ -8,6 +8,8 @@ import type {
   CreateMigrationJobInput,
   MigrationJob,
   MigrationPreflight,
+  MigrationSyncItem,
+  MigrationSyncWebhook,
   MigrationUploadResult,
 } from '@/types/respondio-migration';
 import type { ListQuery, ListResult } from '@/types/resource';
@@ -58,5 +60,26 @@ export const realRespondioMigrationService: RespondioMigrationService = {
   },
   downloadFailuresCsv(jobId) {
     return apiFetchText(`/omnichannel/migration/jobs/${jobId}/failures.csv`);
+  },
+  getSync(workspaceId) {
+    const p = new URLSearchParams({ workspaceId });
+    return apiFetch<MigrationSyncItem | null>(`/omnichannel/migration/syncs?${p.toString()}`);
+  },
+  createSync(workspaceId) {
+    return apiFetch<MigrationSyncItem>('/omnichannel/migration/syncs', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId }),
+    });
+  },
+  syncAction(id, action) {
+    return apiFetch<MigrationSyncItem>(`/omnichannel/migration/syncs/${id}/${action}`, { method: 'POST' });
+  },
+  getSyncWebhook(id) {
+    return apiFetch<MigrationSyncWebhook>(`/omnichannel/migration/syncs/${id}/webhook`);
+  },
+  rotateSyncWebhook(id) {
+    return apiFetch<MigrationSyncWebhook>(`/omnichannel/migration/syncs/${id}/webhook/rotate`, {
+      method: 'POST',
+    });
   },
 };

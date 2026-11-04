@@ -26,6 +26,8 @@ import { MIGRATION_MODE_LABEL, MIGRATION_STATUS_REGISTRY } from '../components/m
 import { migrationProgressPct } from '../components/migration-progress';
 import { MigrationReportCard } from '../components/migration-report-card';
 import { MigrationFailuresTable } from '../components/migration-failures-table';
+import { MigrationSyncCard } from '../components/migration-sync-card';
+import { canOfferSync } from '../components/sync-status';
 import { migrationListPath } from '../components/paths';
 
 const POLL_MS = 3000;
@@ -159,6 +161,8 @@ export default function MigrationJobDetailPage({ params }: { params: Promise<{ j
             <MigrationReportCard report={job.report} />
           </div>
         )}
+
+        {canOfferSync(job) && <MigrationSyncCard jobId={job.id} workspaceId={job.workspaceId} />}
 
         {job.failureCount > 0 && (
           <MigrationFailuresTable jobId={job.id} rows={job.failureSample} totalFailures={job.failureCount} />

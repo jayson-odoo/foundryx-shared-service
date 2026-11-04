@@ -203,7 +203,9 @@ class Settings(BaseSettings):
     workflow_run_retention_days: int = 30
     # Keyed workflow serialization. Redis leases are renewed while a run is
     # active; the beat backstop wakes durable Pending scopes older than the
-    # recovery age without changing their state.
+    # recovery age without changing their state. Lease floor 30 seconds: the renew
+    # thread also stamps the run heartbeat in the database before its next wait,
+    # so the lease must outlast one slow renew plus that write.
     workflow_serialized_lease_seconds: int = 120
     workflow_serialized_recovery_age_seconds: int = 60
     # Workflow Redis action (S3): every workflow-data key carries a TTL so a
@@ -305,6 +307,17 @@ class Settings(BaseSettings):
     # `app/database.py::process_application_name()`, so the DEPLOY.md
     # lock-holder report names the owning process. Capped at 63 chars.
     db_application_name: str = ""
+    # Lock-wait bound for the API process only (seconds, 0 disables). Carried
+    # as `-c lock_timeout` in the libpq `options` of connections whose
+    # application name is `foundryx-api`; a wait past it ends in a clean 503
+    # busy answer. bootstrap keeps its own lock timeout from PGOPTIONS (an
+    # explicit libpq `options` value would override it) and workers use the
+    # `worker_db_*` settings above, so neither gets this.
+    api_db_lock_timeout_seconds: int = 10
+    # Ceiling for request paths that do long locked work (module install,
+    # tenant purge, storage-migration Complete): applied per transaction with
+    # SET LOCAL by `allow_long_lock_wait`. Must be >= the normal limit.
+    api_db_long_lock_timeout_seconds: int = 300
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like
@@ -428,6 +441,17 @@ class Settings(BaseSettings):
     platform_storage_access_key_id: str = ""
     platform_storage_secret_access_key: str = ""
     platform_storage_cdn_base_url: str = ""
+    # Tenant S3 calls run on API request paths and storage jobs; the library
+    # defaults allowed very long waits, so connect, read and retries are bounded.
+    # On uploads the connect timeout also bounds each stalled send of the request
+    # body (botocore sends under the connect timeout and switches to the read
+    # timeout only for the response), so an upload with no progress for longer
+    # than the connect timeout is retried; the read timeout is the idle window
+    # for responses and downloads.
+    storage_s3_connect_timeout_seconds: int = 5
+    storage_s3_read_timeout_seconds: int = 60
+    # Total tries per call, including the first.
+    storage_s3_max_attempts: int = 3
 
     # ── Meetings bot fleet (sprint-5 S2) ───────────────────────────────────
     # The image one bot container runs. Empty = the pilot image built locally
@@ -578,12 +602,70 @@ class Settings(BaseSettings):
     autocount_fingerprint_sweep_minutes: int = 15
     autocount_fingerprint_fast_window_days: int = 60
 
+    @field_validator("api_db_lock_timeout_seconds")
+    @classmethod
+    def _api_db_lock_timeout_floor(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("api_db_lock_timeout_seconds must be 0 or more.")
+        return v
+
+    @model_validator(mode="after")
+    def _api_db_long_lock_timeout_not_below_normal(self) -> "Settings":
+        if self.api_db_long_lock_timeout_seconds < 1:
+            raise ValueError("api_db_long_lock_timeout_seconds must be at least 1.")
+        if (
+            self.api_db_lock_timeout_seconds > 0
+            and self.api_db_long_lock_timeout_seconds < self.api_db_lock_timeout_seconds
+        ):
+            raise ValueError(
+                "api_db_long_lock_timeout_seconds must be at least "
+                "api_db_lock_timeout_seconds."
+            )
+        return self
+
     @field_validator("background_job_orphan_after_minutes")
     @classmethod
     def _background_job_orphan_after_floor(cls, v: int) -> int:
         if v < 5:
             raise ValueError(
                 "background_job_orphan_after_minutes must be at least 5 minutes."
+            )
+        return v
+
+    @field_validator("storage_s3_connect_timeout_seconds")
+    @classmethod
+    def _storage_s3_connect_timeout_floor(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(
+                "storage_s3_connect_timeout_seconds must be at least 1 second."
+            )
+        return v
+
+    @field_validator("storage_s3_read_timeout_seconds")
+    @classmethod
+    def _storage_s3_read_timeout_floor(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError(
+                "storage_s3_read_timeout_seconds must be at least 5 seconds."
+            )
+        return v
+
+    @field_validator("storage_s3_max_attempts")
+    @classmethod
+    def _storage_s3_max_attempts_range(cls, v: int) -> int:
+        if v < 1 or v > 10:
+            raise ValueError("storage_s3_max_attempts must be between 1 and 10.")
+        return v
+
+    @field_validator("workflow_serialized_lease_seconds")
+    @classmethod
+    def _workflow_serialized_lease_floor(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError(
+                "workflow_serialized_lease_seconds must be at least 30 seconds: "
+                "the lease is renewed every third of its length, so it must "
+                "outlast one slow renew plus the run heartbeat write the renew thread "
+                "makes in the database before its next wait."
             )
         return v
 

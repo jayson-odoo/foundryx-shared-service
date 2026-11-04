@@ -1,4 +1,5 @@
 """Database configuration and session management."""
+import contextlib
 import logging
 import os
 import re
@@ -6,9 +7,9 @@ import sys
 import threading
 import weakref
 from contextvars import ContextVar
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import (
     Session,
@@ -102,7 +103,56 @@ def app_connect_args(url: Optional[str] = None) -> Dict[str, str]:
     as ``worker_connect_args`` (sqlite's DBAPI rejects unknown keys)."""
     if not (url if url is not None else settings.database_url).startswith("postgresql"):
         return {}
-    return {"application_name": process_application_name(), **worker_connect_args()}
+    # Gating uses `process_application_name()`, so `DB_APPLICATION_NAME`
+    # overrides it (setting it to `foundryx-api` opts a process in, anything
+    # else opts it out). An API process that also sets
+    # `worker_db_lock_timeout_seconds` gets the API value: it is added last and
+    # the later `-c lock_timeout` wins. A dev run via `python main.py` is not
+    # named `foundryx-api`, so it gets no API limit.
+    name = process_application_name()
+    args: Dict[str, str] = {"application_name": name, **worker_connect_args()}
+    if name == "foundryx-api" and settings.api_db_lock_timeout_seconds > 0:
+        lock = f"-c lock_timeout={settings.api_db_lock_timeout_seconds * 1000}"
+        # One options string: a second `options` key would drop the worker ones.
+        args["options"] = f"{args['options']} {lock}" if args.get("options") else lock
+    return args
+
+
+_LONG_WAIT_FLAG = "long_lock_wait"
+
+
+def _set_long_lock_timeout(connection: Connection) -> None:
+    ms = settings.api_db_long_lock_timeout_seconds * 1000
+    connection.execute(text(f"SET LOCAL lock_timeout = '{int(ms)}ms'"))
+
+
+@event.listens_for(Session, "after_begin")
+def _carry_long_lock_wait(session: Session, transaction, connection: Connection) -> None:  # noqa: ANN001
+    """Every transaction a flagged session begins gets the raised ceiling."""
+    if session.info.get(_LONG_WAIT_FLAG) and connection.dialect.name == "postgresql":
+        _set_long_lock_timeout(connection)
+
+
+@contextlib.contextmanager
+def allow_long_lock_wait(db: Session) -> Iterator[None]:
+    """Raise the API lock timeout to the long ceiling
+    (``api_db_long_lock_timeout_seconds``) for one long, legitimate operation
+    (module install/update/uninstall, tenant purge, storage-migration Complete).
+
+    Transaction-scoped: ``SET LOCAL`` on the current transaction plus an
+    ``after_begin`` listener that repeats it for each later transaction of this
+    session while the flag is set. ``SET LOCAL`` ends with its transaction, so
+    nothing can leak into the connection pool. Postgres only; a no-op elsewhere.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        yield
+        return
+    db.info[_LONG_WAIT_FLAG] = True
+    try:
+        _set_long_lock_timeout(db.connection())
+        yield
+    finally:
+        db.info.pop(_LONG_WAIT_FLAG, None)
 
 
 def scrub_error_params(engine: Engine) -> Engine:

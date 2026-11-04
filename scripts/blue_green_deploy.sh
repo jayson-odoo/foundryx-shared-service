@@ -44,6 +44,30 @@ HEALTH_WAIT_TICKS="${HEALTH_WAIT_TICKS:-120}"   # 120 * 2s = 4 min max
 WORKER_WAIT_TICKS="${WORKER_WAIT_TICKS:-45}"    # 45 * 2s = 90s for each celery container to prove it started
 TICK_SECONDS=2
 
+# ONE deploy at a time on this host (SS-DEPLOY-LOCK-SHA). Two overlapping runs
+# both read the same .active_color and bring up the SAME standby colour. The CI
+# workflow queues deploys (concurrency: deploy-prod); this lock also covers a
+# manual run on the server, and a CI retry whose first attempt is still running
+# remotely. Taken BEFORE .active_color is read. The kernel drops the lock when
+# this process exits, however it exits (no stale-lock cleanup needed).
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-.blue_green_deploy.lock}"
+# 5 min: a full deploy itself can take ~11 min worst case (4 min health + drain
+# + 4 x 90s worker gates), and wait + deploy must fit the CI step's 18 min.
+DEPLOY_LOCK_TIMEOUT_SECONDS="${DEPLOY_LOCK_TIMEOUT_SECONDS:-300}"
+if ! command -v flock >/dev/null 2>&1; then
+  echo "::error::DEPLOY ABORTED (flock not found - install util-linux). Refusing to deploy without the deploy lock." >&2
+  exit 1
+fi
+exec 9>>"$DEPLOY_LOCK_FILE"
+echo "==> Waiting up to ${DEPLOY_LOCK_TIMEOUT_SECONDS}s for the deploy lock ${DEPLOY_LOCK_FILE}"
+if ! flock -w "$DEPLOY_LOCK_TIMEOUT_SECONDS" 9; then
+  echo "::error::DEPLOY ABORTED (another blue/green deploy holds ${DEPLOY_LOCK_FILE} after ${DEPLOY_LOCK_TIMEOUT_SECONDS}s; holder: $(cat "$DEPLOY_LOCK_FILE" 2>/dev/null || echo unknown)). Nothing pulled, started or swapped." >&2
+  exit 1
+fi
+# Record the holder for whoever waits next (truncating keeps the lock: it is
+# held on the open file, not the contents).
+printf 'pid=%s image_tag=%s started=%s\n' "$$" "$IMAGE_TAG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_LOCK_FILE"
+
 ACTIVE=$(cat .active_color 2>/dev/null || echo blue)
 if [ "$ACTIVE" = "blue" ]; then
   NEW=green; OLD=blue
