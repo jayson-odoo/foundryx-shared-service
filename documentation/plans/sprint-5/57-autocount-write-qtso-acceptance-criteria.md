@@ -37,6 +37,7 @@ builder -> ONE vendor write -> GET back -> verify -> one `ac_write_action` row -
 | AC-57-19 | [BE] Every vendor call is recorded on its action row exactly: method, path (no host), request body, response status and body, before and after documents; no host, key or credential anywhere in the row, logs or answer |
 | AC-57-20 | [BE] Finding a document by DocKey (the wrapper reads by date only): the caller's optional `docDate`, else the staged record's DocDate, else the DocDate of our last confirmed read-back of that document (action log); none known = `DOC_DATE_REQUIRED` before any HTTP; a GET that misses the DocKey on that date = `DOC_NOT_FOUND` (staff may have changed the date in AutoCount) |
 | AC-57-21 | [BE] Write-back never overwrites SQL-synced staging: for a document whose entity is SQL-sourced, the read-back is kept on the action row only and the SQL-staged record (with its per-line received / delivered qty) is left as the SQL sync wrote it; HTTP-sourced documents are restaged and pushed as in plan 55 (fixes plan 55 `staging.py:81-97`) |
+| AC-57-22 | [BE] The write connection can only be set on a company with no SQL-synced data (no entity whose source is `sql_db`, no staged record created by any job other than write-back): else `WRITE_COMPANY_NOT_TEST` and the company is unchanged. Write-back staging never writes over a staged row that another job created; such a document is answered from the read-back only and logged, never restaged |
 
 ## C. Operations (CRM picks which; SS owns how)
 
