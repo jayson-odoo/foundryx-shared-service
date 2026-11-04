@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import allow_long_lock_wait, get_db
 from app.dependencies import (
     effective_permission_keys,
     get_actor_user_id,
@@ -126,4 +126,5 @@ def complete_job(
     user: User = Depends(require_permission(_MIGRATE_PERM)),
     db: Session = Depends(get_db),
 ) -> JobOut:
-    return JobOut.model_validate(StorageMigrationService(db).complete(user.tenant_id, job_id))
+    with allow_long_lock_wait(db):
+        return JobOut.model_validate(StorageMigrationService(db).complete(user.tenant_id, job_id))

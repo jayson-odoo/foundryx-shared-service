@@ -307,6 +307,13 @@ class Settings(BaseSettings):
     # `app/database.py::process_application_name()`, so the DEPLOY.md
     # lock-holder report names the owning process. Capped at 63 chars.
     db_application_name: str = ""
+    # Lock-wait bound for the API process only (seconds, 0 disables). Carried
+    # as `-c lock_timeout` in the libpq `options` of connections whose
+    # application name is `foundryx-api`; a wait past it ends in a clean 503
+    # busy answer. bootstrap keeps its own lock timeout from PGOPTIONS (an
+    # explicit libpq `options` value would override it) and workers use the
+    # `worker_db_*` settings above, so neither gets this.
+    api_db_lock_timeout_seconds: int = 10
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like
@@ -579,6 +586,13 @@ class Settings(BaseSettings):
     # Read at CALL time ("retune without a restart").
     autocount_fingerprint_sweep_minutes: int = 15
     autocount_fingerprint_fast_window_days: int = 60
+
+    @field_validator("api_db_lock_timeout_seconds")
+    @classmethod
+    def _api_db_lock_timeout_floor(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("api_db_lock_timeout_seconds must be 0 or more.")
+        return v
 
     @field_validator("background_job_orphan_after_minutes")
     @classmethod

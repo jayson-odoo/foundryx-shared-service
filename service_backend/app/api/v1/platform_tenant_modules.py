@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.v1.app_store import run_store_action, store_error_http
-from app.database import get_db
+from app.database import allow_long_lock_wait, get_db
 from app.dependencies import require_platform_permission
 from app.models.user import User
 from app.schemas.app_store import StoreModuleOut, UninstallRequest, store_module_out
@@ -51,7 +51,8 @@ def install(
     db: Session = Depends(get_db),
 ) -> StoreModuleOut:
     _tenant_or_404(db, tenant_id)
-    return run_store_action(AppStoreService(db).install, tenant_id, name)
+    with allow_long_lock_wait(db):
+        return run_store_action(AppStoreService(db).install, tenant_id, name)
 
 
 @router.post("/{tenant_id}/modules/{name}/update", response_model=StoreModuleOut)
@@ -62,7 +63,8 @@ def update(
     db: Session = Depends(get_db),
 ) -> StoreModuleOut:
     _tenant_or_404(db, tenant_id)
-    return run_store_action(AppStoreService(db).update, tenant_id, name)
+    with allow_long_lock_wait(db):
+        return run_store_action(AppStoreService(db).update, tenant_id, name)
 
 
 @router.post("/{tenant_id}/modules/{name}/deactivate", response_model=StoreModuleOut)
@@ -97,7 +99,8 @@ def uninstall(
 ) -> dict:
     _tenant_or_404(db, tenant_id)
     try:
-        AppStoreService(db).uninstall(tenant_id, name, payload.confirmName)
+        with allow_long_lock_wait(db):
+            AppStoreService(db).uninstall(tenant_id, name, payload.confirmName)
     except AppStoreError as exc:
         raise store_error_http(exc)
     return {"ok": True}

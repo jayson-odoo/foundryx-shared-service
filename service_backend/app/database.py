@@ -1,4 +1,5 @@
 """Database configuration and session management."""
+import contextlib
 import logging
 import os
 import re
@@ -6,9 +7,9 @@ import sys
 import threading
 import weakref
 from contextvars import ContextVar
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import (
     Session,
@@ -102,7 +103,44 @@ def app_connect_args(url: Optional[str] = None) -> Dict[str, str]:
     as ``worker_connect_args`` (sqlite's DBAPI rejects unknown keys)."""
     if not (url if url is not None else settings.database_url).startswith("postgresql"):
         return {}
-    return {"application_name": process_application_name(), **worker_connect_args()}
+    name = process_application_name()
+    args: Dict[str, str] = {"application_name": name, **worker_connect_args()}
+    if name == "foundryx-api" and settings.api_db_lock_timeout_seconds > 0:
+        lock = f"-c lock_timeout={settings.api_db_lock_timeout_seconds * 1000}"
+        # One options string: a second `options` key would drop the worker ones.
+        args["options"] = f"{args['options']} {lock}" if args.get("options") else lock
+    return args
+
+
+@contextlib.contextmanager
+def allow_long_lock_wait(db: Session) -> Iterator[None]:
+    """Lift the API lock timeout for one long, legitimate operation (module
+    install/update/uninstall, tenant purge, storage-migration Complete).
+
+    Session-level ``SET`` (not ``SET LOCAL``) so it survives the several
+    commits those operations make; ``RESET`` in ``finally`` returns the
+    connection to the process default before it goes back to the pool.
+    Postgres only; a no-op elsewhere.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        yield
+        return
+    db.execute(text("SET lock_timeout = 0"))
+    try:
+        yield
+    finally:
+        try:
+            db.execute(text("RESET lock_timeout"))
+        except Exception:  # noqa: BLE001 - failed transaction: clear it, retry once
+            try:
+                db.rollback()
+                db.execute(text("RESET lock_timeout"))
+            except Exception:  # noqa: BLE001 - never leave a raised-limit connection pooled
+                logger.warning("could not reset lock_timeout; dropping the connection")
+                try:
+                    db.connection().invalidate()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def scrub_error_params(engine: Engine) -> Engine:
