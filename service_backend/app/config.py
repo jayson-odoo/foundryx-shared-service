@@ -432,6 +432,11 @@ class Settings(BaseSettings):
     platform_storage_cdn_base_url: str = ""
     # Tenant S3 calls run on API request paths and storage jobs; the library
     # defaults allowed very long waits, so connect, read and retries are bounded.
+    # On uploads the connect timeout also bounds each stalled send of the request
+    # body (botocore sends under the connect timeout and switches to the read
+    # timeout only for the response), so an upload with no progress for longer
+    # than the connect timeout is retried; the read timeout is the idle window
+    # for responses and downloads.
     storage_s3_connect_timeout_seconds: int = 5
     storage_s3_read_timeout_seconds: int = 60
     # Total tries per call, including the first.

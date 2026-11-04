@@ -104,7 +104,6 @@ class S3CompatibleAdapter:
         import boto3  # noqa: PLC0415 - imported here so the stub seam works without it
         from botocore.config import Config  # noqa: PLC0415
 
-
         return boto3.client(
             "s3",
             config=Config(
@@ -366,5 +365,3 @@ class R2Provider(_StorageProviderBase):
             *_KEY_FIELDS,
             _CDN_FIELD,
         ]
-
-
