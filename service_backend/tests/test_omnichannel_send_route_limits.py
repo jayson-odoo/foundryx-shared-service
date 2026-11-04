@@ -1099,8 +1099,10 @@ def test_idempotency_memory_claim_is_atomic_under_two_threads():
     store._memory = _RendezvousDict()
     results = _race(store)
     assert len(results) == 2
-    assert results.count(None) == 1, f"both threads claimed the key: {results}"
-    assert idempotency.PENDING in results
+    existing = [r.existing for r in results]
+    assert existing.count(None) == 1, f"both threads claimed the key: {existing}"
+    assert idempotency.PENDING in existing
+    assert sum(1 for r in results if r.token) == 1
 
 
 def test_idempotency_race_rig_sees_a_non_atomic_claim():
@@ -1110,14 +1112,14 @@ def test_idempotency_race_rig_sees_a_non_atomic_claim():
         def reserve(self, workspace_id, idem_key):
             k = idempotency._key(workspace_id, idem_key)
             if k in self._memory:
-                return self._memory[k]
+                return idempotency.Reservation("", idempotency.PENDING)
             self._memory[k] = idempotency.PENDING
-            return None
+            return idempotency.Reservation("tok", None)
 
     store = NaiveStore()
     store._memory = _RendezvousDict()
     results = _race(store)
-    assert results.count(None) == 2
+    assert [r.existing for r in results].count(None) == 2
 
 
 # ══ Review round 2 ═══════════════════════════════════════════════════════════
