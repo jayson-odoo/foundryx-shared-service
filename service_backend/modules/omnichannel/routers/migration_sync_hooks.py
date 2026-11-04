@@ -5,6 +5,7 @@ the capability. The body is a HINT: only a respond.io contact id is kept, the
 tick re-reads everything from the respond.io API. No respond.io call is made
 here. Every authorization failure is the same uniform 404."""
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -29,7 +30,8 @@ async def receive_migration_hook(
             raise HTTPException(413, "Payload too large")
         chunks.append(chunk)
     try:
-        outcome = record_hint(db, sync_id, secret, b"".join(chunks))
+        # DB + Fernet work runs on a worker thread, never on the event loop.
+        outcome = await run_in_threadpool(record_hint, db, sync_id, secret, b"".join(chunks))
     except SyncNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
     if outcome == "stored":

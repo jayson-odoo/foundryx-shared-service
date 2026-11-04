@@ -174,7 +174,7 @@ def test_sync_11_poll_creates_new_contacts_and_skips_untouched_histories(client,
 
     run_due_syncs(w.db)
 
-    n = w.contact_by_phone("+6011910002")
+    n = w.contact_by_phone("+601000910002")
     assert n is not None, "the new contact was created"
     assert [m.body for m in w.messages_of(n)] == ["hi there", "welcome"]
     assert w.db.query(ContactChannelIdentity).filter(ContactChannelIdentity.contact_id == n.id).count() == 1
@@ -211,7 +211,7 @@ def test_sync_12_hints_tick_fetches_flagged_and_creates_unknown(client, session_
     jobs = sync_jobs(w.db)
     assert len(jobs) == 1 and jobs[0].payload_json["kind"] == "hints"
     assert [m.body for m in w.messages_of(w.contact_by_cid(910001))] == ["hello 910001", "a news"]
-    b = w.contact_by_phone("+6011910002")
+    b = w.contact_by_phone("+601000910002")
     assert b is not None and [m.body for m in w.messages_of(b)] == ["b one", "b two"]
     assert w.fake.contact_get_calls(910002) == 1, "unknown contact created via GET /contact/id:B"
     assert len(w.messages_of(w.contact_by_cid(910003))) == 1, "unflagged C untouched"
@@ -351,7 +351,7 @@ def test_sync_16_skipped_channel_then_mapped_relinks_on_next_tick(client, sessio
     assert {m.channel_id for m in msgs} == {w.channel.id}, "the #179 re-link"
     idents = w.db.query(ContactChannelIdentity).filter(ContactChannelIdentity.contact_id == a.id).all()
     assert [i.channel_id for i in idents] == [w.channel.id]
-    assert idents[0].external_user_id == "6011910001"
+    assert idents[0].external_user_id == "601000910001"
 
 
 def test_sync_17_mapping_follows_the_newest_done_real_api_run(client, session_factory, monkeypatch):
@@ -613,11 +613,11 @@ def test_sync_21_one_off_migration_stays_fill_if_empty(session_factory, monkeypa
     w = new_world(session_factory, monkeypatch)
     local = Contact(
         tenant_id=DEFAULT_TENANT_ID, workspace_id=w.ws.id, first_name="Local", last_name=None,
-        phone="+6011910555", phone_digits="6011910555", priority="MEDIUM",
+        phone="+601000910555", phone_digits="601000910555", priority="MEDIUM",
     )
     w.db.add(local)
     w.db.commit()
-    w.fake.add_contact(910555, first="Remote", last="Name", phone="+6011910555")
+    w.fake.add_contact(910555, first="Remote", last="Name", phone="+601000910555")
     w.run_migration()
     w.db.expire_all()
     merged = w.db.get(Contact, local.id)
@@ -761,7 +761,7 @@ def test_sync_42_running_tick_stops_at_its_next_checkpoint_when_paused(client, s
     make_due(w.db, sid, full_sweep="not_due")
     run_due_syncs(w.db)
 
-    assert w.contact_by_phone("+6011910023") is None, "the tick stopped at its next checkpoint"
+    assert w.contact_by_phone("+601000910023") is None, "the tick stopped at its next checkpoint"
     assert sync_row(w.db, sid).status == "paused", "and the pause was not overwritten"
     assert all(j.status not in (JOB_PENDING, JOB_RUNNING) for j in sync_jobs(w.db))
 
@@ -778,8 +778,8 @@ def test_sync_43_stop_runs_one_final_tick_then_sets_csw_and_stops(client, sessio
         {Contact.last_incoming_message_at: now - timedelta(days=3), Contact.csw_expires_at: now - timedelta(days=2)},
         synchronize_session=False)
     local = Contact(
-        tenant_id=DEFAULT_TENANT_ID, workspace_id=w.ws.id, first_name="Native", phone="+6011999",
-        phone_digits="6011999", priority="MEDIUM", last_incoming_message_at=now - timedelta(hours=1),
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=w.ws.id, first_name="Native", phone="+601000999",
+        phone_digits="601000999", priority="MEDIUM", last_incoming_message_at=now - timedelta(hours=1),
     )
     w.db.add(local)
     w.db.commit()
@@ -806,7 +806,7 @@ def test_sync_43_stop_runs_one_final_tick_then_sets_csw_and_stops(client, sessio
 
     row = sync_row(w.db, sid)
     assert row.status == "stopped" and row.stopped_at is not None
-    assert w.contact_by_phone("+6011910004") is not None, "final tick polled new contacts"
+    assert w.contact_by_phone("+601000910004") is not None, "final tick polled new contacts"
     assert any(m.body == "final agent reply" for m in w.messages_of(w.contact_by_cid(910001))), "and consumed hints"
     assert len(w.messages_of(w.contact_by_cid(910003))) == 1 and w.fake.message_list_calls(910003) == 0, "no full sweep"
     assert hint_ids(w.db, sid) == []

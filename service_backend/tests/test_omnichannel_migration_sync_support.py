@@ -106,7 +106,7 @@ class FakeRespondIo:
         assignee: Optional[Dict[str, Any]] = None, custom_fields: Optional[List[Dict[str, Any]]] = None,
         source_channel: int = SOURCE_CHANNEL,
     ) -> Dict[str, Any]:
-        phone = phone or f"+6011{cid}"
+        phone = phone or f"+601000{cid}"
         row: Dict[str, Any] = {
             "id": cid, "firstName": first, "lastName": last, "phone": phone, "email": email,
             "language": language, "countryCode": country, "tags": tags or [], "lifecycle": lifecycle,

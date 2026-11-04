@@ -385,7 +385,7 @@ def _enqueue_tick(db: Session, tenant_id: str, sync_id: str, kind: str) -> Optio
     enqueue, then create + enqueue the tick job. None when the claim lost."""
     repo = MigrationSyncRepository(db)
     claimed = repo.update_if(
-        tenant_id, sync_id, [MigrationSync.running_job_id.is_(None)], running_job_id=_CLAIM_PLACEHOLDER
+        tenant_id, sync_id, [], running_job_id=_CLAIM_PLACEHOLDER
     )
     db.commit()
     if not claimed:

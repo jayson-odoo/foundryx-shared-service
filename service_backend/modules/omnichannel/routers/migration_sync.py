@@ -3,7 +3,7 @@ Reads gated ``omnichannel_migration.read``, writes ``.manage`` (D14: no new
 permission). A foreign tenant's sync id is a uniform 404."""
 from typing import Callable, Optional, TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -94,18 +94,22 @@ def stop(
 @router.get("/{sync_id}/webhook", response_model=MigrationSyncWebhook)
 def get_webhook(
     sync_id: str,
+    response: Response,
     current_user: User = Depends(require_permission("omnichannel_migration.manage")),
     db: Session = Depends(get_db),
 ) -> MigrationSyncWebhook:
+    response.headers["Cache-Control"] = "no-store"
     return _guard(lambda: MigrationSyncWebhook(url=MigrationSyncService(db).webhook_url(current_user.tenant_id, sync_id)))
 
 
 @router.post("/{sync_id}/webhook/rotate", response_model=MigrationSyncWebhook)
 def rotate_webhook(
     sync_id: str,
+    response: Response,
     current_user: User = Depends(require_permission("omnichannel_migration.manage")),
     db: Session = Depends(get_db),
 ) -> MigrationSyncWebhook:
+    response.headers["Cache-Control"] = "no-store"
     return _guard(
         lambda: MigrationSyncWebhook(url=MigrationSyncService(db).rotate_webhook(current_user.tenant_id, sync_id))
     )
