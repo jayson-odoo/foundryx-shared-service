@@ -251,7 +251,8 @@ def test_ac_55_15_spo_unlink_body(spo):
     body = build_spo_unlink(spo, row["DtlKey"])
     assert body["DocKey"] == spo["DocKey"]
     assert body["DocNo"] == spo["DocNo"]
-    assert {k for k in body if k != "Details"} <= HEADER_KEYS
+    assert {k for k in body if k != "Details"} <= HEADER_KEYS | {"ShippingPO"}  # SPO body only
+    assert body["ShippingPO"] == "T"
     assert len(body["Details"]) == 1
     r = body["Details"][0]
     assert r["DtlKey"] == row["DtlKey"]
