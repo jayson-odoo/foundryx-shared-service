@@ -8,8 +8,12 @@ rows appear in ``Details``. Quantities are computed in ``Decimal``.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+from modules.autocount.write_back import capabilities
+from modules.autocount.write_back.doc_kinds import DocKind, kind_of
 
 Doc = Dict[str, Any]
 
@@ -250,3 +254,304 @@ def build_spo_unlink(spo: Doc, spo_dtl_key: int) -> Doc:
     details: List[Doc] = [_unlinked(row)]
     body["Details"] = details
     return body
+
+
+# ── plan 57 level-1 primitive builders (AC-57-10..18) ───────────────────────────
+
+@dataclass(frozen=True)
+class VendorRequest:
+    method: str
+    path: str
+    body: Doc
+
+
+@dataclass
+class Verdict:
+    """A verifier answer: ``outcome`` "done" | "mismatch"; ``code`` names why."""
+
+    outcome: str
+    code: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+
+
+DONE = "done"
+MISMATCH = "mismatch"
+
+NEW_DOCNO = "<<New>>"
+LINK_UNCONFIRMED = "QT_ROW_LINK_UNCONFIRMED"
+# Header fields a create may carry, any kind (party and DocNo handled by the kind).
+CREATE_HEADER_KEYS = tuple(
+    dict.fromkeys(HEADER_KEYS + SO_HEADER_KEYS + ("YourPONo",))
+)
+CREATE_HEADER_KEYS = tuple(k for k in CREATE_HEADER_KEYS if k != "DocKey")
+# Header fields an edit may change (AC-57-14).
+EDIT_HEADER_KEYS = (
+    "Ref", "Description", "Remark1", "Remark2", "Remark3", "Remark4", "DisplayTerm",
+    "SalesAgent", "PurchaseAgent", "YourPONo", "InvAddr1", "InvAddr2", "InvAddr3", "InvAddr4",
+    "DeliverAddr1", "DeliverAddr2", "DeliverAddr3", "DeliverAddr4",
+)
+# Line fields an edit may change, by DtlKey.
+EDIT_LINE_KEYS = ("Qty", "UnitPrice", "Discount", "Location", "Description", "DeliveryDate")
+LINE_KEYS = tuple(k for k in ROW_KEYS if k != "DtlKey") + ("YourPONo",)
+REQUIRED_HEADER = ("DocDate", "DisplayTerm", "CurrencyCode", "CurrencyRate")
+REQUIRED_LINE = ("ItemCode", "UOM", "Qty", "UnitPrice", "Location")
+# Compared before / after to prove an edit touched nothing else.
+_COMPARE_HEADER = ("DocNo", "DocDate", "DebtorCode", "CreditorCode", "Cancelled") + EDIT_HEADER_KEYS
+_COMPARE_LINE = ("ItemCode", "UOM", "Qty", "UnitPrice", "Discount", "Location", "Description", "DeliveryDate")
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _plain(value: Any) -> Any:
+    """JSON-safe copy of a value (Decimal -> float)."""
+    return float(value) if isinstance(value, Decimal) else value
+
+
+def _num_of(value: Any) -> Optional[Decimal]:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        out = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return out if out.is_finite() else None
+
+
+def _same(a: Any, b: Any) -> bool:
+    na, nb = _num_of(a), _num_of(b)
+    if na is not None and nb is not None and not isinstance(a, str) and not isinstance(b, str):
+        return na == nb
+    return a == b
+
+
+def _check_kind_doc(kind: DocKind, doc: Doc, *, cancelled_ok: bool = False) -> None:
+    if kind.name in ("PO", "SPO") and _is_spo(doc) != (kind.name == "SPO"):
+        raise WriteRefusal("DOC_KIND_MISMATCH", "wrong document kind")
+    if not cancelled_ok and doc.get("Cancelled") == "T":
+        raise WriteRefusal("DOC_CANCELLED", "document is cancelled")
+
+
+def _check_line(line: Mapping[str, Any]) -> None:
+    for key in REQUIRED_LINE:
+        if _blank(line.get(key)):
+            raise WriteRefusal("FIELD_REQUIRED", key)
+    qty, price = _num_of(line.get("Qty")), _num_of(line.get("UnitPrice"))
+    if qty is None or qty <= 0:
+        raise WriteRefusal("FIELD_REQUIRED", "Qty must be above zero")
+    if price is None or price < 0:
+        raise WriteRefusal("FIELD_REQUIRED", "UnitPrice must not be negative")
+
+
+def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None) -> Doc:
+    out = {k: _plain(v) for k, v in _pick(dict(line), LINE_KEYS).items()}
+    if dtl_key is not None:
+        out["DtlKey"] = dtl_key
+    return out
+
+
+def _doc_header(kind: DocKind, doc: Doc) -> Doc:
+    body = _pick(doc, ("DocKey",) + CREATE_HEADER_KEYS)
+    if kind.name == "SPO":
+        body["ShippingPO"] = "T"
+    return body
+
+
+def build_create(kind_name: str, header: Mapping[str, Any], lines: Optional[Sequence[Mapping[str, Any]]]) -> VendorRequest:
+    kind = kind_of(kind_name)
+    clean = _pick(dict(header), CREATE_HEADER_KEYS)
+    for key in REQUIRED_HEADER + (kind.party_field,):
+        if _blank(clean.get(key)):
+            raise WriteRefusal("FIELD_REQUIRED", key)
+    if not lines:
+        raise WriteRefusal("FIELD_REQUIRED", "Details")
+    for ln in lines:
+        _check_line(ln)
+    if _blank(clean.get("DocNo")):
+        if not capabilities.AUTO_DOCNO:
+            raise WriteRefusal("DOCNO_REQUIRED", "a document number is required")
+        clean["DocNo"] = NEW_DOCNO
+    body: Doc = {k: _plain(v) for k, v in clean.items()}
+    if kind.name in ("PO", "SPO"):
+        body["ShippingPO"] = "T" if kind.name == "SPO" else "F"
+    body["Details"] = [_vendor_line(ln, None) for ln in lines]
+    return VendorRequest("POST", kind.new_path, body)
+
+
+_ANSWER = re.compile(r"DocNo=(.+?)\s*,DocKey=(\d+)")
+
+
+def parse_create_answer(text: object) -> Optional[Tuple[str, int]]:
+    """``(DocNo, DocKey)`` from the 2xx answer text, or None when it is not that shape."""
+    if not isinstance(text, str):
+        return None
+    match = _ANSWER.search(text)
+    if match is None or not match.group(1).strip():
+        return None
+    return match.group(1).strip(), int(match.group(2))
+
+
+def build_edit(
+    kind_name: str,
+    doc: Doc,
+    header_changes: Mapping[str, Any],
+    line_changes: Sequence[Mapping[str, Any]],
+) -> VendorRequest:
+    kind = kind_of(kind_name)
+    _check_kind_doc(kind, doc)
+    for key in header_changes:
+        if key not in EDIT_HEADER_KEYS:
+            raise WriteRefusal("FIELD_NOT_EDITABLE", key)
+    body = _doc_header(kind, doc)
+    body.update({k: _plain(v) for k, v in header_changes.items()})
+    details: List[Doc] = []
+    for change in line_changes:
+        row = _find_row(doc, change.get("DtlKey"))  # type: ignore[arg-type]
+        edits = {k: v for k, v in change.items() if k != "DtlKey"}
+        for key in edits:
+            if key not in EDIT_LINE_KEYS:
+                raise WriteRefusal("FIELD_NOT_EDITABLE", key)
+        out = _row_fields(row)
+        out.update({k: _plain(v) for k, v in edits.items()})
+        qty, price = _num_of(out.get("Qty")), _num_of(out.get("UnitPrice"))
+        if "Qty" in edits and (qty is None or qty <= 0):
+            raise WriteRefusal("QTY_INVALID", "quantity must be above zero")
+        if "UnitPrice" in edits and (price is None or price < 0):
+            raise WriteRefusal("PRICE_INVALID", "unit price must not be negative")
+        details.append(out)
+    body["Details"] = details
+    return VendorRequest("PUT", kind.edit_path, body)
+
+
+def build_add_line(kind_name: str, doc: Doc, line: Mapping[str, Any]) -> VendorRequest:
+    kind = kind_of(kind_name)
+    _check_kind_doc(kind, doc)
+    _check_line(line)
+    body = _doc_header(kind, doc)
+    body["Details"] = [_vendor_line(line, 0)]
+    return VendorRequest("PUT", kind.edit_path, body)
+
+
+def build_delete_line(kind_name: str, doc: Doc, dtl_key: int) -> VendorRequest:
+    kind = kind_of(kind_name)
+    _check_kind_doc(kind, doc)
+    _find_row(doc, dtl_key)
+    return VendorRequest(
+        kind.delete_line.method, kind.delete_line.path, {"DocKey": doc.get("DocKey"), "DtlKey": dtl_key}
+    )
+
+
+def build_delete_doc(kind_name: str, doc: Doc) -> VendorRequest:
+    kind = kind_of(kind_name)
+    _check_kind_doc(kind, doc)
+    return VendorRequest(kind.delete_doc.method, kind.delete_doc.path, {"DocKey": doc.get("DocKey")})
+
+
+def build_cancel(kind_name: str, doc: Doc) -> VendorRequest:
+    kind = kind_of(kind_name)
+    _check_kind_doc(kind, doc)
+    if kind.name == "QT" and not _blank(doc.get("ToDocType")):
+        raise WriteRefusal("DOC_HAS_TRANSFERS", "quotation has a target document")
+    body = _doc_header(kind, doc)
+    body["Cancelled"] = "T"
+    body["Details"] = [_row_fields(r) for r in doc.get("Details") or []]
+    return VendorRequest("PUT", kind.edit_path, body)
+
+
+# ── verifiers (pure; compare the fresh read-back with what was sent) ─────────────
+
+def _same_line(sent: Mapping[str, Any], got: Doc) -> bool:
+    return all(_same(sent.get(k), got.get(k)) for k in REQUIRED_LINE)
+
+
+def verify_create(kind_name: str, sent: Mapping[str, Any], after: Doc) -> Verdict:
+    kind_of(kind_name)
+    want: Sequence[Mapping[str, Any]] = sent.get("Details") or []
+    got: List[Doc] = after.get("Details") or []
+    if len(got) < len(want):
+        return Verdict(MISMATCH, "ROWS_DROPPED")
+    if len(got) > len(want):
+        return Verdict(MISMATCH, "ROWS_UNEXPECTED")
+    warnings: List[str] = []
+    for line, row in zip(want, got):
+        if not _same_line(line, row):
+            return Verdict(MISMATCH, "ROW_MISMATCH")
+        if line.get("FromDocType") and (
+            row.get("FromDocType") != line.get("FromDocType") or row.get("FromDocNo") != line.get("FromDocNo")
+        ):
+            return Verdict(MISMATCH, "LINK_MISMATCH")
+        if line.get("FromDocDtlKey") and not _same(row.get("FromDocDtlKey"), line.get("FromDocDtlKey")):
+            if LINK_UNCONFIRMED not in warnings:
+                warnings.append(LINK_UNCONFIRMED)
+    return Verdict(DONE, None, warnings)
+
+
+def _row_by_key(doc: Doc, dtl_key: Any) -> Optional[Doc]:
+    for row in doc.get("Details") or []:
+        if row.get("DtlKey") == dtl_key:
+            return row
+    return None
+
+
+def _drifted(before: Doc, after: Doc, skip_header: Sequence[str], skip_rows: Sequence[Any]) -> List[str]:
+    out: List[str] = []
+    for key in _COMPARE_HEADER:
+        if key in before and key not in skip_header and not _same(before.get(key), after.get(key)):
+            out.append(key)
+    for row in before.get("Details") or []:
+        if row.get("DtlKey") in skip_rows:
+            continue
+        now = _row_by_key(after, row.get("DtlKey"))
+        if now is None:
+            out.append(f"Details[{row.get('DtlKey')}]")
+            continue
+        for key in _COMPARE_LINE:
+            if key in row and not _same(row.get(key), now.get(key)):
+                out.append(f"Details[{row.get('DtlKey')}].{key}")
+    return out
+
+
+def verify_edit(
+    kind_name: str,
+    before: Doc,
+    header_changes: Mapping[str, Any],
+    line_changes: Sequence[Mapping[str, Any]],
+    after: Doc,
+) -> List[str]:
+    """Names of every field AutoCount ignored or altered unasked; empty = clean."""
+    kind_of(kind_name)
+    out: List[str] = [k for k, v in header_changes.items() if not _same(after.get(k), v)]
+    touched: List[Any] = []
+    for change in line_changes:
+        dtl = change.get("DtlKey")
+        touched.append(dtl)
+        row = _row_by_key(after, dtl)
+        if row is None:
+            out.append(f"Details[{dtl}]")
+            continue
+        out.extend(f"Details[{dtl}].{k}" for k, v in change.items() if k != "DtlKey" and not _same(row.get(k), v))
+        original = _row_by_key(before, dtl) or {}
+        out.extend(
+            f"Details[{dtl}].{k}"
+            for k in _COMPARE_LINE
+            if k in original and k not in change and not _same(original.get(k), row.get(k))
+        )
+    out.extend(_drifted(before, after, list(header_changes), touched))
+    return out
+
+
+def verify_delete_line(kind_name: str, before: Doc, dtl_key: int, after: Doc) -> Verdict:
+    kind_of(kind_name)
+    if _row_by_key(after, dtl_key) is not None:
+        return Verdict(MISMATCH, "LINE_NOT_DELETED")
+    if _drifted(before, after, (), [dtl_key]):
+        return Verdict(MISMATCH, "COLLATERAL_CHANGE")
+    return Verdict(DONE)
+
+
+def verify_cancel(kind_name: str, after: Doc) -> Verdict:
+    kind_of(kind_name)
+    if after.get("Cancelled") == "T":
+        return Verdict(DONE)
+    return Verdict(MISMATCH, "CANCEL_IGNORED")
