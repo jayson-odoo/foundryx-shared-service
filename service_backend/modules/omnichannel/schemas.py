@@ -1578,6 +1578,16 @@ class ContactReadResponse(ApiModel):
     receipts: List[ReadReceiptItem]
 
 
+class ContactEraseResponse(ApiModel):
+    """What an erase removed (plan 56 C): `messages` counts the contact's
+    messages (notes included), `files` the stored files."""
+
+    contactId: str
+    erasedAt: datetime
+    messages: int
+    files: int
+
+
 # ── respond.io-parity response shapes (public gateway) ───────────────────────
 # These deliberately do NOT inherit ApiModel: they mirror respond.io's documented
 # JSON exactly - snake_case where respond.io uses it (``custom_fields``,

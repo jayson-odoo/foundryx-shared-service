@@ -28,6 +28,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
+from app.dependencies import require_permission
+from app.models.user import User
 from app.services.status_machine import (
     TransitionConditionsNotMet,
     TransitionForbidden,
@@ -43,6 +45,7 @@ from ..embed_auth import (
 )
 from ..schemas import (
     CloseThreadRequest,
+    ContactEraseResponse,
     ConversationEventListResponse,
     LifecycleMoveOption,
     LifecycleMoveRequest,
@@ -57,6 +60,7 @@ from ..schemas import (
     ThreadPatch,
 )
 from ..services import event_service
+from ..services.contact_erase_service import ContactEraseService, ContactNotFound
 from ..services.close_reason_service import CloseReasonInactive, CloseReasonNotFound
 from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
@@ -857,6 +861,24 @@ def react_to_message(
     except SendRejected as exc:
         raise HTTPException(status_code=422, detail=exc.message)
     return ReactionResult(**result)
+
+
+@router.delete("/{contact_id}", response_model=ContactEraseResponse)
+def erase_contact(
+    contact_id: str,
+    current_user: User = Depends(require_permission("contacts.erase")),
+    db: Session = Depends(get_db),
+) -> ContactEraseResponse:
+    """Erase one contact for good (plan 56 C, PDPA). A native user spans the
+    tenant; another tenant's contact and an unknown id answer the same 404."""
+    try:
+        result = ContactEraseService(db).erase_in_tenant(current_user.tenant_id, contact_id)
+    except ContactNotFound:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return ContactEraseResponse(
+        contactId=result.contact_id, erasedAt=result.erased_at,
+        messages=result.messages, files=result.files,
+    )
 
 
 class NoteRequest(BaseModel):

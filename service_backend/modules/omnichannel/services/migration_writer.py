@@ -51,6 +51,8 @@ from .migration_media import MediaFetchResult
 logger = logging.getLogger("foundryx.omnichannel.migration")
 
 ENTITY_CONTACT = "contact"
+# The erase keeps one ref per erased contact under this type (plan 56 C).
+ENTITY_CONTACT_ERASED = "contact_erased"
 ENTITY_IDENTITY = "identity"
 ENTITY_MESSAGE = "message"
 # S4 additions (AC-MIG-41/44) - `event` is keyed PER CONTACT (one ref covers
@@ -92,6 +94,8 @@ class ContactWriteResult:
     assignee_unmatched: bool = False
     lifecycle_unmapped: bool = False
     warnings: List[str] = dataclass_field(default_factory=list)
+    # True when the contact was erased here earlier: nothing is written (plan 56 C).
+    skipped: bool = False
 
 
 def _slugify_key(name: str, taken: set) -> str:
@@ -535,7 +539,20 @@ class MigrationWriter:
                 return contact, None
         return None, None
 
+    def _is_erased(self, source: SourceContact) -> bool:
+        """True when this source contact id was erased from here (tombstone ref,
+        plan 56 C): the erase deleted the phone and email, so the id is the only
+        key that still names it."""
+        return bool(
+            self.refs.local_for_one(
+                self.tenant_id, self.workspace_id, self.source, ENTITY_CONTACT_ERASED, str(source.id)
+            )
+        )
+
     def write_contact(self, source: SourceContact) -> ContactWriteResult:
+        if self._is_erased(source):
+            label = " ".join(p for p in (source.firstName, source.lastName) if p) or f"contact {source.id}"
+            return ContactWriteResult(kind="skipped", contact_id="", source_label=label, skipped=True)
         contact, existing_ref = self._find_existing(source)
         kind = "update" if contact is not None else "create"
         source_label = " ".join(p for p in (source.firstName, source.lastName) if p) or (

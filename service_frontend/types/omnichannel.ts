@@ -625,6 +625,7 @@ export interface ThreadListQuery {
 /** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */
 export type ConversationSocketEvent =
   | { type: 'message.created'; message: ConversationMessage; thread: ConversationThread }
+  | { type: 'contact.erased'; contactId: string }
   | { type: 'message.status'; messageId: string; contactId: string; deliveryStatus: DeliveryStatus; errorMessage?: string }
   | { type: 'contact.updated'; thread: ConversationThread }
   | {

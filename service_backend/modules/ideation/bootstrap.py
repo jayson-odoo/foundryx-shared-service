@@ -33,9 +33,21 @@ COMMENT_PERMISSION = "ideation.ideas.comment"
 def register_capabilities() -> None:
     """Boot-time capability registration (plan sprint-3/10 D5). Idempotent.
 
-    Ideation provides no capabilities yet (it consumes omnichannel's
-    ``messaging.send@1`` for submitter notifications - later slice)."""
-    return None
+    Ideation provides ``contact.erase_cleanup@1``: when omnichannel erases a
+    contact, the idea's submitter link is cleared (the idea stays). It consumes
+    omnichannel's ``messaging.send@1`` for submitter notifications."""
+    from app.module_platform import CapabilityDef, register_capability
+
+    from .services.contact_cleanup import detach_submitter
+
+    register_capability(
+        CapabilityDef(
+            key="contact.erase_cleanup",
+            version=1,
+            provider_module=MODULE_NAME,
+            handler=detach_submitter,
+        )
+    )
 
 
 def register_engine_entities() -> None:

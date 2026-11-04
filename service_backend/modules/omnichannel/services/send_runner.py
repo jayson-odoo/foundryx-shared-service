@@ -506,10 +506,17 @@ def _run_send(
                 # agent playback + the media endpoint serve the correct type.
                 from app.services.storage import storage_for_tenant
 
-                row.media_key = storage_for_tenant(db, row.tenant_id).save(
-                    f"omnichannel/{row.tenant_id}/voice", content, mime
-                )
+                store = storage_for_tenant(db, row.tenant_id)
+                original_key = row.media_key
+                row.media_key = store.save(f"omnichannel/{row.tenant_id}/voice", content, mime)
                 row.media_mime = mime
+                # The original upload is no longer reachable from the row: delete
+                # it now so nothing is left behind (plan 56 C, AC-56-43).
+                if original_key and original_key != row.media_key:
+                    try:
+                        store.delete(original_key)
+                    except Exception:  # noqa: BLE001 - a leftover file never fails the send
+                        logger.warning("original voice upload of message %s could not be deleted", row.id)
             media_id = adapter.upload_media(credentials, phone_id, content, mime)
             result = adapter.send(
                 credentials,
