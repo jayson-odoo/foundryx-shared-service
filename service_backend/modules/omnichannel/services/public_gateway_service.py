@@ -989,16 +989,31 @@ class PublicGatewayService:
                     )
                 return claimed, True  # completed → replay the stored id
 
+        self.messages.stored_message_id = None
         try:
             message_id = self._do_send(tenant_id, workspace_id, key_id, req)
         except Exception:
-            if reservation is not None and reservation.existing is None:
-                store.release(workspace_id, idempotency_key, reservation.token)  # let a retry re-claim
+            self._settle_reservation_on_error(store, workspace_id, idempotency_key, reservation)
             raise
 
         if reservation is not None and reservation.existing is None:
             store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
         return message_id, False
+
+    def _settle_reservation_on_error(
+        self, store, workspace_id: str, idempotency_key: Optional[str], reservation
+    ) -> None:
+        """A send failed. Before the message row was committed the key is
+        released so a retry can re-claim it; once the row is stored the
+        reservation is finalized with its id, so a same-key retry replays that
+        message instead of sending a second one."""
+        if reservation is None or reservation.existing is not None:
+            return
+        stored_id = self.messages.stored_message_id
+        if stored_id:
+            store.finalize(workspace_id, idempotency_key, stored_id, reservation.token)
+        else:
+            store.release(workspace_id, idempotency_key, reservation.token)
 
     def _do_send(
         self, tenant_id: str, workspace_id: str, key_id: str, req: PublicSendRequest
@@ -1333,6 +1348,7 @@ class PublicGatewayService:
                         "A request with this Idempotency-Key is still being processed.",
                     )
                 return claimed, True
+        self.messages.stored_message_id = None
         try:
             # After the replay check, as the JSON path does; a refusal releases the key.
             channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
@@ -1348,8 +1364,7 @@ class PublicGatewayService:
                 channel=channel,
             )
         except Exception:
-            if reservation is not None and reservation.existing is None:
-                store.release(workspace_id, idempotency_key, reservation.token)
+            self._settle_reservation_on_error(store, workspace_id, idempotency_key, reservation)
             raise
         if reservation is not None and reservation.existing is None:
             store.finalize(workspace_id, idempotency_key, message_id, reservation.token)

@@ -11,6 +11,7 @@
 > | Date | Change |
 > |----|----|
 > | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
+> | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
 > | **2026-11-05** | **Provider message id** (sections 9.1 and 9.2): `externalMessageId` is `null`, never an empty string, when the channel accepted a send without returning an id. |
 > | **2026-11-04** | **Erase a contact** (sections 6a, 7, 10). New `DELETE /contacts/{identifier}` erases one contact of the key's workspace with its messages and files, and answers what was erased. New opt-in webhook event contact.erased tells your endpoints. A later message from the same number starts a new contact. |
 > | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
@@ -140,7 +141,7 @@ Each API key is limited to **10 requests in progress at once** and **600 request
 { "error": { "code": "rate_limited", "message": "Too many requests for this key." } }
 ```
 
-The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (a send is safe to retry with the same `Idempotency-Key`).
+The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned with `idempotencyReplay: true`, not sent again). A `503 busy_try_again` (§10) is retried the same way.
 
 The limits are per key. If your integration needs more, ask support to raise the limits for a key.
 
@@ -1322,6 +1323,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
 | `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
 | `meta_rate_limited` | 429 | Meta is rate limiting the channel for a call made inside your request: a read receipt (`POST /contacts/{id}/read`) or a reaction send. Nothing was stored for the reaction. The `Retry-After` header gives the seconds to wait (Meta's value when it sent one, never more than 600). Distinct from `rate_limited`, which is this API's own per-key limit. |
+| `busy_try_again` | 503 | This record is busy with another change, so the request waited too long. The request may or may not have been applied. Retry after the `Retry-After` header (seconds). For a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned (`202`, `idempotencyReplay: true`), not sent again. Body message: "This record is busy with another change. Please try again in a moment." |
 
 ### Meta rate limits on a send
 
