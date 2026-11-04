@@ -58,7 +58,7 @@ def _rows(session_factory):
         db.close()
 
 
-def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None):
+def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None, propagate=False):
     """Drive the app with a lazily produced body of `total` bytes in `chunk`
     pieces. `declared` is the Content-Length header (None = chunked, no header).
     Returns (status, json body or None, bytes the app pulled)."""
@@ -103,6 +103,8 @@ def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None)
     try:
         asyncio.run(app(scope, receive, send))
     except ClientDisconnect:
+        if propagate:
+            raise
         # the JSON send route reads the body itself and does not catch this; the
         # client already has its single 422, so only the answer is asserted
         pass
@@ -302,3 +304,15 @@ def test_refused_request_never_reaches_the_handler_and_is_answered_once(client, 
     assert starts == [422], f"exactly one response start expected, got {starts}"
     assert _rows(session_factory) == before
     assert idempotency.get_store()._memory == {}, "no idempotency record for a refused request"
+
+
+@pytest.mark.parametrize("which", [0, 4])
+def test_refused_oversize_request_ends_cleanly_on_the_server(client, session_factory, which):
+    hdr, cid, eid = _rig(client, session_factory, f"+6012000100{which}")
+    method, path = (_routes(cid, eid) + [("POST", f"{BASE}/messages")])[which]
+    starts = []
+    # no exception may escape the app call (propagate=True lets one through)
+    st, body, _pulled = _asgi(method, path, {**hdr, **JSON_CT}, total=2 * 1024 * 1024,
+                              declared=None, starts=starts, propagate=True)
+    assert starts == [422], starts
+    _assert_stream_refused(st, body, _pulled, CAP + CHUNK)
