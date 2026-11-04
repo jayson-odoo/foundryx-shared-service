@@ -165,3 +165,65 @@ def test_provider_test_treats_unset_version_as_2():
     )
     assert result.ok is False
     assert "1.4" in result.message
+
+
+def test_contract_1_still_pushes_a_linked_document_with_lines():
+    """The four linked documents send the vendor record as stored, and
+    ``product_code`` stays in their line SINK_FIELDS at every contract
+    major, so contract 1 strips nothing and the guard must not refuse them
+    (review finding, INGEST-LINE-DROP-GUARD)."""
+    from modules.autocount.canonical.documents import (
+        CanonicalCancelSalesOrder,
+        CanonicalLinkedDocumentLine,
+    )
+    from modules.autocount.canonical.documents import ENTITY_CANCEL_SALES_ORDER
+
+    seen: list = []
+    sink = SorentoSink(
+        base_url="http://crm", api_key="k" * 12, entity_type=ENTITY_CANCEL_SALES_ORDER,
+        transport=_ok_transport(seen), contract_version=1,
+    )
+    record = CanonicalCancelSalesOrder(
+        source_ref="db1:XS:1", doc_no="XS-1",
+        lines=[CanonicalLinkedDocumentLine(source_ref="db1:XS:1:1", product_code="A", qty=Decimal("1"))],
+    )
+    sink.write_batch([record], request_id="r1")
+    assert seen
+
+
+def test_contract_1_still_pushes_a_billing_document_with_lines():
+    """Billing lines carry their own wire shape (contract 2.6), independent
+    of the contract major."""
+    from modules.autocount.canonical.documents import (
+        CanonicalBillingDocumentLine,
+        CanonicalInvoice,
+    )
+    from modules.autocount.canonical.documents import ENTITY_INVOICE
+
+    seen: list = []
+    sink = SorentoSink(
+        base_url="http://crm", api_key="k" * 12, entity_type=ENTITY_INVOICE,
+        transport=_ok_transport(seen), contract_version=1,
+    )
+    record = CanonicalInvoice(
+        source_ref="db1:IV:1", doc_no="IV-1",
+        lines=[CanonicalBillingDocumentLine(source_ref="db1:IV:1:1", quantity=Decimal("1"))],
+    )
+    sink.write_batch([record], request_id="r1")
+    assert seen
+
+
+def test_contract_1_refuses_before_any_chunk_is_posted_concurrently(monkeypatch):
+    """With several chunks and concurrency > 1, a guarded document in a LATER
+    chunk must stop the push before ANY chunk is posted (an earlier chunk
+    must never be delivered and left unmarked)."""
+    seen: list = []
+    sink = SorentoSink(
+        base_url="http://crm", api_key="k" * 12, entity_type=ENTITY_SALES_ORDER,
+        transport=_ok_transport(seen), contract_version=1, batch_size=1,
+        concurrency_config="4",
+    )
+    header_only = CanonicalSalesOrder(source_ref="db1:0", so_number="SO-0", status="open")
+    with pytest.raises(SorentoSinkError):
+        sink.write_batch([header_only, _so()], request_id="r1")
+    assert seen == []

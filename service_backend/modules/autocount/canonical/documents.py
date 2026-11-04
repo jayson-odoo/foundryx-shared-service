@@ -771,6 +771,10 @@ class CanonicalLinkedDocument(CanonicalDocument):
     """Shared header of the four linked documents. ``sink_payload`` is the
     raw vendor-shaped record (see the section comment)."""
 
+    # The vendor-shaped record carries `product_code` in its line SINK_FIELDS
+    # at every contract major - contract 1 strips nothing here.
+    CONTRACT_1_STRIPS_LINES: ClassVar[bool] = False
+
     doc_no: Optional[str] = Field(None, max_length=100)
     doc_date: Optional[date] = None
     agent_code: Optional[str] = Field(None, max_length=100)

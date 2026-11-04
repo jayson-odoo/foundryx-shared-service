@@ -1529,6 +1529,10 @@ class SorentoSink:
         future, same as before.
         """
         record_list = list(records)
+        # INGEST-LINE-DROP-GUARD - refuse the WHOLE batch before any POST, so
+        # a concurrent push can never deliver earlier chunks (unmarked) and
+        # then stop on a later one. `_to_records` re-checks per chunk.
+        self._refuse_contract_1_line_drop(record_list)
         chunks = [
             record_list[start : start + self.batch_size]
             for start in range(0, len(record_list), self.batch_size)
