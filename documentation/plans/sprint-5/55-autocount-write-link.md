@@ -139,6 +139,67 @@ docs pulled by `...byLastModified`. Local CRM with a fresh DB pointed at the lan
   Opening a live db needs a code change and review, never config.
 - Writes only through one client class; reads keep using the existing client.
 
+## 6a. Owner rulings (4 Nov, Step 1 card, all option (a))
+
+Q1 same qty, other location = edit the row's location, no split. Q2 q above the PO row's free qty =
+refuse (link a second PO row). Q3 an unlinked split row stays its own row, no merge. Q4 refuse any
+link change on a PO row an SPO row points at until the SPO row is unlinked explicitly. Q5 gateway
+routes + scripted db3 runner + test report; no SS screen; CRM Stock Debt is the entry (later lane).
+
+## 6b. Design (phase 1)
+
+New package `service_backend/modules/autocount/write_back/`:
+
+- `guard.py`: `WRITE_ALLOWED_BOOKS = frozenset({"db3"})`, `assert_write_allowed(base_url) -> book`.
+  Strict parse: https only, no query / fragment / params / encoded or dot segments; the last path
+  segment must equal an allowlisted book exactly. Called on EVERY write request, not only at init.
+- `client.py`: `AutoCountWriteClient` (POST / PUT only, JSON body, reuses the SSRF guard and redirect
+  ban of `http_client.py:74-85`). Never retries a write (a `DtlKey 0` row would be added twice).
+- `reader.py`: one-document GET by DocKey through `<doc>bydocdate?DocDate=` (filter by DocKey, refuse
+  0 or 2+ matches); `Details` -> `_lines` so the existing PO / SO mapping profiles read it
+  (`mapping.py:1222`, `:1234`). SPO = header `ShippingPO "T"`.
+- `payloads.py`: pure builders `build_link`, `build_unlink`, `build_spo_unlink` + `so_outstanding`;
+  `Decimal` math; stable refusal codes (`ITEM_MISMATCH`, `UOM_MISMATCH`, `QTY_INVALID`,
+  `QTY_ABOVE_FREE`, `QTY_ABOVE_OUTSTANDING`, `ROW_ALREADY_LINKED`, `ROW_NOT_LINKED`, `ROW_ON_SPO`,
+  `DOC_CANCELLED`, `DOC_KIND_MISMATCH`, `ROW_NOT_FOUND`).
+- `service.py`: `WriteBackService.link / unlink / spo_unlink`: company -> write connection -> guard ->
+  per-document busy check -> fresh GET (outside any DB transaction) -> stale check -> build -> PUT ->
+  GET back -> verify -> stage the read-back document in `ac_staged_record` through the company's PO /
+  SPO mapping (`sync.py:1213` `_stage_documents`) -> push through the Sorento sink. SO outstanding is
+  derived from the company's staged PO rows whose `FromSODtlKey` equals the SO row (db3 scale; live
+  scale is a follow-up unless AutoCount exposes transferred qty, AQ11).
+- `pull_docs.py`: day-range pull of PO / SPO / SO from `...byLastModified` (and `bydocdate` for the
+  first load) into `ac_staged_record` + sink, so a local SS and CRM hold db3 documents.
+
+Schema (module migration `0036_autocount_write_back`, schema `app_autocount`):
+- `ac_write_action`: id (uuid), tenant_id, company_id, action, doc_type, doc_key, dtl_key, outcome
+  (`done`, `refused`, `mismatch`, `pending_verification`, `vendor_error`), error_code, request_json
+  (sanitised body), response_status, response_json, before_json, after_json, key_id, created_at,
+  updated_at. Doubles as the test report source and the busy lock (one open action per document).
+- `ac_company.write_connection_id` nullable (null = writes disabled; backfill: null for every company).
+- `ac_pull_api_key.scopes` JSON (backfill `["pull"]` for every existing key; write routes need
+  `"write_back"`; issuing that scope needs `autocount.companies.manage`, so no new permission).
+
+Gateway (`routers/pull_v1.py`, public, `X-API-Key`, same company resolution as `/snapshots`):
+`POST /api/v1/autocount/po-links` (link), `POST /api/v1/autocount/po-links/unlink`,
+`POST /api/v1/autocount/spo-links/unlink`. Body carries `companyCode`, DocKey / DtlKey ids, qty,
+location, optional `expectedLastModified`; answer = outcome + read-back rows. Contract doc
+`55-autocount-write-link-contract.md` ships in the same change (guide-writer after review).
+
+## 6c. Slices (LEAD pattern: tester red first, one coder continued by message)
+
+| Slice | Scope | ACs |
+|---|---|---|
+| S1 | guard + write client | AC-55-01..05 |
+| S2 | payload builders + outstanding (pure) | AC-55-10..16 |
+| S3 | migration 0036, reader, service flow, action log, busy + stale, staging + push | AC-55-20..28 |
+| S4 | doc pull (db3 local load) + SO ref resolution | AC-55-30, 31 |
+| S5 | gateway routes + key scopes + company write connection | AC-55-40..45 |
+| S6 | db3 runner, live runs, AutoCount test report | AC-55-42, 50, 51 |
+
+Local resources: targeted pytest only (`-n 2` max); global guards `tests/test_schema_uuid_id_principle.py`
+and `tests/test_list_pagination_limit.py` after S3 and S5. Migration checked on a lane Postgres copy.
+
 ## 7. Test report for AutoCount
 
 `documentation/integrations/autocount/test-report-<date>.md`, one section per test id: purpose,
