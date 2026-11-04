@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-from modules.autocount.models import AcStagedRecord, AcWriteAction
+from modules.autocount.models import AcEntityConfig, AcStagedRecord, AcWriteAction
 
 OUTCOME_IN_FLIGHT = "in_flight"
 
@@ -72,4 +72,21 @@ class StagedDocRepository:
                 AcStagedRecord.op != "delete",
             )
             .all()
+        )
+
+
+class EntitySourceRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def source_impl(self, tenant_id: str, company_id: str, entity_type: str) -> Optional[str]:
+        """``source_impl`` of the company's entity config, or None when it has none."""
+        return (
+            self.db.query(AcEntityConfig.source_impl)
+            .filter(
+                AcEntityConfig.tenant_id == tenant_id,
+                AcEntityConfig.company_id == company_id,
+                AcEntityConfig.entity_type == entity_type,
+            )
+            .scalar()
         )

@@ -1771,3 +1771,86 @@ def resolve_preset_rows(
         return (http_preset.label, http_preset.rows) if http_preset else None
     document_preset = DOCUMENT_PRESETS.get(config.entity_type)
     return (document_preset.label, document_preset.header) if document_preset else None
+
+
+# ── plan 55: wrapper document preset fields (IN MEMORY, never seeded) ─────────
+# A document read back through the AutoCount wrapper (write-back, day pull) has
+# CODE-keyed fields (ItemCode, Location, CreditorCode), not the SQL AutoKey
+# aliases the presets above map. These field tuples are mapped in memory
+# (``write_back.doc_mapping``) through the unchanged ``MappingEngine``; they are
+# deliberately NOT in ``HTTP_PRESETS`` and are never written to
+# ``ac_field_mapping``, so the task UI and its parity are untouched. The
+# wrapper-only source keys ``FromSODocKey`` / ``FromPODocKey`` are resolved
+# from staged documents before mapping.
+
+
+@dataclass(frozen=True)
+class WrapperPreset:
+    header: Tuple[PresetField, ...]
+    line: Tuple[PresetField, ...]
+
+
+_WRAPPER_LINE_COMMON: Tuple[PresetField, ...] = (
+    PresetField("DtlKey", "source_ref", "string", required=True),
+    PresetField("ItemCode", "product_ref", "ref_product", required=True),
+    PresetField("Location", "warehouse_ref", "ref_warehouse"),
+    PresetField("Qty", "qty_ordered", "decimal", required=True),
+    PresetField("UOM", "uom", "string"),
+    PresetField("ItemCode", "product_code", "string"),
+    PresetField("Description", "product_name", "string"),
+    PresetField("Location", "warehouse_code", "string"),
+    PresetField("Seq", "line_number", "string"),
+)
+_WRAPPER_PO_LINE_LINKS: Tuple[PresetField, ...] = (
+    PresetField("UnitPrice", "unit_cost", "decimal"),
+    PresetField("DeliveryDate", "expected_date", "date"),
+    PresetField("FromSODocKey", "from_so_doc_key", "int"),
+    PresetField("FromSODtlKey", "from_so_line_key", "int"),
+    PresetField("FromSODocList", "from_so_numbers", "string_list"),
+    PresetField("FromPODocKey", "from_po_doc_key", "int"),
+    PresetField("FromPODtlKey", "from_po_line_key", "int"),
+    PresetField("FromPODocNo", "from_po_number", "string"),
+)
+_WRAPPER_PO_HEADER: Tuple[PresetField, ...] = (
+    PresetField("CreditorCode", "supplier_ref", "ref_supplier"),
+    PresetField("DocDate", "issue_date", "date"),
+    PresetField("CurrencyCode", "currency", "string"),
+    PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
+    PresetField("CreditorCode", "supplier_code", "string"),
+    PresetField("CreditorName", "supplier_name", "string"),
+    PresetField("PurchaseAgent", "agent_code", "string"),
+)
+
+WRAPPER_PO = WrapperPreset(
+    header=(PresetField("DocNo", "po_number", "string", required=True),) + _WRAPPER_PO_HEADER,
+    line=_WRAPPER_LINE_COMMON + _WRAPPER_PO_LINE_LINKS,
+)
+WRAPPER_SPO = WrapperPreset(
+    header=(
+        (PresetField("DocNo", "spo_number", "string", required=True),)
+        + _WRAPPER_PO_HEADER
+        + (PresetField("Ref", "container_number", "string"),)
+    ),
+    line=_WRAPPER_LINE_COMMON + _WRAPPER_PO_LINE_LINKS,
+)
+WRAPPER_SO = WrapperPreset(
+    header=(
+        PresetField("DocNo", "so_number", "string", required=True),
+        PresetField("DebtorCode", "customer_ref", "ref_customer"),
+        PresetField("SalesAgent", "sales_agent_ref", "ref_sales_agent"),
+        PresetField("DocDate", "doc_date", "date"),
+        PresetField("Note", "internal_note", "string"),
+        PresetField("Ref", "ref", "string"),
+        PresetField("ShipInfo", "ship_info", "string"),
+        PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
+        PresetField("DebtorCode", "customer_code", "string"),
+        PresetField("DebtorName", "customer_name", "string"),
+    ),
+    line=_WRAPPER_LINE_COMMON
+    + (
+        PresetField("UnitPrice", "unit_price", "decimal"),
+        PresetField("SubTotal", "line_total", "decimal"),
+        PresetField("DeliveryDate", "required_date", "date"),
+        PresetField("FurtherDescription", "line_remark", "string"),
+    ),
+)

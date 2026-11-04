@@ -2,7 +2,7 @@
 
 company -> write connection -> db3 guard -> per-document busy check -> staged
 DocDate -> fresh GET -> stale check -> derive outstanding / SPO reference ->
-S2 builder -> PUT -> GET back -> verify -> stage the raw read-back.
+S2 builder -> PUT -> GET back -> verify -> stage the read-back and push once.
 
 AC-55-27: no AutoCount call is made while the session holds a transaction; the
 ``in_flight`` action row is committed before the PUT, and every outcome is
@@ -25,7 +25,6 @@ from modules.autocount.canonical.documents import (
     ENTITY_SHIPPING_ORDER,
 )
 from modules.autocount.models import (
-    STAGED,
     AcCompany,
     AcWriteAction,
 )
@@ -37,6 +36,7 @@ from modules.autocount.write_back.client import (
     WriteTransportError,
 )
 from modules.autocount.write_back.constants import EDIT_PO_PATH
+from modules.autocount.write_back.staging import DocStager
 from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
@@ -185,7 +185,7 @@ class WriteBackService:
         *,
         client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
         reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
-        sink_factory: Optional[Callable[..., Any]] = None,  # S4 (post-write push)
+        sink_factory: Optional[Callable[..., Any]] = None,
     ) -> None:
         self.db = db
         self.actions = WriteActionRepository(db)
@@ -443,38 +443,11 @@ class WriteBackService:
         if not verify_readback(before, after, body):
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
         result = self._finish(row, OUTCOME_DONE, document=after)
-        self._stage(company, plan.kind[1], after)
+        self._stage(company, plan.kind[0], after)
         return result
 
-    # ── staging ──────────────────────────────────────────────────────────────
-    # S3 stages the RAW read-back only (canonical None, status STAGED); the
-    # canonical mapping and the push of a wrapper document are S4.
+    # ── staging + push ───────────────────────────────────────────────────────
 
-    def _stage(self, company: AcCompany, entity_type: str, doc: Doc) -> None:
-        """Overwrite the document's staged row with the read-back. The write
-        already happened and verified, so a staging fault never changes the
-        action outcome."""
-        try:
-            self._stage_readback(company, entity_type, doc)
-            self.db.commit()
-        except Exception:  # noqa: BLE001 - the verified write must stand
-            self.db.rollback()
-            logger.exception("autocount write-back staging failed")
-
-    def _stage_readback(self, company: AcCompany, entity_type: str, doc: Doc) -> None:
-        """Details become ``_lines``; the row is updated in place (never a second row)."""
-        from modules.autocount.sync import json_safe_row
-
-        ref = f"{company.database_name}:{doc.get('DocKey')}"
-        row = self.staged.newest(company.tenant_id, company.id, entity_type, ref)
-        if row is None:
-            return
-        raw = {k: v for k, v in doc.items() if k != "Details"}
-        raw["_lines"] = list(doc.get("Details") or [])
-        row.raw_json = json_safe_row(raw)
-        row.canonical_json = None
-        row.diff_json = None
-        row.errors_json = None
-        row.error = None
-        row.status = STAGED
-        row.pushed_at = None
+    def _stage(self, company: AcCompany, kind: str, doc: Doc) -> None:
+        """Stage the verified read-back and push it once (never changes the outcome)."""
+        DocStager(self.db, self._sink_factory).stage_and_push(company, doc, kind)

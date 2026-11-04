@@ -15,7 +15,12 @@ from typing import Dict, List, Optional
 import httpx
 
 from modules.autocount.http_client import autocount_guarded_client
-from modules.autocount.write_back.constants import PO_BY_DOC_DATE_PATH, SO_BY_DOC_DATE_PATH
+from modules.autocount.write_back.constants import (
+    PO_BY_DOC_DATE_PATH,
+    PO_BY_LAST_MODIFIED_PATH,
+    SO_BY_DOC_DATE_PATH,
+    SO_BY_LAST_MODIFIED_PATH,
+)
 
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
 DOC_AMBIGUOUS = "DOC_AMBIGUOUS"
@@ -23,6 +28,11 @@ READ_FAILED = "READ_FAILED"
 
 Document = Dict[str, object]
 
+_LAST_MODIFIED_PATHS = {
+    "PO": PO_BY_LAST_MODIFIED_PATH,
+    "SPO": PO_BY_LAST_MODIFIED_PATH,
+    "SO": SO_BY_LAST_MODIFIED_PATH,
+}
 _PATHS = {"PO": PO_BY_DOC_DATE_PATH, "SPO": PO_BY_DOC_DATE_PATH, "SO": SO_BY_DOC_DATE_PATH}
 
 
@@ -53,14 +63,13 @@ class AutoCountDocReader:
             )
         return autocount_guarded_client(self._timeout)
 
-    def _fetch_day(self, kind: str, doc_date: date) -> List[Document]:
-        path = _PATHS.get(kind)
+    def _fetch(self, path: Optional[str], params: Dict[str, str]) -> List[Document]:
         if path is None:
             raise DocReadError(READ_FAILED)
         url = self.base_url.rstrip("/") + path
         try:
             with self._http() as http:
-                response = http.get(url, params={"DocDate": doc_date.strftime("%Y%m%d")})
+                response = http.get(url, params=params)
             if not response.is_success:
                 raise DocReadError(READ_FAILED)
             body = response.json()
@@ -69,6 +78,18 @@ class AutoCountDocReader:
         if not isinstance(body, list):
             raise DocReadError(READ_FAILED)
         return [d for d in body if isinstance(d, dict)]
+
+    def _fetch_day(self, kind: str, doc_date: date) -> List[Document]:
+        return self._fetch(_PATHS.get(kind), {"DocDate": doc_date.strftime("%Y%m%d")})
+
+    def list_day(self, kind: str, day: date, *, by_last_modified: bool) -> List[Document]:
+        """Every ``kind`` document of one day, by ``lastModified`` or ``DocDate``
+        (a PO answer also carries SPO documents)."""
+        if by_last_modified:
+            return self._fetch(
+                _LAST_MODIFIED_PATHS.get(kind), {"lastModified": day.strftime("%Y%m%d")}
+            )
+        return self._fetch_day(kind, day)
 
     def get_document(self, kind: str, doc_key: int, doc_date: date) -> Document:
         """The single document of ``kind`` (PO | SPO | SO) with ``doc_key`` dated ``doc_date``."""
