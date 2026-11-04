@@ -2,7 +2,7 @@
 
 4 Nov 2026. Owner scope change (17:35): AutoCount says a line's link can never be edited after the line
 exists; the way is delete the line and add a new one. AutoCount is preparing a delete API. Card 1 rulings
-folded in: Q1 (a) SS only; Q2 build rec (a) with (b) as a one-line switch (owner still to confirm);
+folded in: Q1 (a) SS only; Q2 (a) (owner, 4 Nov) with (b) as a one-line switch, default (a);
 Q3 (a); Q4 (a); Q5 (a). Rows tagged [probe] are adjusted by the recorded db3 probes
 (`57-autocount-write-qtso.md` section 4); rows tagged [AQn] wait for AutoCount
 (`documentation/integrations/autocount/write-api-questions-2026-11-04.md`). Plan 55 criteria stay in

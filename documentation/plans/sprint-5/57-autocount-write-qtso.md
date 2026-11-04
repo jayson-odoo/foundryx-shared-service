@@ -56,8 +56,8 @@ Known behaviour (phase 1 test report `documentation/integrations/autocount/test-
 
 ## 3. Owner rulings (card 1, 4 Nov)
 
-Q1 (a) SS only in this lane; CRM buttons and trigger points belong to later CRM lanes' cards. Q2 (owner
-to confirm) build rec (a): fully received `ROW_RECEIVED`; partially received = cut the row to the
+Q1 (a) SS only in this lane; CRM buttons and trigger points belong to later CRM lanes' cards. Q2 (a)
+(owner, 4 Nov): fully received `ROW_RECEIVED`; partially received = cut the row to the
 received qty and add the open remainder as the new row; unknown received qty `TRANSFER_STATE_UNKNOWN`;
 (b) "refuse any receipt" kept as a one-line switch. Q3 (a) old -> new DtlKey in the answer AND
 `replacesLineRef` on the Sorento sink line. Q4 (a) delete-document primitive flag-off, no route or
