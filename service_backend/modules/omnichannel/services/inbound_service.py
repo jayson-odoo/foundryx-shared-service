@@ -60,6 +60,44 @@ def _payload_entry_id(payload: Dict[str, Any]) -> Optional[str]:
         pass
     return None
 
+def _routed_parts(payload: Dict[str, Any]) -> List[Tuple[Optional[str], Dict[str, Any]]]:
+    """Split a webhook POST into ``(identifier, sub_payload)`` parts, each with
+    the original ``object``/``entry``/``changes`` shape so the adapter parses it
+    unchanged. Meta may batch several entries/changes naming different
+    numbers/pages; each part is routed by its own identifier (WhatsApp change
+    ``metadata.phone_number_id``; Messenger/Instagram entry id). A part with no
+    identifier (e.g. template events) keeps the URL-channel routing."""
+    entries = payload.get("entry")
+    if not isinstance(entries, list) or not entries:
+        return [(None, payload)]
+    parts: List[Tuple[Optional[str], Dict[str, Any]]] = []
+    is_page = payload.get("object") in ("page", "instagram")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if is_page:
+            eid = entry.get("id")
+            parts.append((str(eid) if eid else None, {**payload, "entry": [entry]}))
+            continue
+        changes = entry.get("changes")
+        if not isinstance(changes, list) or not changes:
+            parts.append((None, {**payload, "entry": [entry]}))
+            continue
+        for change in changes:
+            meta = (change.get("value") or {}).get("metadata") or {} if isinstance(change, dict) else {}
+            pnid = meta.get("phone_number_id") if isinstance(meta, dict) else None
+            parts.append((
+                str(pnid) if pnid else None,
+                {**payload, "entry": [{**entry, "changes": [change]}]},
+            ))
+    return parts or [(None, payload)]
+
+
+def _owns_identifier(channel: Channel, identifier: str) -> bool:
+    """A part naming a number/page only routes to the channel that owns it."""
+    return identifier in (channel.phone_number_id, channel.external_account_id)
+
+
 # Delivery receipts only ever move forward (a late DELIVERED after READ is
 # dropped); FAILED always applies.
 _STATUS_RANK = {"SENT": 0, "DELIVERED": 1, "READ": 2}
@@ -78,22 +116,34 @@ class InboundService:
         number) - falling back to the URL id for the single-channel/legacy case.
         This is what makes multi-number correct: number #2's inbound is attributed
         to number #2's channel, not the URL's."""
-        channel = self._resolve_channel(channel_id, payload)
-        if channel is None:
-            logger.warning("webhook for unknown channel %s dropped", channel_id)
-            return {"messages": 0, "statuses": 0, "skipped": 0}
-
-        # The webhook router is mounted public (no require_module gate) - re-apply
-        # the module-active check here so a tenant that uninstalled/deactivated
-        # omnichannel doesn't get resurrected inbox rows from late webhooks.
         from app.repositories.module_repository import ModuleRepository
 
-        if not ModuleRepository(self.db).is_active(channel.tenant_id, "omnichannel"):
-            logger.info("webhook for inactive-module tenant %s dropped", channel.tenant_id)
-            return {"messages": 0, "statuses": 0, "skipped": 0}
-
-        adapter = get_adapter(channel.channel_type)
         counters = {"messages": 0, "statuses": 0, "skipped": 0}
+        parts = _routed_parts(payload)
+        for identifier, part in parts:
+            channel = self._resolve_channel(channel_id, part)
+            # A lone part keeps the URL-id last-resort fallback; in a batched
+            # POST a part naming a number/page nobody owns is dropped on its own.
+            if channel is None or (
+                len(parts) > 1 and identifier and not _owns_identifier(channel, identifier)
+            ):
+                logger.warning("webhook part for unknown channel %s dropped", channel_id)
+                continue
+
+            # The webhook router is mounted public (no require_module gate) -
+            # re-apply the module-active check per resolved channel so a tenant
+            # that uninstalled/deactivated omnichannel doesn't get resurrected
+            # inbox rows from late webhooks.
+            if not ModuleRepository(self.db).is_active(channel.tenant_id, "omnichannel"):
+                logger.info("webhook for inactive-module tenant %s dropped", channel.tenant_id)
+                continue
+
+            self._handle_part(channel, part, counters)
+        return counters
+
+    def _handle_part(self, channel: Channel, payload: Dict[str, Any], counters: Dict[str, int]) -> None:
+        """Handle the events of one routed part under its own channel."""
+        adapter = get_adapter(channel.channel_type)
         for event in adapter.parse_inbound(payload):
             if event["kind"] == "message":
                 if self._handle_message(channel, event):
@@ -119,7 +169,6 @@ class InboundService:
                     counters["templates"] = counters.get("templates", 0) + 1
                 else:
                     counters["skipped"] += 1
-        return counters
 
     def _resolve_channel(self, channel_id: str, payload: Dict[str, Any]) -> Optional[Channel]:
         """Dispatch on the payload's ``object`` field (D-A7-2): ``page``/
