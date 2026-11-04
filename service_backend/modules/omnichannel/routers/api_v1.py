@@ -76,17 +76,18 @@ router = APIRouter()
 _JSON_BODY_CAP = 256 * 1024
 
 
+_MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+
+
 async def _read_capped_body(request: Request) -> bytes:
     """Bytes of the request body, refused once over the cap (counted as read, so a
     chunked body with no Content-Length is capped too). No content-type rule."""
-    body = b""
+    body = bytearray()
     async for chunk in request.stream():
         body += chunk
         if len(body) > _JSON_BODY_CAP:
             raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", "Request body is too large.")
-    return body
-
-_MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+    return bytes(body)
 
 
 def wire_format(
@@ -169,7 +170,7 @@ async def send_message(
     else:
         try:
             body = json.loads(await _read_capped_body(request))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):  # nesting too deep to parse is not JSON we accept
             raise ApiError(422, "invalid_request", "Request body must be valid JSON.")
         if not isinstance(body, dict):
             raise RequestValidationError(
