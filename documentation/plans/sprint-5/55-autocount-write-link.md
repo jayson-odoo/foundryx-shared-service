@@ -182,8 +182,9 @@ Schema (module migration `0036_autocount_write_back`, schema `app_autocount`):
 
 Gateway (`routers/pull_v1.py`, public, `X-API-Key`, same company resolution as `/snapshots`):
 `POST /api/v1/autocount/po-links` (link), `POST /api/v1/autocount/po-links/unlink`,
-`POST /api/v1/autocount/spo-links/unlink`. Body carries `companyCode`, DocKey / DtlKey ids, qty,
-location, optional `expectedLastModified`; answer = outcome + read-back rows. Contract doc
+`POST /api/v1/autocount/spo-links/unlink`. Body carries `companyCode`, DocKey / DtlKey ids, qty and
+an optional `expectedLastModified` (no location field: the PO row takes the SO row's location, Q1);
+answer = `{actionId, outcome, errorCode, document}`, `document` = the read-back PO / SPO on `done`. Contract doc
 `55-autocount-write-link-contract.md` ships in the same change (guide-writer after review).
 
 ## 6c. Slices (LEAD pattern: tester red first, one coder continued by message)
