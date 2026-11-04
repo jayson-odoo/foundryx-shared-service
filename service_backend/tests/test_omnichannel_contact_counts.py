@@ -120,6 +120,46 @@ def test_the_list_counts_with_the_same_number_of_statements_for_3_and_10_contact
     )
 
 
+def _contact_with_preview(rig, phone, *, with_channel):
+    """One contact whose ONLY non-SYSTEM message (so its list preview) carries a channel id or not."""
+    from datetime import datetime, timezone
+
+    cid = _contact(rig.sf, rig.ws, phone)
+    db = rig.sf()
+    try:
+        db.add(ConversationMessage(tenant_id=DEFAULT_TENANT_ID, contact_id=cid,
+                                   channel_id=rig.channel if with_channel else None,
+                                   sender_type="CONTACT", message_type="TEXT", body="hello",
+                                   created_at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)))
+        db.commit()
+    finally:
+        db.close()
+    return cid
+
+
+def _statements_for_page(client, rig, run):
+    assert len(run()) >= 1  # warm
+    return [_shape(x) for x in _count_statements(rig.sf, run)]
+
+
+def test_the_statement_count_compares_pages_with_the_same_preview_shape(client, rig):
+    """Pins the data-conditional channel lookup: the list resolves channel types and identity
+    windows only when some preview carries a channel id. A 3-contact page with no channel-bearing
+    preview and a 10-contact page with some must not be compared as if only the row count differed."""
+    for i in range(3):
+        _contact_with_preview(rig, f"+6010000072{i}", with_channel=False)
+    run = _measured_list_request(client, rig)
+    n3 = _statements_for_page(client, rig, run)
+    for i in range(3, 10):
+        _contact_with_preview(rig, f"+6010000072{i}", with_channel=i % 2 == 0)
+    assert len(run()) == 10
+    n10 = _statements_for_page(client, rig, run)
+    more, fewer = Counter(n10) - Counter(n3), Counter(n3) - Counter(n10)
+    assert len(n10) == len(n3), (
+        f"statements grew with the page: {len(n3)} -> {len(n10)}; extra in 10: {dict(more)}; extra in 3: {dict(fewer)}"
+    )
+
+
 def test_the_measured_window_holds_only_the_list_request(client, rig):
     """The statement count must measure the list request alone: the login (throttle
     bookkeeping + the sign-in write) must not run inside the measured closure."""
