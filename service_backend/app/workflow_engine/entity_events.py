@@ -124,7 +124,13 @@ def set_origin(
 
 
 def build_shortcut_event(
-    db: Session, entity_type: str, record: Any, *, tenant_id: str, actor: Optional[Any]
+    db: Session,
+    entity_type: str,
+    record: Any,
+    *,
+    tenant_id: str,
+    actor: Optional[Any],
+    actor_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the event-bus envelope for a shortcut run (plan sprint-4/27,
     D-A3-10) - the SAME shape ``emit_entity_event`` buffers below, so it flows
@@ -143,6 +149,9 @@ def build_shortcut_event(
             "name": getattr(actor, "name", None) or getattr(actor, "email", "") or "",
             "email": getattr(actor, "email", "") or "",
         }
+    elif actor_id:
+        # A caller with no user (an API key): attribute the run to its id.
+        actor_dict = {"id": actor_id, "name": "API key", "email": ""}
     return {
         "entity_type": entity_type,
         "action": "shortcut",

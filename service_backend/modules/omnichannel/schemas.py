@@ -2367,3 +2367,10 @@ class PublicWorkflowActiveRequest(BaseModel):
 class PublicWorkflowRunRequest(BaseModel):
     contact: str = Field(min_length=1, max_length=200)
     inputs: Optional[Any] = None
+
+
+class PublicBusinessHoursResponse(ApiModel):
+    workspaceId: str
+    timezone: Optional[str] = None
+    windows: Dict[str, Any]
+    source: str  # workspace | tenant | none

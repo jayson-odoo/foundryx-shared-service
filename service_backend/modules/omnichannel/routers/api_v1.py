@@ -28,6 +28,8 @@ from ..schemas import (
     PublicContactUpdateRequest,
     PublicSendRequest,
     PublicSendResponse,
+    BusinessHoursUpdate,
+    PublicBusinessHoursResponse,
     PublicCatalogResponse,
     PublicValidateRequest,
     PublicWorkflowActiveRequest,
@@ -56,7 +58,8 @@ from ..schemas import (
     WebhookEndpointUpdateRequest,
     WebhookSecretResponse,
 )
-from ..services.key_workflows import KeyWorkflowService
+from ..services.business_hours import BusinessHoursService
+from ..services.key_workflows import KeyWorkflowService, put_business_hours
 from ..services.media_pipeline import META_CEILINGS
 from ..services.public_gateway_service import (
     FORMAT_GUIDE,
@@ -851,3 +854,35 @@ def archive_workflow(
 ) -> Response:
     KeyWorkflowService(db).archive(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Business hours (plan 38 gap 7): the key's own workspace only ─────────────
+@router.get("/business-hours", response_model=PublicBusinessHoursResponse)
+def get_business_hours(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicBusinessHoursResponse:
+    data = BusinessHoursService(db).get_with_source(api_ws.tenant_id, api_ws.workspace_id)
+    return PublicBusinessHoursResponse(workspaceId=api_ws.workspace_id, **data)
+
+
+@router.put("/business-hours", response_model=PublicBusinessHoursResponse)
+async def put_business_hours_route(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicBusinessHoursResponse:
+    try:
+        raw = await read_capped_json(request)
+    except WebchatInvalidRequest as exc:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", exc.message)
+    payload = _validated(BusinessHoursUpdate, raw)
+    data = await run_in_threadpool(
+        put_business_hours,
+        db,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        payload.timezone,
+        payload.windows,
+    )
+    return PublicBusinessHoursResponse(workspaceId=api_ws.workspace_id, **data)

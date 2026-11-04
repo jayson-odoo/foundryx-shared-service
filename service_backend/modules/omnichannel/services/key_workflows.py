@@ -10,7 +10,6 @@ import copy
 import re
 import uuid
 from dataclasses import dataclass
-from types import SimpleNamespace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -67,6 +66,7 @@ from ..schemas import (
     PublicWorkflowVersionListResponse,
 )
 from . import lifecycle_service
+from .business_hours import BusinessHoursService, BusinessHoursValidationError
 from .public_gateway_service import PublicGatewayService
 
 MAX_OWNED_WORKFLOWS = 200
@@ -774,21 +774,21 @@ class KeyWorkflowService:
         inputs: Any,
     ) -> PublicWorkflowRunItem:
         """Start the published version of an owned shortcut workflow for one
-        contact of the key's workspace. Order: owned, inputs, runnable, contact."""
+        contact of the key's workspace. Order: owned, inputs, contact, runnable."""
         wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
         clean_inputs = check_run_inputs(inputs)
+        # Find-only: a miss never creates a contact.
+        found = PublicGatewayService(self.db)._resolve_contact(tenant_id, workspace_id, contact)
         if wf.current_version_id is None:
             raise _not_runnable("unpublished")
         if not wf.is_active:
             raise _not_runnable("inactive")
         if wf.trigger_type != "entity.shortcut" or wf.trigger_entity_type != SHORTCUT_ENTITY:
             raise _not_runnable("trigger")
-        # Find-only: a miss never creates a contact.
-        found = PublicGatewayService(self.db)._resolve_contact(tenant_id, workspace_id, contact)
-        actor = SimpleNamespace(id=actor_id_for_key(key_id), name="API key", email="")
         try:
             run = self.workflows.run_shortcut(
-                tenant_id, wf.id, SHORTCUT_ENTITY, found, actor, inputs=clean_inputs or None
+                tenant_id, wf.id, SHORTCUT_ENTITY, found, None,
+                inputs=clean_inputs or None, actor_id=actor_id_for_key(key_id),
             )
         except ShortcutNotFound:
             raise _not_runnable("unpublished")
@@ -800,3 +800,22 @@ class KeyWorkflowService:
         self.db.commit()
         self.db.refresh(run)
         return run_item(run)
+
+
+def put_business_hours(
+    db: Session, tenant_id: str, workspace_id: str, timezone_name: str, windows: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Set the key's own workspace hours (never the tenant default), validated
+    with the dashboard's validators. A refusal writes nothing."""
+    try:
+        data = BusinessHoursService(db).set(
+            tenant_id, workspace_id, timezone=timezone_name, windows=windows
+        )
+    except BusinessHoursValidationError as exc:
+        errors: Dict[str, str] = {}
+        for field_key, message in exc.errors.items():
+            name = field_key.split(".", 1)[0]
+            detail = field_key.split(".", 1)[1] if "." in field_key else ""
+            errors.setdefault(name, f"{detail}: {message}" if detail else message)
+        raise ApiError(422, "invalid_request", "The business hours are not valid.", {"fieldErrors": errors})
+    return {**data, "source": "workspace"}

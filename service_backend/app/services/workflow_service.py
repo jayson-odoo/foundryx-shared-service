@@ -530,6 +530,7 @@ class WorkflowService:
         record: Any,
         actor: Optional[User],
         inputs: Optional[Dict[str, Any]] = None,
+        actor_id: Optional[str] = None,
     ) -> WorkflowRun:
         """Fire a shortcut against the workflow's PUBLISHED version - NEVER the
         draft (`run()` above executes the draft by design; a shortcut must not,
@@ -591,7 +592,9 @@ class WorkflowService:
         )
         from app.workflow_engine.serialization import CorrelationKeyUnresolved
 
-        ev = build_shortcut_event(self.db, entity_type, scoped_record, tenant_id=tenant_id, actor=actor)
+        ev = build_shortcut_event(
+            self.db, entity_type, scoped_record, tenant_id=tenant_id, actor=actor, actor_id=actor_id
+        )
         try:
             run = create_run_for_event(self.db, wf, ev, depth=0, inputs=inputs)
         except CodeNotAuthorized as exc:
