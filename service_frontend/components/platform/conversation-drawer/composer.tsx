@@ -9,6 +9,7 @@
  * and ★ workspace quick replies.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
   Contact as ContactIcon,
   FileText,
@@ -25,6 +26,7 @@ import {
   Star,
   Sticker,
   Trash2,
+  Unplug,
   Video,
   X,
 } from 'lucide-react';
@@ -62,6 +64,7 @@ import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { EMOJI_GROUPS } from '@/lib/emoji';
 import { CHANNEL_CAPABILITIES, type ChannelCapabilities } from '@/lib/channel-capabilities';
 import { cn } from '@/lib/utils';
+import { channelsListPath } from '@/app/(protected)/omnichannel/settings/channels/components/paths';
 import {
   ContactsBuilderDialog,
   InteractiveBuilderDialog,
@@ -127,6 +130,14 @@ export interface ComposerProps {
   /** Active reply target (from the bubble context menu). */
   replyTo?: ConversationMessage | null;
   onCancelReply?: () => void;
+  /**
+   * The thread's workspace has no active channel (lane SS-CHANNEL-SKIP - e.g.
+   * migrated before its number was connected). Locks message mode and shows
+   * the no-channel banner + Connect channel link INSTEAD of the window
+   * marker: no send can succeed, so the 24-hour template lock would mislead.
+   * Notes are unaffected. Absent/false = unchanged behaviour.
+   */
+  noChannel?: boolean;
 }
 
 interface PendingFile {
@@ -365,6 +376,7 @@ export function Composer({
   onAddNote,
   replyTo = null,
   onCancelReply,
+  noChannel = false,
 }: ComposerProps) {
   const [body, setBody] = useState('');
   const [quickOpen, setQuickOpen] = useState(false);
@@ -392,10 +404,12 @@ export function Composer({
   // message that will be delivered when they return, not a violation.
   const hasWindow = capabilities.reengageMode !== 'none';
   const extendedOpen = !windowOpen && humanAgentWindowOpen;
-  const locked = !isNote && hasWindow && !windowOpen && !extendedOpen;
+  const showNoChannel = !isNote && !!noChannel;
+  const locked = showNoChannel || (!isNote && hasWindow && !windowOpen && !extendedOpen);
   // A neutral window marker shows whenever the standard window is closed,
-  // whether or not the composer itself is still usable (AC-CHN-08).
-  const showWindowMarker = !isNote && hasWindow && !windowOpen;
+  // whether or not the composer itself is still usable (AC-CHN-08). The
+  // no-channel banner wins over it.
+  const showWindowMarker = !showNoChannel && !isNote && hasWindow && !windowOpen;
   // The window-less presence marker (AC-WEB-43) - replaces the window marker
   // 1:1 for a `reengageMode: 'none'` thread, never locks anything, and
   // carries no instructional copy (just a status fact + a timestamp).
@@ -544,6 +558,20 @@ export function Composer({
         onChange={onFilesChosen}
         data-testid="attach-input"
       />
+      {showNoChannel && (
+        <div
+          className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
+          data-testid="no-channel-banner"
+        >
+          <span className="flex items-center gap-2">
+            <Unplug className="size-4 shrink-0" />
+            No active channel is connected to this workspace.
+          </span>
+          <Button size="sm" variant="outline" asChild>
+            <Link href={channelsListPath}>Connect channel</Link>
+          </Button>
+        </div>
+      )}
       {showWindowMarker && (
         <div
           className="mb-2 flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
