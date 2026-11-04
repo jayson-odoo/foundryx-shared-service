@@ -75,6 +75,21 @@ Write rules (vendor notes): POST = new document, no DocKey / DtlKey. PUT = edit 
   db2 = Mocha (`backlog.md:361`). db3 is new: masters are a Sorento copy (4 Nov: 11,980 items,
   4,274 debtors, 1,088 creditors); documents are only AutoCount's 4 Nov test set (DocKeys from 11982).
 
+## 3b. CRM side today (sorento-crm origin/main 9c6b581e6, read only; CRM UI is a later lane)
+
+- Stock Debt snapshot: one row per product; each row's `lines` = SO demand lines carrying
+  `sales_order_line_id` (core UUID) and `assigned_from[]` (po / spo), but no AutoCount DocKey / DtlKey
+  (`services/scm/stock_debt_service.py:642-669` drops `source_ref`); supply rows live only in the live
+  drill (`schemas/stock_debt.py:266-310`). A link action must resolve `sales_order_lines.source_ref`.
+- Reserve today is CRM-only (decision columns, or "Request CS to reserve" -> `OrderInquiryLink`); no
+  call to FoundryX or AutoCount. CRM's manual Link dialog writes `scm.order_link_claim` source `manual`;
+  AutoCount ingest writes source `autocount` from `from_so_line_ref` (`order_link_service.py:526-612`).
+- CRM -> SS client to reuse: `FoundryxAutocountClient` (`services/foundryx_autocount_client.py:73-131`,
+  `X-API-Key`, generic `_request`). Ingest never writes back (`document_ingest_service.py:53-54`), so a
+  fetch-back push cannot loop.
+- Phase 2 hooks: project quotations (`api/v1/projects/quotations.py:160,192`) and project SO publish
+  (`services/project_so_draft_service.py:2668-2767`, "the ESB call replaces this transport in stage 2").
+
 ## 4. Use cases
 
 Phase 1 (build first):
