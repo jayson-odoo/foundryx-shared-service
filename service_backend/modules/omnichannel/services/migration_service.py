@@ -437,7 +437,9 @@ class MigrationPreflightService:
             if mapped is None or mapped not in target_types:
                 warnings.append(
                     f'No connected channel in the target workspace matches source '
-                    f'channel "{c.name}" ({c.source}) - it will be skipped.'
+                    f'channel "{c.name}" ({c.source}). Its contacts and history still '
+                    f'import. Connect the channel later and run the migration again '
+                    f'to link them.'
                 )
 
     def _distinct_lifecycles(
