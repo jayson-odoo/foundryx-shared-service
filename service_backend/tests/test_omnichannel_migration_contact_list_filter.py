@@ -4,9 +4,13 @@ REQUIRES a ``filter`` object in the body. Without it the vendor answers 400
 and the whole migration job failed with 0 processed (live dry run, every
 channel on "Skip for now").
 
-The mock below is STRICT: it rejects a body with no ``filter`` object exactly
-like the live API, so the dry run / run (all channels skipped, or some) only
-pass when the client sends a valid filter.
+Lane SS-MIGRATION-SEARCH-HOTFIX - once the filter shipped, the vendor rejected
+the body again: "Please check if search exists, but value can be empty." The
+body must carry ``search`` (empty string OK) as well.
+
+The mock below is STRICT: it rejects a body with no ``search`` string or no
+``filter`` object exactly like the live API, so the dry run / run (all
+channels skipped, or some) only pass when the client sends the full body.
 """
 import json
 
@@ -36,8 +40,9 @@ LIVE_SEARCH_MESSAGE = "Sorry, there are errors in the request. Please check if s
 
 
 def _strict(inner):
-    """Wrap a handler: `POST /contact/list` without a `filter` object is a
-    400 with respond.io's own body, before the inner handler ever runs."""
+    """Wrap a handler: `POST /contact/list` without a `search` string or a
+    `filter` object is a 400 with respond.io's own body, before the inner
+    handler ever runs."""
     bodies = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -82,7 +87,7 @@ def _two_channel_contact_handler():
     )
 
 
-def test_client_always_sends_a_filter_object():
+def test_client_always_sends_the_full_contact_list_body():
     handler = _strict(lambda r: httpx.Response(200, json={"items": [], "pagination": {"next": None}}))
     client = RespondIoClient(
         api_token="t", client=httpx.Client(transport=httpx.MockTransport(handler)), sleep=lambda _s: None
