@@ -1,7 +1,7 @@
 """Plan 59 - the erase call's own log row keeps no phone number (AC-59-01..08).
 
 RED tests written BEFORE the implementation. Black box: real requests through
-the app with a real workspace API key, so the real IntegrationActivityMiddleware
+the app with a real workspace API key, so the real GatewayActivityMiddleware
 writes the row; the assertions read ``integration_activity`` rows from the DB.
 
 Contract: for ``DELETE /api/v1/omnichannel/contacts/phone:<number>`` (any case,
@@ -167,8 +167,7 @@ def test_ac_59_06_other_phone_routes_keep_the_number(rig):
         res = rig.client.request(method, url, headers=rig.hdr, json=body)
         assert res.status_code < 500, (method, url, res.text)
     ops = {r.operation: r for r in _rows(rig.sf)}
-    suffixes = ["", "/messages", "", "/read"]
-    for (method, url, _), _s in zip(calls, suffixes):
+    for method, url, _ in calls:
         op = f"{method} {url[len('/api/v1/omnichannel'):]}"
         assert op in ops, (op, list(ops))
         assert ops[op].request_summary_json["path"] == url
@@ -208,3 +207,22 @@ def test_ac_59_08_erase_still_answers_200_when_the_log_write_raises(rig, monkeyp
     res = rig.client.delete(f"{BASE}/phone:{number}", headers=rig.hdr)
     assert res.status_code == 200, res.text
     assert _rows(rig.sf) == []
+
+
+def test_ac_59_08_erase_still_answers_200_when_the_masking_raises(rig, monkeypatch):
+    from modules.omnichannel.models import Contact
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("masking failed")
+
+    monkeypatch.setattr("app.activity_log.middleware._masked_path", _boom)
+    number = "+60100005918"
+    cid = _contact(rig.sf, rig.ws, number)
+    res = rig.client.delete(f"{BASE}/phone:{number}", headers=rig.hdr)
+    assert res.status_code == 200, res.text
+    assert res.json()["contactId"] == cid
+    db = rig.sf()
+    try:
+        assert db.query(Contact).filter(Contact.id == cid).count() == 0
+    finally:
+        db.close()
