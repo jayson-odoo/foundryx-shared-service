@@ -39,6 +39,10 @@ cancelled. Every later run appends to this table.
 | FXT-1104b-1 | PO | 12024 | P8b (unlink: FromDocDtlKey 11989 + FromSODocList + FromSODtlKey 0) | 15:44:33 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12028 stays linked to 11989) | | TEST DOC |
 | FXT-1104b-1 | PO | 12024 | P8c (unlink: as P8b plus FromDocType SO and FromDocNo) | 15:44:34 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12028 stays linked to 11989) | | TEST DOC |
 | FXT-1104b-1 | PO | 12024 | P8d (unlink: FromDocDtlKey 11989 + FromSODocList only) | 15:44:35 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12028 stays linked to 11989) | | TEST DOC |
+| FXT-1104c-1 | PO | 12032 | C01 (run 3a) | about 15:33 | POST /NewPurchaseOrder | 200 | created (the run then stopped at C03, `QTY_ABOVE_OUTSTANDING`) | 12033 SRTKT38SS 50 HQ 0; 12034 SRTKT38SS 10 HQ 0 | TEST DOC |
+| FXT-1104b-S2 | SPO | none | P9a (FromDocType key absent) | 15:47:06 | POST /NewPurchaseOrder | 400 | refused (" is not valid value to FromDocType.") | not created | PROBE, FAILED CREATE |
+| FXT-1104b-S3 | SPO (read back as PO) | 12036 | P9b (FromDocType "") | 15:47:08 | POST /NewPurchaseOrder | 200 | created, rows dropped, ShippingPO read back "F" | no rows; ShippingPO F; DisplayTerm C.O.D., CurrencyCode CNY | PROBE, FAILED CREATE |
+| FXT-1104b-S4 | SPO | none | P9c (no link keys at all) | 15:47:09 | POST /NewPurchaseOrder | 400 | refused (" is not valid value to FromDocType.") | not created | PROBE, FAILED CREATE |
 Notes:
 
 - FXT-PROBE-1 shows a blank creditor name because our probe body sent only `CreditorCode` (400-N004) and no
@@ -264,6 +268,28 @@ still linked. Each PUT answered status 200 `Done Edit.`; Qty and Location unchan
 Stopped after P8d (no try unlinked). The final FXT-1104b-1 rows are unchanged by these probes: 12025 (40 HQ,
 0), 12026 (10 BRW-AM, 0), 12028 (10 BRW-AM, 11989), 12031 (10 HQ, 11992).
 
+### P9 SPO create variants (Q13, Q14a): an SPO cannot be created
+
+Every body as C01 builds it: header from 202602-S0007's read-back, `ShippingPO "T"`, today's DocDate, one full
+row (SRTKT38SS, qty 5, BRW-AM, UOM and Description from the SO row, DeliveryDate today). Link target
+FXT-1104b-1 row 12025 (40 HQ, `FromSODtlKey 0`, read first). Row 12025 (qty 40, location HQ, unlinked) was
+re-read after each probe and never changed.
+
+- P9a (15:47:06) DocNo FXT-1104b-S2: row with `FromDocNo "FXT-1104b-1"`, `FromDocDtlKey 12025`, the
+  `FromDocType` key ABSENT. POST -> status 400 `{"Message": " is not valid value to FromDocType."}` (the
+  value named is empty). Document does not exist.
+- P9b (15:47:08) DocNo FXT-1104b-S3: same row with `FromDocType ""`. POST -> status 200 `DocNo=FXT-1104b-S3
+  ,DocKey=12036 ... Created Successful.` Read back by DocDate: DocKey 12036, `ShippingPO "F"` (not "T"),
+  no rows (the row was dropped). So the vendor created an ordinary PO header without the SPO flag and
+  without rows.
+- P9c (15:47:09) DocNo FXT-1104b-S4: a plain SPO, `ShippingPO "T"` and no link keys at all. POST -> status 400
+  `" is not valid value to FromDocType."`. Not created. So an SPO row needs a valid `FromDocType`, and we have
+  no value that works: "" and absent are refused or dropped (P9a, P9b, P9c), and "PO" was refused earlier
+  (P3: `PO is not valid value to FromDocType.`).
+- P9d skipped. The only `FromDocType` spellings anywhere we hold are `""`, `"PO"` (63 rows, all db1 GET
+  rows, e.g. SPO-2026/11-0001 row 46179075), `"SO"` and `"QT"` (vendor test-records file and db3 GETs; `ToDocType`
+  also shows `"GR"` and `"SO"`). No other spelling of the PO type exists, and "PO" is the one P3 refused.
+
 ## Observations for AutoCount
 
 Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
@@ -293,7 +319,11 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
 4. **ShippingPO on create (Q13, Q14a).** `POST /NewPurchaseOrder` with `ShippingPO "T"` and a row
    `FromDocType "PO"` is refused: status 400 `PO is not valid value to FromDocType.` (P3). What
    `FromDocType` value links an SPO row to a PO row, and is `ShippingPO "T"` accepted on create? Run 2
-   C10/C11 were SKIPPED so the SPO flow is still unobserved.
+   C10/C11 were SKIPPED so the SPO flow is still unobserved. P9a-c (key absent, `""`, no link keys)
+   confirm that creating an SPO fails with `<value> is not valid value to FromDocType` for a blank or absent
+   type, and a blank type with `ShippingPO "T"` creates a plain PO header with no rows (P9b: `ShippingPO`
+   read back "F"). db1 reads SPO rows with `FromDocType "PO"`, which db3 refuses on create. What value (and
+   what header) creates an SPO on db3?
 5. **Empty dates (Q21).** In run 1 an echoed `DeliveryDate "0001-01-01T00:00:00"` gave status 500
    `SqlDateTime overflow`; omitting it works (run 2, P1, P2). The split row created through the SO link
    reads back `DeliveryDate "0001-01-01T00:00:00"` although we sent no empty date (C03).
