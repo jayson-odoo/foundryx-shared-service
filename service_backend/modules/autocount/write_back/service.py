@@ -71,6 +71,7 @@ from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
+from modules.autocount.write_back.primitives import vendor_message
 from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT
 
 if TYPE_CHECKING:  # operations imports this module
@@ -661,7 +662,8 @@ class WriteBackService(WriteFrame):
         except WriteTransportError as exc:
             return self._finish(row, OUTCOME_PENDING, exc.code)
         row.response_status = response.status_code
-        row.response_json = _safe_body(response.body)
+        # a failure keeps its status and the redacted text only (AC-57-47); a success as it came
+        row.response_json = _safe_body(response.body) if response.ok else {"text": vendor_message(response.body, base_url)}
         if not response.ok:
             return self._finish(row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR")
         self.db.commit()
@@ -749,7 +751,11 @@ class WriteBackService(WriteFrame):
         except WriteTransportError as exc:
             row.response_json = [row.response_json[0], {"error": exc.code}]
         else:
-            row.response_json = [row.response_json[0], _safe_body(response.body)]
+            row.response_json = [
+                row.response_json[0],
+                _safe_body(response.body) if response.ok
+                else {"text": vendor_message(response.body, getattr(client, "base_url", ""))},
+            ]
             row.response_status = [first_status, response.status_code]
             if response.ok and not self._expired():
                 self.db.commit()

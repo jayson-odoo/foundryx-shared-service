@@ -44,7 +44,7 @@ from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteNotAllowed
 from modules.autocount.write_back.payloads import header_of, so_header_of
 from modules.autocount.write_back.operations import OperationService
-from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService, redact_text, vendor_message
+from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService, vendor_message
 from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
     PullDocsResult,
@@ -800,8 +800,9 @@ class _QtRun:
         status = entry["responseStatus"]
         if isinstance(status, int) and 200 <= status < 300:
             return _scrub(entry["responseBody"])
-        return vendor_message(entry["responseBody"], self.base_url) or redact_text(
-            str(entry["responseBody"]), self.base_url)
+        # AutoCount's own message when there is one; else the status only (never a stack,
+        # an exception type or the raw body)
+        return vendor_message(entry["responseBody"], self.base_url) or f"status {status}"
 
     def call(self, case: CaseResult, fn) -> PrimitiveResult:
         start = len(self.tap.writes)

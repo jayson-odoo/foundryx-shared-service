@@ -580,6 +580,9 @@ class OperationService:
         qty = _dec(snap["row"].get("Qty"))
         received = None if snap["received"] is None else Decimal(snap["received"])
         partial = snap["mode"] == "partial"
+        # The deadline may stop an operation only HERE, before its first write. After the
+        # delete / cut has landed every further step runs (the heartbeat guards the lock).
+        self._check_deadline()
         if partial:
             assert received is not None
             cut = self.prims.edit_doc(
@@ -597,7 +600,6 @@ class OperationService:
                 # a timeout or a bare 5xx: the delete may have landed; resume reads AutoCount (AC-57-42)
                 raise _Done(PENDING, gone.error_code, gone.message)
             self._abort_unless_done(gone)
-        self._check_deadline()
         add = self.prims.add_line(
             **self._call(row, company, snap, "add"),
             line=self._line_of(snap, snap["newLink"], (qty - received) if partial else None),
@@ -623,13 +625,16 @@ class OperationService:
         raise _Done(PENDING, res.error_code, res.message)  # mismatch / pending: resume decides
 
     def _move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, new_key: int,
-              document: Optional[Doc], location: Optional[str]) -> Doc:
+              document: Optional[Doc], location: Optional[str], *, deadline: bool = True) -> Doc:
         """Move the new row to ``location`` when the read-back differs (db3 forces
         HQ on a new linked row); a failed move is a warning, never a failure."""
-        self._check_deadline()
         document = document or {}
         landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
         if not location or landed.get("Location") == location:
+            return document
+        if deadline and time.monotonic() > self._op_deadline:  # move due, deadline past: skip it
+            if LOCATION_NOT_MOVED not in self._warnings:
+                self._warnings.append(LOCATION_NOT_MOVED)
             return document
         moved = self.prims.edit_doc(
             **self._call(row, company, snap, "move"), header_changes={},
@@ -669,7 +674,7 @@ class OperationService:
                 raise _Done(PENDING, res.error_code)
             if res.outcome == OUTCOME_DONE and res.new_dtl_key is not None:
                 new_key = int(res.new_dtl_key)
-                document = self._move(row, company, snap, new_key, res.document, snap["location"])
+                document = self._move(row, company, snap, new_key, res.document, snap["location"], deadline=False)
                 self.prims._stage(company, snap["kind"], document, {new_key: old_key})
                 return self._finish(row, RECOVERED, failed_code, replaced=[(old_key, new_key)], document=document)
         return self._needs_attention(row, company, snap, failed_code)
@@ -766,7 +771,7 @@ class OperationService:
 
     def _resume_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, key: int, doc: Doc,
                      location: Optional[str]) -> Doc:
-        return self._move(row, company, snap, key, doc, location)
+        return self._move(row, company, snap, key, doc, location, deadline=False)
 
     # ── split link (plan 55 wrapped, AC-57-40) ───────────────────────────────
 
