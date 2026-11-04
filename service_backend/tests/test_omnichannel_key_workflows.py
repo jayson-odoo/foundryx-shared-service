@@ -533,8 +533,11 @@ def test_ac_38_125_migration_file():
         out = {}
         for node in ast.parse(path.read_text()).body:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                if node.targets[0].id in ("revision", "down_revision") and isinstance(node.value, ast.Constant):
-                    out[node.targets[0].id] = node.value.value
+                if node.targets[0].id in ("revision", "down_revision"):
+                    try:
+                        out[node.targets[0].id] = ast.literal_eval(node.value)
+                    except ValueError:
+                        pass
         return out
 
     mine = _consts(target)
@@ -547,8 +550,10 @@ def test_ac_38_125_migration_file():
         c = _consts(f)
         if "revision" in c:
             revs[c["revision"]] = f.name
-            if c.get("down_revision"):
-                downs.add(c["down_revision"])
+            parents = c.get("down_revision")
+            if isinstance(parents, str):
+                parents = [parents]
+            downs.update(parents or [])
     heads = [r for r in revs if r not in downs]
     assert heads == ["0024_omni_workflow_owner"], f"expected one head, got {heads}"
     text = target.read_text()
