@@ -112,35 +112,41 @@ def app_connect_args(url: Optional[str] = None) -> Dict[str, str]:
     return args
 
 
+_LONG_WAIT_FLAG = "long_lock_wait"
+
+
+def _set_long_lock_timeout(connection: Connection) -> None:
+    ms = settings.api_db_long_lock_timeout_seconds * 1000
+    connection.execute(text(f"SET LOCAL lock_timeout = '{int(ms)}ms'"))
+
+
+@event.listens_for(Session, "after_begin")
+def _carry_long_lock_wait(session: Session, transaction, connection: Connection) -> None:  # noqa: ANN001
+    """Every transaction a flagged session begins gets the raised ceiling."""
+    if session.info.get(_LONG_WAIT_FLAG) and connection.dialect.name == "postgresql":
+        _set_long_lock_timeout(connection)
+
+
 @contextlib.contextmanager
 def allow_long_lock_wait(db: Session) -> Iterator[None]:
-    """Lift the API lock timeout for one long, legitimate operation (module
-    install/update/uninstall, tenant purge, storage-migration Complete).
+    """Raise the API lock timeout to the long ceiling
+    (``api_db_long_lock_timeout_seconds``) for one long, legitimate operation
+    (module install/update/uninstall, tenant purge, storage-migration Complete).
 
-    Session-level ``SET`` (not ``SET LOCAL``) so it survives the several
-    commits those operations make; ``RESET`` in ``finally`` returns the
-    connection to the process default before it goes back to the pool.
-    Postgres only; a no-op elsewhere.
+    Transaction-scoped: ``SET LOCAL`` on the current transaction plus an
+    ``after_begin`` listener that repeats it for each later transaction of this
+    session while the flag is set. ``SET LOCAL`` ends with its transaction, so
+    nothing can leak into the connection pool. Postgres only; a no-op elsewhere.
     """
     if db.get_bind().dialect.name != "postgresql":
         yield
         return
-    db.execute(text("SET lock_timeout = 0"))
+    db.info[_LONG_WAIT_FLAG] = True
     try:
+        _set_long_lock_timeout(db.connection())
         yield
     finally:
-        try:
-            db.execute(text("RESET lock_timeout"))
-        except Exception:  # noqa: BLE001 - failed transaction: clear it, retry once
-            try:
-                db.rollback()
-                db.execute(text("RESET lock_timeout"))
-            except Exception:  # noqa: BLE001 - never leave a raised-limit connection pooled
-                logger.warning("could not reset lock_timeout; dropping the connection")
-                try:
-                    db.connection().invalidate()
-                except Exception:  # noqa: BLE001
-                    pass
+        db.info.pop(_LONG_WAIT_FLAG, None)
 
 
 def scrub_error_params(engine: Engine) -> Engine:

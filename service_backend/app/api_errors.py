@@ -74,7 +74,9 @@ def install_api_error_handler(app: FastAPI) -> None:
         # database error keeps today's unhandled 500 behaviour.
         if error_code_of(exc) != _LOCK_NOT_AVAILABLE:
             raise exc
-        logger.warning("lock wait timed out on %s %s", request.method, request.url.path)
+        route = request.scope.get("route")
+        template = getattr(route, "path", None) or "<unmatched>"
+        logger.warning("lock wait timed out on %s %s", request.method, template)
         headers = {"Retry-After": str(BUSY_RETRY_AFTER_SECONDS)}
         if request.url.path.startswith(PUBLIC_API_PREFIX):
             return JSONResponse(

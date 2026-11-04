@@ -314,6 +314,10 @@ class Settings(BaseSettings):
     # explicit libpq `options` value would override it) and workers use the
     # `worker_db_*` settings above, so neither gets this.
     api_db_lock_timeout_seconds: int = 10
+    # Ceiling for request paths that do long locked work (module install,
+    # tenant purge, storage-migration Complete): applied per transaction with
+    # SET LOCAL by `allow_long_lock_wait`. Must be >= the normal limit.
+    api_db_long_lock_timeout_seconds: int = 300
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like
@@ -593,6 +597,18 @@ class Settings(BaseSettings):
         if v < 0:
             raise ValueError("api_db_lock_timeout_seconds must be 0 or more.")
         return v
+
+    @model_validator(mode="after")
+    def _api_db_long_lock_timeout_not_below_normal(self) -> "Settings":
+        if (
+            self.api_db_lock_timeout_seconds > 0
+            and self.api_db_long_lock_timeout_seconds < self.api_db_lock_timeout_seconds
+        ):
+            raise ValueError(
+                "api_db_long_lock_timeout_seconds must be at least "
+                "api_db_lock_timeout_seconds."
+            )
+        return self
 
     @field_validator("background_job_orphan_after_minutes")
     @classmethod
