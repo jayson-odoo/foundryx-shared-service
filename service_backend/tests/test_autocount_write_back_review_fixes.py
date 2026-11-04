@@ -546,8 +546,10 @@ def test_ac_57_47_403_write_not_allowed_names_no_book(client, h, db, monkeypatch
                        (f"{PREFIX}/po-links/unlink", {"companyCode": "SRT", "poDocKey": 1, "poDtlKey": 2})):
         r = client.post(path, json=body, headers=gw.hdr(path[-8:]))
         assert r.status_code == 403 and code(r) == "WRITE_NOT_ALLOWED", r.text
+        # the random ids (operationId, actionId) are the only fields a book name can match by chance
+        text = json.dumps({k: v for k, v in r.json().items() if k not in ("operationId", "actionId")})
         for book in ("db1", "db3", "api/db"):
-            assert book not in r.text, (book, r.text)
+            assert book not in text, (book, text)
     h.no_http()
 
 
