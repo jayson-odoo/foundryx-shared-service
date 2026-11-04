@@ -33,7 +33,11 @@ from app.dependencies import (
 from app.models.tenant import DEFAULT_TENANT_ID
 from app.repositories.user_repository import UserRepository
 from app.security import decode_access_token
-from app.services.storage import UnresolvableKey, storage_for_tenant
+from app.services.storage import (
+    StorageUnavailable,
+    UnresolvableKey,
+    storage_for_tenant,
+)
 
 from ..api_auth import _parse_bearer, gateway_key_enabled
 from ..repositories.contact_repository import ContactRepository
@@ -167,5 +171,11 @@ def _serve(
         data, stored_mime = storage_for_tenant(db, tenant_id).fetch(message.media_key)
     except (UnresolvableKey, FileNotFoundError):
         raise HTTPException(status_code=404, detail="Not found")
+    except StorageUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="The file is temporarily unavailable. Please try again.",
+            headers={"Retry-After": "5"},
+        )
     media_type = message.media_mime or stored_mime or "application/octet-stream"
     return Response(content=data, media_type=media_type, headers=_MEDIA_HEADERS)

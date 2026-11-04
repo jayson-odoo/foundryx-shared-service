@@ -14,12 +14,23 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from botocore.exceptions import BotoCoreError
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
+
 from app.config import settings
 from app.integrations.base import TestResult
+from app.services.storage import StorageUnavailable
 
 PRESIGN_TTL_SECONDS = 3600  # resolved per request - never persisted (D4)
 _PROBE_TIMEOUT_SECONDS = 10
 _PROBE_MAX_BYTES = 1024 * 1024  # the probe object is tiny
+
+
+_BODY_READ_ERRORS = (
+    OSError,
+    BotoCoreError,
+    Urllib3HTTPError,
+)
 
 
 def _ext_for(mime_type: str) -> str:
@@ -151,7 +162,11 @@ class S3CompatibleAdapter:
             obj = self.client.get_object(Bucket=self.bucket, Key=key)
         except Exception as exc:  # noqa: BLE001 - boto3 ClientError (NoSuchKey etc.)
             raise FileNotFoundError(key) from exc
-        return obj["Body"].read(), obj.get("ContentType")
+        try:
+            data = obj["Body"].read()
+        except _BODY_READ_ERRORS as exc:
+            raise StorageUnavailable(key) from exc
+        return data, obj.get("ContentType")
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
