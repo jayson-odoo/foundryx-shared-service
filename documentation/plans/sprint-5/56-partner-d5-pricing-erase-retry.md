@@ -4,7 +4,13 @@ Lane SS-FUJI-READINESS. Owner ruling D5 (a), 1 Nov (crew ask a67164769): add for
 
 Code checked at origin/main c7fa99dc (gap 7, PR 181, merged). UAC: `56-partner-d5-pricing-erase-retry-acceptance-criteria.md`.
 
-Three PRs, in this order: A (S), B (M), C (L). B and C start only after crew relays the answers to the behaviour card. A starts now on the recommendations below unless crew says otherwise.
+Three PRs, in this order: A (S), B (M), C (L).
+
+## Rulings (crew, 4 Nov, on the D5 behaviour card)
+
+- A1 (a), A2 (a), A3 (a): as written in section A. Build A now.
+- B1 (a), B2 (a), B3 (a), B4 (a): as written in section B. Build B after A.
+- C goes to the owner. No C code before his answers. Planning the C4 tombstone with lane SS-MIGRATION-SYNC is allowed.
 
 ## A. Meta rate-limit retry on WhatsApp sends (size S)
 
@@ -40,7 +46,7 @@ Per-workspace outbound concurrency (BL-SS-338 is about workflow `http.request`, 
 - GET /templates already returns `category` (`schemas.py:1477-1483`, `?category=` filter `routers/api_v1.py:196`, guide `:326-343`). Partner ask 3 is already met.
 - Dev data: 0 rows contain "pricing" in `foundryx_service` and `foundryx_service_ssfujireadiness` (every text and json column searched).
 
-### Change (recommendations, pending card Q-B1..Q-B4)
+### Change (crew ruling B1a B2a B3a B4a)
 
 1. Parse `statuses[].pricing` into a normalised object `{billable: bool, pricingModel: str, category: str, type: str | null}`. Strings are Meta input: lower-case, capped at 40 chars, `[a-z0-9_]` only, else dropped. Unknown keys dropped.
 2. Store on the message as `metadata_json["pricing"]` (fresh dict, reassigned). The latest non-null object wins. Stored even when the status itself does not move forward (a late `sent` after `delivered`).
@@ -60,14 +66,15 @@ Per-workspace outbound concurrency (BL-SS-338 is about workflow `http.request`, 
 - Inbound from the same number recreates a contact by phone (`services/inbound_service.py:466-489`).
 - Dev examples (`foundryx_service`, read-only counts): contact `cnt-003` 14 messages, 4 with media, 1 event, 1 identity; `d7fa2243` 12 messages, named in 8 workflow run payloads; `84e6050c` 7 messages, 9 run payloads. 37 contacts in all.
 
-### Change (recommendations, pending card Q-C1..Q-C5)
+### Change (recommendations, pending the owner's answers to card C1..C5)
 
 1. Hard erase, one transaction for rows, fixed order: cancel parked waits (as `bootstrap.py:886`), reactions, messages, events, identities, tag links, waits, workflow contact fires, broadcast recipient rows, migration refs, ideation submitter set NULL, then the contact.
 2. Stored files deleted after commit as a `background_jobs` job that retries; every key collected before the delete, including the voice original once the transcode keeps it findable.
 3. `webhook_deliveries` rows for the contact keep id and status; `payload_json` becomes ids only.
 4. API key: `DELETE /api/v1/omnichannel/contacts/{identifier}` in the key's own workspace (gap 7 precedent: every key has full power in its own workspace). Staff: typed-confirm action under a new permission `contacts.erase` with an Admin grant sweep, UI after a mock.
 5. New webhook event `contact.erased` (ids only, opt-in per endpoint).
-6. The guide states what SS cannot erase: the chat on the customer's phone, media Meta still holds, copies FujiAire keeps, and exports already downloaded.
+6. Respond.io re-import (card C4, recommended (b), read of PR 180 head 6af716f5, WIP, lane SS-MIGRATION-SYNC). The sync matches a contact by ref on the respond.io id, then phone digits, then email (`MigrationWriter._find_existing`, main `services/migration_writer.py:504-552`); the one-off import shares `write_contact` (main `services/migration_service.py:710,2589`); the sync loops until cutover and a stopped sync can be restarted (PR 180 `migration_sync_service.py:259-277,347-362`). A kept ref alone is not a clean tombstone: the ref hit finds no contact, phone and email miss, a new contact is written and `refs.record` hits `uq_migration_refs_external`, so the contact fails on every tick. `migration_refs.local_id` is NOT NULL (`models.py:992`). Smallest tombstone, no schema change: the erase deletes every ref of the contact except its contact ref, which it re-keys to `entity_type = "contact_erased"` with `local_id = "erased"` (the unique key includes the entity type, so no collision). `_find_existing` (main) checks for that row by respond.io id first and the writer skips the contact and all its rows; the key is the respond.io id because the phone is gone. Placing the check in the writer covers both the one-off import and the sync. Coordinate with SS-MIGRATION-SYNC by a signed `crew-note` on PR 180 when C starts.
+7. The guide states what SS cannot erase: the chat on the customer's phone, media Meta still holds, copies FujiAire keeps, and exports already downloaded.
 
 ## Order and gates
 

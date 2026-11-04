@@ -1,6 +1,6 @@
 # Plan 56 acceptance criteria (partner inbox D5)
 
-Plan: `56-partner-d5-pricing-erase-retry.md`. Section A is final. Sections B and C are drafts until crew relays the behaviour card answers.
+Plan: `56-partner-d5-pricing-erase-retry.md`. Sections A and B are final (crew rulings A1a A2a A3a B1a B2a B3a B4a, 4 Nov). Section C is a draft until the owner answers card C1..C5.
 
 ## A. Meta rate-limit retry on WhatsApp sends
 
@@ -17,7 +17,7 @@ Plan: `56-partner-d5-pricing-erase-retry.md`. Section A is final. Sections B and
 - AC-56-11: `POST /api/v1/omnichannel/contacts/{id}/read` and the API key reaction send answer HTTP 429 with code `meta_rate_limited` and a `Retry-After` header when Meta rate-limits the call, and the per-key request limit's own 429 code stays distinct.
 - AC-56-12: The consumer guide lists the retried codes, the schedule, the FAILED outcome and `meta_rate_limited`, with a changelog row.
 
-## B. Meta pricing per message (draft)
+## B. Meta pricing per message
 
 - AC-56-20: A Meta status webhook carrying `pricing` stores `{billable, pricingModel, category, type}` on the message.
 - AC-56-21: The consumer `message.status` webhook carries `pricing` (object or null).
