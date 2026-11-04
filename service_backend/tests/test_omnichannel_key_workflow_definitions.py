@@ -788,3 +788,105 @@ def test_ac_38_135_catalog_allowed_registered_workspace_options(client, session_
     assert client.get(f"{BASE}/workflows/catalog", headers=hdr1b).json() == body
     other = client.get(f"{BASE}/workflows/catalog", headers=w["hdr2"]).json()
     assert {c["id"] for c in other["options"]["channels"]} == {w["ch2"]}
+
+
+# -- review round 1 guards ------------------------------------------------------
+def test_ac_38_133_publish_pins_a_staff_edited_draft(client, session_factory):
+    """A staff edit can put another workspace's literal id into the draft of a key-owned
+    workflow; publish must re-check pinning and refuse, publishing nothing."""
+    w = _world(client, session_factory)
+    hdr = w["hdr1"]
+    wid = _post(client, hdr, _doc(_comment())).json()["id"]
+    edited = _doc(_node("act", "omnichannel.add_tag", {
+        "contactId": "{{ trigger.contact.id }}", "workspaceId": w["ws1"], "tagId": w["tag2"]}))
+    db = session_factory()
+    try:
+        db.query(Workflow).filter(Workflow.id == wid).update({"draft_definition_json": edited})
+        db.commit()
+    finally:
+        db.close()
+    before = _wf_row(session_factory, wid)
+    r = client.post(f"{BASE}/workflows/{wid}/publish", headers=hdr)
+    assert r.status_code == 422, r.text
+    err = r.json()["error"]
+    assert err["code"] == "invalid_definition"
+    assert err["details"]["nodeId"] == "act" and err["details"]["field"] == "tagId"
+    assert _wf_row(session_factory, wid) == before and _versions(session_factory, wid) == 0
+    # control: with the key's own tag it publishes
+    ok = _doc(_node("act", "omnichannel.add_tag", {
+        "contactId": "{{ trigger.contact.id }}", "workspaceId": w["ws1"], "tagId": w["tag1"]}))
+    db = session_factory()
+    try:
+        db.query(Workflow).filter(Workflow.id == wid).update({"draft_definition_json": ok})
+        db.commit()
+    finally:
+        db.close()
+    assert client.post(f"{BASE}/workflows/{wid}/publish", headers=hdr).status_code == 200
+
+
+def test_ac_38_134_business_hours_node_merged_foreign_workspace(client, session_factory):
+    from modules.omnichannel.services.business_hours import BusinessHoursService
+
+    w = _world(client, session_factory)
+    db = session_factory()
+    try:
+        BusinessHoursService(db).set(DEFAULT_TENANT_ID, w["ws1"], timezone="UTC",
+                                     windows={d: [] for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")})
+        BusinessHoursService(db).set(DEFAULT_TENANT_ID, w["ws2"], timezone="UTC",
+                                     windows={d: [] for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")})
+    finally:
+        db.close()
+    doc = _doc(_node("bh", "omnichannel.business_hours", {"workspaceId": "{{ trigger.message.text }}"}))
+    wf = _staff_publish(session_factory, doc, "bh pinned")
+    _own(session_factory, wf, w["ws1"])
+
+    _inbound(session_factory, w["ch1"], "60177000001", w["ws2"])  # another workspace's id, merged
+    run = _runs(session_factory, wf)[0]
+    node = next(n for n in run["nodes"] if n[0] == "bh")
+    assert run["status"] == RUN_FAILED
+    assert node[1] == NODE_FAILED and "record_not_in_workspace" in node[2], node
+
+    _inbound(session_factory, w["ch1"], "60177000001", w["ws1"])  # control: its own workspace
+    statuses = sorted(r["status"] for r in _runs(session_factory, wf))
+    assert statuses == [RUN_FAILED, RUN_SUCCESS], statuses
+
+
+def test_ac_38_134_broadcast_completed_staff_edit_isolation(client, session_factory):
+    from app.workflow_engine.entity_events import _match_and_enqueue
+
+    w = _world(client, session_factory)
+    doc = _doc(_node("act", "omnichannel.add_comment", {"contactId": w["contact1"], "body": "done"}),
+               trigger=_node("trg", "omnichannel.broadcast_completed", {}, "trigger"))
+    wf = _staff_publish(session_factory, doc, "bc owned")
+    _own(session_factory, wf, w["ws1"])
+
+    def emit(ws):
+        ev = {"entity_type": "omnichannel_broadcast", "action": "completed",
+              "tenant_id": DEFAULT_TENANT_ID, "record_id": str(uuid.uuid4()), "actor": None,
+              "changes": None, "record_facts": {},
+              "extra": {"broadcastId": "bc-1", "workspaceId": ws}, "source": None}
+        db = session_factory()
+        try:
+            _match_and_enqueue(db, ev)
+            db.commit()
+        finally:
+            db.close()
+
+    emit(w["ws2"])
+    assert _runs(session_factory, wf) == [], "an owned workflow never fires on another workspace"
+    emit(w["ws1"])
+    assert len(_runs(session_factory, wf)) == 1
+
+    # staff edit the owned trigger to name W2 in the draft and the version: still no fire on W2
+    edited = _doc(_node("act", "omnichannel.add_comment", {"contactId": w["contact1"], "body": "done"}),
+                  trigger=_node("trg", "omnichannel.broadcast_completed", {"workspaceId": w["ws2"]}, "trigger"))
+    db = session_factory()
+    try:
+        row = db.get(Workflow, wf)
+        row.draft_definition_json = edited
+        db.get(WorkflowVersion, row.current_version_id).definition_json = edited
+        db.commit()
+    finally:
+        db.close()
+    emit(w["ws2"])
+    assert len(_runs(session_factory, wf)) == 1, "owner check holds against a staff edit"

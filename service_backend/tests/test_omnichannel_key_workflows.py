@@ -369,6 +369,8 @@ NOT_OWNED_ROUTES = [
     ("GET", "/workflows/{id}", None),
     ("PATCH", "/workflows/{id}", {"name": "hijack"}),
     ("DELETE", "/workflows/{id}", None),
+    # review round 1: publish
+    ("POST", "/workflows/{id}/publish", None),
     # S3 routes (plan 38 S3)
     ("POST", "/workflows/{id}/unpublish", None),
     ("PUT", "/workflows/{id}/active", {"isActive": True}),
@@ -732,3 +734,50 @@ def test_ac_38_145_dashboard_routes_serve_key_owned_workflow(client, session_fac
     assert len(responses["versions"].json()["data"]) == 1
     assert [x["id"] for x in responses["runs"].json()["data"]] == [run_id]
     assert responses["run detail"].json()["id"] == run_id
+
+
+# -- AC-38-120, review round 1: every key route refuses a revoked key and counts toward the limit --
+ALL_KEY_ROUTES = [
+    ("GET", "/workflows/catalog", None),
+    ("POST", "/workflows/validate", {"draftDefinition": EMPTY_DEF}),
+    ("GET", "/workflows", None),
+    ("POST", "/workflows", {"name": "n", "draftDefinition": EMPTY_DEF}),
+    ("GET", "/workflows/{id}", None),
+    ("PATCH", "/workflows/{id}", {"name": "n"}),
+    ("DELETE", "/workflows/{id}", None),
+    ("POST", "/workflows/{id}/publish", None),
+    ("POST", "/workflows/{id}/unpublish", None),
+    ("PUT", "/workflows/{id}/active", {"isActive": False}),
+    ("GET", "/workflows/{id}/versions", None),
+    ("GET", "/workflows/{id}/runs", None),
+    ("POST", "/workflows/{id}/runs", {"contact": "phone:+60177099999"}),
+    ("GET", "/workflows/runs/{id}", None),
+    ("GET", "/business-hours", None),
+    ("PUT", "/business-hours", {"timezone": "UTC", "windows": {}}),
+]
+
+
+@pytest.mark.parametrize("method,path,body", ALL_KEY_ROUTES, ids=[f"{m} {p}" for m, p, _ in ALL_KEY_ROUTES])
+def test_ac_38_120_revoked_401_and_limit_429_every_route(client, session_factory, monkeypatch, method, path, body):
+    ws = _default_workspace_id(session_factory)
+    wid = _seed_wf(session_factory, owner_ws=ws)
+    url = BASE + path.replace("{id}", wid)
+
+    kid, hdr = _key(client, ws, "to-revoke")
+    assert client.post(f"/omnichannel/workspaces/{ws}/api-keys/{kid}/revoke", headers=_auth(client)).status_code == 200
+    counts = _counts(session_factory)
+    r = client.request(method, url, json=body, headers=hdr)
+    assert r.status_code == 401, r.text
+    assert r.json()["error"]["code"] == "invalid_api_key"
+    assert _counts(session_factory) == counts
+
+    monkeypatch.setitem(settings.__dict__, "omni_key_max_per_minute", 1)
+    _, hdr2 = _key(client, ws, "limited")
+    first = client.request(method, url, json=body, headers=hdr2)
+    assert first.status_code not in (401, 429), first.text
+    counts = _counts(session_factory)
+    r = client.request(method, url, json=body, headers=hdr2)
+    assert r.status_code == 429, r.text
+    assert r.json()["error"]["code"] == "rate_limited"
+    assert int(r.headers["Retry-After"]) >= 1
+    assert _counts(session_factory) == counts
