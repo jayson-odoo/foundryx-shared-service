@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoCount write alignment</title>
+<style>
+:root {
+  --bg: #ffffff; --surface: #f7f7f8; --surface-2: #efeff1; --text: #1b1b1f; --muted: #5d5d66;
+  --line: #dcdce1; --brand: #ff5a00; --brand-soft: #fff1e8;
+  --ok: #157a3d; --ok-bg: #e6f5ec; --wait: #8a5a00; --wait-bg: #fff4d6;
+  --unk: #2f4f8a; --unk-bg: #e8eefa; --off: #8a1f1f; --off-bg: #fbe9e9;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141416; --surface: #1c1c20; --surface-2: #24242a; --text: #ececf0; --muted: #a3a3ad;
+    --line: #34343c; --brand: #ff7a33; --brand-soft: #2b1b12;
+    --ok: #6fd39a; --ok-bg: #12301f; --wait: #f2c45a; --wait-bg: #33280f;
+    --unk: #9db8f0; --unk-bg: #18233a; --off: #f19a9a; --off-bg: #3a1717;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
+main { max-width: 1040px; margin: 0 auto; padding: 28px 16px 64px; }
+h1 { font-size: 26px; line-height: 1.25; margin: 0 0 6px; }
+h2 { font-size: 19px; margin: 40px 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+h3 { font-size: 16px; margin: 22px 0 8px; }
+p { margin: 8px 0; }
+.lede { color: var(--muted); margin-bottom: 18px; }
+.num { display: inline-block; min-width: 26px; height: 26px; border-radius: 13px; background: var(--brand);
+  color: #fff; text-align: center; font-weight: 700; font-size: 14px; line-height: 26px; margin-right: 8px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 12px 0; }
+.callout { background: var(--brand-soft); border-left: 4px solid var(--brand); border-radius: 8px; padding: 12px 14px; margin: 14px 0; }
+.badge { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .02em; border-radius: 999px;
+  padding: 2px 9px; white-space: nowrap; }
+.ok { color: var(--ok); background: var(--ok-bg); }
+.wait { color: var(--wait); background: var(--wait-bg); }
+.unk { color: var(--unk); background: var(--unk-bg); }
+.off { color: var(--off); background: var(--off-bg); }
+.ev { font-size: 12px; color: var(--muted); display: block; margin-top: 2px; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+th, td { border: 1px solid var(--line); padding: 8px 9px; text-align: left; vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; }
+ol.steps { padding-left: 0; list-style: none; counter-reset: s; margin: 8px 0; }
+ol.steps > li { counter-increment: s; position: relative; padding: 8px 10px 8px 40px; border-bottom: 1px dashed var(--line); }
+ol.steps > li::before { content: counter(s); position: absolute; left: 6px; top: 8px; width: 24px; height: 24px;
+  border-radius: 12px; background: var(--surface-2); text-align: center; font-weight: 700; font-size: 13px; line-height: 24px; }
+.fail { color: var(--off); font-weight: 600; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.legend span { margin-right: 10px; }
+svg { width: 100%; height: auto; display: block; }
+svg text { fill: var(--text); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+svg .muted { fill: var(--muted); font-size: 12px; }
+svg .box { fill: var(--surface); stroke: var(--line); }
+svg .crm { fill: var(--brand-soft); stroke: var(--brand); }
+svg .arrow { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+svg .t-ok { fill: var(--ok); font-weight: 700; font-size: 12px; }
+svg .t-wait { fill: var(--wait); font-weight: 700; font-size: 12px; }
+svg .t-unk { fill: var(--unk); font-weight: 700; font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } h1 { font-size: 22px; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>AutoCount write-back: how the shared service writes to AutoCount</h1>
+<p class="lede">Plan 57, lane AC-WRITE-QTSO, 4 Nov 2026. For the owner to align before we build further.
+Every "works today" claim comes from a recorded run on the <b>db3 test book</b>; the run id is shown.
+Example documents are our own db3 test documents <b>FXT-1104d-1</b> (purchase order, DocKey 12042) and
+<b>FXT-1104d-SO</b> (sales order, DocKey 12038). No customer data.</p>
+
+<p class="legend">
+<span class="badge ok">WORKS TODAY</span>
+<span class="badge wait">WAITING AUTOCOUNT DELETE</span>
+<span class="badge unk">UNKNOWN / NOT POSSIBLE YET</span>
+<span class="badge off">OFF BY OWNER RULE</span>
+</p>
+
+<h2><span class="num">1</span>Four layers</h2>
+<p>The CRM decides <b>what</b> the user wants (business intent). The shared service decides <b>how</b>: it
+turns one intent into safe steps (operations), each step is one write to one document (primitives), and
+only primitives call AutoCount.</p>
+
+<div class="scroll">
+<svg viewBox="0 0 1000 560" role="img" aria-label="CRM intent to SS operations to SS primitives to AutoCount API">
+  <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8a8a94"/></marker></defs>
+
+  <rect class="crm" x="20" y="14" width="960" height="78" rx="10"/>
+  <text x="36" y="40" font-weight="700">CRM: business intent (later CRM lanes)</text>
+  <text x="36" y="62" class="muted">Stock Debt snapshot: "give this PO line to that SO line", "free this PO line", "move it to another SO"</text>
+  <text x="36" y="80" class="muted">Project sales: "send this quotation", "publish this sales order", "amend it", "cancel it"</text>
+
+  <path class="arrow" d="M500 92 L500 122" marker-end="url(#ah)"/>
+  <text x="512" y="113" class="muted">one gateway call, with an idempotency key</text>
+
+  <rect class="box" x="20" y="126" width="960" height="150" rx="10"/>
+  <text x="36" y="150" font-weight="700">Shared service: OPERATIONS (sequence steps, own recovery)</text>
+  <text x="36" y="178">Split link (part of a PO line to an SO line)</text><text x="420" y="178" class="t-ok">WORKS TODAY (C03, C08)</text>
+  <text x="36" y="200">Link whole line, Unlink, Relink to another SO (and SPO versions)</text><text x="520" y="200" class="t-wait">WAITING AUTOCOUNT DELETE</text>
+  <text x="36" y="222">Create / edit quotation and sales order</text><text x="420" y="222" class="t-ok">WORKS TODAY (P-QT1, P-QT2, P-SO0, P-SO1)</text>
+  <text x="36" y="244">Remove a quotation / sales order line</text><text x="420" y="244" class="t-wait">WAITING AUTOCOUNT DELETE</text>
+  <text x="36" y="266">Cancel a quotation / sales order</text><text x="420" y="266" class="t-unk">NOT POSSIBLE YET (P-CX1, P-CX3, AQ2)</text>
+
+  <path class="arrow" d="M500 276 L500 306" marker-end="url(#ah)"/>
+  <text x="512" y="297" class="muted">each step = one primitive</text>
+
+  <rect class="box" x="20" y="310" width="960" height="120" rx="10"/>
+  <text x="36" y="334" font-weight="700">Shared service: PRIMITIVES per document (Quotation, Sales Order, Purchase Order, Shipping PO)</text>
+  <text x="36" y="360">create document, edit document (header, qty, location, price), add line</text><text x="560" y="360" class="t-ok">WORKS TODAY (see table)</text>
+  <text x="36" y="382">delete line</text><text x="560" y="382" class="t-wait">WAITING AUTOCOUNT DELETE (AQ23)</text>
+  <text x="36" y="404">cancel document</text><text x="560" y="404" class="t-unk">NOT POSSIBLE YET (AQ2)</text>
+  <text x="36" y="424" class="muted">delete document: built, switched off, nothing calls it (owner: never delete; cancel is how a document ends)</text>
+
+  <path class="arrow" d="M500 430 L500 460" marker-end="url(#ah)"/>
+  <text x="512" y="451" class="muted">every write: db3 only, fresh read first, read back after, logged exactly</text>
+
+  <rect class="box" x="20" y="464" width="960" height="82" rx="10"/>
+  <text x="36" y="488" font-weight="700">AutoCount API (hapi wrapper)</text>
+  <text x="36" y="510" class="muted">POST NewQuotation / NewSalesOrder / NewPurchaseOrder, PUT Edit...bydockey, GET ...bydocdate</text>
+  <text x="36" y="530" class="muted">Coming from AutoCount: a DELETE for lines (shape not known yet, AQ23)</text>
+</svg>
+</div>
+
+<h3>Primitive status per document (db3 evidence)</h3>
+<div class="scroll">
+<table>
+<tr><th>Primitive</th><th>Quotation</th><th>Sales Order</th><th>Purchase Order</th><th>Shipping PO</th></tr>
+<tr><td>Create</td>
+<td><span class="badge ok">WORKS</span><span class="ev">P-QT1 FXT-1104q-QT1</span></td>
+<td><span class="badge ok">WORKS</span><span class="ev">C00 FXT-1104d-SO, P-SO0</span></td>
+<td><span class="badge ok">WORKS</span><span class="ev">C01 FXT-1104d-1</span></td>
+<td><span class="badge unk">REFUSED BY AUTOCOUNT</span><span class="ev">plan 55: 400 or rows dropped (AQ14a)</span></td></tr>
+<tr><td>Edit (header, qty, location, price)</td>
+<td><span class="badge ok">WORKS</span><span class="ev">P-QT2: every change applied</span></td>
+<td><span class="badge ok">WORKS</span><span class="ev">P-SO1 (door not in AutoCount's notes, AQ33)</span></td>
+<td><span class="badge ok">WORKS</span><span class="ev">C03 qty cut, P4 location move</span></td>
+<td><span class="badge unk">UNKNOWN</span><span class="ev">db3 has no SPO to test</span></td></tr>
+<tr><td>Add line</td>
+<td><span class="badge ok">WORKS</span><span class="ev">P-QT2 row 12063</span></td>
+<td><span class="badge ok">WORKS</span><span class="ev">P-SO1 row 12075</span></td>
+<td><span class="badge ok">WORKS</span><span class="ev">C03 row 12046 (linked rows land at HQ)</span></td>
+<td><span class="badge unk">UNKNOWN</span><span class="ev">AQ13, AQ14a</span></td></tr>
+<tr><td>Delete line</td>
+<td colspan="4"><span class="badge wait">WAITING AUTOCOUNT DELETE</span><span class="ev">built against the expected shape and a fake AutoCount; switch on = flip flag + one db3 run (AQ23-AQ30)</span></td></tr>
+<tr><td>Cancel document</td>
+<td><span class="badge unk">NOT POSSIBLE YET</span><span class="ev">P-CX1: Cancelled "T" answered 200, nothing changed</span></td>
+<td><span class="badge unk">NOT POSSIBLE YET</span><span class="ev">P-CX3: same</span></td>
+<td><span class="badge unk">UNKNOWN</span><span class="ev">AQ2</span></td>
+<td><span class="badge unk">UNKNOWN</span><span class="ev">AQ2</span></td></tr>
+<tr><td>Delete document</td>
+<td colspan="4"><span class="badge off">OFF BY OWNER RULE</span><span class="ev">never deleted; the primitive exists only so the shape is ready</span></td></tr>
+</table>
+</div>
+
+<h2><span class="num">2</span>Each operation, step by step</h2>
+<p>The example purchase order <b>FXT-1104d-1</b> today holds (row number, item, qty, location, linked SO row):</p>
+<div class="scroll">
+<table>
+<tr><th>PO row</th><th>Item</th><th>Qty</th><th>Location</th><th>Linked to</th></tr>
+<tr><td class="mono">12043</td><td>SRTKT38SS</td><td>35</td><td>HQ</td><td>nothing</td></tr>
+<tr><td class="mono">12044</td><td>SRTKT38SS</td><td>10</td><td>HQ</td><td>nothing</td></tr>
+<tr><td class="mono">12046</td><td>SRTKT38SS</td><td>10</td><td>BRW-AM</td><td>FXT-1104d-SO row 12039</td></tr>
+<tr><td class="mono">12048</td><td>SRTKT38SS</td><td>5</td><td>BRW-AM</td><td>FXT-1104d-SO row 12040</td></tr>
+</table>
+</div>
+<p>Sales order FXT-1104d-SO rows: 12039 (10, BRW-AM), 12040 (5, BRW-AM), 12041 (10, BRW-AM).</p>
+
+<div class="callout"><b>Before every operation</b> the service checks, and refuses without writing anything when one fails:
+same item and unit; the SO line still needs that qty; the PO line is not on a Shipping PO; the received qty is
+known (section 3); nobody else is writing that document right now; the document has not changed since the CRM
+read it; the idempotency key is new (a repeated key returns the first answer and writes nothing).</div>
+
+<h3>Split link: give 5 of row 12043 to SO row 12041 <span class="badge ok">WORKS TODAY</span></h3>
+<ol class="steps">
+<li>One edit: cut row 12043 from 35 to 30 and add a new 5 row linked to SO row 12041, in the same call.
+AutoCount puts the new row at HQ. <span class="ev">C03, C08</span></li>
+<li>Move the new row to BRW-AM (the SO line's location). <span class="ev">P4</span>
+<span class="fail">If the move fails:</span> the link stands; answer "done, location not moved"; the user retries the move.</li>
+<li>Answer the CRM with what AutoCount read back, and push the refreshed PO to the CRM.</li>
+</ol>
+
+<h3>Link whole line: row 12044 (10, HQ) to SO row 12041 <span class="badge wait">WAITING AUTOCOUNT DELETE</span></h3>
+<p>Today AutoCount answers 200 but ignores a link on an existing line (P10a), and has told us a link can never be changed on an existing line.</p>
+<ol class="steps">
+<li>Keep a snapshot of row 12044 (every field).</li>
+<li>Delete row 12044. <span class="fail">If it fails:</span> nothing changed; answer "refused" or "AutoCount error".</li>
+<li>Add a new row: same item, qty, price, description, delivery date, linked to SO row 12041. AutoCount puts it at HQ and gives it a new row number.
+<span class="fail">If it fails:</span> <b>recovery</b> adds row 12044's copy back (unlinked, HQ). Answer "recovered": the line is as before, under a new row number.</li>
+<li>Move the new row to BRW-AM. <span class="fail">If it fails:</span> answer "done, location not moved".</li>
+<li>Answer: "row 12044 is now row N", and push the PO with "row N replaces row 12044" (section 4).</li>
+</ol>
+
+<h3>Unlink: free row 12046 (10, BRW-AM, linked to SO row 12039) <span class="badge wait">WAITING AUTOCOUNT DELETE</span></h3>
+<ol class="steps">
+<li>Snapshot row 12046.</li>
+<li>Delete row 12046.</li>
+<li>Add a new 10 row at BRW-AM with no link. <span class="fail">If it fails:</span> recovery adds the linked copy back (lands at HQ) and moves it to BRW-AM. Answer "recovered".</li>
+<li>Answer "row 12046 is now row N"; push the PO.</li>
+</ol>
+
+<h3>Relink: move row 12048 (5, linked to SO row 12040) to SO row 12041 <span class="badge wait">WAITING AUTOCOUNT DELETE</span></h3>
+<ol class="steps">
+<li>Snapshot row 12048, delete it, add a 5 row linked to SO row 12041 (lands at HQ), move it to BRW-AM.</li>
+<li><span class="fail">If the add fails:</span> recovery re-adds the old link to SO row 12040 and moves it back to BRW-AM.</li>
+<li>If row 12048 were on a Shipping PO line, the relink is refused until that SPO line is released first (plan 55 rule kept).</li>
+</ol>
+
+<h3>When recovery also fails: "needs attention"</h3>
+<div class="card">
+<p>If the line was deleted and both the new line and the re-created original are refused, AutoCount no longer has
+that line. The service then: marks the operation <b>needs attention</b>; keeps the snapshot; emails the AutoCount
+alert recipients once, naming the exact line to re-key (e.g. "PO FXT-1104d-1: SRTKT38SS 10 UNIT at BRW-AM,
+linked to FXT-1104d-SO row 12039"); never retries on its own. A <b>Resume</b> action reads AutoCount again and
+re-creates the line only if it is still missing, so a lost answer can never double a line.</p>
+</div>
+
+<h3>Quotation and sales order</h3>
+<div class="grid2">
+<div class="card"><b>Create</b> <span class="badge ok">WORKS TODAY</span>
+<ol class="steps">
+<li>Check the header and every line are complete (debtor, date, terms, currency, item, unit, qty, price, location).</li>
+<li>Send it. AutoCount answers with the new number and key (P-DOC2: "DocNo=QT-000001, DocKey=12069"), or numbers it itself when we send "&lt;&lt;New&gt;&gt;".</li>
+<li>Read it back; every line must be there. <span class="fail">Lines missing:</span> "mismatch", never "done". <span class="fail">Timeout:</span> "pending"; resume reads back, never re-sends.</li>
+</ol></div>
+<div class="card"><b>Edit</b> <span class="badge ok">WORKS TODAY</span>
+<ol class="steps">
+<li>Refuse if cancelled, changed since the CRM read it, or a field outside the allowed list.</li>
+<li>Send only the changed lines with the full header.</li>
+<li>Read back; any change AutoCount ignored makes the answer "mismatch" and names the field.</li>
+</ol>
+<p><b>Remove a line</b> <span class="badge wait">WAITING AUTOCOUNT DELETE</span><br>
+<b>Cancel</b> <span class="badge unk">NOT POSSIBLE YET</span> (P-CX1, P-CX3, AQ2): refused with "AutoCount does not support this yet".</p>
+<p><b>Quotation to sales order:</b> the SO keeps "from quotation FXT-1104q-QT1" but AutoCount does not record which quotation line (P-SO0, AQ31): answered as done with a warning.</p></div>
+</div>
+
+<h2><span class="num">3</span>Received and delivered lines (owner ruling Q2 a)</h2>
+<div class="card">
+<p><b>Rule.</b> A line fully received (GRN) or delivered (DO): refuse "line already received". Partly received:
+never delete; cut the original line to the received qty (it keeps its current link) and put the open remainder on a
+new line with the new link (or none). Received qty not readable exactly: refuse "receipt state unknown". A one-line
+switch can change this to "refuse any line with any receipt".</p>
+<p><b>Worked example</b> (illustration on row 12043; db3 has no goods receipts): row 12043 holds 35, 20 already received.
+Relink it to SO row 12041:</p>
+<ol class="steps">
+<li>Edit row 12043 from 35 to 20 (the received 20 stay as they were).</li>
+<li>Add a new 15 row linked to SO row 12041 (lands at HQ), then move it to BRW-AM.</li>
+<li>No delete is needed, so this path works with today's API once the received qty is known.</li>
+</ol>
+<p>If all 35 were received: refused. If the received qty cannot be read: refused.</p>
+</div>
+<div class="callout"><b>Important for timing.</b> AutoCount's read API does not return a line's received or transferred
+qty today (AQ11). By this rule every link change on a db3 / API-sourced document is refused "receipt state unknown"
+until AutoCount adds that field, even after the delete door ships. Live companies read over SQL do carry it.</div>
+
+<h2><span class="num">4</span>Row numbers change: how the CRM keeps up</h2>
+<div class="card">
+<p>Delete + add gives the line a <b>new row number</b> (DtlKey); so does a recovery. Anything the CRM pinned to the
+old row (reservations, link claims, notes) must move to the new one. Two paths, both built (owner Q3 a):</p>
+<ol class="steps">
+<li>The answer to the CRM's call lists "old row 12044 is now row N".</li>
+<li>The PO pushed to the CRM marks the new line "replaces db3:12042:12044", so CRM ingest moves the pinned state itself
+even if the CRM's call timed out. This is a new optional field (Sorento contract 2.12); the CRM side is a later CRM lane.</li>
+</ol>
+</div>
+
+<h2><span class="num">5</span>Switches and how they reach CRM buttons</h2>
+<div class="card">
+<p>Each (document, primitive) has an on/off switch in shared-service code, never a setting:
+create / edit / add line on for quotation, sales order and purchase order; delete line, delete document and
+cancel off everywhere; Shipping PO create and add line off. Turning one on = a code change, a review, and a
+recorded db3 run.</p>
+<p><b>Proposal (to build with the gateway slice):</b> the shared service publishes, per company, which operations are
+available and why not (e.g. "Link whole line: waiting for AutoCount delete"). The CRM Stock Debt screen
+(lane AC-LINK-CRM-UI, CRM PR #2168, at plan stage) shows only the buttons that will work, and a disabled one says why.
+When AutoCount ships delete and we flip the switch, the buttons light up with no CRM release. The shared service
+still refuses anything switched off, as a safety net.</p>
+</div>
+
+<h2><span class="num">6</span>Which CRM screen triggers which operation <span class="badge unk">LATER CRM LANES</span></h2>
+<div class="scroll">
+<table>
+<tr><th>CRM screen</th><th>User action</th><th>Operation</th><th>Today</th></tr>
+<tr><td rowspan="4">Stock Debt snapshot (AC-LINK-CRM-UI, #2168)</td><td>Give part of a PO line to an SO line</td><td>Split link</td><td><span class="badge ok">WORKS</span></td></tr>
+<tr><td>Give a whole PO line to an SO line</td><td>Link whole line</td><td><span class="badge wait">WAITING DELETE</span></td></tr>
+<tr><td>Free a PO line</td><td>Unlink</td><td><span class="badge wait">WAITING DELETE</span></td></tr>
+<tr><td>Move a PO line to another SO</td><td>Relink (SPO line released first)</td><td><span class="badge wait">WAITING DELETE</span></td></tr>
+<tr><td rowspan="3">Project sales: quotation</td><td>First "Send to Customer"</td><td>Create quotation</td><td><span class="badge ok">WORKS</span></td></tr>
+<tr><td>Later issued revision</td><td>Edit quotation (+ remove line)</td><td><span class="badge ok">EDIT WORKS</span> <span class="badge wait">REMOVE WAITS</span></td></tr>
+<tr><td>Cancel (new explicit action; "Lost" never cancels)</td><td>Cancel quotation</td><td><span class="badge unk">AQ2</span></td></tr>
+<tr><td rowspan="3">Project sales: sales order</td><td>Publish (replaces the CSV import file)</td><td>Create sales order</td><td><span class="badge ok">WORKS</span></td></tr>
+<tr><td>Publish an amendment (replaces the change-list sheet)</td><td>Edit sales order (+ remove line)</td><td><span class="badge ok">EDIT WORKS</span> <span class="badge wait">REMOVE WAITS</span></td></tr>
+<tr><td>Cancel (new explicit action)</td><td>Cancel sales order</td><td><span class="badge unk">AQ2</span></td></tr>
+</table>
+</div>
+<p class="ev">The trigger points are recommendations from card 1; each CRM lane decides them in its own card.</p>
+
+<h2><span class="num">7</span>What we still need from AutoCount</h2>
+<div class="scroll">
+<table>
+<tr><th>Ask</th><th>Why it matters</th><th>Ref</th></tr>
+<tr><td>The delete door: path, method, body (DocKey + row key), for lines and documents</td><td>Unlocks link whole line, unlink, relink, remove line</td><td>AQ23</td></tr>
+<tr><td>Delete + add in ONE call</td><td>A relink could then never leave a line missing between two calls</td><td>AQ24</td></tr>
+<tr><td>Delete refused on received / linked lines, with a clear error</td><td>A second safety net behind our own check</td><td>AQ25</td></tr>
+<tr><td>Received / transferred qty on the read API</td><td>Without it every link change is refused "receipt state unknown"</td><td>AQ11</td></tr>
+<tr><td>A cancel (and un-cancel) door</td><td>Cancel is the only way a document ends; the header flag is ignored today</td><td>AQ2, AQ32</td></tr>
+<tr><td>A new linked line keeps the location we send</td><td>Saves the second "move" write and its failure case</td><td>AQ29</td></tr>
+<tr><td>Quotation line recorded on a sales order line</td><td>Shows which quotation lines turned into orders</td><td>AQ31</td></tr>
+<tr><td>Confirm the sales order edit door; a read-one-document-by-key door</td><td>Supported use; simpler reads</td><td>AQ33, AQ3</td></tr>
+<tr><td>Cancel our db3 test documents (including a quotation our probe numbered SO390188 by mistake)</td><td>Clean test book</td><td>AQ34</td></tr>
+</table>
+</div>
+
+<h2>Points to confirm</h2>
+<div class="card">
+<ol class="steps">
+<li>Section 3 callout: link changes stay refused on API-sourced documents until AutoCount returns received qty (AQ11). OK, or accept AutoCount's own refusal (AQ25) as the check for API documents?</li>
+<li>Section 5: build the "available operations" feed so the CRM shows only working buttons. OK?</li>
+<li>Link whole line moves the new line to the SO line's location (plan 55 rule); unlink keeps the line where it was. OK?</li>
+</ol>
+</div>
+
+</main>
+</body>
+</html>
