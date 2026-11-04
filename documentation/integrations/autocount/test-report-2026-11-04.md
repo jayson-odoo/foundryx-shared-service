@@ -110,35 +110,65 @@ Run tag 1104a. PASS 4 (C05, C06, C09, C12), FAIL 2 (C01, C07), SKIPPED 6.
   added as well: status 200 `Created Successful` (DocNo FXT-PROBE-1, DocKey 12023) but the document reads
   back with `Details []`: both rows were dropped with no error. FXT-PROBE-1 is an empty leftover.
 
+## Run 3 probes (P1-P3)
+
+Direct calls to db3 only, outside the suite, with the same body builders as the suite (header fields as
+read back, only the touched row, no date below 1753). Header fields not shown are the creditor's header
+as read back (DocKey, DocNo, DocDate, CreditorCode, DisplayTerm C.O.D., CurrencyCode CNY, CurrencyRate 0.6,
+blank remarks).
+
+### P1 Unlink with the link's own fields (Q8): not honoured
+
+- Before, PO 202602-S0007 row 12013: `Qty 10, Location HQ, FromSODtlKey 11993, FromSODocList "SO389293",
+  FromDocType "", FromDocNo "", FromDocDtlKey 0, DeliveryDate "0001-01-01T00:00:00"`.
+- PUT `/EditPurchaseOrderbydockey` -> status 200, `DocNo=202602-S0007 ,DocKey=12008 ... Done Edit.`
+  - request row: `{"DtlKey":12013,"ItemCode":"SRTKS7090","Location":"HQ","UOM":"UNIT","UserUOM":"UNIT","Qty":10.0,"FOCQty":0.0,"UnitPrice":0.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0,"FromSODtlKey":0,"FromSODocList":"","FullTransferOption":" ","FullTransferFromDocList":""}`
+- After: unchanged, `FromSODtlKey 11993, FromSODocList "SO389293"`.
+- P1b, the same row with `FromDocType "SO"`, `FromDocNo ""`, `FromDocDtlKey 0` (and `FromSODtlKey 0`,
+  `FromSODocList ""`): status 200 `Done Edit.`; After: unchanged, `FromSODtlKey 11993`.
+
+### P2 Link on edit of an existing row (Q7): accepted, link ignored, location kept
+
+- Before, FXT-1104b-1 (DocKey 12024) row 12026: `Qty 10, Location HQ, FromSODtlKey 0, FromDocType ""`.
+- PUT `/EditPurchaseOrderbydockey` -> status 200, `DocNo=FXT-1104b-1 ,DocKey=12024 ... Done Edit.`
+  - request row: `{"DtlKey":12026,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","UserUOM":"UNIT","Qty":10.0,"FOCQty":0.0,"UnitPrice":1.0,"DeliveryDate":"2026-11-04T00:00:00","FromDocType":"SO","FromDocNo":"SO389293","FromDocDtlKey":11992,"FullTransferOption":" ","FullTransferFromDocList":""}`
+- After: row 12026 `Location BRW-AM` (kept), `FromSODtlKey 0`, `FromSODocList ""`, `FromDocType ""`: NOT linked.
+  Rows 12025 (40 HQ, unlinked) and 12028 (10 HQ, linked to 11989) unchanged.
+
+### P3 SPO create (Q13, Q14a): refused
+
+- POST `/NewPurchaseOrder` with `ShippingPO "T"`, DocNo FXT-1104b-S1, one row
+  `{"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","UserUOM":"UNIT","Qty":10,"FOCQty":0,"UnitPrice":1.0,"DeliveryDate":"2026-11-04T00:00:00","FromDocType":"PO","FromDocNo":"FXT-1104b-1","FromDocDtlKey":12028,"FullTransferOption":" ","FullTransferFromDocList":""}`
+  -> status 400, `{"Message": "PO is not valid value to FromDocType."}`.
+- After: FXT-1104b-S1 does not exist; FXT-1104b-1 unchanged. Not retried with another value, as agreed.
+
 ## Observations for AutoCount
 
 Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
 
-1. **Location on transfer (Q9): the vendor overrides the row location.** C03 sent the new split row with
-   `Location "BRW-AM"` (the SO row's location) and `FromDocType "SO"`, `FromDocNo "SO389293"`,
-   `FromDocDtlKey 11989`. The PUT answered 200 and the row read back `Location "HQ"` with
-   `FromSODtlKey 11989`. The edited row kept `HQ`. So the link was accepted but the location we sent was
-   not kept. We need rows to keep the location we send, or a documented way to set it.
-2. **Unlink is not honoured (Q8): C07 PUT answered 200 but nothing changed.** Row 12013 was sent with
-   `FromDocType ""`, `FromDocNo ""`, `FromDocDtlKey 0` and read back unchanged: `FromSODtlKey 11993`,
-   `FromSODocList "SO389293"`. Note that linked rows read back `FromDocType ""`, `FromDocNo ""`,
-   `FromDocDtlKey 0` already, so those three fields never carry the link on a PO row; the link lives in
-   `FromSODtlKey` / `FromSODocList`. How is a PO row unlinked from its SO row on edit (send
-   `FromSODtlKey 0`? remove and re-add the row)?
-3. **Link on edit of an existing row (Q7): not exercised cleanly.** C03 linked through a NEW row
-   (`DtlKey 0`): accepted, read back `FromSODtlKey 11989`, `FromSODocList "SO389293"`, but with the
-   location overridden (item 1) and `DeliveryDate "0001-01-01T00:00:00"` although we had sent a valid
-   date (the edited row kept 2026-11-04). C04 (link an existing row in place) was SKIPPED because C03
-   failed, so Q7 for `DtlKey > 0` is still open.
-4. **ShippingPO on create and the SPO link (Q13, Q14a): not observed.** C10 and C11 were SKIPPED (their
-   prerequisite C03 failed), so we do not yet know whether `ShippingPO "T"` is honoured on create or how
-   an SPO row links to a PO row.
-5. **Empty dates (Q21):** run 1, C07, see the summary above. In run 2 omitting the empty date made the
-   PUT succeed (status 200). Is omitting the field the right way to leave a date empty?
-6. **Create body requirements (Q22):** run 1, C01, see the summary above. In run 2 a body built from the
-   creditor's existing PO header (DisplayTerm, CurrencyCode, CurrencyRate) plus complete rows created
-   FXT-1104b-1 with both rows (status 200, 2 rows read back). A POST that silently drops rows should return
-   an error instead.
+1. **Location on transfer (Q9).** A NEW row sent with `Location "BRW-AM"` and `FromDocType "SO"` links
+   (status 200, `FromSODtlKey 11989`) but reads back `HQ` (run 2, C03). An EXISTING row edited with a new
+   location keeps it (P2: row 12026 became `BRW-AM`), but then the link is not applied (item 3). So we can
+   either link (location overridden) or move (no link), never both in one PUT. Can the transfer keep the
+   location we send?
+2. **Unlink (Q8): no way found.** C07 and P1 both answer status 200 `Done Edit.` and change nothing, also
+   when `FromSODtlKey 0` and `FromSODocList ""` are sent (P1) and with `FromDocType "SO"` and a blank
+   `FromDocNo` (P1b). Linked PO rows read back `FromDocType ""`, `FromDocNo ""`, `FromDocDtlKey 0`, so
+   the link is kept only in `FromSODtlKey` / `FromSODocList`. How is a PO row unlinked from its SO row
+   (remove the row, or a different field or endpoint)? Please also return an error instead of 200 when an
+   edit changes nothing.
+3. **Link on edit of an existing row (Q7): not applied.** P2 answered status 200 `Done Edit.`, applied the
+   location, and ignored `FromDocType "SO"`, `FromDocNo`, `FromDocDtlKey` (row stayed `FromSODtlKey 0`).
+   Linking worked only on a new row (`DtlKey 0`, run 2 C03). Is that intended?
+4. **ShippingPO on create (Q13, Q14a).** `POST /NewPurchaseOrder` with `ShippingPO "T"` and a row
+   `FromDocType "PO"` is refused: status 400 `PO is not valid value to FromDocType.` (P3). What
+   `FromDocType` value links an SPO row to a PO row, and is `ShippingPO "T"` accepted on create? Run 2
+   C10/C11 were SKIPPED so the SPO flow is still unobserved.
+5. **Empty dates (Q21).** In run 1 an echoed `DeliveryDate "0001-01-01T00:00:00"` gave status 500
+   `SqlDateTime overflow`; omitting it works (run 2, P1, P2). The split row created through the SO link
+   reads back `DeliveryDate "0001-01-01T00:00:00"` although we sent no empty date (C03).
+6. **Create body requirements (Q22).** A complete header (DisplayTerm, CurrencyCode, CurrencyRate) and
+   complete rows are needed; a POST that silently drops incomplete rows (run 1) should return an error.
 7. Vendor remark in the SO GET about `YourPODate` ("need to change to valid date") fits finding 5.
 8. Refusals C05, C06 and C09 and the guard C12 are local and sent no write.
 
@@ -152,4 +182,6 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
   The PO total of 60 is conserved.
 - SO389293 rows 11989 and 11993 are unchanged (qty 10, BRW-AM).
 - FXT-PROBE-1 (DocKey 12023) exists with no rows. No SPO was created.
+- After run 3: PO 202602-S0007 is still unchanged (P1 and P1b had no effect). FXT-1104b-1 row 12026 now
+  reads `Location BRW-AM` (P2), still unlinked. FXT-1104b-S1 does not exist.
 - Test documents left in db3: FXT-PROBE-1 (empty) and FXT-1104b-1 (three rows). They can be deleted.
