@@ -689,20 +689,22 @@ Newest first, paged like the list. `{ "data": [ { "id", "versionNumber", "publis
   "id": "run_example_1",
   "workflowId": "wf_example_1",
   "status": "failed",
-  "triggeredBy": "entity.shortcut",
+  "triggeredBy": "event",
   "actorId": "apikey:key_example_1",
   "error": null,
   "startedAt": "2026-11-04T08:01:00Z",
   "finishedAt": "2026-11-04T08:01:02Z",
   "nodes": [
-    { "nodeId": "n1", "nodeType": "entity.shortcut", "status": "succeeded", "input": null, "output": {}, "error": null },
-    { "nodeId": "n2", "nodeType": "http.request", "status": "failed", "input": { "url": "https://example.com/hook", "headers": "[redacted]" }, "output": null, "error": "…" },
+    { "nodeId": "n1", "nodeType": "entity.shortcut", "status": "success", "input": null, "output": {}, "error": null },
+    { "nodeId": "n2", "nodeType": "http.request", "status": "failed", "input": { "config": { "url": "https://example.com/hook", "headers": [ { "key": "X-Token", "value": "***" } ] }, "resolved": { "url": "https://example.com/hook" } }, "output": null, "error": "…" },
     { "nodeId": "n3", "nodeType": "omnichannel.add_tag", "status": "skipped", "input": null, "output": null, "error": null }
   ]
 }
 ```
 
-A run item has `id`, `workflowId`, `status`, `triggeredBy`, `actorId` (`apikey:<keyId>` when started through a key, else `null`), `error`, `startedAt` and `finishedAt` (`null` until set). A node's `input` and `output` are the stored trace; fields that carry secrets, such as the values of `http.request` headers, are masked in it.
+A run item has `id`, `workflowId`, `status`, `triggeredBy`, `actorId` (`apikey:<keyId>` when started through a key, else `null`), `error`, `startedAt` and `finishedAt` (`null` until set). `status` is one of `pending`, `running`, `waiting`, `success`, `failed`, `cancelled`; a node `status` is `pending`, `running`, `success`, `failed` or `skipped`. A node's `input` is `{ "config", "resolved" }`: the node's saved config, and `resolved`, the merge-token fields as rendered for this run (absent when there are none). Fields that carry secrets are masked in `config`: the `value` of each `http.request` header row reads `"***"` and its `key` stays. Trigger nodes have `input` `null`.
+
+A run that is refused before any node executes has status `failed`, no node results, and an `error` that starts with a code: `node_not_allowed: …` (a node type outside the list below) or `record_not_in_workspace: …` (the contact, or the event the run started from, is outside the workflow's workspace). A node that touches a record outside the workspace at run fails with an `error` starting `record_not_in_workspace`.
 
 ### Run a workflow for one contact - `POST /api/v1/omnichannel/workflows/{id}/runs`
 
@@ -715,7 +717,7 @@ Starts the **published** version of an owned, active workflow whose trigger is t
 * `contact` is 1 to 200 characters and follows the `{identifier}` convention of section 6a (`phone:<e164>`, `id:<uuid>` or a bare id). It is **find-only**: a contact that is not in your workspace answers `404 contact_not_found` and no contact is created.
 * `inputs` is optional: an object of at most **20 keys**, each key matching `^[A-Za-z][A-Za-z0-9_]{0,39}$`, each value a **string of at most 1000 characters**. Each pair is available to the workflow as `trigger.input.<key>` (for the example, `trigger.input.orderRef`). Anything else answers `422 invalid_request` and no run is created.
 * Answers `202` with the run item (above, without `nodes`). The run proceeds after the answer; read it with the run routes.
-* Checks run in this order, and the first failure is the answer: the workflow is yours (`404 not_found`), `inputs` (`422 invalid_request`), the contact (`404 contact_not_found`), then whether the workflow can run now: `409 workflow_not_runnable` with `details.reason` set to `unpublished`, `inactive` or `trigger` (the trigger is not the contact shortcut). A workflow whose run key is built from an input or contact value that comes out empty answers `422 invalid_request` naming the missing input; send that input and retry.
+* Checks run in this order, and the first failure is the answer: the workflow is yours (`404 not_found`), `inputs` (`422 invalid_request`), the contact (`404 contact_not_found`), then whether the workflow can run now: `409 workflow_not_runnable` with `details.reason` set to `unpublished`, `inactive` or `trigger` (the trigger is not the contact shortcut). A workflow whose run key renders empty for this contact and these `inputs` answers `422 invalid_request` with the message "This workflow needs a value for its run key. Send the input the key is built from." (it does not name the input); send the input the workflow's key uses and retry.
 
 ### What a key may put in a workflow
 
@@ -725,14 +727,14 @@ Only these node types. Anything else is refused with `422 node_not_allowed`, nam
 * **Actions:** `omnichannel.get_contact`, `omnichannel.send_message`, `omnichannel.add_tag`, `omnichannel.remove_tag`, `omnichannel.update_field`, `omnichannel.update_lifecycle`, `omnichannel.open_conversation`, `omnichannel.close_conversation`, `omnichannel.add_comment`, `omnichannel.ask_question`, `omnichannel.wait`, `omnichannel.business_hours`, `http.request`.
 * **Branch:** `if`.
 
-A definition must have `schemaVersion` `1` (`422 invalid_definition` otherwise) and the structure the catalog describes (`422 invalid_definition` with the problem named).
+A definition must have `schemaVersion` `1` (`422 invalid_definition` with `details.field` `schemaVersion` otherwise). A body that does not parse as a workflow definition at all answers `422 invalid_request` ("draftDefinition is not a valid workflow definition."). `invalid_definition` is used for the schemaVersion, workspace pinning and header problems, and for problems the publish check names.
 
 ### Workspace pinning
 
 A workflow stays inside its owner workspace.
 
 * **At save, publish and validate:** every literal id in a node's config (channel, tag, contact field, lifecycle stage, close reason, template, contact, member) must belong to your workspace, else `422 invalid_definition` with `details.nodeId` and `details.field`. The workspace of a trigger is set by the server to your workspace.
-* **At run:** an id that arrives through a merge token or a record is checked when the node runs. A record outside the workspace fails that node with an error starting `record_not_in_workspace`, and nothing is sent or written.
+* **At run:** an id that arrives through a merge token or a record is checked when the node runs. A record outside the workspace fails that node with an error starting `record_not_in_workspace`, and nothing is sent or written. A run whose trigger contact, or whose trigger event, belongs to another workspace is refused before any node executes with the run `error` `record_not_in_workspace: …`; this includes a test run started by staff with another workspace's event.
 * **Events:** an owned workflow fires only on events of its own workspace.
 
 ### Outbound URLs - `http.request`
@@ -741,9 +743,9 @@ The `http.request` node calls a URL you control. The rule is the one the consume
 
 * `https://` only. The address is checked before the call and again when the connection is made.
 * Redirects are not followed.
-* Request headers that change the framing or route of the request are refused: `Host`, `Connection`, `Content-Length`, `Transfer-Encoding`, `TE`, `Upgrade`, `Keep-Alive`, `Trailer`, `Expect` and any `Proxy-*`. A definition that sets one is refused at save, validate and publish with `422 invalid_definition` (`details.field` `headers`), and the node refuses it at run.
+* Request headers that change the framing or route of the request are refused: `Host`, `Connection`, `Content-Length`, `Transfer-Encoding`, `TE`, `Upgrade`, `Keep-Alive`, `Trailer`, `Expect`, `Forwarded`, `X-Forwarded-Host`, `X-Original-URL`, `X-Rewrite-URL` and any `Proxy-*`. A definition that sets one is refused at save, validate and publish with `422 invalid_definition` (`details.field` `headers`), and the node refuses it at run.
 * The request asks for no content encoding. At most one `gzip` or `deflate` layer of a response is decoded, within the cap; any other encoding fails the node.
-* The node has a deadline, `timeoutSeconds` (default 10 seconds, at most 30), that covers the whole exchange including the response headers.
+* The node has a deadline, `timeoutSeconds` (default 10 seconds, at most 30), that covers the whole exchange: resolving the name, connecting (at most 4 resolved addresses are tried) and the response headers and body.
 * A response is read up to 256 KB; the cap counts the bytes received.
 * A target is refused when it is, or a public-looking name resolves to, a loopback address (`127.0.0.1`, `[::1]`), an RFC 1918 private address (`10.0.0.1`, `172.16.0.1`, `192.168.0.1`), a link-local address (`169.254.169.254`, `[fe80::1]`), shared address space (`100.64.0.0/10`, for example `100.64.0.1` and `100.127.255.254`), an IPv6 unique local address (`[fd00::1]`), an IPv6 site-local address (`fec0::/10`), the IPv4-mapped forms of these (`[::ffff:10.0.0.1]`, `[::ffff:100.64.0.1]`), or another reserved, multicast or unspecified address. `localhost` and `.local` names are refused too.
 * A refused target fails the node with the guard's message, the nodes after it are `skipped`, and no connection is attempted. The URL is checked when the node runs, so a URL taken from `inputs` is checked then.
