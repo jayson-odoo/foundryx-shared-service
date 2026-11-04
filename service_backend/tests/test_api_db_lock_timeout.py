@@ -346,14 +346,15 @@ def test_live_postgres_lock_timeout_surfaces_as_55p03():
 
     from app.db_errors import error_code_of
 
+    dbname = f"foundryx_lockprobe_{uuid.uuid4().hex[:8]}"
     try:
         admin = create_engine("postgresql://localhost/postgres", isolation_level="AUTOCOMMIT")
         with admin.connect() as c:
-            c.execute(text("DROP DATABASE IF EXISTS foundryx_lockprobe"))
-            c.execute(text("CREATE DATABASE foundryx_lockprobe"))
+            c.execute(text(f"DROP DATABASE IF EXISTS {dbname}"))
+            c.execute(text(f"CREATE DATABASE {dbname}"))
     except Exception as exc:  # noqa: BLE001 - no local Postgres: skip
         pytest.skip(f"no local Postgres to probe: {exc!r}")
-    url = "postgresql://localhost/foundryx_lockprobe"
+    url = f"postgresql://localhost/{dbname}"
     a = create_engine(url)
     b = create_engine(url, connect_args={"options": "-c lock_timeout=1000"})
     try:
@@ -374,5 +375,149 @@ def test_live_postgres_lock_timeout_surfaces_as_55p03():
         a.dispose()
         b.dispose()
         with admin.connect() as c:
-            c.execute(text("DROP DATABASE IF EXISTS foundryx_lockprobe"))
+            c.execute(text(f"DROP DATABASE IF EXISTS {dbname}"))
         admin.dispose()
+
+
+# ---- f. live Postgres: the real engine args, handler and opt-out ----------
+
+
+@pytest.fixture
+def live_pg(monkeypatch):
+    """Scratch Postgres database + an engine built with the app's REAL
+    connect args as the API process with a 1 s lock limit. Skips without a
+    local Postgres."""
+    from sqlalchemy import create_engine, text
+
+    from app import database
+    from app.config import settings
+
+    dbname = f"foundryx_lockprobe_{uuid.uuid4().hex[:8]}"
+    try:
+        admin = create_engine("postgresql://localhost/postgres", isolation_level="AUTOCOMMIT")
+        with admin.connect() as c:
+            c.execute(text(f"DROP DATABASE IF EXISTS {dbname}"))
+            c.execute(text(f"CREATE DATABASE {dbname}"))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"no local Postgres to probe: {exc!r}")
+    url = f"postgresql://localhost/{dbname}"
+    monkeypatch.setattr(database, "process_application_name", lambda: "foundryx-api")
+    for name in (
+        "worker_db_statement_timeout_seconds",
+        "worker_db_lock_timeout_seconds",
+        "worker_db_idle_in_transaction_session_timeout_seconds",
+    ):
+        monkeypatch.setattr(settings, name, 0)
+    monkeypatch.setattr(settings, "api_db_lock_timeout_seconds", 1)
+    engine = database.build_engine(url)
+    other = create_engine(url)
+    with other.begin() as c:
+        c.execute(text("CREATE TABLE t (id int PRIMARY KEY, v int)"))
+        c.execute(text("INSERT INTO t VALUES (1, 0)"))
+    holder = other.connect()
+    holder.execute(text("SELECT * FROM t WHERE id = 1 FOR UPDATE"))
+    try:
+        yield SimpleNamespace(engine=engine, holder=holder)
+    finally:
+        holder.close()
+        engine.dispose()
+        other.dispose()
+        with admin.connect() as c:
+            c.execute(text(f"DROP DATABASE IF EXISTS {dbname}"))
+        admin.dispose()
+
+
+def _update(session):
+    from sqlalchemy import text
+
+    session.execute(text("UPDATE t SET v = v + 1 WHERE id = 1"))
+
+
+def _show_limit(session):
+    from sqlalchemy import text
+
+    return session.execute(text("SHOW lock_timeout")).scalar()
+
+
+def test_live_session_update_hits_the_api_lock_limit(live_pg):
+    import time
+
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+
+    from app.db_errors import error_code_of
+
+    session = Session(live_pg.engine)
+    started = time.monotonic()
+    with pytest.raises(DBAPIError) as caught:
+        _update(session)
+    elapsed = time.monotonic() - started
+    session.rollback()
+    session.close()
+    assert error_code_of(caught.value) == "55P03"
+    assert 0.8 < elapsed < 3, elapsed
+
+
+def test_live_lock_timeout_through_the_real_handler_is_503(live_pg):
+    from app.main import app
+    from sqlalchemy.orm import Session
+
+    def touch():
+        session = Session(live_pg.engine)
+        try:
+            _update(session)
+        finally:
+            session.close()
+
+    before = len(app.router.routes)
+    app.add_api_route("/_lockprobe/live", touch, methods=["GET"])
+    try:
+        res = TestClient(app, raise_server_exceptions=False).get(
+            "/_lockprobe/live", headers=ORIGIN
+        )
+    finally:
+        del app.router.routes[before:]
+    assert res.status_code == 503, res.text
+    assert res.headers["retry-after"].isdigit()
+    assert res.json() == {"detail": BUSY_MESSAGE}
+    assert res.headers["access-control-allow-origin"] == ORIGIN["Origin"]
+
+
+def test_live_opt_out_waits_past_the_limit_then_restores_it(live_pg):
+    import threading
+    import time
+
+    from sqlalchemy.orm import Session
+
+    from app.database import allow_long_lock_wait
+
+    session = Session(live_pg.engine)
+    assert _show_limit(session) == "1s"
+    session.rollback()
+    threading.Timer(2.0, live_pg.holder.commit).start()
+    started = time.monotonic()
+    with allow_long_lock_wait(session):
+        _update(session)
+        session.commit()
+    elapsed = time.monotonic() - started
+    assert elapsed > 1.5, elapsed  # waited past the 1 s limit, then succeeded
+    assert _show_limit(session) == "1s"
+    session.close()
+
+
+def test_live_opt_out_restores_the_limit_after_a_rollback(live_pg):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+
+    from app.database import allow_long_lock_wait
+
+    live_pg.holder.rollback()  # no contention needed here
+    session = Session(live_pg.engine)
+    with allow_long_lock_wait(session):
+        with pytest.raises(DBAPIError):
+            session.execute(text("SELECT 1/0"))
+        session.rollback()
+    assert _show_limit(session) == "1s"
+    assert session.execute(text("SELECT 1")).scalar() == 1
+    session.close()
