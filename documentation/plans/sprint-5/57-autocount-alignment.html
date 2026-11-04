@@ -67,7 +67,7 @@ svg .t-unk { fill: var(--unk); font-weight: 700; font-size: 12px; }
 <main>
 
 <h1>AutoCount write-back: how the shared service writes to AutoCount</h1>
-<p class="lede">Plan 57, lane AC-WRITE-QTSO, 4 Nov 2026. Version 2: your v1 notes applied (see the end) and the workflow question answered (section 8).
+<p class="lede">Plan 57, lane AC-WRITE-QTSO, 4 Nov 2026. Version 3: your v2 notes applied (received qty from our SQL sync, a db3 test of a sales order line that a purchase order line takes from, one AutoCount ask dropped); v1 notes and the workflow answer (section 8) stay.
 Every "works today" claim comes from a recorded run on the <b>db3 test book</b>; the run id is shown.
 Example documents are our own db3 test documents <b>FXT-1104d-1</b> (purchase order, DocKey 12042) and
 <b>FXT-1104d-SO</b> (sales order, DocKey 12038). No customer data.</p>
@@ -208,6 +208,22 @@ AutoCount puts the new row at HQ. <span class="ev">C03, C08</span></li>
 <li>If row 12048 were on a Shipping PO line, the relink is refused until that SPO line is released first (plan 55 rule kept).</li>
 </ol>
 
+<h3>What AutoCount does today with a sales order line that a purchase order line takes from (your v2 question)</h3>
+<div class="card">
+<p>Tested on db3 (FXT-1104r-SO1 row 12086, qty 10; FXT-1104r-PO1 row 12089, qty 10, linked to it). A true delete
+can only be tested once AutoCount ships its delete door; these are the edits possible today:</p>
+<div class="scroll"><table>
+<tr><th>Edit on the sales order line</th><th>AutoCount answer</th></tr>
+<tr><td>Qty to 0 (P-SL1)</td><td><span class="badge off">REFUSED</span> "The quantity of the item code SRTKT38SS is less than the quantity it was partially transferred to Purchase Order, save aborted." Nothing changed.</td></tr>
+<tr><td>Qty to 4, below the 10 linked (P-SL2)</td><td><span class="badge off">REFUSED</span> same clear message</td></tr>
+<tr><td>Change the item code (P-SL3)</td><td><span class="badge wait">ACCEPTED</span> the line now names another item while the PO line stays linked; we never send item changes (AQ36)</td></tr>
+<tr><td>Qty to 0 on an unlinked line (P-SL5, control)</td><td><span class="badge ok">ACCEPTED</span></td></tr>
+</table></div>
+<p>So AutoCount already guards linked qty with a clear error, and we expect its delete to do the same (AQ35).
+Also seen: creating an order for a customer over the credit limit is refused with "This account had violated the
+credit limit. You are not allow to save." (P-SL0a). Every such AutoCount refusal reaches the CRM word for word.</p>
+</div>
+
 <h3>When recovery also fails: "needs attention"</h3>
 <div class="card">
 <p>If the line was deleted and both the new line and the re-created original are refused, AutoCount no longer has
@@ -238,6 +254,11 @@ re-creates the line only if it is still missing, so a lost answer can never doub
 
 <h2><span class="num">3</span>Received and delivered lines (owner ruling Q2 a)</h2>
 <div class="card">
+<p><b>Where the received qty comes from (your v2 note).</b> We already have it: our SQL sync reads AutoCount's
+per-line transferred qty and keeps it on every purchase order, shipping PO and sales order line
+(<span class="mono">presets.py:275, 439, 509</span>). So: (1) if AutoCount's read API ever returns it, we use that;
+(2) otherwise the line as our SQL sync last saw it; (3) only a book we read through the API alone (db3 today)
+has no number, and there AutoCount decides.</p>
 <p><b>Rule.</b> A line fully received (GRN) or delivered (DO): refuse "line already received". Partly received:
 never delete; cut the original line to the received qty (it keeps its current link) and put the open remainder on a
 new line with the new link (or none). Received qty not readable (every API-sourced document today):
@@ -254,10 +275,16 @@ Relink it to SO row 12041:</p>
 <p>If all 35 were received: refused by us. If the received qty cannot be read: we try, and AutoCount's answer
 decides (refused with AutoCount's message, or done).</p>
 </div>
-<div class="callout"><b>Changed after your v1 note.</b> AutoCount's read API does not return a line's received qty
-(AQ11), so on API-sourced documents AutoCount's own delete refusal is the receipt check (AQ25 asks them to refuse
-a received line with a clear error). The answer then carries the warning "receipt state unknown" so the CRM can
-show that AutoCount decided.</div>
+<div class="scroll"><table>
+<tr><th>Book</th><th>How we read its orders</th><th>Received / delivered qty per line</th></tr>
+<tr><td>Live company book (db1)</td><td>SQL sync (plan 55, section 3a)</td><td>Known: our rule applies; AutoCount's refusal is the backstop</td></tr>
+<tr><td>Test book (db3)</td><td>API only</td><td>Not known: we go ahead with the warning "receipt state unknown", AutoCount decides</td></tr>
+</table></div>
+<div class="callout"><b>Two things we found and fixed.</b> (1) After a write, our phase 1 code saved AutoCount's
+read-back over the SQL-synced copy of that order, wiping the received qty until the next sync
+(<span class="mono">staging.py:81-97</span>); from now on a write never overwrites the SQL copy. (2) AutoCount can
+raise a line's transferred qty without changing the order's "last modified" time, so our copy can trail by one
+sync; that is the case where AutoCount's own refusal protects the line.</div>
 
 <h2><span class="num">4</span>Row numbers change: how the CRM keeps up</h2>
 <div class="card">
@@ -307,7 +334,10 @@ still refuses anything switched off, as a safety net.</p>
 <tr><th>Ask</th><th>Why it matters</th><th>Ref</th></tr>
 <tr><td>The delete door: path, method, body (DocKey + row key), for lines and documents</td><td>Unlocks link whole line, unlink, relink, remove line</td><td>AQ23</td></tr>
 <tr><td>Delete refused on received / linked lines, with a clear error</td><td>A second safety net behind our own check</td><td>AQ25</td></tr>
-<tr><td>Received / transferred qty on the read API</td><td>Without it, AutoCount's own refusal is the only receipt check on API documents</td><td>AQ11</td></tr>
+<tr><td>Received / transferred qty on the read API (nice to have)</td><td>Only for books read through the API alone; the live book already has it through our SQL sync</td><td>AQ11</td></tr>
+<tr><td>Delete refused on a linked / received line with the same clear message as today's qty cut</td><td>Today's cut below the linked qty is already refused clearly (P-SL1)</td><td>AQ35</td></tr>
+<tr><td>Refuse an item change on a line a PO line is linked to</td><td>Accepted today (P-SL3)</td><td>AQ36</td></tr>
+<tr><td>Business refusals as 4xx, not 500</td><td>Tells a refusal apart from a server fault</td><td>AQ37</td></tr>
 <tr><td>A cancel (and un-cancel) door</td><td>Cancel is the only way a document ends; the header flag is ignored today</td><td>AQ2, AQ32</td></tr>
 <tr><td>A new linked line keeps the location we send</td><td>Saves the second "move" write and its failure case</td><td>AQ29</td></tr>
 <tr><td>Quotation line recorded on a sales order line</td><td>Shows which quotation lines turned into orders</td><td>AQ31</td></tr>
@@ -316,6 +346,15 @@ still refuses anything switched off, as a safety net.</p>
 </table>
 </div>
 
+<h2>Your v2 notes, applied</h2>
+<div class="card">
+<ol class="steps">
+<li>"Delete + add in one call" ask dropped (AQ24 withdrawn): separate delete, then add, with our recovery.</li>
+<li>Linked sales order line tested on db3 today; results in section 2; delete itself waits for AutoCount (AQ35).</li>
+<li>Received / delivered qty taken from our SQL sync; books table and the staging fix in section 3.</li>
+<li>Workflow actions: a follow-up lane (BL-SS-349), as recommended.</li>
+</ol>
+</div>
 <h2>Your v1 notes, applied</h2>
 <div class="card">
 <ol class="steps">
