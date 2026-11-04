@@ -104,14 +104,31 @@ def _shape(statement):
     return re.sub(r"IN \(\?(?:, ?\?)*\)", "IN (?)", statement)
 
 
+def _pin_preview(rig, cid, n):
+    """A final channel-bearing message with a distinct, ordered created_at, so the contact's list
+    preview is this message (never a tie broken by random ids)."""
+    from datetime import datetime, timedelta, timezone
+
+    db = rig.sf()
+    try:
+        db.add(ConversationMessage(tenant_id=DEFAULT_TENANT_ID, contact_id=cid, channel_id=rig.channel,
+                                   sender_type="CONTACT", message_type="TEXT", body="latest",
+                                   created_at=datetime(2099, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=n)))
+        db.commit()
+    finally:
+        db.close()
+
+
 def test_the_list_counts_with_the_same_number_of_statements_for_3_and_10_contacts(client, rig):
     cids = [rig.footprint(f"+6010000070{i}", f"p{i}")["cid"] for i in range(3)]
+    for n, cid in enumerate(cids):
+        _pin_preview(rig, cid, n)
     run = _measured_list_request(client, rig)
     first = run()
-    assert all(first[c]["messageCount"] == 6 for c in cids)  # control: the fields exist and are filled
+    assert all(first[c]["messageCount"] == 7 for c in cids)  # control: the fields exist and are filled
     n3 = [_shape(x) for x in _count_statements(rig.sf, run)]
     for i in range(3, 10):
-        rig.footprint(f"+6010000070{i}", f"p{i}")
+        _pin_preview(rig, rig.footprint(f"+6010000070{i}", f"p{i}")["cid"], i)
     assert len(run()) == 10
     n10 = [_shape(x) for x in _count_statements(rig.sf, run)]
     more, fewer = Counter(n10) - Counter(n3), Counter(n3) - Counter(n10)
@@ -142,16 +159,17 @@ def _statements_for_page(client, rig, run):
     return [_shape(x) for x in _count_statements(rig.sf, run)]
 
 
-def test_the_statement_count_compares_pages_with_the_same_preview_shape(client, rig):
-    """Pins the data-conditional channel lookup: the list resolves channel types and identity
-    windows only when some preview carries a channel id. A 3-contact page with no channel-bearing
-    preview and a 10-contact page with some must not be compared as if only the row count differed."""
+@pytest.mark.parametrize("with_channel", [False, True])
+def test_the_statement_count_compares_pages_with_the_same_preview_shape(client, rig, with_channel):
+    """The list resolves channel types and identity windows only when some preview carries a
+    channel id, so only pages of the SAME preview shape (every preview channel-bearing, or none)
+    may be compared: the count must not grow with the rows either way."""
     for i in range(3):
-        _contact_with_preview(rig, f"+6010000072{i}", with_channel=False)
+        _contact_with_preview(rig, f"+6010000072{i}", with_channel=with_channel)
     run = _measured_list_request(client, rig)
     n3 = _statements_for_page(client, rig, run)
     for i in range(3, 10):
-        _contact_with_preview(rig, f"+6010000072{i}", with_channel=i % 2 == 0)
+        _contact_with_preview(rig, f"+6010000072{i}", with_channel=with_channel)
     assert len(run()) == 10
     n10 = _statements_for_page(client, rig, run)
     more, fewer = Counter(n10) - Counter(n3), Counter(n3) - Counter(n10)
