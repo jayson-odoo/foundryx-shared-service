@@ -30,7 +30,7 @@ describe('realContactService.eraseContact', () => {
   });
 
   it('encodes the id and lets an ApiError (404/403) through unchanged', async () => {
-    apiFetchMock.mockRejectedValue(new ApiError(403, 'Forbidden'));
+    apiFetchMock.mockRejectedValue(new ApiError('Forbidden', 403));
     await expect(realContactService.eraseContact('a/b')).rejects.toMatchObject({ status: 403 });
     expect(apiFetchMock.mock.calls[0][0]).toBe('/omnichannel/contacts/a%2Fb');
   });

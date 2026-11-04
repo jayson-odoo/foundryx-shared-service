@@ -116,7 +116,7 @@ describe('AC-56-52 list registry', () => {
   });
 
   it('a failed erase shows the error, reloads nothing and says nothing was erased', async () => {
-    eraseMock.mockRejectedValue(new ApiError(404, 'Contact not found'));
+    eraseMock.mockRejectedValue(new ApiError('Contact not found', 404));
     const reload = vi.fn();
     await erase().run!([row()], { reload, ctx: undefined, index: 0 });
     expect(toastError).toHaveBeenCalled();
@@ -218,7 +218,7 @@ describe('AC-56-52 detail menu (same action from the same registry)', () => {
 
   it('a failed erase stays on the detail view', async () => {
     getMock.mockResolvedValue(row());
-    eraseMock.mockRejectedValue(new ApiError(404, 'Contact not found'));
+    eraseMock.mockRejectedValue(new ApiError('Contact not found', 404));
     const { result } = renderHook(() => useContactForm('cnt-1', 'wsp-1'));
     await waitFor(() => expect(result.current.config).not.toBeNull());
     await act(async () => {
