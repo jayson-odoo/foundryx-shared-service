@@ -878,16 +878,17 @@ class MigrationWriter:
         the number of rows changed (0 on a repeat run)."""
         if not message_ids:
             return 0
-        changed = (
-            self.db.query(ConversationMessage)
-            .filter(
-                ConversationMessage.tenant_id == self.tenant_id,
-                ConversationMessage.contact_id == contact_id,
-                ConversationMessage.id.in_(message_ids),
-                ConversationMessage.channel_id.is_(None),
+        with self.db.begin_nested():  # a failure rolls back only this statement
+            changed = (
+                self.db.query(ConversationMessage)
+                .filter(
+                    ConversationMessage.tenant_id == self.tenant_id,
+                    ConversationMessage.contact_id == contact_id,
+                    ConversationMessage.id.in_(message_ids),
+                    ConversationMessage.channel_id.is_(None),
+                )
+                .update({ConversationMessage.channel_id: channel_id}, synchronize_session=False)
             )
-            .update({ConversationMessage.channel_id: channel_id}, synchronize_session=False)
-        )
         return int(changed or 0)
 
     def recompute_contact_timestamps(self, contact: ContactModel) -> None:

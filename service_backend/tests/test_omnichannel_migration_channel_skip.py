@@ -7,8 +7,8 @@ AC-SKIP-04: connect the channel afterwards and run again with it mapped ->
 every previously migrated contact gets its identity, no message duplicates.
 AC-SKIP-05: sending to such a contact while no channel is connected is
 refused with a clear message (never a 500, never a silent drop).
-AC-SKIP-01 (copy): the preflight warning says the channel can be connected
-later instead of reading like data loss.
+AC-SKIP-01 (copy): the preflight warning says contacts and history still
+import instead of reading like data loss.
 """
 import httpx
 import pytest
@@ -235,6 +235,50 @@ def test_ac_skip_01_preflight_warning_says_connect_later():
     )
     assert warnings == [
         'No connected channel in the target workspace matches source channel "WA Main" (whatsapp). '
-        "Its contacts and history still import. Connect the channel later and run the migration "
-        "again to link them."
+        "Its contacts and history import without a channel."
     ]
+
+
+def test_ac_skip_06_relink_ignores_a_later_messages_since_floor(session_factory, monkeypatch):
+    """A re-run with a later `messagesSince` floor still puts the history the
+    first run imported onto the now-connected channel (review finding)."""
+    db = session_factory()
+    ws = _default_workspace(db, DEFAULT_TENANT_ID)
+    conn = _make_connection(db, DEFAULT_TENANT_ID)
+    db.commit()
+
+    contact_row = {"id": 980001, "firstName": "Floor", "phone": "+15556660000"}
+    handler = _pages_handler_full(
+        {None: ([contact_row], None)},
+        channels_by_contact={"id:980001": [{"id": int(SOURCE_CHANNEL_ID), "name": "WA", "source": "whatsapp",
+                                            "meta": {"phone": "+15556660000"}}]},
+        messages_by_contact={"id:980001": {None: ([
+            {"messageId": 1, "traffic": "outgoing", "channelId": int(SOURCE_CHANNEL_ID),
+             "message": {"type": "text", "text": "old"},
+             "status": [{"value": "sent", "timestamp": 1600000000}]},
+        ], None)}},
+    )
+    _stub_client(monkeypatch, handler)
+
+    job1 = _make_full_job(
+        db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run",
+        channel_map=[{"sourceChannelId": SOURCE_CHANNEL_ID, "targetChannelId": None}],
+    )
+    run_migration_job(db, job1)
+    db.refresh(job1)
+    assert job1.status == "done", job1.error
+    contact = db.query(Contact).filter(Contact.phone == "+15556660000").first()
+
+    wa_channel = _make_channel(db, DEFAULT_TENANT_ID, ws.id, channel_type="WHATSAPP")
+    db.commit()
+    job2 = _make_full_job(
+        db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run",
+        channel_map=[{"sourceChannelId": SOURCE_CHANNEL_ID, "targetChannelId": wa_channel.id}],
+    )
+    job2.payload_json = {**job2.payload_json, "messagesSince": "2030-01-01T00:00:00+00:00"}
+    db.commit()
+    run_migration_job(db, job2)
+    db.refresh(job2)
+    assert job2.status == "done", job2.error
+    assert _message_channels(db, contact.id) == {1: wa_channel.id}
+    db.close()
