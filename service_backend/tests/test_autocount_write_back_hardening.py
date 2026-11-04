@@ -682,3 +682,322 @@ def test_h13_relink_route_does_not_exist(client, db):
     _row, plain = _key(db, [company.id], scopes=["pull", "write_back"])
     r = client.post(f"{PREFIX}/po-links/relink", json=LINK_BODY, headers=_hdr(plain))
     assert r.status_code in (404, 405)
+
+
+# ======================================================================================
+# Round 17/18: deadline, relocate lookup, malformed URLs, read-only caps, re-review lows
+# ======================================================================================
+
+import time  # noqa: E402
+from types import MappingProxyType  # noqa: E402
+
+from app.main import app as _app  # noqa: E402,F401
+from modules.autocount.models import AcStagedRecord  # noqa: E402
+from modules.autocount.write_back import capabilities as _caps  # noqa: E402
+from modules.autocount.write_back import service as _service_mod  # noqa: E402
+from tests.test_autocount_write_back_vendor_caps import VendorFake  # noqa: E402
+
+
+@pytest.fixture
+def vh(db, session_factory):
+    """Harness over a db3-style fake (new linked row forced to HQ)."""
+    harness = Harness(db, session_factory)
+    fake = VendorFake(db, session_factory)
+    fake.serve("purchaseorderbydocdate", _load("po_202602_S0007.json"))
+    fake.serve("salesorderbydocdate", _load("so_SO389293.json"))
+    harness.ac = fake
+    return harness
+
+
+def _rows_of(h, outcome=None):
+    h.db.expire_all()
+    q = h.db.query(AcWriteAction)
+    return q.all() if outcome is None else q.filter(AcWriteAction.outcome == outcome).all()
+
+
+# ---- A. overall deadline per action ----------------------------------------------------------
+
+def test_deadline_is_at_most_half_the_busy_window():
+    assert _service_mod.ACTION_DEADLINE_SECONDS <= _service_mod.BUSY_WINDOW_SECONDS / 2
+
+
+def test_deadline_first_read_past_budget_is_refused_with_no_further_call(h, monkeypatch):
+    monkeypatch.setattr(_service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+
+    def slow(request):
+        time.sleep(0.3)
+        return h.ac._on_get(request)
+
+    h.ac.read_transport = httpx.MockTransport(slow)
+    res = h.link_split()
+    assert res.outcome == "refused" and res.error_code == "DEADLINE_EXCEEDED"
+    assert len(h.ac.get_calls) == 1 and h.ac.put_calls == []
+    assert _rows_of(h, "in_flight") == []
+
+
+def test_deadline_read_back_past_budget_after_put_is_pending_verification(h, monkeypatch):
+    monkeypatch.setattr(_service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+
+    def slow_after_put(request):
+        if h.ac.put_calls:
+            time.sleep(0.3)
+        return h.ac._on_get(request)
+
+    h.ac.read_transport = httpx.MockTransport(slow_after_put)
+    res = h.link_split()
+    assert res.outcome == "pending_verification" and res.error_code == "DEADLINE_EXCEEDED"
+    assert len(h.ac.put_calls) == 1  # never a second write after the deadline
+    assert len(h.ac.get_calls) == 3  # PO, SO, the read-back; nothing after
+
+
+def test_deadline_stale_sweep_keeps_a_row_still_inside_its_window(h):
+    _seed_row(h, "in_flight", 590)  # BUSY_WINDOW_SECONDS is 600
+    res = h.link_split()
+    assert res.outcome == "refused" and res.error_code == "DOC_BUSY"
+    h.no_http()
+    assert [r.outcome for r in _rows_of(h) if r.doc_key == 12008 and r.dtl_key == 12017 and r.outcome == "in_flight"] == ["in_flight"]
+
+
+# ---- B. relocate location lookup ---------------------------------------------------------------
+
+def _staged_so(h):
+    return h.db.query(AcStagedRecord).filter(
+        AcStagedRecord.company_id == h.company.id, AcStagedRecord.entity_type == "sales_order"
+    ).one()
+
+
+def _stranded(h) -> int:
+    h.ac.put2_mode = "ignore"
+    assert h.link_split().error_code == "LOCATION_NOT_MOVED"
+    h.ac.put2_mode = "apply"
+    h.ac.put_calls.clear()
+    h.ac.put_bodies.clear()
+    return h.ac.linked_row(11989)["DtlKey"]
+
+
+def _set_so_location(rec, location):
+    raw = copy.deepcopy(rec.raw_json)
+    for line in raw["_lines"]:
+        if line["DtlKey"] == 11989:
+            line["Location"] = location
+    rec.raw_json = raw
+
+
+def _add_old_so(h, location, created_at):
+    old = _staged_so(h)
+    raw = copy.deepcopy(old.raw_json)
+    twin = AcStagedRecord(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, entity_type="sales_order",
+        job_id="job-sql", source_ref=old.source_ref, doc_no=old.doc_no, raw_json=raw,
+        canonical_json={}, status="STAGED", created_at=created_at,
+    )
+    _set_so_location(twin, location)
+    h.db.add(twin)
+    return twin
+
+
+def test_relocate_lookup_uses_the_newest_staged_so_record(vh):
+    h = vh
+    dtl = _stranded(h)
+    now = datetime.now(timezone.utc)
+    newest = _staged_so(h)
+    _set_so_location(newest, "BRW-NEW")
+    newest.created_at = now
+    _add_old_so(h, "BRW-OLD", now - timedelta(days=1))
+    h.db.commit()
+    res = h.service().relocate(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=dtl
+    )
+    assert res.outcome == "done", res.error_code
+    assert h.ac.put_bodies[0]["Details"][0]["Location"] == "BRW-NEW"
+
+
+def test_relocate_lookup_refuses_two_equally_new_conflicting_records(vh):
+    h = vh
+    dtl = _stranded(h)
+    same = datetime.now(timezone.utc)
+    first = _staged_so(h)
+    _set_so_location(first, "BRW-ONE")
+    first.created_at = same
+    _add_old_so(h, "BRW-TWO", same)
+    h.db.commit()
+    res = h.service().relocate(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=dtl
+    )
+    assert res.outcome == "refused" and res.error_code == "SO_LOCATION_AMBIGUOUS"
+    assert h.ac.put_calls == []
+
+
+# ---- C. malformed base URLs ----------------------------------------------------------------------
+
+MALFORMED = [
+    ("https://zz]/api/db3", "zz"),
+    ("https://[zz/api/db3", "zz"),
+    ("https://[::1/api/db3", "::1"),
+    ("https://a℅b/api/db3", "℅"),
+    ("https://℀.example/api/db3", "℀"),
+]
+
+
+@pytest.mark.parametrize("url,fragment", MALFORMED)
+def test_malformed_base_url_raises_write_not_allowed_never_value_error(url, fragment):
+    with pytest.raises(WriteNotAllowed) as exc:
+        assert_write_allowed(url)
+    assert fragment not in str(exc.value)
+    assert exc.value.code == "WRITE_NOT_ALLOWED"
+
+
+@pytest.mark.parametrize("url,fragment", MALFORMED[:2])
+def test_malformed_base_url_through_the_gateway_is_403_with_a_recorded_code(
+    client, db, session_factory, url, fragment
+):
+    from app.models.connection import Connection
+
+    company = gw_company(db)
+    conn = db.get(Connection, company.write_connection_id)
+    conn.config_json = {**conn.config_json, "baseUrl": url}
+    db.commit()
+    _row, plain = _key(db, [company.id], scopes=["write_back"])
+    service, fake = _real_service(db, session_factory)
+    _use(service)
+    r = client.post(LINK, json=LINK_BODY, headers=_hdr(plain))
+    assert r.status_code == 403, r.text
+    assert "WRITE_NOT_ALLOWED" in r.text and fragment not in r.text
+    assert fake.get_calls == [] and fake.put_calls == []
+    db.expire_all()
+    rows = db.query(AcWriteAction).all()
+    assert rows and all(row.error_code for row in rows) and all(row.outcome != "in_flight" for row in rows)
+
+
+# ---- nit 1: capabilities are read-only ------------------------------------------------------------
+
+def test_capabilities_mapping_is_read_only():
+    assert isinstance(_caps.VENDOR_CAPABILITIES, MappingProxyType)
+    with pytest.raises(TypeError):
+        _caps.VENDOR_CAPABILITIES["unlink"] = True  # type: ignore[index]
+
+
+def test_all_on_fixture_swaps_the_whole_attribute(vendor_caps_all_on):
+    assert isinstance(_caps.VENDOR_CAPABILITIES, MappingProxyType)
+    assert all(_caps.VENDOR_CAPABILITIES.values())
+
+
+# ---- nit 2: an unexpected error before any PUT is a refusal, not a blocker ---------------------------
+
+def test_unexpected_error_before_put_is_refused_internal_error_and_does_not_block(h):
+    svc = _svc_with_reader(h, boom_on=1)
+    res = svc.link(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008,
+        po_dtl_key=12017, so_doc_key=11988, so_dtl_key=11989, qty=Decimal(10),
+    )
+    assert res.outcome == "refused" and res.error_code == "INTERNAL_ERROR"
+    assert h.ac.put_calls == []
+    row = _row_for(h)
+    assert row.outcome == "refused" and row.error_code == "INTERNAL_ERROR"
+    again = h.link_split()
+    assert again.outcome == "done", again.error_code
+
+
+# ---- R-A: the whole-row gate also applies after the fresh SO read ------------------------------------
+
+def test_whole_row_gate_holds_when_only_the_fresh_so_read_shows_enough_outstanding(h):
+    h.ac.docs["purchaseorderbydocdate"][0]["Details"][-1]["Qty"] = 10.0  # row 12017
+    staged = h.staged_po()
+    raw = copy.deepcopy(staged.raw_json)
+    for r in raw["_lines"]:
+        if r["DtlKey"] == 12017:
+            r["Qty"] = 10.0
+    staged.raw_json = raw
+    so = _staged_so(h)
+    so_raw = copy.deepcopy(so.raw_json)
+    for r in so_raw["_lines"]:
+        if r["DtlKey"] == 11989:
+            r["Qty"] = 5.0  # the staged copy LOOKS over-outstanding for q=10; the fresh read says 10
+    so.raw_json = so_raw
+    h.db.commit()
+    res = h.link_split(qty=Decimal(10))
+    assert res.outcome == "refused" and res.error_code == "VENDOR_UNSUPPORTED"
+    assert h.ac.put_calls == []
+
+
+# ---- R-C: unlink only touches an SO link ----------------------------------------------------------------
+
+def test_payload_unlink_refuses_a_row_with_another_transfer_type():
+    po = _load("po_202602_S0007.json")
+    row = next(r for r in po["Details"] if r["DtlKey"] == 12013)
+    row.update(FromDocType="RQ", FromDocNo="RQ-1", FromDocDtlKey=777, FromSODtlKey=0, FromSODocList="")
+    with pytest.raises(WriteRefusal) as exc:
+        payloads.build_unlink(po, 12013)
+    assert exc.value.code == "ROW_HAS_OTHER_TRANSFER"
+
+
+def test_payload_unlink_row_with_no_link_at_all_is_not_linked():
+    po = _load("po_202602_S0007.json")
+    row = next(r for r in po["Details"] if r["DtlKey"] == 12013)
+    row.update(FromDocType="", FromDocNo="", FromDocDtlKey=0, FromSODtlKey=0, FromSODocList="")
+    with pytest.raises(WriteRefusal) as exc:
+        payloads.build_unlink(po, 12013)
+    assert exc.value.code == "ROW_NOT_LINKED"
+
+
+def test_service_unlink_refuses_other_transfer_without_a_put(h, vendor_caps_all_on):
+    row = next(r for r in h.ac.docs["purchaseorderbydocdate"][0]["Details"] if r["DtlKey"] == 12013)
+    row.update(FromDocType="QT", FromDocNo="QT-1", FromDocDtlKey=4242, FromSODtlKey=0, FromSODocList="")
+    res = h.service().unlink(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=12013
+    )
+    assert res.outcome == "refused" and res.error_code == "ROW_HAS_OTHER_TRANSFER"
+    assert h.ac.put_calls == []
+
+
+# ---- R-D: header fields we did not send must read back unchanged ---------------------------------------
+
+def _blank_header_on_put(h, field):
+    original = h.ac._apply
+
+    def apply(body):
+        original(body)
+        h.ac.docs["purchaseorderbydocdate"][0][field] = ""
+
+    h.ac._apply = apply
+
+
+@pytest.mark.parametrize("field", ["Note", "UDF_Remark"])
+def test_header_field_blanked_by_the_put_is_a_mismatch(h, field):
+    h.ac.docs["purchaseorderbydocdate"][0][field] = "keep me"
+    _blank_header_on_put(h, field)
+    res = h.link_split()
+    assert res.outcome == "mismatch", res.outcome
+    assert res.error_code == "READBACK_MISMATCH"
+
+
+def test_header_totals_and_stamps_may_change_without_a_mismatch(h):
+    h.ac.docs["purchaseorderbydocdate"][0]["Note"] = "keep me"
+    original = h.ac._apply
+
+    def apply(body):
+        original(body)
+        doc = h.ac.docs["purchaseorderbydocdate"][0]
+        doc.update(Total=999.0, NetTotal=999.0, LocalNetTotal=999.0, Tax=1.0, FinalTotal=999.0,
+                   RoundAdj=0.01, LastModifiedUserID="OTHER", CreatedTimeStamp="2020-01-01T00:00:00")
+
+    h.ac._apply = apply
+    res = h.link_split()
+    assert res.outcome == "done", res.error_code
+
+
+# ---- R-E (2): a split records both response statuses ------------------------------------------------------
+
+def test_split_response_status_records_both_statuses(vh):
+    h = vh
+    res = h.link_split()
+    assert res.outcome == "done"
+    row = h.action(res)
+    assert row.response_status == [200, 200]
+
+
+def test_single_write_link_response_status_stays_one_status(vh):
+    h = vh
+    h.ac.force_hq = False
+    res = h.link_split()
+    assert h.action(res).response_status in (200, [200])

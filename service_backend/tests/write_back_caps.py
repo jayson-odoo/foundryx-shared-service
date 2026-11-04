@@ -6,6 +6,8 @@ while the capabilities module does not exist yet."""
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 import pytest
 
 
@@ -19,7 +21,7 @@ def vendor_caps_all_on(monkeypatch):
     monkeypatch.setattr(
         capabilities,
         "VENDOR_CAPABILITIES",
-        {key: True for key in capabilities.VENDOR_CAPABILITIES},
+        MappingProxyType({key: True for key in capabilities.VENDOR_CAPABILITIES}),
         raising=True,
     )
     yield

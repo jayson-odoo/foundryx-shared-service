@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+from types import MappingProxyType
 from decimal import Decimal
 from typing import Any, Dict
 
@@ -204,7 +205,9 @@ def test_cap_q_above_row_qty_keeps_its_own_refusal(h):
 
 
 def test_cap_flip_unlink_reenables_the_old_path(h, monkeypatch):
-    monkeypatch.setitem(capabilities.VENDOR_CAPABILITIES, "unlink", True)
+    monkeypatch.setattr(
+        capabilities, "VENDOR_CAPABILITIES", MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "unlink": True})
+    )
     h.ac.honor_unlink = True
     res = h.service().unlink(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=PO_KEY, po_dtl_key=12013
@@ -214,7 +217,9 @@ def test_cap_flip_unlink_reenables_the_old_path(h, monkeypatch):
 
 
 def test_cap_flip_spo_unlink_reenables_the_old_path(h, monkeypatch):
-    monkeypatch.setitem(capabilities.VENDOR_CAPABILITIES, "spo_unlink", True)
+    monkeypatch.setattr(
+        capabilities, "VENDOR_CAPABILITIES", MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "spo_unlink": True})
+    )
     h.ac.honor_unlink = True
     spo = _load("spo_db1_sample.json")
     spo["Details"][0].update(FromDocType="PO", FromDocDtlKey=12013)
@@ -229,7 +234,9 @@ def test_cap_flip_spo_unlink_reenables_the_old_path(h, monkeypatch):
 
 
 def test_cap_flip_link_existing_row_reenables_the_whole_row_path(h, monkeypatch):
-    monkeypatch.setitem(capabilities.VENDOR_CAPABILITIES, "link_existing_row", True)
+    monkeypatch.setattr(
+        capabilities, "VENDOR_CAPABILITIES", MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "link_existing_row": True})
+    )
     h.ac.honor_existing_link = True
     _set_row_qty(h, 12017, 10.0)
     res = _split(h, qty=Decimal(10))

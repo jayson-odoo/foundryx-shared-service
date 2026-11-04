@@ -481,7 +481,9 @@ def test_vendor_c01_create_body_is_complete_and_has_no_empty_dates(db):
     assert _case(res, "C01").status == "PASS"
     # C01's OWN read-back shows two rows (the PO grows later, e.g. C03's split)
     seen = [len(st.after_rows) for st in _case(res, "C01").steps if st.after_rows is not None]
-    assert (seen and seen[-1] == 2) or "2 rows" in _case(res, "C01").observed
+    assert seen and seen[-1] == 2  # strict: the read-back step records the 2 PO rows
+    seen00 = [len(st.after_rows) for st in _case(res, "C00").steps if st.after_rows is not None]
+    assert seen00 and seen00[-1] == 3  # and C00's read-back the 3 SO rows
 
 
 def test_vendor_c01_description_comes_from_the_so_row(db):
