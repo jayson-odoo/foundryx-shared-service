@@ -10,7 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
-> | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and a multipart send up to the media limit plus a small margin. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send with more than one file part or extra form fields answers `422 invalid_request` too. |
+> | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and `POST /messages` as multipart up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send takes exactly one `file` part and one `payload` part, with at most 5 form fields; more answers `422 invalid_request`. |
 > | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
 > | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
 > | **2026-11-05** | **Media fetch retry** (section 8). `GET /omnichannel/media/{messageId}` answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` when the file cannot be read from storage for a moment; fetch again after the wait. A missing file is still `404`. Other contract details are unchanged. |
@@ -147,7 +147,7 @@ Each API key is limited to **10 requests in progress at once** and **600 request
 
 The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned with `idempotencyReplay: true`, not sent again). A `503 busy_try_again` (§10) is retried the same way.
 
-Every request body under your API key is limited: 256 KiB, and a multipart send up to the media limit of its file plus a small margin. A larger body answers `422 invalid_request` ("Request body is too large.") and nothing is done.
+Every request body under your API key is limited: 256 KiB, and `POST /messages` as `multipart/form-data` up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large.") and nothing is done.
 
 The limits are per key. If your integration needs more, ask support to raise the limits for a key.
 
@@ -291,7 +291,7 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/messages \
   -F 'payload={"to":"+60123456789","type":"document","media":{"filename":"receipt.pdf","caption":"Your receipt"}}'
 ```
 
-Missing either part → `422 invalid_request`.
+The send takes exactly one `file` part and one `payload` part, with at most 5 form fields in all. Missing either part, a second file part or more fields → `422 invalid_request`.
 
 ### 4.4 Interactive, location, contacts
 
