@@ -637,3 +637,53 @@ def test_ac_38_136_address_cap_holds_when_every_connect_fails_fast(monkeypatch):
     assert out is None and err
     assert time.monotonic() - started < 5
     assert 1 <= len(set(attempts)) <= 4, f"addresses attempted: {attempts}"
+
+
+# -- review round 2 guards: the connect clamp and connect-time resolution (AC-38-136) ---------
+def test_ac_38_136_each_connect_attempt_is_clamped_to_the_time_left(monkeypatch):
+    """First address refuses at 0.6 x the deadline, the second blackholes. The second attempt may
+    only use what is left of the deadline, not a fresh full step timeout."""
+    import app.workflow_engine.actions.http_actions as ha
+
+    deadline = 2
+    slow, hole = "93.184.216.30", "93.184.216.10"
+    _resolver(monkeypatch, MANY, [[slow, hole]])
+
+    def create(address, timeout=None, *a, **k):
+        if address[0] == slow:
+            time.sleep(0.6 * deadline)
+            raise ConnectionRefusedError("test stub: refused late")
+        time.sleep(timeout or deadline)
+        raise socket.timeout("test stub: blackhole")
+
+    monkeypatch.setattr(socket, "create_connection", create)
+    started = time.monotonic()
+    out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds=str(deadline))
+    elapsed = time.monotonic() - started
+    assert out is None and err
+    assert elapsed < deadline + 0.6, f"the node took {elapsed:.1f}s with a {deadline}s deadline"
+
+
+def test_ac_38_136_connect_time_resolution_is_bounded_by_the_deadline(monkeypatch):
+    """The pre-flight lookup answers at once; the lookup made when connecting hangs."""
+    import app.workflow_engine.actions.http_actions as ha
+
+    real = socket.getaddrinfo
+    calls = {"n": 0}
+
+    def hang_after_first(host, *a, **k):
+        if str(host).lower() == MANY:
+            calls["n"] += 1
+            if calls["n"] > 1:
+                time.sleep(5)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.10", 0))]
+        return real(host, *a, **k)
+
+    monkeypatch.setattr(socket, "getaddrinfo", hang_after_first)
+    attempts = _stalling_connects(monkeypatch)
+    started = time.monotonic()
+    out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
+    elapsed = time.monotonic() - started
+    assert out is None and err
+    assert calls["n"] >= 2, "the connect-time lookup did not happen, so this proves nothing"
+    assert elapsed < 2.5, f"connect-time resolution held the node for {elapsed:.1f}s with a 1s deadline"

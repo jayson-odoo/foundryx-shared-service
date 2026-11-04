@@ -1176,3 +1176,41 @@ def test_ac_38_134_contact_event_payload_of_another_workspace_is_refused(client,
     ok = fire(w["contact1"], w["ws1"])
     assert ok[0] == RUN_SUCCESS, ok
     assert sent == ["https://api.example.com/ping"]
+
+
+def test_ac_38_134_run_guard_checks_the_contact_named_only_in_the_event_extra(client, session_factory, monkeypatch):
+    """The owner's channel and workspace, but a contact of another workspace that appears only in
+    the event's extra: refused before any node, nothing sent."""
+    from app.workflow_engine.entity_events import build_event_trigger_payload
+    from app.workflow_engine.executor import run_workflow
+
+    w = _world(client, session_factory)
+    sent = _recording_transport(monkeypatch)
+    wf_id = _staff_publish(session_factory, _doc(*_http_then_note(w)), "owned extra contact")
+    _own(session_factory, wf_id, w["ws1"])
+
+    def fire(contact_id):
+        ev = {"action": "received", "actor": None, "record_id": "msg-1", "changes": None,
+              "record_facts": {},
+              "extra": {"channelId": w["ch1"], "workspaceId": w["ws1"], "contactId": contact_id,
+                        "conversationId": contact_id, "messageText": "hi", "messageType": "TEXT"}}
+        payload = build_event_trigger_payload(ev, trigger_type="omnichannel.message_received", config={})
+        db = session_factory()
+        try:
+            run = WorkflowRun(tenant_id=DEFAULT_TENANT_ID, workflow_id=wf_id, status="pending",
+                              triggered_by="event", is_test=True,
+                              definition_snapshot_json=_doc(*_http_then_note(w)), trigger_payload_json=payload)
+            db.add(run)
+            db.commit()
+            done = run_workflow(db, run.id)
+            return done.status, done.error or "", [(n.node_id, n.status) for n in done.nodes
+                                                     if n.status in (NODE_SUCCESS, NODE_RUNNING, NODE_FAILED)]
+        finally:
+            db.close()
+
+    status, error, nodes = fire(w["contact2"])
+    assert status == RUN_FAILED and "record_not_in_workspace" in error, (status, error)
+    assert nodes == [] and sent == []
+    status, error, nodes = fire(w["contact1"])  # control: the owner's contact runs
+    assert status == RUN_SUCCESS, (status, error)
+    assert sent == ["https://api.example.com/ping"]
