@@ -20,8 +20,9 @@ def rig(client, session_factory):
     return Rig(client, session_factory)
 
 
-def _list(client, rig, page_size=100):
-    res = client.get(f"/omnichannel/workspaces/{rig.ws}/contacts?pageSize={page_size}", headers=_auth(client))
+def _list(client, rig, page_size=100, headers=None):
+    headers = headers if headers is not None else _auth(client)
+    res = client.get(f"/omnichannel/workspaces/{rig.ws}/contacts?pageSize={page_size}", headers=headers)
     assert res.status_code == 200, res.text
     return {c["id"]: c for c in res.json()["data"]}
 
@@ -69,23 +70,30 @@ def test_counts_are_per_contact_and_never_include_another_tenants_rows(client, r
 
 
 def _count_statements(sf, fn):
+    """The normalised statements the request runs while `fn` runs. Only one thread
+    may show up (the request thread); more than one fails with the whole list."""
+    import threading
+
     engine = sf().get_bind()
     seen = []
 
     def hook(conn, cursor, statement, parameters, context, executemany):
-        seen.append(statement)
+        seen.append((threading.get_ident(), " ".join(statement.split())))
 
     sa.event.listen(engine, "before_cursor_execute", hook)
     try:
         fn()
     finally:
         sa.event.remove(engine, "before_cursor_execute", hook)
-    return len(seen)
+    threads = {t for t, _ in seen}
+    assert len(threads) <= 1, f"statements ran on {len(threads)} threads: {seen}"
+    return [stmt for _, stmt in seen]
 
 
 def test_the_list_counts_with_the_same_number_of_statements_for_3_and_10_contacts(client, rig):
     cids = [rig.footprint(f"+6010000070{i}", f"p{i}")["cid"] for i in range(3)]
-    run = lambda: _list(client, rig)  # noqa: E731
+    headers = _auth(client)  # the login stays OUTSIDE the measured window
+    run = lambda: _list(client, rig, headers=headers)  # noqa: E731
     first = run()
     assert all(first[c]["messageCount"] == 6 for c in cids)  # control: the fields exist and are filled
     n3 = _count_statements(rig.sf, run)
@@ -93,7 +101,11 @@ def test_the_list_counts_with_the_same_number_of_statements_for_3_and_10_contact
         rig.footprint(f"+6010000070{i}", f"p{i}")
     assert len(run()) == 10
     n10 = _count_statements(rig.sf, run)
-    assert n10 == n3, f"statements grew with the page: {n3} -> {n10}"
+    only3 = [x for x in n3 if x not in n10]
+    only10 = [x for x in n10 if x not in n3]
+    assert len(n10) == len(n3), (
+        f"statements grew with the page: {len(n3)} -> {len(n10)}; only in 3: {only3}; only in 10: {only10}"
+    )
 
 
 def _window_statements(sf, fn):
@@ -118,7 +130,8 @@ def test_the_measured_window_holds_only_the_list_request(client, rig):
     """The statement count must measure the list request alone: the login (throttle
     bookkeeping + the sign-in write) must not run inside the measured closure."""
     rig.footprint("+60100000710", "w0")
-    run = lambda: _list(client, rig)  # noqa: E731 - the closure the 3-vs-10 test measures
+    headers = _auth(client)  # built outside the window, as the 3-vs-10 test does
+    run = lambda: _list(client, rig, headers=headers)  # noqa: E731 - the closure the 3-vs-10 test measures
     run()  # warm
     seen = _window_statements(rig.sf, run)
     offenders = [s[:120] for _, s in seen if "auth_throttle" in s or s.startswith("UPDATE users")]
