@@ -137,7 +137,8 @@ companies stage (`presets.py:275,439,509`), so for hapi documents it is UNKNOWN.
 2. snapshot = the row from the fresh GET (every field) + document LastModified, stored on the operation;
 3. `delete_line` (primitive) -> read-back shows it gone;
 4. `add_line` with the snapshot fields + the new link (or none) -> exactly one new row;
-5. location move when the read-back location differs (db3 forces HQ on a new linked row).
+5. location move when the read-back location differs from the target: the SO row's location for link /
+   relink, the snapshot location for unlink and for every recovery re-add (db3 forces HQ on a new linked row).
 
 Partially received (switch on): step 3 becomes an `edit_doc` cutting the row to the received qty, and
 step 4 adds the remainder (no delete needed). Recovery when step 4 fails after step 3 landed: add the

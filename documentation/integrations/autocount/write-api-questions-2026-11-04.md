@@ -80,9 +80,7 @@ right link (or none). We are building our side now so that your delete API plugs
     Purchase Order, Shipping PO): for example `DELETE /DeletePurchaseOrderDetailbydtlkey` with
     `{DocKey, DtlKey}`, or a row flag on the existing `Edit...bydockey` PUT? And the same for a whole
     document (we will not use document delete in normal work; cancel stays the way a document ends).
-24. Can a delete and an add be ONE request (one transaction), for example an edit PUT where one row is
-    marked deleted and a `DtlKey 0` row carries the new link? Then a relink can never leave the line
-    missing between two calls.
+24. (Withdrawn 4 Nov: we design for a separate delete then add, with our own recovery if the add fails.)
 25. Deleting a row that has something downstream: a PO row already received (GRN) or partially received,
     a PO row an SPO row points at, an SO row a PO row is linked to, an SO row already delivered (DO). Is
     the delete refused, and with what HTTP status and error text?
