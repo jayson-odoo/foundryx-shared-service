@@ -383,3 +383,136 @@ def test_ac_56_28_changelog_row_mentions_pricing_and_templates_category():
     assert rows, "changelog needs a pricing row"
     assert any("templates" in ln.lower() and "category" in ln.lower() for ln in rows), rows
     assert any("null" in ln.lower() for ln in rows), "row must say older messages answer null"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Round 1 review findings
+# ═════════════════════════════════════════════════════════════════════════════
+def _set_metadata(session_factory, mid, value):
+    db = session_factory()
+    try:
+        row = db.query(ConversationMessage).filter(ConversationMessage.id == mid).one()
+        row.metadata_json = value
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_r1_failed_receipt_without_pricing_carries_and_keeps_the_stored_pricing(client, session_factory):
+    r, mid, ext = _sent(client, session_factory, "+60100000201")
+    _receipt(session_factory, r, ext, "sent", pricing=META)
+    _receipt(session_factory, r, ext, "failed", errors=[{"code": 131026, "title": "undeliverable"}])
+    assert _data(session_factory, mid, "FAILED")["pricing"] == STORED
+    assert _meta_row(session_factory, mid)["pricing"] == STORED
+
+
+def test_r1_forward_receipt_without_pricing_does_not_clear_a_stored_one(client, session_factory):
+    r, mid, ext = _sent(client, session_factory, "+60100000202")
+    _receipt(session_factory, r, ext, "sent", pricing=META)
+    _receipt(session_factory, r, ext, "delivered")  # moves forward, no pricing
+    assert _meta_row(session_factory, mid)["pricing"] == STORED
+    assert _item(client, r, mid)["pricing"] == STORED
+
+
+ALL_NULL = [
+    {},
+    {"billable": "yes", "pricing_model": 5, "category": "BAD CHARS!", "type": ["x"]},
+    {"unknown": 1},
+]
+
+
+@pytest.mark.parametrize("bad", ALL_NULL, ids=["empty", "all-invalid", "unknown-only"])
+def test_r1_all_null_pricing_never_overwrites_a_stored_value(client, session_factory, bad):
+    r, mid, ext = _sent(client, session_factory, "+60100000203")
+    _receipt(session_factory, r, ext, "sent", pricing=META)
+    _receipt(session_factory, r, ext, "delivered", pricing=bad)
+    assert _meta_row(session_factory, mid)["pricing"] == STORED
+
+
+@pytest.mark.parametrize("bad", ALL_NULL, ids=["empty", "all-invalid", "unknown-only"])
+def test_r1_all_null_pricing_on_a_message_without_pricing_stores_nothing(client, session_factory, bad):
+    r, mid, ext = _sent(client, session_factory, "+60100000204")
+    _receipt(session_factory, r, ext, "delivered", pricing=bad)
+    assert "pricing" not in _meta_row(session_factory, mid)
+    assert _item(client, r, mid)["pricing"] is None
+
+
+def test_r1_status_entry_naming_an_inbound_message_never_stores_pricing(client, session_factory):
+    phone = "+60100000205"
+    r, _mid, _ext = _sent(client, session_factory, phone)
+    _process(session_factory, r["channel_id"],
+             _wa_payload(wamid="wamid.in-56-r1", from_=phone.lstrip("+"), text="hello"))
+    db = session_factory()
+    try:
+        inbound = db.query(ConversationMessage).filter(
+            ConversationMessage.external_message_id == "wamid.in-56-r1"
+        ).one()
+        inbound_id = inbound.id
+    finally:
+        db.close()
+    _receipt(session_factory, r, "wamid.in-56-r1", "delivered", pricing=META)
+    assert "pricing" not in _meta_row(session_factory, inbound_id)
+    assert _item(client, r, inbound_id)["pricing"] is None
+
+
+BAD_STORED = [
+    ("x", None),
+    (["a"], None),
+    (5, None),
+    ({"billable": "yes", "pricingModel": "pmp", "category": "utility", "type": "regular"},
+     {"billable": None, "pricingModel": "pmp", "category": "utility", "type": "regular"}),
+    ({"billable": True, "pricingModel": "pmp", "category": "c" * 500, "type": "regular"},
+     {"billable": True, "pricingModel": "pmp", "category": None, "type": "regular"}),
+]
+BAD_IDS = ["string", "list", "int", "non-bool-billable", "500-char-category"]
+
+
+@pytest.mark.parametrize("stored,expected", BAD_STORED, ids=BAD_IDS)
+def test_r1_malformed_stored_value_never_fails_get_list_or_single(client, session_factory, stored, expected):
+    r, mid, _ext = _sent(client, session_factory, "+60100000206")
+    other = _api_text(client, r["hdr"], "+60100000206", body="second").json()["id"]
+    _set_metadata(session_factory, mid, {"pricing": stored})
+    res = client.get(f"/api/v1/omnichannel/contacts/{r['cid']}/messages", headers=r["hdr"])
+    assert res.status_code == 200, res.text
+    items = {m["id"]: m for m in res.json()["data"]}
+    assert items[mid]["pricing"] == expected
+    assert items[other]["pricing"] is None  # other messages unaffected
+    one = client.get(f"/api/v1/omnichannel/contacts/{r['cid']}/messages/{mid}", headers=r["hdr"])
+    assert one.status_code == 200, one.text
+    assert one.json()["pricing"] == expected
+
+
+@pytest.mark.parametrize("stored,expected", BAD_STORED, ids=BAD_IDS)
+def test_r1_malformed_stored_value_never_breaks_the_receipt_side_webhook(client, session_factory, stored, expected):
+    r, mid, ext = _sent(client, session_factory, "+60100000207")
+    _set_metadata(session_factory, mid, {"pricing": stored})
+    _receipt(session_factory, r, ext, "delivered")
+    assert _data(session_factory, mid, "DELIVERED")["pricing"] == expected
+
+
+@pytest.mark.parametrize("stored,expected", BAD_STORED, ids=BAD_IDS)
+def test_r1_malformed_stored_value_never_breaks_the_send_side_webhook(
+    client, session_factory, monkeypatch, stored, expected
+):
+    from modules.omnichannel.services.send_runner import run_send
+
+    r = _rig(client, session_factory, "+60100000208", events=("message.status",))
+    db = session_factory()
+    try:
+        row = ConversationMessage(
+            tenant_id=DEFAULT_TENANT_ID, contact_id=r["cid"], channel_id=r["channel_id"],
+            sender_type="AGENT", message_type="TEXT", body="hi", delivery_status="QUEUED",
+            metadata_json={"pricing": stored},
+        )
+        db.add(row)
+        db.commit()
+        mid = row.id
+    finally:
+        db.close()
+    _swap_adapter(monkeypatch)
+    db = session_factory()
+    try:
+        assert run_send(db, mid) == "SENT"
+    finally:
+        db.close()
+    assert _data(session_factory, mid, "SENT")["pricing"] == expected
