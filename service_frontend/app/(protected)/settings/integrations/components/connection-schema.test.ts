@@ -145,7 +145,8 @@ const sorento: IntegrationProvider = {
 };
 
 describe('Sorento contract version on edit (fix/sorento-contract-version-field)', () => {
-  it('a connection saved before the field existed prefills the EFFECTIVE "1", not blank', () => {
+  it('a connection saved before the field existed prefills the EFFECTIVE "2", not blank', () => {
+    // INGEST-LINE-DROP-GUARD: an unset connection runs at contract 2.
     const values = valuesForConnection(sorento, {
       provider: 'sorento',
       name: 'Sorento',
@@ -153,7 +154,7 @@ describe('Sorento contract version on edit (fix/sorento-contract-version-field)'
     });
     expect(values.config).toEqual({
       baseUrl: 'https://sorento.example.com',
-      sorentoContractVersion: '1',
+      sorentoContractVersion: '2',
     });
     // The prefilled value satisfies the required check, so an unrelated
     // save of the connection is not blocked by a field the operator never set.
@@ -184,10 +185,12 @@ describe('storedOrEffective (read mode and edit prefill share one resolution)', 
   const version = sorento.fields.find((f) => f.key === 'sorentoContractVersion') as ProviderField;
   const baseUrl = sorento.fields.find((f) => f.key === 'baseUrl') as ProviderField;
 
-  it('a legacy connection reads "1" for the contract version, never blank', () => {
-    expect(storedOrEffective(version, { baseUrl: 'https://s' })).toBe('1');
+  it('a legacy connection reads "2" for the contract version, never blank or "1"', () => {
+    // INGEST-LINE-DROP-GUARD: an unset connection runs at contract 2 (the
+    // sink's `resolve_contract_version`); contract 1 drops every document line.
+    expect(storedOrEffective(version, { baseUrl: 'https://s' })).toBe('2');
     expect(version.options?.find((o) => o.value === storedOrEffective(version, {}))?.label).toBe(
-      '1 (legacy)',
+      '2',
     );
   });
 
@@ -242,7 +245,7 @@ describe('Sorento sink concurrency read-mode / edit prefill (feat/sink-concurren
       name: 'Sorento',
       config: { baseUrl: 'https://sorento.example.com' },
     });
-    expect(values.config.sorentoContractVersion).toBe('1');
+    expect(values.config.sorentoContractVersion).toBe('2');
   });
 });
 
