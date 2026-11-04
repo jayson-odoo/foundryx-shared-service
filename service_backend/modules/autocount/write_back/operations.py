@@ -28,9 +28,10 @@ from sqlalchemy.orm import Session
 
 from modules.autocount.alerts import _safe_subject, alert_recipients
 from modules.autocount.canonical.documents import ENTITY_SALES_ORDER, ENTITY_SHIPPING_ORDER
-from modules.autocount.models import AcCompany, AcWriteAction, AcWriteOperation
+from modules.autocount.models import AcCompany, AcWriteOperation
 from modules.autocount.repositories import CompanyRepository
-from modules.autocount.write_back import capabilities, payloads
+from modules.autocount.write_back import capabilities, guard, payloads
+from modules.autocount.write_back.guard import WriteConnectionError
 from modules.autocount.write_back.constants import EDIT_PO_PATH
 from modules.autocount.write_back.frame import (
     BUSY_WINDOW_SECONDS,
@@ -348,6 +349,7 @@ class OperationService:
         if base_url is None:
             raise _Done(REFUSED, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
+        self._check_test_company(company)
         if op == SPLIT_LINK or (
             op == "link_row" and not params.get("whole_row") and self._is_part_of_row(company, base_url, spec, params)
         ):
@@ -382,6 +384,12 @@ class OperationService:
             return False
         row = next((r for r in fresh.get("Details") or [] if r.get("DtlKey") == spec.dtl_key), None)
         return row is not None and _dec(row.get("Qty")) != _dec(params["qty"])
+
+    def _check_test_company(self, company: AcCompany, restore: Optional[str] = None) -> None:
+        try:
+            guard.assert_test_company(self.db, company.tenant_id, company.id)
+        except WriteConnectionError as exc:
+            raise _Done(restore or REFUSED, exc.code) from None
 
     def _check_not_busy(self, company: AcCompany, doc_key: int, kind: str) -> None:
         """Standalone actions and young pending operations hold the document; an
@@ -683,6 +691,7 @@ class OperationService:
         if base_url is None:
             raise _Done(was, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
+        self._check_test_company(company, restore=was)
         kind, doc_date = snap["kind"], date.fromisoformat(snap["docDate"])
         reader = self.prims._reader_factory(base_url)
         self.db.commit()
@@ -748,14 +757,10 @@ class OperationService:
             so_dtl_key=int(spec.target_dtl_key or 0), qty=qty,
             expected_last_modified=spec.expected_last_modified, so_doc_date=_as_date(spec.target_doc_date),
         )
-        if result.action_id:
-            action = self.db.query(AcWriteAction).filter(
-                AcWriteAction.id == result.action_id, AcWriteAction.tenant_id == company.tenant_id
-            ).first()
-            if action is not None:
-                action.operation_id, action.step = row.id, SPLIT_LINK
-                action.request_method, action.request_path = "PUT", EDIT_PO_PATH
-                self.db.commit()
+        if result.action_id and self.prims.actions.attach_to_operation(
+            company.tenant_id, result.action_id, row.id, SPLIT_LINK, "PUT", EDIT_PO_PATH
+        ):
+            self.db.commit()
         self._steps.append({"step": SPLIT_LINK, "outcome": result.outcome, "code": result.error_code,
                             "actionId": result.action_id})
         status = result.outcome if result.outcome in (DONE, REFUSED, PENDING, VENDOR_ERROR) else (

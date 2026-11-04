@@ -142,7 +142,7 @@ def _create_header(raw: WriteBody) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for name, value in _object(raw, "header", required=True).items():
         if name not in HEADER_FIELDS:
-            raise _bad("INVALID_REQUEST", f"header.{name} is not a known field.")
+            raise _bad("INVALID_REQUEST", f"header.{_safe_echo(name)} is not a known field.")
         out[HEADER_FIELDS[name]] = _vendor_date(value, name) if name == "docDate" else value
     return out
 
@@ -159,7 +159,7 @@ def _line(raw: Any, kind: str, *, create: bool) -> Dict[str, Any]:
         elif name in LINE_FIELDS:
             out[LINE_FIELDS[name]] = _vendor_date(value, name) if name == "deliveryDate" else value
         else:
-            raise _bad("INVALID_REQUEST", f"line.{name} is not a known field.")
+            raise _bad("INVALID_REQUEST", f"line.{_safe_echo(name)} is not a known field.")
     return out
 
 
@@ -177,7 +177,7 @@ def _edit_changes(raw: WriteBody) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]
     for name, value in _object(raw, "header").items():
         vendor = name[:1].upper() + name[1:]
         if vendor not in payloads.EDIT_HEADER_KEYS:
-            raise _bad("FIELD_NOT_EDITABLE", f"FIELD_NOT_EDITABLE: {name}")
+            raise _bad("FIELD_NOT_EDITABLE", f"FIELD_NOT_EDITABLE: {_safe_echo(name)}")
         header[vendor] = value
     lines: List[Dict[str, Any]] = []
     for item in raw.get("lines") or []:
@@ -189,7 +189,7 @@ def _edit_changes(raw: WriteBody) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]
                 continue
             vendor = LINE_FIELDS.get(name)
             if vendor not in payloads.EDIT_LINE_KEYS:
-                raise _bad("FIELD_NOT_EDITABLE", f"FIELD_NOT_EDITABLE: {name}")
+                raise _bad("FIELD_NOT_EDITABLE", f"FIELD_NOT_EDITABLE: {_safe_echo(name)}")
             change[vendor] = _vendor_date(value, name) if name == "deliveryDate" else value
         lines.append(change)
     return header, lines

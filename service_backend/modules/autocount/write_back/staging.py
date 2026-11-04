@@ -23,6 +23,7 @@ from modules.autocount.models import (
     AcCompany,
     AcStagedRecord,
 )
+from modules.autocount.write_back.constants import STAGING_JOB_ID  # noqa: F401 (re-exported)
 from modules.autocount.write_back.doc_mapping import (
     ENTITY_BY_KIND,
     WrapperMappingError,
@@ -37,7 +38,6 @@ logger = logging.getLogger("foundryx.autocount")
 
 Doc = Dict[str, Any]
 SinkFactory = Callable[..., Any]
-STAGING_JOB_ID = "write-back"
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,7 @@ class DocStager:
         day) must stand whatever happens here."""
         try:
             if self._left_alone(company, doc, kind):
+                logger.info("autocount write-back left a document staged by another job alone (STAGED_BY_OTHER_JOB)")
                 return StageOutcome(False, False)
             row, changed = self._stage_raw(company, doc, kind, skip_unchanged)
             self.db.commit()

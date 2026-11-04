@@ -29,6 +29,31 @@ _SAFE_BOOK = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _FORBIDDEN_CHARS = ("?", "#", ";", "%", "\\", "@")
 
 
+class WriteConnectionError(Exception):
+    """A write connection refused: ``code`` is WRITE_NOT_ALLOWED, CONNECTION_NOT_FOUND or
+    WRITE_COMPANY_NOT_TEST. ``set_write_connection`` leaves the company unchanged."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def assert_test_company(db, tenant_id: str, company_id: str) -> None:
+    """AC-57-22 / AC-57-47: the ONE write-time check that a company is a test book. A
+    company that reads SQL, or holds a staged PO / SPO / SO row of a job other than
+    write-back, is a live book: ``WriteConnectionError("WRITE_COMPANY_NOT_TEST")``.
+    ``set_write_connection`` and every write frame call it as ``guard.assert_test_company``
+    (the module attribute), so opening a live book is one reviewed change here."""
+    from modules.autocount.write_back.constants import STAGING_JOB_ID
+    from modules.autocount.write_back.repository import CompanyDataRepository
+
+    data = CompanyDataRepository(db)
+    if data.has_sql_source(tenant_id, company_id) or data.has_foreign_document_rows(
+        tenant_id, company_id, ("purchase_order", "shipping_order", "sales_order"), STAGING_JOB_ID
+    ):
+        raise WriteConnectionError("WRITE_COMPANY_NOT_TEST")
+
+
 class WriteNotAllowed(Exception):
     """The base URL does not name an allowlisted book. Carries only the book
     segment (never the URL), so no credential or query can leak into a log."""

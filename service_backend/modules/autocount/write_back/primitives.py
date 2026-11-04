@@ -118,20 +118,39 @@ class _Call:
     stage: bool = True
 
 
-_URL = re.compile(r"https?://\S+", re.IGNORECASE)
-_CONN_PAIR = re.compile(
-    r"\b(?:password|pwd|user\s*id|uid|server|data\s*source|initial\s*catalog|database)\s*=", re.IGNORECASE
+# AC-57-47: what marks the start of an internal detail. The text is cut at the FIRST one:
+# whatever follows is where hosts, accounts and secrets sit.
+_CUT_PATTERNS = (
+    re.compile(r"[a-z][a-z0-9+.-]*://", re.IGNORECASE),  # any scheme://
+    re.compile(
+        r"""\b(?:addr|address|host|hostname|user\s*id|username|user|uid|password|pwd|server|"""
+        r"""data\s*source|initial\s*catalog|database)\b["']?\s*[=:]""",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"),  # IPv4
+    re.compile(r"\b[A-Za-z]:\\"),  # drive path
+    re.compile(r"\\\\[A-Za-z0-9_.$-]"),  # UNC path
 )
 MESSAGE_CAP = 300
 
 
+def redact_text(text: str, base_url: str = "") -> str:
+    """The first line of ``text``, control characters removed, cut at the first
+    internal detail (the cut list above, or the company's own write host) and capped."""
+    text = next((line for line in text.splitlines() if line.strip()), "")
+    text = "".join(" " if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else c for c in text)
+    cuts = [m.start() for m in (pattern.search(text) for pattern in _CUT_PATTERNS) if m]
+    host = (urlsplit(base_url).hostname or "") if base_url else ""
+    if host and host.lower() in text.lower():
+        cuts.append(text.lower().index(host.lower()))
+    if cuts:
+        text = text[: min(cuts)].rstrip() + " [redacted]"
+    return " ".join(text.split())[:MESSAGE_CAP]
+
+
 def vendor_message(body: Any, base_url: str = "") -> str:
-    """AutoCount's own refusal text, safe to show: the first line of its
-    ``ExceptionMessage`` (else ``Message``), never the stack or exception type.
-    Everything from the first URL, connection-string pair (password / pwd / user id /
-    uid / server / data source / initial catalog / database =) or the write host onward
-    is dropped for ``[redacted]`` (what follows such a token is where secrets sit);
-    capped at 300 characters."""
+    """AutoCount's own refusal text, safe to show: ``ExceptionMessage`` (else a
+    non-generic ``Message``), never the stack or exception type, redacted (``redact_text``)."""
     text = ""
     if isinstance(body, dict):
         text = str(body.get("ExceptionMessage") or "")
@@ -139,15 +158,7 @@ def vendor_message(body: Any, base_url: str = "") -> str:
             text = str(body.get("Message") or "")
     elif isinstance(body, str):
         text = body
-    text = next((line for line in text.splitlines() if line.strip()), "")
-    text = "".join(" " if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else c for c in text)
-    cuts = [m.start() for m in (_URL.search(text), _CONN_PAIR.search(text)) if m]
-    host = (urlsplit(base_url).hostname or "") if base_url else ""
-    if host and host.lower() in text.lower():
-        cuts.append(text.lower().index(host.lower()))
-    if cuts:
-        text = text[: min(cuts)].rstrip() + " [redacted]"
-    return " ".join(text.split())[:MESSAGE_CAP]
+    return redact_text(text, base_url)
 
 
 _GENERIC = "An error has occurred."
@@ -246,6 +257,7 @@ class PrimitiveService(WriteFrame):
             except ValueError:
                 raise self._refuse(row, DOC_KIND_UNKNOWN) from None
             base_url = self._write_base_url(row, company)
+            self._check_test_company(row, company)
             if not capabilities.capable(call.kind, call.primitive):
                 raise self._refuse(row, VENDOR_UNSUPPORTED)
             reader = self._reader_factory(base_url)
@@ -417,12 +429,15 @@ class PrimitiveService(WriteFrame):
         except WriteTransportError as exc:
             return self._wrap(self._finish(row, OUTCOME_PENDING, exc.code))
         row.response_status = response.status_code
-        row.response_json = _safe_body(response.body)
+        if response.ok:
+            row.response_json = _safe_body(response.body)
         if not response.ok:
             if is_business_refusal(response.status_code, response.body):
                 message = vendor_message(response.body, base_url)
                 row.response_json = {"message": message}  # the same safe text, never the stack
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message))
+            # a bare failure (an IIS page, a stack): the status and redacted text only (AC-57-47)
+            row.response_json = {"text": vendor_message(response.body, base_url)}
             return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR))
         self.db.commit()
         self._check_deadline(row)

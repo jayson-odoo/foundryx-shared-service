@@ -40,12 +40,11 @@ from modules.autocount.write_back.constants import (
     SO_BY_DOC_DATE_PATH,
     PO_BY_DOC_DATE_PATH,
 )
+from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteNotAllowed
 from modules.autocount.write_back.payloads import header_of, so_header_of
 from modules.autocount.write_back.operations import OperationService
 from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService
-from modules.autocount.write_back.repository import CompanyDataRepository
-from modules.autocount.write_back.staging import STAGING_JOB_ID
 from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
     PullDocsResult,
@@ -120,6 +119,11 @@ class SuiteResult:
     evidence: List[Dict[str, object]] = field(default_factory=list)
 
 
+def _doc_prefix(run_tag: str) -> str:
+    """``FXT-<tag>``, without doubling the prefix when the tag already carries it."""
+    return run_tag if run_tag.upper().startswith("FXT-") else f"FXT-{run_tag}"
+
+
 def _rows(rows: Sequence[Row]) -> List[Row]:
     return [{k: r[k] for k in _ROW_FIELDS if k in r} for r in rows]
 
@@ -150,7 +154,7 @@ class _Run:
         self.base_url = base_url
         self.creditor = creditor_code
         self.debtor = debtor_code
-        self.so_no = f"FXT-{run_tag}-SO"
+        self.so_no = f"{_doc_prefix(run_tag)}-SO"
         self.so_doc: Optional[Doc] = None
         self.tag = run_tag
         self.client_factory = client_factory
@@ -161,8 +165,8 @@ class _Run:
             sink_factory=sink_factory,
         )
         self.today = myt_date(datetime.now(timezone.utc))
-        self.po_no = f"FXT-{run_tag}-1"
-        self.spo_no = f"FXT-{run_tag}-S1"
+        self.po_no = f"{_doc_prefix(run_tag)}-1"
+        self.spo_no = f"{_doc_prefix(run_tag)}-S1"
         self.results: Dict[str, CaseResult] = {}
         self.po_doc: Optional[Doc] = None
         self.big_key: int = 0
@@ -639,7 +643,7 @@ def render_report(result: SuiteResult, *, run_date: date) -> str:
 # ── plan 57: Quotation / Sales Order suite (Q01..Q09) ────────────────────────
 
 _SCRUB_KEYS = re.compile(
-    r"^(DebtorName|InvAddr\d|DeliverAddr\d|Phone\d?|Fax\d?|DeliverPhone\d?|DeliverFax\d?|Attention|DeliverContact)$"
+    r"^(DebtorName|InvAddr\d|DeliverAddr\d|Phone\d?|Fax\d?|DeliverPhone\d?|DeliverFax\d?|Attention|DeliverContact|SalesAgent|RefDocNo|ShipInfo)$"
 )
 
 
@@ -808,7 +812,7 @@ class _QtRun:
         auto = self.call(case, lambda: self.prims.create_doc(
             **self._args("QT"), header=self._header(), lines=[self._line(1)]))
         explicit = self.call(case, lambda: self.prims.create_doc(
-            **self._args("QT"), header=self._header(DocNo=f"FXT-{self.tag}-QT"), lines=[self._line(1)]))
+            **self._args("QT"), header=self._header(DocNo=f"{_doc_prefix(self.tag)}-QT"), lines=[self._line(1)]))
         case.observed = f"auto {self._note(auto)} {auto.doc_no or ''}; explicit {self._note(explicit)} {explicit.doc_no or ''}".strip()
         if auto.outcome == "done":
             self.qt_auto = auto
@@ -862,7 +866,7 @@ class _QtRun:
                           YourPONo="", ProjNo="", FOCQty=0, Discount="", TaxCode="", Desc2="",
                           FullTransferOption=" ", FullTransferFromDocList="")
         res = self.call(case, lambda: self.prims.create_doc(
-            **self._args("SO"), header=self._header(DocNo=f"FXT-{self.tag}-SO"), lines=[line]))
+            **self._args("SO"), header=self._header(DocNo=f"{_doc_prefix(self.tag)}-SO"), lines=[line]))
         case.observed = self._note(res) + (f" warnings {','.join(res.warnings)}" if res.warnings else "")
         if res.outcome == "done":
             self.so = res
@@ -947,17 +951,12 @@ def run_qtso_suite(
     that reads SQL or holds documents staged by another job). A case fault is
     recorded as FAIL, never raised; every vendor write lands in ``evidence``."""
     from modules.autocount.write_back.pull_docs import WriteDisabled
-    from modules.autocount.write_back.service import WriteConnectionError
 
     company = CompanyRepository(db).get(tenant_id, company_id)
     if company is None:
         raise WriteDisabled()
     base_url = write_base_url(db, company)
-    data = CompanyDataRepository(db)
-    if data.has_sql_source(tenant_id, company.id) or data.has_foreign_document_rows(
-        tenant_id, company.id, ("purchase_order", "shipping_order", "sales_order"), STAGING_JOB_ID
-    ):
-        raise WriteConnectionError("WRITE_COMPANY_NOT_TEST")
+    guard.assert_test_company(db, tenant_id, company.id)  # raises WriteConnectionError
     run = _QtRun(
         db, tenant_id, company, base_url, debtor_code, run_tag, header_extra or {},
         client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory,

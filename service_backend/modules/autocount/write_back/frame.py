@@ -21,7 +21,8 @@ from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.provider import PROVIDER_KEY
 from modules.autocount.repositories import ConnectionRepository
 from modules.autocount.write_back.client import AutoCountWriteClient
-from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
+from modules.autocount.write_back import guard
+from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
 from modules.autocount.write_back.repository import (
@@ -182,8 +183,17 @@ class WriteFrame:
         try:
             assert_write_allowed(base_url)
         except WriteNotAllowed as exc:
-            return None, (exc.code, str(exc))
+            return None, (exc.code, "")  # the code only: never the book name (AC-57-47)
         return base_url, None
+
+    def _check_test_company(self, row: AcWriteAction, company: AcCompany) -> None:
+        """AC-57-47: the write-time test-company check, through the guard module's one
+        function, before any request (a company can gain SQL data after its connection
+        was set)."""
+        try:
+            guard.assert_test_company(self.db, company.tenant_id, company.id)
+        except WriteConnectionError as exc:
+            raise self._refuse(row, exc.code) from None
 
     def _write_base_url(self, row: AcWriteAction, company: AcCompany) -> str:
         """The write URL, or a ``_Stop`` (refused) carrying why not."""

@@ -25,6 +25,21 @@ class WriteActionRepository:
         self.db.flush()
         return row
 
+    def attach_to_operation(
+        self, tenant_id: str, action_id: str, operation_id: str, step: str, method: str, path: str
+    ) -> bool:
+        """Mark an existing action as one step of an operation (the plan 55 split link
+        that an operation wraps); tenant-scoped."""
+        row = (
+            self.db.query(AcWriteAction)
+            .filter(AcWriteAction.id == action_id, AcWriteAction.tenant_id == tenant_id)
+            .first()
+        )
+        if row is None:
+            return False
+        row.operation_id, row.step, row.request_method, row.request_path = operation_id, step, method, path
+        return True
+
     def has_open(
         self, tenant_id: str, company_id: str, doc_key: int, since: datetime,
         *, standalone_only: bool = False,

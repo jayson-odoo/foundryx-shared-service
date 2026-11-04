@@ -9,3 +9,6 @@ PO_BY_DOC_DATE_PATH = "/purchaseorderbydocdate"
 SO_BY_DOC_DATE_PATH = "/salesorderbydocdate"
 PO_BY_LAST_MODIFIED_PATH = "/purchaseorderbyLastModified"
 SO_BY_LAST_MODIFIED_PATH = "/salesorderbyLastModified"
+
+# Job id of staged rows the write flows themselves create (any other job id = a sync's rows).
+STAGING_JOB_ID = "write-back"

@@ -17,7 +17,7 @@ import uuid
 from datetime import date
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -67,11 +67,14 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
     _safe_body,
     _same,
 )
-from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
+from modules.autocount.write_back import guard
+from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
-from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, CompanyDataRepository
-from modules.autocount.write_back.staging import STAGING_JOB_ID
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT
+
+if TYPE_CHECKING:  # operations imports this module
+    from modules.autocount.write_back.operations import OperationService
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -232,7 +235,7 @@ class WriteBackService(WriteFrame):
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
-        operations: Optional[Any] = None,
+        operations: Optional["OperationService"] = None,
         so_doc_date: Optional[date] = None,
     ) -> WriteActionResult:
         """Part of a row: the plan 55 split link (idempotent when a key is given).
@@ -259,7 +262,7 @@ class WriteBackService(WriteFrame):
         return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
 
     def _link_operation(
-        self, operations: Any, tenant_id: str, company_id: str, key_id: Optional[str],
+        self, operations: "OperationService", tenant_id: str, company_id: str, key_id: Optional[str],
         idempotency_key: Optional[str], po_doc_key: int, po_dtl_key: int, qty: Decimal,
     ) -> Optional[str]:
         """Which operation a link request runs (AC-57-44). A stored key keeps its
@@ -302,7 +305,7 @@ class WriteBackService(WriteFrame):
 
     @staticmethod
     def _operation(
-        operations: Any, op: str, tenant_id: str, company_id: str, key_id: Optional[str],
+        operations: "OperationService", op: str, tenant_id: str, company_id: str, key_id: Optional[str],
         idempotency_key: Optional[str], params: Dict[str, Any],
     ) -> WriteActionResult:
         """Run a plan 57 operation and answer in the plan 55 shape (plus the
@@ -327,7 +330,7 @@ class WriteBackService(WriteFrame):
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
-        operations: Optional[Any] = None,
+        operations: Optional["OperationService"] = None,
     ) -> WriteActionResult:
         """With ``operations`` (the gateway): AutoCount never edits a link in place,
         so the ``unlink_row`` operation runs. Without it the plan 55 flow."""
@@ -349,7 +352,7 @@ class WriteBackService(WriteFrame):
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
-        operations: Optional[Any] = None,
+        operations: Optional["OperationService"] = None,
     ) -> WriteActionResult:
         """With ``operations``: the ``spo_unlink_row`` operation (delete + add unlinked)."""
         if operations is None:
@@ -394,6 +397,7 @@ class WriteBackService(WriteFrame):
         try:
             self._check_qty(plan, row)
             base_url = self._write_base_url(row, company)
+            self._check_test_company(row, company)
             self._check_capability(plan, row)
             self._check_not_busy(row, tenant_id, company.id, plan.doc_key)
             row.outcome = OUTCOME_IN_FLIGHT
@@ -760,15 +764,6 @@ class WriteBackService(WriteFrame):
 
 
 
-class WriteConnectionError(Exception):
-    """``set_write_connection`` refused; ``code`` is WRITE_NOT_ALLOWED or
-    CONNECTION_NOT_FOUND and the company is left unchanged."""
-
-    def __init__(self, code: str) -> None:
-        self.code = code
-        super().__init__(code)
-
-
 def set_write_connection(
     db: Session, *, tenant_id: str, company_id: str, connection_id: str
 ) -> AcCompany:
@@ -780,11 +775,7 @@ def set_write_connection(
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
     # AC-57-22: company-scoped data first. A company that reads SQL, or already holds
     # documents staged by another job, is a live book: it never gets a write connection.
-    data = CompanyDataRepository(db)
-    if data.has_sql_source(tenant_id, company.id) or data.has_foreign_document_rows(
-        tenant_id, company.id, (ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER, ENTITY_SALES_ORDER), STAGING_JOB_ID
-    ):
-        raise WriteConnectionError("WRITE_COMPANY_NOT_TEST")
+    guard.assert_test_company(db, tenant_id, company.id)
     conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
     if conn is None:
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
