@@ -524,9 +524,15 @@ def _run_send(
                 row.media_key = store.save(f"omnichannel/{row.tenant_id}/voice", content, mime)
                 row.media_mime = mime
                 # The original upload is no longer reachable from the row; it is
-                # deleted once the new key is committed (plan 56 C, AC-56-43).
+                # deleted once the converted key is committed (plan 56 C, AC-56-43).
                 superseded_key = original_key if original_key != row.media_key else None
             media_id = adapter.upload_media(credentials, phone_id, content, mime)
+            if superseded_key:
+                # The converted file is accepted: keep it on the row from here on,
+                # whatever the send does next, then drop the original.
+                db.commit()
+                _delete_superseded_upload(db, row, superseded_key)
+                superseded_key = None
             result = adapter.send(
                 credentials,
                 phone_id,
@@ -618,8 +624,6 @@ def _run_send(
     except Exception:  # noqa: BLE001
         logger.exception("recording the SENT outcome of message %s failed", message_id)
         return _record_sent_by_id(db, message_id, external_id)
-    if superseded_key:
-        _delete_superseded_upload(db, row, superseded_key)
     _record_broadcast_receipt(db, row)
     _publish_status(db, row)
     _emit_status_webhook(db, row, "SENT")
