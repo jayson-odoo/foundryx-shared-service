@@ -109,7 +109,7 @@ def test_purge_ignores_legacy_urls_on_migrated_rows_but_not_on_native_rows(rig):
     assert not _exists(native), "control: the same kind of url on a native row is purged"
 
 
-def test_purge_through_connections_deletes_only_the_tenants_own_connection_keys(
+def test_purge_through_connections_follows_connection_owner_and_the_tenants_area(
     rig, session_factory, monkeypatch
 ):
     import app.database as appdb
@@ -129,21 +129,28 @@ def test_purge_through_connections_deletes_only_the_tenants_own_connection_keys(
         foreign = _storage_connection(db, OTHER).id
     finally:
         db.close()
-    own_raw = f"omnichannel/{DEFAULT_TENANT_ID}/own-obj.png"
-    platform_raw = f"omnichannel/{PLATFORM_TENANT_ID}/platform-obj.png"
-    foreign_raw = f"omnichannel/{OTHER}/foreign-obj.png"
-    for raw in (own_raw, platform_raw, foreign_raw):
+    area = f"omnichannel/{DEFAULT_TENANT_ID}"
+    raws = {
+        "own_conn_own_area": f"{area}/own-conn.png",
+        "platform_conn_own_area": f"{area}/platform-conn.png",
+        "platform_conn_other_area": f"omnichannel/{OTHER}/platform-other.png",
+        "foreign_conn_own_area": f"{area}/foreign-conn.png",
+    }
+    for raw in raws.values():
         client.objects[raw] = b"x"
     cid = _contact(rig.sf, rig.ws, "+60100000604")
-    _add_message(rig.sf, cid, rig.channel, media_key=f"conn:{own}:{own_raw}")
-    _add_message(rig.sf, cid, rig.channel, media_url=PUBLIC + f"conn:{platform}:{platform_raw}")
-    _add_message(rig.sf, cid, rig.channel, media_url=PUBLIC + f"conn:{foreign}:{foreign_raw}")
+    _add_message(rig.sf, cid, rig.channel, media_key=f"conn:{own}:{raws['own_conn_own_area']}")
+    _add_message(rig.sf, cid, rig.channel, media_key=f"conn:{platform}:{raws['platform_conn_own_area']}")
+    _add_message(rig.sf, cid, rig.channel, media_url=PUBLIC + f"conn:{platform}:{raws['platform_conn_other_area']}")
+    _add_message(rig.sf, cid, rig.channel, media_url=PUBLIC + f"conn:{foreign}:{raws['foreign_conn_own_area']}")
     res = rig.erase(cid)
     assert res.status_code == 200, res.text
-    assert own_raw not in client.objects  # control: the tenant's own connection is purged
-    assert platform_raw in client.objects, "the platform connection's object is not purged"
-    assert foreign_raw in client.objects, "another tenant's connection object is not purged"
     assert rig.counts(cid)["messages"] == 0
+    assert raws["own_conn_own_area"] not in client.objects  # control: own connection, own area
+    assert raws["platform_conn_own_area"] not in client.objects, "platform default storage, own area: purged"
+    assert raws["platform_conn_other_area"] in client.objects, "platform storage under another area is kept"
+    assert raws["foreign_conn_own_area"] in client.objects, "another tenant's connection is never used"
+    assert res.json()["files"] == 2
 
 
 # ═════════════════════════════════════════════════════════════════════════════
