@@ -308,6 +308,7 @@ def test_sample_scope_post_is_non_blocking_under_a_real_worker_and_never_touches
     enter the gate and sit in it until the hold cap, so the walk would have
     both entered and left the gate by the time the POST answers."""
     import threading
+    import time
 
     from app.config import settings
     from modules.autocount.services import etl_service as etl_service_module
@@ -354,16 +355,38 @@ def test_sample_scope_post_is_non_blocking_under_a_real_worker_and_never_touches
         transport=httpx.MockTransport(handler)
     )
     try:
-        response = client.post(
-            "/autocount/http/preview",
-            json={"scope": "sample", "connectionId": conn.id, "path": "/itembypage"},
-            headers=_auth(client),
-        )
+        headers = _auth(client)  # the login (bcrypt) is NOT part of the timed window
+        box: Dict[str, Any] = {}
+
+        def _post() -> None:
+            t0 = time.monotonic()
+            try:
+                box["response"] = client.post(
+                    "/autocount/http/preview",
+                    json={"scope": "sample", "connectionId": conn.id, "path": "/itembypage"},
+                    headers=headers,
+                )
+            except BaseException as exc:  # noqa: BLE001 - surfaced below
+                box["error"] = exc
+            box["elapsed"] = time.monotonic() - t0
+
+        poster = threading.Thread(target=_post, daemon=True)
+        poster.start()
+        poster.join(timeout=10)  # hang guard: an unbounded wait goes red, never hangs CI
+        finished = not poster.is_alive()
         walk_entered, walk_left = entered.is_set(), left.is_set()
     finally:
         release.set()
         app.dependency_overrides.pop(get_http_transport, None)
 
+    assert finished, "the POST had not returned after 10s - it must never wait on the walk or the job"
+    assert "error" not in box, f"the POST raised: {box.get('error')!r}"
+    response = box["response"]
+    elapsed = box["elapsed"]
+    # Loose bound over the POST alone (the gate carries the proof; this only
+    # catches a route that waits on the job row, which the stubbed worker
+    # never completes).
+    assert elapsed < 3.0, f"the POST took {elapsed:.3f}s - it must answer without waiting on the job"
     assert response.status_code == 202, response.text
     assert not walk_entered, (
         "the POST ran the source walk inline (it entered the held step"
