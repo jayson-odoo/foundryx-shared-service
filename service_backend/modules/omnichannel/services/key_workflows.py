@@ -7,6 +7,7 @@ and archived by the core ``WorkflowService`` with ``actor=None`` and
 ``actor_id="apikey:<keyId>"``.
 """
 import copy
+import math
 import re
 import uuid
 from dataclasses import dataclass
@@ -220,6 +221,35 @@ def stamp_trigger_workspace(definition: Dict[str, Any], workspace_id: str) -> Di
     return stamped
 
 
+_ROW_HEIGHT = 120
+
+
+def _valid_position(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for axis in ("x", "y"):
+        v = value.get(axis)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return False
+    return True
+
+
+def lay_out_nodes(definition: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of the definition in which every node has a position the canvas
+    can read. Valid positions are kept; each node without one is placed in the
+    column x = 0, one row per node in definition order, below the lowest kept
+    node so nothing overlaps."""
+    laid = copy.deepcopy(definition)
+    nodes = [n for n in laid.get("nodes") or [] if isinstance(n, dict)]
+    kept_ys = [n["position"]["y"] for n in nodes if _valid_position(n.get("position"))]
+    next_y = (max(kept_ys) + _ROW_HEIGHT) if kept_ys else 0
+    for node in nodes:
+        if not _valid_position(node.get("position")):
+            node["position"] = {"x": 0, "y": next_y}
+            next_y += _ROW_HEIGHT
+    return laid
+
+
 def pinning_issues(
     db: Session, tenant_id: str, workspace_id: str, doc: Any
 ) -> List[DefinitionIssue]:
@@ -379,7 +409,9 @@ def check_for_save(
 ) -> Dict[str, Any]:
     """The save gate (create, update): shape, schemaVersion, node cap,
     allow-list, pinning. Returns the definition with the trigger workspace
-    stamped. Raises the first problem."""
+    stamped and every node positioned. Raises the first problem."""
+    if isinstance(definition, dict):
+        definition = lay_out_nodes(definition)  # before parsing: a bad position is repaired, not refused
     shape = _shape_issues(definition)
     doc = _parse(definition)
     if shape:
@@ -687,6 +719,8 @@ class KeyWorkflowService:
         self, tenant_id: str, workspace_id: str, definition: Dict[str, Any]
     ) -> PublicValidateResponse:
         """Every problem a save or publish would raise, saving nothing."""
+        if isinstance(definition, dict):
+            definition = lay_out_nodes(definition)
         issues = _shape_issues(definition)
         doc = _parse(definition)
         if issues:
