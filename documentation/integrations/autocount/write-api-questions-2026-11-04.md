@@ -68,5 +68,5 @@ Every observation below is from read-only GETs on 4 Nov 2026; doc numbers refer 
     now omit such dates on write. Is omitting the field the right way to keep a date empty on edit?
 22. `POST /NewPurchaseOrder` with a short body: 500 "Column 'DisplayTerm' does not allow nulls", then
     500 SQL error 8178 until `CurrencyCode` / `CurrencyRate` were added, then 200 "Created Successful"
-    but the document read back with no rows (our probe FXT-PROBE-1, DocKey 12023, please delete it).
+    but the document read back with no rows (our probe FXT-PROBE-1, DocKey 12023, left in place; we never delete in AutoCount).
     Which header and row fields are required, and can a POST that drops rows return an error instead?
