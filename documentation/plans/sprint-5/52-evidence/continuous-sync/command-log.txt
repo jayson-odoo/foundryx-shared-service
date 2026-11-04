@@ -4935,3 +4935,1350 @@ $ agent-browser screenshot --full /home/user/foundryx-shared-service/documentati
 ✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/15-stopped-after-confirm-375.png
 $ agent-browser close
 ✓ Browser closed
+# === RE-RUN on HEAD f77a3db8 (round 2 build) ===
+$ agent-browser open http://localhost:3001/signin
+✓ Foundryx
+  http://localhost:3001/signin
+$ agent-browser set viewport 1280 900
+✓ Done
+$ agent-browser fill @e4 demo@example.com
+✗ Unknown ref: e4
+$ agent-browser fill @e11 demo1234
+✗ Unknown ref: e11
+$ agent-browser click @e7
+✗ Unknown ref: e7
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser snapshot -i
+- link "Logo" [ref=e2]
+- heading "Welcome back." [level=1, ref=e3]
+- textbox "Email" [ref=e4]
+- link "Forgot Password?" [ref=e5]
+- textbox "Your password" [ref=e11]
+- button "Show password" [ref=e12]
+- checkbox "Remember me" [checked=false, ref=e6]
+- button "Sign In" [ref=e7]
+- link "Terms" [ref=e8]
+- link "Plans" [ref=e9]
+- link "Contact Us" [ref=e10]
+- region "Notifications alt+T" [ref=e1]
+$ agent-browser click @
+✗ Element not found. Verify the selector is correct and the element exists in the DOM.
+$ agent-browser wait 700
+✓ Done
+$ agent-browser snapshot -i
+- link "Logo" [ref=e2]
+- heading "Welcome back." [level=1, ref=e3]
+- textbox "Email" [ref=e4]
+- link "Forgot Password?" [ref=e5]
+- textbox "Your password" [ref=e11]
+- button "Show password" [ref=e12]
+- checkbox "Remember me" [checked=false, ref=e6]
+- button "Sign In" [ref=e7]
+- link "Terms" [ref=e8]
+- link "Plans" [ref=e9]
+- link "Contact Us" [ref=e10]
+- region "Notifications alt+T" [ref=e1]
+$ agent-browser scrollintoview @
+✓ Done
+$ agent-browser click @
+✗ Element not found. Verify the selector is correct and the element exists in the DOM.
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser get url
+http://localhost:3001/signin
+$ agent-browser snapshot -i
+- link "Logo" [ref=e2]
+- heading "Welcome back." [level=1, ref=e3]
+- textbox "Email" [ref=e4]
+- link "Forgot Password?" [ref=e5]
+- textbox "Your password" [ref=e11]
+- button "Show password" [ref=e12]
+- checkbox "Remember me" [checked=false, ref=e6]
+- button "Sign In" [ref=e7]
+- link "Terms" [ref=e8]
+- link "Plans" [ref=e9]
+- link "Contact Us" [ref=e10]
+- region "Notifications alt+T" [ref=e1]
+$ agent-browser click @
+✗ Element not found. Verify the selector is correct and the element exists in the DOM.
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser snapshot -i
+- link "Logo" [ref=e2]
+- heading "Welcome back." [level=1, ref=e3]
+- textbox "Email" [ref=e4]
+- link "Forgot Password?" [ref=e5]
+- textbox "Your password" [ref=e11]
+- button "Show password" [ref=e12]
+- checkbox "Remember me" [checked=false, ref=e6]
+- button "Sign In" [ref=e7]
+- link "Terms" [ref=e8]
+- link "Plans" [ref=e9]
+- link "Contact Us" [ref=e10]
+- region "Notifications alt+T" [ref=e1]
+$ agent-browser open http://localhost:3001/signin
+✓ Foundryx
+  http://localhost:3001/signin
+$ agent-browser snapshot -i
+- link "Logo" [ref=e2]
+- heading "Welcome back." [level=1, ref=e3]
+- textbox "Email" [ref=e4]
+- link "Forgot Password?" [ref=e5]
+- textbox "Your password" [ref=e11]
+- button "Show password" [ref=e12]
+- checkbox "Remember me" [checked=false, ref=e6]
+- button "Sign In" [ref=e7]
+- link "Terms" [ref=e8]
+- link "Plans" [ref=e9]
+- link "Contact Us" [ref=e10]
+- region "Notifications alt+T" [ref=e1]
+$ agent-browser fill @e4 demo@example.com
+✓ Done
+$ agent-browser fill @e11 demo1234
+✓ Done
+$ agent-browser click @e7
+✓ Done
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser get url
+http://localhost:3001/
+$ agent-browser snapshot -i
+- link "Skip to content" [ref=e1]
+- link "Default Logo" [ref=e30]
+- button "Collapse sidebar" [ref=e31]
+- heading "Dashboards" [level=3, ref=e36]
+  - button "Dashboards" [expanded=true, ref=e49]
+    - link "Dashboards" [ref=e64]
+- heading "App Store" [level=3, ref=e37]
+  - button "App Store" [expanded=false, ref=e50]
+- heading "Workflows" [level=3, ref=e38]
+  - button "Workflows" [expanded=false, ref=e51]
+- heading "Forms" [level=3, ref=e39]
+  - button "Forms" [expanded=false, ref=e52]
+- heading "Imports" [level=3, ref=e40]
+  - button "Imports" [expanded=false, ref=e53]
+    - link "Imports" [ref=e65]
+- heading "Jobs" [level=3, ref=e41]
+  - button "Jobs" [expanded=false, ref=e54]
+    - link "Jobs" [ref=e66]
+- heading "Developers" [level=3, ref=e42]
+  - button "Developers" [expanded=false, ref=e55]
+- heading "Documents" [level=3, ref=e43]
+  - button "Documents" [expanded=false, ref=e56]
+- heading "Settings" [level=3, ref=e44]
+  - button "Settings" [expanded=false, ref=e57]
+- heading "User Management" [level=3, ref=e45]
+  - button "User Management" [expanded=false, ref=e58]
+- heading "Products" [level=3, ref=e46]
+  - button "Products" [expanded=false, ref=e59]
+    - link "Products" [ref=e67]
+- heading "Ideation" [level=3, ref=e47]
+  - button "Ideation" [expanded=false, ref=e60]
+- heading "Omnichannel" [level=3, ref=e48]
+  - button "Omnichannel" [expanded=false, ref=e61]
+- navigation "Main" [ref=e3]
+  - link "Home" [ref=e62]
+  - button "Apps" [expanded=false, ref=e63]
+- button "Search" [expanded=false, ref=e4]
+- button "Uploads" [ref=e5]
+- button "Imports" [ref=e6]
+- button "Jobs" [ref=e7]
+- button "Downloads" [ref=e8]
+- button "Notifications" [expanded=false, ref=e9]
+- button "Chat" [expanded=false, ref=e10]
+- button "Apps" [expanded=false, ref=e11]
+- button "User menu" [expanded=false, ref=e12]
+- heading "Dashboard" [level=1, ref=e13]
+- button "Jan 20, 2025 - Feb 09, 2025" [expanded=false, ref=e14]
+- heading "See What's New in the Release Notes" [level=2, ref=e15]
+  - link "Release Notes" [ref=e32]
+- link "Get Started" [ref=e16]
+- heading "Highlights" [level=3, ref=e17]
+- button "More options" [expanded=false, ref=e18]
+- heading "Earnings" [level=3, ref=e19]
+- switch "Referrals only" [checked=true, ref=e20]
+- combobox [expanded=false, ref=e21]: 1 month
+  - generic "1 month" [ref=e33] clickable [onclick]
+- link "Join Meeting" [ref=e22]
+- heading "Teams" [level=3, ref=e23]
+- textbox "Search Teams..." [ref=e34]
+- columnheader "Select all" [ref=e98]
+  - checkbox "Select all" [checked=false, ref=e103]
+- columnheader "Team" [ref=e99]
+  - button "Team" [expanded=false, ref=e104]
+- columnheader "Rating" [ref=e100]
+  - button "Rating" [expanded=false, ref=e105]
+- columnheader "Last Modified" [ref=e101]
+  - button "Last Modified" [expanded=false, ref=e106]
+- columnheader "Members" [ref=e102]
+  - button "Members" [expanded=false, ref=e107]
+- row "Quality AssuranceProduct testing25 Sep, 2024DTDT" [ref=e68] clickable [onclick]
+  - cell "Select row" [ref=e73]
+    - checkbox "Select row" [checked=false, ref=e108]
+  - cell "Quality Assurance Product testing" [ref=e74]
+  - cell "    " [ref=e75]
+  - cell "25 Sep, 2024" [ref=e76]
+  - cell "DT DT" [ref=e77]
+- row "Legal TeamLegal support25 Aug, 2024DTDT" [ref=e69] clickable [onclick]
+  - cell "Select row" [ref=e78]
+    - checkbox "Select row" [checked=false, ref=e109]
+  - cell "Legal Team Legal support" [ref=e79]
+  - cell "    " [ref=e80]
+  - cell "25 Aug, 2024" [ref=e81]
+  - cell "DT DT" [ref=e82]
+- row "Product ManagementProduct development & lifecycle21 Oct, 2024PMPMPMPM" [ref=e70] clickable [onclick]
+  - cell "Select row" [ref=e83]
+    - checkbox "Select row" [checked=false, ref=e110]
+  - cell "Product Management Product development & lifecycle" [ref=e84]
+  - cell "    " [ref=e85]
+  - cell "21 Oct, 2024" [ref=e86]
+  - cell "PM PM PM PM" [ref=e87]
+- row "Finance TeamFinancial planning20 Sep, 2024DTDTDT" [ref=e71] clickable [onclick]
+  - cell "Select row" [ref=e88]
+    - checkbox "Select row" [checked=false, ref=e111]
+  - cell "Finance Team Financial planning" [ref=e89]
+  - cell "    " [ref=e90]
+  - cell "20 Sep, 2024" [ref=e91]
+  - cell "DT DT DT" [ref=e92]
+- row "Logistics TeamSupply chain20 Aug, 2024DTDT" [ref=e72] clickable [onclick]
+  - cell "Select row" [ref=e93]
+    - checkbox "Select row" [checked=false, ref=e112]
+  - cell "Logistics Team Supply chain" [ref=e94]
+  - cell "    " [ref=e95]
+  - cell "20 Aug, 2024" [ref=e96]
+  - cell "DT DT" [ref=e97]
+- combobox [expanded=false, ref=e24]: 5
+  - generic "5" [ref=e35] clickable [onclick]
+- button "Go to previous page" [disabled, ref=e25]
+- button "1" [ref=e26]
+- button "2" [ref=e27]
+- button "3" [ref=e28]
+- button "Go to next page" [ref=e29]
+- region "Notifications alt+T" [ref=e2]
+$ agent-browser click @e61
+✓ Done
+$ agent-browser wait 700
+✓ Done
+$ agent-browser snapshot -i
+- link "Skip to content" [ref=e1]
+- link "Default Logo" [ref=e30]
+- button "Collapse sidebar" [ref=e31]
+- heading "Dashboards" [level=3, ref=e36]
+  - button "Dashboards" [expanded=false, ref=e50]
+    - link "Dashboards" [ref=e65]
+- heading "App Store" [level=3, ref=e37]
+  - button "App Store" [expanded=false, ref=e51]
+- heading "Workflows" [level=3, ref=e38]
+  - button "Workflows" [expanded=false, ref=e52]
+- heading "Forms" [level=3, ref=e39]
+  - button "Forms" [expanded=false, ref=e53]
+- heading "Imports" [level=3, ref=e40]
+  - button "Imports" [expanded=false, ref=e54]
+    - link "Imports" [ref=e66]
+- heading "Jobs" [level=3, ref=e41]
+  - button "Jobs" [expanded=false, ref=e55]
+    - link "Jobs" [ref=e67]
+- heading "Developers" [level=3, ref=e42]
+  - button "Developers" [expanded=false, ref=e56]
+- heading "Documents" [level=3, ref=e43]
+  - button "Documents" [expanded=false, ref=e57]
+- heading "Settings" [level=3, ref=e44]
+  - button "Settings" [expanded=false, ref=e58]
+- heading "User Management" [level=3, ref=e45]
+  - button "User Management" [expanded=false, ref=e59]
+- heading "Products" [level=3, ref=e46]
+  - button "Products" [expanded=false, ref=e60]
+    - link "Products" [ref=e68]
+- heading "Ideation" [level=3, ref=e47]
+  - button "Ideation" [expanded=false, ref=e61]
+- heading "Omnichannel" [level=3, ref=e48]
+  - button "Omnichannel" [expanded=true, ref=e62]
+- region "Omnichannel" [ref=e49]
+  - heading "Dashboard" [level=3, ref=e74]
+    - button "Dashboard" [expanded=false, ref=e110]
+      - link "Dashboard" [ref=e126]
+  - heading "Inbox" [level=3, ref=e75]
+    - button "Inbox" [expanded=false, ref=e111]
+      - link "Inbox" [ref=e127]
+  - heading "Contacts" [level=3, ref=e76]
+    - button "Contacts" [expanded=false, ref=e112]
+      - link "Contacts" [ref=e128]
+  - heading "Broadcasts" [level=3, ref=e77]
+    - button "Broadcasts" [expanded=false, ref=e113]
+      - link "Broadcasts" [ref=e129]
+  - heading "Reports" [level=3, ref=e78]
+    - button "Reports" [expanded=false, ref=e114]
+      - link "Reports" [ref=e130]
+  - heading "Channels" [level=3, ref=e79]
+    - button "Channels" [expanded=false, ref=e115]
+      - link "Channels" [ref=e131]
+  - heading "Workspaces" [level=3, ref=e80]
+    - button "Workspaces" [expanded=false, ref=e116]
+      - link "Workspaces" [ref=e132]
+  - heading "Media limits" [level=3, ref=e81]
+    - button "Media limits" [expanded=false, ref=e117]
+      - link "Media limits" [ref=e133]
+  - heading "Quick replies" [level=3, ref=e82]
+    - button "Quick replies" [expanded=false, ref=e118]
+      - link "Quick replies" [ref=e134]
+  - heading "Embed access" [level=3, ref=e83]
+    - button "Embed access" [expanded=false, ref=e119]
+      - link "Embed access" [ref=e135]
+  - heading "Migration" [level=3, ref=e84]
+    - button "Migration" [expanded=false, ref=e120]
+      - link "Migration" [ref=e136]
+- navigation "Main" [ref=e3]
+  - link "Home" [ref=e63]
+  - button "Apps" [expanded=false, ref=e64]
+- button "Search" [expanded=false, ref=e4]
+- button "Uploads" [ref=e5]
+- button "Imports" [ref=e6]
+- button "Jobs" [ref=e7]
+- button "Downloads" [ref=e8]
+- button "Notifications" [expanded=false, ref=e9]
+- button "Chat" [expanded=false, ref=e10]
+- button "Apps" [expanded=false, ref=e11]
+- button "User menu" [expanded=false, ref=e12]
+- heading "Dashboard" [level=1, ref=e13]
+- button "Jan 20, 2025 - Feb 09, 2025" [expanded=false, ref=e14]
+- heading "See What's New in the Release Notes" [level=2, ref=e15]
+  - link "Release Notes" [ref=e32]
+- link "Get Started" [ref=e16]
+- heading "Highlights" [level=3, ref=e17]
+- button "More options" [expanded=false, ref=e18]
+- heading "Earnings" [level=3, ref=e19]
+- switch "Referrals only" [checked=true, ref=e20]
+- combobox [expanded=false, ref=e21]: 1 month
+  - generic "1 month" [ref=e33] clickable [onclick]
+- link "Join Meeting" [ref=e22]
+- heading "Teams" [level=3, ref=e23]
+- textbox "Search Teams..." [ref=e34]
+- columnheader "Select all" [ref=e121]
+  - checkbox "Select all" [checked=false, ref=e137]
+- columnheader "Team" [ref=e122]
+  - button "Team" [expanded=false, ref=e138]
+- columnheader "Rating" [ref=e123]
+  - button "Rating" [expanded=false, ref=e139]
+- columnheader "Last Modified" [ref=e124]
+  - button "Last Modified" [expanded=false, ref=e140]
+- columnheader "Members" [ref=e125]
+  - button "Members" [expanded=false, ref=e141]
+- row "Quality AssuranceProduct testing25 Sep, 2024DTDT" [ref=e69] clickable [onclick]
+  - cell "Select row" [ref=e85]
+    - checkbox "Select row" [checked=false, ref=e142]
+  - cell "Quality Assurance Product testing" [ref=e86]
+  - cell "    " [ref=e87]
+  - cell "25 Sep, 2024" [ref=e88]
+  - cell "DT DT" [ref=e89]
+- row "Legal TeamLegal support25 Aug, 2024DTDT" [ref=e70] clickable [onclick]
+  - cell "Select row" [ref=e90]
+    - checkbox "Select row" [checked=false, ref=e143]
+  - cell "Legal Team Legal support" [ref=e91]
+  - cell "    " [ref=e92]
+  - cell "25 Aug, 2024" [ref=e93]
+  - cell "DT DT" [ref=e94]
+- row "Product ManagementProduct development & lifecycle21 Oct, 2024PMPMPMPM" [ref=e71] clickable [onclick]
+  - cell "Select row" [ref=e95]
+    - checkbox "Select row" [checked=false, ref=e144]
+  - cell "Product Management Product development & lifecycle" [ref=e96]
+  - cell "    " [ref=e97]
+  - cell "21 Oct, 2024" [ref=e98]
+  - cell "PM PM PM PM" [ref=e99]
+- row "Finance TeamFinancial planning20 Sep, 2024DTDTDT" [ref=e72] clickable [onclick]
+  - cell "Select row" [ref=e100]
+    - checkbox "Select row" [checked=false, ref=e145]
+  - cell "Finance Team Financial planning" [ref=e101]
+  - cell "    " [ref=e102]
+  - cell "20 Sep, 2024" [ref=e103]
+  - cell "DT DT DT" [ref=e104]
+- row "Logistics TeamSupply chain20 Aug, 2024DTDT" [ref=e73] clickable [onclick]
+  - cell "Select row" [ref=e105]
+    - checkbox "Select row" [checked=false, ref=e146]
+  - cell "Logistics Team Supply chain" [ref=e106]
+  - cell "    " [ref=e107]
+  - cell "20 Aug, 2024" [ref=e108]
+  - cell "DT DT" [ref=e109]
+- combobox [expanded=false, ref=e24]: 5
+  - generic "5" [ref=e35] clickable [onclick]
+- button "Go to previous page" [disabled, ref=e25]
+- button "1" [ref=e26]
+- button "2" [ref=e27]
+- button "3" [ref=e28]
+- button "Go to next page" [ref=e29]
+- region "Notifications alt+T" [ref=e2]
+$ agent-browser scrollintoview @e136
+✓ Done
+$ agent-browser click @e136
+✓ Done
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser get url
+http://localhost:3001/omnichannel/settings/migration
+$ agent-browser snapshot -i
+- link "Skip to content" [ref=e1]
+- link "Default Logo" [ref=e21]
+- button "Collapse sidebar" [ref=e22]
+- heading "Dashboards" [level=3, ref=e25]
+  - button "Dashboards" [expanded=false, ref=e41]
+    - link "Dashboards" [ref=e56]
+- heading "App Store" [level=3, ref=e26]
+  - button "App Store" [expanded=false, ref=e42]
+- heading "Workflows" [level=3, ref=e27]
+  - button "Workflows" [expanded=false, ref=e43]
+- heading "Forms" [level=3, ref=e28]
+  - button "Forms" [expanded=false, ref=e44]
+- heading "Imports" [level=3, ref=e29]
+  - button "Imports" [expanded=false, ref=e45]
+    - link "Imports" [ref=e57]
+- heading "Jobs" [level=3, ref=e30]
+  - button "Jobs" [expanded=false, ref=e46]
+    - link "Jobs" [ref=e58]
+- heading "Developers" [level=3, ref=e31]
+  - button "Developers" [expanded=false, ref=e47]
+- heading "Documents" [level=3, ref=e32]
+  - button "Documents" [expanded=false, ref=e48]
+- heading "Settings" [level=3, ref=e33]
+  - button "Settings" [expanded=false, ref=e49]
+- heading "User Management" [level=3, ref=e34]
+  - button "User Management" [expanded=false, ref=e50]
+- heading "Products" [level=3, ref=e35]
+  - button "Products" [expanded=false, ref=e51]
+    - link "Products" [ref=e59]
+- heading "Ideation" [level=3, ref=e36]
+  - button "Ideation" [expanded=false, ref=e52]
+- heading "Omnichannel" [level=3, ref=e37]
+  - button "Omnichannel" [expanded=true, ref=e53]
+- region "Omnichannel" [ref=e38]
+  - heading "Dashboard" [level=3, ref=e61]
+    - button "Dashboard" [expanded=false, ref=e83]
+      - link "Dashboard" [ref=e115]
+  - heading "Inbox" [level=3, ref=e62]
+    - button "Inbox" [expanded=false, ref=e84]
+      - link "Inbox" [ref=e116]
+  - heading "Contacts" [level=3, ref=e63]
+    - button "Contacts" [expanded=false, ref=e85]
+      - link "Contacts" [ref=e117]
+  - heading "Broadcasts" [level=3, ref=e64]
+    - button "Broadcasts" [expanded=false, ref=e86]
+      - link "Broadcasts" [ref=e118]
+  - heading "Reports" [level=3, ref=e65]
+    - button "Reports" [expanded=false, ref=e87]
+      - link "Reports" [ref=e119]
+  - heading "Channels" [level=3, ref=e66]
+    - button "Channels" [expanded=false, ref=e88]
+      - link "Channels" [ref=e120]
+  - heading "Workspaces" [level=3, ref=e67]
+    - button "Workspaces" [expanded=false, ref=e89]
+      - link "Workspaces" [ref=e121]
+  - heading "Media limits" [level=3, ref=e68]
+    - button "Media limits" [expanded=false, ref=e90]
+      - link "Media limits" [ref=e122]
+  - heading "Quick replies" [level=3, ref=e69]
+    - button "Quick replies" [expanded=false, ref=e91]
+      - link "Quick replies" [ref=e123]
+  - heading "Embed access" [level=3, ref=e70]
+    - button "Embed access" [expanded=false, ref=e92]
+      - link "Embed access" [ref=e124]
+  - heading "Migration" [level=3, ref=e71]
+    - button "Migration" [expanded=false, ref=e93]
+      - link "Migration" [ref=e125]
+- navigation "Main" [ref=e3]
+  - link "Home" [ref=e54]
+  - button "Apps" [expanded=false, ref=e55]
+- button "Search" [expanded=false, ref=e4]
+- button "Uploads" [ref=e5]
+- button "Imports" [ref=e6]
+- button "Jobs" [ref=e7]
+- button "Downloads" [ref=e8]
+- button "Notifications" [expanded=false, ref=e9]
+- button "Chat" [expanded=false, ref=e10]
+- button "Apps" [expanded=false, ref=e11]
+- button "User menu" [expanded=false, ref=e12]
+- heading "Migration" [level=1, ref=e13]
+- navigation "breadcrumb" [ref=e14]
+  - link "Dashboard" [ref=e39]
+  - link "Migration" [disabled, ref=e40]
+- button "New migration" [ref=e15]
+- textbox "Search migrations…" [ref=e23]
+- button "What can I search?" [ref=e16]
+- combobox "View segment" [expanded=false, ref=e17]: All
+- button "Filters" [expanded=false, ref=e18]
+- button "Columns" [expanded=false, ref=e19]
+- columnheader "Select all" [ref=e72]
+  - generic [ref=e94] clickable [onclick]
+    - checkbox "Select all" [checked=false, disabled, ref=e126]
+- columnheader "Drag to reorder Source" [ref=e73]
+  - button "Drag to reorder" [ref=e95]
+  - button "Source" [expanded=false, disabled, ref=e96]
+- columnheader "Drag to reorder Target workspace" [ref=e74]
+  - button "Drag to reorder" [ref=e97]
+  - button "Target workspace" [expanded=false, disabled, ref=e98]
+- columnheader "Drag to reorder Mode" [ref=e75]
+  - button "Drag to reorder" [ref=e99]
+  - button "Mode" [expanded=false, disabled, ref=e100]
+- columnheader "Drag to reorder Status" [ref=e76]
+  - button "Drag to reorder" [ref=e101]
+  - button "Status" [expanded=false, disabled, ref=e102]
+- columnheader "Drag to reorder Progress" [ref=e77]
+  - button "Drag to reorder" [ref=e103]
+  - button "Progress" [expanded=false, disabled, ref=e104]
+- columnheader "Drag to reorder Contacts" [ref=e78]
+  - button "Drag to reorder" [ref=e105]
+  - button "Contacts" [expanded=false, disabled, ref=e106]
+- columnheader "Drag to reorder Messages" [ref=e79]
+  - button "Drag to reorder" [ref=e107]
+  - button "Messages" [expanded=false, disabled, ref=e108]
+- columnheader "Drag to reorder Failures" [ref=e80]
+  - button "Drag to reorder" [ref=e109]
+  - button "Failures" [expanded=false, disabled, ref=e110]
+- columnheader "Drag to reorder Started" [ref=e81]
+  - button "Drag to reorder" [ref=e111]
+  - button "Started" [expanded=false, disabled, ref=e112]
+- columnheader "Drag to reorder Finished" [ref=e82]
+  - button "Drag to reorder" [ref=e113]
+  - button "Finished" [expanded=false, disabled, ref=e114]
+- cell "No data available" [ref=e60]
+- combobox [expanded=false, ref=e20]: 25
+  - generic "25" [ref=e24] clickable [onclick]
+- region "Notifications alt+T" [ref=e2]
+$ agent-browser click @e15
+✓ Done
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser snapshot -i
+- link "Skip to content" [ref=e1]
+- link "Default Logo" [ref=e20]
+- button "Collapse sidebar" [ref=e21]
+- heading "Dashboards" [level=3, ref=e36]
+  - button "Dashboards" [expanded=false, ref=e58]
+    - link "Dashboards" [ref=e73]
+- heading "App Store" [level=3, ref=e37]
+  - button "App Store" [expanded=false, ref=e59]
+- heading "Workflows" [level=3, ref=e38]
+  - button "Workflows" [expanded=false, ref=e60]
+- heading "Forms" [level=3, ref=e39]
+  - button "Forms" [expanded=false, ref=e61]
+- heading "Imports" [level=3, ref=e40]
+  - button "Imports" [expanded=false, ref=e62]
+    - link "Imports" [ref=e74]
+- heading "Jobs" [level=3, ref=e41]
+  - button "Jobs" [expanded=false, ref=e63]
+    - link "Jobs" [ref=e75]
+- heading "Developers" [level=3, ref=e42]
+  - button "Developers" [expanded=false, ref=e64]
+- heading "Documents" [level=3, ref=e43]
+  - button "Documents" [expanded=false, ref=e65]
+- heading "Settings" [level=3, ref=e44]
+  - button "Settings" [expanded=false, ref=e66]
+- heading "User Management" [level=3, ref=e45]
+  - button "User Management" [expanded=false, ref=e67]
+- heading "Products" [level=3, ref=e46]
+  - button "Products" [expanded=false, ref=e68]
+    - link "Products" [ref=e76]
+- heading "Ideation" [level=3, ref=e47]
+  - button "Ideation" [expanded=false, ref=e69]
+- heading "Omnichannel" [level=3, ref=e48]
+  - button "Omnichannel" [expanded=true, ref=e70]
+- region "Omnichannel" [ref=e49]
+  - heading "Dashboard" [level=3, ref=e77]
+    - button "Dashboard" [expanded=false, ref=e88]
+      - link "Dashboard" [ref=e99]
+  - heading "Inbox" [level=3, ref=e78]
+    - button "Inbox" [expanded=false, ref=e89]
+      - link "Inbox" [ref=e100]
+  - heading "Contacts" [level=3, ref=e79]
+    - button "Contacts" [expanded=false, ref=e90]
+      - link "Contacts" [ref=e101]
+  - heading "Broadcasts" [level=3, ref=e80]
+    - button "Broadcasts" [expanded=false, ref=e91]
+      - link "Broadcasts" [ref=e102]
+  - heading "Reports" [level=3, ref=e81]
+    - button "Reports" [expanded=false, ref=e92]
+      - link "Reports" [ref=e103]
+  - heading "Channels" [level=3, ref=e82]
+    - button "Channels" [expanded=false, ref=e93]
+      - link "Channels" [ref=e104]
+  - heading "Workspaces" [level=3, ref=e83]
+    - button "Workspaces" [expanded=false, ref=e94]
+      - link "Workspaces" [ref=e105]
+  - heading "Media limits" [level=3, ref=e84]
+    - button "Media limits" [expanded=false, ref=e95]
+      - link "Media limits" [ref=e106]
+  - heading "Quick replies" [level=3, ref=e85]
+    - button "Quick replies" [expanded=false, ref=e96]
+      - link "Quick replies" [ref=e107]
+  - heading "Embed access" [level=3, ref=e86]
+    - button "Embed access" [expanded=false, ref=e97]
+      - link "Embed access" [ref=e108]
+  - heading "Migration" [level=3, ref=e87]
+    - button "Migration" [expanded=false, ref=e98]
+      - link "Migration" [ref=e109]
+- navigation "Main" [ref=e3]
+  - link "Home" [ref=e71]
+  - button "Apps" [expanded=false, ref=e72]
+- button "Search" [expanded=false, ref=e4]
+- button "Uploads" [ref=e5]
+- button "Imports" [ref=e6]
+- button "Jobs" [ref=e7]
+- button "Downloads" [ref=e8]
+- button "Notifications" [expanded=false, ref=e9]
+- button "Chat" [expanded=false, ref=e10]
+- button "Apps" [expanded=false, ref=e11]
+- button "User menu" [expanded=false, ref=e12]
+- heading "Migration" [level=1, ref=e13]
+- navigation "breadcrumb" [ref=e14]
+  - link "Dashboard" [ref=e50]
+  - link "Home" [ref=e51]
+  - link "Omnichannel" [ref=e52]
+  - link "Migration" [ref=e53]
+  - link "New migration" [disabled, ref=e54]
+- link "Back to migration" [ref=e15]
+- heading "New migration" [level=2, ref=e16]
+- button "Cancel" [ref=e17]
+- button "Save migration" [ref=e18]
+- tablist "Setup" [ref=e22] focusable [tabindex]
+  - tab "Setup" [selected, ref=e31]
+- tabpanel "Setup" [ref=e19] focusable [tabindex]
+  - heading "Source" [level=3, ref=e23]
+  - combobox "Migration source method" [expanded=false, ref=e32]: respond.io Developer API
+  - combobox "respond.io connection" [expanded=false, ref=e33]: Select…
+  - generic "Drop a file or click to choose (csv, xlsx, xls)" [ref=e24] clickable [cursor:pointer, onclick]
+  - heading "Target" [level=3, ref=e25]
+  - combobox "Target workspace" [expanded=false, ref=e34]: Select…
+  - heading "Scope" [level=3, ref=e26]
+  - switch [checked=false, ref=e27]
+  - spinbutton "Month Month" [ref=e55]: 0
+  - spinbutton "Day Day" [ref=e56]: 0
+  - spinbutton "Year Year" [ref=e57]: 0
+  - button "Show date picker Show date picker" [ref=e35]
+  - heading "Review" [level=3, ref=e28]
+  - button "Run dry run" [ref=e29]
+  - button "Start migration" [disabled, ref=e30]
+- region "Notifications alt+T" [ref=e2]
+$ agent-browser click @e33
+✓ Done
+$ agent-browser snapshot -i
+- region "Notifications alt+T" [ref=e1]
+- combobox [expanded=true, ref=e2]
+- listbox "Suggestions" [ref=e3]
+  - option "Synthetic Space" [selected, ref=e4]
+$ agent-browser click @e4
+✓ Done
+$ agent-browser wait 500
+✓ Done
+$ agent-browser snapshot -i
+- link "Skip to content" [ref=e1]
+- link "Default Logo" [ref=e20]
+- button "Collapse sidebar" [ref=e21]
+- heading "Dashboards" [level=3, ref=e36]
+  - button "Dashboards" [expanded=false, ref=e58]
+    - link "Dashboards" [ref=e73]
+- heading "App Store" [level=3, ref=e37]
+  - button "App Store" [expanded=false, ref=e59]
+- heading "Workflows" [level=3, ref=e38]
+  - button "Workflows" [expanded=false, ref=e60]
+- heading "Forms" [level=3, ref=e39]
+  - button "Forms" [expanded=false, ref=e61]
+- heading "Imports" [level=3, ref=e40]
+  - button "Imports" [expanded=false, ref=e62]
+    - link "Imports" [ref=e74]
+- heading "Jobs" [level=3, ref=e41]
+  - button "Jobs" [expanded=false, ref=e63]
+    - link "Jobs" [ref=e75]
+- heading "Developers" [level=3, ref=e42]
+  - button "Developers" [expanded=false, ref=e64]
+- heading "Documents" [level=3, ref=e43]
+  - button "Documents" [expanded=false, ref=e65]
+- heading "Settings" [level=3, ref=e44]
+  - button "Settings" [expanded=false, ref=e66]
+- heading "User Management" [level=3, ref=e45]
+  - button "User Management" [expanded=false, ref=e67]
+- heading "Products" [level=3, ref=e46]
+  - button "Products" [expanded=false, ref=e68]
+    - link "Products" [ref=e76]
+- heading "Ideation" [level=3, ref=e47]
+  - button "Ideation" [expanded=false, ref=e69]
+- heading "Omnichannel" [level=3, ref=e48]
+  - button "Omnichannel" [expanded=true, ref=e70]
+- region "Omnichannel" [ref=e49]
+  - heading "Dashboard" [level=3, ref=e77]
+    - button "Dashboard" [expanded=false, ref=e88]
+      - link "Dashboard" [ref=e99]
+  - heading "Inbox" [level=3, ref=e78]
+    - button "Inbox" [expanded=false, ref=e89]
+      - link "Inbox" [ref=e100]
+  - heading "Contacts" [level=3, ref=e79]
+    - button "Contacts" [expanded=false, ref=e90]
+      - link "Contacts" [ref=e101]
+  - heading "Broadcasts" [level=3, ref=e80]
+    - button "Broadcasts" [expanded=false, ref=e91]
+      - link "Broadcasts" [ref=e102]
+  - heading "Reports" [level=3, ref=e81]
+    - button "Reports" [expanded=false, ref=e92]
+      - link "Reports" [ref=e103]
+  - heading "Channels" [level=3, ref=e82]
+    - button "Channels" [expanded=false, ref=e93]
+      - link "Channels" [ref=e104]
+  - heading "Workspaces" [level=3, ref=e83]
+    - button "Workspaces" [expanded=false, ref=e94]
+      - link "Workspaces" [ref=e105]
+  - heading "Media limits" [level=3, ref=e84]
+    - button "Media limits" [expanded=false, ref=e95]
+      - link "Media limits" [ref=e106]
+  - heading "Quick replies" [level=3, ref=e85]
+    - button "Quick replies" [expanded=false, ref=e96]
+      - link "Quick replies" [ref=e107]
+  - heading "Embed access" [level=3, ref=e86]
+    - button "Embed access" [expanded=false, ref=e97]
+      - link "Embed access" [ref=e108]
+  - heading "Migration" [level=3, ref=e87]
+    - button "Migration" [expanded=false, ref=e98]
+      - link "Migration" [ref=e109]
+- navigation "Main" [ref=e3]
+  - link "Home" [ref=e71]
+  - button "Apps" [expanded=false, ref=e72]
+- button "Search" [expanded=false, ref=e4]
+- button "Uploads" [ref=e5]
+- button "Imports" [ref=e6]
+- button "Jobs" [ref=e7]
+- button "Downloads" [ref=e8]
+- button "Notifications" [expanded=false, ref=e9]
+- button "Chat" [expanded=false, ref=e10]
+- button "Apps" [expanded=false, ref=e11]
+- button "User menu" [expanded=false, ref=e12]
+- heading "Migration" [level=1, ref=e13]
+- navigation "breadcrumb" [ref=e14]
+  - link "Dashboard" [ref=e50]
+  - link "Home" [ref=e51]
+  - link "Omnichannel" [ref=e52]
+  - link "Migration" [ref=e53]
+  - link "New migration" [disabled, ref=e54]
+- link "Back to migration" [ref=e15]
+- heading "New migration" [level=2, ref=e16]
+- button "Cancel" [ref=e17]
+- button "Save migration" [ref=e18]
+- tablist "Setup" [ref=e22] focusable [tabindex]
+  - tab "Setup" [selected, ref=e31]
+- tabpanel "Setup" [ref=e19] focusable [tabindex]
+  - heading "Source" [level=3, ref=e23]
+  - combobox "Migration source method" [expanded=false, ref=e32]: respond.io Developer API
+  - combobox "respond.io connection" [expanded=false, ref=e33]: Synthetic Space
+  - generic "Drop a file or click to choose (csv, xlsx, xls)" [ref=e24] clickable [cursor:pointer, onclick]
+  - heading "Target" [level=3, ref=e25]
+  - combobox "Target workspace" [expanded=false, ref=e34]: Select…
+  - heading "Scope" [level=3, ref=e26]
+  - switch [checked=false, ref=e27]
+  - spinbutton "Month Month" [ref=e55]: 0
+  - spinbutton "Day Day" [ref=e56]: 0
+  - spinbutton "Year Year" [ref=e57]: 0
+  - button "Show date picker Show date picker" [ref=e35]
+  - heading "Review" [level=3, ref=e28]
+  - button "Run dry run" [ref=e29]
+  - button "Start migration" [disabled, ref=e30]
+- region "Notifications alt+T" [ref=e2]
+$ agent-browser click @e34
+✓ Done
+$ agent-browser snapshot -i
+- region "Notifications alt+T" [ref=e1]
+- combobox [expanded=true, ref=e2]
+- listbox "Suggestions" [ref=e3]
+  - option "General" [selected, ref=e4]
+$ agent-browser click @e4
+✓ Done
+$ agent-browser wait 2000
+✓ Done
+$ agent-browser snapshot -i
+- link "Skip to content" [ref=e1]
+- link "Default Logo" [ref=e20]
+- button "Collapse sidebar" [ref=e21]
+- heading "Dashboards" [level=3, ref=e39]
+  - button "Dashboards" [expanded=false, ref=e61]
+    - link "Dashboards" [ref=e76]
+- heading "App Store" [level=3, ref=e40]
+  - button "App Store" [expanded=false, ref=e62]
+- heading "Workflows" [level=3, ref=e41]
+  - button "Workflows" [expanded=false, ref=e63]
+- heading "Forms" [level=3, ref=e42]
+  - button "Forms" [expanded=false, ref=e64]
+- heading "Imports" [level=3, ref=e43]
+  - button "Imports" [expanded=false, ref=e65]
+    - link "Imports" [ref=e77]
+- heading "Jobs" [level=3, ref=e44]
+  - button "Jobs" [expanded=false, ref=e66]
+    - link "Jobs" [ref=e78]
+- heading "Developers" [level=3, ref=e45]
+  - button "Developers" [expanded=false, ref=e67]
+- heading "Documents" [level=3, ref=e46]
+  - button "Documents" [expanded=false, ref=e68]
+- heading "Settings" [level=3, ref=e47]
+  - button "Settings" [expanded=false, ref=e69]
+- heading "User Management" [level=3, ref=e48]
+  - button "User Management" [expanded=false, ref=e70]
+- heading "Products" [level=3, ref=e49]
+  - button "Products" [expanded=false, ref=e71]
+    - link "Products" [ref=e79]
+- heading "Ideation" [level=3, ref=e50]
+  - button "Ideation" [expanded=false, ref=e72]
+- heading "Omnichannel" [level=3, ref=e51]
+  - button "Omnichannel" [expanded=true, ref=e73]
+- region "Omnichannel" [ref=e52]
+  - heading "Dashboard" [level=3, ref=e80]
+    - button "Dashboard" [expanded=false, ref=e91]
+      - link "Dashboard" [ref=e102]
+  - heading "Inbox" [level=3, ref=e81]
+    - button "Inbox" [expanded=false, ref=e92]
+      - link "Inbox" [ref=e103]
+  - heading "Contacts" [level=3, ref=e82]
+    - button "Contacts" [expanded=false, ref=e93]
+      - link "Contacts" [ref=e104]
+  - heading "Broadcasts" [level=3, ref=e83]
+    - button "Broadcasts" [expanded=false, ref=e94]
+      - link "Broadcasts" [ref=e105]
+  - heading "Reports" [level=3, ref=e84]
+    - button "Reports" [expanded=false, ref=e95]
+      - link "Reports" [ref=e106]
+  - heading "Channels" [level=3, ref=e85]
+    - button "Channels" [expanded=false, ref=e96]
+      - link "Channels" [ref=e107]
+  - heading "Workspaces" [level=3, ref=e86]
+    - button "Workspaces" [expanded=false, ref=e97]
+      - link "Workspaces" [ref=e108]
+  - heading "Media limits" [level=3, ref=e87]
+    - button "Media limits" [expanded=false, ref=e98]
+      - link "Media limits" [ref=e109]
+  - heading "Quick replies" [level=3, ref=e88]
+    - button "Quick replies" [expanded=false, ref=e99]
+      - link "Quick replies" [ref=e110]
+  - heading "Embed access" [level=3, ref=e89]
+    - button "Embed access" [expanded=false, ref=e100]
+      - link "Embed access" [ref=e111]
+  - heading "Migration" [level=3, ref=e90]
+    - button "Migration" [expanded=false, ref=e101]
+      - link "Migration" [ref=e112]
+- navigation "Main" [ref=e3]
+  - link "Home" [ref=e74]
+  - button "Apps" [expanded=false, ref=e75]
+- button "Search" [expanded=false, ref=e4]
+- button "Uploads" [ref=e5]
+- button "Imports" [ref=e6]
+- button "Jobs" [ref=e7]
+- button "Downloads" [ref=e8]
+- button "Notifications" [expanded=false, ref=e9]
+- button "Chat" [expanded=false, ref=e10]
+- button "Apps" [expanded=false, ref=e11]
+- button "User menu" [expanded=false, ref=e12]
+- heading "Migration" [level=1, ref=e13]
+- navigation "breadcrumb" [ref=e14]
+  - link "Dashboard" [ref=e53]
+  - link "Home" [ref=e54]
+  - link "Omnichannel" [ref=e55]
+  - link "Migration" [ref=e56]
+  - link "New migration" [disabled, ref=e57]
+- link "Back to migration" [ref=e15]
+- heading "New migration" [level=2, ref=e16]
+- button "Cancel" [ref=e17]
+- button "Save migration" [ref=e18]
+- tablist "Setup" [ref=e22] focusable [tabindex]
+  - tab "Setup" [selected, ref=e33]
+- tabpanel "Setup" [ref=e19] focusable [tabindex]
+  - heading "Source" [level=3, ref=e23]
+  - combobox "Migration source method" [expanded=false, ref=e34]: respond.io Developer API
+  - combobox "respond.io connection" [expanded=false, ref=e35]: Synthetic Space
+  - generic "Drop a file or click to choose (csv, xlsx, xls)" [ref=e24] clickable [cursor:pointer, onclick]
+  - heading "Target" [level=3, ref=e25]
+  - combobox "Target workspace" [expanded=false, ref=e36]: General
+  - heading "Channels" [level=3, ref=e26]
+  - combobox "Target channel for WA Main" [expanded=false, ref=e37]: Demo WhatsApp (sandbox)
+  - heading "People" [level=3, ref=e27]
+  - heading "Scope" [level=3, ref=e28]
+  - switch [checked=false, ref=e29]
+  - spinbutton "Month Month" [ref=e58]: 0
+  - spinbutton "Day Day" [ref=e59]: 0
+  - spinbutton "Year Year" [ref=e60]: 0
+  - button "Show date picker Show date picker" [ref=e38]
+  - heading "Review" [level=3, ref=e30]
+  - button "Run dry run" [ref=e31]
+  - button "Start migration" [disabled, ref=e32]
+- region "Notifications alt+T" [ref=e2]
+$ agent-browser find role button click --name Run dry run
+✓ Done
+$ agent-browser wait 5000
+✓ Done
+$ agent-browser eval document.body.innerText.includes('Counts report')
+false
+$ agent-browser wait 3000
+✓ Done
+$ agent-browser eval document.body.innerText.slice(-500)
+"Apps\nDU\nMigration\nDashboard\nHome\nOmnichannel\nMigration\nNew migration\nBack to migration\nNew migration\nMap a respond.io space onto a workspace\nCancel\nSave migration\nSetup\nSource\nMethod\nrespond.io Developer API\nrespond.io connection *\nSynthetic Space\nQuick replies CSV\nDrop a file or click to choose (csv, xlsx, xls)\nTarget\nTarget workspace *\nGeneral\nChannels\n\nWA Main\n\nwhatsapp\n\nDemo WhatsApp (sandbox)\nPeople\nScope\nContacts only (skip message history)\nMessages since\nReview\nRun dry run\nStart migration"
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Run dry run').scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Run dry run
+✓ Done
+$ agent-browser wait 5000
+✓ Done
+$ agent-browser eval document.body.innerText.includes('Counts report')
+true
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Start migration').scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Start migration
+✓ Done
+$ agent-browser wait 5000
+✓ Done
+$ agent-browser get url
+http://localhost:3001/omnichannel/settings/migration/33f57d20-6ba0-4902-8c0e-bddb8e0d3062
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Start syncing')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Start syncing
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser eval document.body.innerText.split('Continuous sync')[1].slice(0,420)
+"\nActive\n\nSyncing every 15 min. Next sync 04 Nov 2026, 05:16.\n\n4 respond.io contacts. Full sweep about 1 min.\n\nCopy\nRotate link\nSync now\nPause\nStop syncing (cutover)\nLogs\n\nNo log entries yet."
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser eval document.documentElement.scrollWidth+"/"+innerWidth
+"1265/1280"
+$ agent-browser eval (()=>{const i=document.querySelector("input[aria-label=\"Webhook URL\"]");return i?("input width "+Math.round(i.getBoundingClientRect().width)):"no webhook input"})()
+"input width 722"
+active1280 "1265/1280" "input width 722"
+$ agent-browser screenshot --full /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-01-active-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-01-active-1280.png
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Sync now')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Sync now
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ python run_due.py (beat stand-in)
+run_due_syncs -> {'started': 1}
+$ agent-browser reload
+http://localhost:3001/omnichannel/settings/migration/33f57d20-6ba0-4902-8c0e-bddb8e0d3062
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser eval document.body.innerText.split('Continuous sync')[1].slice(0,420)
+"\nActive\n\nSyncing every 15 min. Last sync 04 Nov 2026, 05:16: +1 contacts, +1 messages, 0 errors. Next sync 04 Nov 2026, 05:31.\n\n5 respond.io contacts. Full sweep about 1 min.\n\nCopy\nRotate link\nSync now\nPause\nStop syncing (cutover)\nLogs\n\nNo log entries yet."
+$ agent-browser screenshot --full /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-02-after-sync-now-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-02-after-sync-now-1280.png
+# simulated a running tick: running job row inserted in the throwaway DB
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Sync now')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Sync now
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-03-409-sync-now-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-03-409-sync-now-1280.png
+$ agent-browser eval document.body.innerText.includes('already')||document.body.innerText.slice(-200)
+" 04 Nov 2026, 05:16: +1 contacts, +1 messages, 0 errors. Sync running.\n\n5 respond.io contacts. Full sweep about 1 min.\n\nCopy\nRotate link\nSync now\nPause\nStop syncing (cutover)\nLogs\n\nNo log entries yet."
+$ agent-browser snapshot -i
+- link "Skip to content" [ref=e1]
+- link "Default Logo" [ref=e26]
+- button "Collapse sidebar" [ref=e27]
+- heading "Dashboards" [level=3, ref=e36]
+  - button "Dashboards" [expanded=false, ref=e101]
+    - link "Dashboards" [ref=e122]
+- heading "App Store" [level=3, ref=e37]
+  - button "App Store" [expanded=false, ref=e102]
+- heading "Workflows" [level=3, ref=e38]
+  - button "Workflows" [expanded=false, ref=e103]
+- heading "Forms" [level=3, ref=e39]
+  - button "Forms" [expanded=false, ref=e104]
+- heading "Imports" [level=3, ref=e40]
+  - button "Imports" [expanded=false, ref=e105]
+    - link "Imports" [ref=e123]
+- heading "Jobs" [level=3, ref=e41]
+  - button "Jobs" [expanded=false, ref=e106]
+    - link "Jobs" [ref=e124]
+- heading "Developers" [level=3, ref=e42]
+  - button "Developers" [expanded=false, ref=e107]
+- heading "Documents" [level=3, ref=e43]
+  - button "Documents" [expanded=false, ref=e108]
+- heading "Settings" [level=3, ref=e44]
+  - button "Settings" [expanded=false, ref=e109]
+- heading "User Management" [level=3, ref=e45]
+  - button "User Management" [expanded=false, ref=e110]
+- heading "Products" [level=3, ref=e46]
+  - button "Products" [expanded=false, ref=e111]
+    - link "Products" [ref=e125]
+- heading "Ideation" [level=3, ref=e47]
+  - button "Ideation" [expanded=false, ref=e112]
+- heading "Omnichannel" [level=3, ref=e48]
+  - button "Omnichannel" [expanded=true, ref=e113]
+- region "Omnichannel" [ref=e49]
+  - heading "Dashboard" [level=3, ref=e126]
+    - button "Dashboard" [expanded=false, ref=e137]
+      - link "Dashboard" [ref=e148]
+  - heading "Inbox" [level=3, ref=e127]
+    - button "Inbox" [expanded=false, ref=e138]
+      - link "Inbox" [ref=e149]
+  - heading "Contacts" [level=3, ref=e128]
+    - button "Contacts" [expanded=false, ref=e139]
+      - link "Contacts" [ref=e150]
+  - heading "Broadcasts" [level=3, ref=e129]
+    - button "Broadcasts" [expanded=false, ref=e140]
+      - link "Broadcasts" [ref=e151]
+  - heading "Reports" [level=3, ref=e130]
+    - button "Reports" [expanded=false, ref=e141]
+      - link "Reports" [ref=e152]
+  - heading "Channels" [level=3, ref=e131]
+    - button "Channels" [expanded=false, ref=e142]
+      - link "Channels" [ref=e153]
+  - heading "Workspaces" [level=3, ref=e132]
+    - button "Workspaces" [expanded=false, ref=e143]
+      - link "Workspaces" [ref=e154]
+  - heading "Media limits" [level=3, ref=e133]
+    - button "Media limits" [expanded=false, ref=e144]
+      - link "Media limits" [ref=e155]
+  - heading "Quick replies" [level=3, ref=e134]
+    - button "Quick replies" [expanded=false, ref=e145]
+      - link "Quick replies" [ref=e156]
+  - heading "Embed access" [level=3, ref=e135]
+    - button "Embed access" [expanded=false, ref=e146]
+      - link "Embed access" [ref=e157]
+  - heading "Migration" [level=3, ref=e136]
+    - button "Migration" [expanded=false, ref=e147]
+      - link "Migration" [ref=e158]
+- navigation "Main" [ref=e3]
+  - link "Home" [ref=e114]
+  - button "Apps" [expanded=false, ref=e115]
+- button "Search" [expanded=false, ref=e4]
+- button "Uploads" [ref=e5]
+- button "Imports" [ref=e6]
+- button "Jobs" [ref=e7]
+- button "Downloads" [ref=e8]
+- button "Notifications" [expanded=false, ref=e9]
+- button "Chat" [expanded=false, ref=e10]
+- button "Apps" [expanded=false, ref=e11]
+- button "User menu" [expanded=false, ref=e12]
+- heading "Synthetic" [level=1, ref=e13]
+- navigation "breadcrumb" [ref=e14]
+  - link "Dashboard" [ref=e50]
+  - link "Migration" [ref=e51]
+  - link "Synthetic" [disabled, ref=e52]
+- heading "Progress" [level=3, ref=e15]
+- heading "Details" [level=3, ref=e16]
+- heading "Counts report" [level=3, ref=e17]
+- columnheader "Entity" [ref=e116]
+- columnheader "Fetched" [ref=e117]
+- columnheader "Would create" [ref=e118]
+- columnheader "Would update" [ref=e119]
+- columnheader "Would skip" [ref=e120]
+- columnheader "Errors" [ref=e121]
+- row "Contacts44000" [ref=e28] clickable [onclick]
+  - cell "Contacts" [ref=e53]
+  - cell "4" [ref=e54]
+  - cell "4" [ref=e55]
+  - cell "0" [ref=e56]
+  - cell "0" [ref=e57]
+  - cell "0" [ref=e58]
+- row "Custom fields00000" [ref=e29] clickable [onclick]
+  - cell "Custom fields" [ref=e59]
+  - cell "0" [ref=e60]
+  - cell "0" [ref=e61]
+  - cell "0" [ref=e62]
+  - cell "0" [ref=e63]
+  - cell "0" [ref=e64]
+- row "Tags00000" [ref=e30] clickable [onclick]
+  - cell "Tags" [ref=e65]
+  - cell "0" [ref=e66]
+  - cell "0" [ref=e67]
+  - cell "0" [ref=e68]
+  - cell "0" [ref=e69]
+  - cell "0" [ref=e70]
+- row "Channel identities44000" [ref=e31] clickable [onclick]
+  - cell "Channel identities" [ref=e71]
+  - cell "4" [ref=e72]
+  - cell "4" [ref=e73]
+  - cell "0" [ref=e74]
+  - cell "0" [ref=e75]
+  - cell "0" [ref=e76]
+- row "Messages88000" [ref=e32] clickable [onclick]
+  - cell "Messages" [ref=e77]
+  - cell "8" [ref=e78]
+  - cell "8" [ref=e79]
+  - cell "0" [ref=e80]
+  - cell "0" [ref=e81]
+  - cell "0" [ref=e82]
+- row "Media00000" [ref=e33] clickable [onclick]
+  - cell "Media" [ref=e83]
+  - cell "0" [ref=e84]
+  - cell "0" [ref=e85]
+  - cell "0" [ref=e86]
+  - cell "0" [ref=e87]
+  - cell "0" [ref=e88]
+- row "Events48000" [ref=e34] clickable [onclick]
+  - cell "Events" [ref=e89]
+  - cell "4" [ref=e90]
+  - cell "8" [ref=e91]
+  - cell "0" [ref=e92]
+  - cell "0" [ref=e93]
+  - cell "0" [ref=e94]
+- row "Quick replies00000" [ref=e35] clickable [onclick]
+  - cell "Quick replies" [ref=e95]
+  - cell "0" [ref=e96]
+  - cell "0" [ref=e97]
+  - cell "0" [ref=e98]
+  - cell "0" [ref=e99]
+  - cell "0" [ref=e100]
+- heading "Continuous sync" [level=3, ref=e18]
+- textbox "Webhook URL" [ref=e19]: http://localhost:8001/omnichannel/migration-hooks/9be06cc9-5324-4ebb-b3f1-1dfff1efe2db/<secret redacted>
+- button "Copy webhook URL" [ref=e20]
+- button "Rotate link" [ref=e21]
+- button "Sync now" [disabled, ref=e22]
+- button "Pause" [ref=e23]
+- button "Stop syncing (cutover)" [ref=e24]
+- heading "Logs" [level=3, ref=e25]
+- region "Notifications alt+T" [ref=e2]
+$ agent-browser reload
+http://localhost:3001/omnichannel/settings/migration/33f57d20-6ba0-4902-8c0e-bddb8e0d3062
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser eval document.body.innerText.split('Continuous sync')[1].slice(0,420)
+"\nActive\n\nSyncing every 15 min. Last sync 04 Nov 2026, 05:16: +1 contacts, +1 messages, 0 errors. Sync running.\n\n5 respond.io contacts. Full sweep about 1 min.\n\nCopy\nRotate link\nSync now\nPause\nStop syncing (cutover)\nLogs\n\nNo log entries yet."
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Sync now')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Sync now
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-03-409-sync-now-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-03-409-sync-now-1280.png
+$ agent-browser reload
+http://localhost:3001/omnichannel/settings/migration/33f57d20-6ba0-4902-8c0e-bddb8e0d3062
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+# a tick starts after the page loaded (running job row inserted in the throwaway DB), then Sync now is clicked on the stale card
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Sync now')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Sync now
+✓ Done
+$ agent-browser wait 900
+✓ Done
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-03-409-sync-now-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-03-409-sync-now-1280.png
+$ agent-browser reload
+http://localhost:3001/omnichannel/settings/migration/33f57d20-6ba0-4902-8c0e-bddb8e0d3062
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser wait 1500
+✓ Done
+$ agent-browser eval document.querySelector('input[aria-label="Webhook URL"]').value
+"http://localhost:8001/omnichannel/migration-hooks/9be06cc9-5324-4ebb-b3f1-1dfff1efe2db/<secret redacted>"
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Rotate link')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Rotate link
+✓ Done
+$ agent-browser wait 1000
+✓ Done
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-04-rotate-confirm-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-04-rotate-confirm-1280.png
+$ agent-browser snapshot -i
+- region "Notifications alt+T" [ref=e1]
+- heading "Rotate webhook link?" [level=2, ref=e2]
+- button "Cancel" [ref=e3]
+- button "Rotate link" [ref=e4]
+$ agent-browser eval document.querySelector('input[aria-label="Webhook URL"]').value
+"http://localhost:8001/omnichannel/migration-hooks/9be06cc9-5324-4ebb-b3f1-1dfff1efe2db/<secret redacted>"
+$ agent-browser click @e4
+✓ Done
+$ agent-browser wait 2000
+✓ Done
+$ agent-browser eval document.querySelector('input[aria-label="Webhook URL"]').value
+"http://localhost:8001/omnichannel/migration-hooks/9be06cc9-5324-4ebb-b3f1-1dfff1efe2db/<secret redacted>"
+$ curl -X POST <OLD url> (after rotate)
+{"detail":"Not Found"} HTTP 404
+$ curl -X POST <NEW url>
+{"ok":true} HTTP 200
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-05-after-rotate-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-05-after-rotate-1280.png
+$ agent-browser eval document.body.innerText.split('Continuous sync')[1].slice(0,420)
+"\nActive\n\nSyncing every 15 min. Last sync 04 Nov 2026, 05:16: +1 contacts, +1 messages, 0 errors. Next sync 04 Nov 2026, 05:16.\n\n5 respond.io contacts. Full sweep about 1 min.\n\nCopy\nRotate link\nSync now\nPause\nStop syncing (cutover)\nLogs\n\nNo log entries yet."
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Pause')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Pause
+✓ Done
+$ agent-browser wait 1800
+✓ Done
+$ agent-browser eval document.body.innerText.split('Continuous sync')[1].slice(0,420)
+"\nPaused\n\nSyncing is paused. Last sync 04 Nov 2026, 05:16.\n\n5 respond.io contacts. Full sweep about 1 min.\n\nCopy\nRotate link\nResume\nStop syncing (cutover)\nLogs\n\nNo log entries yet."
+$ agent-browser screenshot --full /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-06-paused-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-06-paused-1280.png
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Resume')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Resume
+✓ Done
+$ agent-browser wait 1800
+✓ Done
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Stop syncing (cutover)')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Stop syncing (cutover)
+✓ Done
+$ agent-browser wait 1000
+✓ Done
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-07-stop-confirm-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-07-stop-confirm-1280.png
+$ agent-browser snapshot -i
+- region "Notifications alt+T" [ref=e1]
+- heading "Stop syncing?" [level=2, ref=e2]
+- button "Cancel" [ref=e3]
+- button "Stop syncing" [ref=e4]
+$ agent-browser click @e4
+✓ Done
+$ agent-browser wait 4000
+✓ Done
+$ agent-browser eval document.body.innerText.split('Continuous sync')[1].slice(0,420)
+"\nStopped\n\nStopped 04 Nov 2026, 05:17\n\nStart syncing\nLogs\n\nNo log entries yet."
+$ agent-browser screenshot --full /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-08-stopped-1280.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-08-stopped-1280.png
+$ agent-browser eval document.documentElement.scrollWidth+"/"+innerWidth
+"1280/1280"
+$ agent-browser eval (()=>{const i=document.querySelector("input[aria-label=\"Webhook URL\"]");return i?("input width "+Math.round(i.getBoundingClientRect().width)):"no webhook input"})()
+"no webhook input"
+stopped1280 "1280/1280" "no webhook input"
+# --- 375 px ---
+$ agent-browser set viewport 375 800
+✓ Done
+$ agent-browser reload
+http://localhost:3001/omnichannel/settings/migration/33f57d20-6ba0-4902-8c0e-bddb8e0d3062
+$ agent-browser wait --load networkidle
+✓ Done
+$ agent-browser wait 1800
+✓ Done
+$ agent-browser eval document.documentElement.scrollWidth+"/"+innerWidth
+"360/375"
+$ agent-browser eval (()=>{const i=document.querySelector("input[aria-label=\"Webhook URL\"]");return i?("input width "+Math.round(i.getBoundingClientRect().width)):"no webhook input"})()
+"no webhook input"
+stopped375 "360/375" "no webhook input"
+$ agent-browser screenshot --full /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-09-stopped-375.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-09-stopped-375.png
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Start syncing')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Start syncing
+✓ Done
+$ agent-browser wait 2500
+✓ Done
+$ agent-browser eval document.documentElement.scrollWidth+"/"+innerWidth
+"360/375"
+$ agent-browser eval (()=>{const i=document.querySelector("input[aria-label=\"Webhook URL\"]");return i?("input width "+Math.round(i.getBoundingClientRect().width)):"no webhook input"})()
+"input width 286"
+active375 "360/375" "input width 286"
+$ agent-browser screenshot --full /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-10-active-375.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-10-active-375.png
+$ agent-browser eval document.querySelector('input[aria-label="Webhook URL"]').scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-10b-active-card-375.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-10b-active-card-375.png
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Rotate link')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Rotate link
+✓ Done
+$ agent-browser wait 1000
+✓ Done
+$ agent-browser eval document.documentElement.scrollWidth+"/"+innerWidth
+"375/375"
+$ agent-browser eval (()=>{const i=document.querySelector("input[aria-label=\"Webhook URL\"]");return i?("input width "+Math.round(i.getBoundingClientRect().width)):"no webhook input"})()
+"input width 286"
+rotate-dialog375 "375/375" "input width 286"
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-11-rotate-confirm-375.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-11-rotate-confirm-375.png
+$ agent-browser find role button click --name Cancel
+✓ Done
+$ agent-browser wait 600
+✓ Done
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Pause')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Pause
+✓ Done
+$ agent-browser wait 1800
+✓ Done
+$ agent-browser eval document.documentElement.scrollWidth+"/"+innerWidth
+"360/375"
+$ agent-browser eval (()=>{const i=document.querySelector("input[aria-label=\"Webhook URL\"]");return i?("input width "+Math.round(i.getBoundingClientRect().width)):"no webhook input"})()
+"input width 286"
+paused375 "360/375" "input width 286"
+$ agent-browser screenshot --full /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-12-paused-375.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-12-paused-375.png
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Resume')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Resume
+✓ Done
+$ agent-browser wait 1800
+✓ Done
+$ agent-browser eval [...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Stop syncing (cutover)')).scrollIntoView({block:'center'})
+{
+  "interrupted": false
+}
+$ agent-browser find role button click --name Stop syncing (cutover)
+✓ Done
+$ agent-browser wait 1000
+✓ Done
+$ agent-browser eval document.documentElement.scrollWidth+"/"+innerWidth
+"375/375"
+$ agent-browser eval (()=>{const i=document.querySelector("input[aria-label=\"Webhook URL\"]");return i?("input width "+Math.round(i.getBoundingClientRect().width)):"no webhook input"})()
+"input width 286"
+stop-dialog375 "375/375" "input width 286"
+$ agent-browser screenshot /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-13-stop-confirm-375.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-13-stop-confirm-375.png
+$ agent-browser snapshot -i
+- region "Notifications alt+T" [ref=e1]
+- heading "Stop syncing?" [level=2, ref=e2]
+- button "Cancel" [ref=e3]
+- button "Stop syncing" [ref=e4]
+$ agent-browser click @e4
+✓ Done
+$ agent-browser wait 4000
+✓ Done
+$ agent-browser eval document.body.innerText.split('Continuous sync')[1].slice(0,420)
+"\nStopped\n\nStopped 04 Nov 2026, 05:18\n\nStart syncing\nLogs\n\nNo log entries yet."
+$ agent-browser eval document.documentElement.scrollWidth+"/"+innerWidth
+"360/375"
+$ agent-browser eval (()=>{const i=document.querySelector("input[aria-label=\"Webhook URL\"]");return i?("input width "+Math.round(i.getBoundingClientRect().width)):"no webhook input"})()
+"no webhook input"
+stopped2-375 "360/375" "no webhook input"
+$ agent-browser screenshot --full /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-14-stopped-after-confirm-375.png
+✓ Screenshot saved to /home/user/foundryx-shared-service/documentation/plans/sprint-5/52-evidence/continuous-sync/r2-14-stopped-after-confirm-375.png
+$ agent-browser close
+✓ Browser closed
