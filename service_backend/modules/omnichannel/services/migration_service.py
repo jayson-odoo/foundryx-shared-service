@@ -1089,7 +1089,7 @@ def _respondio_job_error(exc: RespondIoError) -> str:
     if "filter is provided" in (exc.message or "").lower():
         return (
             "respond.io rejected the contact list request (no contacts were read): "
-            f"{exc.message} Nothing was imported; contact Foundryx support."
+            f"{exc.message} Contact support if this keeps happening."
         )
     return f"respond.io error: {exc.message}"
 

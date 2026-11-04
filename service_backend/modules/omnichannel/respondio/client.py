@@ -442,15 +442,12 @@ class RespondIoClient:
 # respond.io's `POST /contact/list` REQUIRES a `filter` object: without one the
 # vendor answers 400 "Please check if filter is provided." (live failure, lane
 # SS-MIGRATION-FILTER-HOTFIX). An empty `$and` group = "every contact".
-MATCH_ALL_CONTACTS_FILTER: Dict[str, Any] = {"$and": []}
-
-
 def _contact_list_body(
     *, timezone: str, search: Optional[str], filter_: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "timezone": timezone,
-        "filter": filter_ if filter_ else {"$and": list(MATCH_ALL_CONTACTS_FILTER["$and"])},
+        "filter": filter_ if filter_ else {"$and": []},
     }
     if search:
         body["search"] = search
