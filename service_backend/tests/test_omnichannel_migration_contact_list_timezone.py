@@ -122,6 +122,9 @@ def test_bad_stored_timezone_is_sent_as_asia_kuala_lumpur(stored):
         ("Asia/Kuala_Lumpur", "Asia/Kuala_Lumpur"),
         ("  Asia/Singapore  ", "Asia/Singapore"),
         ("asia/kuala_lumpur", "Asia/Kuala_Lumpur"),
+        # Review round 1: a lower-case name whose canonical form is NOT the
+        # fallback, so an exact-case lookup cannot pass by falling back.
+        ("asia/singapore", "Asia/Singapore"),
         ("America/Port-au-Prince", "America/Port-au-Prince"),
         ("UTC", "UTC"),
     ],
@@ -138,10 +141,11 @@ def test_contact_list_query_is_the_documented_limit_and_cursor():
     list(client.list_contacts(timezone="GMT+8"))
     list(client.list_contacts_pages(timezone="GMT+8", limit=100, start_cursor="123"))
     list(client.list_contacts_pages(timezone="GMT+8", limit=50))
+    list(client.list_contacts_pages(timezone="GMT+8", limit=0))
     params = [p for p, _b in handler.seen["contact_list"]]
     # limit: minimum 1, exclusiveMaximum 100 -> the default and an oversized
-    # request both become 99; a smaller caller value is kept.
-    assert params == [{"limit": "99"}, {"limit": "99", "cursorId": "123"}, {"limit": "50"}]
+    # request both become 99; a smaller caller value is kept; below 1 is 1.
+    assert params == [{"limit": "99"}, {"limit": "99", "cursorId": "123"}, {"limit": "50"}, {"limit": "1"}]
 
 
 def test_message_list_query_never_exceeds_the_documented_50():
