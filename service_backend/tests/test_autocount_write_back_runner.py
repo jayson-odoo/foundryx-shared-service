@@ -209,7 +209,7 @@ class Sink:
         return WriteResult(ok=True, sink="fake", delivered=True, outcome="delivered")
 
 
-def _setup(db, *, base_url=DB3, **wrapper_kw):
+def _setup(db, *, base_url=DB3, database=DBNAME, **wrapper_kw):
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="AC",
         config_json={"baseUrl": base_url, "userId": "ADMIN"},
@@ -218,8 +218,8 @@ def _setup(db, *, base_url=DB3, **wrapper_kw):
     db.add(conn)
     db.commit()
     company = AcCompany(
-        tenant_id=DEFAULT_TENANT_ID, connection_id=conn.id, database_name=DBNAME,
-        company_name=DBNAME, name=DBNAME, is_active=True, sink_impl="logging",
+        tenant_id=DEFAULT_TENANT_ID, connection_id=conn.id, database_name=database,
+        company_name=database, name=database, is_active=True, sink_impl="logging",
         write_connection_id=conn.id,
     )
     db.add(company)
@@ -282,7 +282,7 @@ def test_ac_55_50_c02_pulls_so_before_po(db):
 
 
 def _so_keys(s, tag="T1"):
-    """DtlKeys of the test SO the suite created in C00 (row 1 = 10 @BRW-AM, row 2 = 5)."""
+    """DtlKeys of the test SO the suite created in C00 (row 1 = 10, row 2 = 5, row 3 = 10, all @BRW-AM)."""
     rows = s.wrapper.so(f"FXT-{tag}-SO")["Details"]
     return rows[0]["DtlKey"], rows[1]["DtlKey"]
 
@@ -555,13 +555,15 @@ def test_c00_creates_a_test_so_with_a_complete_body(db):
     assert re.match(r"^20\d\d-\d\d-\d\dT", body["DocDate"])
     assert body["DisplayTerm"] == "C.O.D." and body["CurrencyCode"] == "MYR"
     rows = body["Details"]
-    assert [(r["ItemCode"], r["Qty"], r["Location"]) for r in rows] == [("SRTKT38SS", 10, "BRW-AM"), ("SRTKT38SS", 5, "BRW-AM")]
+    assert [(r["ItemCode"], r["Qty"], r["Location"]) for r in rows] == [
+        ("SRTKT38SS", 10, "BRW-AM"), ("SRTKT38SS", 5, "BRW-AM"), ("SRTKT38SS", 10, "BRW-AM"),
+    ]
     for r in rows:
         assert SO_ROW_FIELDS <= set(r), SO_ROW_FIELDS - set(r)
         assert re.match(r"^20\d\d-\d\d-\d\dT", r["DeliveryDate"]) and r["UOM"] == "UNIT"
         assert r["FromDocType"] == "" and r["FromDocNo"] == "" and r["FromDocDtlKey"] == 0
         assert r["YourPONo"] == ""
-    assert len(s.wrapper.so("FXT-T1-SO")["Details"]) == 2
+    assert len(s.wrapper.so("FXT-T1-SO")["Details"]) == 3
 
 
 def test_c00_header_comes_from_so389293s_read_back(db):
@@ -577,7 +579,7 @@ def test_c00_debtor_code_defaults_and_can_be_overridden(db):
     s = _setup(db)
     _run(db, s)
     assert _so_bodies(s)[0]["DebtorCode"] == "300-S057"
-    s2 = _setup(db)
+    s2 = _setup(db, database="AED_RUN2")
     _run(db, s2, tag="T2", debtor_code="300-X999")
     assert _so_bodies(s2)[0]["DebtorCode"] == "300-X999"
 
@@ -632,3 +634,34 @@ def test_suite_is_repeatable_second_run_with_a_new_tag_passes_again(db):
     for res in (first, second):
         bad = {c.case_id: (c.status, c.observed) for c in res.cases if c.status != "PASS"}
         assert bad == {}, bad
+
+
+def test_c04_whole_row_target_is_c00s_third_row_not_a_real_so_row(db, monkeypatch):
+    from modules.autocount.write_back.service import WriteBackService
+
+    s = _setup(db)
+    calls = []
+    original = WriteBackService.link
+
+    def spy(self, **kw):
+        before = len(s.wrapper.requests)
+        res = original(self, **kw)
+        calls.append((kw, s.wrapper.requests[before:], res))
+        return res
+
+    monkeypatch.setattr(WriteBackService, "link", spy)
+    res = _run(db, s)
+    assert _case(res, "C04").status == "PASS"
+    so = s.wrapper.so("FXT-T1-SO")
+    row3 = so["Details"][2]
+    assert row3["Qty"] == 10  # uncovered, outstanding 10
+    po = s.wrapper.po("FXT-T1-1")["Details"]
+    whole_key = next(r["DtlKey"] for r in po if r["Qty"] == 10 and r["Location"] == "HQ" and not r["FromSODtlKey"])
+    kw, slice_, result = next(
+        c for c in calls if c[0]["po_dtl_key"] == whole_key and c[0]["qty"] == Decimal(10)
+    )
+    assert kw["so_doc_key"] == so["DocKey"] and kw["so_dtl_key"] == row3["DtlKey"]
+    assert kw["so_dtl_key"] not in (11989, 11992, 11993, 11996)  # never a real SO389293 row
+    assert result.outcome == "refused" and result.error_code == "VENDOR_UNSUPPORTED"
+    assert len([r for r in slice_ if r.startswith("GET")]) == 1
+    assert not [r for r in slice_ if r.startswith(("PUT", "POST"))]
