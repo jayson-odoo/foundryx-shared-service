@@ -291,7 +291,7 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/messages \
   -F 'payload={"to":"+60123456789","type":"document","media":{"filename":"receipt.pdf","caption":"Your receipt"}}'
 ```
 
-The send takes exactly one `file` part and one `payload` part, with at most 5 form fields in all. Missing either part, a second file part or more fields → `422 invalid_request`.
+The send takes exactly one `file` part and one `payload` part, with at most 5 further form fields besides the file (the `payload` part counts as one of them; the file part does not). Missing either part, a second file part or more fields → `422 invalid_request`.
 
 ### 4.4 Interactive, location, contacts
 
