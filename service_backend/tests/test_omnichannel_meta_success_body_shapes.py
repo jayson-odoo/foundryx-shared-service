@@ -67,7 +67,7 @@ SITES = {
     "wa_check_token": (
         lambda c: _wa(c).check_token(CREDS, "pn-1"),
         {},
-        [{"id": 7}, {"id": ["pn-1"]}],
+        [{"id": True}, {"id": ["pn-1"]}],
     ),
     "wa_token_details": (
         lambda c: _wa(c).token_details("tok-1"),
@@ -77,12 +77,12 @@ SITES = {
     "wa_list_waba_numbers": (
         lambda c: _wa(c).list_waba_numbers(CREDS, "waba-1"),
         {},
-        [{"data": "x"}, {"data": 5}, {"data": {"id": "1"}}],
+        [{"data": "x"}, {"data": 5}, {"data": {"id": "1"}}, {"data": [5]}],
     ),
     "wa_upload_media": (
         lambda c: _wa(c).upload_media(CREDS, "pn-1", b"data", "image/png"),
         {},
-        [{"id": 7}, {"id": ["m"]}],
+        [{"id": True}, {"id": ["m"]}],
     ),
     "wa_get_business_profile": (
         lambda c: _wa(c).get_business_profile(CREDS, "pn-1"),
@@ -92,7 +92,7 @@ SITES = {
     "wa_list_templates": (
         lambda c: _wa(c).list_templates(CREDS, "waba-1"),
         {},
-        [{"data": "x"}, {"data": 5}, {"data": {"id": "1"}}],
+        [{"data": "x"}, {"data": 5}, {"data": {"id": "1"}}, {"data": [5]}],
     ),
     "wa_send": (
         lambda c: _wa(c).send(CREDS, "pn-1", "+60100000001", text="hi"),
@@ -112,12 +112,12 @@ SITES = {
     "wa_create_template": (
         lambda c: _wa(c).create_template(CREDS, "waba-1", {"name": "t"}),
         {},
-        [{"id": 7}, {"id": ["t"]}, {"status": 5}, {"status": ["APPROVED"]}],
+        [{"id": True}, {"id": ["t"]}, {"status": 5}, {"status": ["APPROVED"]}],
     ),
     "wa_upload_resumable": (
         lambda c: _wa(c).upload_resumable(CREDS, "app-1", b"data", "image/png"),
         {},
-        [{"id": 7}, {"id": ["s"]}, {"h": 5}, {"h": ["x"]}],
+        [{"id": True}, {"id": ["s"]}, {"h": 5}, {"h": ["x"]}],
     ),
     "ms_exchange_code": (
         lambda c: _ms(c).exchange_code("code-1", "https://x.example/cb"),
@@ -132,7 +132,7 @@ SITES = {
     "ms_list_pages": (
         lambda c: _ms(c).list_pages(CREDS),
         {},
-        [{"data": "x"}, {"data": 5}, {"data": {"id": "1"}}],
+        [{"data": "x"}, {"data": 5}, {"data": {"id": "1"}}, {"data": [5]}],
     ),
     "ms_upload_media": (
         lambda c: _ms(c).upload_media(CREDS, "pg-1", b"data", "image/png"),
@@ -224,3 +224,87 @@ def test_control_messenger_send_pages_upload_name():
     assert _ms(_client({"attachment_id": "att-1"})).upload_media(CREDS, "pg-1", b"d", "image/png") == "att-1"
     assert _ms(_client({"name": "Ada"})).fetch_profile_name(CREDS, "psid-1") == "Ada"
     assert _ms(_client({"access_token": "tok-y"})).exchange_code("c") == {"access_token": "tok-y"}
+
+
+# ── list sites keep only object items ────────────────────────────────────────
+LIST_CALLS = {
+    "wa_list_waba_numbers": lambda c: _wa(c).list_waba_numbers(CREDS, "waba-1"),
+    "wa_list_templates": lambda c: _wa(c).list_templates(CREDS, "waba-1"),
+    "ms_list_pages": lambda c: _ms(c).list_pages(CREDS),
+}
+
+
+@pytest.mark.parametrize("name", list(LIST_CALLS))
+def test_list_site_keeps_only_object_items(name):
+    call = LIST_CALLS[name]
+    assert call(_client({"data": [5]})) == []
+    assert call(_client({"data": ["x", {"id": "1"}, None, [1]]})) == [{"id": "1"}]
+
+
+# ── fetch_media: odd media-info body means None and NO download ──────────────
+class _MediaMeta:
+    def __init__(self, info_body, raw_null=False):
+        self.info_body = info_body
+        self.raw_null = raw_null
+        self.gets = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.gets.append(str(request.url))
+        if len(self.gets) == 1:
+            if self.raw_null:
+                return httpx.Response(200, content=b"null", headers={"content-type": "application/json"})
+            return httpx.Response(200, json=self.info_body)
+        return httpx.Response(200, content=b"BYTES", headers={"content-type": "image/png"})
+
+    def client(self):
+        return httpx.Client(transport=httpx.MockTransport(self.handler))
+
+
+MEDIA_ODD = [[], ["x"], "x", 5, {"url": 5}, {"url": ["https://x.example/m"]}, {}]
+MEDIA_IDS = ["list-empty", "list", "str", "int", "url-int", "url-list", "empty-obj"]
+
+
+@pytest.mark.parametrize("info", MEDIA_ODD, ids=MEDIA_IDS)
+def test_fetch_media_odd_info_body_returns_none_without_download(info):
+    meta = _MediaMeta(info)
+    assert _wa(meta.client()).fetch_media(CREDS, "media-1") is None
+    assert len(meta.gets) == 1
+
+
+def test_fetch_media_null_info_body_returns_none_without_download():
+    meta = _MediaMeta(None, raw_null=True)
+    assert _wa(meta.client()).fetch_media(CREDS, "media-1") is None
+    assert len(meta.gets) == 1
+
+
+def test_control_fetch_media_downloads_via_second_get():
+    meta = _MediaMeta({"url": "https://cdn.example/m1", "mime_type": "image/png"})
+    out = _wa(meta.client()).fetch_media(CREDS, "media-1")
+    assert out == {"content": b"BYTES", "mime_type": "image/png"}
+    assert len(meta.gets) == 2 and meta.gets[1] == "https://cdn.example/m1"
+
+
+# ── numeric ids arrive as their string form; bools are never ids ─────────────
+def test_numeric_id_check_token_ok():
+    assert _wa(_client({"id": 7})).check_token(CREDS, "7") == "ok"
+
+
+def test_numeric_id_upload_media_is_string():
+    assert _wa(_client({"id": 7})).upload_media(CREDS, "pn-1", b"d", "image/png") == "7"
+
+
+def test_numeric_id_create_template_is_string():
+    out = _wa(_client({"id": 7, "status": "approved"})).create_template(CREDS, "waba-1", {"name": "t"})
+    assert out == {"meta_template_id": "7", "status": "APPROVED"}
+
+
+def test_numeric_session_id_upload_resumable_uses_string_form():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"id": 7} if len(seen) == 1 else {"h": "handle-1"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert _wa(client).upload_resumable(CREDS, "app-1", b"d", "image/png") == "handle-1"
+    assert seen[1].endswith("/7")
