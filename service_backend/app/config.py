@@ -430,6 +430,11 @@ class Settings(BaseSettings):
     platform_storage_access_key_id: str = ""
     platform_storage_secret_access_key: str = ""
     platform_storage_cdn_base_url: str = ""
+    # Tenant S3 calls run on API request paths and storage jobs; the library
+    # defaults allowed very long waits, so connect, read and retries are bounded.
+    storage_s3_connect_timeout_seconds: int = 5
+    storage_s3_read_timeout_seconds: int = 60
+    storage_s3_max_attempts: int = 3
 
     # ── Meetings bot fleet (sprint-5 S2) ───────────────────────────────────
     # The image one bot container runs. Empty = the pilot image built locally
@@ -587,6 +592,31 @@ class Settings(BaseSettings):
             raise ValueError(
                 "background_job_orphan_after_minutes must be at least 5 minutes."
             )
+        return v
+
+    @field_validator("storage_s3_connect_timeout_seconds")
+    @classmethod
+    def _storage_s3_connect_timeout_floor(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(
+                "storage_s3_connect_timeout_seconds must be at least 1 second."
+            )
+        return v
+
+    @field_validator("storage_s3_read_timeout_seconds")
+    @classmethod
+    def _storage_s3_read_timeout_floor(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError(
+                "storage_s3_read_timeout_seconds must be at least 5 seconds."
+            )
+        return v
+
+    @field_validator("storage_s3_max_attempts")
+    @classmethod
+    def _storage_s3_max_attempts_range(cls, v: int) -> int:
+        if v < 1 or v > 10:
+            raise ValueError("storage_s3_max_attempts must be between 1 and 10.")
         return v
 
     @field_validator("workflow_serialized_lease_seconds")
