@@ -109,10 +109,14 @@ number), needs_attention (the line is missing in AutoCount; alert mail sent; use
 `VENDOR_UNSUPPORTED` (switched off: delete line, cancel, whole-row link, unlink, relink, SPO create / add
 line), `WRITE_DISABLED`, `WRITE_NOT_ALLOWED`, `DOC_BUSY`, `DOC_STALE`, `DOC_CANCELLED`,
 `DOC_HAS_TRANSFERS`, `ROW_HAS_TRANSFERS`, `QTY_BELOW_TRANSFERRED`, `ROW_RECEIVED`,
-`TRANSFER_STATE_UNKNOWN`, `ROW_ON_SPO`, `ROW_ALREADY_LINKED`, `ROW_NOT_LINKED`, `NO_CHANGE`,
+`ROW_ON_SPO`, `ROW_ALREADY_LINKED`, `ROW_NOT_LINKED`, `NO_CHANGE`,
 `ITEM_MISMATCH`, `UOM_MISMATCH`, `QTY_ABOVE_OUTSTANDING`, `ROW_NOT_FOUND`, `DOC_NOT_FOUND`,
 `DOC_DATE_REQUIRED`, `DOC_KIND_MISMATCH`, `DOCNO_REQUIRED`, `FIELD_REQUIRED`, `FIELD_NOT_EDITABLE`,
 `IDEMPOTENCY_CONFLICT`, `OPERATION_IN_PROGRESS`.
+
+AutoCount refused the write (for example a delete of a received line): `502`, outcome `vendor_error`,
+`errorCode: VENDOR_REFUSED`, AutoCount's message in `message`. Warning `TRANSFER_STATE_UNKNOWN`: the
+received qty could not be read, so AutoCount decided.
 
 ## 6. Sink addition (Sorento contract 2.12, claimed here)
 

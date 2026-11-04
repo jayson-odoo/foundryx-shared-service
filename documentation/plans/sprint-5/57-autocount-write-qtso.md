@@ -58,11 +58,18 @@ Known behaviour (phase 1 test report `documentation/integrations/autocount/test-
 
 Q1 (a) SS only in this lane; CRM buttons and trigger points belong to later CRM lanes' cards. Q2 (a)
 (owner, 4 Nov): fully received `ROW_RECEIVED`; partially received = cut the row to the
-received qty and add the open remainder as the new row; unknown received qty `TRANSFER_STATE_UNKNOWN`;
+received qty and add the open remainder as the new row; unknown received qty: changed by the alignment notes below;
 (b) "refuse any receipt" kept as a one-line switch. Q3 (a) old -> new DtlKey in the answer AND
 `replacesLineRef` on the Sorento sink line. Q4 (a) delete-document primitive flag-off, no route or
 operation uses it; cancel is the only way a document ends. Q5 (a) `needs_attention` + snapshot +
 alert email naming the line + a resume that re-reads AutoCount and re-creates only if still absent.
+
+Alignment notes (owner, Lavish, 4 Nov): (1) unknown received qty is NOT refused by us: "the refusal
+should come from AutoCount, not us"; the delete path runs with warning `TRANSFER_STATE_UNKNOWN` and an
+AutoCount refusal comes back as `VENDOR_REFUSED` with AutoCount's message; known received qty keeps rule
+(a). (2) Build the available-operations feed (`GET /write-capabilities`). (3) link_row moves the new row
+to the SO row's location; unlink keeps the row where it was. (4) Workflow engine question: answered in
+the alignment page v2, section 8.
 
 ## 4. db3 probes (4 Nov, 15 writes, all recorded exact in crew files `autocount-api/db3-requests-qtso-4nov.json`)
 
@@ -177,9 +184,9 @@ rows kept, ignored link edits, `Cancelled` ignored, POST answer text) and the pl
 Every operation test runs against it. `runner.py` gains QT / SO cases; delete / cancel cases assert the
 refusal with no HTTP until their flags flip.
 
-Readiness note: turning delete on needs the flag flip + one live db3 run, AND AutoCount's
-`TransferedQty` on the GET (AQ11): without it every row's received qty on a hapi document is unknown and
-the operations refuse `TRANSFER_STATE_UNKNOWN` by rule (Q2).
+Readiness note: turning delete on needs the flag flip + one live db3 run. Without AutoCount's
+`TransferedQty` on the GET (AQ11) a hapi document's received qty is unknown, so AutoCount's own delete
+refusal (AQ25) is the receipt check there (owner alignment note 1).
 
 ## 6. Slices (LEAD: tester red first, one coder continued by message, reviewer + security-reviewer)
 

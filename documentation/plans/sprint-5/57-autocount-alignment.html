@@ -67,7 +67,7 @@ svg .t-unk { fill: var(--unk); font-weight: 700; font-size: 12px; }
 <main>
 
 <h1>AutoCount write-back: how the shared service writes to AutoCount</h1>
-<p class="lede">Plan 57, lane AC-WRITE-QTSO, 4 Nov 2026. For the owner to align before we build further.
+<p class="lede">Plan 57, lane AC-WRITE-QTSO, 4 Nov 2026. Version 2: your v1 notes applied (see the end) and the workflow question answered (section 8).
 Every "works today" claim comes from a recorded run on the <b>db3 test book</b>; the run id is shown.
 Example documents are our own db3 test documents <b>FXT-1104d-1</b> (purchase order, DocKey 12042) and
 <b>FXT-1104d-SO</b> (sales order, DocKey 12038). No customer data.</p>
@@ -169,8 +169,8 @@ only primitives call AutoCount.</p>
 <p>Sales order FXT-1104d-SO rows: 12039 (10, BRW-AM), 12040 (5, BRW-AM), 12041 (10, BRW-AM).</p>
 
 <div class="callout"><b>Before every operation</b> the service checks, and refuses without writing anything when one fails:
-same item and unit; the SO line still needs that qty; the PO line is not on a Shipping PO; the received qty is
-known (section 3); nobody else is writing that document right now; the document has not changed since the CRM
+same item and unit; the SO line still needs that qty; the PO line is not on a Shipping PO; a known received qty
+follows section 3; nobody else is writing that document right now; the document has not changed since the CRM
 read it; the idempotency key is new (a repeated key returns the first answer and writes nothing).</div>
 
 <h3>Split link: give 5 of row 12043 to SO row 12041 <span class="badge ok">WORKS TODAY</span></h3>
@@ -240,8 +240,10 @@ re-creates the line only if it is still missing, so a lost answer can never doub
 <div class="card">
 <p><b>Rule.</b> A line fully received (GRN) or delivered (DO): refuse "line already received". Partly received:
 never delete; cut the original line to the received qty (it keeps its current link) and put the open remainder on a
-new line with the new link (or none). Received qty not readable exactly: refuse "receipt state unknown". A one-line
-switch can change this to "refuse any line with any receipt".</p>
+new line with the new link (or none). Received qty not readable (every API-sourced document today):
+<b>we do not refuse</b>; we go ahead and AutoCount decides (owner, v1 note: "the refusal should come from
+AutoCount, not us"). If AutoCount refuses the delete, the CRM gets AutoCount's own message and nothing else is
+written. A one-line switch can change the known-receipt rule to "refuse any line with any receipt".</p>
 <p><b>Worked example</b> (illustration on row 12043; db3 has no goods receipts): row 12043 holds 35, 20 already received.
 Relink it to SO row 12041:</p>
 <ol class="steps">
@@ -249,11 +251,13 @@ Relink it to SO row 12041:</p>
 <li>Add a new 15 row linked to SO row 12041 (lands at HQ), then move it to BRW-AM.</li>
 <li>No delete is needed, so this path works with today's API once the received qty is known.</li>
 </ol>
-<p>If all 35 were received: refused. If the received qty cannot be read: refused.</p>
+<p>If all 35 were received: refused by us. If the received qty cannot be read: we try, and AutoCount's answer
+decides (refused with AutoCount's message, or done).</p>
 </div>
-<div class="callout"><b>Important for timing.</b> AutoCount's read API does not return a line's received or transferred
-qty today (AQ11). By this rule every link change on a db3 / API-sourced document is refused "receipt state unknown"
-until AutoCount adds that field, even after the delete door ships. Live companies read over SQL do carry it.</div>
+<div class="callout"><b>Changed after your v1 note.</b> AutoCount's read API does not return a line's received qty
+(AQ11), so on API-sourced documents AutoCount's own delete refusal is the receipt check (AQ25 asks them to refuse
+a received line with a clear error). The answer then carries the warning "receipt state unknown" so the CRM can
+show that AutoCount decided.</div>
 
 <h2><span class="num">4</span>Row numbers change: how the CRM keeps up</h2>
 <div class="card">
@@ -272,7 +276,7 @@ even if the CRM's call timed out. This is a new optional field (Sorento contract
 create / edit / add line on for quotation, sales order and purchase order; delete line, delete document and
 cancel off everywhere; Shipping PO create and add line off. Turning one on = a code change, a review, and a
 recorded db3 run.</p>
-<p><b>Proposal (to build with the gateway slice):</b> the shared service publishes, per company, which operations are
+<p><b>Confirmed (your v1 note: ok), built with the gateway slice:</b> the shared service publishes, per company, which operations are
 available and why not (e.g. "Link whole line: waiting for AutoCount delete"). The CRM Stock Debt screen
 (lane AC-LINK-CRM-UI, CRM PR #2168, at plan stage) shows only the buttons that will work, and a disabled one says why.
 When AutoCount ships delete and we flip the switch, the buttons light up with no CRM release. The shared service
@@ -304,7 +308,7 @@ still refuses anything switched off, as a safety net.</p>
 <tr><td>The delete door: path, method, body (DocKey + row key), for lines and documents</td><td>Unlocks link whole line, unlink, relink, remove line</td><td>AQ23</td></tr>
 <tr><td>Delete + add in ONE call</td><td>A relink could then never leave a line missing between two calls</td><td>AQ24</td></tr>
 <tr><td>Delete refused on received / linked lines, with a clear error</td><td>A second safety net behind our own check</td><td>AQ25</td></tr>
-<tr><td>Received / transferred qty on the read API</td><td>Without it every link change is refused "receipt state unknown"</td><td>AQ11</td></tr>
+<tr><td>Received / transferred qty on the read API</td><td>Without it, AutoCount's own refusal is the only receipt check on API documents</td><td>AQ11</td></tr>
 <tr><td>A cancel (and un-cancel) door</td><td>Cancel is the only way a document ends; the header flag is ignored today</td><td>AQ2, AQ32</td></tr>
 <tr><td>A new linked line keeps the location we send</td><td>Saves the second "move" write and its failure case</td><td>AQ29</td></tr>
 <tr><td>Quotation line recorded on a sales order line</td><td>Shows which quotation lines turned into orders</td><td>AQ31</td></tr>
@@ -313,14 +317,43 @@ still refuses anything switched off, as a safety net.</p>
 </table>
 </div>
 
-<h2>Points to confirm</h2>
+<h2>Your v1 notes, applied</h2>
 <div class="card">
 <ol class="steps">
-<li>Section 3 callout: link changes stay refused on API-sourced documents until AutoCount returns received qty (AQ11). OK, or accept AutoCount's own refusal (AQ25) as the check for API documents?</li>
-<li>Section 5: build the "available operations" feed so the CRM shows only working buttons. OK?</li>
-<li>Link whole line moves the new line to the SO line's location (plan 55 rule); unlink keeps the line where it was. OK?</li>
+<li>Unknown received qty: AutoCount refuses, not us. Applied in section 3 (rule, tests and code).</li>
+<li>Available-operations feed for CRM buttons: ok. Built with the gateway (section 5).</li>
+<li>Link whole line moves the new line to the SO line's location; unlink keeps it where it was: confirmed.</li>
+<li>Workflow tool or not: answered in section 8.</li>
 </ol>
 </div>
+<h2><span class="num">8</span>Workflow tool or code? (your v1 question)</h2>
+<p><b>Recommendation: the operations stay in code as the safe core, and each whole operation is offered to the
+workflow tool as ONE action</b> (e.g. "AutoCount: relink PO line"), so workflows can compose them without being
+able to break them. We do not build the operations themselves as workflows.</p>
+<div class="scroll">
+<table>
+<tr><th>What an AutoCount operation needs</th><th>Shared-service workflow tool today</th><th>Evidence</th></tr>
+<tr><td>Go to a recovery step when step 2 fails</td><td>No failure path: a failed step stops the run and skips the rest</td><td class="mono">executor.py:435-438, 456-466</td></tr>
+<tr><td>Never repeat a vendor write by accident</td><td>No retries, but if the process dies before the end, a serialized run restarts from the first step, so an "add line" already sent would be sent again</td><td class="mono">serialization.py:345-356, 450-495</td></tr>
+<tr><td>Undo / compensation</td><td>None</td><td class="mono">app/workflow_engine (no saga)</td></tr>
+<tr><td>Resume after "needs attention"</td><td>Only a deliberately parked run can resume; a failed run cannot</td><td class="mono">executor.py:646-680</td></tr>
+<tr><td>One write at a time per AutoCount document</td><td>Lock is per workflow, so two workflows (or a workflow and the CRM) can hit the same document</td><td class="mono">serialization.py:124-125</td></tr>
+<tr><td>Same request twice = one write (idempotency)</td><td>No idempotency key on triggers or actions</td><td class="mono">executor.py, workflow_service.py</td></tr>
+<tr><td>Exact, durable log of every vendor call</td><td>Step results are saved only at the end of the run, and runs are pruned after 30 days</td><td class="mono">executor.py:639, config.py:203</td></tr>
+<tr><td>Raw "delete line" never in a tenant's hands</td><td>Tenant admins compose any registered action from a shared palette; the editor's test button fires real writes</td><td class="mono">workflow_service.py:782-783, executor.py:748</td></tr>
+</table>
+</div>
+<div class="card">
+<p><b>Why this scales:</b> a new operation is a new step table in code that reuses the same tested primitives,
+the same lock, log, idempotency and recovery. The workflow tool then adds reach, not risk: "when a sales order is
+published, create it in AutoCount, then message the salesperson" is a workflow made of whole operations. Each
+operation action would be marked destructive, need its own permission, check that the AutoCount module is on for
+the tenant, and come out with two exits ("done" / "needs attention"). Only whole operations are offered; the raw
+primitives (delete line, add line) are never registered as workflow actions.</p>
+<p><b>When:</b> a follow-up lane once a real workflow needs it; today the CRM is the only caller, through the
+gateway. Say if you want the workflow actions in this lane instead.</p>
+</div>
+
 
 </main>
 </body>
