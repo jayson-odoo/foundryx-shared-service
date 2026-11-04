@@ -197,6 +197,23 @@ location, optional `expectedLastModified`; answer = outcome + read-back rows. Co
 | S5 | gateway routes + key scopes + company write connection | AC-55-40..45 |
 | S6 | db3 runner, live runs, AutoCount test report | AC-55-42, 50, 51 |
 
+Build log (4 Nov):
+- S1+S2: red 17dad883, fix 55ae7b8f, kill-proof K1-K3 (PR #183 comments).
+- S3: red dbfe7fb6, fix 4cae05c8, kill-proof K4-K6. Lead re-slice 0d746427: the wrapper read-back has
+  no AutoKeys / TransferedQty / FromSODocKey, so it cannot go through the SQL PO mapping
+  (`presets.py:335-378`); S3 stages the raw read-back (STAGED, canonical None) and the push moves to S4.
+  Migration 0036 applied on lane Postgres `foundryx_service_acwl` from 0035.
+- S4 design: in-memory WRAPPER_PO / WRAPPER_SPO / WRAPPER_SO preset fields (code-keyed refs like the
+  HTTP masters, not registered in `HTTP_PRESETS`, no DB seeding) mapped by the unchanged
+  `MappingEngine.map_document`; pre-map resolves `FromSODocKey` from staged SO rows by DtlKey and the
+  SPO's PO refs from staged PO rows; companies whose PO entity is SQL-sourced skip the push (SQL re-pull
+  follow-up). Pull loads SO days before PO days.
+- S5: key scopes ship as module migration 0037 (`ac_pull_api_key.scopes`, backfill `["pull"]`).
+- The global guard tests named in the crew brief (`test_schema_uuid_id_principle.py`,
+  `test_list_pagination_limit.py`) do not exist in this repo: n/a.
+- Open for later lanes: an SS key-issue screen toggle for `write_back` (the route accepts `scopes`
+  now); live-company refresh through SQL re-pull; SO outstanding at live scale (AQ11).
+
 Local resources: targeted pytest only (`-n 2` max); global guards `tests/test_schema_uuid_id_principle.py`
 and `tests/test_list_pagination_limit.py` after S3 and S5. Migration checked on a lane Postgres copy.
 
