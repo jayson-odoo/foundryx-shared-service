@@ -69,8 +69,6 @@ _PHONE_NUMBER_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 # Total time one media fetch may take (connect, headers and body together).
 MEDIA_FETCH_TOTAL_SECONDS = 60.0
-# The idempotency hold must outlast the media fetch plus the route's own steps.
-assert idempotency._PENDING_TTL_SECONDS >= MEDIA_FETCH_TOTAL_SECONDS + 120
 # Media fetches allowed at once in this server process, and per tenant.
 MEDIA_FETCH_MAX_CONCURRENT = 4
 MEDIA_FETCH_MAX_PER_TENANT = 2

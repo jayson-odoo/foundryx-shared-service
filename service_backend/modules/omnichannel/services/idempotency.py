@@ -17,8 +17,8 @@ _TTL_SECONDS = 24 * 60 * 60
 # A PENDING reservation lives only this long. The route ends at enqueue in prod
 # (the Meta send runs in the worker), so the hold must outlast the route's own
 # steps (media fetch total limit plus storage save, DB and enqueue): it is
-# MEDIA_FETCH_TOTAL_SECONDS (60 s) plus a margin, and public_gateway_service
-# asserts that relation at import (importing the constant here would be a cycle).
+# MEDIA_FETCH_TOTAL_SECONDS (60 s) plus a margin; a test guards that relation
+# (importing the constant here would be a cycle).
 # Trade-off: a request whose final step was lost can be sent again after the hold,
 # where before it was refused for a day.
 _PENDING_TTL_SECONDS = 300
