@@ -219,8 +219,15 @@ def test_ac_55_50_c03_split_link_steps_and_server_state(db):
     test_po = s.wrapper.po("FXT-T1-1")
     # quantity is conserved across split + relocation
     assert sum(r["Qty"] for r in test_po["Details"]) == 60
-    assert any(r["Qty"] == 40 and r["Location"] == "HQ" for r in test_po["Details"]) or any(r["Qty"] == 10 for r in test_po["Details"])
-    assert {r["FromSODtlKey"] for r in test_po["Details"]} >= {11989, 11992}
+    after = {(r["Qty"], r["Location"], r.get("FromSODtlKey")) for r in put.after_rows}
+    assert (40, "HQ", 0) in after
+    assert (10, "BRW-AM", 11989) in after
+    # final server state: C04's link on row 11992 stands; C11 unlinked the split-off row
+    by_so = {r["FromSODtlKey"] for r in test_po["Details"]}
+    assert 11992 in by_so
+    assert 11989 not in by_so
+    split_off = [r for r in test_po["Details"] if r["Qty"] == 10 and r["Location"] == "BRW-AM"]
+    assert any(r["FromSODtlKey"] == 0 for r in split_off)
 
 
 def test_ac_55_50_c04_same_qty_location_move_adds_no_row(db):
