@@ -735,19 +735,20 @@ def test_deadline_first_read_past_budget_is_refused_with_no_further_call(h, monk
     assert _rows_of(h, "in_flight") == []
 
 
-def test_deadline_read_back_past_budget_after_put_is_pending_verification(h, monkeypatch):
+def test_deadline_after_put_before_read_back_is_pending_verification(h, monkeypatch):
     monkeypatch.setattr(_service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+    original = h.ac._on_put
 
-    def slow_after_put(request):
-        if h.ac.put_calls:
-            time.sleep(0.3)
-        return h.ac._on_get(request)
+    def slow_put(request):
+        time.sleep(0.3)  # the PUT answer arrives after the budget: no read-back may follow
+        return original(request)
 
-    h.ac.read_transport = httpx.MockTransport(slow_after_put)
+    h.ac.write_transport = httpx.MockTransport(slow_put)
     res = h.link_split()
     assert res.outcome == "pending_verification" and res.error_code == "DEADLINE_EXCEEDED"
     assert len(h.ac.put_calls) == 1  # never a second write after the deadline
-    assert len(h.ac.get_calls) == 3  # PO, SO, the read-back; nothing after
+    assert len(h.ac.get_calls) == 2  # PO, SO; no read-back call
+    assert _rows_of(h, "in_flight") == []
 
 
 def test_deadline_stale_sweep_keeps_a_row_still_inside_its_window(h):
