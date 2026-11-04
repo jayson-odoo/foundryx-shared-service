@@ -1322,3 +1322,54 @@ def test_ac_38_131_dashboard_detail_returns_positions_for_every_node(client, ses
     nodes = (body.get("draftDefinition") or body.get("draft") or body.get("definition") or {}).get("nodes")
     assert nodes, list(body)
     _assert_laid_out(nodes, 4)
+
+
+def test_ac_38_131_non_finite_positions_are_laid_out_not_kept(client, session_factory):
+    """The body is sent raw: Python's json.loads accepts NaN and Infinity, and a JSON column
+    must never store them. Such nodes get a finite laid-out position, never a 500."""
+    import math
+
+    w = _world(client, session_factory)
+    hdr = {**w["hdr1"], "Content-Type": "application/json"}
+
+    def raw_doc(pos_a, pos_b):
+        return (
+            '{"schemaVersion":1,"nodes":['
+            '{"id":"trg","kind":"trigger","type":"omnichannel.message_received","config":{},"position":%s},'
+            '{"id":"note_1","kind":"action","type":"omnichannel.add_comment","config":{"contactId":'
+            '"{{ trigger.contact.id }}","body":"a","name":"A"},"position":%s}],'
+            '"edges":[{"id":"e1","source":"trg","target":"note_1"}]}' % (pos_a, pos_b)
+        )
+
+    for pos_a, pos_b in (('{"x":NaN,"y":0}', '{"x":0,"y":120}'),
+                         ('{"x":Infinity,"y":1}', '{"x":-Infinity,"y":NaN}')):
+        body = '{"name":"nonfinite","draftDefinition":%s}' % raw_doc(pos_a, pos_b)
+        r = client.post(f"{BASE}/workflows", content=body.encode(), headers=hdr)
+        assert r.status_code == 201, (pos_a, r.status_code, r.text[:200])
+        _assert_laid_out(r.json()["draftDefinition"]["nodes"], 2)
+        for n in r.json()["draftDefinition"]["nodes"]:
+            assert math.isfinite(n["position"]["x"]) and math.isfinite(n["position"]["y"])
+        wid = r.json()["id"]
+        patch = '{"draftDefinition":%s}' % raw_doc(pos_a, pos_b)
+        r = client.patch(f"{BASE}/workflows/{wid}", content=patch.encode(), headers=hdr)
+        assert r.status_code == 200, (pos_a, r.status_code, r.text[:200])
+        _assert_laid_out(r.json()["draftDefinition"]["nodes"], 2)
+        db = session_factory()
+        try:
+            for n in db.get(Workflow, wid).draft_definition_json["nodes"]:
+                assert math.isfinite(n["position"]["x"]) and math.isfinite(n["position"]["y"])
+        finally:
+            db.close()
+
+
+def test_ac_38_131_laid_out_nodes_do_not_overlap_a_kept_position(client, session_factory):
+    w = _world(client, session_factory)
+    doc = _no_position_doc()
+    doc["nodes"][0]["position"] = {"x": 0, "y": 0}  # a kept node at the origin
+    r = _post(client, w["hdr1"], doc)
+    assert r.status_code == 201, r.text
+    nodes = r.json()["draftDefinition"]["nodes"]
+    _assert_laid_out(nodes, 4)
+    kept = nodes[0]["position"]
+    assert kept == {"x": 0, "y": 0}
+    assert all(n["position"]["y"] > kept["y"] for n in nodes[1:]), [n["position"] for n in nodes]
