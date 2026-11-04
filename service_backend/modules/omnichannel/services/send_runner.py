@@ -317,6 +317,7 @@ def _record_sent_by_id(db: Session, message_id: str, external_id: Optional[str])
     guarded UPDATE (only from QUEUED or SENDING), then announce it once. If this
     fails too the row is left as it is and the ids are logged: the message
     reached the contact, so it is never marked FAILED and never re-sent."""
+    external_id = external_id or None  # empty id is stored as NULL (globally unique)
     try:
         db.rollback()
         probe = (
@@ -588,7 +589,8 @@ def _run_send(
         # Transport / stored-media read blip - retryable with backoff.
         _requeue_transient(db, row, str(exc))
 
-    external_id = result.get("external_message_id")
+    # The external id is globally unique, so an empty id is stored as NULL.
+    external_id = result.get("external_message_id") or None
     # From here the provider has the message: the fail path must never run.
     if progress is not None:
         progress["accepted"] = True
