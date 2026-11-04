@@ -182,6 +182,10 @@ class AcCompany(AutocountBase):
     # Required when ``sink_impl='sorento'`` (validated at activation, S2);
     # NULL for the logging sink and for every pre-plan-22 row.
     sorento_company_code = Column(String, nullable=True)
+    # Plan 55: core ``connections.id`` of the connection WRITES go through
+    # (db3 only, enforced in code by ``write_back.guard``). NULL = writes
+    # disabled; every existing row stays NULL (no backfill needed).
+    write_connection_id = Column(String, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
@@ -1067,4 +1071,37 @@ class AcDocLookupSettings(AutocountBase):
     company_id = Column(String, primary_key=True)
     back_days = Column(Integer, nullable=False, default=DOC_LOOKUP_DEFAULT_BACK_DAYS)
     forward_days = Column(Integer, nullable=False, default=DOC_LOOKUP_DEFAULT_FORWARD_DAYS)
+    updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+
+class AcWriteAction(AutocountBase):
+    """One write-back action against AutoCount (plan 55, AC-55-28).
+
+    The audit trail, the test-report source and the busy lock in one: a row in
+    ``in_flight`` blocks any other action on the same document. ``request_json``
+    is the sanitised body actually sent; no credential is ever stored here.
+    """
+
+    __tablename__ = "ac_write_action"
+    __table_args__ = (
+        Index("ix_ac_write_action_busy", "tenant_id", "company_id", "doc_key", "outcome"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    company_id = Column(String, nullable=False)
+    action = Column(String, nullable=False)  # link | unlink | spo_unlink
+    doc_type = Column(String, nullable=False)  # PO | SPO
+    doc_key = Column(BigInteger, nullable=False)
+    dtl_key = Column(BigInteger, nullable=True)
+    # in_flight | done | refused | mismatch | pending_verification | vendor_error
+    outcome = Column(String, nullable=False)
+    error_code = Column(String, nullable=True)
+    request_json = Column(_JSON, nullable=True)
+    response_status = Column(Integer, nullable=True)
+    response_json = Column(_JSON, nullable=True)
+    before_json = Column(_JSON, nullable=True)
+    after_json = Column(_JSON, nullable=True)
+    key_id = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
