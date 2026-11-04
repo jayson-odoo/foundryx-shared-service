@@ -98,3 +98,55 @@ def test_redaction_matrix_across_all_four_sources(session_factory):
         _all_secrets_masked(stored.request_summary_json)
         _all_secrets_masked(stored.response_summary_json)
     db.close()
+
+
+# ── plan 38 gap 7, AC-38-146: {"key": ..., "value": ...} rows ────────────────
+def _kv_summary() -> dict:
+    return {
+        "headers": [
+            {"key": "Authorization", "value": "Bearer kv-secret-1"},
+            {"key": "X-Api-Token", "value": "kv-token-2"},
+            {"key": "Accept", "value": "application/json"},
+        ],
+        "body": {
+            "config": {
+                "headers": [
+                    {"key": "X-Client-Secret", "value": "kv-secret-3"},
+                    {"key": "Content-Type", "value": "text/plain"},
+                ],
+                "inner": {"rows": [{"key": "api_key", "value": "kv-secret-4"}, {"key": "Accept", "value": "keep"}]},
+            }
+        },
+    }
+
+
+def test_ac_38_146_key_value_row_masked(session_factory):
+    out = redact(_kv_summary())
+    h = out["headers"]
+    assert h[0] == {"key": "Authorization", "value": "***"}
+    assert h[1] == {"key": "X-Api-Token", "value": "***"}
+    assert h[2] == {"key": "Accept", "value": "application/json"}
+    nested = out["body"]["config"]
+    assert nested["headers"][0] == {"key": "X-Client-Secret", "value": "***"}
+    assert nested["headers"][1] == {"key": "Content-Type", "value": "text/plain"}
+    assert nested["inner"]["rows"][0] == {"key": "api_key", "value": "***"}
+    assert nested["inner"]["rows"][1] == {"key": "Accept", "value": "keep"}
+    blob = str(out)
+    for secret in ("kv-secret-1", "kv-token-2", "kv-secret-3", "kv-secret-4"):
+        assert secret not in blob
+
+    # stored request AND response summaries
+    db = session_factory()
+    try:
+        row = ActivityLogService(db).record(
+            tenant_id=DEFAULT_TENANT_ID, source=SOURCE_INBOUND_API, operation="POST /workflows",
+            status="success", request=_kv_summary(), response=_kv_summary(),
+        )
+        stored = db.query(IntegrationActivity).filter(IntegrationActivity.id == row.id).first()
+        for summary in (stored.request_summary_json, stored.response_summary_json):
+            for secret in ("kv-secret-1", "kv-token-2", "kv-secret-3", "kv-secret-4"):
+                assert secret not in str(summary)
+            assert summary["headers"][2]["value"] == "application/json"
+            assert summary["body"]["config"]["headers"][1]["value"] == "text/plain"
+    finally:
+        db.close()

@@ -598,3 +598,137 @@ def test_ac_38_123_run_detail_of_not_owned_workflow_uniform_404(client, session_
     ref = client.get(f"{BASE}/workflows/runs/{uuid.uuid4()}", headers=hdr)
     assert r.content == ref.content
     assert _counts(session_factory) == before
+
+
+# -- AC-38-145 ------------------------------------------------------------------
+def _key_activity(session_factory, key_id):
+    from app.models.integration_activity import IntegrationActivity
+
+    db = session_factory()
+    try:
+        return [(r.operation, r.status_code, r.status, r.workspace_id, r.api_key_id, r.method)
+                for r in db.query(IntegrationActivity)
+                .filter(IntegrationActivity.api_key_id == key_id).all()]
+    finally:
+        db.close()
+
+
+def _shortcut_doc():
+    return {
+        "schemaVersion": 1,
+        "nodes": [
+            {"id": "trg", "kind": "trigger", "type": "entity.shortcut",
+             "config": {"entityType": "omnichannel_contact"}},
+            {"id": "note_1", "kind": "action", "type": "omnichannel.add_comment",
+             "config": {"contactId": "{{ trigger.record.id }}", "body": "hello"}},
+        ],
+        "edges": [{"id": "e1", "source": "trg", "target": "note_1"}],
+    }
+
+
+def test_ac_38_145_logs_and_actor_attribution(client, session_factory):
+    from app.models.workflow import Workflow, WorkflowRun, WorkflowVersion
+    from tests.test_omnichannel_contacts_module import _seed_contact
+
+    ws = _default_workspace_id(session_factory)
+    kid, hdr = _key(client, ws)
+    contact = _seed_contact(session_factory, ws, first="Log", phone="+60177050001")
+    unknown = str(uuid.uuid4())
+    seen = []
+
+    def call(method, path, status, **kw):
+        url = BASE + path
+        r = client.request(method, url, headers=hdr, **kw)
+        assert r.status_code == status, (method, path, r.status_code, r.text)
+        rows = _key_activity(session_factory, kid)
+        assert len(rows) == len(seen) + 1, f"{method} {path}: exactly one Developer Logs row"
+        newest = [x for x in rows if x not in seen]
+        assert len(newest) == 1
+        op, code, st, row_ws, row_key, row_method = newest[0]
+        assert op == f"{method} {path.split('?')[0]}"
+        assert code == status and row_ws == ws and row_key == kid and row_method == method
+        assert st == ("success" if status < 400 else "error")
+        seen.append(newest[0])
+        return r
+
+    call("GET", "/workflows/catalog", 200)
+    call("POST", "/workflows/validate", 200, json={"draftDefinition": _shortcut_doc()})
+    created = call("POST", "/workflows", 201, json={"name": "Logged", "draftDefinition": _shortcut_doc()}).json()
+    wid = created["id"]
+    assert created["createdBy"] == f"apikey:{kid}"
+    call("GET", "/workflows", 200)
+    call("GET", f"/workflows/{wid}", 200)
+    call("PATCH", f"/workflows/{wid}", 200, json={"name": "Logged 2"})
+    call("POST", f"/workflows/{wid}/publish", 200)
+    call("PUT", f"/workflows/{wid}/active", 200, json={"isActive": True})
+    call("GET", f"/workflows/{wid}/versions", 200)
+    run = call("POST", f"/workflows/{wid}/runs", 202, json={"contact": contact}).json()
+    call("GET", f"/workflows/{wid}/runs", 200)
+    call("GET", f"/workflows/runs/{run['id']}", 200)
+    call("GET", "/business-hours", 200)
+    call("PUT", "/business-hours", 200, json={"timezone": "UTC", "windows": {d: [] for d in
+         ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}})
+    call("POST", f"/workflows/{wid}/unpublish", 200)
+    # refusals to a valid key are logged too
+    call("GET", f"/workflows/{unknown}", 404)
+    call("POST", "/workflows", 422, json={"name": "", "draftDefinition": _shortcut_doc()})
+    call("POST", f"/workflows/{wid}/runs", 409, json={"contact": contact})  # unpublished now
+    call("POST", f"/workflows/{wid}/runs", 404, json={"contact": unknown})
+    call("PUT", "/business-hours", 422, json={"timezone": "Mars/Olympus", "windows": {}})
+    call("DELETE", f"/workflows/{wid}", 204)
+
+    # attribution: the stored author, publisher and run actor are the key
+    db = session_factory()
+    try:
+        assert db.query(Workflow).filter(Workflow.id == wid).one().created_by == f"apikey:{kid}"
+        assert {v.published_by for v in db.query(WorkflowVersion)
+                .filter(WorkflowVersion.workflow_id == wid).all()} == {f"apikey:{kid}"}
+        assert {r.actor_id for r in db.query(WorkflowRun).filter(WorkflowRun.workflow_id == wid).all()} \
+            == {f"apikey:{kid}"}
+    finally:
+        db.close()
+
+
+def _name_fields(node, path=""):
+    """Every (path, value) of a key ending in `Name` in a JSON structure."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k.endswith("Name") and isinstance(v, str):
+                yield f"{path}.{k}", v
+            yield from _name_fields(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _name_fields(v, f"{path}[{i}]")
+
+
+def test_ac_38_145_dashboard_routes_serve_key_owned_workflow(client, session_factory):
+    from tests.test_omnichannel_contacts_module import _seed_contact
+
+    ws = _default_workspace_id(session_factory)
+    kid, hdr = _key(client, ws)
+    contact = _seed_contact(session_factory, ws, first="Dash", phone="+60177050002")
+    wid = client.post(f"{BASE}/workflows", json={"name": "Dash wf", "draftDefinition": _shortcut_doc()},
+                      headers=hdr).json()["id"]
+    assert client.post(f"{BASE}/workflows/{wid}/publish", headers=hdr).status_code == 200
+    assert client.put(f"{BASE}/workflows/{wid}/active", json={"isActive": True}, headers=hdr).status_code == 200
+    run = client.post(f"{BASE}/workflows/{wid}/runs", json={"contact": contact}, headers=hdr)
+    assert run.status_code == 202, run.text
+    run_id = run.json()["id"]
+
+    staff = _auth(client)
+    responses = {
+        "list": client.get("/workflows", headers=staff),
+        "detail": client.get(f"/workflows/{wid}", headers=staff),
+        "versions": client.get(f"/workflows/{wid}/versions", headers=staff),
+        "runs": client.get(f"/workflows/{wid}/runs", headers=staff),
+        "run detail": client.get(f"/workflows/runs/{run_id}", headers=staff),
+    }
+    for label, r in responses.items():
+        assert r.status_code == 200, (label, r.status_code, r.text)
+        for path, value in _name_fields(r.json()):
+            assert "apikey:" not in value, f"{label} leaks the raw author in {path}: {value!r}"
+    assert wid in [i["id"] for i in responses["list"].json()["data"]]
+    assert responses["detail"].json()["id"] == wid
+    assert len(responses["versions"].json()["data"]) == 1
+    assert [x["id"] for x in responses["runs"].json()["data"]] == [run_id]
+    assert responses["run detail"].json()["id"] == run_id
