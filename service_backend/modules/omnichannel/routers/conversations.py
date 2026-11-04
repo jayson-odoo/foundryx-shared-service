@@ -61,7 +61,7 @@ from ..schemas import (
     ThreadPatch,
 )
 from ..services import event_service
-from ..services.contact_erase_service import ContactEraseService, ContactNotFound
+from ..services.contact_erase_service import ContactEraseService, ContactNotFound, EraseActor
 from ..services.close_reason_service import CloseReasonInactive, CloseReasonNotFound
 from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
@@ -874,7 +874,9 @@ def erase_contact(
     """Erase one contact for good (plan 56 C, PDPA). A native user spans the
     tenant; another tenant's contact and an unknown id answer the same 404."""
     try:
-        result = ContactEraseService(db).erase_in_tenant(current_user.tenant_id, contact_id)
+        result = ContactEraseService(db).erase_in_tenant(
+            current_user.tenant_id, contact_id, actor=EraseActor.staff(current_user.id)
+        )
     except ContactNotFound:
         raise HTTPException(status_code=404, detail="Contact not found")
     return ContactEraseResponse(
