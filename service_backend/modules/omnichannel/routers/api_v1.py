@@ -28,6 +28,9 @@ from ..schemas import (
     PublicContactUpdateRequest,
     PublicSendRequest,
     PublicSendResponse,
+    PublicCatalogResponse,
+    PublicValidateRequest,
+    PublicValidateResponse,
     PublicWorkflowCreateRequest,
     PublicWorkflowItem,
     PublicWorkflowListResponse,
@@ -687,6 +690,29 @@ async def create_workflow(
     )
 
 
+@router.get("/workflows/catalog", response_model=PublicCatalogResponse)
+def workflow_catalog(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicCatalogResponse:
+    return KeyWorkflowService(db).catalog(api_ws.tenant_id, api_ws.workspace_id)
+
+
+@router.post("/workflows/validate", response_model=PublicValidateResponse)
+async def validate_workflow(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicValidateResponse:
+    payload = _validated(PublicValidateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).validate,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        payload.draftDefinition,
+    )
+
+
 @router.get("/workflows/{workflow_id}", response_model=PublicWorkflowItem)
 def get_workflow(
     workflow_id: str,
@@ -712,6 +738,18 @@ async def update_workflow(
         name=payload.name,
         description=payload.description,
         definition=payload.draftDefinition,
+        expected_updated_at=payload.expectedUpdatedAt,
+    )
+
+
+@router.post("/workflows/{workflow_id}/publish", response_model=PublicWorkflowItem)
+def publish_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).publish(
+        api_ws.tenant_id, api_ws.workspace_id, api_ws.key_id, workflow_id
     )
 
 

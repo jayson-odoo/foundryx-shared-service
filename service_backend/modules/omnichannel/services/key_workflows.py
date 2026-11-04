@@ -6,28 +6,91 @@ reason, is the same ``404 not_found``. The workflow itself is created, edited
 and archived by the core ``WorkflowService`` with ``actor=None`` and
 ``actor_id="apikey:<keyId>"``.
 """
+import copy
 import uuid
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
+from app.models.status import Status as CoreStatus
 from app.models.workflow import Workflow
 from app.services.workflow_service import WorkflowService
-from app.workflow_engine.schemas import parse_definition
+from app.workflow_engine.executor import RunRefused, register_run_guard
+from app.workflow_engine.registry import (
+    get_action,
+    get_trigger,
+    list_actions,
+    list_triggers,
+)
+from app.workflow_engine.schemas import definition_issues, parse_definition
 
-from ..models import Workspace
+from ..models import (
+    Channel,
+    CloseReason,
+    Contact,
+    ContactField,
+    ContactTag,
+    WhatsappTemplate,
+    WorkflowOwner,
+    Workspace,
+)
 from ..repositories.workflow_owner_repository import (
     InvalidCursor,
     WorkflowOwnerRepository,
     decode_cursor,
     encode_cursor,
 )
-from ..schemas import PublicWorkflowItem, PublicWorkflowListResponse
+from ..schemas import (
+    PublicCatalogResponse,
+    PublicValidateResponse,
+    PublicWorkflowItem,
+    PublicWorkflowListResponse,
+)
+from . import lifecycle_service
 
 MAX_OWNED_WORKFLOWS = 200
+MAX_DEFINITION_NODES = 200
+KEY_SCHEMA_VERSION = 1
+SHORTCUT_ENTITY = "omnichannel_contact"
+
+# The node types an API key may put in a workflow. Fails closed: a node type
+# registered later stays off until it is added here on purpose.
+KEY_WORKFLOW_NODE_TYPES = frozenset(
+    {
+        # triggers
+        "omnichannel.message_received",
+        "omnichannel.conversation_opened",
+        "omnichannel.conversation_closed",
+        "omnichannel.conversation_assigned",
+        "omnichannel.contact_tag_added",
+        "omnichannel.contact_tag_removed",
+        "omnichannel.contact_field_changed",
+        "omnichannel.lifecycle_changed",
+        "omnichannel.broadcast_completed",
+        "entity.shortcut",  # only with entityType == SHORTCUT_ENTITY
+        # actions
+        "omnichannel.get_contact",
+        "omnichannel.send_message",
+        "omnichannel.add_tag",
+        "omnichannel.remove_tag",
+        "omnichannel.update_field",
+        "omnichannel.update_lifecycle",
+        "omnichannel.open_conversation",
+        "omnichannel.close_conversation",
+        "omnichannel.add_comment",
+        "omnichannel.ask_question",
+        "omnichannel.wait",
+        "omnichannel.business_hours",
+        "http.request",
+        # built-in branch node
+        "if",
+    }
+)
 
 
 def actor_id_for_key(key_id: str) -> str:
@@ -54,11 +117,298 @@ def public_workflow_item(wf: Workflow) -> PublicWorkflowItem:
     )
 
 
-def _check_shape(definition: Dict[str, Any]) -> None:
+@dataclass
+class DefinitionIssue:
+    code: str  # node_not_allowed | invalid_definition | invalid_request
+    message: str
+    node_id: Optional[str] = None
+    field: Optional[str] = None
+    node_type: Optional[str] = None
+
+    def to_error(self) -> ApiError:
+        details: Dict[str, Any] = {}
+        if self.node_id is not None:
+            details["nodeId"] = self.node_id
+        if self.node_type is not None:
+            details["nodeType"] = self.node_type
+        if self.field is not None:
+            details["field"] = self.field
+        return ApiError(422, self.code, self.message, details or None)
+
+
+def _is_merged(value: Any) -> bool:
+    return isinstance(value, str) and "{{" in value
+
+
+def _literal(config: Dict[str, Any], key: str) -> Optional[str]:
+    """A literal string id in a node config, or None (absent, empty, not text,
+    or carrying a merge token, which is checked at run instead)."""
+    value = config.get(key)
+    if not isinstance(value, str) or not value.strip() or _is_merged(value):
+        return None
+    return value.strip()
+
+
+def allow_list_issues(doc: Any) -> List[DefinitionIssue]:
+    """Every node of a parsed definition whose type is off the allow-list."""
+    out: List[DefinitionIssue] = []
+    for node in doc.nodes:
+        allowed = node.type in KEY_WORKFLOW_NODE_TYPES
+        if allowed and node.type == "entity.shortcut":
+            allowed = node.config.get("entityType") == SHORTCUT_ENTITY
+        if not allowed:
+            out.append(
+                DefinitionIssue(
+                    "node_not_allowed",
+                    f'Node "{node.id}" has type "{node.type}", which an API key cannot use.',
+                    node_id=node.id,
+                    node_type=node.type,
+                )
+            )
+    return out
+
+
+def _workspace_field_key(node_type: str) -> Optional[str]:
+    """The key of a trigger's own workspace field, when it has one."""
+    trigger = get_trigger(node_type)
+    if trigger is None:
+        return None
+    for f in trigger.fields:
+        if f.type == "omnichannelWorkspace":
+            return f.key
+    return None
+
+
+def stamp_trigger_workspace(definition: Dict[str, Any], workspace_id: str) -> Dict[str, Any]:
+    """A copy of the definition whose workspace-bearing triggers name the key's
+    own workspace (set when absent or merged; a literal other workspace is
+    refused by the pinning check)."""
+    stamped = copy.deepcopy(definition)
+    for node in stamped.get("nodes") or []:
+        if not isinstance(node, dict) or node.get("kind") != "trigger":
+            continue
+        key = _workspace_field_key(str(node.get("type") or ""))
+        if key is None:
+            continue
+        config = node.get("config")
+        if not isinstance(config, dict):
+            config = {}
+            node["config"] = config
+        if _literal(config, key) is None:
+            config[key] = workspace_id
+    return stamped
+
+
+def pinning_issues(
+    db: Session, tenant_id: str, workspace_id: str, doc: Any
+) -> List[DefinitionIssue]:
+    """Every literal id in a node config must belong to the key's workspace.
+    Every lookup carries the tenant and the workspace."""
+    out: List[DefinitionIssue] = []
+
+    def outside(node: Any, key: str) -> None:
+        out.append(
+            DefinitionIssue(
+                "invalid_definition",
+                f'Node "{node.id}": {key} is not in this workspace.',
+                node_id=node.id,
+                field=key,
+            )
+        )
+
+    def exists(model: Any, *conds: Any) -> bool:
+        return db.query(model.id).filter(*conds).first() is not None
+
+    for node in doc.nodes:
+        definition = get_trigger(node.type) if node.kind == "trigger" else get_action(node.type)
+        if definition is None:
+            continue
+        for f in definition.fields:
+            value = _literal(node.config, f.key)
+            if value is None:
+                continue
+            ok = True
+            if f.type == "omnichannelWorkspace":
+                ok = value == workspace_id
+            elif f.type == "omnichannelChannel":
+                ok = exists(
+                    Channel,
+                    Channel.id == value,
+                    Channel.tenant_id == tenant_id,
+                    Channel.workspace_id == workspace_id,
+                )
+            elif f.type == "omnichannelTag":
+                ok = exists(
+                    ContactTag,
+                    ContactTag.id == value,
+                    ContactTag.tenant_id == tenant_id,
+                    ContactTag.workspace_id == workspace_id,
+                )
+            elif f.type == "omnichannelContactField":
+                ok = exists(
+                    ContactField,
+                    ContactField.key == value,
+                    ContactField.tenant_id == tenant_id,
+                    ContactField.workspace_id == workspace_id,
+                )
+            elif f.type == "omnichannelLifecycleStage":
+                ok = exists(
+                    CoreStatus,
+                    CoreStatus.id == value,
+                    CoreStatus.tenant_id == tenant_id,
+                    CoreStatus.entity_type == lifecycle_service.ENTITY_TYPE,
+                    CoreStatus.scope_id == workspace_id,
+                )
+            elif f.type == "omnichannelCloseReason":
+                ok = exists(
+                    CloseReason,
+                    CloseReason.id == value,
+                    CloseReason.tenant_id == tenant_id,
+                    CloseReason.workspace_id == workspace_id,
+                )
+            elif f.type == "whatsappTemplate":
+                ok = (
+                    db.query(WhatsappTemplate.id)
+                    .join(Channel, Channel.id == WhatsappTemplate.channel_id)
+                    .filter(
+                        WhatsappTemplate.id == value,
+                        WhatsappTemplate.tenant_id == tenant_id,
+                        Channel.tenant_id == tenant_id,
+                        Channel.workspace_id == workspace_id,
+                    )
+                    .first()
+                    is not None
+                )
+            elif f.key == "contactId" and node.type.startswith("omnichannel."):
+                ok = exists(
+                    Contact,
+                    Contact.id == value,
+                    Contact.tenant_id == tenant_id,
+                    Contact.workspace_id == workspace_id,
+                )
+            if not ok:
+                outside(node, f.key)
+    return out
+
+
+def _gate_issues(doc: Any, workflow_id: Optional[str] = None) -> List[DefinitionIssue]:
+    return [
+        DefinitionIssue("invalid_definition", message)
+        for message in definition_issues(doc, workflow_id=workflow_id)
+    ]
+
+
+def _shape_issues(definition: Any) -> List[DefinitionIssue]:
+    """schemaVersion and the node cap, on the raw document."""
+    out: List[DefinitionIssue] = []
+    if not isinstance(definition, dict) or definition.get("schemaVersion") != KEY_SCHEMA_VERSION:
+        out.append(
+            DefinitionIssue(
+                "invalid_definition", f"schemaVersion must be {KEY_SCHEMA_VERSION}.", field="schemaVersion"
+            )
+        )
+    nodes = definition.get("nodes") if isinstance(definition, dict) else None
+    if isinstance(nodes, list) and len(nodes) > MAX_DEFINITION_NODES:
+        out.append(
+            DefinitionIssue(
+                "invalid_request", f"A workflow can have at most {MAX_DEFINITION_NODES} nodes."
+            )
+        )
+    return out
+
+
+def _parse(definition: Dict[str, Any]) -> Any:
     try:
-        parse_definition(definition)
+        return parse_definition(definition)
     except ValidationError:
         raise ApiError(422, "invalid_request", "draftDefinition is not a valid workflow definition.")
+
+
+def check_for_save(
+    db: Session, tenant_id: str, workspace_id: str, definition: Dict[str, Any]
+) -> Dict[str, Any]:
+    """The save gate (create, update): shape, schemaVersion, node cap,
+    allow-list, pinning. Returns the definition with the trigger workspace
+    stamped. Raises the first problem."""
+    shape = _shape_issues(definition)
+    doc = _parse(definition)
+    if shape:
+        raise shape[0].to_error()
+    issues = allow_list_issues(doc)
+    if issues:
+        raise issues[0].to_error()
+    stamped = stamp_trigger_workspace(definition, workspace_id)
+    issues = pinning_issues(db, tenant_id, workspace_id, _parse(stamped))
+    if issues:
+        raise issues[0].to_error()
+    return stamped
+
+
+def _to_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+# ── catalog ──────────────────────────────────────────────────────────────────
+_IF_CONDITION_FORMAT: Dict[str, Any] = {
+    "configKey": "conditions",
+    "type": "group",
+    "combinator": ["and", "or"],
+    "rule": {"kind": "condition", "field": "<merge path, e.g. trigger.message.text>", "operator": "<operator>", "value": "<value>"},
+    "example": {
+        "kind": "group",
+        "combinator": "and",
+        "rules": [
+            {"kind": "condition", "field": "trigger.message.text", "operator": "contains", "value": "hello"}
+        ],
+    },
+    "ports": ["true", "false"],
+}
+
+
+def _field_item(f: Any) -> Dict[str, Any]:
+    show_when = None
+    if f.show_when is not None:
+        controlling, wanted = f.show_when
+        show_when = {"field": controlling, "value": list(wanted) if isinstance(wanted, tuple) else wanted}
+    return {
+        "key": f.key,
+        "label": f.label,
+        "type": f.type,
+        "required": bool(f.required),
+        "options": f.options,
+        "showWhen": show_when,
+        "mergeable": bool(f.mergeable),
+    }
+
+
+def _node_item(kind: str, d: Any) -> Dict[str, Any]:
+    return {
+        "type": d.key,
+        "kind": kind,
+        "label": d.label,
+        "description": d.description,
+        "fields": [_field_item(f) for f in d.fields],
+        "outputs": [{"key": o.key, "label": o.label} for o in d.outputs],
+    }
+
+
+def register_key_workflow_run_guard() -> None:
+    """Hold an owned workflow's runs to the allow-list at run start, whoever
+    published the version. Idempotent."""
+    register_run_guard(_owned_run_guard)
+
+
+def _owned_run_guard(db: Session, run: Any, doc: Any) -> None:
+    owned = (
+        db.query(WorkflowOwner.id)
+        .filter(WorkflowOwner.tenant_id == run.tenant_id, WorkflowOwner.workflow_id == run.workflow_id)
+        .first()
+    )
+    if owned is None:
+        return
+    issues = allow_list_issues(doc)
+    if issues:
+        raise RunRefused("node_not_allowed", issues[0].message)
 
 
 class KeyWorkflowService:
@@ -106,7 +456,7 @@ class KeyWorkflowService:
         description: str,
         definition: Dict[str, Any],
     ) -> PublicWorkflowItem:
-        _check_shape(definition)
+        definition = check_for_save(self.db, tenant_id, workspace_id, definition)
         actor_id = actor_id_for_key(key_id)
         # Serialise creates in this workspace so the count below stays true.
         # The lock is held until the commit inside the core create, and the
@@ -160,10 +510,28 @@ class KeyWorkflowService:
         name: Optional[str],
         description: Optional[str],
         definition: Optional[Dict[str, Any]],
+        expected_updated_at: Optional[datetime] = None,
     ) -> PublicWorkflowItem:
         wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
         if definition is not None:
-            _check_shape(definition)
+            definition = check_for_save(self.db, tenant_id, workspace_id, definition)
+        # Lock the row so the stamp comparison and the write are one unit.
+        locked = (
+            self.db.query(Workflow)
+            .filter(Workflow.id == wf.id, Workflow.tenant_id == tenant_id)
+            .with_for_update()
+            .first()
+        )
+        if locked is None or locked.is_trashed:
+            self.db.rollback()
+            raise workflow_not_found()
+        wf = locked
+        if expected_updated_at is not None and wf.updated_at is not None:
+            if _to_utc(wf.updated_at) > _to_utc(expected_updated_at):
+                self.db.rollback()
+                raise ApiError(
+                    409, "edit_conflict", "The workflow changed after the copy you edited."
+                )
         updated = self.workflows.update(
             wf.id,
             tenant_id,
@@ -177,3 +545,88 @@ class KeyWorkflowService:
     def archive(self, tenant_id: str, workspace_id: str, workflow_id: str) -> None:
         wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
         self.workflows.archive(wf.id, tenant_id)
+
+    # ── validate, publish, catalog ───────────────────────────────────────────
+    def validate(
+        self, tenant_id: str, workspace_id: str, definition: Dict[str, Any]
+    ) -> PublicValidateResponse:
+        """Every problem a save or publish would raise, saving nothing."""
+        issues = _shape_issues(definition)
+        doc = _parse(definition)
+        issues += allow_list_issues(doc)
+        stamped = stamp_trigger_workspace(definition, workspace_id)
+        stamped_doc = _parse(stamped)
+        issues += pinning_issues(self.db, tenant_id, workspace_id, stamped_doc)
+        issues += _gate_issues(stamped_doc)
+        return PublicValidateResponse(
+            valid=not issues,
+            issues=[
+                {"code": i.code, "message": i.message, "nodeId": i.node_id, "field": i.field}
+                for i in issues
+            ],
+        )
+
+    def publish(
+        self, tenant_id: str, workspace_id: str, key_id: str, workflow_id: str
+    ) -> PublicWorkflowItem:
+        wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
+        doc = _parse(wf.draft_definition_json or {})
+        # The allow-list runs before any core call: the core publish has no
+        # user here, so it would not gate node types itself.
+        issues = allow_list_issues(doc)
+        issues += pinning_issues(self.db, tenant_id, workspace_id, doc)
+        issues += _gate_issues(doc, workflow_id=wf.id)
+        if issues:
+            raise issues[0].to_error()
+        published = self.workflows.publish(wf.id, tenant_id, actor_id_for_key(key_id), actor=None)
+        return public_workflow_item(published)
+
+    def catalog(self, tenant_id: str, workspace_id: str) -> PublicCatalogResponse:
+        nodes: List[Dict[str, Any]] = []
+        for t in list_triggers():
+            if t.key in KEY_WORKFLOW_NODE_TYPES:
+                nodes.append(_node_item("trigger", t))
+        for a in list_actions():
+            if a.key in KEY_WORKFLOW_NODE_TYPES:
+                nodes.append(_node_item("action", a))
+        nodes.append(
+            {
+                "type": "if",
+                "kind": "if",
+                "label": "Condition",
+                "description": "Branch the flow. Matching runs take the true path.",
+                "fields": [],
+                "outputs": [],
+                "conditionFormat": _IF_CONDITION_FORMAT,
+            }
+        )
+        # The same per-workspace pickers the dashboard editor reads, narrowed
+        # to the key's own workspace.
+        entry = next(
+            (
+                w
+                for w in self.workflows._omnichannel_workspace_options(tenant_id)
+                if w["id"] == workspace_id
+            ),
+            {},
+        )
+        channels = (
+            self.db.query(Channel.id, Channel.name)
+            .filter(
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id == workspace_id,
+                Channel.is_trashed.is_(False),
+                Channel.is_active.is_(True),
+            )
+            .order_by(Channel.name)
+            .all()
+        )
+        options = {
+            "channels": [{"id": c.id, "name": c.name} for c in channels],
+            "contactTags": entry.get("contactTags", []),
+            "contactFields": entry.get("contactFields", []),
+            "lifecycleStages": entry.get("lifecycleStages", []),
+            "closeReasons": entry.get("closeReasons", []),
+            "templates": entry.get("templates", []),
+        }
+        return PublicCatalogResponse(nodes=nodes, options=options)

@@ -2294,3 +2294,25 @@ class PublicWorkflowUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=2000)
     draftDefinition: Optional[Dict[str, Any]] = None
+    expectedUpdatedAt: Optional[datetime] = None
+
+
+class PublicValidateRequest(BaseModel):
+    draftDefinition: Dict[str, Any]
+
+
+class PublicValidateIssue(ApiModel):
+    code: str
+    message: str
+    nodeId: Optional[str] = None
+    field: Optional[str] = None
+
+
+class PublicValidateResponse(ApiModel):
+    valid: bool
+    issues: List[PublicValidateIssue]
+
+
+class PublicCatalogResponse(ApiModel):
+    nodes: List[Dict[str, Any]]
+    options: Dict[str, List[Dict[str, Any]]]

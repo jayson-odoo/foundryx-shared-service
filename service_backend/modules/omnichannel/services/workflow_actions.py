@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from app.repositories.module_repository import ModuleRepository
 from app.workflow_engine.context import render_field
 
-from ..models import Contact, Status, Workspace, WorkspaceMember
+from ..models import Channel, Contact, Status, WorkflowOwner, Workspace, WorkspaceMember
 from app.models.status import Status as CoreStatus
 from app.models.user import User
 from ..repositories.contact_repository import ContactRepository
@@ -62,6 +62,62 @@ def _require_module_active(db: Session, tenant_id: str) -> None:
         raise ActionError("The omnichannel service is not active.")
 
 
+_OWNER_CTX_KEY = "_workflow.ownerWorkspaceId"
+
+
+def _owner_workspace(db: Session, tenant_id: str, ctx: Dict[str, Any]) -> str:
+    """Plan 38 gap 7: the workspace that owns this run's workflow, or "" for a
+    workflow no API key owns. Looked up once per run (cached in the run
+    context), tenant-scoped, from the run's own workflow id."""
+    if _OWNER_CTX_KEY in ctx:
+        return str(ctx[_OWNER_CTX_KEY] or "")
+    workflow_id = str(ctx.get("_workflow.workflowId") or "")
+    owner = ""
+    if workflow_id:
+        owner = (
+            db.query(WorkflowOwner.workspace_id)
+            .filter(WorkflowOwner.tenant_id == tenant_id, WorkflowOwner.workflow_id == workflow_id)
+            .scalar()
+            or ""
+        )
+    ctx[_OWNER_CTX_KEY] = owner
+    return owner
+
+
+def _outside_owner_workspace(what: str) -> ActionError:
+    return ActionError(f"record_not_in_workspace: The {what} is outside this workflow's workspace.")
+
+
+def _check_contact_workspace(db: Session, tenant_id: str, ctx: Dict[str, Any], contact: Contact) -> None:
+    owner = _owner_workspace(db, tenant_id, ctx)
+    if owner and contact.workspace_id != owner:
+        raise _outside_owner_workspace("contact")
+
+
+def _check_send_target_workspace(
+    db: Session, tenant_id: str, ctx: Dict[str, Any], contact_id: str
+) -> None:
+    """Owned run: the contact and the channel the reply goes out on must both
+    sit in the owner workspace before anything is sent."""
+    owner = _owner_workspace(db, tenant_id, ctx)
+    if not owner:
+        return
+    contact = ContactRepository(db).get_by_id(contact_id, tenant_id)
+    if contact is None:
+        raise ActionError("Contact not found.")
+    if contact.workspace_id != owner:
+        raise _outside_owner_workspace("contact")
+    channel_id = str(ctx.get("trigger.channel.id") or "")
+    if channel_id:
+        channel_ws = (
+            db.query(Channel.workspace_id)
+            .filter(Channel.id == channel_id, Channel.tenant_id == tenant_id)
+            .scalar()
+        )
+        if channel_ws != owner:
+            raise _outside_owner_workspace("channel")
+
+
 def _contact_id(config: Dict[str, Any], ctx: Dict[str, Any]) -> str:
     contact_id = render_field(config.get("contactId"), ctx).strip()
     if not contact_id:
@@ -77,6 +133,7 @@ def _load_contact(db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict
     contact = ContactRepository(db).get_by_id(contact_id, tenant_id)
     if contact is None:
         raise ActionError("Contact not found.")
+    _check_contact_workspace(db, tenant_id, ctx, contact)
     return contact
 
 
@@ -143,6 +200,7 @@ def _send_configured_message(
     reuses `MessageService.send_message`'s own approval + placeholder-count
     validation, text mode merge-renders `config.message` unless the caller
     supplies `text_override` (the Ask node appends its numbered choices)."""
+    _check_send_target_workspace(db, tenant_id, ctx, contact_id)
     mode = str(config.get("mode") or "text")
     sandbox_only = ctx.get("_workflow.sandboxOnly") is True
     channel_override = str(ctx.get("trigger.channel.id") or "") or None
@@ -712,6 +770,9 @@ def omnichannel_business_hours(
     workspace_id = render_field(config.get("workspaceId"), ctx).strip()
     if not workspace_id:
         raise ActionError("Workspace is empty after merging.")
+    owner = _owner_workspace(db, tenant_id, ctx)
+    if owner and workspace_id != owner:
+        raise _outside_owner_workspace("workspace")
     workspace = (
         db.query(Workspace)
         .filter(
