@@ -15,7 +15,6 @@ Behaviour pinned here:
    ``dispatch`` raises for one, and leaves the session usable.
 6. Controls: 2xx success, 5xx retry, blocked host refused with no POST.
 """
-import socket
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -50,12 +49,16 @@ MARKER = "detail-from-client"
 
 @pytest.fixture(autouse=True)
 def _public_dns(monkeypatch):
-    """Every host resolves to a public address; nothing touches the network."""
+    """Only the consumer hosts these tests register resolve (to a public address);
+    any other lookup raises. Nothing touches the network."""
+    from tests.resolver_stub import stub_resolver
 
-    def fake(host, *_a, **_k):
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
-
-    monkeypatch.setattr("socket.getaddrinfo", fake)
+    unexpected = stub_resolver(
+        monkeypatch,
+        {host: "8.8.8.8" for host in ("consumer.example", "hooks.example.com", "example.com", "bücher.example")},
+    )
+    yield
+    assert unexpected == []
 
 
 @pytest.fixture

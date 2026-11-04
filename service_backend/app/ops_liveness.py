@@ -49,6 +49,10 @@ _CONTROL_TRANSPORT_OPTIONS = {
 # `stt`/`bots`, meetings) adds its name here when it needs this same signal.
 KNOWN_QUEUES = ("workflow", "jobs")
 
+# Bounded socket waits for the liveness client.
+_SOCKET_CONNECT_TIMEOUT_SECONDS = 1.0
+_SOCKET_READ_TIMEOUT_SECONDS = 1.0
+
 _TTL_SECONDS = 300  # AC-11-86: a wedged worker is visible within one TTL.
 
 _client: Optional["redis.Redis"] = None
@@ -68,7 +72,12 @@ def _key(queue: str) -> str:
 def _get_client() -> "redis.Redis":
     global _client
     if _client is None:
-        _client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        _client = redis.Redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=_SOCKET_CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=_SOCKET_READ_TIMEOUT_SECONDS,
+        )
     return _client
 
 

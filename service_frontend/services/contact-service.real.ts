@@ -22,6 +22,7 @@ import type {
   BulkLifecycleInput,
   BulkResult,
   BulkTagsInput,
+  ContactEraseResult,
   ContactExportRequest,
   ContactListItem,
   CreateContactInput,
@@ -126,6 +127,12 @@ export const realContactService: ContactService = {
     return apiFetch<BulkResult>(`/omnichannel/workspaces/${workspaceId}/contacts/bulk/lifecycle`, {
       method: 'POST',
       body: JSON.stringify(input),
+    });
+  },
+
+  eraseContact(contactId) {
+    return apiFetch<ContactEraseResult>(`/omnichannel/contacts/${encodeURIComponent(contactId)}`, {
+      method: 'DELETE',
     });
   },
 

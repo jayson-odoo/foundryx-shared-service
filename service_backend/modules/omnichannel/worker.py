@@ -83,19 +83,55 @@ def omnichannel_send_message(self, message_id: str, trace_id: Optional[str] = No
     ``trace_id_var`` defaults to None, so without this the outbound Meta row would
     lose the trace in prod. ``run_send`` re-seeds the contextvar from it."""
     from app.database import SessionLocal
-    from modules.omnichannel.services.send_runner import fail_unfinished, run_send
+    from modules.omnichannel.services.send_runner import (
+        RATE_LIMIT_MAX_RETRIES,
+        TransientSendError,
+        fail_unfinished,
+        rate_limit_countdown,
+        run_send,
+    )
 
     db = SessionLocal()
     try:
         return run_send(db, message_id, trace_id=trace_id)
-    except Exception:
+    except Exception as exc:
+        retries = self.request.retries
+        # A Meta rate limit has its own, slower schedule and budget (plan 56 A).
+        if isinstance(exc, TransientSendError) and exc.rate_limited:
+            if retries < RATE_LIMIT_MAX_RETRIES:
+                raise self.retry(
+                    exc=exc,
+                    countdown=rate_limit_countdown(retries, exc.retry_after),
+                    max_retries=RATE_LIMIT_MAX_RETRIES,
+                )
+            # Budget spent: the row ends FAILED and the task ends with it (no
+            # raise, so autoretry cannot queue a further attempt).
+            return fail_unfinished(db, message_id, "retries exhausted")
         # Last attempt: end the row FAILED (one status event) instead of
         # leaving it QUEUED. Earlier attempts just let Celery retry.
-        if self.request.retries >= self.max_retries:
+        if retries >= self.max_retries:
             fail_unfinished(db, message_id, "retries exhausted")
         raise
     finally:
         db.close()
+
+
+@celery_app.task(
+    name="omnichannel.purge_erased_files",
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_backoff_max=3600,
+    retry_jitter=True,
+    max_retries=6,
+)
+def purge_erased_files(tenant_id: str, keys: list) -> int:
+    """Delete the stored files of an erased contact (plan 56 C). Keys were
+    collected before the rows went; a failed delete retries with backoff and
+    never touches the already-committed erase."""
+    from modules.omnichannel.services.contact_erase_service import purge_files
+
+    purge_files(tenant_id, list(keys))
+    return len(keys)
 
 
 @celery_app.task(name="omnichannel.check_channel_token")

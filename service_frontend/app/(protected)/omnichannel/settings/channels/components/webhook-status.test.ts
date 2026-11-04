@@ -27,16 +27,18 @@ describe('webhook event-type labels', () => {
     expect(WEBHOOK_EVENT_LABELS['message.status']).toBe('Delivery receipts');
     expect(WEBHOOK_EVENT_LABELS['contact.updated']).toBe('Contact updates');
     expect(WEBHOOK_EVENT_LABELS['message.reaction']).toBe('Reactions');
+    expect(WEBHOOK_EVENT_LABELS['contact.erased']).toBe('Contact erased');
   });
 
-  it('exposes the five events as picker options in label/value shape (AC-38-13)', () => {
-    expect(WEBHOOK_EVENT_OPTIONS).toHaveLength(5);
+  it('exposes the six events as picker options in label/value shape (AC-38-13)', () => {
+    expect(WEBHOOK_EVENT_OPTIONS).toHaveLength(6);
     expect(WEBHOOK_EVENT_OPTIONS.map((o) => o.value)).toEqual([
       'message.inbound',
       'message.outbound',
       'message.status',
       'contact.updated',
       'message.reaction',
+      'contact.erased',
     ]);
     expect(WEBHOOK_EVENT_OPTIONS.find((o) => o.value === 'message.outbound')?.label).toBe(
       'Outbound messages',

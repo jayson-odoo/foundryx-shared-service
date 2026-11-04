@@ -9,7 +9,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import allow_long_lock_wait, get_db
 from app.dependencies import require_platform_permission
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -378,7 +378,8 @@ def purge_tenant(
     """Hard-delete an ARCHIVED tenant + all its rows (BL-035). Irreversible -
     typed slug confirm, archive-first two-step."""
     try:
-        TenantService(db).purge(tenant_id, payload.confirmSlug)
+        with allow_long_lock_wait(db):
+            TenantService(db).purge(tenant_id, payload.confirmSlug)
     except TenantNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found.")
     except PlatformTenantProtected:

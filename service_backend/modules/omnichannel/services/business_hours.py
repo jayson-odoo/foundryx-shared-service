@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import OmnichannelSettings
@@ -129,9 +130,33 @@ class BusinessHoursService:
             self.db.add(row)
         row.business_timezone = tz
         row.business_hours_json = clean_windows
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # A parallel first write created the workspace row between the
+            # lookup above and this insert (uq_omnichannel_settings_ws): roll
+            # back and update that row once.
+            self.db.rollback()
+            row = self._row(tenant_id, workspace_id)
+            if row is None:
+                raise
+            row.business_timezone = tz
+            row.business_hours_json = clean_windows
+            self.db.commit()
         self.db.refresh(row)
         return self.get(tenant_id, workspace_id)
+
+    def get_with_source(self, tenant_id: str, workspace_id: str) -> Dict[str, Any]:
+        """The key view: the workspace's own row, else the tenant default, else
+        nothing configured. Never another workspace's row."""
+        own = self._row(tenant_id, workspace_id)
+        if own is not None and own.business_timezone:
+            return {**self.get(tenant_id, workspace_id), "source": "workspace"}
+        resolved = self.resolve(tenant_id, workspace_id)
+        if resolved is None:
+            return {"timezone": None, "windows": {day: [] for day in DAY_KEYS}, "source": "none"}
+        tz, windows = resolved
+        return {"timezone": tz, "windows": windows or {day: [] for day in DAY_KEYS}, "source": "tenant"}
 
     def resolve(
         self, tenant_id: str, workspace_id: Optional[str]
