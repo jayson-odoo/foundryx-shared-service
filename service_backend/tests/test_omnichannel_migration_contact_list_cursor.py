@@ -61,6 +61,7 @@ def _is_list(method: str, path: str) -> bool:
         or path.endswith("/space/channel")
         or path.endswith("/space/user")
         or path.endswith("/space/custom_field")
+        or (path.startswith("/v2/contact/") and path.endswith("/channels"))
     )
 
 
@@ -198,6 +199,22 @@ def test_space_reads_walk_every_page(method_name, suffix):
     got = getattr(_client(vendor), method_name)()
     assert vendor.rejected == []
     assert [r["id"] for r in got] == [r["id"] for r in rows]
+
+
+@pytest.mark.parametrize("n_channels, pages", [(25, [25]), (150, [99, 51])])
+def test_contact_channels_read_every_page(n_channels, pages):
+    """`GET /contact/{identifier}/channels` is paginated too
+    (docs/api/a17bccb520d2e-list-contact-channels: `limit` default 10,
+    `pagination.next` =
+    `https://api.respond.io/contact/{identifier}/channels?limit=10&cursorId=10`).
+    Reading only the first page drops every channel past the vendor's
+    default 10, so the contact's identities are silently incomplete."""
+    rows = _rows(n_channels, start=500)
+    vendor = StrictPaging(_source_from({"/channels": rows}))
+    got = _client(vendor).get_contact_channels("id:42")
+    assert vendor.rejected == []
+    assert [r["id"] for r in got] == [r["id"] for r in rows]
+    assert len(vendor.requests) == len(pages)
 
 
 @pytest.mark.parametrize("last_page", ["null", "missing", "empty"])
