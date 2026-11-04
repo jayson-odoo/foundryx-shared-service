@@ -30,7 +30,9 @@ Security invariants:
 from __future__ import annotations
 
 import json as json_module
+import threading
 import time
+import zlib
 from typing import Any, Dict, List, Tuple
 
 import httpx
@@ -53,6 +55,21 @@ MAX_JSON_FLATTEN_KEYS = 500  # safety valve - never explode an enormous body
 MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MB - authored config, not a file upload
 MAX_HEADER_NAME_LENGTH = 256
 MAX_HEADER_VALUE_LENGTH = 8000  # generous (Bearer JWTs, signed cookies) but bounded
+
+
+# Request headers that change the framing or the route of a request. A workflow
+# may not set them, whoever authored it.
+_FORBIDDEN_HEADER_NAMES = frozenset(
+    {
+        "host", "connection", "content-length", "transfer-encoding", "te",
+        "upgrade", "keep-alive", "trailer", "expect",
+    }
+)
+
+
+def is_forbidden_header_name(name: str) -> bool:
+    lowered = (name or "").strip().lower()
+    return lowered in _FORBIDDEN_HEADER_NAMES or lowered.startswith("proxy-")
 
 
 def _timeout_seconds(config: Dict[str, Any]) -> int:
@@ -89,6 +106,8 @@ def _headers(config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
             raise ActionError("A header name or value is too long.")
         if any(ch in key for ch in ("\r", "\n")) or any(ch in value for ch in ("\r", "\n")):
             raise ActionError("A header name or value contains an illegal character.")
+        if is_forbidden_header_name(key):
+            raise ActionError("A header name is not allowed on this request.")
         out[key] = value
     return out
 
@@ -162,6 +181,49 @@ def _body_and_content_type(
     return encoded, content_type
 
 
+_ENCODING_UNSUPPORTED = "The response uses a content encoding that is not supported."
+_ENCODING_UNREADABLE = "The response body could not be decoded."
+
+
+def _single_encoding(header_value: str) -> str:
+    """The one content coding to decode: "" (none), "gzip" or "deflate". A
+    stacked list or any other coding fails the node."""
+    tokens = [t.strip().lower() for t in (header_value or "").split(",") if t.strip()]
+    tokens = [t for t in tokens if t != "identity"]
+    if not tokens:
+        return ""
+    if len(tokens) > 1:
+        raise ActionError(_ENCODING_UNSUPPORTED)
+    token = tokens[0]
+    if token in ("gzip", "x-gzip"):
+        return "gzip"
+    if token == "deflate":
+        return "deflate"
+    raise ActionError(_ENCODING_UNSUPPORTED)
+
+
+def _decode_bounded(coding: str, wire: bytes) -> Tuple[bytes, bool]:
+    """Decode ONE gzip or deflate layer, producing at most MAX_RESPONSE_BYTES.
+    Returns (bytes, cut) where cut means the output hit the cap."""
+    attempts = [16 + zlib.MAX_WBITS] if coding == "gzip" else [zlib.MAX_WBITS, -zlib.MAX_WBITS]
+    last: Exception = ValueError("no attempt")
+    for wbits in attempts:
+        decoder = zlib.decompressobj(wbits)
+        out = bytearray()
+        try:
+            data = wire
+            while data and len(out) <= MAX_RESPONSE_BYTES:
+                out += decoder.decompress(data, MAX_RESPONSE_BYTES + 1 - len(out))
+                data = decoder.unconsumed_tail
+        except zlib.error as exc:
+            last = exc
+            continue
+        if len(out) > MAX_RESPONSE_BYTES:
+            return bytes(out[:MAX_RESPONSE_BYTES]), True
+        return bytes(out), False
+    raise ActionError(_ENCODING_UNREADABLE) from last
+
+
 def http_request(
     db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -182,8 +244,33 @@ def http_request(
     if default_content_type and not any(k.lower() == "content-type" for k in headers):
         headers["Content-Type"] = default_content_type
 
+    # Ask for an unencoded body; a server that encodes anyway is handled below.
+    for existing in [k for k in headers if k.lower() == "accept-encoding"]:
+        del headers[existing]
+    headers["Accept-Encoding"] = "identity"
+
     timeout = _timeout_seconds(config)
     started = time.monotonic()
+    transport = GuardedTransport()
+    expired = threading.Event()
+
+    def _expire() -> None:
+        # The deadline covers the whole exchange (connect, status line,
+        # headers, body): cut the open sockets so a blocked read ends now.
+        expired.set()
+        abort = getattr(transport, "abort_connections", None)
+        if abort is not None:
+            abort()
+
+    watchdog = threading.Timer(timeout, _expire)
+    watchdog.daemon = True
+    status_code = 0
+    content_type = ""
+    is_text = False
+    raw = b""
+    total = 0
+    truncated = False
+    watchdog.start()
     try:
         # A fresh client per request whose transport connects only to an
         # address that passed the guard at connect time. `follow_redirects=
@@ -191,37 +278,45 @@ def http_request(
         # change) - a 302 to an internal address must never be auto-followed
         # past the guard.
         with httpx.Client(
-            transport=GuardedTransport(), timeout=timeout, follow_redirects=False,
+            transport=transport, timeout=timeout, follow_redirects=False,
         ) as client, client.stream(
             method, url, headers=headers, content=body or None,
         ) as resp:
             status_code = resp.status_code
             content_type = resp.headers.get("content-type", "")
             is_text = _is_text_content_type(content_type)
+            # Take the coding out of the headers so the client hands over the
+            # bytes as they came; at most ONE gzip or deflate layer is decoded
+            # below, bounded by the same cap.
+            coding = _single_encoding(resp.headers.pop("content-encoding", "") or "")
             chunks: List[bytes] = []
-            total = 0
-            truncated = False
-            for chunk in resp.iter_bytes():
-                # Wall-clock deadline (plan 31 review S3): `timeout=` on
-                # the client is a PER-OPERATION budget (connect/read/write/
-                # pool), not a cap on total elapsed time - a hostile endpoint
-                # drip-feeding one byte every few seconds under the read
-                # timeout would otherwise hold this worker slot indefinitely
-                # while never exceeding MAX_RESPONSE_BYTES. Checked BEFORE
-                # counting the chunk so a slow-drip response truncates even
-                # when every individual read succeeds.
-                if time.monotonic() - started > timeout:
-                    truncated = True
-                    break
-                total += len(chunk)
-                if total > MAX_RESPONSE_BYTES:
-                    truncated = True
-                    break
-                chunks.append(chunk)
+            try:
+                for chunk in resp.iter_bytes():
+                    # Wall-clock deadline (plan 31 review S3): `timeout=` on
+                    # the client is a PER-OPERATION budget, not a cap on total
+                    # elapsed time - a hostile endpoint drip-feeding one byte
+                    # every few seconds under the read timeout would otherwise
+                    # hold this worker slot indefinitely. Checked BEFORE
+                    # counting the chunk so a slow-drip response truncates even
+                    # when every individual read succeeds.
+                    if time.monotonic() - started > timeout:
+                        truncated = True
+                        break
+                    total += len(chunk)
+                    if total > MAX_RESPONSE_BYTES:  # the cap counts bytes on the wire
+                        truncated = True
+                        break
+                    chunks.append(chunk)
+            except httpx.HTTPError:
+                if not expired.is_set():
+                    raise
+                truncated = True  # the deadline cut the body: keep what arrived
             raw = b"".join(chunks)
     except UrlGuardError as exc:
         raise ActionError(f"URL refused: {exc}") from exc
     except httpx.HTTPError as exc:
+        if expired.is_set():
+            raise ActionError("Request timed out.") from exc
         # AC-WFP-60: a transport error fails the node with its error class in
         # the message - no silent success. Scrub any CONFIGURED header value
         # out of the message (B1, second leg): `httpx.LocalProtocolError` (an
@@ -240,6 +335,12 @@ def http_request(
             if secret_value:
                 message = message.replace(secret_value, "***")
         raise ActionError(message) from exc
+    finally:
+        watchdog.cancel()
+    if coding and raw:
+        raw, cut = _decode_bounded(coding, raw)
+        truncated = truncated or cut
+    total = len(raw)
     duration_ms = int((time.monotonic() - started) * 1000)
 
     ok = 200 <= status_code < 300

@@ -26,6 +26,7 @@ from app.services.workflow_service import (
     ShortcutSerializationConflict,
     WorkflowService,
 )
+from app.workflow_engine.actions.http_actions import is_forbidden_header_name
 from app.workflow_engine.executor import RunRefused, register_run_guard
 from app.workflow_engine.registry import (
     get_action,
@@ -44,6 +45,7 @@ from ..models import (
     WhatsappTemplate,
     WorkflowOwner,
     Workspace,
+    WorkspaceMember,
 )
 from ..repositories.workflow_owner_repository import (
     InvalidCursor,
@@ -285,6 +287,13 @@ def pinning_issues(
                     CloseReason.tenant_id == tenant_id,
                     CloseReason.workspace_id == workspace_id,
                 )
+            elif f.type == "omnichannelMember":
+                ok = exists(
+                    WorkspaceMember,
+                    WorkspaceMember.user_id == value,
+                    WorkspaceMember.tenant_id == tenant_id,
+                    WorkspaceMember.workspace_id == workspace_id,
+                )
             elif f.type == "whatsappTemplate":
                 ok = (
                     db.query(WhatsappTemplate.id)
@@ -307,6 +316,28 @@ def pinning_issues(
                 )
             if not ok:
                 outside(node, f.key)
+    return out
+
+
+def header_issues(doc: Any) -> List[DefinitionIssue]:
+    """An `http.request` node may not set a header that changes the framing or
+    the route of the request (the run refuses these too, for every caller)."""
+    out: List[DefinitionIssue] = []
+    for node in doc.nodes:
+        if node.type != "http.request":
+            continue
+        rows = node.config.get("headers")
+        for row in rows if isinstance(rows, list) else []:
+            name = str(row.get("key") or "").strip() if isinstance(row, dict) else ""
+            if name and is_forbidden_header_name(name):
+                out.append(
+                    DefinitionIssue(
+                        "invalid_definition",
+                        f'Node "{node.id}": the header "{name}" cannot be set.',
+                        node_id=node.id,
+                        field="headers",
+                    )
+                )
     return out
 
 
@@ -357,7 +388,9 @@ def check_for_save(
     if issues:
         raise issues[0].to_error()
     stamped = stamp_trigger_workspace(definition, workspace_id)
-    issues = pinning_issues(db, tenant_id, workspace_id, _parse(stamped))
+    stamped_doc = _parse(stamped)
+    issues = pinning_issues(db, tenant_id, workspace_id, stamped_doc)
+    issues += header_issues(stamped_doc)
     if issues:
         raise issues[0].to_error()
     return stamped
@@ -424,7 +457,11 @@ _IF_CONDITION_FORMAT: Dict[str, Any] = {
 }
 
 
-def _field_item(f: Any) -> Dict[str, Any]:
+def _shortcut_entity_options() -> List[Dict[str, str]]:
+    return [{"value": SHORTCUT_ENTITY, "label": "Contact"}]
+
+
+def _field_item(f: Any, options: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     show_when = None
     if f.show_when is not None:
         controlling, wanted = f.show_when
@@ -434,19 +471,26 @@ def _field_item(f: Any) -> Dict[str, Any]:
         "label": f.label,
         "type": f.type,
         "required": bool(f.required),
-        "options": f.options,
+        "options": f.options if options is None else options,
         "showWhen": show_when,
         "mergeable": bool(f.mergeable),
     }
 
 
-def _node_item(kind: str, d: Any) -> Dict[str, Any]:
+def _node_item(kind: str, d: Any, members: List[Dict[str, str]]) -> Dict[str, Any]:
+    def options_for(f: Any) -> Optional[List[Dict[str, Any]]]:
+        if d.key == "entity.shortcut" and f.key == "entityType":
+            return _shortcut_entity_options()
+        if f.type == "omnichannelMember":
+            return members
+        return None
+
     return {
         "type": d.key,
         "kind": kind,
         "label": d.label,
         "description": d.description,
-        "fields": [_field_item(f) for f in d.fields],
+        "fields": [_field_item(f, options_for(f)) for f in d.fields],
         "outputs": [{"key": o.key, "label": o.label} for o in d.outputs],
     }
 
@@ -458,16 +502,29 @@ def register_key_workflow_run_guard() -> None:
 
 
 def _owned_run_guard(db: Session, run: Any, doc: Any) -> None:
-    owned = (
-        db.query(WorkflowOwner.id)
+    owner_ws = (
+        db.query(WorkflowOwner.workspace_id)
         .filter(WorkflowOwner.tenant_id == run.tenant_id, WorkflowOwner.workflow_id == run.workflow_id)
-        .first()
+        .scalar()
     )
-    if owned is None:
+    if owner_ws is None:
         return
     issues = allow_list_issues(doc)
     if issues:
         raise RunRefused("node_not_allowed", issues[0].message)
+    # A run started by another workflow (a staff `workflow.trigger` step) can
+    # carry any contact of the tenant: the contact must be in the owner workspace.
+    record_id = (run.trigger_payload_json or {}).get("recordId")
+    if record_id:
+        contact_ws = (
+            db.query(Contact.workspace_id)
+            .filter(Contact.id == str(record_id), Contact.tenant_id == run.tenant_id)
+            .scalar()
+        )
+        if contact_ws is not None and contact_ws != owner_ws:
+            raise RunRefused(
+                "record_not_in_workspace", "The contact is outside this workflow's workspace."
+            )
 
 
 class KeyWorkflowService:
@@ -534,6 +591,7 @@ class KeyWorkflowService:
             )
 
         owners = self.owners
+        owned: List[str] = []
 
         def _own_new_workflow(session: Session, _ctx: Any, _instances: Any) -> None:
             for obj in list(session.new):
@@ -541,8 +599,15 @@ class KeyWorkflowService:
                     if obj.id is None:
                         obj.id = str(uuid.uuid4())
                     owners.add(tenant_id, workspace_id, obj.id, actor_id)
+                    owned.append(obj.id)
+
+        def _require_owner(_session: Session) -> None:
+            # Fail closed: a workflow is never committed without its owner row.
+            if not owned:
+                raise RuntimeError("workflow owner row was not written")
 
         event.listen(self.db, "before_flush", _own_new_workflow, once=True)
+        event.listen(self.db, "before_commit", _require_owner, once=True)
         try:
             wf = self.workflows.create(
                 tenant_id,
@@ -558,6 +623,8 @@ class KeyWorkflowService:
         finally:
             if event.contains(self.db, "before_flush", _own_new_workflow):
                 event.remove(self.db, "before_flush", _own_new_workflow)
+            if event.contains(self.db, "before_commit", _require_owner):
+                event.remove(self.db, "before_commit", _require_owner)
         return public_workflow_item(wf)
 
     def update(
@@ -612,11 +679,20 @@ class KeyWorkflowService:
         """Every problem a save or publish would raise, saving nothing."""
         issues = _shape_issues(definition)
         doc = _parse(definition)
+        if issues:
+            # Same as a save: stop at the first class of problem, so an
+            # over-size definition costs no per-node work.
+            return self._validate_response(issues)
         issues += allow_list_issues(doc)
         stamped = stamp_trigger_workspace(definition, workspace_id)
         stamped_doc = _parse(stamped)
         issues += pinning_issues(self.db, tenant_id, workspace_id, stamped_doc)
+        issues += header_issues(stamped_doc)
         issues += _gate_issues(stamped_doc)
+        return self._validate_response(issues)
+
+    @staticmethod
+    def _validate_response(issues: List[DefinitionIssue]) -> PublicValidateResponse:
         return PublicValidateResponse(
             valid=not issues,
             issues=[
@@ -634,6 +710,7 @@ class KeyWorkflowService:
         # user here, so it would not gate node types itself.
         issues = allow_list_issues(doc)
         issues += pinning_issues(self.db, tenant_id, workspace_id, doc)
+        issues += header_issues(doc)
         issues += _gate_issues(doc, workflow_id=wf.id)
         if issues:
             raise issues[0].to_error()
@@ -641,13 +718,18 @@ class KeyWorkflowService:
         return public_workflow_item(published)
 
     def catalog(self, tenant_id: str, workspace_id: str) -> PublicCatalogResponse:
+        # The same per-workspace pickers the dashboard editor reads, built for
+        # the key's own workspace only.
+        entries = self.workflows._omnichannel_workspace_options(tenant_id, workspace_id=workspace_id)
+        entry = entries[0] if entries else {}
+        members = [{"value": m["id"], "label": m["name"]} for m in entry.get("members", [])]
         nodes: List[Dict[str, Any]] = []
         for t in list_triggers():
             if t.key in KEY_WORKFLOW_NODE_TYPES:
-                nodes.append(_node_item("trigger", t))
+                nodes.append(_node_item("trigger", t, members))
         for a in list_actions():
             if a.key in KEY_WORKFLOW_NODE_TYPES:
-                nodes.append(_node_item("action", a))
+                nodes.append(_node_item("action", a, members))
         nodes.append(
             {
                 "type": "if",
@@ -658,16 +740,6 @@ class KeyWorkflowService:
                 "outputs": [],
                 "conditionFormat": _IF_CONDITION_FORMAT,
             }
-        )
-        # The same per-workspace pickers the dashboard editor reads, narrowed
-        # to the key's own workspace.
-        entry = next(
-            (
-                w
-                for w in self.workflows._omnichannel_workspace_options(tenant_id)
-                if w["id"] == workspace_id
-            ),
-            {},
         )
         channels = (
             self.db.query(Channel.id, Channel.name)
@@ -792,7 +864,13 @@ class KeyWorkflowService:
             )
         except ShortcutNotFound:
             raise _not_runnable("unpublished")
-        except (ShortcutCodeNotAuthorized, ShortcutSerializationConflict) as exc:
+        except ShortcutSerializationConflict:
+            raise ApiError(
+                422,
+                "invalid_request",
+                "This workflow needs a value for its run key. Send the input the key is built from.",
+            )
+        except ShortcutCodeNotAuthorized as exc:
             raise ApiError(
                 409, "workflow_not_runnable", str(exc) or "This workflow cannot be run now.",
                 {"reason": "trigger"},

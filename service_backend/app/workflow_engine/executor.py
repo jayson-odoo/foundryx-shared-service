@@ -553,6 +553,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
         run.status = RUN_FAILED
         run.error = f"{refusal.code}: {refusal}"
         run.finished_at = _now()
+        run_wait_cleanup(db, run)  # a refused run is terminal like any other
         db.commit()
         set_origin(db, prev_origin)
         return run

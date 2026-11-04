@@ -20,6 +20,7 @@ Security invariants (unchanged from the original):
 import ipaddress
 import socket
 import typing
+import weakref
 from urllib.parse import urlparse
 
 import anyio
@@ -51,7 +52,8 @@ def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
     if isinstance(ip, ipaddress.IPv4Address) and ip in _SHARED_ADDRESS_SPACE:
         return True
     return (
-        ip.is_private
+        getattr(ip, "is_site_local", False)  # IPv6 fec0::/10, deprecated but routable
+        or ip.is_private
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_reserved
@@ -195,8 +197,34 @@ class _GuardedSyncBackend(httpcore.SyncBackend):
         super().__init__()
         self._subject = subject
         self._exempt_host = exempt_host
+        # Sockets opened through this backend, so a caller's overall deadline can
+        # cut a blocked exchange short (see ``GuardedTransport.abort_connections``).
+        self._sockets: "weakref.WeakSet[socket.socket]" = weakref.WeakSet()
+
+    def abort_connections(self) -> None:
+        for sock in list(self._sockets):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        return self._track(self._connect_tcp(host, port, timeout, local_address, socket_options))
+
+    def _track(self, stream):
+        sock = stream.get_extra_info("socket")
+        if sock is not None:
+            self._sockets.add(sock)
+        start_tls = stream.start_tls
+
+        def tracked_start_tls(*args, **kwargs):
+            # TLS wraps the socket in a new object: track that one too.
+            return self._track(start_tls(*args, **kwargs))
+
+        stream.start_tls = tracked_start_tls
+        return stream
+
+    def _connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
         if self._exempt_host is not None and self._exempt_host(host):
             return super().connect_tcp(host, port, timeout, local_address, socket_options)
         literal = _literal_ip(host)
@@ -300,6 +328,7 @@ class GuardedTransport(httpx.HTTPTransport):
         ctx = httpx.create_ssl_context(verify=verify, trust_env=trust_env)
         super().__init__(verify=ctx, trust_env=trust_env, limits=limits)
         self._pool.close()
+        self._backend = _GuardedSyncBackend(subject, exempt_host)
         self._pool = httpcore.ConnectionPool(
             ssl_context=ctx,
             max_connections=limits.max_connections,
@@ -308,8 +337,13 @@ class GuardedTransport(httpx.HTTPTransport):
             http1=True,
             http2=False,
             retries=0,
-            network_backend=_GuardedSyncBackend(subject, exempt_host),
+            network_backend=self._backend,
         )
+
+    def abort_connections(self) -> None:
+        """Shut down every socket this transport opened. A blocked read in
+        another thread then fails at once (used for an overall deadline)."""
+        self._backend.abort_connections()
 
 
 class GuardedAsyncTransport(httpx.AsyncHTTPTransport):

@@ -649,8 +649,8 @@ def delete_webhook(
 
 # ── Workflows (plan 38 gap 7) ────────────────────────────────────────────────
 # A key configures the workflows its own workspace owns. Tenant and workspace
-# come from the key only. Specific paths (catalog, validate, runs/{runId}) are
-# registered BEFORE `/workflows/{workflow_id}` in later slices.
+# come from the key only. The fixed paths (catalog, validate, runs/{runId}) are
+# registered BEFORE `/workflows/{workflow_id}` so they are never read as an id.
 _WORKFLOW_BODY_CAP = 256 * 1024
 
 
