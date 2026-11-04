@@ -119,6 +119,8 @@ write guards as a link. Use it when a link ended `LOCATION_NOT_MOVED`.
 
 ### 4.5 Response (all four routes)
 
+Plan 57 (`57-autocount-write-qtso-contract.md`) rewired `po-links`, `po-links/unlink` and `spo-links/unlink`: an optional `Idempotency-Key`, `soDocDate` on `po-links`, and extra body fields (`operationId`, `message`, `warnings`, `docKey`, `docNo`, `replacedLines`) when an operation answers.
+
 ```json
 { "actionId": "c1a0...", "outcome": "done", "errorCode": null, "document": { "...": "..." } }
 ```
