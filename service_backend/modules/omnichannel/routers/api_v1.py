@@ -9,7 +9,7 @@ JWT `require_module` gate - service-active is re-checked inside the dependency.
 import json
 from typing import Optional, Union
 
-from fastapi import APIRouter, Depends, Header, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
@@ -28,6 +28,21 @@ from ..schemas import (
     PublicContactUpdateRequest,
     PublicSendRequest,
     PublicSendResponse,
+    BusinessHoursUpdate,
+    PublicBusinessHoursResponse,
+    PublicCatalogResponse,
+    PublicValidateRequest,
+    PublicWorkflowActiveRequest,
+    PublicWorkflowRunDetail,
+    PublicWorkflowRunListResponse,
+    PublicWorkflowRunRequest,
+    PublicWorkflowVersionListResponse,
+    PublicWorkflowRunItem,
+    PublicValidateResponse,
+    PublicWorkflowCreateRequest,
+    PublicWorkflowItem,
+    PublicWorkflowListResponse,
+    PublicWorkflowUpdateRequest,
     PublicChannelListResponse,
     PublicTemplateListResponse,
     RioContactItem,
@@ -43,6 +58,8 @@ from ..schemas import (
     WebhookEndpointUpdateRequest,
     WebhookSecretResponse,
 )
+from ..services.business_hours import BusinessHoursService
+from ..services.key_workflows import KeyWorkflowService, put_business_hours
 from ..services.media_pipeline import META_CEILINGS
 from ..services.public_gateway_service import (
     FORMAT_GUIDE,
@@ -50,6 +67,7 @@ from ..services.public_gateway_service import (
     WIRE_FORMATS,
     PublicGatewayService,
 )
+from ..services.webchat_visitor_service import WebchatInvalidRequest, read_capped_json
 
 router = APIRouter()
 
@@ -627,3 +645,244 @@ def delete_webhook(
         raise _paused_by_staff() from exc
     except WebhookNotFound as exc:
         raise _endpoint_not_found() from exc
+
+
+# ── Workflows (plan 38 gap 7) ────────────────────────────────────────────────
+# A key configures the workflows its own workspace owns. Tenant and workspace
+# come from the key only. The fixed paths (catalog, validate, runs/{runId}) are
+# registered BEFORE `/workflows/{workflow_id}` so they are never read as an id.
+_WORKFLOW_BODY_CAP = 256 * 1024
+
+
+async def _read_workflow_body(request: Request) -> dict:
+    """Capped JSON read, done on the loop with no transaction open."""
+    try:
+        return await read_capped_json(request, cap=_WORKFLOW_BODY_CAP)
+    except WebchatInvalidRequest as exc:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", exc.message)
+
+
+def _validated(model, body: dict):
+    try:
+        return model(**body)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors(include_url=False, include_context=False)) from None
+
+
+@router.get("/workflows", response_model=PublicWorkflowListResponse)
+def list_workflows(
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowListResponse:
+    return KeyWorkflowService(db).list(
+        api_ws.tenant_id, api_ws.workspace_id, limit=limit, cursor=cursor
+    )
+
+
+@router.post("/workflows", response_model=PublicWorkflowItem, status_code=status.HTTP_201_CREATED)
+async def create_workflow(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowCreateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).create,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        api_ws.key_id,
+        name=payload.name,
+        description=payload.description,
+        definition=payload.draftDefinition,
+    )
+
+
+@router.get("/workflows/catalog", response_model=PublicCatalogResponse)
+def workflow_catalog(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicCatalogResponse:
+    return KeyWorkflowService(db).catalog(api_ws.tenant_id, api_ws.workspace_id)
+
+
+@router.post("/workflows/validate", response_model=PublicValidateResponse)
+async def validate_workflow(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicValidateResponse:
+    payload = _validated(PublicValidateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).validate,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        payload.draftDefinition,
+    )
+
+
+@router.get("/workflows/runs/{run_id}", response_model=PublicWorkflowRunDetail)
+def get_workflow_run(
+    run_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunDetail:
+    return KeyWorkflowService(db).run_detail(api_ws.tenant_id, api_ws.workspace_id, run_id)
+
+
+@router.get("/workflows/{workflow_id}", response_model=PublicWorkflowItem)
+def get_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).get(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+
+
+@router.patch("/workflows/{workflow_id}", response_model=PublicWorkflowItem)
+async def update_workflow(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowUpdateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).update,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        workflow_id,
+        name=payload.name,
+        description=payload.description,
+        definition=payload.draftDefinition,
+        expected_updated_at=payload.expectedUpdatedAt,
+    )
+
+
+@router.post("/workflows/{workflow_id}/publish", response_model=PublicWorkflowItem)
+def publish_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).publish(
+        api_ws.tenant_id, api_ws.workspace_id, api_ws.key_id, workflow_id
+    )
+
+
+@router.post("/workflows/{workflow_id}/unpublish", response_model=PublicWorkflowItem)
+def unpublish_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).unpublish(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+
+
+@router.put("/workflows/{workflow_id}/active", response_model=PublicWorkflowItem)
+async def set_workflow_active(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowActiveRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).set_active,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        workflow_id,
+        payload.isActive,
+    )
+
+
+@router.get("/workflows/{workflow_id}/versions", response_model=PublicWorkflowVersionListResponse)
+def list_workflow_versions(
+    workflow_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowVersionListResponse:
+    return KeyWorkflowService(db).list_versions(
+        api_ws.tenant_id, api_ws.workspace_id, workflow_id, limit=limit, cursor=cursor
+    )
+
+
+@router.get("/workflows/{workflow_id}/runs", response_model=PublicWorkflowRunListResponse)
+def list_workflow_runs(
+    workflow_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunListResponse:
+    return KeyWorkflowService(db).list_runs(
+        api_ws.tenant_id, api_ws.workspace_id, workflow_id, limit=limit, cursor=cursor
+    )
+
+
+@router.post(
+    "/workflows/{workflow_id}/runs",
+    response_model=PublicWorkflowRunItem,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_workflow_for_contact(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunItem:
+    payload = _validated(PublicWorkflowRunRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).run_for_contact,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        api_ws.key_id,
+        workflow_id,
+        contact=payload.contact,
+        inputs=payload.inputs,
+    )
+
+
+@router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> Response:
+    KeyWorkflowService(db).archive(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Business hours (plan 38 gap 7): the key's own workspace only ─────────────
+@router.get("/business-hours", response_model=PublicBusinessHoursResponse)
+def get_business_hours(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicBusinessHoursResponse:
+    data = BusinessHoursService(db).get_with_source(api_ws.tenant_id, api_ws.workspace_id)
+    return PublicBusinessHoursResponse(workspaceId=api_ws.workspace_id, **data)
+
+
+@router.put("/business-hours", response_model=PublicBusinessHoursResponse)
+async def put_business_hours_route(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicBusinessHoursResponse:
+    try:
+        raw = await read_capped_json(request)
+    except WebchatInvalidRequest as exc:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", exc.message)
+    payload = _validated(BusinessHoursUpdate, raw)
+    data = await run_in_threadpool(
+        put_business_hours,
+        db,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        payload.timezone,
+        payload.windows,
+    )
+    return PublicBusinessHoursResponse(workspaceId=api_ws.workspace_id, **data)

@@ -934,7 +934,23 @@ class ConversationService:
 
         from app.services.workflow_service import WorkflowService
 
-        return WorkflowService(self.db).list_shortcuts(tenant_id, SHORTCUT_ENTITY_TYPE)
+        rows = WorkflowService(self.db).list_shortcuts(tenant_id, SHORTCUT_ENTITY_TYPE)
+        # Plan 38 gap 7: a shortcut owned by an API key's workspace belongs to
+        # that workspace's contacts only.
+        owners = self._shortcut_owners(tenant_id, [r["workflowId"] for r in rows])
+        return [r for r in rows if owners.get(r["workflowId"], c.workspace_id) == c.workspace_id]
+
+    def _shortcut_owners(self, tenant_id: str, workflow_ids: List[str]) -> Dict[str, str]:
+        if not workflow_ids:
+            return {}
+        from ..models import WorkflowOwner
+
+        return {
+            wid: ws
+            for wid, ws in self.db.query(WorkflowOwner.workflow_id, WorkflowOwner.workspace_id)
+            .filter(WorkflowOwner.tenant_id == tenant_id, WorkflowOwner.workflow_id.in_(workflow_ids))
+            .all()
+        }
 
     def run_shortcut(self, contact_id: str, tenant_id: str, workflow_id: str, actor: Optional[User]):
         """Fire a shortcut against this contact (AC-IVE-37/38) - resolves the
@@ -947,8 +963,11 @@ class ConversationService:
         if c is None:
             raise ThreadNotFound()
 
-        from app.services.workflow_service import WorkflowService
+        from app.services.workflow_service import ShortcutNotFound, WorkflowService
 
+        owner = self._shortcut_owners(tenant_id, [workflow_id]).get(workflow_id)
+        if owner is not None and owner != c.workspace_id:
+            raise ShortcutNotFound()  # an owned shortcut is invalid on other workspaces' contacts
         return WorkflowService(self.db).run_shortcut(
             tenant_id, workflow_id, SHORTCUT_ENTITY_TYPE, c, actor
         )

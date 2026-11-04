@@ -313,3 +313,49 @@ def test_require_native_refuses_any_embed_principal_regardless_of_caps():
     with pytest.raises(HTTPException) as exc2:
         native_missing.require_native("conversations.shortcut")
     assert exc2.value.status_code == 403
+
+
+# ── plan 38 gap 7, AC-38-142: an owned shortcut belongs to its owner workspace ──
+def test_ac_38_142_owned_shortcut_listed_on_own_workspace_only(client, session_factory):
+    from tests.test_omnichannel_api_gateway import _default_workspace_id
+    from tests.test_omnichannel_contacts_module import _seed_contact
+    from tests.test_omnichannel_key_workflows import _new_workspace, _owner_cls
+
+    ws1 = _default_workspace_id(session_factory)
+    ws2 = _new_workspace(session_factory, "Second")
+    mine = _seed_contact(session_factory, ws1, first="Mine", phone="+60177042001")
+    theirs = _seed_contact(session_factory, ws2, first="Theirs", phone="+60177042002")
+
+    db = session_factory()
+    try:
+        owned = _publish_shortcut_workflow(db, name="Owned by W1").id
+        unowned = _publish_shortcut_workflow(db, name="Unowned").id
+        db.add(_owner_cls()(tenant_id=DEFAULT_TENANT_ID, workflow_id=owned, workspace_id=ws1,
+                            created_by="apikey:seed"))
+        db.commit()
+    finally:
+        db.close()
+
+    h = _auth(client)
+    on_mine = client.get(f"/omnichannel/contacts/{mine}/shortcuts", headers=h)
+    on_theirs = client.get(f"/omnichannel/contacts/{theirs}/shortcuts", headers=h)
+    assert on_mine.status_code == 200, on_mine.text
+    assert on_theirs.status_code == 200, on_theirs.text
+    assert {i["workflowId"] for i in on_mine.json()} == {owned, unowned}
+    # control: the other workspace's contact is reachable and still lists the unowned shortcut
+    assert {i["workflowId"] for i in on_theirs.json()} == {unowned}
+
+    # running the owned one on the other workspace's contact: 404 like any invalid shortcut
+    from app.models.workflow import WorkflowRun
+
+    db = session_factory()
+    runs_before = db.query(WorkflowRun).count()
+    db.close()
+    res = client.post(f"/omnichannel/contacts/{theirs}/shortcuts/{owned}", headers=h)
+    assert res.status_code == 404, res.text
+    db = session_factory()
+    assert db.query(WorkflowRun).count() == runs_before
+    db.close()
+    # unowned shortcuts are unchanged: runnable on both workspaces' contacts
+    assert client.post(f"/omnichannel/contacts/{theirs}/shortcuts/{unowned}", headers=h).status_code == 200
+    assert client.post(f"/omnichannel/contacts/{mine}/shortcuts/{owned}", headers=h).status_code == 200

@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from app.schemas.base import ApiModel
 from app.schemas.filters import FilterGroup
@@ -2257,3 +2257,120 @@ class MigrationJobListResponse(ApiModel):
     data: List[MigrationJobItem]
     total: int
     page: int
+
+
+# ── Workflows under the API key (plan 38 gap 7) ──────────────────────────────
+# Own narrow shapes: a change to the dashboard workflow schemas cannot move
+# this public contract. Unknown body keys (tenantId, workspaceId) are ignored.
+class PublicWorkflowItem(ApiModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    isActive: bool
+    publishedVersionId: Optional[str] = None
+    triggerType: Optional[str] = None
+    draftDefinition: Dict[str, Any]
+    createdBy: str
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class PublicWorkflowListResponse(ApiModel):
+    data: List[PublicWorkflowItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    draftDefinition: Dict[str, Any]
+
+
+class PublicWorkflowUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    draftDefinition: Optional[Dict[str, Any]] = None
+    expectedUpdatedAt: Optional[datetime] = None
+
+
+class PublicValidateRequest(BaseModel):
+    draftDefinition: Dict[str, Any]
+
+
+class PublicValidateIssue(ApiModel):
+    code: str
+    message: str
+    nodeId: Optional[str] = None
+    field: Optional[str] = None
+
+
+class PublicValidateResponse(ApiModel):
+    valid: bool
+    issues: List[PublicValidateIssue]
+
+
+class PublicCatalogResponse(ApiModel):
+    nodes: List[Dict[str, Any]]
+    options: Dict[str, List[Dict[str, Any]]]
+
+
+class PublicWorkflowVersionItem(ApiModel):
+    id: str
+    versionNumber: int
+    publishedAt: datetime
+    publishedBy: Optional[str] = None
+    definition: Dict[str, Any]
+
+
+class PublicWorkflowVersionListResponse(ApiModel):
+    data: List[PublicWorkflowVersionItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowRunItem(ApiModel):
+    id: str
+    workflowId: str
+    status: str
+    triggeredBy: str
+    actorId: Optional[str] = None
+    error: Optional[str] = None
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+
+
+class PublicWorkflowRunNode(ApiModel):
+    nodeId: str
+    nodeType: str
+    status: str
+    input: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class PublicWorkflowRunDetail(PublicWorkflowRunItem):
+    nodes: List[PublicWorkflowRunNode]
+
+
+class PublicWorkflowRunListResponse(ApiModel):
+    data: List[PublicWorkflowRunItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowActiveRequest(BaseModel):
+    isActive: StrictBool
+
+
+class PublicWorkflowRunRequest(BaseModel):
+    contact: str = Field(min_length=1, max_length=200)
+    inputs: Optional[Any] = None
+
+
+class PublicBusinessHoursResponse(ApiModel):
+    workspaceId: str
+    timezone: Optional[str] = None
+    windows: Dict[str, Any]
+    source: str  # workspace | tenant | none
