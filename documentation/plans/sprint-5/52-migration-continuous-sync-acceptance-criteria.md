@@ -96,9 +96,10 @@ Tags: `[BE]` backend, `[FE]` frontend, `[T]` automated test, `[E2E]` recorded ag
 - AC-SYNC-41 [BE][T] 429: the existing client backoff applies; a tick that still fails on rate
   limits ends with `lastError` set and the sync stays `active` (next tick retries).
 - AC-SYNC-42 [BE][T] Pause / Resume / Sync now: pause stops new ticks (a running tick stops at its
-  next checkpoint); Sync now on an `active` sync makes it due now (409 when a tick is running).
+  next checkpoint); Sync now on an `active` sync makes it due now as a FULL sweep (every contact's
+  new messages, crew ruling 4 Nov) (409 when a tick is running).
 - AC-SYNC-43 [BE][T] Stop (POST `/syncs/{id}/stop`): status `stopping`, one final tick (poll +
-  hints, no full sweep) runs, then for every respond.io-migrated contact of the workspace
+  hints + FULL sweep, crew ruling 4 Nov: nothing is lost at cutover) runs, then for every respond.io-migrated contact of the workspace
   `csw_expires_at` = `last_incoming_message_at + 24 h` when that is in the future (else
   untouched), and the sync ends `stopped`. No automatic stop exists (Q5).
 - AC-SYNC-44 [BE][T] The sync never stops itself: deleted connection or workspace pauses it with

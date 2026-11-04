@@ -791,7 +791,7 @@ def test_sync_43_stop_runs_one_final_tick_then_sets_csw_and_stops(client, sessio
     assert post_hint(client, path, {"contact": {"id": 910001}}).status_code == 200
     w.fake.add_contact(910004, first="LateNew")
     w.fake.add_message(910004, 1, text="late hello")
-    w.fake.add_message(910003, 4, text="C news never flagged")  # a final tick has no full sweep
+    w.fake.add_message(910003, 4, text="C news never flagged")  # the final tick is a full sweep (crew ruling)
     w.fake.clear_calls()
     enqueued = stub_enqueue(monkeypatch)
 
@@ -808,14 +808,18 @@ def test_sync_43_stop_runs_one_final_tick_then_sets_csw_and_stops(client, sessio
     assert row.status == "stopped" and row.stopped_at is not None
     assert w.contact_by_phone("+601000910004") is not None, "final tick polled new contacts"
     assert any(m.body == "final agent reply" for m in w.messages_of(w.contact_by_cid(910001))), "and consumed hints"
-    assert len(w.messages_of(w.contact_by_cid(910003))) == 1 and w.fake.message_list_calls(910003) == 0, "no full sweep"
+    assert [m.body for m in w.messages_of(w.contact_by_cid(910003))].count("C news never flagged") == 1, "full sweep at Stop"
     assert hint_ids(w.db, sid) == []
 
     w.db.expire_all()
     a2, b2, c2, local2 = (w.db.get(Contact, x.id) for x in (a, b, c, local))
     assert aware(a2.csw_expires_at) == a_last_incoming + timedelta(hours=24), "last incoming + 24 h (still in the future)"
     assert aware(b2.csw_expires_at) == b_csw_before, "window already past: untouched"
-    assert c2.csw_expires_at is None
+    c_incoming = aware(c2.last_incoming_message_at)
+    if c_incoming is not None and c_incoming + timedelta(hours=24) > utcnow():
+        assert aware(c2.csw_expires_at) == c_incoming + timedelta(hours=24)
+    else:
+        assert c2.csw_expires_at is None
     assert local2.csw_expires_at is None, "only respond.io-migrated contacts are touched"
 
     # A stopped sync takes no more hints and no more ticks.

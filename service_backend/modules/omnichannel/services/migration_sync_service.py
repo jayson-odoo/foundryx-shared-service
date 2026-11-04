@@ -314,7 +314,11 @@ class MigrationSyncService:
             raise SyncConflict("not_active", "Only an active sync can run now.")
         if self._tick_running(sync):
             raise SyncConflict("tick_running", "A sync is already running.")
-        self.repo.update(tenant_id, sync_id, next_sync_at=_now())
+        # Sync now is a FULL sweep (crew ruling): clearing the sweep stamp makes
+        # the next poll re-check every contact's messages, so a new message on
+        # an existing contact with no webhook hint is not missed. The stamp is
+        # set again only when that sweep completes.
+        self.repo.update(tenant_id, sync_id, next_sync_at=_now(), last_full_sweep_at=None)
         self.db.commit()
         return self.get(tenant_id, sync_id)
 
@@ -748,8 +752,13 @@ class _Tick:
         flagged: Set[str] = set(hint_ids)
         now = _now()
         last_sweep = _aware(self.sync.last_full_sweep_at)
-        sweep_due = self.kind == KIND_POLL and (
-            last_sweep is None or now - last_sweep >= timedelta(hours=self.sync.full_sweep_hours)
+        # The final tick on Stop is always a full sweep (crew ruling): anything
+        # missed by hints/new-contact detection would otherwise be lost at
+        # cutover. A poll sweeps when the 6 h interval is due (or Sync now
+        # cleared the stamp).
+        sweep_due = self.kind == KIND_FINAL or (
+            self.kind == KIND_POLL
+            and (last_sweep is None or now - last_sweep >= timedelta(hours=self.sync.full_sweep_hours))
         )
 
         try:
