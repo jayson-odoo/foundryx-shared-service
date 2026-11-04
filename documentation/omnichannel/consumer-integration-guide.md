@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
 > | **2026-11-05** | **Media fetch retry** (section 8). `GET /omnichannel/media/{messageId}` answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` when the file cannot be read from storage for a moment; fetch again after the wait. A missing file is still `404`. Other contract details are unchanged. |
 > | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
 > | **2026-11-05** | **Provider message id** (sections 9.1 and 9.2): `externalMessageId` is `null`, never an empty string, when the channel accepted a send without returning an id. |
@@ -538,7 +539,7 @@ When Meta rate limits a channel's read receipt, the route answers `429 meta_rate
 
 ### Erase a contact
 
-`DELETE /api/v1/omnichannel/contacts/{identifier}` erases one contact of your key's own workspace for good. `{identifier}` is `id:<contactId>`, `phone:<number>` or a bare contact id, as on the other contact routes. Any API key of the workspace may call it. It cannot be undone.
+`DELETE /api/v1/omnichannel/contacts/{identifier}` erases one contact of your key's own workspace for good. `{identifier}` is `id:<contactId>`, `phone:<number>` or a bare contact id, as on the other contact routes. Any API key of the workspace may call it. It cannot be undone. The log of the erase call shows `phone:<erased>` in place of the number.
 
 ```jsonc
 // 200
