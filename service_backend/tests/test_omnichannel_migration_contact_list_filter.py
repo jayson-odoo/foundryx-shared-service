@@ -30,6 +30,9 @@ from tests.test_omnichannel_respondio_migration_s3 import (
 )
 
 LIVE_FILTER_MESSAGE = "Sorry, there are errors in the request. Please check if filter is provided."
+# Lane SS-MIGRATION-SEARCH-HOTFIX: after the filter fix went live the vendor
+# rejected the body again, this time for the missing `search` key.
+LIVE_SEARCH_MESSAGE = "Sorry, there are errors in the request. Please check if search exists, but value can be empty."
 
 
 def _strict(inner):
@@ -41,6 +44,8 @@ def _strict(inner):
         if request.url.path.endswith("/contact/list"):
             body = json.loads(request.content or b"{}")
             bodies.append(body)
+            if not isinstance(body.get("search"), str):
+                return httpx.Response(400, json={"code": 400, "message": LIVE_SEARCH_MESSAGE})
             flt = body.get("filter")
             if not isinstance(flt, dict) or not any(isinstance(flt.get(k), list) for k in ("$and", "$or")):
                 return httpx.Response(400, json={"code": 400, "message": LIVE_FILTER_MESSAGE})
@@ -84,12 +89,34 @@ def test_client_always_sends_a_filter_object():
     )
     assert list(client.list_contacts(timezone="Asia/Kuala_Lumpur")) == []
     assert [items for items, _c in client.list_contacts_pages(timezone="Asia/Kuala_Lumpur")] == [[]]
-    assert handler.bodies[0]["filter"] == {"$and": []}
-    assert handler.bodies[0]["timezone"] == "Asia/Kuala_Lumpur"
+    # Exact body for BOTH call sites: search present (empty string), match-all
+    # filter, timezone. limit/cursorId ride the query string, never the body.
+    expected = {"search": "", "filter": {"$and": []}, "timezone": "Asia/Kuala_Lumpur"}
+    assert handler.bodies[0] == expected
+    assert handler.bodies[1] == expected
     # An explicit caller filter still wins.
     custom = {"$and": [{"category": "contactField", "field": "phone", "operator": "isNotEmpty"}]}
     list(client.list_contacts(timezone="UTC", filter_=custom))
-    assert handler.bodies[-1]["filter"] == custom
+    assert handler.bodies[-1] == {"search": "", "filter": custom, "timezone": "UTC"}
+    # An explicit caller search is sent verbatim.
+    list(client.list_contacts_pages(timezone="UTC", search="needle"))
+    assert handler.bodies[-1] == {"search": "needle", "filter": {"$and": []}, "timezone": "UTC"}
+
+
+def test_contact_list_query_carries_limit_and_cursor_not_body():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((dict(request.url.params), json.loads(request.content or b"{}")))
+        return httpx.Response(200, json={"items": [], "pagination": {"next": None}})
+
+    client = RespondIoClient(
+        api_token="t", client=httpx.Client(transport=httpx.MockTransport(handler)), sleep=lambda _s: None
+    )
+    list(client.list_contacts_pages(timezone="UTC", limit=50, start_cursor="123"))
+    params, body = seen[0]
+    assert params == {"limit": "50", "cursorId": "123"}
+    assert set(body) == {"search", "filter", "timezone"}
 
 
 def _run(db, ws, conn, *, mode, channel_map):
@@ -121,7 +148,9 @@ def test_dry_run_and_run_with_every_channel_skipped_import_contacts_and_history(
     assert run.status == "done", run.error
     contact = db.query(Contact).filter(Contact.tenant_id == DEFAULT_TENANT_ID, Contact.phone == "+15558880000").first()
     assert contact is not None
-    assert handler.bodies and all(b.get("filter") == {"$and": []} for b in handler.bodies)
+    assert handler.bodies and all(
+        b.get("filter") == {"$and": []} and b.get("search") == "" for b in handler.bodies
+    )
     db.close()
 
 
@@ -147,5 +176,8 @@ def test_filter_error_maps_to_a_clear_job_error():
     text = _respondio_job_error(exc)
     assert "contact list request" in text
     assert LIVE_FILTER_MESSAGE in text
+    search = _respondio_job_error(RespondIoError(LIVE_SEARCH_MESSAGE, status_code=400, code=400))
+    assert "contact list request" in search
+    assert LIVE_SEARCH_MESSAGE in search
     other = RespondIoError("Unauthorized", status_code=401)
     assert _respondio_job_error(other) == "respond.io error: Unauthorized"
