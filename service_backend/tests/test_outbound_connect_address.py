@@ -985,25 +985,23 @@ class _Attempts:
 
 def _make_unanswered(monkeypatch, unanswered):
     import anyio
-    import httpcore
+    from anyio._backends._asyncio import AsyncIOBackend
 
     attempts = _Attempts()
-    real = httpcore.AnyIOBackend.connect_tcp
+    real = AsyncIOBackend.connect_tcp.__func__
 
-    async def wrapped(self, host, port, timeout=None, local_address=None, socket_options=None):
+    async def wrapped(cls, host, port, local_address=None):
         attempts.started.append(host)
         if host in unanswered:
+            # The caller's scope (the connect budget) ends the wait.
             try:
-                with anyio.move_on_after(timeout):
-                    await anyio.sleep_forever()
+                await anyio.sleep_forever()
             except BaseException:
                 attempts.cancelled.append(host)
                 raise
-            attempts.timed_out.append(host)
-            raise httpcore.ConnectTimeout("scripted: no answer")
-        return await real(self, host, port, timeout, local_address, socket_options)
+        return await real(cls, host, port, local_address)
 
-    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", wrapped)
+    monkeypatch.setattr(AsyncIOBackend, "connect_tcp", classmethod(wrapped))
     return attempts
 
 
@@ -1216,17 +1214,17 @@ def test_the_sync_path_tries_the_next_address_after_a_connect_timeout(rig, env, 
 def test_an_immediate_connect_timeout_on_the_first_address_is_not_an_error_group(rig, monkeypatch):
     import asyncio
 
-    import httpcore
+    from anyio._backends._asyncio import AsyncIOBackend
 
     _two_addresses(rig, monkeypatch)
-    real = httpcore.AnyIOBackend.connect_tcp
+    real = AsyncIOBackend.connect_tcp.__func__
 
-    async def wrapped(self, host, port, timeout=None, local_address=None, socket_options=None):
+    async def wrapped(cls, host, port, local_address=None):
         if host == ALLOWED_ADDR:
-            raise httpcore.ConnectTimeout("scripted: no answer")
-        return await real(self, host, port, timeout, local_address, socket_options)
+            raise TimeoutError("scripted: no answer")
+        return await real(cls, host, port, local_address)
 
-    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", wrapped)
+    monkeypatch.setattr(AsyncIOBackend, "connect_tcp", classmethod(wrapped))
 
     async def go():
         async with httpx.AsyncClient(transport=url_guard.GuardedAsyncTransport(), timeout=BUDGET) as client:
@@ -1243,22 +1241,22 @@ def test_a_late_second_connection_is_closed_and_one_stream_stays_in_use(rig, mon
     import asyncio
 
     import anyio
-    import httpcore
+    from anyio._backends._asyncio import AsyncIOBackend
 
     _two_addresses(rig, monkeypatch)
-    real = httpcore.AnyIOBackend.connect_tcp
+    real = AsyncIOBackend.connect_tcp.__func__
     streams = []
     closed = []
 
-    async def wrapped(self, host, port, timeout=None, local_address=None, socket_options=None):
+    async def wrapped(cls, host, port, local_address=None):
         if host == ALLOWED_ADDR:
             # Slower than the delay before the next attempt starts, and finishing
             # even though the other attempt has already won.
             with anyio.CancelScope(shield=True):
                 await anyio.sleep(url_guard._CONNECT_ATTEMPT_DELAY + 0.3)
-                stream = await real(self, host, port, timeout, local_address, socket_options)
+                stream = await real(cls, host, port, local_address)
         else:
-            stream = await real(self, host, port, timeout, local_address, socket_options)
+            stream = await real(cls, host, port, local_address)
         original = stream.aclose
 
         async def spy_aclose():
@@ -1269,7 +1267,7 @@ def test_a_late_second_connection_is_closed_and_one_stream_stays_in_use(rig, mon
         streams.append(host)
         return stream
 
-    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", wrapped)
+    monkeypatch.setattr(AsyncIOBackend, "connect_tcp", classmethod(wrapped))
 
     async def go():
         async with httpx.AsyncClient(transport=url_guard.GuardedAsyncTransport(), timeout=BUDGET) as client:
@@ -1279,8 +1277,10 @@ def test_a_late_second_connection_is_closed_and_one_stream_stays_in_use(rig, mon
     status, made, shut = asyncio.run(asyncio.wait_for(go(), WAIT_SECONDS))
     assert status == 200
     assert sorted(made) == sorted([ALLOWED_ADDR, BLOCKED_ADDR]), f"both attempts should have connected: {made}"
-    assert shut == [ALLOWED_ADDR], f"the losing stream was not closed: closed={shut}"
-    assert len(made) - len(shut) == 1, "exactly one stream should stay in use"
+    # The late loser is closed exactly once; the one in use is closed at most once
+    # (by the finished request), never by the losing path.
+    assert shut.count(ALLOWED_ADDR) == 1, f"the losing stream was not closed once: closed={shut}"
+    assert shut.count(BLOCKED_ADDR) <= 1, f"the stream in use was closed twice: closed={shut}"
 
 
 def test_the_async_budget_covers_resolving(rig):
