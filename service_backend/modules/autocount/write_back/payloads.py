@@ -140,9 +140,12 @@ def build_link(
     *,
     so_linked_qty: Decimal = Decimal(0),
     spo_ref: Optional[str] = None,
+    whole_row_as_split: bool = False,
 ) -> Doc:
     """Link ``qty`` of a PO row to an SO row: in place when ``qty`` equals the
-    row qty (the row also takes the SO row's location), else split off a new row."""
+    row qty (the row also takes the SO row's location), else split off a new row.
+    ``whole_row_as_split`` emulates a whole-row link as a split that leaves the
+    original row at quantity 0."""
     _check_doc(po, want_spo=False)
     if so.get("Cancelled") == "T":
         raise WriteRefusal("DOC_CANCELLED", "sales order is cancelled")
@@ -168,7 +171,7 @@ def build_link(
         "Location": so_row.get("Location"),
     }
     body = _header(po)
-    if qty == free:
+    if qty == free and not whole_row_as_split:
         row = _row_fields(po_row)
         row.update(link)
         body["Details"] = [row]
@@ -178,6 +181,25 @@ def build_link(
     new = _row_fields(po_row)
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
     body["Details"] = [edited, new]
+    return body
+
+
+def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref: Optional[str] = None) -> Doc:
+    """Move one LINKED PO row to ``location``: the row exactly as read, only its
+    location changed (the vendor keeps the link of an edited existing row)."""
+    _check_doc(po, want_spo=False)
+    row = _find_row(po, po_dtl_key)
+    _refuse_on_spo(spo_ref)
+    if not _row_linked(row):
+        raise WriteRefusal("ROW_NOT_LINKED", "row is not linked")
+    if not location:
+        raise WriteRefusal("DOC_UNKNOWN", "the linked sales order row is not in the synced copy")
+    if row.get("Location") == location:
+        raise WriteRefusal("ROW_ALREADY_AT_LOCATION", "row is already at that location")
+    moved = _row_fields(row)
+    moved["Location"] = location
+    body = _header(po)
+    body["Details"] = [moved]
     return body
 
 

@@ -618,3 +618,22 @@ def unlink_spo_row(
         )
 
     return _write_route(request, db, raw_body, service, "write_spo_unlink", call)
+
+
+@router.post("/po-links/relocate")
+def relocate_po_row(
+    request: Request,
+    db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+    service: WriteBackService = Depends(get_write_back_service),
+) -> JSONResponse:
+    def call(
+        svc: WriteBackService, raw: WriteBody, tenant_id: str, company_id: str, key_id: str
+    ) -> WriteActionResult:
+        return svc.relocate(
+            tenant_id=tenant_id, company_id=company_id, key_id=key_id,
+            po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
+            expected_last_modified=_optional_text(raw, "expectedLastModified"),
+        )
+
+    return _write_route(request, db, raw_body, service, "write_relocate", call)

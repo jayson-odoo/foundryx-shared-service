@@ -103,7 +103,19 @@ its own qty and location.
 `spoDocKey`, `spoDtlKey` integer, required (an SPO is a PO document marked as shipping); `expectedLastModified`
 optional. Clears the SPO row's link to its PO row.
 
-### 4.4 Response (all three routes)
+### 4.4 `POST /api/v1/autocount/po-links/relocate`
+
+```json
+{ "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12050, "expectedLastModified": "2026-11-05T09:00:03" }
+```
+
+`poDocKey`, `poDtlKey` integer, required; `expectedLastModified` optional. Moves one LINKED PO row to
+the location of the SO row it is linked to; the caller never sends a location (the server takes it
+from its synced copy of the SO). Refused `ROW_NOT_LINKED` when the row has no link and
+`ROW_ALREADY_AT_LOCATION` when it is already there. Same auth, company resolution, stale, busy and
+write guards as a link. Use it when a link ended `LOCATION_NOT_MOVED`.
+
+### 4.5 Response (all four routes)
 
 ```json
 { "actionId": "c1a0...", "outcome": "done", "errorCode": null, "document": { "...": "..." } }
@@ -139,6 +151,8 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `DOC_UNKNOWN` | The document is not in the synced copy, so its date is unknown | Run or wait for the doc sync, then retry |
 | `DOC_STALE` | `expectedLastModified` no longer matches: the document changed in AutoCount | Refresh the document, re-check the row, retry with the new `LastModified` |
 | `DOC_NOT_FOUND` / `DOC_AMBIGUOUS` / `READ_FAILED` | (when raised before the write) the document could not be read exactly once | Retry later; if it persists, report with `actionId` |
+| `VENDOR_UNSUPPORTED` | AutoCount does not apply this edit yet: unlink, SPO row unlink, and a link of a WHOLE PO row (quantity equal to the row). Refused before anything is sent | Show 'not supported by AutoCount yet'; offer a split link (quantity below the row) instead |
+| `ROW_ALREADY_AT_LOCATION` | Relocate: the row is already at its SO row's location | Nothing to do |
 | `DOC_KIND_MISMATCH` | A PO key sent to the SPO route, or an SPO key sent to a PO route | Use the right route |
 | `DOC_CANCELLED` | The PO, SPO or SO is cancelled | Show it as cancelled; no action |
 | `ROW_NOT_FOUND` | No row with that `DtlKey` on the document | Refresh and re-pick |
@@ -150,6 +164,14 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `QTY_INVALID` | `qty` is zero or negative, above 1,000,000,000, or has more than 8 decimal places (checked before AutoCount is read) | Fix the input |
 | `QTY_ABOVE_FREE` | `qty` is above the PO row qty | Lower `qty` |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
+
+**Split link is two writes.** Linking a quantity below the PO row edits the row down and adds a new
+linked row. AutoCount places that new row at its default location, so the server then sends a second
+write that moves only the new row to the SO row's location, and reads the document back. The call
+answers `done` once the link is verified. If the second write fails or the location did not move, it
+still answers `done` (200) with `errorCode` `LOCATION_NOT_MOVED`: the link stands, the row sits at the
+default location, and the CRM should offer "Move location" (the relocate route above). The second
+write is never retried.
 
 `INTERNAL_ERROR` (202) means an unexpected server fault after the action started: the write may or
 may not have happened, so treat it like any other `pending_verification` and check the document.

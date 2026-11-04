@@ -31,7 +31,7 @@ from modules.autocount.models import (
 )
 from modules.autocount.provider import PROVIDER_KEY
 from modules.autocount.repositories import CompanyRepository, ConnectionRepository
-from modules.autocount.write_back import payloads
+from modules.autocount.write_back import capabilities, payloads
 from modules.autocount.write_back.client import (
     AutoCountWriteClient,
     WriteTransportError,
@@ -63,6 +63,9 @@ WRITE_DISABLED = "WRITE_DISABLED"
 BUSY_WINDOW_SECONDS = 600
 
 INTERNAL_ERROR = "INTERNAL_ERROR"
+VENDOR_UNSUPPORTED = "VENDOR_UNSUPPORTED"
+LOCATION_NOT_MOVED = "LOCATION_NOT_MOVED"
+ROW_ALREADY_AT_LOCATION = "ROW_ALREADY_AT_LOCATION"
 DOC_KIND_MISMATCH = "DOC_KIND_MISMATCH"
 DOC_BUSY = "DOC_BUSY"
 DOC_UNKNOWN = "DOC_UNKNOWN"
@@ -71,6 +74,7 @@ DOC_STALE = "DOC_STALE"
 ACTION_LINK = "link"
 ACTION_UNLINK = "unlink"
 ACTION_SPO_UNLINK = "spo_unlink"
+ACTION_RELOCATE = "relocate"
 
 # vendor kind -> (action-log doc_type, staged entity type)
 _PO = ("PO", ENTITY_PURCHASE_ORDER)
@@ -144,16 +148,21 @@ def _expected_link(row: Doc, is_spo: bool) -> int:
     return int(row.get("FromDocDtlKey") or 0) if row.get("FromDocType") == "SO" else 0
 
 
-def _row_ok(sent: Doc, got: Doc, is_spo: bool) -> bool:
-    if not all(_same(sent.get(k), got.get(k)) for k in _VERIFY_FIELDS):
+def _row_ok(sent: Doc, got: Doc, is_spo: bool, check_location: bool = True) -> bool:
+    fields = _VERIFY_FIELDS if check_location else tuple(f for f in _VERIFY_FIELDS if f != "Location")
+    if not all(_same(sent.get(k), got.get(k)) for k in fields):
         return False
     key = "FromDocDtlKey" if is_spo else "FromSODtlKey"
     return int(got.get(key) or 0) == _expected_link(sent, is_spo)
 
 
-def verify_readback(before: Doc, after: Doc, body: Doc) -> bool:
+def verify_readback(
+    before: Doc, after: Doc, body: Doc, *, ignore_new_row_location: bool = False
+) -> bool:
     """AC-55-22: every sent row reads back as sent (a new row, ``DtlKey 0``,
-    appears exactly once) and every untouched row reads back unchanged."""
+    appears exactly once) and every untouched row reads back unchanged.
+    ``ignore_new_row_location``: the vendor may force a new linked row's
+    location (db3 forces HQ); the split flow moves it in a second write."""
     is_spo = before.get("ShippingPO") == "T"
     for key, value in body.items():  # every header field we sent reads back unchanged
         if key != "Details" and not _same(value, after.get(key)):
@@ -171,7 +180,9 @@ def verify_readback(before: Doc, after: Doc, body: Doc) -> bool:
             row["DtlKey"] in after_rows and _row_ok(row, after_rows[row["DtlKey"]], is_spo)
         ):
             return False
-    if not all(any(_row_ok(s, a, is_spo) for a in added) for s in new_sent):
+    if not all(
+        any(_row_ok(s, a, is_spo, not ignore_new_row_location) for a in added) for s in new_sent
+    ):
         return False
     for key, row in before_rows.items():
         if key in sent_keys:
@@ -179,6 +190,25 @@ def verify_readback(before: Doc, after: Doc, body: Doc) -> bool:
         got = after_rows.get(key)
         if got is None or not all(_same(row.get(f), got.get(f)) for f in _UNTOUCHED_FIELDS):
             return False
+    return True
+
+
+def verify_relocate(before: Doc, after: Doc, dtl_key: int, location: str, body: Doc) -> bool:
+    """The row is at ``location`` with everything else as before, and no other
+    row or header field changed."""
+    for key, value in body.items():
+        if key != "Details" and not _same(value, after.get(key)):
+            return False
+    before_rows = {r.get("DtlKey"): r for r in before.get("Details") or []}
+    after_rows = {r.get("DtlKey"): r for r in after.get("Details") or []}
+    if set(before_rows) != set(after_rows):
+        return False
+    for key, row in before_rows.items():
+        got = after_rows[key]
+        for field in _UNTOUCHED_FIELDS:
+            want = location if key == dtl_key and field == "Location" else row.get(field)
+            if not _same(want, got.get(field)):
+                return False
     return True
 
 
@@ -249,6 +279,20 @@ class WriteBackService:
         plan = _Plan(ACTION_SPO_UNLINK, _SPO, spo_doc_key, spo_dtl_key)
         return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
 
+    def relocate(
+        self,
+        *,
+        tenant_id: str,
+        company_id: str,
+        po_doc_key: int,
+        po_dtl_key: int,
+        expected_last_modified: Optional[str] = None,
+        key_id: Optional[str] = None,
+    ) -> WriteActionResult:
+        """Move a linked PO row to its SO row's location (taken from staging)."""
+        plan = _Plan(ACTION_RELOCATE, _PO, po_doc_key, po_dtl_key)
+        return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+
     # ── flow ─────────────────────────────────────────────────────────────────
 
     def _run(
@@ -266,6 +310,7 @@ class WriteBackService:
         try:
             self._check_qty(plan, row)
             base_url = self._write_base_url(row, company)
+            self._check_capability(plan, row)
             self._check_not_busy(row, tenant_id, company.id, plan.doc_key)
             row.outcome = OUTCOME_IN_FLIGHT
             try:
@@ -287,6 +332,13 @@ class WriteBackService:
             return self._finish(row, OUTCOME_PENDING, INTERNAL_ERROR)
         finally:
             self.db.rollback()
+
+    def _check_capability(self, plan: _Plan, row: AcWriteAction) -> None:
+        """Unlink and SPO unlink are refused outright while the vendor does not
+        apply them (no request at all)."""
+        flag = {ACTION_UNLINK: "unlink", ACTION_SPO_UNLINK: "spo_unlink"}.get(plan.action)
+        if flag and not capabilities.VENDOR_CAPABILITIES[flag]:
+            raise self._refuse(row, VENDOR_UNSUPPORTED)
 
     def _check_qty(self, plan: _Plan, row: AcWriteAction) -> None:
         """Quantity bounds before any document is read (H5)."""
@@ -376,6 +428,8 @@ class WriteBackService:
         doc = self._read_fresh(plan.kind, plan.doc_key, company, row, reader)
         if expected_last_modified and doc.get("LastModified") != expected_last_modified:
             raise self._refuse(row, DOC_STALE)
+        if plan.action == ACTION_LINK:
+            self._gate_whole_row(plan, company, doc, row)
         so_doc = None
         if plan.so_doc_key is not None:
             so_doc = self._read_fresh(_SO, plan.so_doc_key, company, row, reader)
@@ -383,7 +437,34 @@ class WriteBackService:
         row.before_json = doc
         row.request_json = body
         self.db.commit()  # in_flight + body committed before any PUT (AC-55-27)
-        return self._put_and_verify(plan, company, base_url, row, reader, doc, body)
+        return self._put_and_verify(plan, company, base_url, row, reader, doc, body, so_doc)
+
+    def _gate_whole_row(
+        self, plan: _Plan, company: AcCompany, doc: Doc, row: AcWriteAction
+    ) -> None:
+        """A link of the whole PO row edits an existing row, which the vendor does
+        not apply (unless flipped on or emulated): refused after the one PO read.
+        A request the staged SO row already shows to be over its outstanding keeps
+        its own refusal (``QTY_ABOVE_OUTSTANDING``) from the normal flow."""
+        po_row = next(
+            (r for r in doc.get("Details") or [] if r.get("DtlKey") == plan.dtl_key), None
+        )
+        if po_row is None or plan.qty is None or _dec(po_row.get("Qty")) != plan.qty:
+            return
+        if capabilities.VENDOR_CAPABILITIES["link_existing_row"] or capabilities.ZERO_QTY_EMULATION:
+            return
+        if self._staged_over_outstanding(plan, company, doc):
+            return
+        raise self._refuse(row, VENDOR_UNSUPPORTED)
+
+    def _staged_over_outstanding(self, plan: _Plan, company: AcCompany, doc: Doc) -> bool:
+        so_ref = f"{company.database_name}:{plan.so_doc_key}"
+        staged = self.staged.newest(company.tenant_id, company.id, ENTITY_SALES_ORDER, so_ref)
+        so_row = next((r for r in _lines(staged.raw_json if staged else None) if r.get("DtlKey") == plan.so_dtl_key), None)
+        if so_row is None or plan.so_dtl_key is None or plan.qty is None:
+            return False
+        linked = self._so_linked_qty(company, doc, plan.so_dtl_key)
+        return plan.qty > payloads.so_outstanding(so_row, linked)
 
     def _read_fresh(
         self,
@@ -425,6 +506,10 @@ class WriteBackService:
             if plan.action == ACTION_SPO_UNLINK:
                 return payloads.build_spo_unlink(doc, plan.dtl_key)
             spo_ref = self._spo_ref(tenant_id, company.id, plan.dtl_key)
+            if plan.action == ACTION_RELOCATE:
+                return payloads.build_relocate(
+                    doc, plan.dtl_key, self._so_location(company, doc, plan.dtl_key), spo_ref=spo_ref
+                )
             if plan.action == ACTION_UNLINK:
                 return payloads.build_unlink(doc, plan.dtl_key, spo_ref=spo_ref)
             assert so_doc is not None and plan.so_dtl_key is not None and plan.qty is not None
@@ -432,9 +517,23 @@ class WriteBackService:
             return payloads.build_link(
                 doc, plan.dtl_key, so_doc, plan.so_dtl_key, plan.qty,
                 so_linked_qty=linked, spo_ref=spo_ref,
+                whole_row_as_split=capabilities.ZERO_QTY_EMULATION
+                and not capabilities.VENDOR_CAPABILITIES["link_existing_row"],
             )
         except WriteRefusal as exc:
             raise self._refuse(row, exc.code, str(exc)) from None
+
+    def _so_location(self, company: AcCompany, po: Doc, dtl_key: int) -> str:
+        """Location of the staged SO row the PO row is linked to; ``DOC_UNKNOWN``-style
+        refusals surface as a missing location (the builder then refuses)."""
+        po_row = next((r for r in po.get("Details") or [] if r.get("DtlKey") == dtl_key), None)
+        so_key = (po_row or {}).get("FromSODtlKey")
+        if so_key:
+            for staged in self.staged.for_entity(company.tenant_id, company.id, ENTITY_SALES_ORDER):
+                for line in _lines(staged.raw_json):
+                    if line.get("DtlKey") == so_key:
+                        return str(line.get("Location") or "")
+        return ""
 
     def _so_linked_qty(self, company: AcCompany, fresh_po: Doc, so_dtl_key: int) -> Decimal:
         """Qty of the SO row already covered by PO rows: the fresh edited PO plus
@@ -472,6 +571,7 @@ class WriteBackService:
         reader: AutoCountDocReader,
         before: Doc,
         body: Doc,
+        so_doc: Optional[Doc] = None,
     ) -> WriteActionResult:
         client = self._client_factory(base_url)
         try:
@@ -483,19 +583,98 @@ class WriteBackService:
         if not response.ok:
             return self._finish(row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR")
         self.db.commit()
-        doc_date = _doc_date(before)
-        try:
-            assert doc_date is not None
-            after = reader.get_document(plan.kind[0], plan.doc_key, doc_date)
-        except (DocReadError, AssertionError) as exc:
-            return self._finish(
-                row, OUTCOME_PENDING, getattr(exc, "code", "READ_FAILED")
-            )
+        after = self._read_back(plan, reader, before)
+        if isinstance(after, WriteActionResult):
+            return self._finish(row, OUTCOME_PENDING, after.error_code)
         row.after_json = after
-        if not verify_readback(before, after, body):
+        is_split = plan.action == ACTION_LINK and any(
+            not r.get("DtlKey") for r in body.get("Details") or []
+        )
+        if plan.action == ACTION_RELOCATE:
+            ok = verify_relocate(
+                before, after, plan.dtl_key, str(body["Details"][0].get("Location")), body
+            )
+        else:
+            ok = verify_readback(before, after, body, ignore_new_row_location=is_split)
+        if not ok:
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
+        if is_split and so_doc is not None and plan.so_dtl_key is not None:
+            return self._finish_split(plan, company, client, row, reader, before, after, body, so_doc)
         result = self._finish(row, OUTCOME_DONE, document=after)
         self._stage(company, plan.kind[0], after)
+        return result
+
+    def _read_back(
+        self, plan: _Plan, reader: AutoCountDocReader, before: Doc
+    ) -> "Doc | WriteActionResult":
+        """The document as it reads now, or a pending result naming why not."""
+        doc_date = _doc_date(before)
+        if doc_date is None:
+            return WriteActionResult(None, OUTCOME_PENDING, "READ_FAILED")
+        try:
+            return reader.get_document(plan.kind[0], plan.doc_key, doc_date)
+        except DocReadError as exc:
+            return WriteActionResult(None, OUTCOME_PENDING, exc.code)
+
+    def _finish_split(
+        self,
+        plan: _Plan,
+        company: AcCompany,
+        client: AutoCountWriteClient,
+        row: AcWriteAction,
+        reader: AutoCountDocReader,
+        before: Doc,
+        after1: Doc,
+        body1: Doc,
+        so_doc: Doc,
+    ) -> WriteActionResult:
+        """Second write of a split link: move the vendor-placed new row to the SO
+        row's location. Any failure there is ``done`` with ``LOCATION_NOT_MOVED``
+        (the link stands; the write is never retried)."""
+        target = next(
+            (r.get("Location") for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key),
+            None,
+        )
+        before_keys = {r.get("DtlKey") for r in before.get("Details") or []}
+        new_row = next(
+            (
+                r for r in after1.get("Details") or []
+                if r.get("DtlKey") not in before_keys and r.get("FromSODtlKey") == plan.so_dtl_key
+            ),
+            None,
+        )
+        if new_row is None or not target or new_row.get("Location") == target:
+            result = self._finish(row, OUTCOME_DONE, document=after1)
+            self._stage(company, plan.kind[0], after1)
+            return result
+        body2 = payloads.build_relocate(after1, int(new_row["DtlKey"]), str(target))
+        row.request_json = [body1, body2]
+        row.response_json = [row.response_json, None]
+        row.after_json = [after1, None]
+        self.db.commit()  # no transaction open during the second write
+        final, code = after1, LOCATION_NOT_MOVED
+        try:
+            response = client.put(EDIT_PO_PATH, body2)  # never retried
+        except WriteTransportError as exc:
+            row.response_json = [row.response_json[0], {"error": exc.code}]
+        else:
+            row.response_json = [row.response_json[0], _safe_body(response.body)]
+            row.response_status = response.status_code
+            if response.ok:
+                self.db.commit()
+                after2 = self._read_back(plan, reader, before)
+                if not isinstance(after2, WriteActionResult):
+                    row.after_json = [after1, after2]
+                    final = after2
+                    if verify_relocate(after1, after2, int(new_row["DtlKey"]), str(target), body2):
+                        code = None
+                    elif next(
+                        (r for r in after2.get("Details") or [] if r.get("DtlKey") == new_row["DtlKey"]), {}
+                    ).get("Location") == target:
+                        self.db.commit()
+                        return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
+        result = self._finish(row, OUTCOME_DONE, code, document=final)
+        self._stage(company, plan.kind[0], final)
         return result
 
     # ── staging + push ───────────────────────────────────────────────────────

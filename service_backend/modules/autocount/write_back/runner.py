@@ -71,6 +71,7 @@ TEST_MOVE_SO_ROW = 11992  # SRTKT38SS qty 10 @BRW-AM
 BASELINE_FROM = date(2026, 1, 26)  # SO389293 DocDate
 BASELINE_TO = date(2026, 2, 4)  # PO 202602-S0007 DocDate
 STALE_STAMP = "1900-01-01T00:00:00.00"
+ROW_ALREADY_AT_LOCATION_CODE = "ROW_ALREADY_AT_LOCATION"
 ITEM = "SRTKT38SS"
 
 # Header fields kept as evidence of a create: codes and numbers only, never names.
@@ -150,8 +151,7 @@ class _Run:
         self.spo_no = f"FXT-{run_tag}-S1"
         self.results: Dict[str, CaseResult] = {}
         self.po_doc: Optional[Doc] = None
-        self.split_key: Optional[int] = None
-        self.spo_doc: Optional[Doc] = None
+        self.big_key: int = 0
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -182,28 +182,44 @@ class _Run:
             .first()
         )
 
-    def _put_step(self, row: Optional[AcWriteAction]) -> List[Step]:
+    def _put_steps(self, row: Optional[AcWriteAction]) -> List[Step]:
+        """One PUT step per write recorded on the action (one body, or a list of
+        two for a split with its location move), with the touched rows before
+        and after each write. Only codes, quantities and doc numbers are kept."""
         if row is None or not row.request_json:
             return []
-        body: Doc = row.request_json  # type: ignore[assignment]
-        sent = body.get("Details") or []
-        touched = {r.get("DtlKey") for r in sent if r.get("DtlKey")}
-        before = (row.before_json or {}).get("Details") or []
-        after = (row.after_json or {}).get("Details") or []
-        before_keys = {r.get("DtlKey") for r in before}
-        return [Step(
-            "PUT", EDIT_PO_PATH, row.response_status,
-            {"DocKey": body.get("DocKey"), "DocNo": body.get("DocNo"), "Details": _rows(sent)},
-            _rows([r for r in before if r.get("DtlKey") in touched]),
-            _rows([r for r in after if r.get("DtlKey") in touched or r.get("DtlKey") not in before_keys]),
-        )]
+        bodies = row.request_json if isinstance(row.request_json, list) else [row.request_json]
+        afters = row.after_json if isinstance(row.after_json, list) else [row.after_json]
+        responses = row.response_json if isinstance(row.response_json, list) else [row.response_json]
+        previous: Doc = row.before_json or {}
+        steps: List[Step] = []
+        for index, body in enumerate(bodies):
+            sent = body.get("Details") or []
+            touched = {r.get("DtlKey") for r in sent if r.get("DtlKey")}
+            before = previous.get("Details") or []
+            after_doc: Doc = (afters[index] if index < len(afters) else None) or {}
+            after = after_doc.get("Details") or []
+            before_keys = {r.get("DtlKey") for r in before}
+            reply = responses[index] if index < len(responses) else None
+            status = row.response_status if index == len(bodies) - 1 else 200
+            if isinstance(reply, dict) and "error" in reply:
+                status = None
+            steps.append(Step(
+                "PUT", EDIT_PO_PATH, status,
+                {"DocKey": body.get("DocKey"), "DocNo": body.get("DocNo"), "Details": _rows(sent)},
+                _rows([r for r in before if r.get("DtlKey") in touched]),
+                _rows([r for r in after if r.get("DtlKey") in touched or r.get("DtlKey") not in before_keys]),
+            ))
+            if after_doc:
+                previous = after_doc
+        return steps
 
     def _service_case(
         self, case: CaseResult, result: WriteActionResult, outcome: str, code: Optional[str] = None
     ) -> bool:
         """Record a service answer on the case; True when it is the expected one."""
         row = self._action(result)
-        case.steps.extend(self._put_step(row))
+        case.steps.extend(self._put_steps(row))
         case.action_id = result.action_id
         case.observed = result.outcome + (f" {result.error_code}" if result.error_code else "")
         return result.outcome == outcome and (code is None or result.error_code == code)
@@ -324,37 +340,39 @@ class _Run:
     def _test_rows(self) -> List[Row]:
         return list((self.po_doc or {}).get("Details") or [])  # type: ignore[arg-type]
 
+    def _linked_new_row(self, doc: Optional[Doc], so_dtl_key: int) -> Optional[Row]:
+        for r in (doc or {}).get("Details") or []:  # type: ignore[union-attr]
+            if r.get("FromSODtlKey") == so_dtl_key:
+                return r
+        return None
+
     def c03(self, case: CaseResult) -> None:
-        case.expected = "split: 40 stay at HQ, a new 10 row at BRW-AM linked to SO row 11989"
+        case.expected = "split in two writes: 40 stay at HQ, a new 10 row linked to SO row 11989 and moved to BRW-AM"
         if self._skip(case, "C02"):
             return
         big = next(r for r in self._test_rows() if _num(r.get("Qty")) == 50)
+        self.big_key = int(big["DtlKey"])  # type: ignore[arg-type]
         result = self.service.link(
             tenant_id=self.tenant_id, company_id=self.company.id,
-            po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=int(big["DtlKey"]),  # type: ignore[index,arg-type]
+            po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=self.big_key,  # type: ignore[index,arg-type]
             so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=TEST_SPLIT_SO_ROW, qty=Decimal(10),
         )
-        if self._service_case(case, result, "done"):
-            rows = (result.document or {}).get("Details") or []
-            split = [r for r in rows if r.get("FromSODtlKey") == TEST_SPLIT_SO_ROW]
-            if len(split) == 1:
-                self.split_key = int(split[0]["DtlKey"])  # type: ignore[arg-type]
+        if self._service_case(case, result, "done") and result.error_code is None:
+            if self._linked_new_row(result.document, TEST_SPLIT_SO_ROW) is not None:
                 self.po_doc = result.document
                 case.status = PASS
 
     def c04(self, case: CaseResult) -> None:
-        case.expected = "same quantity: the row moves to BRW-AM in place, no row added"
+        case.expected = "whole-row link refused: the vendor does not apply an edit of an existing row (VENDOR_UNSUPPORTED)"
         if self._skip(case, "C03"):
             return
         small = next(r for r in self._test_rows() if _num(r.get("Qty")) == 10 and not r.get("FromSODtlKey"))
-        before_count = len(self._test_rows())
         result = self.service.link(
             tenant_id=self.tenant_id, company_id=self.company.id,
             po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=int(small["DtlKey"]),  # type: ignore[index,arg-type]
             so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=TEST_MOVE_SO_ROW, qty=Decimal(10),
         )
-        if self._service_case(case, result, "done") and len((result.document or {}).get("Details") or []) == before_count:  # type: ignore[arg-type]
-            self.po_doc = result.document
+        if self._service_case(case, result, "refused", "VENDOR_UNSUPPORTED"):
             case.status = PASS
 
     def _refusal(self, case: CaseResult, code: str, **link: object) -> None:
@@ -363,10 +381,13 @@ class _Run:
             case.status = PASS
 
     def c05(self, case: CaseResult) -> None:
-        case.expected = "link refused: the SO row is fully covered (QTY_ABOVE_OUTSTANDING)"
+        case.expected = "link refused: the SO row is already covered (QTY_ABOVE_OUTSTANDING)"
+        if self._skip(case, "C03"):
+            return
         self._refusal(
-            case, "QTY_ABOVE_OUTSTANDING", po_doc_key=REAL_PO_DOC_KEY, po_dtl_key=FREE_PO_ROW,
-            so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=COVERED_SO_ROW, qty=Decimal(1),
+            case, "QTY_ABOVE_OUTSTANDING", po_doc_key=int(self.po_doc["DocKey"]),  # type: ignore[index,arg-type]
+            po_dtl_key=self.big_key, so_doc_key=REAL_SO_DOC_KEY,
+            so_dtl_key=TEST_SPLIT_SO_ROW, qty=Decimal(1),
         )
 
     def c06(self, case: CaseResult) -> None:
@@ -377,27 +398,27 @@ class _Run:
         )
 
     def c07(self, case: CaseResult) -> None:
-        case.expected = "unlink of the linked real row 12013 is done"
+        case.expected = f"unlink of {REAL_PO_NO} row {LINKED_PO_ROW} refused: the vendor does not apply it (VENDOR_UNSUPPORTED), nothing sent"
         result = self.service.unlink(
             tenant_id=self.tenant_id, company_id=self.company.id,
             po_doc_key=REAL_PO_DOC_KEY, po_dtl_key=LINKED_PO_ROW,
         )
-        if self._service_case(case, result, "done"):
+        if self._service_case(case, result, "refused", "VENDOR_UNSUPPORTED"):
             case.status = PASS
 
     def c08(self, case: CaseResult) -> None:
-        case.expected = "relink of row 12013 to SO row 11993 is done and reads back linked"
-        if self._skip(case, "C07"):
+        case.expected = "second split of the 40 row: 5 linked to SO row 11992 and moved to BRW-AM"
+        if self._skip(case, "C03"):
             return
         result = self.service.link(
             tenant_id=self.tenant_id, company_id=self.company.id,
-            po_doc_key=REAL_PO_DOC_KEY, po_dtl_key=LINKED_PO_ROW,
-            so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=LINKED_SO_ROW, qty=Decimal(10),
+            po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=self.big_key,  # type: ignore[index,arg-type]
+            so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=TEST_MOVE_SO_ROW, qty=Decimal(5),
         )
-        rows = (result.document or {}).get("Details") or []
-        linked = any(r.get("DtlKey") == LINKED_PO_ROW and r.get("FromSODtlKey") == LINKED_SO_ROW for r in rows)
-        if self._service_case(case, result, "done") and linked:
-            case.status = PASS
+        if self._service_case(case, result, "done") and result.error_code is None:
+            if self._linked_new_row(result.document, TEST_MOVE_SO_ROW) is not None:
+                self.po_doc = result.document
+                case.status = PASS
 
     def c09(self, case: CaseResult) -> None:
         case.expected = "stale document refused (DOC_STALE)"
@@ -410,56 +431,28 @@ class _Run:
             case.status = PASS
 
     def c10(self, case: CaseResult) -> None:
-        case.expected = "SPO created pointing at the split row; unlinking that PO row is refused (ROW_ON_SPO)"
-        if self._skip(case, "C03"):
+        case.expected = "SPO unlink refused: the vendor does not apply it (VENDOR_UNSUPPORTED), nothing sent"
+        if self._skip(case, "C01"):
             return
-        if self.split_key is None:
-            case.observed = "C03 left no split row"
-            return
-        body = self._create_body(
-            case, self.spo_no,
-            [{"ItemCode": ITEM, "Qty": 10, "Location": "BRW-AM", "FromDocType": "PO",
-              "FromDocNo": self.po_no, "FromDocDtlKey": self.split_key}],
-            spo=True,
+        result = self.service.spo_unlink(
+            tenant_id=self.tenant_id, company_id=self.company.id, spo_doc_key=1, spo_dtl_key=1,
         )
-        if body is None:
-            return
-        doc = self._setup_post(case, body, self.spo_no)
-        if doc is None:
-            return
-        if doc.get("ShippingPO") != "T":
-            case.observed = "the vendor did not honour ShippingPO T: the document reads back as a plain PO"
-            return
-        self.spo_doc = doc
-        pulled = self._pull(self.today, self.today)  # stages the SPO
-        if pulled.failed:
-            case.observed = f"pull failed {pulled.error_code}"
-            return
-        result = self.service.unlink(
-            tenant_id=self.tenant_id, company_id=self.company.id,
-            po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=self.split_key,  # type: ignore[index,arg-type]
-        )
-        if self._service_case(case, result, "refused", "ROW_ON_SPO"):
+        if self._service_case(case, result, "refused", "VENDOR_UNSUPPORTED"):
             case.status = PASS
 
     def c11(self, case: CaseResult) -> None:
-        case.expected = "SPO row unlinked, then the PO row unlinked, both done"
-        if self._skip(case, "C10"):
+        case.expected = "relocate of the C08 row, already at its SO location, is refused (ROW_ALREADY_AT_LOCATION)"
+        if self._skip(case, "C08"):
             return
-        spo_row = (self.spo_doc.get("Details") or [])[0]  # type: ignore[index]
-        first = self.service.spo_unlink(
-            tenant_id=self.tenant_id, company_id=self.company.id,
-            spo_doc_key=int(self.spo_doc["DocKey"]), spo_dtl_key=int(spo_row["DtlKey"]),  # type: ignore[arg-type]
-        )
-        if not self._service_case(case, first, "done"):
+        moved = self._linked_new_row(self.po_doc, TEST_MOVE_SO_ROW)
+        if moved is None:
+            case.observed = "C08 left no linked row"
             return
-        second = self.service.unlink(
+        result = self.service.relocate(
             tenant_id=self.tenant_id, company_id=self.company.id,
-            po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=self.split_key,  # type: ignore[index,arg-type]
+            po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=int(moved["DtlKey"]),  # type: ignore[index,arg-type]
         )
-        first_observed = case.observed
-        if self._service_case(case, second, "done"):
-            case.observed = f"spo_unlink {first_observed}; unlink {case.observed}"
+        if self._service_case(case, result, "refused", ROW_ALREADY_AT_LOCATION_CODE):
             case.status = PASS
 
     def c12(self, case: CaseResult) -> None:
@@ -478,14 +471,14 @@ _CASES = (
     ("C01", "Create the test PO", "c01"),
     ("C02", "Pull SO then PO into staging", "c02"),
     ("C03", "Link with split", "c03"),
-    ("C04", "Link same quantity, location moves", "c04"),
+    ("C04", "Whole-row link refused by the capability gate", "c04"),
     ("C05", "Over-link refused", "c05"),
     ("C06", "Quantity above the PO row refused", "c06"),
-    ("C07", "Unlink a linked real row", "c07"),
-    ("C08", "Relink the real row", "c08"),
+    ("C07", "Unlink refused by the capability gate", "c07"),
+    ("C08", "Second split of the 40 row", "c08"),
     ("C09", "Stale document refused", "c09"),
-    ("C10", "SPO precondition", "c10"),
-    ("C11", "SPO unlink then PO unlink", "c11"),
+    ("C10", "SPO unlink refused by the capability gate", "c10"),
+    ("C11", "Relocate of a row already at its location", "c11"),
     ("C12", "Other book refused with no request", "c12"),
 )
 
