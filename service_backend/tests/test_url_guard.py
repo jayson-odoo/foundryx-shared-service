@@ -137,7 +137,7 @@ def test_ac_38_137_blocked_set_covers_listed_ranges(literal):
         assert_deliverable(f"https://{host}/x")
 
 
-@pytest.mark.parametrize("literal", ["8.8.8.8", "::ffff:8.8.8.8", "93.184.216.34"])
+@pytest.mark.parametrize("literal", ["8.8.8.8", "1.1.1.1", "2606:4700::1111", "::ffff:8.8.8.8", "93.184.216.34"])
 def test_ac_38_137_public_addresses_stay_allowed(literal):
     import ipaddress
 
@@ -146,3 +146,28 @@ def test_ac_38_137_public_addresses_stay_allowed(literal):
     assert not _is_blocked_ip(ipaddress.ip_address(literal)), literal
     host = f"[{literal}]" if ":" in literal else literal
     assert validate_public_https_url(f"https://{host}/x") == f"https://{host}/x"
+
+
+# every IANA special-purpose range of AC-38-137: both ends are refused
+IANA_RANGES = [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+    "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15",
+    "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32",
+    "::/128", "::1/128", "::ffff:0:0/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/23",
+    "2001:db8::/32", "2002::/16", "fc00::/7", "fe80::/10", "fec0::/10", "ff00::/8",
+]
+_IANA_ENDS = [(net, end) for net in IANA_RANGES for end in ("first", "last")]
+
+
+@pytest.mark.parametrize("net,end", _IANA_ENDS, ids=[f"{n}-{e}" for n, e in _IANA_ENDS])
+def test_ac_38_137_iana_special_purpose_ranges_blocked(net, end):
+    import ipaddress
+
+    from app.services.url_guard import _is_blocked_ip
+
+    network = ipaddress.ip_network(net)
+    ip = network[0] if end == "first" else network[-1]
+    assert _is_blocked_ip(ip), f"{ip} ({net} {end})"
+    host = f"[{ip}]" if ip.version == 6 else str(ip)
+    with pytest.raises(UrlGuardError):
+        assert_deliverable(f"https://{host}/x")
