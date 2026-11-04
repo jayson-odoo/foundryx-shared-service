@@ -99,6 +99,26 @@ SITES = {
         {},
         [{"messages": "x"}, {"messages": [5]}, {"messages": ["x"]}, {"messages": [{"id": 7}]}, {"messages": {"id": "w"}}],
     ),
+    "wa_fetch_phone_details": (
+        lambda c: _wa(c).fetch_phone_details(CREDS, "pn-1"),
+        {},
+        [],
+    ),
+    "wa_fetch_waba_details": (
+        lambda c: _wa(c).fetch_waba_details(CREDS, "waba-1"),
+        {},
+        [],
+    ),
+    "wa_create_template": (
+        lambda c: _wa(c).create_template(CREDS, "waba-1", {"name": "t"}),
+        {},
+        [{"id": 7}, {"id": ["t"]}, {"status": 5}, {"status": ["APPROVED"]}],
+    ),
+    "wa_upload_resumable": (
+        lambda c: _wa(c).upload_resumable(CREDS, "app-1", b"data", "image/png"),
+        {},
+        [{"id": 7}, {"id": ["s"]}, {"h": 5}, {"h": ["x"]}],
+    ),
     "ms_exchange_code": (
         lambda c: _ms(c).exchange_code("code-1", "https://x.example/cb"),
         {},
