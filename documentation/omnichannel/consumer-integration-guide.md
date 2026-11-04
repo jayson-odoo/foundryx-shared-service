@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
 > | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
 > | **2026-11-05** | **Media fetch retry** (section 8). `GET /omnichannel/media/{messageId}` answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` when the file cannot be read from storage for a moment; fetch again after the wait. A missing file is still `404`. Other contract details are unchanged. |
 > | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
@@ -21,6 +22,7 @@
 > | **2026-11-04** | **Developer Logs body capture** (section 13.3). A request or response body that is over the capture limit, or JSON that does not parse, is now shown as a note with its size and is never stored as raw text. Additive: no API field changes. |
 > | **2026-11-04** | **Workflows and business hours under the API key** (sections 6c, 6d, 10). New routes under `/workflows` (catalog, create, list, get, edit, archive, validate, publish, unpublish, active, versions, runs, run for one contact) and `/business-hours` (get, put), all scoped to the key's workspace. New error codes `node_not_allowed`, `invalid_definition`, `workflow_not_runnable` and `edit_conflict`. Additive and not breaking: no existing route, field or code changes. |
 > | **2026-11-03** | **Corrections: voice, interactive replies, endpoint re-enable** (sections 4.2, 7, 9.1, 9.2, 10). `voice` accepts ogg and browser webm (`audio/webm`, `video/webm`) and is always sent as ogg/opus; `audio` takes no webm. The send call no longer lists `422 transcode_failed`: a voice note that cannot be converted ends as `message.status` `FAILED`. `INTERACTIVE_REPLY` and `BUTTON` (a template quick-reply tap, no `payload`) are listed in `messageType`, and in the `?format=rio` notes the tapped title is `text`. Endpoint `status`, `consecutiveFailures` and `disabledReason` are documented, with the reset on success, the re-enable and no queue or replay while not `ACTIVE`. |
+> | **2026-11-03** | **Reply to a message: `replyToMessageId` on send** (sections 4, 4.3, 10). `POST /messages` accepts an optional `replyToMessageId`, the `id` of a message in the same conversation, so the new message is sent as a reply to it. It works on every message type except `reaction`, in the JSON body and in the multipart `payload`. The created message shows `replyTo` in history reads. Non-breaking: a send without the field behaves as before. New error `422 reply_channel_mismatch`. |
 > | **2026-11-02** | **Webhook delivery deadline** (section 7). One delivery attempt waits at most 10 seconds in total, then counts as a failed attempt. Only the status code decides success; the response body is not used, so answer `2xx` quickly and do the work afterwards. No field changes. |
 > | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
 > | **2026-11-02** | **Revoking a key and pausing an endpoint** (section 7, section 10). An endpoint belongs to the key that last changed it. When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` says the key was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key. A pause set by staff cannot be undone with a key: enable, PATCH, rotate and DELETE answer `409 endpoint_paused_by_staff`. While a workspace is trashed, its tenant is suspended or the service is off, no event is queued and those events are not sent later. No field changes, but some calls that answered `200` or `204` now answer `409`, including on an endpoint a key disabled before this date, which reads as a staff pause until staff resume it. |
@@ -164,6 +166,8 @@ Sends one message. Returns `**202 Accepted**` with your durable message id - the
 | `Content-Type: application/json` **or** `multipart/form-data` | yes | JSON for everything; multipart only to upload a media file directly (see §4.3) |
 | `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup. A completed send is remembered for 24h: a replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`, held at most 5 minutes; after that a request that never got an answer can be retried with the same key. If the first request did complete meanwhile, the retry may send again, so look the message up first (`GET /contacts/{identifier}/messages` or the `message.outbound` webhook) before retrying after the hold. |
 
+A JSON body larger than 256 KiB answers `422 invalid_request` ("Request body is too large.").
+
 **Response** `202`:
 
 ```json
@@ -180,6 +184,7 @@ The JSON body always has `to` + `type`, plus one type-specific object:
 {
   "to": "+60123456789",     // recipient - see the "to" formats table below
   "channelId": null,        // OPTIONAL - see "Choosing a channel" below
+  "replyToMessageId": null, // OPTIONAL - see "Replying to a message" below
   "type": "text",           // see the table below
   "text":        { … },
   "template":    { … },
@@ -251,6 +256,22 @@ Reactions target **Foundryx's** message id - the `id` from a send response, a `M
   "reaction": { "messageId": "8dbc5265-…", "emoji": "👍" } }
 ```
 
+#### Replying to a message
+
+Add `replyToMessageId` (string, optional) to quote an earlier message of the same conversation. Use the `id` from a send response, a `MessageItem.id` (§9.1), or a `MessageObject.messageId` (§9.2). It works on text, template, media (JSON or multipart), interactive, location and contacts sends.
+
+```json
+{ "to": "+60123456789", "type": "text",
+  "text": { "body": "Yes, it ships today." }, "replyToMessageId": "8dbc5265-…" }
+```
+
+* The quoted message must belong to the contact you are sending to. An unknown id, a message of another contact, workspace or tenant, and an internal note all get the same `422 invalid_request` with "The message you are replying to was not found." So does an id that is not 1 to 64 letters, digits, hyphens or underscores, and a reply to a phone number that has no contact yet. Nothing is sent and nothing is written: no contact, message or event is created. The recipient is checked first: if `to` is refused, the answer is the same as for a send without `replyToMessageId`.
+* `replyToMessageId` together with `type: "reaction"` is refused `422 invalid_request` ("replyToMessageId cannot be used with a reaction."). A value that is not a string is `422 invalid_request` as well.
+* The channel is resolved first, exactly as in "Choosing a channel" above (`channel_required` and `invalid_channel` are unchanged). If the quoted message was sent on a different channel than the one resolved, the send is refused `422 reply_channel_mismatch` ("The quoted message was sent on another channel. Pass the quoted message's channelId to reply on that number."). A reply never moves to another channel by itself. A quoted message that has no channel is accepted.
+* On success the new message carries `replyTo` in history reads, in both shapes (§9.1 `replyTo`, §9.2 `replyTo`). On WhatsApp the quote is also sent to the provider; if the quoted message has no provider id, the message is sent without a quote and still shows `replyTo`.
+* `Idempotency-Key` alone identifies a send: a repeat with the same key replays the first result whatever its `replyToMessageId`. A refused send does not use up the key.
+* `message.outbound` and `message.status` events are unchanged. Provider acceptance of a quote has not been confirmed for every message type (templates in particular); if the provider refuses the send, it arrives as a `message.status` of `FAILED`.
+
 ### 4.2 Media by URL
 
 Give a public **https** URL; Foundryx fetches the bytes, validates them, and uploads to WhatsApp (a bare Meta link is never forwarded).
@@ -287,6 +308,8 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/messages \
 ```
 
 Missing either part → `422 invalid_request`.
+
+The `payload` JSON also accepts `replyToMessageId` (string) with the rules in §4 "Replying to a message"; a non-string value is `422 invalid_request`.
 
 ### 4.4 Interactive, location, contacts
 
@@ -601,7 +624,7 @@ A workflow is a graph of trigger, action and `if` nodes that runs inside your wo
 * Workflows that staff built in the dashboard are **not visible to keys**.
 * A key is identified by `apikey:<keyId>`, the same value a message sent with the key carries as its sender (`senderId`, section 7). It appears on the workflows, versions and runs the key creates, as shown below.
 * Every miss answers the same `404 not_found` with the message "Workflow not found.": an unknown id, a workflow of another workspace or tenant, an archived workflow, and a staff-built workflow all look identical.
-* Limits: **200 workflows per workspace** (create past it answers `422 invalid_request`), **200 nodes** per definition (`422 invalid_request`), and a request body of at most **256 KB** (`422 invalid_request`).
+* Limits: **200 workflows per workspace** (create past it answers `422 invalid_request`), **200 nodes** per definition (`422 invalid_request`), and a request body of at most **256 KiB** (`422 invalid_request`).
 
 ### The workflow object
 
@@ -1308,9 +1331,10 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
 | `service_not_enabled` | 403 | Omnichannel not active for your tenant, the tenant is suspended or archived, or the key's workspace is trashed - contact the operator. The key works again once restored. |
-| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics; on `/workflows` also a bad `cursor`, `limit` or `inputs`, more than 200 workflows or nodes, and on `PUT /business-hours` `details.fieldErrors` keyed `timezone` / `windows`), or a reaction refused for its channel (§4). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
+| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics; on `/workflows` also a bad `cursor`, `limit` or `inputs`, more than 200 workflows or nodes, and on `PUT /business-hours` `details.fieldErrors` keyed `timezone` / `windows`), a JSON body over 256 KiB on `POST /messages` or the workflow routes ("Request body is too large."), a reaction refused for its channel (§4), or a `replyToMessageId` that is not found for this contact, is not a string, or is sent with a reaction (§4). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
 | `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
+| `reply_channel_mismatch` | 422 | `replyToMessageId` quotes a message that was sent on another channel than the one resolved for this send. Nothing is sent; pass the quoted message's `channelId` (see §4 "Replying to a message"). |
 | `channel_required` | 422 | `channelId` was omitted and the workspace has more than one active WhatsApp channel (or no active WhatsApp channel and more than one other active channel), on `POST /messages` and `GET /templates`. Nothing is sent; pass `channelId` (see `GET /channels`) and retry with the same `Idempotency-Key`. |
 | `endpoint_paused_by_staff` | 409 | Staff paused this webhook endpoint, so enable, PATCH and rotate with an API key are refused and nothing changes. Only staff resume it. |
 | `no_active_channel` | 409 | The workspace has no connected number, on a send or when registering a webhook. |
