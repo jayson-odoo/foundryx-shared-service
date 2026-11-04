@@ -456,8 +456,12 @@ class OperationService:
         if target is not None:
             new_link = {"FromDocType": defn.target, "FromDocNo": target.get("DocNo"),
                         "FromDocDtlKey": spec.target_dtl_key}
+        move_to = row.get("Location")  # unlink / SPO: the line stays where it was
+        if target is not None and defn.target == "SO":
+            trow = next((r for r in target.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), {})
+            move_to = trow.get("Location") or move_to  # owner ruling: a linked PO row sits at its SO row
         return _json_safe({
-            "kind": defn.kind, "mode": plan["mode"], "docKey": spec.doc_key, "docNo": doc.get("DocNo"),
+            "moveTo": move_to, "kind": defn.kind, "mode": plan["mode"], "docKey": spec.doc_key, "docNo": doc.get("DocNo"),
             "docDate": doc_date.isoformat(), "lastModified": doc.get("LastModified"),
             "knownKeys": [r.get("DtlKey") for r in doc.get("Details") or []],
             "row": row, "received": None if plan["received"] is None else str(plan["received"]),
@@ -527,7 +531,7 @@ class OperationService:
         if add.outcome != OUTCOME_DONE or add.new_dtl_key is None:
             return self._recover(row, company, snap, add.error_code or INTERNAL_ERROR, partial)
         new_key = int(add.new_dtl_key)
-        document = self._move(row, company, snap, new_key, add.document, snap["location"])
+        document = self._move(row, company, snap, new_key, add.document, snap.get("moveTo") or snap["location"])
         self.prims._stage(company, snap["kind"], document)
         return self._finish(row, DONE, None, replaced=[] if partial else [(old_key, new_key)], document=document)
 
@@ -627,7 +631,7 @@ class OperationService:
 
         intended = matching(snap["newLink"], want_qty)
         if intended is not None:
-            document = self._resume_move(row, company, snap, int(intended["DtlKey"]), doc, snap["location"])
+            document = self._resume_move(row, company, snap, int(intended["DtlKey"]), doc, snap.get("moveTo") or snap["location"])
             return self._finish(row, DONE, None, replaced=[] if partial else [(old_key, int(intended["DtlKey"]))],
                                 document=document)
         if partial:
