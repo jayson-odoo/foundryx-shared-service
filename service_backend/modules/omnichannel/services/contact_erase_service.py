@@ -146,14 +146,23 @@ class ContactEraseService:
 
     def _connection_is_own(self, key: str, tenant_id: str) -> bool:
         """A `conn:` key is purged only through a connection of the erasing
-        tenant itself (never the platform default)."""
+        tenant itself or the platform's default storage connection (where a
+        tenant without its own storage writes). Another tenant's connection is
+        never used. The raw part's area was already checked by `purgeable_key`."""
         connection_id, _raw = split_connection_key(key)
         if connection_id is None:
             return True
+        from app.models.tenant import PLATFORM_TENANT_ID
         from app.repositories.connection_repository import ConnectionRepository
 
-        connection = ConnectionRepository(self.db).get_by_id(connection_id)
-        return connection is not None and connection.tenant_id == tenant_id
+        repo = ConnectionRepository(self.db)
+        connection = repo.get_by_id(connection_id)
+        if connection is None:
+            return False
+        if connection.tenant_id == tenant_id:
+            return True
+        default = repo.get_by_type(PLATFORM_TENANT_ID, "storage")
+        return default is not None and default.id == connection.id
 
     def _cancel_waits(self, tenant_id: str, contact_id: str) -> None:
         from app.workflow_engine.parking import cancel_parked_run
