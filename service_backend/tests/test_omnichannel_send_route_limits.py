@@ -10,6 +10,7 @@ transports are different classes, so the fake never sees the test's own calls.
 import asyncio
 import json
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,9 +34,6 @@ MEDIA_HOST = "media.example.com"
 MEDIA_URL = f"https://{MEDIA_HOST}/files/doc.pdf"
 GRAPH_HOST = "graph.facebook.com"
 PDF = b"%PDF-1.4\n" + b"x" * 512
-
-SLEEP = 3.0  # generous: the loop must stay free for well under this
-GAP_LIMIT = 1.5  # heartbeat ticks every 50 ms; half the sleep is a wide margin
 
 GUIDE = Path(__file__).resolve().parents[2] / "documentation" / "omnichannel" / "consumer-integration-guide.md"
 
@@ -109,7 +107,7 @@ def _stub_media_host_resolution(monkeypatch, address):
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
 
 
-def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=None):
+def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=None, gate=None):
     """Fake every outbound call, for a sync or an async client. `rig.media_calls`
     counts fetches of the media host; `rig.graph_calls` lists the provider paths
     hit. `header_delay` pauses before the media response headers are returned."""
@@ -125,18 +123,30 @@ def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=
             rig.media_calls += 1
             if on_fetch:
                 on_fetch()
+            if gate is not None:
+                gate.entered.set()
             return media(request), header_delay
         raise AssertionError(f"unexpected outbound call to {host}")
 
     def fake(self, request):
         resp, delay = route(request)
-        if delay:
+        if gate is not None and request.url.host == MEDIA_HOST:
+            gate.hold()
+        elif delay:
             time.sleep(delay)
         return resp
 
     async def fake_async(self, request):
         resp, delay = route(request)
-        if delay:
+        if gate is not None and request.url.host == MEDIA_HOST:
+            try:
+                for _ in range(int(gate.cap / 0.01)):
+                    if gate.release.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+            finally:
+                gate.left.set()
+        elif delay:
             await asyncio.sleep(delay)
         return resp
 
@@ -249,6 +259,75 @@ async def _drive(send):
     )
 
 
+class _Gate:
+    """Deterministic stand-in for a slow upstream: the step holds on a
+    threading.Event until the test releases it, so no wall-clock is measured.
+    A step that wrongly runs ON the event loop stalls the loop here; hold()
+    gives up after `cap` seconds so such a run ends (and fails) instead of
+    hanging."""
+
+    def __init__(self, cap=8.0):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.left = threading.Event()  # set when the step stops holding: released OR timed out
+        self.cap = cap
+
+    def hold(self):
+        self.entered.set()
+        try:
+            self.release.wait(self.cap)
+        finally:
+            self.left.set()
+
+
+async def _drive_gated(send, gate):
+    """Start `send`, wait until its slow step is holding on `gate`, then prove
+    the loop is free: a heartbeat keeps ticking and a cheap request is answered
+    while the send is still blocked. Only then release the gate."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        ticks = []
+        stop = asyncio.Event()
+
+        async def heartbeat():
+            while not stop.is_set():
+                await asyncio.sleep(0.01)
+                ticks.append(1)
+
+        hb = asyncio.create_task(heartbeat())
+        send_task = asyncio.create_task(send(ac))
+        for _ in range(1000):  # up to ~10 s for the slow step to be reached
+            if gate.entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        entered = gate.entered.is_set()
+        ticks_before = len(ticks)
+        cheap_status = None
+        try:
+            cheap = await asyncio.wait_for(ac.get("/"), timeout=5.0)
+            cheap_status = cheap.status_code
+        except asyncio.TimeoutError:
+            pass
+        # The step must still have been holding when the loop answered: a step
+        # that blocked the loop only lets the cheap request through after its
+        # hold timed out, which sets `left` first.
+        step_over_when_answered = gate.left.is_set()
+        send_still_blocked = not send_task.done()
+        ticks_during = len(ticks) - ticks_before
+        gate.release.set()
+        resp = await send_task
+        stop.set()
+        await hb
+    return SimpleNamespace(
+        resp=resp,
+        entered=entered,
+        cheap_status=cheap_status,
+        step_over_when_answered=step_over_when_answered,
+        send_still_blocked=send_still_blocked,
+        ticks_during=ticks_during,
+    )
+
+
 def _error_code(resp):
     body = resp.json()
     return body["error"]["code"] if isinstance(body, dict) and "error" in body else f"no error body: {resp.status_code} {resp.text[:80]}"
@@ -258,27 +337,31 @@ def _error_code(resp):
 def test_ac_41_01_json_media_send_leaves_the_loop_free(client, session_factory, monkeypatch):
     headers, _cid, _ch = _setup(client, session_factory, phone="+60700700701")
 
-    _install(monkeypatch, media=_pdf_media, header_delay=SLEEP)
+    gate = _Gate()
+    _install(monkeypatch, media=_pdf_media, gate=gate)
 
     async def send(ac):
         return await ac.post("/api/v1/omnichannel/messages", json=_media_body("+60700700701"), headers=headers)
 
-    out = asyncio.run(_drive(send))
-    # control: the wait really happened and the send really succeeded
+    out = asyncio.run(_drive_gated(send, gate))
+    # control: the slow step was reached and the send really succeeds once released
+    assert out.entered, "the media fetch never started"
     assert out.resp.status_code == 202, out.resp.text
-    assert out.send_seconds >= SLEEP * 0.9
-    # the rule
-    assert out.max_gap < GAP_LIMIT, f"event loop was blocked for {out.max_gap:.2f}s"
-    assert out.cheap_status == 200
-    assert out.cheap_before_send_by > 1.0, "the cheap request waited for the send"
+    # the rule: while the fetch is held, the loop answers other requests and ticks
+    assert out.cheap_status == 200, "the loop was blocked while the media fetch was held"
+    assert not out.step_over_when_answered, "the cheap request was only answered after the media fetch gave up holding"
+    assert out.send_still_blocked, "the send finished without waiting for its fetch"
+    assert out.ticks_during >= 1, "the loop made no progress while the media fetch was held"
 
 
 def test_ac_41_01_multipart_send_leaves_the_loop_free(client, session_factory, monkeypatch):
     headers, _cid, _ch = _setup(client, session_factory, phone="+60700700702", token="tkn-live-01")
 
+    gate = _Gate()
+
     def slow_graph(request):
         if request.url.path.endswith("/media"):
-            time.sleep(SLEEP)
+            gate.hold()
         return _default_graph(request)
 
     rig = _install(monkeypatch, graph=slow_graph)
@@ -286,12 +369,14 @@ def test_ac_41_01_multipart_send_leaves_the_loop_free(client, session_factory, m
     async def send(ac):
         return await ac.post("/api/v1/omnichannel/messages", headers=headers, **_multipart("+60700700702"))
 
-    out = asyncio.run(_drive(send))
+    out = asyncio.run(_drive_gated(send, gate))
+    assert out.entered, "the provider upload never started"
     assert out.resp.status_code == 202, out.resp.text
     assert rig.graph_calls, "the provider fake was never hit"
-    assert out.send_seconds >= SLEEP * 0.9
-    assert out.max_gap < GAP_LIMIT, f"event loop was blocked for {out.max_gap:.2f}s"
-    assert out.cheap_before_send_by > 1.0, "the cheap request waited for the send"
+    assert out.cheap_status == 200, "the loop was blocked while the upload was held"
+    assert not out.step_over_when_answered, "the cheap request was only answered after the upload gave up holding"
+    assert out.send_still_blocked, "the send finished without waiting for its upload"
+    assert out.ticks_during >= 1, "the loop made no progress while the upload was held"
 
 
 # ══ AC-41-03: a media fetch has a 60 s total limit ═══════════════════════════
@@ -521,16 +606,18 @@ def test_ac_41_07_changelog_has_a_row_for_the_limit():
 
 # ══ Behaviour to keep (these pass before the change and must still pass) ═════
 def test_rig_heartbeat_sees_a_blocked_loop():
-    """Control for the AC-41-01 tests: a handler that blocks the loop DOES show
-    up as a large heartbeat gap and a cheap request that waits."""
+    """Control for the AC-41-01 tests: a step that blocks the loop while it holds
+    on the gate must make the gated check's conditions fail (the cheap request is
+    only answered after the hold gave up, and the loop made no progress)."""
+    gate = _Gate(cap=1.0)
 
     async def blocking_send(ac):
-        time.sleep(1.0)  # blocks the whole loop
+        gate.hold()  # blocks the whole loop until the cap
         return httpx.Response(202)
 
-    out = asyncio.run(_drive(blocking_send))
-    assert out.max_gap >= 0.9
-    assert out.cheap_before_send_by <= 0.1
+    out = asyncio.run(_drive_gated(blocking_send, gate))
+    assert out.step_over_when_answered
+    assert not out.send_still_blocked
 
 
 # ── AC-41-02: nothing else on the wire changes ───────────────────────────────
