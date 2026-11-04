@@ -24,6 +24,8 @@ x-backend-env: &backend-env
   API_HOST: 0.0.0.0
   API_PORT: 8001
   WORKERS: ${BACKEND_WORKERS:-4}
+  API_DB_LOCK_TIMEOUT_SECONDS: ${API_DB_LOCK_TIMEOUT_SECONDS:-10}
+  API_DB_LONG_LOCK_TIMEOUT_SECONDS: ${API_DB_LONG_LOCK_TIMEOUT_SECONDS:-300}
   ENVIRONMENT: production
   DEBUG: "false"
   # Behind Caddy (sets X-Forwarded-*). Real client IP for the auth throttle +

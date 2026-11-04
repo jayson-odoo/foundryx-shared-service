@@ -43,6 +43,12 @@ def rig(client, session_factory):
     return Rig(client, session_factory)
 
 
+def _actor():
+    from modules.omnichannel.services.contact_erase_service import EraseActor
+
+    return EraseActor.staff("u-round1")
+
+
 def _exists(rel):
     return (Path(settings.media_root) / rel).exists()
 
@@ -252,7 +258,7 @@ def test_continuous_sync_skips_an_erased_contact_cleanly_and_imports_the_next(
         w, h, sid = _ready(client, session_factory, monkeypatch, contacts=(910001, 910002))
         gone = w.contact_by_cid(910001)
         gone_id, gone_phone = gone.id, gone.phone
-        ContactEraseService(w.db).erase_in_tenant(DEFAULT_TENANT_ID, gone_id)
+        ContactEraseService(w.db).erase_in_tenant(DEFAULT_TENANT_ID, gone_id, actor=_actor())
         w.fake.add_message(910001, 2, text="after the erase")
         w.fake.add_contact(910003, first="After")
         w.fake.add_message(910003, 1, text="imported after the skip")
@@ -479,7 +485,7 @@ def test_nothing_is_purged_and_no_row_goes_when_the_commit_fails(rig, monkeypatc
 
         monkeypatch.setattr(db, "commit", boom)
         with pytest.raises(RuntimeError):
-            ContactEraseService(db).erase(DEFAULT_TENANT_ID, rig.ws, cid)
+            ContactEraseService(db).erase(DEFAULT_TENANT_ID, rig.ws, cid, actor=_actor())
     finally:
         db.close()
     assert queued == [], "the purge was queued before the commit"
@@ -488,7 +494,7 @@ def test_nothing_is_purged_and_no_row_goes_when_the_commit_fails(rig, monkeypatc
     # control: the same erase with a working commit queues the purge and removes the rows
     db = rig.sf()
     try:
-        ContactEraseService(db).erase(DEFAULT_TENANT_ID, rig.ws, cid)
+        ContactEraseService(db).erase(DEFAULT_TENANT_ID, rig.ws, cid, actor=_actor())
     finally:
         db.close()
     assert len(queued) == 1 and rig.counts(cid)["contact"] == 0

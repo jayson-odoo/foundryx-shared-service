@@ -441,7 +441,7 @@ def erase_contact(
     db: Session = Depends(get_db),
 ) -> ContactEraseResponse:
     return PublicGatewayService(db).erase_contact(
-        api_ws.tenant_id, api_ws.workspace_id, identifier
+        api_ws.tenant_id, api_ws.workspace_id, identifier, api_key_id=api_ws.key_id
     )
 
 
