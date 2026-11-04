@@ -28,6 +28,10 @@ cancelled. Every later run appends to this table.
 | FXT-1104b-S1 | SPO | none | P3 | about 15:14 | POST /NewPurchaseOrder | 400 | refused (FromDocType PO not valid) | not created | PROBE, FAILED CREATE |
 | FXT-1104b-1 | PO | 12024 | P4 | 15:14:46 (vendor LastModified) | PUT /EditPurchaseOrderbydockey | 200 | applied (row 12028 moved to BRW-AM, link kept) | 12025 SRTKT38SS 40 HQ 0; 12026 SRTKT38SS 10 BRW-AM 0; 12028 SRTKT38SS 10 BRW-AM 11989 | TEST DOC |
 
+| FXT-1104b-1 | PO | 12024 | P5.1 (FullTransferOption "T") | 15:30:57 | PUT /EditPurchaseOrderbydockey | 200 | no change (link on existing row 12026 ignored) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P5.2 ("T" + FullTransferFromDocList "SO389293") | 15:31:01 | PUT /EditPurchaseOrderbydockey | 200 | no change (link ignored) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P5.3 ("F") | 15:31:04 | PUT /EditPurchaseOrderbydockey | 200 | no change (link ignored) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P6 (replace row) | 15:31:15 | PUT /EditPurchaseOrderbydockey | 200 | applied: new row added and linked at HQ; omitted row 12026 kept | 12025 SRTKT38SS 40 HQ 0; 12026 SRTKT38SS 10 BRW-AM 0; 12028 SRTKT38SS 10 BRW-AM 11989; 12031 SRTKT38SS 10 HQ 11992 (total 70) | TEST DOC |
 Notes:
 
 - FXT-PROBE-1 shows a blank creditor name because our probe body sent only `CreditorCode` (400-N004) and no
@@ -185,6 +189,43 @@ blank remarks).
 - After: row 12028 `Location BRW-AM`, `FromSODtlKey 11989`, `FromSODocList "SO389293"`: the location moved
   and the link was kept. Rows 12025 and 12026 unchanged.
 
+### P5 Link on edit of an existing row, varying FullTransferOption (Q7): still not linked
+
+What the vendor material shows for `FullTransferOption` / `FullTransferFromDocList`: the vendor test-records
+file (about 400 rows across QT, SO, PO samples) shows only `FullTransferOption " "` and
+`FullTransferFromDocList ""`, also on the transferred rows (QT-to-SO and SO-to-PO samples); the PO sample is
+a POST of new rows with `FromDocType`, `FromDocNo`, `FromDocDtlKey` amended ("just amend the From* fields for
+triggering transfer"). Every GET we hold (db3 and db1 PO, SO, QT) carries only `" "` / `""` (400 rows
+`" "`, 327 `""`). No non-blank value is documented anywhere, and no sample transfers on an existing row.
+So the three values below are the AutoCount-typical candidates, each with its reason.
+
+- Before: SO389293 row 11992 unlinked (no PO row has `FromSODtlKey 11992`; PO 202602-S0007 holds 11990,
+  11993, 11996 and FXT-1104b-1 holds 11989). Row 12026 of FXT-1104b-1: `Qty 10, Location BRW-AM,
+  FromSODtlKey 0, FromSODocList "", FromDocType ""`.
+- Request row (all three tries): row 12026 as read back with `FromDocType "SO"`, `FromDocNo "SO389293"`,
+  `FromDocDtlKey 11992`; only these two fields varied:
+  - P5.1 (15:30:57) `FullTransferOption "T"`, `FullTransferFromDocList ""`. Reason: the qty (10) equals the
+    whole SO row, so "T" (full transfer) is the typical value.
+  - P5.2 (15:31:01) `FullTransferOption "T"`, `FullTransferFromDocList "SO389293"`. Reason: the list field
+    has the same shape as `FromSODocList`, which reads back as the SO doc number.
+  - P5.3 (15:31:04) `FullTransferOption "F"`, `FullTransferFromDocList ""`. Reason: the other typical
+    flag value named by the owner.
+- Each PUT: status 200, `DocNo=FXT-1104b-1 ,DocKey=12024 ... Done Edit.`
+- After each try: row 12026 unchanged, `FromSODtlKey 0`, `FromSODocList ""`, `FromDocType ""`. Not linked.
+  Stopped after three tries, as agreed.
+
+### P6 Replace a row (Q4): the omitted row is kept, nothing is removed
+
+- Before, FXT-1104b-1 rows: `12025 qty 40 HQ unlinked; 12026 qty 10 BRW-AM unlinked; 12028 qty 10 BRW-AM
+  FromSODtlKey 11989`; total qty 60. SO row 11992 unlinked (P5 changed nothing).
+- PUT `/EditPurchaseOrderbydockey` (15:31:15) with a Details list that leaves out row 12026 and adds one
+  `DtlKey 0` row: `{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","UserUOM":"UNIT","Qty":10,"FOCQty":0.0,"UnitPrice":1.0,"DeliveryDate":"2026-11-04T00:00:00","FromDocType":"SO","FromDocNo":"SO389293","FromDocDtlKey":11992,"FullTransferOption":" ","FullTransferFromDocList":""}`
+  -> status 200, `DocNo=FXT-1104b-1 ,DocKey=12024 ... Done Edit.`
+- After: `12025 40 HQ 0; 12026 10 BRW-AM 0; 12028 10 BRW-AM 11989; 12031 10 HQ 11992`; total qty 70.
+  - the omitted row 12026 is kept, unchanged (not deleted, not set to zero);
+  - the new row 12031 is linked to 11992 but forced to `HQ` (same as C03) with an empty `DeliveryDate`.
+- So a whole-row link by replacing the row does not work: it leaves the original row and doubles the qty.
+
 ## Observations for AutoCount
 
 Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
@@ -203,7 +244,10 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
    edit changes nothing.
 3. **Link on edit of an existing row (Q7): not applied.** P2 answered status 200 `Done Edit.`, applied the
    location, and ignored `FromDocType "SO"`, `FromDocNo`, `FromDocDtlKey` (row stayed `FromSODtlKey 0`).
-   Linking worked only on a new row (`DtlKey 0`, run 2 C03). Is that intended?
+   Linking worked only on a new row (`DtlKey 0`, run 2 C03). P5 repeated P2 with `FullTransferOption "T"`,
+   `"T"` plus `FullTransferFromDocList "SO389293"`, and `"F"`: all status 200, none linked. No document or
+   GET sample shows a non-blank `FullTransferOption`, so what it means is still unknown. Is a link on an
+   existing row supported at all, and with which values?
 4. **ShippingPO on create (Q13, Q14a).** `POST /NewPurchaseOrder` with `ShippingPO "T"` and a row
    `FromDocType "PO"` is refused: status 400 `PO is not valid value to FromDocType.` (P3). What
    `FromDocType` value links an SPO row to a PO row, and is `ShippingPO "T"` accepted on create? Run 2
@@ -211,10 +255,14 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
 5. **Empty dates (Q21).** In run 1 an echoed `DeliveryDate "0001-01-01T00:00:00"` gave status 500
    `SqlDateTime overflow`; omitting it works (run 2, P1, P2). The split row created through the SO link
    reads back `DeliveryDate "0001-01-01T00:00:00"` although we sent no empty date (C03).
-6. **Create body requirements (Q22).** A complete header (DisplayTerm, CurrencyCode, CurrencyRate) and
+6. **Replacing a row (Q4).** P6 omitted row 12026 and added a new linked row: status 200, the omitted row
+   was kept unchanged and the new row was forced to HQ, so no whole-row link by replacement (the qty
+   doubled, 60 to 70). Omitted rows are never removed. How is a detail row removed (we never delete
+   documents, but we may need to zero or remove a row)?
+7. **Create body requirements (Q22).** A complete header (DisplayTerm, CurrencyCode, CurrencyRate) and
    complete rows are needed; a POST that silently drops incomplete rows (run 1) should return an error.
-7. Vendor remark in the SO GET about `YourPODate` ("need to change to valid date") fits finding 5.
-8. Refusals C05, C06 and C09 and the guard C12 are local and sent no write.
+8. Vendor remark in the SO GET about `YourPODate` ("need to change to valid date") fits finding 5.
+9. Refusals C05, C06 and C09 and the guard C12 are local and sent no write.
 
 ## Cross-check of the final book state (read-only GETs)
 
@@ -229,4 +277,6 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
 - After run 3: PO 202602-S0007 is still unchanged (P1 and P1b had no effect). FXT-1104b-1 row 12026 now
   reads `Location BRW-AM` (P2), still unlinked. FXT-1104b-S1 does not exist.
 - After P4: FXT-1104b-1 row 12028 reads `Location BRW-AM`, `FromSODtlKey 11989`.
-- Test documents left in place as test evidence: FXT-PROBE-1 (empty) and FXT-1104b-1 (three rows). Nothing is deleted or cancelled.
+- After P5 and P6: FXT-1104b-1 holds rows 12025 (40 HQ), 12026 (10 BRW-AM, unlinked), 12028 (10 BRW-AM, 11989)
+  and 12031 (10 HQ, 11992), total 70. SO389293 row 11992 is now linked by row 12031.
+- Test documents left in place as test evidence: FXT-PROBE-1 (empty) and FXT-1104b-1 (four rows). Nothing is deleted or cancelled.
