@@ -317,15 +317,11 @@ class PullGatewayService:
     def __init__(self, db: Session):
         self.db = db
 
-    # ── build (POST /snapshots, AC-10-29/30/31) ─────────────────────────
-
-    def build(
-        self,
-        key_row: AcPullApiKey,
-        company_code_raw: str,
-        internal_entity: str,
-        scope: Optional[Dict[str, Optional[str]]] = None,
-    ) -> Tuple[AcCompany, AcPullSnapshot]:
+    def resolve_company(self, key_row: AcPullApiKey, company_code_raw: str) -> AcCompany:
+        """The key's tenant's ONE company with this Sorento code, inside the
+        key's allowed scope: 404 ``UNKNOWN_COMPANY``, 409 ``AMBIGUOUS_COMPANY``,
+        403 ``COMPANY_NOT_ALLOWED``. Shared by the pull build and the plan 55
+        write routes."""
         # Security round 1 LOW 7 - ALL matches, never pick one arbitrarily.
         # `set_sink_target` does not (yet) prevent two companies in one
         # tenant from sharing a code (backlogged, not fixed in this slice -
@@ -350,6 +346,18 @@ class PullGatewayService:
                 "This company is not in this key's allowed scope.",
                 company_id=company.id,
             )
+        return company
+
+    # ── build (POST /snapshots, AC-10-29/30/31) ─────────────────────────
+
+    def build(
+        self,
+        key_row: AcPullApiKey,
+        company_code_raw: str,
+        internal_entity: str,
+        scope: Optional[Dict[str, Optional[str]]] = None,
+    ) -> Tuple[AcCompany, AcPullSnapshot]:
+        company = self.resolve_company(key_row, company_code_raw)
 
         if is_doc_feed_entity(internal_entity):
             # plan 16 D5 - the gate is THIS entity's doc-feed row WITH a

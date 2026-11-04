@@ -108,20 +108,22 @@ def _summarize_body(
 ) -> Optional[Any]:
     """Turn a teed body into a JSON-storable, un-redacted summary value (the
     service redacts it). ``None`` when there is no body. A JSON body parses to its
-    object; a truncated JSON body / unparseable body stores the capped raw string;
+    object; a truncated or unparseable JSON body stores a size note only;
     a non-JSON (multipart/binary) body stores a size note ONLY - never the bytes."""
     if total_size <= 0:
         return None
     if not is_json:
         label = (content_type or "").split(";", 1)[0].strip() or "binary"
         return {"note": f"{label} body ({total_size} bytes) not captured"}
-    text = raw.decode("utf-8", errors="replace")
+    note = f"json body ({total_size} bytes) not captured"
     if truncated:
-        return {"truncated": True, "raw": text}
+        # Over the capture limit: a size note only, never part of the text.
+        return {"truncated": True, "bytes": total_size, "note": note}
+    text = raw.decode("utf-8", errors="replace")
     try:
         return json.loads(text)
-    except Exception:  # noqa: BLE001 - malformed JSON: keep the capped raw text.
-        return {"raw": text}
+    except Exception:  # noqa: BLE001 - malformed JSON: a size note only.
+        return {"unparseable": True, "bytes": total_size, "note": note}
 
 
 class _BodyTee:

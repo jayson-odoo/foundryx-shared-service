@@ -285,6 +285,40 @@ describe('MigrationFormView - connection and workspace chosen', () => {
     expect(screen.getByRole('button', { name: 'Run dry run' })).toBeEnabled();
   });
 
+  it('a channel with no connected target says so, links to Channels and reads "Skip for now" (AC-SKIP-01)', async () => {
+    preflightMock.mockResolvedValueOnce(preflight({ targetChannels: [] }));
+    render(<MigrationFormView />);
+    await screen.findByText('Channels');
+    expect(screen.getByText('No channel connected')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'Connect channel' });
+    expect(link).toHaveAttribute('href', '/omnichannel/settings/channels');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(rowSelect('Support line')).toHaveTextContent('Skip for now');
+  });
+
+  it('every channel skipped: the dry run submits with a null target (AC-SKIP-03)', async () => {
+    createJobMock.mockResolvedValue(doneJob('dry_run'));
+    getJobMock.mockResolvedValue(doneJob('dry_run'));
+    preflightMock.mockResolvedValueOnce(preflight({ targetChannels: [] }));
+    render(<MigrationFormView />);
+    await screen.findByText('Channels');
+    await waitFor(() => expect(save()).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Run dry run' }));
+    await waitFor(() => expect(createJobMock).toHaveBeenCalledTimes(1));
+    const input = createJobMock.mock.calls[0][0] as {
+      channelMap: { sourceChannelId: string; targetChannelId: string | null }[];
+    };
+    expect(input.channelMap.length).toBeGreaterThan(0);
+    expect(input.channelMap.every((e) => e.targetChannelId === null)).toBe(true);
+  });
+
+  it('a channel with a connected target shows no "No channel connected" line', async () => {
+    preflightMock.mockResolvedValueOnce(preflight());
+    render(<MigrationFormView />);
+    await screen.findByText('Channels');
+    expect(screen.queryByText('No channel connected')).not.toBeInTheDocument();
+  });
+
   it('a server error shows the plain text, not its message', async () => {
     preflightMock.mockRejectedValueOnce(new ApiError('Internal Server Error', 500));
     render(<MigrationFormView />);

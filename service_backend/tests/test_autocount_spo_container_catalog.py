@@ -82,7 +82,7 @@ MINTED_HEADER_FIELDS = frozenset({"source_ref"})
 # fields that feed minting and are never sent on the wire themselves - they
 # ARE accepted line targets on a model that declares them (PO/SPO; empty for
 # SO, which declares none of them).
-MINTED = frozenset({"from_so_line_ref", "from_so_external", "from_po_line_ref"})
+MINTED = frozenset({"from_so_line_ref", "from_so_external", "from_po_line_ref", "replaces_line_ref"})
 INPUT = frozenset({
     "from_so_doc_key", "from_so_line_key",
     "from_so_external_db", "from_so_external_doc_key",
@@ -439,3 +439,12 @@ def test_re_adding_the_ref_row_after_a_drop_is_accepted(session_factory):
     finally:
         db.close()
         RUNTIME.dispose_all()
+
+
+@pytest.mark.parametrize("entity_type", sorted(DOCUMENT_MODELS))
+def test_replaces_line_ref_is_minted_by_write_back_and_never_offered_in_the_mapping_picker(entity_type):
+    """Plan 57: ``replaces_line_ref`` is set by the write-back operations, never by a mapping row
+    (foolproof UI: only offer options that will work), so the line catalog excludes it."""
+    assert "replaces_line_ref" not in line_accepted_field_names(entity_type)
+    assert sorento_field_for(entity_type, "replaces_line_ref", "line") is None
+    assert sorento_field_for(entity_type, "replaces_line_ref", "header") is None

@@ -10,6 +10,14 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
+> | **2026-11-05** | **Provider message id** (sections 9.1 and 9.2): `externalMessageId` is `null`, never an empty string, when the channel accepted a send without returning an id. |
+> | **2026-11-04** | **Erase a contact** (sections 6a, 7, 10). New `DELETE /contacts/{identifier}` erases one contact of the key's workspace with its messages and files, and answers what was erased. New opt-in webhook event contact.erased tells your endpoints. A later message from the same number starts a new contact. |
+> | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
+> | **2026-11-04** | **Meta pricing per message** (sections 7, 9.1, 9.3). `message.status` data and the default `MessageItem` now carry `pricing` (`billable`, `pricingModel`, `category`, `type`), or `null` when Meta has not reported it; older messages answer `null`, as do inbound ones. `?format=rio` is unchanged. `GET /templates` already returns each template's `category`. |
+> | **2026-11-04** | **Meta rate-limit retry** (section 10, section 6a). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
+> | **2026-11-04** | **Developer Logs body capture** (section 13.3). A request or response body that is over the capture limit, or JSON that does not parse, is now shown as a note with its size and is never stored as raw text. Additive: no API field changes. |
+> | **2026-11-04** | **Workflows and business hours under the API key** (sections 6c, 6d, 10). New routes under `/workflows` (catalog, create, list, get, edit, archive, validate, publish, unpublish, active, versions, runs, run for one contact) and `/business-hours` (get, put), all scoped to the key's workspace. New error codes `node_not_allowed`, `invalid_definition`, `workflow_not_runnable` and `edit_conflict`. Additive and not breaking: no existing route, field or code changes. |
 > | **2026-11-02** | **Webhook delivery deadline** (section 7). One delivery attempt waits at most 10 seconds in total, then counts as a failed attempt. Only the status code decides success; the response body is not used, so answer `2xx` quickly and do the work afterwards. No field changes. |
 > | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
 > | **2026-11-02** | **Revoking a key and pausing an endpoint** (section 7, section 10). An endpoint belongs to the key that last changed it. When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` says the key was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key. A pause set by staff cannot be undone with a key: enable, PATCH, rotate and DELETE answer `409 endpoint_paused_by_staff`. While a workspace is trashed, its tenant is suspended or the service is off, no event is queued and those events are not sent later. No field changes, but some calls that answered `200` or `204` now answer `409`, including on an endpoint a key disabled before this date, which reads as a staff pause until staff resume it. |
@@ -133,7 +141,7 @@ Each API key is limited to **10 requests in progress at once** and **600 request
 { "error": { "code": "rate_limited", "message": "Too many requests for this key." } }
 ```
 
-The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (a send is safe to retry with the same `Idempotency-Key`).
+The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned with `idempotencyReplay: true`, not sent again). A `503 busy_try_again` (§10) is retried the same way.
 
 The limits are per key. If your integration needs more, ask support to raise the limits for a key.
 
@@ -151,7 +159,7 @@ Sends one message. Returns `**202 Accepted**` with your durable message id - the
 |----|----|----|
 | `Authorization: Bearer fxw_live_…` | yes |    |
 | `Content-Type: application/json` **or** `multipart/form-data` | yes | JSON for everything; multipart only to upload a media file directly (see §4.3) |
-| `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup, 24h TTL. A replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`. |
+| `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup. A completed send is remembered for 24h: a replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`, held at most 5 minutes; after that a request that never got an answer can be retried with the same key. If the first request did complete meanwhile, the retry may send again, so look the message up first (`GET /contacts/{identifier}/messages` or the `message.outbound` webhook) before retrying after the hold. |
 
 **Response** `202`:
 
@@ -514,7 +522,7 @@ Call this when one of your staff opens the conversation. It takes no body. It do
 }
 ```
 
-A contact that exists always answers `200`, and `unreadCount` is `0` afterwards even when a receipt failed. `messageId` is the same `id` as on `MessageItem`. `receipts` has one item per channel the customer has written on, and is `[]` when there is nothing to acknowledge. An unknown contact answers `404 contact_not_found`, like the other contact routes.
+A contact that exists answers `200` unless Meta rate limits a channel (see below), and `unreadCount` is `0` afterwards even when a receipt failed. `messageId` is the same `id` as on `MessageItem`. `receipts` has one item per channel the customer has written on, and is `[]` when there is nothing to acknowledge. An unknown contact answers `404 contact_not_found`, like the other contact routes.
 
 | `status` | Meaning | What to do |
 |----|----|----|
@@ -525,6 +533,27 @@ A contact that exists always answers `200`, and `unreadCount` is `0` afterwards 
 | `not_supported` | The channel type does not support read receipts (Messenger, Instagram, web chat). | Nothing. |
 
 Each channel is handled on its own, so one `failed` never blocks another channel. This route creates no message and fires no webhook.
+
+When Meta rate limits a channel's read receipt, the route answers `429 meta_rate_limited` with a `Retry-After` header (§10) after it has still tried the other channels. The body is the error envelope, with no `receipts`. By then `unreadCount` is already `0`, and every other channel was tried: a receipt that went out answers `already_sent` on a repeat call, and the others answer as in the table. When several channels are throttled, `Retry-After` is the longest of their waits (30 seconds for a channel where Meta gave none). Call again after the wait to retry the throttled channel.
+
+### Erase a contact
+
+`DELETE /api/v1/omnichannel/contacts/{identifier}` erases one contact of your key's own workspace for good. `{identifier}` is `id:<contactId>`, `phone:<number>` or a bare contact id, as on the other contact routes. Any API key of the workspace may call it. It cannot be undone.
+
+```jsonc
+// 200
+{ "contactId": "…", "erasedAt": "2026-11-04T09:30:00Z", "messages": 14, "files": 4 }
+```
+
+`messages` counts the contact's messages (internal notes included) and `files` the stored files that were removed. A contact that does not exist in your workspace, a contact of another workspace, and a second call for a contact already erased all answer `404 contact_not_found`.
+
+What goes: the contact, its messages and internal notes, their reactions, the conversation history entries, channel identities, tags on the contact, parked workflow steps (their runs end cancelled), the contact's place in broadcast audiences and recipient lists, and the stored files. The ids in earlier webhook deliveries to your endpoints are kept, but their payloads are reduced to ids only. An idea that named the contact as its submitter stays and loses that link.
+
+Subscribe an endpoint to `contact.erased` (opt-in, like every event) to be told. One event per erase, sent once to each subscribed active endpoint that covers the workspace (endpoints for all channels) or one of the channels the contact had written on, with exactly two data fields: `contactId` and `erasedAt` (the same `erasedAt` as the response). The event holds no name, phone number or message.
+
+A message from the same phone number after the erase, or a `POST /messages` to `phone:<number>`, creates a new contact with a new id and no link to the erased one. If the contact came from a respond.io import or sync, the erase leaves a marker for its respond.io id: a later one-off import or sync pass that meets that id writes nothing for it, and other respond.io contacts import as usual.
+
+What an erase cannot reach: the chat on the customer's phone, media that Meta still holds on its side, copies your own systems keep (including copies you made from webhooks and reads), exports already downloaded, and core activity logs that mention the contact, which are purged after 30 days. Files uploaded before this feature for a voice note that was converted for sending may remain until storage is cleaned.
 
 
 ---
@@ -559,6 +588,234 @@ When you follow a `pagination.next`/`previous` URL, `format=rio` is already carr
 
 ---
 
+## 6c. Workflows
+
+A workflow is a graph of trigger, action and `if` nodes that runs inside your workspace (reply to a message, tag a contact, call your own HTTPS endpoint, and so on). With your API key you can build, validate, publish, run and read the runs of workflows without the dashboard. Every route below is under `/api/v1/omnichannel`, takes the Bearer key, and answers camelCase JSON with ISO-8601 `Z` timestamps. Tenant and workspace come from the key; a `tenantId` or `workspaceId` in a body is ignored.
+
+### Ownership
+
+* A workflow you create through a key is **owned by the key's workspace**. Every key of that workspace sees and edits it, and your staff see it in the dashboard Workflows list like any other workflow.
+* Workflows that staff built in the dashboard are **not visible to keys**.
+* A key is identified by `apikey:<keyId>`, the same value a message sent with the key carries as its sender (`senderId`, section 7). It appears on the workflows, versions and runs the key creates, as shown below.
+* Every miss answers the same `404 not_found` with the message "Workflow not found.": an unknown id, a workflow of another workspace or tenant, an archived workflow, and a staff-built workflow all look identical.
+* Limits: **200 workflows per workspace** (create past it answers `422 invalid_request`), **200 nodes** per definition (`422 invalid_request`), and a request body of at most **256 KB** (`422 invalid_request`).
+
+### The workflow object
+
+```json
+{
+  "id": "wf_example_1",
+  "name": "Reply to hello",
+  "description": "",
+  "isActive": true,
+  "publishedVersionId": null,
+  "triggerType": "omnichannel.message_received",
+  "draftDefinition": { "schemaVersion": 1, "nodes": [], "edges": [] },
+  "createdBy": "apikey:key_example_1",
+  "createdAt": "2026-11-04T08:00:00Z",
+  "updatedAt": "2026-11-04T08:00:00Z"
+}
+```
+
+`draftDefinition` is the definition you saved, with `schemaVersion` `1`. `publishedVersionId` is `null` until you publish. `createdBy` is `apikey:<keyId>` for a workflow made through a key.
+
+### Node catalog - `GET /api/v1/omnichannel/workflows/catalog`
+
+Lists the node types a key may use, with the pickers for your workspace only.
+
+```json
+{
+  "nodes": [
+    {
+      "type": "omnichannel.message_received",
+      "kind": "trigger",
+      "label": "Message received",
+      "description": "…",
+      "fields": [
+        { "key": "channelId", "label": "Channel", "type": "omnichannelChannel", "required": false,
+          "options": null, "showWhen": null, "mergeable": false }
+      ],
+      "outputs": [ { "key": "trigger.message.text", "label": "Message text" } ]
+    },
+    {
+      "type": "if", "kind": "if", "label": "Condition",
+      "description": "Branch the flow. Matching runs take the true path.",
+      "fields": [], "outputs": [],
+      "conditionFormat": {
+        "configKey": "conditions", "type": "group", "combinator": ["and", "or"],
+        "rule": { "kind": "condition", "field": "<merge path, e.g. trigger.message.text>", "operator": "<operator>", "value": "<value>" },
+        "example": { "kind": "group", "combinator": "and",
+          "rules": [ { "kind": "condition", "field": "trigger.message.text", "operator": "contains", "value": "hello" } ] },
+        "ports": ["true", "false"]
+      }
+    }
+  ],
+  "options": {
+    "channels": [ { "id": "ch_example_1", "name": "Support line" } ],
+    "contactTags": [], "contactFields": [], "lifecycleStages": [], "closeReasons": [], "templates": []
+  }
+}
+```
+
+* `kind` is `trigger`, `action` or `if`. A field's `showWhen` is `null` or `{ "field", "value" }`: show and use the field only when the named field holds that value. `mergeable: true` means the value may carry a `{{ … }}` merge token that is filled in at run time.
+* The `if` entry has no fields. Its `conditionFormat` describes the `conditions` group it reads from the node's config; its `true` and `false` ports are the edge handles.
+* The `entityType` field of the `entity.shortcut` trigger has one option, `omnichannel_contact`. A member field (for example an assignee filter) lists the members of your workspace as `{value, label}` options.
+* `options` lists the ids you may put in the fields above, for **your key's workspace only**: its active channels (`{id, name}`), contact tags, contact fields, lifecycle stages, close reasons and templates.
+
+### Create, list, get, edit, delete
+
+| Method | Path | Body | Returns |
+|----|----|----|----|
+| `POST` | `/workflows` | `{ name, description?, draftDefinition }` | `201` workflow |
+| `GET` | `/workflows?limit=&cursor=` | | `200 { data[], nextCursor }` |
+| `GET` | `/workflows/{id}` | | `200` workflow |
+| `PATCH` | `/workflows/{id}` | `{ name?, description?, draftDefinition?, expectedUpdatedAt? }` | `200` workflow |
+| `DELETE` | `/workflows/{id}` | | `204`, empty body |
+
+* `name` is 1 to 200 characters, `description` at most 2000. A save checks the definition and answers the **first** problem it finds (see "What a key may put in a workflow" and "Workspace pinning") and answers `422` before anything is written.
+* **Paging.** The list is newest first. `limit` is 1 to 100 (default 50). `nextCursor` is opaque: pass it back as `cursor`; `null` means the last page. A bad `limit` or `cursor` answers `422 invalid_request`.
+* **Edit conflict.** Send the `updatedAt` you read as `expectedUpdatedAt` on `PATCH`. If the workflow changed after that instant the answer is `409 edit_conflict` and nothing is written; fetch it again and re-apply. Without `expectedUpdatedAt` the edit always applies.
+* `DELETE` archives the workflow: it stops running and leaves the list, every route then answers `404` for it, and your staff can restore it from the dashboard Archived view (it is then owned by the same workspace again).
+
+### Validate - `POST /api/v1/omnichannel/workflows/validate`
+
+Takes `{ "draftDefinition": { … } }` and saves nothing. It reports the problems a save and a publish would raise, in one pass. If the definition has a shape problem (wrong `schemaVersion`, or more than 200 nodes) the answer holds only that issue, and the per-node checks are not run until it is fixed.
+
+```json
+{
+  "valid": false,
+  "issues": [
+    { "code": "node_not_allowed", "message": "Node \"n2\" has type \"code.run\", which an API key cannot use.", "nodeId": "n2", "field": null },
+    { "code": "invalid_definition", "message": "Node \"n3\": channelId is not in this workspace.", "nodeId": "n3", "field": "channelId" }
+  ]
+}
+```
+
+`code` is `node_not_allowed`, `invalid_definition` or `invalid_request` (more than 200 nodes). `nodeId` and `field` are `null` when an issue is not about one node or field. A body that is not a workflow definition at all answers `422 invalid_request` instead.
+
+### Publish, unpublish, active
+
+| Method | Path | Body | Returns |
+|----|----|----|----|
+| `POST` | `/workflows/{id}/publish` | none | `200` workflow, `publishedVersionId` set |
+| `POST` | `/workflows/{id}/unpublish` | none | `200` workflow, `publishedVersionId` `null` |
+| `PUT` | `/workflows/{id}/active` | `{ "isActive": true }` | `200` workflow |
+
+Publish makes the draft the live version and runs the same checks as validate; the first problem is returned as `422 node_not_allowed` or `422 invalid_definition` (create and edit also answer the first issue only). `isActive` must be a JSON boolean. A published and active workflow runs on its trigger; an unpublished or inactive one does not.
+
+### Versions - `GET /api/v1/omnichannel/workflows/{id}/versions?limit=&cursor=`
+
+Newest first, paged like the list. `{ "data": [ { "id", "versionNumber", "publishedAt", "publishedBy", "definition" } ], "nextCursor" }`. `publishedBy` is `apikey:<keyId>` for a publish made through a key.
+
+### Runs
+
+* `GET /api/v1/omnichannel/workflows/{id}/runs?limit=&cursor=` - newest first, paged like the list: `{ "data": [ run ], "nextCursor" }`.
+* `GET /api/v1/omnichannel/workflows/runs/{runId}` - one run with its nodes. A run of a workflow your workspace does not own answers `404 not_found`.
+
+```json
+{
+  "id": "run_example_1",
+  "workflowId": "wf_example_1",
+  "status": "failed",
+  "triggeredBy": "event",
+  "actorId": "apikey:key_example_1",
+  "error": null,
+  "startedAt": "2026-11-04T08:01:00Z",
+  "finishedAt": "2026-11-04T08:01:02Z",
+  "nodes": [
+    { "nodeId": "n1", "nodeType": "entity.shortcut", "status": "success", "input": null, "output": {}, "error": null },
+    { "nodeId": "n2", "nodeType": "http.request", "status": "failed", "input": { "config": { "url": "https://example.com/hook", "headers": [ { "key": "X-Token", "value": "***" } ] }, "resolved": { "url": "https://example.com/hook" } }, "output": null, "error": "…" },
+    { "nodeId": "n3", "nodeType": "omnichannel.add_tag", "status": "skipped", "input": null, "output": null, "error": null }
+  ]
+}
+```
+
+A run item has `id`, `workflowId`, `status`, `triggeredBy`, `actorId` (`apikey:<keyId>` when started through a key, else `null`), `error`, `startedAt` and `finishedAt` (`null` until set). `status` is one of `pending`, `running`, `waiting`, `success`, `failed`, `cancelled`; a node `status` is `pending`, `running`, `success`, `failed` or `skipped`. A node's `input` is `{ "config", "resolved" }`: the node's saved config, and `resolved`, the merge-token fields as rendered for this run (absent when there are none). Fields that carry secrets are masked in `config`: the `value` of each `http.request` header row reads `"***"` and its `key` stays. Trigger nodes have `input` `null`.
+
+A run that is refused before any node executes has status `failed`, no node results, and an `error` that starts with a code: `node_not_allowed: …` (a node type outside the list below) or `record_not_in_workspace: …` (the contact, or the event the run started from, is outside the workflow's workspace). A node that touches a record outside the workspace at run fails with an `error` starting `record_not_in_workspace`.
+
+### Run a workflow for one contact - `POST /api/v1/omnichannel/workflows/{id}/runs`
+
+Starts the **published** version of an owned, active workflow whose trigger is the contact shortcut (`entity.shortcut` on contacts), for one contact of your workspace.
+
+```json
+{ "contact": "phone:+60123456789", "inputs": { "orderRef": "ORD0001", "webhookUrl": "https://example.com/hook" } }
+```
+
+* `contact` is 1 to 200 characters and follows the `{identifier}` convention of section 6a (`phone:<e164>`, `id:<uuid>` or a bare id). It is **find-only**: a contact that is not in your workspace answers `404 contact_not_found` and no contact is created.
+* `inputs` is optional: an object of at most **20 keys**, each key matching `^[A-Za-z][A-Za-z0-9_]{0,39}$`, each value a **string of at most 1000 characters**. Each pair is available to the workflow as `trigger.input.<key>` (for the example, `trigger.input.orderRef`). Anything else answers `422 invalid_request` and no run is created.
+* Answers `202` with the run item (above, without `nodes`). The run proceeds after the answer; read it with the run routes.
+* Checks run in this order, and the first failure is the answer: the workflow is yours (`404 not_found`), `inputs` (`422 invalid_request`), the contact (`404 contact_not_found`), then whether the workflow can run now: `409 workflow_not_runnable` with `details.reason` set to `unpublished`, `inactive` or `trigger` (the trigger is not the contact shortcut). A workflow whose run key renders empty for this contact and these `inputs` answers `422 invalid_request` with the message "This workflow needs a value for its run key. Send the input the key is built from." (it does not name the input); send the input the workflow's key uses and retry.
+
+### What a key may put in a workflow
+
+Only these node types. Anything else is refused with `422 node_not_allowed`, naming the node id and `nodeType`, on create, edit, validate and publish. The check also runs when a run starts, whoever published the version, so a run with a node outside this list fails before any node executes.
+
+* **Triggers:** `omnichannel.message_received`, `omnichannel.conversation_opened`, `omnichannel.conversation_closed`, `omnichannel.conversation_assigned`, `omnichannel.contact_tag_added`, `omnichannel.contact_tag_removed`, `omnichannel.contact_field_changed`, `omnichannel.lifecycle_changed`, `omnichannel.broadcast_completed`, and `entity.shortcut` with `entityType` `omnichannel_contact` only.
+* **Actions:** `omnichannel.get_contact`, `omnichannel.send_message`, `omnichannel.add_tag`, `omnichannel.remove_tag`, `omnichannel.update_field`, `omnichannel.update_lifecycle`, `omnichannel.open_conversation`, `omnichannel.close_conversation`, `omnichannel.add_comment`, `omnichannel.ask_question`, `omnichannel.wait`, `omnichannel.business_hours`, `http.request`.
+* **Branch:** `if`.
+
+A node's `position` (`{ "x": 0, "y": 0 }`, finite numbers) is optional. On create, edit and validate, a node with no valid position is given one: `x` `0`, one row of 120 per node in definition order, starting 120 below the largest `y` you gave (or at `y` `0` when none), so the dashboard editor can draw it. Positions you gave that are valid are kept. The stored draft and every published version carry the positions.
+
+A definition must have `schemaVersion` `1` (`422 invalid_definition` with `details.field` `schemaVersion` otherwise). A body that does not parse as a workflow definition at all answers `422 invalid_request` ("draftDefinition is not a valid workflow definition."). `invalid_definition` is used for the schemaVersion, workspace pinning and header problems, and for problems the publish check names.
+
+### Workspace pinning
+
+A workflow stays inside its owner workspace.
+
+* **At save, publish and validate:** every literal id in a node's config (channel, tag, contact field, lifecycle stage, close reason, template, contact, member) must belong to your workspace, else `422 invalid_definition` with `details.nodeId` and `details.field`. The workspace of a trigger is set by the server to your workspace.
+* **At run:** an id that arrives through a merge token or a record is checked when the node runs. A record outside the workspace fails that node with an error starting `record_not_in_workspace`, and nothing is sent or written. A run whose trigger contact, or whose trigger event, belongs to another workspace is refused before any node executes with the run `error` `record_not_in_workspace: …`; this includes a test run started by staff with another workspace's event.
+* **Events:** an owned workflow fires only on events of its own workspace.
+
+### Outbound URLs - `http.request`
+
+The `http.request` node calls a URL you control. The rule is the one the consumer webhooks use:
+
+* `https://` only. The address is checked before the call and again when the connection is made.
+* Redirects are not followed.
+* Request headers that change the framing or route of the request are refused: `Host`, `Connection`, `Content-Length`, `Transfer-Encoding`, `TE`, `Upgrade`, `Keep-Alive`, `Trailer`, `Expect`, `Forwarded`, `X-Forwarded-Host`, `X-Original-URL`, `X-Rewrite-URL` and any `Proxy-*`. A definition that sets one is refused at save, validate and publish with `422 invalid_definition` (`details.field` `headers`), and the node refuses it at run.
+* The request asks for no content encoding. At most one `gzip` or `deflate` layer of a response is decoded, within the cap; any other encoding fails the node.
+* The node has a deadline, `timeoutSeconds` (default 10 seconds, at most 30), that covers the whole exchange: resolving the name, connecting (at most 4 resolved addresses are tried) and the response headers and body.
+* A response is read up to 256 KB; the cap counts the bytes received.
+* A target is refused when it is, or a public-looking name resolves to, an address in any of these ranges: IPv4 `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`, `192.0.2.0/24`, `192.88.99.0/24`, `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`, `255.255.255.255`; IPv6 `::`, `::1`, `::ffff:0:0/96` (judged by the mapped IPv4 address), `64:ff9b::/96`, `64:ff9b:1::/48`, `100::/64`, `2001::/23`, `2001:db8::/32`, `2002::/16`, `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8`. `localhost` and `.local` names are refused too. This is one rule for every outbound call the service makes for you (workflow requests, webhooks and media URLs).
+* A refused target fails the node with the guard's message, the nodes after it are `skipped`, and no connection is attempted. The URL is checked when the node runs, so a URL taken from `inputs` is checked then.
+
+---
+
+## 6d. Business hours
+
+The business hours that the `omnichannel.business_hours` node reads and the dashboard Business hours tab shows. A key reads and writes its **own workspace** only.
+
+### `GET /api/v1/omnichannel/business-hours`
+
+```json
+{
+  "workspaceId": "ws_example_1",
+  "timezone": "Asia/Kuala_Lumpur",
+  "windows": {
+    "mon": [ { "from": "09:00", "to": "18:00" } ], "tue": [ { "from": "09:00", "to": "18:00" } ],
+    "wed": [], "thu": [], "fri": [], "sat": [], "sun": []
+  },
+  "source": "workspace"
+}
+```
+
+`source` says where the hours come from: `workspace` (this workspace has its own), `tenant` (the account-wide default applies, and `timezone` and `windows` are that default's), or `none` (neither is set: `timezone` is `null` and every day in `windows` is `[]`). Another workspace's hours are never returned.
+
+### `PUT /api/v1/omnichannel/business-hours`
+
+Body `{ "timezone": "Asia/Kuala_Lumpur", "windows": { "mon": [ { "from": "09:00", "to": "18:00" } ], … } }`, the same body as the dashboard. `timezone` is an IANA name; `windows` has the keys `mon` to `sun`, each a list of `{from, to}` in `HH:MM` (a window whose `to` is not after `from` runs overnight). Answers `200` in the shape above with `source` `workspace`. This sets your workspace's own hours; it never changes the account-wide default or another workspace, and the dashboard and the business hours node read the new value straight away.
+
+An invalid body answers `422 invalid_request` with the problems keyed by field, and nothing is written:
+
+```json
+{ "error": { "code": "invalid_request", "message": "The business hours are not valid.", "details": { "fieldErrors": { "timezone": "Unknown timezone: 'Mars/Base' (use an IANA name)." } } } }
+```
+
+`fieldErrors` is keyed `timezone` and `windows`. Only the first `windows` problem is reported; its message names the day and window it is about (for example `mon.0: …`).
+
+---
+
 ## 7. Receiving events (webhooks: Foundryx → you)
 
 Foundryx POSTs a **signed JSON envelope** to each callback URL you registered for the channel, for each event type you subscribed to.
@@ -573,6 +830,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 | `message.outbound` | Foundryx sends a message on your channel (your API call, a workflow, an inbox agent or a broadcast). **Opt-in**: you receive nothing new unless you subscribe to it |
 | `message.status` | A message you sent changes state (SENT/DELIVERED/READ/FAILED). `SENT` fires when Meta accepts the send and `FAILED` fires on a synchronous send failure, as well as on the later delivery receipts |
 | `message.reaction` | A reaction is added/removed on a message |
+| `contact.erased` | A contact was erased with `DELETE /contacts/{identifier}`. **Opt-in** (§6a). `data` is `{ "contactId", "erasedAt" }` and nothing else |
 | `contact.updated` | A thread is assigned (to a user and/or a **team**) / status / priority changes, or its fields / tags / lifecycle stage change |
 
 ### The envelope
@@ -619,10 +877,18 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 
   ```json
   { "messageId":"0a0d673d-…", "externalMessageId":"wamid…", "contactId":"b2ad5218-…",
-    "deliveryStatus":"DELIVERED", "errorCode":null, "errorMessage":null }
+    "deliveryStatus":"DELIVERED", "errorCode":null, "errorMessage":null,
+    "pricing":{ "billable":true, "pricingModel":"pmp", "category":"utility", "type":"regular" } }
   ```
 
+  `pricing` is Meta's pricing for that message, taken from the delivery receipt: `billable` (true/false), `pricingModel` (for example `pmp`), `category` (for example `utility`, `marketing`) and `type` (for example `regular`, `free_customer_service`); any field Meta did not send is `null`. The key is always present. It is `null` until a receipt carries pricing (so on the `SENT` event, and on every message sent before this change), and once stored it is repeated on later events for the same message. Meta may send it on a receipt that arrives late; the stored value is updated without a new event. Sum `pricing` per message yourself for usage.
+
   `deliveryStatus` is one of `SENT`, `DELIVERED`, `READ`, `FAILED`. `SENT` is emitted when Meta accepts the send and `FAILED` on a synchronous failure (Meta rejection or a local failure such as a media transcode error), with `errorCode`/`errorMessage` filled for `FAILED` only (both are `null` on `SENT`, `DELIVERED` and `READ`). On `FAILED`, `errorCode` is the provider's own code when it gave one (for example a Meta error code) and `null` otherwise, such as a local media failure; `errorMessage` is at most 300 characters. A temporary failure that Foundryx retries is not reported as `FAILED` and carries no error text to you. Normally a send ends in one `SENT` or one `FAILED` on `message.status`. Delivery is at-least-once, so the same event can arrive more than once: dedupe on the event id (`{messageId}:{deliveryStatus}`). While a message is being retried, `GET` messages can show a generic error text and an `errorCode` on it. Ignore any `deliveryStatus` value you do not recognise rather than failing the delivery. Each status is its own event (`{messageId}:SENT`, `{messageId}:FAILED`, ...); a later Meta `sent` receipt for the same message adds no second `SENT`. **If you already subscribe to `message.status` you now also receive `SENT` and sender-side `FAILED` events.** Delivery order across events is not guaranteed (each event is delivered and retried independently), so a `DELIVERED` can arrive before the `SENT` for the same message: never move a stored status backward (rank `SENT` < `DELIVERED` < `READ`), and treat `FAILED` as a terminal outcome.
+* `**contact.erased**` - `id` = `{contactId}:erased`. Sent once per erase to every subscribed active endpoint for all channels of the workspace, and to the subscribed endpoints of the channels the contact had written on (each endpoint receives it once); the envelope `channelId` is `null`.
+
+  ```json
+  { "contactId":"b2ad5218-…", "erasedAt":"2026-11-04T09:30:00Z" }
+  ```
 * `**message.reaction**`
 
   ```json
@@ -823,10 +1089,11 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "mediaUnavailable": false,    // true = a Messenger/Instagram inbound attachment whose CDN link expired before we could fetch it (plan 32 / A7a); the message still lands, there is just no blob - render a muted placeholder, not an error
   "payload": { … },             // structured def for interactive/location/contacts/template
   "reactions": [ { "emoji":"❤️", "reactorType":"CONTACT", "reactor":"+6012…" } ],
-  "externalMessageId": "wamid…",// Meta wamid
+  "externalMessageId": "wamid…",// Meta wamid; null until the send lands, or when the channel accepted the send without returning an id
   "deliveryStatus": "DELIVERED",// QUEUED|SENT|DELIVERED|READ|FAILED
   "errorCode": null,
   "errorMessage": null,
+  "pricing": null,              // Meta pricing once a receipt carried it: { "billable": true, "pricingModel": "pmp", "category": "utility", "type": "regular" }; null for inbound and older messages (default shape only, `?format=rio` has none)
   "replyTo": { "id":"…", "body":"…", "senderType":"…", "senderName":"…" },
   "createdAt": "2026-07-09T11:02:43Z"
 }
@@ -878,7 +1145,7 @@ Returned by `GET /contacts/{identifier}/messages?format=rio` (inside `items[]`) 
 ```jsonc
 {
   "messageId": "099e061a-…",            // Foundryx durable id (use for reactions / correlation)
-  "channelMessageId": "wamid.HBg…",     // Meta's wamid, null until the send lands
+  "channelMessageId": "wamid.HBg…",     // Meta's wamid, null until the send lands, or when the channel accepted the send without returning an id
   "contactId": "fd5d6b58-…",
   "channelId": "31c4900f-…",
   "channelType": "WHATSAPP",            // WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT (plan 32 / A7a, plan 34 / A7b)
@@ -983,6 +1250,7 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 | `mediaMime` / `mediaFilename` / `mediaSize` | `message.mimeType` / `message.filename` / `message.size` |
 | `voice: true` | `message.type === "voice"` |
 | `payload` | `message.payload` |
+| `pricing` (object or null) | none: `?format=rio` has no `pricing` |
 | `mediaUnavailable` | `message.mediaUnavailable` (same - Foundryx extension, plan 32 / A7a) |
 | `reactions[]` | `reactions[]` (identical) |
 | `replyTo.id` / `.body` | `replyTo.messageId` / `.text` |
@@ -1030,7 +1298,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
 | `service_not_enabled` | 403 | Omnichannel not active for your tenant, the tenant is suspended or archived, or the key's workspace is trashed - contact the operator. The key works again once restored. |
-| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics), or a reaction refused for its channel (§4). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
+| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics; on `/workflows` also a bad `cursor`, `limit` or `inputs`, more than 200 workflows or nodes, and on `PUT /business-hours` `details.fieldErrors` keyed `timezone` / `windows`), or a reaction refused for its channel (§4). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
 | `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
 | `channel_required` | 422 | `channelId` was omitted and the workspace has more than one active WhatsApp channel (or no active WhatsApp channel and more than one other active channel), on `POST /messages` and `GET /templates`. Nothing is sent; pass `channelId` (see `GET /channels`) and retry with the same `Idempotency-Key`. |
@@ -1043,14 +1311,23 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `send_rejected` | 422 | WhatsApp/Meta rejected the send (message has the reason) - also covers a message `type` the chosen channel's type doesn't carry (e.g. `template` on Messenger/Instagram). |
 | `lifecycle_move_not_allowed` | 409 | The contact PATCH's `lifecycle` value is a real stage, but there is no path there from the contact's CURRENT stage (e.g. it already won or lost) - `message` carries the reason. |
 | `unsupported_type` | 400 | Unknown `type`. |
-| `not_found` | 404 | Reaction target message not found / not in your workspace. |
-| `contact_not_found` | 404 | Contact not found / not in your workspace. |
+| `not_found` | 404 | Reaction target message not found / not in your workspace. On the `/workflows` routes: the workflow or run is not reachable by your key, for any reason (§6c). |
+| `contact_not_found` | 404 | Contact not found / not in your workspace. Also on `POST /workflows/{id}/runs` (§6c); no contact is created. |
 | `message_not_found` | 404 | Message id not on that contact's thread. |
-| `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing. |
+| `node_not_allowed` | 422 | A workflow definition uses a node type a key may not use. `details` has `nodeId` and `nodeType`. On create, edit, publish, and in a validate issue (§6c). |
+| `invalid_definition` | 422 | A workflow definition is not valid: wrong `schemaVersion`, a structure problem, or an id that is not in your workspace. `details` names `nodeId` and `field` where it applies. On create, edit, publish, and in a validate issue (§6c). |
+| `workflow_not_runnable` | 409 | `POST /workflows/{id}/runs` on a workflow that cannot run now. `details.reason` is `unpublished`, `inactive` or `trigger` (not the contact shortcut). |
+| `edit_conflict` | 409 | `PATCH /workflows/{id}` with an `expectedUpdatedAt` older than the workflow. Nothing is written; fetch it again and re-apply. |
+| `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing (held at most 5 minutes). |
 | `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
 | `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
+| `meta_rate_limited` | 429 | Meta is rate limiting the channel for a call made inside your request: a read receipt (`POST /contacts/{id}/read`) or a reaction send. Nothing was stored for the reaction. The `Retry-After` header gives the seconds to wait (Meta's value when it sent one, never more than 600). Distinct from `rate_limited`, which is this API's own per-key limit. |
+| `busy_try_again` | 503 | This record is busy with another change, so the request waited too long. The request may or may not have been applied. Retry after the `Retry-After` header (seconds). For a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned (`202`, `idempotencyReplay: true`), not sent again. Body message: "This record is busy with another change. Please try again in a moment." |
 
+### Meta rate limits on a send
+
+When Meta rate limits a WhatsApp send (HTTP 429, or error code `130429`, `131056`, `80007`, `4`, `17`, `32` or `613`) the message stays `pending` and the platform retries it itself: after 15, 60, 180 and 600 seconds, each plus up to 20% jitter, and later when Meta sends a `Retry-After` header (up to 600 seconds). That is at most 4 retries, about 14 minutes in all. The retry count is shared across causes: a Meta 5xx or network failure after rate limits uses the same count, so the total never exceeds the lower of the two budgets. No status event goes out while a retry is pending. If the retries run out the message ends `failed`, `status[].code` / `errorCode` keeps Meta's code (for example `130429`), and exactly one `failed` status event is sent. Code `131048` (spam rate limit) is never retried: the message ends `failed` on the first attempt. Other temporary failures (Meta 5xx, network) keep their own shorter retry schedule.
 
 ---
 
@@ -1387,6 +1664,7 @@ Open any row → the **trace timeline** shows every leg with its status and late
 ### 13.3 Redaction & retention
 
 * **Redaction.** Request/response bodies are stored **redacted** - any `Authorization`, API key, token, secret, `assertion`, `embedSecret`, or password field is masked to `***`. WhatsApp **message text is preserved** (it's content, not a credential), so you can still see what was sent.
+* **Large or unreadable bodies.** A body over the capture limit, or JSON that does not parse, is shown as a note with its size (for example `json body (N bytes) not captured`), never as raw text. This applies to every route, including the API key routes.
 * **Retention.** Rows are pruned per tenant - default **30 days**. An admin with `integration_logs.manage` can change the window in **Developers ▸ Logs ▸ Settings**.
 
 ### 13.4 Finding things
@@ -1422,6 +1700,21 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret | `{signingSecret}` |
 | POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume (`409 endpoint_paused_by_staff` on enable when staff paused it) | `WebhookEndpoint` |
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove | `204` |
+| GET | `/api/v1/omnichannel/workflows/catalog` | Node types a key may use, plus the workspace's pickers | `{nodes[], options}` (§6c) |
+| POST | `/api/v1/omnichannel/workflows` | Create a workflow | `201` workflow |
+| GET | `/api/v1/omnichannel/workflows` | List the workspace's workflows (paged) | `{data[], nextCursor}` |
+| GET | `/api/v1/omnichannel/workflows/{id}` | Get a workflow | workflow |
+| PATCH | `/api/v1/omnichannel/workflows/{id}` | Edit (`expectedUpdatedAt` -> `409 edit_conflict`) | workflow |
+| DELETE | `/api/v1/omnichannel/workflows/{id}` | Archive | `204` |
+| POST | `/api/v1/omnichannel/workflows/validate` | Check a definition, saves nothing | `{valid, issues[]}` |
+| POST | `/api/v1/omnichannel/workflows/{id}/publish` \| `/unpublish` | Publish the draft / take it down | workflow |
+| PUT | `/api/v1/omnichannel/workflows/{id}/active` | Turn on or off (`{isActive}`) | workflow |
+| GET | `/api/v1/omnichannel/workflows/{id}/versions` | Published versions (paged) | `{data[], nextCursor}` |
+| GET | `/api/v1/omnichannel/workflows/{id}/runs` | Runs of a workflow (paged) | `{data[], nextCursor}` |
+| GET | `/api/v1/omnichannel/workflows/runs/{runId}` | One run with its nodes | run + `nodes[]` |
+| POST | `/api/v1/omnichannel/workflows/{id}/runs` | Run the published workflow for one contact (`{contact, inputs?}`) | `202` run |
+| GET | `/api/v1/omnichannel/business-hours` | The workspace's hours and their `source` | `{workspaceId, timezone, windows, source}` |
+| PUT | `/api/v1/omnichannel/business-hours` | Set the workspace's own hours | same shape, `source` `workspace` |
 | GET | `/omnichannel/media/{messageId}` | Fetch media bytes | binary |
 
 The **contact and message** read endpoints above also accept `?format=rio` for the respond.io shape (§6b). `/templates` and the send/webhook routes have a single shape.
