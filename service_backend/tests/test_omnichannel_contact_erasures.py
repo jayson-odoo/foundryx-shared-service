@@ -207,6 +207,40 @@ def test_ac_58_10_staff_erase_writes_one_row_equal_to_the_response(rig, client, 
     assert _utc(row.erased_at) == _wire_dt(body["erasedAt"])
 
 
+def _impersonated_erase(rig, client, session_factory, phone, tag, *, impersonate):
+    from tests.test_impersonation import _make_user
+
+    target = _make_user(session_factory, f"erase-target-{tag}@example.com", "pw12345678",
+                        perm_keys=["contacts.read", "contacts.erase"])
+    fp = rig.footprint(phone, tag)
+    hdr = _auth(client)
+    if impersonate:
+        started = client.post("/impersonation/start", headers=hdr, json={"targetUserId": target})
+        assert started.status_code == 200, started.text
+        hdr = {**hdr, "X-Impersonate-User-Id": target}
+    res = _staff_delete(client, fp["cid"], hdr)
+    assert res.status_code == 200, res.text
+    rows = _rows(session_factory)
+    assert len(rows) == 1
+    return rows[0], target
+
+
+def test_ac_58_10_staff_erase_without_impersonation_records_the_caller(rig, client, session_factory):
+    """Control: the signed-in admin is attributed as themselves."""
+    row, target = _impersonated_erase(rig, client, session_factory, "+60100000751", "r10c", impersonate=False)
+    assert row.actor_user_id == _staff_user_id(session_factory) != target
+
+
+def test_ac_58_10_impersonated_staff_erase_records_the_real_admin(rig, client, session_factory):
+    """Attribution: while an admin acts as another user, the register names the
+    admin who is signed in, never the user being acted as."""
+    row, target = _impersonated_erase(rig, client, session_factory, "+60100000752", "r10i", impersonate=True)
+    admin = _staff_user_id(session_factory)
+    assert admin != target
+    assert row.actor_kind == "staff"
+    assert row.actor_user_id == admin
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # AC-58-11 - API key erase
 # ═════════════════════════════════════════════════════════════════════════════
