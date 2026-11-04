@@ -379,7 +379,7 @@ def test_ac_55_51_report_has_a_section_per_case_with_evidence(db):
         assert re.search(rf"^#+ .*{cid}", md, re.M), cid
     assert "PASS" in md and "/EditPurchaseOrderbydockey" in md and "/NewPurchaseOrder" in md
     assert "FXT-T1-1" in md and "202602-S0007" in md
-    assert "QTY_ABOVE_OUTSTANDING" in md and "ROW_ON_SPO" in md
+    assert "QTY_ABOVE_OUTSTANDING" in md and "VENDOR_UNSUPPORTED" in md
 
 
 def test_ac_55_04_report_is_sanitised(db):
