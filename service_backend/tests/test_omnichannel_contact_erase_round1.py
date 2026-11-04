@@ -538,3 +538,50 @@ def test_contact_erased_reaches_all_channel_endpoints_and_endpoints_of_the_conta
     got = sorted(r["endpoint_id"] for r in _deliveries(rig.sf, "contact.erased"))
     assert got == sorted([every, on_first, on_second]), "one delivery per reachable endpoint, none for an unrelated channel"
     assert on_unrelated not in got
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 5b - the original voice upload goes once the converted file is the row's key
+# ═════════════════════════════════════════════════════════════════════════════
+def test_voice_original_is_removed_once_the_converted_file_is_committed_even_if_the_send_fails(
+    client, session_factory, monkeypatch
+):
+    from modules.omnichannel.adapters.base import SendError
+    from modules.omnichannel.services.send_runner import run_send
+    from tests.test_omnichannel_outbound_event import _rig
+
+    r = _rig(client, session_factory, "+60100000614", events=())
+    original = _file("voice/original-upload-r1b.webm", b"webm-bytes")
+    db = session_factory()
+    try:
+        row = ConversationMessage(tenant_id=DEFAULT_TENANT_ID, contact_id=r["cid"], channel_id=r["channel_id"],
+                                  sender_type="AGENT", message_type="VOICE", media_key=original,
+                                  media_mime="audio/webm", delivery_status="QUEUED")
+        db.add(row)
+        db.commit()
+        mid = row.id
+    finally:
+        db.close()
+    monkeypatch.setattr("modules.omnichannel.services.send_runner.transcode_voice",
+                        lambda content: b"OggS" + b"\x00" * 64)
+
+    class _Adapter:
+        def upload_media(self, *a, **k):
+            return "media-1"
+
+        def send(self, *a, **k):
+            raise SendError("recipient number is not valid")  # permanent rejection
+
+    monkeypatch.setattr("modules.omnichannel.services.send_runner.get_adapter", lambda *a, **k: _Adapter())
+    db = session_factory()
+    try:
+        assert run_send(db, mid) == "FAILED"
+    finally:
+        db.close()
+    db = session_factory()
+    try:
+        key = db.query(ConversationMessage).filter(ConversationMessage.id == mid).one().media_key
+    finally:
+        db.close()
+    assert key != original and _exists(key), "the row points at the converted file, which stays"
+    assert not _exists(original), "nothing points at the original upload any more"
