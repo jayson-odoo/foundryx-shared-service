@@ -60,3 +60,13 @@ Every observation below is from read-only GETs on 4 Nov 2026; doc numbers refer 
 19. Audit: writes show `LastModifiedUserID "FOUNDRYX"`. Can we pass the acting user's name?
 20. Authentication scheme for the write endpoints on the live databases, and whether db3 will stay
     available as the test database.
+
+## Found in our first db3 run (4 Nov 2026)
+
+21. Empty dates: GET returns `"0001-01-01T00:00:00"` for an empty row date (e.g. PO 202602-S0007 row
+    12013 `DeliveryDate`), and a PUT that sends it back fails with HTTP 500 "SqlDateTime overflow". We
+    now omit such dates on write. Is omitting the field the right way to keep a date empty on edit?
+22. `POST /NewPurchaseOrder` with a short body: 500 "Column 'DisplayTerm' does not allow nulls", then
+    500 SQL error 8178 until `CurrencyCode` / `CurrencyRate` were added, then 200 "Created Successful"
+    but the document read back with no rows (our probe FXT-PROBE-1, DocKey 12023, please delete it).
+    Which header and row fields are required, and can a POST that drops rows return an error instead?
