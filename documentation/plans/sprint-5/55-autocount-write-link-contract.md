@@ -127,7 +127,7 @@ write guards as a link. Use it when a link ended `LOCATION_NOT_MOVED`.
 |---|---|---|
 | `actionId` | string or null | The id of the audit record for this call; quote it to support. Null only when the company could not be resolved to a write action |
 | `outcome` | string | One of section 5 |
-| `errorCode` | string or null | Null on `done`; else a code from section 5 |
+| `errorCode` | string or null | Null on a clean `done`; `LOCATION_NOT_MOVED` on a `done` whose location move did not land (section 5); else a code from section 5 |
 | `document` | object or null | On `done` only: the whole document as AutoCount reads back after the write (PO, or SPO), in the vendor's field names (`DocKey`, `DocNo`, `LastModified`, `Details[]` with `DtlKey`, `ItemCode`, `Location`, `UOM`, `Qty`, `FromSODtlKey`, `FromDocDtlKey`, ...). Null otherwise |
 
 The same JSON is returned for every outcome, with only the HTTP status differing. Responses are
