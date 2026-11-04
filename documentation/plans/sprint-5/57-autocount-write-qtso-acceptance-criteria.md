@@ -54,6 +54,13 @@ builder -> ONE vendor write -> GET back -> verify -> one `ac_write_action` row -
 | AC-57-38 | [BE] One operation at a time per document, held across all its steps (`DOC_BUSY`) |
 | AC-57-39 | [BE] Location move fails after the link landed: outcome `done` with warning `LOCATION_NOT_MOVED` (plan 55 Q3) |
 | AC-57-40 | [BE] Plan 55 split link keeps its behaviour and also accepts an idempotency key |
+| AC-57-41 | [BE] (review) An add that should carry a link is verified on the link too (PO row `FromSODtlKey`, SPO row `FromDocDtlKey`, SO row `FromDocType` + `FromDocNo`); a missing link is a mismatch, never done. Recovery after a failed add first removes a stray new row the failed add left (delete line), else goes `needs_attention`; a recovery never doubles a line's qty |
+| AC-57-42 | [BE] (review) A delete whose outcome is unknown (timeout, a 5xx without an AutoCount message) makes the operation `pending_verification` (resumable); only `VENDOR_REFUSED` counts as "the delete did not land" |
+| AC-57-43 | [BE] (review) An `in_progress` operation older than the busy window is moved to `pending_verification` before the next call on that document, so a stranded operation never blocks a document; `DOC_BUSY` refusals are not stored under the idempotency key (a retry with the same key tries again) |
+| AC-57-44 | [BE] (review) `/po-links` passes the caller's qty: whole-row only when it equals the FRESH row qty, else split; qty is part of the idempotency hash. Link / relink take the target document's date (`soDocDate`, SPO ops `poDocDate`) |
+| AC-57-45 | [BE] (live db3) Create and add-line bodies always carry the vendor's full row shape per kind (SO: `FullTransferOption " "`, `FullTransferFromDocList ""`, `YourPONo`, `ProjNo`, `FOCQty`, `Discount`, `TaxCode`, `Desc2`; QT / PO likewise), since a thinner SO row is answered 200 and dropped |
+| AC-57-46 | [BE] (live db3) A sales order row taken from a quotation row inherits that row's unit price and location: create answers done with warning `QT_ROW_VALUES_INHERITED` naming the fields that differ from what was sent |
+| AC-57-47 | [BE] (security) Refusal text is cut at any scheme URL, host / address / user / password pair, IPv4, drive or UNC path, or JSON password key; a non-refusal vendor body is stored as status + redacted text only; the needs_attention mail goes once per operation (a failed resume never re-sends); resume claims the operation with a conditional update (one resume runs); 403 WRITE_NOT_ALLOWED carries no book name; 422 field names are echoed through the safe-echo rule; AC-57-22 is re-checked at write time (a company that gained SQL-synced data is refused `WRITE_COMPANY_NOT_TEST`); a foreign row left alone is logged (codes only) |
 
 ## D. Sink and CRM re-pointing
 
