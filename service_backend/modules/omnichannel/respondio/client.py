@@ -393,11 +393,7 @@ class RespondIoClient:
         lifecycle pass (S1). ``timezone`` is REQUIRED by the vendor
         (plan §5.1). S2's resumable contacts WALK uses
         ``list_contacts_pages`` below instead (page-granular, resumable)."""
-        body: Dict[str, Any] = {"timezone": timezone}
-        if search:
-            body["search"] = search
-        if filter_:
-            body["filter"] = filter_
+        body = _contact_list_body(timezone=timezone, search=search, filter_=filter_)
         return self._paginated("POST", "/contact/list", json_body=body, limit=limit)
 
     def list_contacts_pages(
@@ -413,11 +409,7 @@ class RespondIoClient:
         yields ``(items, next_cursor)`` so the migration job can write
         ``cursor_json`` after EVERY page and crash-resume from
         ``start_cursor`` without re-processing an already-completed page."""
-        body: Dict[str, Any] = {"timezone": timezone}
-        if search:
-            body["search"] = search
-        if filter_:
-            body["filter"] = filter_
+        body = _contact_list_body(timezone=timezone, search=search, filter_=filter_)
         return self._paginated_pages(
             "POST", "/contact/list", json_body=body, limit=limit, start_cursor=start_cursor
         )
@@ -459,6 +451,21 @@ class RespondIoClient:
         return self._paginated_pages(
             "GET", f"/contact/{identifier}/message/list", limit=limit, start_cursor=start_cursor
         )
+
+
+# respond.io's `POST /contact/list` REQUIRES a `filter` object: without one the
+# vendor answers 400 "Please check if filter is provided." (live failure, lane
+# SS-MIGRATION-FILTER-HOTFIX). An empty `$and` group = "every contact".
+def _contact_list_body(
+    *, timezone: str, search: Optional[str], filter_: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
+        "timezone": timezone,
+        "filter": filter_ if filter_ else {"$and": []},
+    }
+    if search:
+        body["search"] = search
+    return body
 
 
 def _clamp_rps(value: float) -> float:
