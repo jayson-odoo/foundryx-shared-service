@@ -189,8 +189,9 @@ class StorageReadError(Exception):
 
 
 class StorageUnavailable(OSError):
-    """Storage was reachable but the object body could not be read. Callers may
-    retry. Distinct from FileNotFoundError: the object is not known to be gone."""
+    """Storage could not be reached, or the object body could not be read.
+    Callers may retry. Distinct from FileNotFoundError: the object is not known
+    to be gone."""
 
 
 # Hard ceiling for a stored object read that has no tighter limit (200 MiB).

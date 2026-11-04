@@ -42,7 +42,7 @@ def _is_transport_error(exc: BaseException) -> bool:
             status = int(exc.response["ResponseMetadata"]["HTTPStatusCode"])
         except (KeyError, TypeError, ValueError):
             return False
-        return status >= 500
+        return status >= 500 or status == 429
     return isinstance(
         exc, (BotoConnectionError, HTTPClientError, Urllib3HTTPError, OSError)
     )
