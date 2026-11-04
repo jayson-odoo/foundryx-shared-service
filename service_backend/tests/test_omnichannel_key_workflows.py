@@ -369,6 +369,12 @@ NOT_OWNED_ROUTES = [
     ("GET", "/workflows/{id}", None),
     ("PATCH", "/workflows/{id}", {"name": "hijack"}),
     ("DELETE", "/workflows/{id}", None),
+    # S3 routes (plan 38 S3)
+    ("POST", "/workflows/{id}/unpublish", None),
+    ("PUT", "/workflows/{id}/active", {"isActive": True}),
+    ("GET", "/workflows/{id}/versions", None),
+    ("GET", "/workflows/{id}/runs", None),
+    ("POST", "/workflows/{id}/runs", {"contact": "phone:+60177099999"}),
 ]
 NOT_OWNED_REASONS = ["unowned", "other_workspace", "foreign_tenant", "archived", "unknown"]
 
@@ -560,3 +566,35 @@ def test_ac_38_125_migration_file():
     assert "workflow_owners" in text and re.search(r"inspect|has_table|IF NOT EXISTS|checkfirst", text), (
         "migration must create workflow_owners idempotently"
     )
+
+
+@pytest.mark.parametrize("reason", NOT_OWNED_REASONS)
+def test_ac_38_123_run_detail_of_not_owned_workflow_uniform_404(client, session_factory, reason):
+    """GET /workflows/runs/{runId} on a run of an unowned / other-workspace / foreign-tenant /
+    archived workflow, or an unknown run id: the same 404 body, nothing changed."""
+    from app.models.workflow import WorkflowRun
+
+    ws = _default_workspace_id(session_factory)
+    ws2 = _new_workspace(session_factory)
+    _, hdr = _key(client, ws)
+    wid = _reason_workflow(session_factory, reason, ws, ws2)
+    if reason == "unknown":
+        run_id = str(uuid.uuid4())
+    else:
+        db = session_factory()
+        try:
+            wf_tenant = FOREIGN_TENANT if reason == "foreign_tenant" else DEFAULT_TENANT_ID
+            run = WorkflowRun(tenant_id=wf_tenant, workflow_id=wid, status="success",
+                              definition_snapshot_json=dict(EMPTY_DEF), trigger_payload_json={})
+            db.add(run)
+            db.commit()
+            run_id = run.id
+        finally:
+            db.close()
+    before = _counts(session_factory)
+    r = client.get(f"{BASE}/workflows/runs/{run_id}", headers=hdr)
+    assert r.status_code == 404, r.text
+    assert r.json() == NOT_FOUND
+    ref = client.get(f"{BASE}/workflows/runs/{uuid.uuid4()}", headers=hdr)
+    assert r.content == ref.content
+    assert _counts(session_factory) == before

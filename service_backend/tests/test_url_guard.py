@@ -113,3 +113,36 @@ def test_dns_rebinding_guard_blocks_a_host_that_now_resolves_internally(monkeypa
         lambda host, port: [(None, None, None, "", ("93.184.216.34", 0))],
     )
     assert_deliverable("https://ok.example.com/hook")  # public -> allowed
+
+
+# -- plan 38 gap 7, AC-38-137 ----------------------------------------------------
+AC_38_137_BLOCKED = [
+    "127.0.0.1", "::1", "10.0.0.1", "172.16.0.1", "192.168.0.1", "169.254.169.254",
+    "fe80::1", "100.64.0.1", "100.127.255.254", "fd00::1", "::ffff:10.0.0.1",
+    "::ffff:100.64.0.1", "10.0.0.7",
+]
+
+
+@pytest.mark.parametrize("literal", AC_38_137_BLOCKED)
+def test_ac_38_137_blocked_set_covers_listed_ranges(literal):
+    import ipaddress
+
+    from app.services.url_guard import _is_blocked_ip
+
+    assert _is_blocked_ip(ipaddress.ip_address(literal)), literal
+    host = f"[{literal}]" if ":" in literal else literal
+    with pytest.raises(UrlGuardError):
+        validate_public_https_url(f"https://{host}/x")
+    with pytest.raises(UrlGuardError):
+        assert_deliverable(f"https://{host}/x")
+
+
+@pytest.mark.parametrize("literal", ["8.8.8.8", "::ffff:8.8.8.8", "93.184.216.34"])
+def test_ac_38_137_public_addresses_stay_allowed(literal):
+    import ipaddress
+
+    from app.services.url_guard import _is_blocked_ip
+
+    assert not _is_blocked_ip(ipaddress.ip_address(literal)), literal
+    host = f"[{literal}]" if ":" in literal else literal
+    assert validate_public_https_url(f"https://{host}/x") == f"https://{host}/x"
