@@ -1,5 +1,6 @@
 'use client';
 
+import { openedType } from '@/lib/file-display-type';
 import { useEffect, useState } from 'react';
 import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -39,6 +40,7 @@ export function IdeaAttachmentPreviewDialog({
   fetchContent,
 }: IdeaAttachmentPreviewDialogProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [blobType, setBlobType] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const contentPath = attachment?.contentPath;
 
@@ -49,13 +51,12 @@ export function IdeaAttachmentPreviewDialog({
     fetchContent(attachment)
       .then((blob) => {
         if (!active) return;
-        // Only when the response carried no type: a PDF by name gets its mime
-        // so the browser previews it; anything else stays untyped.
-        const typed =
-          blob.type || !attachment.name.toLowerCase().endsWith('.pdf')
-            ? blob
-            : new Blob([blob], { type: 'application/pdf' });
-        created = URL.createObjectURL(typed);
+        // An untyped PDF (by name) gets its mime; every blob is then created
+        // with a type from the fixed display set, else as a download.
+        const raw = blob.type || (attachment.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : '');
+        const type = openedType(raw);
+        created = URL.createObjectURL(new Blob([blob], { type }));
+        setBlobType(type);
         setBlobUrl(created);
       })
       .catch(() => {
@@ -65,6 +66,7 @@ export function IdeaAttachmentPreviewDialog({
       active = false;
       if (created) URL.revokeObjectURL(created);
       setBlobUrl(null);
+      setBlobType(null);
       setFailed(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -72,7 +74,8 @@ export function IdeaAttachmentPreviewDialog({
 
   // Uploaded -> the blob object URL (null until fetched); captured -> its durable url.
   const a = attachment ? { ...attachment, url: contentPath ? (blobUrl ?? '') : attachment.url } : null;
-  const pdf = a ? isPdf(a.name, a.url) : false;
+  // An uploaded file is framed only from a blob served as a PDF.
+  const pdf = a ? (contentPath ? blobType === 'application/pdf' : isPdf(a.name, a.url)) : false;
 
   return (
     <Dialog open={!!a} onOpenChange={(o) => !o && onClose()}>
