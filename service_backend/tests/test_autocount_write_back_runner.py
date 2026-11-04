@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from decimal import Decimal
 from datetime import date
 from types import SimpleNamespace
 from typing import Any, Dict, List
