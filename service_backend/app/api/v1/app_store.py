@@ -6,7 +6,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import allow_long_lock_wait, get_db
 from app.dependencies import require_permission
 from app.models.user import User
 from app.schemas.app_store import (
@@ -88,7 +88,8 @@ def install(
     current_user: User = Depends(require_permission("app_store.install")),
     db: Session = Depends(get_db),
 ) -> StoreModuleOut:
-    return run_store_action(AppStoreService(db).install, current_user.tenant_id, name)
+    with allow_long_lock_wait(db):
+        return run_store_action(AppStoreService(db).install, current_user.tenant_id, name)
 
 
 @router.post("/modules/{name}/update", response_model=StoreModuleOut)
@@ -97,7 +98,8 @@ def update(
     current_user: User = Depends(require_permission("app_store.install")),
     db: Session = Depends(get_db),
 ) -> StoreModuleOut:
-    return run_store_action(AppStoreService(db).update, current_user.tenant_id, name)
+    with allow_long_lock_wait(db):
+        return run_store_action(AppStoreService(db).update, current_user.tenant_id, name)
 
 
 @router.post("/modules/{name}/deactivate", response_model=StoreModuleOut)
@@ -126,7 +128,8 @@ def uninstall(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        AppStoreService(db).uninstall(current_user.tenant_id, name, payload.confirmName)
+        with allow_long_lock_wait(db):
+            AppStoreService(db).uninstall(current_user.tenant_id, name, payload.confirmName)
     except AppStoreError as exc:
         raise store_error_http(exc)
     return {"ok": True}
