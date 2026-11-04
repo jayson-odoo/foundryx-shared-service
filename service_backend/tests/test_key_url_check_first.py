@@ -22,7 +22,6 @@ from tests.test_omnichannel_api_gateway import _seeded
 from tests.test_omnichannel_send_route_limits import _install, _pdf_media, _PATHS, _setup
 
 HOOKS = "/api/v1/omnichannel/webhooks"
-PUBLIC = [(2, 1, 6, "", ("93.184.216.34", 0))]
 
 
 @pytest.fixture(autouse=True)

@@ -1061,9 +1061,9 @@ def test_delivery_refuses_a_target_that_resolves_internally(monkeypatch):
     with pytest.raises(ws.WebhookError):
         ws.assert_deliverable("https://rebound.example.com/hook")
 
-    unexpected += stub_resolver(monkeypatch, {"ok.example.com": "93.184.216.34"})
+    second = stub_resolver(monkeypatch, {"ok.example.com": "93.184.216.34"})
     ws.assert_deliverable("https://ok.example.com/hook")  # public → allowed
-    assert unexpected == []
+    assert unexpected == [] and second == []
 
 
 def test_webhook_endpoint_cap_per_channel(client, session_factory):
