@@ -175,3 +175,90 @@ def test_heartbeat_after_lease_loss_stops_without_a_current_run():
     hb._run()
     assert hb.lost.is_set() and client.renew_calls == 1
     assert touched == []
+
+
+def test_heartbeat_thread_exits_after_lease_loss_when_no_run_is_current():
+    class _Forever:
+        def __init__(self):
+            self.calls = 0
+
+        def wait(self, timeout=None):
+            self.calls += 1
+            if self.calls > 50:
+                raise AssertionError("heartbeat kept looping after the lease was lost with no run")
+            return False
+
+        def set(self):
+            pass
+
+    client = _Client("false")
+    hb = _LeaseHeartbeat(client, "k", "t", ttl_seconds=30, touch=lambda run_id: None)
+    hb._stop = _Forever()
+    hb._run()
+    assert hb.lost.is_set()
+    assert hb._stop.calls <= 3 and client.renew_calls == 1
+
+
+def test_drain_does_not_execute_a_run_when_lease_is_lost_before_it_is_marked_current(
+    session_factory, monkeypatch
+):
+    import threading
+    import time
+
+    from app.models.workflow import RUN_PENDING
+    from app.workflow_engine import serialization as s
+
+    db = session_factory()
+    now = datetime.now(timezone.utc)
+    wf = Workflow(tenant_id=DEFAULT_TENANT_ID, name="Window", description="",
+                  draft_definition_json=_definition())
+    db.add(wf)
+    db.flush()
+    run = WorkflowRun(
+        id="window-run",
+        tenant_id=DEFAULT_TENANT_ID,
+        workflow_id=wf.id,
+        status=RUN_PENDING,
+        definition_snapshot_json=_definition(),
+        trigger_payload_json={"triggeredBy": "event", "omnichannel": {"conversationId": "conv-win"}},
+        created_at=now,
+    )
+    assign_run_correlation(run)
+    db.add(run)
+    db.commit()
+
+    class _Lost:
+        def acquire(self, k, t, ttl):
+            return True
+
+        def renew(self, k, t, ttl):
+            return False
+
+        def release(self, k, t):
+            return True
+
+    real_oldest = s._oldest_pending_run_id
+
+    def oldest(*args, **kwargs):
+        # The lease is lost AFTER the loop's lost check and BEFORE current_run_id is set.
+        deadline = time.time() + 5
+        while (
+            any(t.name == "workflow-lease-renewal" for t in threading.enumerate())
+            and time.time() < deadline
+        ):
+            time.sleep(0.05)
+        return real_oldest(*args, **kwargs)
+
+    monkeypatch.setattr(s, "_oldest_pending_run_id", oldest)
+    executed = []
+    try:
+        s.drain_serialized_runs(
+            db, DEFAULT_TENANT_ID, wf.id, correlation_digest("conv-win"),
+            lease_client=_Lost(), execute=lambda d, rid: executed.append(rid),
+            ttl_seconds=3, touch=lambda rid: None,
+        )
+    except s.SerializedCoordinationUnavailable:
+        pass
+    assert executed == []
+    db.expire_all()
+    assert db.query(WorkflowRun).filter(WorkflowRun.id == "window-run").one().status == RUN_PENDING
