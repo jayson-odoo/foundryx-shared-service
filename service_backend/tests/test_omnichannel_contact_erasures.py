@@ -332,6 +332,32 @@ def test_ac_58_12_failure_writing_the_row_rolls_the_erase_back(rig, session_fact
     assert _present(rig, fp["cid"]) == (1, 6)
 
 
+def test_ac_58_12_a_failed_commit_leaves_no_register_row(rig, session_factory, monkeypatch):
+    from modules.omnichannel.services.contact_erase_service import EraseActor
+
+    fp = rig.footprint("+60100000716", "r12c")
+    db, svc = _service(session_factory)
+    try:
+        def boom():
+            raise RuntimeError("commit stopped")
+
+        monkeypatch.setattr(db, "commit", boom)
+        with pytest.raises(RuntimeError):
+            svc.erase(DEFAULT_TENANT_ID, rig.ws, fp["cid"], actor=EraseActor.staff("u-12c"))
+    finally:
+        db.close()
+    assert _present(rig, fp["cid"]) == (1, 6)
+    assert [r for r in _rows(session_factory) if r.contact_id == fp["cid"]] == []
+    assert _rows(session_factory) == []
+    # control: the same erase with a working commit writes the row
+    db, svc = _service(session_factory)
+    try:
+        svc.erase(DEFAULT_TENANT_ID, rig.ws, fp["cid"], actor=EraseActor.staff("u-12c"))
+    finally:
+        db.close()
+    assert [r.contact_id for r in _rows(session_factory)] == [fp["cid"]]
+
+
 @pytest.mark.parametrize("route", ["staff", "key"])
 def test_ac_58_12_a_failing_register_write_answers_an_error_over_http(rig, client, session_factory, monkeypatch, route):
     from modules.omnichannel.repositories.contact_erase_repository import ContactEraseRepository
