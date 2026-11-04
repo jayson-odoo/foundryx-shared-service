@@ -32,6 +32,13 @@ cancelled. Every later run appends to this table.
 | FXT-1104b-1 | PO | 12024 | P5.2 ("T" + FullTransferFromDocList "SO389293") | 15:31:01 | PUT /EditPurchaseOrderbydockey | 200 | no change (link ignored) | | TEST DOC |
 | FXT-1104b-1 | PO | 12024 | P5.3 ("F") | 15:31:04 | PUT /EditPurchaseOrderbydockey | 200 | no change (link ignored) | | TEST DOC |
 | FXT-1104b-1 | PO | 12024 | P6 (replace row) | 15:31:15 | PUT /EditPurchaseOrderbydockey | 200 | applied: new row added and linked at HQ; omitted row 12026 kept | 12025 SRTKT38SS 40 HQ 0; 12026 SRTKT38SS 10 BRW-AM 0; 12028 SRTKT38SS 10 BRW-AM 11989; 12031 SRTKT38SS 10 HQ 11992 (total 70) | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P8 (unlink via FromSODtlKey 0 and FromSODocList empty, From* keys absent) | 15:43:51 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12031 stays linked to 11992) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P7a (FromSODtlKey 11992 + FromSODocList, From* keys absent) | 15:43:54 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12026 stays unlinked) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P7b (FromDocDtlKey 11992 + FromSODocList, others absent) | 15:43:56 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12026 stays unlinked) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P7c (FromSODtlKey 11992 only) | 15:43:58 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12026 stays unlinked) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P8b (unlink: FromDocDtlKey 11989 + FromSODocList + FromSODtlKey 0) | 15:44:33 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12028 stays linked to 11989) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P8c (unlink: as P8b plus FromDocType SO and FromDocNo) | 15:44:34 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12028 stays linked to 11989) | | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | P8d (unlink: FromDocDtlKey 11989 + FromSODocList only) | 15:44:35 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12028 stays linked to 11989) | | TEST DOC |
 Notes:
 
 - FXT-PROBE-1 shows a blank creditor name because our probe body sent only `CreditorCode` (400-N004) and no
@@ -226,6 +233,37 @@ So the three values below are the AutoCount-typical candidates, each with its re
   - the new row 12031 is linked to 11992 but forced to `HQ` (same as C03) with an empty `DeliveryDate`.
 - So a whole-row link by replacing the row does not work: it leaves the original row and doubles the qty.
 
+### P8 and P7a-c: write the read-back link fields, From* keys absent (Q7, Q8): no change
+
+Idea: a link reads back as `FromSODtlKey` + `FromSODocList`, so write those directly on an existing row with
+`FromDocType`, `FromDocNo` and `FromDocDtlKey` ABSENT from the row object (not sent empty). Each body: header
+as read back, only the touched row as read back, dates before 1753 omitted. Each PUT answered status 200,
+`DocNo=FXT-1104b-1 ,DocKey=12024 ... Done Edit.`; row Qty and Location did not change in any probe, and the
+PO total stayed 70.
+
+- P8 (15:43:51) unlink, row 12031 (10 HQ, `FromSODtlKey 11992`): row sent with `FromSODtlKey 0` and
+  `FromSODocList ""`. After: still `FromSODtlKey 11992`, `FromSODocList "SO389293"`. No change. So 11992
+  stayed covered by 12031 for the P7 probes.
+- Before each P7 try, row 12026 (10 BRW-AM) read `FromSODtlKey 0`.
+  - P7a (15:43:54): `FromSODtlKey 11992`, `FromSODocList "SO389293"`. After: `FromSODtlKey 0`. Not linked.
+  - P7b (15:43:56): `FromDocDtlKey 11992`, `FromSODocList "SO389293"`. After: `FromSODtlKey 0`. Not linked.
+  - P7c (15:43:58): `FromSODtlKey 11992` only. After: `FromSODtlKey 0`. Not linked.
+  A successful P7 link would have over-covered 11992 (SO qty 10, linked 20), so a link would have needed
+  checking that; none took effect.
+
+### P8b-d: unlink with the CURRENT link values (Q8): no change
+
+Row 12028 (10 BRW-AM, `FromSODtlKey 11989`, `FromSODocList "SO389293"`), read first before each try, always
+still linked. Each PUT answered status 200 `Done Edit.`; Qty and Location unchanged.
+
+- P8b (15:44:33): `FromDocDtlKey 11989`, `FromSODocList "SO389293"`, `FromSODtlKey 0`; `FromDocType` and
+  `FromDocNo` absent. After: `FromSODtlKey 11989`, still linked.
+- P8c (15:44:34): as P8b plus `FromDocType "SO"` and `FromDocNo "SO389293"`. After: still linked to 11989.
+- P8d (15:44:35): only `FromDocDtlKey 11989` and `FromSODocList "SO389293"`. After: still linked to 11989.
+
+Stopped after P8d (no try unlinked). The final FXT-1104b-1 rows are unchanged by these probes: 12025 (40 HQ,
+0), 12026 (10 BRW-AM, 0), 12028 (10 BRW-AM, 11989), 12031 (10 HQ, 11992).
+
 ## Observations for AutoCount
 
 Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
@@ -240,14 +278,18 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
    when `FromSODtlKey 0` and `FromSODocList ""` are sent (P1) and with `FromDocType "SO"` and a blank
    `FromDocNo` (P1b). Linked PO rows read back `FromDocType ""`, `FromDocNo ""`, `FromDocDtlKey 0`, so
    the link is kept only in `FromSODtlKey` / `FromSODocList`. How is a PO row unlinked from its SO row
-   (a different field or endpoint)? Please also return an error instead of 200 when an
-   edit changes nothing.
+   (a different field or endpoint)? P8 (`FromSODtlKey 0` and `FromSODocList ""`
+   with the From* keys absent) and P8b-d (the current link values, with or without `FromDocType`/`FromDocNo`,
+   `FromSODtlKey 0` or absent) also changed nothing (status 200, still linked). Please also return an error
+   instead of 200 when an edit changes nothing.
 3. **Link on edit of an existing row (Q7): not applied.** P2 answered status 200 `Done Edit.`, applied the
    location, and ignored `FromDocType "SO"`, `FromDocNo`, `FromDocDtlKey` (row stayed `FromSODtlKey 0`).
    Linking worked only on a new row (`DtlKey 0`, run 2 C03). P5 repeated P2 with `FullTransferOption "T"`,
    `"T"` plus `FullTransferFromDocList "SO389293"`, and `"F"`: all status 200, none linked. No document or
-   GET sample shows a non-blank `FullTransferOption`, so what it means is still unknown. Is a link on an
-   existing row supported at all, and with which values?
+   GET sample shows a non-blank `FullTransferOption`, so what it means is still unknown. P7a-c wrote the read-back
+   fields directly with the From* keys absent (`FromSODtlKey` + `FromSODocList`, `FromDocDtlKey` +
+   `FromSODocList`, `FromSODtlKey` alone): all status 200, none linked. Is a link on an existing row supported
+   at all, and with which values?
 4. **ShippingPO on create (Q13, Q14a).** `POST /NewPurchaseOrder` with `ShippingPO "T"` and a row
    `FromDocType "PO"` is refused: status 400 `PO is not valid value to FromDocType.` (P3). What
    `FromDocType` value links an SPO row to a PO row, and is `ShippingPO "T"` accepted on create? Run 2
