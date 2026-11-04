@@ -727,6 +727,8 @@ Only these node types. Anything else is refused with `422 node_not_allowed`, nam
 * **Actions:** `omnichannel.get_contact`, `omnichannel.send_message`, `omnichannel.add_tag`, `omnichannel.remove_tag`, `omnichannel.update_field`, `omnichannel.update_lifecycle`, `omnichannel.open_conversation`, `omnichannel.close_conversation`, `omnichannel.add_comment`, `omnichannel.ask_question`, `omnichannel.wait`, `omnichannel.business_hours`, `http.request`.
 * **Branch:** `if`.
 
+A node's `position` (`{ "x": 0, "y": 0 }`, finite numbers) is optional. On create, edit and validate, a node with no valid position is given one: `x` `0`, one row of 120 per node in definition order, starting 120 below the largest `y` you gave (or at `y` `0` when none), so the dashboard editor can draw it. Positions you gave that are valid are kept. The stored draft and every published version carry the positions.
+
 A definition must have `schemaVersion` `1` (`422 invalid_definition` with `details.field` `schemaVersion` otherwise). A body that does not parse as a workflow definition at all answers `422 invalid_request` ("draftDefinition is not a valid workflow definition."). `invalid_definition` is used for the schemaVersion, workspace pinning and header problems, and for problems the publish check names.
 
 ### Workspace pinning
