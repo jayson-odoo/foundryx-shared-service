@@ -1214,3 +1214,99 @@ def test_ac_38_134_run_guard_checks_the_contact_named_only_in_the_event_extra(cl
     status, error, nodes = fire(w["contact1"])  # control: the owner's contact runs
     assert status == RUN_SUCCESS, (status, error)
     assert sent == ["https://api.example.com/ping"]
+
+
+# -- AC-38-131 (amended): the server lays out node positions on save -------------------------
+def _no_position_doc():
+    doc = _doc(_comment("note_1"), _comment("note_2"), _comment("note_3"))
+    doc["nodes"][1]["config"]["name"] = "Note one"
+    doc["nodes"][2]["config"]["name"] = "Note two"
+    doc["nodes"][3]["config"]["name"] = "Note three"
+    for n in doc["nodes"]:
+        assert "position" not in n
+    return doc
+
+
+def _assert_laid_out(nodes, expect_count):
+    assert len(nodes) == expect_count
+    seen = set()
+    for n in nodes:
+        pos = n.get("position")
+        assert isinstance(pos, dict), n
+        assert isinstance(pos.get("x"), (int, float)) and not isinstance(pos.get("x"), bool), n
+        assert isinstance(pos.get("y"), (int, float)) and not isinstance(pos.get("y"), bool), n
+        seen.add((pos["x"], pos["y"]))
+    assert len(seen) == expect_count, f"positions are not distinct: {sorted(seen)}"
+
+
+def test_ac_38_131_missing_positions_get_a_layout_on_save(client, session_factory):
+    w = _world(client, session_factory)
+    hdr = w["hdr1"]
+
+    # create: no node has a position
+    r = _post(client, hdr, _no_position_doc())
+    assert r.status_code == 201, r.text
+    wid = r.json()["id"]
+    _assert_laid_out(r.json()["draftDefinition"]["nodes"], 4)
+    db = session_factory()
+    try:
+        _assert_laid_out(db.get(Workflow, wid).draft_definition_json["nodes"], 4)
+    finally:
+        db.close()
+
+    # update: a missing position and malformed ones are replaced; a valid one is kept
+    doc = _no_position_doc()
+    doc["nodes"][0]["position"] = {"x": 12, "y": 34}  # valid: kept
+    doc["nodes"][1]["position"] = {"x": "a", "y": 5}  # malformed
+    doc["nodes"][2]["position"] = {"x": 7}  # y missing
+    doc["nodes"][3]["position"] = "left"  # not an object
+    r = client.patch(f"{BASE}/workflows/{wid}", json={"draftDefinition": doc}, headers=hdr)
+    assert r.status_code == 200, r.text
+    nodes = r.json()["draftDefinition"]["nodes"]
+    _assert_laid_out(nodes, 4)
+    assert nodes[0]["position"] == {"x": 12, "y": 34}
+    db = session_factory()
+    try:
+        _assert_laid_out(db.get(Workflow, wid).draft_definition_json["nodes"], 4)
+    finally:
+        db.close()
+
+    # publish copies the positions into the version
+    pub = client.post(f"{BASE}/workflows/{wid}/publish", headers=hdr)
+    assert pub.status_code == 200, pub.text
+    db = session_factory()
+    try:
+        version = db.query(WorkflowVersion).filter(WorkflowVersion.workflow_id == wid).one()
+        _assert_laid_out(version.definition_json["nodes"], 4)
+    finally:
+        db.close()
+
+
+def test_ac_38_131_given_positions_are_kept(client, session_factory):
+    w = _world(client, session_factory)
+    hdr = w["hdr1"]
+    doc = _no_position_doc()
+    given = {"trg": {"x": 0, "y": 0}, "note_1": {"x": 320.5, "y": 10}, "note_2": {"x": 640, "y": -20},
+             "note_3": {"x": 960, "y": 0}}
+    for n in doc["nodes"]:
+        n["position"] = dict(given[n["id"]])
+    r = _post(client, hdr, doc)
+    assert r.status_code == 201, r.text
+    assert {n["id"]: n["position"] for n in r.json()["draftDefinition"]["nodes"]} == given
+    wid = r.json()["id"]
+    r = client.patch(f"{BASE}/workflows/{wid}", json={"draftDefinition": doc}, headers=hdr)
+    assert r.status_code == 200
+    assert {n["id"]: n["position"] for n in r.json()["draftDefinition"]["nodes"]} == given
+
+
+def test_ac_38_131_dashboard_detail_returns_positions_for_every_node(client, session_factory):
+    from tests.test_omnichannel_api_gateway import _auth
+
+    w = _world(client, session_factory)
+    wid = _post(client, w["hdr1"], _no_position_doc()).json()["id"]
+    r = client.get(f"/workflows/{wid}", headers=_auth(client))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    nodes = (body.get("draftDefinition") or body.get("draft") or body.get("definition") or {}).get("nodes")
+    assert nodes, list(body)
+    _assert_laid_out(nodes, 4)
