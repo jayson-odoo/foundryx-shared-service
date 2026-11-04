@@ -28,18 +28,18 @@ def test_client_config_matches_default_settings():
     cfg = _cfg()
     assert cfg.connect_timeout == settings.storage_s3_connect_timeout_seconds == 5
     assert cfg.read_timeout == settings.storage_s3_read_timeout_seconds == 60
-    assert cfg.retries["max_attempts"] == settings.storage_s3_max_attempts == 3
+    assert cfg.retries["total_max_attempts"] == settings.storage_s3_max_attempts == 3
     assert cfg.retries["mode"] == "standard"
 
 
 def test_client_config_follows_changed_settings(monkeypatch):
     monkeypatch.setattr(settings, "storage_s3_connect_timeout_seconds", 2, raising=False)
     monkeypatch.setattr(settings, "storage_s3_read_timeout_seconds", 15, raising=False)
-    monkeypatch.setattr(settings, "storage_s3_max_attempts", 7, raising=False)
+    monkeypatch.setattr(settings, "storage_s3_max_attempts", 5, raising=False)
     cfg = _cfg()
     assert cfg.connect_timeout == 2
     assert cfg.read_timeout == 15
-    assert cfg.retries["max_attempts"] == 7
+    assert cfg.retries["total_max_attempts"] == 5
 
 
 @pytest.mark.parametrize(
