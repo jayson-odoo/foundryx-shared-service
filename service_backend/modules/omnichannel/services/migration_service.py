@@ -49,7 +49,7 @@ from ..repositories.migration_connection_repository import MigrationConnectionRe
 from ..repositories.migration_ref_repository import MigrationRefRepository
 from ..repositories.migration_upload_repository import MigrationUploadRepository
 from ..respondio.channel_map import target_channel_type_for
-from ..respondio.client import RespondIoClient, RespondIoError
+from ..respondio.client import MAX_MESSAGE_PAGE_LIMIT, MAX_PAGE_LIMIT, RespondIoClient, RespondIoError
 from ..respondio.shapes import Contact, CustomField, SpaceChannel, SpaceUser
 from ..respondio.shapes import ContactChannel as SourceContactChannel
 from ..respondio.shapes import MessageItem as SourceMessageItem
@@ -92,8 +92,11 @@ SYNC_JOB_TYPE = "omnichannel.respondio_sync"
 # 24h + mapping-hash gate (D-A6-14, AC-MIG-20) - a `run` needs a successful
 # `dry_run` of the SAME mapping inside this window.
 DRY_RUN_TTL_HOURS = 24
-CONTACTS_PAGE_LIMIT = 100
-MESSAGES_PAGE_LIMIT = 100
+# respond.io's documented page sizes (`respondio/client.py` MAX_PAGE_LIMIT /
+# MAX_MESSAGE_PAGE_LIMIT): contact list `exclusiveMaximum: 100`, message list
+# `maximum: 50`.
+CONTACTS_PAGE_LIMIT = MAX_PAGE_LIMIT
+MESSAGES_PAGE_LIMIT = MAX_MESSAGE_PAGE_LIMIT
 # S3's identities/messages phases checkpoint PER CONTACT (D-A6-9's timestamp
 # interpolation needs a whole contact's message history bracketed together,
 # so buffering per-contact is a deliberate deviation from the plan's
