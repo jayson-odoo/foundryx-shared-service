@@ -158,6 +158,11 @@ _LINE_REMARK_FIELDS: Tuple[str, ...] = ("line_remark", "section_heading")
 # the eight input fields, so this can never drift from the model either.
 _LINE_LINKAGE_DIRECT_WIRE_FIELDS: Tuple[str, ...] = ("from_so_numbers", "from_po_number")
 
+# plan 57 S5 - ``replaces_line_ref`` is a line wire field (FALLBACK_FIELDS) fed by the
+# write flow, never by a mapping; the catalog parity pin counts every FALLBACK field, so
+# a model that declares it lists it here (read off the model, like the remark fields).
+_LINE_REPLACES_FIELDS: Tuple[str, ...] = ("replaces_line_ref",)
+
 # sprint-5/02 (AC-02-02/03) - a document's LINE fields are now first-class,
 # operator-editable mapping rows (the fixed column-name convention is gone).
 # `source_ref` is a mappable LINE target (unlike a header's, which is
@@ -218,9 +223,12 @@ def _line_fields(line_model, required: frozenset) -> Tuple[SorentoFieldDef, ...]
     declared_remark = tuple(
         name for name in _LINE_REMARK_FIELDS if name in line_model.model_fields
     )
+    declared_replaces = tuple(
+        name for name in _LINE_REPLACES_FIELDS if name in line_model.model_fields
+    )
     return _accepted_line(
         line_model.SINK_FIELDS + _LINE_FALLBACK_FIELDS + declared_remark
-        + declared_direct_wire + declared_input,
+        + declared_direct_wire + declared_replaces + declared_input,
         required,
     )
 

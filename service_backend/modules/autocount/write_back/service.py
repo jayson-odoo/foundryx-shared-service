@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -227,9 +228,73 @@ class WriteBackService(WriteFrame):
         qty: Decimal,
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        operations: Optional[Any] = None,
     ) -> WriteActionResult:
+        """Part of a row: the plan 55 split link (idempotent when a key is given).
+        The whole row: the ``link_row`` operation (delete + add, plan 57). The gateway
+        passes ``operations`` (the plan 57 service); without it the plan 55 flow runs."""
+        if operations is not None:
+            op = self._link_operation(operations, tenant_id, company_id, key_id, idempotency_key,
+                                      po_doc_key, po_dtl_key, qty)
+            if op == "link_row":
+                return self._operation(
+                    operations, op, tenant_id, company_id, key_id, idempotency_key,
+                    {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
+                     "so_dtl_key": so_dtl_key, "expected_last_modified": expected_last_modified},
+                )
+            if op == "split_link":
+                return self._operation(
+                    operations, op, tenant_id, company_id, key_id, idempotency_key,
+                    {"po_doc_key": po_doc_key, "po_dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
+                     "so_dtl_key": so_dtl_key, "qty": qty, "expected_last_modified": expected_last_modified},
+                )
         plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty)
         return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+
+    def _link_operation(
+        self, operations: Any, tenant_id: str, company_id: str, key_id: Optional[str],
+        idempotency_key: Optional[str], po_doc_key: int, po_dtl_key: int, qty: Decimal,
+    ) -> Optional[str]:
+        """Which operation a link request runs: a stored key keeps its operation (a
+        replay must not flip because the staged row changed since); else the whole
+        row = ``link_row``, a part of it with a key = ``split_link``, a part without
+        a key = None (the plan 55 flow)."""
+        if idempotency_key is not None:
+            stored = operations.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
+            if stored is not None and stored.op in ("link_row", "split_link"):
+                return stored.op
+        if self._covers_whole_row(tenant_id, company_id, po_doc_key, po_dtl_key, qty):
+            return "link_row"
+        return "split_link" if idempotency_key is not None else None
+
+    def _covers_whole_row(
+        self, tenant_id: str, company_id: str, po_doc_key: int, po_dtl_key: int, qty: Decimal
+    ) -> bool:
+        """The staged PO row has exactly ``qty`` (a whole-row link needs delete + add)."""
+        company = CompanyRepository(self.db).get(tenant_id, company_id)
+        if company is None:
+            return False
+        staged = self.staged.newest(tenant_id, company.id, _PO[1], f"{company.database_name}:{po_doc_key}")
+        row = next((r for r in _lines(staged.raw_json if staged else None) if r.get("DtlKey") == po_dtl_key), None)
+        return row is not None and _dec(row.get("Qty")) == qty
+
+    @staticmethod
+    def _operation(
+        operations: Any, op: str, tenant_id: str, company_id: str, key_id: Optional[str],
+        idempotency_key: Optional[str], params: Dict[str, Any],
+    ) -> WriteActionResult:
+        """Run a plan 57 operation and answer in the plan 55 shape (plus the
+        operation fields); no key given = a fresh one (not idempotent, as before)."""
+        result = operations.run(
+            tenant_id=tenant_id, company_id=company_id, key_id=key_id,
+            idempotency_key=idempotency_key or uuid.uuid4().hex, op=op, params=params,
+        )
+        return WriteActionResult(
+            None, result.outcome, result.error_code, result.message, result.document,
+            operation_id=result.operation_id, warnings=result.warnings,
+            replaced_lines=result.replaced_lines, doc_key=result.doc_key, doc_no=result.doc_no,
+        )
 
     def unlink(
         self,
@@ -240,9 +305,18 @@ class WriteBackService(WriteFrame):
         po_dtl_key: int,
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        operations: Optional[Any] = None,
     ) -> WriteActionResult:
-        plan = _Plan(ACTION_UNLINK, _PO, po_doc_key, po_dtl_key)
-        return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+        """With ``operations`` (the gateway): AutoCount never edits a link in place,
+        so the ``unlink_row`` operation runs. Without it the plan 55 flow."""
+        if operations is None:
+            plan = _Plan(ACTION_UNLINK, _PO, po_doc_key, po_dtl_key)
+            return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+        return self._operation(
+            operations, "unlink_row", tenant_id, company_id, key_id, idempotency_key,
+            {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "expected_last_modified": expected_last_modified},
+        )
 
     def spo_unlink(
         self,
@@ -253,9 +327,18 @@ class WriteBackService(WriteFrame):
         spo_dtl_key: int,
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        operations: Optional[Any] = None,
     ) -> WriteActionResult:
-        plan = _Plan(ACTION_SPO_UNLINK, _SPO, spo_doc_key, spo_dtl_key)
-        return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+        """With ``operations``: the ``spo_unlink_row`` operation (delete + add unlinked)."""
+        if operations is None:
+            plan = _Plan(ACTION_SPO_UNLINK, _SPO, spo_doc_key, spo_dtl_key)
+            return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+        return self._operation(
+            operations, "spo_unlink_row", tenant_id, company_id, key_id, idempotency_key,
+            {"spo_doc_key": spo_doc_key, "spo_dtl_key": spo_dtl_key,
+             "expected_last_modified": expected_last_modified},
+        )
 
     def relocate(
         self,

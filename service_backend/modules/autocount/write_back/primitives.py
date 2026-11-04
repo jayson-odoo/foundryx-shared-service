@@ -66,6 +66,7 @@ Doc = Dict[str, Any]
 DOC_DATE_REQUIRED = "DOC_DATE_REQUIRED"
 DOC_KIND_UNKNOWN = "DOC_KIND_UNKNOWN"
 VENDOR_ERROR = "VENDOR_ERROR"
+VENDOR_REFUSED = "VENDOR_REFUSED"
 FIELD_IGNORED = "FIELD_IGNORED"
 ANSWER_UNPARSEABLE = "ANSWER_UNPARSEABLE"
 QTY_BELOW_TRANSFERRED = "QTY_BELOW_TRANSFERRED"
@@ -129,6 +130,21 @@ def vendor_message(body: Any) -> str:
     text = _URL.sub("", text)
     text = "".join(" " if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else c for c in text)
     return " ".join(text.split())[:300]
+
+
+_GENERIC = "An error has occurred."
+
+
+def is_business_refusal(status: int, body: Any) -> bool:
+    """AutoCount said no with a reason (a credit limit, a transferred quantity, a
+    received line): a JSON error carrying ``ExceptionMessage`` / ``Message``, or a
+    plain-text 4xx. A bare 5xx or an empty answer is a vendor fault instead."""
+    if isinstance(body, dict):
+        message = str(body.get("ExceptionMessage") or "")
+        if not message:
+            message = "" if body.get("Message") == _GENERIC else str(body.get("Message") or "")
+        return bool(message.strip())
+    return isinstance(body, str) and 400 <= status < 500 and bool(body.strip())
 
 
 class PrimitiveService(WriteFrame):
@@ -381,8 +397,9 @@ class PrimitiveService(WriteFrame):
         row.response_status = response.status_code
         row.response_json = _safe_body(response.body)
         if not response.ok:
+            code = VENDOR_REFUSED if is_business_refusal(response.status_code, response.body) else VENDOR_ERROR
             return self._wrap(
-                self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR, message=vendor_message(response.body))
+                self._finish(row, OUTCOME_VENDOR_ERROR, code, message=vendor_message(response.body))
             )
         self.db.commit()
         self._check_deadline(row)

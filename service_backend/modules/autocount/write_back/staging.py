@@ -53,7 +53,8 @@ class DocStager:
         self._sink_factory = sink_factory or self._default_sink
 
     def stage_and_push(
-        self, company: AcCompany, doc: Doc, kind: str, *, skip_unchanged: bool = False
+        self, company: AcCompany, doc: Doc, kind: str, *, skip_unchanged: bool = False,
+        replaced: Optional[Dict[int, int]] = None,
     ) -> StageOutcome:
         """Never raises: the caller's own outcome (a verified write, a fetched
         day) must stand whatever happens here."""
@@ -62,7 +63,7 @@ class DocStager:
             self.db.commit()
             if not changed:
                 return StageOutcome(False, False)
-            return StageOutcome(True, self._push(company, doc, kind, row))
+            return StageOutcome(True, self._push(company, doc, kind, row, replaced))
         except Exception:  # noqa: BLE001
             self.db.rollback()
             logger.exception("autocount write-back staging/push failed")
@@ -103,7 +104,10 @@ class DocStager:
         self.db.flush()
         return row, True
 
-    def _push(self, company: AcCompany, doc: Doc, kind: str, row: AcStagedRecord) -> bool:
+    def _push(
+        self, company: AcCompany, doc: Doc, kind: str, row: AcStagedRecord,
+        replaced: Optional[Dict[int, int]] = None,
+    ) -> bool:
         from modules.autocount.sync import compute_diff
 
         entity_type = ENTITY_BY_KIND[kind]
@@ -114,7 +118,8 @@ class DocStager:
             return False  # SQL-sourced entity: refreshed through SQL, not here
         try:
             _entity, record = map_wrapper_document(
-                self.db, tenant_id=company.tenant_id, company=company, doc=doc, kind=kind
+                self.db, tenant_id=company.tenant_id, company=company, doc=doc, kind=kind,
+                replaced=replaced,
             )
         except WrapperMappingError as exc:
             row.error = str(exc)[:4000]

@@ -52,7 +52,11 @@ from app.db_errors import db_error_in, stored_error_text
 
 from .canonical.base import CanonicalRecord
 from .canonical.documents import (
+    REPLACES_LINE_REF_MIN_CONTRACT,
     CanonicalDocument,
+    CanonicalPurchaseOrder,
+    CanonicalSalesOrder,
+    CanonicalShippingOrder,
     CanonicalLinkedDocument,
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
@@ -354,6 +358,10 @@ AR_OUTSTANDING_CONTRACT_VERSION = ContractVersion(2, 10)
 # Plan 37 (CRM #1988) - the item classes door (contract 2.11). A
 # ``ContractVersion`` for the same two-digit-minor reason as 2.10 above.
 ITEM_CLASSES_CONTRACT_VERSION = ContractVersion(2, 11)
+
+# Plan 57 S5 - ``replaces_line_ref`` on PO / SPO / SO lines (contract 2.12); sent only
+# when the consumer ADVERTISES at least this (Sorento ingest uses ``extra="forbid"``).
+REPLACES_LINE_REF_CONTRACT_VERSION = ContractVersion(*REPLACES_LINE_REF_MIN_CONTRACT)
 
 # plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
 # is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
@@ -827,6 +835,11 @@ class SorentoSink:
             # WRONG fallback branch (a bare call a document's signature does
             # not even accept), masking the actual error as a v1 downgrade.
             if isinstance(record, CanonicalLinkedDocument):
+                out.append(payload(
+                    contract_version=self.contract_version,
+                    advertised_contract=self.advertised_contract_version,
+                ))
+            elif isinstance(record, (CanonicalPurchaseOrder, CanonicalShippingOrder, CanonicalSalesOrder)):
                 out.append(payload(
                     contract_version=self.contract_version,
                     advertised_contract=self.advertised_contract_version,

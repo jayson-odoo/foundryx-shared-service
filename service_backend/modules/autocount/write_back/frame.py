@@ -10,7 +10,7 @@ service share one implementation.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -66,6 +66,12 @@ class WriteActionResult:
     error_code: Optional[str] = None
     message: str = ""
     document: Optional[Doc] = None
+    # plan 57: set only when an operation answered (the plan 55 routes then add them to the body)
+    operation_id: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+    replaced_lines: List[Tuple[int, int]] = field(default_factory=list)
+    doc_key: Optional[int] = None
+    doc_no: Optional[str] = None
 
 
 class _Stop(Exception):
@@ -185,6 +191,8 @@ class WriteFrame:
             raise self._refuse(row, code, message)
         return base_url
 
-    def _stage(self, company: AcCompany, kind: str, doc: Doc) -> None:
+    def _stage(
+        self, company: AcCompany, kind: str, doc: Doc, replaced: Optional[Dict[int, int]] = None
+    ) -> None:
         """Stage the verified read-back and push it once (never changes the outcome)."""
-        DocStager(self.db, self._sink_factory).stage_and_push(company, doc, kind)
+        DocStager(self.db, self._sink_factory).stage_and_push(company, doc, kind, replaced=replaced)

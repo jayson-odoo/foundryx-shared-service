@@ -48,6 +48,7 @@ from modules.autocount.write_back.frame import (
     _dec,
     _lines,
 )
+from modules.autocount.write_back.doc_kinds import KINDS
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService
 from modules.autocount.write_back.reader import DocReadError
@@ -118,6 +119,8 @@ class OperationResult:
     warnings: List[str] = field(default_factory=list)
     replaced_lines: List[Tuple[int, int]] = field(default_factory=list)
     document: Optional[Doc] = None
+    doc_key: Optional[int] = None
+    doc_no: Optional[str] = None
 
 
 @dataclass
@@ -142,6 +145,20 @@ def default_receipt_reader(kind: str, doc: Doc, row: Doc) -> Optional[Decimal]:
     (AQ11), so a hapi document row reads as unknown (None)."""
     value = row.get("TransferedQty")
     return None if value is None else _dec(value)
+
+
+def primitive_answer(res: PrimitiveResult, doc_key: Optional[int] = None) -> Dict[str, Any]:
+    """The gateway answer of a primitive (contract section 4)."""
+    return {
+        "operationId": None, "actionId": res.action_id, "outcome": res.outcome, "errorCode": res.error_code,
+        "message": res.message, "warnings": list(res.warnings), "docKey": res.doc_key or doc_key,
+        "docNo": res.doc_no, "replacedLines": [], "document": res.document,
+    }
+
+
+def _doc_no(document: Optional[Doc], snapshot: Optional[Doc]) -> Optional[str]:
+    number = (document or {}).get("DocNo") or (snapshot or {}).get("docNo")
+    return str(number) if number else None
 
 
 def _json_safe(value: Any) -> Any:
@@ -297,13 +314,15 @@ class OperationService:
             row.id, stored.get("outcome") or row.status, stored.get("errorCode", row.error_code),
             stored.get("message") or "", list(stored.get("warnings") or []),
             [(int(o), int(n)) for o, n in stored.get("replacedLines") or []], stored.get("document"),
+            row.doc_key, _doc_no(stored.get("document"), row.snapshot_json),
         )
 
     def _finish(self, row: AcWriteOperation, status: str, code: Optional[str] = None, *, message: str = "",
                 replaced: Optional[List[Tuple[int, int]]] = None,
                 document: Optional[Doc] = None) -> OperationResult:
         result = OperationResult(
-            row.id, status, code, message, list(self._warnings), list(replaced or []), document
+            row.id, status, code, message, list(self._warnings), list(replaced or []), document,
+            row.doc_key, _doc_no(document, row.snapshot_json),
         )
         row.status, row.error_code = status, code
         row.steps_json = _json_safe(self._steps)
@@ -412,12 +431,10 @@ class OperationService:
             raise _Done(REFUSED, "ITEM_MISMATCH")
         if row.get("UOM") != trow.get("UOM"):
             raise _Done(REFUSED, "UOM_MISMATCH")
-        if defn.target == "SO":
+        if defn.target == "SO":  # AC-57-32 pins the outstanding rule for SO rows only
             used = self.prims._so_linked_qty(company, int(spec.target_dtl_key or 0), fresh_po=doc)
-        else:
-            used = self._spo_linked_qty(company, doc, int(spec.target_dtl_key or 0), spec.dtl_key)
-        if link_qty > payloads.so_outstanding(trow, used):
-            raise _Done(REFUSED, "QTY_ABOVE_OUTSTANDING")
+            if link_qty > payloads.so_outstanding(trow, used):
+                raise _Done(REFUSED, "QTY_ABOVE_OUTSTANDING")
         return tdoc
 
     def _spo_ref(self, company: AcCompany, po_dtl_key: int) -> Optional[str]:
@@ -429,22 +446,6 @@ class OperationService:
             ):
                 return str(raw.get("DocNo") or staged.doc_no or staged.source_ref)
         return None
-
-    def _spo_linked_qty(self, company: AcCompany, fresh_spo: Doc, po_dtl_key: int, own_dtl: int) -> Decimal:
-        """Qty of one PO row already covered by SPO rows: the fresh SPO (minus the
-        row being replaced) plus every other staged, non-cancelled SPO."""
-        own_ref = f"{company.database_name}:{fresh_spo.get('DocKey')}"
-        sources: List[List[Doc]] = [
-            [r for r in fresh_spo.get("Details") or [] if r.get("DtlKey") != own_dtl]
-        ]
-        for staged in self.prims.staged.for_entity(company.tenant_id, company.id, ENTITY_SHIPPING_ORDER):
-            raw = staged.raw_json or {}
-            if raw.get("Cancelled") != "T" and staged.source_ref != own_ref:
-                sources.append(_lines(raw))
-        return sum(
-            (_dec(r.get("Qty")) for lines in sources for r in lines if r.get("FromDocDtlKey") == po_dtl_key),
-            Decimal(0),
-        )
 
     # ── snapshot ─────────────────────────────────────────────────────────────
 
@@ -519,7 +520,7 @@ class OperationService:
             gone = self.prims.delete_line(**self._call(row, company, snap, "delete"), dtl_key=old_key)
             self._step("delete", gone)
             if gone.outcome == OUTCOME_VENDOR_ERROR:  # AutoCount refused: the delete did not land
-                raise _Done(VENDOR_ERROR, VENDOR_REFUSED, gone.message)
+                raise _Done(VENDOR_ERROR, gone.error_code, gone.message)
             self._abort_unless_done(gone)
         add = self.prims.add_line(
             **self._call(row, company, snap, "add"),
@@ -532,7 +533,7 @@ class OperationService:
             return self._recover(row, company, snap, add.error_code or INTERNAL_ERROR, partial)
         new_key = int(add.new_dtl_key)
         document = self._move(row, company, snap, new_key, add.document, snap.get("moveTo") or snap["location"])
-        self.prims._stage(company, snap["kind"], document)
+        self.prims._stage(company, snap["kind"], document, None if partial else {new_key: old_key})
         return self._finish(row, DONE, None, replaced=[] if partial else [(old_key, new_key)], document=document)
 
     def _abort_unless_done(self, res: PrimitiveResult) -> None:
@@ -587,7 +588,7 @@ class OperationService:
             if res.outcome == OUTCOME_DONE and res.new_dtl_key is not None:
                 new_key = int(res.new_dtl_key)
                 document = self._move(row, company, snap, new_key, res.document, snap["location"])
-                self.prims._stage(company, snap["kind"], document)
+                self.prims._stage(company, snap["kind"], document, {new_key: old_key})
                 return self._finish(row, RECOVERED, failed_code, replaced=[(old_key, new_key)], document=document)
         return self._needs_attention(row, company, snap, failed_code)
 
@@ -632,7 +633,9 @@ class OperationService:
         intended = matching(snap["newLink"], want_qty)
         if intended is not None:
             document = self._resume_move(row, company, snap, int(intended["DtlKey"]), doc, snap.get("moveTo") or snap["location"])
-            return self._finish(row, DONE, None, replaced=[] if partial else [(old_key, int(intended["DtlKey"]))],
+            new_key = int(intended["DtlKey"])
+            self.prims._stage(company, snap["kind"], document, None if partial else {new_key: old_key})
+            return self._finish(row, DONE, None, replaced=[] if partial else [(old_key, new_key)],
                                 document=document)
         if partial:
             if _dec(original.get("Qty")) == qty if original else True:
@@ -641,6 +644,7 @@ class OperationService:
         old = matching(snap["oldLink"], qty)
         if old is not None:
             document = self._resume_move(row, company, snap, int(old["DtlKey"]), doc, snap["location"])
+            self.prims._stage(company, snap["kind"], document, {int(old["DtlKey"]): old_key})
             return self._finish(row, RECOVERED, None, replaced=[(old_key, int(old["DtlKey"]))], document=document)
         res = self._recover(row, company, snap, "RESUMED", False)
         if res.outcome == NEEDS_ATTENTION and was == NEEDS_ATTENTION:
@@ -679,6 +683,81 @@ class OperationService:
         status = result.outcome if result.outcome in (DONE, REFUSED, PENDING, VENDOR_ERROR) else (
             PENDING if result.outcome == OUTCOME_MISMATCH else result.outcome)
         return self._finish(row, status, result.error_code, message=result.message, document=result.document)
+
+    # ── gateway helpers (plan 57 S6) ─────────────────────────────────────────
+
+    def capabilities(self, company: AcCompany) -> List[Dict[str, Any]]:
+        """Every primitive per kind and every operation, enabled or not and why
+        (reads the flags now; no AutoCount call). No usable write connection =
+        every entry off with that reason."""
+        base_url, refusal = self.prims._resolve_write_base_url(company)
+        off = None if base_url is not None else (refusal[0] if refusal else WRITE_DISABLED)
+        items: List[Dict[str, Any]] = []
+
+        def entry(op: str, kind: str, enabled: bool) -> None:
+            reason = off or (None if enabled else VENDOR_UNSUPPORTED)
+            items.append({"op": op, "kind": kind, "enabled": reason is None, "reasonCode": reason})
+
+        for kind in KINDS:
+            for primitive in ("create_doc", "edit_doc", "add_line", "delete_line", "cancel_doc"):
+                entry(primitive, kind, capabilities.capable(kind, primitive))
+        for name, defn in OPS.items():
+            entry(name, defn.kind, all(
+                capabilities.capable(defn.kind, p) for p in ("delete_line", "add_line", "edit_doc")))
+        return items
+
+    def run_primitive(
+        self, *, tenant_id: str, company_id: str, key_id: Optional[str], idempotency_key: str,
+        name: str, kind: str, doc_key: Optional[int], params: Dict[str, Any],
+        call: Callable[[], PrimitiveResult],
+    ) -> Dict[str, Any]:
+        """One primitive under an idempotency key: the stored answer on a replay,
+        ``IDEMPOTENCY_CONFLICT`` for another body, else run ``call`` and store the
+        answer. Returns the answer dict (the gateway body)."""
+        label = f"{name}:{kind}"
+        if CompanyRepository(self.db).get(tenant_id, company_id) is None:
+            return primitive_answer(PrimitiveResult(None, OUTCOME_REFUSED, WRITE_DISABLED), doc_key)
+        request_hash = hashlib.sha256(
+            json.dumps({"op": label, "docKey": doc_key, "params": params}, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+        def replay(row: AcWriteOperation) -> Dict[str, Any]:
+            if row.op != label or row.request_hash != request_hash:
+                return primitive_answer(PrimitiveResult(None, OUTCOME_REFUSED, IDEMPOTENCY_CONFLICT), doc_key)
+            if row.status == IN_PROGRESS or not row.result_json:
+                return primitive_answer(PrimitiveResult(None, OUTCOME_REFUSED, OPERATION_IN_PROGRESS), doc_key)
+            return dict(row.result_json)
+
+        existing = self.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
+        if existing is not None:
+            return replay(existing)
+        row = AcWriteOperation(
+            tenant_id=tenant_id, company_id=company_id, key_id=key_id, idempotency_key=idempotency_key,
+            request_hash=request_hash, op=label, doc_type=kind, doc_key=doc_key, status=IN_PROGRESS,
+        )
+        try:
+            self.ops.add(row)
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            raced = self.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
+            if raced is not None:
+                return replay(raced)
+            return primitive_answer(PrimitiveResult(None, OUTCOME_REFUSED, DOC_BUSY), doc_key)
+        status, code = PENDING, INTERNAL_ERROR
+        answer = primitive_answer(PrimitiveResult(None, OUTCOME_PENDING, INTERNAL_ERROR), doc_key)
+        try:
+            result = call()
+            answer = primitive_answer(result, doc_key)
+            status, code = result.outcome, result.error_code
+        except Exception:  # noqa: BLE001 - the in_progress lock must never be stranded
+            logger.exception("autocount primitive call failed (%s)", row.id)
+            self.db.rollback()
+        finally:
+            row = self.ops.get(tenant_id, company_id, row.id) or row
+            row.status, row.error_code, row.result_json = status, code, _json_safe(answer)
+            self.db.commit()
+        return answer
 
     # ── needs_attention mail (AC-57-35) ──────────────────────────────────────
 
