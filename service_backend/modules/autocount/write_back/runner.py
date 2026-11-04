@@ -854,7 +854,13 @@ class _QtRun:
         qt = self._qt_ready(case)
         if qt is None:
             return
-        line = self._line(1, FromDocType="QT", FromDocNo=qt.doc_no, FromDocDtlKey=self.line_of(qt))
+        # db3 (live run 4 Nov): a row that carries a quotation link is dropped unless the
+        # vendor-shaped transfer fields ride along, and it then takes the quotation row's
+        # unit price and location (Q02 / Q03 left 850.0 at BRW-AM), so those are sent as they are.
+        line = self._line(1, FromDocType="QT", FromDocNo=qt.doc_no, FromDocDtlKey=self.line_of(qt),
+                          UnitPrice=850.0, Location="BRW-AM",
+                          YourPONo="", ProjNo="", FOCQty=0, Discount="", TaxCode="", Desc2="",
+                          FullTransferOption=" ", FullTransferFromDocList="")
         res = self.call(case, lambda: self.prims.create_doc(
             **self._args("SO"), header=self._header(DocNo=f"FXT-{self.tag}-SO"), lines=[line]))
         case.observed = self._note(res) + (f" warnings {','.join(res.warnings)}" if res.warnings else "")
@@ -875,7 +881,10 @@ class _QtRun:
             header_changes={"Ref": f"{self.tag} so"},
             line_changes=[{"DtlKey": self.line_of(so), "Qty": 2, "UnitPrice": 800.0}]))
         add = self.call(case, lambda: self.prims.add_line(
-            **self._args("SO"), doc_key=int(so.doc_key or 0), doc_date=self.today, line=self._line(2)))
+            **self._args("SO"), doc_key=int(so.doc_key or 0), doc_date=self.today,
+            line=self._line(2, YourPONo="", ProjNo="", FOCQty=0, Discount="", TaxCode="", Desc2="",
+                            FromDocType="", FromDocNo="", FromDocDtlKey=0,
+                            FullTransferOption=" ", FullTransferFromDocList="")))
         case.observed = f"edit {self._note(edit)}; add {self._note(add)}"
         case.status = PASS if edit.outcome == "done" and add.outcome == "done" else FAIL
 
