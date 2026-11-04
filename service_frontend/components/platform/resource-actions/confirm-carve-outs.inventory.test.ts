@@ -59,6 +59,10 @@ const CARVE_OUTS = [
   // its encrypted secrets for good (irreversible) - typed product-key confirm,
   // owner-approved on PR #119 (Q4).
   'app/(protected)/settings/claude-connector/components/use-connector-product-form.tsx',
+  // Plan 56 C (AC-56-52): erasing a contact for PDPA is an irreversible hard delete -
+  // typed ERASE confirm, one definition shared by the contacts list row menu and the
+  // contact detail menu.
+  'app/(protected)/omnichannel/contacts/components/use-contact-erase-action.tsx',
 ];
 
 /**
@@ -206,6 +210,7 @@ describe('AC-DLA-43/47 confirm: is reserved to the carve-outs + the disclosed pe
       'components/platform/app-store/use-module-list-config.tsx',
       'app/(protected)/platform/tenants/components/use-tenant-actions.tsx',
       'app/(protected)/documents/shares/page.tsx',
+      'app/(protected)/omnichannel/contacts/components/use-contact-erase-action.tsx',
     ];
     for (const file of typed) {
       const src = fs.readFileSync(path.join(repoRoot, file), 'utf8');
