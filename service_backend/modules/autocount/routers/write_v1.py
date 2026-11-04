@@ -42,6 +42,7 @@ from .pull_v1 import (
     _require_scope,
     _safe_echo,
     idempotency_key_header,
+    optional_iso_date,
 )
 
 router = APIRouter()
@@ -125,14 +126,7 @@ def _vendor_date(value: Any, name: str) -> str:
     return f"{day.isoformat()}T00:00:00"
 
 
-def _optional_date(raw: WriteBody, name: str) -> Optional[date]:
-    value = raw.get(name)
-    if value is None:
-        return None
-    try:
-        return date.fromisoformat(str(value))
-    except ValueError:
-        raise _bad("INVALID_REQUEST", f"{name} must be a date (YYYY-MM-DD).") from None
+_optional_date = optional_iso_date
 
 
 def _object(raw: WriteBody, name: str, *, required: bool = False) -> Dict[str, Any]:
@@ -373,7 +367,7 @@ def cancel_document(
 # ── operations ───────────────────────────────────────────────────────────────
 
 def _operation_route(
-    path: str, op: str, fields: Tuple[Tuple[str, str], ...], action: str
+    path: str, op: str, fields: Tuple[Tuple[str, str], ...], action: str, target_date: str
 ) -> None:
     """Register ``POST path`` running operation ``op``; ``fields`` = (wire name,
     operation param) pairs, all integer keys."""
@@ -386,6 +380,7 @@ def _operation_route(
         def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
             params: Dict[str, Any] = {param: _int_field(raw, wire) for wire, param in fields}
             params["doc_date"] = _optional_date(raw, "docDate")
+            params["target_doc_date"] = _optional_date(raw, target_date)  # soDocDate / poDocDate
             params["expected_last_modified"] = _optional_text(raw, "expectedLastModified")
             result = ops.run(
                 tenant_id=key.tenant_id, company_id=company.id, key_id=key.id,
@@ -402,9 +397,9 @@ def _operation_route(
 _PO_KEYS = (("poDocKey", "doc_key"), ("poDtlKey", "dtl_key"), ("soDocKey", "so_doc_key"), ("soDtlKey", "so_dtl_key"))
 _SPO_KEYS = (("spoDocKey", "spo_doc_key"), ("spoDtlKey", "spo_dtl_key"),
              ("poDocKey", "po_doc_key"), ("poDtlKey", "po_dtl_key"))
-_operation_route("/po-links/relink", "relink_row", _PO_KEYS, "write_relink")
-_operation_route("/spo-links", "spo_link_row", _SPO_KEYS, "write_spo_link")
-_operation_route("/spo-links/relink", "spo_relink_row", _SPO_KEYS, "write_spo_relink")
+_operation_route("/po-links/relink", "relink_row", _PO_KEYS, "write_relink", "soDocDate")
+_operation_route("/spo-links", "spo_link_row", _SPO_KEYS, "write_spo_link", "poDocDate")
+_operation_route("/spo-links/relink", "spo_relink_row", _SPO_KEYS, "write_spo_relink", "poDocDate")
 
 
 @router.get("/write-operations/{operationId}")

@@ -31,7 +31,7 @@ import logging
 import re
 from decimal import Decimal
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
@@ -485,6 +485,17 @@ def _write_body(result: WriteActionResult) -> Dict[str, object]:
     return body
 
 
+def optional_iso_date(raw: WriteBody, name: str) -> Optional["date"]:
+    """An optional ``YYYY-MM-DD`` field; anything else is 422 ``INVALID_REQUEST``."""
+    value = raw.get(name)
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        raise PullGatewayError(422, "INVALID_REQUEST", f"{name} must be a date (YYYY-MM-DD).") from None
+
+
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[\x20-\x7e]{1,128}$")
 
 
@@ -602,7 +613,7 @@ def link_po_row(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
             so_doc_key=_int_field(raw, "soDocKey"), so_dtl_key=_int_field(raw, "soDtlKey"),
-            qty=_qty_field(raw),
+            qty=_qty_field(raw), so_doc_date=optional_iso_date(raw, "soDocDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 

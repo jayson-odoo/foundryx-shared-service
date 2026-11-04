@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import date
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -111,6 +112,7 @@ class _Plan:
     so_doc_key: Optional[int] = None
     so_dtl_key: Optional[int] = None
     qty: Optional[Decimal] = None
+    so_doc_date: Optional[date] = None  # AC-57-44: DocDate of an SO that is not staged
 
 
 
@@ -231,6 +233,7 @@ class WriteBackService(WriteFrame):
         key_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         operations: Optional[Any] = None,
+        so_doc_date: Optional[date] = None,
     ) -> WriteActionResult:
         """Part of a row: the plan 55 split link (idempotent when a key is given).
         The whole row: the ``link_row`` operation (delete + add, plan 57). The gateway
@@ -242,43 +245,60 @@ class WriteBackService(WriteFrame):
                 return self._operation(
                     operations, op, tenant_id, company_id, key_id, idempotency_key,
                     {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
-                     "so_dtl_key": so_dtl_key, "expected_last_modified": expected_last_modified},
+                     "so_dtl_key": so_dtl_key, "qty": qty, "whole_row": True, "target_doc_date": so_doc_date,
+                     "expected_last_modified": expected_last_modified},
                 )
             if op == "split_link":
                 return self._operation(
                     operations, op, tenant_id, company_id, key_id, idempotency_key,
                     {"po_doc_key": po_doc_key, "po_dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
-                     "so_dtl_key": so_dtl_key, "qty": qty, "expected_last_modified": expected_last_modified},
+                     "so_dtl_key": so_dtl_key, "qty": qty, "target_doc_date": so_doc_date,
+                     "expected_last_modified": expected_last_modified},
                 )
-        plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty)
+        plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty, so_doc_date)
         return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
 
     def _link_operation(
         self, operations: Any, tenant_id: str, company_id: str, key_id: Optional[str],
         idempotency_key: Optional[str], po_doc_key: int, po_dtl_key: int, qty: Decimal,
     ) -> Optional[str]:
-        """Which operation a link request runs: a stored key keeps its operation (a
-        replay must not flip because the staged row changed since); else the whole
-        row = ``link_row``, a part of it with a key = ``split_link``, a part without
-        a key = None (the plan 55 flow)."""
+        """Which operation a link request runs (AC-57-44). A stored key keeps its
+        operation (a replay must not flip because the row changed since). Else the
+        qty is compared with the FRESH row qty: equal = ``link_row`` (delete + add),
+        anything else = the split link (an operation when a key is given, else the
+        plan 55 flow). An invalid qty, or a row that cannot be read, takes the plan
+        55 flow, which refuses it with its own recorded code and no further request."""
         if idempotency_key is not None:
             stored = operations.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
             if stored is not None and stored.op in ("link_row", "split_link"):
                 return stored.op
-        if self._covers_whole_row(tenant_id, company_id, po_doc_key, po_dtl_key, qty):
+        fresh = self._fresh_row_qty(tenant_id, company_id, po_doc_key, po_dtl_key, qty)
+        if fresh is not None and fresh == qty:
             return "link_row"
         return "split_link" if idempotency_key is not None else None
 
-    def _covers_whole_row(
+    def _fresh_row_qty(
         self, tenant_id: str, company_id: str, po_doc_key: int, po_dtl_key: int, qty: Decimal
-    ) -> bool:
-        """The staged PO row has exactly ``qty`` (a whole-row link needs delete + add)."""
+    ) -> Optional[Decimal]:
+        try:
+            payloads.validate_qty(qty)
+        except WriteRefusal:
+            return None
         company = CompanyRepository(self.db).get(tenant_id, company_id)
         if company is None:
-            return False
+            return None
+        base_url, _refusal = self._resolve_write_base_url(company)
         staged = self.staged.newest(tenant_id, company.id, _PO[1], f"{company.database_name}:{po_doc_key}")
-        row = next((r for r in _lines(staged.raw_json if staged else None) if r.get("DtlKey") == po_dtl_key), None)
-        return row is not None and _dec(row.get("Qty")) == qty
+        day = _doc_date(staged.raw_json if staged else None)
+        if base_url is None or day is None:
+            return None
+        self.db.commit()  # no transaction open during the GET
+        try:
+            fresh = self._reader_factory(base_url).get_document("PO", po_doc_key, day)
+        except DocReadError:
+            return None
+        row = next((r for r in fresh.get("Details") or [] if r.get("DtlKey") == po_dtl_key), None)
+        return None if row is None else _dec(row.get("Qty"))
 
     @staticmethod
     def _operation(
@@ -459,7 +479,7 @@ class WriteBackService(WriteFrame):
             self._gate_whole_row(plan, company, doc, row)
         so_doc = None
         if plan.so_doc_key is not None:
-            so_doc = self._read_fresh(_SO, plan.so_doc_key, company, row, reader)
+            so_doc = self._read_fresh(_SO, plan.so_doc_key, company, row, reader, plan.so_doc_date)
         body = self._build(plan, company, row, doc, so_doc)
         row.before_json = doc
         row.request_json = body
@@ -507,10 +527,11 @@ class WriteBackService(WriteFrame):
         company: AcCompany,
         row: AcWriteAction,
         reader: AutoCountDocReader,
+        date_hint: Optional[date] = None,
     ) -> Doc:
         ref = f"{company.database_name}:{doc_key}"
         staged = self.staged.newest(company.tenant_id, company.id, kind[1], ref)
-        doc_date = _doc_date(staged.raw_json if staged else None)
+        doc_date = _doc_date(staged.raw_json if staged else None) or date_hint
         if doc_date is None:
             raise self._refuse(row, self._missing_code(kind, company, ref))
         self._check_deadline(row)

@@ -130,6 +130,7 @@ class _Spec:
     target_dtl_key: Optional[int] = None
     doc_date: Optional[date] = None
     expected_last_modified: Optional[str] = None
+    target_doc_date: Optional[date] = None  # AC-57-44: soDocDate / poDocDate for an unstaged target
 
 
 class _Done(Exception):
@@ -146,6 +147,12 @@ def primitive_answer(res: PrimitiveResult, doc_key: Optional[int] = None) -> Dic
         "message": res.message, "warnings": list(res.warnings), "docKey": res.doc_key or doc_key,
         "docNo": res.doc_no, "replacedLines": [], "document": res.document,
     }
+
+
+def _as_date(value: Any) -> Optional[date]:
+    if value is None or isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
 
 
 def _doc_no(document: Optional[Doc], snapshot: Optional[Doc]) -> Optional[str]:
@@ -286,14 +293,14 @@ class OperationService:
             return _Spec(
                 int(params["po_doc_key"]), int(params["po_dtl_key"]),
                 int(params["so_doc_key"]), int(params["so_dtl_key"]),
-                params.get("doc_date"), params.get("expected_last_modified"),
+                params.get("doc_date"), params.get("expected_last_modified"), params.get("target_doc_date"),
             )
         names = _PARAM_NAMES[OPS[op].kind]
         target = OPS[op].target
         return _Spec(
             int(params[names[0]]), int(params[names[1]]),
             int(params[names[2]]) if target else None, int(params[names[3]]) if target else None,
-            params.get("doc_date"), params.get("expected_last_modified"),
+            params.get("doc_date"), params.get("expected_last_modified"), params.get("target_doc_date"),
         )
 
     def _replay(self, row: AcWriteOperation, op: str, request_hash: str) -> OperationResult:
@@ -341,7 +348,9 @@ class OperationService:
         if base_url is None:
             raise _Done(REFUSED, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
-        if op == SPLIT_LINK:
+        if op == SPLIT_LINK or (
+            op == "link_row" and not params.get("whole_row") and self._is_part_of_row(company, base_url, spec, params)
+        ):
             return self._split_link(row, company, spec, params)
         defn = OPS[op]
         for primitive in ("delete_line", "add_line", "edit_doc"):
@@ -358,6 +367,22 @@ class OperationService:
         self.db.commit()
         return self._steps_run(row, company, op, defn, spec, snapshot)
 
+    def _is_part_of_row(self, company: AcCompany, base_url: str, spec: _Spec, params: Dict[str, Any]) -> bool:
+        """A ``link_row`` that names a qty below the FRESH row qty is the split link
+        (no delete needed); anything else, or a row that cannot be read, is a whole row."""
+        if params.get("qty") is None:
+            return False
+        found, _code = self.prims.find_date(company, "PO", spec.doc_key, spec.doc_date)
+        if found is None:
+            return False
+        self.db.commit()
+        try:
+            fresh = self.prims._reader_factory(base_url).get_document("PO", spec.doc_key, found)
+        except DocReadError:
+            return False
+        row = next((r for r in fresh.get("Details") or [] if r.get("DtlKey") == spec.dtl_key), None)
+        return row is not None and _dec(row.get("Qty")) != _dec(params["qty"])
+
     def _check_not_busy(self, company: AcCompany, doc_key: int, kind: str) -> None:
         """Standalone actions and young pending operations hold the document; an
         operation's own actions do not (the operation row carries its age, AC-57-43)."""
@@ -372,7 +397,7 @@ class OperationService:
     def _read(self, company: AcCompany, reader: Any, kind: str, doc_key: int,
               doc_date: Optional[date]) -> Tuple[date, Doc]:
         """AC-57-20 date, then one fresh GET with no transaction open."""
-        found, code = self.prims.find_date(company, kind, doc_key, doc_date)
+        found, code = self.prims.find_date(company, kind, doc_key, _as_date(doc_date))
         if found is None:
             raise _Done(REFUSED, code)
         self.db.commit()
@@ -425,7 +450,7 @@ class OperationService:
     def _guard_target(self, company: AcCompany, reader: Any, defn: _OpDef, spec: _Spec, doc: Doc,
                       row: Doc, link_qty: Decimal) -> Doc:
         assert defn.target and spec.target_doc_key is not None
-        _date, tdoc = self._read(company, reader, defn.target, spec.target_doc_key, None)
+        _date, tdoc = self._read(company, reader, defn.target, spec.target_doc_key, spec.target_doc_date)
         if tdoc.get("Cancelled") == "T":
             raise _Done(REFUSED, "DOC_CANCELLED")
         trow = next((r for r in tdoc.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), None)
@@ -721,7 +746,7 @@ class OperationService:
             tenant_id=company.tenant_id, company_id=company.id, key_id=row.key_id,
             po_doc_key=spec.doc_key, po_dtl_key=spec.dtl_key, so_doc_key=int(spec.target_doc_key or 0),
             so_dtl_key=int(spec.target_dtl_key or 0), qty=qty,
-            expected_last_modified=spec.expected_last_modified,
+            expected_last_modified=spec.expected_last_modified, so_doc_date=_as_date(spec.target_doc_date),
         )
         if result.action_id:
             action = self.db.query(AcWriteAction).filter(
