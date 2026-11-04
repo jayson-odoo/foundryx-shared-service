@@ -236,8 +236,11 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   (`fix/sorento-contract-version-field`): the ESB compares MAJORS only (`2` vs `"2.1"` agree); a 200
   that names no `version` reads as major 1; the endpoint is ADVISORY - the gate for v2 fields is the
   connection's own `sorentoContractVersion` (a select on the Sorento connection form, `1 (legacy)` /
-  `2`, new connections default to `2`, an existing connection with no stored value runs at 1 until
-  edited), and `SorentoSink.fetch_contract` only feeds a non-blocking preview warning when Sorento
+  `2`, new connections default to `2`; since INGEST-LINE-DROP-GUARD (2026-11-04) a connection with
+  no stored or unparseable value also runs at 2 via `resolve_contract_version`, and a connection
+  explicitly at 1 refuses to push or dry-run a document whose lines contract 1 would strip
+  (`product_code`; billing, AR outstanding and the four linked documents are exempt) with a loud
+  `SorentoSinkError`), and `SorentoSink.fetch_contract` only feeds a non-blocking preview warning when Sorento
   advertises a HIGHER major than the connection is set to. The connection's Test refuses the
   opposite case (chosen major above the advertised one: "Sorento advertises contract 1; choose
   version 1 or upgrade Sorento"); a Sorento with no contract endpoint at all is reported, not failed.
