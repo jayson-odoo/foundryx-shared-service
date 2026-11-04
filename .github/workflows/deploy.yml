@@ -237,6 +237,14 @@ jobs:
         test-frontend,
       ]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # ONE prod deploy at a time. Two main pushes a minute apart used to run two
+    # blue/green deploys at once (both read the same .active_color and brought
+    # up the same standby colour). Queue, never cancel: cancelling a run
+    # mid-switch could leave Caddy and .active_color disagreeing. The host-side
+    # flock in blue_green_deploy.sh also covers manual runs on the server.
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -392,7 +400,7 @@ jobs:
             [ -n "$APP_DOMAIN" ] || { echo "APP_DOMAIN repository variable is not set"; exit 1; }
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; curl -fsS -o /dev/null http://127.0.0.1:\$BE/health && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
+            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; HEALTH=\$(curl -fsS http://127.0.0.1:\$BE/health) && echo \"health=\$HEALTH\" && echo \"\$HEALTH\" | grep -q '\"git_sha\": *\"${{ github.sha }}\"' && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
             curl --fail --silent --show-error --output /dev/null "https://$APP_DOMAIN/"
             echo "public HTTPS certificate verified"
 
