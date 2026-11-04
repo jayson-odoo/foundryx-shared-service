@@ -115,7 +115,9 @@ def test_lease_client_is_built_with_bounded_timeouts(monkeypatch):
 
     seen = _capture_from_url(monkeypatch)
     RedisLeaseClient()
-    _bounded(seen, 1.0, 2.0)
+    _bounded(seen, 1.0, 10.0)
+    # a short Redis stall must not look like a lost lease: the read timeout rides it out
+    assert seen["socket_timeout"] >= 5.0, seen
 
 
 def test_lease_acquire_timeout_raises_coordination_unavailable(session_factory):
