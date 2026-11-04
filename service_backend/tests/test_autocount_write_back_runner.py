@@ -32,7 +32,8 @@ DB3 = "https://ac.example.test/api/db3"
 DB1 = "https://ac.example.test/api/db1"
 DBNAME = "AED_RUN"
 SECRETS = {"appId": "app-secret-run", "password": "pw-secret-run"}
-CASE_IDS = [f"C{n:02d}" for n in range(1, 13)]
+CASE_IDS = [f"C{n:02d}" for n in range(0, 13)]
+DEBTOR = "300-S057"
 CREDITOR = "400-N004"
 
 
@@ -73,15 +74,24 @@ POST_ROW_FIELDS = {
 
 
 class Wrapper:
-    def __init__(self, db, *, ignore_shipping_po: bool = False, drop_rows: bool = False):
+    def __init__(self, db, *, ignore_shipping_po: bool = False, drop_rows: bool = False, drop_so_rows: bool = False):
         self.db = db
         self.ignore_shipping_po = ignore_shipping_po
-        self.drop_rows = drop_rows  # vendor answers 200 but saves no rows
+        self.drop_rows = drop_rows  # vendor answers 200 but saves no PO rows
+        self.drop_so_rows = drop_so_rows  # same for a created SO
         self.bodies: List[Dict[str, Any]] = []
         self.requests: List[str] = []  # "METHOD full-url"
         self.violations: List[str] = []
         so = _load("so_SO389293.json")
-        so.update(DebtorCode="300-C001", DebtorName="Example Customer", Cancelled="F", LastModified="2026-01-26T10:00:00.00")
+        so.update(
+            DebtorCode=DEBTOR, DebtorName="Example Customer", Cancelled="F", LastModified="2026-01-26T10:00:00.00",
+            Ref="", Description="SALES ORDER", DisplayTerm="C.O.D.", SalesAgent="AGENT",
+            InvAddr1="1 Example Road", InvAddr2="", InvAddr3="", InvAddr4="", Phone1="000", Fax1="",
+            Attention="Example Contact", BranchCode="", DeliverAddr1="1 Example Road", DeliverAddr2="",
+            DeliverAddr3="", DeliverAddr4="", DeliverPhone1="000", DeliverFax1="", DeliverContact="",
+            CurrencyCode="MYR", CurrencyRate=1.0, Remark1="", Remark2="", Remark3="", Remark4="",
+            RefDocNo="", ShipVia="", ShipInfo="", InclusiveTax="F", YourPODate="0001-01-01T00:00:00",
+        )
         self.sos: List[Dict[str, Any]] = [so]
         self.pos: List[Dict[str, Any]] = [_load("po_202602_S0007.json")]
         self.next_doc = 50000
@@ -114,6 +124,8 @@ class Wrapper:
         self.bodies.append(body)
         if _has_ancient_date(body):  # vendor behaviour (plan 55 live run, C07)
             return httpx.Response(500, json={"ExceptionMessage": "SqlDateTime overflow. Must be between 1/1/1753 12:00:00 AM and 12/31/9999 11:59:59 PM."})
+        if request.method == "POST" and name == "newsalesorder":
+            return self._new_so(body)
         if request.method == "POST" and name == "newpurchaseorder":
             return self._new(body)
         if request.method == "PUT" and name == "editpurchaseorderbydockey":
@@ -138,6 +150,26 @@ class Wrapper:
         doc["Details"] = rows
         self._touch(doc)
         self.pos.append(doc)
+        return httpx.Response(200, json={"DocKey": doc["DocKey"], "DocNo": doc["DocNo"]})
+
+    def so(self, doc_no: str) -> Dict[str, Any]:
+        return next(d for d in self.sos if d["DocNo"] == doc_no)
+
+    def _new_so(self, body):
+        """POST /NewSalesOrder: fresh DocKey / DtlKeys; a row missing UOM, UnitPrice or
+        DeliveryDate is silently dropped (200 with no rows), as for a PO."""
+        tmpl = {k: v for k, v in self.sos[0].items() if k != "Details"}
+        doc = {**tmpl, **{k: v for k, v in body.items() if k != "Details"}}
+        doc.update(DocKey=self.next_doc, Cancelled="F", DebtorName="Example Customer")
+        self.next_doc += 1
+        incomplete = any(not r.get("UOM") or r.get("UnitPrice") is None or not r.get("DeliveryDate") for r in body["Details"])
+        rows = []
+        for r in ([] if (incomplete or self.drop_so_rows) else body["Details"]):
+            rows.append({**r, "DtlKey": self.next_dtl, "DocKey": doc["DocKey"]})
+            self.next_dtl += 1
+        doc["Details"] = rows
+        self._touch(doc)
+        self.sos.append(doc)
         return httpx.Response(200, json={"DocKey": doc["DocKey"], "DocNo": doc["DocNo"]})
 
     def _edit(self, body):
@@ -195,7 +227,7 @@ def _setup(db, *, base_url=DB3, **wrapper_kw):
     return SimpleNamespace(company=company, wrapper=Wrapper(db, **wrapper_kw), sink=Sink(), bases=[])
 
 
-def _run(db, s, tag="T1"):
+def _run(db, s, tag="T1", **kw):
     def client_factory(url):
         s.bases.append(url)
         return AutoCountWriteClient(url, transport=s.wrapper.transport)
@@ -204,7 +236,7 @@ def _run(db, s, tag="T1"):
         db, tenant_id=DEFAULT_TENANT_ID, company_id=s.company.id, creditor_code=CREDITOR,
         run_tag=tag, client_factory=client_factory,
         reader_factory=lambda url: AutoCountDocReader(url, transport=s.wrapper.transport),
-        sink_factory=lambda *a, **k: s.sink,
+        sink_factory=lambda *a, **k: s.sink, **kw,
     )
 
 
@@ -249,6 +281,12 @@ def test_ac_55_50_c02_pulls_so_before_po(db):
     assert first_po > 0
 
 
+def _so_keys(s, tag="T1"):
+    """DtlKeys of the test SO the suite created in C00 (row 1 = 10 @BRW-AM, row 2 = 5)."""
+    rows = s.wrapper.so(f"FXT-{tag}-SO")["Details"]
+    return rows[0]["DtlKey"], rows[1]["DtlKey"]
+
+
 def _put_count(s):
     return len([r for r in s.wrapper.requests if r.startswith("PUT")])
 
@@ -265,10 +303,13 @@ def test_ac_55_50_c03_is_a_two_write_split_ending_at_the_so_location(db):
     puts = [st for st in c.steps if st.method == "PUT"]
     assert len(puts) == 2 and all(p.path == "/EditPurchaseOrderbydockey" and p.status_code == 200 for p in puts)
     # first write: the vendor forced the new linked row to HQ; second write moved it
+    so1, so2 = _so_keys(s)
     first_after = {(r["Qty"], r["Location"], r.get("FromSODtlKey")) for r in puts[0].after_rows}
-    assert (40, "HQ", 0) in first_after and (10, "HQ", 11989) in first_after
+    assert (40, "HQ", 0) in first_after and (10, "HQ", so1) in first_after
     second_after = {(r["Qty"], r["Location"], r.get("FromSODtlKey")) for r in puts[1].after_rows}
-    assert (10, "BRW-AM", 11989) in second_after
+    assert (10, "BRW-AM", so1) in second_after
+    new_row = next(r for r in puts[0].request_json["Details"] if r["DtlKey"] == 0)
+    assert (new_row["FromDocNo"], new_row["FromDocDtlKey"]) == ("FXT-T1-SO", so1)
     row = db.get(AcWriteAction, c.action_id)
     assert row.action == "link" and row.outcome == "done" and row.error_code is None
 
@@ -291,9 +332,10 @@ def test_ac_55_50_c08_second_split_of_the_40_row_ends_at_brw_am(db):
     assert c.status == "PASS" and c.action_id
     po = s.wrapper.po("FXT-T1-1")["Details"]
     linked = {r["FromSODtlKey"]: r for r in po if r["FromSODtlKey"]}
-    assert set(linked) == {11989, 11992}
-    assert linked[11989]["Qty"] == 10 and linked[11989]["Location"] == "BRW-AM"
-    assert linked[11992]["Qty"] == 5 and linked[11992]["Location"] == "BRW-AM"
+    so1, so2 = _so_keys(s)
+    assert set(linked) == {so1, so2}
+    assert linked[so1]["Qty"] == 10 and linked[so1]["Location"] == "BRW-AM"
+    assert linked[so2]["Qty"] == 5 and linked[so2]["Location"] == "BRW-AM"
     assert sorted(r["Qty"] for r in po if not r["FromSODtlKey"]) == [10, 35]
     assert sum(r["Qty"] for r in po) == 60
 
@@ -326,7 +368,7 @@ def test_ac_55_50_c10_spo_unlink_is_refused_vendor_unsupported_and_no_spo_is_cre
     assert c.status == "PASS" and "VENDOR_UNSUPPORTED" in c.observed
     assert not c.steps
     assert db.get(AcWriteAction, c.action_id).action == "spo_unlink"
-    assert _post_count(s) == 1  # only C01's PO create
+    assert _post_count(s) == 2  # C00's SO create and C01's PO create
     assert not [b for b in s.wrapper.bodies if b.get("ShippingPO") == "T"]
 
 
@@ -378,6 +420,7 @@ def test_ac_55_51_report_has_a_section_per_case_with_evidence(db):
     for cid in CASE_IDS:
         assert re.search(rf"^#+ .*{cid}", md, re.M), cid
     assert "PASS" in md and "/EditPurchaseOrderbydockey" in md and "/NewPurchaseOrder" in md
+    assert "/NewSalesOrder" in md
     assert "FXT-T1-1" in md and "202602-S0007" in md
     assert "QTY_ABOVE_OUTSTANDING" in md and "VENDOR_UNSUPPORTED" in md
 
@@ -409,7 +452,7 @@ def test_ac_55_51_report_marks_fail_and_skipped_honestly(db):
 # ---- vendor findings (live run 2026-11-04): create body + read-back check ----------
 
 def _create_bodies(s):
-    return [b for b in s.wrapper.bodies if "DocNo" in b and "DocKey" not in b]
+    return [b for b in s.wrapper.bodies if "DocNo" in b and "DocKey" not in b and "CreditorCode" in b]
 
 
 def _assert_complete_create_body(body, *, spo=False):
@@ -476,3 +519,116 @@ def test_fake_wrapper_rejects_ancient_dates_and_drops_incomplete_rows(db):
     thin = {"DocNo": "X2", "DocDate": "2026-11-04T00:00:00", "Details": [{"ItemCode": "A", "Qty": 1}]}
     assert client.post("/NewPurchaseOrder", thin).status_code == 200
     assert s.wrapper.po("X2")["Details"] == []
+
+
+# ---- C00: the suite creates its own test SO (repeatable db3 suite) ---------------------
+
+SO_HEADER_KEYS = {
+    "DocNo", "DocDate", "DebtorCode", "DebtorName", "Ref", "Description", "DisplayTerm", "SalesAgent",
+    "InvAddr1", "InvAddr2", "InvAddr3", "InvAddr4", "Phone1", "Fax1", "Attention", "BranchCode",
+    "DeliverAddr1", "DeliverAddr2", "DeliverAddr3", "DeliverAddr4", "DeliverPhone1", "DeliverFax1",
+    "DeliverContact", "CurrencyCode", "CurrencyRate", "Remark1", "Remark2", "Remark3", "Remark4",
+    "RefDocNo", "ShipVia", "ShipInfo", "InclusiveTax",
+}
+SO_ROW_FIELDS = {
+    "ItemCode", "Location", "Description", "YourPONo", "ProjNo", "UOM", "UserUOM", "Qty", "FOCQty",
+    "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Desc2", "FromDocType", "FromDocNo",
+    "FromDocDtlKey", "FullTransferOption", "FullTransferFromDocList",
+}
+
+
+def _so_bodies(s):
+    return [b for b in s.wrapper.bodies if "DebtorCode" in b and "DocKey" not in b]
+
+
+def test_c00_creates_a_test_so_with_a_complete_body(db):
+    s = _setup(db)
+    res = _run(db, s, tag="T1")
+    c = _case(res, "C00")
+    assert c.status == "PASS"
+    post = next(st for st in c.steps if st.method == "POST")
+    assert post.path == "/NewSalesOrder"
+    body = _so_bodies(s)[0]
+    assert set(body) - {"Details"} <= SO_HEADER_KEYS
+    assert "YourPODate" not in body and not _has_ancient_date(body)
+    assert body["DocNo"] == "FXT-T1-SO" and body["DebtorCode"] == DEBTOR
+    assert re.match(r"^20\d\d-\d\d-\d\dT", body["DocDate"])
+    assert body["DisplayTerm"] == "C.O.D." and body["CurrencyCode"] == "MYR"
+    rows = body["Details"]
+    assert [(r["ItemCode"], r["Qty"], r["Location"]) for r in rows] == [("SRTKT38SS", 10, "BRW-AM"), ("SRTKT38SS", 5, "BRW-AM")]
+    for r in rows:
+        assert SO_ROW_FIELDS <= set(r), SO_ROW_FIELDS - set(r)
+        assert re.match(r"^20\d\d-\d\d-\d\dT", r["DeliveryDate"]) and r["UOM"] == "UNIT"
+        assert r["FromDocType"] == "" and r["FromDocNo"] == "" and r["FromDocDtlKey"] == 0
+        assert r["YourPONo"] == ""
+    assert len(s.wrapper.so("FXT-T1-SO")["Details"]) == 2
+
+
+def test_c00_header_comes_from_so389293s_read_back(db):
+    s = _setup(db)
+    _run(db, s)
+    body = _so_bodies(s)[0]
+    src = s.wrapper.so("SO389293")
+    for k in ("DisplayTerm", "SalesAgent", "CurrencyCode", "CurrencyRate", "InclusiveTax"):
+        assert body[k] == src[k]
+
+
+def test_c00_debtor_code_defaults_and_can_be_overridden(db):
+    s = _setup(db)
+    _run(db, s)
+    assert _so_bodies(s)[0]["DebtorCode"] == "300-S057"
+    s2 = _setup(db)
+    _run(db, s2, tag="T2", debtor_code="300-X999")
+    assert _so_bodies(s2)[0]["DebtorCode"] == "300-X999"
+
+
+def test_c00_cli_has_a_debtor_flag(capsys):
+    from modules.autocount.write_back.runner import main
+
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert "--debtor" in capsys.readouterr().out
+
+
+def test_c00_200_with_dropped_so_rows_is_fail_and_dependents_skipped(db):
+    s = _setup(db, drop_so_rows=True)
+    res = _run(db, s)
+    c00 = _case(res, "C00")
+    assert c00.status == "FAIL" and "rows dropped" in c00.observed
+    assert _case(res, "C02").status == "SKIPPED" and "C00" in _case(res, "C02").observed
+    for cid in ("C03", "C04", "C08", "C11"):
+        assert _case(res, cid).status == "SKIPPED", cid
+    assert not [r for r in s.wrapper.requests if r.startswith("PUT")]
+
+
+def test_c02_pulls_so_before_po_and_stages_the_test_so(db):
+    from modules.autocount.models import AcStagedRecord
+
+    s = _setup(db)
+    res = _run(db, s)
+    assert _case(res, "C02").status == "PASS"
+    so_key = s.wrapper.so("FXT-T1-SO")["DocKey"]
+    db.expire_all()
+    ref = f"{DBNAME}:{so_key}"
+    assert db.query(AcStagedRecord).filter(
+        AcStagedRecord.company_id == s.company.id, AcStagedRecord.entity_type == "sales_order",
+        AcStagedRecord.source_ref == ref,
+    ).count() == 1
+
+
+def test_c05_over_link_targets_the_test_so_row_covered_by_c03(db):
+    s = _setup(db)
+    res = _run(db, s)
+    c = _case(res, "C05")
+    assert c.status == "PASS" and "QTY_ABOVE_OUTSTANDING" in c.observed
+    assert not [st for st in c.steps if st.method == "PUT"]
+    assert db.get(AcWriteAction, c.action_id).error_code == "QTY_ABOVE_OUTSTANDING"
+
+
+def test_suite_is_repeatable_second_run_with_a_new_tag_passes_again(db):
+    s = _setup(db)
+    first = _run(db, s, tag="R1")
+    second = _run(db, s, tag="R2")
+    for res in (first, second):
+        bad = {c.case_id: (c.status, c.observed) for c in res.cases if c.status != "PASS"}
+        assert bad == {}, bad
