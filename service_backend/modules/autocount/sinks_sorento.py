@@ -591,6 +591,33 @@ def contract_major(version: Any, *, default: Optional[int] = None) -> Optional[i
     return int(head) if head.isdigit() else default
 
 
+# INGEST-LINE-DROP-GUARD - what a Sorento connection with NO stored (or an
+# unparseable) ``sorentoContractVersion`` speaks. Contract 2 is the floor every
+# live CRM advertises; contract 1 strips ``product_code`` from every document
+# line and the CRM then drops those lines silently, so an unset value must
+# never mean 1. An operator can still pick 1 explicitly; the sink then refuses
+# documents with lines (``SorentoSink._refuse_contract_1_line_drop``).
+DEFAULT_CONTRACT_VERSION = 2
+
+
+def resolve_contract_version(stored: Any) -> int:
+    """The connection's contract MAJOR: the stored select value ("1"/"2", or a
+    hand-set "2.0"/"2.1") when it is a version >= 1, else
+    ``DEFAULT_CONTRACT_VERSION``. Shared by the sink factory and the
+    provider's Test so the two never resolve the same config differently."""
+    major = contract_major(stored)
+    return major if major is not None and major >= 1 else DEFAULT_CONTRACT_VERSION
+
+
+def _doc_label(record: Any) -> str:
+    """A document's operator-facing number (its DocNo), else its source_ref."""
+    for attr in ("source_doc_no", "so_number", "po_number", "spo_number", "doc_no"):
+        value = getattr(record, attr, None)
+        if value:
+            return str(value)
+    return str(getattr(record, "source_ref", "") or "?")
+
+
 @dataclass(frozen=True)
 class SorentoContractInfo:
     """``GET /external/contract``'s full answer (S2, sprint-5/08 review
@@ -722,12 +749,13 @@ class SorentoSink:
         timeout: float = 30.0,
         transport: Optional[httpx.BaseTransport] = None,
         max_rate_limit_waits: int = 2,
-        # AC-02-14 - the connection's OWN `sorentoContractVersion` setting
-        # (default 1, pre-addendum). This is the AUTHORITATIVE gate on every
+        # AC-02-14 - the connection's OWN `sorentoContractVersion` setting.
+        # This is the AUTHORITATIVE gate on every
         # push (`sink_payload(contract_version=)`) - Sorento's own advertised
         # `/contract` version (`fetch_contract`) is ADVISORY ONLY and never
-        # auto-flips it.
-        contract_version: int = 1,
+        # auto-flips it. Default `DEFAULT_CONTRACT_VERSION` (2) - the same
+        # value an unset connection resolves to (INGEST-LINE-DROP-GUARD).
+        contract_version: int = DEFAULT_CONTRACT_VERSION,
         # Records per ingest POST. Clamped to `SORENTO_MAX_BATCH` (their
         # per-request limit); the factory passes
         # `settings.autocount_sink_batch_size` (default 200). Every chunk
@@ -811,6 +839,35 @@ class SorentoSink:
 
     # ── projection ──────────────────────────────────────────────────────────
 
+    def _refuse_contract_1_line_drop(self, records: Sequence[CanonicalRecord]) -> None:
+        """INGEST-LINE-DROP-GUARD - never strip a line's identity silently.
+
+        At contract 1 a document line loses ``product_code`` and its linkage
+        refs (``CanonicalDocumentLine.FALLBACK_FIELDS``). The CRM matches a
+        line's product by code only, so it drops every such line and says
+        nothing. Refuse the whole batch loudly instead (the caller returns it
+        to review), naming the documents and the fix.
+        """
+        if self.contract_version >= 2:
+            return
+        affected = [
+            _doc_label(r)
+            for r in records
+            if isinstance(r, CanonicalDocument)
+            and r.CONTRACT_1_STRIPS_LINES
+            and r.lines
+        ]
+        if not affected:
+            return
+        shown = ", ".join(affected[:5]) + (f" and {len(affected) - 5} more" if len(affected) > 5 else "")
+        raise SorentoSinkError(
+            f"Refusing to push {len(affected)} {self.entity_type} document(s) ({shown}): "
+            "this Sorento connection is set to contract version 1, which strips "
+            "product_code from every document line, and Sorento drops a line it "
+            "cannot match by product_code. Set the connection's Contract version "
+            "to 2 (Settings > Integrations > Sorento > Edit), run Test, then retry."
+        )
+
     def _to_records(self, records: Sequence[CanonicalRecord]) -> List[Dict[str, Any]]:
         """Project each canonical record to EXACTLY Sorento's field set.
 
@@ -818,6 +875,7 @@ class SorentoSink:
         model, AC-14-14) so provenance and locally-useful fields never cross the
         wire and trip ``extra="forbid"``.
         """
+        self._refuse_contract_1_line_drop(records)
         out: List[Dict[str, Any]] = []
         for record in records:
             payload = getattr(record, "sink_payload", None)
@@ -1827,18 +1885,15 @@ def sorento_sink_from_connection(
         batch_size=settings.autocount_sink_batch_size,
         transport=transport,
         # AC-02-14 - the connection's own authoritative gate. The integrations
-        # form stores the select's value as the STRING "1" / "2"; ``int`` on
-        # ``contract_major`` resolves "2" (and a hand-set "2.0") to 2; a
-        # value that is not a version at all ("abc" - the config PATCH merges
-        # verbatim, nothing validates it against the select's options) falls
-        # back to 1 instead of raising ValueError inside ``sink_for_company``.
-        # Default 1 (pre-addendum) so an existing connection with no such key
-        # configured behaves exactly as it always has - there is deliberately
-        # NO backfill of this key: an existing tenant opts into contract 2 by
-        # picking it on the connection's edit form (Settings > Integrations >
-        # Sorento), where the provider's Test then checks the choice against
-        # the contract Sorento advertises.
-        contract_version=contract_major(config.get("sorentoContractVersion"), default=1) or 1,
+        # form stores the select's value as the STRING "1" / "2"; "2" (and a
+        # hand-set "2.0"/"2.1") resolves to 2. INGEST-LINE-DROP-GUARD: no
+        # stored value, or one that is not a version ("abc" - the config PATCH
+        # merges verbatim), resolves to contract 2, never 1. Contract 1 strips
+        # product_code from every document line and the CRM drops such lines
+        # silently, so a connection saved before the field existed must not
+        # quietly run at 1. Picking 1 explicitly is still possible; the sink
+        # then refuses documents with lines (see `_refuse_contract_1_line_drop`).
+        contract_version=resolve_contract_version(config.get("sorentoContractVersion")),
         # feat/sink-concurrency-ui - the connection's own override, else the
         # platform default resolved lazily inside the sink (see
         # `SorentoSink._resolve_concurrency`). Passed through verbatim

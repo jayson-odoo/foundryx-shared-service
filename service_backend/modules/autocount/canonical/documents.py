@@ -445,6 +445,12 @@ class CanonicalDocument(CanonicalRecord):
     # a genuine `False` (or `0`) still reaches the wire. Use this, never
     # `OMIT_WHEN_EMPTY_FIELDS`, for a boolean/numeric field.
     OMIT_WHEN_NONE_FIELDS: ClassVar[Tuple[str, ...]] = ()
+    # INGEST-LINE-DROP-GUARD - True when this document's lines lose their
+    # identity (``product_code`` and the linkage refs) at contract 1. The CRM
+    # matches a line's product by CODE only, so such a line is dropped there
+    # without a trace; ``SorentoSink`` refuses to push these at contract 1.
+    # Billing / AR shapes never depended on the contract major (False).
+    CONTRACT_1_STRIPS_LINES: ClassVar[bool] = True
 
     @field_validator("status")
     @classmethod
@@ -1009,6 +1015,8 @@ class CanonicalBillingDocument(CanonicalDocument):
     """AutoCount IV / CS / CN / DN -> CRM ``billing_documents`` (contract 2.6).
     Subclassed per entity only to fix ``entity_type`` (= ``document_type``)."""
 
+    CONTRACT_1_STRIPS_LINES: ClassVar[bool] = False
+
     entity_type: str = ENTITY_INVOICE
 
     doc_no: Optional[str] = Field(None, max_length=100)
@@ -1155,6 +1163,8 @@ class CanonicalArOutstanding(CanonicalDocument):
     as_of: datetime = Field(default_factory=_now_utc)
     total_outstanding: Optional[Decimal] = None
     lines: List[CanonicalArOutstandingDocument] = Field(default_factory=list)
+
+    CONTRACT_1_STRIPS_LINES: ClassVar[bool] = False
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "customer_ref", "customer_code", "as_of", "total_outstanding",

@@ -9,9 +9,10 @@ Resource shell with no bespoke UI.
 
 Three fields: the base URL, the contract version the ESB should speak to
 this Sorento (``sorentoContractVersion``, a select - ``1`` legacy or ``2``;
-new connections default to ``2``, an existing connection with no stored value
-keeps behaving as ``1`` until the operator picks one on the edit form - there
-is no backfill, see ``sinks_sorento.sorento_sink_from_connection``), and the
+new connections default to ``2``, and a connection with no stored value also
+runs at ``2`` - INGEST-LINE-DROP-GUARD, since contract 1 strips every document
+line's ``product_code`` and the CRM drops those lines silently; see
+``sinks_sorento.resolve_contract_version``), and the
 integration's own API key. Auth is ``X-API-Key`` (never ``Authorization:
 Bearer``, never the legacy ``EXTERNAL_API_KEY`` - its hash is seeded onto the
 *n8n* integration, so presenting it would misattribute every write,
@@ -43,7 +44,7 @@ from app.config import settings
 from app.database import release_read_transactions
 from app.integrations.base import TestResult
 
-from .sinks_sorento import SINK_CONCURRENCY_KEY, contract_major
+from .sinks_sorento import DEFAULT_CONTRACT_VERSION, SINK_CONCURRENCY_KEY, contract_major
 
 SORENTO_PROVIDER_KEY = "sorento"
 # Connection category. Distinct from AutoCount's ``erp`` (which points AT
@@ -157,9 +158,10 @@ class SorentoProvider:
         api_key = str(credentials.get("apiKey", "")).strip()
         if not api_key:
             return TestResult(ok=False, message="Enter the Sorento API key.")
-        # Absent = 1, exactly as the sink resolves it (an existing connection
-        # saved before the field existed keeps its legacy behaviour).
-        chosen = str(config.get(CONTRACT_VERSION_KEY) or "1").strip()
+        # Absent = 2, exactly as the sink resolves it
+        # (``resolve_contract_version``, INGEST-LINE-DROP-GUARD): the Test
+        # verifies the version the sink will actually speak.
+        chosen = str(config.get(CONTRACT_VERSION_KEY) or DEFAULT_CONTRACT_VERSION).strip()
         chosen_major = contract_major(chosen)
         if chosen_major is None:
             return TestResult(
