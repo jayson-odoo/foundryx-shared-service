@@ -516,7 +516,7 @@ Call this when one of your staff opens the conversation. It takes no body. It do
 }
 ```
 
-A contact that exists always answers `200`, and `unreadCount` is `0` afterwards even when a receipt failed. `messageId` is the same `id` as on `MessageItem`. `receipts` has one item per channel the customer has written on, and is `[]` when there is nothing to acknowledge. An unknown contact answers `404 contact_not_found`, like the other contact routes.
+A contact that exists answers `200` unless Meta rate limits a channel (see below), and `unreadCount` is `0` afterwards even when a receipt failed. `messageId` is the same `id` as on `MessageItem`. `receipts` has one item per channel the customer has written on, and is `[]` when there is nothing to acknowledge. An unknown contact answers `404 contact_not_found`, like the other contact routes.
 
 | `status` | Meaning | What to do |
 |----|----|----|
@@ -528,7 +528,7 @@ A contact that exists always answers `200`, and `unreadCount` is `0` afterwards 
 
 Each channel is handled on its own, so one `failed` never blocks another channel. This route creates no message and fires no webhook.
 
-When Meta rate limits a channel's read receipt, the route answers `429 meta_rate_limited` with a `Retry-After` header (§10) after it has still tried the other channels: every other channel's receipt goes out, and a repeat call answers `already_sent` for those. Call again after the wait to retry the throttled channel.
+When Meta rate limits a channel's read receipt, the route answers `429 meta_rate_limited` with a `Retry-After` header (§10) after it has still tried the other channels. The body is the error envelope, with no `receipts`. By then `unreadCount` is already `0`, and every other channel was tried: a receipt that went out answers `already_sent` on a repeat call, and the others answer as in the table. When several channels are throttled, `Retry-After` is the longest of their waits (30 seconds for a channel where Meta gave none). Call again after the wait to retry the throttled channel.
 
 
 ---
