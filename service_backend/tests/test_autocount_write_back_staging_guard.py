@@ -1,7 +1,8 @@
 """Plan 57 (RED): AC-57-22 write connection only on a test company; staging never
 overwrites another job's rows.
 
-(a) ``set_write_connection`` refuses ``WRITE_COMPANY_NOT_TEST`` (company unchanged) when the
+(a) ``set_write_connection`` (staged rows count only for purchase_order / shipping_order / sales_order;
+masters of any job never block) refuses ``WRITE_COMPANY_NOT_TEST`` (company unchanged) when the
 company has ANY ``ac_entity_config`` with ``source_impl == "sql_db"`` or ANY
 ``ac_staged_record`` whose ``job_id`` is not ``STAGING_JOB_ID``; the CLI prints
 ``error: WRITE_COMPANY_NOT_TEST`` and returns 2.
@@ -78,10 +79,21 @@ def test_ac_57_22_any_sql_db_entity_config_refuses(fresh, entity):
     _refused(fresh, call)
 
 
-def test_ac_57_22_a_staged_row_of_another_job_refuses(fresh):
-    _row(fresh, SYNC_JOB)
+@pytest.mark.parametrize("entity", ["purchase_order", "shipping_order", "sales_order"])
+def test_ac_57_22_a_staged_document_row_of_another_job_refuses(fresh, entity):
+    _row(fresh, SYNC_JOB, entity=entity)
     _conn, call = _set(fresh)
     _refused(fresh, call)
+
+
+@pytest.mark.parametrize("entity", ["product", "customer", "supplier", "warehouse", "item_class"])
+def test_ac_57_22_staged_masters_of_another_job_do_not_block(fresh, entity):
+    _row(fresh, SYNC_JOB, ref=f"AED_TEST:M-{entity}", entity=entity)  # an HTTP master task's row
+    conn, call = _set(fresh)
+    call()
+    fresh.db.expire_all()
+    fresh.db.refresh(fresh.company)
+    assert fresh.company.write_connection_id == conn.id
 
 
 def test_ac_57_22_clean_company_gets_the_connection(fresh):
