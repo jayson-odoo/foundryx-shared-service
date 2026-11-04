@@ -4,6 +4,67 @@ Book: db3 only. Runs on 4 Nov 2026, newest first: run 3b (self-contained suite, 
 run 3a (blocked by state), run 2 (fixed bodies), run 1 (first attempt), then the probes P1 to P9 that explain
 what the wrapper does not apply. Nothing was ever deleted or cancelled.
 
+## Our side verified
+
+Read-only GETs on db3 (by DocDate), raw rows as returned, only the rows named in this report, header lines
+limited to DocKey, DocNo and DocDate. Every DtlKey exists on the DocKey and with the item, quantity and location
+this report claims; no difference found.
+
+SO SO389293 (DocKey 11988, DocDate 2026-01-26):
+```
+{"DtlKey": 11989, "DocKey": 11988, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+{"DtlKey": 11990, "DocKey": 11988, "ItemCode": "SRTKS7090", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+{"DtlKey": 11992, "DocKey": 11988, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+{"DtlKey": 11993, "DocKey": 11988, "ItemCode": "SRTKS7090", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+{"DtlKey": 11995, "DocKey": 11988, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 9.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+{"DtlKey": 11996, "DocKey": 11988, "ItemCode": "SRTKS7090", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 9.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+```
+
+SO FXT-1104d-SO (DocKey 12038, DocDate 2026-11-04):
+```
+{"DtlKey": 12041, "DocKey": 12038, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+```
+
+PO 202602-S0007 (DocKey 12008, DocDate 2026-02-04):
+```
+{"DtlKey": 12009, "DocKey": 12008, "ItemCode": "SRTKS7090", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 1.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 0, "FromSODocList": ""}
+{"DtlKey": 12011, "DocKey": 12008, "ItemCode": "SRTKS7090", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "HQ", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 11990, "FromSODocList": "SO389293"}
+{"DtlKey": 12013, "DocKey": 12008, "ItemCode": "SRTKS7090", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "HQ", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 11993, "FromSODocList": "SO389293"}
+{"DtlKey": 12015, "DocKey": 12008, "ItemCode": "SRTKS7090", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 9.0, "Location": "HQ", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 11996, "FromSODocList": "SO389293"}
+```
+
+PO FXT-1104b-1 (DocKey 12024, DocDate 2026-11-04):
+```
+{"DtlKey": 12025, "DocKey": 12024, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 40.0, "Location": "HQ", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 0, "FromSODocList": ""}
+{"DtlKey": 12026, "DocKey": 12024, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 0, "FromSODocList": ""}
+{"DtlKey": 12028, "DocKey": 12024, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "BRW-AM", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 11989, "FromSODocList": "SO389293"}
+{"DtlKey": 12031, "DocKey": 12024, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "HQ", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 11992, "FromSODocList": "SO389293"}
+```
+
+PO FXT-1104d-1 (DocKey 12042, DocDate 2026-11-04):
+```
+{"DtlKey": 12044, "DocKey": 12042, "ItemCode": "SRTKT38SS", "UOM": "UNIT", "UserUOM": "UNIT", "Qty": 10.0, "Location": "HQ", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0, "FromSODtlKey": 0, "FromSODocList": ""}
+```
+
+Checks:
+
+- (a) The PUT door: the vendor document shows only `PUT /EditQuotationbydockey`. Our `PUT /EditPurchaseOrderbydockey`
+  was named by analogy and is not shown in the vendor document; it is proven live: it answers status 200
+  "Done Edit." and applies edits, for example the split rows of C03 and C08 in run 3b (15:48:35 and 15:48:44, rows
+  12046 and 12048 created and moved) and the P4 location move (15:14:46, row 12028 to BRW-AM).
+- (b) DocKey and DtlKey are never mixed up: the 7 request bodies stored in the action log all carry the header
+  DocKey of the PO they edit (equal to the action's DocKey). Every Details DtlKey is 0 or a DtlKey of that same PO. The
+  only DtlKeys not present in the document before the action are 12046 and 12048, the second write of a split
+  (C03, C08 in run 3b): they are the rows the action's own first write created on the same PO (DocKey 12042),
+  read back above. The direct probes (P1 to P9, P2-2, P7a-2 to P7c-2) edited rows 12013 (DocKey 12008), 12026,
+  12028, 12031 (DocKey 12024) and 12044 (DocKey 12042); each of those DtlKeys is shown above on that DocKey.
+  No exception.
+- (c) Item and UOM match on every link try: C03 (run 2) and C03/C08 (run 3b) link a new SRTKT38SS UNIT row to
+  SO389293 row 11989 and to FXT-1104d-SO rows 12039 and 12040 (all SRTKT38SS UNIT); P2, P5.1 to P5.3, P6 and P7a-c
+  link SRTKT38SS UNIT rows to SO389293 row 11992 (SRTKT38SS UNIT); P7a-2, P7b-2, P7c-2 and P2-2 link row 12044
+  (SRTKT38SS UNIT) to FXT-1104d-SO row 12041 (SRTKT38SS UNIT). No mismatch. (The earlier refused links that paired
+  an SRTKS7090 row with an SRTKT38SS row never reached AutoCount.)
+
 ## Summary: what works on db3 today and what is gated pending AutoCount
 
 | Area | Works today | Gated, pending AutoCount | Evidence |
