@@ -111,3 +111,15 @@ right link (or none). We are building our side now so that your delete API plugs
     (DocKey 12067, Ref `P-DOC1-FXT1104q`), which our probe created by mistake with a wrong DocNo, and
     quotation QT-000001 (DocKey 12069, Ref `P-DOC2-FXT1104q`, our test of `DocNo "<<New>>"`). We cannot
     cancel through the API today and never delete. Your sales order SO390188 was not touched.
+
+## Sales order line with a linked purchase order line (db3, 4 Nov 2026, FXT-1104r-SO1 / FXT-1104r-PO1)
+
+35. Cutting such a line below the linked qty is refused with HTTP 500 and the clear message "The quantity of
+    the item code ... is less than the quantity it was partially transferred to Purchase Order, save
+    aborted." Will your delete API refuse deleting that sales order line the same way (status and message),
+    and refuse deleting a purchase order line that is received (GRN) or on a Shipping PO?
+36. Changing the ItemCode of that linked sales order line was ACCEPTED (200): the line now reads another item
+    while the purchase order line stays linked to it. Should AutoCount refuse an item change on a line that
+    has a linked purchase order line? (We never send item changes on existing lines.)
+37. Business refusals arrive as HTTP 500 with `ExceptionMessage` (credit limit, transferred qty). Could they
+    use 4xx, so a refusal is told apart from a server fault?

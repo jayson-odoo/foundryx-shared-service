@@ -31,3 +31,25 @@ shows the sanitised summary. Times are UTC (add 8 h for Malaysia time). Rows rea
 - Cancel is not possible through the API today; our cancel stays switched off until you add a door (AQ2).
 - A Sales Order row taken from a quotation row keeps `FromDocType` / `FromDocNo` but not the row key, and
   the quotation shows no transfer (AQ31); we report that as a warning, never as a failure.
+
+## Sales order line linked to a purchase order line (4 Nov 2026, db3, UTC)
+
+Question: what happens when a sales order line that a purchase order line is linked to is cut or changed?
+A true delete can only be tested once your delete API ships; these are the edits possible today. Test
+documents FXT-1104r-SO1 (DocKey 12085: row A 12086 qty 10, row B 12087 qty 5, both BRW-AM) and
+FXT-1104r-PO1 (DocKey 12083: row 12084 cut to 10 HQ unlinked, row 12089 qty 10 linked to SO row 12086).
+Nine writes, every one recorded exactly.
+
+| Probe | Time | Call | Status | AutoCount answer | Observed |
+|---|---|---|---|---|---|
+| P-SL0a | 10:18:32 | POST /NewSalesOrder, debtor 301-B018 | 500 | `This account had violated the credit limit. You are not allow to save.` | not created; a clear business error (retried with debtor 300-S057: 200, DocKey 12085) |
+| P-SL0b | 10:18:35 | POST /NewPurchaseOrder FXT-1104r-PO1 | 200 | `DocNo=FXT-1104r-PO1 ,DocKey=12083 ... Created Successful.` | row 12084 20 HQ |
+| P-SL0c | 10:18:57 | PUT /EditPurchaseOrderbydockey: row 12084 to 10, new row 10 linked to SO row 12086 | 200 | `... Done Edit.` | new row 12089 reads `FromSODtlKey 12086`; the sales order shows no change (no transferred or to-document field) |
+| P-SL1 | 10:19:13 | PUT /EditSalesOrderbydockey: row 12086 Qty 0 | 500 | `The quantity of the item code SRTKT38SS is less than the quantity it was partially transferred to Purchase Order, save aborted.` | refused; sales order unchanged; PO link kept |
+| P-SL2 | 10:19:14 | same, Qty 4 (below the 10 linked) | 500 | same message | refused; unchanged |
+| P-SL3 | 10:19:16 | same row, ItemCode changed to SRTKS7090 | 200 | `... Done Edit.` | ACCEPTED: the SO row now reads SRTKS7090 while the PO row stays linked to it (AQ36) |
+| P-SL4 | 10:19:17 | restore Qty 10, ItemCode SRTKT38SS | 200 | `... Done Edit.` | restored; link intact |
+| P-SL5 | 10:19:18 | control: unlinked row 12087 Qty 0 | 200 | `... Done Edit.` | row reads 0; totals fall |
+
+So today AutoCount refuses, with a clear message, any cut of a sales order line below what purchase order
+lines have taken from it. We expect a delete of such a line to be refused the same way (AQ35).
