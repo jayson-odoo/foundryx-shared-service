@@ -32,7 +32,7 @@ def _body_read_errors() -> Tuple[type, ...]:
 
 
 def _is_transport_error(exc: BaseException) -> bool:
-    """True when the bucket could not be reached or answered 5xx (retryable)."""
+    """True when the bucket could not be reached or answered 5xx or 429 (retryable)."""
     from botocore.exceptions import ClientError, ConnectionError as BotoConnectionError
     from botocore.exceptions import HTTPClientError
     from urllib3.exceptions import HTTPError as Urllib3HTTPError
@@ -182,7 +182,7 @@ class S3CompatibleAdapter:
         streams them SAME-ORIGIN (no presigned redirect → no bucket-CORS
         preflight, which browsers 403 against R2/S3). Missing object →
         FileNotFoundError. A bucket that cannot be reached (connection or
-        timeout errors, a 5xx answer) → StorageUnavailable, a clean retry."""
+        timeout errors, a 5xx or 429 answer) → StorageUnavailable, a clean retry."""
         try:
             obj = self.client.get_object(Bucket=self.bucket, Key=key)
         except Exception as exc:  # noqa: BLE001 - classified below, chain kept
