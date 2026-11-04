@@ -32,10 +32,11 @@ _PENDING_PREFIX = PENDING + ":"
 
 logger = logging.getLogger(__name__)
 
-# Compare-and-set / compare-and-delete: act only while the slot still holds this
-# request's own pending mark.
+# Compare-and-set / compare-and-delete: act only while the slot holds this request's
+# own pending mark (finalize also when the slot is empty, so a late id keeps the replay).
 _FINALIZE_LUA = (
-    "if redis.call('GET', KEYS[1]) == ARGV[1] then "
+    "local v = redis.call('GET', KEYS[1]) "
+    "if v == ARGV[1] or not v then "
     "redis.call('SET', KEYS[1], ARGV[2], 'EX', tonumber(ARGV[3])) return 1 end return 0"
 )
 _RELEASE_LUA = (
@@ -152,7 +153,8 @@ class IdempotencyStore:
             except Exception:  # noqa: BLE001
                 logger.warning("idempotency store unreachable during finalize; falling back to process memory")
         with self._memory_lock:
-            if self._memory_get(k) == _pending_mark(token):
+            current = self._memory_get(k)
+            if current is None or current == _pending_mark(token):
                 self._memory[k] = message_id
                 self._pending_expiry.pop(k, None)
 
