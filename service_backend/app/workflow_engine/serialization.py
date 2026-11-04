@@ -342,6 +342,11 @@ def drain_serialized_runs(
                 return {"admitted": True, "drained": drained, "stalled": run_id}
             last_run_id = run_id
             heartbeat.current_run_id = run_id
+            if heartbeat.lost.is_set():
+                # The thread sets lost then reads the run id; we set the run id
+                # then read lost, so one of us always sees the other.
+                heartbeat.current_run_id = None
+                break
             try:
                 execute_run(db, run_id)
             except SoftTimeLimitExceeded:
