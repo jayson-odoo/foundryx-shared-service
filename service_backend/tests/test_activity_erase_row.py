@@ -104,6 +104,24 @@ def test_ac_59_03_case_and_encoded_forms_are_masked_the_same_way(rig, segment):
     _assert_masked(_only(rig.sf), "+60100005903")
 
 
+@pytest.mark.parametrize(
+    "prefix,form,number",
+    [
+        ("%20", "phone%3A%2B{n}", "+60100005931"),
+        ("%C2%A0", "phone:+{n}", "+60100005932"),
+        ("%0B", "phone:+{n}", "+60100005933"),
+        ("%E2%80%83", "PHONE:+{n}", "+60100005934"),
+        ("%E3%80%80", "Phone:+{n}", "+60100005935"),
+    ],
+)
+def test_ac_59_03_padded_phone_identifier_is_masked_too(rig, prefix, form, number):
+    _contact(rig.sf, rig.ws, number)
+    segment = prefix + form.format(n=number[1:])
+    res = rig.client.delete(f"{BASE}/{segment}", headers=rig.hdr)
+    assert res.status_code == 200, res.text
+    _assert_masked(_only(rig.sf), number)
+
+
 # AC-59-04 (control)
 def test_ac_59_04_bad_and_revoked_key_write_no_row(rig, client):
     number = "+60100005904"
