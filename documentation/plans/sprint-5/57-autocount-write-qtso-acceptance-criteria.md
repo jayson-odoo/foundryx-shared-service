@@ -35,6 +35,7 @@ builder -> ONE vendor write -> GET back -> verify -> one `ac_write_action` row -
 | AC-57-17 | [BE] Cancel document (flag): the edit door with the full header and `Cancelled "T"` [probe][AQ2]; read-back `Cancelled "T"`, else `mismatch` |
 | AC-57-18 | [BE] Refused before any HTTP, stable codes: edit / add / delete / cancel on a cancelled document `DOC_CANCELLED`; cancel of a QT whose header names a target document (`ToDocType`) or of an SO with PO lines linked to it or delivered lines `DOC_HAS_TRANSFERS`; delete of an SO line that PO lines link to `ROW_HAS_TRANSFERS`; SO line qty edited below its linked qty `QTY_BELOW_TRANSFERRED`; `DOC_STALE`; `DOC_BUSY`; `ROW_NOT_FOUND`; `DOC_KIND_MISMATCH` |
 | AC-57-19 | [BE] Every vendor call is recorded on its action row exactly: method, path (no host), request body, response status and body, before and after documents; no host, key or credential anywhere in the row, logs or answer |
+| AC-57-20 | [BE] Finding a document by DocKey (the wrapper reads by date only): the caller's optional `docDate`, else the staged record's DocDate, else the DocDate of our last confirmed read-back of that document (action log); none known = `DOC_DATE_REQUIRED` before any HTTP; a GET that misses the DocKey on that date = `DOC_NOT_FOUND` (staff may have changed the date in AutoCount) |
 
 ## C. Operations (CRM picks which; SS owns how)
 
