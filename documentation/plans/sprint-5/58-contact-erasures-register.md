@@ -12,6 +12,7 @@ An Admin erases a contact from the staff menu, or an integration erases one with
 - 2a: rows are kept, no age purge. They hold no erased personal data.
 - 3a: no screen now; viewer filed as BL-SS-350.
 - 4a: size L minus the mock: migration probed on a dev copy before review, security-reviewer runs.
+- Plan review (crew, 5 Nov): approved with uninstall option (a): the register follows the tenant's omnichannel data; module uninstall and a platform tenant purge remove it with the rest, no change to the sweep.
 
 ## Today (9c2110c1)
 
@@ -34,7 +35,7 @@ An Admin erases a contact from the staff menu, or an integration erases one with
 - `erase(..., *, actor: EraseActor)` and `erase_in_tenant(..., *, actor: EraseActor)`: required keyword, no default (AC-58-16).
 - Inside the existing `try` (before `self.db.commit()` at `:99`): `ContactEraseRepository.add_erasure(...)` (pure SQLAlchemy, `db.add` + `flush`) with the counts `_erase_rows` returned and the same `erased_at` the result carries, so the row and the response can never differ (AC-58-10/11). A failed insert falls into the same `except` -> rollback -> re-raise (AC-58-12).
 - Staff route passes `EraseActor.staff(current_user.id)`; `PublicGatewayService.erase_contact` gains `api_key_id` and the API route passes `api_ws.key_id`.
-- `bootstrap.uninstall_tenant` already deletes every `OmniBase` table's rows by `tenant_id` (`bootstrap.py:938-940`): the register is covered with no change (AC-58-17). "Kept" (ruling 2a) therefore means for the life of the tenant's omnichannel data: an uninstall or a platform tenant purge removes it with everything else (decision taken here, flagged in the plan review).
+- `bootstrap.uninstall_tenant` already deletes every `OmniBase` table's rows by `tenant_id` (`bootstrap.py:938-940`): the register is covered with no change (AC-58-17). "Kept" (ruling 2a) therefore means for the life of the tenant's omnichannel data: an uninstall or a platform tenant purge removes it with everything else (crew ruling (a) at plan review).
 
 ### Docs (`[T]`)
 
@@ -50,7 +51,7 @@ An Admin erases a contact from the staff menu, or an integration erases one with
 
 ## Order and gates
 
-1. Plan review (crew; lavish markup) before any code.
+1. Plan review (crew; lavish markup) before any code. Done 5 Nov: approved, uninstall option (a).
 2. Tester writes red tests for S0 + S1 from this UAC (test list below), committed alone as `test(red): ...`; red proof in a clean copy.
 3. Coder (one seat) S0 then S1 until green; control list = every test file that calls `ContactEraseService`, `erase_contact`, the staff erase route, `uninstall_tenant`, or the omnichannel migrations.
 4. Migration probe on a dev copy (S0 above).
