@@ -4,6 +4,39 @@ Book: db3 only. Two runs on 4 Nov 2026 with the same suite of 12 cases. Run 1 hi
 (findings 5 and 6 below). Run 2 used fixed request bodies (empty dates omitted, complete create body) and
 exposes the link and unlink behaviour of the wrapper.
 
+## Documents created or edited in db3
+
+Every write request our runs sent to db3, one row per document per request, oldest first. Times are MYT: the
+action-log time (`ac_write_action`) where one exists, otherwise approximate, cross-checked against the vendor's
+`CreatedTimeStamp` / `LastModified` (all written by user FOUNDRYX). Requests refused locally before any call
+(C05, C06, C09, C12 and the earlier refused links) sent nothing and are not listed. Nothing was ever deleted or
+cancelled. Every later run appends to this table.
+
+| Doc no | Type | DocKey | Test id | Request time (MYT) | Method + path | Status | Effect | Final state now (DtlKey, item, qty, location, FromSODtlKey) | Mark |
+|---|---|---|---|---|---|---|---|---|---|
+| FXT-1104a-1 | PO | none | C01 (run 1) | about 15:04 | POST /NewPurchaseOrder | 500 | refused (DisplayTerm null) | not created | FAILED CREATE |
+| 202602-S0007 | PO | 12008 | C07 (run 1) | 15:04:19 | PUT /EditPurchaseOrderbydockey | 500 | refused (SqlDateTime overflow) | see last row of this document | EXISTING DOC |
+| FXT-1104a-1 | PO | none | probe (3 sends, 15:04 to 15:05) | about 15:05 | POST /NewPurchaseOrder | 500 | refused (DisplayTerm null) | not created | PROBE, FAILED CREATE |
+| FXT-PROBE-1 | PO | none | probe (2 sends) | about 15:05 | POST /NewPurchaseOrder | 500 | refused (SQL error 8178) | not created | PROBE, FAILED CREATE |
+| FXT-PROBE-1 | PO | 12023 | probe | 15:05:15 (vendor CreatedTimeStamp) | POST /NewPurchaseOrder | 200 | rows dropped (document created with no rows) | no rows; creditor code 400-N004, creditor name blank | PROBE, FAILED CREATE |
+| FXT-1104b-1 | PO | 12024 | C01 (run 2) | 15:11:16 | POST /NewPurchaseOrder | 200 | created | see next row | TEST DOC |
+| FXT-1104b-1 | PO | 12024 | C03 (run 2) | 15:11:17 | PUT /EditPurchaseOrderbydockey | 200 | applied (split and link; new row kept HQ, not BRW-AM) | | TEST DOC |
+| 202602-S0007 | PO | 12008 | C07 (run 2) | 15:11:23 | PUT /EditPurchaseOrderbydockey | 200 | no change (unlink ignored) | | EXISTING DOC |
+| 202602-S0007 | PO | 12008 | P1 | about 15:13 | PUT /EditPurchaseOrderbydockey | 200 | no change (unlink ignored) | | EXISTING DOC |
+| 202602-S0007 | PO | 12008 | P1b | 15:13:25 (vendor LastModified) | PUT /EditPurchaseOrderbydockey | 200 | no change (unlink ignored) | 12009 SRTKS7090 1 BRW-AM 0; 12011 SRTKS7090 10 HQ 11990; 12013 SRTKS7090 10 HQ 11993; 12015 SRTKS7090 9 HQ 11996 | EXISTING DOC |
+| FXT-1104b-1 | PO | 12024 | P2 | about 15:14 | PUT /EditPurchaseOrderbydockey | 200 | applied for location only (row 12026 moved to BRW-AM); link ignored | | TEST DOC |
+| FXT-1104b-S1 | SPO | none | P3 | about 15:14 | POST /NewPurchaseOrder | 400 | refused (FromDocType PO not valid) | not created | PROBE, FAILED CREATE |
+| FXT-1104b-1 | PO | 12024 | P4 | 15:14:46 (vendor LastModified) | PUT /EditPurchaseOrderbydockey | 200 | applied (row 12028 moved to BRW-AM, link kept) | 12025 SRTKT38SS 40 HQ 0; 12026 SRTKT38SS 10 BRW-AM 0; 12028 SRTKT38SS 10 BRW-AM 11989 | TEST DOC |
+
+Notes:
+
+- FXT-PROBE-1 shows a blank creditor name because our probe body sent only `CreditorCode` (400-N004) and no
+  `CreditorName`; the vendor did not fill it in from the creditor. The documents created with a header copied
+  from an existing PO (FXT-1104b-1) carry the creditor name.
+- Vendor cross-check of today's documents: FXT-PROBE-1 created 15:05:15.107; FXT-1104b-1 created 15:11:16.477,
+  last modified 15:14:46.297; 202602-S0007 (created by AutoCount earlier, 13:39:22.89) last modified 15:13:25.337.
+- Left in place as test evidence: FXT-PROBE-1 and FXT-1104b-1. No SPO exists.
+
 ## Run 2 (fixed bodies)
 
 Book: db3. Run tag: 1104b. PASS 6, FAIL 2, SKIPPED 4.
@@ -166,7 +199,7 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
    when `FromSODtlKey 0` and `FromSODocList ""` are sent (P1) and with `FromDocType "SO"` and a blank
    `FromDocNo` (P1b). Linked PO rows read back `FromDocType ""`, `FromDocNo ""`, `FromDocDtlKey 0`, so
    the link is kept only in `FromSODtlKey` / `FromSODocList`. How is a PO row unlinked from its SO row
-   (remove the row, or a different field or endpoint)? Please also return an error instead of 200 when an
+   (a different field or endpoint)? Please also return an error instead of 200 when an
    edit changes nothing.
 3. **Link on edit of an existing row (Q7): not applied.** P2 answered status 200 `Done Edit.`, applied the
    location, and ignored `FromDocType "SO"`, `FromDocNo`, `FromDocDtlKey` (row stayed `FromSODtlKey 0`).
@@ -196,4 +229,4 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
 - After run 3: PO 202602-S0007 is still unchanged (P1 and P1b had no effect). FXT-1104b-1 row 12026 now
   reads `Location BRW-AM` (P2), still unlinked. FXT-1104b-S1 does not exist.
 - After P4: FXT-1104b-1 row 12028 reads `Location BRW-AM`, `FromSODtlKey 11989`.
-- Test documents left in db3: FXT-PROBE-1 (empty) and FXT-1104b-1 (three rows). They can be deleted.
+- Test documents left in place as test evidence: FXT-PROBE-1 (empty) and FXT-1104b-1 (three rows). Nothing is deleted or cancelled.
