@@ -96,6 +96,37 @@ def test_the_list_counts_with_the_same_number_of_statements_for_3_and_10_contact
     assert n10 == n3, f"statements grew with the page: {n3} -> {n10}"
 
 
+def _window_statements(sf, fn):
+    """(thread id, statement) for every statement the engine runs while `fn` runs."""
+    import threading
+
+    engine = sf().get_bind()
+    seen = []
+
+    def hook(conn, cursor, statement, parameters, context, executemany):
+        seen.append((threading.get_ident(), " ".join(statement.split())))
+
+    sa.event.listen(engine, "before_cursor_execute", hook)
+    try:
+        fn()
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", hook)
+    return seen
+
+
+def test_the_measured_window_holds_only_the_list_request(client, rig):
+    """The statement count must measure the list request alone: the login (throttle
+    bookkeeping + the sign-in write) must not run inside the measured closure."""
+    rig.footprint("+60100000710", "w0")
+    run = lambda: _list(client, rig)  # noqa: E731 - the closure the 3-vs-10 test measures
+    run()  # warm
+    seen = _window_statements(rig.sf, run)
+    offenders = [s[:120] for _, s in seen if "auth_throttle" in s or s.startswith("UPDATE users")]
+    assert not offenders, f"login statements inside the measured window: {offenders}"
+    threads = {t for t, _ in seen}
+    assert len(threads) == 1, f"statements ran on {len(threads)} threads"
+
+
 def test_api_key_contact_routes_keep_their_shape(client, rig):
     fp = rig.footprint("+60100000605", "c4")
     lst = client.get("/api/v1/omnichannel/contacts", headers=rig.hdr)
