@@ -237,6 +237,14 @@ jobs:
         test-frontend,
       ]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # ONE prod deploy at a time. Two main pushes a minute apart used to run two
+    # blue/green deploys at once (both read the same .active_color and brought
+    # up the same standby colour). Queue, never cancel: cancelling a run
+    # mid-switch could leave Caddy and .active_color disagreeing. The host-side
+    # flock in blue_green_deploy.sh also covers manual runs on the server.
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -338,7 +346,7 @@ jobs:
             PLATFORM_SMTP_FROM_EMAIL=${{ vars.PLATFORM_SMTP_FROM_EMAIL }}
             PLATFORM_SMTP_FROM_NAME=${{ vars.PLATFORM_SMTP_FROM_NAME || 'Foundryx EMS' }}
         with:
-          timeout_minutes: 3
+          timeout_minutes: 6   # 3 locked writes x up to 60s lock wait, plus the dial budget
           max_attempts: 2
           retry_wait_seconds: 10
           command: |
@@ -350,12 +358,20 @@ jobs:
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
             ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts" || { rc=$?; if [ "$rc" -eq 255 ]; then echo "::error::ssh could not connect or verify the host (exit 255). Check the SSH_KNOWN_HOSTS secret (see DEPLOY.md) and the SSH_HOST, SSH_PORT and SSH_PRIVATE_KEY values. Do not re-run this deploy until they are checked."; exit 1; fi; echo "::error::cannot mkdir $D/scripts - the deploy user cannot write DEPLOY_PATH. On the host run: sudo chown -R $U $D"; exit 1; }
-            scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/" || { echo "::error::scp deploy script failed - DEPLOY_PATH not writable by $U (sudo chown -R $U $D on the host)"; exit 1; }
+            # Every write below runs under the SAME host lock blue_green_deploy.sh
+            # holds for a whole deploy (SS-DEPLOY-LOCK-SHA): rewriting the script,
+            # compose or .env under a running (e.g. manual) deploy would make it
+            # execute a mix of old and new lines. Exit 75 = the lock stayed busy.
+            LOCK="$D/.blue_green_deploy.lock"
+            put() { ssh $O -p "$P" "$U@$H" "flock -E 75 -w 60 $LOCK sh -c 'cat > $1${2:+ && chmod $2 $1}'"; }
+            busy() { echo "::error::another blue/green deploy holds $LOCK on the host (waited 60s) - files NOT synced; re-run once it finishes"; exit 1; }
+            put "$D/scripts/blue_green_deploy.sh" 755 < scripts/blue_green_deploy.sh || { [ $? -eq 75 ] && busy; echo "::error::writing the deploy script failed - DEPLOY_PATH not writable by $U (sudo chown -R $U $D on the host)"; exit 1; }
             # Compose MUST land or the host keeps a stale compose - fatal + diagnostic.
-            scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml" || { echo "::error::scp docker-compose.yml failed - $D/docker-compose.yml not writable by $U. Fix on the host: sudo chown $U $D/docker-compose.yml (or sudo chown -R $U $D)"; exit 1; }
+            put "$D/docker-compose.yml" < docker-compose.yml || { [ $? -eq 75 ] && busy; echo "::error::writing docker-compose.yml failed - $D/docker-compose.yml not writable by $U. Fix on the host: sudo chown $U $D/docker-compose.yml (or sudo chown -R $U $D)"; exit 1; }
             # .env: warn but do not block - the host keeps its existing .env if this
             # write is refused (e.g. a root-owned .env from an earlier run).
-            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env && chmod 600 $D/.env" || echo "::warning::.env write or chmod refused (permission) - the host .env may be unchanged or keep its old mode. Fix: sudo chown $U $D/.env on the host"
+            # (A busy lock is still fatal: busy exits before the warning.)
+            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; flock -E 75 -w 60 $LOCK sh -c 'cat > $D/.env && chmod 600 $D/.env'" || { [ $? -ne 75 ] || busy; false; } || echo "::warning::.env write or chmod refused (permission) - the host .env may be unchanged or keep its old mode. Fix: sudo chown $U $D/.env on the host"
             echo "files synced (see any warnings above)"
 
       - name: Deploy blue/green via Caddy (retry)
@@ -392,7 +408,7 @@ jobs:
             [ -n "$APP_DOMAIN" ] || { echo "APP_DOMAIN repository variable is not set"; exit 1; }
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; curl -fsS -o /dev/null http://127.0.0.1:\$BE/health && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
+            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; HEALTH=\$(curl -fsS http://127.0.0.1:\$BE/health) && echo \"health=\$HEALTH\" && echo \"\$HEALTH\" | grep -q '\"git_sha\": *\"${{ github.sha }}\"' && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
             curl --fail --silent --show-error --output /dev/null "https://$APP_DOMAIN/"
             echo "public HTTPS certificate verified"
 
