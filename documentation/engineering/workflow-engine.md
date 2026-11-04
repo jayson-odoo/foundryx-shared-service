@@ -30,3 +30,9 @@ n8n/Power-Automate-class automation: triggers → actions, evaluated via a topol
     - A platform-tier **`status.transition_notification` starter template** is seeded (`seed_templates.py`) so the picker has day-one content.
   - **Reinforced: the served frontend build goes stale.** `npm start` serves a prod `.next` build; after ANY frontend change you MUST `rm -rf .next && npm run build` + restart `:3001` before live-verifying (the wrong-build gotcha bit repeatedly this session). The retired browser MCP on a freshly-mounted React button sometimes doesn't fire the `onClick` (harness quirk) - a native `.click()` via `browser_evaluate` does; not a product bug.
 
+
+
+### Run-guard seam and shortcut inputs (plan 38 gap 7)
+
+- **Run guard.** `app/workflow_engine/executor.py` exposes `register_run_guard(fn)` / `unregister_run_guard(fn)` and `class RunRefused(Exception)` (`.code`, message). A guard is `fn(db, run, doc) -> None`; registering is idempotent. Guards run in `run_workflow` right after `parse_definition` of the run's snapshot (a refusal fails the run with status `failed`, `error = "<code>: <message>"`, before any node executes and before resume state is read) and in `debug_execute` after the scratch config merge (a refusal reaches the caller and no node executes). With no guard registered nothing changes. A module registers one for the workflows it owns; omnichannel uses it to hold owned workflows to the API key allow-list.
+- **`inputs` / `actor_id` seam.** `WorkflowService.run_shortcut(..., inputs=None, actor_id=None)`, `build_shortcut_event(..., actor_id=None)` and `create_run_for_event(..., inputs=None)` carry a dict of caller values into the trigger payload as `input` (exposed as `trigger.input.<key>`), and let a run started with no user record its actor as a string id. Callers that pass neither behave as before. The caller validates `inputs` (the key path caps 20 keys, 1000 characters per value).
