@@ -553,3 +553,67 @@ def test_ac_38_136_deadline_covers_a_stalled_resolver(monkeypatch):
     elapsed = time.monotonic() - started
     assert out is None and err
     assert elapsed < 2.5, f"name resolution held the node for {elapsed:.1f}s with a 1s deadline"
+
+
+# -- review round 2b: a blackholed first address must not lend the second one a fresh deadline --
+def test_ac_38_136_deadline_across_a_blackholed_first_address_closes_the_second_socket(tmp_path, monkeypatch):
+    """The resolver (test host only) answers a blackhole address first (its connect stalls to the
+    connect timeout) and a local TLS drip server second. With timeoutSeconds=1 the node fails in
+    under 2.5 s and the drip connection is closed, not left dripping."""
+    import ssl
+    import threading
+
+    import app.services.url_guard as ug
+    import app.workflow_engine.actions.http_actions as ha
+
+    host, blackhole, drip = "blackhole-drip.example", "93.184.216.10", "93.184.216.20"
+    certfile, keyfile = _self_signed(tmp_path)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile, keyfile)
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(2)
+    port = srv.getsockname()[1]
+    server_saw_close = threading.Event()
+    served = threading.Event()
+
+    def serve():
+        try:
+            raw, _ = srv.accept()
+            served.set()
+            conn = ctx.wrap_socket(raw, server_side=True)
+            conn.recv(65536)
+            conn.sendall(b"HTTP/1.1 200 OK\r\n")
+            end = time.time() + 10
+            while time.time() < end:
+                time.sleep(0.2)
+                conn.sendall(b"X-Drip: 1\r\n")
+            conn.close()
+        except OSError:
+            server_saw_close.set()  # the client side went away: a send or the handshake failed
+
+    threading.Thread(target=serve, daemon=True).start()
+
+    _resolver(monkeypatch, host, [[blackhole, drip]])
+    real_create = socket.create_connection
+    attempts = []
+
+    def create(address, timeout=None, *a, **k):
+        attempts.append(address[0])
+        if address[0] == blackhole:
+            time.sleep((timeout or 1) + 0.3)
+            raise socket.timeout("test stub: blackhole")
+        return real_create(("127.0.0.1", port), timeout, *a, **k)
+
+    real_blocked = ug._is_blocked_ip
+    monkeypatch.setattr(socket, "create_connection", create)
+    monkeypatch.setattr(ug, "_is_blocked_ip", lambda ip: False if str(ip) == "127.0.0.1" else real_blocked(ip))
+    monkeypatch.setattr(ha, "GuardedTransport", lambda *a, **k: ug.GuardedTransport(verify=False))
+    started = time.monotonic()
+    out, err = _call(ha, url=f"https://{host}:{port}/", timeoutSeconds="1")
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.5, f"the node took {elapsed:.1f}s with a 1s deadline across two addresses"
+    assert out is None and err, "a response that outlives the deadline fails the node"
+    assert blackhole in attempts, "the blackhole address was tried first"
+    assert server_saw_close.wait(2.0), "the second connection was left open and dripping"
+    srv.close()
