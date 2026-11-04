@@ -19,10 +19,13 @@ and ``sleep=`` / ``rand=`` fakes (the pattern already used for
 ``WhatsAppCloudAdapter``, ``tests/test_omnichannel.py``) so retry/backoff/
 throttle pacing is asserted deterministically with zero real waiting.
 """
+import functools
 import logging
 import random
+import re
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional
+from zoneinfo import available_timezones
 
 import httpx
 
@@ -47,6 +50,22 @@ MAX_PAGES = 100_000
 # Halve our own rate after this many CONSECUTIVE 429s (D-A6-5).
 RATE_HALVE_THRESHOLD = 4
 _BACKOFF_BASE_SECONDS = 0.5
+# Page sizes the vendor documents (developers.respond.io, API v2): every list
+# call's `limit` is `minimum: 1, exclusiveMaximum: 100` (so 99 is the largest
+# legal page), except `GET /contact/{id}/message/list`, which is `maximum: 50`.
+# `_paginated_pages` clamps every request into these ranges, so no caller can
+# send a page size the vendor rejects (lane SS-MIGRATION-TZ-HOTFIX).
+MAX_PAGE_LIMIT = 99
+MAX_MESSAGE_PAGE_LIMIT = 50
+# `POST /contact/list` REQUIRES `timezone` to be an IANA name; the live 400 is
+# 'Please check if timezone is a valid IANA timezone name, such as
+# "Asia/Kuala_Lumpur".' The connection form's "Workspace timezone" is free
+# text, so anything that is not a known IANA name goes out as this fallback
+# (the vendor's own example, and every current tenant's zone).
+DEFAULT_CONTACT_LIST_TIMEZONE = "Asia/Kuala_Lumpur"
+# Offset-style values ("+08:00", "UTC+8", "GMT+8", "Etc/GMT-8"): a sign
+# followed by a digit. Never sent, even when tzdata knows the name.
+_OFFSET_STYLE = re.compile(r"[+-]\d")
 
 MilestoneFn = Callable[[str], None]
 
@@ -275,7 +294,7 @@ class RespondIoClient:
         *,
         params: Optional[Dict[str, Any]] = None,
         json_body: Optional[Dict[str, Any]] = None,
-        limit: int = 100,
+        limit: int = MAX_PAGE_LIMIT,
     ) -> Iterator[Dict[str, Any]]:
         for items, _next_cursor in self._paginated_pages(
             method, path, params=params, json_body=json_body, limit=limit
@@ -290,8 +309,9 @@ class RespondIoClient:
         *,
         params: Optional[Dict[str, Any]] = None,
         json_body: Optional[Dict[str, Any]] = None,
-        limit: int = 100,
+        limit: int = MAX_PAGE_LIMIT,
         start_cursor: Optional[str] = None,
+        max_limit: int = MAX_PAGE_LIMIT,
     ) -> Iterator[tuple]:
         """PAGE-granular walk (plan 33 S2, AC-MIG-22): yields
         ``(items, next_cursor)`` per page instead of flattening - the job
@@ -309,7 +329,7 @@ class RespondIoClient:
         absolute ceiling, logged as a milestone so it surfaces on the job's
         detail page rather than looking like a silent early stop."""
         base_params = dict(params or {})
-        base_params["limit"] = limit
+        base_params["limit"] = max(1, min(int(limit), max_limit))
         cursor: Optional[str] = start_cursor
         pages = 0
         while True:
@@ -384,10 +404,10 @@ class RespondIoClient:
     def list_contacts(
         self,
         *,
-        timezone: str,
+        timezone: Any,
         search: Optional[str] = None,
         filter_: Optional[Dict[str, Any]] = None,
-        limit: int = 100,
+        limit: int = MAX_PAGE_LIMIT,
     ) -> Iterator[Dict[str, Any]]:
         """``POST /contact/list`` - the preflight's read-only distinct-
         lifecycle pass (S1). ``timezone`` is REQUIRED by the vendor
@@ -399,10 +419,10 @@ class RespondIoClient:
     def list_contacts_pages(
         self,
         *,
-        timezone: str,
+        timezone: Any,
         search: Optional[str] = None,
         filter_: Optional[Dict[str, Any]] = None,
-        limit: int = 100,
+        limit: int = MAX_PAGE_LIMIT,
         start_cursor: Optional[str] = None,
     ) -> Iterator[tuple]:
         """``POST /contact/list``, PAGE-granular (plan 33 S2, AC-MIG-22) -
@@ -441,7 +461,7 @@ class RespondIoClient:
         self,
         identifier: str,
         *,
-        limit: int = 100,
+        limit: int = MAX_MESSAGE_PAGE_LIMIT,
         start_cursor: Optional[str] = None,
     ) -> Iterator[tuple]:
         """``GET /contact/{identifier}/message/list`` (AC-MIG-32), PAGE-
@@ -449,27 +469,55 @@ class RespondIoClient:
         ``(items, next_cursor)`` so the messages phase can checkpoint and
         crash-resume mid-contact)."""
         return self._paginated_pages(
-            "GET", f"/contact/{identifier}/message/list", limit=limit, start_cursor=start_cursor
+            "GET", f"/contact/{identifier}/message/list", limit=limit, start_cursor=start_cursor,
+            max_limit=MAX_MESSAGE_PAGE_LIMIT,
         )
 
 
 # respond.io's `POST /contact/list` body is `{search, filter, timezone}` and the
-# vendor validates ALL of them as present (limit/cursorId ride the query
-# string, see `_paginated_pages`). Live failures, in order:
+# vendor validates ALL of them (limit/cursorId ride the query string, see
+# `_paginated_pages`). Contract of record:
+# https://developers.respond.io/docs/api/0759d02787ab3-list-the-contacts -
+# every official example is
+# `{"search": "", "filter": {"$and": []}, "timezone": "Asia/Kuala_Lumpur"}`.
+# Live failures, in order:
 #   - no `filter`  -> 400 "Please check if filter is provided."
 #     (lane SS-MIGRATION-FILTER-HOTFIX). An empty `$and` group = every contact.
 #   - no `search`  -> 400 "Please check if search exists, but value can be
 #     empty." (lane SS-MIGRATION-SEARCH-HOTFIX). An empty string = no search.
+#   - a non-IANA `timezone` -> 400 "Please check if timezone is a valid IANA
+#     timezone name" (lane SS-MIGRATION-TZ-HOTFIX). `respondio_timezone`.
 # So the body ALWAYS carries all three keys - never drop one because it is
-# empty.
+# empty, and never send a timezone that is not an IANA name.
 def _contact_list_body(
-    *, timezone: str, search: Optional[str], filter_: Optional[Dict[str, Any]]
+    *, timezone: Any, search: Optional[str], filter_: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
     return {
         "search": search or "",
         "filter": filter_ if filter_ else {"$and": []},
-        "timezone": timezone,
+        "timezone": respondio_timezone(timezone),
     }
+
+
+@functools.lru_cache(maxsize=1)
+def _iana_names_by_lower() -> Dict[str, str]:
+    return {name.lower(): name for name in available_timezones()}
+
+
+def respondio_timezone(value: Any) -> str:
+    """The IANA name to send as `/contact/list`'s `timezone`. The stored
+    connection value is free text: it is stripped and matched against the
+    IANA database case-insensitively (sent in canonical case); blank, unknown,
+    non-string and offset-style values ("+08:00", "UTC+8", "GMT+8",
+    "Etc/GMT-8") become `DEFAULT_CONTACT_LIST_TIMEZONE`. Membership in
+    `available_timezones()` (not `ZoneInfo(name)`) keeps the answer identical
+    on a case-insensitive dev filesystem and the case-sensitive prod one."""
+    if not isinstance(value, str):
+        return DEFAULT_CONTACT_LIST_TIMEZONE
+    name = value.strip()
+    if not name or _OFFSET_STYLE.search(name):
+        return DEFAULT_CONTACT_LIST_TIMEZONE
+    return _iana_names_by_lower().get(name.lower(), DEFAULT_CONTACT_LIST_TIMEZONE)
 
 
 def _clamp_rps(value: float) -> float:

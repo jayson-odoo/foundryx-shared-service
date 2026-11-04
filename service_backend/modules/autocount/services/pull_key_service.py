@@ -22,6 +22,10 @@ from ..models import AcPullApiKey
 from ..repositories import CompanyRepository, PullKeyRepository
 from .company_service import AutocountServiceError
 
+SCOPE_PULL = "pull"
+SCOPE_WRITE_BACK = "write_back"
+ALLOWED_SCOPES = (SCOPE_PULL, SCOPE_WRITE_BACK)
+
 KEY_SCHEME = "fxa_live_"
 PREFIX_LEN = 8  # chars after the scheme used for the O(1) lookup
 
@@ -75,6 +79,7 @@ class PullKeyService:
         name: str,
         company_ids: Sequence[str],
         created_by: Optional[str] = None,
+        scopes: Optional[Sequence[str]] = None,
     ) -> Tuple[AcPullApiKey, str]:
         """Create a key, returning ``(row, full_plaintext_key)``. The
         plaintext is the ONLY time the caller ever sees the full key - never
@@ -101,6 +106,12 @@ class PullKeyService:
             if company_repo.get(tenant_id, company_id) is None:
                 raise PullKeyValidationError({"companyIds": _UNKNOWN_COMPANY_MESSAGE})
 
+        granted = list(dict.fromkeys(scopes)) if scopes else [SCOPE_PULL]
+        if any(scope not in ALLOWED_SCOPES for scope in granted):
+            raise PullKeyValidationError(
+                {"scopes": "scopes must be pull and/or write_back."}
+            )
+
         full_key = KEY_SCHEME + secrets.token_urlsafe(32)
         row = AcPullApiKey(
             tenant_id=tenant_id,
@@ -108,6 +119,7 @@ class PullKeyService:
             key_prefix=_prefix_of(full_key),
             key_hash=_hash_key(full_key),
             company_ids=ids,
+            scopes=granted,
             created_by=created_by,
         )
         self.repo.add(row)
