@@ -72,6 +72,20 @@ from ..services.webchat_visitor_service import WebchatInvalidRequest, read_cappe
 
 router = APIRouter()
 
+# Cap on a JSON body the gateway reads itself (the send route and the workflow routes).
+_JSON_BODY_CAP = 256 * 1024
+
+
+async def _read_capped_body(request: Request) -> bytes:
+    """Bytes of the request body, refused once over the cap (counted as read, so a
+    chunked body with no Content-Length is capped too). No content-type rule."""
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > _JSON_BODY_CAP:
+            raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", "Request body is too large.")
+    return body
+
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 
@@ -154,7 +168,7 @@ async def send_message(
         )
     else:
         try:
-            body = await request.json()
+            body = json.loads(await _read_capped_body(request))
         except (ValueError, TypeError):
             raise ApiError(422, "invalid_request", "Request body must be valid JSON.")
         if not isinstance(body, dict):
@@ -664,13 +678,12 @@ def delete_webhook(
 # A key configures the workflows its own workspace owns. Tenant and workspace
 # come from the key only. The fixed paths (catalog, validate, runs/{runId}) are
 # registered BEFORE `/workflows/{workflow_id}` so they are never read as an id.
-_WORKFLOW_BODY_CAP = 256 * 1024
 
 
 async def _read_workflow_body(request: Request) -> dict:
     """Capped JSON read, done on the loop with no transaction open."""
     try:
-        return await read_capped_json(request, cap=_WORKFLOW_BODY_CAP)
+        return await read_capped_json(request, cap=_JSON_BODY_CAP)
     except WebchatInvalidRequest as exc:
         raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", exc.message)
 
