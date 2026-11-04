@@ -40,9 +40,12 @@ class LeaseClient(Protocol):
     def release(self, key: str, token: str) -> bool: ...
 
 
-# Bounded socket waits; the read bound stays far below the renew interval.
+# Bounded socket waits. The read bound must ride out a short Redis stall (one
+# renew error marks the lease lost and stops the heartbeat), stays far below the
+# renew interval max(1, ttl/3), and bounds a hung connection on redis-py below 8
+# (8.x defaults to 5 s).
 _LEASE_SOCKET_CONNECT_TIMEOUT_SECONDS = 1.0
-_LEASE_SOCKET_READ_TIMEOUT_SECONDS = 2.0
+_LEASE_SOCKET_READ_TIMEOUT_SECONDS = 5.0
 
 
 class RedisLeaseClient:
