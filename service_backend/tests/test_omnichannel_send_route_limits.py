@@ -139,8 +139,13 @@ def _install(monkeypatch, *, media=None, graph=None, header_delay=0.0, on_fetch=
     async def fake_async(self, request):
         resp, delay = route(request)
         if gate is not None and request.url.host == MEDIA_HOST:
-            while not gate.release.is_set():
-                await asyncio.sleep(0.01)
+            try:
+                for _ in range(int(gate.cap / 0.01)):
+                    if gate.release.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+            finally:
+                gate.left.set()
         elif delay:
             await asyncio.sleep(delay)
         return resp
@@ -264,11 +269,15 @@ class _Gate:
     def __init__(self, cap=8.0):
         self.entered = threading.Event()
         self.release = threading.Event()
+        self.left = threading.Event()  # set when the step stops holding: released OR timed out
         self.cap = cap
 
     def hold(self):
         self.entered.set()
-        self.release.wait(self.cap)
+        try:
+            self.release.wait(self.cap)
+        finally:
+            self.left.set()
 
 
 async def _drive_gated(send, gate):
@@ -299,7 +308,10 @@ async def _drive_gated(send, gate):
             cheap_status = cheap.status_code
         except asyncio.TimeoutError:
             pass
-        # all observed while the send is still held: the loop was free
+        # The step must still have been holding when the loop answered: a step
+        # that blocked the loop only lets the cheap request through after its
+        # hold timed out, which sets `left` first.
+        step_over_when_answered = gate.left.is_set()
         send_still_blocked = not send_task.done()
         ticks_during = len(ticks) - ticks_before
         gate.release.set()
@@ -310,6 +322,7 @@ async def _drive_gated(send, gate):
         resp=resp,
         entered=entered,
         cheap_status=cheap_status,
+        step_over_when_answered=step_over_when_answered,
         send_still_blocked=send_still_blocked,
         ticks_during=ticks_during,
     )
@@ -336,6 +349,7 @@ def test_ac_41_01_json_media_send_leaves_the_loop_free(client, session_factory, 
     assert out.resp.status_code == 202, out.resp.text
     # the rule: while the fetch is held, the loop answers other requests and ticks
     assert out.cheap_status == 200, "the loop was blocked while the media fetch was held"
+    assert not out.step_over_when_answered, "the cheap request was only answered after the media fetch gave up holding"
     assert out.send_still_blocked, "the send finished without waiting for its fetch"
     assert out.ticks_during >= 1, "the loop made no progress while the media fetch was held"
 
@@ -360,6 +374,7 @@ def test_ac_41_01_multipart_send_leaves_the_loop_free(client, session_factory, m
     assert out.resp.status_code == 202, out.resp.text
     assert rig.graph_calls, "the provider fake was never hit"
     assert out.cheap_status == 200, "the loop was blocked while the upload was held"
+    assert not out.step_over_when_answered, "the cheap request was only answered after the upload gave up holding"
     assert out.send_still_blocked, "the send finished without waiting for its upload"
     assert out.ticks_during >= 1, "the loop made no progress while the upload was held"
 
@@ -591,16 +606,18 @@ def test_ac_41_07_changelog_has_a_row_for_the_limit():
 
 # ══ Behaviour to keep (these pass before the change and must still pass) ═════
 def test_rig_heartbeat_sees_a_blocked_loop():
-    """Control for the AC-41-01 tests: a handler that blocks the loop DOES show
-    up as a large heartbeat gap and a cheap request that waits."""
+    """Control for the AC-41-01 tests: a step that blocks the loop while it holds
+    on the gate must make the gated check's conditions fail (the cheap request is
+    only answered after the hold gave up, and the loop made no progress)."""
+    gate = _Gate(cap=1.0)
 
     async def blocking_send(ac):
-        time.sleep(1.0)  # blocks the whole loop
+        gate.hold()  # blocks the whole loop until the cap
         return httpx.Response(202)
 
-    out = asyncio.run(_drive(blocking_send))
-    assert out.max_gap >= 0.9
-    assert out.cheap_before_send_by <= 0.1
+    out = asyncio.run(_drive_gated(blocking_send, gate))
+    assert out.step_over_when_answered
+    assert not out.send_still_blocked
 
 
 # ── AC-41-02: nothing else on the wire changes ───────────────────────────────
