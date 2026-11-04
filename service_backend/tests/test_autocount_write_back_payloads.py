@@ -312,3 +312,79 @@ def test_builders_do_not_mutate_inputs(po, so):
     build_link(po, 12017, so, 11989, Decimal(10))
     build_unlink(po, 12013)
     assert po == po_before and so == so_before
+
+
+# ---- vendor finding (live run C07): dates below 1753 are omitted -----------------------
+
+EMPTY = "0001-01-01T00:00:00"
+
+
+def _all_rows(body):
+    return body["Details"]
+
+
+def test_vendor_unlink_real_row_12013_omits_the_empty_delivery_date(po):
+    assert _row(po, 12013)["DeliveryDate"] == EMPTY
+    body = build_unlink(po, 12013)
+    assert "DeliveryDate" not in body["Details"][0]
+    assert body["DocDate"] == po["DocDate"]
+
+
+def test_vendor_link_in_place_omits_empty_date_keeps_valid_one(po, so):
+    po2 = copy.deepcopy(po)
+    _row(po2, 12009)["DeliveryDate"] = EMPTY
+    body = build_link(po2, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
+    assert "DeliveryDate" not in body["Details"][0]
+    body_ok = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
+    assert body_ok["Details"][0]["DeliveryDate"] == "2026-03-15T00:00:00"
+
+
+def test_vendor_split_omits_empty_date_on_edited_and_new_row(po, so):
+    po2 = copy.deepcopy(po)
+    _row(po2, 12017)["DeliveryDate"] = EMPTY
+    body = build_link(po2, 12017, so, 11989, Decimal(10))
+    assert len(body["Details"]) == 2
+    assert all("DeliveryDate" not in r for r in body["Details"])
+
+
+def test_vendor_split_keeps_a_valid_date_on_both_rows(po, so):
+    body = build_link(po, 12017, so, 11989, Decimal(10))
+    assert [r["DeliveryDate"] for r in body["Details"]] == ["2026-03-15T00:00:00"] * 2
+
+
+def test_vendor_missing_date_stays_missing(po, so):
+    po2 = copy.deepcopy(po)
+    del _row(po2, 12017)["DeliveryDate"]
+    body = build_link(po2, 12017, so, 11989, Decimal(10))
+    assert all("DeliveryDate" not in r for r in body["Details"])
+    unlink = build_unlink(po2, 12013)
+    assert "DeliveryDate" not in unlink["Details"][0]
+
+
+@pytest.mark.parametrize("value,kept", [
+    ("1752-12-31T00:00:00", False),
+    ("0001-01-01", False),
+    ("1753-01-01T00:00:00", True),
+    ("2026-03-15T00:00:00", True),
+])
+def test_vendor_date_cutoff_is_year_1753(po, value, kept):
+    po2 = copy.deepcopy(po)
+    _row(po2, 12013)["DeliveryDate"] = value
+    row = build_unlink(po2, 12013)["Details"][0]
+    assert ("DeliveryDate" in row) is kept
+    if kept:
+        assert row["DeliveryDate"] == value
+
+
+def test_vendor_spo_unlink_omits_empty_date_keeps_valid(spo):
+    spo2 = copy.deepcopy(spo)
+    spo2["Details"][0]["DeliveryDate"] = EMPTY
+    body = build_spo_unlink(spo2, spo2["Details"][0]["DtlKey"])
+    assert "DeliveryDate" not in body["Details"][0]
+    ok = build_spo_unlink(spo, spo["Details"][0]["DtlKey"])
+    assert ok["Details"][0]["DeliveryDate"] == "2026-10-29T00:00:00"
+
+
+def test_vendor_header_docdate_always_stays(po):
+    body = build_unlink(po, 12013)
+    assert body["DocDate"] == "2026-02-04T00:00:00"

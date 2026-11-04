@@ -12,7 +12,7 @@ import json
 import re
 from datetime import date
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import httpx
 import pytest
@@ -44,10 +44,39 @@ def db(session_factory):
         session.close()
 
 
+_DATE = re.compile(r"^(\d{4})-\d{2}-\d{2}T")
+
+
+def _has_ancient_date(node) -> bool:
+    if isinstance(node, dict):
+        return any(_has_ancient_date(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_ancient_date(v) for v in node)
+    m = _DATE.match(node) if isinstance(node, str) else None
+    return bool(m and int(m.group(1)) < 1753)
+
+
+HEADER_KEYS = {
+    "DocKey", "DocNo", "DocDate", "CreditorCode", "CreditorName", "Ref", "Description",
+    "DisplayTerm", "PurchaseAgent", "InvAddr1", "InvAddr2", "InvAddr3", "InvAddr4",
+    "Phone1", "Fax1", "Attention", "BranchCode", "DeliverAddr1", "DeliverAddr2",
+    "DeliverAddr3", "DeliverAddr4", "DeliverPhone1", "DeliverFax1", "DeliverContact",
+    "CurrencyCode", "CurrencyRate", "Remark1", "Remark2", "Remark3", "Remark4",
+    "RefDocNo", "ShipVia", "ShipInfo", "InclusiveTax",
+}
+POST_ROW_FIELDS = {
+    "ItemCode", "Location", "Description", "ProjNo", "UOM", "UserUOM", "Qty", "FOCQty",
+    "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Desc2", "FromDocType", "FromDocNo",
+    "FromDocDtlKey", "FullTransferOption", "FullTransferFromDocList",
+}
+
+
 class Wrapper:
-    def __init__(self, db, *, ignore_shipping_po: bool = False):
+    def __init__(self, db, *, ignore_shipping_po: bool = False, drop_rows: bool = False):
         self.db = db
         self.ignore_shipping_po = ignore_shipping_po
+        self.drop_rows = drop_rows  # vendor answers 200 but saves no rows
+        self.bodies: List[Dict[str, Any]] = []
         self.requests: List[str] = []  # "METHOD full-url"
         self.violations: List[str] = []
         so = _load("so_SO389293.json")
@@ -81,6 +110,9 @@ class Wrapper:
             docs = self.pos if name.startswith("purchaseorder") else self.sos
             return httpx.Response(200, json=copy.deepcopy(docs))
         body = json.loads(request.content)
+        self.bodies.append(body)
+        if _has_ancient_date(body):  # vendor behaviour (plan 55 live run, C07)
+            return httpx.Response(500, json={"ExceptionMessage": "SqlDateTime overflow. Must be between 1/1/1753 12:00:00 AM and 12/31/9999 11:59:59 PM."})
         if request.method == "POST" and name == "newpurchaseorder":
             return self._new(body)
         if request.method == "PUT" and name == "editpurchaseorderbydockey":
@@ -95,7 +127,8 @@ class Wrapper:
         doc.setdefault("DocDate", "2026-11-05T00:00:00")
         doc["ShippingPO"] = "F" if self.ignore_shipping_po else body.get("ShippingPO", "F")
         rows = []
-        for r in body["Details"]:
+        incomplete = any(not r.get("UOM") or r.get("UnitPrice") is None or not r.get("DeliveryDate") for r in body["Details"])
+        for r in ([] if (incomplete or self.drop_rows) else body["Details"]):
             row = {**_load("po_202602_S0007.json")["Details"][0], **r, "DtlKey": self.next_dtl, "DocKey": doc["DocKey"]}
             row.setdefault("FromDocType", "")
             self.next_dtl += 1
@@ -357,3 +390,81 @@ def test_ac_55_51_report_marks_fail_and_skipped_honestly(db):
     assert "FAIL" in c10 and "ShippingPO" in c10
     c11 = md[md.index(re.search(r"^#+ .*C11", md, re.M).group(0)):]
     assert "SKIPPED" in c11.split("C12")[0]
+
+
+# ---- vendor findings (live run 2026-11-04): create body + read-back check ----------
+
+def _create_bodies(s):
+    return [b for b in s.wrapper.bodies if "DocNo" in b and "DocKey" not in b]
+
+
+def _assert_complete_create_body(body, *, spo=False):
+    assert set(body) - {"Details", "ShippingPO"} <= HEADER_KEYS
+    assert body["DisplayTerm"] == "C.O.D." and body["CurrencyCode"] == "CNY"
+    assert body["CurrencyRate"] == 0.6 and body["CreditorCode"] == CREDITOR
+    assert body["DocDate"] and not _has_ancient_date(body)
+    assert body.get("ShippingPO") == ("T" if spo else "F")
+    assert body["Details"]
+    for r in body["Details"]:
+        assert POST_ROW_FIELDS <= set(r), POST_ROW_FIELDS - set(r)
+        assert r["UOM"] == "UNIT" and r["UserUOM"] == "UNIT"
+        assert r["UnitPrice"] == 1.0
+        assert r["Description"] and r["Description"].endswith("SRTKT38SS")
+        assert re.match(r"^20\d\d-\d\d-\d\dT", r["DeliveryDate"])
+
+
+def test_vendor_c01_create_body_is_complete_and_has_no_empty_dates(db):
+    s = _setup(db)
+    res = _run(db, s)
+    body = _create_bodies(s)[0]
+    assert body["DocNo"] == "FXT-T1-1"
+    _assert_complete_create_body(body)
+    assert [r["Qty"] for r in body["Details"]] == [50, 10]
+    assert [r["Location"] for r in body["Details"]] == ["HQ", "HQ"]
+    assert _case(res, "C01").status == "PASS"
+    assert len(s.wrapper.po("FXT-T1-1")["Details"]) == 2
+
+
+def test_vendor_c01_description_comes_from_the_so_row(db):
+    s = _setup(db)
+    _run(db, s)
+    so_row = next(r for r in s.wrapper.sos[0]["Details"] if r["DtlKey"] == 11989)
+    for r in _create_bodies(s)[0]["Details"]:
+        assert r["Description"] == so_row["Description"] and r["UOM"] == so_row["UOM"]
+
+
+def test_vendor_c10_spo_create_body_is_complete(db):
+    s = _setup(db)
+    _run(db, s)
+    spo_body = next(b for b in _create_bodies(s) if b["DocNo"] == "FXT-T1-S1")
+    _assert_complete_create_body(spo_body, spo=True)
+    assert spo_body["Details"][0]["FromDocType"] == "PO"
+
+
+def test_vendor_no_write_body_in_the_suite_carries_a_pre_1753_date(db):
+    s = _setup(db)
+    _run(db, s)
+    assert s.wrapper.bodies
+    assert not [b for b in s.wrapper.bodies if _has_ancient_date(b)]
+
+
+def test_vendor_c01_200_with_dropped_rows_is_fail_and_dependents_skipped(db):
+    s = _setup(db, drop_rows=True)
+    res = _run(db, s)
+    c01 = _case(res, "C01")
+    assert c01.status == "FAIL" and "rows dropped" in c01.observed
+    assert _case(res, "C02").status == "SKIPPED" and "C01" in _case(res, "C02").observed
+    for cid in ("C03", "C04", "C10", "C11"):
+        assert _case(res, cid).status == "SKIPPED", cid
+
+
+# ---- the fake itself reproduces both vendor behaviours ------------------------------
+
+def test_fake_wrapper_rejects_ancient_dates_and_drops_incomplete_rows(db):
+    s = _setup(db)
+    client = AutoCountWriteClient(DB3, transport=s.wrapper.transport)
+    bad_date = {"DocNo": "X1", "DocDate": "0001-01-01T00:00:00", "Details": []}
+    assert client.post("/NewPurchaseOrder", bad_date).status_code == 500
+    thin = {"DocNo": "X2", "DocDate": "2026-11-04T00:00:00", "Details": [{"ItemCode": "A", "Qty": 1}]}
+    assert client.post("/NewPurchaseOrder", thin).status_code == 200
+    assert s.wrapper.po("X2")["Details"] == []
