@@ -868,6 +868,29 @@ class MigrationWriter:
         )
         return MessageWriteResult(message_id=row.id, timestamp_inferred=timestamp_inferred, sender_type=sender_type)
 
+    def link_messages_to_channel(self, contact_id: str, message_ids: List[str], channel_id: str) -> int:
+        """Lane SS-CHANNEL-SKIP - set `channel_id` on already-migrated
+        messages that were imported while their source channel was skipped.
+        Fills NULL only (a message that already carries a channel is never
+        re-pointed), tenant + contact scoped, ONE statement.
+        The contact is already workspace-scoped by the caller and `channel_id`
+        comes from the job's re-validated channel map. Returns
+        the number of rows changed (0 on a repeat run)."""
+        if not message_ids:
+            return 0
+        with self.db.begin_nested():  # a failure rolls back only this statement
+            changed = (
+                self.db.query(ConversationMessage)
+                .filter(
+                    ConversationMessage.tenant_id == self.tenant_id,
+                    ConversationMessage.contact_id == contact_id,
+                    ConversationMessage.id.in_(message_ids),
+                    ConversationMessage.channel_id.is_(None),
+                )
+                .update({ConversationMessage.channel_id: channel_id}, synchronize_session=False)
+            )
+        return int(changed or 0)
+
     def recompute_contact_timestamps(self, contact: ContactModel) -> None:
         """AC-MIG-37 - exactly ONE recompute per contact, after its ENTIRE
         message phase (all pages) is written. Queries the maxima over

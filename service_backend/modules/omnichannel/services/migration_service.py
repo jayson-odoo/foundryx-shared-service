@@ -437,7 +437,8 @@ class MigrationPreflightService:
             if mapped is None or mapped not in target_types:
                 warnings.append(
                     f'No connected channel in the target workspace matches source '
-                    f'channel "{c.name}" ({c.source}) - it will be skipped.'
+                    f'channel "{c.name}" ({c.source}). Its contacts and history import '
+                    f'without a channel.'
                 )
 
     def _distinct_lifecycles(
@@ -927,7 +928,7 @@ def _build_report(
             "messages": {
                 "fetched": messages_c.get("fetched", 0),
                 "wouldCreate": messages_c.get("create", 0),
-                "wouldUpdate": 0,
+                "wouldUpdate": messages_c.get("update", 0),
                 "wouldSkip": messages_c.get("skip", 0),
                 "errors": messages_c.get("errors", 0),
             },
@@ -1835,6 +1836,25 @@ def _process_contact_messages(
         )
         return 0, 0, 0
 
+    # Lane SS-CHANNEL-SKIP - a message imported while its source channel was
+    # skipped has `channel_id` NULL. Once that channel is connected and mapped
+    # on a re-run, the earlier message gets it (only ever a NULL -> target
+    # fill, never an overwrite), so the history lands on the connected channel.
+    # Collected BEFORE the `messages_since` floor: a later floor on the re-run
+    # must not strand history the first run already imported.
+    already = refs.local_for(
+        tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_MESSAGE,
+        [str(m.messageId) for m in parsed_items],
+    )
+    relink: Dict[str, List[str]] = {}
+    relink_source_ids: set = set()
+    for item in parsed_items:
+        local_id = already.get(str(item.messageId))
+        target = channel_map.get(str(item.channelId)) if item.channelId is not None else None
+        if local_id is not None and target is not None:
+            relink.setdefault(target, []).append(local_id)
+            relink_source_ids.add(str(item.messageId))
+
     skipped_before_floor = 0
     if messages_since is not None:
         kept_items: List[SourceMessageItem] = []
@@ -1847,18 +1867,14 @@ def _process_contact_messages(
             kept_resolved.append((created_at, inferred))
         parsed_items, resolved = kept_items, kept_resolved
 
-    already = refs.already_migrated(
-        tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_MESSAGE,
-        [str(m.messageId) for m in parsed_items],
-    )
-
     newly_inferred = 0
     for item, (created_at, inferred) in zip(parsed_items, resolved):
         message_counts["fetched"] = message_counts.get("fetched", 0) + 1
-        if str(item.messageId) in already:
-            message_counts["skip"] = message_counts.get("skip", 0) + 1
-            continue
         target_channel_id = channel_map.get(str(item.channelId)) if item.channelId is not None else None
+        if str(item.messageId) in already:
+            if str(item.messageId) not in relink_source_ids:  # counted after the re-link below
+                message_counts["skip"] = message_counts.get("skip", 0) + 1
+            continue
         try:
             writer.write_message(
                 local_contact.id, item, created_at,
@@ -1878,6 +1894,26 @@ def _process_contact_messages(
             newly_inferred += 1
         if len(message_samples) < MAX_REPORT_SAMPLES:
             message_samples.append({"type": item.message.type, "action": "create"})
+
+    if relink_source_ids:
+        try:
+            relinked = sum(
+                writer.link_messages_to_channel(local_contact.id, local_ids, target_channel_id)
+                for target_channel_id, local_ids in relink.items()
+            )
+        except Exception as exc:  # noqa: BLE001 - per-contact isolation (AC-MIG-29's pattern)
+            message_counts["errors"] = message_counts.get("errors", 0) + len(relink_source_ids)
+            failures.append(
+                {
+                    "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
+                    "reason": f"could not link earlier messages to their channel: {_failure_reason(exc)}",
+                    "action": "skipped",
+                }
+            )
+        else:
+            message_counts["update"] = message_counts.get("update", 0) + relinked
+            # Already carried a channel: nothing to do, same as any re-run skip.
+            message_counts["skip"] = message_counts.get("skip", 0) + len(relink_source_ids) - relinked
 
     # AC-MIG-37 - exactly ONE recompute per contact, after its WHOLE message
     # phase (this call covers every page for this contact - buffered above).

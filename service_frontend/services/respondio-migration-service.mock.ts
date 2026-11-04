@@ -145,7 +145,7 @@ function seed(): JobRow[] {
     report.messagesWithInferredTimestamp = 312;
     report.blockers = [
       '16 contacts have no lifecycle mapping and will land with no lifecycle stage.',
-      'Instagram - @acmesupport and Telegram bot have no compatible target channel and will be skipped.',
+      'Instagram - @acmesupport and Telegram bot have no compatible target channel. Their contacts and history import without a channel.',
     ];
     report.samples.contacts = [{ name: 'Alicia Chan', phone: '+15551234501' }];
     report.samples.messages = [{ body: 'Hi, is my order ready?', direction: 'incoming' }];
