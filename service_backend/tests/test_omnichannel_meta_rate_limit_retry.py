@@ -592,3 +592,275 @@ def test_ac_56_12_guide_changelog_has_a_rate_limit_row():
     head = guide.split("## 1. The big picture")[0]
     rows = [ln for ln in head.splitlines() if ln.startswith("> | **2026-")]
     assert any("meta_rate_limited" in ln or "meta rate limit" in ln.lower() for ln in rows), rows
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Round 1 review findings (lead rulings 1-10)
+# ═════════════════════════════════════════════════════════════════════════════
+from tests.test_omnichannel_api_gateway import _auth  # noqa: E402
+from tests.test_omnichannel_mark_read import HIGH_ID, LOW_ID  # noqa: E402
+
+
+def _staff_react(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    ch = _channel(session_factory, ws, name="wa-56-staff", age_rank=1)
+    _live_creds(session_factory, ch)
+    cid, mid = _reaction_rig(session_factory, ws, ch)
+    return cid, mid
+
+
+def _post_staff_react(client, cid, mid):
+    return client.post(
+        f"/omnichannel/contacts/{cid}/messages/{mid}/react", json={"emoji": "\U0001F44D"}, headers=_auth(client)
+    )
+
+
+# ── ruling 1 + 2: Retry-After pass-through and the 600 s ceiling ─────────────
+def _route_retry_after(client, session_factory, monkeypatch, surface, header):
+    meta = Meta(err(429, 130429, {"Retry-After": header}))
+    _patch_meta(monkeypatch, meta)
+    if surface == "read":
+        rig = Rig(client, session_factory, None)
+        ch = rig.channel("pn-56-ra", token="tok-56-ra")
+        rig.msg(ch, wamid="wamid.in-56-ra", when=1)
+        return rig.read()
+    if surface == "key_reaction":
+        hdr, mid = _reaction_ready(client, session_factory)
+        return _react(client, hdr, mid)
+    cid, mid = _staff_react(client, session_factory)
+    return _post_staff_react(client, cid, mid)
+
+
+SURFACES = ["read", "key_reaction", "staff_reaction"]
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_ac_56_11_retry_after_90_is_passed_through_not_a_hardcoded_default(
+    client, session_factory, monkeypatch, surface
+):
+    res = _route_retry_after(client, session_factory, monkeypatch, surface, "90")
+    assert res.status_code == 429, res.text
+    assert res.headers.get("Retry-After") == "90"
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize("header", ["4000", "9" * 4000], ids=["4000", "4000-digits"])
+def test_ac_56_11_retry_after_sent_to_clients_is_capped_at_600(client, session_factory, monkeypatch, surface, header):
+    res = _route_retry_after(client, session_factory, monkeypatch, surface, header)
+    assert res.status_code == 429, res.text
+    assert res.headers.get("Retry-After") == "600"
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_ac_56_11_meta_throttle_answers_429_meta_rate_limited_on_every_route(
+    client, session_factory, monkeypatch, surface
+):
+    res = _route_retry_after(client, session_factory, monkeypatch, surface, "45")
+    assert res.status_code == 429, res.text
+    if surface != "staff_reaction":  # the staff route answers a plain detail message, no code envelope
+        assert res.json()["error"]["code"] == "meta_rate_limited", res.text
+    assert res.headers.get("Retry-After") == "45"
+
+
+# ── ruling 3: error.code that is a dict or list never raises ─────────────────
+WEIRD_CODES = [{"a": 1}, [4], [[130429]], {"code": 4}]
+
+
+@pytest.mark.parametrize("code", WEIRD_CODES, ids=["dict", "list", "nested", "dict-code"])
+@pytest.mark.parametrize("status", [400, 429])
+def test_ac_56_02_send_with_a_dict_or_list_error_code_is_a_permanent_send_error(code, status):
+    meta = Meta((status, {"error": {"message": "odd", "code": code}}, None))
+    with pytest.raises(SendError) as exc:
+        _wa(meta).send(CREDS, "pn-56", "+60100000001", text="hi")
+    if status == 429:
+        return  # a bare 429 is a rate limit whatever the body says; it only must not blow up
+    assert exc.value.transient is False
+
+
+@pytest.mark.parametrize("code", WEIRD_CODES, ids=["dict", "list", "nested", "dict-code"])
+def test_ac_56_03_upload_with_a_dict_or_list_error_code_is_a_permanent_send_error(code):
+    meta = Meta((400, {"error": {"message": "odd", "code": code}}, None))
+    with pytest.raises(SendError) as exc:
+        _wa(meta).upload_media(CREDS, "pn-56", b"data", "image/png")
+    assert exc.value.transient is False
+
+
+@pytest.mark.parametrize("code", WEIRD_CODES, ids=["dict", "list", "nested", "dict-code"])
+def test_ac_56_11_read_with_a_dict_or_list_error_code_is_the_existing_refusal(mark_rig, monkeypatch, code):
+    _read_ready(mark_rig)
+    _patch_meta(monkeypatch, Meta((400, {"error": {"message": "odd", "code": code}}, None)))
+    res = mark_rig.read()
+    assert res.status_code == 200, res.text
+    assert [r["status"] for r in res.json()["receipts"]] == ["failed"]
+
+
+@pytest.mark.parametrize("code", WEIRD_CODES, ids=["dict", "list", "nested", "dict-code"])
+def test_ac_56_11_key_reaction_with_a_dict_or_list_error_code_is_not_a_500_or_429(
+    client, session_factory, monkeypatch, code
+):
+    hdr, mid = _reaction_ready(client, session_factory)
+    _patch_meta(monkeypatch, Meta((400, {"error": {"message": "odd", "code": code}}, None)))
+    res = _react(client, hdr, mid)
+    assert 400 <= res.status_code < 500 and res.status_code != 429, res.text
+
+
+# ── ruling 4: 131048 wins over HTTP 429 ──────────────────────────────────────
+def test_ac_56_04_429_with_code_131048_is_permanent_on_send():
+    meta = Meta(err(429, 131048))
+    with pytest.raises(SendError) as exc:
+        _wa(meta).send(CREDS, "pn-56", "+60100000001", text="hi")
+    assert exc.value.transient is False
+    assert exc.value.code == "131048"
+
+
+def test_ac_56_04_429_with_code_131048_is_permanent_on_upload():
+    meta = Meta(err(429, 131048))
+    with pytest.raises(SendError) as exc:
+        _wa(meta).upload_media(CREDS, "pn-56", b"data", "image/png")
+    assert exc.value.transient is False
+
+
+def test_ac_56_04_429_with_131048_ends_failed_first_attempt(client, session_factory, monkeypatch):
+    mid, _ch = _wa_row(client, session_factory, "+60100000191")
+    meta = Meta(err(429, 131048))
+    _use_real_wa_adapter(monkeypatch, meta)
+    retries = _run_task(monkeypatch, session_factory, mid)
+    assert meta.calls == 1 and retries == []
+    assert _row(session_factory, mid) == ("FAILED", "131048")
+
+
+# ── ruling 5: two channels, the first throttled ──────────────────────────────
+class PerNumber:
+    """Graph fake keyed by the phone number id in the URL path."""
+
+    def __init__(self):
+        self.behaviour = {}
+        self.calls = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        pn = request.url.path.strip("/").split("/")[-2]
+        self.calls.append(pn)
+        action = self.behaviour.get(pn, "ok")
+        if action == "ok":
+            return httpx.Response(200, json={"success": True})
+        return httpx.Response(429, json={"error": {"message": "throttled", "code": 130429}},
+                              headers={"Retry-After": "40"})
+
+    def client(self):
+        return httpx.Client(transport=httpx.MockTransport(self.handler))
+
+
+def test_ac_56_11_read_tries_every_channel_when_the_first_is_throttled(mark_rig, monkeypatch):
+    from modules.omnichannel.adapters import meta_graph
+
+    fake = PerNumber()
+    fake.behaviour["pn-A"] = "throttle"
+    monkeypatch.setattr(meta_graph.MetaGraphMixin, "_http", lambda self: fake.client())
+    a = mark_rig.channel("pn-A", token="tok-A", created=0, cid=LOW_ID)
+    b = mark_rig.channel("pn-B", token="tok-B", created=10, cid=HIGH_ID)
+    mark_rig.msg(a, wamid="wamid.in-A1", when=1)
+    mark_rig.msg(b, wamid="wamid.in-B1", when=2)
+
+    res = mark_rig.read()
+    assert res.status_code == 429, res.text
+    assert res.json()["error"]["code"] == "meta_rate_limited"
+    assert res.headers.get("Retry-After") == "40"
+    assert "pn-B" in fake.calls, "the second channel must still be tried after the first is throttled"
+
+    # the throttle clears: the channel that already went out is not sent again
+    fake.behaviour.clear()
+    b_before = fake.calls.count("pn-B")
+    again = mark_rig.read()
+    assert again.status_code == 200, again.text
+    by_channel = {r["channelId"]: r["status"] for r in again.json()["receipts"]}
+    assert by_channel == {a: "sent", b: "already_sent"}
+    assert fake.calls.count("pn-B") == b_before, "no double receipt for the channel that went out"
+
+
+# ── ruling 6: the max_retries override must not leak between chains ──────────
+def test_ac_56_05_a_rate_limited_chain_does_not_change_the_budget_of_a_later_5xx_chain(
+    client, session_factory, monkeypatch
+):
+    first, _ = _wa_row(client, session_factory, "+60100000201")
+    meta429 = Meta(err(429, 130429))
+    _use_real_wa_adapter(monkeypatch, meta429)
+    _drive_to_the_end(monkeypatch, session_factory, first)
+    assert meta429.calls == 5 and _row(session_factory, first)[0] == "FAILED"  # control: whole chain ran
+
+    second, _ = _wa_row(client, session_factory, "+60100000202")
+    meta503 = Meta((503, {"error": {"message": "down", "code": 2}}, None))
+    _use_real_wa_adapter(monkeypatch, meta503)
+    _drive_to_the_end(monkeypatch, session_factory, second)
+    assert meta503.calls == 4, "a 5xx chain keeps today's first attempt plus 3 retries"
+    assert _row(session_factory, second)[0] == "FAILED"
+
+
+def test_ac_56_05_three_rate_limits_then_a_5xx_ends_failed_after_four_calls_with_one_webhook(
+    client, session_factory, monkeypatch
+):
+    mid, _ = _wa_row(client, session_factory, "+60100000203")
+    meta = Meta(err(429, 130429), err(429, 130429), err(429, 130429),
+                (503, {"error": {"message": "down", "code": 2}}, None))
+    _use_real_wa_adapter(monkeypatch, meta)
+    _drive_to_the_end(monkeypatch, session_factory, mid)
+    assert meta.calls == 4
+    assert _row(session_factory, mid)[0] == "FAILED"
+    assert [x["event_id"] for x in _status_rows(session_factory, mid)] == [f"{mid}:FAILED"]
+
+
+# ── ruling 8: jitter bound pinned ────────────────────────────────────────────
+@pytest.mark.parametrize("attempt,base", [(0, 15), (1, 60), (2, 180), (3, 600)])
+def test_ac_56_05_jitter_is_exactly_up_to_twenty_percent(client, session_factory, monkeypatch, attempt, base):
+    mid, _ch = _wa_row(client, session_factory, f"+601000002{attempt}4")
+    _use_real_wa_adapter(monkeypatch, Meta(err(429, 130429)))
+    monkeypatch.setattr("random.uniform", lambda lo, hi: hi)
+    top = _run_task(monkeypatch, session_factory, mid, retries=attempt)
+    assert top[0]["countdown"] == pytest.approx(base * 1.2)
+    monkeypatch.setattr("random.uniform", lambda lo, hi: lo)
+    low = _run_task(monkeypatch, session_factory, mid, retries=attempt)
+    assert low[0]["countdown"] == pytest.approx(base)
+
+
+# ── ruling 9: garbage Retry-After never raises, schedule kept ────────────────
+@pytest.mark.parametrize(
+    "header", ["abc", "Wed, 21 Oct 2026 07:28:00 GMT", "1.5", "0", "-5"], ids=["abc", "http-date", "float", "zero", "neg"]
+)
+def test_ac_56_06_garbage_retry_after_leaves_the_schedule(client, session_factory, monkeypatch, header):
+    mid, _ch = _wa_row(client, session_factory, "+60100000211")
+    _use_real_wa_adapter(monkeypatch, Meta(err(429, 130429, {"Retry-After": header})))
+    retries = _run_task(monkeypatch, session_factory, mid, retries=0)
+    assert len(retries) == 1
+    assert 15 <= retries[0]["countdown"] <= 18.001, retries[0]
+
+
+# ── ruling 10: guide ─────────────────────────────────────────────────────────
+def test_ac_56_12_guide_error_row_states_the_600_second_ceiling():
+    row = [ln for ln in _guide().splitlines() if ln.startswith("| `meta_rate_limited`")]
+    assert len(row) == 1
+    assert "600" in row[0]
+
+
+def test_ac_56_12_guide_section_6a_says_other_channels_are_still_tried_on_a_throttle():
+    guide = _guide()
+    sec = guide[guide.index("## 6a.") : guide.index("## 6b.")]
+    low = sec.lower()
+    assert "meta_rate_limited" in sec and "429" in sec
+    assert "other channels" in low or "remaining channels" in low or "every channel" in low
+
+
+def test_ac_56_12_changelog_row_no_longer_claims_section_7_changed():
+    head = _guide().split("## 1. The big picture")[0]
+    rows = [ln for ln in head.splitlines() if ln.startswith("> | **2026-") and "Meta rate-limit retry" in ln]
+    assert len(rows) == 1
+    import re
+
+    assert not re.search(r"sections?\s+7\b", rows[0]), rows[0]
+
+
+def test_ac_56_12_guide_schedule_says_the_retry_count_is_shared_across_causes():
+    import re
+
+    low = _guide().lower()
+    assert re.search(r"(retr(y|ies)[^.\n]{0,160}shared|shared[^.\n]{0,160}retr(y|ies))", low), (
+        "the guide must say the 4 retries are shared across causes (a 5xx after rate limits uses the same count)"
+    )
