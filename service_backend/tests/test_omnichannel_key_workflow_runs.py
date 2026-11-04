@@ -322,3 +322,36 @@ def test_ac_38_141_inputs_caps(client, session_factory):
     # exactly 20 keys and a 40 char key are the inclusive bounds
     edge = {("a" * 40): "v", **{f"k{i}": "v" for i in range(19)}}
     assert _post_run(client, hdr, wid, r["contact"], edge).status_code == 202
+
+
+# -- review round 1, B4 ------------------------------------------------------------
+def test_ac_38_140_run_key_rendering_empty_is_422_not_409(client, session_factory):
+    r = _rig(client, session_factory)
+    hdr = r["hdr"]
+    doc = _chain(SHORTCUT_TRIGGER, _note_node())
+    doc["schemaVersion"] = 2
+    doc["execution"] = {"mode": "serialized", "correlationKey": "{{ trigger.input.ticket }}"}
+    db = session_factory()
+    try:
+        svc = WorkflowService(db)
+        wf = svc.create(DEFAULT_TENANT_ID, name="keyed", description="", draft=doc, actor_id=None)
+        svc.set_active(wf.id, DEFAULT_TENANT_ID, True)
+        svc.publish(wf.id, DEFAULT_TENANT_ID, actor_id=None)
+        db.add(_owner_cls()(tenant_id=DEFAULT_TENANT_ID, workflow_id=wf.id, workspace_id=r["ws"],
+                            created_by="apikey:seed"))
+        db.commit()
+        wid = wf.id
+    finally:
+        db.close()
+
+    for inputs in (None, {}, {"other": "x"}, {"ticket": ""}):
+        before = _counts(session_factory)
+        resp = _post_run(client, hdr, wid, r["contact"], inputs)
+        assert resp.status_code == 422, (inputs, resp.status_code, resp.text)
+        err = resp.json()["error"]
+        assert err["code"] == "invalid_request"
+        assert "key" in err["message"].lower(), err["message"]
+        assert _runs_of(session_factory, wid) == [] and _counts(session_factory) == before
+    ok = _post_run(client, hdr, wid, r["contact"], {"ticket": "T-1"})  # control
+    assert ok.status_code == 202, ok.text
+    assert len(_runs_of(session_factory, wid)) == 1

@@ -890,3 +890,194 @@ def test_ac_38_134_broadcast_completed_staff_edit_isolation(client, session_fact
         db.close()
     emit(w["ws2"])
     assert len(_runs(session_factory, wf)) == 1, "owner check holds against a staff edit"
+
+
+# -- review round 1, reds ---------------------------------------------------------
+def test_ac_38_130_dashboard_debug_of_refused_owned_run_is_a_4xx(client, session_factory, spy):
+    """B1: staff debug of an owned run whose snapshot holds a node off the list answers
+    422 node_not_allowed naming the node (today the refusal escapes as a 500); no node runs."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from tests.test_omnichannel_api_gateway import _auth
+
+    w = _world(client, session_factory)
+    doc = _spy_doc()
+    wf_id = _staff_publish(session_factory, doc, "dbg owned")
+    _own(session_factory, wf_id, w["ws1"])
+    db = session_factory()
+    try:
+        run = WorkflowRun(tenant_id=DEFAULT_TENANT_ID, workflow_id=wf_id, status="failed",
+                          definition_snapshot_json=doc, trigger_payload_json={})
+        db.add(run)
+        db.commit()
+        run_id = run.id
+    finally:
+        db.close()
+    quiet = TestClient(app, raise_server_exceptions=False)
+    r = quiet.post(f"/workflows/{wf_id}/debug", headers=_auth(client),
+                   json={"runId": run_id, "targetNodeId": "spy_node", "scratch": {}, "staleNodeIds": []})
+    assert r.status_code == 422, (r.status_code, r.text[:200])
+    assert "node_not_allowed" in r.text and "spy_node" in r.text
+    assert spy == [], "no node executed"
+
+
+def test_ac_38_130_refused_run_runs_the_wait_cleanup(client, session_factory, spy):
+    """B2: a refused run is terminal like any other, so registered wait cleanups are called."""
+    from app.workflow_engine.parking import register_wait_cleanup, unregister_wait_cleanup
+
+    w = _world(client, session_factory)
+    owned = _staff_publish(session_factory, _spy_doc(), "owned cleanup")
+    _own(session_factory, owned, w["ws1"])
+    seen = []
+
+    def cleanup(db, run):
+        seen.append((run.workflow_id, run.status))
+
+    register_wait_cleanup(cleanup)
+    try:
+        _inbound(session_factory, w["ch1"], "60177000001", "hi")
+    finally:
+        unregister_wait_cleanup(cleanup)
+    run = _runs(session_factory, owned)[0]
+    assert run["status"] == RUN_FAILED and "node_not_allowed" in run["error"]
+    assert (owned, RUN_FAILED) in seen, f"wait cleanup was not called for the refused run: {seen}"
+
+
+def test_ac_38_131_validate_over_node_cap_stops_early(client, session_factory):
+    """B3: more than 200 nodes -> the node-cap issue and nothing else; no per-node pinning work."""
+    from sqlalchemy import event
+
+    w = _world(client, session_factory)
+    hdr = w["hdr1"]
+    engine = session_factory.kw["bind"]
+
+    def doc_of(n):
+        nodes = [_node(f"t{i}", "omnichannel.add_tag", {"contactId": "{{ trigger.contact.id }}",
+                                                       "workspaceId": w["ws1"], "tagId": w["tag1"],
+                                                       "name": f"Tag {i}"}) for i in range(n)]
+        return {"schemaVersion": 1, "edges": [],
+                "nodes": [_node("trg", "omnichannel.message_received", kind="trigger"), *nodes]}
+
+    def measure(n):
+        stmts = []
+
+        def count(conn, cursor, statement, *a):
+            stmts.append(statement)
+
+        event.listen(engine, "before_cursor_execute", count)
+        try:
+            r = client.post(f"{BASE}/workflows/validate", json={"draftDefinition": doc_of(n)}, headers=hdr)
+        finally:
+            event.remove(engine, "before_cursor_execute", count)
+        return r, len(stmts)
+
+    small, small_q = measure(1)
+    assert small.status_code == 200, small.text
+    big, big_q = measure(250)
+    assert big.status_code == 200, big.text
+    body = big.json()
+    assert body["valid"] is False
+    assert 1 <= len(body["issues"]) <= 3, f"{len(body['issues'])} issues for an over-cap definition"
+    assert any("200" in i["message"] or "node" in i["message"].lower() for i in body["issues"])
+    assert big_q <= small_q + 5, f"query count grew with node count: {small_q} -> {big_q}"
+
+
+def test_ac_38_134_staff_workflow_trigger_into_owned_run_checks_contact_workspace(client, session_factory):
+    """B10: a staff workflow.trigger step starts an owned workflow with another workspace's
+    contact: the child run fails before any node with record_not_in_workspace, nothing is written."""
+    from app.workflow_engine.executor import run_workflow
+
+    w = _world(client, session_factory)
+    owned_doc = _chain_shortcut(_comment("note_1", contact="{{ trigger.record.id }}"))
+    owned = _staff_publish(session_factory, owned_doc, "owned child")
+    _own(session_factory, owned, w["ws1"])
+
+    def run_parent(contact_id, name):
+        doc = {"schemaVersion": 1,
+               "nodes": [{"id": "trg", "kind": "trigger", "type": "manual", "config": {}},
+                         _node("kick", "workflow.trigger", {"workflowId": owned, "contactId": contact_id})],
+               "edges": [{"id": "e1", "source": "trg", "target": "kick"}]}
+        db = session_factory()
+        try:
+            wf = Workflow(tenant_id=DEFAULT_TENANT_ID, name=name, description="",
+                          draft_definition_json=doc, created_by="staff")
+            db.add(wf)
+            db.flush()
+            run = WorkflowRun(tenant_id=DEFAULT_TENANT_ID, workflow_id=wf.id, status="pending",
+                              definition_snapshot_json=doc,
+                              trigger_payload_json={"triggeredBy": "manual", "input": {}})
+            db.add(run)
+            db.commit()
+            run_workflow(db, run.id)
+        finally:
+            db.close()
+
+    foreign_before = _msg_count(session_factory, w["contact2"])
+    run_parent(w["contact2"], "parent foreign")
+    child = _runs(session_factory, owned)
+    assert len(child) == 1 and child[0]["status"] == RUN_FAILED, child
+    assert "record_not_in_workspace" in child[0]["error"], child[0]["error"]
+    assert [n for n in child[0]["nodes"] if n[1] in (NODE_SUCCESS, NODE_RUNNING, NODE_FAILED)] == []
+    assert _msg_count(session_factory, w["contact2"]) == foreign_before
+
+    own_before = _msg_count(session_factory, w["contact1"])
+    run_parent(w["contact1"], "parent own")  # control: the owner workspace's contact runs
+    statuses = sorted(r["status"] for r in _runs(session_factory, owned))
+    assert statuses == [RUN_FAILED, RUN_SUCCESS], statuses
+    assert _msg_count(session_factory, w["contact1"]) == own_before + 1
+
+
+def _chain_shortcut(*nodes):
+    return _doc(*nodes, trigger=_node("trg", "entity.shortcut", {"entityType": "omnichannel_contact"}, "trigger"))
+
+
+def _option_ids(options):
+    return {o.get("value") or o.get("id") for o in (options or [])}
+
+
+def test_ac_38_135_catalog_shortcut_entity_and_assignee_options(client, session_factory):
+    """B11: entity.shortcut lists only omnichannel_contact; the assignee filter lists the key
+    workspace's members only; a literal member of another workspace is refused at save."""
+    from app.models import User, UserStatus
+    from app.security import hash_password
+    from sqlalchemy.sql import func
+    from modules.omnichannel.models import WorkspaceMember
+
+    w = _world(client, session_factory)
+    db = session_factory()
+    try:
+        mine = db.query(User).filter(User.email == "demo@example.com").one().id
+        other = User(tenant_id=DEFAULT_TENANT_ID, email="member-w2@example.com",
+                     password=hash_password("pw12345678"), name="W2 Member",
+                     status=UserStatus.ACTIVE.value, email_verified_at=func.now())
+        db.add(other)
+        db.flush()
+        theirs = other.id
+        db.add_all([WorkspaceMember(tenant_id=DEFAULT_TENANT_ID, workspace_id=w["ws1"], user_id=mine),
+                    WorkspaceMember(tenant_id=DEFAULT_TENANT_ID, workspace_id=w["ws2"], user_id=theirs)])
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.get(f"{BASE}/workflows/catalog", headers=w["hdr1"])
+    assert r.status_code == 200, r.text
+    by = {n["type"]: n for n in r.json()["nodes"]}
+    shortcut = {f["key"]: f for f in by["entity.shortcut"]["fields"]}
+    assert _option_ids(shortcut["entityType"]["options"]) == {"omnichannel_contact"}
+    assignee = {f["key"]: f for f in by["omnichannel.conversation_assigned"]["fields"]}["assigneeUserId"]
+    assert _option_ids(assignee["options"]) == {mine}
+    assert theirs not in r.text
+
+    def doc(user):
+        return _doc(_comment(), trigger=_node("trg", "omnichannel.conversation_assigned",
+                                              {"assigneeUserId": user}, "trigger"))
+
+    before = _counts(session_factory)
+    bad = _post(client, w["hdr1"], doc(theirs))
+    assert bad.status_code == 422, bad.text
+    err = bad.json()["error"]
+    assert err["code"] == "invalid_definition"
+    assert err["details"]["nodeId"] == "trg" and err["details"]["field"] == "assigneeUserId"
+    assert _counts(session_factory) == before
+    assert _post(client, w["hdr1"], doc(mine)).status_code == 201  # control

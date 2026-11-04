@@ -150,3 +150,58 @@ def test_ac_38_146_key_value_row_masked(session_factory):
             assert summary["body"]["config"]["headers"][1]["value"] == "text/plain"
     finally:
         db.close()
+
+
+# ── plan 38 gap 7 review round 1, AC-38-146: large and unparseable bodies ───────────
+def _stored_rows(session_factory, key_id):
+    db = session_factory()
+    try:
+        return [(r.operation, r.request_summary_json, r.response_summary_json)
+                for r in db.query(IntegrationActivity).filter(IntegrationActivity.api_key_id == key_id).all()]
+    finally:
+        db.close()
+
+
+def test_ac_38_146_big_and_unparseable_bodies_never_store_raw_secrets(client, session_factory):
+    import json
+
+    from tests.test_omnichannel_api_gateway import _default_workspace_id
+    from tests.test_omnichannel_key_workflows import BASE, _key
+
+    ws = _default_workspace_id(session_factory)
+    kid, hdr = _key(client, ws)
+    secret = "Bearer s3cr3t-LOG-PROBE"
+    definition = {
+        "schemaVersion": 1,
+        "nodes": [
+            {"id": "trg", "kind": "trigger", "type": "entity.shortcut",
+             "config": {"entityType": "omnichannel_contact"}},
+            {"id": "http_1", "kind": "action", "type": "http.request",
+             "config": {"method": "POST", "url": "https://api.example.com/x",
+                        "headers": [{"key": "Authorization", "value": secret}],
+                        "bodyMode": "text", "body": "y" * 20000}},
+        ],
+        "edges": [{"id": "e1", "source": "trg", "target": "http_1"}],
+    }
+    big = client.post(f"{BASE}/workflows", json={"name": "big", "draftDefinition": definition}, headers=hdr)
+    assert big.status_code == 201, big.text
+
+    broken = ('{"name": "x", "draftDefinition": {"headers": [{"key": "Authorization", "value": "%s"}' % secret).encode()
+    bad = client.post(f"{BASE}/workflows", content=broken,
+                      headers={**hdr, "Content-Type": "application/json"})
+    assert bad.status_code == 422, bad.text
+
+    rows = _stored_rows(session_factory, kid)
+    assert len(rows) == 2
+    for op, req, resp in rows:
+        blob = json.dumps(req) + json.dumps(resp)
+        assert "s3cr3t-LOG-PROBE" not in blob, f"{op}: the secret reached a stored summary"
+
+    # the unparseable body is stored as a note with its size, never raw text
+    unparsed = next(req for op, req, resp in rows if req["body"] is not None and "note" in req["body"]
+                    and str(len(broken)) in req["body"]["note"])
+    assert "raw" not in unparsed["body"]
+    # the over-capture-limit request is a note with its size too
+    over = [req for op, req, resp in rows if req["body"] is not None and "note" in req["body"]
+            and req is not unparsed]
+    assert over and "raw" not in over[0]["body"]
