@@ -16,6 +16,7 @@ from app.models.connection import Connection
 from app.secrets import encrypt_secret
 from modules.autocount.models import (
     SOURCE_IMPL_AUTOCOUNT_HTTP,
+    SOURCE_IMPL_SQL_DB,
     STAGED_PUSHED,
     AcCompany,
     AcEntityConfig,
@@ -78,7 +79,7 @@ def _so_doc():
     return d
 
 
-def _setup(db, *, write=True, mode="last_modified"):
+def _setup(db, *, write=True, mode="last_modified", configs=True):
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="AC",
         config_json={"baseUrl": DB3, "userId": "ADMIN"},
@@ -93,7 +94,7 @@ def _setup(db, *, write=True, mode="last_modified"):
     )
     db.add(company)
     db.commit()
-    for entity in ("purchase_order", "shipping_order", "sales_order"):
+    for entity in (("purchase_order", "shipping_order", "sales_order") if configs else ()):
         db.add(AcEntityConfig(
             tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=entity,
             source_impl=SOURCE_IMPL_AUTOCOUNT_HTTP, etl_status="active", delivery_mode="push",
@@ -232,3 +233,23 @@ def test_ac_55_27_no_transaction_open_during_any_get(db):
     _run(db, s)
     assert s.wrapper.violations == []
     assert len(s.wrapper.requests) == 20
+
+
+def test_ac_55_30_company_without_entity_configs_pushes(db):
+    s = _setup(db, configs=False)
+    res = _run(db, s)
+    assert (res.docs_seen, res.pushed) == (2, 2)
+    assert len(s.sink.records) == 2
+
+
+def test_ac_55_30_sql_sourced_po_config_skips_push_and_stays_staged(db):
+    s = _setup(db, configs=False)
+    db.add(AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=s.company.id, entity_type="purchase_order",
+        source_impl=SOURCE_IMPL_SQL_DB, etl_status="active", delivery_mode="push", source_config={},
+    ))
+    db.commit()
+    res = _run(db, s)
+    assert res.pushed == 1  # only the sales order
+    po = _staged(db, "purchase_order")
+    assert len(po) == 1 and po[0].status == "STAGED" and po[0].canonical_json is None

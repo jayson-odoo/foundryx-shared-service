@@ -2,9 +2,9 @@
 
 Mapping tests call ``map_wrapper_document`` directly. Push tests drive the
 real ``WriteBackService`` over the S3 fake wrapper. A company pushes after a
-confirmed write only when it has a ``purchase_order`` entity config whose
-``source_impl`` is not ``sql_db`` (a company with NO entity config keeps the S3
-stage-only behaviour, so the S3 tests stay valid).
+confirmed write UNLESS it has an entity config for that doc's entity type with
+``source_impl`` ``sql_db`` (no config at all = push: the write connection is
+then the only PO source).
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from modules.autocount.canonical.masters import (
 )
 from modules.autocount.mapping import flat_source_ref
 from modules.autocount.models import (
-    SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_PUSHED,
@@ -195,7 +194,7 @@ def test_ac_55_31_unresolved_spo_po_ref_keeps_number(h):
 
 # ---- post-write push (AC-55-25) --------------------------------------------------
 
-def _enable_push(h, source_impl=SOURCE_IMPL_AUTOCOUNT_HTTP):
+def _add_config(h, source_impl):
     h.db.add(AcEntityConfig(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, entity_type="purchase_order",
         source_impl=source_impl, etl_status="active", delivery_mode="push", source_config={},
@@ -236,7 +235,6 @@ def _link(h, svc):
 
 
 def test_ac_55_25_done_maps_and_pushes_once_and_marks_pushed(h):
-    _enable_push(h)
     sink = _Sink()
     res = _link(h, _service(h, sink))
     assert res.outcome == "done", res.error_code
@@ -250,7 +248,6 @@ def test_ac_55_25_done_maps_and_pushes_once_and_marks_pushed(h):
 
 
 def test_ac_55_25_mapping_failure_still_done_row_stays_staged_no_push(h):
-    _enable_push(h)
     h.ac.docs["purchaseorderbydocdate"][0]["Details"][0]["ItemCode"] = ""  # row 12009 has qty 1
     sink = _Sink()
     res = _link(h, _service(h, sink))
@@ -261,7 +258,6 @@ def test_ac_55_25_mapping_failure_still_done_row_stays_staged_no_push(h):
 
 @pytest.mark.parametrize("mode", ["raise", "reject"])
 def test_ac_55_25_sink_failure_still_done_row_stays_staged(h, mode):
-    _enable_push(h)
     sink = _Sink(mode)
     res = _link(h, _service(h, sink))
     assert res.outcome == "done", res.error_code
@@ -269,7 +265,7 @@ def test_ac_55_25_sink_failure_still_done_row_stays_staged(h, mode):
 
 
 def test_ac_55_25_sql_db_company_gets_no_wrapper_mapping_and_no_push(h):
-    _enable_push(h, source_impl=SOURCE_IMPL_SQL_DB)
+    _add_config(h, SOURCE_IMPL_SQL_DB)
     sink = _Sink()
     res = _link(h, _service(h, sink))
     assert res.outcome == "done", res.error_code
@@ -279,9 +275,21 @@ def test_ac_55_25_sql_db_company_gets_no_wrapper_mapping_and_no_push(h):
     assert row.canonical_json is None
 
 
-def test_ac_55_25_company_without_entity_config_stays_stage_only(h):
+def test_ac_55_25_company_without_entity_config_pushes(h):
     sink = _Sink()
     res = _link(h, _service(h, sink))
     assert res.outcome == "done"
-    assert sink.records == []
-    assert h.staged_po().status == STAGED
+    assert len(sink.records) == 1
+    assert h.staged_po().status == STAGED_PUSHED
+
+
+def test_ac_55_25_sql_config_on_another_entity_does_not_block_po_push(h):
+    h.db.add(AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, entity_type="sales_order",
+        source_impl=SOURCE_IMPL_SQL_DB, etl_status="active", delivery_mode="push", source_config={},
+    ))
+    h.db.commit()
+    sink = _Sink()
+    res = _link(h, _service(h, sink))
+    assert res.outcome == "done"
+    assert len(sink.records) == 1

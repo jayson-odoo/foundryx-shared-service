@@ -22,7 +22,14 @@ import pytest
 from app.models import DEFAULT_TENANT_ID
 from app.models.connection import Connection
 from app.secrets import encrypt_secret
-from modules.autocount.models import STAGED, AcCompany, AcStagedRecord, AcWriteAction
+from modules.autocount.models import (
+    SOURCE_IMPL_SQL_DB,
+    STAGED,
+    AcCompany,
+    AcEntityConfig,
+    AcStagedRecord,
+    AcWriteAction,
+)
 from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.service import WriteBackService
@@ -481,8 +488,16 @@ def test_ac_55_20_done_stores_only_the_second_get(h):
     assert len(h.ac.get_calls) >= 3  # PO + SO before, PO after
 
 
+def _make_po_sql_sourced(h):
+    h.db.add(AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, entity_type="purchase_order",
+        source_impl=SOURCE_IMPL_SQL_DB, etl_status="active", delivery_mode="push", source_config={},
+    ))
+    h.db.commit()
+
+
 def _assert_staged_readback_queued_for_remap(h, res):
-    # push pinned in S4 (wrapper doc mapping)
+    # SQL-sourced PO: wrapper push skipped; push pinned in S4
     row = h.staged_po()
     server = h.ac.docs["purchaseorderbydocdate"][0]
     expected = {k: v for k, v in server.items() if k != "Details"}
@@ -494,12 +509,14 @@ def _assert_staged_readback_queued_for_remap(h, res):
 
 
 def test_ac_55_25_done_stages_readback_for_remap(h):
+    _make_po_sql_sourced(h)
     res = h.link_split()
     assert res.outcome == "done"
     _assert_staged_readback_queued_for_remap(h, res)
 
 
 def test_ac_55_12_unlink_done(h):
+    _make_po_sql_sourced(h)
     res = h.service().unlink(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=12013
     )
