@@ -521,3 +521,218 @@ def test_live_opt_out_restores_the_limit_after_a_rollback(live_pg):
     assert _show_limit(session) == "1s"
     assert session.execute(text("SELECT 1")).scalar() == 1
     session.close()
+
+
+# ---- g. PR 203 round 1: the opt-out never leaves a pooled connection unbounded
+
+
+def test_long_limit_setting_default_and_floor(monkeypatch):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.delenv("API_DB_LOCK_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("API_DB_LONG_LOCK_TIMEOUT_SECONDS", raising=False)
+    assert Settings().api_db_long_lock_timeout_seconds == 300
+    monkeypatch.setenv("API_DB_LOCK_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("API_DB_LONG_LOCK_TIMEOUT_SECONDS", "5")
+    with pytest.raises(ValidationError):
+        Settings()
+    monkeypatch.setenv("API_DB_LONG_LOCK_TIMEOUT_SECONDS", "10")
+    assert Settings().api_db_long_lock_timeout_seconds == 10
+
+
+def test_busy_warning_logs_the_route_template_not_the_concrete_path(client, caplog):
+    import logging
+
+    from app.main import app
+
+    secret = "s3cr3t-token-value"
+
+    def busy(token: str):
+        raise OperationalError("UPDATE t SET v = 1", None, _FakeOrig("55P03"))
+
+    before = len(app.router.routes)
+    app.add_api_route("/_lockprobe/by-token/{token}", busy, methods=["GET"])
+    try:
+        with caplog.at_level(logging.WARNING):
+            res = TestClient(app, raise_server_exceptions=False).get(
+                f"/_lockprobe/by-token/{secret}"
+            )
+    finally:
+        del app.router.routes[before:]
+    assert res.status_code == 503
+    text_logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "/_lockprobe/by-token/{token}" in text_logged
+    assert secret not in text_logged
+
+
+@pytest.fixture
+def live_pg_long(monkeypatch):
+    """Like ``live_pg`` but API limit 1 s, long limit 3 s, a 3-connection pool."""
+    from sqlalchemy import create_engine, text
+
+    from app import database
+    from app.config import settings
+
+    dbname = f"foundryx_lockprobe_{uuid.uuid4().hex[:8]}"
+    try:
+        admin = create_engine("postgresql://localhost/postgres", isolation_level="AUTOCOMMIT")
+        with admin.connect() as c:
+            c.execute(text(f"CREATE DATABASE {dbname}"))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"no local Postgres to probe: {exc!r}")
+    url = f"postgresql://localhost/{dbname}"
+    monkeypatch.setattr(database, "process_application_name", lambda: "foundryx-api")
+    for name in (
+        "worker_db_statement_timeout_seconds",
+        "worker_db_lock_timeout_seconds",
+        "worker_db_idle_in_transaction_session_timeout_seconds",
+    ):
+        monkeypatch.setattr(settings, name, 0)
+    monkeypatch.setattr(settings, "api_db_lock_timeout_seconds", 1)
+    # The field may not exist yet (red run): set it on the instance directly.
+    monkeypatch.setitem(settings.__dict__, "api_db_long_lock_timeout_seconds", 3)
+    engine = database.build_engine(url, pool_size=3, max_overflow=0)
+    other = create_engine(url)
+    with other.begin() as c:
+        c.execute(text("CREATE TABLE t (id int PRIMARY KEY, v int)"))
+        c.execute(text("INSERT INTO t VALUES (1, 0)"))
+    holder = other.connect()
+    holder.execute(text("SELECT * FROM t WHERE id = 1 FOR UPDATE"))
+    try:
+        yield SimpleNamespace(engine=engine, holder=holder)
+    finally:
+        holder.close()
+        engine.dispose()
+        other.dispose()
+        with admin.connect() as c:
+            c.execute(text(f"DROP DATABASE IF EXISTS {dbname}"))
+        admin.dispose()
+
+
+def _fill_pool(engine, n=3):
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+
+    sessions = [Session(engine) for _ in range(n)]
+    for s in sessions:
+        s.execute(text("SELECT 1"))
+    for s in sessions:
+        s.close()
+    assert engine.pool.checkedin() >= 2
+
+
+def _idle_limits(engine):
+    conns = [engine.raw_connection() for _ in range(engine.pool.checkedin())]
+    try:
+        limits = []
+        for rc in conns:
+            cur = rc.cursor()
+            cur.execute("SHOW lock_timeout")
+            limits.append(cur.fetchone()[0])
+            cur.close()
+            rc.rollback()
+        return limits
+    finally:
+        for rc in conns:
+            rc.close()
+
+
+def test_live_pool_stays_bounded_after_a_committing_opt_out(live_pg_long):
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+
+    from app.database import allow_long_lock_wait
+
+    live_pg_long.holder.rollback()
+    _fill_pool(live_pg_long.engine)
+    session = Session(live_pg_long.engine)
+    session.execute(text("SELECT 1"))  # dependency hop
+    with allow_long_lock_wait(session):
+        session.execute(text("UPDATE t SET v = v + 1 WHERE id = 1"))
+        session.commit()
+        session.execute(text("UPDATE t SET v = v + 1 WHERE id = 1"))
+        session.commit()
+        session.execute(text("SELECT v FROM t"))  # response refresh
+    session.close()  # what get_db does
+    limits = _idle_limits(live_pg_long.engine)
+    assert len(limits) >= 2
+    assert limits == ["1s"] * len(limits), limits
+
+
+def test_live_opt_out_survives_a_commit_inside_the_block(live_pg_long):
+    import threading
+    import time
+
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+
+    from app.database import allow_long_lock_wait
+
+    session = Session(live_pg_long.engine)
+    timer = threading.Timer(2.0, live_pg_long.holder.commit)
+    try:
+        with allow_long_lock_wait(session):
+            session.execute(text("SELECT 1"))
+            session.commit()  # the opt-out must still hold in the next transaction
+            timer.start()
+            started = time.monotonic()
+            session.execute(text("UPDATE t SET v = v + 1 WHERE id = 1"))
+            session.commit()
+            elapsed = time.monotonic() - started
+    finally:
+        timer.cancel()
+        session.close()
+    assert elapsed > 1.5, elapsed
+
+
+def test_live_opt_out_has_a_ceiling(live_pg_long):
+    import threading
+    import time
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+
+    from app.database import allow_long_lock_wait
+    from app.db_errors import error_code_of
+
+    session = Session(live_pg_long.engine)
+    # Safety net so a regression (unbounded wait) ends the test instead of hanging.
+    timer = threading.Timer(7.0, live_pg_long.holder.commit)
+    timer.start()
+    started = time.monotonic()
+    try:
+        with allow_long_lock_wait(session):
+            with pytest.raises(DBAPIError) as caught:
+                session.execute(text("UPDATE t SET v = v + 1 WHERE id = 1"))
+        elapsed = time.monotonic() - started
+    finally:
+        timer.cancel()
+        session.rollback()
+        session.close()
+    assert error_code_of(caught.value) == "55P03"
+    assert 2.5 < elapsed < 5, elapsed
+
+
+def test_live_pool_stays_bounded_after_a_rollback_inside_the_opt_out(live_pg_long):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+
+    from app.database import allow_long_lock_wait
+
+    live_pg_long.holder.rollback()
+    _fill_pool(live_pg_long.engine)
+    session = Session(live_pg_long.engine)
+    with allow_long_lock_wait(session):
+        session.execute(text("UPDATE t SET v = v + 1 WHERE id = 1"))
+        session.commit()
+        with pytest.raises(DBAPIError):
+            session.execute(text("SELECT 1/0"))
+        session.rollback()
+    session.close()
+    limits = _idle_limits(live_pg_long.engine)
+    assert len(limits) >= 2
+    assert limits == ["1s"] * len(limits), limits
