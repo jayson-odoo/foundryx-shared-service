@@ -31,6 +31,23 @@ def _body_read_errors() -> Tuple[type, ...]:
     return (OSError, BotoCoreError, Urllib3HTTPError)
 
 
+def _is_transport_error(exc: BaseException) -> bool:
+    """True when the bucket could not be reached or answered 5xx or 429 (retryable)."""
+    from botocore.exceptions import ClientError, ConnectionError as BotoConnectionError
+    from botocore.exceptions import HTTPClientError
+    from urllib3.exceptions import HTTPError as Urllib3HTTPError
+
+    if isinstance(exc, ClientError):
+        try:
+            status = int(exc.response["ResponseMetadata"]["HTTPStatusCode"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return status >= 500 or status == 429
+    return isinstance(
+        exc, (BotoConnectionError, HTTPClientError, Urllib3HTTPError, OSError)
+    )
+
+
 def _ext_for(mime_type: str) -> str:
     return mimetypes.guess_extension(mime_type or "") or ".bin"
 
@@ -164,10 +181,13 @@ class S3CompatibleAdapter:
         """Read the object bytes straight through boto3 so the serving route
         streams them SAME-ORIGIN (no presigned redirect → no bucket-CORS
         preflight, which browsers 403 against R2/S3). Missing object →
-        FileNotFoundError."""
+        FileNotFoundError. A bucket that cannot be reached (connection or
+        timeout errors, a 5xx or 429 answer) → StorageUnavailable, a clean retry."""
         try:
             obj = self.client.get_object(Bucket=self.bucket, Key=key)
-        except Exception as exc:  # noqa: BLE001 - boto3 ClientError (NoSuchKey etc.)
+        except Exception as exc:  # noqa: BLE001 - classified below, chain kept
+            if _is_transport_error(exc):
+                raise StorageUnavailable(key) from exc
             raise FileNotFoundError(key) from exc
         try:
             data = obj["Body"].read()
