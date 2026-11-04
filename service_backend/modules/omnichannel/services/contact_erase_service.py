@@ -115,11 +115,16 @@ class ContactEraseService:
         # legacy url on a migrated row is never a purge target.
         migrated = repo.migrated_message_ids(message_ids, tenant_id)
         for mid, media_key, media_url in msgs:
-            candidates = [media_key]
-            if mid not in migrated:
-                candidates.append(local_key_from_url(media_url))
-            for key in candidates:
-                if key and purgeable_key(key, tenant_id) and self._connection_is_own(key, tenant_id):
+            native = mid not in migrated
+            candidates = [(media_key, native)]
+            if native:
+                candidates.append((local_key_from_url(media_url), False))
+            for key, minted_ok in candidates:
+                if (
+                    key
+                    and purgeable_key(key, tenant_id, native=minted_ok)
+                    and self._connection_is_own(key, tenant_id)
+                ):
                     keys.add(key)
         channel_ids = repo.identity_channel_ids(contact_id, tenant_id)
         event_ids = repo.event_ids(contact_id, tenant_id)

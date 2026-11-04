@@ -3,6 +3,7 @@
 Pure SQLAlchemy. Every query is tenant scoped, and workspace scoped where the
 table carries a workspace. No commit here: the service owns the transaction.
 Order of use is fixed by the service (no foreign key cascades exist)."""
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import String, and_, case, cast, func, or_
@@ -66,13 +67,24 @@ def split_connection_key(key: str) -> Tuple[Optional[str], str]:
     return None, key
 
 
-def purgeable_key(key: Optional[str], tenant_id: str) -> bool:
+# A bare key the server minted itself for converted legacy media: no slash,
+# `<basename>-<8 hex>.<ext>` (the shape the storage layer mints on write).
+_MINTED_BARE = re.compile(r"[A-Za-z0-9_-]+-[0-9a-f]{8}\.[A-Za-z0-9]+")
+_MINTED_PG = r"^(conn:[^:]+:)?[A-Za-z0-9_-]+-[0-9a-f]{8}\.[A-Za-z0-9]+$"
+_MINTED_GLOB = "*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].*"
+
+
+def purgeable_key(key: Optional[str], tenant_id: str, *, native: bool = False) -> bool:
     """THE one rule for which stored keys an erase may delete (and count): a key
     in the tenant's own storage area, free of path tricks. A `conn:` key is
-    judged by its raw part; the connection's owner is checked at purge time."""
+    judged by its raw part; the connection's owner is checked at purge time.
+    `native` (no migration ref on the message) also admits a server-minted
+    bare key."""
     if not key:
         return False
     _connection_id, raw = split_connection_key(key)
+    if native and _MINTED_BARE.fullmatch(raw):
+        return True  # converted media on a native row (a migrated row never qualifies)
     return _safe_raw(raw) and any(raw.startswith(p) for p in own_area_prefixes(tenant_id))
 
 
@@ -141,6 +153,13 @@ class ContactEraseRepository:
             return {}
         areas = own_area_prefixes(tenant_id)
         url_base = f"{settings.public_base_url}{MEDIA_PATH}"
+        if self.db.get_bind().dialect.name == "postgresql":
+            minted = ConversationMessage.media_key.op("~")(_MINTED_PG)
+        else:
+            minted = and_(
+                ConversationMessage.media_key.op("GLOB")(_MINTED_GLOB),
+                ~ConversationMessage.media_key.like("%/%"),
+            )
         key_ok = or_(
             *[ConversationMessage.media_key.startswith(p, autoescape=True) for p in areas],
             *[
@@ -157,6 +176,7 @@ class ContactEraseRepository:
             )
             .exists()
         )
+        key_ok = or_(key_ok, and_(~migrated, minted))
         url_ok = and_(
             ~migrated,
             or_(
