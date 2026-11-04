@@ -133,3 +133,61 @@ def test_compose_backend_env_passes_the_api_lock_limits_through():
     env = compose["x-backend-env"]
     for name in ("API_DB_LOCK_TIMEOUT_SECONDS", "API_DB_LONG_LOCK_TIMEOUT_SECONDS"):
         assert name in env, f"{name} must be passed through the backend env allow-list"
+
+
+# ---- round 3: the stored id is recorded at commit, not after the refresh ----
+
+
+def _fail_message_refresh(monkeypatch):
+    """Every ``refresh`` of a message row raises (the post-commit refresh)."""
+    from sqlalchemy.orm import Session
+
+    from modules.omnichannel.models import ConversationMessage
+
+    real = Session.refresh
+
+    def refresh(self, instance, *a, **k):
+        if isinstance(instance, ConversationMessage):
+            raise RuntimeError("refresh failed after commit")
+        return real(self, instance, *a, **k)
+
+    monkeypatch.setattr(Session, "refresh", refresh)
+
+
+def test_json_send_refresh_failure_after_commit_still_replays(client, session_factory, monkeypatch):
+    phone = "+60700800811"
+    headers, cid = _setup(client, session_factory, phone)
+    http = _no_raise_client(client)
+    with monkeypatch.context() as m:
+        _fail_message_refresh(m)
+        first = http.post(URL, json=_payload(phone), headers=headers)
+    assert first.status_code == 500, first.text
+    stored = _messages(session_factory, cid)
+    assert len(stored) == 1
+    retry = http.post(URL, json=_payload(phone), headers=headers)
+    assert retry.status_code == 202, retry.text
+    assert retry.json()["idempotencyReplay"] is True
+    assert retry.json()["id"] == stored[0]
+    assert len(_messages(session_factory, cid)) == 1
+
+
+def test_multipart_send_refresh_failure_after_commit_still_replays(client, session_factory, monkeypatch):
+    from tests.test_omnichannel_send_route_limits import _install, _multipart
+    from tests.test_omnichannel_send_route_limits import _setup as _media_setup
+
+    phone = "+60700800812"
+    headers, cid, _ch = _media_setup(client, session_factory, phone=phone, token="tkn-live-r3")
+    _install(monkeypatch)
+    headers = {**headers, "Idempotency-Key": "idem-multipart-r3"}
+    http = _no_raise_client(client)
+    with monkeypatch.context() as m:
+        _fail_message_refresh(m)
+        first = http.post(URL, headers=headers, **_multipart(phone))
+    assert first.status_code == 500, first.text
+    stored = _messages(session_factory, cid)
+    assert len(stored) == 1
+    retry = http.post(URL, headers=headers, **_multipart(phone))
+    assert retry.status_code == 202, retry.text
+    assert retry.json()["idempotencyReplay"] is True
+    assert retry.json()["id"] == stored[0]
+    assert len(_messages(session_factory, cid)) == 1

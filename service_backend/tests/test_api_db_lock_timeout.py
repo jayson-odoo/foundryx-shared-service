@@ -757,3 +757,38 @@ def test_live_pool_stays_bounded_after_a_rollback_inside_the_opt_out(live_pg_lon
     limits = _idle_limits(live_pg_long.engine)
     assert len(limits) >= 2
     assert limits == ["1s"] * len(limits), limits
+
+
+# ---- h. PR 203 round 3 ------------------------------------------------------
+
+
+@pytest.mark.parametrize("long_value", ["0", "-1"])
+@pytest.mark.parametrize("normal_value", ["0", "10"])
+def test_long_limit_below_one_is_refused_even_when_the_normal_limit_is_off(
+    monkeypatch, normal_value, long_value
+):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("API_DB_LOCK_TIMEOUT_SECONDS", normal_value)
+    monkeypatch.setenv("API_DB_LONG_LOCK_TIMEOUT_SECONDS", long_value)
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_live_flag_applies_only_to_the_opted_out_session(live_pg_long):
+    from sqlalchemy.orm import Session
+
+    from app.database import allow_long_lock_wait
+
+    live_pg_long.holder.rollback()
+    a = Session(live_pg_long.engine)
+    b = Session(live_pg_long.engine)
+    try:
+        with allow_long_lock_wait(a):
+            assert _show_limit(a) == "3s"
+            assert _show_limit(b) == "1s"
+    finally:
+        a.close()
+        b.close()
