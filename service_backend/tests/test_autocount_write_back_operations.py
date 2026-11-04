@@ -333,10 +333,37 @@ def test_ac_57_33_partly_received_unlink_keeps_link_on_received_part(h, w):
     assert len(remainder) == 1 and remainder[0]["Qty"] == 3 and remainder[0]["FromSODtlKey"] == 0
 
 
-def test_ac_57_33_unknown_received_qty_refused(h, w):
+def test_ac_57_33_unknown_received_qty_proceeds_with_warning(h, w):
+    # owner ruling 4 Nov: the refusal comes from AutoCount, not from us
     res = h.run("link_row", w.params["link_row"], receipt_reader=lambda kind, doc, row: None)
-    assert res.outcome == "refused" and res.error_code == "TRANSFER_STATE_UNKNOWN"
-    assert h.vendor.writes() == []
+    assert res.outcome == "done", res.error_code
+    assert "TRANSFER_STATE_UNKNOWN" in res.warnings
+    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]
+
+
+def test_ac_57_33_known_received_qty_has_no_unknown_warning(h, w):
+    res = h.run("link_row", w.params["link_row"])
+    assert res.outcome == "done" and "TRANSFER_STATE_UNKNOWN" not in res.warnings
+
+
+def test_ac_57_33_autocount_refusing_the_delete_is_vendor_refused_and_nothing_else_is_written(h, w):
+    h.vendor.mark_received("PO", 7001, w.p_free, "Cannot delete: line already received.")
+    res = h.run("link_row", w.params["link_row"], receipt_reader=lambda kind, doc, row: None)
+    assert res.outcome == "vendor_error" and res.error_code == "VENDOR_REFUSED"
+    assert "Cannot delete: line already received." in (res.message or "")
+    assert "ac.example.test" not in (res.message or "") and "api/db3" not in (res.message or "")
+    assert h.steps() == [DEL_PO]  # no add, no recovery: the delete did not land
+    assert w.row_by_key(w.po_rows(), w.p_free) is not None and len(w.po_rows()) == 4
+    assert h.alerts == []
+    assert len(h.op_actions(res)) == 1
+
+
+@pytest.mark.parametrize("op", ["unlink_row", "relink_row"])
+def test_ac_57_33_vendor_refused_delete_for_other_po_ops(h, w, op):
+    h.vendor.mark_received("PO", 7001, w.p_linked, "line received")
+    res = h.run(op, w.params[op], receipt_reader=lambda kind, doc, row: None)
+    assert res.outcome == "vendor_error" and res.error_code == "VENDOR_REFUSED"
+    assert h.steps() == [DEL_PO]
 
 
 def test_ac_57_33_switch_off_any_receipt_is_row_received(h, w, monkeypatch):
@@ -354,11 +381,12 @@ def test_ac_57_33_default_receipt_reader_uses_transfered_qty_else_unknown(h):
     h.delete_on()
     w = World(h, po_over={"TransferedQty": 0})
     assert h.run("link_row", w.params["link_row"], receipt_reader="default").outcome == "done"
-    # a hapi document row without TransferedQty is unknown
+    # a hapi document row without TransferedQty is unknown: proceed, warn (owner ruling 4 Nov)
     row = next(r for r in h.vendor.rows("PO", 7001) if r["DtlKey"] == w.p_linked)
     assert "TransferedQty" not in row
     res = h.run("unlink_row", w.params["unlink_row"], key="idem-2", receipt_reader="default")
-    assert res.outcome == "refused" and res.error_code == "TRANSFER_STATE_UNKNOWN"
+    assert res.outcome == "done", res.error_code
+    assert "TRANSFER_STATE_UNKNOWN" in res.warnings
 
 
 def test_ac_57_33_default_receipt_reader_full_receipt(h):
@@ -574,11 +602,11 @@ def test_ac_57_37_same_key_other_op_is_idempotency_conflict(h, w):
 
 
 def test_ac_57_37_a_refused_answer_is_stored_too(h, w):
-    first = h.run("link_row", w.params["link_row"], receipt_reader=lambda kind, doc, row: None)
-    assert first.error_code == "TRANSFER_STATE_UNKNOWN"
+    first = h.run("link_row", w.params["link_row"], receipt_reader=lambda kind, doc, row: Decimal(4))
+    assert first.error_code == "ROW_RECEIVED"
     calls = len(h.vendor.calls)
     again = h.run("link_row", w.params["link_row"])  # reader now fine, same key: stored answer
-    assert again.error_code == "TRANSFER_STATE_UNKNOWN" and len(h.vendor.calls) == calls
+    assert again.error_code == "ROW_RECEIVED" and len(h.vendor.calls) == calls
 
 
 def test_ac_57_37_key_scope_is_per_api_key_and_company(h, w):

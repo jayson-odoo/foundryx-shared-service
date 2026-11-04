@@ -108,6 +108,9 @@ class FakeAutoCountVendor:
         self.ignored_fields: set = set()
         # answer every by-date GET with all docs regardless of date (QT has no staged date)
         self.any_date = False
+        # rows AutoCount refuses to delete because they were received / delivered; the GET
+        # still hides TransferedQty (AQ11), so the caller cannot know. (doc_key, dtl_key) -> message
+        self.received_rows: Dict[tuple, str] = {}
         self.transport = httpx.MockTransport(self._handle)
 
     # ---- seeding / inspection ---------------------------------------------
@@ -133,6 +136,10 @@ class FakeAutoCountVendor:
 
     def no_http(self) -> bool:
         return not self.calls
+
+    def mark_received(self, kind: str, doc_key: int, dtl_key: int,
+                      message: str = "Cannot delete: the line has been transferred.") -> None:
+        self.received_rows[(doc_key, dtl_key)] = message
 
     # ---- failure injection --------------------------------------------------
     def fail_next(self, method: str, leaf: str, status: int = 500, text: str = "injected failure",
@@ -288,6 +295,9 @@ class FakeAutoCountVendor:
             doc = self.find(kind, body["DocKey"])
         except KeyError:
             return httpx.Response(404, text="Document not found.")
+        refused = self.received_rows.get((body["DocKey"], body["DtlKey"]))
+        if refused:
+            return httpx.Response(400, text=refused)
         before = len(doc["Details"])
         doc["Details"] = [r for r in doc["Details"] if r["DtlKey"] != body["DtlKey"]]
         if len(doc["Details"]) == before:

@@ -123,3 +123,14 @@ def test_spo_new_linked_row_keeps_from_doc_dtl_key_and_location(v, http):
          "FromDocType": "PO", "FromDocDtlKey": 321}]})
     row = v.rows("SPO", 500)[1]
     assert row["FromDocDtlKey"] == 321 and row["Location"] == "BR1"
+
+
+def test_received_row_delete_is_refused_with_message_while_get_hides_it(v, http):
+    v.seed("PO", new_doc("PO", 600, "PO-6", "C", [{}, {}]))
+    key = v.rows("PO", 600)[0]["DtlKey"]
+    v.mark_received("PO", 600, key, "line transferred")
+    r = http.request("DELETE", "/DeletePurchaseOrderDetailbydtlkey", json={"DocKey": 600, "DtlKey": key})
+    assert r.status_code == 400 and r.text == "line transferred"
+    assert len(v.rows("PO", 600)) == 2
+    got = http.get("/purchaseorderbydocdate", params={"DocDate": "20261104"}).json()
+    assert "TransferedQty" not in got[0]["Details"][0]
