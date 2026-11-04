@@ -159,6 +159,12 @@ findings B1-B3/S1-S9/N1-N9 and their fixes) lives in the plan file and
 - **Screen.** The Channels card lists each unreadable id with "Skip this channel" as its only choice, not chosen until picked; the refusal shows under that card.
 
 
+#### respond.io migration: the contact-list request (lanes SS-MIGRATION-FILTER/SEARCH/TZ-HOTFIX)
+
+- **Contract of record:** https://developers.respond.io/docs/api/0759d02787ab3-list-the-contacts. Body `{search, filter, timezone}`, all three always sent: `search: ""`, `filter: {"$and": []}` (match all), `timezone` an IANA name. Query `limit` (`minimum: 1`, `exclusiveMaximum: 100`) and `cursorId`. Built in ONE place, `_contact_list_body` (`respondio/client.py`), shared by the preflight, the migration job and the sync tick.
+- **Timezone.** The connection's "Workspace timezone" is free text, so `respondio_timezone()` sends the stored value only when it is a known IANA name (stripped, case-insensitive, canonical case) and not offset style (`+08:00`, `GMT+8`, `Etc/GMT-8`); anything else goes out as `Asia/Kuala_Lumpur`. Matching uses `available_timezones()`, never `ZoneInfo(name)`, which accepts wrong case on a case-insensitive dev disk only.
+- **Page sizes.** `_paginated_pages` clamps every list call to 1..99; the message list (`GET /contact/{id}/message/list`, documented `maximum: 50`) to 50.
+
 ### Workflows under the API key (plan 38 gap 7)
 
 Consumer doc: guide sections 6c and 6d (the guide is the contract).

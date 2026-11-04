@@ -171,6 +171,7 @@ renamed, dropped or re-typed; `Details[]` included; unknown vendor keys included
 
 | Status | code | Meaning |
 |---|---|---|
+| 403 | `SCOPE_REQUIRED` | The read routes (build, header, rows) need a key carrying the `pull` scope; a `write_back`-only key is refused before anything else is answered |
 | 409 | `BUILD_IN_FLIGHT` | A `delivery_orders` build with a DIFFERENT scope is still building for this company; wait for it |
 | 422 | `INVALID_REQUEST` | (existing code) now also: a bad / missing DO scope, a scope key on a non-DO entity; `message` names the field |
 | 422 | `UNKNOWN_ENTITY` | (existing) `message` now lists `delivery_orders, products, stock_balances` |
@@ -228,3 +229,5 @@ Only these differ:
   holding `autocount.pull.manage` (who can issue a key) can read a GRN snapshot through the
   gateway even without `autocount.sync.read`. The `sync.read` gate protects read-only operators
   only. A per-key entity allowlist is the fix if this ever matters.
+
+- 2026-11-04: the write routes (`po-links`, `po-links/unlink`, `spo-links/unlink`) share this gateway's auth and error body; their contract is `55-autocount-write-link-contract.md`.
