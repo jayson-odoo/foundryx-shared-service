@@ -907,20 +907,20 @@ def test_ac_51_01_slow_tls_setup_ends_at_the_deadline(
     session_factory, local_server, https_seam, monkeypatch
 ):
     """Building the TLS context is blocking work (CA file read) done per attempt.
-    It must not push one attempt past the total deadline: the 3 s stall here
-    is longer than the 1.5 s deadline plus the 2.0 s margin allows."""
-    srv = local_server(_logging({"requests": []}, lambda conn, stop: None), tls=_server_ctx(https_seam))
+    It must not push one attempt past the total deadline. Each build stalls 5 s,
+    so even a SINGLE build (httpx builds one per client and per guarded
+    transport; the count is an httpx detail) is longer than the 1.5 s deadline
+    plus the 2.0 s margin. Nothing may reach the server after the deadline."""
+    state = {"requests": []}
+    srv = local_server(_logging(state, lambda conn, stop: None), tls=_server_ctx(https_seam))
     FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")])
     real = httpx.create_ssl_context
 
     def slow(*a, **k):
-        time.sleep(3.0)
+        time.sleep(5.0)
         return real(*a, **k)
 
-    # every name the delivery path may reach the builder by
     monkeypatch.setattr(httpx, "create_ssl_context", slow)
-    monkeypatch.setattr(httpx._transports.default, "create_ssl_context", slow, raising=False)
-    monkeypatch.setattr(httpx._config, "create_ssl_context", slow, raising=False)
     _lower_deadline(monkeypatch)
     phases = _time_phases(monkeypatch)
     _eid, did = _seed(session_factory, "pn-d-slow-tls", f"https://{NAME}:{srv.port}/hook")
@@ -928,7 +928,10 @@ def test_ac_51_01_slow_tls_setup_ends_at_the_deadline(
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
     assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s, phases {phases}"
+    assert phases["_post"] < LOW_DEADLINE + 1.0, f"the post alone took {phases['_post']:.1f}s, phases {phases}"
     assert outcome == "retry"
     assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
         seconds=wd.DELIVERY_DEADLINE_SECONDS
     )
+    time.sleep(1.0)
+    assert state["requests"] == [], "a request reached the server after the attempt ended"
