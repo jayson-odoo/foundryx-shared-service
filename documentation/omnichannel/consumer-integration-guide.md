@@ -11,6 +11,7 @@
 > | Date | Change |
 > |----|----|
 > | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and a multipart send up to the media limit plus a small margin. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send with more than one file part or extra form fields answers `422 invalid_request` too. |
+> | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
 > | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
 > | **2026-11-05** | **Media fetch retry** (section 8). `GET /omnichannel/media/{messageId}` answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` when the file cannot be read from storage for a moment; fetch again after the wait. A missing file is still `404`. Other contract details are unchanged. |
 > | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
@@ -165,6 +166,8 @@ Sends one message. Returns `**202 Accepted**` with your durable message id - the
 | `Authorization: Bearer fxw_live_…` | yes |    |
 | `Content-Type: application/json` **or** `multipart/form-data` | yes | JSON for everything; multipart only to upload a media file directly (see §4.3) |
 | `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup. A completed send is remembered for 24h: a replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`, held at most 5 minutes; after that a request that never got an answer can be retried with the same key. If the first request did complete meanwhile, the retry may send again, so look the message up first (`GET /contacts/{identifier}/messages` or the `message.outbound` webhook) before retrying after the hold. |
+
+A JSON body larger than 256 KiB answers `422 invalid_request` ("Request body is too large.").
 
 **Response** `202`:
 
@@ -603,7 +606,7 @@ A workflow is a graph of trigger, action and `if` nodes that runs inside your wo
 * Workflows that staff built in the dashboard are **not visible to keys**.
 * A key is identified by `apikey:<keyId>`, the same value a message sent with the key carries as its sender (`senderId`, section 7). It appears on the workflows, versions and runs the key creates, as shown below.
 * Every miss answers the same `404 not_found` with the message "Workflow not found.": an unknown id, a workflow of another workspace or tenant, an archived workflow, and a staff-built workflow all look identical.
-* Limits: **200 workflows per workspace** (create past it answers `422 invalid_request`), **200 nodes** per definition (`422 invalid_request`), and a request body of at most **256 KB** (`422 invalid_request`).
+* Limits: **200 workflows per workspace** (create past it answers `422 invalid_request`), **200 nodes** per definition (`422 invalid_request`), and a request body of at most **256 KiB** (`422 invalid_request`).
 
 ### The workflow object
 
