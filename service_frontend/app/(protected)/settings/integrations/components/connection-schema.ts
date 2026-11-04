@@ -70,21 +70,23 @@ export function dependentDefault(
  * The Sorento connection's contract-version select
  * (`modules/autocount/sorento_provider.py`, `fix/sorento-contract-version-field`):
  * a connection saved BEFORE the field existed has no stored value, and the
- * sink then runs at contract 1. On edit that field prefills with that
- * EFFECTIVE value, not blank: a blank required select would silently block
- * every unrelated save of the connection, while "1" states the runtime truth
- * without flipping anything - the operator still has to pick 2 explicitly.
+ * sink then runs at contract 2 (INGEST-LINE-DROP-GUARD: contract 1 strips every
+ * document line's product_code and the CRM drops those lines silently, so an
+ * unset value must never mean 1 - `resolve_contract_version` in
+ * `sinks_sorento.py`). On edit that field prefills with that EFFECTIVE value,
+ * not blank: a blank required select would silently block every unrelated
+ * save of the connection, while "2" states the runtime truth.
  * Scoped to this one key on purpose; every other field keeps the plain
  * "stored value or blank" prefill (no new generic behaviour).
  */
 export const SORENTO_CONTRACT_VERSION_KEY = 'sorentoContractVersion';
-const SORENTO_CONTRACT_VERSION_EFFECTIVE = '1';
+const SORENTO_CONTRACT_VERSION_EFFECTIVE = '2';
 
 /** The value a field SHOWS for an existing connection: the stored one, else
  *  the field's own `effectiveValue` (feat/sink-concurrency-ui - the provider
  *  computes it per request, e.g. the platform's `sinkConcurrency` default),
  *  else the Sorento contract-version literal above (its provider payload
- *  predates `effectiveValue` and still hardcodes "1"), else blank. Used by
+ *  predates `effectiveValue` and hardcodes "2"), else blank. Used by
  *  both the edit prefill and the read-mode row so the two modes never
  *  disagree about what the connection runs at. */
 export function storedOrEffective(f: ProviderField, config: Record<string, string>): string {

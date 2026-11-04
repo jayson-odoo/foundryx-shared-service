@@ -75,7 +75,7 @@ from modules.autocount.models import (
     AcSyncRun,
 )
 from modules.autocount.presets import PO_PRESET, SPO_PRESET, PresetField, _PO_HEADER_QUERY
-from modules.autocount.sinks_sorento import SorentoSink
+from modules.autocount.sinks_sorento import SorentoSink, SorentoSinkError
 from modules.autocount.sql_source.runtime import RUNTIME
 from modules.autocount.sync import AUTOCOUNT_SYNC
 
@@ -249,6 +249,13 @@ def test_sorento_sink_projects_container_number_through_the_contract_gate(versio
         base_url="http://x", api_key="sk_test", entity_type=ENTITY_SHIPPING_ORDER,
         company_code="AED", contract_version=version,
     )
+    if version < 2:
+        # INGEST-LINE-DROP-GUARD: a document with lines is refused at
+        # contract 1 (product_code would be stripped off every line). The
+        # header gate itself stays pinned on `sink_payload` above.
+        with pytest.raises(SorentoSinkError):
+            sink._to_records([_spo()])
+        return
     records = sink._to_records([_spo()])
     assert len(records) == 1
     assert ("container_number" in records[0]) is expected, sorted(records[0])

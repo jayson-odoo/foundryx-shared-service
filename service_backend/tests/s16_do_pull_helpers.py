@@ -55,14 +55,11 @@ _PUBLIC_DNS_STUB_IP = "8.8.8.8"
 def s16_isolation(monkeypatch):
     """No real sleep (retry ladders), a stubbed resolver (the SSRF re-check on
     `autocount-wrapper.example.com`), and the lane rule: no test may touch the network."""
-    import socket
-
     monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
 
-    def _stub_getaddrinfo(host, *_args, **_kwargs):
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC_DNS_STUB_IP, 0))]
+    from tests.resolver_stub import stub_resolver
 
-    monkeypatch.setattr("socket.getaddrinfo", _stub_getaddrinfo)
+    unexpected = stub_resolver(monkeypatch, {"autocount-wrapper.example.com": _PUBLIC_DNS_STUB_IP})
 
     real_send = httpx.Client.send
     real_async_send = httpx.AsyncClient.send
@@ -85,6 +82,8 @@ def s16_isolation(monkeypatch):
 
     monkeypatch.setattr(httpx.Client, "send", guarded_send)
     monkeypatch.setattr(httpx.AsyncClient, "send", guarded_async_send)
+    yield
+    assert unexpected == []
 
 
 # ── dates (MYT calendar days, the vendor's DocDate) ──────────────────────────

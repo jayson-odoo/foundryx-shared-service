@@ -298,12 +298,20 @@ def test_sample_scope_post_is_non_blocking_under_a_real_worker_and_never_touches
     REAL (non-eager) worker deployment: with
     ``settings.celery_task_always_eager=False`` and job dispatch stubbed
     (mirrors ``test_autocount_http_lifecycle.py``'s own sweep-dispatch seam),
-    the POST must land well under a second and the source must NEVER be
-    requested from inside the request/response cycle - only a worker
-    (stubbed away here) would ever run the job."""
+    the POST must return while the source walk is still held on a gate (no
+    wall clock is measured) and the source must NEVER be requested from
+    inside the request/response cycle - only a worker (stubbed away here)
+    would ever run the job.
+
+    The walk (``EtlService.preview_http``, the step the worker runs) holds on
+    a threading.Event. If the route wrongly ran it inline, the POST would
+    enter the gate and sit in it until the hold cap, so the walk would have
+    both entered and left the gate by the time the POST answers."""
+    import threading
     import time
 
     from app.config import settings
+    from modules.autocount.services import etl_service as etl_service_module
     from app.jobs import worker as worker_module
 
     monkeypatch.setattr(settings, "celery_task_always_eager", False)
@@ -315,6 +323,20 @@ def test_sample_scope_post_is_non_blocking_under_a_real_worker_and_never_touches
         worker_module.run_job_task, "apply_async",
         lambda args=None, queue=None, **kw: dispatched.append((args, queue)),
     )
+
+    entered = threading.Event()
+    release = threading.Event()
+    left = threading.Event()  # the walk stopped holding: released OR timed out
+
+    def _held_walk(*args, **kwargs):
+        entered.set()
+        try:
+            release.wait(5.0)  # hang guard only; a timed-out hold is caught below
+        finally:
+            left.set()
+        raise AssertionError("the walk must not complete inside the request")
+
+    monkeypatch.setattr(etl_service_module.EtlService, "preview_http", _held_walk)
 
     conn = _open_connection(db)
     calls: List[httpx.Request] = []
@@ -333,18 +355,44 @@ def test_sample_scope_post_is_non_blocking_under_a_real_worker_and_never_touches
         transport=httpx.MockTransport(handler)
     )
     try:
-        started = time.monotonic()
-        response = client.post(
-            "/autocount/http/preview",
-            json={"scope": "sample", "connectionId": conn.id, "path": "/itembypage"},
-            headers=_auth(client),
-        )
-        elapsed = time.monotonic() - started
+        headers = _auth(client)  # the login (bcrypt) is NOT part of the timed window
+        box: Dict[str, Any] = {}
+
+        def _post() -> None:
+            t0 = time.monotonic()
+            try:
+                box["response"] = client.post(
+                    "/autocount/http/preview",
+                    json={"scope": "sample", "connectionId": conn.id, "path": "/itembypage"},
+                    headers=headers,
+                )
+            except BaseException as exc:  # noqa: BLE001 - surfaced below
+                box["error"] = exc
+            box["elapsed"] = time.monotonic() - t0
+
+        poster = threading.Thread(target=_post, daemon=True)
+        poster.start()
+        poster.join(timeout=10)  # hang guard: an unbounded wait goes red, never hangs CI
+        finished = not poster.is_alive()
+        walk_entered, walk_left = entered.is_set(), left.is_set()
     finally:
+        release.set()
         app.dependency_overrides.pop(get_http_transport, None)
 
+    assert finished, "the POST had not returned after 10s - it must never wait on the walk or the job"
+    assert "error" not in box, f"the POST raised: {box.get('error')!r}"
+    response = box["response"]
+    elapsed = box["elapsed"]
+    # Loose bound over the POST alone (the gate carries the proof; this only
+    # catches a route that waits on the job row, which the stubbed worker
+    # never completes).
+    assert elapsed < 3.0, f"the POST took {elapsed:.3f}s - it must answer without waiting on the job"
     assert response.status_code == 202, response.text
-    assert elapsed < 1.0, f"the POST took {elapsed:.3f}s - it must never block on the walk"
+    assert not walk_entered, (
+        "the POST ran the source walk inline (it entered the held step"
+        + (" and sat in it until the hold timed out" if walk_left else "")
+        + ") - it must never block on the walk"
+    )
     assert len(calls) == 0, "no source page must be requested inside the request/response cycle"
     assert len(dispatched) == 1, "the job must be handed to the worker, never run inline"
     assert response.json()["status"] == "queued", response.json()

@@ -864,6 +864,9 @@ def test_app_engine_connect_args_carry_application_name_on_postgres_only(monkeyp
     monkeypatch.setattr(settings, "worker_db_lock_timeout_seconds", 0)
     monkeypatch.setattr(settings, "worker_db_statement_timeout_seconds", 0)
     monkeypatch.setattr(settings, "worker_db_idle_in_transaction_session_timeout_seconds", 0)
+    # The API lock limit (own test file) is pinned off: this test is about the
+    # application name only.
+    monkeypatch.setattr(settings, "api_db_lock_timeout_seconds", 0)
     assert database.app_connect_args() == {"application_name": "foundryx-api"}
 
     monkeypatch.setattr(settings, "worker_db_lock_timeout_seconds", 5)

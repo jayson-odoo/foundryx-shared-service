@@ -59,6 +59,12 @@ const CARVE_OUTS = [
   // its encrypted secrets for good (irreversible) - typed product-key confirm,
   // owner-approved on PR #119 (Q4).
   'app/(protected)/settings/claude-connector/components/use-connector-product-form.tsx',
+  // Plan 56 C (AC-56-52): erasing a contact for PDPA is an irreversible hard delete -
+  // typed ERASE confirm, one definition shared by the contacts list row menu and the
+  // contact detail menu.
+  'app/(protected)/omnichannel/contacts/components/use-contact-erase-action.tsx',
+  // Plan 52 (AC-SYNC-52): the sync card's Stop (cutover) must open a confirm dialog.
+  'app/(protected)/omnichannel/settings/migration/components/migration-sync-card.tsx',
 ];
 
 /**
@@ -161,6 +167,12 @@ const DISCLOSED_PLAIN_CONFIRMS: { file: string; count: number; reason: string }[
     reason:
       'Claude connector single-grant Revoke (sprint-4/19, AC-19-60) - a security access cut, not a record delete; the bulk Revoke carries the typed REVOKE input.',
   },
+  {
+    file: 'app/(protected)/omnichannel/settings/migration/components/migration-sync-card.tsx',
+    count: 2,
+    reason:
+      'Continuous sync Stop (plan 52, AC-SYNC-52) - the cutover action; the UAC mandates a confirm dialog and the sync is not a deferred-actions entity. Plus Rotate link: it invalidates the webhook URL already configured at respond.io.',
+  },
 ];
 
 describe('AC-DLA-43/47 confirm: is reserved to the carve-outs + the disclosed pending baseline', () => {
@@ -206,6 +218,7 @@ describe('AC-DLA-43/47 confirm: is reserved to the carve-outs + the disclosed pe
       'components/platform/app-store/use-module-list-config.tsx',
       'app/(protected)/platform/tenants/components/use-tenant-actions.tsx',
       'app/(protected)/documents/shares/page.tsx',
+      'app/(protected)/omnichannel/contacts/components/use-contact-erase-action.tsx',
     ];
     for (const file of typed) {
       const src = fs.readFileSync(path.join(repoRoot, file), 'utf8');

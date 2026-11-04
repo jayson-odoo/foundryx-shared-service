@@ -56,7 +56,8 @@ describe('useContactActions', () => {
         onMoveLifecycle: vi.fn(),
       }),
     );
-    const actions = result.current;
+    // plan 56 C adds a separate `erase-contact` action (contacts.erase, row only) - covered in use-contact-erase.test.tsx
+    const actions = result.current.filter((a) => a.id !== 'erase-contact');
     expect(actions.map((a) => a.id)).toEqual(['bulk-assign', 'add-tags', 'remove-tags', 'move-lifecycle']);
     for (const action of actions) {
       expect(action.permission).toBe('contacts.manage');

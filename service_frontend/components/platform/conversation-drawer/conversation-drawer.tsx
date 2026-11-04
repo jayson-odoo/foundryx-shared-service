@@ -43,6 +43,7 @@ import { useMessages } from '@/hooks/use-messages';
 import { useMyTeams } from '@/hooks/use-my-teams';
 import { useTeams } from '@/hooks/use-teams';
 import { useThreadEvents } from '@/hooks/use-thread-events';
+import { useWorkspaceHasActiveChannel } from '@/hooks/use-workspace-has-active-channel';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
 import { channelCapabilities } from '@/lib/channel-capabilities';
@@ -127,6 +128,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     messages,
     isLoading,
     error,
+    erased,
     isSending,
     sendError,
     send,
@@ -258,6 +260,9 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   // reads the SAME `cswExpiresAt` instant it always has (D-A7-5/R7 - byte-
   // identical); every other type reads the generalized `windowExpiresAt`.
   const capabilities = channelCapabilities(thread?.channelType ?? 'WHATSAPP');
+  // Lane SS-CHANNEL-SKIP - `false` only when the workspace verifiably has no
+  // active channel (null = unknown keeps the window-driven composer).
+  const hasActiveChannel = useWorkspaceHasActiveChannel(thread?.workspaceId);
   const windowOpen = useMemo(() => {
     const iso = thread?.channelType === 'WHATSAPP' ? thread?.cswExpiresAt : thread?.windowExpiresAt;
     return !!iso && Date.parse(iso) > nowTick;
@@ -348,7 +353,8 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     setMatchCursor(0);
   }, []);
 
-  if (!contactId) {
+  // An erased contact (plan 56 C) leaves the same empty state as "nothing selected".
+  if (!contactId || erased) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground" data-testid="drawer-empty">
         <Inbox className="size-8" />
@@ -644,6 +650,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         onAddNote={addNote}
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
+        noChannel={hasActiveChannel === false}
       />
       </div>
 

@@ -1071,11 +1071,12 @@ def test_sink_payload_contract_gate():
     assert payload_v2["lines"][0]["warehouse_code"] == "WH1"
 
 
-def test_contract_version_mismatch_is_advisory_only(session_factory):
-    """AC-02-14: `GET /api/v1/external/contract` advertising a higher
-    version than the connection's `sorento_contract_version` setting yields
-    `warnings.contract_version_mismatch` in the activation preview and never
-    auto-flips the payload."""
+def test_contract_version_1_refuses_a_document_preview_loudly(session_factory):
+    """AC-02-14 + INGEST-LINE-DROP-GUARD: the connection's explicit
+    `sorentoContractVersion` 1 is still never auto-flipped by Sorento's
+    advertised version, but a document preview at contract 1 no longer
+    reaches the consumer with `product_code` stripped off every line (the CRM
+    drops such lines silently): the dry run is refused, naming the fix."""
     db = session_factory()
     engine = _source_engine(
         [("D001", "SO-001", "open", "F", "2026-08-01", "2026-08-01 09:00:00")],
@@ -1116,16 +1117,19 @@ def test_contract_version_mismatch_is_advisory_only(session_factory):
         return sink
 
     import modules.autocount.services.company_service as company_service_module
+    from modules.autocount.services.etl_service import PreviewUnavailable
+
     company_service_module.sorento_sink_from_connection = patched
     try:
-        _, preview = EtlService(db).preview_task(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER)
+        with pytest.raises(PreviewUnavailable) as caught:
+            EtlService(db).preview_task(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER)
     finally:
         company_service_module.sorento_sink_from_connection = original_from_connection
 
-    warnings = preview.get("warnings") or {}
-    assert warnings.get("contractVersionMismatch"), (
-        "no advisory contract-version-mismatch warning surfaces yet (AC-02-14)"
-    )
+    message = str(caught.value)
+    assert "contract version 1" in message
+    assert "product_code" in message
+    assert "SO-001" in message or "AED_CV1:D001" in message
     db.close()
 
 
