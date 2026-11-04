@@ -570,3 +570,67 @@ def test_ac_57_73_new_columns_are_nullable_and_operation_model_exists():
                  "doc_type", "doc_key", "dtl_key", "status", "error_code", "snapshot_json",
                  "steps_json", "result_json", "created_at", "updated_at"):
         assert name in op, name
+
+
+# ---- VENDOR_REFUSED: AutoCount's own refusal text (owner ruling 4 Nov) ----------------------------------------
+
+CREDIT = "This account had violated the credit limit. You are not allow to save."
+TRANSFERRED = ("Quantity cannot be less than the quantity it was partially transferred to Purchase "
+               "Order, save aborted.")
+
+
+def _refusal_body(message: str, **extra) -> str:
+    return json.dumps({"Message": "An error has occurred.", "ExceptionMessage": message,
+                       "ExceptionType": "System.Exception",
+                       "StackTrace": "   at AutoCount.Foo.Bar() in C:\\src\\Foo.cs:line 12", **extra})
+
+
+def _assert_clean(res):
+    text = res.message or ""
+    for bad in ("StackTrace", "ExceptionType", "System.Exception", "Foo.cs", "ac.example.test", "api/db3"):
+        assert bad not in text, bad
+
+
+def test_vendor_refused_on_create_carries_the_autocount_message(h):
+    h.vendor.fail_next("POST", "NewSalesOrder", 500, _refusal_body(CREDIT))
+    res = h.create("SO")
+    assert res.outcome == "vendor_error" and res.error_code == "VENDOR_REFUSED"
+    assert CREDIT in res.message
+    _assert_clean(res)
+    assert [c.method for c in h.vendor.writes()] == ["POST"] and h.vendor.docs["SO"] == []
+
+
+def test_vendor_refused_on_edit_carries_the_autocount_message(h):
+    _so(h)
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, _refusal_body(TRANSFERRED))
+    res = h.edit("SO", 5001, {"Remark1": "x"})
+    assert res.outcome == "vendor_error" and res.error_code == "VENDOR_REFUSED"
+    assert TRANSFERRED in res.message
+    _assert_clean(res)
+    assert len(h.vendor.writes()) == 1
+
+
+def test_vendor_refused_message_is_sanitised_of_hosts_and_secrets(h):
+    nasty = f"Cannot reach https://ac.example.test/api/db3/NewSalesOrder with {SECRETS['password']}"
+    h.vendor.fail_next("POST", "NewSalesOrder", 500, _refusal_body(nasty))
+    res = h.create("SO")
+    assert res.error_code == "VENDOR_REFUSED"
+    _assert_clean(res)
+    assert SECRETS["password"] not in (res.message or "")
+
+
+@pytest.mark.parametrize("body", ["boom", "", json.dumps({"Message": "An error has occurred."}),
+                                  json.dumps({"ExceptionMessage": ""})])
+def test_a_bare_5xx_without_a_message_stays_a_plain_vendor_error(h, body):
+    _so(h)
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, body)
+    res = h.edit("SO", 5001, {"Remark1": "x"})
+    assert res.outcome == "vendor_error" and res.error_code != "VENDOR_REFUSED"
+
+
+def test_vendor_refused_message_is_recorded_on_the_action_row_without_a_host(h):
+    h.vendor.fail_next("POST", "NewSalesOrder", 500, _refusal_body(CREDIT))
+    res = h.create("SO")
+    row = h.action(res)
+    assert row.error_code == "VENDOR_REFUSED" and row.response_status == 500
+    assert "ac.example.test" not in json.dumps(row.response_json, default=str)

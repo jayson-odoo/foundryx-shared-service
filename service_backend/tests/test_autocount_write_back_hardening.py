@@ -675,13 +675,17 @@ def test_h12_refuses_unknown_connection_id(h):
     _unchanged(h, company)
 
 
-# ---- H13 AC-55-41: no relink route -----------------------------------------------------------
+# ---- H13 (retired by plan 57): the relink route now EXISTS ---------------------------------------
 
-def test_h13_relink_route_does_not_exist(client, db):
+def test_h13_relink_route_exists_needs_the_write_back_scope_and_an_idempotency_key(client, db):
     company = gw_company(db)
+    relink = {"companyCode": "SRT", "poDocKey": 1, "poDtlKey": 2, "soDocKey": 3, "soDtlKey": 4}
+    _row, pull_only = _key(db, [company.id])  # default scope: pull
+    r = client.post(f"{PREFIX}/po-links/relink", json=relink, headers={**_hdr(pull_only), "Idempotency-Key": "k"})
+    assert r.status_code == 403 and "SCOPE_REQUIRED" in r.text
     _row, plain = _key(db, [company.id], scopes=["pull", "write_back"])
-    r = client.post(f"{PREFIX}/po-links/relink", json=LINK_BODY, headers=_hdr(plain))
-    assert r.status_code in (404, 405)
+    r = client.post(f"{PREFIX}/po-links/relink", json=relink, headers=_hdr(plain))
+    assert r.status_code == 422 and "IDEMPOTENCY_KEY_REQUIRED" in r.text  # exists (not 404 / 405)
 
 
 # ======================================================================================

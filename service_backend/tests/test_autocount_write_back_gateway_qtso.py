@@ -384,6 +384,20 @@ def test_ac_57_60_malformed_bodies_are_4xx_without_http(client, gw, path, body):
     gw.h.no_http()
 
 
+def _set_spo_qty(h, dtl_key, qty):
+    """Set an SPO row's qty on the vendor and in the staged copy."""
+    import copy as _copy
+
+    from modules.autocount.models import AcStagedRecord
+
+    next(r for r in h.vendor.rows("SPO", 7003) if r["DtlKey"] == dtl_key)["Qty"] = qty
+    row = h.db.query(AcStagedRecord).filter(AcStagedRecord.source_ref == "AED_TEST:7003").one()
+    raw = _copy.deepcopy(row.raw_json)
+    next(r for r in raw["_lines"] if r["DtlKey"] == dtl_key)["Qty"] = qty
+    row.raw_json = raw
+    h.db.commit()
+
+
 def _so(gw):
     doc = gw.h.seed_doc("SO", 5001, [_line("A", 10, 5.0), _line("B", 4, 6.0, "BR1")])
     return doc, [r["DtlKey"] for r in doc["Details"]]
@@ -483,23 +497,29 @@ def test_ac_57_16_delete_line_route_when_the_flag_is_on(client, gw):
 # ---- status mapping (section 4) -------------------------------------------------------------------------------------
 
 def test_ac_57_61_status_mapping_for_every_outcome(client, gw, world):
-    # 202 pending_verification
+    # 202 pending_verification (leaves PO 7001 busy)
     gw.h.vendor.timeout_next("PUT", "EditPurchaseOrderbydockey")
     r = client.post(f"{PREFIX}/po-links/unlink", headers=gw.hdr("k-pending"),
                     json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked})
     assert r.status_code == 202 and r.json()["outcome"] == "pending_verification"
+    # 409 DOC_BUSY: the timed-out operation still holds PO 7001
+    r = client.post(f"{PREFIX}/po-links/unlink", headers=gw.hdr("k-busy"),
+                    json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked})
+    assert r.status_code == 409 and code(r) == "DOC_BUSY"
     # 502 vendor_error
     _so(gw)
     gw.h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, "kaput")
     r = client.patch(f"{PREFIX}/documents/sales-orders/5001", headers=gw.hdr("k-vendor"),
                      json={"companyCode": "SRT", "header": {"ref": "x"}})
     assert r.status_code == 502 and r.json()["outcome"] == "vendor_error"
-    # 502 recovered
+    # 502 recovered, on its OWN document (PO 7101)
+    link = dict(FromDocType="SO", FromDocNo="SO-7002", FromDocDtlKey=world.so_a, FromSODtlKey=world.so_a)
+    doc = gw.h.seed_doc("PO", 7101, [_line("ITEM-A", 4, 5.0, "BR1", **link)])
     gw.h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
     r = client.post(f"{PREFIX}/po-links/relink", headers=gw.hdr("k-recovered"), json={
-        "companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_other,
+        "companyCode": "SRT", "poDocKey": 7101, "poDtlKey": doc["Details"][0]["DtlKey"],
         "soDocKey": 7002, "soDtlKey": world.so_b})
-    assert r.status_code == 502 and r.json()["outcome"] in ("recovered", "refused", "needs_attention")
+    assert r.status_code == 502 and r.json()["outcome"] == "recovered", r.text
 
 
 def test_ac_57_61_needs_attention_is_502_and_resume_is_available(client, gw, world):
@@ -593,9 +613,18 @@ def test_ac_57_61_operation_read_is_tenant_and_key_scoped(client, gw, world, db)
     op_id = r.json()["operationId"]
     assert client.get(f"{PREFIX}/write-operations/{op_id}?companyCode=SRT", headers=_hdr(gw.plain)).status_code == 200
     assert client.get(f"{PREFIX}/write-operations/nope?companyCode=SRT", headers=_hdr(gw.plain)).status_code == 404
+    from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
+
     _other_tenant(db)
     theirs = _company(db, OTHER_TENANT, code="OTH", database="AED_OTH")
     _row, plain = _key(db, [theirs.id], scopes=["write_back"], tenant_id=OTHER_TENANT)
+    # a tenant without the module installed never reaches the lookup: shared auth says 403
+    blocked = client.get(f"{PREFIX}/write-operations/{op_id}?companyCode=OTH", headers=_hdr(plain))
+    assert blocked.status_code == 403 and code(blocked) == "SERVICE_NOT_ENABLED"
+    module = db.query(Module).filter(Module.name == "autocount").one()
+    db.add(TenantModule(tenant_id=OTHER_TENANT, module_id=module.id, status=MODULE_STATUS_ACTIVE,
+                        installed_version="1.0.0"))
+    db.commit()
     leak = client.get(f"{PREFIX}/write-operations/{op_id}?companyCode=OTH", headers=_hdr(plain))
     assert leak.status_code == 404
     assert op_id not in leak.text
@@ -663,3 +692,49 @@ def test_ac_57_19_answers_and_error_bodies_never_hold_host_key_or_secrets(client
         no_secret(r)
         assert gw.plain not in r.text
         assert r.headers.get("cache-control") == "no-store"
+
+
+def test_ac_57_61_spo_link_then_relink_flow_stays_green_with_consistent_data(client, gw, world):
+    r = client.post(f"{PREFIX}/spo-links", headers=gw.hdr("a"), json={
+        "companyCode": "SRT", "spoDocKey": 7003, "spoDtlKey": world.s_free, "poDocKey": 7001,
+        "poDtlKey": world.p_other})
+    assert r.status_code == 200, r.text
+    new_key = r.json()["replacedLines"][0]["newDtlKey"]
+    r = client.post(f"{PREFIX}/spo-links/relink", headers=gw.hdr("b"), json={
+        "companyCode": "SRT", "spoDocKey": 7003, "spoDtlKey": new_key, "poDocKey": 7001,
+        "poDtlKey": world.p_free})
+    assert r.status_code == 200, r.text
+    moved = r.json()["replacedLines"][0]["newDtlKey"]
+    row = next(x for x in gw.h.vendor.rows("SPO", 7003) if x["DtlKey"] == moved)
+    assert row["FromDocDtlKey"] == world.p_free
+
+
+def test_ac_57_32_spo_link_above_the_target_po_rows_outstanding_is_409(client, gw, world):
+    gw.h.vendor.rows("SPO", 7003)  # keep the world alive
+    _set_spo_qty(gw.h, world.s_free, 5)  # PO row p_other has 4
+    r = client.post(f"{PREFIX}/spo-links", headers=gw.hdr(), json={
+        "companyCode": "SRT", "spoDocKey": 7003, "spoDtlKey": world.s_free, "poDocKey": 7001,
+        "poDtlKey": world.p_other})
+    assert r.status_code == 409 and code(r) == "QTY_ABOVE_OUTSTANDING"
+    assert gw.h.vendor.writes() == []
+
+
+# ---- VENDOR_REFUSED through the gateway -----------------------------------------------------------------
+
+CREDIT = "This account had violated the credit limit. You are not allow to save."
+
+
+def test_ac_57_61_vendor_refused_is_502_with_the_code_and_autocount_message(client, gw):
+    import json as _json
+
+    gw.h.vendor.fail_next("POST", "NewQuotation", 500, _json.dumps(
+        {"Message": "An error has occurred.", "ExceptionMessage": CREDIT,
+         "ExceptionType": "System.Exception", "StackTrace": "at Foo.Bar() in C:\\src\\x.cs:line 9"}))
+    r = client.post(f"{PREFIX}/documents/quotations", json=create_body(), headers=gw.hdr())
+    assert r.status_code == 502, r.text
+    body = r.json()
+    assert body["outcome"] == "vendor_error" and body["errorCode"] == "VENDOR_REFUSED"
+    assert CREDIT in body["message"]
+    for bad in ("StackTrace", "ExceptionType", "System.Exception", "x.cs"):
+        assert bad not in r.text
+    no_secret(r)

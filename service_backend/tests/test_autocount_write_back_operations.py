@@ -364,8 +364,9 @@ def test_ac_57_33_partly_received_unlink_keeps_link_on_received_part(h, w):
     assert len(remainder) == 1 and remainder[0]["Qty"] == 3 and remainder[0]["FromSODtlKey"] == 0
 
 
-def test_ac_57_33_unknown_received_qty_proceeds_with_warning(h, w):
+def test_ac_57_33_unknown_received_qty_proceeds_with_warning(h, w_far):
     # owner ruling 4 Nov: the refusal comes from AutoCount, not from us
+    w = w_far  # SO at BRW-AM: delete, add, move
     res = h.run("link_row", w.params["link_row"], receipt_reader=lambda kind, doc, row: None)
     assert res.outcome == "done", res.error_code
     assert "TRANSFER_STATE_UNKNOWN" in res.warnings
@@ -778,3 +779,67 @@ def test_ac_57_20_a_failed_create_does_not_supply_a_date(h):
     res = h.service().add_line(**h.args("QT", doc_key=bad.doc_key, line=_line("Z", 1, 2.0)))
     assert res.outcome == "refused" and res.error_code == "DOC_DATE_REQUIRED"
     h.no_http()
+
+
+# ---- SPO target outstanding (AC-57-32 extended to SPO ops) ----------------------------------------------------
+
+def _spo_qty(h, w, dtl_key, qty):
+    import copy as _copy
+
+    next(r for r in h.vendor.rows("SPO", 7003) if r["DtlKey"] == dtl_key)["Qty"] = qty
+    row = h.db.query(AcStagedRecord).filter(AcStagedRecord.source_ref == "AED_TEST:7003").one()
+    raw = _copy.deepcopy(row.raw_json)
+    next(r for r in raw["_lines"] if r["DtlKey"] == dtl_key)["Qty"] = qty
+    row.raw_json = raw
+    h.db.commit()
+
+
+def _extra_spo_row(h, w, po_dtl, qty):
+    """Another SPO row (staged too) that already takes ``qty`` from PO row ``po_dtl``."""
+    import copy as _copy
+
+    doc = h.vendor.find("SPO", 7003)
+    key = 700399
+    doc["Details"].append(dict(doc["Details"][0], DtlKey=key, Qty=qty, FromDocDtlKey=po_dtl, FromDocType="PO"))
+    row = h.db.query(AcStagedRecord).filter(AcStagedRecord.source_ref == "AED_TEST:7003").one()
+    raw = _copy.deepcopy(row.raw_json)
+    raw["_lines"].append(dict(raw["_lines"][0], DtlKey=key, Qty=qty, FromDocDtlKey=po_dtl, FromDocType="PO"))
+    row.raw_json = raw
+    h.db.commit()
+    return key
+
+
+@pytest.mark.parametrize("op", ["spo_link_row", "spo_relink_row"])
+def test_ac_57_32_spo_row_above_the_target_po_rows_qty_is_qty_above_outstanding(h, w, op):
+    dtl = w.params[op]["spo_dtl_key"]
+    _spo_qty(h, w, dtl, 5)  # the target PO row p_other has qty 4
+    _refused(h, w, op, "QTY_ABOVE_OUTSTANDING")
+
+
+@pytest.mark.parametrize("op", ["spo_link_row", "spo_relink_row"])
+def test_ac_57_32_other_spo_rows_already_taking_from_the_target_count(h, w, op):
+    _extra_spo_row(h, w, w.p_other, 3)  # leaves 1 of 4
+    dtl = w.params[op]["spo_dtl_key"]
+    _spo_qty(h, w, dtl, 2)
+    _refused(h, w, op, "QTY_ABOVE_OUTSTANDING")
+    _spo_qty(h, w, dtl, 1)
+    ok = h.run(op, w.params[op], key="idem-2")
+    assert ok.outcome == "done", ok.error_code
+
+
+def test_ac_57_32_the_row_being_moved_is_excluded_from_what_the_target_already_takes(h, w):
+    # s_linked (qty 4) points at p_spo (qty 4): relinking it AWAY and back must pass, because
+    # its own qty is not counted against the target it is about to join
+    first = h.run("spo_relink_row", w.params["spo_relink_row"], key="away")
+    assert first.outcome == "done", first.error_code
+    (_old, moved), = first.replaced_lines
+    back = h.run("spo_relink_row", dict(spo_doc_key=7003, spo_dtl_key=moved, po_doc_key=7001,
+                                         po_dtl_key=w.p_spo), key="back")
+    assert back.outcome == "done", back.error_code
+
+
+def test_ac_57_32_relink_within_capacity_passes_when_the_target_is_partly_taken(h, w):
+    _extra_spo_row(h, w, w.p_other, 1)  # 3 of 4 left
+    _spo_qty(h, w, w.s_linked, 3)
+    ok = h.run("spo_relink_row", w.params["spo_relink_row"])
+    assert ok.outcome == "done", ok.error_code
