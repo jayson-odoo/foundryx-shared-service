@@ -86,6 +86,38 @@ def _meta_error_text(resp: "httpx.Response", key: str = "message") -> str:
     return val if isinstance(val, str) else ""
 
 
+def _json_obj(resp: "httpx.Response") -> dict:
+    """A SUCCESS body when it is a JSON object, else ``{}`` (not JSON, a list,
+    a scalar, null). Never raises."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _str_field(obj: dict, key: str, default=""):
+    """``obj[key]`` only when it is a string, else ``default``."""
+    val = obj.get(key) if isinstance(obj, dict) else None
+    return val if isinstance(val, str) else default
+
+
+def _list_field(obj: dict, key: str) -> list:
+    """``obj[key]`` only when it is a list, else ``[]``."""
+    val = obj.get(key) if isinstance(obj, dict) else None
+    return val if isinstance(val, list) else []
+
+
+def _dict_items(items: object) -> list:
+    """The dict items of a list (``[]`` when it is not a list)."""
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _bool_field(obj: dict, key: str) -> bool:
+    """True only when ``obj[key]`` is the boolean ``True``."""
+    return isinstance(obj, dict) and obj.get(key) is True
+
+
 def is_rate_limited_error(resp: "httpx.Response") -> bool:
     """True when this Graph response is Meta throttling the call - a raw HTTP
     429, or an `error.code` in `_RATE_LIMIT_ERROR_CODES` regardless of HTTP
