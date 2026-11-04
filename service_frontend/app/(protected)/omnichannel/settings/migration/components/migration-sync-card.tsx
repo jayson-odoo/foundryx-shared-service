@@ -40,6 +40,18 @@ const STOP_ACTION: ResourceAction<MigrationSyncItem> = {
   run: () => undefined,
 };
 
+const ROTATE_ACTION: ResourceAction<MigrationSyncItem> = {
+  id: 'rotate-webhook',
+  label: 'Rotate link',
+  surfaces: { form: true },
+  confirm: {
+    title: 'Rotate webhook link?',
+    description: 'The current link stops working.',
+    confirmLabel: 'Rotate link',
+  },
+  run: () => undefined,
+};
+
 export function MigrationSyncCard({
   jobId,
   workspaceId,
@@ -60,7 +72,7 @@ export function MigrationSyncCard({
     act,
     rotateWebhook,
   } = useMigrationSync(workspaceId, canManage);
-  const [confirmingStop, setConfirmingStop] = useState(false);
+  const [confirming, setConfirming] = useState<'stop' | 'rotate' | null>(null);
   const { copyToClipboard, isCopied } = useCopyToClipboard();
 
   if (!loaded) return null;
@@ -157,12 +169,12 @@ export function MigrationSyncCard({
           )}
 
           {showWebhook && (
-            <div className="flex w-full items-center gap-2">
+            <div className="flex w-full flex-wrap items-center gap-2">
               <Input
                 readOnly
                 value={webhookUrl}
                 aria-label="Webhook URL"
-                className="min-w-0 flex-1"
+                className="w-full min-w-0 sm:flex-1"
               />
               <Button
                 type="button"
@@ -182,7 +194,7 @@ export function MigrationSyncCard({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void rotateWebhook()}
+                onClick={() => setConfirming('rotate')}
                 disabled={busy}
               >
                 Rotate link
@@ -196,7 +208,7 @@ export function MigrationSyncCard({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void rotateWebhook()}
+                onClick={() => setConfirming('rotate')}
                 disabled={busy}
               >
                 Rotate link
@@ -242,7 +254,7 @@ export function MigrationSyncCard({
                   type="button"
                   size="sm"
                   variant="destructive"
-                  onClick={() => setConfirmingStop(true)}
+                  onClick={() => setConfirming('stop')}
                   disabled={busy}
                 >
                   Stop syncing (cutover)
@@ -263,10 +275,20 @@ export function MigrationSyncCard({
         </CardContent>
 
         <ConfirmActionDialog<MigrationSyncItem>
-          pending={confirmingStop ? STOP_ACTION : null}
+          pending={
+            confirming === 'stop'
+              ? STOP_ACTION
+              : confirming === 'rotate'
+                ? ROTATE_ACTION
+                : null
+          }
           rows={sync ? [sync] : []}
-          onClose={() => setConfirmingStop(false)}
-          onConfirm={() => void act('stop')}
+          onClose={() => setConfirming(null)}
+          onConfirm={(action) =>
+            void (action.id === 'rotate-webhook'
+              ? rotateWebhook()
+              : act('stop'))
+          }
         />
       </Card>
       {result && result.failureSample.length > 0 && (

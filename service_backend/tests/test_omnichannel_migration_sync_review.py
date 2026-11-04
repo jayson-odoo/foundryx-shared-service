@@ -291,3 +291,30 @@ def test_m7_a_second_claim_returns_none_and_stop_while_a_tick_runs_defers_to_it(
     by_id = {j.id: j.payload_json["kind"] for j in sync_jobs(w.db)}
     assert sorted(by_id.values()) == ["final", "poll"], "... and enqueues the final tick"
     assert by_id[enqueued[-1]] == "final"
+
+
+def test_hint_repeated_at_the_cap_still_bumps(client, session_factory, monkeypatch):
+    from modules.omnichannel.models import MigrationSyncHint
+
+    w, h, sid = _ready(client, session_factory, monkeypatch)
+    path = webhook_path(client, h, sid)
+    old = utcnow() - timedelta(hours=1)
+    w.db.bulk_insert_mappings(
+        MigrationSyncHint,
+        [
+            {"tenant_id": DEFAULT_TENANT_ID, "sync_id": sid, "external_contact_id": str(300000 + i), "created_at": old}
+            for i in range(5000)
+        ],
+    )
+    w.db.commit()
+    assert post_hint(client, path, {"contact": {"id": 300007}}).status_code == 200
+    w.db.expire_all()
+    stamps = {
+        r.external_contact_id: aware(r.created_at)
+        for r in w.db.query(MigrationSyncHint).filter(MigrationSyncHint.sync_id == sid).all()
+    }
+    assert len(stamps) == 5000
+    assert stamps["300007"] > old + timedelta(minutes=30), "the repeat re-stamped the existing row"
+    assert stamps["300008"] == old
+    assert post_hint(client, path, {"contact": {"id": 399999}}).status_code in (200, 204)
+    assert "399999" not in hint_ids(w.db, sid), "a NEW contact over the cap is still dropped"

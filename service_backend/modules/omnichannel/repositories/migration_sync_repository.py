@@ -107,6 +107,19 @@ class MigrationSyncRepository:
             q = q.limit(limit)
         return [(r[0], r[1]) for r in q.all()]
 
+    def bump_hint(self, tenant_id: str, sync_id: str, external_contact_id: str, now: datetime) -> bool:
+        """Re-stamp an EXISTING hint (True when one existed)."""
+        n = (
+            self.db.query(MigrationSyncHint)
+            .filter(
+                MigrationSyncHint.tenant_id == tenant_id,
+                MigrationSyncHint.sync_id == sync_id,
+                MigrationSyncHint.external_contact_id == external_contact_id,
+            )
+            .update({MigrationSyncHint.created_at: now}, synchronize_session=False)
+        )
+        return bool(n)
+
     def add_hint(self, tenant_id: str, sync_id: str, external_contact_id: str, now: datetime) -> bool:
         """Insert-ignore. True when a new row was stored. A duplicate bumps the
         existing row's stamp to ``now`` (a tick that already read the old stamp

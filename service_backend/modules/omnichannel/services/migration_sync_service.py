@@ -536,9 +536,12 @@ def record_hint(db: Session, sync_id: str, secret: str, body: bytes) -> str:
     contact_id = _hint_id_from(parsed)
     if contact_id is None:
         return "ignored"
-    if repo.count_hints(sync.tenant_id, sync.id) >= HINT_CAP:
-        return "ignored"  # dropped; the next full sweep covers it
-    repo.add_hint(sync.tenant_id, sync.id, contact_id, _now())
+    # A repeat of a pending hint re-stamps it even at the cap (B1); only a NEW
+    # contact is dropped over the cap (the next full sweep covers it).
+    if not repo.bump_hint(sync.tenant_id, sync.id, contact_id, _now()):
+        if repo.count_hints(sync.tenant_id, sync.id) >= HINT_CAP:
+            return "ignored"
+        repo.add_hint(sync.tenant_id, sync.id, contact_id, _now())
     db.commit()
     return "stored"
 

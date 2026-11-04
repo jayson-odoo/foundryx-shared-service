@@ -165,9 +165,9 @@ const DISCLOSED_PLAIN_CONFIRMS: { file: string; count: number; reason: string }[
   },
   {
     file: 'app/(protected)/omnichannel/settings/migration/components/migration-sync-card.tsx',
-    count: 1,
+    count: 2,
     reason:
-      'Continuous sync Stop (plan 52, AC-SYNC-52) - the cutover action; the UAC mandates a confirm dialog and the sync is not a deferred-actions entity.',
+      'Continuous sync Stop (plan 52, AC-SYNC-52) - the cutover action; the UAC mandates a confirm dialog and the sync is not a deferred-actions entity. Plus Rotate link: it invalidates the webhook URL already configured at respond.io.',
   },
 ];
 

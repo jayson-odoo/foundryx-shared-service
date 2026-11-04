@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -193,6 +193,14 @@ describe('MigrationSyncCard', () => {
     )) as HTMLInputElement;
     const old = before.value;
     await userEvent.click(screen.getByRole('button', { name: 'Rotate link' }));
+    expect(await screen.findByText('Rotate webhook link?')).toBeInTheDocument();
+    expect(
+      (screen.getByLabelText('Webhook URL') as HTMLInputElement).value,
+    ).toBe(old);
+    const dialog = screen.getByRole('alertdialog');
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: 'Rotate link' }),
+    );
     await waitFor(() =>
       expect(
         (screen.getByLabelText('Webhook URL') as HTMLInputElement).value,
