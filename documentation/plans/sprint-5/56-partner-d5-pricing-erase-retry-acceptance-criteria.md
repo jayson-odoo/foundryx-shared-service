@@ -1,6 +1,6 @@
 # Plan 56 acceptance criteria (partner inbox D5)
 
-Plan: `56-partner-d5-pricing-erase-retry.md`. Sections A and B are final (crew rulings A1a A2a A3a B1a B2a B3a B4a, 4 Nov). Section C is a draft until the owner answers card C1..C5.
+Plan: `56-partner-d5-pricing-erase-retry.md`. Sections A and B are final (crew rulings A1a A2a A3a B1a B2a B3a B4a, 4 Nov). Section C is a draft: the owner ruled C1a C2a C3a C4b C5a (4 Nov); it is completed when C starts, after A and B.
 
 ## A. Meta rate-limit retry on WhatsApp sends
 
@@ -19,12 +19,17 @@ Plan: `56-partner-d5-pricing-erase-retry.md`. Sections A and B are final (crew r
 
 ## B. Meta pricing per message
 
-- AC-56-20: A Meta status webhook carrying `pricing` stores `{billable, pricingModel, category, type}` on the message.
-- AC-56-21: The consumer `message.status` webhook carries `pricing` (object or null).
-- AC-56-22: `MessageItem` carries `pricing` on GET messages (default shape); the rio shape is unchanged.
-- AC-56-23: A status that does not move the message forward still records its pricing.
-- AC-56-24: Out-of-range pricing strings (wrong type, too long, characters outside `[a-z0-9_]`) are dropped, never stored.
-- AC-56-25: Messages without Meta pricing answer `pricing: null`; tenant and workspace scoping as every other message read.
+Code today: parse `adapters/whatsapp_cloud.py:949-958`; apply `services/inbound_service.py:642-800` (`_apply_receipt` returns early at the rank guard, before the commit); send-side events `services/send_runner.py:69-107`; `MessageItem` `schemas.py:643-684` built at `services/conversation_service.py:314`; rio `schemas.py:1715-1730` unchanged.
+
+- AC-56-20: A WhatsApp status webhook entry with `pricing` `{billable, pricing_model, category, type}` stores `{billable, pricingModel, category, type}` under `metadata_json["pricing"]` of the message it targets. `billable` is a bool; the other three are strings or null. Other metadata keys (`reply_to`, `broadcast`, `message_tag`) are kept.
+- AC-56-21: The consumer `message.status` webhook for that receipt carries `data.pricing` with the same object. Every `message.status` webhook, including the send-side `SENT` and `FAILED` events from `send_runner.py`, carries the message's stored pricing at that moment (null when none).
+- AC-56-22: GET `/api/v1/omnichannel/contacts/{id}/messages` and GET of one message return `pricing` on every `MessageItem` (object or null). The `?format=rio` shape has no `pricing` key.
+- AC-56-23: A receipt that does not move the status forward (a `sent` after `delivered`) still stores its pricing and commits it, sends no `message.status` webhook, and the next GET shows it.
+- AC-56-24: The latest non-null pricing wins; a later status with no pricing never clears a stored one.
+- AC-56-25: Meta strings are untrusted: each of `pricing_model`, `category`, `type` is lower-cased and kept only if it is a string of 1 to 40 chars in `[a-z0-9_]`, else that field is null. `billable` that is not a JSON bool is null. A `pricing` value that is not an object stores nothing. Unknown keys are dropped. None of this ever fails the webhook.
+- AC-56-26: An inbound message, and messages older than this change, answer `pricing: null`. No backfill (Meta's data was never stored).
+- AC-56-27: Tenant and workspace scoping are unchanged: a status webhook on channel X never writes pricing on a message of another tenant (same `external_message_id` in a foreign tenant).
+- AC-56-28: Guide: `message.status` payload section (`consumer-integration-guide.md:847-854`), MessageItem section 9.1 (`:1029-1060`), field map 9.3 (`:1193-1199`, rio has none), a note that GET /templates already returns `category`, and a changelog row.
 
 ## C. Contact erase (draft)
 
