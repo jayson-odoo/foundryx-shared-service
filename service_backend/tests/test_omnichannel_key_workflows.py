@@ -760,8 +760,33 @@ ALL_KEY_ROUTES = [
 ]
 
 
+def _pin_limit_window(monkeypatch, *, advance_after=None):
+    """Pin the clock the per-minute key limit reads, so every request of a test
+    falls in ONE minute window (a real clock can roll over between the request
+    that fills the limit and the one expected to be refused). The counter key is
+    derived from key_limits.time.time(); only that name is replaced.
+    `advance_after=n` is for the proof of the old flake: the n-th clock read and
+    later land one minute on."""
+    import time as _time
+    from types import SimpleNamespace
+
+    from modules.omnichannel.services import key_limits
+
+    base = (int(_time.time()) // 60) * 60 + 10.0
+    reads = {"n": 0}
+
+    def fake_time():
+        reads["n"] += 1
+        if advance_after is not None and reads["n"] >= advance_after:
+            return base + 60.0
+        return base
+
+    monkeypatch.setattr(key_limits, "time", SimpleNamespace(time=fake_time, monotonic=_time.monotonic))
+
+
 @pytest.mark.parametrize("method,path,body", ALL_KEY_ROUTES, ids=[f"{m} {p}" for m, p, _ in ALL_KEY_ROUTES])
 def test_ac_38_120_revoked_401_and_limit_429_every_route(client, session_factory, monkeypatch, method, path, body):
+    _pin_limit_window(monkeypatch)
     ws = _default_workspace_id(session_factory)
     wid = _seed_wf(session_factory, owner_ws=ws)
     url = BASE + path.replace("{id}", wid)
