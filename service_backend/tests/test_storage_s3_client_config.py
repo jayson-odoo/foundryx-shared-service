@@ -73,7 +73,7 @@ def test_settings_at_bounds_load(monkeypatch, env, value, attr):
 
 
 def test_control_endpoint_region_credentials_and_presign_still_work():
-    client = _build = _adapter()._build_client()
+    client = _adapter()._build_client()
     assert client.meta.endpoint_url == "http://127.0.0.1:9"
     assert client.meta.region_name == "us-east-1"
     creds = client._request_signer._credentials
