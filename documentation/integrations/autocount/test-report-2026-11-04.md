@@ -142,15 +142,26 @@ blank remarks).
   -> status 400, `{"Message": "PO is not valid value to FromDocType."}`.
 - After: FXT-1104b-S1 does not exist; FXT-1104b-1 unchanged. Not retried with another value, as agreed.
 
+### P4 Location of an already-linked row: moves, link kept
+
+- Before, FXT-1104b-1 (DocKey 12024) row 12028 (created by the C03 split): `Qty 10, Location HQ,
+  FromSODtlKey 11989, FromSODocList "SO389293", FromDocType "", FromDocNo "", FromDocDtlKey 0`.
+- PUT `/EditPurchaseOrderbydockey` -> status 200, `DocNo=FXT-1104b-1 ,DocKey=12024 ... Done Edit.`
+  - request row (the row as read back, only `Location` changed, the 0001 date omitted):
+    `{"DtlKey":12028,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","UserUOM":"UNIT","Qty":10.0,"FOCQty":0.0,"UnitPrice":0.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0,"FullTransferOption":" ","FullTransferFromDocList":""}`
+- After: row 12028 `Location BRW-AM`, `FromSODtlKey 11989`, `FromSODocList "SO389293"`: the location moved
+  and the link was kept. Rows 12025 and 12026 unchanged.
+
 ## Observations for AutoCount
 
 Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
 
 1. **Location on transfer (Q9).** A NEW row sent with `Location "BRW-AM"` and `FromDocType "SO"` links
    (status 200, `FromSODtlKey 11989`) but reads back `HQ` (run 2, C03). An EXISTING row edited with a new
-   location keeps it (P2: row 12026 became `BRW-AM`), but then the link is not applied (item 3). So we can
-   either link (location overridden) or move (no link), never both in one PUT. Can the transfer keep the
-   location we send?
+   location keeps it (P2: row 12026 became `BRW-AM`), but then the link is not applied (item 3). P4 shows
+   the location of an already-linked row can be edited afterwards and the link survives (row 12028 moved
+   HQ to BRW-AM, `FromSODtlKey` still 11989). So a link to an SO row at another location is two PUTs:
+   link on a new row, then edit its location. Can the transfer keep the location we send in one PUT?
 2. **Unlink (Q8): no way found.** C07 and P1 both answer status 200 `Done Edit.` and change nothing, also
    when `FromSODtlKey 0` and `FromSODocList ""` are sent (P1) and with `FromDocType "SO"` and a blank
    `FromDocNo` (P1b). Linked PO rows read back `FromDocType ""`, `FromDocNo ""`, `FromDocDtlKey 0`, so
@@ -184,4 +195,5 @@ Questions refer to the numbering in `write-api-questions-2026-11-04.md`.
 - FXT-PROBE-1 (DocKey 12023) exists with no rows. No SPO was created.
 - After run 3: PO 202602-S0007 is still unchanged (P1 and P1b had no effect). FXT-1104b-1 row 12026 now
   reads `Location BRW-AM` (P2), still unlinked. FXT-1104b-S1 does not exist.
+- After P4: FXT-1104b-1 row 12028 reads `Location BRW-AM`, `FromSODtlKey 11989`.
 - Test documents left in db3: FXT-PROBE-1 (empty) and FXT-1104b-1 (three rows). They can be deleted.
