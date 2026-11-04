@@ -91,6 +91,9 @@ class ContactWriteResult:
     tags_matched: int = 0
     assignee_unmatched: bool = False
     lifecycle_unmapped: bool = False
+    # Plan 52 - True when this call actually changed an EXISTING contact (the
+    # sync counts `contactsUpdated` from it; always False for a create).
+    changed: bool = False
     warnings: List[str] = dataclass_field(default_factory=list)
 
 
@@ -338,7 +341,16 @@ class MigrationWriter:
         thread_closed_status_id: Optional[str] = None,
         team_map: Optional[Dict[str, str]] = None,
         user_team_by_id: Optional[Dict[str, str]] = None,
+        contact_mode: str = "fill_empty",
     ):
+        if contact_mode not in ("fill_empty", "source_wins"):
+            raise ValueError(f"unknown contact_mode {contact_mode!r}")
+        # Plan 52 D7 - "fill_empty" (the one-off migration, plan 33 D-A6-11:
+        # an existing value is never overwritten) vs "source_wins" (the
+        # continuous sync, respond.io is authoritative until cutover: only
+        # NON-EMPTY source values overwrite, tags become the source's exact
+        # set, a value the source leaves empty never clears ours).
+        self.contact_mode = contact_mode
         self.db = db
         self.tenant_id = tenant_id
         self.workspace_id = workspace_id
@@ -457,6 +469,8 @@ class MigrationWriter:
     def _apply_tags(
         self, contact: ContactModel, source_tags: Optional[List[str]]
     ) -> Tuple[Optional[List[str]], int, int, bool]:
+        # `source_wins` (plan 52 D7) returns exactly the source's tag set
+        # instead of the union with what the contact already carries.
         """Find-or-create via the real `ContactTagService.resolve_or_create_
         by_name` (its own docstring: flush-only, never commits, so it is safe
         inside the job handler's per-contact SAVEPOINT - unlike
@@ -488,6 +502,8 @@ class MigrationWriter:
         distinct_lower = {n.lower() for n in names}
         matched = len(found)
         created = max(len(distinct_lower) - matched, 0)
+        if self.contact_mode == "source_wins":
+            return sorted(set(resolved_ids)), created, matched, False
         existing_ids = set(self.tags_service.ids_for_contact(contact.id, self.tenant_id))
         union_ids = sorted(existing_ids | set(resolved_ids))
         return union_ids, created, matched, False
@@ -563,19 +579,23 @@ class MigrationWriter:
         # ── system fields: fill-if-empty (D-A6-11) - ONE rule covers both a
         # brand-new (all-NULL) contact and a merge target's still-empty
         # fields, so create and merge share this exact code path. ─────────
+        source_wins = self.contact_mode == "source_wins"
         digits = digits_only(source.phone) if source.phone else ""
         patch_kwargs: Dict[str, Any] = {}
-        if not contact.first_name and source.firstName:
+        # `source_wins`: a non-empty source value overwrites (the patch seam
+        # itself only writes on a real difference); the phone is the match
+        # key and stays fill-if-empty in both modes.
+        if source.firstName and (source_wins or not contact.first_name):
             patch_kwargs["first_name"] = source.firstName
-        if not contact.last_name and source.lastName:
+        if source.lastName and (source_wins or not contact.last_name):
             patch_kwargs["last_name"] = source.lastName
         if not contact.phone and digits:
             patch_kwargs["phone"] = f"+{digits}"
-        if not contact.email and source.email:
+        if source.email and (source_wins or not contact.email):
             patch_kwargs["email"] = source.email
-        if not contact.language and source.language:
+        if source.language and (source_wins or not contact.language):
             patch_kwargs["language"] = source.language
-        if not contact.country_code and source.countryCode:
+        if source.countryCode and (source_wins or not contact.country_code):
             patch_kwargs["country_code"] = source.countryCode.upper()
 
         # ── custom fields (AC-MIG-24): find-or-create the FIELD, then only
@@ -595,7 +615,7 @@ class MigrationWriter:
                 result.fields_created += 1
             else:
                 result.fields_matched += 1
-            if current_custom.get(cfield.key) is not None:
+            if current_custom.get(cfield.key) is not None and not source_wins:
                 continue  # merge rule: never overwrite an existing value
             coerced, err = _coerce_value(cfield.type, raw_value)
             if err:
@@ -616,13 +636,15 @@ class MigrationWriter:
             result.warnings.append("Tag resolution failed for this contact (workspace tag cap reached).")
 
         try:
-            self.profile.patch(
+            changes = self.profile.patch(
                 contact,
                 custom_fields=clean_custom if clean_custom else _UNSET,
                 tag_ids=union_tag_ids if union_tag_ids is not None else _UNSET,
                 emit=False,  # D-A6-8: this writer never fires an entity event
                 **patch_kwargs,
             )
+            if changes and kind == "update":
+                result.changed = True
         except ProfilePatchError as exc:  # pragma: no cover - values are pre-validated above
             result.warnings.append(f"Some fields could not be written: {exc.errors}")
 
@@ -652,10 +674,29 @@ class MigrationWriter:
             if source_label_lc and mapped is None:
                 result.lifecycle_unmapped = True
             contact.lifecycle_status_id = mapped or self.initial_lifecycle_status_id
+        elif source_wins and source.lifecycle:
+            # Plan 52 D7 - follows the source ONLY when the label maps to a
+            # stage; an unmapped label (or none) leaves ours alone.
+            source_label_lc = source.lifecycle.strip().lower()
+            mapped = self.lifecycle_map.get(source_label_lc)
+            if mapped is None:
+                stage = find_stage_by_key_or_label(
+                    self.db, self.tenant_id, self.workspace_id, source.lifecycle
+                )
+                mapped = stage.id if stage is not None else None
+            if mapped is None:
+                result.lifecycle_unmapped = True
+            elif mapped != contact.lifecycle_status_id:
+                contact.lifecycle_status_id = mapped
+                result.changed = result.changed or kind == "update"
 
         # ── assignee (AC-MIG-26): email lookup ONLY, never `userMap`, never
         # creates a user/role/team; never overwrites an existing assignment.
-        if contact.assigned_user_id is None and source.assignee and source.assignee.email:
+        if (
+            (contact.assigned_user_id is None or source_wins)
+            and source.assignee
+            and source.assignee.email
+        ):
             from app.models.user import User
 
             row = (
@@ -667,7 +708,9 @@ class MigrationWriter:
                 .first()
             )
             if row:
-                contact.assigned_user_id = row[0]
+                if contact.assigned_user_id != row[0]:
+                    contact.assigned_user_id = row[0]
+                    result.changed = result.changed or kind == "update"
             else:
                 result.assignee_unmatched = True
 
@@ -677,11 +720,23 @@ class MigrationWriter:
         # (`self.user_team_by_id`, built once by the service from `GET
         # /space/user`). Never overwrites an existing assignment; CSV mode's
         # `assignee` is always `None` so this simply no-ops there. ─────────
-        if contact.assigned_team_id is None and source.assignee is not None:
+        if (contact.assigned_team_id is None or source_wins) and source.assignee is not None:
             source_team_id = self.user_team_by_id.get(str(source.assignee.id))
             mapped_team_id = self.team_map.get(source_team_id) if source_team_id else None
-            if mapped_team_id:
+            if mapped_team_id and mapped_team_id != contact.assigned_team_id:
                 contact.assigned_team_id = mapped_team_id
+                result.changed = result.changed or kind == "update"
+
+        # ── thread open/closed (plan 52 D7, source_wins only): the one-off
+        # migration never moves an existing contact's thread status.
+        if source_wins:
+            wanted_status = {
+                "open": self.thread_open_status_id,
+                "close": self.thread_closed_status_id,
+            }.get((source.status or "").strip().lower())
+            if wanted_status and wanted_status != contact.status_id:
+                contact.status_id = wanted_status
+                result.changed = result.changed or kind == "update"
 
         self.db.flush()
         return result
@@ -827,6 +882,10 @@ class MigrationWriter:
             migration_meta["timestampInferred"] = True
         if pending_media is not None:
             migration_meta["pendingMedia"] = True
+        # Plan 52 D8 - the WhatsApp id respond.io carries, kept for the
+        # native-duplicate check (never the `external_message_id` column).
+        if item.channelMessageId not in (None, ""):
+            migration_meta["channelMessageId"] = str(item.channelMessageId)
         if migration_meta:
             payload_json["migration"] = {**migration_meta, **(payload_json.get("migration") or {})}
 
@@ -867,6 +926,24 @@ class MigrationWriter:
             self.tenant_id, self.workspace_id, self.source, ENTITY_MESSAGE, str(item.messageId), row.id
         )
         return MessageWriteResult(message_id=row.id, timestamp_inferred=timestamp_inferred, sender_type=sender_type)
+
+    def native_message_ids(self, candidate_ids: List[str]) -> set:
+        """Plan 52 D8 - which of these WhatsApp message ids already exist as
+        NATIVE rows (`external_message_id`) in this tenant. Tenant-scoped,
+        chunked so a long history never builds one giant IN list."""
+        found: set = set()
+        ids = sorted({c for c in candidate_ids if c})
+        for i in range(0, len(ids), 500):
+            rows = (
+                self.db.query(ConversationMessage.external_message_id)
+                .filter(
+                    ConversationMessage.tenant_id == self.tenant_id,
+                    ConversationMessage.external_message_id.in_(ids[i : i + 500]),
+                )
+                .all()
+            )
+            found.update(r[0] for r in rows)
+        return found
 
     def link_messages_to_channel(self, contact_id: str, message_ids: List[str], channel_id: str) -> int:
         """Lane SS-CHANNEL-SKIP - set `channel_id` on already-migrated
@@ -917,6 +994,22 @@ class MigrationWriter:
             )
             .first()
         )
+        if self.contact_mode == "source_wins":
+            # Plan 52 - the sync only ever moves these forward: the contact
+            # may have newer native traffic the aggregate above cannot see
+            # (and a sync tick must never regress the 24 h window anchor).
+            def _later(current, computed):
+                if current is None:
+                    return computed
+                if computed is None:
+                    return current
+                cur = current if current.tzinfo is not None else current.replace(tzinfo=timezone.utc)
+                new = computed if computed.tzinfo is not None else computed.replace(tzinfo=timezone.utc)
+                return current if cur >= new else computed
+
+            last_message_at = _later(contact.last_message_at, last_message_at)
+            last_incoming_at = _later(contact.last_incoming_message_at, last_incoming_at)
+            last_agent_at = _later(contact.last_agent_message_at, last_agent_at)
         contact.last_message_at = last_message_at
         contact.last_incoming_message_at = last_incoming_at
         contact.last_agent_message_at = last_agent_at

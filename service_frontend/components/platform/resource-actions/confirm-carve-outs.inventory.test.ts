@@ -59,6 +59,8 @@ const CARVE_OUTS = [
   // its encrypted secrets for good (irreversible) - typed product-key confirm,
   // owner-approved on PR #119 (Q4).
   'app/(protected)/settings/claude-connector/components/use-connector-product-form.tsx',
+  // Plan 52 (AC-SYNC-52): the sync card's Stop (cutover) must open a confirm dialog.
+  'app/(protected)/omnichannel/settings/migration/components/migration-sync-card.tsx',
 ];
 
 /**
@@ -160,6 +162,12 @@ const DISCLOSED_PLAIN_CONFIRMS: { file: string; count: number; reason: string }[
     count: 1,
     reason:
       'Claude connector single-grant Revoke (sprint-4/19, AC-19-60) - a security access cut, not a record delete; the bulk Revoke carries the typed REVOKE input.',
+  },
+  {
+    file: 'app/(protected)/omnichannel/settings/migration/components/migration-sync-card.tsx',
+    count: 2,
+    reason:
+      'Continuous sync Stop (plan 52, AC-SYNC-52) - the cutover action; the UAC mandates a confirm dialog and the sync is not a deferred-actions entity. Plus Rotate link: it invalidates the webhook URL already configured at respond.io.',
   },
 ];
 
