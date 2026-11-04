@@ -12,6 +12,8 @@ from typing import Any, Optional
 
 import httpx
 
+from app.services.url_guard import UrlGuardError
+
 from modules.autocount.http_client import autocount_guarded_client
 from modules.autocount.write_back.guard import assert_write_allowed
 
@@ -80,7 +82,7 @@ class AutoCountWriteClient:
                 response = http.request(method, url, json=body)
         except httpx.TimeoutException:
             raise WriteTransportError("WRITE_TIMEOUT") from None
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError):
             raise WriteTransportError("WRITE_CONNECT") from None
         return WriteResponse(
             status_code=response.status_code,

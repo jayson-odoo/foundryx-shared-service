@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from modules.autocount.doc_feed.clock import myt_date
 from modules.autocount.models import AcCompany, AcWriteAction
+from modules.autocount.repositories import CompanyRepository
 from modules.autocount.write_back.client import AutoCountWriteClient, WriteTransportError
 from modules.autocount.write_back.constants import (
     EDIT_PO_PATH,
@@ -503,11 +504,7 @@ def run_db3_suite(
     """Run C01..C12 in order. Refuses to start (``WriteNotAllowed`` /
     ``WriteDisabled``) before any request when the company's write connection is
     not db3. A case fault is recorded as FAIL, never raised."""
-    company = (
-        db.query(AcCompany)
-        .filter(AcCompany.tenant_id == tenant_id, AcCompany.id == company_id)
-        .first()
-    )
+    company = CompanyRepository(db).get(tenant_id, company_id)
     from modules.autocount.write_back.pull_docs import WriteDisabled
 
     if company is None:

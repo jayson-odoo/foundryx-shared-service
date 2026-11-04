@@ -37,6 +37,9 @@ fault.
   Issuing a key with `write_back` needs the issuing user to hold `autocount.companies.manage` on top
   of `autocount.pull.manage`; without it the issue call answers `403`. The scope cannot be added
   to an existing key: issue a new one and revoke the old.
+- The read routes (`POST /snapshots`, `GET /snapshots/{id}`, `GET /snapshots/{id}/rows`) need the
+  **`pull` scope** the same way: a key without it answers `403 SCOPE_REQUIRED` before any other answer.
+  A `write_back`-only key does not read. A key can carry both.
 - Unknown, malformed or revoked key: `401 INVALID_API_KEY`. Module not enabled or tenant suspended:
   `403 SERVICE_NOT_ENABLED`. Throttled: `429 TOO_MANY_REQUESTS` with `Retry-After`.
 
@@ -73,9 +76,9 @@ not idempotent: do not blind-retry a call that ended `pending_verification`.
 | Field | Type | Rule |
 |---|---|---|
 | `companyCode` | string | required |
-| `poDocKey`, `poDtlKey` | integer | the PO document and the PO row (AutoCount `DocKey`, `DtlKey`) |
+| `poDocKey`, `poDtlKey` | integer | the PO document and the PO row (AutoCount `DocKey`, `DtlKey`). Every key field is an integer from 1 to 9223372036854775807; anything else is `422 INVALID_REQUEST` |
 | `soDocKey`, `soDtlKey` | integer | the SO document and the SO row to link to |
-| `qty` | number | quantity to link; above zero, at most the PO row qty, at most the SO row outstanding. Sent as a JSON number; the server reads it as an exact decimal, never a binary float, so `3.3` stays `3.3`. Send decimals as plain numbers, not strings |
+| `qty` | number | quantity to link; above zero and at most 1,000,000,000, with at most 8 decimal places (a value the server would have to round is refused `QTY_INVALID`, never rewritten), at most the PO row qty, at most the SO row outstanding. Sent as a JSON number; the server reads it as an exact decimal, never a binary float, so `3.3` stays `3.3`. Send decimals as plain numbers, not strings |
 | `expectedLastModified` | string, optional | the `LastModified` of the PO as the CRM last read it; when given and the PO has changed since, the call is refused `DOC_STALE` |
 
 When `qty` equals the PO row qty the row is linked in place and takes the SO row's location. When
@@ -121,8 +124,8 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | outcome | HTTP | errorCode | Meaning |
 |---|---|---|---|
 | `done` | 200 | null | Written and verified: every sent row read back as sent and every other row unchanged |
-| `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED` | The write may or may not have happened; the server could not confirm it |
-| `refused` | 403 | `WRITE_DISABLED` | This company has no write connection |
+| `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR` | The write may or may not have happened; the server could not confirm it |
+| `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
 | `refused` | 409 | any code below | Refused before anything was written |
 | `mismatch` | 502 | `READBACK_MISMATCH` | AutoCount accepted the write but the document read back differently from what was sent |
@@ -132,11 +135,11 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 
 | errorCode | Meaning | CRM action |
 |---|---|---|
-| `DOC_BUSY` | Another write on the same document is in flight | Wait a few seconds and retry |
+| `DOC_BUSY` | Another write on the same document is in flight, or ended `pending_verification` less than 10 minutes ago | Wait and retry; after 10 minutes an unfinished action no longer blocks |
 | `DOC_UNKNOWN` | The document is not in the synced copy, so its date is unknown | Run or wait for the doc sync, then retry |
 | `DOC_STALE` | `expectedLastModified` no longer matches: the document changed in AutoCount | Refresh the document, re-check the row, retry with the new `LastModified` |
 | `DOC_NOT_FOUND` / `DOC_AMBIGUOUS` / `READ_FAILED` | (when raised before the write) the document could not be read exactly once | Retry later; if it persists, report with `actionId` |
-| `DOC_KIND_MISMATCH` | A PO key sent to the SPO route or the reverse | Use the right route |
+| `DOC_KIND_MISMATCH` | A PO key sent to the SPO route, or an SPO key sent to a PO route | Use the right route |
 | `DOC_CANCELLED` | The PO, SPO or SO is cancelled | Show it as cancelled; no action |
 | `ROW_NOT_FOUND` | No row with that `DtlKey` on the document | Refresh and re-pick |
 | `ROW_ALREADY_LINKED` | The PO row already links to an SO row | Unlink first, then link |
@@ -144,9 +147,12 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `ROW_ON_SPO` | An active SPO row points at this PO row | Unlink the SPO row first (`/spo-links/unlink`), then retry |
 | `ITEM_MISMATCH` | PO row and SO row have different items | Do not offer this pair |
 | `UOM_MISMATCH` | Different units of measure | Do not offer this pair |
-| `QTY_INVALID` | `qty` is zero or negative | Fix the input |
+| `QTY_INVALID` | `qty` is zero or negative, above 1,000,000,000, or has more than 8 decimal places (checked before AutoCount is read) | Fix the input |
 | `QTY_ABOVE_FREE` | `qty` is above the PO row qty | Lower `qty` |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
+
+`INTERNAL_ERROR` (202) means an unexpected server fault after the action started: the write may or
+may not have happened, so treat it like any other `pending_verification` and check the document.
 
 Note `DOC_NOT_FOUND`, `DOC_AMBIGUOUS` and `READ_FAILED` appear in both places by design: before
 the write they come back as `refused` 409; after the write (the verification read) as
@@ -179,13 +185,13 @@ Auth, scope, company and parse failures use the pull gateway's flat body, no `ou
 | Status | code | Meaning |
 |---|---|---|
 | 401 | `INVALID_API_KEY` | Missing, malformed, unknown or revoked key |
-| 403 | `SCOPE_REQUIRED` | Key lacks `write_back` |
+| 403 | `SCOPE_REQUIRED` | Key lacks `write_back` (write routes) or `pull` (read routes) |
 | 403 | `SERVICE_NOT_ENABLED` | Module not enabled for the tenant |
 | 403 | `COMPANY_NOT_ALLOWED` | Section 3 |
 | 404 | `UNKNOWN_COMPANY` | Section 3 |
 | 409 | `AMBIGUOUS_COMPANY` | Section 3 |
 | 413 | `PAYLOAD_TOO_LARGE` | Body over the cap |
-| 422 | `INVALID_REQUEST` | Missing `companyCode`, not a JSON object, a key not an integer, `qty` not a number |
+| 422 | `INVALID_REQUEST` | Missing `companyCode`, not a JSON object, a key not an integer in 1..9223372036854775807, `qty` not a number |
 | 429 | `TOO_MANY_REQUESTS` | `Retry-After` seconds |
 | 500 | (internal error body) | Unexpected failure; no write is assumed |
 

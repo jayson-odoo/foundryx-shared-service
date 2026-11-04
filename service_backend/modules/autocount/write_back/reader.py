@@ -14,6 +14,8 @@ from typing import Dict, List, Optional
 
 import httpx
 
+from app.services.url_guard import UrlGuardError
+
 from modules.autocount.http_client import autocount_guarded_client
 from modules.autocount.write_back.constants import (
     PO_BY_DOC_DATE_PATH,
@@ -73,7 +75,7 @@ class AutoCountDocReader:
             if not response.is_success:
                 raise DocReadError(READ_FAILED)
             body = response.json()
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError, ValueError):
             raise DocReadError(READ_FAILED) from None
         if not isinstance(body, list):
             raise DocReadError(READ_FAILED)

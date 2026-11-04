@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from modules.autocount.canonical.documents import (
@@ -29,7 +30,7 @@ from modules.autocount.models import (
     AcWriteAction,
 )
 from modules.autocount.provider import PROVIDER_KEY
-from modules.autocount.repositories import ConnectionRepository
+from modules.autocount.repositories import CompanyRepository, ConnectionRepository
 from modules.autocount.write_back import payloads
 from modules.autocount.write_back.client import (
     AutoCountWriteClient,
@@ -57,6 +58,12 @@ OUTCOME_PENDING = "pending_verification"
 OUTCOME_VENDOR_ERROR = "vendor_error"
 
 WRITE_DISABLED = "WRITE_DISABLED"
+# An in_flight / pending_verification action blocks its document for this long;
+# after it the document is free again (the old row is marked pending_verification).
+BUSY_WINDOW_SECONDS = 600
+
+INTERNAL_ERROR = "INTERNAL_ERROR"
+DOC_KIND_MISMATCH = "DOC_KIND_MISMATCH"
 DOC_BUSY = "DOC_BUSY"
 DOC_UNKNOWN = "DOC_UNKNOWN"
 DOC_STALE = "DOC_STALE"
@@ -148,6 +155,9 @@ def verify_readback(before: Doc, after: Doc, body: Doc) -> bool:
     """AC-55-22: every sent row reads back as sent (a new row, ``DtlKey 0``,
     appears exactly once) and every untouched row reads back unchanged."""
     is_spo = before.get("ShippingPO") == "T"
+    for key, value in body.items():  # every header field we sent reads back unchanged
+        if key != "Details" and not _same(value, after.get(key)):
+            return False
     before_rows = {r.get("DtlKey"): r for r in before.get("Details") or []}
     after_rows = {r.get("DtlKey"): r for r in after.get("Details") or []}
     sent = body.get("Details") or []
@@ -249,25 +259,59 @@ class WriteBackService:
         expected_last_modified: Optional[str],
         key_id: Optional[str],
     ) -> WriteActionResult:
-        company = (
-            self.db.query(AcCompany)
-            .filter(AcCompany.tenant_id == tenant_id, AcCompany.id == company_id)
-            .first()
-        )
+        company = CompanyRepository(self.db).get(tenant_id, company_id)
         if company is None:
             return WriteActionResult(None, OUTCOME_REFUSED, WRITE_DISABLED)
         row = self._new_row(plan, tenant_id, company.id, key_id)
         try:
+            self._check_qty(plan, row)
             base_url = self._write_base_url(row, company)
-            if self.actions.has_open(tenant_id, company.id, plan.doc_key):
-                raise self._refuse(row, DOC_BUSY)
+            self._check_not_busy(row, tenant_id, company.id, plan.doc_key)
             row.outcome = OUTCOME_IN_FLIGHT
-            self.db.commit()
+            try:
+                self.db.commit()
+            except IntegrityError:
+                # lost the race to another in_flight action on this document
+                self.db.rollback()
+                return self._busy_after_race(plan, tenant_id, company.id, key_id)
+        except _Stop as stop:
+            return stop.result
+        row_id = row.id
+        try:
             return self._execute(plan, company, base_url, row, expected_last_modified)
         except _Stop as stop:
             return stop.result
+        except Exception:  # noqa: BLE001 - the in_flight row must never be stranded
+            logger.exception("autocount write-back flow failed (action %s)", row_id)
+            self.db.rollback()
+            return self._finish(row, OUTCOME_PENDING, INTERNAL_ERROR)
         finally:
             self.db.rollback()
+
+    def _check_qty(self, plan: _Plan, row: AcWriteAction) -> None:
+        """Quantity bounds before any document is read (H5)."""
+        if plan.qty is None:
+            return
+        try:
+            plan.qty = payloads.validate_qty(plan.qty)
+        except WriteRefusal as exc:
+            raise self._refuse(row, exc.code, str(exc)) from None
+
+    def _check_not_busy(
+        self, row: AcWriteAction, tenant_id: str, company_id: str, doc_key: int
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(seconds=BUSY_WINDOW_SECONDS)
+        if self.actions.expire_stale_in_flight(tenant_id, company_id, doc_key, window_start):
+            self.db.commit()
+        if self.actions.has_open(tenant_id, company_id, doc_key, window_start):
+            raise self._refuse(row, DOC_BUSY)
+
+    def _busy_after_race(
+        self, plan: _Plan, tenant_id: str, company_id: str, key_id: Optional[str]
+    ) -> WriteActionResult:
+        row = self._new_row(plan, tenant_id, company_id, key_id)
+        return self._finish(row, OUTCOME_REFUSED, DOC_BUSY)
 
     def _new_row(
         self, plan: _Plan, tenant_id: str, company_id: str, key_id: Optional[str]
@@ -307,11 +351,11 @@ class WriteBackService:
         """The company's write connection URL, resolved WITH tenant_id and the
         db3 guard applied; a ``_Stop`` (refused) otherwise."""
         conn = None
-        if company.write_connection_id:
+        if company.is_active and company.write_connection_id:
             conn = self.connections.get_for_provider(
                 company.tenant_id, company.write_connection_id, PROVIDER_KEY
             )
-        if conn is None:
+        if conn is None or not conn.is_active:
             raise self._refuse(row, WRITE_DISABLED)
         base_url = str((conn.config_json or {}).get("baseUrl") or "")
         try:
@@ -353,12 +397,20 @@ class WriteBackService:
         staged = self.staged.newest(company.tenant_id, company.id, kind[1], ref)
         doc_date = _doc_date(staged.raw_json if staged else None)
         if doc_date is None:
-            raise self._refuse(row, DOC_UNKNOWN)
+            raise self._refuse(row, self._missing_code(kind, company, ref))
         self.db.commit()  # no transaction open during the GET (AC-55-27)
         try:
             return reader.get_document(kind[0], doc_key, doc_date)
         except DocReadError as exc:
             raise self._refuse(row, exc.code) from None
+
+    def _missing_code(self, kind: tuple, company: AcCompany, ref: str) -> str:
+        """``DOC_KIND_MISMATCH`` when the DocKey is staged as the OTHER PO-family
+        entity (a PO key sent as an SPO, or the reverse), else ``DOC_UNKNOWN``."""
+        other = {_PO[1]: _SPO[1], _SPO[1]: _PO[1]}.get(kind[1])
+        if other and self.staged.newest(company.tenant_id, company.id, other, ref):
+            return DOC_KIND_MISMATCH
+        return DOC_UNKNOWN
 
     def _build(
         self,
@@ -451,3 +503,31 @@ class WriteBackService:
     def _stage(self, company: AcCompany, kind: str, doc: Doc) -> None:
         """Stage the verified read-back and push it once (never changes the outcome)."""
         DocStager(self.db, self._sink_factory).stage_and_push(company, doc, kind)
+
+
+class WriteConnectionError(Exception):
+    """``set_write_connection`` refused; ``code`` is WRITE_NOT_ALLOWED or
+    CONNECTION_NOT_FOUND and the company is left unchanged."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def set_write_connection(
+    db: Session, *, tenant_id: str, company_id: str, connection_id: str
+) -> AcCompany:
+    """Point a company's writes at a connection: same-tenant ``autocount``
+    connection whose base URL passes the write guard (db3 only), else a
+    ``WriteConnectionError`` with the company unchanged."""
+    company = CompanyRepository(db).get(tenant_id, company_id)
+    conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+    if company is None or conn is None:
+        raise WriteConnectionError("CONNECTION_NOT_FOUND")
+    try:
+        assert_write_allowed(str((conn.config_json or {}).get("baseUrl") or ""))
+    except WriteNotAllowed as exc:
+        raise WriteConnectionError(exc.code) from None
+    company.write_connection_id = conn.id
+    db.commit()
+    return company

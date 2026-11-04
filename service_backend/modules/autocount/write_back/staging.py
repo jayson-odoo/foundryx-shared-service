@@ -123,11 +123,15 @@ class DocStager:
         canonical = record.comparable()
         row.diff_json = compute_diff(None, canonical)
         row.canonical_json = canonical
+        row_id, tenant_id, company_id = row.id, company.tenant_id, company.id
+        self.db.commit()  # no transaction open while the sink is called
+        sink = self._sink_factory(tenant_id, company, entity_type)
+        request_id = f"write-back:{row_id}"
         self.db.commit()
-        sink = self._sink_factory(company.tenant_id, company, entity_type)
-        result = sink.write(record, request_id=f"write-back:{row.id}")
+        result = sink.write(record, request_id=request_id)
         if getattr(result, "ok", True) is False:
             return False
+        row = self.staged.newest(tenant_id, company_id, entity_type, f"{company.database_name}:{doc.get('DocKey')}") or row
         row.status = STAGED_PUSHED
         row.pushed_at = datetime.now(timezone.utc)
         self.db.commit()

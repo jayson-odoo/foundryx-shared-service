@@ -1088,6 +1088,14 @@ class AcWriteAction(AutocountBase):
     __tablename__ = "ac_write_action"
     __table_args__ = (
         Index("ix_ac_write_action_busy", "tenant_id", "company_id", "doc_key", "outcome"),
+        # DB-level busy lock: at most one in_flight action per document.
+        Index(
+            "uq_ac_write_action_one_in_flight",
+            "tenant_id", "company_id", "doc_key",
+            unique=True,
+            sqlite_where=text("outcome = 'in_flight'"),
+            postgresql_where=text("outcome = 'in_flight'"),
+        ),
     )
 
     id = Column(String, primary_key=True, default=_uuid)

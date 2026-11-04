@@ -8,7 +8,7 @@ rows appear in ``Details``. Quantities are computed in ``Decimal``.
 from __future__ import annotations
 
 import re
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence
 
 Doc = Dict[str, Any]
@@ -113,6 +113,24 @@ def _refuse_on_spo(spo_ref: Optional[str]) -> None:
         raise WriteRefusal("ROW_ON_SPO", f"row is referenced by {spo_ref}; unlink it there first")
 
 
+MAX_QTY = Decimal(1_000_000_000)
+_QTY_PLACES = Decimal("1E-8")
+
+
+def validate_qty(qty: Decimal) -> Decimal:
+    """The quantity at the vendor's 8 places, or ``QTY_INVALID``: not above zero,
+    above 1e9, or changed by the rounding (never a silent rewrite)."""
+    if not qty.is_finite() or qty <= 0 or qty > MAX_QTY:
+        raise WriteRefusal("QTY_INVALID", "quantity out of range")
+    try:
+        quantized = qty.quantize(_QTY_PLACES)
+    except InvalidOperation:
+        raise WriteRefusal("QTY_INVALID", "quantity out of range") from None
+    if quantized != qty:
+        raise WriteRefusal("QTY_INVALID", "quantity has more than 8 decimal places")
+    return quantized
+
+
 def build_link(
     po: Doc,
     po_dtl_key: int,
@@ -137,8 +155,7 @@ def build_link(
         raise WriteRefusal("ITEM_MISMATCH", "item differs")
     if po_row.get("UOM") != so_row.get("UOM"):
         raise WriteRefusal("UOM_MISMATCH", "unit of measure differs")
-    if qty <= 0:
-        raise WriteRefusal("QTY_INVALID", "quantity must be above zero")
+    qty = validate_qty(qty)
     free = _dec(po_row.get("Qty"))
     if qty > free:
         raise WriteRefusal("QTY_ABOVE_FREE", "quantity above the PO row quantity")
@@ -183,6 +200,7 @@ def build_spo_unlink(spo: Doc, spo_dtl_key: int) -> Doc:
     if not (row.get("FromDocDtlKey") or row.get("FromDocNo")):
         raise WriteRefusal("ROW_NOT_LINKED", "row is not linked")
     body = _header(spo)
+    body["ShippingPO"] = "T"
     details: List[Doc] = [_unlinked(row)]
     body["Details"] = details
     return body

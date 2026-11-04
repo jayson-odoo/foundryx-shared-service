@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from modules.autocount.models import AcCompany
 from modules.autocount.provider import PROVIDER_KEY
-from modules.autocount.repositories import ConnectionRepository
+from modules.autocount.repositories import CompanyRepository, ConnectionRepository
 from modules.autocount.write_back.doc_mapping import KIND_PO, KIND_SO, detect_kind
 from modules.autocount.write_back.guard import assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
@@ -77,11 +77,11 @@ def _days(date_from: date, date_to: date) -> List[date]:
 
 def write_base_url(db: Session, company: AcCompany) -> str:
     conn = None
-    if company.write_connection_id:
+    if company.is_active and company.write_connection_id:
         conn = ConnectionRepository(db).get_for_provider(
             company.tenant_id, company.write_connection_id, PROVIDER_KEY
         )
-    if conn is None:
+    if conn is None or not conn.is_active:
         raise WriteDisabled()
     base_url = str((conn.config_json or {}).get("baseUrl") or "")
     assert_write_allowed(base_url)  # db3 only, read or write
@@ -100,11 +100,7 @@ def pull_documents(
     sink_factory: Optional[Callable[..., Any]] = None,
 ) -> PullDocsResult:
     days = _days(date_from, date_to)
-    company = (
-        db.query(AcCompany)
-        .filter(AcCompany.tenant_id == tenant_id, AcCompany.id == company_id)
-        .first()
-    )
+    company = CompanyRepository(db).get(tenant_id, company_id)
     if company is None:
         raise WriteDisabled()
     reader = (reader_factory or AutoCountDocReader)(write_base_url(db, company))

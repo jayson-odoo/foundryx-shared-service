@@ -32,7 +32,7 @@ import re
 from decimal import Decimal
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -43,7 +43,7 @@ from app.database import get_db
 from ..doc_feed.clock import myt_date
 from ..models import AcPullApiKey
 from ..pull_auth import PullGatewayError, resolve_pull_key
-from ..services.pull_key_service import SCOPE_WRITE_BACK
+from ..services.pull_key_service import SCOPE_PULL, SCOPE_WRITE_BACK
 from ..write_back.deps import get_write_back_service
 from ..write_back.service import WriteActionResult, WriteBackService
 from ..services.pull_gateway_service import (
@@ -231,6 +231,13 @@ def _finalize_quietly(db: Session, ctx: _CallContext, action: str, status_code: 
         )
 
 
+def _require_scope(key_row: AcPullApiKey, scope: str) -> None:
+    """403 ``SCOPE_REQUIRED`` unless the key carries ``scope``. Checked right
+    after the key resolves, before any body, company or snapshot answer."""
+    if scope not in (key_row.scopes or []):
+        raise PullGatewayError(403, "SCOPE_REQUIRED", "This key does not carry the required scope.")
+
+
 def _internal_error_response(
     db: Session,
     ctx: _CallContext,
@@ -290,6 +297,7 @@ def build_snapshot(
 
         key_row = resolve_pull_key(request, db)
         ctx.key_row = key_row
+        _require_scope(key_row, SCOPE_PULL)
 
         company_code_raw = company_code_hint
         entity_wire = entity_hint
@@ -363,6 +371,7 @@ def get_snapshot_header_route(
     try:
         key_row = resolve_pull_key(request, db)
         ctx.key_row = key_row
+        _require_scope(key_row, SCOPE_PULL)
 
         service = PullGatewayService(db)
         snapshot = service.get_snapshot_for_key(key_row, snapshot_id)
@@ -400,6 +409,7 @@ def get_snapshot_rows_route(
     try:
         key_row = resolve_pull_key(request, db)
         ctx.key_row = key_row
+        _require_scope(key_row, SCOPE_PULL)
 
         page, page_ok = _parse_bounded_page(request, minimum=1, maximum=MAX_PAGE)
         if not page_ok:
@@ -458,7 +468,7 @@ def _write_status(result: WriteActionResult) -> int:
     return 502
 
 
-def _write_body(result: WriteActionResult) -> dict:
+def _write_body(result: WriteActionResult) -> Dict[str, object]:
     return {
         "actionId": result.action_id,
         "outcome": result.outcome,
@@ -467,35 +477,43 @@ def _write_body(result: WriteActionResult) -> dict:
     }
 
 
-def _parse_write_json(raw_bytes: bytes) -> dict:
+WriteBody = Dict[str, object]
+MAX_KEY = 2**63 - 1
+WriteCall = Callable[[WriteBackService, WriteBody, str, str, str], WriteActionResult]
+
+
+def _parse_write_json(raw_bytes: bytes) -> WriteBody:
     """Body as a dict with JSON floats kept as ``Decimal`` (a quantity is never
     a binary float). Anything that is not a JSON object is a 422."""
     if len(raw_bytes) > MAX_BODY_BYTES:
         raise PullGatewayError(413, "PAYLOAD_TOO_LARGE", "Request body is too large.")
     try:
         raw = json.loads(raw_bytes or b"{}", parse_float=Decimal)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError):  # incl. JSON errors and absurdly long integers
         raw = None
     if not isinstance(raw, dict):
         raise PullGatewayError(422, "INVALID_REQUEST", "A JSON object body is required.")
     return raw
 
 
-def _int_field(raw: dict, name: str) -> int:
+def _int_field(raw: WriteBody, name: str) -> int:
+    """A DocKey / DtlKey: an integer in 1..2**63-1 (the database's bigint range)."""
     value = raw.get(name)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise PullGatewayError(422, "INVALID_REQUEST", f"{name} must be an integer.")
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_KEY:
+        raise PullGatewayError(
+            422, "INVALID_REQUEST", f"{name} must be an integer between 1 and {MAX_KEY}."
+        )
     return value
 
 
-def _qty_field(raw: dict) -> Decimal:
+def _qty_field(raw: WriteBody) -> Decimal:
     value = raw.get("qty")
     if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
         raise PullGatewayError(422, "INVALID_REQUEST", "qty must be a number.")
     return Decimal(value)
 
 
-def _optional_text(raw: dict, name: str) -> Optional[str]:
+def _optional_text(raw: WriteBody, name: str) -> Optional[str]:
     value = raw.get(name)
     if value is None:
         return None
@@ -510,7 +528,7 @@ def _write_route(
     raw_body: bytes,
     service: WriteBackService,
     action: str,
-    call,
+    call: WriteCall,
 ) -> JSONResponse:
     """The shared write-route frame. ``call(service, raw, tenant_id, company_id,
     key_id)`` invokes the service method; everything before it is auth, scope,
@@ -550,7 +568,9 @@ def link_po_row(
     raw_body: bytes = Depends(_read_request_body_bytes),
     service: WriteBackService = Depends(get_write_back_service),
 ) -> JSONResponse:
-    def call(svc, raw, tenant_id, company_id, key_id):
+    def call(
+        svc: WriteBackService, raw: WriteBody, tenant_id: str, company_id: str, key_id: str
+    ) -> WriteActionResult:
         return svc.link(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
@@ -569,7 +589,9 @@ def unlink_po_row(
     raw_body: bytes = Depends(_read_request_body_bytes),
     service: WriteBackService = Depends(get_write_back_service),
 ) -> JSONResponse:
-    def call(svc, raw, tenant_id, company_id, key_id):
+    def call(
+        svc: WriteBackService, raw: WriteBody, tenant_id: str, company_id: str, key_id: str
+    ) -> WriteActionResult:
         return svc.unlink(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
@@ -586,7 +608,9 @@ def unlink_spo_row(
     raw_body: bytes = Depends(_read_request_body_bytes),
     service: WriteBackService = Depends(get_write_back_service),
 ) -> JSONResponse:
-    def call(svc, raw, tenant_id, company_id, key_id):
+    def call(
+        svc: WriteBackService, raw: WriteBody, tenant_id: str, company_id: str, key_id: str
+    ) -> WriteActionResult:
         return svc.spo_unlink(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             spo_doc_key=_int_field(raw, "spoDocKey"), spo_dtl_key=_int_field(raw, "spoDtlKey"),
