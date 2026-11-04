@@ -50,10 +50,16 @@ export function MigrationSyncCard({
   const { can } = useCan();
   const canManage = can('omnichannel_migration.manage');
   const { formatDateTime } = useDatetime();
-  const { sync, loaded, busy, webhookUrl, start, act } = useMigrationSync(
-    workspaceId,
-    canManage,
-  );
+  const {
+    sync,
+    loaded,
+    busy,
+    webhookUrl,
+    webhookUnreadable,
+    start,
+    act,
+    rotateWebhook,
+  } = useMigrationSync(workspaceId, canManage);
   const [confirmingStop, setConfirmingStop] = useState(false);
   const { copyToClipboard, isCopied } = useCopyToClipboard();
 
@@ -63,8 +69,10 @@ export function MigrationSyncCard({
 
   const running = Boolean(sync?.runningJobId);
   const result = sync?.lastResult ?? null;
-  const showWebhook =
-    canManage && sync && sync.status !== 'stopped' && webhookUrl;
+  const webhookVisible = Boolean(
+    canManage && sync && sync.status !== 'stopped',
+  );
+  const showWebhook = webhookVisible && webhookUrl;
 
   return (
     <>
@@ -169,6 +177,29 @@ export function MigrationSyncCard({
                   <Copy className="size-4" />
                 )}
                 {isCopied ? 'Copied' : 'Copy'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void rotateWebhook()}
+                disabled={busy}
+              >
+                Rotate link
+              </Button>
+            </div>
+          )}
+
+          {webhookVisible && !webhookUrl && webhookUnreadable && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void rotateWebhook()}
+                disabled={busy}
+              >
+                Rotate link
               </Button>
             </div>
           )}

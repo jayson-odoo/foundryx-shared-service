@@ -21,12 +21,37 @@ export interface UseMigrationSyncResult {
   busy: boolean;
   /** Full webhook URL; only fetched for `canManage`. */
   webhookUrl: string | null;
+  /** The stored webhook link cannot be read; rotating it fixes that. */
+  webhookUnreadable: boolean;
   start: () => Promise<void>;
   act: (action: MigrationSyncAction) => Promise<void>;
+  rotateWebhook: () => Promise<void>;
 }
 
-function messageOf(err: unknown, fallback: string): string {
-  return err instanceof ApiError && err.message ? err.message : fallback;
+/** Plain copy for the 409 reasons the sync routes answer. */
+const REASON_COPY: Record<string, string> = {
+  tick_running: 'A sync is already running. Try again when it finishes.',
+  sync_exists: 'A sync already exists for this workspace.',
+  no_finished_migration: 'Finish a migration for this workspace first.',
+  webhook_unreadable: 'The webhook link could not be read.',
+  migration_in_progress: 'A migration is running for this workspace.',
+  not_active: 'This sync is not active.',
+  not_paused: 'This sync is not paused.',
+};
+
+export function syncErrorCopy(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    const detail = err.detail as { reason?: unknown } | null | undefined;
+    const reason = typeof detail?.reason === 'string' ? detail.reason : null;
+    if (reason && REASON_COPY[reason]) return REASON_COPY[reason];
+    if (err.status === 409) return fallback;
+    if (err.message) return err.message;
+  }
+  return fallback;
+}
+
+function nextWait(item: MigrationSyncItem | null): number {
+  return item?.runningJobId ? SYNC_POLL_RUNNING_MS : SYNC_POLL_IDLE_MS;
 }
 
 export function useMigrationSync(
@@ -37,7 +62,9 @@ export function useMigrationSync(
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
+  const [webhookUnreadable, setWebhookUnreadable] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generation = useRef(0);
   const alive = useRef(true);
 
   const load = useCallback(async (): Promise<MigrationSyncItem | null> => {
@@ -51,46 +78,37 @@ export function useMigrationSync(
     } catch (err) {
       if (alive.current) {
         setLoaded(true);
-        toast.error(messageOf(err, 'Could not load the sync status.'));
+        toast.error(syncErrorCopy(err, 'Could not load the sync status.'));
       }
       return null;
     }
   }, [workspaceId]);
 
-  // Poll loop: 5 s while a tick runs, else 30 s. Re-armed after every load.
-  useEffect(() => {
-    alive.current = true;
-    const loop = async () => {
-      const item = await load();
-      if (!alive.current) return;
-      const wait = item?.runningJobId
-        ? SYNC_POLL_RUNNING_MS
-        : SYNC_POLL_IDLE_MS;
-      timer.current = setTimeout(loop, wait);
-    };
-    void loop();
-    return () => {
-      alive.current = false;
+  // ONE poll chain: scheduling always clears the previous timer and bumps a
+  // generation, so a late-resolving load of an older chain can never re-arm.
+  const schedule = useCallback(
+    (delay: number) => {
       if (timer.current) clearTimeout(timer.current);
-    };
-  }, [load]);
-
-  // After an action the poll cadence may need to change: restart the loop.
-  const restartPoll = useCallback(
-    (item: MigrationSyncItem) => {
-      if (timer.current) clearTimeout(timer.current);
-      const wait = item.runningJobId ? SYNC_POLL_RUNNING_MS : SYNC_POLL_IDLE_MS;
-      timer.current = setTimeout(async function again() {
-        const next = await load();
-        if (!alive.current) return;
-        timer.current = setTimeout(
-          again,
-          next?.runningJobId ? SYNC_POLL_RUNNING_MS : SYNC_POLL_IDLE_MS,
-        );
-      }, wait);
+      const gen = ++generation.current;
+      timer.current = setTimeout(async () => {
+        if (gen !== generation.current) return;
+        const item = await load();
+        if (!alive.current || gen !== generation.current) return;
+        schedule(nextWait(item));
+      }, delay);
     },
     [load],
   );
+
+  useEffect(() => {
+    alive.current = true;
+    schedule(0);
+    return () => {
+      alive.current = false;
+      generation.current += 1;
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [schedule]);
 
   const syncId = sync?.id ?? null;
   const showsWebhook =
@@ -98,16 +116,25 @@ export function useMigrationSync(
   useEffect(() => {
     if (!showsWebhook || !syncId) {
       setWebhookUrl(null);
+      setWebhookUnreadable(false);
       return;
     }
     let cancelled = false;
     respondioMigrationService
       .getSyncWebhook(syncId)
       .then((w) => {
-        if (!cancelled) setWebhookUrl(w.url);
+        if (cancelled) return;
+        setWebhookUrl(w.url);
+        setWebhookUnreadable(false);
       })
-      .catch(() => {
-        if (!cancelled) setWebhookUrl(null);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setWebhookUrl(null);
+        const detail =
+          err instanceof ApiError
+            ? (err.detail as { reason?: unknown } | null)
+            : null;
+        setWebhookUnreadable(detail?.reason === 'webhook_unreadable');
       });
     return () => {
       cancelled = true;
@@ -121,15 +148,15 @@ export function useMigrationSync(
         const item = await call();
         if (alive.current) {
           setSync(item);
-          restartPoll(item);
+          schedule(nextWait(item));
         }
       } catch (err) {
-        toast.error(messageOf(err, failure));
+        toast.error(syncErrorCopy(err, failure));
       } finally {
         if (alive.current) setBusy(false);
       }
     },
-    [restartPoll],
+    [schedule],
   );
 
   const start = useCallback(
@@ -152,5 +179,30 @@ export function useMigrationSync(
     [run, syncId],
   );
 
-  return { sync, loaded, busy, webhookUrl, start, act };
+  const rotateWebhook = useCallback(async () => {
+    if (!syncId) return;
+    setBusy(true);
+    try {
+      const w = await respondioMigrationService.rotateSyncWebhook(syncId);
+      if (alive.current) {
+        setWebhookUrl(w.url);
+        setWebhookUnreadable(false);
+      }
+    } catch (err) {
+      toast.error(syncErrorCopy(err, 'Could not rotate the link.'));
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  }, [syncId]);
+
+  return {
+    sync,
+    loaded,
+    busy,
+    webhookUrl,
+    webhookUnreadable,
+    start,
+    act,
+    rotateWebhook,
+  };
 }
