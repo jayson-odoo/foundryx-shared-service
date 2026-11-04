@@ -39,6 +39,24 @@ class ContactNotFound(Exception):
     """No such contact in this tenant and workspace (a uniform 404)."""
 
 
+@dataclass(frozen=True)
+class EraseActor:
+    """Who erases (plan 58): a staff user or a workspace API key. Required on
+    every erase so no path can skip the register row."""
+
+    kind: str
+    user_id: Optional[str] = None
+    api_key_id: Optional[str] = None
+
+    @classmethod
+    def staff(cls, user_id: str) -> "EraseActor":
+        return cls(kind="staff", user_id=user_id)
+
+    @classmethod
+    def api_key(cls, key_id: str) -> "EraseActor":
+        return cls(kind="api_key", api_key_id=key_id)
+
+
 @dataclass
 class EraseResult:
     contact_id: str
@@ -81,21 +99,28 @@ class ContactEraseService:
         self.db = db
         self.repo = ContactEraseRepository(db)
 
-    def erase_in_tenant(self, tenant_id: str, contact_id: str) -> EraseResult:
+    def erase_in_tenant(self, tenant_id: str, contact_id: str, *, actor: EraseActor) -> EraseResult:
         """Staff path: the contact is resolved by tenant, its own workspace is
         then used for every workspace-scoped step."""
         contact = self.repo.get_contact_in_tenant(contact_id, tenant_id)
         if contact is None:
             raise ContactNotFound()
-        return self.erase(tenant_id, contact.workspace_id, contact.id)
+        return self.erase(tenant_id, contact.workspace_id, contact.id, actor=actor)
 
-    def erase(self, tenant_id: str, workspace_id: str, contact_id: str) -> EraseResult:
+    def erase(
+        self, tenant_id: str, workspace_id: str, contact_id: str, *, actor: EraseActor
+    ) -> EraseResult:
         contact = self.repo.get_contact(contact_id, tenant_id, workspace_id)
         if contact is None:
             raise ContactNotFound()
         erased_at = datetime.now(timezone.utc)
         try:
             messages, keys, channel_ids = self._erase_rows(tenant_id, workspace_id, contact_id)
+            self.repo.add_erasure(
+                tenant_id=tenant_id, workspace_id=workspace_id, contact_id=contact_id,
+                actor_kind=actor.kind, actor_user_id=actor.user_id, api_key_id=actor.api_key_id,
+                messages=messages, files=len(keys), erased_at=erased_at,
+            )
             self.db.commit()
         except Exception:
             self.db.rollback()

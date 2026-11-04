@@ -345,16 +345,18 @@ class PublicGatewayService:
             return ApiError(422, "channel_not_available_for_contact", exc.message)
         return ApiError(422, default_code, exc.message)
 
-    def erase_contact(self, tenant_id: str, workspace_id: str, identifier: str):
+    def erase_contact(self, tenant_id: str, workspace_id: str, identifier: str, *, api_key_id: str):
         """API-key erase of one contact in the key's own workspace (plan 56 C).
         A miss, a foreign workspace/tenant and a second call all answer the
         same 404."""
         from ..schemas import ContactEraseResponse
-        from .contact_erase_service import ContactEraseService, ContactNotFound
+        from .contact_erase_service import ContactEraseService, ContactNotFound, EraseActor
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
         try:
-            result = ContactEraseService(self.db).erase(tenant_id, workspace_id, contact.id)
+            result = ContactEraseService(self.db).erase(
+                tenant_id, workspace_id, contact.id, actor=EraseActor.api_key(api_key_id)
+            )
         except ContactNotFound as exc:
             raise ApiError(404, "contact_not_found", "Contact not found for this workspace.") from exc
         return ContactEraseResponse(

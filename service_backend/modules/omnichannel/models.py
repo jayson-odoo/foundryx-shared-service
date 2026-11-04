@@ -10,6 +10,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     ForeignKey,
     Index,
@@ -1053,6 +1054,36 @@ class MigrationSyncHint(OmniBase):
 
     __table_args__ = (
         UniqueConstraint("sync_id", "external_contact_id", name="uq_migration_sync_hints_contact"),
+    )
+
+
+class ContactErasure(OmniBase):
+    """One row per erased contact (plan 58): who erased, when, which contact id
+    in which workspace, and how many messages and files went. Ids and counts
+    only, never personal data. No foreign key to contacts or workspaces: the
+    row outlives the contact. Removed only with the tenant's module data."""
+
+    __tablename__ = "contact_erasures"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    workspace_id = Column(String, nullable=False)
+    contact_id = Column(String, nullable=False)
+    actor_kind = Column(String, nullable=False)  # staff | api_key
+    actor_user_id = Column(String, nullable=True)
+    api_key_id = Column(String, nullable=True)
+    messages = Column(Integer, nullable=False)
+    files = Column(Integer, nullable=False)
+    erased_at = Column(UTCDateTime(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(actor_kind = 'staff' AND actor_user_id IS NOT NULL AND api_key_id IS NULL)"
+            " OR (actor_kind = 'api_key' AND api_key_id IS NOT NULL AND actor_user_id IS NULL)",
+            name="ck_contact_erasures_actor",
+        ),
+        Index("ix_contact_erasures_tenant_erased", "tenant_id", "erased_at"),
+        Index("ix_contact_erasures_tenant_contact", "tenant_id", "contact_id"),
     )
 
 
