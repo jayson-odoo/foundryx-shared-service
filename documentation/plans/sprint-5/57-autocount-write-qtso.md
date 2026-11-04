@@ -1,7 +1,7 @@
 # 57 - AutoCount write-back phase 2: Quotation and Sales Order create, edit, cancel
 
-Lane AC-WRITE-QTSO, size L, LEAD pattern. Status: STEP 1 (study + behaviour card). No write call made
-yet. Builds on plan 55 (phase 1, PR #183: `service_backend/modules/autocount/write_back/`). UAC
+Lane AC-WRITE-QTSO, size L, LEAD pattern. Status: card 1 answered (4 Nov), db3 probes recorded, design below.
+Rescoped by the owner (4 Nov 17:35) from QT / SO only to the whole SS AutoCount write layer. Builds on plan 55 (phase 1, PR #183: `service_backend/modules/autocount/write_back/`). UAC
 (`57-autocount-write-qtso-acceptance-criteria.md`) is written after the owner answers the card.
 
 Owner rules carried from phase 1 (4 Nov): writes reach `db3` only (code guard `write_back/guard.py:15`);
@@ -53,28 +53,145 @@ Known behaviour (phase 1 test report `documentation/integrations/autocount/test-
   (`project_so_adoption_service.py:390`). No cancel action (DELETE refuses published, `:386`).
 - CRM -> SS client: `app/services/foundryx_autocount_client.py` (X-API-Key, read-only routes today).
 
-## 3. Use cases (to confirm on the card)
 
-- UC-6 Create QT: POST `/NewQuotation` -> read back by DocDate (filter DocKey) -> return DocKey / DocNo /
-  DtlKeys.
-- UC-7 Edit QT: PUT `/EditQuotationbydockey`, full header + rows by DtlKey (0 adds).
-- UC-8 Cancel QT: PUT `/EditQuotationbydockey` header `Cancelled "T"` IF the db3 probe shows it applies;
-  else capability flag off, refused `VENDOR_UNSUPPORTED`, AutoCount question.
-- UC-9 Create SO: POST `/NewSalesOrder`, rows optionally `FromDocType "QT"` + QT DtlKey.
-- UC-10 Edit SO: PUT `/EditSalesOrderbydockey` IF the db3 probe shows the door exists and applies.
-- UC-11 Cancel SO: as UC-8 on the SO door.
-- Never: delete; uncancel unless the owner asks.
+## 3. Owner rulings (card 1, 4 Nov)
 
-## 4. db3 probes (before any code; each recorded exactly)
+Q1 (a) SS only in this lane; CRM buttons and trigger points belong to later CRM lanes' cards. Q2 (owner
+to confirm) build rec (a): fully received `ROW_RECEIVED`; partially received = cut the row to the
+received qty and add the open remainder as the new row; unknown received qty `TRANSFER_STATE_UNKNOWN`;
+(b) "refuse any receipt" kept as a one-line switch. Q3 (a) old -> new DtlKey in the answer AND
+`replacesLineRef` on the Sorento sink line. Q4 (a) delete-document primitive flag-off, no route or
+operation uses it; cancel is the only way a document ends. Q5 (a) `needs_attention` + snapshot +
+alert email naming the line + a resume that re-reads AutoCount and re-creates only if still absent.
 
-Only on documents this lane creates (DocNo prefix `FXT-`), never on AutoCount's test set.
-P-QT1 create QT full body; P-QT2 edit header fields + one row price/qty + add a row; P-QT3 PUT a row
-not listed (kept?) and qty 0 (accepted?); P-QT4 `Cancelled "T"` on the edit PUT; P-SO1 PUT
-`/EditSalesOrderbydockey` (exists?); P-SO2 SO edit header + row; P-SO3 `Cancelled "T"` on the SO;
-P-SO4 cancel an SO whose row a PO links to (refused?); P-DOC DocNo omitted / `<<New>>` (AutoCount
-numbering?).
+## 4. db3 probes (4 Nov, 15 writes, all recorded exact in crew files `autocount-api/db3-requests-qtso-4nov.json`)
 
-## 5. Steps
+| Probe | Call | Result |
+|---|---|---|
+| P-QT1 | POST /NewQuotation FXT-1104q-QT1 | 200, DocKey 12060, rows 12061 (HQ) / 12062 (BRW-AM) as sent; GET shows `Cancelled F`, `DocStatus A`, `ToDocType ""` |
+| P-QT2 | PUT /EditQuotationbydockey | 200, ALL applied: Ref / Description / Remark1, qty, unit price, discount "5%", location, new `DtlKey 0` row 12063 |
+| P-QT3 | PUT one row Qty 0 (FXT-1104q-QT4, 12064) | 200, Qty 0 stored; omitted row kept |
+| P-DOC1b | POST DocNo omitted | 500 "Column 'DocNo' does not allow nulls" |
+| P-DOC2 | POST DocNo `"<<New>>"` | 200, answer text `DocNo=QT-000001 ,DocKey=12069 ... Created Successful.` |
+| P-DOC1 | POST (script bug: template DocNo) | created a QUOTATION numbered SO390188 (DocKey 12067); clean-up asked of AutoCount (AQ34); the real SO390188 untouched |
+| P-SO0 | POST /NewSalesOrder FXT-1104q-SO1 from QT row 12061 (vendor shape incl. FullTransfer*) | 200, DocKey 12072; row `FromDocType QT`, `FromDocNo` kept, `FromDocDtlKey 0`; QT shows no back-link (AQ31) |
+| P-SO1 | PUT /EditSalesOrderbydockey | door EXISTS: 200, qty / price / discount applied, new row 12075 |
+| P-CX1..3 | header `Cancelled "T"` / "F" on both edit doors (FXT-1104q-QT3 12076, FXT-1104q-SO2 12078) | 200, nothing changes (AQ2, AQ32) |
 
-Card (crew `--ask`) -> owner answers -> UAC + section 6 design -> db3 probes -> tester red tests ->
-coder -> reviewer + security-reviewer -> live db3 suite -> test report + AutoCount questions -> PR.
+The POST answer text carries the new DocNo and DocKey, so create read-back is by DocKey.
+
+## 5. Design
+
+Two levels. The CRM picks WHICH operation (business intent); SS owns HOW (steps, guards, recovery).
+Everything stays in `service_backend/modules/autocount/write_back/`.
+
+### 5.1 Kinds, capabilities, client
+
+- `doc_kinds.py`: one frozen `DocKind` per kind `QT`, `SO`, `PO`, `SPO` (SPO = PO doors + header
+  `ShippingPO "T"`): `new_path`, `edit_path`, `by_date_path`, `by_modified_path`, `party_field`
+  (`DebtorCode` / `CreditorCode`), `delete_line` and `delete_doc` vendor shapes. The delete shapes are
+  ONE placeholder entry per kind (method `DELETE`, path `/Delete<Doc>Detailbydtlkey` /
+  `/Delete<Doc>bydockey`, body `{DocKey, DtlKey}`), marked UNVERIFIED (AQ23): plugging AutoCount's real
+  shape in = edit this one table.
+- `capabilities.py`: `CAPABILITIES[(kind, primitive)]` for primitives `create_doc`, `edit_doc`,
+  `add_line`, `delete_line`, `delete_doc`, `cancel_doc`; `capable(kind, primitive)` reads the module
+  table at call time. Shipped: create / edit / add on for QT, SO, PO; SPO edit on, SPO create / add off;
+  delete_line, delete_doc, cancel_doc off everywhere. `AUTO_DOCNO = True` (`"<<New>>"`),
+  `PARTIAL_RECEIPT_SPLIT = True` (Q2 switch). Plan 55 `link_new_row` stays; `link_existing_row`,
+  `unlink`, `spo_unlink`, `ZERO_QTY_EMULATION` retire (AutoCount: a link never changes in place), their
+  routes now run the operations below.
+- `client.py`: `delete(path, body)` beside `post` / `put`; same guard per request, same no-retry rule.
+
+### 5.2 Primitives (level 1)
+
+`payloads.py` gains pure builders returning `VendorRequest(method, path, body)` or raising
+`WriteRefusal(code)`: `build_create(kind, header, lines)`, `build_edit(kind, doc, header_changes,
+line_changes)`, `build_add_line(kind, doc, line)`, `build_delete_line(kind, doc, dtl_key)`,
+`build_delete_doc(kind, doc)`, `build_cancel(kind, doc)`; plus `parse_create_answer(text) -> (doc_no,
+doc_key) | None` and verifiers `verify_create`, `verify_edit` (returns the ignored fields),
+`verify_delete_line`, `verify_cancel`. Header allowlist and line field list as AC-57-14.
+
+`primitives.py`: `PrimitiveService(db, tenant_id, company)` with `create_doc`, `edit_doc`, `add_line`,
+`delete_line`, `delete_doc`, `cancel_doc`. Each = the plan 55 frame generalised from the PO door to the
+kind table (`service.py:327-675`): guard -> capability -> busy -> fresh GET (reader extended to QT) ->
+stale (`DOC_STALE`) -> guards (AC-57-18) -> build -> commit the action row -> ONE vendor call -> GET back
+-> verify -> finish -> stage + push (PO / SPO / SO; QT answered only). Transfer facts for the guards:
+SO rows linked by PO rows = staged PO rows' `FromSODtlKey` (`service.py:603`); delivered / received qty
+= AutoCount `TransferedQty`, which the hapi GET does not return (AQ11) and which only SQL-sourced
+companies stage (`presets.py:275,439,509`), so for hapi documents it is UNKNOWN.
+
+### 5.3 Operations (level 2)
+
+`operations.py`: `OperationService.run(op, params, idempotency_key, key_id)`; ops `link_row`,
+`unlink_row`, `relink_row` (PO rows -> SO rows), `spo_link_row`, `spo_unlink_row`, `spo_relink_row`
+(SPO rows -> PO rows), and plan 55 `split_link` wrapped with an idempotency key. One step table per op:
+
+1. guards (AC-57-32, AC-57-33), all before any write;
+2. snapshot = the row from the fresh GET (every field) + document LastModified, stored on the operation;
+3. `delete_line` (primitive) -> read-back shows it gone;
+4. `add_line` with the snapshot fields + the new link (or none) -> exactly one new row;
+5. location move when the read-back location differs (db3 forces HQ on a new linked row).
+
+Partially received (switch on): step 3 becomes an `edit_doc` cutting the row to the received qty, and
+step 4 adds the remainder (no delete needed). Recovery when step 4 fails after step 3 landed: add the
+snapshot back with its old link (+ move) -> `recovered`; when that fails too -> `needs_attention`, alert
+mail via `alerts.alert_recipients` (`alerts.py:400`) + outbox `enqueue_raw` (`alerts.py:550`) naming the
+line, no retry. `resume(operation_id)` re-reads AutoCount and re-creates only if neither the snapshot row
+nor the intended new row is present. Answer: `{operationId, outcome, errorCode, warnings,
+replacedLines: [{oldDtlKey, newDtlKey}], document}`.
+
+### 5.4 Schema (module migration `0040_autocount_write_ops`, schema `app_autocount`)
+
+- `ac_write_operation`: id (uuid), tenant_id, company_id, key_id, idempotency_key, request_hash, op,
+  doc_type, doc_key, dtl_key, status (`in_progress`, `done`, `refused`, `recovered`, `needs_attention`,
+  `pending_verification`), error_code, snapshot_json, steps_json, result_json, created_at, updated_at
+  (UTCDateTime). Unique (tenant_id, company_id, key_id, idempotency_key); partial unique one
+  `in_progress` per (company_id, doc_type, doc_key) = the cross-step busy lock.
+- `ac_write_action` + `operation_id` (nullable), `step` (nullable), `request_method`, `request_path`.
+  Existing rows keep nulls (no backfill needed: nullable, read as plan 55 actions).
+
+### 5.5 Sink
+
+Canonical PO / SPO / SO lines gain optional `replaces_line_ref` (`{db}:{DocKey}:{DtlKey}` of the deleted
+row), injected in `_premap_line` (`doc_mapping.py:126-138`) from the operation's replaced map, mapped in
+the WRAPPER_* presets (`presets.py:1824-1840`), in `OMIT_WHEN_EMPTY_FIELDS`, and sent only when the
+connection's advertised contract is >= `REPLACES_LINE_REF_CONTRACT_VERSION = ContractVersion(2, 12)`
+(Sorento ingest uses `extra="forbid"`; CRM is at 2.11, `external/ingest.py:344`). The 2.12 number is
+claimed here; renumber if another lane lands one first. Sorento consumption = a later CRM lane.
+
+### 5.6 Gateway (`routers/pull_v1.py`, X-API-Key `write_back` scope)
+
+`POST /documents/{kind}` create, `PATCH /documents/{kind}/{docKey}` edit, `POST
+/documents/{kind}/{docKey}/lines` add line, `DELETE /documents/{kind}/{docKey}/lines/{dtlKey}` delete
+line, `POST /documents/{kind}/{docKey}/cancel` cancel (`kind` in `quotations`, `sales-orders`,
+`purchase-orders`, `shipping-purchase-orders`); `POST /po-links/relink`, `POST /spo-links`,
+`POST /spo-links/relink`; existing `/po-links`, `/po-links/unlink`, `/spo-links/unlink` run the
+operations; `GET /write-operations/{id}`, `POST /write-operations/{id}/resume`. No delete-document
+route. Contract doc `57-autocount-write-qtso-contract.md` (guide-writer after review).
+
+### 5.7 Fake vendor and runner
+
+`tests/autocount_write_back/fake_vendor.py` (test helper): an httpx MockTransport holding documents in
+memory, honouring the known db3 behaviour (link only on new rows, forced HQ on new linked rows, omitted
+rows kept, ignored link edits, `Cancelled` ignored, POST answer text) and the placeholder delete shape.
+Every operation test runs against it. `runner.py` gains QT / SO cases; delete / cancel cases assert the
+refusal with no HTTP until their flags flip.
+
+Readiness note: turning delete on needs the flag flip + one live db3 run, AND AutoCount's
+`TransferedQty` on the GET (AQ11): without it every row's received qty on a hapi document is unknown and
+the operations refuse `TRANSFER_STATE_UNKNOWN` by rule (Q2).
+
+## 6. Slices (LEAD: tester red first, one coder continued by message, reviewer + security-reviewer)
+
+| Slice | Scope | ACs |
+|---|---|---|
+| S1 | kinds, capabilities, client DELETE | AC-57-01..05 |
+| S2 | pure builders, answer parser, verifiers | AC-57-10..18 (builder side) |
+| S3 | migration 0040, QT reader, primitive service, exact action recording | AC-57-10..19 (flow), 73 |
+| S4 | operations, idempotency, recovery, needs_attention, resume, receipt rule, fake vendor | AC-57-30..40, 71 |
+| S5 | sink `replacesLineRef` + contract gate | AC-57-50..52 |
+| S6 | gateway routes + contract doc | AC-57-60..63 |
+| S7 | db3 runner + test report | AC-57-70, 72 |
+
+Local resources: targeted pytest only, `-n 2` max; global guards `tests/test_schema_uuid_id_principle.py`
+and `tests/test_list_pagination_limit.py` if present (plan 55 found them absent).

@@ -95,3 +95,21 @@ right link (or none). We are building our side now so that your delete API plugs
     test FXT-1104d-1 row 12046), so today a link needs a second edit to move it. Can the add keep the
     location we send?
 30. Deleting the last row of a document, or a row of a cancelled document: allowed or refused?
+
+## Found in our Quotation / Sales Order run (4 Nov 2026, db3)
+
+31. Sales Order from a Quotation row: `POST /NewSalesOrder` FXT-1104q-SO1 (DocKey 12072) sent the row with
+    `FromDocType "QT"`, `FromDocNo "FXT-1104q-QT1"`, `FromDocDtlKey 12061`, `FullTransferOption " "`,
+    `FullTransferFromDocList ""` (qty 1 of the quotation row's 2). The SO row reads back `FromDocDtlKey 0`
+    and the quotation shows `ToDocType ""`, `ToDocKey 0` on the header and every row. Your SO390188 left
+    QT-004193 with `ToDocType SO`. Is a partial transfer from a quotation row supported, and which field
+    shows the quotation row's transferred quantity?
+32. Cancel: `Cancelled "T"` in the header of `PUT /EditQuotationbydockey` (FXT-1104q-QT3, DocKey 12076) and
+    `PUT /EditSalesOrderbydockey` (FXT-1104q-SO2, DocKey 12078) answer 200 and change nothing (`Cancelled`
+    reads back "F"). Please add a cancel (and un-cancel) door, or say which field the edit door honours (AQ2).
+33. `PUT /EditSalesOrderbydockey` exists and applied qty, unit price, discount and a new `DtlKey 0` row on
+    FXT-1104q-SO1. Please confirm it is supported (it is not in your notes).
+34. Clean-up on db3: please cancel our test documents FXT-1104q-* and the quotation numbered `SO390188`
+    (DocKey 12067, Ref `P-DOC1-FXT1104q`), which our probe created by mistake with a wrong DocNo, and
+    quotation QT-000001 (DocKey 12069, Ref `P-DOC2-FXT1104q`, our test of `DocNo "<<New>>"`). We cannot
+    cancel through the API today and never delete. Your sales order SO390188 was not touched.
