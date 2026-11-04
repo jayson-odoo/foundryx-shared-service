@@ -146,6 +146,18 @@ refuse (link a second PO row). Q3 an unlinked split row stays its own row, no me
 link change on a PO row an SPO row points at until the SPO row is unlinked explicitly. Q5 gateway
 routes + scripted db3 runner + test report; no SS screen; CRM Stock Debt is the entry (later lane).
 
+## 6a-2. Vendor reality on db3 and owner rulings (card 2, 4 Nov)
+
+Live runs (test report `documentation/integrations/autocount/test-report-2026-11-04.md`): link works only
+on a NEW row (DtlKey 0), and AutoCount forces that row to HQ; a second PUT that moves the linked row's
+location keeps the link (probe P4). Linking an existing row, unlink, and SPO transfer are not honoured
+(200 with no change, or 400 for SPO). Rulings:
+- Q1 (a): capability gate in code. Split-link (2 writes) is on; link-in-place, unlink and SPO unlink are
+  refused `VENDOR_UNSUPPORTED` before any write. Enabling one later = flip its flag + rerun the db3 suite.
+- Q2: build (a) refuse whole-row links for now; keep (b) zero-qty emulation as a switch, default off.
+- Q3 (a): if the location move fails after the link landed, the outcome is `done` with warning
+  `LOCATION_NOT_MOVED`; the user retries the move (relocate action), the link stays.
+
 ## 6b. Design (phase 1)
 
 New package `service_backend/modules/autocount/write_back/`:
