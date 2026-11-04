@@ -940,3 +940,25 @@ def test_sync_crew3_stop_final_tick_runs_a_full_sweep(client, session_factory, m
     bodies = [m.body for m in w.messages_of(w.contact_by_cid(910001))]
     assert bodies.count("last words before cutover") == 1
     assert get_sync(client, h, sid)["status"] == "stopped"
+
+
+def test_sync_contact_walk_sends_respondio_required_search_and_filter(client, session_factory, monkeypatch):
+    """#182/#184: respond.io's POST /contact/list rejects a body without
+    `search` and `filter`. Every list call the sync tick makes (poll, full
+    sweep, final) must carry `search: ""` and a `filter` object."""
+    w, h, sid = _ready(client, session_factory, monkeypatch)
+    w.fake.contact_list_bodies.clear()
+
+    make_due(w.db, sid, full_sweep="due")
+    run_due_syncs(w.db)
+    res = client.post(f"{SYNCS}/{sid}/stop", headers=h)
+    assert res.status_code == 200, res.text
+    run_due_syncs(w.db)
+
+    bodies = w.fake.contact_list_bodies
+    assert len(bodies) >= 2, "the poll and the final tick both walk the contact list"
+    for body in bodies:
+        assert isinstance(body, dict)
+        assert body.get("search") == ""
+        assert isinstance(body.get("filter"), dict)
+        assert "timezone" in body

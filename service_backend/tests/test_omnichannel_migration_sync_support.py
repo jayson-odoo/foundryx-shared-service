@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+import json
 import httpx
 
 from app.models import DEFAULT_TENANT_ID
@@ -90,6 +91,9 @@ class FakeRespondIo:
         self.channels: Dict[int, List[Dict[str, Any]]] = {}
         self.custom_fields: List[Dict[str, Any]] = []
         self.calls: List[tuple] = []
+        # JSON bodies of POST /contact/list, in order (respond.io's required
+        # `search` + `filter` keys, #182/#184).
+        self.contact_list_bodies: List[Any] = []
         self.fail_all: Optional[int] = None
         self.fail_paths: Dict[str, int] = {}
         self.rate_limited = False
@@ -164,6 +168,11 @@ class FakeRespondIo:
         path = request.url.path
         method = request.method
         self.calls.append((method, path))
+        if method == "POST" and path.endswith("/contact/list"):
+            try:
+                self.contact_list_bodies.append(json.loads(request.content or b"null"))
+            except ValueError:
+                self.contact_list_bodies.append(None)
         for hook in list(self.hooks):
             hook(method, path)
         if path.endswith("/message/list"):
