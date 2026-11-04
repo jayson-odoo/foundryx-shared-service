@@ -145,6 +145,10 @@ cancelled. Every later run appends to this table.
 | FXT-1104d-1 | PO | 12042 | P2-2 (documented shape, control; clean pair) | 15:54:03 | PUT /EditPurchaseOrderbydockey | 200 | no change | 12043 SRTKT38SS 35 HQ 0; 12044 SRTKT38SS 10 HQ 0; 12046 SRTKT38SS 10 BRW-AM 12039; 12048 SRTKT38SS 5 BRW-AM 12040 | TEST DOC |
 | FXT-1104d-1 | PO | 12042 | P10a (full body link, clean pair) | 16:09:17 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12044 stays unlinked; rows 12046 and 12048 keep their links) | 12043 SRTKT38SS 35 HQ 0; 12044 SRTKT38SS 10 HQ 0; 12046 SRTKT38SS 10 BRW-AM 12039; 12048 SRTKT38SS 5 BRW-AM 12040 | TEST DOC |
 | FXT-1104d-1 | PO | 12042 | P10b (full body unlink of row 12048) | 16:09:22 | PUT /EditPurchaseOrderbydockey | 200 | no change (row 12048 stays linked to 12040) | same four rows, 4 rows total | TEST DOC |
+| FXT-1104e-SO | SO | 12049 | E01 (cancelled recorded pass, tag 1104e) | 16:30:34 (vendor CreatedTimeStamp 16:30:34.62) | POST /NewSalesOrder | 200 | created | 12050 SRTKT38SS 10 BRW-AM; 12051 10 BRW-AM; 12052 10 BRW-AM (linked from PO row 12059); 12053 9 BRW-AM | TEST DOC |
+| FXT-1104e-1 | PO | 12054 | E02 (cancelled recorded pass) | 16:30:35 (vendor CreatedTimeStamp 16:30:35.327) | POST /NewPurchaseOrder | 200 | created (rows 50, 10, 10 HQ) | see last row for this document | TEST DOC |
+| FXT-1104e-1 | PO | 12054 | E03 to E10 (cancelled pass: link-existing variants of P2, P5.1-3, P7a-c shapes and the P10a full body on row 12056 and SO row 12050) | 16:30:36 to 16:30:5x (per-call times not saved) | PUT /EditPurchaseOrderbydockey | 200 (inferred from script order; the pass was cancelled before its JSON was written) | no change (row 12056 stays unlinked, SO row 12050 uncovered) | | TEST DOC |
+| FXT-1104e-1 | PO | 12054 | E11 and E12 (cancelled pass: 2-write split of the 50 row, 10 to SO row 12052) | up to 16:30:58 (vendor LastModified 16:30:58.89) | PUT /EditPurchaseOrderbydockey x2 | 200 | applied (split: new row 12059 linked to 12052, then moved to BRW-AM) | 12055 SRTKT38SS 40 HQ 0; 12056 SRTKT38SS 10 HQ 0; 12057 SRTKT38SS 10 HQ 0; 12059 SRTKT38SS 10 BRW-AM 12052 | TEST DOC |
 Notes:
 
 - FXT-PROBE-1 shows a blank creditor name because our probe body sent only `CreditorCode` (400-N004) and no
@@ -152,7 +156,8 @@ Notes:
   from an existing PO (FXT-1104b-1) carry the creditor name.
 - Vendor cross-check of today's documents: FXT-PROBE-1 created 15:05:15.107; FXT-1104b-1 created 15:11:16.477,
   last modified 15:14:46.297; 202602-S0007 (created by AutoCount earlier, 13:39:22.89) last modified 15:13:25.337.
-- Left in place as test evidence: FXT-PROBE-1, FXT-1104b-1, FXT-1104b-S3 (empty), FXT-1104c-1, FXT-1104d-SO and FXT-1104d-1. No SPO exists.
+- The 1104e recorded pass was cancelled by the owner while running; its calls from E13 on (unlink shapes and the SPO create shapes) may or may not have been sent before it was stopped: no document shows an effect (row 12059 is still linked, no FXT-1104e SPO exists). No per-call recording was kept.
+- Left in place as test evidence: FXT-PROBE-1, FXT-1104b-1, FXT-1104b-S3 (empty), FXT-1104c-1, FXT-1104d-SO, FXT-1104d-1, FXT-1104e-SO and FXT-1104e-1. No SPO exists.
 
 ## Run 3b (self-contained suite, card 2 code)
 
