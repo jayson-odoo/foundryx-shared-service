@@ -55,11 +55,12 @@ def test_idempotency_store_falls_back_to_memory_when_redis_times_out(monkeypatch
 
     store = IdempotencyStore()
     monkeypatch.setattr(store, "_client", lambda: _Broken())
-    assert store.reserve("ws-t", "key-1") is None  # claimed in memory
-    assert store.reserve("ws-t", "key-1") is not None  # second claim sees it
-    store.finalize("ws-t", "key-1", "msg-1")
+    first = store.reserve("ws-t", "key-1")
+    assert first.existing is None  # claimed in memory
+    assert store.reserve("ws-t", "key-1").existing is not None  # second claim sees it
+    store.finalize("ws-t", "key-1", "msg-1", first.token)
     assert store.lookup("ws-t", "key-1") == "msg-1"
-    store.release("ws-t", "key-2")  # no exception
+    store.release("ws-t", "key-2", "")  # no exception
 
 
 # ── ops liveness ─────────────────────────────────────────────────────────────
