@@ -58,7 +58,7 @@ def _rows(session_factory):
         db.close()
 
 
-def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None, propagate=False):
+def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None, propagate=False, root_path="", start_msgs=None):
     """Drive the app with a lazily produced body of `total` bytes in `chunk`
     pieces. `declared` is the Content-Length header (None = chunked, no header).
     Returns (status, json body or None, bytes the app pulled)."""
@@ -71,8 +71,8 @@ def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None,
         raw.append((b"content-length", str(declared).encode()))
     scope = {
         "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
-        "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
-        "root_path": "", "headers": raw + [(b"host", b"localhost")],
+        "scheme": "http", "path": root_path + path, "raw_path": (root_path + path).encode(), "query_string": b"",
+        "root_path": root_path, "headers": raw + [(b"host", b"localhost")],
         "client": ("127.0.0.1", 1), "server": ("localhost", 80),
     }
 
@@ -93,6 +93,8 @@ def _asgi(method, path, headers, total, declared=None, chunk=CHUNK, starts=None,
     async def send(msg):
         if msg["type"] == "http.response.start":
             out["status"] = msg["status"]
+            if start_msgs is not None:
+                start_msgs.append(msg)
             if starts is not None:
                 starts.append(msg["status"])
         elif msg["type"] == "http.response.body":
@@ -316,3 +318,94 @@ def test_refused_oversize_request_ends_cleanly_on_the_server(client, session_fac
                               declared=None, starts=starts, propagate=True)
     assert starts == [422], starts
     _assert_stream_refused(st, body, _pulled, CAP + CHUNK)
+
+
+# ── round 2: the multipart limit applies to the send route only ──────────────
+MP_CT = {"Content-Type": "multipart/form-data; boundary=x"}
+
+
+@pytest.mark.parametrize("which", [0, 1, 2, 3])
+def test_multipart_label_on_a_json_route_without_a_key_gets_the_small_cap(client, session_factory, which):
+    _hdr, cid, eid = _rig(client, session_factory, f"+6012000110{which}")
+    method, path = _routes(cid, eid)[which]
+    st, body, pulled = _asgi(method, path, MP_CT, total=2 * 1024 * 1024, declared=None)
+    _assert_stream_refused(st, body, pulled, CAP + CHUNK)
+
+
+@pytest.mark.parametrize("which", [0, 1, 2, 3])
+def test_multipart_label_on_a_json_route_with_a_key_gets_the_small_cap(client, session_factory, which):
+    hdr, cid, eid = _rig(client, session_factory, f"+6012000120{which}")
+    method, path = _routes(cid, eid)[which]
+    before = _rows(session_factory)
+    st, body, pulled = _asgi(method, path, {**hdr, **MP_CT}, total=2 * 1024 * 1024, declared=None)
+    _assert_stream_refused(st, body, pulled, CAP + CHUNK)
+    assert _rows(session_factory) == before
+
+
+def test_refusal_asks_the_server_to_close_the_connection(client, session_factory):
+    hdr, cid, eid = _rig(client, session_factory, "+60120001301")
+    msgs = []
+    st, _body, _p = _asgi("PATCH", f"{BASE}/contacts/{cid}", {**hdr, **JSON_CT},
+                          total=2 * 1024 * 1024, declared=None, start_msgs=msgs)
+    assert st == 422 and len(msgs) == 1
+    names = {k.lower(): v.lower() for k, v in msgs[0]["headers"]}
+    assert names.get(b"connection") == b"close", msgs[0]["headers"]
+
+
+def test_the_cap_holds_when_the_app_is_mounted_under_a_root_path(client, session_factory):
+    hdr, cid, _eid = _rig(client, session_factory, "+60120001401")
+    st, body, pulled = _asgi("PATCH", f"{BASE}/contacts/{cid}", {**hdr, **JSON_CT},
+                             total=2 * 1024 * 1024, declared=None, root_path="/x")
+    _assert_stream_refused(st, body, pulled, CAP + CHUNK)
+
+
+def test_mixed_case_multipart_content_type_is_a_multipart_send(client, session_factory):
+    hdr, payload = _mp_rig(client, session_factory, "+60120001501")
+    boundary = "BoundaryXyz"
+    body = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"payload\"\r\n\r\n{payload}\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\n"
+        f"Content-Type: image/png\r\n\r\n"
+    ).encode() + PNG + f"\r\n--{boundary}--\r\n".encode()
+    r = client.post(f"{BASE}/messages", content=body,
+                    headers={**hdr, "Content-Type": f"Multipart/form-data; boundary={boundary}"})
+    assert r.status_code == 202, r.text
+
+
+def _assert_invalid_multipart(res):
+    assert res.status_code == 422, (res.status_code, res.text[:200])
+    err = res.json()["error"]
+    assert err["code"] == "invalid_request", err
+    assert err["message"] != "The multipart body has too many parts.", err
+    assert "multipart" in err["message"].lower(), err
+
+
+def test_multipart_without_a_boundary_is_an_invalid_multipart_body(client, session_factory):
+    hdr, _payload = _mp_rig(client, session_factory, "+60120001601")
+    r = client.post(f"{BASE}/messages", content=b"junk",
+                    headers={**hdr, "Content-Type": "multipart/form-data"})
+    _assert_invalid_multipart(r)
+
+
+def test_multipart_payload_part_over_the_part_limit_is_an_invalid_multipart_body(client, session_factory):
+    hdr, _payload = _mp_rig(client, session_factory, "+60120001602")
+    big = json.dumps({"to": "+60120001602", "type": "image", "pad": "a" * (1024 * 1024 + 10)})
+    r = client.post(f"{BASE}/messages", headers=hdr, data={"payload": big},
+                    files={"file": ("a.png", PNG, "image/png")})
+    _assert_invalid_multipart(r)
+
+
+def test_refused_streamed_json_body_never_logs_a_500(client, session_factory):
+    from app.models.integration_activity import IntegrationActivity
+
+    hdr, cid, _eid = _rig(client, session_factory, "+60120001701")
+    db = session_factory()
+    seen = {r.id for r in db.query(IntegrationActivity).all()}
+    db.close()
+    st, body, pulled = _asgi("PATCH", f"{BASE}/contacts/{cid}", {**hdr, **JSON_CT},
+                             total=2 * 1024 * 1024, declared=None)
+    _assert_stream_refused(st, body, pulled, CAP + CHUNK)
+    db = session_factory()
+    new = [r for r in db.query(IntegrationActivity).all() if r.id not in seen]
+    db.close()
+    assert [r.status_code for r in new if r.status_code == 500] == [], [r.status_code for r in new]
