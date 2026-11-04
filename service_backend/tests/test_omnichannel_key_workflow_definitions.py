@@ -1081,3 +1081,98 @@ def test_ac_38_135_catalog_shortcut_entity_and_assignee_options(client, session_
     assert err["details"]["nodeId"] == "trg" and err["details"]["field"] == "assigneeUserId"
     assert _counts(session_factory) == before
     assert _post(client, w["hdr1"], doc(mine)).status_code == 201  # control
+
+
+# -- review round 2: the trigger event's workspace, staff test runs included (AC-38-134) ---
+def _recording_transport(monkeypatch):
+    import httpx
+
+    import app.workflow_engine.actions.http_actions as ha
+
+    sent = []
+
+    def handler(request):
+        sent.append(str(request.url))
+        return httpx.Response(200, headers={"content-type": "text/plain"}, text="ok")
+
+    monkeypatch.setattr(ha, "GuardedTransport", lambda *a, **k: httpx.MockTransport(handler))
+    monkeypatch.setattr(ha, "assert_deliverable", lambda url: None)
+    return sent
+
+
+def _http_then_note(w):
+    return (_node("http_1", "http.request", {"method": "GET", "url": "https://api.example.com/ping"}),
+            _node("note_1", "omnichannel.add_comment", {"contactId": w["contact1"], "body": "ok"}))
+
+
+def _node_states(run):
+    return [(n.node_id, n.status) for n in run.nodes if n.status in (NODE_SUCCESS, NODE_RUNNING, NODE_FAILED)]
+
+
+def test_ac_38_134_staff_test_run_with_another_workspace_payload_is_refused(client, session_factory, monkeypatch):
+    from app.models import User
+    from modules.omnichannel.models import Contact
+
+    w = _world(client, session_factory)
+    sent = _recording_transport(monkeypatch)
+    wf_id = _staff_publish(session_factory, _doc(*_http_then_note(w)), "owned test run")
+    _own(session_factory, wf_id, w["ws1"])
+    db = session_factory()
+    try:
+        for cid in (w["contact1"], w["contact2"]):
+            db.get(Contact, cid).csw_expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        db.commit()
+        staff = db.query(User).filter(User.tenant_id == DEFAULT_TENANT_ID).first()
+
+        def test_run(channel, contact):
+            return WorkflowService(db).run(
+                wf_id, DEFAULT_TENANT_ID, inputs={}, is_test=True, actor=staff,
+                test_trigger={"type": "omnichannel.message_received", "channelId": channel,
+                              "contactId": contact, "messageText": "test"})
+
+        refused = test_run(w["ch2"], w["contact2"])  # a payload naming workspace W2
+        assert refused.status == RUN_FAILED, (refused.status, refused.error)
+        assert "record_not_in_workspace" in (refused.error or "")
+        assert _node_states(refused) == []
+        assert sent == [], "nothing was sent"
+
+        ok = test_run(w["ch1"], w["contact1"])  # control: the owner workspace's payload runs
+        assert ok.status == RUN_SUCCESS, (ok.status, ok.error)
+        assert sent == ["https://api.example.com/ping"]
+    finally:
+        db.close()
+
+
+def test_ac_38_134_contact_event_payload_of_another_workspace_is_refused(client, session_factory, monkeypatch):
+    from app.workflow_engine.entity_events import build_event_trigger_payload
+    from app.workflow_engine.executor import run_workflow
+
+    w = _world(client, session_factory)
+    sent = _recording_transport(monkeypatch)
+    doc = _doc(*_http_then_note(w), trigger=_node("trg", "omnichannel.conversation_opened", {}, "trigger"))
+    wf_id = _staff_publish(session_factory, doc, "owned contact event")
+    _own(session_factory, wf_id, w["ws1"])
+
+    def fire(contact_id, ws):
+        ev = {"action": "conversation_opened", "actor": None, "record_id": contact_id, "changes": None,
+              "record_facts": {"record.workspaceId": ws}, "extra": {}}
+        payload = build_event_trigger_payload(ev, trigger_type="omnichannel.conversation_opened", config={})
+        db = session_factory()
+        try:
+            run = WorkflowRun(tenant_id=DEFAULT_TENANT_ID, workflow_id=wf_id, status="pending",
+                              triggered_by="event", definition_snapshot_json=doc, trigger_payload_json=payload)
+            db.add(run)
+            db.commit()
+            done = run_workflow(db, run.id)
+            return done.status, done.error or ""
+        finally:
+            db.close()
+
+    # the payload says W2: refused whether the contact is W2's or (a forged payload) W1's
+    for contact in (w["contact2"], w["contact1"]):
+        refused = fire(contact, w["ws2"])
+        assert refused[0] == RUN_FAILED and "record_not_in_workspace" in refused[1], (contact, refused)
+    assert sent == []
+    ok = fire(w["contact1"], w["ws1"])
+    assert ok[0] == RUN_SUCCESS, ok
+    assert sent == ["https://api.example.com/ping"]

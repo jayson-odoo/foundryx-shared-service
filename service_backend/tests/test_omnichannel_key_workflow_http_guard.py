@@ -417,7 +417,7 @@ def test_ac_38_136_slow_status_line_and_headers_hit_the_deadline(tmp_path, monke
 # -- B7: request header names that change the framing or the route ----------------------
 BAD_HEADER_NAMES = ["Host", "host", "CONNECTION", "Content-Length", "transfer-encoding", "TE", "Upgrade",
                     "Keep-Alive", "TRAILER", "Expect", "Proxy-Authorization", "proxy-connection",
-                    "Proxy-Anything"]
+                    "Proxy-Anything", "Forwarded", "X-Forwarded-Host", "x-original-url", "X-REWRITE-URL"]
 
 
 def _bad_header_doc(name):
@@ -479,7 +479,8 @@ def test_ac_38_136_forbidden_request_header_names_refused_at_save(client, sessio
             db.close()
 
 
-@pytest.mark.parametrize("name", ["Host", "content-length", "Transfer-Encoding", "Proxy-Authorization"])
+@pytest.mark.parametrize("name", ["Host", "content-length", "Transfer-Encoding", "Proxy-Authorization",
+                                  "Forwarded", "x-forwarded-host", "X-Original-URL", "x-rewrite-url"])
 def test_ac_38_136_forbidden_header_name_at_run_fails_the_node_and_connects_nowhere(
     client, session_factory, connect_spy, monkeypatch, name
 ):
@@ -496,3 +497,59 @@ def test_ac_38_136_forbidden_header_name_at_run_fails_the_node_and_connects_nowh
     assert _node(detail, "http_1")["status"] == "failed"
     assert _node(detail, "after_1")["status"] == "skipped"
     assert connect_spy == [], f"a connect was attempted: {connect_spy}"
+
+
+# -- review round 2: the deadline starts at name resolution (AC-38-136) ---------------------
+MANY = "many-addresses.example"
+
+
+def _stalling_connects(monkeypatch):
+    """Every TCP connect records its address and stalls for its own timeout, then times out.
+    Nothing ever really connects."""
+    attempts = []
+
+    def stall(address, timeout=None, *a, **k):
+        attempts.append(address[0])
+        time.sleep(timeout if timeout else 1)
+        raise socket.timeout("test stub: connect timed out")
+
+    def refuse(self, address, *a, **k):
+        attempts.append(("raw", address[0]))
+        raise OSError("test spy: connect refused")
+
+    monkeypatch.setattr(socket, "create_connection", stall)
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    return attempts
+
+
+def test_ac_38_136_deadline_covers_connect_to_many_resolved_addresses(monkeypatch):
+    import app.workflow_engine.actions.http_actions as ha
+
+    _resolver(monkeypatch, MANY, [[f"93.184.216.{i}" for i in range(10, 16)]])
+    attempts = _stalling_connects(monkeypatch)
+    started = time.monotonic()
+    out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
+    elapsed = time.monotonic() - started
+    assert out is None and err, "the node fails when no address connects in time"
+    assert elapsed < 2.5, f"connect phase took {elapsed:.1f}s with a 1s deadline"
+    assert len({a for a in attempts if isinstance(a, str)}) <= 4, f"more than 4 addresses tried: {attempts}"
+
+
+def test_ac_38_136_deadline_covers_a_stalled_resolver(monkeypatch):
+    import app.workflow_engine.actions.http_actions as ha
+
+    real = socket.getaddrinfo
+
+    def slow(host, *a, **k):
+        if str(host).lower() == MANY:
+            time.sleep(5)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.10", 0))]
+        return real(host, *a, **k)
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow)
+    attempts = _stalling_connects(monkeypatch)
+    started = time.monotonic()
+    out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
+    elapsed = time.monotonic() - started
+    assert out is None and err
+    assert elapsed < 2.5, f"name resolution held the node for {elapsed:.1f}s with a 1s deadline"
