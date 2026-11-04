@@ -125,11 +125,14 @@ def test_the_list_counts_with_the_same_number_of_statements_for_3_and_10_contact
         _pin_preview(rig, cid, n)
     run = _measured_list_request(client, rig)
     first = run()
+    assert all(first[c]["lastMessagePreview"] == "latest" for c in cids)  # control: the pinned preview
     assert all(first[c]["messageCount"] == 7 for c in cids)  # control: the fields exist and are filled
     n3 = [_shape(x) for x in _count_statements(rig.sf, run)]
     for i in range(3, 10):
         _pin_preview(rig, rig.footprint(f"+6010000070{i}", f"p{i}")["cid"], i)
-    assert len(run()) == 10
+    page10 = run()
+    assert len(page10) == 10
+    assert all(c["lastMessagePreview"] == "latest" for c in page10.values())  # control: pinned on every row
     n10 = [_shape(x) for x in _count_statements(rig.sf, run)]
     more, fewer = Counter(n10) - Counter(n3), Counter(n3) - Counter(n10)
     assert len(n10) == len(n3), (
