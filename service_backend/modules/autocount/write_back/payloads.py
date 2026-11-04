@@ -7,8 +7,9 @@ rows appear in ``Details``. Quantities are computed in ``Decimal``.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 Doc = Dict[str, Any]
 
@@ -48,12 +49,35 @@ def so_outstanding(so_row: Doc, linked_qty: Decimal) -> Decimal:
     return max(_dec(so_row.get("Qty")) - linked_qty, Decimal(0))
 
 
+_DATE_PREFIX = re.compile(r"^(\d{4})-\d{2}-\d{2}(?:$|[T ])")
+# The wrapper's SQL Server floor: it answers 500 (SqlDateTime overflow) to any
+# date below it, and reads an empty date back as 0001-01-01T00:00:00.
+MIN_VENDOR_YEAR = 1753
+
+
+def _empty_date(value: Any) -> bool:
+    match = _DATE_PREFIX.match(value) if isinstance(value, str) else None
+    return bool(match) and int(match.group(1)) < MIN_VENDOR_YEAR
+
+
+def _pick(source: Doc, keys: Sequence[str]) -> Doc:
+    """Whitelisted fields of ``source``; a date the vendor cannot take back
+    (year below 1753) is omitted, a missing one stays missing. The one place
+    that rule lives."""
+    return {k: source[k] for k in keys if k in source and not _empty_date(source[k])}
+
+
 def _header(doc: Doc) -> Doc:
-    return {k: doc[k] for k in HEADER_KEYS if k in doc}
+    return _pick(doc, HEADER_KEYS)
+
+
+def header_of(doc: Doc) -> Doc:
+    """The whitelisted header of an existing document (a template for a new one)."""
+    return _header(doc)
 
 
 def _row_fields(row: Doc) -> Doc:
-    return {k: row[k] for k in ROW_KEYS if k in row}
+    return _pick(row, ROW_KEYS)
 
 
 def _is_spo(doc: Doc) -> bool:

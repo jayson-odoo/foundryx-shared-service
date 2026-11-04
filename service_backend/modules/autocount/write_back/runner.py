@@ -37,6 +37,7 @@ from modules.autocount.write_back.constants import (
     PO_BY_DOC_DATE_PATH,
 )
 from modules.autocount.write_back.guard import WriteNotAllowed
+from modules.autocount.write_back.payloads import header_of
 from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
     PullDocsResult,
@@ -71,6 +72,8 @@ BASELINE_TO = date(2026, 2, 4)  # PO 202602-S0007 DocDate
 STALE_STAMP = "1900-01-01T00:00:00.00"
 ITEM = "SRTKT38SS"
 
+# Header fields kept as evidence of a create: codes and numbers only, never names.
+_EVIDENCE_HEADER = ("DocNo", "DocDate", "CreditorCode", "ShippingPO")
 _ROW_FIELDS = (
     "DtlKey", "ItemCode", "Location", "UOM", "Qty",
     "FromSODtlKey", "FromDocType", "FromDocNo", "FromDocDtlKey",
@@ -217,7 +220,7 @@ class _Run:
         except WriteTransportError as exc:
             case.observed = f"create failed {exc.code}"
             return None
-        sent = {k: v for k, v in body.items() if k != "Details"}
+        sent = {k: body[k] for k in _EVIDENCE_HEADER if k in body}
         sent["Details"] = _rows(body["Details"])  # type: ignore[arg-type]
         case.steps.append(Step("POST", NEW_PO_PATH, response.status_code, sent))
         if not response.ok:
@@ -236,6 +239,45 @@ class _Run:
         case.observed = f"prerequisite {prereq} did not pass"
         return True
 
+    def _create_body(
+        self, case: CaseResult, doc_no: str, specs: Sequence[Doc], *, spo: bool
+    ) -> Optional[Doc]:
+        """A full create body: header from the creditor's existing db3 PO (through
+        the header whitelist, new DocNo and DocDate, no DocKey), rows with the
+        documented POST fields, description / UOM from the SO row of the item."""
+        self.db.commit()
+        reader = self.reader_factory(self.base_url)
+        template = next(
+            (d for d in reader.list_day("PO", BASELINE_TO, by_last_modified=False)
+             if d.get("DocNo") == REAL_PO_NO and d.get("CreditorCode") == self.creditor),
+            None,
+        )
+        if template is None:
+            case.observed = f"no existing PO of the creditor to take the header from ({REAL_PO_NO})"
+            return None
+        so_doc = reader.get_document("SO", REAL_SO_DOC_KEY, BASELINE_FROM)
+        so_rows = {r.get("ItemCode"): r for r in so_doc.get("Details") or []}  # type: ignore[union-attr]
+        delivery = f"{self.today.isoformat()}T00:00:00"
+        rows: List[Doc] = []
+        for spec in specs:
+            source = so_rows.get(spec["ItemCode"])
+            if source is None:
+                case.observed = "no SO row for the test item"
+                return None
+            rows.append({
+                "ItemCode": spec["ItemCode"], "Location": spec["Location"],
+                "Description": source.get("Description"), "ProjNo": "",
+                "UOM": source.get("UOM"), "UserUOM": source.get("UOM"),
+                "Qty": spec["Qty"], "FOCQty": 0, "UnitPrice": 1.0, "Discount": "",
+                "TaxCode": "", "DeliveryDate": delivery, "Desc2": "",
+                "FromDocType": spec.get("FromDocType", ""), "FromDocNo": spec.get("FromDocNo", ""),
+                "FromDocDtlKey": spec.get("FromDocDtlKey", 0), "FullTransferOption": " ",
+                "FullTransferFromDocList": "",
+            })
+        body: Doc = {k: v for k, v in header_of(template).items() if k != "DocKey"}
+        body.update(DocNo=doc_no, DocDate=delivery, ShippingPO="T" if spo else "F", Details=rows)
+        return body
+
     # ── cases ────────────────────────────────────────────────────────────────
 
     def c01(self, case: CaseResult) -> None:
@@ -245,20 +287,22 @@ class _Run:
         if baseline.failed:
             case.observed = f"baseline pull failed {baseline.error_code}"
             return
-        details = [
-            {"ItemCode": ITEM, "Qty": 50, "Location": "HQ", "UOM": "UNIT", "UnitPrice": 1},
-            {"ItemCode": ITEM, "Qty": 10, "Location": "HQ", "UOM": "UNIT", "UnitPrice": 1},
-        ]
-        body: Doc = {
-            "DocNo": self.po_no, "CreditorCode": self.creditor,
-            "DocDate": f"{self.today.isoformat()}T00:00:00", "ShippingPO": "F",
-            "Details": details,
-        }
+        body = self._create_body(
+            case, self.po_no,
+            [{"ItemCode": ITEM, "Qty": 50, "Location": "HQ"}, {"ItemCode": ITEM, "Qty": 10, "Location": "HQ"}],
+            spo=False,
+        )
+        if body is None:
+            return
         doc = self._setup_post(case, body, self.po_no)
         if doc is None:
             return
-        if doc.get("ShippingPO") == "T" or len(doc.get("Details") or []) != 2:  # type: ignore[arg-type]
-            case.observed = "created document does not read back as two plain PO rows"
+        read_back = len(doc.get("Details") or [])  # type: ignore[arg-type]
+        if read_back != 2:
+            case.observed = f"rows dropped: sent 2, read back {read_back}"
+            return
+        if doc.get("ShippingPO") == "T":
+            case.observed = "created document reads back as an SPO"
             return
         self.po_doc = doc
         case.status = PASS
@@ -371,14 +415,14 @@ class _Run:
         if self.split_key is None:
             case.observed = "C03 left no split row"
             return
-        body: Doc = {
-            "DocNo": self.spo_no, "CreditorCode": self.creditor,
-            "DocDate": f"{self.today.isoformat()}T00:00:00", "ShippingPO": "T",
-            "Details": [{
-                "ItemCode": ITEM, "Qty": 10, "Location": "BRW-AM", "UOM": "UNIT", "UnitPrice": 1,
-                "FromDocType": "PO", "FromDocNo": self.po_no, "FromDocDtlKey": self.split_key,
-            }],
-        }
+        body = self._create_body(
+            case, self.spo_no,
+            [{"ItemCode": ITEM, "Qty": 10, "Location": "BRW-AM", "FromDocType": "PO",
+              "FromDocNo": self.po_no, "FromDocDtlKey": self.split_key}],
+            spo=True,
+        )
+        if body is None:
+            return
         doc = self._setup_post(case, body, self.spo_no)
         if doc is None:
             return
