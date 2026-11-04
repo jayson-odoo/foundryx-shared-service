@@ -51,7 +51,9 @@ TICK_SECONDS=2
 # remotely. Taken BEFORE .active_color is read. The kernel drops the lock when
 # this process exits, however it exits (no stale-lock cleanup needed).
 DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-.blue_green_deploy.lock}"
-DEPLOY_LOCK_TIMEOUT_SECONDS="${DEPLOY_LOCK_TIMEOUT_SECONDS:-900}"   # 15 min, under the CI step's 18 min
+# 5 min: a full deploy itself can take ~11 min worst case (4 min health + drain
+# + 4 x 90s worker gates), and wait + deploy must fit the CI step's 18 min.
+DEPLOY_LOCK_TIMEOUT_SECONDS="${DEPLOY_LOCK_TIMEOUT_SECONDS:-300}"
 if ! command -v flock >/dev/null 2>&1; then
   echo "::error::DEPLOY ABORTED (flock not found - install util-linux). Refusing to deploy without the deploy lock." >&2
   exit 1

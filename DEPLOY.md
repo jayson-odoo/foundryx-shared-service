@@ -405,7 +405,11 @@ waited for a lock on the same table.
   mid-switch. On the host, `scripts/blue_green_deploy.sh` takes `flock` on
   `.blue_green_deploy.lock` (in the deploy dir, override `DEPLOY_LOCK_FILE`)
   BEFORE reading `.active_color`, so a manual run cannot overlap a CI run
-  either. It waits up to `DEPLOY_LOCK_TIMEOUT_SECONDS` (default 900), then
+  either. The workflow's file-sync step writes the script, compose and
+  `.env` under the same lock (60s wait, then a named error), so CI never
+  rewrites files under a running manual deploy. The script waits up to
+  `DEPLOY_LOCK_TIMEOUT_SECONDS` (default 300: wait + a worst-case ~11 min
+  deploy must fit the CI step's 18 min), then
   exits 1 with `::error::DEPLOY ABORTED (another blue/green deploy holds ...;
   holder: pid=.. image_tag=.. started=..)` having pulled, started and swapped
   nothing. The lock lives with the process: a killed deploy releases it.

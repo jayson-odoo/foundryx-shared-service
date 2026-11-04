@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -45,14 +46,16 @@ def test_a_second_deploy_waits_for_the_lock_then_fails_loudly_without_touching_a
     lock = tmp_path / "held.lock"
     lock.write_text("pid=4242 image_tag=olderdeploy\n")
     # Hold the lock in a separate process for the whole run (a concurrent deploy).
-    holder = subprocess.Popen(["flock", str(lock), "sh", "-c", "sleep 30"])
+    holder = subprocess.Popen(
+        ["flock", str(lock), "sh", "-c", "sleep 30"], start_new_session=True
+    )
     try:
         _wait_until_locked(lock)
         result, calls, active = _run(
             tmp_path, DEPLOY_LOCK_FILE=str(lock), DEPLOY_LOCK_TIMEOUT_SECONDS="1"
         )
     finally:
-        holder.kill()
+        os.killpg(holder.pid, signal.SIGKILL)  # flock AND its sleep child (it inherits the lock fd)
         holder.wait()
     out = result.stdout + result.stderr
     assert result.returncode != 0
@@ -64,6 +67,8 @@ def test_a_second_deploy_waits_for_the_lock_then_fails_loudly_without_touching_a
 
 
 def test_a_deploy_takes_and_releases_the_lock(tmp_path):
+    if not shutil_which("flock"):
+        pytest.skip("flock not available")
     lock = tmp_path / "deploy.lock"
     result, calls, active = _run(tmp_path, DEPLOY_LOCK_FILE=str(lock))
     assert result.returncode == 0, result.stdout + result.stderr
@@ -76,7 +81,7 @@ def test_a_deploy_takes_and_releases_the_lock(tmp_path):
 def test_the_default_lock_is_a_fixed_file_in_the_deploy_dir_with_a_bounded_wait():
     text = SCRIPT.read_text()
     assert 'DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-.blue_green_deploy.lock}"' in text
-    assert 'DEPLOY_LOCK_TIMEOUT_SECONDS="${DEPLOY_LOCK_TIMEOUT_SECONDS:-900}"' in text
+    assert 'DEPLOY_LOCK_TIMEOUT_SECONDS="${DEPLOY_LOCK_TIMEOUT_SECONDS:-300}"' in text
     # The lock is taken before the active colour is read (the race this closes).
     assert text.index("flock -w") < text.index("ACTIVE=$(cat .active_color")
 
@@ -86,6 +91,20 @@ def test_the_default_lock_is_a_fixed_file_in_the_deploy_dir_with_a_bounded_wait(
 @pytest.fixture(scope="module")
 def compose():
     return yaml.safe_load(COMPOSE.read_text())
+
+
+def test_the_ci_file_sync_writes_under_the_same_host_lock():
+    """CI must not rewrite the script/compose/.env under a running manual deploy."""
+    sync = next(
+        st for st in yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-and-deploy"]["steps"]
+        if st.get("name", "").startswith("Sync compose")
+    )["with"]["command"]
+    assert 'LOCK="$D/.blue_green_deploy.lock"' in sync
+    assert "flock -E 75 -w 60 $LOCK" in sync
+    assert "scp " not in sync  # every write goes through the locked put()
+    for target in ('put "$D/scripts/blue_green_deploy.sh"', 'put "$D/docker-compose.yml"'):
+        assert target in sync
+    assert "flock -E 75 -w 60 $LOCK sh -c 'cat > $D/.env && chmod 600 $D/.env'" in sync
 
 
 @pytest.mark.parametrize(
