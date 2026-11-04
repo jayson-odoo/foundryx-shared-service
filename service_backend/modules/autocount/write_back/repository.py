@@ -43,6 +43,27 @@ class WriteActionRepository:
             is not None
         )
 
+    def last_confirmed_after(
+        self, tenant_id: str, company_id: str, doc_type: str, doc_key: int
+    ) -> Optional[dict]:
+        """The read-back document of the newest ``done`` action on the document
+        (AC-57-20: its DocDate is a fallback for the by-date read)."""
+        row = (
+            self.db.query(AcWriteAction.after_json)
+            .filter(
+                AcWriteAction.tenant_id == tenant_id,
+                AcWriteAction.company_id == company_id,
+                AcWriteAction.doc_type == doc_type,
+                AcWriteAction.doc_key == doc_key,
+                AcWriteAction.outcome == "done",
+                AcWriteAction.after_json.isnot(None),
+            )
+            .order_by(AcWriteAction.created_at.desc(), AcWriteAction.id)
+            .first()
+        )
+        after = row[0] if row else None
+        return after if isinstance(after, dict) else None
+
     def expire_stale_in_flight(
         self, tenant_id: str, company_id: str, doc_key: int, before: datetime
     ) -> int:

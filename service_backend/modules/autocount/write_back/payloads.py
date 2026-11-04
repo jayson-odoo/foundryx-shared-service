@@ -555,3 +555,17 @@ def verify_cancel(kind_name: str, after: Doc) -> Verdict:
     if after.get("Cancelled") == "T":
         return Verdict(DONE)
     return Verdict(MISMATCH, "CANCEL_IGNORED")
+
+
+def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after: Doc) -> Verdict:
+    """Exactly one new row reads back as sent and nothing else moved."""
+    kind_of(kind_name)
+    known = {r.get("DtlKey") for r in before.get("Details") or []}
+    added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]
+    if len(added) != 1:
+        return Verdict(MISMATCH, "ROWS_DROPPED" if not added else "ROWS_UNEXPECTED")
+    if not _same_line(line, added[0]):
+        return Verdict(MISMATCH, "ROW_MISMATCH")
+    if _drifted(before, after, (), []):
+        return Verdict(MISMATCH, "COLLATERAL_CHANGE")
+    return Verdict(DONE)

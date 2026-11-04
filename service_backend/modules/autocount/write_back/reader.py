@@ -17,12 +17,7 @@ import httpx
 from app.services.url_guard import UrlGuardError
 
 from modules.autocount.http_client import autocount_guarded_client
-from modules.autocount.write_back.constants import (
-    PO_BY_DOC_DATE_PATH,
-    PO_BY_LAST_MODIFIED_PATH,
-    SO_BY_DOC_DATE_PATH,
-    SO_BY_LAST_MODIFIED_PATH,
-)
+from modules.autocount.write_back.doc_kinds import KINDS
 
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
 DOC_AMBIGUOUS = "DOC_AMBIGUOUS"
@@ -30,12 +25,16 @@ READ_FAILED = "READ_FAILED"
 
 Document = Dict[str, object]
 
-_LAST_MODIFIED_PATHS = {
-    "PO": PO_BY_LAST_MODIFIED_PATH,
-    "SPO": PO_BY_LAST_MODIFIED_PATH,
-    "SO": SO_BY_LAST_MODIFIED_PATH,
-}
-_PATHS = {"PO": PO_BY_DOC_DATE_PATH, "SPO": PO_BY_DOC_DATE_PATH, "SO": SO_BY_DOC_DATE_PATH}
+
+
+def _by_modified_path(kind: str) -> Optional[str]:
+    found = KINDS.get(kind)
+    return found.by_modified_path if found else None
+
+
+def _by_date_path(kind: str) -> Optional[str]:
+    found = KINDS.get(kind)
+    return found.by_date_path if found else None
 
 
 class DocReadError(Exception):
@@ -82,20 +81,29 @@ class AutoCountDocReader:
         return [d for d in body if isinstance(d, dict)]
 
     def _fetch_day(self, kind: str, doc_date: date) -> List[Document]:
-        return self._fetch(_PATHS.get(kind), {"DocDate": doc_date.strftime("%Y%m%d")})
+        return self._fetch(_by_date_path(kind), {"DocDate": doc_date.strftime("%Y%m%d")})
 
     def list_day(self, kind: str, day: date, *, by_last_modified: bool) -> List[Document]:
         """Every ``kind`` document of one day, by ``lastModified`` or ``DocDate``
         (a PO answer also carries SPO documents)."""
         if by_last_modified:
             return self._fetch(
-                _LAST_MODIFIED_PATHS.get(kind), {"lastModified": day.strftime("%Y%m%d")}
+                _by_modified_path(kind), {"lastModified": day.strftime("%Y%m%d")}
             )
         return self._fetch_day(kind, day)
 
     def get_document(self, kind: str, doc_key: int, doc_date: date) -> Document:
-        """The single document of ``kind`` (PO | SPO | SO) with ``doc_key`` dated ``doc_date``."""
+        """The single document of ``kind`` (QT | SO | PO | SPO) with ``doc_key`` dated ``doc_date``."""
         matches = [d for d in self._fetch_day(kind, doc_date) if d.get("DocKey") == doc_key]
+        if not matches:
+            raise DocReadError(DOC_NOT_FOUND)
+        if len(matches) > 1:
+            raise DocReadError(DOC_AMBIGUOUS)
+        return matches[0]
+
+    def find_by_doc_no(self, kind: str, doc_no: str, doc_date: date) -> Document:
+        """The single ``kind`` document numbered ``doc_no`` dated ``doc_date``."""
+        matches = [d for d in self._fetch_day(kind, doc_date) if d.get("DocNo") == doc_no]
         if not matches:
             raise DocReadError(DOC_NOT_FOUND)
         if len(matches) > 1:
