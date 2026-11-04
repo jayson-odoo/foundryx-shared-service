@@ -488,3 +488,52 @@ def test_gateway_relocate_validation_is_422(client, h, body):
     hdr = _gateway(client, h)
     assert client.post(RELOCATE, json=body, headers=hdr).status_code == 422
     _no_http(h)
+
+
+# ---- a deadline that trips after PUT1 was read back and verified (AC-55-62) -----------------
+
+def _slow_readback_after_first_put(h, delay=0.3):
+    import time
+
+    def handler(request):
+        if len(h.ac.put_calls) == 1:
+            time.sleep(delay)  # the read-back of PUT1 arrives after the budget
+        return h.ac._on_get(request)
+
+    h.ac.read_transport = httpx.MockTransport(handler)
+
+
+def _expected_staged(h):
+    doc = h.ac.docs["purchaseorderbydocdate"][0]
+    expected = {k: v for k, v in doc.items() if k != "Details"}
+    expected["_lines"] = doc["Details"]
+    return json.loads(json.dumps(expected))
+
+
+def test_deadline_after_a_verified_link_ends_done_location_not_moved(h, monkeypatch):
+    from modules.autocount.write_back import service as service_mod
+
+    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+    _slow_readback_after_first_put(h)
+    res = h.link_split()
+    assert res.outcome == "done" and res.error_code == "LOCATION_NOT_MOVED"
+    assert len(h.ac.put_calls) == 1  # PUT2 never sent after the deadline
+    assert len(h.ac.get_calls) == 3  # PO, SO, the read-back; nothing after
+    new = h.ac.linked_row(11989)
+    assert new["FromSODtlKey"] == 11989 and new["Location"] == "HQ"  # the link stands, forced HQ
+    assert h.staged_po().raw_json == _expected_staged(h)  # the verified read-back is staged
+    row = h.action(res)
+    assert row.outcome == "done" and row.error_code == "LOCATION_NOT_MOVED"
+    assert h.db.query(AcWriteAction).filter(AcWriteAction.outcome == "in_flight").count() == 0
+
+
+def test_deadline_with_a_verified_readback_in_hand_is_not_discarded(h, monkeypatch):
+    from modules.autocount.write_back import service as service_mod
+
+    h.ac.force_hq = False  # the vendor keeps the location: nothing left to move
+    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+    _slow_readback_after_first_put(h)
+    res = h.link_split()
+    assert res.outcome == "done" and res.error_code is None
+    assert len(h.ac.put_calls) == 1
+    assert h.staged_po().raw_json == _expected_staged(h)
