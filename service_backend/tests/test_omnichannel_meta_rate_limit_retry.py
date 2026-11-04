@@ -844,6 +844,7 @@ def test_ac_56_12_guide_section_6a_says_other_channels_are_still_tried_on_a_thro
     guide = _guide()
     sec = guide[guide.index("## 6a.") : guide.index("## 6b.")]
     low = sec.lower()
+    assert "longest" in low
     assert "meta_rate_limited" in sec and "429" in sec
     assert "other channels" in low or "remaining channels" in low or "every channel" in low
 
@@ -864,3 +865,47 @@ def test_ac_56_12_guide_schedule_says_the_retry_count_is_shared_across_causes():
     assert re.search(r"(retr(y|ies)[^.\n]{0,160}shared|shared[^.\n]{0,160}retr(y|ies))", low), (
         "the guide must say the 4 retries are shared across causes (a 5xx after rate limits uses the same count)"
     )
+
+
+# ── round 2 ──────────────────────────────────────────────────────────────────
+class PerNumberHeaders(PerNumber):
+    """pn -> Retry-After header value, or None for a throttle without a header."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        pn = request.url.path.strip("/").split("/")[-2]
+        self.calls.append(pn)
+        headers = {}
+        if self.behaviour.get(pn):
+            headers["Retry-After"] = self.behaviour[pn]
+        return httpx.Response(429, json={"error": {"message": "throttled", "code": 130429}}, headers=headers)
+
+
+@pytest.mark.parametrize(
+    "first,second,expected", [("5", None, "30"), (None, "5", "30"), ("5", "90", "90")],
+    ids=["5-and-none", "none-and-5", "5-and-90"],
+)
+def test_ac_56_11_read_with_every_channel_throttled_answers_the_longest_wait(
+    mark_rig, monkeypatch, first, second, expected
+):
+    from modules.omnichannel.adapters import meta_graph
+
+    fake = PerNumberHeaders()
+    fake.behaviour = {"pn-A": first, "pn-B": second}
+    monkeypatch.setattr(meta_graph.MetaGraphMixin, "_http", lambda self: fake.client())
+    a = mark_rig.channel("pn-A", token="tok-A", created=0, cid=LOW_ID)
+    b = mark_rig.channel("pn-B", token="tok-B", created=10, cid=HIGH_ID)
+    mark_rig.msg(a, wamid="wamid.in-A1", when=1)
+    mark_rig.msg(b, wamid="wamid.in-B1", when=2)
+    res = mark_rig.read()
+    assert sorted(set(fake.calls)) == ["pn-A", "pn-B"]  # control: both channels were tried
+    assert res.status_code == 429, res.text
+    assert res.headers.get("Retry-After") == expected
+
+
+@pytest.mark.parametrize("code", [{"a": 1}, [4], [[613]]], ids=["dict", "list", "nested"])
+def test_ac_56_10_is_rate_limited_error_with_a_dict_or_list_code_is_false_and_never_raises(code):
+    from modules.omnichannel.adapters.meta_graph import is_rate_limited_error
+
+    resp = httpx.Response(400, json={"error": {"message": "odd", "code": code}})
+    assert is_rate_limited_error(resp) is False
+    assert is_rate_limited_error(httpx.Response(429, json={"error": {"message": "odd", "code": code}})) is True
