@@ -8,14 +8,17 @@ reader's own copy.
 
 from __future__ import annotations
 
-from typing import Dict
+from types import MappingProxyType
+from typing import Mapping
 
-VENDOR_CAPABILITIES: Dict[str, bool] = {
-    "link_new_row": True,
-    "link_existing_row": False,
-    "unlink": False,
-    "spo_unlink": False,
-}
+VENDOR_CAPABILITIES: Mapping[str, bool] = MappingProxyType(
+    {
+        "link_new_row": True,
+        "link_existing_row": False,
+        "unlink": False,
+        "spo_unlink": False,
+    }
+)
 
 # Whole-row link emulated as: original row to Qty 0 plus a new linked row, then
 # the location move. Off until a db3 rerun shows the vendor accepts a zero qty.

@@ -114,7 +114,14 @@ def _find_row(doc: Doc, dtl_key: int) -> Doc:
 
 
 def _row_linked(row: Doc) -> bool:
-    return bool(row.get("FromSODtlKey")) or bool(row.get("FromDocDtlKey"))
+    """Linked to an SO row (the only link a PO row write touches)."""
+    return bool(row.get("FromSODtlKey"))
+
+
+def _refuse_other_transfer(row: Doc) -> None:
+    """A row transferred from some other document type (PO, QT, ...) is not ours to rewrite."""
+    if row.get("FromDocType") not in ("", None, "SO"):
+        raise WriteRefusal("ROW_HAS_OTHER_TRANSFER", "row comes from another document type")
 
 
 def _unlinked(row: Doc) -> Doc:
@@ -167,6 +174,7 @@ def build_link(
     po_row = _find_row(po, po_dtl_key)
     so_row = _find_row(so, so_dtl_key)
     _refuse_on_spo(spo_ref)
+    _refuse_other_transfer(po_row)
     if _row_linked(po_row):
         raise WriteRefusal("ROW_ALREADY_LINKED", "row is already linked")
     if po_row.get("ItemCode") != so_row.get("ItemCode"):
@@ -223,6 +231,7 @@ def build_unlink(po: Doc, po_dtl_key: int, *, spo_ref: Optional[str] = None) -> 
     _check_doc(po, want_spo=False)
     row = _find_row(po, po_dtl_key)
     _refuse_on_spo(spo_ref)
+    _refuse_other_transfer(row)
     if not _row_linked(row):
         raise WriteRefusal("ROW_NOT_LINKED", "row is not linked")
     body = _header(po)

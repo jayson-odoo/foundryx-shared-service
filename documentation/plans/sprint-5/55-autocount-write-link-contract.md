@@ -81,9 +81,11 @@ not idempotent: do not blind-retry a call that ended `pending_verification`.
 | `qty` | number | quantity to link; above zero and at most 1,000,000,000, with at most 8 decimal places (a value the server would have to round is refused `QTY_INVALID`, never rewritten), at most the PO row qty, at most the SO row outstanding. Sent as a JSON number; the server reads it as an exact decimal, never a binary float, so `3.3` stays `3.3`. Send decimals as plain numbers, not strings |
 | `expectedLastModified` | string, optional | the `LastModified` of the PO as the CRM last read it; when given and the PO has changed since, the call is refused `DOC_STALE` |
 
-When `qty` equals the PO row qty the row is linked in place and takes the SO row's location. When
-`qty` is lower, the PO row keeps `rowQty - qty` unlinked and a NEW PO row (new `DtlKey`) carries the
-linked `qty`. The location comes from the SO row; the caller does not send one.
+`qty` must be BELOW the PO row qty: the PO row keeps `rowQty - qty` unlinked and a NEW PO row (new
+`DtlKey`) carries the linked `qty` (two writes, section 5). A `qty` equal to the PO row qty (a whole
+row) is not linked in place: AutoCount does not apply an edit of an existing row, so the call is
+refused `409 VENDOR_UNSUPPORTED` after one document read. The location comes from the SO row; the
+caller does not send one.
 
 ### 4.2 `POST /api/v1/autocount/po-links/unlink`
 
@@ -135,8 +137,8 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 
 | outcome | HTTP | errorCode | Meaning |
 |---|---|---|---|
-| `done` | 200 | null | Written and verified: every sent row read back as sent and every other row unchanged |
-| `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR` | The write may or may not have happened; the server could not confirm it |
+| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged |
+| `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` | The write may or may not have happened; the server could not confirm it |
 | `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
 | `refused` | 409 | any code below | Refused before anything was written |
@@ -152,6 +154,8 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `DOC_STALE` | `expectedLastModified` no longer matches: the document changed in AutoCount | Refresh the document, re-check the row, retry with the new `LastModified` |
 | `DOC_NOT_FOUND` / `DOC_AMBIGUOUS` / `READ_FAILED` | (when raised before the write) the document could not be read exactly once | Retry later; if it persists, report with `actionId` |
 | `VENDOR_UNSUPPORTED` | AutoCount does not apply this edit yet: unlink, SPO row unlink, and a link of a WHOLE PO row (quantity equal to the row). Refused before anything is sent | Show 'not supported by AutoCount yet'; offer a split link (quantity below the row) instead |
+| `ROW_HAS_OTHER_TRANSFER` | Unlink or link: the PO row was transferred from another document type (not an SO) | Nothing to do here; handle it in AutoCount |
+| `SO_LOCATION_AMBIGUOUS` | Relocate: two equally recent synced copies of the SO disagree on the row's location | Re-run the doc sync, then retry |
 | `ROW_ALREADY_AT_LOCATION` | Relocate: the row is already at its SO row's location | Nothing to do |
 | `DOC_KIND_MISMATCH` | A PO key sent to the SPO route, or an SPO key sent to a PO route | Use the right route |
 | `DOC_CANCELLED` | The PO, SPO or SO is cancelled | Show it as cancelled; no action |
@@ -172,6 +176,11 @@ answers `done` once the link is verified. If the second write fails or the locat
 still answers `done` (200) with `errorCode` `LOCATION_NOT_MOVED`: the link stands, the row sits at the
 default location, and the CRM should offer "Move location" (the relocate route above). The second
 write is never retried.
+
+`DEADLINE_EXCEEDED`: an action has an overall time budget (under 5 minutes). Past it before any write was
+sent the call is refused `409 DEADLINE_EXCEEDED` (nothing changed); past it after a write was sent it
+answers `202 pending_verification` with the same code, and no further call is made. `done` may
+carry `errorCode` `LOCATION_NOT_MOVED` (section above).
 
 `INTERNAL_ERROR` (202) means an unexpected server fault after the action started: the write may or
 may not have happened, so treat it like any other `pending_verification` and check the document.
@@ -238,7 +247,7 @@ PO `202602-S0007` (DocKey 12008) has row 12009 (item `SRTKS7090`, qty 1) and row
 `SRTKT38SS`, qty 10). SO `SO389293` (DocKey 11988) has row 11990 (item `SRTKS7090`, qty 10) and
 row 11989 (item `SRTKT38SS`).
 
-Link the whole 12009 row to SO row 11990, in place:
+Link the whole 12009 row to SO row 11990 (qty equals the row qty):
 
 ```json
 POST /api/v1/autocount/po-links
@@ -246,8 +255,7 @@ POST /api/v1/autocount/po-links
   "soDocKey": 11988, "soDtlKey": 11990, "qty": 1 }
 ```
 ```json
-200 { "actionId": "c1a0...", "outcome": "done", "errorCode": null,
-      "document": { "DocKey": 12008, "DocNo": "202602-S0007", "Details": [ { "DtlKey": 12009, "ItemCode": "SRTKS7090", "Qty": 1, "FromSODtlKey": 11990 } ] } }
+409 { "actionId": "c1a0...", "outcome": "refused", "errorCode": "VENDOR_UNSUPPORTED", "document": null }
 ```
 
 Link 4 of the 10 on row 12017 (split): row 12017 keeps 6 unlinked, a new row carries 4 linked to 11989.

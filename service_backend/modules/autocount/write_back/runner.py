@@ -68,7 +68,6 @@ COVERED_SO_ROW = 11996  # qty 9, fully covered by PO row 12015
 SO_ROW_QTY_2_SIDE = 11990  # SRTKS7090
 LINKED_PO_ROW = 12013  # linked to SO row 11993, qty 10
 LINKED_SO_ROW = 11993
-WHOLE_ROW_SO_ROW = 11992  # real SO389293 row, SRTKT38SS qty 10, uncovered (C04 whole-row gate)
 BASELINE_FROM = date(2026, 1, 26)  # SO389293 DocDate
 BASELINE_TO = date(2026, 2, 4)  # PO 202602-S0007 DocDate
 STALE_STAMP = "1900-01-01T00:00:00.00"
@@ -207,7 +206,8 @@ class _Run:
             after = after_doc.get("Details") or []
             before_keys = {r.get("DtlKey") for r in before}
             reply = responses[index] if index < len(responses) else None
-            status = row.response_status if index == len(bodies) - 1 else 200
+            statuses = row.response_status if isinstance(row.response_status, list) else [row.response_status]
+            status = statuses[index] if index < len(statuses) else None
             if isinstance(reply, dict) and "error" in reply:
                 status = None
             steps.append(Step(
@@ -257,6 +257,8 @@ class _Run:
         doc = self._find_doc(doc_no, kind)
         if doc is None:
             case.observed = f"{doc_no} not found after create"
+        else:
+            case.steps[-1].after_rows = _rows(doc.get("Details") or [])  # type: ignore[arg-type]
         return doc
 
     def _skip(self, case: CaseResult, prereq: str) -> bool:
@@ -309,7 +311,7 @@ class _Run:
     # ── cases ────────────────────────────────────────────────────────────────
 
     def c00(self, case: CaseResult) -> None:
-        case.expected = f"test SO {self.so_no} created with two SRTKT38SS rows at BRW-AM (10 and 5)"
+        case.expected = f"test SO {self.so_no} created with three SRTKT38SS rows at BRW-AM (10, 5 and 10)"
         self.db.commit()
         reader = self.reader_factory(self.base_url)
         template = reader.get_document("SO", REAL_SO_DOC_KEY, BASELINE_FROM)
@@ -327,7 +329,7 @@ class _Run:
                 "DeliveryDate": delivery, "Desc2": "", "FromDocType": "", "FromDocNo": "",
                 "FromDocDtlKey": 0, "FullTransferOption": " ", "FullTransferFromDocList": "",
             }
-            for qty in (10, 5)
+            for qty in (10, 5, 10)
         ]
         body: Doc = {k: v for k, v in so_header_of(template).items() if k != "DocKey"}
         if body.get("DebtorCode") != self.debtor:
@@ -337,12 +339,12 @@ class _Run:
         if doc is None:
             return
         read_back = doc.get("Details") or []
-        if len(read_back) != 2:  # type: ignore[arg-type]
-            case.observed = f"rows dropped: sent 2, read back {len(read_back)}"  # type: ignore[arg-type]
+        if len(read_back) != 3:  # type: ignore[arg-type]
+            case.observed = f"rows dropped: sent 3, read back {len(read_back)}"  # type: ignore[arg-type]
             return
         self.so_doc = doc
         case.status = PASS
-        case.observed = f"created {self.so_no} with 2 rows"
+        case.observed = f"created {self.so_no} with 3 rows"
 
     def c01(self, case: CaseResult) -> None:
         case.expected = "test PO created with two SRTKT38SS rows (50 and 10 at HQ)"
@@ -423,7 +425,7 @@ class _Run:
         result = self.service.link(
             tenant_id=self.tenant_id, company_id=self.company.id,
             po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=int(small["DtlKey"]),  # type: ignore[index,arg-type]
-            so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=WHOLE_ROW_SO_ROW, qty=Decimal(10),
+            so_doc_key=self._so_key(), so_dtl_key=self._so_row(2), qty=Decimal(10),
         )
         if self._service_case(case, result, "refused", "VENDOR_UNSUPPORTED"):
             case.status = PASS

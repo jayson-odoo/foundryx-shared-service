@@ -52,14 +52,15 @@ def _clean_segments(base_url: str) -> list[str]:
     allowlist)."""
     if not base_url or any(c in base_url for c in _FORBIDDEN_CHARS):
         return []
-    parts = urlsplit(base_url)
-    if parts.scheme != "https" or not parts.hostname:
-        return []
-    try:
+    try:  # malformed hosts raise ValueError inside urlsplit / hostname / port
+        parts = urlsplit(base_url)
+        host = parts.hostname
         port: Optional[int] = parts.port
     except ValueError:
         return []
-    if port not in (None, _HTTPS_PORT) or not _host_allowed(parts.hostname):
+    if parts.scheme != "https" or not host:
+        return []
+    if port not in (None, _HTTPS_PORT) or not _host_allowed(host):
         return []
     path = parts.path[:-1] if parts.path.endswith("/") else parts.path
     segments = path.split("/")[1:] if path else []

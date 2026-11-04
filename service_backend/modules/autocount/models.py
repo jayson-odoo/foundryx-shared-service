@@ -1109,7 +1109,8 @@ class AcWriteAction(AutocountBase):
     outcome = Column(String, nullable=False)
     error_code = Column(String, nullable=True)
     request_json = Column(_JSON, nullable=True)
-    response_status = Column(Integer, nullable=True)
+    # One status, or a list of two for a split link (link write, then location move).
+    response_status = Column(_JSON, nullable=True)
     response_json = Column(_JSON, nullable=True)
     before_json = Column(_JSON, nullable=True)
     after_json = Column(_JSON, nullable=True)
