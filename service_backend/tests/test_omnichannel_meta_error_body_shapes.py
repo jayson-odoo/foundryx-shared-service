@@ -38,8 +38,9 @@ ODD_BODIES = [
     {"error": {"code": [1]}},
     {"error": {"message": 5, "error_user_msg": {}, "error_data": "x"}},
     {"error": {"error_data": {"details": 5}}},
+    {"error": {"error_user_title": [1], "error_user_msg": 5}},
 ]
-ODD_IDS = ["list", "str", "int", "null", "err-str", "err-list", "code-list", "text-types", "details-int"]
+ODD_IDS = ["list", "str", "int", "null", "err-str", "err-list", "code-list", "text-types", "details-int", "user-fields-int"]
 
 # Shapes for the adapter call sites (each used to raise AttributeError/TypeError).
 ADAPTER_BODIES = [["x"], {"error": "x"}, {"error": {"message": 5}}, None]
