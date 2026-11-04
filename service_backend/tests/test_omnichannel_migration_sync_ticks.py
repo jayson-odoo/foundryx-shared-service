@@ -887,3 +887,52 @@ def test_sync_44_trashed_workspace_pauses_with_reason_never_deletes(client, sess
     row = sync_row(w.db, sid)
     assert row is not None, "the sync row is kept"
     assert row.status == "paused" and row.paused_reason == "workspace_missing"
+
+
+# ── crew round 3 (crew ruling): Sync now and the final Stop tick are FULL sweeps ──
+
+
+def test_sync_crew3_sync_now_runs_a_full_sweep(client, session_factory, monkeypatch):
+    """A new message on an EXISTING contact with no webhook hint is picked up by
+    Sync now, even when the 6 h full sweep is not due."""
+    w, h, sid = _ready(client, session_factory, monkeypatch)
+    make_due(w.db, sid, full_sweep="not_due")
+    not_due(w.db, sid)
+    w.fake.add_message(910001, 2, text="no hint, sync now")
+
+    res = client.post(f"{SYNCS}/{sid}/run-now", headers=h)
+    assert res.status_code == 200, res.text
+    run_due_syncs(w.db)
+
+    bodies = [m.body for m in w.messages_of(w.contact_by_cid(910001))]
+    assert bodies.count("no hint, sync now") == 1
+    item = get_sync(client, h, sid)
+    assert item["lastFullSweepAt"] is not None
+    assert item["lastResult"]["messagesCreated"] == 1
+
+
+def test_sync_crew3_regular_poll_still_skips_unflagged_histories(client, session_factory, monkeypatch):
+    """Control: without Sync now, a not-due poll leaves an unflagged contact's
+    history alone (Q2 stays intact)."""
+    w, h, sid = _ready(client, session_factory, monkeypatch)
+    w.fake.add_message(910001, 2, text="waits for the sweep")
+    make_due(w.db, sid, full_sweep="not_due")
+    run_due_syncs(w.db)
+    assert w.fake.message_list_calls(910001) == 0
+
+
+def test_sync_crew3_stop_final_tick_runs_a_full_sweep(client, session_factory, monkeypatch):
+    """The final tick on Stop re-checks every contact, so a message on an
+    existing contact with no hint is not lost at cutover."""
+    w, h, sid = _ready(client, session_factory, monkeypatch)
+    make_due(w.db, sid, full_sweep="not_due")
+    not_due(w.db, sid)
+    w.fake.add_message(910001, 2, text="last words before cutover")
+
+    res = client.post(f"{SYNCS}/{sid}/stop", headers=h)
+    assert res.status_code == 200, res.text
+    run_due_syncs(w.db)  # in case the final tick was deferred to the sweep
+
+    bodies = [m.body for m in w.messages_of(w.contact_by_cid(910001))]
+    assert bodies.count("last words before cutover") == 1
+    assert get_sync(client, h, sid)["status"] == "stopped"
