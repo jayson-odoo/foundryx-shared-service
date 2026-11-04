@@ -84,9 +84,9 @@ class OpHarness(Harness):
 class World:
     """PO 7001 + SO 7002 + SPO 7003, all staged. Params per op in ``params``."""
 
-    def __init__(self, h: OpHarness, *, po_over=None, so_over=None, so_qty=10, received=None):
+    def __init__(self, h: OpHarness, *, po_over=None, so_over=None, so_qty=10, received=None, so_loc="HQ"):
         self.h = h
-        so_rows = [_line("ITEM-A", so_qty, 5.0, "HQ", **(so_over or {})), _line("ITEM-A", 10, 5.0, "HQ")]
+        so_rows = [_line("ITEM-A", so_qty, 5.0, so_loc, **(so_over or {})), _line("ITEM-A", 10, 5.0, so_loc)]
         self.so = h.seed_doc("SO", 7002, so_rows)
         self.so_a, self.so_b = [r["DtlKey"] for r in self.so["Details"]]
         link_a = dict(FromDocType="SO", FromDocNo="SO-7002", FromDocDtlKey=self.so_a, FromSODtlKey=self.so_a)
@@ -142,6 +142,13 @@ def w(h):
     return World(h)
 
 
+@pytest.fixture
+def w_far(h):
+    """SO rows at BRW-AM: neither the PO row's location (BR1) nor the HQ the vendor forces."""
+    h.delete_on()
+    return World(h, so_loc="BRW-AM")
+
+
 # ---- AC-57-03 / 32: delete flag off = VENDOR_UNSUPPORTED, zero HTTP ---------------------------
 
 @pytest.mark.parametrize("op", OPS)
@@ -155,28 +162,42 @@ def test_ac_57_32_delete_flag_off_refuses_every_operation_without_http(h, op):
 
 # ---- AC-57-30 / 31: happy paths, step order ------------------------------------------------------
 
-def test_ac_57_30_link_row_delete_add_move_in_order(h, w):
+def test_ac_57_30_link_row_moves_the_new_row_to_the_so_rows_location(h, w_far):
+    w = w_far
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "done", res.error_code
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]
+    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]  # delete, add (vendor forces HQ), move to the SO row's place
     delete, add, move = h.vendor.writes()
     assert delete.body == {"DocKey": 7001, "DtlKey": w.p_free}
     new_row = add.body["Details"][0]
     assert new_row["DtlKey"] == 0 and new_row["FromDocType"] == "SO" and new_row["FromDocDtlKey"] == w.so_a
     for field, value in (("ItemCode", "ITEM-A"), ("UOM", "UNIT"), ("Qty", 4), ("UnitPrice", 5.0),
                          ("Discount", "5%"), ("TaxCode", "SR"), ("Description", "d"),
-                         ("DeliveryDate", "2026-12-01T00:00:00"), ("Location", "BR1")):
+                         ("DeliveryDate", "2026-12-01T00:00:00")):
         assert new_row[field] == value, field
     (old_key, new_key), = res.replaced_lines
     assert old_key == w.p_free and new_key != old_key
-    assert [r["DtlKey"] for r in move.body["Details"]] == [new_key] and move.body["Details"][0]["Location"] == "BR1"
+    assert [r["DtlKey"] for r in move.body["Details"]] == [new_key]
+    assert move.body["Details"][0]["Location"] == "BRW-AM"
     stored = w.row_by_key(w.po_rows(), new_key)
-    assert stored["FromSODtlKey"] == w.so_a and stored["Location"] == "BR1"  # forced HQ, then moved back
+    assert stored["FromSODtlKey"] == w.so_a and stored["Location"] == "BRW-AM"
+    assert res.document and w.row_by_key(res.document["Details"], new_key)["Location"] == "BRW-AM"
     assert w.row_by_key(w.po_rows(), w.p_free) is None
     assert len(w.po_rows()) == 4
 
 
-def test_ac_57_30_link_row_location_move_failure_is_done_with_warning(h, w):
+def test_ac_57_30_link_row_to_an_so_row_at_hq_skips_the_move(h, w):
+    res = h.run("link_row", w.params["link_row"])  # SO row at HQ = where the vendor already puts it
+    assert res.outcome == "done", res.error_code
+    assert h.steps() == [DEL_PO, PUT_PO]
+    (old_key, new_key), = res.replaced_lines
+    row = w.row_by_key(w.po_rows(), new_key)
+    assert row["FromSODtlKey"] == w.so_a and row["Location"] == "HQ"
+    assert w.row_by_key(w.po_rows(), w.p_free) is None
+
+
+def test_ac_57_30_link_row_location_move_failure_is_done_with_warning(h, w_far):
+    w = w_far
     h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "done" and "LOCATION_NOT_MOVED" in res.warnings
@@ -195,13 +216,22 @@ def test_ac_57_31_unlink_row_delete_then_add_without_link(h, w):
     assert row["FromSODtlKey"] == 0 and row["FromDocType"] == "" and row["Location"] == "BR1" and row["Qty"] == 4
 
 
-def test_ac_57_31_relink_row_moves_link_to_the_other_so_row(h, w):
+def test_ac_57_31_relink_row_moves_link_and_row_to_the_new_so_rows_location(h, w_far):
+    w = w_far
     res = h.run("relink_row", w.params["relink_row"])
     assert res.outcome == "done", res.error_code
     assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]
     (old_key, new_key), = res.replaced_lines
     row = w.row_by_key(w.po_rows(), new_key)
-    assert old_key == w.p_linked and row["FromSODtlKey"] == w.so_b and row["Location"] == "BR1"
+    assert old_key == w.p_linked and row["FromSODtlKey"] == w.so_b and row["Location"] == "BRW-AM"
+
+
+def test_ac_57_31_relink_to_an_so_row_at_hq_skips_the_move(h, w):
+    res = h.run("relink_row", w.params["relink_row"])
+    assert res.outcome == "done", res.error_code
+    assert h.steps() == [DEL_PO, PUT_PO]
+    (_old, new_key), = res.replaced_lines
+    assert w.row_by_key(w.po_rows(), new_key)["Location"] == "HQ"
 
 
 def test_ac_57_31_spo_link_unlink_relink(h, w):
@@ -306,7 +336,8 @@ def test_ac_57_33_fully_received_row_refused(h, w):
     assert h.vendor.writes() == []
 
 
-def test_ac_57_33_partly_received_link_row_edits_to_received_qty_and_adds_remainder_no_delete(h, w):
+def test_ac_57_33_partly_received_link_row_edits_to_received_qty_and_adds_remainder_no_delete(h, w_far):
+    w = w_far
     res = h.run("link_row", w.params["link_row"],
                 receipt_reader=lambda kind, doc, row: Decimal(1) if row["DtlKey"] == w.p_free else Decimal(0))
     assert res.outcome == "done", res.error_code
@@ -319,7 +350,7 @@ def test_ac_57_33_partly_received_link_row_edits_to_received_qty_and_adds_remain
     original = w.row_by_key(w.po_rows(), w.p_free)
     assert original["Qty"] == 1 and original["FromSODtlKey"] == 0
     linked = [r for r in w.po_rows() if r["FromSODtlKey"] == w.so_a and r["DtlKey"] != w.p_linked]
-    assert len(linked) == 1 and linked[0]["Qty"] == 3 and linked[0]["Location"] == "BR1"
+    assert len(linked) == 1 and linked[0]["Qty"] == 3 and linked[0]["Location"] == "BRW-AM"  # the SO row's place
 
 
 def test_ac_57_33_partly_received_unlink_keeps_link_on_received_part(h, w):
@@ -410,6 +441,16 @@ def test_ac_57_34_add_fails_after_delete_original_is_readded_and_outcome_recover
     row = w.row_by_key(w.po_rows(), new_key)
     assert row["Qty"] == 4 and row["ItemCode"] == "ITEM-A" and row["FromSODtlKey"] == 0 and row["Location"] == "BR1"
     assert h.alerts == []
+
+
+def test_ac_57_34_link_row_recovery_re_adds_at_the_snapshot_location_not_the_so_rows(h, w_far):
+    w = w_far
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    res = h.run("link_row", w.params["link_row"])
+    assert res.outcome == "recovered"
+    (old_key, new_key), = res.replaced_lines
+    row = w.row_by_key(w.po_rows(), new_key)
+    assert row["Location"] == "BR1" and row["FromSODtlKey"] == 0  # snapshot place, original (no) link
 
 
 def test_ac_57_34_recovery_restores_old_link_and_moves_back_to_snapshot_location(h, w):
@@ -636,7 +677,8 @@ def test_ac_57_40_split_link_keeps_plan_55_behaviour_and_is_idempotent(h, w):
 
 # ---- recording --------------------------------------------------------------------------------------------------------------
 
-def test_ac_57_19_every_vendor_write_of_an_operation_is_an_action_row_with_operation_and_step(h, w):
+def test_ac_57_19_every_vendor_write_of_an_operation_is_an_action_row_with_operation_and_step(h, w_far):
+    w = w_far
     res = h.run("link_row", w.params["link_row"])
     actions = h.op_actions(res)
     assert len(actions) == len(h.vendor.writes()) == 3
