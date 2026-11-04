@@ -13,6 +13,7 @@ Parts, top to bottom:
 - ``run_sync_job``          - the tick handler (poll / hints / final)
 """
 import hmac
+import html
 import json
 import logging
 import math
@@ -385,7 +386,7 @@ def _enqueue_tick(db: Session, tenant_id: str, sync_id: str, kind: str) -> Optio
     enqueue, then create + enqueue the tick job. None when the claim lost."""
     repo = MigrationSyncRepository(db)
     claimed = repo.update_if(
-        tenant_id, sync_id, [], running_job_id=_CLAIM_PLACEHOLDER
+        tenant_id, sync_id, [MigrationSync.running_job_id.is_(None)], running_job_id=_CLAIM_PLACEHOLDER
     )
     db.commit()
     if not claimed:
@@ -508,11 +509,15 @@ def record_hint(db: Session, sync_id: str, secret: str, body: bytes) -> str:
     repo = MigrationSyncRepository(db)
     sync = repo.get_unscoped(sync_id)
     expected = ""
-    if sync is not None:
-        try:
-            expected = str(decrypt_secret(sync.webhook_secret_enc).get("secret") or "")
-        except (InvalidToken, ValueError):
-            expected = ""
+    # An unknown sync id still pays one decrypt, so timing does not reveal
+    # whether the id exists.
+    ciphertext = sync.webhook_secret_enc if sync is not None else encrypt_secret({"secret": "-"})
+    try:
+        expected = str(decrypt_secret(ciphertext).get("secret") or "")
+    except (InvalidToken, ValueError):
+        expected = ""
+    if sync is None:
+        expected = ""
     # constant-time compare, run even when the sync is unknown
     matches = hmac.compare_digest(secret.encode("utf-8"), (expected or "\x00").encode("utf-8"))
     if sync is None or not expected or not matches:
@@ -524,7 +529,7 @@ def record_hint(db: Session, sync_id: str, secret: str, body: bytes) -> str:
 
     try:
         parsed = json.loads(body.decode("utf-8")) if body else None
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return "ignored"
     contact_id = _hint_id_from(parsed)
     if contact_id is None:
@@ -982,9 +987,12 @@ class _Tick:
                 f"The respond.io sync for {name} is paused because respond.io rejected the access token. "
                 "Update the connection's access token, then resume the sync."
             )
-            html = f"<p>{text}</p>"
+            html_body = (
+                f"<p>The respond.io sync for {html.escape(name)} is paused because respond.io rejected "
+                "the access token. Update the connection's access token, then resume the sync.</p>"
+            )
             email_service.enqueue_raw(
-                self.db, self.tenant_id, user.email, subject, html, text, template_key="migration_sync_paused"
+                self.db, self.tenant_id, user.email, subject, html_body, text, template_key="migration_sync_paused"
             )
         except Exception:  # noqa: BLE001 - mail trouble never fails the tick
             logger.exception("sync %s: could not enqueue the paused email", self.sync_id)
