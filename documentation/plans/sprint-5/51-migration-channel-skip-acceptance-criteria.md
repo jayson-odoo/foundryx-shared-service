@@ -25,3 +25,8 @@ target channel and the channel must be connectable afterwards.
   channel in the workspace, When an agent or a workflow sends to it, Then the send is
   refused with "No active channel is connected to this workspace." (no 500, no silent
   drop).
+- AC-SKIP-06 [BE][T] Given messages imported while their source channel was skipped,
+  When the migration runs again with that source channel mapped to a connected channel,
+  Then every earlier message from that source channel carries the channel, messages
+  from a still-skipped channel or with no source channel stay without one, the dry run
+  previews the count (messages Update) without writing, and a third run changes nothing.
