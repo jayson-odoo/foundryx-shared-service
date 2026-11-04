@@ -102,6 +102,10 @@ class WriteActionResult:
     document: Optional[Doc] = None
 
 
+class _SkipMove(Exception):
+    """Internal: the location move is not attempted (deadline passed)."""
+
+
 class _Stop(Exception):
     """Internal early exit carrying a finished result."""
 
@@ -361,6 +365,9 @@ class WriteBackService:
             return self._finish(row, outcome, INTERNAL_ERROR)
         finally:
             self.db.rollback()
+
+    def _expired(self) -> bool:
+        return time.monotonic() > self._deadline
 
     def _check_deadline(self, row: AcWriteAction) -> None:
         """No vendor call after the action's overall deadline: refused before any
@@ -647,8 +654,7 @@ class WriteBackService:
         after = self._read_back(plan, reader, before)
         if isinstance(after, WriteActionResult):
             return self._finish(row, OUTCOME_PENDING, after.error_code)
-        self._check_deadline(row)
-        row.after_json = after
+        row.after_json = after  # a read-back in hand is always verified, whatever the clock says
         is_split = plan.action == ACTION_LINK and any(
             not r.get("DtlKey") for r in body.get("Details") or []
         )
@@ -716,21 +722,24 @@ class WriteBackService:
         row.response_status = [first_status, None]
         row.after_json = [after1, None]
         self.db.commit()  # no transaction open during the second write
-        self._check_deadline(row)
         final, code = after1, LOCATION_NOT_MOVED
+        # The link is verified: past the deadline the move is simply not attempted
+        # (no vendor call after it) and the action still ends done.
         try:
+            if self._expired():
+                raise _SkipMove()
             response = client.put(EDIT_PO_PATH, body2)  # never retried
+        except _SkipMove:
+            pass
         except WriteTransportError as exc:
             row.response_json = [row.response_json[0], {"error": exc.code}]
         else:
             row.response_json = [row.response_json[0], _safe_body(response.body)]
             row.response_status = [first_status, response.status_code]
-            if response.ok:
+            if response.ok and not self._expired():
                 self.db.commit()
-                self._check_deadline(row)
                 after2 = self._read_back(plan, reader, before)
                 if not isinstance(after2, WriteActionResult):
-                    self._check_deadline(row)
                     row.after_json = [after1, after2]
                     final = after2
                     if verify_relocate(after1, after2, int(new_row["DtlKey"]), str(target), body2):
