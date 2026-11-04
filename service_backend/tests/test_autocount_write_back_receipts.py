@@ -34,6 +34,9 @@ from tests.test_autocount_write_back_operations import (  # noqa: F401
 )
 from tests.test_autocount_write_back_primitives import _line
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
+from tests.write_back_live_books import live_books_open  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("live_books_open")
 
 ENTITY = {"PO": "purchase_order", "SPO": "shipping_order", "SO": "sales_order"}
 QTY_FIELD = {"purchase_order": "qty_received", "shipping_order": "qty_received", "sales_order": "qty_delivered"}

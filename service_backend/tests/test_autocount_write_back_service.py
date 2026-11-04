@@ -34,6 +34,7 @@ from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.service import WriteBackService
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
+from tests.write_back_live_books import live_books_open  # noqa: F401
 from tests.write_back_caps import vendor_caps_all_on  # noqa: F401
 
 FIX = Path(__file__).parent / "fixtures" / "autocount_write_back"
@@ -511,7 +512,7 @@ def _assert_staged_readback_queued_for_remap(h, res):
     assert len(h.sink_calls) == 0
 
 
-def test_ac_55_25_done_stages_readback_for_remap(h):
+def test_ac_55_25_done_stages_readback_for_remap(h, live_books_open):
     _make_po_sql_sourced(h)
     res = h.link_split()
     assert res.outcome == "done"

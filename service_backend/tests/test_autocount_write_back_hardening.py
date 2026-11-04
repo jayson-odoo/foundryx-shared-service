@@ -62,6 +62,7 @@ from tests.write_back_host_pin import (  # noqa: F401
     pin_test_write_host,
 )
 from tests.write_back_caps import vendor_caps_all_on  # noqa: F401
+from tests.write_back_live_books import live_books_open  # noqa: F401
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -801,7 +802,7 @@ def _add_old_so(h, location, created_at):
     return twin
 
 
-def test_relocate_lookup_uses_the_newest_staged_so_record(vh):
+def test_relocate_lookup_uses_the_newest_staged_so_record(vh, live_books_open):
     h = vh
     dtl = _stranded(h)
     now = datetime.now(timezone.utc)
@@ -817,7 +818,7 @@ def test_relocate_lookup_uses_the_newest_staged_so_record(vh):
     assert h.ac.put_bodies[0]["Details"][0]["Location"] == "BRW-NEW"
 
 
-def test_relocate_lookup_refuses_two_equally_new_conflicting_records(vh):
+def test_relocate_lookup_refuses_two_equally_new_conflicting_records(vh, live_books_open):
     h = vh
     dtl = _stranded(h)
     same = datetime.now(timezone.utc)

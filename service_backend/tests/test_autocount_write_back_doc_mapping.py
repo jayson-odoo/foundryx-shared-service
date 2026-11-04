@@ -36,6 +36,8 @@ from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.service import WriteBackService
 from tests.test_autocount_write_back_service import DBNAME, Harness, _load
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
+from tests.write_back_live_books import live_books_open  # noqa: F401
+from tests.write_back_live_books import live_books_open  # noqa: F401
 
 PO_DOC_KEY = 12008
 
@@ -263,7 +265,7 @@ def test_ac_55_25_sink_failure_still_done_row_stays_staged(h, mode):
     assert h.staged_po().status == STAGED
 
 
-def test_ac_55_25_sql_db_company_gets_no_wrapper_mapping_and_no_push(h):
+def test_ac_55_25_sql_db_company_gets_no_wrapper_mapping_and_no_push(h, live_books_open):
     _add_config(h, SOURCE_IMPL_SQL_DB)
     sink = _Sink()
     res = _link(h, _service(h, sink))
@@ -283,7 +285,7 @@ def test_ac_55_25_company_without_entity_config_pushes(h):
     assert h.staged_po().status == STAGED_PUSHED
 
 
-def test_ac_55_25_sql_config_on_another_entity_does_not_block_po_push(h):
+def test_ac_55_25_sql_config_on_another_entity_does_not_block_po_push(h, live_books_open):
     h.db.add(AcEntityConfig(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, entity_type="sales_order",
         source_impl=SOURCE_IMPL_SQL_DB, etl_status="active", delivery_mode="push", source_config={},

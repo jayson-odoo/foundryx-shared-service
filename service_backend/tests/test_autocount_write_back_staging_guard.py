@@ -28,6 +28,7 @@ from modules.autocount.write_back.staging import STAGING_JOB_ID
 from tests.test_autocount_write_back_operations import OpHarness, World, db, h  # noqa: F401
 from tests.test_autocount_write_back_primitives import DB3, _line
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
+from tests.write_back_live_books import live_books_open  # noqa: F401
 
 SYNC_JOB = "sql-sync-job"
 
@@ -198,7 +199,7 @@ def _foreign_po(h, canonical=True):
     return w
 
 
-def test_ac_57_22_primitive_edit_answers_from_the_read_back_and_leaves_a_foreign_row_alone(h):
+def test_ac_57_22_primitive_edit_answers_from_the_read_back_and_leaves_a_foreign_row_alone(h, live_books_open):
     _foreign_po(h)
     before = _snap(_newest(h, "purchase_order", 7001))
     res = h.edit("PO", 7001, {"Remark1": "from write-back"})
@@ -208,7 +209,7 @@ def test_ac_57_22_primitive_edit_answers_from_the_read_back_and_leaves_a_foreign
     assert h.sink_calls == []
 
 
-def test_ac_57_22_primitive_add_line_leaves_a_foreign_row_alone(h):
+def test_ac_57_22_primitive_add_line_leaves_a_foreign_row_alone(h, live_books_open):
     _foreign_po(h)
     before = _snap(_newest(h, "purchase_order", 7001))
     res = h.service().add_line(**h.args("PO", doc_key=7001, line=_line("C", 1, 3.0)))
@@ -216,7 +217,7 @@ def test_ac_57_22_primitive_add_line_leaves_a_foreign_row_alone(h):
     assert _snap(_newest(h, "purchase_order", 7001)) == before and h.sink_calls == []
 
 
-def test_ac_57_22_operation_leaves_foreign_rows_alone_and_still_answers_done(h):
+def test_ac_57_22_operation_leaves_foreign_rows_alone_and_still_answers_done(h, live_books_open):
     w = _foreign_po(h)
     before = _snap(_newest(h, "purchase_order", 7001))
     res = h.run("link_row", w.params["link_row"])
@@ -226,7 +227,7 @@ def test_ac_57_22_operation_leaves_foreign_rows_alone_and_still_answers_done(h):
     assert h.sink_calls == []
 
 
-def test_ac_57_22_spo_operation_leaves_a_foreign_spo_row_alone(h):
+def test_ac_57_22_spo_operation_leaves_a_foreign_spo_row_alone(h, live_books_open):
     h.delete_on()
     w = World(h)
     row = _newest(h, "shipping_order", 7003)
@@ -238,7 +239,7 @@ def test_ac_57_22_spo_operation_leaves_a_foreign_spo_row_alone(h):
     assert _snap(_newest(h, "shipping_order", 7003)) == before and h.sink_calls == []
 
 
-def test_ac_57_22_plan_55_split_link_leaves_a_foreign_row_alone(h):
+def test_ac_57_22_plan_55_split_link_leaves_a_foreign_row_alone(h, live_books_open):
     w = _foreign_po(h)
     before = _snap(_newest(h, "purchase_order", 7001))
     svc = WriteBackService(h.db, **h.factories())
@@ -248,7 +249,7 @@ def test_ac_57_22_plan_55_split_link_leaves_a_foreign_row_alone(h):
     assert _snap(_newest(h, "purchase_order", 7001)) == before and h.sink_calls == []
 
 
-def test_ac_57_22_a_foreign_so_row_is_left_alone_when_the_so_is_edited(h):
+def test_ac_57_22_a_foreign_so_row_is_left_alone_when_the_so_is_edited(h, live_books_open):
     doc = h.seed_doc("SO", 5001, [_line("A", 10, 5.0)])
     row = _newest(h, "sales_order", 5001)
     row.job_id = SYNC_JOB
@@ -260,7 +261,7 @@ def test_ac_57_22_a_foreign_so_row_is_left_alone_when_the_so_is_edited(h):
     assert doc
 
 
-def test_ac_57_22_no_second_row_is_added_next_to_a_foreign_one(h):
+def test_ac_57_22_no_second_row_is_added_next_to_a_foreign_one(h, live_books_open):
     _foreign_po(h)
     count = h.db.query(AcStagedRecord).filter(AcStagedRecord.source_ref == "AED_TEST:7001").count()
     h.edit("PO", 7001, {"Remark1": "x"})
