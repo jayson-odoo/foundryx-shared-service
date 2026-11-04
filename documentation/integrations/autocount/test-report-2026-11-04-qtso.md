@@ -53,3 +53,26 @@ Nine writes, every one recorded exactly.
 
 So today AutoCount refuses, with a clear message, any cut of a sales order line below what purchase order
 lines have taken from it. We expect a delete of such a line to be refused the same way (AQ35).
+
+## Runner suite through our write layer (4 Nov 2026, db3, tag 1104v)
+
+Our db3 runner (`write_back/runner.py`, `--suite qtso`) ran these cases through the shared service's own
+primitives and operations, debtor 300-S057; every vendor write was recorded exactly (private evidence file).
+
+| Case | What | Result | Documents |
+|---|---|---|---|
+| Q01 | Create a quotation, once with `"<<New>>"` and once with our number | PASS | QT-000005 (DocKey 12112), FXT-1104v-QT (12114) |
+| Q02 | Edit the quotation: header, qty, unit price, discount, location | PASS | 12114 |
+| Q03 | Add a quotation line, then move a line's location | PASS | new row 12116 |
+| Q04 | Sales order from the quotation row | PASS with warning `QT_ROW_LINK_UNCONFIRMED` | FXT-1104v-SO (12117) |
+| Q05 | Edit the sales order and add a line | PASS | 12117 |
+| Q06 / Q07 | Cancel quotation / sales order | refused by us before any call (`VENDOR_UNSUPPORTED`, AQ2) | none |
+| Q08 | Delete a sales order line | refused by us before any call (waiting for your delete door) | none |
+| Q09 | Link / unlink / relink a PO line | refused by us before any call (needs the delete door) | none |
+
+Two findings from the earlier attempts (tags 1104s, 1104t, 1104u, also on db3):
+- A sales order line sent without the full row shape of your sample (`FullTransferOption " "`,
+  `FullTransferFromDocList ""`, `YourPONo`, `ProjNo`, `FOCQty`, `Discount`, `TaxCode`, `Desc2`) is answered 200
+  `Created Successful.` / `Done Edit.` but reads back with no row. Is that intended? (AQ38)
+- A sales order line taken from a quotation line takes that line's unit price and location, whatever we send.
+  Is that intended, and can a different price be sent on the transfer? (AQ39)

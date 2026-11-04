@@ -109,7 +109,9 @@ right link (or none). We are building our side now so that your delete API plugs
     FXT-1104q-SO1. Please confirm it is supported (it is not in your notes).
 34. Clean-up on db3: please cancel our test documents FXT-1104q-* and the quotation numbered `SO390188`
     (DocKey 12067, Ref `P-DOC1-FXT1104q`), which our probe created by mistake with a wrong DocNo, and
-    quotation QT-000001 (DocKey 12069, Ref `P-DOC2-FXT1104q`, our test of `DocNo "<<New>>"`). We cannot
+    quotation QT-000001 (DocKey 12069, Ref `P-DOC2-FXT1104q`, our test of `DocNo "<<New>>"`), and the
+    runner documents of 4 Nov: QT-000002 to QT-000005, FXT-1104r-*, FXT-1104s-* (including FXT-FXT-1104s-SO,
+    which has no row), FXT-1104t-*, FXT-1104u-*, FXT-1104v-*. We cannot
     cancel through the API today and never delete. Your sales order SO390188 was not touched.
 
 ## Sales order line with a linked purchase order line (db3, 4 Nov 2026, FXT-1104r-SO1 / FXT-1104r-PO1)
@@ -123,3 +125,11 @@ right link (or none). We are building our side now so that your delete API plugs
     has a linked purchase order line? (We never send item changes on existing lines.)
 37. Business refusals arrive as HTTP 500 with `ExceptionMessage` (credit limit, transferred qty). Could they
     use 4xx, so a refusal is told apart from a server fault?
+
+## Found by our runner (4 Nov 2026, db3)
+
+38. A sales order line without the full row shape of your sample (`FullTransferOption " "`,
+    `FullTransferFromDocList ""`, `YourPONo`, `ProjNo`, `FOCQty`, `Discount`, `TaxCode`, `Desc2`) is answered 200
+    but reads back with no row. Could such a body be refused with an error instead of dropping the row?
+39. A sales order line taken from a quotation line takes that line's unit price and location whatever we send.
+    Intended? Can a different price or location be sent on the transfer?
