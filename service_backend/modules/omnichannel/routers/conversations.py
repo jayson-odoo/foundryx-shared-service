@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.dependencies import require_permission
+from app.dependencies import require_module, require_permission
 from app.models.user import User
 from app.services.status_machine import (
     TransitionConditionsNotMet,
@@ -868,6 +868,7 @@ def react_to_message(
 def erase_contact(
     contact_id: str,
     current_user: User = Depends(require_permission("contacts.erase")),
+    _module: User = Depends(require_module("omnichannel")),
     db: Session = Depends(get_db),
 ) -> ContactEraseResponse:
     """Erase one contact for good (plan 56 C, PDPA). A native user spans the

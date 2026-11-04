@@ -886,6 +886,11 @@ class _Tick:
         nested = self.db.begin_nested()
         try:
             outcome = self.writer.write_contact(source_contact)
+            if outcome.skipped:
+                # Erased earlier: nothing to import or fetch for this contact.
+                nested.commit()
+                self.db.commit()
+                return
             local = (
                 self.db.query(ContactModel)
                 .filter(ContactModel.id == outcome.contact_id, ContactModel.tenant_id == self.tenant_id)

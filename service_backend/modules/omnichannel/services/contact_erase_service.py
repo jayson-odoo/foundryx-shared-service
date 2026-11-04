@@ -22,6 +22,8 @@ from ..repositories.contact_erase_repository import (
     ENTITY_CONTACT,
     ContactEraseRepository,
     local_key_from_url,
+    purgeable_key,
+    split_connection_key,
 )
 from . import realtime
 
@@ -93,13 +95,13 @@ class ContactEraseService:
             raise ContactNotFound()
         erased_at = datetime.now(timezone.utc)
         try:
-            messages, keys = self._erase_rows(tenant_id, workspace_id, contact_id)
+            messages, keys, channel_ids = self._erase_rows(tenant_id, workspace_id, contact_id)
             self.db.commit()
         except Exception:
             self.db.rollback()
             raise
         result = EraseResult(contact_id, erased_at, messages, len(keys))
-        self._after_commit(tenant_id, workspace_id, result, sorted(keys))
+        self._after_commit(tenant_id, workspace_id, result, sorted(keys), channel_ids)
         return result
 
     # ── one transaction ──────────────────────────────────────────────────────
@@ -108,12 +110,18 @@ class ContactEraseService:
         msgs = repo.messages(contact_id, tenant_id)
         message_ids = [m[0] for m in msgs]
         keys: Set[str] = set()
-        for _mid, media_key, media_url in msgs:
-            if media_key:
-                keys.add(media_key)
-            legacy = local_key_from_url(media_url)
-            if legacy:
-                keys.add(legacy)
+        # A file is purged only when it sits in the tenant's own storage area
+        # (and, through a connection, only that tenant's own connection). A
+        # legacy url on a migrated row is never a purge target.
+        migrated = repo.migrated_message_ids(message_ids, tenant_id)
+        for mid, media_key, media_url in msgs:
+            candidates = [media_key]
+            if mid not in migrated:
+                candidates.append(local_key_from_url(media_url))
+            for key in candidates:
+                if key and purgeable_key(key, tenant_id) and self._connection_is_own(key, tenant_id):
+                    keys.add(key)
+        channel_ids = repo.identity_channel_ids(contact_id, tenant_id)
         event_ids = repo.event_ids(contact_id, tenant_id)
         identity_ids = repo.identity_ids(contact_id, tenant_id)
 
@@ -130,10 +138,22 @@ class ContactEraseService:
         self._migration_refs(tenant_id, workspace_id, contact_id, message_ids + event_ids + identity_ids)
         self._ideation_cleanup(tenant_id, contact_id)
         self._reduce_deliveries(tenant_id, workspace_id, contact_id)
+        self._reduce_reaction_deliveries(tenant_id, workspace_id, contact_id, message_ids)
         repo.flush()
         repo.delete_contact(contact_id, tenant_id, workspace_id)
         repo.flush()
-        return len(message_ids), keys
+        return len(message_ids), keys, channel_ids
+
+    def _connection_is_own(self, key: str, tenant_id: str) -> bool:
+        """A `conn:` key is purged only through a connection of the erasing
+        tenant itself (never the platform default)."""
+        connection_id, _raw = split_connection_key(key)
+        if connection_id is None:
+            return True
+        from app.repositories.connection_repository import ConnectionRepository
+
+        connection = ConnectionRepository(self.db).get_by_id(connection_id)
+        return connection is not None and connection.tenant_id == tenant_id
 
     def _cancel_waits(self, tenant_id: str, contact_id: str) -> None:
         from app.workflow_engine.parking import cancel_parked_run
@@ -153,11 +173,13 @@ class ContactEraseService:
                 self.repo.delete_ref(ref)
 
     def _ideation_cleanup(self, tenant_id: str, contact_id: str) -> None:
-        from app.module_platform.capabilities import resolve_capability
+        # Whatever the provider's activation state: the link must go with the
+        # contact, so the registered handler is used directly (it scopes by tenant).
+        from app.module_platform.capabilities import list_capabilities
 
-        handler = resolve_capability(self.db, tenant_id, IDEATION_CLEANUP_CAPABILITY, 1)
-        if handler is not None:
-            handler(self.db, tenant_id, {"contactId": contact_id})
+        for cap in list_capabilities():
+            if cap.key == IDEATION_CLEANUP_CAPABILITY and cap.version == 1:
+                cap.handler(self.db, tenant_id, {"contactId": contact_id})
 
     def _reduce_deliveries(self, tenant_id: str, workspace_id: str, contact_id: str) -> None:
         for row in self.repo.deliveries_naming(contact_id, tenant_id):
@@ -168,9 +190,33 @@ class ContactEraseService:
                 continue
             row.payload_json = _ids_only(payload, contact_id)  # fresh dict: JSON column
 
+    def _reduce_reaction_deliveries(
+        self, tenant_id: str, workspace_id: str, contact_id: str, message_ids: List[str]
+    ) -> None:
+        """Reaction events name a message, not the contact: they are matched by
+        the erased messages and reduced to ids (the event id loses the
+        reactor part too)."""
+        wanted = set(message_ids)
+        for row in self.repo.reaction_deliveries(message_ids, tenant_id):
+            payload = row.payload_json
+            data = payload.get("data") if isinstance(payload, dict) else None
+            target = (data or {}).get("targetMessageId") or (data or {}).get("messageId")
+            if target not in wanted or payload.get("workspaceId") not in (None, workspace_id):
+                continue
+            reduced = {k: payload[k] for k in _ENVELOPE_KEYS if k in payload}
+            reduced["id"] = f"{target}:erased"
+            reduced["data"] = {"contactId": contact_id, "targetMessageId": target}
+            row.payload_json = reduced
+            row.event_id = f"{target}:erased"
+
     # ── after the commit ─────────────────────────────────────────────────────
     def _after_commit(
-        self, tenant_id: str, workspace_id: str, result: EraseResult, keys: List[str]
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        result: EraseResult,
+        keys: List[str],
+        channel_ids: List[str],
     ) -> None:
         try:
             realtime.publish(workspace_id, {"type": "contact.erased", "contactId": result.contact_id})
@@ -186,6 +232,7 @@ class ContactEraseService:
                 EVENT_CONTACT_ERASED,
                 f"{result.contact_id}:erased",
                 {"contactId": result.contact_id, "erasedAt": _wire(result.erased_at)},
+                also_channel_ids=channel_ids,
             )
         except Exception:  # noqa: BLE001
             logger.warning("contact.erased webhook fan-out failed")

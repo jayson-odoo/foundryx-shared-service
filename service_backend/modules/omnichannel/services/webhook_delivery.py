@@ -134,6 +134,7 @@ def _fan_out(
     event_type: str,
     event_id: str,
     data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
+    extra_channel_ids: Optional[List[str]] = None,
 ) -> int:
     """Shared body of ``enqueue_event`` / ``enqueue_workspace_event``. Creates
     durable delivery rows + queues each POST. Failure-isolated: never raises.
@@ -141,6 +142,13 @@ def _fan_out(
     subscribes, so a scope with no subscriber pays nothing to build the payload."""
     try:
         endpoints = _active_endpoints(db, tenant_id, workspace_id, channel_id, event_type)
+        # Further channels whose own endpoints are also told: one delivery per endpoint.
+        seen = {ep.id for ep in endpoints}
+        for extra in extra_channel_ids or []:
+            for ep in _active_endpoints(db, tenant_id, workspace_id, extra, event_type):
+                if ep.id not in seen:
+                    seen.add(ep.id)
+                    endpoints.append(ep)
         if not endpoints:
             return 0
         # Same state check as the key routes; an error here is logged below.
@@ -208,10 +216,15 @@ def enqueue_workspace_event(
     event_type: str,
     event_id: str,
     data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
+    also_channel_ids: Optional[List[str]] = None,
 ) -> int:
-    """Fan an event that belongs to no channel to the workspace's all-channels
-    endpoints only (envelope ``channelId`` is null). Never raises."""
-    return _fan_out(db, tenant_id, workspace_id, None, event_type, event_id, data)
+    """Fan an event that belongs to no channel (envelope ``channelId`` is null)
+    to the workspace's all-channels endpoints, plus the own endpoints of
+    ``also_channel_ids`` when given (each endpoint once). Never raises."""
+    return _fan_out(
+        db, tenant_id, workspace_id, None, event_type, event_id, data,
+        extra_channel_ids=also_channel_ids,
+    )
 
 
 def _post(

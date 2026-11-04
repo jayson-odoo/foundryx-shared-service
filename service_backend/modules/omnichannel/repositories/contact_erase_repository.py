@@ -43,11 +43,46 @@ def local_key_from_url(url: Optional[str]) -> Optional[str]:
     return None
 
 
+def own_area_prefixes(tenant_id: str) -> Tuple[str, str]:
+    """The storage areas a tenant's own files are written under."""
+    return (f"omnichannel/{tenant_id}/", f"omnichannel/migration/{tenant_id}/")
+
+
+def _like_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _safe_raw(raw: str) -> bool:
+    if not raw or "\x00" in raw or "\\" in raw or raw.startswith(("/", "~")):
+        return False
+    return ".." not in raw.split("/")
+
+
+def split_connection_key(key: str) -> Tuple[Optional[str], str]:
+    """`conn:<id>:<raw>` -> (id, raw); a bare key -> (None, key)."""
+    if key.startswith("conn:") and key.count(":") >= 2:
+        _, connection_id, raw = key.split(":", 2)
+        return connection_id, raw
+    return None, key
+
+
+def purgeable_key(key: Optional[str], tenant_id: str) -> bool:
+    """THE one rule for which stored keys an erase may delete (and count): a key
+    in the tenant's own storage area, free of path tricks. A `conn:` key is
+    judged by its raw part; the connection's owner is checked at purge time."""
+    if not key:
+        return False
+    _connection_id, raw = split_connection_key(key)
+    return _safe_raw(raw) and any(raw.startswith(p) for p in own_area_prefixes(tenant_id))
+
+
 class ContactEraseRepository:
     def __init__(self, db: Session):
         self.db = db
 
     def get_contact(self, contact_id: str, tenant_id: str, workspace_id: str) -> Optional[Contact]:
+        """The contact row, held FOR UPDATE: a message arriving meanwhile waits
+        for the erase, so the files collected below are the files that go."""
         return (
             self.db.query(Contact)
             .filter(
@@ -55,8 +90,35 @@ class ContactEraseRepository:
                 Contact.tenant_id == tenant_id,
                 Contact.workspace_id == workspace_id,
             )
+            .with_for_update()
             .first()
         )
+
+    def identity_channel_ids(self, contact_id: str, tenant_id: str) -> List[str]:
+        return sorted(
+            {
+                r[0]
+                for r in self.db.query(ContactChannelIdentity.channel_id).filter(
+                    ContactChannelIdentity.tenant_id == tenant_id,
+                    ContactChannelIdentity.contact_id == contact_id,
+                )
+                if r[0]
+            }
+        )
+
+    def reaction_deliveries(self, message_ids: List[str], tenant_id: str) -> List[WebhookDelivery]:
+        rows: List[WebhookDelivery] = []
+        for chunk in _chunks(message_ids, 40):
+            rows.extend(
+                self.db.query(WebhookDelivery)
+                .filter(
+                    WebhookDelivery.tenant_id == tenant_id,
+                    WebhookDelivery.event_type == "message.reaction",
+                    or_(*[cast(WebhookDelivery.payload_json, String).like(f"%{m}%") for m in chunk]),
+                )
+                .all()
+            )
+        return rows
 
     def get_contact_in_tenant(self, contact_id: str, tenant_id: str) -> Optional[Contact]:
         return (
@@ -69,23 +131,45 @@ class ContactEraseRepository:
         self, contact_ids: List[str], tenant_id: str
     ) -> Dict[str, Tuple[int, int]]:
         """`{contact_id: (messages, files)}` for a page, in ONE grouped query.
-        Every message counts (notes included); a file is a message with a
-        `media_key` or a legacy local `media_url` (same rule as the erase)."""
+        Every message counts (notes included). A file is a message whose
+        `media_key`, or whose legacy local `media_url` (not on a migrated
+        row), sits in the tenant's own storage area: the same rule the purge
+        keeps to (`purgeable_key`)."""
         from app.config import settings
 
         if not contact_ids:
             return {}
-        local_prefix = f"{settings.public_base_url}{MEDIA_PATH}"
-        has_file = case(
-            (
-                or_(
-                    and_(ConversationMessage.media_key.isnot(None), ConversationMessage.media_key != ""),
-                    ConversationMessage.media_url.startswith(local_prefix, autoescape=True),
-                ),
-                1,
-            ),
-            else_=0,
+        areas = own_area_prefixes(tenant_id)
+        url_base = f"{settings.public_base_url}{MEDIA_PATH}"
+        key_ok = or_(
+            *[ConversationMessage.media_key.startswith(p, autoescape=True) for p in areas],
+            *[
+                ConversationMessage.media_key.like(f"conn:%:{_like_escape(p)}%", escape="\\")
+                for p in areas
+            ],
         )
+        migrated = (
+            self.db.query(MigrationRef.id)
+            .filter(
+                MigrationRef.tenant_id == tenant_id,
+                MigrationRef.entity_type == "message",
+                MigrationRef.local_id == ConversationMessage.id,
+            )
+            .exists()
+        )
+        url_ok = and_(
+            ~migrated,
+            or_(
+                *[ConversationMessage.media_url.startswith(url_base + p, autoescape=True) for p in areas],
+                *[
+                    ConversationMessage.media_url.like(
+                        f"{_like_escape(url_base)}conn:%:{_like_escape(p)}%", escape="\\"
+                    )
+                    for p in areas
+                ],
+            ),
+        )
+        has_file = case((or_(key_ok, url_ok), 1), else_=0)
         rows = (
             self.db.query(
                 ConversationMessage.contact_id,
@@ -100,6 +184,19 @@ class ContactEraseRepository:
             .all()
         )
         return {cid: (int(m), int(f)) for cid, m, f in rows}
+
+    def migrated_message_ids(self, message_ids: List[str], tenant_id: str) -> set:
+        found: set = set()
+        for chunk in _chunks(message_ids):
+            found.update(
+                r[0]
+                for r in self.db.query(MigrationRef.local_id).filter(
+                    MigrationRef.tenant_id == tenant_id,
+                    MigrationRef.entity_type == "message",
+                    MigrationRef.local_id.in_(chunk),
+                )
+            )
+        return found
 
     def messages(self, contact_id: str, tenant_id: str) -> List[Tuple[str, Optional[str], Optional[str]]]:
         """(id, media_key, media_url) of every message of the contact."""
