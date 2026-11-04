@@ -45,6 +45,28 @@ def _client_error(code, status):
     )
 
 
+def _client_error_no_metadata(code):
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": code, "Message": "x"}}, "GetObject")
+
+
+def _no_credentials():
+    from botocore.exceptions import NoCredentialsError
+
+    return NoCredentialsError()
+
+
+def _id(exc):
+    from botocore.exceptions import ClientError
+
+    if isinstance(exc, ClientError):
+        meta = exc.response.get("ResponseMetadata", {})
+        code = exc.response["Error"]["Code"]
+        return f"ClientError-{meta.get('HTTPStatusCode', 'nometa')}-{code}"
+    return type(exc).__name__
+
+
 def _transport_errors():
     from botocore.exceptions import (
         ConnectionClosedError,
@@ -67,6 +89,8 @@ def _transport_errors():
         _client_error("InternalError", 500),
         _client_error("SlowDown", 503),
         _client_error("ServiceUnavailable", 503),
+        _client_error("TooManyRequests", 429),
+        _client_error("SlowDown", 429),
     ]
 
 
@@ -76,6 +100,8 @@ def _missing_errors():
         _client_error("NotFound", 404),
         _client_error("AccessDenied", 403),
         _client_error("BadRequest", 400),
+        _client_error_no_metadata("X"),
+        _no_credentials(),
     ]
 
 
@@ -88,11 +114,10 @@ class _RaisingClient(StubS3Client):
         raise self.exc
 
 
-@pytest.mark.parametrize("idx", range(10))
-def test_fetch_get_object_transport_failure_raises_storage_unavailable(idx):
+@pytest.mark.parametrize("exc", _transport_errors(), ids=_id)
+def test_fetch_get_object_transport_failure_raises_storage_unavailable(exc):
     from app.services.storage import StorageUnavailable
 
-    exc = _transport_errors()[idx]
     with pytest.raises(StorageUnavailable) as ei:
         adapter(client=_RaisingClient(exc)).fetch("k.png")
     assert isinstance(ei.value, OSError)
@@ -100,11 +125,10 @@ def test_fetch_get_object_transport_failure_raises_storage_unavailable(idx):
     assert ei.value.__cause__ is exc
 
 
-@pytest.mark.parametrize("idx", range(4))
-def test_fetch_get_object_missing_or_forbidden_stays_file_not_found(idx):
+@pytest.mark.parametrize("exc", _missing_errors(), ids=_id)
+def test_fetch_get_object_missing_or_forbidden_stays_file_not_found(exc):
     from app.services.storage import StorageUnavailable
 
-    exc = _missing_errors()[idx]
     with pytest.raises(FileNotFoundError) as ei:
         adapter(client=_RaisingClient(exc)).fetch("k.png")
     assert type(ei.value) is FileNotFoundError
@@ -145,12 +169,12 @@ def test_media_route_unreachable_bucket_503_for_api_key(client, session_factory,
     assert r.json() == {"detail": PLAIN}
 
 
-@pytest.mark.parametrize("idx", [0, 2])
+@pytest.mark.parametrize("exc", _missing_errors()[:3], ids=_id)
 def test_media_route_missing_or_forbidden_object_still_404(
-    client, session_factory, monkeypatch, idx
+    client, session_factory, monkeypatch, exc
 ):
     _, msg_id = _seed_message(client, session_factory)
-    _patch_client(monkeypatch, _missing_errors()[idx])
+    _patch_client(monkeypatch, exc)
     r = client.get(f"/omnichannel/media/{msg_id}", headers=_auth(client))
     assert r.status_code == 404
     assert r.json() == {"detail": "Not found"}
