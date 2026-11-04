@@ -687,3 +687,52 @@ def test_media_url_on_a_foreign_host_with_our_path_is_not_a_stored_file(rig):
     _add_message(rig.sf, cid2, rig.channel, media_url=PUBLIC + own)
     res2 = rig.erase(cid2)
     assert res2.json()["files"] == 1 and not _exists(own)
+
+
+def test_minted_looking_key_inside_another_tenants_area_is_neither_counted_nor_purged(
+    rig, client, session_factory, monkeypatch
+):
+    import app.database as appdb
+    from app.integrations.s3_provider import S3CompatibleAdapter
+    from app.services import storage as storage_module
+    from tests.test_storage_providers import StubS3Client
+    from tests.test_storage_resolution import _storage_connection
+
+    s3 = StubS3Client()
+    monkeypatch.setattr(S3CompatibleAdapter, "_build_client", lambda self: s3)
+    storage_module.clear_adapter_cache()
+    monkeypatch.setattr(appdb, "SessionLocal", session_factory)
+    db = session_factory()
+    try:
+        platform = _storage_connection(db, PLATFORM_TENANT_ID).id
+    finally:
+        db.close()
+    local = _file(f"omnichannel/{OTHER}/inbound-3fa9c2b1.png")
+    remote_raw = f"omnichannel/{OTHER}/inbound-5c2e9a10.png"
+    s3.objects[remote_raw] = b"x"
+    cid = _contact(rig.sf, rig.ws, "+60100000621")
+    _add_message(rig.sf, cid, rig.channel, media_key=f"omnichannel/{OTHER}/inbound-3fa9c2b1.png")
+    _add_message(rig.sf, cid, rig.channel, media_key=f"conn:{platform}:{remote_raw}")
+    staff = client.get(f"/omnichannel/contacts/{cid}", headers=_auth(client))
+    assert staff.status_code == 200 and staff.json()["fileCount"] == 0
+    res = rig.erase(cid)
+    assert res.status_code == 200, res.text
+    assert res.json()["files"] == 0
+    assert _exists(local)
+    assert remote_raw in s3.objects
+
+
+def test_minted_bare_key_on_a_migrated_row_is_not_counted_on_the_staff_reads(rig, client):
+    minted = _file("converted-8a1c4e77.png")
+    cid = _contact(rig.sf, rig.ws, "+60100000622")
+    mid = _add_message(rig.sf, cid, rig.channel, media_key=minted)
+    _migrated(rig.sf, rig.ws, mid, "rio-m-r2b")
+    hdr = _auth(client)
+    one = client.get(f"/omnichannel/contacts/{cid}", headers=hdr)
+    assert one.status_code == 200 and one.json()["fileCount"] == 0
+    from tests.test_omnichannel_contact_counts import _list
+
+    row = _list(client, rig)[cid]
+    assert row["fileCount"] == 0
+    assert rig.erase(cid).json()["files"] == 0  # same number as the erase
+    assert _exists(minted)
