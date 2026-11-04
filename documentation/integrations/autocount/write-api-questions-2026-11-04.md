@@ -1,6 +1,6 @@
-# AutoCount write API: questions from FoundryX (4 Nov 2026)
+# AutoCount write API: questions from Foundryx (4 Nov 2026)
 
-Context: FoundryX will write PO line links (PO line <-> SO line, SPO line <-> PO line) and later
+Context: Foundryx will write PO line links (PO line <-> SO line, SPO line <-> PO line) and later
 Quotation / Sales Order create, edit and cancel through the hapi wrapper, testing on `db3` only.
 Every observation below is from read-only GETs on 4 Nov 2026; doc numbers refer to your test set.
 

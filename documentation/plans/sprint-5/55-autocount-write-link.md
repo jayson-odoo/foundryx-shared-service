@@ -82,7 +82,7 @@ Write rules (vendor notes): POST = new document, no DocKey / DtlKey. PUT = edit 
   (`services/scm/stock_debt_service.py:642-669` drops `source_ref`); supply rows live only in the live
   drill (`schemas/stock_debt.py:266-310`). A link action must resolve `sales_order_lines.source_ref`.
 - Reserve today is CRM-only (decision columns, or "Request CS to reserve" -> `OrderInquiryLink`); no
-  call to FoundryX or AutoCount. CRM's manual Link dialog writes `scm.order_link_claim` source `manual`;
+  call to Foundryx or AutoCount. CRM's manual Link dialog writes `scm.order_link_claim` source `manual`;
   AutoCount ingest writes source `autocount` from `from_so_line_ref` (`order_link_service.py:526-612`).
 - CRM -> SS client to reuse: `FoundryxAutocountClient` (`services/foundryx_autocount_client.py:73-131`,
   `X-API-Key`, generic `_request`). Ingest never writes back (`document_ingest_service.py:53-54`), so a
