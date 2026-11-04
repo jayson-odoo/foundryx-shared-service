@@ -228,3 +228,5 @@ Only these differ:
   holding `autocount.pull.manage` (who can issue a key) can read a GRN snapshot through the
   gateway even without `autocount.sync.read`. The `sync.read` gate protects read-only operators
   only. A per-key entity allowlist is the fix if this ever matters.
+
+- 2026-11-04: the write routes (`po-links`, `po-links/unlink`, `spo-links/unlink`) share this gateway's auth and error body; their contract is `55-autocount-write-link-contract.md`.
