@@ -11,6 +11,9 @@ from typing import Dict, Optional
 from app.config import settings
 
 _TTL_SECONDS = 24 * 60 * 60
+# Bounded socket waits so an unreachable Redis falls back to memory quickly.
+_SOCKET_CONNECT_TIMEOUT_SECONDS = 1.0
+_SOCKET_READ_TIMEOUT_SECONDS = 1.0
 # Sentinel stored while a send is in-flight - a second request seeing it knows a
 # concurrent identical send is running (returns 409 rather than double-sending).
 PENDING = "__pending__"
@@ -37,7 +40,12 @@ class IdempotencyStore:
         try:
             import redis
 
-            return redis.Redis.from_url(settings.redis_url, decode_responses=True)
+            return redis.Redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=_SOCKET_CONNECT_TIMEOUT_SECONDS,
+                socket_timeout=_SOCKET_READ_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001 - any failure → memory fallback
             return None
 

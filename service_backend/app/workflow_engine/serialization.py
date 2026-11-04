@@ -40,6 +40,11 @@ class LeaseClient(Protocol):
     def release(self, key: str, token: str) -> bool: ...
 
 
+# Bounded socket waits; the read bound stays far below the renew interval.
+_LEASE_SOCKET_CONNECT_TIMEOUT_SECONDS = 1.0
+_LEASE_SOCKET_READ_TIMEOUT_SECONDS = 2.0
+
+
 class RedisLeaseClient:
     """Token-owned Redis lease. Renew/release never affect a newer owner."""
 
@@ -62,7 +67,12 @@ class RedisLeaseClient:
 
             from app.config import settings
 
-            client = Redis.from_url(settings.redis_url, decode_responses=True)
+            client = Redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=_LEASE_SOCKET_CONNECT_TIMEOUT_SECONDS,
+                socket_timeout=_LEASE_SOCKET_READ_TIMEOUT_SECONDS,
+            )
         self.client = client
 
     def acquire(self, key: str, token: str, ttl_seconds: int) -> bool:
