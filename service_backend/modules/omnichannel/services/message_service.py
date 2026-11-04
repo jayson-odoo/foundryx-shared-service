@@ -73,6 +73,19 @@ class SendRejected(Exception):
         self.code = code
 
 
+class MetaRateLimited(Exception):
+    """Meta throttled a call made inside the request (a reaction): nothing was
+    stored, the caller should retry later. ``retry_after`` is whole seconds
+    (>= 1), Meta's own value when it sent one."""
+
+    def __init__(self, retry_after: Optional[int] = None):
+        from ..adapters.meta_graph import client_retry_after
+
+        super().__init__("Meta is rate limiting this channel. Try again shortly.")
+        self.message = str(self)
+        self.retry_after = client_retry_after(retry_after)
+
+
 class QuickReplyNotFound(Exception):
     """The quick reply doesn't exist in this tenant + workspace (→ 404)."""
 
@@ -915,6 +928,8 @@ class MessageService:
                 reaction={"message_id": target.external_message_id, "emoji": clean},
             )
         except SendError as exc:
+            if getattr(exc, "rate_limited", False):
+                raise MetaRateLimited(exc.retry_after) from exc
             raise SendRejected(str(exc)) from exc
         except channel_addressing.NoChannelIdentity as exc:
             raise SendRejected(str(exc)) from exc
