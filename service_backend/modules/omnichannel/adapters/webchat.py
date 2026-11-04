@@ -109,7 +109,7 @@ class WebChatAdapter:
     def parse_inbound(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         """The visitor-POST -> canonical event-dict translation
         (`services/webchat_visitor_service.py` builds `payload` and calls
-        `InboundService.process_payload` directly - there is no webhook for
+        `InboundService.process_direct` directly - there is no webhook for
         this channel type, so `payload` is already the house canonical shape
         the caller assembled, not a Meta envelope). ALWAYS exactly one
         `"message"` event: web chat carries no delivery-receipt or reaction

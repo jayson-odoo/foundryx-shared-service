@@ -5,7 +5,7 @@ Runs inside the Celery worker (the webhook endpoint only fast-ACKs + enqueues).
 All logic takes an explicit db session so tests drive it directly.
 
 Plan 32 (A7a): ONE ingress serves WhatsApp, Messenger and Instagram
-(D-A7-2) - ``_resolve_channel`` dispatches on the payload's ``object`` field
+(D-A7-2) - ``_resolve_parts`` dispatches on the payload's ``object`` field
 before falling back to the URL id; ``_resolve_contact`` runs the phone stitch
 ONLY for WhatsApp (D-A7-4, a PSID/IGSID carries no phone); every inbound
 message stamps the identity's own re-engagement window via
@@ -76,6 +76,8 @@ def _routed_parts(payload: Dict[str, Any]) -> List[RoutedPart]:
             continue
         entry_id = _ident(entry.get("id"))
         if is_page:
+            if entry_id is None and entry.get("id") is not None:
+                entry_id = ""  # present but unusable: still names an identifier
             parts.append((_PAGE, entry_id, {"object": obj, "entry": [entry]}))
             continue
         changes = entry.get("changes")
@@ -92,8 +94,11 @@ def _routed_parts(payload: Dict[str, Any]) -> List[RoutedPart]:
                 parts.append((_WABA, entry_id, part))
                 continue
             meta = value.get("metadata")
-            pnid = _ident(meta.get("phone_number_id")) if isinstance(meta, dict) else None
-            parts.append((_PHONE if pnid else None, pnid, part))
+            raw = meta.get("phone_number_id") if isinstance(meta, dict) else None
+            pnid = _ident(raw)
+            if pnid is None and raw is not None:
+                pnid = ""  # present but unusable: still names an identifier
+            parts.append((_PHONE if pnid is not None else None, pnid, part))
     return parts
 
 
@@ -141,6 +146,20 @@ class InboundService:
                 self._handle_part(channel, part, counters)
         return counters
 
+    def process_direct(self, channel: Channel, payload: Dict[str, Any]) -> Dict[str, int]:
+        """Handle a canonical-shape payload under an ALREADY-resolved channel
+        (web chat: the visitor session names the channel, there is no Meta
+        envelope to route). Module-active is checked for the channel's tenant;
+        this never resolves a channel from the payload."""
+        from app.repositories.module_repository import ModuleRepository
+
+        counters = {"messages": 0, "statuses": 0, "skipped": 0}
+        if not ModuleRepository(self.db).is_active(channel.tenant_id, "omnichannel"):
+            logger.info("direct payload for inactive-module tenant %s dropped", channel.tenant_id)
+            return counters
+        self._handle_part(channel, payload, counters)
+        return counters
+
     def _resolve_parts(
         self, channel_id: str, obj: Any, parts: List[RoutedPart]
     ) -> List[List[Channel]]:
@@ -151,7 +170,7 @@ class InboundService:
         none does, the URL channel is used ONLY when it is live, of the same
         type and has no identifier of its own (legacy single-channel setups).
         Template events resolve to the live WhatsApp channel(s) of their WABA."""
-        page_type = {"page": "FACEBOOK", "instagram": "INSTAGRAM"}.get(obj)
+        page_type = {"page": "FACEBOOK", "instagram": "INSTAGRAM"}.get(obj) if isinstance(obj, str) else None
         channel_type = page_type or "WHATSAPP"
         primary = _PAGE if page_type else _PHONE
         column = Channel.external_account_id if page_type else Channel.phone_number_id
@@ -184,6 +203,8 @@ class InboundService:
         waba_owners = self._waba_owners(wabas)
 
         def legacy_url_channel(names_identifier: bool) -> Optional[Channel]:
+            """The URL channel. A part that names an identifier gets it only when
+            the channel has no number/account of its own."""
             if url_channel is None:
                 return None
             if not names_identifier:
@@ -198,7 +219,7 @@ class InboundService:
             elif kind == primary and identifier and owners.get(identifier):
                 result.append(owners[identifier][:1])
             else:
-                fallback = legacy_url_channel(bool(identifier))
+                fallback = legacy_url_channel(identifier is not None)
                 result.append([fallback] if fallback is not None else [])
         return result
 
@@ -226,8 +247,8 @@ class InboundService:
         adapter = get_adapter(channel.channel_type)
         try:
             events = adapter.parse_inbound(payload)
-        except Exception:  # odd shapes in one part never block its siblings
-            logger.warning("webhook part could not be parsed and was dropped")
+        except Exception as exc:  # odd shapes in one part never block its siblings
+            logger.warning("webhook part could not be parsed and was dropped (%s)", type(exc).__name__)
             return
         for event in events:
             if event["kind"] == "message":

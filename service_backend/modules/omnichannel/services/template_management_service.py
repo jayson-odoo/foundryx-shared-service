@@ -388,7 +388,8 @@ class TemplateManagementService:
             if mid:
                 row = q.filter(WhatsappTemplate.meta_template_id == str(mid)).first()
             if row is None and name:
-                nq = q.filter(WhatsappTemplate.name == name)
+                # A row that already carries a different Meta id is never name-matched.
+                nq = q.filter(WhatsappTemplate.name == name, WhatsappTemplate.meta_template_id.is_(None))
                 # Only constrain by language when the webhook actually supplied
                 # one - `== None` would render IS NULL and miss real rows.
                 if language:
