@@ -609,11 +609,10 @@ def test_ac_57_47_a_foreign_row_left_alone_is_logged_once_with_codes_only(h, w, 
 # test gaps found by the kill test
 # ======================================================================================
 
-def test_ac_57_32_the_moved_row_is_excluded_even_when_stale_staging_still_counts_it_on_the_target(h, w):
-    """A stale (foreign, left alone) staged SPO copy still shows the moved row on its OLD
-    target, while AutoCount already has it elsewhere. Relinking it BACK must pass: its own
-    stale qty may not count against the target it rejoins. Without the exclusion the target
-    (qty 4) reads 4 of 4 taken and refuses QTY_ABOVE_OUTSTANDING."""
+def test_ac_57_32_relinking_a_row_back_passes_when_stale_staging_still_shows_it_on_the_target(h, w):
+    """Behaviour pin only (the exclusion filter itself is unreachable, reviewer-proved): a stale
+    staged SPO copy shows the moved row on its OLD target while AutoCount already has it
+    elsewhere; relinking it BACK must pass."""
     spo = h.vendor.find("SPO", 7003)
     next(r for r in spo["Details"] if r["DtlKey"] == w.s_linked)["FromDocDtlKey"] = w.p_other  # fresh: moved
     staged = h.db.query(AcStagedRecord).filter(AcStagedRecord.source_ref == "AED_TEST:7003").one()

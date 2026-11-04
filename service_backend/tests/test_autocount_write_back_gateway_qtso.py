@@ -643,7 +643,9 @@ def _caps(client, gw, **kw):
     assert r.status_code == 200, r.text
     body = r.json()
     items = body if isinstance(body, list) else body["capabilities"]
-    return {(i["op"], i["kind"]): i for i in items}
+    short = {"quotations": "QT", "sales-orders": "SO", "purchase-orders": "PO", "shipping-purchase-orders": "SPO"}
+    assert {i["kind"] for i in items} <= set(short), {i["kind"] for i in items}  # wire kind names only
+    return {(i["op"], short[i["kind"]]): {**i, "kind": short[i["kind"]]} for i in items}
 
 
 def test_ac_57_61_write_capabilities_lists_enabled_and_reason_codes(client, h, db):
