@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
+from app.gateway_body_cap import is_multipart
 from app.database import get_db
 
 from ..api_auth import ApiWorkspace, get_api_workspace
@@ -134,12 +135,18 @@ async def send_message(
     svc = PublicGatewayService(db)
     content_type = request.headers.get("content-type", "")
 
-    if content_type.startswith("multipart/"):
+    if is_multipart(content_type):
         try:
             # The send reads one file part and the `payload` part; the cap leaves slack.
             form = await request.form(max_files=1, max_fields=_MULTIPART_MAX_FIELDS)
-        except StarletteHTTPException:
-            raise ApiError(422, "invalid_request", "The multipart body has too many parts.") from None
+        except StarletteHTTPException as exc:
+            # Starlette words its part and field limits "Too many files/fields ..."
+            too_many = str(exc.detail).startswith("Too many")
+            raise ApiError(
+                422,
+                "invalid_request",
+                "The multipart body has too many parts." if too_many else "The multipart body could not be read.",
+            ) from None
         upload = form.get("file")
         raw = form.get("payload")
         if upload is None or raw is None:

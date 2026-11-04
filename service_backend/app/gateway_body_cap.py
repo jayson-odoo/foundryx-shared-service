@@ -13,6 +13,7 @@ handler emits (app/api_errors.py).
 from typing import Optional
 
 from fastapi.responses import JSONResponse
+from starlette._utils import get_route_path
 from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -25,7 +26,13 @@ JSON_BODY_CAP = 256 * 1024
 # 1 MiB margin for the form framing and the payload part. Core must not import
 # module code, so this is a core constant; tests keep it >= the module ceiling.
 MULTIPART_BODY_CAP = 100 * 1024 * 1024 + 1024 * 1024
+SEND_PATH = "/api/v1/omnichannel/messages"
 TOO_LARGE = "Request body is too large."
+
+
+def is_multipart(content_type: Optional[str]) -> bool:
+    """The ONE multipart test, shared by this cap and the send route (case-insensitive)."""
+    return (content_type or "").strip().lower().startswith("multipart/")
 
 
 def _header(scope: Scope, name: bytes) -> Optional[str]:
@@ -40,12 +47,19 @@ class GatewayBodyCapMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") != "http" or not scope.get("path", "").startswith(GATEWAY_PREFIX):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = get_route_path(scope)  # root_path stripped, so a configured root cannot skip the cap
+        if not path.startswith(GATEWAY_PREFIX):
             await self.app(scope, receive, send)
             return
 
-        content_type = (_header(scope, b"content-type") or "").strip().lower()
-        cap = MULTIPART_BODY_CAP if content_type.startswith("multipart/") else JSON_BODY_CAP
+        # The multipart allowance is for the send route's file only; the client's
+        # content type never raises the cap of any other route.
+        is_send = scope.get("method") == "POST" and path.rstrip("/") == SEND_PATH
+        multipart = is_send and is_multipart(_header(scope, b"content-type"))
+        cap = MULTIPART_BODY_CAP if multipart else JSON_BODY_CAP
 
         declared = _header(scope, b"content-length")
         if declared is not None:
@@ -89,4 +103,4 @@ class GatewayBodyCapMiddleware:
     @staticmethod
     async def _refuse(scope: Scope, receive: Receive, send: Send) -> None:
         body = ApiError(422, "invalid_request", TOO_LARGE).to_body()
-        await JSONResponse(status_code=422, content=body)(scope, receive, send)
+        await JSONResponse(status_code=422, content=body, headers={"connection": "close"})(scope, receive, send)
