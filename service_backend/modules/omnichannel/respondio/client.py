@@ -26,6 +26,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import httpx
 
+from app.services.url_guard import GuardedTransport, UrlGuardError, validate_public_https_url
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.respond.io/v2"
@@ -82,6 +84,15 @@ class RespondIoClient:
         rand: Callable[[], float] = random.random,
     ):
         self._base = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        # The bearer token goes to this address on every call: it must be a
+        # public https address (a connection row is tenant-editable). A caller
+        # that injects its own client owns the transport and is not checked.
+        self._base_error: Optional[str] = None
+        if client is None:
+            try:
+                validate_public_https_url(self._base, strict_dns=False, subject="API base URL")
+            except (UrlGuardError, ValueError):
+                self._base_error = "The respond.io API address is not allowed."
         self._token = api_token or ""
         self._rps = _clamp_rps(requests_per_second)
         self._timeout = timeout
@@ -135,7 +146,9 @@ class RespondIoClient:
     # ── transport ──────────────────────────────────────────────────────────
 
     def _http(self) -> httpx.Client:
-        return self._client or httpx.Client(timeout=self._timeout)
+        return self._client or httpx.Client(
+            timeout=self._timeout, transport=GuardedTransport("API base URL")
+        )
 
     def _throttle(self) -> None:
         if self._last_request_at is None:
@@ -185,6 +198,8 @@ class RespondIoClient:
         params: Optional[Dict[str, Any]] = None,
         json_body: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        if self._base_error:
+            raise RespondIoError(self._base_error, status_code=0)
         url = f"{self._base}{path}"
         headers = {"Authorization": f"Bearer {self._token}"}
         client = self._http()
@@ -204,9 +219,8 @@ class RespondIoClient:
                     ) from exc
                 except httpx.HTTPError as exc:
                     if attempt >= MAX_ATTEMPTS:
-                        raise RespondIoError(
-                            f"Could not reach respond.io: {exc}", status_code=0
-                        ) from exc
+                        logger.info("respond.io request failed: %s", type(exc).__name__)
+                        raise RespondIoError("Could not reach respond.io.", status_code=0) from exc
                     self._sleep(self._backoff_seconds(attempt))
                     continue
 
@@ -439,19 +453,23 @@ class RespondIoClient:
         )
 
 
-# respond.io's `POST /contact/list` REQUIRES a `filter` object: without one the
-# vendor answers 400 "Please check if filter is provided." (live failure, lane
-# SS-MIGRATION-FILTER-HOTFIX). An empty `$and` group = "every contact".
+# respond.io's `POST /contact/list` body is `{search, filter, timezone}` and the
+# vendor validates ALL of them as present (limit/cursorId ride the query
+# string, see `_paginated_pages`). Live failures, in order:
+#   - no `filter`  -> 400 "Please check if filter is provided."
+#     (lane SS-MIGRATION-FILTER-HOTFIX). An empty `$and` group = every contact.
+#   - no `search`  -> 400 "Please check if search exists, but value can be
+#     empty." (lane SS-MIGRATION-SEARCH-HOTFIX). An empty string = no search.
+# So the body ALWAYS carries all three keys - never drop one because it is
+# empty.
 def _contact_list_body(
     *, timezone: str, search: Optional[str], filter_: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    body: Dict[str, Any] = {
-        "timezone": timezone,
+    return {
+        "search": search or "",
         "filter": filter_ if filter_ else {"$and": []},
+        "timezone": timezone,
     }
-    if search:
-        body["search"] = search
-    return body
 
 
 def _clamp_rps(value: float) -> float:

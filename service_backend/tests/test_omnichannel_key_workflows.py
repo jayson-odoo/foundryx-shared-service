@@ -563,7 +563,10 @@ def test_ac_38_125_migration_file():
                 parents = [parents]
             downs.update(parents or [])
     heads = [r for r in revs if r not in downs]
-    assert heads == ["0024_omni_workflow_owner"], f"expected one head, got {heads}"
+    # The head moves as later migrations land (plan 52 adds 0025): one head,
+    # and 0024 stays in the chain off 0023.
+    assert len(heads) == 1, f"expected one head, got {heads}"
+    assert "0024_omni_workflow_owner" in revs
     text = target.read_text()
     assert "workflow_owners" in text and re.search(r"inspect|has_table|IF NOT EXISTS|checkfirst", text), (
         "migration must create workflow_owners idempotently"
