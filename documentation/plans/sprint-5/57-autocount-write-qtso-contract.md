@@ -103,6 +103,8 @@ pinned to an old row moves to the new one; the same fact also arrives on the sin
 Status: `200` done; `202` pending_verification; `403` / `409` refused (section 5); `502`
 vendor_error, mismatch, recovered (the intent failed, the original line is back under a new row
 number), needs_attention (the line is missing in AutoCount; alert mail sent; use resume).
+`GET /write-operations/{id}` always answers 200 with the stored answer. A resume that ends `done` or
+`recovered` answers 200 (the line is safe again); other resume outcomes map as above.
 
 ## 5. Refusal codes (no AutoCount write was made)
 
