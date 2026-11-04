@@ -70,3 +70,28 @@ Every observation below is from read-only GETs on 4 Nov 2026; doc numbers refer 
     500 SQL error 8178 until `CurrencyCode` / `CurrencyRate` were added, then 200 "Created Successful"
     but the document read back with no rows (our probe FXT-PROBE-1, DocKey 12023, left in place; we never delete in AutoCount).
     Which header and row fields are required, and can a POST that drops rows return an error instead?
+
+## Delete API (you told us on 4 Nov that a line's link can never be edited after it is created)
+
+We understand the way to change or remove a line's link is: delete the line, then add a new line with the
+right link (or none). We are building our side now so that your delete API plugs in. To match it:
+
+23. Endpoint, method and body for deleting one detail row, per document type (Quotation, Sales Order,
+    Purchase Order, Shipping PO): for example `DELETE /DeletePurchaseOrderDetailbydtlkey` with
+    `{DocKey, DtlKey}`, or a row flag on the existing `Edit...bydockey` PUT? And the same for a whole
+    document (we will not use document delete in normal work; cancel stays the way a document ends).
+24. Can a delete and an add be ONE request (one transaction), for example an edit PUT where one row is
+    marked deleted and a `DtlKey 0` row carries the new link? Then a relink can never leave the line
+    missing between two calls.
+25. Deleting a row that has something downstream: a PO row already received (GRN) or partially received,
+    a PO row an SPO row points at, an SO row a PO row is linked to, an SO row already delivered (DO). Is
+    the delete refused, and with what HTTP status and error text?
+26. After deleting a PO row linked to an SO row, is the SO row's transferred quantity released at once,
+    so a new PO row can link to the full SO quantity in the next call?
+27. What does the delete answer return: the remaining rows, the new `LastModified`, or only a message?
+28. Line position: can the new row take the deleted row's position (`Seq`), so printed documents keep
+    the same line order?
+29. A new row linked to an SO row comes back at location `HQ` even when we send another location (our
+    test FXT-1104d-1 row 12046), so today a link needs a second edit to move it. Can the add keep the
+    location we send?
+30. Deleting the last row of a document, or a row of a cancelled document: allowed or refused?
