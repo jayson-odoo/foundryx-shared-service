@@ -77,7 +77,8 @@ def _masked_path(method: str, path: str) -> str:
     if method != "DELETE" or rest is None or not rest.startswith("/contacts/"):
         return path
     segment = rest[len("/contacts/"):]
-    if "/" in segment or not segment.lower().startswith("phone:"):
+    # strip() mirrors the identifier resolver (public_gateway_service.py, `(identifier or "").strip()`).
+    if "/" in segment or not segment.strip().lower().startswith("phone:"):
         return path
     return f"{_GATEWAY_PREFIX}/contacts/{_ERASED_SEGMENT}"
 
