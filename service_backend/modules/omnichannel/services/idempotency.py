@@ -6,11 +6,17 @@ degrades to a process-local dict so tests/dev need no Redis. A ``set_store``
 seam lets tests inject a deterministic in-memory store.
 """
 import threading
+import time
 from typing import Dict, Optional
 
 from app.config import settings
 
 _TTL_SECONDS = 24 * 60 * 60
+# A PENDING reservation lives only this long: it outlasts the send route's worst
+# case between reserve and finalize/release (media fetch total limit 60 s plus the
+# Meta send), so a reservation whose release never reached Redis, or whose worker
+# stopped, frees itself in minutes instead of a day.
+_PENDING_TTL_SECONDS = 300
 # Bounded socket waits so an unreachable Redis falls back to memory quickly.
 _SOCKET_CONNECT_TIMEOUT_SECONDS = 1.0
 _SOCKET_READ_TIMEOUT_SECONDS = 1.0
@@ -34,6 +40,8 @@ class IdempotencyStore:
 
     def __init__(self) -> None:
         self._memory: Dict[str, str] = {}
+        # monotonic expiry of PENDING entries held in memory
+        self._pending_expiry: Dict[str, float] = {}
         self._memory_lock = threading.Lock()
 
     def _client(self):  # noqa: ANN202
@@ -57,7 +65,17 @@ class IdempotencyStore:
                 return client.get(k)
             except Exception:  # noqa: BLE001
                 pass
-        return self._memory.get(k)
+        with self._memory_lock:
+            return self._memory_get(k)
+
+    def _memory_get(self, k: str) -> Optional[str]:
+        """Caller holds ``_memory_lock``. An expired PENDING reads as absent."""
+        value = self._memory.get(k)
+        if value == PENDING and self._pending_expiry.get(k, 0.0) <= time.monotonic():
+            self._memory.pop(k, None)
+            self._pending_expiry.pop(k, None)
+            return None
+        return value
 
     def reserve(self, workspace_id: str, idem_key: str) -> Optional[str]:
         """Atomically claim the slot. Returns None if WE claimed it (caller
@@ -67,15 +85,17 @@ class IdempotencyStore:
         client = self._client()
         if client is not None:
             try:
-                if client.set(k, PENDING, ex=_TTL_SECONDS, nx=True):
+                if client.set(k, PENDING, ex=_PENDING_TTL_SECONDS, nx=True):
                     return None
                 return client.get(k)
             except Exception:  # noqa: BLE001 - fall through to memory
                 pass
         with self._memory_lock:
-            if k in self._memory:
-                return self._memory[k]
+            current = self._memory_get(k)
+            if current is not None:
+                return current
             self._memory[k] = PENDING
+            self._pending_expiry[k] = time.monotonic() + _PENDING_TTL_SECONDS
             return None
 
     def finalize(self, workspace_id: str, idem_key: str, message_id: str) -> None:
@@ -88,7 +108,9 @@ class IdempotencyStore:
                 return
             except Exception:  # noqa: BLE001
                 pass
-        self._memory[k] = message_id
+        with self._memory_lock:
+            self._memory[k] = message_id
+            self._pending_expiry.pop(k, None)
 
     def release(self, workspace_id: str, idem_key: str) -> None:
         """Drop the reservation (send failed) so a later retry can re-claim it -
@@ -107,6 +129,7 @@ class IdempotencyStore:
         with self._memory_lock:
             if self._memory.get(k) == PENDING:
                 self._memory.pop(k, None)
+                self._pending_expiry.pop(k, None)
 
 
 class MemoryIdempotencyStore(IdempotencyStore):
