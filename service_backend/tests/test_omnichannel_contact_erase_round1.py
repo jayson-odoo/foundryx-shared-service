@@ -592,3 +592,98 @@ def test_voice_original_is_removed_once_the_converted_file_is_committed_even_if_
         db.close()
     assert key != original and _exists(key), "the row points at the converted file, which stays"
     assert not _exists(original), "nothing points at the original upload any more"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Round 2 - which stored files an erase counts and removes
+# ═════════════════════════════════════════════════════════════════════════════
+def _migrated(sf, ws, message_id, ext):
+    db = sf()
+    try:
+        db.add(MigrationRef(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, source="respondio",
+                            entity_type="message", external_id=ext, local_id=message_id))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_server_minted_bare_key_on_a_native_row_is_counted_and_purged(rig, client):
+    minted = _file("inbound-3fa9c2b1.png")  # `<basename>-<uuid8>.<ext>`, no tenant prefix
+    cid = _contact(rig.sf, rig.ws, "+60100000615")
+    _add_message(rig.sf, cid, rig.channel, media_key=minted)
+    staff = client.get(f"/omnichannel/contacts/{cid}", headers=_auth(client))
+    assert staff.status_code == 200 and staff.json()["fileCount"] == 1  # same rule as the erase
+    res = rig.erase(cid)
+    assert res.status_code == 200, res.text
+    assert res.json()["files"] == 1
+    assert not _exists(minted)
+
+
+def test_server_minted_bare_key_on_a_migrated_row_is_neither_counted_nor_purged(rig):
+    minted = _file("migrated-7be01d44.png")
+    cid = _contact(rig.sf, rig.ws, "+60100000616")
+    mid = _add_message(rig.sf, cid, rig.channel, media_key=minted)
+    _migrated(rig.sf, rig.ws, mid, "rio-m-r2a")
+    res = rig.erase(cid)
+    assert res.status_code == 200, res.text
+    assert res.json()["files"] == 0
+    assert _exists(minted)
+
+
+def test_keys_outside_the_tenants_area_that_are_not_minted_are_kept(rig):
+    in_dir = _file("other/dir/file.png")
+    escaped = _file("y.png")  # what `x/../y.png` would resolve to
+    cid = _contact(rig.sf, rig.ws, "+60100000617")
+    _add_message(rig.sf, cid, rig.channel, media_key="other/dir/file.png")
+    _add_message(rig.sf, cid, rig.channel, media_key="x/../y.png")
+    res = rig.erase(cid)
+    assert res.status_code == 200, res.text
+    assert res.json()["files"] == 0
+    assert _exists(in_dir) and _exists(escaped)
+
+
+def test_server_minted_bare_key_behind_a_connection_follows_the_connection_rule(
+    rig, session_factory, monkeypatch
+):
+    import app.database as appdb
+    from app.integrations.s3_provider import S3CompatibleAdapter
+    from app.services import storage as storage_module
+    from tests.test_storage_providers import StubS3Client
+    from tests.test_storage_resolution import _storage_connection
+
+    client = StubS3Client()
+    monkeypatch.setattr(S3CompatibleAdapter, "_build_client", lambda self: client)
+    storage_module.clear_adapter_cache()
+    monkeypatch.setattr(appdb, "SessionLocal", session_factory)
+    db = session_factory()
+    try:
+        platform = _storage_connection(db, PLATFORM_TENANT_ID).id
+        foreign = _storage_connection(db, OTHER).id
+    finally:
+        db.close()
+    for raw in ("via-platform-5c2e9a10.png", "via-foreign-9d4b7e21.png"):
+        client.objects[raw] = b"x"
+    cid = _contact(rig.sf, rig.ws, "+60100000618")
+    _add_message(rig.sf, cid, rig.channel, media_key=f"conn:{platform}:via-platform-5c2e9a10.png")
+    _add_message(rig.sf, cid, rig.channel, media_key=f"conn:{foreign}:via-foreign-9d4b7e21.png")
+    res = rig.erase(cid)
+    assert res.status_code == 200, res.text
+    assert "via-platform-5c2e9a10.png" not in client.objects, "minted key behind the platform default: purged"
+    assert "via-foreign-9d4b7e21.png" in client.objects, "another tenant's connection is never used"
+
+
+def test_media_url_on_a_foreign_host_with_our_path_is_not_a_stored_file(rig):
+    rel = f"omnichannel/{DEFAULT_TENANT_ID}/lookalike.png"
+    _file(rel)
+    cid = _contact(rig.sf, rig.ws, "+60100000619")
+    _add_message(rig.sf, cid, rig.channel, media_url=f"https://cdn.example.org/omnichannel/media/{rel}")
+    res = rig.erase(cid)
+    assert res.status_code == 200, res.text
+    assert res.json()["files"] == 0
+    assert _exists(rel)
+    # control: the same key behind our own public base URL is a stored file
+    own = _file(f"omnichannel/{DEFAULT_TENANT_ID}/ours.png")
+    cid2 = _contact(rig.sf, rig.ws, "+60100000620")
+    _add_message(rig.sf, cid2, rig.channel, media_url=PUBLIC + own)
+    res2 = rig.erase(cid2)
+    assert res2.json()["files"] == 1 and not _exists(own)
