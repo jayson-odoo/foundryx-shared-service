@@ -153,14 +153,34 @@ class DocStager:
         sink = self._sink_factory(tenant_id, company, entity_type)
         request_id = f"write-back:{row_id}"
         self.db.commit()
-        result = sink.write(record, request_id=request_id)
-        if getattr(result, "ok", True) is False:
+        if not self._deliver(sink, record, request_id):
             return False
         row = self.staged.newest(tenant_id, company_id, entity_type, f"{company.database_name}:{doc.get('DocKey')}") or row
         row.status = STAGED_PUSHED
         row.pushed_at = datetime.now(timezone.utc)
         self.db.commit()
         return True
+
+    @staticmethod
+    def _deliver(sink: Any, record: Any, request_id: str) -> bool:
+        """Push ONE record. A real ``SorentoSink`` has only ``write_batch``: its consumer's
+        advertised contract is probed first, once per push (unknown, unparseable or
+        unreachable = None, so ``replaces_line_ref`` is omitted), then the record goes
+        out as a batch of one. A sink with ``write`` (the logging sink, fakes) is called
+        as before. A non-ok result or any exception is not pushed (the row stays STAGED,
+        the caller's write still answers)."""
+        try:
+            if hasattr(sink, "write_batch"):
+                probe = getattr(sink, "fetch_contract_detail", None)
+                info = probe() if callable(probe) else None
+                sink.advertised_contract_version = getattr(info, "version", None)
+                results = sink.write_batch([record], request_id=request_id)
+                return bool(results) and all(getattr(r, "ok", True) is not False for r in results)
+            result = sink.write(record, request_id=request_id)
+            return getattr(result, "ok", True) is not False
+        except Exception:  # noqa: BLE001 - a push fault never changes the write's outcome
+            logger.warning("autocount write-back push failed (PUSH_FAILED)")
+            return False
 
     def _default_sink(self, tenant_id: str, company: AcCompany, entity_type: str) -> Any:
         from modules.autocount.services.company_service import CompanyService
