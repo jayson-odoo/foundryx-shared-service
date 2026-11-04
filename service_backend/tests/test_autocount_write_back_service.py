@@ -22,7 +22,7 @@ import pytest
 from app.models import DEFAULT_TENANT_ID
 from app.models.connection import Connection
 from app.secrets import encrypt_secret
-from modules.autocount.models import AcCompany, AcStagedRecord, AcWriteAction
+from modules.autocount.models import STAGED, AcCompany, AcStagedRecord, AcWriteAction
 from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.service import WriteBackService
@@ -159,7 +159,7 @@ class Harness:
         row = AcStagedRecord(
             tenant_id=tenant_id, company_id=company_id or self.company.id, entity_type=entity,
             job_id="job-1", source_ref=f"{DBNAME}:{doc['DocKey']}", doc_no=doc["DocNo"],
-            raw_json=raw, canonical_json={"sourceRef": f"{DBNAME}:{doc['DocKey']}"}, status="staged",
+            raw_json=raw, canonical_json={"sourceRef": f"{DBNAME}:{doc['DocKey']}"}, status=STAGED,
         )
         self.db.add(row)
         self.db.commit()
@@ -481,10 +481,22 @@ def test_ac_55_20_done_stores_only_the_second_get(h):
     assert len(h.ac.get_calls) >= 3  # PO + SO before, PO after
 
 
-def test_ac_55_25_done_pushes_document_through_sink_once(h):
+def _assert_staged_readback_queued_for_remap(h, res):
+    # push pinned in S4 (wrapper doc mapping)
+    row = h.staged_po()
+    server = h.ac.docs["purchaseorderbydocdate"][0]
+    expected = {k: v for k, v in server.items() if k != "Details"}
+    expected["_lines"] = server["Details"]
+    assert row.raw_json == json.loads(json.dumps(expected))
+    assert row.canonical_json is None
+    assert row.status == STAGED
+    assert len(h.sink_calls) == 0
+
+
+def test_ac_55_25_done_stages_readback_for_remap(h):
     res = h.link_split()
     assert res.outcome == "done"
-    assert len(h.sink_calls) == 1
+    _assert_staged_readback_queued_for_remap(h, res)
 
 
 def test_ac_55_12_unlink_done(h):
@@ -499,7 +511,7 @@ def test_ac_55_12_unlink_done(h):
     assert rows[12013]["FromDocType"] == ""
     assert Decimal(str(rows[12013]["Qty"])) == 10 and rows[12013]["Location"] == "HQ"
     assert rows[12011]["FromSODtlKey"] == 11990
-    assert len(h.sink_calls) == 1
+    _assert_staged_readback_queued_for_remap(h, res)
     assert h.action(res).action == "unlink"
 
 
