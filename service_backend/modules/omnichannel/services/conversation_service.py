@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.status import Status as CoreStatus
 from app.models.user import User
+from ..adapters.meta_graph import sanitise_stored_pricing
 from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
@@ -330,6 +331,7 @@ class ConversationService:
         for m in messages:
             meta = m.metadata_json or {}
             reply = meta.get("reply_to")
+            pricing = meta.get("pricing")
             # Sender display resolves from whichever sender column is set - native
             # user OR federated external agent.
             agent = agents.get(m.sender_external_agent_id) if m.sender_external_agent_id else None
@@ -372,6 +374,7 @@ class ConversationService:
                     deliveryStatus=m.delivery_status,
                     errorCode=m.error_code,
                     errorMessage=m.error_message,
+                    pricing=sanitise_stored_pricing(pricing),
                     replyTo=ReplyRefItem(**reply) if reply else None,
                     createdAt=m.created_at,
                 )

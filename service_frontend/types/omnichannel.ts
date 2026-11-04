@@ -434,9 +434,19 @@ export interface ConversationMessage {
   deliveryStatus: DeliveryStatus | null;
   errorCode: string | null;
   errorMessage: string | null;
+  /** Meta's pricing for this message once a delivery receipt carried it (plan 56 B). */
+  pricing?: MessagePricing | null;
   /** Set when this message replies to another (stored in metadata_json). */
   replyTo: ReplyRef | null;
   createdAt: string; // ISO
+}
+
+/** Meta's pricing for one message, from its delivery receipt (plan 56 B). */
+export interface MessagePricing {
+  billable: boolean | null;
+  pricingModel: string | null;
+  category: string | null;
+  type: string | null;
 }
 
 /** One emoji reaction on a message (plan 12 Slice 3, AC-12-19/20). */

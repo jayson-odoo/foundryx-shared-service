@@ -640,6 +640,15 @@ class ReplyRefItem(ApiModel):
     senderName: Optional[str] = None
 
 
+class MessagePricingItem(ApiModel):
+    """Meta's pricing for one message (plan 56 B), from the delivery receipt."""
+
+    billable: Optional[bool] = None
+    pricingModel: Optional[str] = None
+    category: Optional[str] = None
+    type: Optional[str] = None
+
+
 class MessageItem(ApiModel):
     id: str
     contactId: str
@@ -679,6 +688,9 @@ class MessageItem(ApiModel):
     deliveryStatus: Optional[str] = None  # QUEUED | SENT | DELIVERED | READ | FAILED
     errorCode: Optional[str] = None
     errorMessage: Optional[str] = None
+    # Meta's pricing for this message once a receipt carried it, else null
+    # (inbound and older messages are always null).
+    pricing: Optional[MessagePricingItem] = None
     replyTo: Optional[ReplyRefItem] = None
     createdAt: datetime
 

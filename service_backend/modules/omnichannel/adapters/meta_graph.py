@@ -62,6 +62,12 @@ GraphRecorder = Callable[[GraphCall], None]
 # https://developers.facebook.com/docs/graph-api/overview/rate-limiting
 _RATE_LIMIT_ERROR_CODES = {4, 17, 32, 613}
 
+# WhatsApp Cloud API throttles (plan 56 A): the Graph set plus 80007 (WhatsApp
+# Business Account rate limit), 130429 (Cloud API throughput) and 131056
+# (pair rate limit). 131048 (spam rate limit) is deliberately NOT here:
+# retrying a number Meta flags for spam lowers its quality further.
+WHATSAPP_RATE_LIMIT_ERROR_CODES = _RATE_LIMIT_ERROR_CODES | {80007, 130429, 131056}
+
 
 def is_rate_limited_error(resp: "httpx.Response") -> bool:
     """True when this Graph response is Meta throttling the call - a raw HTTP
@@ -74,7 +80,107 @@ def is_rate_limited_error(resp: "httpx.Response") -> bool:
         code = ((resp.json() or {}).get("error") or {}).get("code")
     except ValueError:
         return False
-    return code in _RATE_LIMIT_ERROR_CODES
+    return isinstance(code, int) and code in _RATE_LIMIT_ERROR_CODES
+
+
+# Longest Retry-After (seconds) ever handed on or waited: the last scheduled
+# send delay. A larger Meta value counts as this.
+RETRY_AFTER_CEILING = 600
+RETRY_AFTER_DEFAULT = 30
+
+
+def _error_code(resp: "httpx.Response") -> Optional[int]:
+    """Meta's `error.code` as an int, only when it is an int or a string of
+    digits. Anything else (dict, list, bool, text) is None. Never raises."""
+    try:
+        code = ((resp.json() or {}).get("error") or {}).get("code")
+    except (ValueError, AttributeError):
+        return None
+    if isinstance(code, bool):
+        return None
+    if isinstance(code, int):
+        return code
+    if isinstance(code, str) and code.isascii() and code.isdigit() and len(code) <= 12:
+        return int(code)
+    return None
+
+
+def is_whatsapp_rate_limited(resp: "httpx.Response") -> bool:
+    """`is_rate_limited_error` with the WhatsApp code set. 131048 (spam rate
+    limit) is never a retryable throttle, even on HTTP 429. Never raises."""
+    code = _error_code(resp)
+    if code == 131048:
+        return False
+    if resp.status_code == 429:
+        return True
+    return code in WHATSAPP_RATE_LIMIT_ERROR_CODES
+
+
+_PRICING_TEXT_RE = re.compile(r"[a-z0-9_]{1,40}")
+
+
+def _pricing_text(value: Any) -> Optional[str]:
+    """One pricing string: lower-cased, 1-40 chars of [a-z0-9_], else None."""
+    if not isinstance(value, str):
+        return None
+    low = value.lower()
+    return low if _PRICING_TEXT_RE.fullmatch(low) else None
+
+
+def _pricing_object(billable: Any, model: Any, category: Any, kind: Any) -> Optional[dict]:
+    out = {
+        "billable": billable if isinstance(billable, bool) else None,
+        "pricingModel": _pricing_text(model),
+        "category": _pricing_text(category),
+        "type": _pricing_text(kind),
+    }
+    # All four null is no pricing at all: callers store nothing.
+    return out if any(v is not None for v in out.values()) else None
+
+
+def normalise_pricing(raw: Any) -> Optional[dict]:
+    """A WhatsApp status entry's `pricing` (Meta input, snake_case) as
+    `{billable, pricingModel, category, type}` (plan 56 B), or None when it is
+    not an object or nothing in it is usable. Unknown keys are dropped. Never
+    raises."""
+    if not isinstance(raw, dict):
+        return None
+    return _pricing_object(
+        raw.get("billable"), raw.get("pricing_model"), raw.get("category"), raw.get("type")
+    )
+
+
+def sanitise_stored_pricing(raw: Any) -> Optional[dict]:
+    """The STORED shape (camelCase) re-checked by the same field rules before
+    it is read onto the wire: a non-object, or an object with no usable field,
+    is None. Never raises."""
+    if not isinstance(raw, dict):
+        return None
+    return _pricing_object(
+        raw.get("billable"), raw.get("pricingModel"), raw.get("category"), raw.get("type")
+    )
+
+
+def parse_retry_after(resp: "httpx.Response") -> Optional[int]:
+    """Meta's `Retry-After` header as whole seconds (1 to 600), or None when
+    absent or not a plain integer. A longer value counts as 600; the digits are
+    measured before any int() so a huge header cannot cost anything. Never
+    raises."""
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    if not raw or not raw.isascii() or not raw.isdigit():
+        return None
+    if len(raw) > 6:
+        return RETRY_AFTER_CEILING
+    seconds = int(raw)
+    return min(seconds, RETRY_AFTER_CEILING) if seconds >= 1 else None
+
+
+def client_retry_after(seconds: Optional[int]) -> int:
+    """The `Retry-After` seconds sent to an API client: Meta's value clamped to
+    1..600, or the default when Meta sent none."""
+    if not seconds:
+        return RETRY_AFTER_DEFAULT
+    return max(1, min(int(seconds), RETRY_AFTER_CEILING))
 
 
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -103,6 +209,8 @@ def meta_error_code(resp: "httpx.Response") -> Optional[str]:
     try:
         code = ((resp.json() or {}).get("error") or {}).get("code")
     except (ValueError, AttributeError):
+        return None
+    if isinstance(code, bool) or not isinstance(code, (int, str)):
         return None
     return str(code) if code else None
 
