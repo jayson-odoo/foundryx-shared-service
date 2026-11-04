@@ -306,8 +306,13 @@ baked into the frontend image; the script also writes it as `PUBLIC_BASE_URL`),
 
 ## Rollback
 
-Re-run a previous successful deploy from the Actions tab (it re-pulls that SHA),
-or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
+Re-running an OLD deploy job from the Actions tab no longer rolls back: its
+sha is not main's head, so the stale-sha guard skips it (see "Stale-sha
+skip" below). To roll back on purpose, point a branch or tag at the old
+commit and run the workflow by hand (Actions, "Run workflow", pick that ref,
+tick **force_sha**), or on the server run
+`IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh` (no `DEPLOY_NEWER_SHAS`
+set = no in-lock skip).
 
 Schema direction on a rollback (no downgrade is ever run automatically):
 
@@ -426,6 +431,27 @@ waited for a lock on the same table.
   workflow's "Verify public endpoints" step fails unless the active colour's
   `/health` reports exactly `github.sha`. The frontend has no health/version
   route, so it carries no `GIT_SHA`.
+- **Stale-sha skip (SS-DEPLOY-SKIP-STALE).** The queue runs deploys in the
+  order their TESTS finish, not merge order: on 5 Nov 2026 four PRs merged
+  within a minute, c748c240 (newest) deployed, then cf831cb0 (older) finished
+  its tests and deployed over it, rolling prod back. Two checks now stop that:
+  1. Right before the host steps, the job fetches `origin/main` and runs
+     `scripts/deploy_head_guard.sh <github.sha> <main head> <force>`. When the
+     sha is not main's head it logs
+     `skip: <sha> is not main head <head>; newer deploy owns prod`, exits 0,
+     and the sync / deploy / verify steps are skipped (the run is green; the
+     owner email says "skipped"). A failed fetch is a loud failure, never a
+     blind deploy.
+  2. That check is racy, so `blue_green_deploy.sh` re-checks INSIDE the flock:
+     CI passes `DEPLOY_NEWER_SHAS` (every main commit newer than this sha, from
+     `git rev-list`, the host has no git history); if the running
+     `backend_<active>` container's `GIT_SHA` is one of them (exact match), it
+     logs `skip: <sha> is older than the running <sha>; newer deploy owns
+     prod` and exits 0 having pulled, started and swapped nothing. An unknown
+     running sha (first deploy) or a redeploy of the same sha deploys as before.
+  `workflow_dispatch` input **force_sha** (default off) bypasses both checks
+  (`DEPLOY_FORCE=1` on the host) to deploy the dispatched ref's sha on
+  purpose. The queue and the host flock are unchanged.
 
 ### Module schema drift guard (last line of defence)
 

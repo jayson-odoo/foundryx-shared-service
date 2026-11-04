@@ -77,6 +77,31 @@ else
   NEW_BE_PORT=8200; NEW_FE_PORT=3200
 fi
 
+# Stale-sha re-check INSIDE the lock (SS-DEPLOY-SKIP-STALE). CI skips a run
+# whose sha is not main's head before it gets here, but that check is racy: a
+# newer deploy can finish while this one waits for the lock. CI passes
+# DEPLOY_NEWER_SHAS = every main commit newer than IMAGE_TAG (the host has no
+# git history); if the RUNNING backend's GIT_SHA is one of them, prod already
+# carries this change and more, so skip (exit 0, touch nothing). Exact match
+# only. DEPLOY_FORCE=1 (workflow_dispatch force_sha) deploys on purpose. An
+# unknown running sha (first deploy, container gone) deploys as before.
+if [ "${DEPLOY_FORCE:-0}" != "1" ] && [ -n "${DEPLOY_NEWER_SHAS:-}" ]; then
+  running_cid=$(docker compose ps -q "backend_${ACTIVE}" 2>/dev/null || true)
+  running_sha=""
+  if [ -n "$running_cid" ]; then
+    running_env=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$running_cid" 2>/dev/null || true)
+    running_sha=$(sed -n 's/^GIT_SHA=//p' <<<"$running_env" | head -n 1)
+  fi
+  if [ -n "$running_sha" ] && [ "$running_sha" != "$IMAGE_TAG" ]; then
+    for newer in $DEPLOY_NEWER_SHAS; do
+      if [ "$newer" = "$running_sha" ]; then
+        echo "skip: ${IMAGE_TAG} is older than the running ${running_sha}; newer deploy owns prod"
+        exit 0
+      fi
+    done
+  fi
+fi
+
 echo "==> Active=${ACTIVE} New=${NEW} IMAGE_TAG=${IMAGE_TAG}"
 
 # SKIP_MIGRATIONS=1 is the ONLY bypass of the container-start bootstrap (and it
