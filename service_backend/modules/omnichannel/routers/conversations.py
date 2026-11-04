@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.dependencies import require_module, require_permission
+from app.dependencies import get_actor_user_id, require_module, require_permission
 from app.models.user import User
 from app.services.status_machine import (
     TransitionConditionsNotMet,
@@ -869,13 +869,14 @@ def erase_contact(
     contact_id: str,
     current_user: User = Depends(require_permission("contacts.erase")),
     _module: User = Depends(require_module("omnichannel")),
+    actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ) -> ContactEraseResponse:
     """Erase one contact for good (plan 56 C, PDPA). A native user spans the
     tenant; another tenant's contact and an unknown id answer the same 404."""
     try:
         result = ContactEraseService(db).erase_in_tenant(
-            current_user.tenant_id, contact_id, actor=EraseActor.staff(current_user.id)
+            current_user.tenant_id, contact_id, actor=EraseActor.staff(actor_id)
         )
     except ContactNotFound:
         raise HTTPException(status_code=404, detail="Contact not found")
