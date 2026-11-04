@@ -141,18 +141,27 @@ class Wrapper:
         return httpx.Response(200, json={"DocKey": doc["DocKey"], "DocNo": doc["DocNo"]})
 
     def _edit(self, body):
+        """db3 reality: a NEW row linked to an SO is forced to HQ and reads back
+        FromDocType "" with an empty DeliveryDate; editing an EXISTING row changes
+        its location but never its link."""
         doc = next((d for d in self.pos if d["DocKey"] == body["DocKey"]), None)
         if doc is None:
             return httpx.Response(404, text="no doc")
         for r in body["Details"]:
+            linked_sent = r.get("FromDocType") == "SO"
             if r["DtlKey"] == 0:
                 row = {**doc["Details"][0], **r, "DtlKey": self.next_dtl, "DocKey": doc["DocKey"]}
                 self.next_dtl += 1
+                row["FromSODtlKey"] = r["FromDocDtlKey"] if linked_sent else 0
+                row["FromSODocList"] = r.get("FromDocNo", "") if linked_sent else ""
+                row["FromDocType"], row["FromDocNo"], row["FromDocDtlKey"] = "", "", 0
+                if linked_sent:
+                    row["DeliveryDate"] = "0001-01-01T00:00:00"
+                    row["Location"] = "HQ"
                 doc["Details"].append(row)
             else:
                 row = next(x for x in doc["Details"] if x["DtlKey"] == r["DtlKey"])
-                row.update(r)
-            self._derive(row)
+                row.update({k: v for k, v in r.items() if not k.startswith("From")})
         self._touch(doc)
         return httpx.Response(200, json={"DocKey": doc["DocKey"]})
 
@@ -240,38 +249,53 @@ def test_ac_55_50_c02_pulls_so_before_po(db):
     assert first_po > 0
 
 
-def test_ac_55_50_c03_split_link_steps_and_server_state(db):
+def _put_count(s):
+    return len([r for r in s.wrapper.requests if r.startswith("PUT")])
+
+
+def _post_count(s):
+    return len([r for r in s.wrapper.requests if r.startswith("POST")])
+
+
+def test_ac_55_50_c03_is_a_two_write_split_ending_at_the_so_location(db):
     s = _setup(db)
     res = _run(db, s)
     c = _case(res, "C03")
     assert c.status == "PASS" and c.action_id
-    put = next(st for st in c.steps if st.method == "PUT")
-    assert put.path == "/EditPurchaseOrderbydockey" and put.status_code == 200
-    assert put.request_json["Details"] and put.before_rows and put.after_rows
+    puts = [st for st in c.steps if st.method == "PUT"]
+    assert len(puts) == 2 and all(p.path == "/EditPurchaseOrderbydockey" and p.status_code == 200 for p in puts)
+    # first write: the vendor forced the new linked row to HQ; second write moved it
+    first_after = {(r["Qty"], r["Location"], r.get("FromSODtlKey")) for r in puts[0].after_rows}
+    assert (40, "HQ", 0) in first_after and (10, "HQ", 11989) in first_after
+    second_after = {(r["Qty"], r["Location"], r.get("FromSODtlKey")) for r in puts[1].after_rows}
+    assert (10, "BRW-AM", 11989) in second_after
     row = db.get(AcWriteAction, c.action_id)
-    assert row.action == "link" and row.outcome == "done"
-    test_po = s.wrapper.po("FXT-T1-1")
-    # quantity is conserved across split + relocation
-    assert sum(r["Qty"] for r in test_po["Details"]) == 60
-    after = {(r["Qty"], r["Location"], r.get("FromSODtlKey")) for r in put.after_rows}
-    assert (40, "HQ", 0) in after
-    assert (10, "BRW-AM", 11989) in after
-    # final server state: C04's link on row 11992 stands; C11 unlinked the split-off row
-    by_so = {r["FromSODtlKey"] for r in test_po["Details"]}
-    assert 11992 in by_so
-    assert 11989 not in by_so
-    split_off = [r for r in test_po["Details"] if r["Qty"] == 10 and r["Location"] == "BRW-AM"]
-    assert any(r["FromSODtlKey"] == 0 for r in split_off)
+    assert row.action == "link" and row.outcome == "done" and row.error_code is None
 
 
-def test_ac_55_50_c04_same_qty_location_move_adds_no_row(db):
+def test_ac_55_50_c04_whole_row_link_is_refused_vendor_unsupported(db):
     s = _setup(db)
     res = _run(db, s)
     c = _case(res, "C04")
-    assert c.status == "PASS"
-    assert len(s.wrapper.po("FXT-T1-1")["Details"]) == 3  # 2 created + 1 split, none from C04
-    put = next(st for st in c.steps if st.method == "PUT")
-    assert [r["DtlKey"] for r in put.request_json["Details"] if r["DtlKey"] == 0] == []
+    assert c.status == "PASS" and "VENDOR_UNSUPPORTED" in c.observed
+    assert not [st for st in c.steps if st.method in ("PUT", "POST")]
+    assert db.get(AcWriteAction, c.action_id).error_code == "VENDOR_UNSUPPORTED"
+    # writes in the whole suite: C03 (2) + C08 (2), nothing from C04
+    assert _put_count(s) == 4
+
+
+def test_ac_55_50_c08_second_split_of_the_40_row_ends_at_brw_am(db):
+    s = _setup(db)
+    res = _run(db, s)
+    c = _case(res, "C08")
+    assert c.status == "PASS" and c.action_id
+    po = s.wrapper.po("FXT-T1-1")["Details"]
+    linked = {r["FromSODtlKey"]: r for r in po if r["FromSODtlKey"]}
+    assert set(linked) == {11989, 11992}
+    assert linked[11989]["Qty"] == 10 and linked[11989]["Location"] == "BRW-AM"
+    assert linked[11992]["Qty"] == 5 and linked[11992]["Location"] == "BRW-AM"
+    assert sorted(r["Qty"] for r in po if not r["FromSODtlKey"]) == [10, 35]
+    assert sum(r["Qty"] for r in po) == 60
 
 
 @pytest.mark.parametrize("cid,code", [("C05", "QTY_ABOVE_OUTSTANDING"), ("C06", "QTY_ABOVE_FREE"), ("C09", "DOC_STALE")])
@@ -283,36 +307,38 @@ def test_ac_55_50_refusal_cases_name_the_code_and_send_no_put(db, cid, code):
     assert not [st for st in c.steps if st.method == "PUT"]
 
 
-def test_ac_55_50_c07_c08_unlink_then_relink_real_row(db):
+def test_ac_55_50_c07_unlink_is_refused_vendor_unsupported_with_no_request(db):
     s = _setup(db)
     res = _run(db, s)
-    assert _case(res, "C07").status == "PASS" and _case(res, "C08").status == "PASS"
-    row = next(r for r in s.wrapper.po("202602-S0007")["Details"] if r["DtlKey"] == 12013)
-    assert row["FromSODtlKey"] == 11993
-    assert _case(res, "C07").action_id and _case(res, "C08").action_id
+    c = _case(res, "C07")
+    assert c.status == "PASS" and "VENDOR_UNSUPPORTED" in c.observed
+    assert not c.steps
+    row = db.get(AcWriteAction, c.action_id)
+    assert row.action == "unlink" and row.outcome == "refused"
+    # the real PO is untouched
+    assert next(r for r in s.wrapper.po("202602-S0007")["Details"] if r["DtlKey"] == 12013)["FromSODtlKey"] == 11993
 
 
-def test_ac_55_50_c10_creates_spo_and_sees_row_on_spo(db):
+def test_ac_55_50_c10_spo_unlink_is_refused_vendor_unsupported_and_no_spo_is_created(db):
     s = _setup(db)
-    res = _run(db, s, tag="T1")
+    res = _run(db, s)
     c = _case(res, "C10")
-    assert c.status == "PASS" and "ROW_ON_SPO" in c.observed
-    post = next(st for st in c.steps if st.method == "POST")
-    assert post.path == "/NewPurchaseOrder"
-    assert post.request_json["ShippingPO"] == "T" and post.request_json["DocNo"] == "FXT-T1-S1"
-    row = post.request_json["Details"][0]
-    assert row["FromDocType"] == "PO" and row["FromDocNo"] == "FXT-T1-1" and row["FromDocDtlKey"]
+    assert c.status == "PASS" and "VENDOR_UNSUPPORTED" in c.observed
+    assert not c.steps
+    assert db.get(AcWriteAction, c.action_id).action == "spo_unlink"
+    assert _post_count(s) == 1  # only C01's PO create
+    assert not [b for b in s.wrapper.bodies if b.get("ShippingPO") == "T"]
 
 
-def test_ac_55_50_c11_spo_unlink_then_po_unlink_done(db):
+def test_ac_55_50_c11_relocate_on_c08s_row_is_already_at_location(db):
     s = _setup(db)
     res = _run(db, s)
     c = _case(res, "C11")
-    assert c.status == "PASS" and c.action_id
-    spo = s.wrapper.po("FXT-T1-S1")
-    assert spo["Details"][0]["FromDocType"] == "" and spo["Details"][0]["FromDocDtlKey"] == 0
-    actions = {a.action for a in db.query(AcWriteAction).all()}
-    assert {"link", "unlink", "spo_unlink"} <= actions
+    assert c.status == "PASS" and "ROW_ALREADY_AT_LOCATION" in c.observed
+    assert not [st for st in c.steps if st.method in ("PUT", "POST")]
+    row = db.get(AcWriteAction, c.action_id)
+    assert row.action == "relocate" and row.outcome == "refused"
+    assert _put_count(s) == 4
 
 
 def test_ac_55_50_c12_guard_makes_zero_requests(db):
@@ -323,20 +349,6 @@ def test_ac_55_50_c12_guard_makes_zero_requests(db):
     assert not [st for st in c.steps if st.method in ("PUT", "POST")]
     assert not [r for r in s.wrapper.requests if "/api/db1" in r]
 
-
-# ---- vendor ignores ShippingPO ------------------------------------------------------
-
-def test_ac_55_50_vendor_ignoring_shipping_po_fails_c10_and_skips_c11(db):
-    s = _setup(db, ignore_shipping_po=True)
-    res = _run(db, s)  # must not crash
-    st = _statuses(res)
-    for cid in CASE_IDS[:9]:
-        assert st[cid][0] == "PASS", (cid, st[cid])
-    assert st["C10"][0] == "FAIL" and "ShippingPO" in st["C10"][1]
-    assert st["C11"][0] == "SKIPPED" and "C10" in st["C11"][1]
-
-
-# ---- runner guard ------------------------------------------------------------------
 
 def test_ac_55_42_non_db3_write_connection_refuses_to_start(db):
     s = _setup(db, base_url=DB1)
@@ -385,12 +397,13 @@ def test_ac_55_04_report_is_sanitised(db):
 
 
 def test_ac_55_51_report_marks_fail_and_skipped_honestly(db):
-    s = _setup(db, ignore_shipping_po=True)
+    s = _setup(db, drop_rows=True)
     md = render_report(_run(db, s), run_date=date(2026, 11, 5))
-    c10 = re.search(r"^#+ .*C10.*?(?=^#+ .*C11)", md, re.M | re.S).group(0)
-    assert "FAIL" in c10 and "ShippingPO" in c10
-    c11 = md[md.index(re.search(r"^#+ .*C11", md, re.M).group(0)):]
-    assert "SKIPPED" in c11.split("C12")[0]
+    c01 = re.search(r"^#+ .*C01.*?(?=^#+ .*C02)", md, re.M | re.S).group(0)
+    assert "FAIL" in c01 and "rows dropped" in c01
+    c02 = md[md.index(re.search(r"^#+ .*C02", md, re.M).group(0)):]
+    assert "SKIPPED" in c02.split("C03")[0]
+    assert "http" not in md.lower() and "example.test" not in md
 
 
 # ---- vendor findings (live run 2026-11-04): create body + read-back check ----------
@@ -436,14 +449,6 @@ def test_vendor_c01_description_comes_from_the_so_row(db):
         assert r["Description"] == so_row["Description"] and r["UOM"] == so_row["UOM"]
 
 
-def test_vendor_c10_spo_create_body_is_complete(db):
-    s = _setup(db)
-    _run(db, s)
-    spo_body = next(b for b in _create_bodies(s) if b["DocNo"] == "FXT-T1-S1")
-    _assert_complete_create_body(spo_body, spo=True)
-    assert spo_body["Details"][0]["FromDocType"] == "PO"
-
-
 def test_vendor_no_write_body_in_the_suite_carries_a_pre_1753_date(db):
     s = _setup(db)
     _run(db, s)
@@ -457,7 +462,7 @@ def test_vendor_c01_200_with_dropped_rows_is_fail_and_dependents_skipped(db):
     c01 = _case(res, "C01")
     assert c01.status == "FAIL" and "rows dropped" in c01.observed
     assert _case(res, "C02").status == "SKIPPED" and "C01" in _case(res, "C02").observed
-    for cid in ("C03", "C04", "C10", "C11"):
+    for cid in ("C03", "C04", "C08", "C10", "C11"):
         assert _case(res, cid).status == "SKIPPED", cid
 
 
