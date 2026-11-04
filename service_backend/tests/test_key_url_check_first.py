@@ -9,6 +9,8 @@ transaction (a session in a transaction holds a pooled connection).
 
 Pins (tests that pass today) say so in their docstring.
 """
+import socket
+
 import httpx
 import pytest
 from sqlalchemy import event
@@ -20,7 +22,6 @@ from tests.test_omnichannel_api_gateway import _seeded
 from tests.test_omnichannel_send_route_limits import _install, _pdf_media, _PATHS, _setup
 
 HOOKS = "/api/v1/omnichannel/webhooks"
-PUBLIC = [(2, 1, 6, "", ("93.184.216.34", 0))]
 
 
 @pytest.fixture(autouse=True)
@@ -53,16 +54,20 @@ class _Rig:
         event.listen(Session, "after_transaction_end", on_end)
         self._listeners = [(on_begin, "after_begin"), (on_end, "after_transaction_end")]
 
-        def resolver(host, port=None, *a, **k):
-            if host == "localhost":  # the realtime publisher's redis connect, not a URL check
-                return PUBLIC
-            rig.events.append("url")
-            rig.open_at_check.append(
-                [s for s in list(rig._open) if s.in_transaction()]
-            )
-            return PUBLIC
+        from tests.resolver_stub import stub_resolver
 
-        monkeypatch.setattr("app.services.url_guard.socket.getaddrinfo", resolver)
+        rig.unexpected = stub_resolver(monkeypatch, {"hooks.example.com": "93.184.216.34", "media.example.com": "93.184.216.34"})
+        answer = socket.getaddrinfo  # the host-scoped stub just installed
+
+        def resolver(host, port=None, *a, **k):
+            if host != "localhost":  # localhost is the realtime publisher's redis connect, not a URL check
+                rig.events.append("url")
+                rig.open_at_check.append(
+                    [s for s in list(rig._open) if s.in_transaction()]
+                )
+            return answer(host, port, *a, **k)
+
+        monkeypatch.setattr(socket, "getaddrinfo", resolver)
         for name in ("_hold_live_key", "_lock_endpoint"):
             original = getattr(WebhookService, name)
 
@@ -75,6 +80,7 @@ class _Rig:
     def detach(self):
         for fn, name in self._listeners:
             event.remove(Session, name, fn)
+        assert self.unexpected == []
 
 
 @pytest.fixture

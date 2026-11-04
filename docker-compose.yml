@@ -81,6 +81,11 @@ x-backend-env: &backend-env
   OMNI_KEY_MAX_IN_FLIGHT: ${OMNI_KEY_MAX_IN_FLIGHT:-}
   OMNI_KEY_MAX_PER_MINUTE: ${OMNI_KEY_MAX_PER_MINUTE:-}
   OMNI_KEY_LIMIT_OVERRIDES: ${OMNI_KEY_LIMIT_OVERRIDES:-}
+  # The running commit, reported by GET /health as `git_sha`. blue_green_deploy.sh
+  # exports IMAGE_TAG (the full sha CI pushed) before `up`, so every
+  # backend-image container (API colours + workers + beat) carries it. Empty
+  # outside a deploy = /health reports null (never fingerprints a guess).
+  GIT_SHA: ${IMAGE_TAG:-}
 
 x-backend-base: &backend-base
   image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:backend-${IMAGE_TAG:-latest}

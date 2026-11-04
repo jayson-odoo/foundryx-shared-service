@@ -59,7 +59,15 @@ import httpx
 from app.config import settings
 from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
 from .base import CodeExchangeError, ConnectionStatus, SendError
-from .meta_graph import MetaGraphMixin, _meta_error_detail, is_rate_limited_error, meta_error_code, provider_error_text
+from .meta_graph import (
+    MetaGraphMixin,
+    _meta_error_detail,
+    _meta_error_obj,
+    _meta_error_text,
+    is_rate_limited_error,
+    meta_error_code,
+    provider_error_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,16 +221,12 @@ class MessengerAdapter(MetaGraphMixin):
                 raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
             if resp.status_code == 200:
                 return {"access_token": resp.json().get("access_token", "")}
-            try:
-                err = resp.json().get("error", {})
-                detail = err.get("message", "")
-            except ValueError:
-                err = {"raw": resp.text[:300]}
-                detail = f"Meta returned {resp.status_code}."
+            err = _meta_error_obj(resp) or {"raw": resp.text[:300]}
+            detail = _meta_error_text(resp) or f"Meta returned {resp.status_code}."
             logger.warning(
                 "Messenger code exchange failed (redirect_uri=%r): %s", redirect_uri, err
             )
-            raise CodeExchangeError(detail or "Code exchange failed.")
+            raise CodeExchangeError(detail)
         finally:
             if self._client is None:
                 client.close()
@@ -326,10 +330,7 @@ class MessengerAdapter(MetaGraphMixin):
             )
             if resp.status_code == 200:
                 return ConnectionStatus(ok=True, message="Reached the page successfully.")
-            try:
-                detail = resp.json().get("error", {}).get("message", "")
-            except ValueError:
-                detail = ""
+            detail = _meta_error_text(resp)
             return ConnectionStatus(ok=False, message=detail or f"Meta returned {resp.status_code}.")
         except httpx.HTTPError as exc:
             return ConnectionStatus(ok=False, message=f"Connection error: {exc}")

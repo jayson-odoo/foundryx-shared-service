@@ -77,14 +77,15 @@ def test_a_stored_string_version_yields_an_int_contract_version_on_the_sink():
     assert sink.contract_version == 2
 
 
-def test_a_connection_with_no_version_key_stays_on_contract_1():
-    """Existing tenants are unchanged - no backfill; the operator opts in from
-    the edit form."""
+def test_a_connection_with_no_version_key_runs_on_contract_2():
+    """INGEST-LINE-DROP-GUARD: an unset version used to mean 1, which strips
+    product_code from every document line (the CRM drops those silently).
+    Unset now resolves to 2 - the floor every live CRM advertises."""
     sink = sorento_sink_from_connection(
         {"baseUrl": "http://sorento.test"},
         {"apiKey": "k"}, entity_type="supplier", company_code="C1",
     )
-    assert sink.contract_version == 1
+    assert sink.contract_version == 2
 
 
 def test_a_stored_dotted_version_yields_its_major_on_the_sink():
@@ -97,12 +98,12 @@ def test_a_stored_dotted_version_yields_its_major_on_the_sink():
     assert sink.contract_version == 2
 
 
-def test_an_unparseable_stored_version_falls_back_to_1_without_raising():
+def test_an_unparseable_stored_version_falls_back_to_2_without_raising():
     sink = sorento_sink_from_connection(
         {"baseUrl": "http://sorento.test", "sorentoContractVersion": "abc"},
         {"apiKey": "k"}, entity_type="supplier", company_code="C1",
     )
-    assert sink.contract_version == 1
+    assert sink.contract_version == 2
 
 
 def test_fetch_contract_parses_a_dotted_advertised_version_to_its_major():
@@ -190,6 +191,10 @@ def test_test_passes_when_the_chosen_version_is_below_the_advertised_one():
     assert result.ok is True, result.message
 
 
-def test_test_treats_a_missing_version_key_as_1():
-    result = _test({"baseUrl": "http://sorento.test"}, 1)
+def test_test_treats_a_missing_version_key_as_2():
+    """INGEST-LINE-DROP-GUARD - the Test verifies the version the sink will
+    speak: a missing key is 2, so it passes against a contract-2 Sorento and
+    fails against a 1.x one (`test_autocount_contract_v1_line_guard`)."""
+    result = _test({"baseUrl": "http://sorento.test"}, 2)
     assert result.ok is True, result.message
+    assert "version 2" in result.message

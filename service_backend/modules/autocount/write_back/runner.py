@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -39,8 +40,11 @@ from modules.autocount.write_back.constants import (
     SO_BY_DOC_DATE_PATH,
     PO_BY_DOC_DATE_PATH,
 )
+from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteNotAllowed
 from modules.autocount.write_back.payloads import header_of, so_header_of
+from modules.autocount.write_back.operations import OperationService
+from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService, vendor_message
 from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
     PullDocsResult,
@@ -92,6 +96,7 @@ class Step:
     before_rows: Optional[List[Row]] = None
     after_rows: Optional[List[Row]] = None
     note: str = ""
+    response: Optional[object] = None  # the vendor answer (plan 57 cases; None for plan 55 steps)
 
 
 @dataclass
@@ -103,12 +108,20 @@ class CaseResult:
     observed: str = ""
     steps: List[Step] = field(default_factory=list)
     action_id: Optional[str] = None
+    http_calls: int = 0  # vendor requests the case made (plan 57 cases)
 
 
 @dataclass
 class SuiteResult:
     run_tag: str
     cases: List[CaseResult] = field(default_factory=list)
+    # plan 57: one exact, UNSCRUBBED dict per vendor write (private file, never the report)
+    evidence: List[Dict[str, object]] = field(default_factory=list)
+
+
+def _doc_prefix(run_tag: str) -> str:
+    """``FXT-<tag>``, without doubling the prefix when the tag already carries it."""
+    return run_tag if run_tag.upper().startswith("FXT-") else f"FXT-{run_tag}"
 
 
 def _rows(rows: Sequence[Row]) -> List[Row]:
@@ -141,7 +154,7 @@ class _Run:
         self.base_url = base_url
         self.creditor = creditor_code
         self.debtor = debtor_code
-        self.so_no = f"FXT-{run_tag}-SO"
+        self.so_no = f"{_doc_prefix(run_tag)}-SO"
         self.so_doc: Optional[Doc] = None
         self.tag = run_tag
         self.client_factory = client_factory
@@ -152,8 +165,8 @@ class _Run:
             sink_factory=sink_factory,
         )
         self.today = myt_date(datetime.now(timezone.utc))
-        self.po_no = f"FXT-{run_tag}-1"
-        self.spo_no = f"FXT-{run_tag}-S1"
+        self.po_no = f"{_doc_prefix(run_tag)}-1"
+        self.spo_no = f"{_doc_prefix(run_tag)}-S1"
         self.results: Dict[str, CaseResult] = {}
         self.po_doc: Optional[Doc] = None
         self.big_key: int = 0
@@ -560,6 +573,7 @@ def run_db3_suite(
     if company is None:
         raise WriteDisabled()
     base_url = write_base_url(db, company)  # resolves WITH tenant_id and runs the db3 guard
+    guard.assert_test_company(db, tenant_id, company.id)  # AC-57-22: before any request
     run = _Run(
         db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
         client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory,
@@ -594,6 +608,8 @@ def _render_step(step: Step) -> List[str]:
     lines = [f"- {step.method} {step.path}{status}" + (f" ({step.note})" if step.note else "")]
     if step.request_json is not None:
         lines.append(f"  - request: `{_dump(step.request_json)}`")
+    if step.response is not None:
+        lines.append(f"  - answer: `{_dump(step.response)}`")
     if step.before_rows is not None:
         lines.append(f"  - before: `{_dump(step.before_rows)}`")
     if step.after_rows is not None:
@@ -625,15 +641,376 @@ def render_report(result: SuiteResult, *, run_date: date) -> str:
     return "\n".join(out)
 
 
+# ── plan 57: Quotation / Sales Order suite (Q01..Q09) ────────────────────────
+
+_SCRUB_KEYS = re.compile(
+    r"^(DebtorName|InvAddr\d|DeliverAddr\d|Phone\d?|Fax\d?|DeliverPhone\d?|DeliverFax\d?|Attention|DeliverContact|SalesAgent|RefDocNo|ShipInfo|CreditorName|Remark\d|Note|CreatedUserID|LastModifiedUserID)$"
+)
+
+
+def _scrub(value: object) -> object:
+    """A deep copy with customer name, address, phone and contact values replaced
+    (keys and codes stay): the report is shareable, the evidence file is not."""
+    if isinstance(value, dict):
+        return {k: ("[scrubbed]" if _SCRUB_KEYS.match(str(k)) and v not in (None, "") else _scrub(v))
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(v) for v in value]
+    return value
+
+
+class _Tap:
+    """Counts every vendor request and keeps every write exactly as sent / answered."""
+
+    def __init__(self) -> None:
+        self.http = 0
+        self.writes: List[Dict[str, object]] = []
+
+
+class _TapClient:
+    def __init__(self, inner: AutoCountWriteClient, tap: _Tap) -> None:
+        self._inner, self._tap = inner, tap
+
+    def _send(self, method: str, path: str, body: object):
+        self._tap.http += 1
+        entry: Dict[str, object] = {"method": method, "path": path, "requestBody": body}
+        self._tap.writes.append(entry)
+        try:
+            response = getattr(self._inner, method.lower())(path, body)
+        except WriteTransportError as exc:
+            entry.update(responseStatus=None, responseBody={"error": exc.code})
+            raise
+        entry.update(responseStatus=response.status_code, responseBody=response.body)
+        return response
+
+    def post(self, path: str, body: object):
+        return self._send("POST", path, body)
+
+    def put(self, path: str, body: object):
+        return self._send("PUT", path, body)
+
+    def delete(self, path: str, body: object):
+        return self._send("DELETE", path, body)
+
+
+class _TapReader:
+    def __init__(self, inner: AutoCountDocReader, tap: _Tap) -> None:
+        self._inner, self._tap = inner, tap
+
+    def get_document(self, *args, **kwargs):
+        self._tap.http += 1
+        return self._inner.get_document(*args, **kwargs)
+
+    def find_by_doc_no(self, *args, **kwargs):
+        self._tap.http += 1
+        return self._inner.find_by_doc_no(*args, **kwargs)
+
+    def list_day(self, *args, **kwargs):
+        self._tap.http += 1
+        return self._inner.list_day(*args, **kwargs)
+
+
+_Q_ITEM = {"ItemCode": ITEM, "UOM": "UNIT", "Description": ITEM, "Location": "HQ", "UnitPrice": 126.0}
+_Q_CASES = (
+    ("Q01", "Create a quotation (AutoCount numbers it, and an explicit number)", "q01"),
+    ("Q02", "Edit the quotation: header, quantity, price, discount, location", "q02"),
+    ("Q03", "Add a line to the quotation, then move the first line", "q03"),
+    ("Q04", "Create a sales order from a quotation row", "q04"),
+    ("Q05", "Edit the sales order and add a line", "q05"),
+    ("Q06", "Cancel the quotation refused (no AutoCount support yet)", "q06"),
+    ("Q07", "Cancel the sales order refused (no AutoCount support yet)", "q07"),
+    ("Q08", "Delete a sales order line refused (no AutoCount support yet)", "q08"),
+    ("Q09", "Link, unlink and relink refused while delete is off", "q09"),
+)
+
+
+class _QtRun:
+    def __init__(self, db: Session, tenant_id: str, company: AcCompany, base_url: str, debtor: str,
+                 run_tag: str, header_extra: Dict[str, object], client_factory, reader_factory,
+                 sink_factory) -> None:
+        self.db, self.tenant_id, self.company, self.debtor, self.tag = db, tenant_id, company, debtor, run_tag
+        self.base_url = base_url
+        self.extra = dict(header_extra)
+        self.tap = _Tap()
+        wrapped_client = lambda url: _TapClient(client_factory(url), self.tap)  # noqa: E731
+        wrapped_reader = lambda url: _TapReader(reader_factory(url), self.tap)  # noqa: E731
+        self.prims = PrimitiveService(db, client_factory=wrapped_client, reader_factory=wrapped_reader,
+                                      sink_factory=sink_factory)
+        self.ops = OperationService(db, client_factory=wrapped_client, reader_factory=wrapped_reader,
+                                    sink_factory=sink_factory)
+        self.today = myt_date(datetime.now(timezone.utc))
+        self.evidence: List[Dict[str, object]] = []
+        self.qt_auto: Optional[PrimitiveResult] = None
+        self.qt: Optional[PrimitiveResult] = None
+        self.so: Optional[PrimitiveResult] = None
+        self.case_id = ""
+        self._http_before = 0
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _args(self, kind: str) -> Dict[str, object]:
+        return {"tenant_id": self.tenant_id, "company_id": self.company.id, "kind": kind}
+
+    def _header(self, **over: object) -> Dict[str, object]:
+        head: Dict[str, object] = {
+            "DebtorCode": self.debtor, "DocDate": f"{self.today.isoformat()}T00:00:00",
+            "DisplayTerm": "C.B.D.", "CurrencyCode": "MYR", "CurrencyRate": 1.0,
+        }
+        head.update(self.extra)
+        head.update(over)
+        return head
+
+    def _line(self, qty: float = 1, **over: object) -> Dict[str, object]:
+        row: Dict[str, object] = dict(_Q_ITEM, Qty=qty, DeliveryDate=f"{self.today.isoformat()}T00:00:00")
+        row.update(over)
+        return row
+
+    def _action(self, result: PrimitiveResult) -> Optional[AcWriteAction]:
+        if not result.action_id:
+            return None
+        return self.db.query(AcWriteAction).filter(
+            AcWriteAction.tenant_id == self.tenant_id, AcWriteAction.id == result.action_id
+        ).first()
+
+    def record(self, case: CaseResult, result: PrimitiveResult, first_write: int) -> None:
+        """Turn the writes the tap saw since ``first_write`` into evidence and report steps."""
+        row = self._action(result)
+        for entry in self.tap.writes[first_write:]:
+            full = {
+                "case": case.case_id, "method": entry["method"], "path": entry["path"],
+                "requestBody": entry["requestBody"], "responseStatus": entry["responseStatus"],
+                "responseBody": entry["responseBody"],
+                "before": json.loads(json.dumps(row.before_json, default=str)) if row and row.before_json else None,
+                "after": json.loads(json.dumps(row.after_json, default=str)) if row and row.after_json else None,
+            }
+            self.evidence.append(full)
+            before = (full["before"] or {}).get("Details") if full["before"] else None  # type: ignore[union-attr]
+            after = (full["after"] or {}).get("Details") if full["after"] else None  # type: ignore[union-attr]
+            case.steps.append(Step(
+                str(entry["method"]), str(entry["path"]), entry["responseStatus"],  # type: ignore[arg-type]
+                _scrub(entry["requestBody"]),  # type: ignore[arg-type]
+                _rows(before) if before else None, _rows(after) if after else None,  # type: ignore[arg-type]
+                response=self._report_answer(entry),
+            ))
+        case.action_id = result.action_id
+
+    def _report_answer(self, entry: Dict[str, object]) -> object:
+        """The answer shown in the report: a success as it came (scrubbed); a failure as
+        its redacted first line only (an IIS page or a stack never reaches the report)."""
+        status = entry["responseStatus"]
+        if isinstance(status, int) and 200 <= status < 300:
+            return _scrub(entry["responseBody"])
+        # AutoCount's own message when there is one; else the status only (never a stack,
+        # an exception type or the raw body)
+        return vendor_message(entry["responseBody"], self.base_url) or f"status {status}"
+
+    def call(self, case: CaseResult, fn) -> PrimitiveResult:
+        start = len(self.tap.writes)
+        result = fn()
+        self.record(case, result, start)
+        return result
+
+    @staticmethod
+    def line_of(result: Optional[PrimitiveResult], index: int = 0) -> int:
+        return int(((result.document or {}).get("Details") or [])[index]["DtlKey"])  # type: ignore[union-attr]
+
+    def _note(self, result: PrimitiveResult) -> str:
+        return result.outcome + (f" {result.error_code}" if result.error_code else "")
+
+    # ── cases ────────────────────────────────────────────────────────────────
+
+    def q01(self, case: CaseResult) -> None:
+        case.expected = "a quotation created with AutoCount's own number, and one with an FXT number"
+        auto = self.call(case, lambda: self.prims.create_doc(
+            **self._args("QT"), header=self._header(), lines=[self._line(1)]))
+        explicit = self.call(case, lambda: self.prims.create_doc(
+            **self._args("QT"), header=self._header(DocNo=f"{_doc_prefix(self.tag)}-QT"), lines=[self._line(1)]))
+        case.observed = f"auto {self._note(auto)} {auto.doc_no or ''}; explicit {self._note(explicit)} {explicit.doc_no or ''}".strip()
+        if auto.outcome == "done":
+            self.qt_auto = auto
+        if explicit.outcome == "done":
+            self.qt = explicit
+        if auto.outcome == "done" and explicit.outcome == "done":
+            case.status = PASS
+
+    def _qt_ready(self, case: CaseResult) -> Optional[PrimitiveResult]:
+        if self.qt is None:
+            case.status, case.observed = SKIPPED, "no quotation was created"
+        return self.qt
+
+    def q02(self, case: CaseResult) -> None:
+        case.expected = "header text, quantity, unit price, discount and location all read back changed"
+        qt = self._qt_ready(case)
+        if qt is None:
+            return
+        res = self.call(case, lambda: self.prims.edit_doc(
+            **self._args("QT"), doc_key=int(qt.doc_key or 0), doc_date=self.today,
+            header_changes={"Ref": f"{self.tag} edited"},
+            line_changes=[{"DtlKey": self.line_of(qt), "Qty": 2, "UnitPrice": 850.0, "Discount": "5%",
+                           "Location": "HQ"}]))
+        case.observed = self._note(res) + (f" {res.message}" if res.message else "")
+        case.status = PASS if res.outcome == "done" else FAIL
+
+    def q03(self, case: CaseResult) -> None:
+        case.expected = "one new line read back with its own DtlKey"
+        qt = self._qt_ready(case)
+        if qt is None:
+            return
+        res = self.call(case, lambda: self.prims.add_line(
+            **self._args("QT"), doc_key=int(qt.doc_key or 0), doc_date=self.today, line=self._line(3)))
+        moved = self.call(case, lambda: self.prims.edit_doc(
+            **self._args("QT"), doc_key=int(qt.doc_key or 0), doc_date=self.today, header_changes={},
+            line_changes=[{"DtlKey": self.line_of(qt), "Location": "BRW-AM"}]))
+        case.observed = f"add {self._note(res)}" + (f" new row {res.new_dtl_key}" if res.new_dtl_key else "") + (
+            f"; move {self._note(moved)}")
+        case.status = PASS if res.outcome == "done" and moved.outcome == "done" else FAIL
+
+    def q04(self, case: CaseResult) -> None:
+        case.expected = "sales order created from the quotation row; the row link is unconfirmed (AutoCount reads it back as 0)"
+        qt = self._qt_ready(case)
+        if qt is None:
+            return
+        # db3 (live run 4 Nov): a row that carries a quotation link is dropped unless the
+        # vendor-shaped transfer fields ride along, and it then takes the quotation row's
+        # unit price and location (Q02 / Q03 left 850.0 at BRW-AM), so those are sent as they are.
+        line = self._line(1, FromDocType="QT", FromDocNo=qt.doc_no, FromDocDtlKey=self.line_of(qt),
+                          UnitPrice=850.0, Location="BRW-AM",
+                          YourPONo="", ProjNo="", FOCQty=0, Discount="", TaxCode="", Desc2="",
+                          FullTransferOption=" ", FullTransferFromDocList="")
+        res = self.call(case, lambda: self.prims.create_doc(
+            **self._args("SO"), header=self._header(DocNo=f"{_doc_prefix(self.tag)}-SO"), lines=[line]))
+        case.observed = self._note(res) + (f" warnings {','.join(res.warnings)}" if res.warnings else "")
+        if res.outcome == "done":
+            self.so = res
+            case.status = PASS if "QT_ROW_LINK_UNCONFIRMED" in res.warnings else FAIL
+            if case.status == FAIL:
+                case.observed += " (link confirmed or no warning: unexpected)"
+
+    def q05(self, case: CaseResult) -> None:
+        case.expected = "sales order edited and one line added"
+        so = self.so
+        if so is None:
+            case.status, case.observed = SKIPPED, "no sales order was created"
+            return
+        edit = self.call(case, lambda: self.prims.edit_doc(
+            **self._args("SO"), doc_key=int(so.doc_key or 0), doc_date=self.today,
+            header_changes={"Ref": f"{self.tag} so"},
+            line_changes=[{"DtlKey": self.line_of(so), "Qty": 2, "UnitPrice": 800.0}]))
+        add = self.call(case, lambda: self.prims.add_line(
+            **self._args("SO"), doc_key=int(so.doc_key or 0), doc_date=self.today,
+            line=self._line(2, YourPONo="", ProjNo="", FOCQty=0, Discount="", TaxCode="", Desc2="",
+                            FromDocType="", FromDocNo="", FromDocDtlKey=0,
+                            FullTransferOption=" ", FullTransferFromDocList="")))
+        case.observed = f"edit {self._note(edit)}; add {self._note(add)}"
+        case.status = PASS if edit.outcome == "done" and add.outcome == "done" else FAIL
+
+    def _refused(self, case: CaseResult, results: List[str]) -> None:
+        """PASS when every answer is a VENDOR_UNSUPPORTED refusal and no request was made."""
+        case.observed = "; ".join(results)
+        ok = all("refused VENDOR_UNSUPPORTED" in r for r in results)
+        case.status = PASS if ok and self.tap.http == self._http_before else FAIL
+
+    def q06(self, case: CaseResult) -> None:
+        case.expected = "refused VENDOR_UNSUPPORTED, no request"
+        res = self.call(case, lambda: self.prims.cancel_doc(
+            **self._args("QT"), doc_key=int((self.qt.doc_key if self.qt else 0) or 1)))
+        self._refused(case, [f"cancel QT {self._note(res)}"])
+
+    def q07(self, case: CaseResult) -> None:
+        case.expected = "refused VENDOR_UNSUPPORTED, no request"
+        res = self.call(case, lambda: self.prims.cancel_doc(
+            **self._args("SO"), doc_key=int((self.so.doc_key if self.so else 0) or 1)))
+        self._refused(case, [f"cancel SO {self._note(res)}"])
+
+    def q08(self, case: CaseResult) -> None:
+        case.expected = "refused VENDOR_UNSUPPORTED, no request"
+        key = int((self.so.doc_key if self.so else 0) or 1)
+        dtl = self.line_of(self.so) if self.so else 1
+        res = self.call(case, lambda: self.prims.delete_line(**self._args("SO"), doc_key=key, dtl_key=dtl))
+        self._refused(case, [f"delete line SO {self._note(res)}"])
+
+    def q09(self, case: CaseResult) -> None:
+        case.expected = "link_row, unlink_row and relink_row each refused VENDOR_UNSUPPORTED, no request"
+        results: List[str] = []
+        specs = (
+            ("link_row", {"doc_key": 1, "dtl_key": 1, "so_doc_key": 2, "so_dtl_key": 2}),
+            ("unlink_row", {"doc_key": 1, "dtl_key": 1}),
+            ("relink_row", {"doc_key": 1, "dtl_key": 1, "so_doc_key": 2, "so_dtl_key": 2}),
+        )
+        for op, params in specs:
+            out = self.ops.run(
+                tenant_id=self.tenant_id, company_id=self.company.id, key_id=None,
+                idempotency_key=f"{self.tag}-q09-{op}", op=op, params=params)
+            results.append(f"{op} {out.outcome}" + (f" {out.error_code}" if out.error_code else ""))
+        self._refused(case, results)
+
+
+def run_qtso_suite(
+    db: Session,
+    *,
+    tenant_id: str,
+    company_id: str,
+    debtor_code: str,
+    run_tag: str,
+    header_extra: Optional[Dict[str, object]] = None,
+    client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
+    reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
+    sink_factory: Optional[Callable[..., object]] = None,
+) -> SuiteResult:
+    """Run Q01..Q09 through the real primitive / operation services. Refuses to
+    start before any request (``WriteDisabled`` / ``WriteNotAllowed`` for the
+    connection, ``WriteConnectionError`` ``WRITE_COMPANY_NOT_TEST`` for a company
+    that reads SQL or holds documents staged by another job). A case fault is
+    recorded as FAIL, never raised; every vendor write lands in ``evidence``."""
+    from modules.autocount.write_back.pull_docs import WriteDisabled
+
+    company = CompanyRepository(db).get(tenant_id, company_id)
+    if company is None:
+        raise WriteDisabled()
+    base_url = write_base_url(db, company)
+    guard.assert_test_company(db, tenant_id, company.id)  # raises WriteConnectionError
+    run = _QtRun(
+        db, tenant_id, company, base_url, debtor_code, run_tag, header_extra or {},
+        client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory,
+    )
+    suite = SuiteResult(run_tag=run_tag)
+    for case_id, title, method in _Q_CASES:
+        case = CaseResult(case_id, title)
+        run.case_id = case_id
+        run._http_before = run.tap.http
+        try:
+            getattr(run, method)(case)
+        except Exception as exc:  # noqa: BLE001 - one case never stops the suite
+            logger.exception("write-back runner case %s failed", case_id)
+            case.status = FAIL
+            case.observed = f"{case.observed} {type(exc).__name__}".strip()
+        case.http_calls = run.tap.http - run._http_before
+        db.rollback()
+        suite.cases.append(case)
+    suite.evidence = run.evidence
+    return suite
+
+
+def write_evidence(result: SuiteResult, path: str) -> None:
+    """The exact, unscrubbed evidence (private): one entry per vendor write."""
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(result.evidence, handle, indent=1, default=str)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run the db3 write-back suite.")
     parser.add_argument("--tenant-slug", required=True)
     parser.add_argument("--company-id", required=True)
-    parser.add_argument("--creditor", required=True)
+    parser.add_argument("--creditor")
     parser.add_argument("--run-tag", required=True)
     parser.add_argument("--debtor", default=DEFAULT_DEBTOR)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--suite", choices=("db3", "qtso"), default="db3")
+    parser.add_argument("--evidence", help="qtso: path of the exact (private) evidence JSON")
+    parser.add_argument("--header-extra", help="qtso: JSON file of header fields (names, addresses) to send")
     args = parser.parse_args(argv)
+    if args.suite == "db3" and not args.creditor:
+        parser.error("--creditor is required for the db3 suite")
 
     from app.database import SessionLocal
     from app.models.tenant import Tenant
@@ -644,16 +1021,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("error: unknown tenant")
             return 2
         try:
-            result = run_db3_suite(
-                db, tenant_id=tenant.id, company_id=args.company_id,
-                creditor_code=args.creditor, run_tag=args.run_tag, debtor_code=args.debtor,
-            )
+            if args.suite == "qtso":
+                extra: Dict[str, object] = {}
+                if args.header_extra:
+                    with open(args.header_extra, encoding="utf-8") as handle:
+                        extra = json.load(handle)
+                result = run_qtso_suite(
+                    db, tenant_id=tenant.id, company_id=args.company_id, debtor_code=args.debtor,
+                    run_tag=args.run_tag, header_extra=extra,
+                )
+            else:
+                result = run_db3_suite(
+                    db, tenant_id=tenant.id, company_id=args.company_id,
+                    creditor_code=args.creditor, run_tag=args.run_tag, debtor_code=args.debtor,
+                )
         except (WriteNotAllowed, Exception) as exc:  # noqa: BLE001
             print(f"error: {getattr(exc, 'code', type(exc).__name__)}")
             return 2
     today = myt_date(datetime.now(timezone.utc))
     with open(args.out, "w", encoding="utf-8") as handle:
         handle.write(render_report(result, run_date=today))
+    if args.evidence:
+        write_evidence(result, args.evidence)
     for case in result.cases:
         print(f"{case.case_id} {case.status}")
     return 0 if all(c.status != FAIL for c in result.cases) else 1

@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
+from datetime import date
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,43 +39,48 @@ from modules.autocount.write_back.client import (
     WriteTransportError,
 )
 from modules.autocount.write_back.constants import EDIT_PO_PATH
-from modules.autocount.write_back.staging import DocStager
-from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
+from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported names)
+    ACTION_DEADLINE_SECONDS,
+    BUSY_WINDOW_SECONDS,  # noqa: F401
+    DEADLINE_EXCEEDED,  # noqa: F401
+    DOC_BUSY,
+    DOC_KIND_MISMATCH,
+    DOC_STALE,
+    DOC_UNKNOWN,
+    INTERNAL_ERROR,
+    LOCATION_NOT_MOVED,
+    OUTCOME_DONE,
+    OUTCOME_MISMATCH,
+    OUTCOME_PENDING,
+    OUTCOME_REFUSED,
+    OUTCOME_VENDOR_ERROR,
+    ROW_ALREADY_AT_LOCATION,
+    SO_LOCATION_AMBIGUOUS,
+    VENDOR_UNSUPPORTED,
+    WRITE_DISABLED,
+    WriteActionResult,
+    WriteFrame,
+    _Stop,
+    _dec,
+    _doc_date,
+    _lines,
+    _safe_body,
+    _same,
+)
+from modules.autocount.write_back import guard
+from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
-from modules.autocount.write_back.repository import (
-    OUTCOME_IN_FLIGHT,
-    StagedDocRepository,
-    WriteActionRepository,
-)
+from modules.autocount.write_back.primitives import vendor_message
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT
+
+if TYPE_CHECKING:  # operations imports this module
+    from modules.autocount.write_back.operations import OperationService
 
 logger = logging.getLogger("foundryx.autocount")
 
 Doc = Dict[str, Any]
 
-OUTCOME_DONE = "done"
-OUTCOME_REFUSED = "refused"
-OUTCOME_MISMATCH = "mismatch"
-OUTCOME_PENDING = "pending_verification"
-OUTCOME_VENDOR_ERROR = "vendor_error"
-
-WRITE_DISABLED = "WRITE_DISABLED"
-# An in_flight / pending_verification action blocks its document for this long;
-# after it the document is free again (the old row is marked pending_verification).
-BUSY_WINDOW_SECONDS = 600
-# Overall budget of one action (all vendor calls together); at most half the busy window.
-ACTION_DEADLINE_SECONDS = 270.0
-DEADLINE_EXCEEDED = "DEADLINE_EXCEEDED"
-SO_LOCATION_AMBIGUOUS = "SO_LOCATION_AMBIGUOUS"
-
-INTERNAL_ERROR = "INTERNAL_ERROR"
-VENDOR_UNSUPPORTED = "VENDOR_UNSUPPORTED"
-LOCATION_NOT_MOVED = "LOCATION_NOT_MOVED"
-ROW_ALREADY_AT_LOCATION = "ROW_ALREADY_AT_LOCATION"
-DOC_KIND_MISMATCH = "DOC_KIND_MISMATCH"
-DOC_BUSY = "DOC_BUSY"
-DOC_UNKNOWN = "DOC_UNKNOWN"
-DOC_STALE = "DOC_STALE"
 
 ACTION_LINK = "link"
 ACTION_UNLINK = "unlink"
@@ -91,26 +97,12 @@ _UNTOUCHED_FIELDS = payloads.ROW_KEYS + ("FromSODtlKey",)
 _MAX_TEXT = 2000
 
 
-@dataclass
-class WriteActionResult:
-    """What a flow answered. ``document`` is the read-back document on ``done``."""
-
-    action_id: Optional[str]
-    outcome: str
-    error_code: Optional[str] = None
-    message: str = ""
-    document: Optional[Doc] = None
 
 
 class _SkipMove(Exception):
     """Internal: the location move is not attempted (deadline passed)."""
 
 
-class _Stop(Exception):
-    """Internal early exit carrying a finished result."""
-
-    def __init__(self, result: WriteActionResult) -> None:
-        self.result = result
 
 
 @dataclass
@@ -124,29 +116,16 @@ class _Plan:
     so_doc_key: Optional[int] = None
     so_dtl_key: Optional[int] = None
     qty: Optional[Decimal] = None
+    so_doc_date: Optional[date] = None  # AC-57-44: DocDate of an SO that is not staged
+    doc_date: Optional[date] = None  # the caller's DocDate of the PO / SPO side when it is not staged
 
 
-def _dec(value: Any) -> Decimal:
-    return Decimal(str(value if value is not None else 0))
 
 
-def _doc_date(raw: Optional[Doc]) -> Optional[date]:
-    text = str((raw or {}).get("DocDate") or "")[:10]
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        return None
 
 
-def _lines(raw: Optional[Doc]) -> List[Doc]:
-    lines = (raw or {}).get("_lines")
-    return [r for r in lines if isinstance(r, dict)] if isinstance(lines, list) else []
 
 
-def _same(a: Any, b: Any) -> bool:
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return _dec(a) == _dec(b)
-    return a == b
 
 
 def _expected_link(row: Doc, is_spo: bool) -> int:
@@ -239,30 +218,9 @@ def verify_relocate(before: Doc, after: Doc, dtl_key: int, location: str, body: 
     return True
 
 
-def _safe_body(body: Any) -> Doc:
-    if isinstance(body, (dict, list)):
-        return body  # type: ignore[return-value]
-    return {"text": str(body)[:_MAX_TEXT]}
 
 
-class WriteBackService:
-    def __init__(
-        self,
-        db: Session,
-        *,
-        client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
-        reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
-        sink_factory: Optional[Callable[..., Any]] = None,
-    ) -> None:
-        self.db = db
-        self.actions = WriteActionRepository(db)
-        self.staged = StagedDocRepository(db)
-        self.connections = ConnectionRepository(db)
-        self._client_factory = client_factory or AutoCountWriteClient
-        self._reader_factory = reader_factory or AutoCountDocReader
-        self._sink_factory = sink_factory
-        self._deadline = 0.0
-        self._put_sent = False
+class WriteBackService(WriteFrame):
 
     # ── public flows ─────────────────────────────────────────────────────────
 
@@ -278,9 +236,95 @@ class WriteBackService:
         qty: Decimal,
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        operations: Optional["OperationService"] = None,
+        so_doc_date: Optional[date] = None,
+        doc_date: Optional[date] = None,
     ) -> WriteActionResult:
-        plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty)
+        """Part of a row: the plan 55 split link (idempotent when a key is given).
+        The whole row: the ``link_row`` operation (delete + add, plan 57). The gateway
+        passes ``operations`` (the plan 57 service); without it the plan 55 flow runs."""
+        if operations is not None:
+            op = self._link_operation(operations, tenant_id, company_id, key_id, idempotency_key,
+                                      po_doc_key, po_dtl_key, qty, doc_date)
+            if op == "link_row":
+                return self._operation(
+                    operations, op, tenant_id, company_id, key_id, idempotency_key,
+                    {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
+                     "so_dtl_key": so_dtl_key, "qty": qty, "whole_row": True, "target_doc_date": so_doc_date,
+                     "doc_date": doc_date,
+                     "expected_last_modified": expected_last_modified},
+                )
+            if op == "split_link":
+                return self._operation(
+                    operations, op, tenant_id, company_id, key_id, idempotency_key,
+                    {"po_doc_key": po_doc_key, "po_dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
+                     "so_dtl_key": so_dtl_key, "qty": qty, "target_doc_date": so_doc_date, "doc_date": doc_date,
+                     "expected_last_modified": expected_last_modified},
+                )
+        plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty, so_doc_date, doc_date)
         return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+
+    def _link_operation(
+        self, operations: "OperationService", tenant_id: str, company_id: str, key_id: Optional[str],
+        idempotency_key: Optional[str], po_doc_key: int, po_dtl_key: int, qty: Decimal,
+        doc_date: Optional[date] = None,
+    ) -> Optional[str]:
+        """Which operation a link request runs (AC-57-44). A stored key keeps its
+        operation (a replay must not flip because the row changed since). Else the
+        qty is compared with the FRESH row qty: equal = ``link_row`` (delete + add),
+        anything else = the split link (an operation when a key is given, else the
+        plan 55 flow). An invalid qty, or a row that cannot be read, takes the plan
+        55 flow, which refuses it with its own recorded code and no further request."""
+        if idempotency_key is not None:
+            stored = operations.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
+            if stored is not None and stored.op in ("link_row", "split_link"):
+                return stored.op
+        fresh = self._fresh_row_qty(tenant_id, company_id, po_doc_key, po_dtl_key, qty, doc_date)
+        if fresh is not None and fresh == qty:
+            return "link_row"
+        return "split_link" if idempotency_key is not None else None
+
+    def _fresh_row_qty(
+        self, tenant_id: str, company_id: str, po_doc_key: int, po_dtl_key: int, qty: Decimal,
+        doc_date: Optional[date] = None,
+    ) -> Optional[Decimal]:
+        try:
+            payloads.validate_qty(qty)
+        except WriteRefusal:
+            return None
+        company = CompanyRepository(self.db).get(tenant_id, company_id)
+        if company is None:
+            return None
+        base_url, _refusal = self._resolve_write_base_url(company)
+        staged = self.staged.newest(tenant_id, company.id, _PO[1], f"{company.database_name}:{po_doc_key}")
+        day = _doc_date(staged.raw_json if staged else None) or doc_date
+        if base_url is None or day is None:
+            return None
+        self.db.commit()  # no transaction open during the GET
+        try:
+            fresh = self._reader_factory(base_url).get_document("PO", po_doc_key, day)
+        except DocReadError:
+            return None
+        row = next((r for r in fresh.get("Details") or [] if r.get("DtlKey") == po_dtl_key), None)
+        return None if row is None else _dec(row.get("Qty"))
+
+    @staticmethod
+    def _operation(
+        operations: "OperationService", op: str, tenant_id: str, company_id: str, key_id: Optional[str],
+        idempotency_key: Optional[str], params: Dict[str, Any],
+    ) -> WriteActionResult:
+        """Run a plan 57 operation and answer in the plan 55 shape (plus the
+        operation fields); no key given = a fresh one (not idempotent, as before)."""
+        result = operations.run(
+            tenant_id=tenant_id, company_id=company_id, key_id=key_id,
+            idempotency_key=idempotency_key or uuid.uuid4().hex, op=op, params=params,
+        )
+        return WriteActionResult(
+            None, result.outcome, result.error_code, result.message, result.document,
+            operation_id=result.operation_id, warnings=result.warnings,
+            replaced_lines=result.replaced_lines, doc_key=result.doc_key, doc_no=result.doc_no,
+        )
 
     def unlink(
         self,
@@ -291,9 +335,20 @@ class WriteBackService:
         po_dtl_key: int,
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        operations: Optional["OperationService"] = None,
+        doc_date: Optional[date] = None,
     ) -> WriteActionResult:
-        plan = _Plan(ACTION_UNLINK, _PO, po_doc_key, po_dtl_key)
-        return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+        """With ``operations`` (the gateway): AutoCount never edits a link in place,
+        so the ``unlink_row`` operation runs. Without it the plan 55 flow."""
+        if operations is None:
+            plan = _Plan(ACTION_UNLINK, _PO, po_doc_key, po_dtl_key)
+            return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+        return self._operation(
+            operations, "unlink_row", tenant_id, company_id, key_id, idempotency_key,
+            {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "doc_date": doc_date,
+             "expected_last_modified": expected_last_modified},
+        )
 
     def spo_unlink(
         self,
@@ -304,9 +359,19 @@ class WriteBackService:
         spo_dtl_key: int,
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        operations: Optional["OperationService"] = None,
+        doc_date: Optional[date] = None,
     ) -> WriteActionResult:
-        plan = _Plan(ACTION_SPO_UNLINK, _SPO, spo_doc_key, spo_dtl_key)
-        return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+        """With ``operations``: the ``spo_unlink_row`` operation (delete + add unlinked)."""
+        if operations is None:
+            plan = _Plan(ACTION_SPO_UNLINK, _SPO, spo_doc_key, spo_dtl_key)
+            return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
+        return self._operation(
+            operations, "spo_unlink_row", tenant_id, company_id, key_id, idempotency_key,
+            {"spo_doc_key": spo_doc_key, "spo_dtl_key": spo_dtl_key, "doc_date": doc_date,
+             "expected_last_modified": expected_last_modified},
+        )
 
     def relocate(
         self,
@@ -341,6 +406,7 @@ class WriteBackService:
         try:
             self._check_qty(plan, row)
             base_url = self._write_base_url(row, company)
+            self._check_test_company(row, company)
             self._check_capability(plan, row)
             self._check_not_busy(row, tenant_id, company.id, plan.doc_key)
             row.outcome = OUTCOME_IN_FLIGHT
@@ -366,17 +432,7 @@ class WriteBackService:
         finally:
             self.db.rollback()
 
-    def _expired(self) -> bool:
-        return time.monotonic() > self._deadline
 
-    def _check_deadline(self, row: AcWriteAction) -> None:
-        """No vendor call after the action's overall deadline: refused before any
-        write was sent, pending verification after."""
-        if time.monotonic() <= self._deadline:
-            return
-        if self._put_sent:
-            raise _Stop(self._finish(row, OUTCOME_PENDING, DEADLINE_EXCEEDED))
-        raise self._refuse(row, DEADLINE_EXCEEDED)
 
     def _check_capability(self, plan: _Plan, row: AcWriteAction) -> None:
         """Unlink and SPO unlink are refused outright while the vendor does not
@@ -394,15 +450,6 @@ class WriteBackService:
         except WriteRefusal as exc:
             raise self._refuse(row, exc.code, str(exc)) from None
 
-    def _check_not_busy(
-        self, row: AcWriteAction, tenant_id: str, company_id: str, doc_key: int
-    ) -> None:
-        now = datetime.now(timezone.utc)
-        window_start = now - timedelta(seconds=BUSY_WINDOW_SECONDS)
-        if self.actions.expire_stale_in_flight(tenant_id, company_id, doc_key, window_start):
-            self.db.commit()
-        if self.actions.has_open(tenant_id, company_id, doc_key, window_start):
-            raise self._refuse(row, DOC_BUSY)
 
     def _busy_after_race(
         self, plan: _Plan, tenant_id: str, company_id: str, key_id: Optional[str]
@@ -426,40 +473,8 @@ class WriteBackService:
             )
         )
 
-    def _finish(
-        self,
-        row: AcWriteAction,
-        outcome: str,
-        code: Optional[str] = None,
-        *,
-        document: Optional[Doc] = None,
-        message: str = "",
-    ) -> WriteActionResult:
-        """Record the outcome (committed) and return the answer."""
-        row.outcome = outcome
-        row.error_code = code
-        self.db.commit()
-        return WriteActionResult(row.id, outcome, code, message, document)
 
-    def _refuse(self, row: AcWriteAction, code: str, message: str = "") -> _Stop:
-        return _Stop(self._finish(row, OUTCOME_REFUSED, code, message=message))
 
-    def _write_base_url(self, row: AcWriteAction, company: AcCompany) -> str:
-        """The company's write connection URL, resolved WITH tenant_id and the
-        db3 guard applied; a ``_Stop`` (refused) otherwise."""
-        conn = None
-        if company.is_active and company.write_connection_id:
-            conn = self.connections.get_for_provider(
-                company.tenant_id, company.write_connection_id, PROVIDER_KEY
-            )
-        if conn is None or not conn.is_active:
-            raise self._refuse(row, WRITE_DISABLED)
-        base_url = str((conn.config_json or {}).get("baseUrl") or "")
-        try:
-            assert_write_allowed(base_url)
-        except WriteNotAllowed as exc:
-            raise self._refuse(row, exc.code, str(exc)) from None
-        return base_url
 
     def _execute(
         self,
@@ -470,14 +485,14 @@ class WriteBackService:
         expected_last_modified: Optional[str],
     ) -> WriteActionResult:
         reader = self._reader_factory(base_url)
-        doc = self._read_fresh(plan.kind, plan.doc_key, company, row, reader)
+        doc = self._read_fresh(plan.kind, plan.doc_key, company, row, reader, plan.doc_date)
         if expected_last_modified and doc.get("LastModified") != expected_last_modified:
             raise self._refuse(row, DOC_STALE)
         if plan.action == ACTION_LINK:
             self._gate_whole_row(plan, company, doc, row)
         so_doc = None
         if plan.so_doc_key is not None:
-            so_doc = self._read_fresh(_SO, plan.so_doc_key, company, row, reader)
+            so_doc = self._read_fresh(_SO, plan.so_doc_key, company, row, reader, plan.so_doc_date)
         body = self._build(plan, company, row, doc, so_doc)
         row.before_json = doc
         row.request_json = body
@@ -525,10 +540,11 @@ class WriteBackService:
         company: AcCompany,
         row: AcWriteAction,
         reader: AutoCountDocReader,
+        date_hint: Optional[date] = None,
     ) -> Doc:
         ref = f"{company.database_name}:{doc_key}"
         staged = self.staged.newest(company.tenant_id, company.id, kind[1], ref)
-        doc_date = _doc_date(staged.raw_json if staged else None)
+        doc_date = _doc_date(staged.raw_json if staged else None) or date_hint
         if doc_date is None:
             raise self._refuse(row, self._missing_code(kind, company, ref))
         self._check_deadline(row)
@@ -646,7 +662,8 @@ class WriteBackService:
         except WriteTransportError as exc:
             return self._finish(row, OUTCOME_PENDING, exc.code)
         row.response_status = response.status_code
-        row.response_json = _safe_body(response.body)
+        # a failure keeps its status and the redacted text only (AC-57-47); a success as it came
+        row.response_json = _safe_body(response.body) if response.ok else {"text": vendor_message(response.body, base_url)}
         if not response.ok:
             return self._finish(row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR")
         self.db.commit()
@@ -734,7 +751,11 @@ class WriteBackService:
         except WriteTransportError as exc:
             row.response_json = [row.response_json[0], {"error": exc.code}]
         else:
-            row.response_json = [row.response_json[0], _safe_body(response.body)]
+            row.response_json = [
+                row.response_json[0],
+                _safe_body(response.body) if response.ok
+                else {"text": vendor_message(response.body, getattr(client, "base_url", ""))},
+            ]
             row.response_status = [first_status, response.status_code]
             if response.ok and not self._expired():
                 self.db.commit()
@@ -755,18 +776,6 @@ class WriteBackService:
 
     # ── staging + push ───────────────────────────────────────────────────────
 
-    def _stage(self, company: AcCompany, kind: str, doc: Doc) -> None:
-        """Stage the verified read-back and push it once (never changes the outcome)."""
-        DocStager(self.db, self._sink_factory).stage_and_push(company, doc, kind)
-
-
-class WriteConnectionError(Exception):
-    """``set_write_connection`` refused; ``code`` is WRITE_NOT_ALLOWED or
-    CONNECTION_NOT_FOUND and the company is left unchanged."""
-
-    def __init__(self, code: str) -> None:
-        self.code = code
-        super().__init__(code)
 
 
 def set_write_connection(
@@ -776,8 +785,13 @@ def set_write_connection(
     connection whose base URL passes the write guard (db3 only), else a
     ``WriteConnectionError`` with the company unchanged."""
     company = CompanyRepository(db).get(tenant_id, company_id)
+    if company is None:
+        raise WriteConnectionError("CONNECTION_NOT_FOUND")
+    # AC-57-22: company-scoped data first. A company that reads SQL, or already holds
+    # documents staged by another job, is a live book: it never gets a write connection.
+    guard.assert_test_company(db, tenant_id, company.id)
     conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
-    if company is None or conn is None:
+    if conn is None:
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
     try:
         assert_write_allowed(str((conn.config_json or {}).get("baseUrl") or ""))
