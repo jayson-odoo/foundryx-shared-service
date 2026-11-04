@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from app.models.workflow import Workflow
+from app.models.workflow import Workflow, WorkflowRun, WorkflowVersion
 
 from ..models import WorkflowOwner
 
@@ -41,6 +41,21 @@ def decode_cursor(cursor: str) -> Tuple[datetime, str]:
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
     return created_at, workflow_id
+
+
+def encode_number_cursor(number: int) -> str:
+    return base64.urlsafe_b64encode(f"n|{number}".encode()).decode().rstrip("=")
+
+
+def decode_number_cursor(cursor: str) -> int:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        tag, value = base64.urlsafe_b64decode(padded.encode()).decode().split("|", 1)
+        if tag != "n":
+            raise ValueError("tag")
+        return int(value)
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        raise InvalidCursor() from exc
 
 
 class WorkflowOwnerRepository:
@@ -125,3 +140,69 @@ class WorkflowOwnerRepository:
         )
         self.db.add(row)
         return row
+
+    # ---- versions and runs of an OWNED workflow (the caller resolved
+    # ``get_owned`` first, so the workflow is this key's) ----
+
+    def list_versions(
+        self, tenant_id: str, workflow_id: str, *, limit: int, before_number: Optional[int]
+    ) -> Tuple[List[WorkflowVersion], Optional[int]]:
+        q = (
+            self.db.query(WorkflowVersion)
+            .join(Workflow, Workflow.id == WorkflowVersion.workflow_id)
+            .filter(WorkflowVersion.workflow_id == workflow_id, Workflow.tenant_id == tenant_id)
+        )
+        if before_number is not None:
+            q = q.filter(WorkflowVersion.version_number < before_number)
+        rows = q.order_by(WorkflowVersion.version_number.desc()).limit(limit + 1).all()
+        if len(rows) <= limit:
+            return rows, None
+        page = rows[:limit]
+        return page, page[-1].version_number
+
+    def list_runs(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        limit: int,
+        cursor: Optional[Tuple[datetime, str]] = None,
+    ) -> Tuple[List[WorkflowRun], Optional[Tuple[datetime, str]]]:
+        q = self.db.query(WorkflowRun).filter(
+            WorkflowRun.tenant_id == tenant_id, WorkflowRun.workflow_id == workflow_id
+        )
+        if cursor is not None:
+            at, rid = cursor
+            q = q.filter(
+                or_(
+                    WorkflowRun.created_at < at,
+                    and_(WorkflowRun.created_at == at, WorkflowRun.id < rid),
+                )
+            )
+        rows = q.order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc()).limit(limit + 1).all()
+        if len(rows) <= limit:
+            return rows, None
+        page = rows[:limit]
+        return page, (page[-1].created_at, page[-1].id)
+
+    def get_owned_run(self, tenant_id: str, workspace_id: str, run_id: str) -> Optional[WorkflowRun]:
+        """A run, only when its workflow is owned by this workspace and live."""
+        return (
+            self.db.query(WorkflowRun)
+            .join(Workflow, and_(Workflow.id == WorkflowRun.workflow_id, Workflow.tenant_id == WorkflowRun.tenant_id))
+            .join(
+                WorkflowOwner,
+                and_(
+                    WorkflowOwner.workflow_id == Workflow.id,
+                    WorkflowOwner.tenant_id == Workflow.tenant_id,
+                ),
+            )
+            .filter(
+                WorkflowRun.id == run_id,
+                WorkflowRun.tenant_id == tenant_id,
+                WorkflowOwner.tenant_id == tenant_id,
+                WorkflowOwner.workspace_id == workspace_id,
+                Workflow.is_trashed.is_(False),
+            )
+            .first()
+        )

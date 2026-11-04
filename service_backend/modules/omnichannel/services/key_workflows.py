@@ -7,8 +7,10 @@ and archived by the core ``WorkflowService`` with ``actor=None`` and
 ``actor_id="apikey:<keyId>"``.
 """
 import copy
+import re
 import uuid
 from dataclasses import dataclass
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -19,7 +21,12 @@ from sqlalchemy.orm import Session
 from app.api_errors import ApiError
 from app.models.status import Status as CoreStatus
 from app.models.workflow import Workflow
-from app.services.workflow_service import WorkflowService
+from app.services.workflow_service import (
+    ShortcutCodeNotAuthorized,
+    ShortcutNotFound,
+    ShortcutSerializationConflict,
+    WorkflowService,
+)
 from app.workflow_engine.executor import RunRefused, register_run_guard
 from app.workflow_engine.registry import (
     get_action,
@@ -43,20 +50,32 @@ from ..repositories.workflow_owner_repository import (
     InvalidCursor,
     WorkflowOwnerRepository,
     decode_cursor,
+    decode_number_cursor,
     encode_cursor,
+    encode_number_cursor,
 )
 from ..schemas import (
     PublicCatalogResponse,
     PublicValidateResponse,
     PublicWorkflowItem,
     PublicWorkflowListResponse,
+    PublicWorkflowRunDetail,
+    PublicWorkflowRunItem,
+    PublicWorkflowRunListResponse,
+    PublicWorkflowRunNode,
+    PublicWorkflowVersionItem,
+    PublicWorkflowVersionListResponse,
 )
 from . import lifecycle_service
+from .public_gateway_service import PublicGatewayService
 
 MAX_OWNED_WORKFLOWS = 200
 MAX_DEFINITION_NODES = 200
 KEY_SCHEMA_VERSION = 1
 SHORTCUT_ENTITY = "omnichannel_contact"
+MAX_RUN_INPUTS = 20
+MAX_RUN_INPUT_VALUE = 1000
+_INPUT_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,39}$")
 
 # The node types an API key may put in a workflow. Fails closed: a node type
 # registered later stays off until it is added here on purpose.
@@ -342,6 +361,46 @@ def check_for_save(
     if issues:
         raise issues[0].to_error()
     return stamped
+
+
+def run_item(run: Any) -> PublicWorkflowRunItem:
+    return PublicWorkflowRunItem(
+        id=run.id,
+        workflowId=run.workflow_id,
+        status=run.status,
+        triggeredBy=run.triggered_by,
+        actorId=run.actor_id,
+        error=run.error,
+        startedAt=run.started_at,
+        finishedAt=run.finished_at,
+    )
+
+
+def check_run_inputs(inputs: Any) -> Dict[str, str]:
+    """AC-38-141: at most 20 keys, identifier-shaped keys, string values of at
+    most 1000 characters. Anything else is a 422 and no run is created."""
+    if inputs is None:
+        return {}
+
+    def bad(message: str) -> ApiError:
+        return ApiError(422, "invalid_request", message)
+
+    if not isinstance(inputs, dict):
+        raise bad("inputs must be an object of text values.")
+    if len(inputs) > MAX_RUN_INPUTS:
+        raise bad(f"inputs can have at most {MAX_RUN_INPUTS} keys.")
+    for key, value in inputs.items():
+        if not isinstance(key, str) or _INPUT_KEY_RE.fullmatch(key) is None:
+            raise bad("An inputs key must start with a letter and use letters, digits and underscores (40 at most).")
+        if not isinstance(value, str) or len(value) > MAX_RUN_INPUT_VALUE:
+            raise bad(f"An inputs value must be text of at most {MAX_RUN_INPUT_VALUE} characters.")
+    return dict(inputs)
+
+
+def _not_runnable(reason: str) -> ApiError:
+    return ApiError(
+        409, "workflow_not_runnable", f"This workflow cannot be run now: {reason}.", {"reason": reason}
+    )
 
 
 def _to_utc(value: datetime) -> datetime:
@@ -630,3 +689,114 @@ class KeyWorkflowService:
             "templates": entry.get("templates", []),
         }
         return PublicCatalogResponse(nodes=nodes, options=options)
+
+    # ── lifecycle toggles, versions, runs ────────────────────────────────────
+    def unpublish(self, tenant_id: str, workspace_id: str, workflow_id: str) -> PublicWorkflowItem:
+        wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
+        return public_workflow_item(self.workflows.unpublish(wf.id, tenant_id))
+
+    def set_active(
+        self, tenant_id: str, workspace_id: str, workflow_id: str, is_active: bool
+    ) -> PublicWorkflowItem:
+        wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
+        return public_workflow_item(self.workflows.set_active(wf.id, tenant_id, is_active))
+
+    def list_versions(
+        self, tenant_id: str, workspace_id: str, workflow_id: str, *, limit: int, cursor: Optional[str]
+    ) -> PublicWorkflowVersionListResponse:
+        wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
+        before = None
+        if cursor:
+            try:
+                before = decode_number_cursor(cursor)
+            except InvalidCursor:
+                raise ApiError(422, "invalid_request", "cursor is not valid.")
+        rows, nxt = self.owners.list_versions(tenant_id, wf.id, limit=limit, before_number=before)
+        return PublicWorkflowVersionListResponse(
+            data=[
+                PublicWorkflowVersionItem(
+                    id=v.id,
+                    versionNumber=v.version_number,
+                    publishedAt=v.published_at,
+                    publishedBy=v.published_by,
+                    definition=v.definition_json or {},
+                )
+                for v in rows
+            ],
+            nextCursor=encode_number_cursor(nxt) if nxt is not None else None,
+        )
+
+    def list_runs(
+        self, tenant_id: str, workspace_id: str, workflow_id: str, *, limit: int, cursor: Optional[str]
+    ) -> PublicWorkflowRunListResponse:
+        wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
+        position = None
+        if cursor:
+            try:
+                position = decode_cursor(cursor)
+            except InvalidCursor:
+                raise ApiError(422, "invalid_request", "cursor is not valid.")
+        rows, nxt = self.owners.list_runs(tenant_id, wf.id, limit=limit, cursor=position)
+        return PublicWorkflowRunListResponse(
+            data=[run_item(r) for r in rows],
+            nextCursor=encode_cursor(*nxt) if nxt else None,
+        )
+
+    def run_detail(self, tenant_id: str, workspace_id: str, run_id: str) -> PublicWorkflowRunDetail:
+        run = self.owners.get_owned_run(tenant_id, workspace_id, run_id)
+        if run is None:
+            raise workflow_not_found()
+        # Node input and output are the stored trace rows, which the executor
+        # already masked when it wrote them.
+        return PublicWorkflowRunDetail(
+            **run_item(run).model_dump(),
+            nodes=[
+                PublicWorkflowRunNode(
+                    nodeId=n.node_id,
+                    nodeType=n.node_type,
+                    status=n.status,
+                    input=n.input_json,
+                    output=n.output_json,
+                    error=n.error,
+                )
+                for n in run.nodes
+            ],
+        )
+
+    def run_for_contact(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        key_id: str,
+        workflow_id: str,
+        *,
+        contact: str,
+        inputs: Any,
+    ) -> PublicWorkflowRunItem:
+        """Start the published version of an owned shortcut workflow for one
+        contact of the key's workspace. Order: owned, inputs, runnable, contact."""
+        wf = self._owned_or_404(tenant_id, workspace_id, workflow_id)
+        clean_inputs = check_run_inputs(inputs)
+        if wf.current_version_id is None:
+            raise _not_runnable("unpublished")
+        if not wf.is_active:
+            raise _not_runnable("inactive")
+        if wf.trigger_type != "entity.shortcut" or wf.trigger_entity_type != SHORTCUT_ENTITY:
+            raise _not_runnable("trigger")
+        # Find-only: a miss never creates a contact.
+        found = PublicGatewayService(self.db)._resolve_contact(tenant_id, workspace_id, contact)
+        actor = SimpleNamespace(id=actor_id_for_key(key_id), name="API key", email="")
+        try:
+            run = self.workflows.run_shortcut(
+                tenant_id, wf.id, SHORTCUT_ENTITY, found, actor, inputs=clean_inputs or None
+            )
+        except ShortcutNotFound:
+            raise _not_runnable("unpublished")
+        except (ShortcutCodeNotAuthorized, ShortcutSerializationConflict) as exc:
+            raise ApiError(
+                409, "workflow_not_runnable", str(exc) or "This workflow cannot be run now.",
+                {"reason": "trigger"},
+            )
+        self.db.commit()
+        self.db.refresh(run)
+        return run_item(run)

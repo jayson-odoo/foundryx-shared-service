@@ -471,6 +471,7 @@ def create_run_for_event(
     *,
     depth: int,
     extra_context: Optional[Dict[str, Any]] = None,
+    inputs: Optional[Dict[str, Any]] = None,
 ) -> Optional[WorkflowRun]:
     """Create + persist + dispatch a ``WorkflowRun`` against ``wf``'s PUBLISHED
     version for a domain event ``ev`` (the event-bus envelope this module
@@ -514,6 +515,9 @@ def create_run_for_event(
     payload = build_event_trigger_payload(
         ev, trigger_type=wf.trigger_type, config=trigger_config, extra_context=extra_context
     )
+    if inputs:
+        # Same slot the manual run writes: `trigger.input.<key>` in the run context.
+        payload["input"] = dict(inputs)
     source = ev.get("source") or {}
     run = WorkflowRun(
         tenant_id=wf.tenant_id,

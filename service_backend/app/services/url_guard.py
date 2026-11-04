@@ -37,7 +37,19 @@ class UnparseableUrlError(UrlGuardError):
     """The URL text cannot be parsed at all (as opposed to being refused)."""
 
 
+# RFC 6598 shared address space: not covered by `is_private` on every Python
+# version, and reachable on carrier-grade NAT networks.
+_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
+    # One rule for the IPv4 form and its IPv4-mapped IPv6 spelling, whatever the
+    # Python version does with the mapped form.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        return _is_blocked_ip(mapped)
+    if isinstance(ip, ipaddress.IPv4Address) and ip in _SHARED_ADDRESS_SPACE:
+        return True
     return (
         ip.is_private
         or ip.is_loopback

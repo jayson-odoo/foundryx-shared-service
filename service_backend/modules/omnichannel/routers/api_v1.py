@@ -30,6 +30,12 @@ from ..schemas import (
     PublicSendResponse,
     PublicCatalogResponse,
     PublicValidateRequest,
+    PublicWorkflowActiveRequest,
+    PublicWorkflowRunDetail,
+    PublicWorkflowRunListResponse,
+    PublicWorkflowRunRequest,
+    PublicWorkflowVersionListResponse,
+    PublicWorkflowRunItem,
     PublicValidateResponse,
     PublicWorkflowCreateRequest,
     PublicWorkflowItem,
@@ -713,6 +719,15 @@ async def validate_workflow(
     )
 
 
+@router.get("/workflows/runs/{run_id}", response_model=PublicWorkflowRunDetail)
+def get_workflow_run(
+    run_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunDetail:
+    return KeyWorkflowService(db).run_detail(api_ws.tenant_id, api_ws.workspace_id, run_id)
+
+
 @router.get("/workflows/{workflow_id}", response_model=PublicWorkflowItem)
 def get_workflow(
     workflow_id: str,
@@ -750,6 +765,81 @@ def publish_workflow(
 ) -> PublicWorkflowItem:
     return KeyWorkflowService(db).publish(
         api_ws.tenant_id, api_ws.workspace_id, api_ws.key_id, workflow_id
+    )
+
+
+@router.post("/workflows/{workflow_id}/unpublish", response_model=PublicWorkflowItem)
+def unpublish_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).unpublish(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+
+
+@router.put("/workflows/{workflow_id}/active", response_model=PublicWorkflowItem)
+async def set_workflow_active(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowActiveRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).set_active,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        workflow_id,
+        payload.isActive,
+    )
+
+
+@router.get("/workflows/{workflow_id}/versions", response_model=PublicWorkflowVersionListResponse)
+def list_workflow_versions(
+    workflow_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowVersionListResponse:
+    return KeyWorkflowService(db).list_versions(
+        api_ws.tenant_id, api_ws.workspace_id, workflow_id, limit=limit, cursor=cursor
+    )
+
+
+@router.get("/workflows/{workflow_id}/runs", response_model=PublicWorkflowRunListResponse)
+def list_workflow_runs(
+    workflow_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunListResponse:
+    return KeyWorkflowService(db).list_runs(
+        api_ws.tenant_id, api_ws.workspace_id, workflow_id, limit=limit, cursor=cursor
+    )
+
+
+@router.post(
+    "/workflows/{workflow_id}/runs",
+    response_model=PublicWorkflowRunItem,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_workflow_for_contact(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunItem:
+    payload = _validated(PublicWorkflowRunRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).run_for_contact,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        api_ws.key_id,
+        workflow_id,
+        contact=payload.contact,
+        inputs=payload.inputs,
     )
 
 

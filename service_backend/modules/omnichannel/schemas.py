@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from app.schemas.base import ApiModel
 from app.schemas.filters import FilterGroup
@@ -2316,3 +2316,54 @@ class PublicValidateResponse(ApiModel):
 class PublicCatalogResponse(ApiModel):
     nodes: List[Dict[str, Any]]
     options: Dict[str, List[Dict[str, Any]]]
+
+
+class PublicWorkflowVersionItem(ApiModel):
+    id: str
+    versionNumber: int
+    publishedAt: datetime
+    publishedBy: Optional[str] = None
+    definition: Dict[str, Any]
+
+
+class PublicWorkflowVersionListResponse(ApiModel):
+    data: List[PublicWorkflowVersionItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowRunItem(ApiModel):
+    id: str
+    workflowId: str
+    status: str
+    triggeredBy: str
+    actorId: Optional[str] = None
+    error: Optional[str] = None
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+
+
+class PublicWorkflowRunNode(ApiModel):
+    nodeId: str
+    nodeType: str
+    status: str
+    input: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class PublicWorkflowRunDetail(PublicWorkflowRunItem):
+    nodes: List[PublicWorkflowRunNode]
+
+
+class PublicWorkflowRunListResponse(ApiModel):
+    data: List[PublicWorkflowRunItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowActiveRequest(BaseModel):
+    isActive: StrictBool
+
+
+class PublicWorkflowRunRequest(BaseModel):
+    contact: str = Field(min_length=1, max_length=200)
+    inputs: Optional[Any] = None
