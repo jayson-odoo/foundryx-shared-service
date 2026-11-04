@@ -188,6 +188,11 @@ class StorageReadError(Exception):
         self.status = status
 
 
+class StorageUnavailable(OSError):
+    """Storage was reachable but the object body could not be read. Callers may
+    retry. Distinct from FileNotFoundError: the object is not known to be gone."""
+
+
 # Hard ceiling for a stored object read that has no tighter limit (200 MiB).
 READ_CAP_BYTES = 200 * 1024 * 1024
 _READ_FAILED = "The stored file could not be read."

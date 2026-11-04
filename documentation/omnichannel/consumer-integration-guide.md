@@ -11,6 +11,7 @@
 > | Date | Change |
 > |----|----|
 > | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
+> | **2026-11-05** | **Media fetch retry** (section 8). `GET /omnichannel/media/{messageId}` answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` when the file cannot be read from storage for a moment; fetch again after the wait. A missing file is still `404`. Other contract details are unchanged. |
 > | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
 > | **2026-11-05** | **Provider message id** (sections 9.1 and 9.2): `externalMessageId` is `null`, never an empty string, when the channel accepted a send without returning an id. |
 > | **2026-11-04** | **Erase a contact** (sections 6a, 7, 10). New `DELETE /contacts/{identifier}` erases one contact of the key's workspace with its messages and files, and answers what was erased. New opt-in webhook event contact.erased tells your endpoints. A later message from the same number starts a new contact. |
@@ -1027,6 +1028,7 @@ curl -L https://YOUR-FOUNDRYX-HOST/omnichannel/media/8dbc5265-… \
 
 * Response headers: `Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=300`.
 * Unknown message / no media → `404`. No/invalid auth → `401`. Service disabled, or an API key whose tenant is suspended or archived or whose workspace is trashed → `403` with a plain `{"detail": "..."}` body (not the `/api/v1` error envelope). A session user of a suspended tenant also gets `403`. During that time a `mediaUrl` fetch with your key fails the same way, even for media you already received a link to; a signed link (below) keeps working until it expires.
+* When the file cannot be read from storage for a moment, it answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` (not the `/api/v1` error envelope). Wait that long and fetch again.
 * In a `message.inbound` webhook the media message's `mediaUrl` is already the absolute form of this URL - just add your `Authorization` header when you fetch it.
 
 ### Two ways in: Bearer, or a signed link
