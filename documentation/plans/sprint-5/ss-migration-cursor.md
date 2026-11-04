@@ -23,6 +23,11 @@ cursor in their own `cursorId` query parameter.
 | `GET /space/user` | `docs/api/96d00b7396970-list-users` | integer | `https://api.respond.io/space/user?limit=10&cursorId=10` |
 | `GET /space/custom_field` | `docs/api/172e05dbb955d-list-custom-fields` | integer | `https://api.respond.io/space/contact_field?limit=10&cursorId=10` |
 | `GET /space/channel` | `docs/api/57c6923fef9e9-list-channels` | integer | `https://api.respond.io/space/channel?limit=10&cursorId=10` |
+| `GET /contact/{identifier}/channels` | `docs/api/a17bccb520d2e-list-contact-channels` | integer, `limit` default 10 | `https://api.respond.io/contact/{identifier}/channels?limit=10&cursorId=10` |
+
+Review round 1 (reviewer, should-fix): `get_contact_channels` read only the first page, so a
+contact with more than the vendor's default 10 channels lost identities. It now walks
+`_paginated` like every other list call (red `ab5e4fd1`, fix `0e20ab36`).
 
 The API overview page: "The integration can use the `pagination.next` in another request to
 receive the next part of the list". The example URLs omit the `/v2` prefix, so the client must
