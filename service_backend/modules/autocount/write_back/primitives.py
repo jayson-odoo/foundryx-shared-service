@@ -17,6 +17,7 @@ import logging
 import re
 import time
 import unicodedata
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -117,20 +118,36 @@ class _Call:
     stage: bool = True
 
 
-_URL = re.compile(r"https?://\S+")
+_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+_CONN_PAIR = re.compile(
+    r"\b(?:password|pwd|user\s*id|uid|server|data\s*source|initial\s*catalog|database)\s*=", re.IGNORECASE
+)
+MESSAGE_CAP = 300
 
 
-def vendor_message(body: Any) -> str:
-    """AutoCount's own message from a failed answer, sanitised: no URL or host,
-    no control characters, no stack trace, at most 300 characters."""
+def vendor_message(body: Any, base_url: str = "") -> str:
+    """AutoCount's own refusal text, safe to show: the first line of its
+    ``ExceptionMessage`` (else ``Message``), never the stack or exception type.
+    Everything from the first URL, connection-string pair (password / pwd / user id /
+    uid / server / data source / initial catalog / database =) or the write host onward
+    is dropped for ``[redacted]`` (what follows such a token is where secrets sit);
+    capped at 300 characters."""
     text = ""
     if isinstance(body, dict):
-        text = str(body.get("ExceptionMessage") or body.get("Message") or "")
+        text = str(body.get("ExceptionMessage") or "")
+        if not text.strip() and body.get("Message") != _GENERIC:
+            text = str(body.get("Message") or "")
     elif isinstance(body, str):
         text = body
-    text = _URL.sub("", text)
+    text = next((line for line in text.splitlines() if line.strip()), "")
     text = "".join(" " if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else c for c in text)
-    return " ".join(text.split())[:300]
+    cuts = [m.start() for m in (_URL.search(text), _CONN_PAIR.search(text)) if m]
+    host = (urlsplit(base_url).hostname or "") if base_url else ""
+    if host and host.lower() in text.lower():
+        cuts.append(text.lower().index(host.lower()))
+    if cuts:
+        text = text[: min(cuts)].rstrip() + " [redacted]"
+    return " ".join(text.split())[:MESSAGE_CAP]
 
 
 _GENERIC = "An error has occurred."
@@ -402,10 +419,11 @@ class PrimitiveService(WriteFrame):
         row.response_status = response.status_code
         row.response_json = _safe_body(response.body)
         if not response.ok:
-            code = VENDOR_REFUSED if is_business_refusal(response.status_code, response.body) else VENDOR_ERROR
-            return self._wrap(
-                self._finish(row, OUTCOME_VENDOR_ERROR, code, message=vendor_message(response.body))
-            )
+            if is_business_refusal(response.status_code, response.body):
+                message = vendor_message(response.body, base_url)
+                row.response_json = {"message": message}  # the same safe text, never the stack
+                return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message))
+            return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR))
         self.db.commit()
         self._check_deadline(row)
         try:

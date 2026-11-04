@@ -138,7 +138,8 @@ _SPO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalShippingOrder.FALLBACK_FIELDS
 # `FALLBACK_FIELDS` the way the header tuples above are - `FALLBACK_FIELDS`
 # also carries the three ENGINE-MINTED linkage fields (`from_so_line_ref`,
 # `from_so_external`, `from_po_line_ref`), which the ESB composes itself
-# post-mapping (`mapping.py`) and can never be an operator-mapped target -
+# post-mapping (`mapping.py`) and can never be an operator-mapped target (nor can
+# plan 57's `replaces_line_ref`, minted by the write flow from an operation's replaced map) -
 # the legitimate, permanent gap between a line model's wire set and this
 # picker, pinned explicitly by
 # `test_line_catalog_equals_the_canonical_line_wire_set_minus_engine_derived`
@@ -158,10 +159,6 @@ _LINE_REMARK_FIELDS: Tuple[str, ...] = ("line_remark", "section_heading")
 # the eight input fields, so this can never drift from the model either.
 _LINE_LINKAGE_DIRECT_WIRE_FIELDS: Tuple[str, ...] = ("from_so_numbers", "from_po_number")
 
-# plan 57 S5 - ``replaces_line_ref`` is a line wire field (FALLBACK_FIELDS) fed by the
-# write flow, never by a mapping; the catalog parity pin counts every FALLBACK field, so
-# a model that declares it lists it here (read off the model, like the remark fields).
-_LINE_REPLACES_FIELDS: Tuple[str, ...] = ("replaces_line_ref",)
 
 # sprint-5/02 (AC-02-02/03) - a document's LINE fields are now first-class,
 # operator-editable mapping rows (the fixed column-name convention is gone).
@@ -223,12 +220,9 @@ def _line_fields(line_model, required: frozenset) -> Tuple[SorentoFieldDef, ...]
     declared_remark = tuple(
         name for name in _LINE_REMARK_FIELDS if name in line_model.model_fields
     )
-    declared_replaces = tuple(
-        name for name in _LINE_REPLACES_FIELDS if name in line_model.model_fields
-    )
     return _accepted_line(
         line_model.SINK_FIELDS + _LINE_FALLBACK_FIELDS + declared_remark
-        + declared_direct_wire + declared_replaces + declared_input,
+        + declared_direct_wire + declared_input,
         required,
     )
 

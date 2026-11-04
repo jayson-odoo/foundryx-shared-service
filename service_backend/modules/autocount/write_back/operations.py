@@ -427,10 +427,12 @@ class OperationService:
             raise _Done(REFUSED, "ITEM_MISMATCH")
         if row.get("UOM") != trow.get("UOM"):
             raise _Done(REFUSED, "UOM_MISMATCH")
-        if defn.target == "SO":  # AC-57-32 pins the outstanding rule for SO rows only
+        if defn.target == "SO":
             used = self.prims._so_linked_qty(company, int(spec.target_dtl_key or 0), fresh_po=doc)
-            if link_qty > payloads.so_outstanding(trow, used):
-                raise _Done(REFUSED, "QTY_ABOVE_OUTSTANDING")
+        else:
+            used = self._spo_linked_qty(company, doc, int(spec.target_dtl_key or 0), spec.dtl_key)
+        if link_qty > payloads.so_outstanding(trow, used):
+            raise _Done(REFUSED, "QTY_ABOVE_OUTSTANDING")
         return tdoc
 
     def _spo_ref(self, company: AcCompany, po_dtl_key: int) -> Optional[str]:
@@ -442,6 +444,22 @@ class OperationService:
             ):
                 return str(raw.get("DocNo") or staged.doc_no or staged.source_ref)
         return None
+
+    def _spo_linked_qty(self, company: AcCompany, fresh_spo: Doc, po_dtl_key: int, own_dtl: int) -> Decimal:
+        """Qty of one PO row already taken by SPO rows: the fresh SPO (minus the row
+        being moved) plus every other staged, non-cancelled SPO."""
+        own_ref = f"{company.database_name}:{fresh_spo.get('DocKey')}"
+        sources: List[List[Doc]] = [
+            [r for r in fresh_spo.get("Details") or [] if r.get("DtlKey") != own_dtl]
+        ]
+        for staged in self.prims.staged.for_entity(company.tenant_id, company.id, ENTITY_SHIPPING_ORDER):
+            raw = staged.raw_json or {}
+            if raw.get("Cancelled") != "T" and staged.source_ref != own_ref:
+                sources.append(_lines(raw))
+        return sum(
+            (_dec(r.get("Qty")) for lines in sources for r in lines if r.get("FromDocDtlKey") == po_dtl_key),
+            Decimal(0),
+        )
 
     # ── snapshot ─────────────────────────────────────────────────────────────
 
