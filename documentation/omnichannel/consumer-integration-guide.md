@@ -10,7 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
-> | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; nothing was changed, retry after the given seconds. |
+> | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
 > | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
 > | **2026-11-04** | **Meta pricing per message** (sections 7, 9.1, 9.3). `message.status` data and the default `MessageItem` now carry `pricing` (`billable`, `pricingModel`, `category`, `type`), or `null` when Meta has not reported it; older messages answer `null`, as do inbound ones. `?format=rio` is unchanged. `GET /templates` already returns each template's `category`. |
 > | **2026-11-04** | **Meta rate-limit retry** (section 10, section 6a). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
@@ -138,7 +138,7 @@ Each API key is limited to **10 requests in progress at once** and **600 request
 { "error": { "code": "rate_limited", "message": "Too many requests for this key." } }
 ```
 
-The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (a send is safe to retry with the same `Idempotency-Key`). A `503 busy_try_again` (§10) is retried the same way.
+The response carries a `Retry-After` header with the number of seconds to wait. Wait that long, then retry (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned with `idempotencyReplay: true`, not sent again). A `503 busy_try_again` (§10) is retried the same way.
 
 The limits are per key. If your integration needs more, ask support to raise the limits for a key.
 
@@ -1293,7 +1293,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
 | `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
 | `meta_rate_limited` | 429 | Meta is rate limiting the channel for a call made inside your request: a read receipt (`POST /contacts/{id}/read`) or a reaction send. Nothing was stored for the reaction. The `Retry-After` header gives the seconds to wait (Meta's value when it sent one, never more than 600). Distinct from `rate_limited`, which is this API's own per-key limit. |
-| `busy_try_again` | 503 | This record is busy with another change, so the request waited too long. Nothing was changed by it. The `Retry-After` header gives the seconds to wait; then retry (a send is safe to retry with the same `Idempotency-Key`). Body message: "This record is busy with another change. Please try again in a moment." |
+| `busy_try_again` | 503 | This record is busy with another change, so the request waited too long. The request may or may not have been applied. Retry after the `Retry-After` header (seconds). For a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned (`202`, `idempotencyReplay: true`), not sent again. Body message: "This record is busy with another change. Please try again in a moment." |
 
 ### Meta rate limits on a send
 
