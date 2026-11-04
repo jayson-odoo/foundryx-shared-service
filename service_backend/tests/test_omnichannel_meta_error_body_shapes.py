@@ -37,8 +37,9 @@ ODD_BODIES = [
     {"error": []},
     {"error": {"code": [1]}},
     {"error": {"message": 5, "error_user_msg": {}, "error_data": "x"}},
+    {"error": {"error_data": {"details": 5}}},
 ]
-ODD_IDS = ["list", "str", "int", "null", "err-str", "err-list", "code-list", "text-types"]
+ODD_IDS = ["list", "str", "int", "null", "err-str", "err-list", "code-list", "text-types", "details-int"]
 
 # Shapes for the adapter call sites (each used to raise AttributeError/TypeError).
 ADAPTER_BODIES = [["x"], {"error": "x"}, {"error": {"message": 5}}, None]
@@ -52,6 +53,8 @@ def _env(monkeypatch):
 
 
 def _resp(body, status=400) -> httpx.Response:
+    if body is None:  # a real JSON null, not an empty body
+        return httpx.Response(status, content=b"null", headers={"content-type": "application/json"})
     return httpx.Response(status, json=body)
 
 
@@ -105,8 +108,20 @@ def test_control_well_formed_codes_unchanged():
 
 
 # ── 3. adapters: same clean failure as a non-JSON error body ─────────────────
+class _NullAwareMeta(Meta):
+    """Meta double that answers a JSON null with the literal bytes ``null``."""
+
+    def handler(self, request):
+        if self.script[0][1] is None:
+            self.calls += 1
+            return httpx.Response(
+                self.script[0][0], content=b"null", headers={"content-type": "application/json"}
+            )
+        return super().handler(request)
+
+
 def _meta_with(body, status=400):
-    return Meta((status, body, None))
+    return _NullAwareMeta((status, body, None))
 
 
 def _non_json_client():
