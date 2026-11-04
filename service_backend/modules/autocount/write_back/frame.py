@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -160,21 +160,29 @@ class WriteFrame:
     def _refuse(self, row: AcWriteAction, code: str, message: str = "") -> _Stop:
         return _Stop(self._finish(row, OUTCOME_REFUSED, code, message=message))
 
-    def _write_base_url(self, row: AcWriteAction, company: AcCompany) -> str:
-        """The company's write connection URL, resolved WITH tenant_id and the
-        db3 guard applied; a ``_Stop`` (refused) otherwise."""
+    def _resolve_write_base_url(self, company: AcCompany) -> "Tuple[Optional[str], Optional[Tuple[str, str]]]":
+        """``(url, None)`` or ``(None, (code, message))``: the company's write
+        connection URL resolved WITH tenant_id and the db3 guard applied."""
         conn = None
         if company.is_active and company.write_connection_id:
             conn = self.connections.get_for_provider(
                 company.tenant_id, company.write_connection_id, PROVIDER_KEY
             )
         if conn is None or not conn.is_active:
-            raise self._refuse(row, WRITE_DISABLED)
+            return None, (WRITE_DISABLED, "")
         base_url = str((conn.config_json or {}).get("baseUrl") or "")
         try:
             assert_write_allowed(base_url)
         except WriteNotAllowed as exc:
-            raise self._refuse(row, exc.code, str(exc)) from None
+            return None, (exc.code, str(exc))
+        return base_url, None
+
+    def _write_base_url(self, row: AcWriteAction, company: AcCompany) -> str:
+        """The write URL, or a ``_Stop`` (refused) carrying why not."""
+        base_url, refusal = self._resolve_write_base_url(company)
+        if base_url is None:
+            code, message = refusal  # type: ignore[misc]
+            raise self._refuse(row, code, message)
         return base_url
 
     def _stage(self, company: AcCompany, kind: str, doc: Doc) -> None:

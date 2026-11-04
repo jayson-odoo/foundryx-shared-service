@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-from modules.autocount.models import AcEntityConfig, AcStagedRecord, AcWriteAction
+from modules.autocount.models import AcEntityConfig, AcStagedRecord, AcWriteAction, AcWriteOperation
 
 OUTCOME_IN_FLIGHT = "in_flight"
 OUTCOME_PENDING = "pending_verification"
@@ -83,6 +83,43 @@ class WriteActionRepository:
         for row in rows:
             row.outcome = OUTCOME_PENDING
         return len(rows)
+
+
+class OperationRepository:
+    """The operation log (plan 57): every query tenant- and company-scoped."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def by_key(
+        self, tenant_id: str, company_id: str, key_id: Optional[str], idempotency_key: str
+    ) -> Optional[AcWriteOperation]:
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.key_id == key_id,
+                AcWriteOperation.idempotency_key == idempotency_key,
+            )
+            .first()
+        )
+
+    def get(self, tenant_id: str, company_id: str, operation_id: str) -> Optional[AcWriteOperation]:
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+            )
+            .first()
+        )
+
+    def add(self, row: AcWriteOperation) -> AcWriteOperation:
+        self.db.add(row)
+        self.db.flush()
+        return row
 
 
 class StagedDocRepository:

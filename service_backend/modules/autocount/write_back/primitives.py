@@ -14,9 +14,11 @@ is open (every outcome is committed as it is reached).
 from __future__ import annotations
 
 import logging
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -110,6 +112,23 @@ class _Call:
     header_changes: Dict[str, Any] = field(default_factory=dict)
     line_changes: Sequence[Dict[str, Any]] = ()
     line: Optional[Dict[str, Any]] = None
+    stage: bool = True
+
+
+_URL = re.compile(r"https?://\S+")
+
+
+def vendor_message(body: Any) -> str:
+    """AutoCount's own message from a failed answer, sanitised: no URL or host,
+    no control characters, no stack trace, at most 300 characters."""
+    text = ""
+    if isinstance(body, dict):
+        text = str(body.get("ExceptionMessage") or body.get("Message") or "")
+    elif isinstance(body, str):
+        text = body
+    text = _URL.sub("", text)
+    text = "".join(" " if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else c for c in text)
+    return " ".join(text.split())[:300]
 
 
 class PrimitiveService(WriteFrame):
@@ -129,29 +148,32 @@ class PrimitiveService(WriteFrame):
         header_changes: Dict[str, Any], line_changes: Sequence[Dict[str, Any]],
         doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None, operation_id: Optional[str] = None, step: Optional[str] = None,
+        stage: bool = True,
     ) -> PrimitiveResult:
         call = _Call(EDIT, kind, tenant_id, doc_key=doc_key, key_id=key_id, operation_id=operation_id,
                      step=step, doc_date=doc_date, expected_last_modified=expected_last_modified,
-                     header_changes=header_changes, line_changes=line_changes)
+                     header_changes=header_changes, line_changes=line_changes, stage=stage)
         return self._run(call, company_id)
 
     def add_line(
         self, *, tenant_id: str, company_id: str, kind: str, doc_key: int, line: Dict[str, Any],
         doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None, operation_id: Optional[str] = None, step: Optional[str] = None,
+        stage: bool = True,
     ) -> PrimitiveResult:
         call = _Call(ADD_LINE, kind, tenant_id, doc_key=doc_key, key_id=key_id, operation_id=operation_id,
-                     step=step, doc_date=doc_date, expected_last_modified=expected_last_modified, line=line)
+                     step=step, doc_date=doc_date, expected_last_modified=expected_last_modified, line=line, stage=stage)
         return self._run(call, company_id)
 
     def delete_line(
         self, *, tenant_id: str, company_id: str, kind: str, doc_key: int, dtl_key: int,
         doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None, operation_id: Optional[str] = None, step: Optional[str] = None,
+        stage: bool = True,
     ) -> PrimitiveResult:
         call = _Call(DELETE_LINE, kind, tenant_id, doc_key=doc_key, dtl_key=dtl_key, key_id=key_id,
                      operation_id=operation_id, step=step, doc_date=doc_date,
-                     expected_last_modified=expected_last_modified)
+                     expected_last_modified=expected_last_modified, stage=stage)
         return self._run(call, company_id)
 
     def delete_doc(
@@ -220,7 +242,7 @@ class PrimitiveService(WriteFrame):
                 tenant_id=call.tenant_id, company_id=company_id, action=call.primitive,
                 doc_type=str(call.kind)[:16], doc_key=call.doc_key, dtl_key=call.dtl_key,
                 outcome=OUTCOME_REFUSED, key_id=call.key_id, operation_id=call.operation_id,
-                step=call.step,
+                step=call.step, created_at=datetime.now(timezone.utc),  # step order = time order
             )
         )
 
@@ -243,7 +265,8 @@ class PrimitiveService(WriteFrame):
                 raise self._refuse(row, exc.code, str(exc)) from None
             return None, request, _doc_date(request.body)
         assert call.doc_key is not None
-        self._check_not_busy(row, call.tenant_id, company.id, call.doc_key)
+        if call.operation_id is None:  # an operation holds its own cross-step lock
+            self._check_not_busy(row, call.tenant_id, company.id, call.doc_key)
         doc_date = self._resolve_date(call, kind, company, row)
         self._check_deadline(row)
         self.db.commit()  # no transaction open during the GET
@@ -272,40 +295,53 @@ class PrimitiveService(WriteFrame):
             return payloads.build_delete_doc(call.kind, doc)
         return payloads.build_cancel(call.kind, doc)
 
+    def find_date(
+        self, company: AcCompany, kind_name: str, doc_key: int, doc_date: Optional[date] = None
+    ) -> "tuple[Optional[date], str]":
+        """AC-57-20: ``(date, "")`` from the caller, else the staged DocDate, else
+        our last confirmed read-back's; ``(None, code)`` when none is known."""
+        if doc_date is not None:
+            return doc_date, ""
+        ref = f"{company.database_name}:{doc_key}"
+        entity = ENTITY_BY_KIND.get(kind_name)
+        staged = self.staged.newest(company.tenant_id, company.id, entity, ref) if entity else None
+        found = _doc_date(staged.raw_json if staged else None)
+        if found is None:
+            found = _doc_date(
+                self.actions.last_confirmed_after(company.tenant_id, company.id, kind_name, doc_key)
+            )
+        if found is not None:
+            return found, ""
+        other = {"PO": "SPO", "SPO": "PO"}.get(kind_name)
+        if other and self.staged.newest(company.tenant_id, company.id, ENTITY_BY_KIND[other], ref):
+            return None, DOC_KIND_MISMATCH
+        return None, DOC_DATE_REQUIRED
+
     def _resolve_date(
         self, call: _Call, kind: DocKind, company: AcCompany, row: AcWriteAction
     ) -> date:
-        """AC-57-20: caller date, else staged DocDate, else our last confirmed
-        read-back's DocDate, else ``DOC_DATE_REQUIRED`` (no HTTP)."""
-        if call.doc_date is not None:
-            return call.doc_date
-        ref = f"{company.database_name}:{call.doc_key}"
-        entity = ENTITY_BY_KIND.get(kind.name)
-        staged = self.staged.newest(company.tenant_id, company.id, entity, ref) if entity else None
-        found = _doc_date(staged.raw_json if staged else None)
-        if found is None and call.doc_key is not None:
-            found = _doc_date(
-                self.actions.last_confirmed_after(company.tenant_id, company.id, kind.name, call.doc_key)
-            )
-        if found is not None:
-            return found
-        other = {"PO": "SPO", "SPO": "PO"}.get(kind.name)
-        if other and self.staged.newest(company.tenant_id, company.id, ENTITY_BY_KIND[other], ref):
-            raise self._refuse(row, DOC_KIND_MISMATCH)
-        raise self._refuse(row, DOC_DATE_REQUIRED)
+        found, code = self.find_date(company, kind.name, int(call.doc_key or 0), call.doc_date)
+        if found is None:
+            raise self._refuse(row, code)
+        return found
 
     # ── transfer guards (AC-57-18) ───────────────────────────────────────────
 
-    def _so_linked_qty(self, company: AcCompany, so_dtl_key: int) -> Decimal:
-        """Qty of one SO row already covered by staged, non-cancelled PO rows."""
+    def _so_linked_qty(
+        self, company: AcCompany, so_dtl_key: int, fresh_po: Optional[Doc] = None
+    ) -> Decimal:
+        """Qty of one SO row already covered by non-cancelled PO rows: the staged
+        copies, with ``fresh_po`` (when given) standing in for its own staged copy."""
         total = Decimal(0)
+        own_ref = f"{company.database_name}:{fresh_po.get('DocKey')}" if fresh_po else None
+        sources: List[List[Doc]] = [list(fresh_po.get("Details") or [])] if fresh_po else []
         for staged in self.staged.for_entity(company.tenant_id, company.id, ENTITY_PURCHASE_ORDER):
             raw = staged.raw_json or {}
-            if raw.get("Cancelled") == "T":
-                continue
+            if raw.get("Cancelled") != "T" and staged.source_ref != own_ref:
+                sources.append(_lines(raw))
+        for lines in sources:
             total += sum(
-                (_dec(r.get("Qty")) for r in _lines(raw) if r.get("FromSODtlKey") == so_dtl_key),
-                Decimal(0),
+                (_dec(r.get("Qty")) for r in lines if r.get("FromSODtlKey") == so_dtl_key), Decimal(0)
             )
         return total
 
@@ -345,7 +381,9 @@ class PrimitiveService(WriteFrame):
         row.response_status = response.status_code
         row.response_json = _safe_body(response.body)
         if not response.ok:
-            return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR))
+            return self._wrap(
+                self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR, message=vendor_message(response.body))
+            )
         self.db.commit()
         self._check_deadline(row)
         try:
@@ -364,7 +402,7 @@ class PrimitiveService(WriteFrame):
         if call.primitive == CREATE:
             row.doc_key = after.get("DocKey")
         result = self._finish(row, OUTCOME_DONE, document=after)
-        if call.kind != "QT":
+        if call.kind != "QT" and call.stage:
             self._stage(company, call.kind, after)
         return self._wrap(result, **extra)
 

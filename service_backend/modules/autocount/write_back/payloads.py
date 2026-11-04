@@ -564,7 +564,10 @@ def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after:
     added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]
     if len(added) != 1:
         return Verdict(MISMATCH, "ROWS_DROPPED" if not added else "ROWS_UNEXPECTED")
-    if not _same_line(line, added[0]):
+    # AutoCount forces HQ on a new row that carries a link (db3, plan 55): the
+    # location is then moved by a later step, so it is not compared here.
+    relaxed = dict(line, Location=added[0].get("Location")) if line.get("FromDocDtlKey") else line
+    if not _same_line(relaxed, added[0]):
         return Verdict(MISMATCH, "ROW_MISMATCH")
     if _drifted(before, after, (), []):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
