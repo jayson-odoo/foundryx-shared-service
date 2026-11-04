@@ -6,6 +6,7 @@ S3 bullets. Owned shortcut workflows are written the way staff would publish
 them (WorkflowService, no actor) plus a direct owner row, so each test controls
 exactly which state (unpublished / inactive / other trigger) it is in.
 """
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -28,6 +29,17 @@ from tests.test_omnichannel_contacts_module import _seed_contact
 
 SHORTCUT_TRIGGER = {"id": "trg", "kind": "trigger", "type": "entity.shortcut",
                     "config": {"entityType": "omnichannel_contact"}}
+
+
+def _without_positions(doc):
+    """The definition with server-laid node positions stripped, after asserting every node has
+    numeric x and y (AC-38-131: a position-less save is laid out by the server)."""
+    out = json.loads(json.dumps(doc))
+    for n in out["nodes"]:
+        pos = n.pop("position", None)
+        assert isinstance(pos, dict), n
+        assert all(isinstance(pos.get(k), (int, float)) and not isinstance(pos.get(k), bool) for k in ("x", "y")), n
+    return out
 
 
 def _action(nid, ntype, config):
@@ -142,7 +154,7 @@ def test_ac_38_138_publish_versions(client, session_factory):
     first = body["data"][0]
     assert set(first) >= {"id", "versionNumber", "publishedAt", "publishedBy", "definition"}
     assert first["versionNumber"] == 2 and first["publishedBy"] == f"apikey:{kid}"
-    assert first["publishedAt"].endswith("Z") and first["definition"] == doc2
+    assert first["publishedAt"].endswith("Z") and _without_positions(first["definition"]) == doc2
     nxt = client.get(f"{BASE}/workflows/{wid}/versions?limit=1&cursor={body['nextCursor']}",
                      headers=hdr).json()
     assert [d["id"] for d in nxt["data"]] == [v1] and nxt["nextCursor"] is None

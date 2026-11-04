@@ -12,6 +12,7 @@ Every test seeds its own workspaces, channels, contacts and workflows. The
 direct owner row: that is the situation a key can never create but the run
 guard must still hold.
 """
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -58,6 +59,17 @@ AC_128_SET = {
     "omnichannel.add_comment", "omnichannel.ask_question", "omnichannel.wait",
     "omnichannel.business_hours", "http.request", "if",
 }
+
+
+def _without_positions(doc):
+    """The definition with server-laid node positions stripped, after asserting every node has
+    numeric x and y (AC-38-131: a position-less save is laid out by the server)."""
+    out = json.loads(json.dumps(doc))
+    for n in out["nodes"]:
+        pos = n.pop("position", None)
+        assert isinstance(pos, dict), n
+        assert all(isinstance(pos.get(k), (int, float)) and not isinstance(pos.get(k), bool) for k in ("x", "y")), n
+    return out
 
 
 # -- shared builders ------------------------------------------------------------
@@ -443,7 +455,7 @@ def test_ac_38_131_schema_version_caps_edit_conflict(client, session_factory):
     assert r.status_code == 200, r.text
     after = _wf_row(session_factory, wid)
     assert after["current_version_id"] == "ver-live"
-    assert r.json()["draftDefinition"] == new_draft
+    assert _without_positions(r.json()["draftDefinition"]) == new_draft
     assert _versions(session_factory, wid) == 0
 
     # with the current stamp: accepted
