@@ -91,7 +91,14 @@ Base path `/api/v1/omnichannel`, Bearer API key, camelCase, timestamps ISO 8601 
 - `POST /workflows` takes `{ name, description?, draftDefinition }` and returns 201 with a `PublicWorkflowItem`. Unknown body keys (`tenantId`, `workspaceId`) are ignored.
 - `GET /workflows/{id}` returns 200 with a `PublicWorkflowItem`. `PATCH /workflows/{id}` takes `{ name?, description?, draftDefinition?, expectedUpdatedAt? }` and returns 200 with a `PublicWorkflowItem`. `DELETE /workflows/{id}` returns 204 with an empty body.
 - Not found, for every reason: `404 { "error": { "code": "not_found", "message": "Workflow not found." } }`. The body is byte-identical across reasons.
-- S2 and S3 routes and shapes follow the UAC; their item fields get added to this block when those slices start.
+- The cursor is opaque. An unknown or tampered cursor answers `422 invalid_request`. Ties on `createdAt` are broken by `id` descending.
+- S2. A definition refusal answers `422` with `details: { "nodeId", "nodeType"?, "field"? }`. `node_not_allowed` names the node id and type in the message. `invalid_definition` names the node and field.
+- S2. `POST /workflows/validate` takes `{ draftDefinition }` and returns 200 `{ "valid": bool, "issues": [ { "code", "message", "nodeId" (string or null), "field" (string or null) } ] }`. `code` is `node_not_allowed` or `invalid_definition`.
+- S2. `POST /workflows/{id}/publish` returns 200 with a `PublicWorkflowItem` whose `publishedVersionId` is set. Its refusals are those of AC-38-129, AC-38-132 and AC-38-133. `unpublish`, `active`, `versions` and `runs` are S3.
+- S2. A `PATCH` whose `expectedUpdatedAt` is older than the row answers `409 edit_conflict`.
+- S2. `GET /workflows/catalog` returns `{ "nodes": [ { "type", "kind" ("trigger", "action" or "if"), "label", "description", "fields": [ { "key", "label", "type", "required", "options", "showWhen", "mergeable" } ], "outputs": [ ... ] } ], "options": { "channels", "contactTags", "contactFields", "lifecycleStages", "closeReasons", "templates" } }`. The option item shapes are those of `WorkflowService.metadata` `omnichannelWorkspaces` (`app/services/workflow_service.py:865-1032`), and `channels` is `[ { "id", "name" } ]`, all for the key's workspace only. The `if` entry carries a `conditionFormat` object.
+- S2 core seam. `app/workflow_engine/executor.py` gets `register_run_guard(fn)` and `unregister_run_guard(fn)`, plus `class RunRefused(Exception)` with `.code` and a message. Its signature is `fn(db, run, doc) -> None`. A guard that raises `RunRefused` fails the run (status `failed`, the run error holds the code and the message) before any node executes. `debug_execute` raises it to its caller, and no node executes.
+- S2 run pinning. An omnichannel action of an owned run whose resolved record is outside the owner workspace fails that node with code `record_not_in_workspace`, and nothing is written or sent.
 
 ## Security
 
