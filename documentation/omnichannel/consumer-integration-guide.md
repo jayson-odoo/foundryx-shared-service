@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
 > | **2026-11-04** | **Meta pricing per message** (sections 7, 9.1, 9.3). `message.status` data and the default `MessageItem` now carry `pricing` (`billable`, `pricingModel`, `category`, `type`), or `null` when Meta has not reported it; older messages answer `null`, as do inbound ones. `?format=rio` is unchanged. `GET /templates` already returns each template's `category`. |
 > | **2026-11-04** | **Meta rate-limit retry** (section 10, section 6a). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
 > | **2026-11-04** | **Developer Logs body capture** (section 13.3). A request or response body that is over the capture limit, or JSON that does not parse, is now shown as a note with its size and is never stored as raw text. Additive: no API field changes. |
@@ -154,7 +155,7 @@ Sends one message. Returns `**202 Accepted**` with your durable message id - the
 |----|----|----|
 | `Authorization: Bearer fxw_live_…` | yes |    |
 | `Content-Type: application/json` **or** `multipart/form-data` | yes | JSON for everything; multipart only to upload a media file directly (see §4.3) |
-| `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup, 24h TTL. A replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`. |
+| `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup. A completed send is remembered for 24h: a replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`, held at most 5 minutes; after that a request that never got an answer can be retried with the same key. If the first request did complete meanwhile, the retry may send again, so look the message up first (`GET /conversations/{id}/messages` or the `message.outbound` webhook) before retrying after the hold. |
 
 **Response** `202`:
 
@@ -1286,7 +1287,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `invalid_definition` | 422 | A workflow definition is not valid: wrong `schemaVersion`, a structure problem, or an id that is not in your workspace. `details` names `nodeId` and `field` where it applies. On create, edit, publish, and in a validate issue (§6c). |
 | `workflow_not_runnable` | 409 | `POST /workflows/{id}/runs` on a workflow that cannot run now. `details.reason` is `unpublished`, `inactive` or `trigger` (not the contact shortcut). |
 | `edit_conflict` | 409 | `PATCH /workflows/{id}` with an `expectedUpdatedAt` older than the workflow. Nothing is written; fetch it again and re-apply. |
-| `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing. |
+| `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing (held at most 5 minutes). |
 | `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
 | `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
