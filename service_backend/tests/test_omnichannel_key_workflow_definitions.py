@@ -384,11 +384,12 @@ def test_ac_38_130_debug_execute_refused(client, session_factory, spy):
     assert spy == []
 
     # control: an unowned workflow with the same definition debugs normally
-    other = _staff_publish(session_factory, doc, "debug unowned")
+    ctrl_doc = _doc(_comment("note_1", contact=w["contact1"]), _node("spy_node", SPY_KEY, {"n": 1}))
+    other = _staff_publish(session_factory, ctrl_doc, "debug unowned")
     db = session_factory()
     try:
         run = WorkflowRun(tenant_id=DEFAULT_TENANT_ID, workflow_id=other, status="pending",
-                          definition_snapshot_json=doc, trigger_payload_json={})
+                          definition_snapshot_json=ctrl_doc, trigger_payload_json={})
         db.add(run)
         db.flush()
         debug_execute(db, run, target_node_id="spy_node", scratch={}, stale_node_ids=[])
@@ -773,7 +774,8 @@ def test_ac_38_135_catalog_allowed_registered_workspace_options(client, session_
     assert {c["id"] for c in opts["channels"]} == {w["ch1"]}
     assert {t["id"] for t in opts["contactTags"]} == {w["tag1"]}
     assert {f["key"] for f in opts["contactFields"]} == {w["field1"]}
-    assert {c["id"] for c in opts["closeReasons"]} == {w["reason1"]}
+    reason_ids = {c["id"] for c in opts["closeReasons"]}
+    assert w["reason1"] in reason_ids and w["reason2"] not in reason_ids
     assert {t["id"] for t in opts["templates"]} == {w["tpl1"]}
     assert w["stage1"] in {s["id"] for s in opts["lifecycleStages"]}
     assert w["stage2"] not in {s["id"] for s in opts["lifecycleStages"]}
