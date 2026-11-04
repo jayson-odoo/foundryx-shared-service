@@ -453,19 +453,23 @@ class RespondIoClient:
         )
 
 
-# respond.io's `POST /contact/list` REQUIRES a `filter` object: without one the
-# vendor answers 400 "Please check if filter is provided." (live failure, lane
-# SS-MIGRATION-FILTER-HOTFIX). An empty `$and` group = "every contact".
+# respond.io's `POST /contact/list` body is `{search, filter, timezone}` and the
+# vendor validates ALL of them as present (limit/cursorId ride the query
+# string, see `_paginated_pages`). Live failures, in order:
+#   - no `filter`  -> 400 "Please check if filter is provided."
+#     (lane SS-MIGRATION-FILTER-HOTFIX). An empty `$and` group = every contact.
+#   - no `search`  -> 400 "Please check if search exists, but value can be
+#     empty." (lane SS-MIGRATION-SEARCH-HOTFIX). An empty string = no search.
+# So the body ALWAYS carries all three keys - never drop one because it is
+# empty.
 def _contact_list_body(
     *, timezone: str, search: Optional[str], filter_: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    body: Dict[str, Any] = {
-        "timezone": timezone,
+    return {
+        "search": search or "",
         "filter": filter_ if filter_ else {"$and": []},
+        "timezone": timezone,
     }
-    if search:
-        body["search"] = search
-    return body
 
 
 def _clamp_rps(value: float) -> float:

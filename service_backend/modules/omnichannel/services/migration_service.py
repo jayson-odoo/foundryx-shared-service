@@ -1088,9 +1088,10 @@ def _list_row_fields(job: BackgroundJob) -> Dict[str, Any]:
 def _respondio_job_error(exc: RespondIoError) -> str:
     """The job error text for a respond.io failure in the contacts walk. A
     rejected contact list request (respond.io's "Please check if filter is
-    provided") says which request failed, so it never reads like a channel or
-    mapping problem."""
-    if "filter is provided" in (exc.message or "").lower():
+    provided" / "Please check if search exists") says which request failed, so
+    it never reads like a channel or mapping problem."""
+    text = (exc.message or "").lower()
+    if "filter is provided" in text or "search exists" in text:
         return (
             "respond.io rejected the contact list request (no contacts were read): "
             f"{exc.message} Contact support if this keeps happening."
