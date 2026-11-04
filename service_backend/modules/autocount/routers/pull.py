@@ -35,6 +35,7 @@ from ..schemas import (
 )
 from ..services.company_service import AutocountServiceError
 from ..services.pull_key_service import (
+    SCOPE_WRITE_BACK,
     PullKeyNotFound,
     PullKeyService,
     PullKeyValidationError,
@@ -46,6 +47,9 @@ from ..services.pull_service import (
     PullSnapshotNotFound,
     snapshot_header,
 )
+
+# Plan 55: issuing a write_back-scoped key is a company-write grant.
+WRITE_BACK_ISSUE_PERMISSION = "autocount.companies.manage"
 
 router = APIRouter()
 
@@ -124,12 +128,20 @@ def issue_pull_key(
     actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ):
+    if SCOPE_WRITE_BACK in (body.scopes or []) and (
+        WRITE_BACK_ISSUE_PERMISSION not in effective_permission_keys(current_user)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Issuing a write_back key needs the companies manage permission.",
+        )
     try:
         key, plaintext = PullKeyService(db).issue(
             current_user.tenant_id,
             name=body.name,
             company_ids=body.companyIds,
             created_by=actor_id,
+            scopes=body.scopes,
         )
     except PullKeyValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)

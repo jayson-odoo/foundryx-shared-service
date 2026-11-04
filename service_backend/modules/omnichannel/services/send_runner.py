@@ -11,12 +11,14 @@ request session (a worker would open a different DB session and not see the
 in-request row - the workflow-engine eager pattern).
 """
 import logging
+import random
 from typing import Optional
 
 import httpx
 from sqlalchemy.orm import Session
 
 from ..adapters.base import SendError
+from ..adapters.meta_graph import sanitise_stored_pricing
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import MEDIA_MESSAGE_TYPES, Channel, ConversationMessage
 from ..repositories.contact_repository import ContactRepository
@@ -66,6 +68,18 @@ def _read_media(db: Session, tenant_id: str, media_key: str) -> bytes:
         raise OSError("Stored media could not be read") from None
 
 
+def _delete_superseded_upload(db: Session, row: ConversationMessage, key: str) -> None:
+    """Remove the original voice upload once its converted copy is committed on
+    the row. A leftover file never fails a send."""
+    row_id, tenant_id = row.id, row.tenant_id
+    try:
+        from app.services.storage import storage_for_tenant
+
+        storage_for_tenant(db, tenant_id).delete(key)
+    except Exception:  # noqa: BLE001
+        logger.warning("original voice upload of message %s could not be deleted", row_id)
+
+
 def _emit_status_webhook(
     db: Session, row: ConversationMessage, outcome: Optional[str] = None
 ) -> None:
@@ -103,6 +117,10 @@ def _emit_status_webhook(
                 # Error fields ride FAILED only (AC-38-15).
                 "errorCode": row.error_code if failed else None,
                 "errorMessage": row.error_message if failed else None,
+                # Meta's per-message pricing when a receipt stored it (plan 56 B).
+                "pricing": sanitise_stored_pricing(
+                    row.metadata_json.get("pricing") if isinstance(row.metadata_json, dict) else None
+                ),
             },
         )
     except Exception:  # noqa: BLE001 - a webhook bug must never break a send
@@ -146,9 +164,40 @@ class TransientSendError(Exception):
     the row QUEUED for a later manual retry (dev uses the stub adapter - no
     transient failures). ``code`` is the provider's error code when it gave one."""
 
-    def __init__(self, message: str = "", *, code: Optional[str] = None):
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        code: Optional[str] = None,
+        rate_limited: bool = False,
+        retry_after: Optional[int] = None,
+    ):
         super().__init__(message)
+        # Meta throttled the call: the worker retries on the slower rate-limit
+        # schedule (plan 56 A), raised by Meta's `Retry-After` when it sent one.
+        self.rate_limited = rate_limited
+        self.retry_after = retry_after
         self.code = code
+
+
+# Rate-limited WhatsApp sends (plan 56 A): up to 4 retries at these delays (plus
+# up to 20% jitter), about 14 minutes in all. Other transient errors keep the
+# task's own backoff.
+RATE_LIMIT_RETRY_DELAYS = (15, 60, 180, 600)
+RATE_LIMIT_MAX_RETRIES = len(RATE_LIMIT_RETRY_DELAYS)
+RATE_LIMIT_DELAY_CAP = 600
+RATE_LIMIT_JITTER = 0.2
+
+
+def rate_limit_countdown(retries: int, retry_after: Optional[int] = None) -> float:
+    """Seconds before the next attempt of a rate-limited send. Meta's
+    ``Retry-After`` raises the delay (never lowers it); Meta's value counts up
+    to the last scheduled delay."""
+    base = RATE_LIMIT_RETRY_DELAYS[min(max(retries, 0), RATE_LIMIT_MAX_RETRIES - 1)]
+    delay = base * (1 + random.uniform(0, RATE_LIMIT_JITTER))
+    if retry_after:
+        delay = max(delay, float(min(retry_after, RATE_LIMIT_DELAY_CAP)))
+    return delay
 
 
 def _record_broadcast_receipt(db: Session, row: ConversationMessage) -> None:
@@ -186,7 +235,13 @@ def _fail(db: Session, row: ConversationMessage, message: str, code: Optional[st
 
 
 def _requeue_transient(
-    db: Session, row: ConversationMessage, message: str, code: Optional[str] = None
+    db: Session,
+    row: ConversationMessage,
+    message: str,
+    code: Optional[str] = None,
+    *,
+    rate_limited: bool = False,
+    retry_after: Optional[int] = None,
 ) -> None:
     """Reset a claimed row to QUEUED so a retry re-sends (the send did NOT reach
     the contact), then raise for backoff. Only reached BEFORE ``adapter.send``
@@ -198,7 +253,12 @@ def _requeue_transient(
     row.error_message = TRANSIENT_ERROR_TEXT
     row.error_code = str(code) if code else None
     db.commit()
-    raise TransientSendError(message, code=str(code) if code else None)
+    raise TransientSendError(
+        message,
+        code=str(code) if code else None,
+        rate_limited=rate_limited,
+        retry_after=retry_after,
+    )
 
 
 UNEXPECTED_ERROR_TEXT = "The message could not be sent"
@@ -269,6 +329,7 @@ def _record_sent_by_id(db: Session, message_id: str, external_id: Optional[str])
     guarded UPDATE (only from QUEUED or SENDING), then announce it once. If this
     fails too the row is left as it is and the ids are logged: the message
     reached the contact, so it is never marked FAILED and never re-sent."""
+    external_id = external_id or None  # empty id is stored as NULL (globally unique)
     try:
         db.rollback()
         probe = (
@@ -431,6 +492,7 @@ def _run_send(
     messaging_type: Optional[str] = meta_send.get("messagingType")
     send_tag: Optional[str] = meta_send.get("tag")
 
+    superseded_key: Optional[str] = None
     try:
         if row.message_type == "TEMPLATE":
             template = (row.payload_json or {}).get("template") or {}
@@ -458,11 +520,20 @@ def _run_send(
                 # agent playback + the media endpoint serve the correct type.
                 from app.services.storage import storage_for_tenant
 
-                row.media_key = storage_for_tenant(db, row.tenant_id).save(
-                    f"omnichannel/{row.tenant_id}/voice", content, mime
-                )
+                store = storage_for_tenant(db, row.tenant_id)
+                original_key = row.media_key
+                row.media_key = store.save(f"omnichannel/{row.tenant_id}/voice", content, mime)
                 row.media_mime = mime
+                # The original upload is no longer reachable from the row; it is
+                # deleted once the converted key is committed (plan 56 C, AC-56-43).
+                superseded_key = original_key if original_key != row.media_key else None
             media_id = adapter.upload_media(credentials, phone_id, content, mime)
+            if superseded_key:
+                # The converted file is accepted: keep it on the row from here on,
+                # whatever the send does next, then drop the original.
+                db.commit()
+                _delete_superseded_upload(db, row, superseded_key)
+                superseded_key = None
             result = adapter.send(
                 credentials,
                 phone_id,
@@ -527,13 +598,21 @@ def _run_send(
         return _fail(db, row, exc.message)
     except SendError as exc:
         if getattr(exc, "transient", False):
-            _requeue_transient(db, row, str(exc), code=getattr(exc, "code", None))
+            _requeue_transient(
+                db,
+                row,
+                str(exc),
+                code=getattr(exc, "code", None),
+                rate_limited=bool(getattr(exc, "rate_limited", False)),
+                retry_after=getattr(exc, "retry_after", None),
+            )
         return _fail(db, row, str(exc), code=getattr(exc, "code", None))
     except (httpx.HTTPError, OSError) as exc:
         # Transport / stored-media read blip - retryable with backoff.
         _requeue_transient(db, row, str(exc))
 
-    external_id = result.get("external_message_id")
+    # The external id is globally unique, so an empty id is stored as NULL.
+    external_id = result.get("external_message_id") or None
     # From here the provider has the message: the fail path must never run.
     if progress is not None:
         progress["accepted"] = True

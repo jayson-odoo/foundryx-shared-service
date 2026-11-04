@@ -29,6 +29,7 @@ from app.schemas.workflow import (
     WorkflowVersionListResponse,
 )
 from app.services.filter_translator import FilterError
+from app.workflow_engine.executor import RunRefused
 from app.services.workflow_service import (
     CodeRunnerRequired,
     WorkflowError,
@@ -412,4 +413,7 @@ def debug_execute(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow or run not found.")
     except WorkflowPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    except RunRefused as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"{exc.code}: {exc}")
     return WorkflowDebugResultOut(nodes=nodes)

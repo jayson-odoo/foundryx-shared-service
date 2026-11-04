@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -73,6 +74,19 @@ class SendRejected(Exception):
         self.code = code
 
 
+class MetaRateLimited(Exception):
+    """Meta throttled a call made inside the request (a reaction): nothing was
+    stored, the caller should retry later. ``retry_after`` is whole seconds
+    (>= 1), Meta's own value when it sent one."""
+
+    def __init__(self, retry_after: Optional[int] = None):
+        from ..adapters.meta_graph import client_retry_after
+
+        super().__init__("Meta is rate limiting this channel. Try again shortly.")
+        self.message = str(self)
+        self.retry_after = client_retry_after(retry_after)
+
+
 class QuickReplyNotFound(Exception):
     """The quick reply doesn't exist in this tenant + workspace (→ 404)."""
 
@@ -111,6 +125,9 @@ def fill_template(body_text: str, variables: List[str]) -> str:
 class MessageService:
     def __init__(self, db: Session):
         self.db = db
+        # Id of the last message row this service committed (see
+        # `_enqueue_and_finalize`); None until a send reaches that point.
+        self.stored_message_id: Optional[str] = None
         self.repo = ContactRepository(db)
         self.channels = ChannelRepository(db)
         self.conversations = ConversationService(db)
@@ -356,6 +373,16 @@ class MessageService:
                 logger.exception("rollback after message.outbound failure failed")
             logger.exception("message.outbound enqueue failed for message %s", row_id)
 
+    def _commit_stored(self, row: ConversationMessage) -> None:
+        """Commit the new message row, record its id at once (before any later
+        step can fail, so a caller can keep its idempotency reservation), then
+        refresh it. The id is read from the identity key: no query."""
+        self.db.commit()
+        identity = sa_inspect(row).identity
+        if identity:
+            self.stored_message_id = identity[0]
+        self.db.refresh(row)
+
     def _enqueue_and_finalize(self, row: ConversationMessage, contact: Contact) -> MessageItem:
         """Publish the optimistic ``message.created`` then dispatch the send
         (inline in eager dev/tests, Celery ``omni`` queue in prod) and return the
@@ -568,8 +595,7 @@ class MessageService:
             contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id,
             is_agent_reply=not (metadata_extra and metadata_extra.get("broadcast")),
         )
-        self.db.commit()
-        self.db.refresh(row)
+        self._commit_stored(row)
         return self._enqueue_and_finalize(row, contact)
 
     # ── Send (media: image/video/audio/voice/document/sticker) ────────────────
@@ -650,8 +676,7 @@ class MessageService:
         self._mark_agent_message(
             contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
         )
-        self.db.commit()
-        self.db.refresh(row)
+        self._commit_stored(row)
         return self._enqueue_and_finalize(row, contact)
 
     # ── Send (structured: interactive / location / contacts, Slice 2) ─────────
@@ -719,8 +744,7 @@ class MessageService:
         self._mark_agent_message(
             contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
         )
-        self.db.commit()
-        self.db.refresh(row)
+        self._commit_stored(row)
         return self._enqueue_and_finalize(row, contact)
 
     def send_interactive(
@@ -915,6 +939,8 @@ class MessageService:
                 reaction={"message_id": target.external_message_id, "emoji": clean},
             )
         except SendError as exc:
+            if getattr(exc, "rate_limited", False):
+                raise MetaRateLimited(exc.retry_after) from exc
             raise SendRejected(str(exc)) from exc
         except channel_addressing.NoChannelIdentity as exc:
             raise SendRejected(str(exc)) from exc

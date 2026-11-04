@@ -10,6 +10,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     ForeignKey,
     Index,
@@ -807,6 +808,25 @@ class WebhookEndpoint(OmniBase):
     )
 
 
+class WorkflowOwner(OmniBase):
+    """Plan 38 gap 7: which workspace owns a workflow built through an API key.
+
+    A key reaches a workflow only through a row here. ``workflow_id`` is a plain
+    indexed column (soft ref to core ``public.workflows.id``): a module never
+    adds a foreign key into a core table. Workflows without a row stay
+    dashboard-only. Reads join the core table on the same ``tenant_id``.
+    """
+
+    __tablename__ = "workflow_owners"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, nullable=False, unique=True, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    created_by = Column(String, nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class WebhookDelivery(OmniBase):
     """One durable delivery attempt-set for an event → endpoint (AC-01-24).
 
@@ -982,6 +1002,88 @@ class MigrationRef(OmniBase):
             "ix_migration_refs_local",
             "tenant_id", "workspace_id", "source", "entity_type", "local_id",
         ),
+    )
+
+
+class MigrationSync(OmniBase):
+    """Continuous respond.io sync for one workspace (plan 52, lane
+    SS-MIGRATION-SYNC). ONE row per (tenant, workspace); the ticks are
+    ``background_jobs`` of type ``omnichannel.respondio_sync``. The mapping is
+    NOT stored here: each tick reads it from the newest DONE real API run of
+    the workspace (D2). ``webhook_secret_enc`` is Fernet-encrypted (D6)."""
+
+    __tablename__ = "migration_syncs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    status = Column(String, nullable=False, default="active")  # active|paused|stopping|stopped
+    paused_reason = Column(String, nullable=True)
+    interval_minutes = Column(Integer, nullable=False, default=15)
+    full_sweep_hours = Column(Integer, nullable=False, default=6)
+    webhook_secret_enc = Column(Text, nullable=False)
+    created_by_user_id = Column(String, nullable=True)
+    last_sync_at = Column(UTCDateTime(), nullable=True)
+    next_sync_at = Column(UTCDateTime(), nullable=True, index=True)
+    last_full_sweep_at = Column(UTCDateTime(), nullable=True)
+    running_job_id = Column(String, nullable=True)
+    last_error = Column(Text, nullable=True)
+    last_result_json = Column(JSON(none_as_null=True), nullable=True)
+    totals_json = Column(JSON(none_as_null=True), nullable=True)
+    source_contact_count = Column(Integer, nullable=True)
+    stopped_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "workspace_id", name="uq_migration_syncs_workspace"),
+    )
+
+
+class MigrationSyncHint(OmniBase):
+    """A webhook-flagged respond.io contact id awaiting the next tick (D5).
+    Only the id is ever stored, never the webhook body."""
+
+    __tablename__ = "migration_sync_hints"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    sync_id = Column(String, ForeignKey("migration_syncs.id", ondelete="CASCADE"), nullable=False, index=True)
+    external_contact_id = Column(String, nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("sync_id", "external_contact_id", name="uq_migration_sync_hints_contact"),
+    )
+
+
+class ContactErasure(OmniBase):
+    """One row per erased contact (plan 58): who erased, when, which contact id
+    in which workspace, and how many messages and files went. Ids and counts
+    only, never personal data. No foreign key to contacts or workspaces: the
+    row outlives the contact. Removed only with the tenant's module data."""
+
+    __tablename__ = "contact_erasures"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    workspace_id = Column(String, nullable=False)
+    contact_id = Column(String, nullable=False)
+    actor_kind = Column(String, nullable=False)  # staff | api_key
+    actor_user_id = Column(String, nullable=True)
+    api_key_id = Column(String, nullable=True)
+    messages = Column(Integer, nullable=False)
+    files = Column(Integer, nullable=False)
+    erased_at = Column(UTCDateTime(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(actor_kind = 'staff' AND actor_user_id IS NOT NULL AND api_key_id IS NULL)"
+            " OR (actor_kind = 'api_key' AND api_key_id IS NOT NULL AND actor_user_id IS NULL)",
+            name="ck_contact_erasures_actor",
+        ),
+        Index("ix_contact_erasures_tenant_erased", "tenant_id", "erased_at"),
+        Index("ix_contact_erasures_tenant_contact", "tenant_id", "contact_id"),
     )
 
 

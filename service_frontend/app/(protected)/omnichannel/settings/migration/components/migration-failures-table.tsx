@@ -36,10 +36,13 @@ export function MigrationFailuresTable({
   jobId,
   rows,
   totalFailures,
+  hideDownload = false,
 }: {
   jobId: string;
   rows: MigrationFailureRow[];
   totalFailures: number;
+  /** Hide the full-CSV button (e.g. a sync tick has only a failure sample). */
+  hideDownload?: boolean;
 }) {
   const [downloading, setDownloading] = useState(false);
 
@@ -79,10 +82,12 @@ export function MigrationFailuresTable({
         <CardHeading>
           <CardTitle>Failures ({totalFailures})</CardTitle>
         </CardHeading>
-        <Button type="button" variant="outline" size="sm" onClick={download} disabled={downloading}>
-          {downloading ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
-          Download CSV
-        </Button>
+        {!hideDownload && (
+          <Button type="button" variant="outline" size="sm" onClick={download} disabled={downloading}>
+            {downloading ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+            Download CSV
+          </Button>
+        )}
       </CardHeader>
       <CardContent className="p-0">
         <DataGrid table={table} recordCount={rows.length}>

@@ -42,6 +42,11 @@
       "public": true
     },
     {
+      "name": "write_v1",
+      "prefix": "/api/v1/autocount",
+      "public": true
+    },
+    {
       "name": "doc_feeds",
       "prefix": "/autocount/doc-feeds"
     },

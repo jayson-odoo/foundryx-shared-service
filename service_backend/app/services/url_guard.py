@@ -19,7 +19,10 @@ Security invariants (unchanged from the original):
 """
 import ipaddress
 import socket
+import threading
+import time
 import typing
+import weakref
 from urllib.parse import urlparse
 
 import anyio
@@ -37,9 +40,26 @@ class UnparseableUrlError(UrlGuardError):
     """The URL text cannot be parsed at all (as opposed to being refused)."""
 
 
+# RFC 6598 shared address space: not covered by `is_private` on every Python
+# version, and reachable on carrier-grade NAT networks.
+_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
+# Deprecated 6to4 relay anycast block (RFC 7526): not covered by the stdlib flags.
+_SIX_TO_FOUR_RELAY = ipaddress.ip_network("192.88.99.0/24")
+
+
 def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
+    # One rule for the IPv4 form and its IPv4-mapped IPv6 spelling, whatever the
+    # Python version does with the mapped form.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        return _is_blocked_ip(mapped)
+    if isinstance(ip, ipaddress.IPv4Address) and (
+        ip in _SHARED_ADDRESS_SPACE or ip in _SIX_TO_FOUR_RELAY
+    ):
+        return True
     return (
-        ip.is_private
+        getattr(ip, "is_site_local", False)  # IPv6 fec0::/10, deprecated but routable
+        or ip.is_private
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_reserved
@@ -139,6 +159,33 @@ def assert_deliverable(url: str, *, subject: str = "URL") -> None:
 # opened to one of those checked addresses. TLS and the Host header keep using
 # the name from the URL (httpcore starts TLS with the origin host).
 
+# With an overall deadline, at most this many distinct resolved addresses are
+# tried (a caller without a deadline keeps trying all of them).
+_MAX_CONNECT_ADDRESSES = 4
+
+
+def call_within(seconds: float, fn: typing.Callable[..., typing.Any], *args: typing.Any, **kwargs: typing.Any):
+    """Run ``fn`` on a helper thread and stop waiting after ``seconds``: raises
+    ``TimeoutError`` (the helper is left to finish on its own, its result
+    dropped). For blocking calls that take no timeout, such as name resolution."""
+    box: typing.Dict[str, typing.Any] = {}
+
+    def work() -> None:
+        try:
+            box["value"] = fn(*args, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 - handed to the waiting caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(max(seconds, 0.0))
+    if worker.is_alive():
+        raise TimeoutError("timed out")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 # Delay before the next address is tried while an earlier attempt is pending.
 _CONNECT_ATTEMPT_DELAY = 0.25
 
@@ -179,12 +226,50 @@ def _literal_addresses(host: str, ip: "ipaddress._BaseAddress", subject: str) ->
 
 
 class _GuardedSyncBackend(httpcore.SyncBackend):
-    def __init__(self, subject: str, exempt_host: HostExemption) -> None:
+    def __init__(self, subject: str, exempt_host: HostExemption, budget: typing.Optional[float] = None) -> None:
         super().__init__()
         self._subject = subject
         self._exempt_host = exempt_host
+        # Overall budget for resolving and connecting, counted from now.
+        self._deadline = None if budget is None else time.monotonic() + budget
+        # Sockets opened through this backend, so a caller's overall deadline can
+        # cut a blocked exchange short (see ``GuardedTransport.abort_connections``).
+        self._sockets: "weakref.WeakSet[socket.socket]" = weakref.WeakSet()
+        self._aborted = False
+
+    def abort_connections(self) -> None:
+        # From now on any socket this backend opens is shut as soon as it
+        # exists, so an address tried after the deadline cannot outlive it.
+        self._aborted = True
+        for sock in list(self._sockets):
+            self._shut(sock)
+
+    @staticmethod
+    def _shut(sock) -> None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        return self._track(self._connect_tcp(host, port, timeout, local_address, socket_options))
+
+    def _track(self, stream):
+        sock = stream.get_extra_info("socket")
+        if sock is not None:
+            self._sockets.add(sock)
+            if self._aborted:
+                self._shut(sock)
+        start_tls = stream.start_tls
+
+        def tracked_start_tls(*args, **kwargs):
+            # TLS wraps the socket in a new object: track that one too.
+            return self._track(start_tls(*args, **kwargs))
+
+        stream.start_tls = tracked_start_tls
+        return stream
+
+    def _connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
         if self._exempt_host is not None and self._exempt_host(host):
             return super().connect_tcp(host, port, timeout, local_address, socket_options)
         literal = _literal_ip(host)
@@ -192,20 +277,38 @@ class _GuardedSyncBackend(httpcore.SyncBackend):
             addresses = _literal_addresses(host, literal, self._subject)
         else:
             try:
-                infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                if self._deadline is None:
+                    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                else:
+                    infos = call_within(
+                        self._remaining(), socket.getaddrinfo, host, port, type=socket.SOCK_STREAM
+                    )
             except TimeoutError as exc:
                 raise httpcore.ConnectTimeout(str(exc)) from exc
             except (OSError, UnicodeError) as exc:
                 raise httpcore.ConnectError(str(exc)) from exc
             addresses = _checked_addresses(host, infos, self._subject)
+        if self._deadline is not None:
+            addresses = addresses[:_MAX_CONNECT_ADDRESSES]
         last: typing.Optional[Exception] = None
         for address in addresses:
+            step = timeout
+            if self._deadline is not None:
+                remaining = self._remaining()
+                if remaining <= 0:
+                    break
+                step = remaining if timeout is None else min(timeout, remaining)
             try:
-                return super().connect_tcp(address, port, timeout, local_address, socket_options)
+                return super().connect_tcp(address, port, step, local_address, socket_options)
             except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
                 last = exc
-        assert last is not None
+        if last is None:
+            raise httpcore.ConnectTimeout("The overall time limit ran out while connecting.")
         raise last
+
+    def _remaining(self) -> float:
+        assert self._deadline is not None
+        return self._deadline - time.monotonic()
 
 
 class _GuardedAsyncBackend(httpcore.AnyIOBackend):
@@ -283,11 +386,15 @@ class GuardedTransport(httpx.HTTPTransport):
         verify: typing.Union[bool, str] = True,
         trust_env: bool = True,
         limits: typing.Optional[httpx.Limits] = None,
+        budget: typing.Optional[float] = None,
     ) -> None:
+        """``budget`` (seconds, optional) bounds resolving plus connecting as a
+        whole; without it each step keeps only its own timeout."""
         limits = limits or _default_limits()
         ctx = httpx.create_ssl_context(verify=verify, trust_env=trust_env)
         super().__init__(verify=ctx, trust_env=trust_env, limits=limits)
         self._pool.close()
+        self._backend = _GuardedSyncBackend(subject, exempt_host, budget)
         self._pool = httpcore.ConnectionPool(
             ssl_context=ctx,
             max_connections=limits.max_connections,
@@ -296,8 +403,13 @@ class GuardedTransport(httpx.HTTPTransport):
             http1=True,
             http2=False,
             retries=0,
-            network_backend=_GuardedSyncBackend(subject, exempt_host),
+            network_backend=self._backend,
         )
+
+    def abort_connections(self) -> None:
+        """Shut down every socket this transport opened. A blocked read in
+        another thread then fails at once (used for an overall deadline)."""
+        self._backend.abort_connections()
 
 
 class GuardedAsyncTransport(httpx.AsyncHTTPTransport):

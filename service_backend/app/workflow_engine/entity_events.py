@@ -124,7 +124,13 @@ def set_origin(
 
 
 def build_shortcut_event(
-    db: Session, entity_type: str, record: Any, *, tenant_id: str, actor: Optional[Any]
+    db: Session,
+    entity_type: str,
+    record: Any,
+    *,
+    tenant_id: str,
+    actor: Optional[Any],
+    actor_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the event-bus envelope for a shortcut run (plan sprint-4/27,
     D-A3-10) - the SAME shape ``emit_entity_event`` buffers below, so it flows
@@ -143,6 +149,9 @@ def build_shortcut_event(
             "name": getattr(actor, "name", None) or getattr(actor, "email", "") or "",
             "email": getattr(actor, "email", "") or "",
         }
+    elif actor_id:
+        # A caller with no user (an API key): attribute the run to its id.
+        actor_dict = {"id": actor_id, "name": "API key", "email": ""}
     return {
         "entity_type": entity_type,
         "action": "shortcut",
@@ -471,6 +480,7 @@ def create_run_for_event(
     *,
     depth: int,
     extra_context: Optional[Dict[str, Any]] = None,
+    inputs: Optional[Dict[str, Any]] = None,
 ) -> Optional[WorkflowRun]:
     """Create + persist + dispatch a ``WorkflowRun`` against ``wf``'s PUBLISHED
     version for a domain event ``ev`` (the event-bus envelope this module
@@ -514,6 +524,9 @@ def create_run_for_event(
     payload = build_event_trigger_payload(
         ev, trigger_type=wf.trigger_type, config=trigger_config, extra_context=extra_context
     )
+    if inputs:
+        # Same slot the manual run writes: `trigger.input.<key>` in the run context.
+        payload["input"] = dict(inputs)
     source = ev.get("source") or {}
     run = WorkflowRun(
         tenant_id=wf.tenant_id,

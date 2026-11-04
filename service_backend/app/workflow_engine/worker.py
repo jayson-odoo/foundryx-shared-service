@@ -114,6 +114,9 @@ celery_app.conf.beat_schedule = {
     # broadcast stuck in SENDING. Same module-absence guard as the webhook
     # retry tick above (this worker is the sole beat host).
     "broadcasts-due": {"task": "omnichannel.broadcasts_due", "schedule": 60.0},
+    # respond.io continuous sync (plan 52, D4) - enqueues the due poll / hints
+    # / final tick per active sync. Same module-absence guard as above.
+    "omnichannel-migration-sync-due": {"task": "omnichannel.migration_sync_due", "schedule": 60.0},
     # WhatsApp token health scan (plan 42) - queues one check per live channel
     # onto the omni queue every 6 hours on the wall clock (00, 06, 12, 18: a deploy does not
     # restart the clock); makes no Meta call itself.
@@ -366,6 +369,28 @@ def broadcasts_due_task() -> dict:
         logger.exception("broadcasts-due tick failed")
         db.rollback()
         return {"started": 0, "reconciled": 0, "finalized": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="omnichannel.migration_sync_due")
+def migration_sync_due_task() -> dict:
+    """respond.io continuous-sync beat tick (plan 52, D4). Failure-isolated; a
+    no-op when the omnichannel module is absent."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.omnichannel.services.migration_sync_service import run_due_syncs
+    except ImportError:
+        return {"started": 0}
+
+    db = SessionLocal()
+    try:
+        return run_due_syncs(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("migration-sync-due tick failed")
+        db.rollback()
+        return {"started": 0}
     finally:
         db.close()
 

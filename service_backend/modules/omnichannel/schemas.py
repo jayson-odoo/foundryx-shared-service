@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from app.schemas.base import ApiModel
 from app.schemas.filters import FilterGroup
@@ -640,6 +640,15 @@ class ReplyRefItem(ApiModel):
     senderName: Optional[str] = None
 
 
+class MessagePricingItem(ApiModel):
+    """Meta's pricing for one message (plan 56 B), from the delivery receipt."""
+
+    billable: Optional[bool] = None
+    pricingModel: Optional[str] = None
+    category: Optional[str] = None
+    type: Optional[str] = None
+
+
 class MessageItem(ApiModel):
     id: str
     contactId: str
@@ -679,6 +688,9 @@ class MessageItem(ApiModel):
     deliveryStatus: Optional[str] = None  # QUEUED | SENT | DELIVERED | READ | FAILED
     errorCode: Optional[str] = None
     errorMessage: Optional[str] = None
+    # Meta's pricing for this message once a receipt carried it, else null
+    # (inbound and older messages are always null).
+    pricing: Optional[MessagePricingItem] = None
     replyTo: Optional[ReplyRefItem] = None
     createdAt: datetime
 
@@ -767,6 +779,16 @@ class ContactListItem(ThreadItem):
     inherited so the module never forks a second contact representation."""
 
     channels: List[ContactChannelRef] = []
+    # What an erase would remove (plan 56 C); the erase dialog shows them.
+    messageCount: int = 0
+    fileCount: int = 0
+
+
+class ThreadDetailItem(ThreadItem):
+    """`ThreadItem` + the erase counts, for the staff single-contact read."""
+
+    messageCount: int = 0
+    fileCount: int = 0
 
 
 class ContactListResponse(ApiModel):
@@ -1566,6 +1588,16 @@ class ContactReadResponse(ApiModel):
     receipts: List[ReadReceiptItem]
 
 
+class ContactEraseResponse(ApiModel):
+    """What an erase removed (plan 56 C): `messages` counts the contact's
+    messages (notes included), `files` the stored files."""
+
+    contactId: str
+    erasedAt: datetime
+    messages: int
+    files: int
+
+
 # ── respond.io-parity response shapes (public gateway) ───────────────────────
 # These deliberately do NOT inherit ApiModel: they mirror respond.io's documented
 # JSON exactly - snake_case where respond.io uses it (``custom_fields``,
@@ -2257,3 +2289,167 @@ class MigrationJobListResponse(ApiModel):
     data: List[MigrationJobItem]
     total: int
     page: int
+
+
+# ── Continuous respond.io sync (plan 52, lane SS-MIGRATION-SYNC) ────────────
+
+
+class MigrationSyncCreate(ApiModel):
+    workspaceId: str
+
+
+class MigrationSyncCounters(ApiModel):
+    contactsCreated: int = 0
+    contactsUpdated: int = 0
+    messagesCreated: int = 0
+    messagesSkipped: int = 0
+    errors: int = 0
+
+
+class MigrationSyncResult(MigrationSyncCounters):
+    failureSample: List[MigrationFailureRow] = []
+
+
+class MigrationSyncItem(ApiModel):
+    """Read shape of one sync (plan 52 section 3). Built by
+    `MigrationSyncService.to_item`; NEVER carries the webhook secret or URL."""
+
+    id: str
+    workspaceId: str
+    status: str
+    pausedReason: Optional[str] = None
+    intervalMinutes: int
+    fullSweepHours: int
+    lastSyncAt: Optional[datetime] = None
+    nextSyncAt: Optional[datetime] = None
+    lastFullSweepAt: Optional[datetime] = None
+    runningJobId: Optional[str] = None
+    lastError: Optional[str] = None
+    lastResult: Optional[MigrationSyncResult] = None
+    totals: Optional[MigrationSyncCounters] = None
+    sourceContactCount: Optional[int] = None
+    estimatedFullSweepMinutes: Optional[int] = None
+    sourceJobId: Optional[str] = None
+    stoppedAt: Optional[datetime] = None
+    createdAt: datetime
+
+
+class MigrationSyncWebhook(ApiModel):
+    url: str
+
+
+# ── Workflows under the API key (plan 38 gap 7) ──────────────────────────────
+# Own narrow shapes: a change to the dashboard workflow schemas cannot move
+# this public contract. Unknown body keys (tenantId, workspaceId) are ignored.
+class PublicWorkflowItem(ApiModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    isActive: bool
+    publishedVersionId: Optional[str] = None
+    triggerType: Optional[str] = None
+    draftDefinition: Dict[str, Any]
+    createdBy: str
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class PublicWorkflowListResponse(ApiModel):
+    data: List[PublicWorkflowItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    draftDefinition: Dict[str, Any]
+
+
+class PublicWorkflowUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    draftDefinition: Optional[Dict[str, Any]] = None
+    expectedUpdatedAt: Optional[datetime] = None
+
+
+class PublicValidateRequest(BaseModel):
+    draftDefinition: Dict[str, Any]
+
+
+class PublicValidateIssue(ApiModel):
+    code: str
+    message: str
+    nodeId: Optional[str] = None
+    field: Optional[str] = None
+
+
+class PublicValidateResponse(ApiModel):
+    valid: bool
+    issues: List[PublicValidateIssue]
+
+
+class PublicCatalogResponse(ApiModel):
+    nodes: List[Dict[str, Any]]
+    options: Dict[str, List[Dict[str, Any]]]
+
+
+class PublicWorkflowVersionItem(ApiModel):
+    id: str
+    versionNumber: int
+    publishedAt: datetime
+    publishedBy: Optional[str] = None
+    definition: Dict[str, Any]
+
+
+class PublicWorkflowVersionListResponse(ApiModel):
+    data: List[PublicWorkflowVersionItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowRunItem(ApiModel):
+    id: str
+    workflowId: str
+    status: str
+    triggeredBy: str
+    actorId: Optional[str] = None
+    error: Optional[str] = None
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+
+
+class PublicWorkflowRunNode(ApiModel):
+    nodeId: str
+    nodeType: str
+    status: str
+    input: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class PublicWorkflowRunDetail(PublicWorkflowRunItem):
+    nodes: List[PublicWorkflowRunNode]
+
+
+class PublicWorkflowRunListResponse(ApiModel):
+    data: List[PublicWorkflowRunItem]
+    nextCursor: Optional[str] = None
+
+
+class PublicWorkflowActiveRequest(BaseModel):
+    isActive: StrictBool
+
+
+class PublicWorkflowRunRequest(BaseModel):
+    contact: str = Field(min_length=1, max_length=200)
+    inputs: Optional[Any] = None
+
+
+class PublicBusinessHoursResponse(ApiModel):
+    workspaceId: str
+    timezone: Optional[str] = None
+    windows: Dict[str, Any]
+    source: str  # workspace | tenant | none

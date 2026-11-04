@@ -16,7 +16,7 @@ Redis lease semantics unchanged.
 import copy
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -49,6 +49,40 @@ from app.workflow_engine.schemas import (
 
 
 logger = logging.getLogger("foundryx.workflow_executor")
+
+
+class RunRefused(Exception):
+    """A registered run guard refuses a run before any node executes.
+
+    ``code`` is a stable machine key; ``str(exc)`` is the human message."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+# A guard is ``fn(db, run, doc) -> None`` and raises ``RunRefused`` to refuse.
+# Modules register one for the workflows they own (same registry pattern as the
+# parking wait cleanups). No guard registered = no change.
+RunGuardFn = Callable[[Session, WorkflowRun, Any], None]
+
+_run_guards: List[RunGuardFn] = []
+
+
+def register_run_guard(fn: RunGuardFn) -> None:
+    """Register a run guard. Idempotent."""
+    if fn not in _run_guards:
+        _run_guards.append(fn)
+
+
+def unregister_run_guard(fn: RunGuardFn) -> None:
+    if fn in _run_guards:
+        _run_guards.remove(fn)
+
+
+def _apply_run_guards(db: Session, run: WorkflowRun, doc: Any) -> None:
+    for fn in list(_run_guards):
+        fn(db, run, doc)
 
 
 def _failure_text(exc: BaseException, what: str) -> str:
@@ -513,6 +547,16 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     )
 
     doc = parse_definition(run.definition_snapshot_json)
+    try:
+        _apply_run_guards(db, run, doc)
+    except RunRefused as refusal:
+        run.status = RUN_FAILED
+        run.error = f"{refusal.code}: {refusal}"
+        run.finished_at = _now()
+        run_wait_cleanup(db, run)  # a refused run is terminal like any other
+        db.commit()
+        set_origin(db, prev_origin)
+        return run
     # Resume (plan 31 S4): the parked walk's own snapshot replaces the fresh
     # trigger-payload context, so nodes that already ran keep their outputs and
     # the active set survives the suspension.
@@ -729,6 +773,7 @@ def debug_execute(
                     stale.add(node.id)
                 node.config = new_config
 
+    _apply_run_guards(db, run, doc)  # a refusal reaches the caller; no node ran
     out_edges = _out_edges(doc)
 
     active = {n.id for n in ordered if n.kind == "trigger"}

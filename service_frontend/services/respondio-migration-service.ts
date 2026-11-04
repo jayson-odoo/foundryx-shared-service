@@ -14,6 +14,9 @@ import type {
   CreateMigrationJobInput,
   MigrationJob,
   MigrationPreflight,
+  MigrationSyncAction,
+  MigrationSyncItem,
+  MigrationSyncWebhook,
   MigrationUploadResult,
 } from '@/types/respondio-migration';
 import type { ListQuery, ListResult } from '@/types/resource';
@@ -46,6 +49,18 @@ export interface RespondioMigrationService {
    *  the CSV text; the caller triggers the client-side Blob download (the
    *  system-wide export convention, `resource-list.tsx` `downloadCsv`). */
   downloadFailuresCsv(jobId: string): Promise<string>;
+
+  // ── Continuous sync (plan 52). Prefix `/omnichannel/migration/syncs`. ──
+  /** `GET ?workspaceId=` - the workspace's sync or `null`. */
+  getSync(workspaceId: string): Promise<MigrationSyncItem | null>;
+  /** `POST {workspaceId}`. 409 `no_finished_migration` | `sync_exists`. */
+  createSync(workspaceId: string): Promise<MigrationSyncItem>;
+  /** `POST /{id}/run-now | /pause | /resume | /stop`. 409 when a tick is running (run-now). */
+  syncAction(id: string, action: MigrationSyncAction): Promise<MigrationSyncItem>;
+  /** `GET /{id}/webhook` (manage only). */
+  getSyncWebhook(id: string): Promise<MigrationSyncWebhook>;
+  /** `POST /{id}/webhook/rotate` (manage only); the old URL then 404s. */
+  rotateSyncWebhook(id: string): Promise<MigrationSyncWebhook>;
 }
 
 // S6 (AC-MIG-56): the shipped boundary is the real api-client impl.

@@ -37,6 +37,7 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEventType, string> = {
   'message.status': 'Delivery receipts',
   'contact.updated': 'Contact updates',
   'message.reaction': 'Reactions',
+  'contact.erased': 'Contact erased',
 };
 
 /** MultiSelect options for the events picker. */
@@ -46,6 +47,7 @@ export const WEBHOOK_EVENT_OPTIONS: { label: string; value: WebhookEventType }[]
   { label: WEBHOOK_EVENT_LABELS['message.status'], value: 'message.status' },
   { label: WEBHOOK_EVENT_LABELS['contact.updated'], value: 'contact.updated' },
   { label: WEBHOOK_EVENT_LABELS['message.reaction'], value: 'message.reaction' },
+  { label: WEBHOOK_EVENT_LABELS['contact.erased'], value: 'contact.erased' },
 ];
 
 /** Human label for one event type (unknown values degrade to the raw key). */

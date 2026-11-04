@@ -151,3 +151,37 @@ describe('Composer - Web chat has no messaging window (plan 34 / A7b, D-A7B-18, 
     expect(screen.queryByTestId('presence-marker')).not.toBeInTheDocument();
   });
 });
+
+describe('Composer - no channel connected (lane SS-CHANNEL-SKIP)', () => {
+  it('no active channel wins over the 24-hour lock: no-channel text + Connect channel link, input locked', () => {
+    render(<Composer {...base} windowOpen={false} noChannel />);
+    const banner = screen.getByTestId('no-channel-banner');
+    expect(banner).toHaveTextContent('No active channel is connected to this workspace.');
+    expect(screen.getByRole('link', { name: 'Connect channel' })).toHaveAttribute(
+      'href',
+      '/omnichannel/settings/channels',
+    );
+    expect(screen.queryByText(/24-hour window has closed/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('csw-banner')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('csw-pick-template')).not.toBeInTheDocument();
+    expect(screen.getByTestId('message-input')).toBeDisabled();
+  });
+
+  it('no active channel with the window open still locks the composer', () => {
+    render(<Composer {...base} windowOpen noChannel />);
+    expect(screen.getByTestId('no-channel-banner')).toBeInTheDocument();
+    expect(screen.getByTestId('message-input')).toBeDisabled();
+  });
+
+  it('note mode is unaffected: notes need no channel', () => {
+    render(<Composer {...base} windowOpen={false} noChannel mode="note" onAddNote={vi.fn(async () => true)} />);
+    expect(screen.queryByTestId('no-channel-banner')).not.toBeInTheDocument();
+    expect(screen.getByTestId('note-input')).toBeEnabled();
+  });
+
+  it('control: a channel connected keeps the 24-hour template lock', () => {
+    render(<Composer {...base} windowOpen={false} noChannel={false} />);
+    expect(screen.queryByTestId('no-channel-banner')).not.toBeInTheDocument();
+    expect(screen.getByText(/24-hour window has closed/)).toBeInTheDocument();
+  });
+});

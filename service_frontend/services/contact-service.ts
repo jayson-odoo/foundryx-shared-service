@@ -15,6 +15,7 @@
  *   POST   /omnichannel/workspaces/{wsId}/contacts/bulk/lifecycle      -> BulkResult
  *   POST   /omnichannel/workspaces/{wsId}/contacts/export              -> { jobId }
  *   GET    /omnichannel/workspaces/{wsId}/contacts/export/{jobId}/file -> text/csv
+ *   DELETE /omnichannel/contacts/{id}  (contacts.erase, plan 56 C)     -> ContactEraseResult
  *
  * (unchanged, reused) GET/PATCH /omnichannel/contacts/{id} and the lifecycle /
  * fields / tags routes ride `conversation-service` / `contact-field-service` /
@@ -26,6 +27,7 @@ import type {
   BulkLifecycleInput,
   BulkResult,
   BulkTagsInput,
+  ContactEraseResult,
   ContactExportRequest,
   ContactListItem,
   CreateContactInput,
@@ -60,6 +62,8 @@ export interface ContactService {
    * rather than showing a bare failure ("never a silent failure").
    */
   exportContacts(workspaceId: string, req: ContactExportRequest): Promise<string>;
+  /** Erase one contact for good (plan 56 C). 403 without `contacts.erase`, 404 when gone. */
+  eraseContact(contactId: string): Promise<ContactEraseResult>;
 }
 
 // Real backend (plan 26 S4) - routes landed S1 (list + segments) / S2

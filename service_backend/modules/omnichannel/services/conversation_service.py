@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.status import Status as CoreStatus
 from app.models.user import User
+from ..adapters.meta_graph import sanitise_stored_pricing
 from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
@@ -19,6 +20,7 @@ from ..schemas import (
     ContactTagRefItem,
     MessageItem,
     ReplyRefItem,
+    ThreadDetailItem,
     ThreadItem,
     VisitorProfile,
 )
@@ -330,6 +332,7 @@ class ConversationService:
         for m in messages:
             meta = m.metadata_json or {}
             reply = meta.get("reply_to")
+            pricing = meta.get("pricing")
             # Sender display resolves from whichever sender column is set - native
             # user OR federated external agent.
             agent = agents.get(m.sender_external_agent_id) if m.sender_external_agent_id else None
@@ -372,6 +375,7 @@ class ConversationService:
                     deliveryStatus=m.delivery_status,
                     errorCode=m.error_code,
                     errorMessage=m.error_message,
+                    pricing=sanitise_stored_pricing(pricing),
                     replyTo=ReplyRefItem(**reply) if reply else None,
                     createdAt=m.created_at,
                 )
@@ -436,6 +440,15 @@ class ConversationService:
         if c is None:
             raise ThreadNotFound()
         return self.thread_item(c)
+
+    def get_thread_with_counts(self, contact_id: str, tenant_id: str) -> ThreadDetailItem:
+        from ..repositories.contact_erase_repository import ContactEraseRepository
+
+        item = self.get_thread(contact_id, tenant_id)
+        messages, files = ContactEraseRepository(self.db).message_file_counts(
+            [contact_id], tenant_id
+        ).get(contact_id, (0, 0))
+        return ThreadDetailItem(**item.model_dump(), messageCount=messages, fileCount=files)
 
     def list_messages(self, contact_id: str, tenant_id: str) -> List[MessageItem]:
         c = self.repo.get_by_id(contact_id, tenant_id)
@@ -934,7 +947,23 @@ class ConversationService:
 
         from app.services.workflow_service import WorkflowService
 
-        return WorkflowService(self.db).list_shortcuts(tenant_id, SHORTCUT_ENTITY_TYPE)
+        rows = WorkflowService(self.db).list_shortcuts(tenant_id, SHORTCUT_ENTITY_TYPE)
+        # Plan 38 gap 7: a shortcut owned by an API key's workspace belongs to
+        # that workspace's contacts only.
+        owners = self._shortcut_owners(tenant_id, [r["workflowId"] for r in rows])
+        return [r for r in rows if owners.get(r["workflowId"], c.workspace_id) == c.workspace_id]
+
+    def _shortcut_owners(self, tenant_id: str, workflow_ids: List[str]) -> Dict[str, str]:
+        if not workflow_ids:
+            return {}
+        from ..models import WorkflowOwner
+
+        return {
+            wid: ws
+            for wid, ws in self.db.query(WorkflowOwner.workflow_id, WorkflowOwner.workspace_id)
+            .filter(WorkflowOwner.tenant_id == tenant_id, WorkflowOwner.workflow_id.in_(workflow_ids))
+            .all()
+        }
 
     def run_shortcut(self, contact_id: str, tenant_id: str, workflow_id: str, actor: Optional[User]):
         """Fire a shortcut against this contact (AC-IVE-37/38) - resolves the
@@ -947,8 +976,11 @@ class ConversationService:
         if c is None:
             raise ThreadNotFound()
 
-        from app.services.workflow_service import WorkflowService
+        from app.services.workflow_service import ShortcutNotFound, WorkflowService
 
+        owner = self._shortcut_owners(tenant_id, [workflow_id]).get(workflow_id)
+        if owner is not None and owner != c.workspace_id:
+            raise ShortcutNotFound()  # an owned shortcut is invalid on other workspaces' contacts
         return WorkflowService(self.db).run_shortcut(
             tenant_id, workflow_id, SHORTCUT_ENTITY_TYPE, c, actor
         )
