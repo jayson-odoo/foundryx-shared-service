@@ -43,6 +43,8 @@ class UnparseableUrlError(UrlGuardError):
 # RFC 6598 shared address space: not covered by `is_private` on every Python
 # version, and reachable on carrier-grade NAT networks.
 _SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
+# Deprecated 6to4 relay anycast block (RFC 7526): not covered by the stdlib flags.
+_SIX_TO_FOUR_RELAY = ipaddress.ip_network("192.88.99.0/24")
 
 
 def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
@@ -51,7 +53,9 @@ def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         return _is_blocked_ip(mapped)
-    if isinstance(ip, ipaddress.IPv4Address) and ip in _SHARED_ADDRESS_SPACE:
+    if isinstance(ip, ipaddress.IPv4Address) and (
+        ip in _SHARED_ADDRESS_SPACE or ip in _SIX_TO_FOUR_RELAY
+    ):
         return True
     return (
         getattr(ip, "is_site_local", False)  # IPv6 fec0::/10, deprecated but routable
