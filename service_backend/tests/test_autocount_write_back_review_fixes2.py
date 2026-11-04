@@ -175,24 +175,75 @@ def test_b_a_resume_cannot_claim_a_live_operation(h, w):
     assert seen["resume"].outcome == "refused" and seen["resume"].error_code == "OPERATION_IN_PROGRESS"
 
 
-def test_b_an_operation_deadline_below_the_busy_window_stops_further_steps(h, w, monkeypatch):
+def _clock_jump_after_writes(h, monkeypatch, writes):
+    """The clock jumps past the busy window right after the read-back GET that follows the
+    ``writes``-th vendor write (``0`` = during the operation's first read, before any write).
+    Jumping after a read-back keeps the primitive's own deadline out of the picture: only the
+    operation-wide deadline sees it."""
     from modules.autocount.write_back.frame import BUSY_WINDOW_SECONDS
 
     offset = {"s": 0.0}
     real = time.monotonic
     monkeypatch.setattr(time, "monotonic", lambda: real() + offset["s"])
-    original = h.vendor._delete_line
+    original = h.vendor._get
 
-    def slow_delete(kind, body):
-        out = original(kind, body)
-        offset["s"] += BUSY_WINDOW_SECONDS + 1  # the delete "took" longer than the busy window
+    def get(kind, call):
+        out = original(kind, call)
+        if len(h.vendor.writes()) == writes and not offset["s"]:
+            offset["s"] = BUSY_WINDOW_SECONDS + 1
         return out
 
-    h.vendor._delete_line = slow_delete
+    h.vendor._get = get
+
+
+def test_b_a_deadline_passed_before_the_first_write_stops_the_operation_with_zero_writes(h, w, monkeypatch):
+    _clock_jump_after_writes(h, monkeypatch, 0)
     res = h.run("unlink_row", w.params["unlink_row"])
-    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
-    assert h.steps() == [DEL_PO]  # no add after the deadline
+    assert res.outcome == "pending_verification" and res.error_code == "DEADLINE_EXCEEDED", (
+        res.outcome, res.error_code)
+    assert h.vendor.writes() == []
     assert h.operation(res).status == "pending_verification"
+
+
+# ======================================================================================
+# 1 (AC-57-39): the deadline never turns a landed result into pending or strands a write
+# ======================================================================================
+
+def test_deadline_after_the_add_with_no_move_needed_is_done_with_replaced_lines_and_a_push(h, w, monkeypatch):
+    _clock_jump_after_writes(h, monkeypatch, 2)  # delete + add landed; SO at HQ so no move is due
+    res = h.run("link_row", w.params["link_row"])
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert len(res.replaced_lines) == 1 and res.replaced_lines[0][0] == w.p_free
+    assert h.steps() == [DEL_PO, PUT_PO]
+    assert any(hasattr(r, "lines") for r in h.sink_calls), "the read-back document must still be pushed"
+
+
+def test_deadline_after_the_add_when_a_move_is_due_is_done_with_location_not_moved(h, w_far, monkeypatch):
+    w = w_far
+    _clock_jump_after_writes(h, monkeypatch, 2)
+    res = h.run("link_row", w.params["link_row"])
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert "LOCATION_NOT_MOVED" in res.warnings
+    assert len(res.replaced_lines) == 1
+    assert h.steps() == [DEL_PO, PUT_PO]  # no move PUT after the deadline
+    assert any(hasattr(r, "lines") for r in h.sink_calls)
+
+
+def test_deadline_after_the_delete_landed_still_runs_the_add(h, w, monkeypatch):
+    _clock_jump_after_writes(h, monkeypatch, 1)
+    res = h.run("unlink_row", w.params["unlink_row"])
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert h.steps() == [DEL_PO, PUT_PO]  # never leave the line missing
+    assert n_item_a(h) == (4, Decimal(16))
+
+
+def test_deadline_during_recovery_still_runs_the_recovery_add(h, w, monkeypatch):
+    _clock_jump_after_writes(h, monkeypatch, 1)  # the delete landed, then the clock is past the deadline
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    res = h.run("unlink_row", w.params["unlink_row"])
+    assert res.outcome == "recovered", (res.outcome, res.error_code)
+    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO, PUT_PO]  # delete, failed add, recovery add, move back
+    assert n_item_a(h) == (4, Decimal(16))
 
 
 # ======================================================================================
@@ -453,3 +504,89 @@ def test_h_write_capabilities_lists_split_link_and_uses_wire_kind_names(client, 
     assert by[("link_row", "purchase-orders")]["reasonCode"] == "VENDOR_UNSUPPORTED"
     assert by[("spo_link_row", "shipping-purchase-orders")]["enabled"] is False
     assert by[("create_doc", "quotations")]["enabled"] is True
+
+
+# ======================================================================================
+# 2 (AC-57-70): a generic Message with an empty ExceptionMessage shows the status only
+# ======================================================================================
+
+def test_report_shows_status_only_for_a_generic_message_with_an_empty_exception_message(h):
+    from datetime import date
+
+    body = json.dumps({"Message": "An error has occurred.", "ExceptionMessage": "",
+                       "ExceptionType": "System.Data.SqlClient.SqlException",
+                       "StackTrace": "   at AutoCount.Wrapper.Foo.Bar(Int32 key) in C:\\src\\Foo.cs:line 7"})
+    h.vendor.fail_next("POST", "NewQuotation", 500, body)
+    md = _runner().render_report(run_suite(h), run_date=date(2026, 11, 5))
+    assert "Q01" in md and "500" in md
+    for leak in ("ExceptionType", "StackTrace", "SqlException", "Foo.Bar", "AutoCount.Wrapper", "Foo.cs",
+                 "An error has occurred"):
+        assert leak not in md, leak
+
+
+# ======================================================================================
+# 3 (AC-57-47): plan 55 frame failures keep status + redacted text only on the action row
+# ======================================================================================
+
+_JSON_FAIL = json.dumps({"Message": "An error has occurred.", "ExceptionMessage": "",
+                         "ExceptionType": "System.Exception",
+                         "StackTrace": "at AutoCount.Foo() in C:\\src\\Foo.cs http://acw-internal.corp/x"})
+
+
+@pytest.mark.parametrize("failure", [HTML_500, _JSON_FAIL])
+def test_plan_55_split_link_failure_stores_status_and_redacted_text_only(h, w, failure):
+    from modules.autocount.write_back.service import WriteBackService
+
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, failure)
+    res = WriteBackService(h.db, **h.factories()).link(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=7001, po_dtl_key=w.p_free,
+        so_doc_key=7002, so_dtl_key=w.so_a, qty=Decimal(2))
+    assert res.outcome == "vendor_error", (res.outcome, res.error_code)
+    row = h.action(res)
+    assert row.response_status == 500
+    stored = json.dumps(row.response_json, default=str)
+    for leak in ("acw-internal", "inetpub", "svc_autocount", "StackTrace", "ExceptionType", "Foo.cs",
+                 "ac.example.test", "<html"):
+        assert leak not in stored, leak
+        assert leak not in (res.message or "")
+
+
+def test_plan_55_relocate_failure_stores_status_and_redacted_text_only(h, w_far):
+    from modules.autocount.write_back.service import WriteBackService
+
+    w = w_far  # p_linked sits at BR1, its SO row at BRW-AM: a relocation is due
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, HTML_500)
+    res = WriteBackService(h.db, **h.factories()).relocate(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=7001, po_dtl_key=w.p_linked)
+    assert res.outcome == "vendor_error", (res.outcome, res.error_code)
+    row = h.action(res)
+    assert row.response_status == 500
+    stored = json.dumps(row.response_json, default=str)
+    for leak in ("acw-internal", "inetpub", "svc_autocount", "<html"):
+        assert leak not in stored, leak
+
+
+# ======================================================================================
+# 4: AutoCount's own refusal text is passed through unchanged (no camelCasing inside it)
+# ======================================================================================
+
+REFUSAL = ("The quantity of the item code SRTKT38SS is less than the quantity it was partially transferred "
+           "to Purchase Order, save aborted. Unit Price and Item Code stay as written.")
+
+
+def test_refusal_text_is_passed_through_unchanged_by_the_primitive(h):
+    h.seed_doc("SO", 5001, [_line("A", 10, 5.0)])
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, json.dumps({"ExceptionMessage": REFUSAL}))
+    res = h.edit("SO", 5001, {"Remark1": "x"})
+    assert res.error_code == "VENDOR_REFUSED"
+    assert res.message == REFUSAL
+
+
+def test_refusal_text_is_passed_through_unchanged_by_the_gateway(client, gw):
+    gw.h.seed_doc("SO", 5001, [_line("A", 10, 5.0)])
+    gw.h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, json.dumps({"ExceptionMessage": REFUSAL}))
+    r = client.patch(f"{PREFIX}/documents/sales-orders/5001", headers=gw.hdr(),
+                     json={"companyCode": "SRT", "header": {"remark1": "x"}})
+    assert r.status_code == 502, r.text
+    body = r.json()
+    assert body["errorCode"] == "VENDOR_REFUSED" and body["message"] == REFUSAL
