@@ -99,7 +99,7 @@ def _stage(db, company: AcCompany, entity: str, doc: Dict[str, Any]) -> None:
     raw = {k: v for k, v in doc.items() if k != "Details"}
     raw["_lines"] = copy.deepcopy(doc["Details"])
     db.add(AcStagedRecord(
-        tenant_id=company.tenant_id, company_id=company.id, entity_type=entity, job_id="job-1",
+        tenant_id=company.tenant_id, company_id=company.id, entity_type=entity, job_id="write-back",
         source_ref=f"{company.database_name}:{doc['DocKey']}", doc_no=doc["DocNo"],
         raw_json=raw, canonical_json={}, status="staged",
     ))

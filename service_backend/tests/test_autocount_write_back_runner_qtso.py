@@ -307,3 +307,32 @@ def test_ac_57_72_cli_prints_the_guard_code_returns_2_and_writes_nothing(h, monk
     assert not md.exists() and not ev.exists()
     _no_http(h)
     assert DB3 not in capsys.readouterr().out
+
+
+# ---- post-hoc coverage for the scrub / prefix nits (already in the runner) ----------------------------------------
+
+def test_ac_57_70_markdown_also_scrubs_sales_agent_ref_doc_no_ship_info_and_fax(h):
+    extra = {**EXTRA, "SalesAgent": "AGENT SMITH", "RefDocNo": "CUSTOMER-PO-777", "ShipInfo": "DELIVER TO GATE 9",
+             "Fax1": "03-11112222", "DeliverFax1": "03-33334444", "Remark1": "keep me visible"}
+    suite = run_suite(h, header_extra=extra)
+    md = _runner().render_report(suite, run_date=date(2026, 11, 5))
+    for private in ("AGENT SMITH", "CUSTOMER-PO-777", "DELIVER TO GATE 9", "03-11112222", "03-33334444"):
+        assert private not in md, private
+    assert md.count("[scrubbed]") >= 5
+    for kept in (DEBTOR, "QT-000001", "/NewQuotation"):
+        assert kept in md, kept
+    evidence = json.dumps(suite.evidence)
+    assert "AGENT SMITH" in evidence and "03-11112222" in evidence  # the private file keeps exact values
+
+
+def test_ac_57_72_a_run_tag_that_already_starts_with_fxt_does_not_double_the_prefix(h):
+    suite = _runner().run_qtso_suite(h.db, tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id,
+                                     debtor_code=DEBTOR, run_tag="FXT-1105a", **h.factories())
+    assert all(c.status == "PASS" for c in suite.cases), [(c.case_id, c.observed) for c in suite.cases]
+    numbers = [d["DocNo"] for kind in ("QT", "SO") for d in h.vendor.docs[kind]]
+    assert any(n.startswith("FXT-1105a") for n in numbers), numbers
+    assert not any("FXT-FXT-" in n.upper() for n in numbers), numbers
+    plain = _runner().run_qtso_suite(h.db, tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id,
+                                     debtor_code=DEBTOR, run_tag="1105b", **h.factories())
+    assert plain.run_tag == "1105b"
+    assert any(d["DocNo"].startswith("FXT-1105b") for d in h.vendor.docs["QT"])
