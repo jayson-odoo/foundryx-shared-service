@@ -529,6 +529,8 @@ class WorkflowService:
         entity_type: str,
         record: Any,
         actor: Optional[User],
+        inputs: Optional[Dict[str, Any]] = None,
+        actor_id: Optional[str] = None,
     ) -> WorkflowRun:
         """Fire a shortcut against the workflow's PUBLISHED version - NEVER the
         draft (`run()` above executes the draft by design; a shortcut must not,
@@ -590,9 +592,11 @@ class WorkflowService:
         )
         from app.workflow_engine.serialization import CorrelationKeyUnresolved
 
-        ev = build_shortcut_event(self.db, entity_type, scoped_record, tenant_id=tenant_id, actor=actor)
+        ev = build_shortcut_event(
+            self.db, entity_type, scoped_record, tenant_id=tenant_id, actor=actor, actor_id=actor_id
+        )
         try:
-            run = create_run_for_event(self.db, wf, ev, depth=0)
+            run = create_run_for_event(self.db, wf, ev, depth=0, inputs=inputs)
         except CodeNotAuthorized as exc:
             raise ShortcutCodeNotAuthorized() from exc
         except CorrelationKeyUnresolved as exc:
@@ -862,7 +866,9 @@ class WorkflowService:
         )
         return [{"id": r.id, "name": r.name} for r in rows]
 
-    def _omnichannel_workspace_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+    def _omnichannel_workspace_options(
+        self, tenant_id: str, workspace_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Backs every omnichannel workspace-scoped picker (tags, contact
         fields, lifecycle stages, close reasons, members, templates) in ONE
         call (plan sprint-4/31, AC-WFP-21; `templates` added S2 for the Send
@@ -895,12 +901,12 @@ class WorkflowService:
         if not ModuleRepository(self.db).is_active(tenant_id, "omnichannel"):
             return []
 
-        workspaces = (
-            self.db.query(Workspace)
-            .filter(Workspace.tenant_id == tenant_id, Workspace.is_trashed.is_(False))
-            .order_by(Workspace.name)
-            .all()
+        ws_query = self.db.query(Workspace).filter(
+            Workspace.tenant_id == tenant_id, Workspace.is_trashed.is_(False)
         )
+        if workspace_id is not None:  # one workspace only (the API-key catalog)
+            ws_query = ws_query.filter(Workspace.id == workspace_id)
+        workspaces = ws_query.order_by(Workspace.name).all()
         if not workspaces:
             return []
         ws_ids = [ws.id for ws in workspaces]

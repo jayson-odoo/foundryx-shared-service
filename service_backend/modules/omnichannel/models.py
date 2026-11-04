@@ -807,6 +807,25 @@ class WebhookEndpoint(OmniBase):
     )
 
 
+class WorkflowOwner(OmniBase):
+    """Plan 38 gap 7: which workspace owns a workflow built through an API key.
+
+    A key reaches a workflow only through a row here. ``workflow_id`` is a plain
+    indexed column (soft ref to core ``public.workflows.id``): a module never
+    adds a foreign key into a core table. Workflows without a row stay
+    dashboard-only. Reads join the core table on the same ``tenant_id``.
+    """
+
+    __tablename__ = "workflow_owners"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, nullable=False, unique=True, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    created_by = Column(String, nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class WebhookDelivery(OmniBase):
     """One durable delivery attempt-set for an event → endpoint (AC-01-24).
 

@@ -256,7 +256,7 @@ def _fail_broadcast(db: Session, broadcast: Broadcast, message: str) -> None:
     emit_entity_event(db, "omnichannel_broadcast", "updated", broadcast, tenant_id=broadcast.tenant_id)
     emit_entity_event(
         db, "omnichannel_broadcast", "completed", broadcast, tenant_id=broadcast.tenant_id,
-        extra={"status": "FAILED", "counts": _counts_dict(broadcast), "error": message},
+        extra={"workspaceId": broadcast.workspace_id, "status": "FAILED", "counts": _counts_dict(broadcast), "error": message},
     )
     db.commit()
     _publish(broadcast, "FAILED")
@@ -462,7 +462,7 @@ def finalize_broadcast(db: Session, broadcast: Broadcast, job: Optional[Backgrou
     emit_entity_event(db, "omnichannel_broadcast", "updated", broadcast, tenant_id=broadcast.tenant_id)
     emit_entity_event(
         db, "omnichannel_broadcast", "completed", broadcast, tenant_id=broadcast.tenant_id,
-        extra={"status": "SENT", "counts": _counts_dict(broadcast)},
+        extra={"workspaceId": broadcast.workspace_id, "status": "SENT", "counts": _counts_dict(broadcast)},
     )
     db.commit()
     if job is not None:
