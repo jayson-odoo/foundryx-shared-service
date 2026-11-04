@@ -434,6 +434,7 @@ class Settings(BaseSettings):
     # defaults allowed very long waits, so connect, read and retries are bounded.
     storage_s3_connect_timeout_seconds: int = 5
     storage_s3_read_timeout_seconds: int = 60
+    # Total tries per call, including the first.
     storage_s3_max_attempts: int = 3
 
     # ── Meetings bot fleet (sprint-5 S2) ───────────────────────────────────

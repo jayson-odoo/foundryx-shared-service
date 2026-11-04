@@ -111,7 +111,7 @@ class S3CompatibleAdapter:
                 connect_timeout=settings.storage_s3_connect_timeout_seconds,
                 read_timeout=settings.storage_s3_read_timeout_seconds,
                 retries={
-                    "max_attempts": settings.storage_s3_max_attempts,
+                    "total_max_attempts": settings.storage_s3_max_attempts,
                     "mode": "standard",
                 },
             ),
