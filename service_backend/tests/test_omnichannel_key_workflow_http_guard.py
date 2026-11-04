@@ -617,3 +617,23 @@ def test_ac_38_136_deadline_across_a_blackholed_first_address_closes_the_second_
     assert blackhole in attempts, "the blackhole address was tried first"
     assert server_saw_close.wait(2.0), "the second connection was left open and dripping"
     srv.close()
+
+
+def test_ac_38_136_address_cap_holds_when_every_connect_fails_fast(monkeypatch):
+    """With a roomy deadline and six resolved addresses that each refuse at once, at most four
+    distinct addresses are attempted (the deadline alone would not stop a fast failure loop)."""
+    import app.workflow_engine.actions.http_actions as ha
+
+    _resolver(monkeypatch, MANY, [[f"93.184.216.{i}" for i in range(10, 16)]])
+    attempts = []
+
+    def refuse(address, timeout=None, *a, **k):
+        attempts.append(address[0])
+        raise ConnectionRefusedError("test stub: refused")
+
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    started = time.monotonic()
+    out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="10")
+    assert out is None and err
+    assert time.monotonic() - started < 5
+    assert 1 <= len(set(attempts)) <= 4, f"addresses attempted: {attempts}"
