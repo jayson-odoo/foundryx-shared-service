@@ -75,7 +75,7 @@ def _days(date_from: date, date_to: date) -> List[date]:
     return [date_from + timedelta(days=i) for i in range(span)]
 
 
-def _base_url(db: Session, company: AcCompany) -> str:
+def write_base_url(db: Session, company: AcCompany) -> str:
     conn = None
     if company.write_connection_id:
         conn = ConnectionRepository(db).get_for_provider(
@@ -107,7 +107,7 @@ def pull_documents(
     )
     if company is None:
         raise WriteDisabled()
-    reader = (reader_factory or AutoCountDocReader)(_base_url(db, company))
+    reader = (reader_factory or AutoCountDocReader)(write_base_url(db, company))
     stager = DocStager(db, sink_factory)
     result = PullDocsResult()
     by_last_modified = mode == MODE_LAST_MODIFIED
