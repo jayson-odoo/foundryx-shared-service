@@ -7,6 +7,12 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 
 ## Changes
 
+- 2026-11-04 (final review round): field names in `message` and `warnings` are the caller's camelCase
+  (`FIELD_IGNORED`, `QT_ROW_VALUES_INHERITED`). `QTY_INVALID` and `PRICE_INVALID` are `422`, checked before
+  any read. `/po-links`, `/po-links/unlink` and `/spo-links/unlink` accept optional `docDate`. A split link
+  on a PO whose date is unknown is `409 DOC_DATE_REQUIRED`. `write-capabilities` uses the URL slugs as
+  `kind` and lists `split_link`. An operation that passes its deadline ends `pending_verification`
+  (resumable).
 - 2026-11-04: first complete version. Describes the routes, bodies, answer, statuses and codes as
   shipped. `GET /write-capabilities` is built (no longer proposed). The plan 55 routes
   `/po-links`, `/po-links/unlink` and `/spo-links/unlink` now run through the operation layer: optional
@@ -99,7 +105,7 @@ answer).
 
 A sales-order line made `fromQuotation` inherits unit price and location from the quotation row: the
 answer is `done` with warning `QT_ROW_VALUES_INHERITED` and `message` `taken from the quotation row:
-UnitPrice, Location` (the fields that differed, in AutoCount's spelling). If AutoCount did not keep the
+unitPrice, location` (the fields that differed, camelCase). If AutoCount did not keep the
 link to the quotation row the answer is `done` with warning `QT_ROW_LINK_UNCONFIRMED`.
 
 ### 3.2 Edit
@@ -114,10 +120,10 @@ Header fields allowed: `ref`, `description`, `remark1`..`remark4`, `displayTerm`
 `purchaseAgent`, `yourPONo`, `invAddr1`..`invAddr4`, `deliverAddr1`..`deliverAddr4`. Line fields allowed
 (each line needs an integer `dtlKey`): `qty`, `unitPrice`, `discount`, `location`, `description`,
 `deliveryDate`. Anything else (including `itemCode`, `uom`, `docNo`, `docDate`, party codes): `422
-FIELD_NOT_EDITABLE`, the name in `message`. `qty` not above zero: `409 QTY_INVALID`; negative `unitPrice`:
-`409 PRICE_INVALID`. A change AutoCount accepts but does not apply: `502`, `outcome: mismatch`,
-`errorCode: FIELD_IGNORED`, `message` `ignored: <names>` and the same names in `warnings`; the names there
-are AutoCount's spelling (for example `Ref`), not camelCase.
+FIELD_NOT_EDITABLE`, the name in `message`. `qty` not above zero (or over 8 decimal places): `422 QTY_INVALID`; negative `unitPrice`:
+`422 PRICE_INVALID`. Both are checked before AutoCount is read. A change AutoCount accepts but does not apply: `502`, `outcome: mismatch`,
+`errorCode: FIELD_IGNORED`, `message` `ignored: <names>` and the same names in `warnings`; the names are camelCase
+(for example `ref`).
 
 ### 3.3 Add line, delete line, cancel
 
@@ -130,17 +136,19 @@ expectedLastModified? }`. Both are switched off today: `409 VENDOR_UNSUPPORTED`.
 
 All keys are integers (1..9223372036854775807).
 
-- `po-links`: plan 55 body `{ companyCode, poDocKey, poDtlKey, soDocKey, soDtlKey, qty, soDocDate?,
+- `po-links`: plan 55 body `{ companyCode, poDocKey, poDtlKey, soDocKey, soDtlKey, qty, docDate?, soDocDate?,
   expectedLastModified? }`. `soDocDate` (`YYYY-MM-DD`) is the date to read the sales order by when its date
   is not known to the service.
-- `po-links/unlink`: `{ companyCode, poDocKey, poDtlKey, expectedLastModified? }`.
-- `spo-links/unlink`: `{ companyCode, spoDocKey, spoDtlKey, expectedLastModified? }`.
+- `po-links/unlink`: `{ companyCode, poDocKey, poDtlKey, docDate?, expectedLastModified? }`.
+- `spo-links/unlink`: `{ companyCode, spoDocKey, spoDtlKey, docDate?, expectedLastModified? }`.
 - `po-links/relink`: `{ companyCode, poDocKey, poDtlKey, soDocKey, soDtlKey, docDate?, soDocDate?,
   expectedLastModified? }` (`docDate` = the PO's date, `soDocDate` = the target sales order's date).
 - `spo-links` and `spo-links/relink`: `{ companyCode, spoDocKey, spoDtlKey, poDocKey, poDtlKey, docDate?,
   poDocDate?, expectedLastModified? }` (`docDate` = the SPO's date, `poDocDate` = the target PO's date).
 
-The plan 55 routes do not take `docDate`; only `soDocDate` on `po-links`.
+The plan 55 routes `po-links`, `po-links/unlink` and `spo-links/unlink` also take optional `docDate`
+(the PO's or SPO's date; malformed = `422 INVALID_REQUEST`); `po-links` additionally takes `soDocDate`. A
+split link on a PO whose date is not known is `409 DOC_DATE_REQUIRED`.
 
 Whole row versus part of a row on `po-links`: the service reads the PO row fresh and compares the caller's
 `qty` with the row's own quantity at that moment. Equal = the whole row: delete the row and add it back
@@ -148,7 +156,7 @@ linked (a new row number, listed in `replacedLines`; refused `VENDOR_UNSUPPORTED
 Different = part of the row: the plan 55 split link, no delete, no `replacedLines`. Without an
 `Idempotency-Key` the split case answers in the plain plan 55 shape (`actionId`, no `operationId`); with a
 key it is an operation and answers with `operationId`. `qty` must be above zero with at most 8 decimal
-places, else `409 QTY_INVALID`. A partly received PO row is cut to the received quantity and the open
+places, else `422 QTY_INVALID`. A partly received PO row is cut to the received quantity and the open
 remainder added as a new linked row (no `replacedLines` for that case).
 
 ## 4. Answer
@@ -182,7 +190,7 @@ Status mapping:
 |---|---|---|
 | `done` | null or none of section 5 (warnings may be set) | 200 |
 | `pending_verification` | (a transport or read-back code, section 5) | 202 |
-| `refused` | `FIELD_REQUIRED`, `FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED` | 422 |
+| `refused` | `FIELD_REQUIRED`, `FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED`, `QTY_INVALID`, `PRICE_INVALID` | 422 |
 | `refused` | `WRITE_DISABLED`, `WRITE_NOT_ALLOWED` | 403 |
 | `refused` | any other code of section 5 | 409 |
 | `vendor_error`, `mismatch`, `recovered`, `needs_attention` | (section 5) | 502 |
@@ -207,7 +215,7 @@ IDEMPOTENCY_KEY_INVALID`, `429 TOO_MANY_REQUESTS`, `500` internal.
 
 Refusals (`outcome: refused`, no AutoCount write was made). 403: `WRITE_DISABLED` (no active write
 connection for the company), `WRITE_NOT_ALLOWED` (the connection is not the test book). 422: `FIELD_REQUIRED`,
-`FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED`. All the rest are 409:
+`FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED`, `QTY_INVALID`, `PRICE_INVALID`. All the rest are 409:
 
 - Switched off: `VENDOR_UNSUPPORTED` (delete line, cancel, whole-row link, unlink and relink, SPO create
   and add line).
@@ -218,8 +226,8 @@ connection for the company), `WRITE_NOT_ALLOWED` (the connection is not the test
   writing), `DOC_KIND_UNKNOWN`.
 - Row and quantity: `ROW_NOT_FOUND`, `ROW_HAS_TRANSFERS`, `QTY_BELOW_TRANSFERRED`, `ROW_RECEIVED`,
   `ROW_ON_SPO`, `ROW_ALREADY_LINKED`, `ROW_NOT_LINKED`, `ROW_HAS_OTHER_TRANSFER`, `NO_CHANGE`,
-  `ITEM_MISMATCH`, `UOM_MISMATCH`, `QTY_ABOVE_OUTSTANDING`, `QTY_ABOVE_FREE`, `QTY_INVALID`,
-  `PRICE_INVALID`, `ROW_ALREADY_AT_LOCATION`, `SO_LOCATION_AMBIGUOUS`.
+  `ITEM_MISMATCH`, `UOM_MISMATCH`, `QTY_ABOVE_OUTSTANDING`, `QTY_ABOVE_FREE`,
+  `ROW_ALREADY_AT_LOCATION`, `SO_LOCATION_AMBIGUOUS`.
 - Idempotency and operations: `IDEMPOTENCY_CONFLICT`, `OPERATION_IN_PROGRESS`, `UNKNOWN_OPERATION` (an
   operation name the service does not run; the 404 above is for an id), `OPERATION_NOT_APPLIED` (a resume found the line unchanged, nothing was written: `recovered` and
   200 for a whole-row operation, `refused` 409 for a part-row one).
@@ -228,7 +236,8 @@ Other outcomes:
 
 - `pending_verification` (202): `WRITE_TIMEOUT`, `WRITE_CONNECT` (the request may or may not have
   landed), `ANSWER_UNPARSEABLE`, `READ_FAILED` (the read-back failed after a write), `DOC_AMBIGUOUS`,
-  `INTERNAL_ERROR`. For an operation, resume reads AutoCount and decides.
+  `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` (an operation that ran past its overall deadline; for a
+  primitive it stays a 409 refusal). For an operation, resume reads AutoCount and decides.
 - `vendor_error` (502): `VENDOR_REFUSED` (AutoCount refused the write, for example a delete of a received
   line; its text is in `message`), `VENDOR_ERROR` (a bare failure; no text is passed on).
 - `mismatch` (502; the write was accepted, the read-back differs): `FIELD_IGNORED`, `ROW_MISMATCH`,
@@ -236,6 +245,7 @@ Other outcomes:
   `CANCEL_IGNORED`, `COLLATERAL_CHANGE`, `READBACK_MISMATCH` (plan 55 flows). Inside an operation a
   mismatch step is reported as `pending_verification` (resume decides).
 - `needs_attention` (502): `errorCode` is the code of the step that failed before the line went missing.
+For a part-row operation the alert mail names the cut quantity and the remainder quantity.
 
 Warnings (in `warnings`, on `done` or `recovered`; they do not fail the call): `LOCATION_NOT_MOVED` (the
 link stands but AutoCount left the new row at its default location; use relocate),
@@ -257,14 +267,16 @@ claims, notes) from the old line to the new one. Renumber if another lane lands 
 Reads the switches now; no AutoCount call. Always `200`:
 
 ```json
-{ "capabilities": [ { "op": "create_doc", "kind": "QT", "enabled": true, "reasonCode": null },
-                    { "op": "delete_line", "kind": "SO", "enabled": false, "reasonCode": "VENDOR_UNSUPPORTED" } ] }
+{ "capabilities": [ { "op": "create_doc", "kind": "quotations", "enabled": true, "reasonCode": null },
+                    { "op": "delete_line", "kind": "sales-orders", "enabled": false, "reasonCode": "VENDOR_UNSUPPORTED" } ] }
 ```
 
 One entry per primitive (`create_doc`, `edit_doc`, `add_line`, `delete_line`, `cancel_doc`) for each
-`kind` in `QT`, `SO`, `PO`, `SPO` (the short codes, not the URL slugs), plus one per operation
-(`link_row` and `relink_row` on `PO` and `unlink_row` on `PO`; `spo_link_row`, `spo_unlink_row`,
-`spo_relink_row` on `SPO`). `reasonCode` is null when enabled, else `WRITE_DISABLED` or
-`WRITE_NOT_ALLOWED` (no usable write connection: every entry is off with that reason) or
-`VENDOR_UNSUPPORTED`. An operation entry is enabled only when delete line, add line and edit are all on
-for its kind, so `link_row` reads off while delete is off even though a part-row link on `po-links` works.
+`kind` in `quotations`, `sales-orders`, `purchase-orders`, `shipping-purchase-orders` (the URL slugs), plus
+one `split_link` on `purchase-orders` and one per operation (`link_row`, `unlink_row`, `relink_row` on
+`purchase-orders`; `spo_link_row`, `spo_unlink_row`, `spo_relink_row` on `shipping-purchase-orders`).
+`reasonCode` is null when enabled, else `WRITE_DISABLED` or `WRITE_NOT_ALLOWED` (no usable write
+connection: every entry is off with that reason) or `VENDOR_UNSUPPORTED`. `split_link` (a part-row link on
+`po-links`) is enabled when purchase-order edit and add line and the vendor's link on a new row are on.
+The other operation entries are enabled only when delete line, add line and edit are all on for their kind,
+so `link_row` (whole row) reads off while delete is off.
