@@ -101,11 +101,13 @@ def test_aw_1_control_a_normal_json_text_send_answers_202(client, session_factor
     assert _message_count(session_factory, cid) == 1
 
 
-def test_aw_1_control_a_body_of_exactly_the_cap_is_not_refused_as_too_large(client, session_factory):
+def test_aw_1_control_a_body_of_exactly_the_cap_is_sent(client, session_factory):
     phone = "+60810000005"
-    headers, _cid, _ws = _rig(client, session_factory, phone)
+    headers, cid, _ws = _rig(client, session_factory, phone)
     r = client.post(URL, content=_body(phone, CAP), headers={**headers, "Content-Type": "application/json"})
     assert not (r.status_code == 422 and r.json().get("error", {}).get("message") == TOO_LARGE), r.text
+    assert r.status_code == 202, r.text
+    assert _message_count(session_factory, cid) == 1
 
 
 def test_aw_1_control_malformed_json_keeps_its_message(client, session_factory):
@@ -138,3 +140,20 @@ def test_aw_1_control_a_multipart_send_is_unchanged(client, session_factory):
     )
     assert r.status_code == 202, r.text
     assert _message_count(session_factory, cid) == 1
+
+
+@pytest.mark.parametrize("raw", [b"[" * 200000, b'{"a":' * 50000], ids=["nested-arrays", "nested-objects"])
+def test_aw_1_a_deeply_nested_body_answers_the_invalid_json_error(client, session_factory, raw):
+    from starlette.testclient import TestClient
+
+    from app.main import app
+
+    assert len(raw) < CAP
+    phone = "+60810000009"
+    headers, cid, _ws = _rig(client, session_factory, phone)
+    with TestClient(app, raise_server_exceptions=False) as quiet:
+        r = quiet.post(URL, content=raw, headers={**headers, "Content-Type": "application/json"})
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["code"] == "invalid_request"
+    assert r.json()["error"]["message"] == "Request body must be valid JSON."
+    assert _message_count(session_factory, cid) == 0
