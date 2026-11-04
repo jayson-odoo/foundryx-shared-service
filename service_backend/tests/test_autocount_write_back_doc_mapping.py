@@ -271,7 +271,8 @@ def test_ac_55_25_sql_db_company_gets_no_wrapper_mapping_and_no_push(h):
     assert sink.records == []
     row = h.staged_po()
     assert row.status == STAGED
-    assert row.canonical_json is None
+    # AC-57-21: the SQL sync's canonical stays (no wrapper mapping, no push)
+    assert row.canonical_json == {"sourceRef": f"{DBNAME}:{PO_DOC_KEY}"}
 
 
 def test_ac_55_25_company_without_entity_config_pushes(h):

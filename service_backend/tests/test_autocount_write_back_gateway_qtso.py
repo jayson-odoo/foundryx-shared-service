@@ -583,7 +583,7 @@ def test_ac_57_61_spo_link_and_relink_routes(client, gw, world):
     assert r.status_code == 200, r.text
     r = client.post(f"{PREFIX}/spo-links/relink", headers=gw.hdr("b"), json={
         "companyCode": "SRT", "spoDocKey": 7003, "spoDtlKey": world.s_linked, "poDocKey": 7001,
-        "poDtlKey": world.p_other})
+        "poDtlKey": world.p_free})  # p_other is now taken by the row just linked (AC-57-32)
     assert r.status_code == 200, r.text
     assert r.json()["replacedLines"]
 

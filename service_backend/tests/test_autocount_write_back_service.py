@@ -167,7 +167,7 @@ class Harness:
         raw["_lines"] = copy.deepcopy(doc["Details"])
         row = AcStagedRecord(
             tenant_id=tenant_id, company_id=company_id or self.company.id, entity_type=entity,
-            job_id="job-1", source_ref=f"{DBNAME}:{doc['DocKey']}", doc_no=doc["DocNo"],
+            job_id="write-back", source_ref=f"{DBNAME}:{doc['DocKey']}", doc_no=doc["DocNo"],
             raw_json=raw, canonical_json={"sourceRef": f"{DBNAME}:{doc['DocKey']}"}, status=STAGED,
         )
         self.db.add(row)
@@ -505,7 +505,8 @@ def _assert_staged_readback_queued_for_remap(h, res):
     expected = {k: v for k, v in server.items() if k != "Details"}
     expected["_lines"] = server["Details"]
     assert row.raw_json == json.loads(json.dumps(expected))
-    assert row.canonical_json is None
+    # AC-57-21: the SQL sync's canonical (with its qty) is never wiped by a write-back
+    assert row.canonical_json == {"sourceRef": f"{DBNAME}:12008"}
     assert row.status == STAGED
     assert len(h.sink_calls) == 0
 
