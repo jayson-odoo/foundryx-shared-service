@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-05** | **Media fetch retry** (section 8). `GET /omnichannel/media/{messageId}` answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` when the file cannot be read from storage for a moment; fetch again after the wait. A missing file is still `404`. Other contract details are unchanged. |
 > | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
 > | **2026-11-04** | **Meta pricing per message** (sections 7, 9.1, 9.3). `message.status` data and the default `MessageItem` now carry `pricing` (`billable`, `pricingModel`, `category`, `type`), or `null` when Meta has not reported it; older messages answer `null`, as do inbound ones. `?format=rio` is unchanged. `GET /templates` already returns each template's `category`. |
 > | **2026-11-04** | **Meta rate-limit retry** (section 10, section 6a). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
@@ -998,6 +999,7 @@ curl -L https://YOUR-FOUNDRYX-HOST/omnichannel/media/8dbc5265-… \
 
 * Response headers: `Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=300`.
 * Unknown message / no media → `404`. No/invalid auth → `401`. Service disabled, or an API key whose tenant is suspended or archived or whose workspace is trashed → `403` with a plain `{"detail": "..."}` body (not the `/api/v1` error envelope). A session user of a suspended tenant also gets `403`. During that time a `mediaUrl` fetch with your key fails the same way, even for media you already received a link to; a signed link (below) keeps working until it expires.
+* When the file cannot be read from storage for a moment, it answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` (not the `/api/v1` error envelope). Wait that long and fetch again.
 * In a `message.inbound` webhook the media message's `mediaUrl` is already the absolute form of this URL - just add your `Authorization` header when you fetch it.
 
 ### Two ways in: Bearer, or a signed link
