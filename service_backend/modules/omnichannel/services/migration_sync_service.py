@@ -602,7 +602,7 @@ class _Tick:
         self.event_counts: Dict[str, int] = {"fetched": 0, "create": 0, "skip": 0, "errors": 0}
         self.walk_complete = False
         self.walked_contacts = 0
-        self.processed_hints: Set[str] = set()
+        self.processed_hints: Dict[str, datetime] = {}
         self.sweep_completed_at: Optional[datetime] = None
 
     # -- outcome helpers --------------------------------------------------------
@@ -735,7 +735,9 @@ class _Tick:
         self.client = client
         self.mapping = mapping
 
-        hint_ids = self.repo.hint_contact_ids(self.tenant_id, self.sync_id, limit=HINTS_PER_TICK)
+        hint_rows = self.repo.hint_rows(self.tenant_id, self.sync_id, limit=HINTS_PER_TICK)
+        hint_stamp: Dict[str, datetime] = {cid: stamp for cid, stamp in hint_rows}
+        hint_ids = [cid for cid, _stamp in hint_rows]
         flagged: Set[str] = set(hint_ids)
         now = _now()
         last_sweep = _aware(self.sync.last_full_sweep_at)
@@ -755,20 +757,20 @@ class _Tick:
                         seen.add(external_id)
                         self._contact(raw, flagged=external_id in flagged, sweep=sweep_due)
                         if external_id in flagged:
-                            self.processed_hints.add(external_id)
+                            self.processed_hints[external_id] = hint_stamp[external_id]
                         self._checkpoint()
                 self.walk_complete = True
             for contact_id in hint_ids:
                 if contact_id in seen:
                     continue
                 self._hinted(contact_id)
-                self.processed_hints.add(contact_id)
+                self.processed_hints[contact_id] = hint_stamp[contact_id]
                 self._checkpoint()
             if sweep_due and self.walk_complete:
                 self.sweep_completed_at = _now()
         finally:
             if self.processed_hints:
-                self.repo.delete_hints(self.tenant_id, self.sync_id, self.processed_hints)
+                self.repo.delete_hints(self.tenant_id, self.sync_id, list(self.processed_hints.items()))
                 self.db.commit()
 
     def _watch_auth(self, client: RespondIoClient) -> None:

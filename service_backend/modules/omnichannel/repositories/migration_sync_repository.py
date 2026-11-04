@@ -95,8 +95,22 @@ class MigrationSyncRepository:
             q = q.limit(limit)
         return [r[0] for r in q.all()]
 
+    def hint_rows(self, tenant_id: str, sync_id: str, limit: Optional[int] = None) -> List[Tuple[str, datetime]]:
+        """``(contact id, created_at)`` as read - the tick deletes exactly
+        these (id AND stamp), so a hint re-sent mid-tick survives."""
+        q = (
+            self.db.query(MigrationSyncHint.external_contact_id, MigrationSyncHint.created_at)
+            .filter(MigrationSyncHint.tenant_id == tenant_id, MigrationSyncHint.sync_id == sync_id)
+            .order_by(MigrationSyncHint.created_at.asc(), MigrationSyncHint.id.asc())
+        )
+        if limit:
+            q = q.limit(limit)
+        return [(r[0], r[1]) for r in q.all()]
+
     def add_hint(self, tenant_id: str, sync_id: str, external_contact_id: str, now: datetime) -> bool:
-        """Insert-ignore. True when a new row was stored."""
+        """Insert-ignore. True when a new row was stored. A duplicate bumps the
+        existing row's stamp to ``now`` (a tick that already read the old stamp
+        then leaves the row for the next tick instead of deleting it)."""
         exists = (
             self.db.query(MigrationSyncHint.id)
             .filter(
@@ -107,6 +121,11 @@ class MigrationSyncRepository:
             .first()
         )
         if exists:
+            (
+                self.db.query(MigrationSyncHint)
+                .filter(MigrationSyncHint.id == exists[0], MigrationSyncHint.tenant_id == tenant_id)
+                .update({MigrationSyncHint.created_at: now}, synchronize_session=False)
+            )
             return False
         try:
             with self.db.begin_nested():
@@ -121,15 +140,16 @@ class MigrationSyncRepository:
             return False
         return True
 
-    def delete_hints(self, tenant_id: str, sync_id: str, contact_ids: Iterable[str]) -> None:
-        ids = list(contact_ids)
-        for i in range(0, len(ids), 500):
+    def delete_hints(self, tenant_id: str, sync_id: str, read: Iterable[Tuple[str, datetime]]) -> None:
+        """Delete only rows still carrying the (id, created_at) the tick read."""
+        for contact_id, stamp in read:
             (
                 self.db.query(MigrationSyncHint)
                 .filter(
                     MigrationSyncHint.tenant_id == tenant_id,
                     MigrationSyncHint.sync_id == sync_id,
-                    MigrationSyncHint.external_contact_id.in_(ids[i : i + 500]),
+                    MigrationSyncHint.external_contact_id == contact_id,
+                    MigrationSyncHint.created_at == stamp,
                 )
                 .delete(synchronize_session=False)
             )
