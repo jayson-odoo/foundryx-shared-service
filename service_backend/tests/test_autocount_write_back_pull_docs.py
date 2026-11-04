@@ -26,6 +26,7 @@ from modules.autocount.sinks import WriteResult
 from modules.autocount.write_back.pull_docs import pull_documents
 from modules.autocount.write_back.reader import AutoCountDocReader
 from tests.test_autocount_write_back_service import DBNAME, _load
+from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 DB3 = "https://ac.example.test/api/db3"
 SO_DAY = "20260126"

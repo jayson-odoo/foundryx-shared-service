@@ -34,6 +34,7 @@ from modules.autocount.write_back.deps import get_write_back_service
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.service import WriteActionResult, WriteBackService
 from tests.test_autocount_write_back_service import FakeAutoCount, _load
+from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 PREFIX = "/api/v1/autocount"
 LINK = f"{PREFIX}/po-links"

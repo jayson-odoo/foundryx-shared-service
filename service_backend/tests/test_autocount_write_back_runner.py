@@ -26,6 +26,7 @@ from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.runner import render_report, run_db3_suite
 from tests.test_autocount_write_back_service import _load
+from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 DB3 = "https://ac.example.test/api/db3"
 DB1 = "https://ac.example.test/api/db1"

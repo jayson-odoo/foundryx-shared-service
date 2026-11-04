@@ -16,6 +16,7 @@ from modules.autocount.write_back.payloads import (
     build_unlink,
     so_outstanding,
 )
+from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 FIX = Path(__file__).parent / "fixtures" / "autocount_write_back"
 

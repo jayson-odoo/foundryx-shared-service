@@ -35,6 +35,7 @@ from modules.autocount.write_back.doc_mapping import map_wrapper_document
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.service import WriteBackService
 from tests.test_autocount_write_back_service import DBNAME, Harness, _load
+from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 PO_DOC_KEY = 12008
 

@@ -16,6 +16,7 @@ from modules.autocount.write_back.guard import (
     WriteNotAllowed,
     assert_write_allowed,
 )
+from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 DB3 = "https://ac.example.test/api/db3"
 
