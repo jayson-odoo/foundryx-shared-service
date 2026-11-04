@@ -13,6 +13,7 @@ handler emits (app/api_errors.py).
 from typing import Optional
 
 from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api_errors import ApiError
@@ -77,7 +78,13 @@ class GatewayBodyCapMiddleware:
             if not refused:  # the refusal is already on the wire; drop the app's own answer
                 await send(message)
 
-        await self.app(scope, counting_receive, guarded_send)
+        try:
+            await self.app(scope, counting_receive, guarded_send)
+        except ClientDisconnect:
+            # Only the disconnect WE handed the app after refusing is expected;
+            # a ClientDisconnect with no refusal, or any other error, still raises.
+            if not refused:
+                raise
 
     @staticmethod
     async def _refuse(scope: Scope, receive: Receive, send: Send) -> None:
