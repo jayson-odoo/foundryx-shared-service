@@ -4,6 +4,7 @@ Pure SQLAlchemy. Every query is tenant scoped, and workspace scoped where the
 table carries a workspace. No commit here: the service owns the transaction.
 Order of use is fixed by the service (no foreign key cascades exist)."""
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import String, and_, case, cast, func, or_
@@ -16,6 +17,7 @@ from ..models import (
     ContactChannelIdentity,
     ContactTagLink,
     ConversationEvent,
+    ContactErasure,
     ConversationMessage,
     MessageReaction,
     MigrationRef,
@@ -355,6 +357,29 @@ class ContactEraseRepository:
 
     def flush(self) -> None:
         self.db.flush()
+
+    def add_erasure(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        contact_id: str,
+        actor_kind: str,
+        actor_user_id: Optional[str],
+        api_key_id: Optional[str],
+        messages: int,
+        files: int,
+        erased_at: datetime,
+    ) -> ContactErasure:
+        """The register row (plan 58), written in the erase's own transaction."""
+        row = ContactErasure(
+            tenant_id=tenant_id, workspace_id=workspace_id, contact_id=contact_id,
+            actor_kind=actor_kind, actor_user_id=actor_user_id, api_key_id=api_key_id,
+            messages=messages, files=files, erased_at=erased_at,
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
 
 
 def _chunks(items: List[Any], size: int = 500):
