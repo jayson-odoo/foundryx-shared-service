@@ -195,20 +195,23 @@ class _LeaseHeartbeat:
         self._thread.join(timeout=1)
 
     def _run(self) -> None:
+        # Once the Redis lease is lost keep stamping the DB heartbeat: a fresh
+        # heartbeat is what stops another worker overtaking a live run.
         interval = _renew_interval(self.ttl_seconds)
+        renewing = True
         while not self._stop.wait(interval):
-            try:
-                if not self.client.renew(
-                    self.key,
-                    self.token,
-                    self.ttl_seconds,
-                ):
+            if renewing:
+                try:
+                    renewing = bool(
+                        self.client.renew(self.key, self.token, self.ttl_seconds)
+                    )
+                except Exception:  # noqa: BLE001
+                    renewing = False
+                if not renewing:
                     self.lost.set()
-                    return
-            except Exception:  # noqa: BLE001
-                self.lost.set()
-                return
             run_id = self.current_run_id
+            if not renewing and not run_id:
+                return  # nothing live to protect; drain starts no run once lost
             if run_id and self.touch is not None:
                 try:
                     self.touch(run_id)
@@ -339,6 +342,11 @@ def drain_serialized_runs(
                 return {"admitted": True, "drained": drained, "stalled": run_id}
             last_run_id = run_id
             heartbeat.current_run_id = run_id
+            if heartbeat.lost.is_set():
+                # The thread sets lost then reads the run id; we set the run id
+                # then read lost, so one of us always sees the other.
+                heartbeat.current_run_id = None
+                break
             try:
                 execute_run(db, run_id)
             except SoftTimeLimitExceeded:
@@ -440,27 +448,44 @@ def reap_stale_running_serialized_runs(
 
     current = now or datetime.now(timezone.utc)
     stale = stale_after or timedelta(seconds=settings.workflow_serialized_lease_seconds)
-    rows = (
-        db.query(WorkflowRun)
-        .filter(
-            WorkflowRun.status == RUN_RUNNING,
-            WorkflowRun.correlation_key_digest.isnot(None),
-            func.coalesce(WorkflowRun.heartbeat_at, WorkflowRun.started_at, WorkflowRun.created_at)
-            <= current - stale,
-        )
-        .all()
+    table = WorkflowRun.__table__
+    conditions = (
+        table.c.status == RUN_RUNNING,
+        table.c.correlation_key_digest.isnot(None),
+        func.coalesce(table.c.heartbeat_at, table.c.started_at, table.c.created_at)
+        <= current - stale,
     )
+    candidates = select(table.c.id).where(*conditions)
+    if db.get_bind().dialect.name == "postgresql":
+        candidates = candidates.with_for_update(skip_locked=True)
+    ids = [row[0] for row in db.execute(candidates).all()]
+    if not ids:
+        return []
+    # Re-check status and staleness in the write itself: a run that finished
+    # or heart-beat since the select must not be failed.
+    failed = db.execute(
+        update(table)
+        .where(table.c.id.in_(ids), *conditions)
+        .values(
+            status=RUN_FAILED,
+            error="Run lost its worker (heartbeat stopped).",
+            finished_at=current,
+        )
+        .returning(
+            table.c.id,
+            table.c.tenant_id,
+            table.c.workflow_id,
+            table.c.correlation_key_digest,
+        )
+    ).all()
     scopes: list[tuple[str, str, str]] = []
-    for row in rows:
-        row.status = RUN_FAILED
-        row.error = "Run lost its worker (heartbeat stopped)."
-        row.finished_at = current
-        scope = (row.tenant_id, row.workflow_id, row.correlation_key_digest)
+    for run_id, tenant_id, workflow_id, digest in failed:
+        scope = (tenant_id, workflow_id, digest)
         if scope not in scopes:
             scopes.append(scope)
-        logger.error("serialized workflow run %s reaped: heartbeat stale", row.id)
-    if rows:
-        db.commit()
+        logger.error("serialized workflow run %s reaped: heartbeat stale", run_id)
+    db.commit()
+    db.expire_all()
     return scopes
 
 

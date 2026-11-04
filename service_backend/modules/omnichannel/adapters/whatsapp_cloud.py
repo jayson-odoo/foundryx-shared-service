@@ -25,6 +25,8 @@ from .meta_graph import (  # noqa: F401
     GraphRecorder,
     MetaGraphMixin,
     _meta_error_detail,
+    _meta_error_obj,
+    _meta_error_text,
     is_whatsapp_rate_limited,
     meta_error_code,
     normalise_pricing,
@@ -74,17 +76,13 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
             if resp.status_code == 200:
                 return {"access_token": resp.json().get("access_token", "")}
-            try:
-                err = resp.json().get("error", {})
-                detail = err.get("message", "")
-            except ValueError:
-                err = {"raw": resp.text[:300]}
-                detail = f"Meta returned {resp.status_code}."
+            err = _meta_error_obj(resp) or {"raw": resp.text[:300]}
+            detail = _meta_error_text(resp) or f"Meta returned {resp.status_code}."
             # Full Meta error (code/subcode/fbtrace_id) for diagnosis.
             logger.warning(
                 "WA code exchange failed (redirect_uri=%r): %s", redirect_uri, err
             )
-            raise CodeExchangeError(detail or "Code exchange failed.")
+            raise CodeExchangeError(detail)
         finally:
             if self._client is None:
                 client.close()
@@ -311,10 +309,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             )
             if resp.status_code != 200:
                 throttled = is_whatsapp_rate_limited(resp)
-                try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
-                    detail = ""
+                detail = _meta_error_text(resp)
                 raise SendError(
                     provider_error_text(_scrub_credential(detail, str(token or "")))
                     or f"Media upload failed ({resp.status_code}).",
@@ -463,10 +458,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             self._last_http_status = resp.status_code
             if resp.status_code != 200:
                 throttled = is_whatsapp_rate_limited(resp)
-                try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
-                    detail = ""
+                detail = _meta_error_text(resp)
                 raise SendError(
                     provider_error_text(
                         _scrub_credential(detail, str(credentials.get("access_token", "") or ""))
@@ -644,10 +636,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
             if resp.status_code != 200:
-                try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
-                    detail = ""
+                detail = _meta_error_text(resp)
                 raise SendError(detail or f"Meta returned {resp.status_code}.")
         except httpx.HTTPError as exc:
             raise SendError(f"Could not reach Meta: {exc}") from exc
@@ -995,10 +984,7 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
                 return ConnectionStatus(ok=True, message="Reached the number successfully.")
             # Surface Meta's reason (e.g. code 190 bad token, code 100 wrong
             # object id / missing permission) instead of just the status code.
-            try:
-                detail = resp.json().get("error", {}).get("message", "")
-            except ValueError:
-                detail = ""
+            detail = _meta_error_text(resp)
             return ConnectionStatus(
                 ok=False,
                 message=detail or f"Meta returned {resp.status_code}.",

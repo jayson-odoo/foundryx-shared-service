@@ -11,6 +11,7 @@
 > | Date | Change |
 > |----|----|
 > | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
+> | **2026-11-05** | **Provider message id** (sections 9.1 and 9.2): `externalMessageId` is `null`, never an empty string, when the channel accepted a send without returning an id. |
 > | **2026-11-04** | **Idempotency in-flight hold** (section 4). A duplicate of a send still in flight answers 409 for at most 5 minutes; a completed send still replays for 24 h. |
 > | **2026-11-04** | **Meta pricing per message** (sections 7, 9.1, 9.3). `message.status` data and the default `MessageItem` now carry `pricing` (`billable`, `pricingModel`, `category`, `type`), or `null` when Meta has not reported it; older messages answer `null`, as do inbound ones. `?format=rio` is unchanged. `GET /templates` already returns each template's `category`. |
 > | **2026-11-04** | **Meta rate-limit retry** (section 10, section 6a). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
@@ -1059,7 +1060,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "mediaUnavailable": false,    // true = a Messenger/Instagram inbound attachment whose CDN link expired before we could fetch it (plan 32 / A7a); the message still lands, there is just no blob - render a muted placeholder, not an error
   "payload": { … },             // structured def for interactive/location/contacts/template
   "reactions": [ { "emoji":"❤️", "reactorType":"CONTACT", "reactor":"+6012…" } ],
-  "externalMessageId": "wamid…",// Meta wamid
+  "externalMessageId": "wamid…",// Meta wamid; null until the send lands, or when the channel accepted the send without returning an id
   "deliveryStatus": "DELIVERED",// QUEUED|SENT|DELIVERED|READ|FAILED
   "errorCode": null,
   "errorMessage": null,
@@ -1115,7 +1116,7 @@ Returned by `GET /contacts/{identifier}/messages?format=rio` (inside `items[]`) 
 ```jsonc
 {
   "messageId": "099e061a-…",            // Foundryx durable id (use for reactions / correlation)
-  "channelMessageId": "wamid.HBg…",     // Meta's wamid, null until the send lands
+  "channelMessageId": "wamid.HBg…",     // Meta's wamid, null until the send lands, or when the channel accepted the send without returning an id
   "contactId": "fd5d6b58-…",
   "channelId": "31c4900f-…",
   "channelType": "WHATSAPP",            // WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT (plan 32 / A7a, plan 34 / A7b)
