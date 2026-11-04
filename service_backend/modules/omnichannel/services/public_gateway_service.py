@@ -865,8 +865,9 @@ class PublicGatewayService:
                         # Keep trying the other channels; the throttle is
                         # answered after the loop (plan 56 A).
                         throttled = True
-                        retry_after = getattr(exc, "retry_after", None) or 0
-                        throttled_retry_after = max(throttled_retry_after or 0, retry_after) or None
+                        # A channel with no Meta Retry-After counts as the default.
+                        retry_after = client_retry_after(getattr(exc, "retry_after", None))
+                        throttled_retry_after = max(throttled_retry_after or 0, retry_after)
                 except Exception:  # noqa: BLE001 - one channel never stops the others.
                     logger.warning("read receipt failed on channel %s", p["channel_id"])
                     status = "failed"
