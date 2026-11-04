@@ -112,9 +112,9 @@ class Rig:
         """One contact with a row of every erasable kind. Returns its ids/files."""
         cid = _contact(self.sf, self.ws, phone)
         files = {
-            "img": _file(f"erase/{tag}/{SECRET_NAME}-img.png"),
-            "voice_missing": f"erase/{tag}/{SECRET_NAME}-gone.ogg",  # never written
-            "legacy": _file(f"erase/{tag}/{SECRET_NAME}-legacy.png"),
+            "img": _file(f"omnichannel/{DEFAULT_TENANT_ID}/erase-{tag}/{SECRET_NAME}-img.png"),
+            "voice_missing": f"omnichannel/{DEFAULT_TENANT_ID}/erase-{tag}/{SECRET_NAME}-gone.ogg",  # never written
+            "legacy": _file(f"omnichannel/{DEFAULT_TENANT_ID}/erase-{tag}/{SECRET_NAME}-legacy.png"),
         }
         db = self.sf()
         try:
