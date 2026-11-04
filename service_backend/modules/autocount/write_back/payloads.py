@@ -21,6 +21,15 @@ HEADER_KEYS = (
     "CurrencyCode", "CurrencyRate", "Remark1", "Remark2", "Remark3", "Remark4",
     "RefDocNo", "ShipVia", "ShipInfo", "InclusiveTax",
 )
+# The SO header fields a create may carry (YourPODate and every total/audit field excluded).
+SO_HEADER_KEYS = (
+    "DocNo", "DocDate", "DebtorCode", "DebtorName", "Ref", "Description", "DisplayTerm",
+    "SalesAgent", "InvAddr1", "InvAddr2", "InvAddr3", "InvAddr4", "Phone1", "Fax1",
+    "Attention", "BranchCode", "DeliverAddr1", "DeliverAddr2", "DeliverAddr3", "DeliverAddr4",
+    "DeliverPhone1", "DeliverFax1", "DeliverContact", "CurrencyCode", "CurrencyRate",
+    "Remark1", "Remark2", "Remark3", "Remark4", "RefDocNo", "ShipVia", "ShipInfo",
+    "InclusiveTax",
+)
 ROW_KEYS = (
     "DtlKey", "ItemCode", "Location", "Description", "ProjNo", "UOM", "UserUOM", "Qty",
     "FOCQty", "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Desc2", "FromDocType",
@@ -69,6 +78,12 @@ def _pick(source: Doc, keys: Sequence[str]) -> Doc:
 
 def _header(doc: Doc) -> Doc:
     return _pick(doc, HEADER_KEYS)
+
+
+def so_header_of(doc: Doc) -> Doc:
+    """The whitelisted header of an existing SO (a template for a new one); dates
+    below 1753 are omitted like everywhere else."""
+    return _pick(doc, SO_HEADER_KEYS)
 
 
 def header_of(doc: Doc) -> Doc:

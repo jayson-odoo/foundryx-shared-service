@@ -4,6 +4,7 @@ from __future__ import annotations
 
 EDIT_PO_PATH = "/EditPurchaseOrderbydockey"
 NEW_PO_PATH = "/NewPurchaseOrder"
+NEW_SO_PATH = "/NewSalesOrder"
 PO_BY_DOC_DATE_PATH = "/purchaseorderbydocdate"
 SO_BY_DOC_DATE_PATH = "/salesorderbydocdate"
 PO_BY_LAST_MODIFIED_PATH = "/purchaseorderbyLastModified"

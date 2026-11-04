@@ -35,10 +35,12 @@ from modules.autocount.write_back.client import AutoCountWriteClient, WriteTrans
 from modules.autocount.write_back.constants import (
     EDIT_PO_PATH,
     NEW_PO_PATH,
+    NEW_SO_PATH,
+    SO_BY_DOC_DATE_PATH,
     PO_BY_DOC_DATE_PATH,
 )
 from modules.autocount.write_back.guard import WriteNotAllowed
-from modules.autocount.write_back.payloads import header_of
+from modules.autocount.write_back.payloads import header_of, so_header_of
 from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
     PullDocsResult,
@@ -66,16 +68,16 @@ COVERED_SO_ROW = 11996  # qty 9, fully covered by PO row 12015
 SO_ROW_QTY_2_SIDE = 11990  # SRTKS7090
 LINKED_PO_ROW = 12013  # linked to SO row 11993, qty 10
 LINKED_SO_ROW = 11993
-TEST_SPLIT_SO_ROW = 11989  # SRTKT38SS qty 10 @BRW-AM
-TEST_MOVE_SO_ROW = 11992  # SRTKT38SS qty 10 @BRW-AM
+WHOLE_ROW_SO_ROW = 11992  # real SO389293 row, SRTKT38SS qty 10, uncovered (C04 whole-row gate)
 BASELINE_FROM = date(2026, 1, 26)  # SO389293 DocDate
 BASELINE_TO = date(2026, 2, 4)  # PO 202602-S0007 DocDate
 STALE_STAMP = "1900-01-01T00:00:00.00"
 ROW_ALREADY_AT_LOCATION_CODE = "ROW_ALREADY_AT_LOCATION"
 ITEM = "SRTKT38SS"
+DEFAULT_DEBTOR = "300-S057"
 
 # Header fields kept as evidence of a create: codes and numbers only, never names.
-_EVIDENCE_HEADER = ("DocNo", "DocDate", "CreditorCode", "ShippingPO")
+_EVIDENCE_HEADER = ("DocNo", "DocDate", "CreditorCode", "DebtorCode", "ShippingPO")
 _ROW_FIELDS = (
     "DtlKey", "ItemCode", "Location", "UOM", "Qty",
     "FromSODtlKey", "FromDocType", "FromDocNo", "FromDocDtlKey",
@@ -128,6 +130,7 @@ class _Run:
         company: AcCompany,
         base_url: str,
         creditor_code: str,
+        debtor_code: str,
         run_tag: str,
         client_factory: Callable[[str], AutoCountWriteClient],
         reader_factory: Callable[[str], AutoCountDocReader],
@@ -138,6 +141,9 @@ class _Run:
         self.company = company
         self.base_url = base_url
         self.creditor = creditor_code
+        self.debtor = debtor_code
+        self.so_no = f"FXT-{run_tag}-SO"
+        self.so_doc: Optional[Doc] = None
         self.tag = run_tag
         self.client_factory = client_factory
         self.reader_factory = reader_factory
@@ -162,10 +168,10 @@ class _Run:
             reader_factory=self.reader_factory, sink_factory=self.sink_factory,
         )
 
-    def _find_doc(self, doc_no: str) -> Optional[Doc]:
+    def _find_doc(self, doc_no: str, kind: str = "PO") -> Optional[Doc]:
         self.db.commit()  # no transaction open during a GET
         reader = self.reader_factory(self.base_url)
-        for doc in reader.list_day("PO", self.today, by_last_modified=False):
+        for doc in reader.list_day(kind, self.today, by_last_modified=False):
             if doc.get("DocNo") == doc_no:
                 return doc
         return None
@@ -224,26 +230,31 @@ class _Run:
         case.observed = result.outcome + (f" {result.error_code}" if result.error_code else "")
         return result.outcome == outcome and (code is None or result.error_code == code)
 
-    def _setup_post(self, case: CaseResult, body: Doc, doc_no: str) -> Optional[Doc]:
-        """Check the DocNo is absent today, POST the document, read it back by DocNo."""
-        existing = self._find_doc(doc_no)
-        case.steps.append(Step("GET", PO_BY_DOC_DATE_PATH, 200, note=f"{doc_no} absent" if existing is None else f"{doc_no} present"))
+    def _setup_post(
+        self, case: CaseResult, body: Doc, doc_no: str, *, kind: str = "PO"
+    ) -> Optional[Doc]:
+        """Check the DocNo is absent today, POST the document (PO or SO create
+        door), read it back by DocNo."""
+        post_path = NEW_SO_PATH if kind == "SO" else NEW_PO_PATH
+        get_path = SO_BY_DOC_DATE_PATH if kind == "SO" else PO_BY_DOC_DATE_PATH
+        existing = self._find_doc(doc_no, kind)
+        case.steps.append(Step("GET", get_path, 200, note=f"{doc_no} absent" if existing is None else f"{doc_no} present"))
         if existing is not None:
             case.observed = f"{doc_no} already exists for today; pick another run tag"
             return None
         self.db.commit()
         try:
-            response = self.client_factory(self.base_url).post(NEW_PO_PATH, body)
+            response = self.client_factory(self.base_url).post(post_path, body)
         except WriteTransportError as exc:
             case.observed = f"create failed {exc.code}"
             return None
         sent = {k: body[k] for k in _EVIDENCE_HEADER if k in body}
         sent["Details"] = _rows(body["Details"])  # type: ignore[arg-type]
-        case.steps.append(Step("POST", NEW_PO_PATH, response.status_code, sent))
+        case.steps.append(Step("POST", post_path, response.status_code, sent))
         if not response.ok:
             case.observed = f"create refused by the vendor, status {response.status_code}"
             return None
-        doc = self._find_doc(doc_no)
+        doc = self._find_doc(doc_no, kind)
         if doc is None:
             case.observed = f"{doc_no} not found after create"
         return doc
@@ -297,6 +308,42 @@ class _Run:
 
     # ── cases ────────────────────────────────────────────────────────────────
 
+    def c00(self, case: CaseResult) -> None:
+        case.expected = f"test SO {self.so_no} created with two SRTKT38SS rows at BRW-AM (10 and 5)"
+        self.db.commit()
+        reader = self.reader_factory(self.base_url)
+        template = reader.get_document("SO", REAL_SO_DOC_KEY, BASELINE_FROM)
+        item_rows = {r.get("ItemCode"): r for r in template.get("Details") or []}  # type: ignore[union-attr]
+        source = item_rows.get(ITEM)
+        if source is None:
+            case.observed = "no SO row for the test item to copy from"
+            return
+        delivery = f"{self.today.isoformat()}T00:00:00"
+        rows: List[Doc] = [
+            {
+                "ItemCode": ITEM, "Location": "BRW-AM", "Description": source.get("Description"),
+                "YourPONo": "", "ProjNo": "", "UOM": source.get("UOM"), "UserUOM": source.get("UOM"),
+                "Qty": qty, "FOCQty": 0, "UnitPrice": 1.0, "Discount": "", "TaxCode": "",
+                "DeliveryDate": delivery, "Desc2": "", "FromDocType": "", "FromDocNo": "",
+                "FromDocDtlKey": 0, "FullTransferOption": " ", "FullTransferFromDocList": "",
+            }
+            for qty in (10, 5)
+        ]
+        body: Doc = {k: v for k, v in so_header_of(template).items() if k != "DocKey"}
+        if body.get("DebtorCode") != self.debtor:
+            body.pop("DebtorName", None)  # the template's name belongs to another debtor
+        body.update(DocNo=self.so_no, DocDate=delivery, DebtorCode=self.debtor, Details=rows)
+        doc = self._setup_post(case, body, self.so_no, kind="SO")
+        if doc is None:
+            return
+        read_back = doc.get("Details") or []
+        if len(read_back) != 2:  # type: ignore[arg-type]
+            case.observed = f"rows dropped: sent 2, read back {len(read_back)}"  # type: ignore[arg-type]
+            return
+        self.so_doc = doc
+        case.status = PASS
+        case.observed = f"created {self.so_no} with 2 rows"
+
     def c01(self, case: CaseResult) -> None:
         case.expected = "test PO created with two SRTKT38SS rows (50 and 10 at HQ)"
         baseline = self._pull(BASELINE_FROM, BASELINE_TO)  # SO days first, then PO days
@@ -327,7 +374,7 @@ class _Run:
 
     def c02(self, case: CaseResult) -> None:
         case.expected = "SO days then PO days pulled; the test PO is staged"
-        if self._skip(case, "C01"):
+        if self._skip(case, "C00") or self._skip(case, "C01"):
             return
         result = self._pull(self.today, self.today)
         case.steps.append(Step("GET", PO_BY_DOC_DATE_PATH, 200, note=f"docs={result.docs_seen} staged={result.staged}"))
@@ -339,6 +386,12 @@ class _Run:
 
     def _test_rows(self) -> List[Row]:
         return list((self.po_doc or {}).get("Details") or [])  # type: ignore[arg-type]
+
+    def _so_row(self, index: int) -> int:
+        return int((self.so_doc or {}).get("Details")[index]["DtlKey"])  # type: ignore[index]
+
+    def _so_key(self) -> int:
+        return int((self.so_doc or {})["DocKey"])  # type: ignore[arg-type]
 
     def _linked_new_row(self, doc: Optional[Doc], so_dtl_key: int) -> Optional[Row]:
         for r in (doc or {}).get("Details") or []:  # type: ignore[union-attr]
@@ -355,10 +408,10 @@ class _Run:
         result = self.service.link(
             tenant_id=self.tenant_id, company_id=self.company.id,
             po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=self.big_key,  # type: ignore[index,arg-type]
-            so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=TEST_SPLIT_SO_ROW, qty=Decimal(10),
+            so_doc_key=self._so_key(), so_dtl_key=self._so_row(0), qty=Decimal(10),
         )
         if self._service_case(case, result, "done") and result.error_code is None:
-            if self._linked_new_row(result.document, TEST_SPLIT_SO_ROW) is not None:
+            if self._linked_new_row(result.document, self._so_row(0)) is not None:
                 self.po_doc = result.document
                 case.status = PASS
 
@@ -370,7 +423,7 @@ class _Run:
         result = self.service.link(
             tenant_id=self.tenant_id, company_id=self.company.id,
             po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=int(small["DtlKey"]),  # type: ignore[index,arg-type]
-            so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=TEST_MOVE_SO_ROW, qty=Decimal(10),
+            so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=WHOLE_ROW_SO_ROW, qty=Decimal(10),
         )
         if self._service_case(case, result, "refused", "VENDOR_UNSUPPORTED"):
             case.status = PASS
@@ -386,8 +439,8 @@ class _Run:
             return
         self._refusal(
             case, "QTY_ABOVE_OUTSTANDING", po_doc_key=int(self.po_doc["DocKey"]),  # type: ignore[index,arg-type]
-            po_dtl_key=self.big_key, so_doc_key=REAL_SO_DOC_KEY,
-            so_dtl_key=TEST_SPLIT_SO_ROW, qty=Decimal(1),
+            po_dtl_key=self.big_key, so_doc_key=self._so_key(),
+            so_dtl_key=self._so_row(0), qty=Decimal(1),
         )
 
     def c06(self, case: CaseResult) -> None:
@@ -413,10 +466,10 @@ class _Run:
         result = self.service.link(
             tenant_id=self.tenant_id, company_id=self.company.id,
             po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=self.big_key,  # type: ignore[index,arg-type]
-            so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=TEST_MOVE_SO_ROW, qty=Decimal(5),
+            so_doc_key=self._so_key(), so_dtl_key=self._so_row(1), qty=Decimal(5),
         )
         if self._service_case(case, result, "done") and result.error_code is None:
-            if self._linked_new_row(result.document, TEST_MOVE_SO_ROW) is not None:
+            if self._linked_new_row(result.document, self._so_row(1)) is not None:
                 self.po_doc = result.document
                 case.status = PASS
 
@@ -444,7 +497,7 @@ class _Run:
         case.expected = "relocate of the C08 row, already at its SO location, is refused (ROW_ALREADY_AT_LOCATION)"
         if self._skip(case, "C08"):
             return
-        moved = self._linked_new_row(self.po_doc, TEST_MOVE_SO_ROW)
+        moved = self._linked_new_row(self.po_doc, self._so_row(1))
         if moved is None:
             case.observed = "C08 left no linked row"
             return
@@ -468,6 +521,7 @@ class _Run:
 
 
 _CASES = (
+    ("C00", "Create the test SO", "c00"),
     ("C01", "Create the test PO", "c01"),
     ("C02", "Pull SO then PO into staging", "c02"),
     ("C03", "Link with split", "c03"),
@@ -490,6 +544,7 @@ def run_db3_suite(
     company_id: str,
     creditor_code: str,
     run_tag: str,
+    debtor_code: str = DEFAULT_DEBTOR,
     client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
     reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
     sink_factory: Optional[Callable[..., object]] = None,
@@ -504,7 +559,7 @@ def run_db3_suite(
         raise WriteDisabled()
     base_url = write_base_url(db, company)  # resolves WITH tenant_id and runs the db3 guard
     run = _Run(
-        db, tenant_id, company, base_url, creditor_code, run_tag,
+        db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
         client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory,
     )
     suite = SuiteResult(run_tag=run_tag)
@@ -574,6 +629,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--company-id", required=True)
     parser.add_argument("--creditor", required=True)
     parser.add_argument("--run-tag", required=True)
+    parser.add_argument("--debtor", default=DEFAULT_DEBTOR)
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
 
@@ -588,7 +644,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             result = run_db3_suite(
                 db, tenant_id=tenant.id, company_id=args.company_id,
-                creditor_code=args.creditor, run_tag=args.run_tag,
+                creditor_code=args.creditor, run_tag=args.run_tag, debtor_code=args.debtor,
             )
         except (WriteNotAllowed, Exception) as exc:  # noqa: BLE001
             print(f"error: {getattr(exc, 'code', type(exc).__name__)}")
