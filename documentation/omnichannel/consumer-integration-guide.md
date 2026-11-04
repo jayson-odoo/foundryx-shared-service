@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
 > | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
 > | **2026-11-05** | **Media fetch retry** (section 8). `GET /omnichannel/media/{messageId}` answers `503` with a `Retry-After: 5` header and the plain body `{"detail": "The file is temporarily unavailable. Please try again."}` when the file cannot be read from storage for a moment; fetch again after the wait. A missing file is still `404`. Other contract details are unchanged. |
 > | **2026-11-05** | **Busy answer** (error table): a request that waits too long for another change to the same record answers `503 busy_try_again` with `Retry-After`; the request may or may not have been applied; retry after `Retry-After` (for a send, always retry with the same `Idempotency-Key`: a send that was already stored is returned, not sent again). |
@@ -163,6 +164,8 @@ Sends one message. Returns `**202 Accepted**` with your durable message id - the
 | `Authorization: Bearer fxw_live_…` | yes |    |
 | `Content-Type: application/json` **or** `multipart/form-data` | yes | JSON for everything; multipart only to upload a media file directly (see §4.3) |
 | `Idempotency-Key: <your-unique-key>` | recommended | Workspace-scoped dedup. A completed send is remembered for 24h: a replay returns the **original** message id, still `202`, with `idempotencyReplay: true`. A duplicate still in flight → `409 idempotency_in_progress`, held at most 5 minutes; after that a request that never got an answer can be retried with the same key. If the first request did complete meanwhile, the retry may send again, so look the message up first (`GET /contacts/{identifier}/messages` or the `message.outbound` webhook) before retrying after the hold. |
+
+A JSON body larger than 256 KiB answers `422 invalid_request` ("Request body is too large.").
 
 **Response** `202`:
 
@@ -620,7 +623,7 @@ A workflow is a graph of trigger, action and `if` nodes that runs inside your wo
 * Workflows that staff built in the dashboard are **not visible to keys**.
 * A key is identified by `apikey:<keyId>`, the same value a message sent with the key carries as its sender (`senderId`, section 7). It appears on the workflows, versions and runs the key creates, as shown below.
 * Every miss answers the same `404 not_found` with the message "Workflow not found.": an unknown id, a workflow of another workspace or tenant, an archived workflow, and a staff-built workflow all look identical.
-* Limits: **200 workflows per workspace** (create past it answers `422 invalid_request`), **200 nodes** per definition (`422 invalid_request`), and a request body of at most **256 KB** (`422 invalid_request`).
+* Limits: **200 workflows per workspace** (create past it answers `422 invalid_request`), **200 nodes** per definition (`422 invalid_request`), and a request body of at most **256 KiB** (`422 invalid_request`).
 
 ### The workflow object
 
@@ -1321,7 +1324,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
 | `service_not_enabled` | 403 | Omnichannel not active for your tenant, the tenant is suspended or archived, or the key's workspace is trashed - contact the operator. The key works again once restored. |
-| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics; on `/workflows` also a bad `cursor`, `limit` or `inputs`, more than 200 workflows or nodes, and on `PUT /business-hours` `details.fieldErrors` keyed `timezone` / `windows`), a reaction refused for its channel (§4), or a `replyToMessageId` that is not found for this contact, is not a string, or is sent with a reaction (§4). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
+| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics; on `/workflows` also a bad `cursor`, `limit` or `inputs`, more than 200 workflows or nodes, and on `PUT /business-hours` `details.fieldErrors` keyed `timezone` / `windows`), a JSON body over 256 KiB on `POST /messages` or the workflow routes ("Request body is too large."), a reaction refused for its channel (§4), or a `replyToMessageId` that is not found for this contact, is not a string, or is sent with a reaction (§4). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
 | `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
 | `reply_channel_mismatch` | 422 | `replyToMessageId` quotes a message that was sent on another channel than the one resolved for this send. Nothing is sent; pass the quoted message's `channelId` (see §4 "Replying to a message"). |
