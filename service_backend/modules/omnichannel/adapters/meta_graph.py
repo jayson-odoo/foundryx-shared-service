@@ -94,6 +94,32 @@ def is_whatsapp_rate_limited(resp: "httpx.Response") -> bool:
     return code in WHATSAPP_RATE_LIMIT_ERROR_CODES
 
 
+_PRICING_TEXT_RE = re.compile(r"[a-z0-9_]{1,40}")
+
+
+def normalise_pricing(raw: Any) -> Optional[dict]:
+    """A WhatsApp status entry's `pricing` as `{billable, pricingModel,
+    category, type}` (plan 56 B), or None when it is not an object. Strings are
+    Meta input: lower-cased, 1-40 chars of [a-z0-9_], else null. `billable`
+    must be a JSON bool, else null. Unknown keys are dropped. Never raises."""
+    if not isinstance(raw, dict):
+        return None
+
+    def text(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        low = value.lower()
+        return low if _PRICING_TEXT_RE.fullmatch(low) else None
+
+    billable = raw.get("billable")
+    return {
+        "billable": billable if isinstance(billable, bool) else None,
+        "pricingModel": text(raw.get("pricing_model")),
+        "category": text(raw.get("category")),
+        "type": text(raw.get("type")),
+    }
+
+
 def parse_retry_after(resp: "httpx.Response") -> Optional[int]:
     """Meta's `Retry-After` header as whole seconds (>= 1), or None when absent
     or not an integer. Never raises."""

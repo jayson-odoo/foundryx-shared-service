@@ -330,6 +330,7 @@ class ConversationService:
         for m in messages:
             meta = m.metadata_json or {}
             reply = meta.get("reply_to")
+            pricing = meta.get("pricing")
             # Sender display resolves from whichever sender column is set - native
             # user OR federated external agent.
             agent = agents.get(m.sender_external_agent_id) if m.sender_external_agent_id else None
@@ -372,6 +373,7 @@ class ConversationService:
                     deliveryStatus=m.delivery_status,
                     errorCode=m.error_code,
                     errorMessage=m.error_message,
+                    pricing=pricing if isinstance(pricing, dict) else None,
                     replyTo=ReplyRefItem(**reply) if reply else None,
                     createdAt=m.created_at,
                 )

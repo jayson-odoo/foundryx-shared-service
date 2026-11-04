@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-04** | **Meta pricing per message** (sections 7, 9.1, 9.3). `message.status` data and the default `MessageItem` now carry `pricing` (`billable`, `pricingModel`, `category`, `type`), or `null` when Meta has not reported it; older messages answer `null`, as do inbound ones. `?format=rio` is unchanged. `GET /templates` already returns each template's `category`. |
 > | **2026-11-04** | **Meta rate-limit retry** (sections 7, 10). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
 > | **2026-11-04** | **Developer Logs body capture** (section 13.3). A request or response body that is over the capture limit, or JSON that does not parse, is now shown as a note with its size and is never stored as raw text. Additive: no API field changes. |
 > | **2026-11-04** | **Workflows and business hours under the API key** (sections 6c, 6d, 10). New routes under `/workflows` (catalog, create, list, get, edit, archive, validate, publish, unpublish, active, versions, runs, run for one contact) and `/business-hours` (get, put), all scoped to the key's workspace. New error codes `node_not_allowed`, `invalid_definition`, `workflow_not_runnable` and `edit_conflict`. Additive and not breaking: no existing route, field or code changes. |
@@ -849,8 +850,11 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 
   ```json
   { "messageId":"0a0d673d-…", "externalMessageId":"wamid…", "contactId":"b2ad5218-…",
-    "deliveryStatus":"DELIVERED", "errorCode":null, "errorMessage":null }
+    "deliveryStatus":"DELIVERED", "errorCode":null, "errorMessage":null,
+    "pricing":{ "billable":true, "pricingModel":"pmp", "category":"utility", "type":"regular" } }
   ```
+
+  `pricing` is Meta's pricing for that message, taken from the delivery receipt: `billable` (true/false), `pricingModel` (for example `pmp`), `category` (for example `utility`, `marketing`) and `type` (for example `regular`, `free_customer_service`); any field Meta did not send is `null`. The key is always present. It is `null` until a receipt carries pricing (so on the `SENT` event, and on every message sent before this change), and once stored it is repeated on later events for the same message. Meta may send it on a receipt that arrives late; the stored value is updated without a new event. Sum `pricing` per message yourself for usage.
 
   `deliveryStatus` is one of `SENT`, `DELIVERED`, `READ`, `FAILED`. `SENT` is emitted when Meta accepts the send and `FAILED` on a synchronous failure (Meta rejection or a local failure such as a media transcode error), with `errorCode`/`errorMessage` filled for `FAILED` only (both are `null` on `SENT`, `DELIVERED` and `READ`). On `FAILED`, `errorCode` is the provider's own code when it gave one (for example a Meta error code) and `null` otherwise, such as a local media failure; `errorMessage` is at most 300 characters. A temporary failure that Foundryx retries is not reported as `FAILED` and carries no error text to you. Normally a send ends in one `SENT` or one `FAILED` on `message.status`. Delivery is at-least-once, so the same event can arrive more than once: dedupe on the event id (`{messageId}:{deliveryStatus}`). While a message is being retried, `GET` messages can show a generic error text and an `errorCode` on it. Ignore any `deliveryStatus` value you do not recognise rather than failing the delivery. Each status is its own event (`{messageId}:SENT`, `{messageId}:FAILED`, ...); a later Meta `sent` receipt for the same message adds no second `SENT`. **If you already subscribe to `message.status` you now also receive `SENT` and sender-side `FAILED` events.** Delivery order across events is not guaranteed (each event is delivered and retried independently), so a `DELIVERED` can arrive before the `SENT` for the same message: never move a stored status backward (rank `SENT` < `DELIVERED` < `READ`), and treat `FAILED` as a terminal outcome.
 * `**message.reaction**`
@@ -1055,6 +1059,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "deliveryStatus": "DELIVERED",// QUEUED|SENT|DELIVERED|READ|FAILED
   "errorCode": null,
   "errorMessage": null,
+  "pricing": null,              // Meta pricing once a receipt carried it: { "billable": true, "pricingModel": "pmp", "category": "utility", "type": "regular" }; null for inbound and older messages (default shape only, `?format=rio` has none)
   "replyTo": { "id":"…", "body":"…", "senderType":"…", "senderName":"…" },
   "createdAt": "2026-07-09T11:02:43Z"
 }
@@ -1211,6 +1216,7 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 | `mediaMime` / `mediaFilename` / `mediaSize` | `message.mimeType` / `message.filename` / `message.size` |
 | `voice: true` | `message.type === "voice"` |
 | `payload` | `message.payload` |
+| `pricing` (object or null) | none: `?format=rio` has no `pricing` |
 | `mediaUnavailable` | `message.mediaUnavailable` (same - Foundryx extension, plan 32 / A7a) |
 | `reactions[]` | `reactions[]` (identical) |
 | `replyTo.id` / `.body` | `replyTo.messageId` / `.text` |

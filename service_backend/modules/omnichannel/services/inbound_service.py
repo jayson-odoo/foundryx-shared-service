@@ -713,6 +713,14 @@ class InboundService:
         commit + broadcast hook + realtime publish + consumer-webhook fan-out)
         - shared verbatim by the single-`external_message_id` case AND every
         message a watermark/`mids[]` receipt bulk-targets."""
+        # Meta's per-message pricing (plan 56 B): the latest non-null object
+        # wins and is kept even when the status itself does not move forward.
+        pricing = event.get("pricing")
+        if isinstance(pricing, dict):
+            msg.metadata_json = {
+                **(msg.metadata_json if isinstance(msg.metadata_json, dict) else {}),
+                "pricing": dict(pricing),
+            }
         if new_status == "FAILED":
             msg.delivery_status = "FAILED"
             msg.error_code = event.get("error_code")
@@ -723,6 +731,8 @@ class InboundService:
         else:
             current = _STATUS_RANK.get(msg.delivery_status or "SENT", 0)
             if _STATUS_RANK[new_status] <= current and msg.delivery_status:
+                if isinstance(pricing, dict):
+                    self.db.commit()  # pricing alone: no status change, no webhook
                 return False  # receipts only move forward
             msg.delivery_status = new_status
         self.db.commit()
@@ -737,6 +747,7 @@ class InboundService:
         error_now = msg.error_message
         error_code_now = msg.error_code
         ext_id = msg.external_message_id
+        pricing_now = (msg.metadata_json or {}).get("pricing") if isinstance(msg.metadata_json, dict) else None
         try:
             from .broadcast_receipts import record_delivery
 
@@ -777,6 +788,7 @@ class InboundService:
                 # Error fields ride FAILED only (AC-38-15).
                 "errorCode": error_code_now if status_now == "FAILED" else None,
                 "errorMessage": error_now if status_now == "FAILED" else None,
+                "pricing": pricing_now,
             },
         )
         return True
