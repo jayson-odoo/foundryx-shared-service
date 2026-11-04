@@ -600,6 +600,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _api_db_long_lock_timeout_not_below_normal(self) -> "Settings":
+        if self.api_db_long_lock_timeout_seconds < 1:
+            raise ValueError("api_db_long_lock_timeout_seconds must be at least 1.")
         if (
             self.api_db_lock_timeout_seconds > 0
             and self.api_db_long_lock_timeout_seconds < self.api_db_lock_timeout_seconds
