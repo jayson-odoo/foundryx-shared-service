@@ -158,6 +158,10 @@ def touch_run_heartbeat(bind: Any, run_id: str, now: Optional[datetime] = None) 
         return conn.execute(stmt).rowcount > 0
 
 
+def _renew_interval(ttl_seconds: int) -> float:
+    return max(1.0, ttl_seconds / 3)
+
+
 class _LeaseHeartbeat:
     """Renews the Redis lease AND, while a run executes, its DB heartbeat."""
 
@@ -191,7 +195,7 @@ class _LeaseHeartbeat:
         self._thread.join(timeout=1)
 
     def _run(self) -> None:
-        interval = max(1.0, self.ttl_seconds / 3)
+        interval = _renew_interval(self.ttl_seconds)
         while not self._stop.wait(interval):
             try:
                 if not self.client.renew(
