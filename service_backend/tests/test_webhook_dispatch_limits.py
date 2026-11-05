@@ -855,6 +855,40 @@ def test_ac_51_01_media_fetch_deadline_holds_when_the_first_cancel_is_swallowed(
     assert swallowed["n"] == 1, "the simulated lost cancel never happened"
 
 
+def test_ac_51_01_media_fetch_slow_tls_setup_ends_at_the_deadline(
+    local_server, https_seam, monkeypatch
+):
+    """Building the TLS context is blocking work (CA file read). A media fetch
+    must still end at its total deadline as media_fetch_failed. Each build stalls
+    5 s, so one build alone breaks the 1.0 s deadline plus the 2.0 s margin; only
+    the public builder is patched. Nothing may reach the server."""
+    from app.api_errors import ApiError
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    state = {"requests": []}
+    srv = local_server(_logging(state, lambda conn, stop: None), tls=_server_ctx(https_seam))
+    FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")])
+    real = httpx.create_ssl_context
+
+    def slow(*a, **k):
+        time.sleep(5.0)
+        return real(*a, **k)
+
+    monkeypatch.setattr(httpx, "create_ssl_context", slow)
+    monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 1.0)
+    svc = pgs.PublicGatewayService.__new__(pgs.PublicGatewayService)
+    started = time.monotonic()
+    with pytest.raises(ApiError) as err:
+        svc._fetch_url(f"https://{NAME}:{srv.port}/media")
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0 + 2.0, f"media fetch took {elapsed:.1f}s"
+    assert err.value.code == "media_fetch_failed"
+    assert err.value.message == pgs._FETCH_FAILED_TEXT
+    # wait until the abandoned 5 s build has had time to finish and (wrongly) connect
+    time.sleep(max(0.0, 5.5 - (time.monotonic() - started)))
+    assert state["requests"] == [], "a request reached the server after the fetch ended"
+
+
 def test_ac_51_01_deadline_during_anyio_connect_leaves_no_socket_open(local_server, monkeypatch):
     """The deadline lands after anyio's connect_tcp holds its connected stream
     but before it returns it; that stream must still be closed (no gc help)."""
