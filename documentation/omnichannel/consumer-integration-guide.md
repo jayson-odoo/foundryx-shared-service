@@ -22,6 +22,7 @@
 > | **2026-11-04** | **Meta rate-limit retry** (section 10, section 6a). A WhatsApp send that Meta rate limits (HTTP 429, or Meta code `130429`, `131056`, `80007`, `4`, `17`, `32`, `613`) is retried by the platform after 15, 60, 180 and 600 seconds (plus up to 20% jitter, longer when Meta sends a `Retry-After`), at most 4 retries. When they run out the message ends `failed` with Meta's code and one `failed` status event goes out. `131048` (spam rate limit) is never retried. `POST /contacts/{id}/read` and a reaction send answer `429 meta_rate_limited` with a `Retry-After` header instead of a generic refusal. |
 > | **2026-11-04** | **Developer Logs body capture** (section 13.3). A request or response body that is over the capture limit, or JSON that does not parse, is now shown as a note with its size and is never stored as raw text. Additive: no API field changes. |
 > | **2026-11-04** | **Workflows and business hours under the API key** (sections 6c, 6d, 10). New routes under `/workflows` (catalog, create, list, get, edit, archive, validate, publish, unpublish, active, versions, runs, run for one contact) and `/business-hours` (get, put), all scoped to the key's workspace. New error codes `node_not_allowed`, `invalid_definition`, `workflow_not_runnable` and `edit_conflict`. Additive and not breaking: no existing route, field or code changes. |
+> | **2026-11-03** | **Corrections: voice, interactive replies, endpoint re-enable** (sections 4.2, 7, 9.1, 9.2, 10). `voice` accepts ogg and browser webm (`audio/webm`, `video/webm`) and is always sent as ogg/opus; `audio` takes no webm. The send call no longer lists `422 transcode_failed`: a voice note that cannot be converted ends as `message.status` `FAILED`. `INTERACTIVE_REPLY` and `BUTTON` (a template quick-reply tap, no `payload`) are listed in `messageType`, and in the `?format=rio` notes the tapped title is `text`. Endpoint `status`, `consecutiveFailures` and `disabledReason` are documented, with the reset on success, the re-enable and no queue or replay while not `ACTIVE`. |
 > | **2026-11-03** | **Reply to a message: `replyToMessageId` on send** (sections 4, 4.3, 10). `POST /messages` accepts an optional `replyToMessageId`, the `id` of a message in the same conversation, so the new message is sent as a reply to it. It works on every message type except `reaction`, in the JSON body and in the multipart `payload`. The created message shows `replyTo` in history reads. Non-breaking: a send without the field behaves as before. New error `422 reply_channel_mismatch`. |
 > | **2026-11-02** | **Webhook delivery deadline** (section 7). One delivery attempt waits at most 10 seconds in total, then counts as a failed attempt. Only the status code decides success; the response body is not used, so answer `2xx` quickly and do the work afterwards. No field changes. |
 > | **2026-11-02** | **Per-key request limits** (section 3a, section 10). Each API key may have at most 10 requests in progress and 600 started per minute. Over either limit the answer is `429 rate_limited` with the message "Too many requests for this key." and a `Retry-After` header in seconds. Wait that long and retry. Other contract details are unchanged. |
@@ -292,11 +293,11 @@ The URL is SSRF-guarded: **https only**, no redirects, no private/loopback/reser
 | image | 5 MB | jpeg, png |
 | video | 16 MB | mp4, 3gpp |
 | audio | 16 MB | aac, mpeg, mp4, amr, ogg |
-| voice | 16 MB | ogg |
+| voice | 16 MB | ogg, and webm as a browser records it (`audio/webm` or `video/webm`) |
 | document | 100 MB | pdf, zip, docx, xlsx, pptx, text/plain |
 | sticker | 500 KB | webp |
 
-Bad size/type → `422 oversize` / `422 unsupported_media` / `422 transcode_failed`.
+Bad size/type → `422 oversize` / `422 unsupported_media`. The send call answers `202` once the file passes the type and size checks. Every voice note is sent to the customer as ogg/opus, whatever you uploaded. A voice note that cannot be converted fails later: the message ends with `message.status` `FAILED`, not a `422` on the send. `audio` does not take webm.
 
 ### 4.3 Media by direct upload (multipart)
 
@@ -848,7 +849,7 @@ An invalid body answers `422 invalid_request` with the problems keyed by field, 
 
 Foundryx POSTs a **signed JSON envelope** to each callback URL you registered for the channel, for each event type you subscribed to.
 
-> Webhook payloads use the **§9.1** shapes (`MessageItem`, `ThreadItem`) - the same shapes the read endpoints return by default, so one internal type covers both surfaces.
+> Webhook payloads use the **§9.1** shapes (`MessageItem`, `ThreadItem`) - the same shapes the read endpoints return by default, so one internal type covers both surfaces. An inbound WhatsApp voice note arrives as `VOICE` (`voice` in the `?format=rio` shape) with the provider's own type, which starts with `audio/ogg`, and is not converted.
 
 ### Subscribable event types
 
@@ -997,7 +998,9 @@ async def receive(request: Request):
 * **Only the status code decides success.** The response body is not used, so answer `2xx` quickly and do the work afterwards.
 * **At-least-once**: retries mean you may see the same event `id` more than once - **be idempotent**.
 * **Retry backoff**: \~1m, 5m, 25m, 1h, 6h (max **6 attempts**) then dead-letter.
-* **Auto-disable**: after 10 consecutive dead-lettered events the endpoint flips to `AUTO_DISABLED`; re-enable it with `POST /webhooks/{id}/enable` or from the dashboard (which resets the counter).
+* **Auto-disable**: after 10 consecutive dead-lettered events the endpoint flips to `AUTO_DISABLED`; re-enable it with `POST /webhooks/{id}/enable` or from the dashboard, which sets `status` back to `ACTIVE`, resets `consecutiveFailures` to `0` and clears `disabledReason`.
+* One successful delivery resets `consecutiveFailures` to `0`, so only an unbroken run of failures disables an endpoint.
+* Only an `ACTIVE` endpoint gets events: while it is `DISABLED` or `AUTO_DISABLED` no event is queued for it, and none is replayed after it is re-enabled.
 * While a workspace is trashed, its tenant is suspended or the service is off for it, no event is queued, and queued retries end failed. Those events are not sent later, even after the workspace is back.
 * Webhook delivery is fully isolated - a slow/broken consumer never blocks an inbound WhatsApp message.
 * A **delivery log** is available in the dashboard (per-attempt status, response code, latency, error) for debugging.
@@ -1027,6 +1030,8 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/webhooks \
                 "events": ["message.inbound","…"], "status": "ACTIVE", … },
   "signingSecret": "whsec_…" }
 ```
+
+Each endpoint reads `status` (`ACTIVE`, `DISABLED` or `AUTO_DISABLED`), `consecutiveFailures` (the current run of failed events) and `disabledReason` (why it is not `ACTIVE`, `null` otherwise).
 
 > **`signingSecret` is shown once.** Store it before you close the response - there is no endpoint that returns it again, only `/rotate`, which invalidates the old one immediately. Deploy the new secret **before** rotating or you will reject your own deliveries.
 
@@ -1108,7 +1113,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "senderId": null,             // outbound: a user id, or "apikey:<id>" for an API send (also on message.outbound)
   "senderName": null,
   "messageType": "IMAGE",       // TEXT|TEMPLATE|IMAGE|VIDEO|AUDIO|VOICE|DOCUMENT|
-                                //   STICKER|INTERACTIVE|LOCATION|CONTACTS|UNSUPPORTED
+                                //   STICKER|INTERACTIVE|INTERACTIVE_REPLY|BUTTON|LOCATION|CONTACTS|UNSUPPORTED
   "body": "caption or text",
   "mediaUrl": "/omnichannel/media/…",  // absolute + authed in the inbound webhook
   "mediaMime": "image/png",     // webhook renames → mimeType
@@ -1212,9 +1217,11 @@ Notes that bite if you miss them:
 * **`timestamp` is the time key.** `status[]` is populated only once a delivery receipt exists and is **always empty for inbound** - never order on it.
 * **`status[].value`** ∈ `pending | sent | delivered | read | failed`. On `failed`, `status[].message` is the free-text reason and **`status[].code` is Meta's numeric code** (e.g. `131047` re-engagement required, `131026` undeliverable) - branch on `code`, not on the message text, which is localised and unstable.
 * **`status[].timestamp` is NOT the receipt time.** We don't record per-receipt times, so it equals the item's top-level `timestamp` (the message's creation time). Computing send→delivered latency from the two will always give `0`.
-* **`message.type`** is lowercase. Two easily-missed values: `voice` is distinct from `audio` (a WhatsApp voice note is `"voice"`, so no separate boolean is needed), and **`interactive_reply`** is what you receive when a customer taps a quick-reply button or picks a list row - a different type from the `interactive` message you sent. Handle it explicitly; after plain text it's the most common inbound event.
+* **`message.type`** is lowercase. Two easily-missed values: `voice` is distinct from `audio` (a WhatsApp voice note is `"voice"`, so no separate boolean is needed), and **`interactive_reply`** is what you receive when a customer taps an interactive reply button or picks a list row - a different type from the `interactive` message you sent. Handle it explicitly; after plain text it's the most common inbound event.
 * **`message.payload`** carries what cannot survive flattening into text, by type:
   * `interactive` → `{ kind, body, header?, footer?, buttons[] | sections[] | cta }`
+  * `interactive_reply` → WhatsApp `{ kind: "button" | "list", id, title, description }`; Messenger and Instagram `{ kind: "quick_reply" | "postback", id, title }`. The tapped title is `text` in the `?format=rio` shape and `body` in the default shape. On WhatsApp `replyTo` names the message that carried the buttons.
+  * `button` → `null`: a tap on a WhatsApp template quick-reply button arrives as messageType `BUTTON` (`button` in this shape) with no `payload`; the button's text is `text` here and `body` in the default shape.
   * `location` → `{ lat, lng, name, address }`
   * `contacts` → the contact-card array
   * `template` → the template binding
@@ -1349,7 +1356,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `workflow_not_runnable` | 409 | `POST /workflows/{id}/runs` on a workflow that cannot run now. `details.reason` is `unpublished`, `inactive` or `trigger` (not the contact shortcut). |
 | `edit_conflict` | 409 | `PATCH /workflows/{id}` with an `expectedUpdatedAt` older than the workflow. Nothing is written; fetch it again and re-apply. |
 | `idempotency_in_progress` | 409 | A duplicate `Idempotency-Key` is still processing (held at most 5 minutes). |
-| `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` / `transcode_failed` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
+| `invalid_media_url` / `media_fetch_failed` / `oversize` / `unsupported_media` | 422 | Media fetch/validation failed (see §4.2). A fetch that takes longer than 60 s in total is `media_fetch_failed`, and so is a compressed response (the fetch asks for an uncompressed body). A response declaring a size over 100 MB is `oversize`, refused before its body is read. |
 | `media_fetch_busy` | 429 | Too many media fetches are running at once: at most 4 in a server process and 2 per tenant. Nothing was sent; safe to retry shortly with the same `Idempotency-Key`. |
 | `rate_limited` | 429 | The key is over its limits: more than 10 requests in progress or more than 600 started in a minute (§3a). The `Retry-After` header gives the seconds to wait before retrying. |
 | `meta_rate_limited` | 429 | Meta is rate limiting the channel for a call made inside your request: a read receipt (`POST /contacts/{id}/read`) or a reaction send. Nothing was stored for the reaction. The `Retry-After` header gives the seconds to wait (Meta's value when it sent one, never more than 600). Distinct from `rate_limited`, which is this API's own per-key limit. |

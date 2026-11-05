@@ -522,7 +522,22 @@ def test_ac_57_47_two_concurrent_resumes_run_only_once(h, w):
     assert n_item_a(h) == (4, Decimal(16))  # re-created exactly once
 
 
-def test_ac_57_47_403_write_not_allowed_names_no_book(client, h, db):
+def _operation_ids_containing_book_names(monkeypatch):
+    """Every new autocount row id carries both book names: the id is a random UUID
+    in production, so a book name can appear in it by chance. The model default
+    calls ``uuid.uuid4`` through this module's own ``uuid`` name on every insert,
+    so replacing that name here (not the global module) reaches every new id."""
+    import types
+
+    from modules.autocount import models as ac_models
+
+    counter = iter(range(1, 100_000))
+    shim = types.SimpleNamespace(uuid4=lambda: f"0db1-db3-{next(counter):05d}")
+    monkeypatch.setattr(ac_models, "uuid", shim)
+
+
+def test_ac_57_47_403_write_not_allowed_names_no_book(client, h, db, monkeypatch):
+    _operation_ids_containing_book_names(monkeypatch)
     gw = Gw(h, db)
     other = h._connection(DB1, DEFAULT_TENANT_ID)
     h.company.write_connection_id = other.id
@@ -531,8 +546,10 @@ def test_ac_57_47_403_write_not_allowed_names_no_book(client, h, db):
                        (f"{PREFIX}/po-links/unlink", {"companyCode": "SRT", "poDocKey": 1, "poDtlKey": 2})):
         r = client.post(path, json=body, headers=gw.hdr(path[-8:]))
         assert r.status_code == 403 and code(r) == "WRITE_NOT_ALLOWED", r.text
+        # the random ids (operationId, actionId) are the only fields a book name can match by chance
+        text = json.dumps({k: v for k, v in r.json().items() if k not in ("operationId", "actionId")})
         for book in ("db1", "db3", "api/db"):
-            assert book not in r.text, (book, r.text)
+            assert book not in text, (book, text)
     h.no_http()
 
 

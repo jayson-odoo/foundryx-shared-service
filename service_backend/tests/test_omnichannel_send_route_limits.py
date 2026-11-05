@@ -304,6 +304,7 @@ async def _drive_gated(send, gate):
         ticks_before = len(ticks)
         cheap_status = None
         try:
+            # hang guard only (a blocked loop shows as a held step, judged by `gate.left` below)
             cheap = await asyncio.wait_for(ac.get("/"), timeout=5.0)
             cheap_status = cheap.status_code
         except asyncio.TimeoutError:
@@ -379,6 +380,25 @@ def test_ac_41_01_multipart_send_leaves_the_loop_free(client, session_factory, m
     assert out.ticks_during >= 1, "the loop made no progress while the upload was held"
 
 
+def _time_fetch(monkeypatch):
+    """Time ``PublicGatewayService._fetch_url`` (the fetch and its deadline, not the
+    request around it); the dict is filled as it runs so an assertion can quote it."""
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    phases = {}
+    real = pgs.PublicGatewayService._fetch_url
+
+    def timed(self, *a, **k):
+        t = time.monotonic()
+        try:
+            return real(self, *a, **k)
+        finally:
+            phases["fetch"] = round(time.monotonic() - t, 2)
+
+    monkeypatch.setattr(pgs.PublicGatewayService, "_fetch_url", timed)
+    return phases
+
+
 # ══ AC-41-03: a media fetch has a 60 s total limit ═══════════════════════════
 def test_total_limit_constant_is_sixty_seconds():
     from modules.omnichannel.services import public_gateway_service as pgs
@@ -409,6 +429,7 @@ def test_ac_41_03_drip_over_the_total_limit_is_refused(client, session_factory, 
         return httpx.Response(200, headers={"Content-Type": "application/pdf"}, stream=stream, request=request)
 
     rig = _install(monkeypatch, media=drip)
+    phases = _time_fetch(monkeypatch)
     before = _message_count(session_factory, cid)
     url, body = _PATHS[path](phone)
     started = time.monotonic()
@@ -417,7 +438,7 @@ def test_ac_41_03_drip_over_the_total_limit_is_refused(client, session_factory, 
     assert rig.media_calls == 1, "the fetch never happened"
     assert r.status_code == 422, r.text
     assert _error_code(r) == "media_fetch_failed"
-    assert elapsed < 3.0, f"the fetch ran for {elapsed:.1f}s"
+    assert phases["fetch"] < 0.5 + 2.0, f"the fetch ran for {phases['fetch']}s (request {elapsed:.1f}s)"
     assert streams[0].consumed < 40, "the fetch kept reading past the limit"
     assert rig.graph_calls == []
     assert _message_count(session_factory, cid) == before
@@ -429,6 +450,16 @@ def test_ac_41_03_slow_headers_over_the_total_limit_are_refused(client, session_
     headers, cid, _ch = _setup(client, session_factory, phone="+60700700705", token="tkn-live-03")
     monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.5)
     rig = _install(monkeypatch, media=_pdf_media, header_delay=6.0)
+    # work OUTSIDE the fetch (before it starts) is slow on a loaded runner; the fetch
+    # deadline is intact, so a request-wide time bound must not decide this test
+    real_window_open = pgs.messaging_policy.window_open
+
+    def slow_window_open(*args, **kwargs):
+        time.sleep(3.2)
+        return real_window_open(*args, **kwargs)
+
+    monkeypatch.setattr(pgs.messaging_policy, "window_open", slow_window_open)
+    phases = _time_fetch(monkeypatch)
     before = _message_count(session_factory, cid)
     started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700705"), headers=headers)
@@ -436,7 +467,7 @@ def test_ac_41_03_slow_headers_over_the_total_limit_are_refused(client, session_
     assert rig.media_calls == 1
     assert r.status_code == 422, r.text
     assert _error_code(r) == "media_fetch_failed"
-    assert elapsed < 3.0, f"the fetch ran for {elapsed:.1f}s"
+    assert phases["fetch"] < 0.5 + 2.0, f"the fetch ran for {phases['fetch']}s (request {elapsed:.1f}s)"
     assert rig.graph_calls == []
     assert _message_count(session_factory, cid) == before
 
@@ -1019,13 +1050,16 @@ def test_ac_41_03_real_peer_cannot_extend_the_total_limit(client, session_factor
     monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.5)
     url = local_peer(handler)
     body = _media_body(phone, url) if path == "media" else _header_body(phone, url)
+    phases = _time_fetch(monkeypatch)
     started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=body, headers=headers)
     elapsed = time.monotonic() - started
-    print(f"peer-elapsed {peer}/{path} {elapsed:.2f}s of {max_elapsed}s")
+    print(f"peer-elapsed {peer}/{path} fetch {phases.get('fetch')}s request {elapsed:.2f}s of {max_elapsed}s")
     assert r.status_code == 422, f"{r.status_code} {r.text} after {elapsed:.1f}s"
     assert _error_code(r) == "media_fetch_failed", f"{r.text} after {elapsed:.1f}s"
-    assert elapsed < max_elapsed, f"the fetch ran for {elapsed:.1f}s against a 0.5 s limit"
+    assert phases["fetch"] < max_elapsed, (
+        f"the fetch ran for {phases['fetch']}s against a 0.5 s limit (request {elapsed:.1f}s)"
+    )
     assert _message_count(session_factory, cid) == 0
 
 
@@ -1300,6 +1334,53 @@ def _post_media(ac, headers, phone, *, header_path=False, idem=None):
     return ac.post("/api/v1/omnichannel/messages", json=body, headers=h)
 
 
+def _time_gate(monkeypatch):
+    """Record how long the fetch gate took to decide each send: ("entered" | "refused",
+    seconds). The gate never waits, so a refusal is the phase 'the busy answer is
+    immediate' is about; work before it (request handling) is not."""
+    import contextlib
+
+    from app.api_errors import ApiError
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    decisions = []
+    real = pgs._FETCH_GATE.slot
+
+    @contextlib.contextmanager
+    def slot(tenant_id):
+        t = time.monotonic()
+        entered = False
+        try:
+            with real(tenant_id):
+                entered = True
+                decisions.append(("entered", round(time.monotonic() - t, 2)))
+                yield
+        except ApiError:
+            if not entered:
+                decisions.append(("refused", round(time.monotonic() - t, 2)))
+            raise
+
+    monkeypatch.setattr(pgs._FETCH_GATE, "slot", slot)
+    return decisions
+
+
+def _stall_before_gate(monkeypatch, seconds=3.2):
+    """Work BEFORE the fetch gate (target lookup) is slow while ``stall["on"]``: a
+    loaded runner's request handling, with the gate and its limits intact."""
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    stall = {"on": False}
+    real = pgs.PublicGatewayService._resolve_send_target
+
+    def slow(self, *a, **k):
+        if stall["on"]:
+            time.sleep(seconds)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(pgs.PublicGatewayService, "_resolve_send_target", slow)
+    return stall
+
+
 @pytest.mark.parametrize("held_path", ["media", "header"])
 def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeypatch, held_path):
     import threading
@@ -1317,6 +1398,8 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
     hp = held_path == "header"
+    stall = _stall_before_gate(monkeypatch)
+    decisions = _time_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -1334,11 +1417,13 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
                     assert await _wait_for(lambda n=i + 1: len(started) >= n), f"fetch {i + 1} never started"
                     if i == 1:
                         # the tenant is full while the process still has room
+                        stall["on"] = True
                         t0 = time.monotonic()
                         out["third_in_tenant"] = await _post_media(
                             ac, keys["c"], phones[2], header_path=hp, idem="retry-me"
                         )
                         out["third_secs"] = time.monotonic() - t0
+                        stall["on"] = False
                         assert len(started) == 2, "a send over the tenant limit started a fetch"
                 calls_when_full = rig.media_calls
                 out["third_tenant"] = await _post_media(ac, keys3["a"], phones3[0], header_path=hp)
@@ -1362,7 +1447,10 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
     assert [r.status_code for r in out["held"]] == [202] * 4
     third = out["third_in_tenant"]
     assert (third.status_code, _error_code(third)) == (429, "media_fetch_busy")
-    assert out["third_secs"] < 3.0, "the busy answer was not immediate"
+    refused = [secs for kind, secs in decisions if kind == "refused"]
+    assert refused and refused[0] < 3.0, (
+        f"the busy answer was not immediate: gate decisions {decisions}, request {out['third_secs']:.1f}s"
+    )
     other = out["third_tenant"]
     assert (other.status_code, _error_code(other)) == (429, "media_fetch_busy")
     assert out["extra_fetches"] == 0, "a refused send still fetched"
@@ -1461,6 +1549,17 @@ def test_ac_41_04_small_double_compressed_body_is_never_decoded(client, session_
         return out
 
     monkeypatch.setattr(decoders.GZipDecoder, "decode", counting)
+    # work OUTSIDE the refusal (before the fetch starts) is slow on a loaded runner;
+    # the refusal itself is still early, so a request-wide time bound must not decide this
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    real_window_open = pgs.messaging_policy.window_open
+
+    def slow_window_open(*args, **kwargs):
+        time.sleep(3.2)
+        return real_window_open(*args, **kwargs)
+
+    monkeypatch.setattr(pgs.messaging_policy, "window_open", slow_window_open)
 
     def peer(conn, stop):
         conn.sendall(
@@ -1470,11 +1569,13 @@ def test_ac_41_04_small_double_compressed_body_is_never_decoded(client, session_
         conn.sendall(payload)
 
     url = local_peer(peer)
+    phases = _time_fetch(monkeypatch)
     started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700741", url), headers=headers)
+    elapsed = time.monotonic() - started
     assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
     assert decoded[0] == 0, f"{decoded[0]} decoded bytes were produced"
-    assert time.monotonic() - started < 3.0
+    assert phases["fetch"] < 3.0, f"the refusal took {phases['fetch']}s (request {elapsed:.1f}s)"
     assert _message_count(session_factory, cid) == 0
 
 
@@ -1854,6 +1955,7 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
         return url
 
     monkeypatch.setattr(webhook_service, "validate_callback_url", slow_lookup)
+    decisions = _time_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -1864,11 +1966,17 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
                 for i, (key, phone) in enumerate(plan):
                     held.append(asyncio.create_task(_post_media(ac, key, phone)))
                     assert await _wait_for(lambda n=i + 1: len(in_lookup) >= n), f"send {i + 1} never reached the lookup"
-                try:
-                    out["tenant_full"] = await asyncio.wait_for(_post_media(ac, keys["c"], phones[2]), 3.0)
-                    out["process_full"] = await asyncio.wait_for(_post_media(ac, keys3["a"], phones3[0]), 3.0)
-                except asyncio.TimeoutError:
-                    out["queued_into_lookup"] = True
+                # a send over a limit is refused AT THE GATE; one that queued would sit in
+                # the lookup behind the 6 s gates and never reach a gate decision
+                for name, key, phone, n in (
+                    ("tenant_full", keys["c"], phones[2], 5),
+                    ("process_full", keys3["a"], phones3[0], 6),
+                ):
+                    task = asyncio.create_task(_post_media(ac, key, phone))
+                    if not await _wait_for(lambda n=n: len(decisions) >= n):
+                        out["queued_into_lookup"] = True
+                        break
+                    out[name] = await task
                 out["lookups_started"] = len(in_lookup)
                 if "queued_into_lookup" not in out:
                     out["held"] = []
@@ -1881,7 +1989,10 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
         return out
 
     out = asyncio.run(scenario())
-    assert "queued_into_lookup" not in out, "a send over the limit waited in the lookup instead of being refused"
+    assert "queued_into_lookup" not in out, (
+        f"a send over the limit waited in the lookup instead of being refused: gate decisions {decisions}"
+    )
+    assert [kind for kind, _ in decisions] == ["entered"] * 4 + ["refused"] * 2, decisions
     for which in ("tenant_full", "process_full"):
         assert (out[which].status_code, _error_code(out[which])) == (429, "media_fetch_busy"), which
     assert out["lookups_started"] == 4, "a refused send still reached the lookup"
@@ -1927,6 +2038,8 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
     _install(monkeypatch, media=_pdf_media)
     saves = _hold_storage_writes(monkeypatch, gates=gates)
     hp = path == "header"
+    stall = _stall_before_gate(monkeypatch)
+    decisions = _time_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -1936,9 +2049,11 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
                 for i, name in enumerate(["a", "b"]):  # fetched, now waiting to be stored
                     held.append(asyncio.create_task(_post_media(ac, keys[name], phones[i], header_path=hp)))
                     assert await _wait_for(lambda n=i + 1: len(saves) >= n), f"send {i + 1} never reached the store"
+                stall["on"] = True
                 t0 = time.monotonic()
                 out["while_storing"] = await _post_media(ac, keys["c"], phones[2], header_path=hp)
                 out["busy_secs"] = time.monotonic() - t0
+                stall["on"] = False
                 out["held"] = []
                 for i, t in enumerate(held):
                     gates[i].set()
@@ -1952,7 +2067,10 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
     out = asyncio.run(scenario())
     busy = out["while_storing"]
     assert (busy.status_code, _error_code(busy)) == (429, "media_fetch_busy"), "the slot was freed before the store"
-    assert out["busy_secs"] < 3.0
+    refused = [secs for kind, secs in decisions if kind == "refused"]
+    assert refused and refused[0] < 3.0, (
+        f"the busy answer was not immediate: gate decisions {decisions}, request {out['busy_secs']:.1f}s"
+    )
     assert [r.status_code for r in out["held"]] == [202, 202]
     assert out["after_store"].status_code == 202, out["after_store"].text  # the slot is free again
     assert _message_count(session_factory, cids[phones[2]]) == 1

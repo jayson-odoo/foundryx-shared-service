@@ -316,8 +316,14 @@ def _check_address(url: str, budget: float) -> float:
 async def _post_async(
     url: str, content: bytes, headers: Dict[str, str], budget: float
 ) -> _Reply:
+    # Building the transport loads the CA bundle (blocking). Do it off the event
+    # loop, inside the attempt's deadline, so a slow build is abandoned at the
+    # deadline instead of stalling the loop past it.
+    transport = await anyio.to_thread.run_sync(
+        lambda: GuardedTransport(subject="Callback URL"), abandon_on_cancel=True
+    )
     async with httpx.AsyncClient(
-        transport=GuardedTransport(subject="Callback URL"), timeout=budget, follow_redirects=False
+        transport=transport, timeout=budget, follow_redirects=False
     ) as client:
         async with client.stream("POST", url, content=content, headers=headers) as resp:
             if not resp.is_stream_consumed:

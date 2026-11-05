@@ -303,12 +303,41 @@ def _mock_exchange(monkeypatch, body, headers):
     return ha
 
 
+NODE = {}  # filled by _call: seconds from the node's first address check to its answer
+
+
 def _call(ha, **extra):
+    """Run the node. ``NODE["deadline_secs"]`` is the span its deadline covers (the first
+    address check through the answer), without the config rendering before it."""
     cfg = {"method": "GET", "url": "https://x.example/", "timeoutSeconds": "5", **extra}
+    real_check = ha.assert_deliverable
+    t0 = {}
+
+    def timed_check(*a, **k):
+        t0.setdefault("t", time.monotonic())
+        return real_check(*a, **k)
+
+    ha.assert_deliverable = timed_check
     try:
-        return ha.http_request(None, "tenant", cfg, {}), None
-    except ha.ActionError as exc:
-        return None, str(exc)
+        try:
+            return ha.http_request(None, "tenant", cfg, {}), None
+        except ha.ActionError as exc:
+            return None, str(exc)
+    finally:
+        ha.assert_deliverable = real_check
+        NODE["deadline_secs"] = round(time.monotonic() - t0["t"], 2) if t0 else None
+
+
+def _stall_before_deadline(ha, monkeypatch, seconds=1.6):
+    """Rendering the node config (before its deadline starts) is slow: a loaded
+    runner's work outside the timed phase, deadline and limits intact."""
+    real = ha.render_field
+
+    def slow(*args, **kwargs):
+        time.sleep(seconds)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ha, "render_field", slow)
 
 
 def test_ac_38_136_gzip_bomb_is_bounded_by_the_cap(monkeypatch, decoded_bytes):
@@ -406,11 +435,12 @@ def test_ac_38_136_slow_status_line_and_headers_hit_the_deadline(tmp_path, monke
     real_blocked = ug._is_blocked_ip
     monkeypatch.setattr(ug, "_is_blocked_ip", lambda ip: False if str(ip) == "127.0.0.1" else real_blocked(ip))
     monkeypatch.setattr(ha, "GuardedTransport", lambda *a, **k: ug.GuardedTransport(verify=False))
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://127.0.0.1:{port}/", timeoutSeconds="1")
     elapsed = time.monotonic() - started
     srv.close()
-    assert elapsed < 1 + 1.5, f"the node took {elapsed:.1f}s with a 1s deadline"
+    assert NODE["deadline_secs"] < 1 + 1.5, f"the node deadline window took {NODE['deadline_secs']}s with a 1s deadline (call {elapsed:.1f}s)"
     assert out is None and err, "a response that outlives the deadline fails the node"
 
 
@@ -527,11 +557,12 @@ def test_ac_38_136_deadline_covers_connect_to_many_resolved_addresses(monkeypatc
 
     _resolver(monkeypatch, MANY, [[f"93.184.216.{i}" for i in range(10, 16)]])
     attempts = _stalling_connects(monkeypatch)
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
     elapsed = time.monotonic() - started
     assert out is None and err, "the node fails when no address connects in time"
-    assert elapsed < 2.5, f"connect phase took {elapsed:.1f}s with a 1s deadline"
+    assert NODE["deadline_secs"] < 2.5, f"connect phase took {NODE['deadline_secs']}s with a 1s deadline (call {elapsed:.1f}s)"
     assert len({a for a in attempts if isinstance(a, str)}) <= 4, f"more than 4 addresses tried: {attempts}"
 
 
@@ -548,11 +579,12 @@ def test_ac_38_136_deadline_covers_a_stalled_resolver(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", slow)
     attempts = _stalling_connects(monkeypatch)
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
     elapsed = time.monotonic() - started
     assert out is None and err
-    assert elapsed < 2.5, f"name resolution held the node for {elapsed:.1f}s with a 1s deadline"
+    assert NODE["deadline_secs"] < 2.5, f"name resolution held the node for {NODE['deadline_secs']}s with a 1s deadline (call {elapsed:.1f}s)"
 
 
 # -- review round 2b: a blackholed first address must not lend the second one a fresh deadline --
@@ -609,10 +641,11 @@ def test_ac_38_136_deadline_across_a_blackholed_first_address_closes_the_second_
     monkeypatch.setattr(socket, "create_connection", create)
     monkeypatch.setattr(ug, "_is_blocked_ip", lambda ip: False if str(ip) == "127.0.0.1" else real_blocked(ip))
     monkeypatch.setattr(ha, "GuardedTransport", lambda *a, **k: ug.GuardedTransport(verify=False))
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{host}:{port}/", timeoutSeconds="1")
     elapsed = time.monotonic() - started
-    assert elapsed < 2.5, f"the node took {elapsed:.1f}s with a 1s deadline across two addresses"
+    assert NODE["deadline_secs"] < 2.5, f"the node took {NODE['deadline_secs']}s with a 1s deadline across two addresses (call {elapsed:.1f}s)"
     assert out is None and err, "a response that outlives the deadline fails the node"
     assert blackhole in attempts, "the blackhole address was tried first"
     assert server_saw_close.wait(2.0), "the second connection was left open and dripping"
@@ -635,6 +668,7 @@ def test_ac_38_136_address_cap_holds_when_every_connect_fails_fast(monkeypatch):
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="10")
     assert out is None and err
+    # hang guard only: a roomy 10 s deadline, the bound just proves the 4-address cap stops a refuse loop
     assert time.monotonic() - started < 5
     assert 1 <= len(set(attempts)) <= 4, f"addresses attempted: {attempts}"
 
@@ -648,8 +682,10 @@ def test_ac_38_136_each_connect_attempt_is_clamped_to_the_time_left(monkeypatch)
     deadline = 2
     slow, hole = "93.184.216.30", "93.184.216.10"
     _resolver(monkeypatch, MANY, [[slow, hole]])
+    attempts = {}  # address -> (start, timeout handed to the connect)
 
     def create(address, timeout=None, *a, **k):
+        attempts[address[0]] = (time.monotonic(), timeout)
         if address[0] == slow:
             time.sleep(0.6 * deadline)
             raise ConnectionRefusedError("test stub: refused late")
@@ -657,11 +693,30 @@ def test_ac_38_136_each_connect_attempt_is_clamped_to_the_time_left(monkeypatch)
         raise socket.timeout("test stub: blackhole")
 
     monkeypatch.setattr(socket, "create_connection", create)
+    # work BEFORE the node's deadline starts (rendering the config) is slow on a loaded
+    # runner; the clamp and the deadline are intact, so it must not fail this test
+    real_render = ha.render_field
+
+    def slow_render(*args, **kwargs):
+        time.sleep(1.0)
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(ha, "render_field", slow_render)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds=str(deadline))
     elapsed = time.monotonic() - started
     assert out is None and err
-    assert elapsed < deadline + 0.6, f"the node took {elapsed:.1f}s with a {deadline}s deadline"
+    # The clamp itself, from the connect's own clock (a loaded runner slows both
+    # attempts alike, so this does not depend on CI speed): the blackholed address
+    # was handed no more than what was left of the deadline when it started, never
+    # a fresh full step. Without the clamp it gets the whole 2 s after 1.2 s spent.
+    first_start, _ = attempts[slow]
+    hole_start, hole_timeout = attempts[hole]
+    left = deadline - (hole_start - first_start)
+    assert hole_timeout is not None and hole_timeout <= left + 0.1, (
+        f"the second attempt was given {hole_timeout}s with {left:.2f}s of the {deadline}s deadline left "
+        f"(node call {elapsed:.1f}s)"
+    )
 
 
 def test_ac_38_136_connect_time_resolution_is_bounded_by_the_deadline(monkeypatch):
@@ -681,9 +736,10 @@ def test_ac_38_136_connect_time_resolution_is_bounded_by_the_deadline(monkeypatc
 
     monkeypatch.setattr(socket, "getaddrinfo", hang_after_first)
     attempts = _stalling_connects(monkeypatch)
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
     elapsed = time.monotonic() - started
     assert out is None and err
     assert calls["n"] >= 2, "the connect-time lookup did not happen, so this proves nothing"
-    assert elapsed < 2.5, f"connect-time resolution held the node for {elapsed:.1f}s with a 1s deadline"
+    assert NODE["deadline_secs"] < 2.5, f"connect-time resolution held the node for {NODE['deadline_secs']}s with a 1s deadline (call {elapsed:.1f}s)"

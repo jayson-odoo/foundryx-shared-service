@@ -431,6 +431,19 @@ def test_ac_p_41_changelog_note_managers_only(setup):
 # ── F. idea page ──────────────────────────────────────────────────────────────
 
 
+def _published_text(detail):
+    """Every published field except the generated `id` (a random uuid that can contain any digits)."""
+    import json
+
+    return json.dumps({k: v for k, v in detail.items() if k != "id"})
+
+
+def test_ac_p_50_the_phone_check_sees_a_leak_in_a_checked_field():
+    # kill: the real digits in a checked field must be caught by the id-stripped text
+    assert "6789" in _published_text({"id": "x", "submitterFirstName": "Aiman +60123456789"})
+    assert "6789" not in _published_text({"id": "00000000-6789-4000-8000-000000000601"})
+
+
 def test_ac_p_50_detail_shape_no_pii(setup):
     s = setup
     hc = _crm_session(s, sub="crm-sales-5")
@@ -444,10 +457,30 @@ def test_ac_p_50_detail_shape_no_pii(setup):
         assert k in d, k
     for k in ("proposedSolution", "impact", "department", "rawText", "submitterContactId", "statusToken"):
         assert k not in d, k
-    assert "6789" not in res.text  # a phone-shaped submitter name is never published
+    assert "6789" not in _published_text(d)  # a phone-shaped submitter name is never published
     assert d["isMine"] is True
     assert [t["label"] for t in d["timeline"]] == ["Under review", "Planned", "In progress", "Complete"]
     assert [t["state"] for t in d["timeline"]] == ["current", "upcoming", "upcoming", "upcoming"]
+
+
+def test_ac_p_50_the_phone_check_holds_when_the_generated_id_contains_the_digits(setup):
+    """The idea id is a random uuid: the phone-digit check must not trip when the id
+    happens to contain the needle (forced here so the chance match is certain)."""
+    from modules.ideation.models import Idea
+
+    s = setup
+    hc = _crm_session(s, sub="crm-sales-5")
+    own = _idea(s, 601, crm_user="crm-sales-5", submitter_name="Aiman +60123456789")
+    forced = "00000000-6789-4000-8000-000000000601"
+    db = s["factory"]()
+    try:
+        db.query(Idea).filter(Idea.id == own).update({Idea.id: forced})
+        db.commit()
+    finally:
+        db.close()
+    res = s["client"].get(f"/portal/ideas/{forced}", headers=hc)
+    assert res.status_code == 200, res.text
+    assert "6789" not in _published_text(res.json())  # a phone-shaped submitter name is never published
 
 
 def test_ac_p_51_vote_toggle_distinct_principals(setup):
