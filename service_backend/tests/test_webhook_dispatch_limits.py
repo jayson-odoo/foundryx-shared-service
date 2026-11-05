@@ -144,6 +144,18 @@ def _lower_deadline(monkeypatch):
     monkeypatch.setattr(wd, "DELIVERY_DEADLINE_SECONDS", LOW_DEADLINE, raising=False)
 
 
+def _stall_after_attempt(monkeypatch, seconds=3.2):
+    """The activity write after the attempt is slow: a loaded runner's DB and
+    request work, outside the deadline window, with the deadline itself intact."""
+    real = wd._record_webhook_activity
+
+    def slow(*a, **k):
+        time.sleep(seconds)
+        return real(*a, **k)
+
+    monkeypatch.setattr(wd, "_record_webhook_activity", slow)
+
+
 # ── AC-51-01 ────────────────────────────────────────────────────────────────
 def test_ac_51_01_default_deadline_is_ten_seconds():
     assert wd.DELIVERY_DEADLINE_SECONDS == 10
@@ -162,19 +174,64 @@ def test_ac_51_01_slow_trickle_ends_at_the_total_deadline(
             i += 1
             time.sleep(0.5)
 
+    _stall_after_attempt(monkeypatch)
+    phases = _time_phases(monkeypatch)
     _lower_deadline(monkeypatch)
     srv = local_server(trickle)
     _eid, did = _seed(session_factory, "pn-d-trickle", srv.url)
     started = time.monotonic()
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
-    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {elapsed:.1f}s), phases {phases}"
+    )
     row = _row(session_factory, did)
     assert outcome == "retry"
     assert row.attempt_count == 1
     assert row.error
     assert MARKER.decode() not in row.error
     assert str(srv.port) not in row.error and "127.0.0.1" not in row.error
+
+
+def test_ac_51_01_post_gets_only_the_time_left_after_the_address_check(
+    session_factory, local_server, allow_loopback, monkeypatch
+):
+    """The address check and the POST share ONE deadline: the POST is handed what is
+    left after the check, not a fresh full deadline. Read from the timeout the POST
+    is given (the check's own clock), so it does not depend on CI speed."""
+
+    def silent(conn, stop):
+        _read_request(conn)
+        stop.wait(12)
+
+    spent = 1.0
+    real_check = wd.assert_deliverable
+
+    def slow_check(*a, **k):
+        time.sleep(spent)
+        return real_check(*a, **k)
+
+    given = {}
+    real_post = wd._post
+
+    def spy_post(*a, **k):
+        given["timeout"] = k["timeout"]
+        return real_post(*a, **k)
+
+    _lower_deadline(monkeypatch)
+    monkeypatch.setattr(wd, "assert_deliverable", slow_check)
+    monkeypatch.setattr(wd, "_post", spy_post)
+    phases = _time_phases(monkeypatch)
+    srv = local_server(silent)
+    _eid, did = _seed(session_factory, "pn-d-left", srv.url)
+    outcome = _run(session_factory, did)
+    assert outcome == "retry"
+    left = LOW_DEADLINE - phases["_check_address"]
+    assert given["timeout"] <= left + 0.1, (
+        f"the POST was given {given['timeout']}s with {left:.2f}s of the {LOW_DEADLINE}s deadline left, "
+        f"phases {phases}"
+    )
+    assert phases["_check_address"] >= spent, "control: the address check really used part of the deadline"
 
 
 def test_ac_51_01_server_that_never_answers_ends_at_the_deadline(
@@ -184,13 +241,16 @@ def test_ac_51_01_server_that_never_answers_ends_at_the_deadline(
         _read_request(conn)
         stop.wait(12)
 
+    phases = _time_phases(monkeypatch)
     _lower_deadline(monkeypatch)
     srv = local_server(silent)
     _eid, did = _seed(session_factory, "pn-d-silent", srv.url)
     started = time.monotonic()
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
-    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {elapsed:.1f}s), phases {phases}"
+    )
     row = _row(session_factory, did)
     assert outcome == "retry"
     assert row.attempt_count == 1 and row.response_status is None
@@ -390,6 +450,7 @@ def test_ac_51_01_slow_phase_ends_at_deadline_leaves_no_thread_and_closes(
     make, session_factory, local_server, allow_loopback, monkeypatch
 ):
     state = {"closed": False}
+    phases = _time_phases(monkeypatch)
     _lower_deadline(monkeypatch)
     srv = local_server(make(state))
     before = set(threading.enumerate())
@@ -397,7 +458,9 @@ def test_ac_51_01_slow_phase_ends_at_deadline_leaves_no_thread_and_closes(
     started = time.monotonic()
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
-    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {elapsed:.1f}s), phases {phases}"
+    )
     assert outcome == "retry"
     row = _row(session_factory, did)
     assert row.attempt_count == 1
@@ -448,6 +511,8 @@ def test_ac_51_01_slow_address_check_counts_inside_the_deadline(session_factory,
     def quick(request):
         return httpx.Response(200, content=b"ok")
 
+    _stall_after_attempt(monkeypatch)
+    phases = _time_phases(monkeypatch)
     _lower_deadline(monkeypatch)
     monkeypatch.setattr(socket, "getaddrinfo", slow_dns)
     monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: httpx.MockTransport(quick))
@@ -455,7 +520,9 @@ def test_ac_51_01_slow_address_check_counts_inside_the_deadline(session_factory,
     started = time.monotonic()
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
-    assert elapsed < LOW_DEADLINE + 1.5, f"attempt took {elapsed:.1f}s"
+    assert phases["window"] < LOW_DEADLINE + 1.5, (
+        f"the deadline window took {phases['window']}s (attempt {elapsed:.1f}s), phases {phases}"
+    )
     assert outcome == "retry"
     assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
         seconds=wd.DELIVERY_DEADLINE_SECONDS
@@ -580,17 +647,26 @@ def _slow_head_body(state):
 
 def _time_phases(monkeypatch):
     """Wrap the three phases of one attempt with a monotonic clock; the dict
-    is filled as they run, so a failing assertion can say which phase stalled."""
+    is filled as they run, so a failing assertion can say which phase stalled.
+    ``window`` is the span the delivery deadline covers (address check through the
+    POST), without the DB work and activity write around it."""
     phases = {}
+    start = {}
     for name in ("_check_address", "_post", "_record_webhook_activity"):
         real = getattr(wd, name)
 
         def timed(*a, _real=real, _name=name, **k):
             t = time.monotonic()
+            if _name == "_check_address":
+                start.setdefault("t", t)
             try:
                 return _real(*a, **k)
             finally:
-                phases[_name] = round(time.monotonic() - t, 2)
+                now = time.monotonic()
+                phases[_name] = round(now - t, 2)
+                if _name != "_record_webhook_activity":
+                    # the deadline window: address check start .. end of the last network phase
+                    phases["window"] = round(now - start["t"], 2)
 
         monkeypatch.setattr(wd, name, timed)
     return phases
@@ -623,8 +699,8 @@ def test_ac_51_01_connect_that_completes_after_the_deadline_sends_nothing(
         started = time.monotonic()
         outcome = _run(session_factory, did)
         ended = time.monotonic()
-        assert ended - started < LOW_DEADLINE + 2.0, (
-            f"attempt took {ended - started:.1f}s, phases {phases}"
+        assert phases["window"] < LOW_DEADLINE + 2.0, (
+            f"the deadline window took {phases['window']}s (attempt {ended - started:.1f}s), phases {phases}"
         )
         assert phases["_post"] < LOW_DEADLINE + 1.0, f"the post alone took {phases['_post']:.1f}s, phases {phases}"
         assert outcome == "retry"
@@ -652,13 +728,17 @@ def test_ac_51_01_tls_handshake_stall_ends_at_the_deadline(
 
     srv = local_server(stall)
     dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")])
+    _stall_after_attempt(monkeypatch)
+    phases = _time_phases(monkeypatch)
     _lower_deadline(monkeypatch)
     before = set(threading.enumerate())
     _eid, did = _seed(session_factory, "pn-d-hs", f"https://{NAME}:{srv.port}/hook")
     started = time.monotonic()
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
-    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {elapsed:.1f}s), phases {phases}"
+    )
     assert outcome == "retry"
     assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
         seconds=wd.DELIVERY_DEADLINE_SECONDS
@@ -676,12 +756,15 @@ def test_ac_51_01_stalled_second_lookup_sends_nothing_after_the_attempt(
     # call 0 is the address check (fast); the connect-time lookup stalls past the deadline
     dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")], stall=lambda n: 0.0 if n == 0 else STALL)
     _lower_deadline(monkeypatch)
+    phases = _time_phases(monkeypatch)
     before = set(threading.enumerate())
     _eid, did = _seed(session_factory, "pn-d-lookup", f"https://{NAME}:{srv.port}/hook")
     started = time.monotonic()
     outcome = _run(session_factory, did)
     ended = time.monotonic()
-    assert ended - started < LOW_DEADLINE + 2.0, f"attempt took {ended - started:.1f}s"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {ended - started:.1f}s), phases {phases}"
+    )
     assert outcome == "retry"
     time.sleep(started + STALL + 1.5 - time.monotonic())  # the lookup has finished by now
     late = [round(t - ended, 2) for t in state["requests"] if t and t > ended]
@@ -771,13 +854,16 @@ def test_ac_51_01_deadline_holds_when_the_first_cancel_is_swallowed(
 ):
     state = {"closed": False}
     swallowed = _swallow_first_cancel(monkeypatch)
+    phases = _time_phases(monkeypatch)
     _lower_deadline(monkeypatch)
     srv = local_server(_body_trickle(state))
     _eid, did = _seed(session_factory, "pn-d-lostcancel", srv.url)
     started = time.monotonic()
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
-    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {elapsed:.1f}s), phases {phases}"
+    )
     assert outcome == "retry"
     assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
         seconds=wd.DELIVERY_DEADLINE_SECONDS
@@ -851,6 +937,7 @@ def test_ac_51_01_media_fetch_deadline_holds_when_the_first_cancel_is_swallowed(
     with pytest.raises(ApiError):
         svc._fetch_url(f"https://{NAME}:{srv.port}/media")
     elapsed = time.monotonic() - started
+    # the call IS the timed phase (no request or DB work around it)
     assert elapsed < LOW_DEADLINE + 2.0, f"media fetch took {elapsed:.1f}s"
     assert swallowed["n"] == 1, "the simulated lost cancel never happened"
 
@@ -881,6 +968,7 @@ def test_ac_51_01_media_fetch_slow_tls_setup_ends_at_the_deadline(
     with pytest.raises(ApiError) as err:
         svc._fetch_url(f"https://{NAME}:{srv.port}/media")
     elapsed = time.monotonic() - started
+    # the call IS the timed phase (no request or DB work around it)
     assert elapsed < 1.0 + 2.0, f"media fetch took {elapsed:.1f}s"
     assert err.value.code == "media_fetch_failed"
     assert err.value.message == pgs._FETCH_FAILED_TEXT
@@ -961,7 +1049,9 @@ def test_ac_51_01_slow_tls_setup_ends_at_the_deadline(
     started = time.monotonic()
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
-    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s, phases {phases}"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {elapsed:.1f}s), phases {phases}"
+    )
     assert phases["_post"] < LOW_DEADLINE + 1.0, f"the post alone took {phases['_post']:.1f}s, phases {phases}"
     assert outcome == "retry"
     assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
