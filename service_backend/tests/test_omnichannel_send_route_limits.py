@@ -379,6 +379,25 @@ def test_ac_41_01_multipart_send_leaves_the_loop_free(client, session_factory, m
     assert out.ticks_during >= 1, "the loop made no progress while the upload was held"
 
 
+def _time_fetch(monkeypatch):
+    """Time ``PublicGatewayService._fetch_url`` (the fetch and its deadline, not the
+    request around it); the dict is filled as it runs so an assertion can quote it."""
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    phases = {}
+    real = pgs.PublicGatewayService._fetch_url
+
+    def timed(self, *a, **k):
+        t = time.monotonic()
+        try:
+            return real(self, *a, **k)
+        finally:
+            phases["fetch"] = round(time.monotonic() - t, 2)
+
+    monkeypatch.setattr(pgs.PublicGatewayService, "_fetch_url", timed)
+    return phases
+
+
 # ══ AC-41-03: a media fetch has a 60 s total limit ═══════════════════════════
 def test_total_limit_constant_is_sixty_seconds():
     from modules.omnichannel.services import public_gateway_service as pgs
@@ -409,6 +428,7 @@ def test_ac_41_03_drip_over_the_total_limit_is_refused(client, session_factory, 
         return httpx.Response(200, headers={"Content-Type": "application/pdf"}, stream=stream, request=request)
 
     rig = _install(monkeypatch, media=drip)
+    phases = _time_fetch(monkeypatch)
     before = _message_count(session_factory, cid)
     url, body = _PATHS[path](phone)
     started = time.monotonic()
@@ -417,7 +437,7 @@ def test_ac_41_03_drip_over_the_total_limit_is_refused(client, session_factory, 
     assert rig.media_calls == 1, "the fetch never happened"
     assert r.status_code == 422, r.text
     assert _error_code(r) == "media_fetch_failed"
-    assert elapsed < 3.0, f"the fetch ran for {elapsed:.1f}s"
+    assert phases["fetch"] < 0.5 + 2.0, f"the fetch ran for {phases['fetch']}s (request {elapsed:.1f}s)"
     assert streams[0].consumed < 40, "the fetch kept reading past the limit"
     assert rig.graph_calls == []
     assert _message_count(session_factory, cid) == before
@@ -429,6 +449,16 @@ def test_ac_41_03_slow_headers_over_the_total_limit_are_refused(client, session_
     headers, cid, _ch = _setup(client, session_factory, phone="+60700700705", token="tkn-live-03")
     monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.5)
     rig = _install(monkeypatch, media=_pdf_media, header_delay=6.0)
+    # work OUTSIDE the fetch (before it starts) is slow on a loaded runner; the fetch
+    # deadline is intact, so a request-wide time bound must not decide this test
+    real_window_open = pgs.messaging_policy.window_open
+
+    def slow_window_open(*args, **kwargs):
+        time.sleep(3.2)
+        return real_window_open(*args, **kwargs)
+
+    monkeypatch.setattr(pgs.messaging_policy, "window_open", slow_window_open)
+    phases = _time_fetch(monkeypatch)
     before = _message_count(session_factory, cid)
     started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700705"), headers=headers)
@@ -436,7 +466,7 @@ def test_ac_41_03_slow_headers_over_the_total_limit_are_refused(client, session_
     assert rig.media_calls == 1
     assert r.status_code == 422, r.text
     assert _error_code(r) == "media_fetch_failed"
-    assert elapsed < 3.0, f"the fetch ran for {elapsed:.1f}s"
+    assert phases["fetch"] < 0.5 + 2.0, f"the fetch ran for {phases['fetch']}s (request {elapsed:.1f}s)"
     assert rig.graph_calls == []
     assert _message_count(session_factory, cid) == before
 
@@ -1019,13 +1049,16 @@ def test_ac_41_03_real_peer_cannot_extend_the_total_limit(client, session_factor
     monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.5)
     url = local_peer(handler)
     body = _media_body(phone, url) if path == "media" else _header_body(phone, url)
+    phases = _time_fetch(monkeypatch)
     started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=body, headers=headers)
     elapsed = time.monotonic() - started
-    print(f"peer-elapsed {peer}/{path} {elapsed:.2f}s of {max_elapsed}s")
+    print(f"peer-elapsed {peer}/{path} fetch {phases.get('fetch')}s request {elapsed:.2f}s of {max_elapsed}s")
     assert r.status_code == 422, f"{r.status_code} {r.text} after {elapsed:.1f}s"
     assert _error_code(r) == "media_fetch_failed", f"{r.text} after {elapsed:.1f}s"
-    assert elapsed < max_elapsed, f"the fetch ran for {elapsed:.1f}s against a 0.5 s limit"
+    assert phases["fetch"] < max_elapsed, (
+        f"the fetch ran for {phases['fetch']}s against a 0.5 s limit (request {elapsed:.1f}s)"
+    )
     assert _message_count(session_factory, cid) == 0
 
 
@@ -1461,6 +1494,17 @@ def test_ac_41_04_small_double_compressed_body_is_never_decoded(client, session_
         return out
 
     monkeypatch.setattr(decoders.GZipDecoder, "decode", counting)
+    # work OUTSIDE the refusal (before the fetch starts) is slow on a loaded runner;
+    # the refusal itself is still early, so a request-wide time bound must not decide this
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    real_window_open = pgs.messaging_policy.window_open
+
+    def slow_window_open(*args, **kwargs):
+        time.sleep(3.2)
+        return real_window_open(*args, **kwargs)
+
+    monkeypatch.setattr(pgs.messaging_policy, "window_open", slow_window_open)
 
     def peer(conn, stop):
         conn.sendall(
@@ -1470,11 +1514,13 @@ def test_ac_41_04_small_double_compressed_body_is_never_decoded(client, session_
         conn.sendall(payload)
 
     url = local_peer(peer)
+    phases = _time_fetch(monkeypatch)
     started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700741", url), headers=headers)
+    elapsed = time.monotonic() - started
     assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
     assert decoded[0] == 0, f"{decoded[0]} decoded bytes were produced"
-    assert time.monotonic() - started < 3.0
+    assert phases["fetch"] < 3.0, f"the refusal took {phases['fetch']}s (request {elapsed:.1f}s)"
     assert _message_count(session_factory, cid) == 0
 
 
