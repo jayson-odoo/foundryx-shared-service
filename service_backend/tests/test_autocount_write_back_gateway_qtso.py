@@ -680,6 +680,27 @@ def test_ac_57_61_write_capabilities_unknown_company_404_and_write_disabled_comp
     assert body.status_code == 200
     items = body.json() if isinstance(body.json(), list) else body.json()["capabilities"]
     assert items and all(i["enabled"] is False and i["reasonCode"] == "WRITE_DISABLED" for i in items)
+    assert body.json()["book"] is None  # no write connection = no book SS would write to
+
+
+def test_ss_writecap_book_names_the_book_ss_writes_to(client, gw):
+    """SS-WRITECAP-BOOK: the CRM keys orders ``{book}:{DocKey}`` and must refuse an
+    Update / Cancel whose book is not the one SS writes to for this company."""
+    r = client.get(f"{PREFIX}/write-capabilities?companyCode=SRT", headers=_hdr(gw.plain))
+    assert r.status_code == 200, r.text
+    assert r.json()["book"] == "db3"
+
+
+def test_ss_writecap_book_is_null_when_the_connection_names_a_refused_book(client, gw):
+    from tests.test_autocount_write_back_service import DB1
+
+    # DB1 shares the pinned allowed host, so the refusal comes from the BOOK, not the host.
+
+    gw.h.company.write_connection_id = gw.h._connection(DB1, DEFAULT_TENANT_ID).id
+    gw.db.commit()
+    body = client.get(f"{PREFIX}/write-capabilities?companyCode=SRT", headers=_hdr(gw.plain)).json()
+    assert body["book"] is None and "db1" not in str(body)  # a refused book is never named (AC-57-47)
+    assert all(i["reasonCode"] == "WRITE_NOT_ALLOWED" for i in body["capabilities"])
 
 
 # ---- hygiene -------------------------------------------------------------------------------------------------------------------

@@ -803,6 +803,14 @@ class OperationService:
 
     # ── gateway helpers (plan 57 S6) ─────────────────────────────────────────
 
+    def write_book(self, company: AcCompany) -> Optional[str]:
+        """The AutoCount book (``/api/<book>``) SS writes to for this company, or
+        None when writes are off or the connection names a book off the allowlist
+        (a refused book is never named, AC-57-47). Lets a consumer refuse an edit of
+        a document keyed to another book (SS-WRITECAP-BOOK)."""
+        base_url, _ = self.prims._resolve_write_base_url(company)
+        return None if base_url is None else guard.assert_write_allowed(base_url)
+
     def capabilities(self, company: AcCompany) -> List[Dict[str, Any]]:
         """Every primitive per kind and every operation, enabled or not and why
         (reads the flags now; no AutoCount call). No usable write connection =
