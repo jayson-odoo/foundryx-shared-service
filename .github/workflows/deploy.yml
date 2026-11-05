@@ -16,7 +16,7 @@ on:
   # their own head on top of the same base, a shared count assertion off by
   # one). Only "Build, push, deploy" and "Notify owner" stay off merge_group
   # (see their own `if:` below): a queue entry only validates the merge
-  # candidate, the deploy belongs to the `push` that lands on main afterward.
+  # candidate. The deploy runs only on workflow_dispatch (batched releases).
   merge_group:
   workflow_dispatch:
     inputs:
@@ -244,7 +244,12 @@ jobs:
         test-backend,
         test-frontend,
       ]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # RELEASES ARE BATCHED (owner ruling 5 Nov 2026: "Don't deploy shared
+    # service on every merge"). A push to main runs the CI jobs above only;
+    # this job runs ONLY on workflow_dispatch (Actions > Run workflow on main),
+    # which crew uses to cut one release over many merges. The head guard
+    # below still refuses a non-head sha unless force_sha is ticked.
+    if: github.event_name == 'workflow_dispatch'
     # ONE prod deploy at a time. Two main pushes a minute apart used to run two
     # blue/green deploys at once (both read the same .active_color and brought
     # up the same standby colour). Queue, never cancel: cancelling a run
@@ -459,7 +464,16 @@ jobs:
   notify-owner:
     name: Notify owner by email
     runs-on: ubuntu-latest
-    needs: [build-and-deploy]
+    needs:
+      [
+        check-migration-heads,
+        lint-conventions,
+        validate-backend,
+        validate-frontend,
+        test-backend,
+        test-frontend,
+        build-and-deploy,
+      ]
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     steps:
       - name: Check SMTP configuration
@@ -479,7 +493,14 @@ jobs:
       - name: Compute notification content
         id: notify
         run: |
-          if [ "${{ needs.build-and-deploy.result }}" = "success" ] && [ "${{ needs.build-and-deploy.outputs.skipped }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # A merge to main never deploys (releases are batched).
+            if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+              echo "subject=❌ Foundryx main CI failed (CI only, not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            else
+              echo "subject=✅ Foundryx main CI passed (CI only, not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "${{ needs.build-and-deploy.result }}" = "success" ] && [ "${{ needs.build-and-deploy.outputs.skipped }}" = "true" ]; then
             echo "subject=⏭️ Foundryx EMS deploy skipped, newer sha owns prod (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           elif [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
             echo "subject=✅ Foundryx EMS deploy succeeded (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"

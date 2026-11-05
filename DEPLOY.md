@@ -3,11 +3,17 @@
 > Shared-service fork (see `PRINCIPLES.md` → "What this is"). Forked from Foundryx EMS; the EMS domain is stripped, each module is a **Service** (first = `omnichannel`). Image/service/host names below may still read "foundryx" - they are the deployment identifiers carried over from the fork; rename per environment as the platform is renamed.
 
 
-Every push to `main` triggers `.github/workflows/deploy.yml`: validate → test →
-build & push images to Docker Hub → SSH into the server →
-`scripts/blue_green_deploy.sh` → verify. PRs run validate + test only (no
-deploy) - `build-and-deploy` `needs` every validate AND test job, so a failing
-suite blocks the deploy the same way a failing build does.
+**Releases are batched: merges land on main; crew dispatches one release.**
+(Owner ruling 5 Nov 2026: "Don't deploy shared service on every merge".) A PR
+and a push to `main` run CI only (migration heads, lint, validate, tests) and
+never deploy; the owner email on a push says "CI only, not deployed". A
+release = Actions > "Build and Deploy Foundryx EMS" > **Run workflow** on
+`main` (`workflow_dispatch`): validate → test → build & push images to Docker
+Hub → SSH into the server → `scripts/blue_green_deploy.sh` → verify.
+`build-and-deploy` `needs` every validate AND test job, so a failing suite
+blocks the release the same way a failing build does. The release deploys
+main's head; dispatching an older ref skips unless **force_sha** is ticked
+(see "Stale-sha skip" below).
 
 ## CI
 
@@ -17,8 +23,9 @@ retired E2E tool - see AGENTS.md), `validate-backend` / `validate-frontend`
 (Docker build + import smoke + `next build`), and `test-backend` / `test-frontend` (the real
 suites: `pytest -q` from `service_backend` against the conftest's in-memory
 SQLite, and `npm run lint && npm test -- --run` from `service_frontend`).
-Only a push to `main` (or `workflow_dispatch`) runs `build-and-deploy`, which
+Only `workflow_dispatch` (a release) runs `build-and-deploy`, which
 `needs` all six - a red test job blocks the deploy exactly like a red build.
+A push to `main` stops after the six gates.
 `test-backend` sets throwaway env (`DATABASE_URL`/`JWT_SECRET`/`FERNET_KEY`/
 `OMNICHANNEL_FERNET_KEY`/`REDIS_URL`) so `app.config.Settings` and
 `app.main` import cleanly; the suite itself never opens a real DB or Redis
@@ -417,7 +424,7 @@ waited for a lock on the same table.
 
 - **Deploys never overlap.** The `build-and-deploy` job carries
   `concurrency: { group: deploy-prod, cancel-in-progress: false }`: a second
-  `main` push queues behind the running deploy and is never cancelled
+  release queues behind the running deploy and is never cancelled
   mid-switch. On the host, `scripts/blue_green_deploy.sh` takes `flock` on
   `.blue_green_deploy.lock` (in the deploy dir, override `DEPLOY_LOCK_FILE`)
   BEFORE reading `.active_color`, so a manual run cannot overlap a CI run
@@ -455,12 +462,11 @@ waited for a lock on the same table.
   `workflow_dispatch` input **force_sha** (default off) bypasses both checks
   (`DEPLOY_FORCE=1` on the host) to deploy the dispatched ref's sha on
   purpose. The queue and the host flock are unchanged.
-  Trade-off (accepted): the pre-check skips whenever the sha is not main's
-  head *at that moment*, even if the head's own run has not deployed yet. If
-  that head run then fails or is cancelled, nothing newer than the previous
-  deploy reaches prod: fix forward (a green head deploys) or dispatch the
-  wanted ref with `force_sha`. The CI step detects an in-lock skip by the
-  exact marker line `DEPLOY_SKIPPED_STALE_SHA`, and a failed ssh deploy still
+  Since releases are batched (dispatch only, top of this file), the guard's
+  job is now: a release dispatched on main deploys main's head; a dispatch of
+  any other ref (or a main that moved while the release queued) skips unless
+  `force_sha` is ticked. The CI step detects an in-lock skip by the exact
+  marker line `DEPLOY_SKIPPED_STALE_SHA`, and a failed ssh deploy still
   fails the step (`set -eo pipefail`) so the retry fires.
 
 ### Module schema drift guard (last line of defence)
