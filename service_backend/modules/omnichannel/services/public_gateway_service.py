@@ -1152,10 +1152,15 @@ class PublicGatewayService:
             return await self._fetch_url_async(safe)
 
     async def _fetch_url_async(self, safe: str) -> bytes:
+        # Building the transport loads the CA bundle (blocking): do it off the event
+        # loop, inside the fetch deadline, so a slow build is abandoned at the deadline.
+        transport = await anyio.to_thread.run_sync(
+            lambda: GuardedAsyncTransport(subject="Callback URL"), abandon_on_cancel=True
+        )
         async with httpx.AsyncClient(
             timeout=15.0,
             follow_redirects=False,
-            transport=GuardedAsyncTransport(subject="Callback URL"),
+            transport=transport,
         ) as client:
             async with client.stream(
                 "GET", safe, headers={"Accept-Encoding": "identity"}
