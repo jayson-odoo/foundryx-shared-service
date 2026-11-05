@@ -1333,6 +1333,36 @@ def _post_media(ac, headers, phone, *, header_path=False, idem=None):
     return ac.post("/api/v1/omnichannel/messages", json=body, headers=h)
 
 
+def _time_gate(monkeypatch):
+    """Record how long the fetch gate took to decide each send: ("entered" | "refused",
+    seconds). The gate never waits, so a refusal is the phase 'the busy answer is
+    immediate' is about; work before it (request handling) is not."""
+    import contextlib
+
+    from app.api_errors import ApiError
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    decisions = []
+    real = pgs._FETCH_GATE.slot
+
+    @contextlib.contextmanager
+    def slot(tenant_id):
+        t = time.monotonic()
+        entered = False
+        try:
+            with real(tenant_id):
+                entered = True
+                decisions.append(("entered", round(time.monotonic() - t, 2)))
+                yield
+        except ApiError:
+            if not entered:
+                decisions.append(("refused", round(time.monotonic() - t, 2)))
+            raise
+
+    monkeypatch.setattr(pgs._FETCH_GATE, "slot", slot)
+    return decisions
+
+
 def _stall_before_gate(monkeypatch, seconds=3.2):
     """Work BEFORE the fetch gate (target lookup) is slow while ``stall["on"]``: a
     loaded runner's request handling, with the gate and its limits intact."""
@@ -1368,6 +1398,7 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
     hp = held_path == "header"
     stall = _stall_before_gate(monkeypatch)
+    decisions = _time_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -1415,7 +1446,10 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
     assert [r.status_code for r in out["held"]] == [202] * 4
     third = out["third_in_tenant"]
     assert (third.status_code, _error_code(third)) == (429, "media_fetch_busy")
-    assert out["third_secs"] < 3.0, "the busy answer was not immediate"
+    refused = [secs for kind, secs in decisions if kind == "refused"]
+    assert refused and refused[0] < 3.0, (
+        f"the busy answer was not immediate: gate decisions {decisions}, request {out['third_secs']:.1f}s"
+    )
     other = out["third_tenant"]
     assert (other.status_code, _error_code(other)) == (429, "media_fetch_busy")
     assert out["extra_fetches"] == 0, "a refused send still fetched"
@@ -1921,6 +1955,7 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
 
     monkeypatch.setattr(webhook_service, "validate_callback_url", slow_lookup)
     stall = _stall_before_gate(monkeypatch)
+    decisions = _time_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -1931,12 +1966,19 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
                 for i, (key, phone) in enumerate(plan):
                     held.append(asyncio.create_task(_post_media(ac, key, phone)))
                     assert await _wait_for(lambda n=i + 1: len(in_lookup) >= n), f"send {i + 1} never reached the lookup"
-                stall["on"] = True
-                try:
-                    out["tenant_full"] = await asyncio.wait_for(_post_media(ac, keys["c"], phones[2]), 3.0)
-                    out["process_full"] = await asyncio.wait_for(_post_media(ac, keys3["a"], phones3[0]), 3.0)
-                except asyncio.TimeoutError:
-                    out["queued_into_lookup"] = True
+                # a send over a limit is refused AT THE GATE; one that queued would sit in
+                # the lookup behind the 6 s gates and never reach a gate decision
+                for name, key, phone, n in (
+                    ("tenant_full", keys["c"], phones[2], 5),
+                    ("process_full", keys3["a"], phones3[0], 6),
+                ):
+                    # the stall covers ONE refused send: two would outlast the 6 s lookup gates
+                    stall["on"] = name == "tenant_full"
+                    task = asyncio.create_task(_post_media(ac, key, phone))
+                    if not await _wait_for(lambda n=n: len(decisions) >= n):
+                        out["queued_into_lookup"] = True
+                        break
+                    out[name] = await task
                 stall["on"] = False
                 out["lookups_started"] = len(in_lookup)
                 if "queued_into_lookup" not in out:
@@ -1950,7 +1992,10 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
         return out
 
     out = asyncio.run(scenario())
-    assert "queued_into_lookup" not in out, "a send over the limit waited in the lookup instead of being refused"
+    assert "queued_into_lookup" not in out, (
+        f"a send over the limit waited in the lookup instead of being refused: gate decisions {decisions}"
+    )
+    assert [kind for kind, _ in decisions] == ["entered"] * 4 + ["refused"] * 2, decisions
     for which in ("tenant_full", "process_full"):
         assert (out[which].status_code, _error_code(out[which])) == (429, "media_fetch_busy"), which
     assert out["lookups_started"] == 4, "a refused send still reached the lookup"
@@ -1997,6 +2042,7 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
     saves = _hold_storage_writes(monkeypatch, gates=gates)
     hp = path == "header"
     stall = _stall_before_gate(monkeypatch)
+    decisions = _time_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -2024,7 +2070,10 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
     out = asyncio.run(scenario())
     busy = out["while_storing"]
     assert (busy.status_code, _error_code(busy)) == (429, "media_fetch_busy"), "the slot was freed before the store"
-    assert out["busy_secs"] < 3.0
+    refused = [secs for kind, secs in decisions if kind == "refused"]
+    assert refused and refused[0] < 3.0, (
+        f"the busy answer was not immediate: gate decisions {decisions}, request {out['busy_secs']:.1f}s"
+    )
     assert [r.status_code for r in out["held"]] == [202, 202]
     assert out["after_store"].status_code == 202, out["after_store"].text  # the slot is free again
     assert _message_count(session_factory, cids[phones[2]]) == 1
