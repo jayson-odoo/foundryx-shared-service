@@ -12,10 +12,12 @@ from typing import Optional, Union
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
+from app.gateway_body_cap import is_multipart
 from app.database import get_db
 
 from ..api_auth import ApiWorkspace, get_api_workspace
@@ -77,6 +79,7 @@ _JSON_BODY_CAP = 256 * 1024
 
 
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+_MULTIPART_MAX_FIELDS = 5  # `payload` + a little slack
 
 
 async def _read_capped_body(request: Request) -> bytes:
@@ -132,8 +135,18 @@ async def send_message(
     svc = PublicGatewayService(db)
     content_type = request.headers.get("content-type", "")
 
-    if content_type.startswith("multipart/"):
-        form = await request.form()
+    if is_multipart(content_type):
+        try:
+            # The send reads one file part and the `payload` part; the cap leaves slack.
+            form = await request.form(max_files=1, max_fields=_MULTIPART_MAX_FIELDS)
+        except StarletteHTTPException as exc:
+            # Starlette words its part and field limits "Too many files/fields ..."
+            too_many = str(exc.detail).startswith("Too many")
+            raise ApiError(
+                422,
+                "invalid_request",
+                "The multipart body has too many parts." if too_many else "The multipart body could not be read.",
+            ) from None
         upload = form.get("file")
         raw = form.get("payload")
         if upload is None or raw is None:

@@ -131,6 +131,16 @@ from app.api_errors import install_api_error_handler  # noqa: E402
 
 install_api_error_handler(app)
 
+# Body size cap for the API-key gateway. Registered BEFORE the activity
+# middleware, so it sits just INSIDE it: the activity row of a refused call is
+# written with its real 422 answer (the cap swallows the disconnect it handed the
+# app, so nothing surfaces as a 500). It stays inside both CORS layers (the 422
+# carries CORS headers) and runs before routing and the key dependency. A call
+# refused on its declared length has no resolved key yet, so it has no row.
+from app.gateway_body_cap import GatewayBodyCapMiddleware  # noqa: E402
+
+app.add_middleware(GatewayBodyCapMiddleware)
+
 # Developer Logs / Integration Activity (sprint-4/12) - logs one inbound_api row
 # per public-gateway request (path-prefix scoped, failure-isolated, records
 # AFTER the response so it never slows/breaks the observed call).
