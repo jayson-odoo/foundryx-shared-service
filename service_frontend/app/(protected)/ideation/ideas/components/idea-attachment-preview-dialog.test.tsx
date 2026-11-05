@@ -76,7 +76,9 @@ describe('idea attachment PDF frame (AC-52-02)', () => {
       await open(upload('scan.pdf'), served(type));
       expect(created[0].type).toBe('application/octet-stream');
       expect(screen.queryByTitle('scan.pdf')).toBeNull();
-      expect(screen.getAllByText('Download').length).toBeGreaterThan(0);
+      // The blob URL is created before React commits the download view: wait
+      // for it (a synchronous getAllByText raced the skeleton on CI run 41943266211).
+      expect((await screen.findAllByText('Download')).length).toBeGreaterThan(0);
     },
   );
 });
