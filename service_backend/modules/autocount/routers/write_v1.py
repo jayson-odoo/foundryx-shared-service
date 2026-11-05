@@ -460,6 +460,6 @@ def get_write_capabilities(
     ops: OperationService = Depends(get_operation_service),
 ) -> JSONResponse:
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
-        return 200, {"capabilities": ops.capabilities(company)}
+        return 200, {"book": ops.write_book(company), "capabilities": ops.capabilities(company)}
 
     return _frame(request, db, b"", "write_capabilities", run, with_body=False)

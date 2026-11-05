@@ -267,9 +267,18 @@ claims, notes) from the old line to the new one. Renumber if another lane lands 
 Reads the switches now; no AutoCount call. Always `200`:
 
 ```json
-{ "capabilities": [ { "op": "create_doc", "kind": "quotations", "enabled": true, "reasonCode": null },
+{ "book": "db3",
+  "capabilities": [ { "op": "create_doc", "kind": "quotations", "enabled": true, "reasonCode": null },
                     { "op": "delete_line", "kind": "sales-orders", "enabled": false, "reasonCode": "VENDOR_UNSUPPORTED" } ] }
 ```
+
+`book` is the AutoCount book (database) SS writes to for this company: the `<book>` of the write
+connection's `/api/<book>` URL (`db3` in the test period; a live book later). It is `null` when there is
+no usable write connection (every entry then reads `WRITE_DISABLED` or `WRITE_NOT_ALLOWED`; a book off the
+write allowlist is never named). A `DocKey` is only unique inside its book: a consumer that keys documents
+`{book}:{DocKey}` (e.g. `db1:12008`) must refuse an edit, add line, delete line or cancel when its book is
+not this `book` (or `book` is `null`), else the `DocKey` would address an unrelated document in the book
+SS writes to. Read it fresh before a write; it changes when the company's write connection changes.
 
 One entry per primitive (`create_doc`, `edit_doc`, `add_line`, `delete_line`, `cancel_doc`) for each
 `kind` in `quotations`, `sales-orders`, `purchase-orders`, `shipping-purchase-orders` (the URL slugs), plus
