@@ -933,5 +933,6 @@ def test_ac_51_01_slow_tls_setup_ends_at_the_deadline(
     assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
         seconds=wd.DELIVERY_DEADLINE_SECONDS
     )
-    time.sleep(1.0)
+    # wait until the abandoned 5 s build has had time to finish and (wrongly) connect
+    time.sleep(max(0.0, 5.5 - (time.monotonic() - started)))
     assert state["requests"] == [], "a request reached the server after the attempt ended"
