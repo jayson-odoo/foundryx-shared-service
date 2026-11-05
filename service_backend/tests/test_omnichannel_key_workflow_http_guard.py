@@ -648,8 +648,10 @@ def test_ac_38_136_each_connect_attempt_is_clamped_to_the_time_left(monkeypatch)
     deadline = 2
     slow, hole = "93.184.216.30", "93.184.216.10"
     _resolver(monkeypatch, MANY, [[slow, hole]])
+    attempts = {}  # address -> (start, timeout handed to the connect)
 
     def create(address, timeout=None, *a, **k):
+        attempts[address[0]] = (time.monotonic(), timeout)
         if address[0] == slow:
             time.sleep(0.6 * deadline)
             raise ConnectionRefusedError("test stub: refused late")
@@ -670,7 +672,17 @@ def test_ac_38_136_each_connect_attempt_is_clamped_to_the_time_left(monkeypatch)
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds=str(deadline))
     elapsed = time.monotonic() - started
     assert out is None and err
-    assert elapsed < deadline + 0.6, f"the node took {elapsed:.1f}s with a {deadline}s deadline"
+    # The clamp itself, from the connect's own clock (a loaded runner slows both
+    # attempts alike, so this does not depend on CI speed): the blackholed address
+    # was handed no more than what was left of the deadline when it started, never
+    # a fresh full step. Without the clamp it gets the whole 2 s after 1.2 s spent.
+    first_start, _ = attempts[slow]
+    hole_start, hole_timeout = attempts[hole]
+    left = deadline - (hole_start - first_start)
+    assert hole_timeout is not None and hole_timeout <= left + 0.1, (
+        f"the second attempt was given {hole_timeout}s with {left:.2f}s of the {deadline}s deadline left "
+        f"(node call {elapsed:.1f}s)"
+    )
 
 
 def test_ac_38_136_connect_time_resolution_is_bounded_by_the_deadline(monkeypatch):
