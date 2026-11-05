@@ -304,6 +304,7 @@ async def _drive_gated(send, gate):
         ticks_before = len(ticks)
         cheap_status = None
         try:
+            # hang guard only (a blocked loop shows as a held step, judged by `gate.left` below)
             cheap = await asyncio.wait_for(ac.get("/"), timeout=5.0)
             cheap_status = cheap.status_code
         except asyncio.TimeoutError:
