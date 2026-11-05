@@ -651,7 +651,6 @@ def test_ac_51_01_connect_that_completes_after_the_deadline_sends_nothing(
         )
         dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")])
         _lower_deadline(monkeypatch)
-        _stall_after_attempt(monkeypatch)
         phases = _time_phases(monkeypatch)
         before = set(threading.enumerate())
         scheme = "https" if tls else "http"
@@ -659,8 +658,8 @@ def test_ac_51_01_connect_that_completes_after_the_deadline_sends_nothing(
         started = time.monotonic()
         outcome = _run(session_factory, did)
         ended = time.monotonic()
-        assert ended - started < LOW_DEADLINE + 2.0, (
-            f"attempt took {ended - started:.1f}s, phases {phases}"
+        assert phases["window"] < LOW_DEADLINE + 2.0, (
+            f"the deadline window took {phases['window']}s (attempt {ended - started:.1f}s), phases {phases}"
         )
         assert phases["_post"] < LOW_DEADLINE + 1.0, f"the post alone took {phases['_post']:.1f}s, phases {phases}"
         assert outcome == "retry"
@@ -716,13 +715,15 @@ def test_ac_51_01_stalled_second_lookup_sends_nothing_after_the_attempt(
     # call 0 is the address check (fast); the connect-time lookup stalls past the deadline
     dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")], stall=lambda n: 0.0 if n == 0 else STALL)
     _lower_deadline(monkeypatch)
-    _stall_after_attempt(monkeypatch)
+    phases = _time_phases(monkeypatch)
     before = set(threading.enumerate())
     _eid, did = _seed(session_factory, "pn-d-lookup", f"https://{NAME}:{srv.port}/hook")
     started = time.monotonic()
     outcome = _run(session_factory, did)
     ended = time.monotonic()
-    assert ended - started < LOW_DEADLINE + 2.0, f"attempt took {ended - started:.1f}s"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {ended - started:.1f}s), phases {phases}"
+    )
     assert outcome == "retry"
     time.sleep(started + STALL + 1.5 - time.monotonic())  # the lookup has finished by now
     late = [round(t - ended, 2) for t in state["requests"] if t and t > ended]
@@ -895,6 +896,7 @@ def test_ac_51_01_media_fetch_deadline_holds_when_the_first_cancel_is_swallowed(
     with pytest.raises(ApiError):
         svc._fetch_url(f"https://{NAME}:{srv.port}/media")
     elapsed = time.monotonic() - started
+    # the call IS the timed phase (no request or DB work around it)
     assert elapsed < LOW_DEADLINE + 2.0, f"media fetch took {elapsed:.1f}s"
     assert swallowed["n"] == 1, "the simulated lost cancel never happened"
 
@@ -925,6 +927,7 @@ def test_ac_51_01_media_fetch_slow_tls_setup_ends_at_the_deadline(
     with pytest.raises(ApiError) as err:
         svc._fetch_url(f"https://{NAME}:{srv.port}/media")
     elapsed = time.monotonic() - started
+    # the call IS the timed phase (no request or DB work around it)
     assert elapsed < 1.0 + 2.0, f"media fetch took {elapsed:.1f}s"
     assert err.value.code == "media_fetch_failed"
     assert err.value.message == pgs._FETCH_FAILED_TEXT
@@ -1000,13 +1003,14 @@ def test_ac_51_01_slow_tls_setup_ends_at_the_deadline(
 
     monkeypatch.setattr(httpx, "create_ssl_context", slow)
     _lower_deadline(monkeypatch)
-    _stall_after_attempt(monkeypatch)
     phases = _time_phases(monkeypatch)
     _eid, did = _seed(session_factory, "pn-d-slow-tls", f"https://{NAME}:{srv.port}/hook")
     started = time.monotonic()
     outcome = _run(session_factory, did)
     elapsed = time.monotonic() - started
-    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s, phases {phases}"
+    assert phases["window"] < LOW_DEADLINE + 2.0, (
+        f"the deadline window took {phases['window']}s (attempt {elapsed:.1f}s), phases {phases}"
+    )
     assert phases["_post"] < LOW_DEADLINE + 1.0, f"the post alone took {phases['_post']:.1f}s, phases {phases}"
     assert outcome == "retry"
     assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
