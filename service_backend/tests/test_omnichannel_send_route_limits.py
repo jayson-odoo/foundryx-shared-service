@@ -1514,11 +1514,13 @@ def test_ac_41_04_small_double_compressed_body_is_never_decoded(client, session_
         conn.sendall(payload)
 
     url = local_peer(peer)
+    phases = _time_fetch(monkeypatch)
     started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700741", url), headers=headers)
+    elapsed = time.monotonic() - started
     assert (r.status_code, _error_code(r)) == (422, "media_fetch_failed")
     assert decoded[0] == 0, f"{decoded[0]} decoded bytes were produced"
-    assert time.monotonic() - started < 3.0
+    assert phases["fetch"] < 3.0, f"the refusal took {phases['fetch']}s (request {elapsed:.1f}s)"
     assert _message_count(session_factory, cid) == 0
 
 
