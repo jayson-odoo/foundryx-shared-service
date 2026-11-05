@@ -44,7 +44,35 @@ def _db_error(cls=IntegrityError, code="23505"):
 # ── AC-47-01: the Sorento sink's chunk commit ───────────────────────────────
 
 
+def _rename_company(session_factory, old, new):
+    """Give the company a chosen id everywhere it is referenced (certain, not chance)."""
+    from sqlalchemy import update
+
+    from modules.autocount.db import AutocountBase
+
+    db = session_factory()
+    try:
+        for table in AutocountBase.metadata.sorted_tables:
+            if "company_id" in table.c:
+                db.execute(update(table).where(table.c.company_id == old).values(company_id=new))
+        company = AutocountBase.metadata.tables[[t for t in AutocountBase.metadata.tables if t.endswith("ac_company")][0]]
+        db.execute(update(company).where(company.c.id == old).values(id=new))
+        db.commit()
+    finally:
+        db.close()
+
+
 def test_ac_47_01_a_chunk_commit_database_error_is_fixed_text_everywhere(session_factory, consumer, monkeypatch):
+    _chunk_commit_error_is_fixed_text(session_factory, monkeypatch)
+
+
+def test_ac_47_01_the_sqlstate_check_holds_when_the_company_id_contains_the_digits(session_factory, consumer, monkeypatch):
+    """The alert link carries the company uuid: a random id holding the SQLSTATE digits must not
+    trip the "no raw database error in the mail" check (forced here so the chance match is certain)."""
+    _chunk_commit_error_is_fixed_text(session_factory, monkeypatch, forced_id="00000000-0000-4000-8000-000023505000")
+
+
+def _chunk_commit_error_is_fixed_text(session_factory, monkeypatch, forced_id=None):
     from modules.autocount.alerts import evaluate_integration_alerts
     from modules.autocount.services.sync_service import SyncService
 
@@ -67,6 +95,9 @@ def test_ac_47_01_a_chunk_commit_database_error_is_fixed_text_everywhere(session
     monkeypatch.setattr(SyncService, "_commit_chunk", failing_commit_chunk)
 
     company_id, _sql_id, engine = _make_rig(session_factory)
+    if forced_id:
+        _rename_company(session_factory, company_id, forced_id)
+        company_id = forced_id
     _insert_rows(engine, _rows(3))
     db = session_factory()
     config = _config_row(db, company_id)
