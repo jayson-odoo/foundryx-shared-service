@@ -403,6 +403,16 @@ class ContactRepository:
             .first()
         )
 
+    def get_reply_target(
+        self, message_id: str, tenant_id: str, contact_id: str
+    ) -> Optional[ConversationMessage]:
+        """One tenant-scoped lookup for a quotable message: it must belong to
+        this contact and not be an internal note. Every miss returns None."""
+        row = self.get_message(message_id, tenant_id)
+        if row is None or row.contact_id != contact_id or row.sender_type == "SYSTEM":
+            return None
+        return row
+
     def get_message_by_external_id(
         self, external_message_id: str, tenant_id: str, *, channel_id: Optional[str] = None
     ) -> Optional[ConversationMessage]:

@@ -3,11 +3,17 @@
 > Shared-service fork (see `PRINCIPLES.md` → "What this is"). Forked from Foundryx EMS; the EMS domain is stripped, each module is a **Service** (first = `omnichannel`). Image/service/host names below may still read "foundryx" - they are the deployment identifiers carried over from the fork; rename per environment as the platform is renamed.
 
 
-Every push to `main` triggers `.github/workflows/deploy.yml`: validate → test →
-build & push images to Docker Hub → SSH into the server →
-`scripts/blue_green_deploy.sh` → verify. PRs run validate + test only (no
-deploy) - `build-and-deploy` `needs` every validate AND test job, so a failing
-suite blocks the deploy the same way a failing build does.
+**Releases are batched: merges land on main; crew dispatches one release.**
+(Owner ruling 5 Nov 2026: "Don't deploy shared service on every merge".) A PR
+and a push to `main` run CI only (migration heads, lint, validate, tests) and
+never deploy; the owner email on a push says "CI only, not deployed". A
+release = Actions > "Build and Deploy Foundryx EMS" > **Run workflow** on
+`main` (`workflow_dispatch`): validate → test → build & push images to Docker
+Hub → SSH into the server → `scripts/blue_green_deploy.sh` → verify.
+`build-and-deploy` `needs` every validate AND test job, so a failing suite
+blocks the release the same way a failing build does. The release deploys
+main's head; dispatching an older ref skips unless **force_sha** is ticked
+(see "Stale-sha skip" below).
 
 ## CI
 
@@ -17,8 +23,9 @@ retired E2E tool - see AGENTS.md), `validate-backend` / `validate-frontend`
 (Docker build + import smoke + `next build`), and `test-backend` / `test-frontend` (the real
 suites: `pytest -q` from `service_backend` against the conftest's in-memory
 SQLite, and `npm run lint && npm test -- --run` from `service_frontend`).
-Only a push to `main` (or `workflow_dispatch`) runs `build-and-deploy`, which
+Only `workflow_dispatch` (a release) runs `build-and-deploy`, which
 `needs` all six - a red test job blocks the deploy exactly like a red build.
+A push to `main` stops after the six gates.
 `test-backend` sets throwaway env (`DATABASE_URL`/`JWT_SECRET`/`FERNET_KEY`/
 `OMNICHANNEL_FERNET_KEY`/`REDIS_URL`) so `app.config.Settings` and
 `app.main` import cleanly; the suite itself never opens a real DB or Redis
@@ -217,7 +224,7 @@ Variable in GitHub and re-run the workflow - never SSH in to hand-edit `.env`.
 
 1. Install Docker + compose plugin. Create the deploy dir (matches `DEPLOY_PATH`
    secret), e.g. `/opt/foundryx-ems`. CI delivers compose + `.env` + the deploy
-   script on first push.
+   script on the first release (Run workflow).
 2. DNS: already done - you reuse the existing `icp-demo.foundryx.my` record. No
    new subdomain needed. Caddy issues TLS for it automatically.
 3. Caddy: the deploy script **owns** a site fragment (`CADDY_SITE_FILE`, default
@@ -251,7 +258,7 @@ Variable in GitHub and re-run the workflow - never SSH in to hand-edit `.env`.
    Replace your old sorento site block with this import (and stop the old
    containers so ports `3001`/`8001` are free).
 4. First deploy: `.active_color` is absent → script starts `blue`, brings up the
-   stack, writes the fragment, reloads Caddy; later pushes flip to green and back.
+   stack, writes the fragment, reloads Caddy; later releases flip to green and back.
    (Manual first run: `IMAGE_TAG=<sha> APP_DOMAIN=icp-demo.foundryx.my
    TLS_EMAIL=you@foundryx.my ./scripts/blue_green_deploy.sh`.)
 
@@ -302,12 +309,20 @@ baked into the frontend image; the script also writes it as `PUBLIC_BASE_URL`),
 
 > Keys left unset render as empty in `.env` (fine for the optional Meta/SMTP
 > blocks - empty = dev-safe/console-log). The required ones (`${VAR:?...}` in
-> compose) will abort the deploy if blank, so set those before the first push.
+> compose) will abort the deploy if blank, so set those before the first release (Run workflow).
 
 ## Rollback
 
-Re-run a previous successful deploy from the Actions tab (it re-pulls that SHA),
-or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
+Re-running an OLD deploy job from the Actions tab no longer rolls back: its
+sha is not main's head, so the stale-sha guard skips it (see "Stale-sha
+skip" below). To roll back on purpose, point a branch or tag at the old
+commit and run the workflow by hand (Actions, "Run workflow", pick that ref,
+tick **force_sha**), or on the server run
+`IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh` (no `DEPLOY_NEWER_SHAS`
+set = no in-lock skip).
+Caveat: a re-run or dispatch of a commit from BEFORE the stale-sha guard
+landed uses that commit's own workflow and script, so it has no guard and
+no `force_sha` input and deploys unconditionally (the old behaviour).
 
 Schema direction on a rollback (no downgrade is ever run automatically):
 
@@ -409,7 +424,7 @@ waited for a lock on the same table.
 
 - **Deploys never overlap.** The `build-and-deploy` job carries
   `concurrency: { group: deploy-prod, cancel-in-progress: false }`: a second
-  `main` push queues behind the running deploy and is never cancelled
+  release queues behind the running deploy and is never cancelled
   mid-switch. On the host, `scripts/blue_green_deploy.sh` takes `flock` on
   `.blue_green_deploy.lock` (in the deploy dir, override `DEPLOY_LOCK_FILE`)
   BEFORE reading `.active_color`, so a manual run cannot overlap a CI run
@@ -426,6 +441,33 @@ waited for a lock on the same table.
   workflow's "Verify public endpoints" step fails unless the active colour's
   `/health` reports exactly `github.sha`. The frontend has no health/version
   route, so it carries no `GIT_SHA`.
+- **Stale-sha skip (SS-DEPLOY-SKIP-STALE).** The queue runs deploys in the
+  order their TESTS finish, not merge order: on 5 Nov 2026 four PRs merged
+  within a minute, c748c240 (newest) deployed, then cf831cb0 (older) finished
+  its tests and deployed over it, rolling prod back. Two checks now stop that:
+  1. Right before the host steps, the job fetches `origin/main` and runs
+     `scripts/deploy_head_guard.sh <github.sha> <main head> <force>`. When the
+     sha is not main's head it logs
+     `skip: <sha> is not main head <head>; newer deploy owns prod`, exits 0,
+     and the sync / deploy / verify steps are skipped (the run is green; the
+     owner email says "skipped"). A failed fetch is a loud failure, never a
+     blind deploy.
+  2. That check is racy, so `blue_green_deploy.sh` re-checks INSIDE the flock:
+     CI passes `DEPLOY_NEWER_SHAS` (every main commit newer than this sha, from
+     `git rev-list`, the host has no git history); if the running
+     `backend_<active>` container's `GIT_SHA` is one of them (exact match), it
+     logs `skip: <sha> is older than the running <sha>; newer deploy owns
+     prod` and exits 0 having pulled, started and swapped nothing. An unknown
+     running sha (first deploy) or a redeploy of the same sha deploys as before.
+  `workflow_dispatch` input **force_sha** (default off) bypasses both checks
+  (`DEPLOY_FORCE=1` on the host) to deploy the dispatched ref's sha on
+  purpose. The queue and the host flock are unchanged.
+  Since releases are batched (dispatch only, top of this file), the guard's
+  job is now: a release dispatched on main deploys main's head; a dispatch of
+  any other ref (or a main that moved while the release queued) skips unless
+  `force_sha` is ticked. The CI step detects an in-lock skip by the exact
+  marker line `DEPLOY_SKIPPED_STALE_SHA`, and a failed ssh deploy still
+  fails the step (`set -eo pipefail`) so the retry fires.
 
 ### Module schema drift guard (last line of defence)
 

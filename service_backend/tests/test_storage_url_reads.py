@@ -2663,3 +2663,163 @@ def test_an_upload_skips_a_connection_with_an_endpoint_with_a_query_or_fragment(
     assert bucket.objects == {}
     assert client_builds == []
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# address shape rules on save, migration start and read
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _long_host(total: int) -> str:
+    """A host of exactly ``total`` characters made only of valid labels."""
+    labels, remaining = [], total - len(".com")
+    while remaining > 0:
+        take = min(63, remaining - (1 if remaining > 63 else 0))
+        labels.append("a" * take)
+        remaining -= take + 1
+    host = ".".join(labels + ["com"])
+    assert len(host) == total and all(len(p) <= 63 for p in host.split("."))
+    return host
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+def test_a_storage_host_longer_than_253_characters_is_refused_on_save(
+    field, client, session_factory, net
+):
+    host = ".".join(["a" * 63] * 5) + ".com"
+    assert len(host) > 253
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, **{field: f"https://{host}"}),
+        headers=_admin(client),
+    )
+    assert res.status_code == 422, res.text
+    assert "must be a valid address" in res.text
+    assert _storage_rows(session_factory) == []
+
+
+@pytest.mark.parametrize("field", ["cdnBaseUrl", "endpointUrl"])
+def test_a_storage_host_of_253_characters_is_saved(field, client, session_factory, net):
+    host = _long_host(253)
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, **{field: f"https://{host}"}),
+        headers=_admin(client),
+    )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://cdn.storage.test/a[b]",
+        "https://cdn.storage.test/a]b",
+        "https://cdn.storage.test/path?x=[1]",
+    ],
+)
+def test_a_bracket_outside_the_host_is_refused_on_save(value, client, session_factory, net):
+    res = client.post(
+        "/integrations/connections",
+        json=_payload(S3_PAYLOAD, cdnBaseUrl=value),
+        headers=_admin(client),
+    )
+    assert res.status_code == 422, res.text
+    assert "must be a valid address" in res.text
+    assert _storage_rows(session_factory) == []
+
+
+def test_a_bracketed_address_host_is_judged_by_the_address_rule_not_the_bracket_rule():
+    from app.services.storage import storage_url_is_plain
+
+    assert storage_url_is_plain("https://[2001:4860:4860::8888]/a")
+    assert not storage_url_is_plain("https://cdn.storage.test/a[b]")
+
+
+def test_a_migration_does_not_start_when_the_new_bucket_config_fails_the_address_check(
+    session_factory, bucket, client_builds, monkeypatch
+):
+    from fastapi import HTTPException
+
+    from app.integrations.s3_provider import S3Provider
+    from app.integrations.base import TestResult
+    from app.models.background_job import BackgroundJob
+    from app.storage_migration.service import StorageMigrationService
+
+    # The probe itself is stubbed to succeed so the save-time address check at
+    # migration start is the only rule that can refuse.
+    monkeypatch.setattr(S3Provider, "test", lambda self, *a, **k: TestResult(ok=True, message="ok"))
+    db = session_factory()
+    current = _connect(db, "https://cdn.storage.test")
+    current_id = current.id
+
+    def start(cdn):
+        return StorageMigrationService(db).start(
+            DEFAULT_TENANT_ID,
+            "actor-1",
+            provider="s3",
+            name="New bucket",
+            new_config={"bucket": "new", "region": "auto", "cdnBaseUrl": cdn},
+            new_credentials={"accessKeyId": "ak2", "secretAccessKey": "sk2"},
+        )
+
+    with pytest.raises(HTTPException) as caught:
+        start("https://cdn.storage.test/a[b]")
+    assert caught.value.status_code == 422
+    db.rollback()
+    check = session_factory()
+    assert check.query(BackgroundJob).filter(BackgroundJob.tenant_id == DEFAULT_TENANT_ID).count() == 0
+    assert [r.id for r in _storage_rows(session_factory)] == [current_id]
+    check.close()
+
+    job = start("https://cdn2.storage.test")
+    assert job is not None
+    db.close()
+
+
+def test_a_migration_does_not_start_when_the_current_row_holds_a_bad_cdn_address(
+    client, session_factory, bucket, client_builds, net
+):
+    from app.models.background_job import BackgroundJob
+
+    net.start(tls=True)
+    db = session_factory()
+    current = _connect(db, "https://cdn.storage.test")
+    current_id = current.id
+    current.config_json = {**current.config_json, "cdnBaseUrl": "https://cdn.storage.test/a[b]"}
+    current.updated_at = datetime.now(timezone.utc) + timedelta(seconds=5)
+    db.commit()
+    storage_module.clear_adapter_cache()
+    res = client.post(
+        "/storage/migrations",
+        json=_migration_body(cdnBaseUrl="https://cdn2.storage.test"),
+        headers=_admin(client),
+    )
+    assert 400 <= res.status_code < 500, res.text
+    check = session_factory()
+    assert check.query(BackgroundJob).filter(BackgroundJob.tenant_id == DEFAULT_TENANT_ID).count() == 0
+    check.close()
+    assert [r.id for r in _storage_rows(session_factory)] == [current_id]
+    db.close()
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        lambda: __import__("botocore.exceptions", fromlist=["x"]).EndpointResolutionError(
+            msg="bad endpoint"
+        ),
+        lambda: __import__("botocore.exceptions", fromlist=["x"]).ParamValidationError(
+            report="bad param"
+        ),
+    ],
+    ids=["EndpointResolutionError", "ParamValidationError"],
+)
+def test_a_read_maps_a_client_library_error_to_a_failed_read(make_error):
+    from app.services.storage import read_object
+
+    class Stub:
+        def resolve_with_ownership(self, key):
+            raise make_error()
+
+    with pytest.raises(StorageReadError):
+        read_object(Stub(), "conn:x:obj.bin")
