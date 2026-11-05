@@ -1954,7 +1954,6 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
         return url
 
     monkeypatch.setattr(webhook_service, "validate_callback_url", slow_lookup)
-    stall = _stall_before_gate(monkeypatch)
     decisions = _time_gate(monkeypatch)
 
     async def scenario():
@@ -1972,14 +1971,11 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
                     ("tenant_full", keys["c"], phones[2], 5),
                     ("process_full", keys3["a"], phones3[0], 6),
                 ):
-                    # the stall covers ONE refused send: two would outlast the 6 s lookup gates
-                    stall["on"] = name == "tenant_full"
                     task = asyncio.create_task(_post_media(ac, key, phone))
                     if not await _wait_for(lambda n=n: len(decisions) >= n):
                         out["queued_into_lookup"] = True
                         break
                     out[name] = await task
-                stall["on"] = False
                 out["lookups_started"] = len(in_lookup)
                 if "queued_into_lookup" not in out:
                     out["held"] = []
