@@ -657,6 +657,15 @@ def test_ac_38_136_each_connect_attempt_is_clamped_to_the_time_left(monkeypatch)
         raise socket.timeout("test stub: blackhole")
 
     monkeypatch.setattr(socket, "create_connection", create)
+    # work BEFORE the node's deadline starts (rendering the config) is slow on a loaded
+    # runner; the clamp and the deadline are intact, so it must not fail this test
+    real_render = ha.render_field
+
+    def slow_render(*args, **kwargs):
+        time.sleep(1.0)
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(ha, "render_field", slow_render)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds=str(deadline))
     elapsed = time.monotonic() - started
