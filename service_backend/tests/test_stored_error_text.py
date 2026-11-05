@@ -44,6 +44,19 @@ def _db_error(cls=IntegrityError, code="23505"):
 # ── AC-47-01: the Sorento sink's chunk commit ───────────────────────────────
 
 
+def _without_generated_ids(text):
+    """The mail minus random uuids (the link carries the company id, which can hold any digits)."""
+    import re
+
+    return re.sub(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", "<id>", text)
+
+
+def test_ac_47_01_the_sqlstate_check_sees_the_code_in_a_text_field():
+    # kill: the real SQLSTATE in a text field is still caught once ids are stripped
+    assert "23505" in _without_generated_ids("Failed runs: 23505 <a href=/c/00000000-0000-4000-8000-000023505000>")
+    assert "23505" not in _without_generated_ids("<a href=/c/00000000-0000-4000-8000-000023505000>")
+
+
 def _rename_company(session_factory, old, new):
     """Give the company a chosen id everywhere it is referenced (certain, not chance)."""
     from sqlalchemy import update
@@ -135,7 +148,7 @@ def _chunk_commit_error_is_fixed_text(session_factory, monkeypatch, forced_id=No
         body = f"{mail.subject}{mail.html_body}{mail.text_body}"
         assert MARKER not in body
         assert "IntegrityError" not in body
-        assert "23505" not in body
+        assert "23505" not in _without_generated_ids(body)
         assert ALERT_EMAIL_SENTENCE in body
     db.close()
 
