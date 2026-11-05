@@ -501,7 +501,7 @@ jobs:
               echo "subject=✅ Foundryx main CI passed (CI only, not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
             fi
           elif [ "${{ needs.build-and-deploy.result }}" = "success" ] && [ "${{ needs.build-and-deploy.outputs.skipped }}" = "true" ]; then
-            echo "subject=⏭️ Foundryx EMS deploy skipped, newer sha owns prod (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            echo "subject=⏭️ Foundryx EMS release skipped, sha is not main head (re-run on main, or force_sha) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           elif [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
             echo "subject=✅ Foundryx EMS deploy succeeded (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           else

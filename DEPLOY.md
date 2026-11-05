@@ -224,7 +224,7 @@ Variable in GitHub and re-run the workflow - never SSH in to hand-edit `.env`.
 
 1. Install Docker + compose plugin. Create the deploy dir (matches `DEPLOY_PATH`
    secret), e.g. `/opt/foundryx-ems`. CI delivers compose + `.env` + the deploy
-   script on first push.
+   script on the first release (Run workflow).
 2. DNS: already done - you reuse the existing `icp-demo.foundryx.my` record. No
    new subdomain needed. Caddy issues TLS for it automatically.
 3. Caddy: the deploy script **owns** a site fragment (`CADDY_SITE_FILE`, default
@@ -258,7 +258,7 @@ Variable in GitHub and re-run the workflow - never SSH in to hand-edit `.env`.
    Replace your old sorento site block with this import (and stop the old
    containers so ports `3001`/`8001` are free).
 4. First deploy: `.active_color` is absent → script starts `blue`, brings up the
-   stack, writes the fragment, reloads Caddy; later pushes flip to green and back.
+   stack, writes the fragment, reloads Caddy; later releases flip to green and back.
    (Manual first run: `IMAGE_TAG=<sha> APP_DOMAIN=icp-demo.foundryx.my
    TLS_EMAIL=you@foundryx.my ./scripts/blue_green_deploy.sh`.)
 
@@ -309,7 +309,7 @@ baked into the frontend image; the script also writes it as `PUBLIC_BASE_URL`),
 
 > Keys left unset render as empty in `.env` (fine for the optional Meta/SMTP
 > blocks - empty = dev-safe/console-log). The required ones (`${VAR:?...}` in
-> compose) will abort the deploy if blank, so set those before the first push.
+> compose) will abort the deploy if blank, so set those before the first release (Run workflow).
 
 ## Rollback
 

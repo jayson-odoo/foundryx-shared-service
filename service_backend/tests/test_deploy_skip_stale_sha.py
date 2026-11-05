@@ -16,6 +16,7 @@ Two guards, red-first:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -203,13 +204,41 @@ def _job_runs_on(job: dict, event: str) -> bool:
     cond = job.get("if")
     if cond is None:
         return True
-    expr = cond.replace("always()", "True").replace("success()", "True")
-    import re
+    expr = cond.replace("always()", "T").replace("success()", "T")
+    expr = re.sub(
+        r"github\.event_name\s*==\s*'([a-z_]+)'",
+        lambda m: "T" if m.group(1) == event else "F",
+        expr,
+    )
+    tokens = re.findall(r"&&|\|\||[TF()]|\S", expr)
+    assert set(tokens) <= {"T", "F", "&&", "||", "(", ")"}, f"unexpected expression: {cond}"
+    return _parse_or(tokens, 0)[0]
 
-    expr = re.sub(r"github\.event_name\s*==\s*'([a-z_]+)'", lambda m: str(m.group(1) == event), expr)
-    expr = expr.replace("&&", " and ").replace("||", " or ")
-    assert re.fullmatch(r"[\sTrueFalsandor()]*", expr), f"unexpected expression: {cond}"
-    return bool(eval(expr))  # noqa: S307 - only True/False/and/or/() survive the check above
+
+# Hand-written recursive-descent evaluator (house line: never eval).
+# or := and ('||' and)* ; and := atom ('&&' atom)* ; atom := T | F | '(' or ')'
+def _parse_or(tok, i):
+    val, i = _parse_and(tok, i)
+    while i < len(tok) and tok[i] == "||":
+        rhs, i = _parse_and(tok, i + 1)
+        val = val or rhs
+    return val, i
+
+
+def _parse_and(tok, i):
+    val, i = _parse_atom(tok, i)
+    while i < len(tok) and tok[i] == "&&":
+        rhs, i = _parse_atom(tok, i + 1)
+        val = val and rhs
+    return val, i
+
+
+def _parse_atom(tok, i):
+    if tok[i] == "(":
+        val, i = _parse_or(tok, i + 1)
+        assert tok[i] == ")", "unbalanced parentheses"
+        return val, i + 1
+    return tok[i] == "T", i + 1
 
 
 def test_a_push_to_main_runs_ci_but_never_the_deploy_job(wf):
@@ -242,5 +271,16 @@ def test_the_owner_email_on_a_push_says_ci_only_not_deployed(wf):
     assert _job_runs_on(notify, "push") and _job_runs_on(notify, "workflow_dispatch")
     assert set(CI_JOBS) <= set(notify["needs"])  # push email reports the CI result
     compute = next(s for s in notify["steps"] if s.get("id") == "notify")["run"]
-    assert "CI only, not deployed" in compute
-    assert "github.event_name" in compute
+    # The CI-only subject must sit in the PUSH branch, not just anywhere.
+    push_branch = compute.split('= "push" ]; then', 1)
+    assert len(push_branch) == 2, "the email step must branch on a push"
+    before_next_branch = push_branch[1].split("elif", 1)[0]
+    assert before_next_branch.count("CI only, not deployed") == 2  # pass + fail subjects
+
+
+def test_the_dispatch_skip_email_does_not_claim_a_newer_deploy(wf):
+    compute = next(
+        s for s in wf["jobs"]["notify-owner"]["steps"] if s.get("id") == "notify"
+    )["run"]
+    assert "newer sha owns prod" not in compute
+    assert "not main head" in compute
