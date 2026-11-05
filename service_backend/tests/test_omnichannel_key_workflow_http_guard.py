@@ -311,6 +311,18 @@ def _call(ha, **extra):
         return None, str(exc)
 
 
+def _stall_before_deadline(ha, monkeypatch, seconds=1.6):
+    """Rendering the node config (before its deadline starts) is slow: a loaded
+    runner's work outside the timed phase, deadline and limits intact."""
+    real = ha.render_field
+
+    def slow(*args, **kwargs):
+        time.sleep(seconds)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ha, "render_field", slow)
+
+
 def test_ac_38_136_gzip_bomb_is_bounded_by_the_cap(monkeypatch, decoded_bytes):
     bomb = gzip.compress(b"\0" * (20 * 1024 * 1024), compresslevel=9)
     assert len(bomb) < CAP
@@ -406,6 +418,7 @@ def test_ac_38_136_slow_status_line_and_headers_hit_the_deadline(tmp_path, monke
     real_blocked = ug._is_blocked_ip
     monkeypatch.setattr(ug, "_is_blocked_ip", lambda ip: False if str(ip) == "127.0.0.1" else real_blocked(ip))
     monkeypatch.setattr(ha, "GuardedTransport", lambda *a, **k: ug.GuardedTransport(verify=False))
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://127.0.0.1:{port}/", timeoutSeconds="1")
     elapsed = time.monotonic() - started
@@ -527,6 +540,7 @@ def test_ac_38_136_deadline_covers_connect_to_many_resolved_addresses(monkeypatc
 
     _resolver(monkeypatch, MANY, [[f"93.184.216.{i}" for i in range(10, 16)]])
     attempts = _stalling_connects(monkeypatch)
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
     elapsed = time.monotonic() - started
@@ -548,6 +562,7 @@ def test_ac_38_136_deadline_covers_a_stalled_resolver(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", slow)
     attempts = _stalling_connects(monkeypatch)
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
     elapsed = time.monotonic() - started
@@ -609,6 +624,7 @@ def test_ac_38_136_deadline_across_a_blackholed_first_address_closes_the_second_
     monkeypatch.setattr(socket, "create_connection", create)
     monkeypatch.setattr(ug, "_is_blocked_ip", lambda ip: False if str(ip) == "127.0.0.1" else real_blocked(ip))
     monkeypatch.setattr(ha, "GuardedTransport", lambda *a, **k: ug.GuardedTransport(verify=False))
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{host}:{port}/", timeoutSeconds="1")
     elapsed = time.monotonic() - started
@@ -702,6 +718,7 @@ def test_ac_38_136_connect_time_resolution_is_bounded_by_the_deadline(monkeypatc
 
     monkeypatch.setattr(socket, "getaddrinfo", hang_after_first)
     attempts = _stalling_connects(monkeypatch)
+    _stall_before_deadline(ha, monkeypatch)
     started = time.monotonic()
     out, err = _call(ha, url=f"https://{MANY}/x", timeoutSeconds="1")
     elapsed = time.monotonic() - started
