@@ -429,6 +429,15 @@ def test_ac_41_03_slow_headers_over_the_total_limit_are_refused(client, session_
     headers, cid, _ch = _setup(client, session_factory, phone="+60700700705", token="tkn-live-03")
     monkeypatch.setattr(pgs, "MEDIA_FETCH_TOTAL_SECONDS", 0.5)
     rig = _install(monkeypatch, media=_pdf_media, header_delay=6.0)
+    # work OUTSIDE the fetch (before it starts) is slow on a loaded runner; the fetch
+    # deadline is intact, so a request-wide time bound must not decide this test
+    real_window_open = pgs.messaging_policy.window_open
+
+    def slow_window_open(*args, **kwargs):
+        time.sleep(3.2)
+        return real_window_open(*args, **kwargs)
+
+    monkeypatch.setattr(pgs.messaging_policy, "window_open", slow_window_open)
     before = _message_count(session_factory, cid)
     started = time.monotonic()
     r = client.post("/api/v1/omnichannel/messages", json=_media_body("+60700700705"), headers=headers)
