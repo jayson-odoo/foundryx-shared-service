@@ -578,6 +578,24 @@ def _slow_head_body(state):
     return body
 
 
+def _time_phases(monkeypatch):
+    """Wrap the three phases of one attempt with a monotonic clock; the dict
+    is filled as they run, so a failing assertion can say which phase stalled."""
+    phases = {}
+    for name in ("_check_address", "_post", "_record_webhook_activity"):
+        real = getattr(wd, name)
+
+        def timed(*a, _real=real, _name=name, **k):
+            t = time.monotonic()
+            try:
+                return _real(*a, **k)
+            finally:
+                phases[_name] = round(time.monotonic() - t, 2)
+
+        monkeypatch.setattr(wd, name, timed)
+    return phases
+
+
 @pytest.mark.parametrize("tls", [False, True], ids=["http", "tls"])
 def test_ac_51_01_connect_that_completes_after_the_deadline_sends_nothing(
     tls, session_factory, local_server, monkeypatch, request
@@ -598,13 +616,17 @@ def test_ac_51_01_connect_that_completes_after_the_deadline_sends_nothing(
         )
         dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")])
         _lower_deadline(monkeypatch)
+        phases = _time_phases(monkeypatch)
         before = set(threading.enumerate())
         scheme = "https" if tls else "http"
         _eid, did = _seed(session_factory, f"pn-d-late-{scheme}", f"{scheme}://{NAME}:{port}/hook")
         started = time.monotonic()
         outcome = _run(session_factory, did)
         ended = time.monotonic()
-        assert ended - started < LOW_DEADLINE + 2.0, f"attempt took {ended - started:.1f}s"
+        assert ended - started < LOW_DEADLINE + 2.0, (
+            f"attempt took {ended - started:.1f}s, phases {phases}"
+        )
+        assert phases["_post"] < LOW_DEADLINE + 1.0, f"the post alone took {phases['_post']:.1f}s, phases {phases}"
         assert outcome == "retry"
         time.sleep(1.0)
         assert _strays(before, dns) == [], "threads still working one second after the attempt"
@@ -879,3 +901,38 @@ def test_ac_51_01_deadline_during_anyio_connect_leaves_no_socket_open(local_serv
         gc.enable()
         gc.collect()
     assert closed_before_gc, "a connection cancelled mid-connect was left open until garbage collection"
+
+
+def test_ac_51_01_slow_tls_setup_ends_at_the_deadline(
+    session_factory, local_server, https_seam, monkeypatch
+):
+    """Building the TLS context is blocking work (CA file read) done per attempt.
+    It must not push one attempt past the total deadline. Each build stalls 5 s,
+    so even a SINGLE build (httpx builds one per client and per guarded
+    transport; the count is an httpx detail) is longer than the 1.5 s deadline
+    plus the 2.0 s margin. Nothing may reach the server after the deadline."""
+    state = {"requests": []}
+    srv = local_server(_logging(state, lambda conn, stop: None), tls=_server_ctx(https_seam))
+    FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")])
+    real = httpx.create_ssl_context
+
+    def slow(*a, **k):
+        time.sleep(5.0)
+        return real(*a, **k)
+
+    monkeypatch.setattr(httpx, "create_ssl_context", slow)
+    _lower_deadline(monkeypatch)
+    phases = _time_phases(monkeypatch)
+    _eid, did = _seed(session_factory, "pn-d-slow-tls", f"https://{NAME}:{srv.port}/hook")
+    started = time.monotonic()
+    outcome = _run(session_factory, did)
+    elapsed = time.monotonic() - started
+    assert elapsed < LOW_DEADLINE + 2.0, f"attempt took {elapsed:.1f}s, phases {phases}"
+    assert phases["_post"] < LOW_DEADLINE + 1.0, f"the post alone took {phases['_post']:.1f}s, phases {phases}"
+    assert outcome == "retry"
+    assert _row(session_factory, did).error == wd.DEADLINE_ERROR.format(
+        seconds=wd.DELIVERY_DEADLINE_SECONDS
+    )
+    # wait until the abandoned 5 s build has had time to finish and (wrongly) connect
+    time.sleep(max(0.0, 5.5 - (time.monotonic() - started)))
+    assert state["requests"] == [], "a request reached the server after the attempt ended"
