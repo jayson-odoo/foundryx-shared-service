@@ -16,9 +16,17 @@ on:
   # their own head on top of the same base, a shared count assertion off by
   # one). Only "Build, push, deploy" and "Notify owner" stay off merge_group
   # (see their own `if:` below): a queue entry only validates the merge
-  # candidate, the deploy belongs to the `push` that lands on main afterward.
+  # candidate. The deploy runs only on workflow_dispatch (batched releases).
   merge_group:
   workflow_dispatch:
+    inputs:
+      force_sha:
+        # SS-DEPLOY-SKIP-STALE: a deploy normally SKIPS when its sha is not
+        # origin/main's head (a queued older run must never roll prod back).
+        # Tick this to deploy the dispatched ref's sha on purpose (rollback).
+        description: "Deploy this sha even if it is not main's head (rollback)"
+        type: boolean
+        default: false
 
 env:
   # Override IMAGE_REPO / RELEASE_TAG via repo Variables if your Docker Hub
@@ -236,7 +244,12 @@ jobs:
         test-backend,
         test-frontend,
       ]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # RELEASES ARE BATCHED (owner ruling 5 Nov 2026: "Don't deploy shared
+    # service on every merge"). A push to main runs the CI jobs above only;
+    # this job runs ONLY on workflow_dispatch (Actions > Run workflow on main),
+    # which crew uses to cut one release over many merges. The head guard
+    # below still refuses a non-head sha unless force_sha is ticked.
+    if: github.event_name == 'workflow_dispatch'
     # ONE prod deploy at a time. Two main pushes a minute apart used to run two
     # blue/green deploys at once (both read the same .active_color and brought
     # up the same standby colour). Queue, never cancel: cancelling a run
@@ -246,6 +259,8 @@ jobs:
       group: deploy-prod
       cancel-in-progress: false
     runs-on: ubuntu-latest
+    outputs:
+      skipped: ${{ steps.outcome.outputs.skipped }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -305,7 +320,24 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts
           chmod 600 ~/.ssh/deploy_known_hosts
 
+      # SS-DEPLOY-SKIP-STALE (5 Nov 2026): the queue above runs deploys one at
+      # a time but in COMPLETION order of their tests, so an older main commit
+      # could deploy after a newer one and roll prod back (cf831cb0 over
+      # c748c240). Skip (exit 0) unless this sha is origin/main's head right
+      # now; workflow_dispatch with force_sha deploys on purpose. The host
+      # script re-checks inside its flock (this check alone is racy).
+      - name: Skip if not main head (stale sha guard)
+        id: head
+        env:
+          FORCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.force_sha }}
+        run: |
+          git fetch --no-tags --quiet --unshallow origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null \
+            || git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+          MAIN_HEAD=$(git rev-parse --verify --quiet refs/remotes/origin/main || true)
+          bash scripts/deploy_head_guard.sh "${{ github.sha }}" "$MAIN_HEAD" "$FORCE_SHA"
+
       - name: Sync compose + deploy script, render .env (retry)
+        if: steps.head.outputs.skip != 'true'
         uses: nick-fields/retry@v3
         env:
           ENV_CONTENT: |
@@ -375,6 +407,7 @@ jobs:
             echo "files synced (see any warnings above)"
 
       - name: Deploy blue/green via Caddy (retry)
+        if: steps.head.outputs.skip != 'true'
         uses: nick-fields/retry@v3
         env:
           APP_DOMAIN: ${{ vars.APP_DOMAIN }}
@@ -386,14 +419,25 @@ jobs:
           timeout_minutes: 18
           max_attempts: 2
           retry_wait_seconds: 15
+          shell: bash
           command: |
+            # -e + pipefail: the retry action runs `bash -c` without -e, so a
+            # failed ssh deploy must stop here (non-zero = retry / red step).
+            set -eo pipefail
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
             O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "cd $D && chmod +x scripts/blue_green_deploy.sh && IMAGE_TAG='${{ github.sha }}' APP_DOMAIN='$APP_DOMAIN' BACKEND_PATH='$BACKEND_PATH' TLS_EMAIL='$TLS_EMAIL' CADDY_SITE_FILE='$CADDY_SITE_FILE' CADDY_CONFIG='$CADDY_CONFIG' ./scripts/blue_green_deploy.sh"
+            # In-lock re-check input: every main commit newer than this sha (hex
+            # shas only, from git). The host skips if the RUNNING backend is one
+            # of them - i.e. a newer deploy won the race after the pre-check.
+            git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main || true
+            NEWER=$(git rev-list "${{ github.sha }}..refs/remotes/origin/main" 2>/dev/null | tr '\n' ' ' || true)
+            ssh $O -p "$P" "$U@$H" "cd $D && chmod +x scripts/blue_green_deploy.sh && DEPLOY_NEWER_SHAS='$NEWER' DEPLOY_FORCE='${{ (github.event_name == 'workflow_dispatch' && inputs.force_sha) && '1' || '0' }}' IMAGE_TAG='${{ github.sha }}' APP_DOMAIN='$APP_DOMAIN' BACKEND_PATH='$BACKEND_PATH' TLS_EMAIL='$TLS_EMAIL' CADDY_SITE_FILE='$CADDY_SITE_FILE' CADDY_CONFIG='$CADDY_CONFIG' ./scripts/blue_green_deploy.sh" | tee "$RUNNER_TEMP/deploy.out"
+            if grep -qx 'DEPLOY_SKIPPED_STALE_SHA' "$RUNNER_TEMP/deploy.out"; then echo "DEPLOY_SKIPPED=1" >> "$GITHUB_ENV"; fi
 
       - name: Verify public endpoints (retry)
+        if: steps.head.outputs.skip != 'true' && env.DEPLOY_SKIPPED != '1'
         uses: nick-fields/retry@v3
         env:
           APP_DOMAIN: ${{ vars.APP_DOMAIN }}
@@ -412,10 +456,24 @@ jobs:
             curl --fail --silent --show-error --output /dev/null "https://$APP_DOMAIN/"
             echo "public HTTPS certificate verified"
 
+      - name: Report deploy outcome
+        id: outcome
+        if: always()
+        run: echo "skipped=${{ steps.head.outputs.skip == 'true' || env.DEPLOY_SKIPPED == '1' }}" >> "$GITHUB_OUTPUT"
+
   notify-owner:
     name: Notify owner by email
     runs-on: ubuntu-latest
-    needs: [build-and-deploy]
+    needs:
+      [
+        check-migration-heads,
+        lint-conventions,
+        validate-backend,
+        validate-frontend,
+        test-backend,
+        test-frontend,
+        build-and-deploy,
+      ]
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     steps:
       - name: Check SMTP configuration
@@ -435,7 +493,16 @@ jobs:
       - name: Compute notification content
         id: notify
         run: |
-          if [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # A merge to main never deploys (releases are batched).
+            if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+              echo "subject=❌ Foundryx main CI failed (CI only, not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            else
+              echo "subject=✅ Foundryx main CI passed (CI only, not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "${{ needs.build-and-deploy.result }}" = "success" ] && [ "${{ needs.build-and-deploy.outputs.skipped }}" = "true" ]; then
+            echo "subject=⏭️ Foundryx EMS release skipped, sha is not main head (re-run on main, or force_sha) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
             echo "subject=✅ Foundryx EMS deploy succeeded (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           else
             echo "subject=❌ Foundryx EMS deploy failed (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"

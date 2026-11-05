@@ -34,6 +34,9 @@ case "$args" in
     cid="${args##* }"
     if [ "$cid" = "cid_backend_green" ]; then echo "$FAKE_BACKEND_STATUS"; else echo running; fi
     exit 0 ;;
+  *"Config.Env"*)
+    [ -n "${FAKE_RUNNING_SHA:-}" ] && echo "GIT_SHA=$FAKE_RUNNING_SHA"
+    echo "PATH=/usr/bin"; exit 0 ;;
   *"inspect --format={{.RestartCount}} "*)
     echo 0; exit 0 ;;
   "logs "*)
