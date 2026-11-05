@@ -1333,6 +1333,23 @@ def _post_media(ac, headers, phone, *, header_path=False, idem=None):
     return ac.post("/api/v1/omnichannel/messages", json=body, headers=h)
 
 
+def _stall_before_gate(monkeypatch, seconds=3.2):
+    """Work BEFORE the fetch gate (target lookup) is slow while ``stall["on"]``: a
+    loaded runner's request handling, with the gate and its limits intact."""
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    stall = {"on": False}
+    real = pgs.PublicGatewayService._resolve_send_target
+
+    def slow(self, *a, **k):
+        if stall["on"]:
+            time.sleep(seconds)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(pgs.PublicGatewayService, "_resolve_send_target", slow)
+    return stall
+
+
 @pytest.mark.parametrize("held_path", ["media", "header"])
 def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeypatch, held_path):
     import threading
@@ -1350,6 +1367,7 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
 
     rig = _install(monkeypatch, media=_pdf_media, on_fetch=hold)
     hp = held_path == "header"
+    stall = _stall_before_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -1367,11 +1385,13 @@ def test_ac_41_10_per_tenant_and_process_limits(client, session_factory, monkeyp
                     assert await _wait_for(lambda n=i + 1: len(started) >= n), f"fetch {i + 1} never started"
                     if i == 1:
                         # the tenant is full while the process still has room
+                        stall["on"] = True
                         t0 = time.monotonic()
                         out["third_in_tenant"] = await _post_media(
                             ac, keys["c"], phones[2], header_path=hp, idem="retry-me"
                         )
                         out["third_secs"] = time.monotonic() - t0
+                        stall["on"] = False
                         assert len(started) == 2, "a send over the tenant limit started a fetch"
                 calls_when_full = rig.media_calls
                 out["third_tenant"] = await _post_media(ac, keys3["a"], phones3[0], header_path=hp)
@@ -1900,6 +1920,7 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
         return url
 
     monkeypatch.setattr(webhook_service, "validate_callback_url", slow_lookup)
+    stall = _stall_before_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -1910,11 +1931,13 @@ def test_ac_41_10_a_send_held_in_the_url_lookup_counts_against_both_limits(clien
                 for i, (key, phone) in enumerate(plan):
                     held.append(asyncio.create_task(_post_media(ac, key, phone)))
                     assert await _wait_for(lambda n=i + 1: len(in_lookup) >= n), f"send {i + 1} never reached the lookup"
+                stall["on"] = True
                 try:
                     out["tenant_full"] = await asyncio.wait_for(_post_media(ac, keys["c"], phones[2]), 3.0)
                     out["process_full"] = await asyncio.wait_for(_post_media(ac, keys3["a"], phones3[0]), 3.0)
                 except asyncio.TimeoutError:
                     out["queued_into_lookup"] = True
+                stall["on"] = False
                 out["lookups_started"] = len(in_lookup)
                 if "queued_into_lookup" not in out:
                     out["held"] = []
@@ -1973,6 +1996,7 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
     _install(monkeypatch, media=_pdf_media)
     saves = _hold_storage_writes(monkeypatch, gates=gates)
     hp = path == "header"
+    stall = _stall_before_gate(monkeypatch)
 
     async def scenario():
         out = {}
@@ -1982,9 +2006,11 @@ def test_ac_41_10_the_slot_is_held_until_the_media_is_stored(client, session_fac
                 for i, name in enumerate(["a", "b"]):  # fetched, now waiting to be stored
                     held.append(asyncio.create_task(_post_media(ac, keys[name], phones[i], header_path=hp)))
                     assert await _wait_for(lambda n=i + 1: len(saves) >= n), f"send {i + 1} never reached the store"
+                stall["on"] = True
                 t0 = time.monotonic()
                 out["while_storing"] = await _post_media(ac, keys["c"], phones[2], header_path=hp)
                 out["busy_secs"] = time.monotonic() - t0
+                stall["on"] = False
                 out["held"] = []
                 for i, t in enumerate(held):
                     gates[i].set()
