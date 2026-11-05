@@ -1494,6 +1494,17 @@ def test_ac_41_04_small_double_compressed_body_is_never_decoded(client, session_
         return out
 
     monkeypatch.setattr(decoders.GZipDecoder, "decode", counting)
+    # work OUTSIDE the refusal (before the fetch starts) is slow on a loaded runner;
+    # the refusal itself is still early, so a request-wide time bound must not decide this
+    from modules.omnichannel.services import public_gateway_service as pgs
+
+    real_window_open = pgs.messaging_policy.window_open
+
+    def slow_window_open(*args, **kwargs):
+        time.sleep(3.2)
+        return real_window_open(*args, **kwargs)
+
+    monkeypatch.setattr(pgs.messaging_policy, "window_open", slow_window_open)
 
     def peer(conn, stop):
         conn.sendall(
