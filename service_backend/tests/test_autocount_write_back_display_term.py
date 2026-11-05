@@ -168,3 +168,39 @@ def test_edit_blanking_with_a_termless_debtor_is_debtor_term_missing(client, gw)
                      json={"companyCode": "SRT", "header": {"displayTerm": ""}})
     assert r.status_code == 422 and code(r) == "DEBTOR_TERM_MISSING", r.text
     assert gw.h.vendor.writes() == []
+
+
+
+def test_the_debtor_walk_runs_the_deadline_hook_before_every_later_page():
+    from modules.autocount.write_back.reader import AutoCountDocReader
+    from tests.autocount_write_back_fake_vendor import FAKE_HOST, FakeAutoCountVendor
+
+    vendor = FakeAutoCountVendor()
+    vendor.debtors = [_debtor(f"D-{i:05d}", "C.O.D.") for i in range(2500)] + [_debtor("PARTY-1", "NET 60")]
+    reader = AutoCountDocReader(FAKE_HOST, transport=vendor.transport)
+    seen = []
+    assert reader.debtor_term("party-1 ", before_page=lambda: seen.append(1)) == (True, "NET 60")
+    assert len(seen) == 2  # pages 2 and 3, never before page 1
+
+    class Stop(Exception):
+        pass
+
+    def deadline():
+        raise Stop()
+
+    vendor.calls.clear()
+    with pytest.raises(Stop):
+        reader.debtor_term("PARTY-1", before_page=deadline)
+    assert len(vendor.calls) == 1  # stopped before page 2
+
+
+def test_debtor_page_without_total_pages_is_read_failed():
+    import httpx
+
+    from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
+
+    body = {"Data": [_debtor("OTHER")]}
+    reader = AutoCountDocReader("https://ac.example.test/api/db3",
+                                transport=httpx.MockTransport(lambda req: httpx.Response(200, json=body)))
+    with pytest.raises(DocReadError):
+        reader.debtor_term("PARTY-1")

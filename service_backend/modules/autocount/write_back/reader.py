@@ -10,7 +10,7 @@ SSRF-guarded client with redirects off.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -116,14 +116,17 @@ class AutoCountDocReader:
             raise DocReadError(DOC_AMBIGUOUS)
         return matches[0]
 
-    def debtor_term(self, debtor_code: str) -> Tuple[bool, Optional[str]]:
+    def debtor_term(
+        self, debtor_code: str, *, before_page: Optional[Callable[[], None]] = None
+    ) -> Tuple[bool, Optional[str]]:
         """``(found, DisplayTerm)`` of the debtor ``debtor_code`` in this book.
 
         ``DisplayTerm`` is the debtor's own AutoCount term code (from AutoCount's
         Terms list), ``None`` when the debtor carries none. Codes compare trimmed
         and case-insensitively (AutoCount's SQL collation). Pages are walked with
         one client and stop at the first match; any failed or mis-shaped page is
-        ``DocReadError(READ_FAILED)`` - never a guess.
+        ``DocReadError(READ_FAILED)`` - never a guess. ``before_page`` runs before
+        every page after the first (the caller's deadline check; it may raise).
         """
         wanted = debtor_code.strip().casefold()
         url = self.base_url.rstrip("/") + DEBTOR_PAGE_PATH
@@ -131,6 +134,8 @@ class AutoCountDocReader:
             with self._http() as http:
                 page = 1
                 while page <= DEBTOR_MAX_PAGES:
+                    if page > 1 and before_page is not None:
+                        before_page()
                     response = http.get(url, params={"page": str(page), "pageSize": str(DEBTOR_PAGE_SIZE)})
                     if not response.is_success:
                         raise DocReadError(READ_FAILED)

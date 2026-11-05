@@ -339,17 +339,17 @@ class PrimitiveService(WriteFrame):
         if call.expected_last_modified and doc.get("LastModified") != call.expected_last_modified:
             raise self._refuse(row, DOC_STALE)
         try:
-            request = self._build(call, doc)  # every other refusal before a debtor read
+            request = self._build(call, doc)
+            self._guard_transfers(call, company, doc)  # every other refusal before a debtor read
         except WriteRefusal as exc:
             raise self._refuse(row, exc.code, str(exc)) from None
         if call.primitive == EDIT and payloads.edit_needs_debtor_term(call.kind, doc, call.header_changes):
             term = self._debtor_term(row, reader, doc.get("DebtorCode"))
             call.header_changes = {**call.header_changes, "DisplayTerm": term}
-            request = self._build(call, doc)
-        try:
-            self._guard_transfers(call, company, doc)
-        except WriteRefusal as exc:
-            raise self._refuse(row, exc.code, str(exc)) from None
+            try:
+                request = self._build(call, doc)
+            except WriteRefusal as exc:
+                raise self._refuse(row, exc.code, str(exc)) from None
         return doc, request, doc_date  # type: ignore[return-value]
 
     def _debtor_term(self, row: AcWriteAction, reader: Any, debtor_code: Any) -> str:
@@ -363,7 +363,7 @@ class PrimitiveService(WriteFrame):
         self._check_deadline(row)
         self.db.commit()  # no transaction open during the GET
         try:
-            found, term = reader.debtor_term(code)
+            found, term = reader.debtor_term(code, before_page=lambda: self._check_deadline(row))
         except DocReadError as exc:
             raise self._refuse(row, exc.code) from None
         if not found:
