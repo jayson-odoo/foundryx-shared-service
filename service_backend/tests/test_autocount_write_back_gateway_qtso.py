@@ -694,6 +694,8 @@ def test_ss_writecap_book_names_the_book_ss_writes_to(client, gw):
 def test_ss_writecap_book_is_null_when_the_connection_names_a_refused_book(client, gw):
     from tests.test_autocount_write_back_service import DB1
 
+    # DB1 shares the pinned allowed host, so the refusal comes from the BOOK, not the host.
+
     gw.h.company.write_connection_id = gw.h._connection(DB1, DEFAULT_TENANT_ID).id
     gw.db.commit()
     body = client.get(f"{PREFIX}/write-capabilities?companyCode=SRT", headers=_hdr(gw.plain)).json()

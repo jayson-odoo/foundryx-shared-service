@@ -7,6 +7,8 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 
 ## Changes
 
+- 2026-11-05: `GET /write-capabilities` adds top-level `book`, the AutoCount book SS writes to for
+  the company (`null` when writes are off). Additive; refuse writes on documents keyed to another book.
 - 2026-11-04 (final review round): field names in `message` and `warnings` are the caller's camelCase
   (`FIELD_IGNORED`, `QT_ROW_VALUES_INHERITED`). `QTY_INVALID` and `PRICE_INVALID` are `422`, checked before
   any read. `/po-links`, `/po-links/unlink` and `/spo-links/unlink` accept optional `docDate`. A split link
@@ -279,6 +281,7 @@ write allowlist is never named). A `DocKey` is only unique inside its book: a co
 `{book}:{DocKey}` (e.g. `db1:12008`) must refuse an edit, add line, delete line or cancel when its book is
 not this `book` (or `book` is `null`), else the `DocKey` would address an unrelated document in the book
 SS writes to. Read it fresh before a write; it changes when the company's write connection changes.
+A non-null `book` does not promise a write succeeds: write-time checks can still refuse it.
 
 One entry per primitive (`create_doc`, `edit_doc`, `add_line`, `delete_line`, `cancel_doc`) for each
 `kind` in `quotations`, `sales-orders`, `purchase-orders`, `shipping-purchase-orders` (the URL slugs), plus
