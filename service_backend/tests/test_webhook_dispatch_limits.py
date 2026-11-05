@@ -144,6 +144,18 @@ def _lower_deadline(monkeypatch):
     monkeypatch.setattr(wd, "DELIVERY_DEADLINE_SECONDS", LOW_DEADLINE, raising=False)
 
 
+def _stall_after_attempt(monkeypatch, seconds=3.2):
+    """The activity write after the attempt is slow: a loaded runner's DB and
+    request work, outside the deadline window, with the deadline itself intact."""
+    real = wd._record_webhook_activity
+
+    def slow(*a, **k):
+        time.sleep(seconds)
+        return real(*a, **k)
+
+    monkeypatch.setattr(wd, "_record_webhook_activity", slow)
+
+
 # ── AC-51-01 ────────────────────────────────────────────────────────────────
 def test_ac_51_01_default_deadline_is_ten_seconds():
     assert wd.DELIVERY_DEADLINE_SECONDS == 10
@@ -162,6 +174,7 @@ def test_ac_51_01_slow_trickle_ends_at_the_total_deadline(
             i += 1
             time.sleep(0.5)
 
+    _stall_after_attempt(monkeypatch)
     _lower_deadline(monkeypatch)
     srv = local_server(trickle)
     _eid, did = _seed(session_factory, "pn-d-trickle", srv.url)
@@ -184,6 +197,7 @@ def test_ac_51_01_server_that_never_answers_ends_at_the_deadline(
         _read_request(conn)
         stop.wait(12)
 
+    _stall_after_attempt(monkeypatch)
     _lower_deadline(monkeypatch)
     srv = local_server(silent)
     _eid, did = _seed(session_factory, "pn-d-silent", srv.url)
@@ -390,6 +404,7 @@ def test_ac_51_01_slow_phase_ends_at_deadline_leaves_no_thread_and_closes(
     make, session_factory, local_server, allow_loopback, monkeypatch
 ):
     state = {"closed": False}
+    _stall_after_attempt(monkeypatch)
     _lower_deadline(monkeypatch)
     srv = local_server(make(state))
     before = set(threading.enumerate())
@@ -448,6 +463,7 @@ def test_ac_51_01_slow_address_check_counts_inside_the_deadline(session_factory,
     def quick(request):
         return httpx.Response(200, content=b"ok")
 
+    _stall_after_attempt(monkeypatch)
     _lower_deadline(monkeypatch)
     monkeypatch.setattr(socket, "getaddrinfo", slow_dns)
     monkeypatch.setattr(wd, "GuardedTransport", lambda *a, **k: httpx.MockTransport(quick))
@@ -652,6 +668,7 @@ def test_ac_51_01_tls_handshake_stall_ends_at_the_deadline(
 
     srv = local_server(stall)
     dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")])
+    _stall_after_attempt(monkeypatch)
     _lower_deadline(monkeypatch)
     before = set(threading.enumerate())
     _eid, did = _seed(session_factory, "pn-d-hs", f"https://{NAME}:{srv.port}/hook")
@@ -771,6 +788,7 @@ def test_ac_51_01_deadline_holds_when_the_first_cancel_is_swallowed(
 ):
     state = {"closed": False}
     swallowed = _swallow_first_cancel(monkeypatch)
+    _stall_after_attempt(monkeypatch)
     _lower_deadline(monkeypatch)
     srv = local_server(_body_trickle(state))
     _eid, did = _seed(session_factory, "pn-d-lostcancel", srv.url)
