@@ -11,6 +11,8 @@ an ``httpx.MockTransport``. It honours the behaviour recorded on db3 on 4 Nov 20
   an EXISTING row are ignored; a NEW row linked to an SO row is forced to Location
   HQ and an SO link reads back as ``FromSODtlKey`` on PO rows.
 * GET /<doc>bydocdate?DocDate=YYYYMMDD.
+* GET /debtorbypage?page=&pageSize= - the paged envelope over ``debtors``
+  (SS-QTSO-DISPLAYTERM: the debtor's own ``DisplayTerm``).
 * DELETE shapes are the PLACEHOLDERS of plan 57 section 5.1 (AQ23, unverified):
   ``/Delete<Doc>Detailbydtlkey`` body ``{DocKey, DtlKey}`` and
   ``/Delete<Doc>bydockey`` body ``{DocKey}``.
@@ -121,6 +123,8 @@ class FakeAutoCountVendor:
         self.require_full_row: set = set()
         # an SO row taken from a QT row inherits that row's UnitPrice and Location (live db3)
         self.inherit_qt_values = False
+        # SS-QTSO-DISPLAYTERM: Debtor master rows served by GET /debtorbypage
+        self.debtors: List[Dict[str, Any]] = []
         self.transport = httpx.MockTransport(self._handle)
 
     # ---- seeding / inspection ---------------------------------------------
@@ -202,6 +206,8 @@ class FakeAutoCountVendor:
 
     def _route(self, method: str, leaf: str, call: Call) -> httpx.Response:
         if method == "GET":
+            if leaf == "debtorbypage":
+                return self._debtor_page(call)
             for kind, spec in SPECS.items():
                 if spec["get"] == leaf:
                     return self._get(kind, call)
@@ -228,6 +234,16 @@ class FakeAutoCountVendor:
             if self.any_date or str(d["DocDate"])[:10].replace("-", "") == wanted
         ]
         return httpx.Response(200, json=out)
+
+    def _debtor_page(self, call: Call) -> httpx.Response:
+        page = int(call.query.get("page", "1"))
+        size = int(call.query.get("pageSize", "50"))
+        total = len(self.debtors)
+        pages = max(1, -(-total // size))
+        data = copy.deepcopy(self.debtors[(page - 1) * size: page * size])
+        return httpx.Response(200, json={
+            "TotalCount": total, "Page": page, "PageSize": size, "TotalPages": pages, "Data": data,
+        })
 
     # ---- POST --------------------------------------------------------------
     def _create(self, kind: str, body: Dict[str, Any]) -> httpx.Response:
