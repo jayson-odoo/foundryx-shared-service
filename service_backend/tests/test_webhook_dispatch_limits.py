@@ -651,6 +651,7 @@ def test_ac_51_01_connect_that_completes_after_the_deadline_sends_nothing(
         )
         dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")])
         _lower_deadline(monkeypatch)
+        _stall_after_attempt(monkeypatch)
         phases = _time_phases(monkeypatch)
         before = set(threading.enumerate())
         scheme = "https" if tls else "http"
@@ -715,6 +716,7 @@ def test_ac_51_01_stalled_second_lookup_sends_nothing_after_the_attempt(
     # call 0 is the address check (fast); the connect-time lookup stalls past the deadline
     dns = FakeDns(monkeypatch, [(socket.AF_INET, "127.0.0.1")], stall=lambda n: 0.0 if n == 0 else STALL)
     _lower_deadline(monkeypatch)
+    _stall_after_attempt(monkeypatch)
     before = set(threading.enumerate())
     _eid, did = _seed(session_factory, "pn-d-lookup", f"https://{NAME}:{srv.port}/hook")
     started = time.monotonic()
@@ -998,6 +1000,7 @@ def test_ac_51_01_slow_tls_setup_ends_at_the_deadline(
 
     monkeypatch.setattr(httpx, "create_ssl_context", slow)
     _lower_deadline(monkeypatch)
+    _stall_after_attempt(monkeypatch)
     phases = _time_phases(monkeypatch)
     _eid, did = _seed(session_factory, "pn-d-slow-tls", f"https://{NAME}:{srv.port}/hook")
     started = time.monotonic()
