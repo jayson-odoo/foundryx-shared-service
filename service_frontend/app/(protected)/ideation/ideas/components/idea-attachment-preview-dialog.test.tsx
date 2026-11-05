@@ -31,6 +31,8 @@ const upload = (name: string): IdeaAttachment => ({
 async function open(att: IdeaAttachment, blob: Blob) {
   render(<IdeaAttachmentPreviewDialog attachment={att} onClose={() => {}} fetchContent={async () => blob} />);
   await waitFor(() => expect(created).toHaveLength(1));
+  // settled = the blob URL is committed (the header Download link needs it)
+  await screen.findAllByText('Download');
 }
 
 const UNLISTED = ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'TEXT/HTML', 'text/html;x=1', ''];
