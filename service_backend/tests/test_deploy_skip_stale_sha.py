@@ -184,3 +184,63 @@ def test_a_partial_sha_in_the_list_never_matches_by_prefix(tmp_path):
     )
     assert result.returncode == 0
     assert active == "green"
+
+
+# ---- 3. owner ruling 5 Nov 2026: releases are batched -------------------
+# "Don't deploy shared service on every merge": a push to main runs CI only;
+# the deploy job runs only on a workflow_dispatch (a release) of main's head.
+
+CI_JOBS = (
+    "check-migration-heads", "lint-conventions", "validate-backend",
+    "validate-frontend", "test-backend", "test-frontend",
+)
+
+
+def _job_runs_on(job: dict, event: str) -> bool:
+    """Evaluate the job-level `if:` for one event. The deploy/notify `if`
+    expressions only combine `always()` and `github.event_name == '<x>'`
+    terms with && / ||, so substituting both is exact for them."""
+    cond = job.get("if")
+    if cond is None:
+        return True
+    expr = cond.replace("always()", "True").replace("success()", "True")
+    import re
+
+    expr = re.sub(r"github\.event_name\s*==\s*'([a-z_]+)'", lambda m: str(m.group(1) == event), expr)
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    assert re.fullmatch(r"[\sTrueFalsandor()]*", expr), f"unexpected expression: {cond}"
+    return bool(eval(expr))  # noqa: S307 - only True/False/and/or/() survive the check above
+
+
+def test_a_push_to_main_runs_ci_but_never_the_deploy_job(wf):
+    jobs = wf["jobs"]
+    assert not _job_runs_on(jobs["build-and-deploy"], "push")
+    for name in CI_JOBS:
+        assert _job_runs_on(jobs[name], "push"), name
+    # The deploy job still needs every CI gate on a release.
+    assert set(CI_JOBS) <= set(jobs["build-and-deploy"]["needs"])
+
+
+def test_only_a_workflow_dispatch_release_runs_the_deploy_job(wf):
+    deploy = wf["jobs"]["build-and-deploy"]
+    assert _job_runs_on(deploy, "workflow_dispatch")
+    for event in ("push", "pull_request", "merge_group"):
+        assert not _job_runs_on(deploy, event), event
+
+
+def test_a_dispatch_of_main_head_deploys_and_a_non_head_without_force_skips(tmp_path):
+    # The dispatch path keeps the head guard (sha/head/force come from the run).
+    result, outputs = _guard(tmp_path, HEAD, HEAD, "false")
+    assert result.returncode == 0 and "skip=false" in outputs
+    result, outputs = _guard(tmp_path, OLD, HEAD, "false")
+    assert result.returncode == 0 and "skip=true" in outputs
+    assert f"skip: {OLD} is not main head {HEAD}" in result.stdout
+
+
+def test_the_owner_email_on_a_push_says_ci_only_not_deployed(wf):
+    notify = wf["jobs"]["notify-owner"]
+    assert _job_runs_on(notify, "push") and _job_runs_on(notify, "workflow_dispatch")
+    assert set(CI_JOBS) <= set(notify["needs"])  # push email reports the CI result
+    compute = next(s for s in notify["steps"] if s.get("id") == "notify")["run"]
+    assert "CI only, not deployed" in compute
+    assert "github.event_name" in compute
