@@ -10,7 +10,7 @@ SSRF-guarded client with redirects off.
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -24,6 +24,12 @@ DOC_AMBIGUOUS = "DOC_AMBIGUOUS"
 READ_FAILED = "READ_FAILED"
 
 Document = Dict[str, object]
+
+# SS-QTSO-DISPLAYTERM: the Debtor master door of the open REST API (paged
+# envelope ``{TotalPages, Data: [...]}``), walked until the debtor is found.
+DEBTOR_PAGE_PATH = "/debtorbypage"
+DEBTOR_PAGE_SIZE = 1000
+DEBTOR_MAX_PAGES = 100  # 100k debtors; a book past that is refused READ_FAILED
 
 
 
@@ -109,3 +115,41 @@ class AutoCountDocReader:
         if len(matches) > 1:
             raise DocReadError(DOC_AMBIGUOUS)
         return matches[0]
+
+    def debtor_term(self, debtor_code: str) -> Tuple[bool, Optional[str]]:
+        """``(found, DisplayTerm)`` of the debtor ``debtor_code`` in this book.
+
+        ``DisplayTerm`` is the debtor's own AutoCount term code (from AutoCount's
+        Terms list), ``None`` when the debtor carries none. Codes compare trimmed
+        and case-insensitively (AutoCount's SQL collation). Pages are walked with
+        one client and stop at the first match; any failed or mis-shaped page is
+        ``DocReadError(READ_FAILED)`` - never a guess.
+        """
+        wanted = debtor_code.strip().casefold()
+        url = self.base_url.rstrip("/") + DEBTOR_PAGE_PATH
+        try:
+            with self._http() as http:
+                page = 1
+                while page <= DEBTOR_MAX_PAGES:
+                    response = http.get(url, params={"page": str(page), "pageSize": str(DEBTOR_PAGE_SIZE)})
+                    if not response.is_success:
+                        raise DocReadError(READ_FAILED)
+                    body: Any = response.json()
+                    if not isinstance(body, dict) or not isinstance(body.get("Data"), list):
+                        raise DocReadError(READ_FAILED)
+                    for row in body["Data"]:
+                        if isinstance(row, dict) and str(row.get("AccNo") or "").strip().casefold() == wanted:
+                            term = row.get("DisplayTerm")
+                            text = term.strip() if isinstance(term, str) else ""
+                            return True, (text or None)
+                    if not body["Data"]:
+                        return False, None
+                    total = body.get("TotalPages")
+                    if not isinstance(total, int) or isinstance(total, bool):
+                        raise DocReadError(READ_FAILED)  # cannot tell "absent" from "unread"
+                    if page >= total:
+                        return False, None
+                    page += 1
+        except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError, ValueError):
+            raise DocReadError(READ_FAILED) from None
+        raise DocReadError(READ_FAILED)

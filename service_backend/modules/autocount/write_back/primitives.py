@@ -308,8 +308,16 @@ class PrimitiveService(WriteFrame):
         """Everything before the vendor call: the pure build for a create, else
         busy -> date -> fresh GET -> stale -> build -> transfer guards."""
         if call.primitive == CREATE:
+            header = dict(call.header or {})
             try:
-                request = payloads.build_create(call.kind, call.header or {}, call.lines)
+                needs_term = payloads.create_needs_debtor_term(call.kind, header, call.lines)
+            except WriteRefusal as exc:
+                raise self._refuse(row, exc.code, str(exc)) from None
+            if needs_term:
+                header["DisplayTerm"] = self._debtor_term(row, reader, header.get("DebtorCode"))
+                call.header = header
+            try:
+                request = payloads.build_create(call.kind, header, call.lines)
             except WriteRefusal as exc:
                 raise self._refuse(row, exc.code, str(exc)) from None
             return None, request, _doc_date(request.body)
@@ -331,11 +339,40 @@ class PrimitiveService(WriteFrame):
         if call.expected_last_modified and doc.get("LastModified") != call.expected_last_modified:
             raise self._refuse(row, DOC_STALE)
         try:
+            request = self._build(call, doc)  # every other refusal before a debtor read
+        except WriteRefusal as exc:
+            raise self._refuse(row, exc.code, str(exc)) from None
+        if call.primitive == EDIT and payloads.edit_needs_debtor_term(call.kind, doc, call.header_changes):
+            term = self._debtor_term(row, reader, doc.get("DebtorCode"))
+            call.header_changes = {**call.header_changes, "DisplayTerm": term}
             request = self._build(call, doc)
+        try:
             self._guard_transfers(call, company, doc)
         except WriteRefusal as exc:
             raise self._refuse(row, exc.code, str(exc)) from None
         return doc, request, doc_date  # type: ignore[return-value]
+
+    def _debtor_term(self, row: AcWriteAction, reader: Any, debtor_code: Any) -> str:
+        """SS-QTSO-DISPLAYTERM: the debtor's own AutoCount term code, read from the
+        same book. ``DEBTOR_TERM_MISSING`` (naming the debtor) when the debtor has no
+        term or is unknown to the book; ``READ_FAILED`` when the read fails. No write
+        is ever sent on either refusal."""
+        code = str(debtor_code or "").strip()
+        if not code:
+            raise self._refuse(row, payloads.DEBTOR_TERM_MISSING, "debtor has no code")
+        self._check_deadline(row)
+        self.db.commit()  # no transaction open during the GET
+        try:
+            found, term = reader.debtor_term(code)
+        except DocReadError as exc:
+            raise self._refuse(row, exc.code) from None
+        if not found:
+            raise self._refuse(row, payloads.DEBTOR_TERM_MISSING,
+                               f"debtor {code} not found in AutoCount; send displayTerm")
+        if term is None:
+            raise self._refuse(row, payloads.DEBTOR_TERM_MISSING,
+                               f"debtor {code} has no credit term in AutoCount; send displayTerm")
+        return term
 
     @staticmethod
     def _build(call: _Call, doc: Doc) -> VendorRequest:
