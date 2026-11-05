@@ -450,6 +450,26 @@ def test_ac_p_50_detail_shape_no_pii(setup):
     assert [t["state"] for t in d["timeline"]] == ["current", "upcoming", "upcoming", "upcoming"]
 
 
+def test_ac_p_50_the_phone_check_holds_when_the_generated_id_contains_the_digits(setup):
+    """The idea id is a random uuid: the phone-digit check must not trip when the id
+    happens to contain the needle (forced here so the chance match is certain)."""
+    from modules.ideation.models import Idea
+
+    s = setup
+    hc = _crm_session(s, sub="crm-sales-5")
+    own = _idea(s, 601, crm_user="crm-sales-5", submitter_name="Aiman +60123456789")
+    forced = "00000000-6789-4000-8000-000000000601"
+    db = s["factory"]()
+    try:
+        db.query(Idea).filter(Idea.id == own).update({Idea.id: forced})
+        db.commit()
+    finally:
+        db.close()
+    res = s["client"].get(f"/portal/ideas/{forced}", headers=hc)
+    assert res.status_code == 200, res.text
+    assert "6789" not in res.text  # a phone-shaped submitter name is never published
+
+
 def test_ac_p_51_vote_toggle_distinct_principals(setup):
     s = setup
     iid = _idea(s, 700)
