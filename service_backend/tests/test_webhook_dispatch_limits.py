@@ -193,6 +193,47 @@ def test_ac_51_01_slow_trickle_ends_at_the_total_deadline(
     assert str(srv.port) not in row.error and "127.0.0.1" not in row.error
 
 
+def test_ac_51_01_post_gets_only_the_time_left_after_the_address_check(
+    session_factory, local_server, allow_loopback, monkeypatch
+):
+    """The address check and the POST share ONE deadline: the POST is handed what is
+    left after the check, not a fresh full deadline. Read from the timeout the POST
+    is given (the check's own clock), so it does not depend on CI speed."""
+
+    def silent(conn, stop):
+        _read_request(conn)
+        stop.wait(12)
+
+    spent = 1.0
+    real_check = wd.assert_deliverable
+
+    def slow_check(*a, **k):
+        time.sleep(spent)
+        return real_check(*a, **k)
+
+    given = {}
+    real_post = wd._post
+
+    def spy_post(*a, **k):
+        given["timeout"] = k["timeout"]
+        return real_post(*a, **k)
+
+    _lower_deadline(monkeypatch)
+    monkeypatch.setattr(wd, "assert_deliverable", slow_check)
+    monkeypatch.setattr(wd, "_post", spy_post)
+    phases = _time_phases(monkeypatch)
+    srv = local_server(silent)
+    _eid, did = _seed(session_factory, "pn-d-left", srv.url)
+    outcome = _run(session_factory, did)
+    assert outcome == "retry"
+    left = LOW_DEADLINE - phases["_check_address"]
+    assert given["timeout"] <= left + 0.1, (
+        f"the POST was given {given['timeout']}s with {left:.2f}s of the {LOW_DEADLINE}s deadline left, "
+        f"phases {phases}"
+    )
+    assert phases["_check_address"] >= spent, "control: the address check really used part of the deadline"
+
+
 def test_ac_51_01_server_that_never_answers_ends_at_the_deadline(
     session_factory, local_server, allow_loopback, monkeypatch
 ):
