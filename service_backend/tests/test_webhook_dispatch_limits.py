@@ -861,7 +861,9 @@ def test_ac_51_01_media_fetch_slow_tls_setup_ends_at_the_deadline(
     elapsed = time.monotonic() - started
     assert elapsed < 1.0 + 2.0, f"media fetch took {elapsed:.1f}s"
     assert err.value.code == "media_fetch_failed"
-    time.sleep(1.0)
+    assert err.value.message == pgs._FETCH_FAILED_TEXT
+    # wait until the abandoned 5 s build has had time to finish and (wrongly) connect
+    time.sleep(max(0.0, 5.5 - (time.monotonic() - started)))
     assert state["requests"] == [], "a request reached the server after the fetch ended"
 
 
