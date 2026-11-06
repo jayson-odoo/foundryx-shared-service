@@ -39,12 +39,27 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 | `GET /api/v1/autocount/write-operations/{operationId}?companyCode=` | read | One operation's state and answer |
 | `POST /api/v1/autocount/write-operations/{operationId}/resume` | operation | Resume a `needs_attention` or `pending_verification` operation |
 | `GET /api/v1/autocount/write-capabilities?companyCode=` | read | Which primitives and operations are available, and why not (section 7) |
+| `GET /api/v1/autocount/documents/{kind}/{docKey}?companyCode=&docDate=` | read | The document as AutoCount holds it now (section 1a) |
 
 `/po-links/relocate` (plan 55) is unchanged. `{kind}`: `quotations`, `sales-orders`, `purchase-orders`,
 `shipping-purchase-orders`; any other value is `404 UNKNOWN_KIND` (flat body). `{docKey}` and `{dtlKey}`
 are integers in 1..9223372036854775807, else `422 INVALID_REQUEST`. There is no route that deletes a
 document: cancel is the only way a document ends. Today the switched-on primitives are create, edit and
 add line for quotations, sales orders and purchase orders, and edit for shipping purchase orders.
+
+### 1a. Read a document
+
+`GET /api/v1/autocount/documents/{kind}/{docKey}?companyCode=SRT[&docDate=YYYY-MM-DD]` reads the document
+fresh from AutoCount (never the staged copy) so a caller can take `LastModified` (for
+`expectedLastModified`) and the row keys before an edit. `{kind}` also accepts `qt`, `so`, `po`, `spo` on
+this route. Same key, `write_back` scope, company resolution and write guard as the write routes; it
+never writes, records no action and stages nothing. `docDate` follows the edit rule: needed when the
+document is not staged and SS never wrote it (always for a quotation SS did not create), else `409
+DOC_DATE_REQUIRED`. The answer is the primitive shape (section 4) with `outcome: "done"`, `operationId`
+and `actionId` null and `document` = AutoCount's fields as read (`DocKey`, `DocNo`, `DocDate`,
+`LastModified`, `Details[].DtlKey`, ...). A refusal uses the same shape and status mapping:
+`403 WRITE_DISABLED` / `WRITE_NOT_ALLOWED`, `409 DOC_DATE_REQUIRED`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`,
+`DOC_KIND_MISMATCH`, `READ_FAILED`. A cancelled document is returned (`Cancelled "T"`), not refused.
 
 ## 2. Idempotency
 

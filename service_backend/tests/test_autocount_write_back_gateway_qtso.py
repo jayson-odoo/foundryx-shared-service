@@ -208,7 +208,8 @@ def test_ac_57_04_no_route_can_delete_a_document():
         if "/documents/" in path:
             tail = path.split("/documents/")[1]
             assert not tail.endswith("/delete") or "/lines/" in tail, path  # only the line delete
-            assert not path.endswith("/documents/{kind}/{docKey}") or methods == ["PATCH"], (path, methods)
+            # B6: the document path reads (GET) and edits (PATCH); it never deletes
+            assert not path.endswith("/documents/{kind}/{docKey}") or methods == ["GET", "PATCH"], (path, methods)
     assert not any(p.endswith("/delete") and "/lines/" not in p for p, _m in paths)
 
 

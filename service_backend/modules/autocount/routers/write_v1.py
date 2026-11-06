@@ -292,6 +292,47 @@ def create_document(
     return _frame(request, db, raw_body, "write_create_doc", run, key_required=True)
 
 
+# B6: the read also takes the short kind names (the CRM read path); writes keep the contract slugs.
+_READ_KIND_SLUGS = {**KIND_SLUGS, "qt": "QT", "so": "SO", "po": "PO", "spo": "SPO"}
+
+
+def _query_date(request: Request, name: str) -> Optional[date]:
+    text = request.query_params.get(name)
+    if text is None or text == "":
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise _bad("INVALID_REQUEST", f"{name} must be a date (YYYY-MM-DD).") from None
+
+
+@router.get("/documents/{kind}/{docKey}")
+def read_document(
+    kind: str, docKey: str, request: Request, db: Session = Depends(get_db),
+    prims: PrimitiveService = Depends(get_primitive_service),
+) -> JSONResponse:
+    """B6: the document as AutoCount holds it now, in the primitive answer shape
+    (``document`` = AutoCount's fields). Same key, scope and db3 guard as the writes;
+    it never writes. ``?companyCode=`` required, ``?docDate=YYYY-MM-DD`` optional."""
+
+    def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        try:
+            name = _READ_KIND_SLUGS[kind]
+        except KeyError:
+            raise PullGatewayError(404, "UNKNOWN_KIND", "Unknown document kind.") from None
+        doc_key, doc_date = _path_key(docKey, "docKey"), _query_date(request, "docDate")
+        res = prims.read_doc(
+            tenant_id=key.tenant_id, company_id=company.id, kind=name, doc_key=doc_key, doc_date=doc_date,
+        )
+        return _respond({
+            "operationId": None, "actionId": None, "outcome": res.outcome, "errorCode": res.error_code,
+            "message": res.message, "warnings": [], "docKey": res.doc_key or doc_key, "docNo": res.doc_no,
+            "document": res.document,
+        })
+
+    return _frame(request, db, b"", "write_read_doc", run, with_body=False)
+
+
 @router.patch("/documents/{kind}/{docKey}")
 def edit_document(
     kind: str, docKey: str, request: Request, db: Session = Depends(get_db),
