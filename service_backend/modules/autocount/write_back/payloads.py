@@ -252,6 +252,53 @@ def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref
     return body
 
 
+# B4 (db3 6 Nov; test report 2026-11-04 P6/P10/C03): AutoCount stores a NEW row
+# transferred from an SO with Location HQ, UnitPrice 0 and an empty DeliveryDate,
+# whatever the split body sent. An edit of the EXISTING row afterwards keeps the link
+# (probe P4), so the split flow restores these in its second write.
+TRANSFER_RESET_FIELDS = ("Location", "UnitPrice", "DeliveryDate")
+
+
+def _day(value: Any) -> Optional[str]:
+    """A date as its ``YYYY-MM-DD`` day; empty and pre-1753 dates are None."""
+    if not isinstance(value, str) or not value.strip() or _empty_date(value):
+        return None
+    return value[:10]
+
+
+def same_row_value(field_name: str, want: Any, got: Any) -> bool:
+    """Row field equality for verify: dates by day (empty = empty), numbers by value."""
+    if field_name == "DeliveryDate":
+        return _day(want) == _day(got)
+    return _same(want, got)
+
+
+def transfer_row_drift(sent: Mapping[str, Any], got: Doc) -> Doc:
+    """The ``TRANSFER_RESET_FIELDS`` the read-back row lost: ``{field: sent value}``.
+    A field not sent (or an empty sent date) is never asked back."""
+    out: Doc = {}
+    for key in TRANSFER_RESET_FIELDS:
+        if key not in sent or (key == "DeliveryDate" and _day(sent[key]) is None):
+            continue
+        if not same_row_value(key, sent[key], got.get(key)):
+            out[key] = sent[key]
+    return out
+
+
+def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any]) -> Doc:
+    """Second write of a split link: the new row exactly as read, with ``values``
+    (location, unit price, delivery date) set back to what the split sent."""
+    if not values:
+        raise WriteRefusal("NO_CHANGE", "nothing to restore")
+    row = _row_fields(_find_row(po, dtl_key))
+    row.update(values)
+    body = _header(po)
+    if _is_spo(po):
+        body["ShippingPO"] = "T"
+    body["Details"] = [row]
+    return body
+
+
 def build_unlink(po: Doc, po_dtl_key: int, *, spo_ref: Optional[str] = None) -> Doc:
     """Clear the link of one PO row; the row keeps its own qty and location."""
     _check_doc(po, want_spo=False)
