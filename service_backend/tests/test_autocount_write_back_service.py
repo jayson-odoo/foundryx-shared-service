@@ -626,3 +626,11 @@ def test_ac_55_20_reader_so_path_and_errors():
     assert run(lambda r: httpx.Response(200, json=[{"DocKey": 1}, {"DocKey": 1}])) == "DOC_AMBIGUOUS"
     assert run(lambda r: httpx.Response(500, text="x")) == "READ_FAILED"
     assert run(lambda r: httpx.Response(200, text="not json")) == "READ_FAILED"
+
+
+def test_vendor_error_carries_the_vendor_text_in_message(h):
+    """SS-AC-BLANK-MASTER-REF B2: the split-link answer carries AutoCount's text."""
+    h.ac.put_mode = "vendor_error"
+    res = h.link_split()
+    assert res.outcome == "vendor_error"
+    assert res.message == "vendor says no"
