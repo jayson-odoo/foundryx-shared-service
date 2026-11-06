@@ -664,8 +664,10 @@ class WriteBackService(WriteFrame):
         row.response_status = response.status_code
         # a failure keeps its status and the redacted text only (AC-57-47); a success as it came
         row.response_json = _safe_body(response.body) if response.ok else {"text": vendor_message(response.body, base_url)}
-        if not response.ok:
-            return self._finish(row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR")
+        if not response.ok:  # carry AutoCount's own (redacted, capped) text to the answer
+            return self._finish(
+                row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR", message=row.response_json["text"]
+            )
         self.db.commit()
         self._check_deadline(row)
         after = self._read_back(plan, reader, before)

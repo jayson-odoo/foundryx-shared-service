@@ -445,8 +445,9 @@ class PrimitiveService(WriteFrame):
                 row.response_json = {"message": message}  # the same safe text, never the stack
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message))
             # a bare failure (an IIS page, a stack): the status and redacted text only (AC-57-47)
-            row.response_json = {"text": vendor_message(response.body, base_url)}
-            return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR))
+            text = vendor_message(response.body, base_url)
+            row.response_json = {"text": text}
+            return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR, message=text))
         self.db.commit()
         self._check_deadline(row)
         try:
