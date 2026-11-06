@@ -296,10 +296,15 @@ def create_document(
 _READ_KIND_SLUGS = {**KIND_SLUGS, "qt": "QT", "so": "SO", "po": "PO", "spo": "SPO"}
 
 
+_YMD = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def _query_date(request: Request, name: str) -> Optional[date]:
     text = request.query_params.get(name)
     if text is None or text == "":
         return None
+    if not _YMD.fullmatch(text):  # fromisoformat also takes 20261104 and week dates
+        raise _bad("INVALID_REQUEST", f"{name} must be a date (YYYY-MM-DD).")
     try:
         return date.fromisoformat(text)
     except ValueError:

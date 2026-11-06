@@ -137,3 +137,54 @@ def test_get_vendor_read_failure_is_502_read_failed(client, gw):
     r = _get(client, gw, "sales-orders", KEYS["SO"])
     assert code(r) == "READ_FAILED" and r.status_code in (409, 502), r.text
     no_secret(r)
+
+
+# ---- review fixes: the CRM flow, the test-company gate, tenant scope, strict date ------------
+
+def test_crm_flow_quotation_created_through_ss_reads_back_without_a_doc_date(client, gw):
+    """CRM #2173: the quotation was created through SS, then the update GETs it with
+    ``companyCode`` only (no docDate); the create's stored read-back gives the date."""
+    from tests.test_autocount_write_back_gateway_qtso import create_body
+
+    made = client.post(f"{PREFIX}/documents/quotations", json=create_body(), headers=gw.hdr())
+    assert made.status_code == 200, made.text
+    doc_key = made.json()["docKey"]
+    r = _get(client, gw, "quotations", doc_key)
+    assert r.status_code == 200, r.text
+    doc = r.json()["document"]
+    assert doc["DocKey"] == doc_key and doc["LastModified"]
+    row = doc["Details"][0]
+    assert {"DtlKey", "ItemCode", "Qty", "UnitPrice"} <= set(row)
+
+
+def test_get_refuses_a_company_holding_sql_data_before_any_vendor_call(client, gw):
+    from modules.autocount.models import AcEntityConfig
+    from tests.test_autocount_write_back_review_fixes import SOURCE_IMPL_SQL_DB
+
+    _seed(gw, "SO")
+    gw.db.add(AcEntityConfig(tenant_id=DEFAULT_TENANT_ID, company_id=gw.h.company.id, entity_type="customer",
+                             source_impl=SOURCE_IMPL_SQL_DB))
+    gw.db.commit()
+    gw.h.vendor.calls.clear()
+    r = _get(client, gw, "sales-orders", KEYS["SO"])
+    assert r.status_code == 409 and code(r) == "WRITE_COMPANY_NOT_TEST", r.text
+    assert gw.h.vendor.calls == []
+
+
+def test_read_doc_never_resolves_another_tenants_company(gw, db):
+    from tests.test_autocount_write_back_gateway import OTHER_TENANT, _other_tenant
+
+    _seed(gw, "SO")
+    _other_tenant(db)
+    res = gw.h.service().read_doc(
+        tenant_id=OTHER_TENANT, company_id=gw.h.company.id, kind="SO", doc_key=KEYS["SO"],
+    )
+    assert res.outcome == "refused" and res.error_code == "WRITE_DISABLED" and res.document is None
+    assert gw.h.vendor.calls == []
+
+
+@pytest.mark.parametrize("bad", ["20261104", "2026-W45-3", "2026-11-04T00:00:00"])
+def test_get_doc_date_must_be_yyyy_mm_dd(client, gw, bad):
+    _seed(gw, "QT", stage=False)
+    r = _get(client, gw, "quotations", KEYS["QT"], f"companyCode=SRT&docDate={bad}")
+    assert r.status_code == 422 and code(r) == "INVALID_REQUEST"

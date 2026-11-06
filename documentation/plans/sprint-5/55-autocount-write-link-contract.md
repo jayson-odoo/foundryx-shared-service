@@ -179,8 +179,8 @@ on the new row only: the SO row's location plus the PO row's unit price and deli
 the document back. The call answers `done` once the link and those values are verified. If only the
 location did not land, it still answers `done` (200) with `errorCode` `LOCATION_NOT_MOVED`: the link
 stands, the row sits at the default location, and the CRM should offer "Move location" (the relocate
-route above). If the unit price or delivery date did not land (second write failed, skipped at the
-deadline, or ignored), it answers `mismatch` (502) with `errorCode` `ROW_VALUES_NOT_KEPT`: the link
+route above). If the unit price or delivery date did not land or could not be verified (second write
+failed, skipped at the deadline, ignored, or written but not read back before the deadline), it answers `mismatch` (502) with `errorCode` `ROW_VALUES_NOT_KEPT`: the link
 stands but the new row is mispriced; show "needs review" and fix the row in AutoCount. The second
 write is never retried.
 
