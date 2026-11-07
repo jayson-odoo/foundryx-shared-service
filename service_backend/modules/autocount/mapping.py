@@ -1646,8 +1646,15 @@ class MappingEngine:
             # SS-PACKAGE-LINES - a billing CHILD line names its parent by the
             # parent line's own composed ref. `parent_dtl_key` is only in
             # `values` when the line model declares it (billing lines); 0 or
-            # NULL is a top-level / parent line and mints nothing.
+            # NULL is a top-level / parent line and mints nothing. Normalised
+            # first (review): an operator-remapped `string` transform hands
+            # "0" here, which must not mint a ref on every parent line. A
+            # non-integer stays as mapped, for the line model to name.
             parent_key = values.get("parent_dtl_key")
+            try:
+                parent_key = t_int(parent_key)
+            except TransformError:
+                parent_key = None
             if self.profile.line_ref_prefix and doc_key and parent_key not in (None, 0):
                 values["parent_line_ref"] = f"{doc_key}:{parent_key}"
             #     !!  LINE LINKAGE MINTING (sprint-5/06, AC-06-05..09).  !!

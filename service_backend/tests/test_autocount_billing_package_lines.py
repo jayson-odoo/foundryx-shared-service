@@ -169,6 +169,32 @@ def test_a_null_parent_key_is_a_top_level_line():
     assert line.parent_line_ref is None and line.line_type is None
 
 
+@pytest.mark.parametrize("parent_value", ["0", " 0 ", "", None])
+def test_a_string_mapped_parent_key_of_zero_mints_no_ref(parent_value):
+    """Review finding: an operator remapping ParentDtlKey with a `string`
+    transform must not turn every parent line into a child of `:0`."""
+    from modules.autocount.mapping import MappingEngine, MappingRow, flat_profile
+    from modules.autocount.mapping import SCOPE_HEADER, SCOPE_LINE as LINE
+
+    preset = DOCUMENT_PRESETS[ENTITY_INVOICE]
+    rows = [
+        MappingRow(f.source_path, f.canonical_field,
+                   "string" if f.source_path == "ParentDtlKey" else f.transform,
+                   scope, is_required=f.required, is_enabled=f.enabled, formula=f.formula)
+        for scope, fields in ((SCOPE_HEADER, preset.header), (LINE, preset.line))
+        for f in fields
+    ]
+    engine = MappingEngine(rows, entity_type=ENTITY_INVOICE,
+                           profile=flat_profile(ENTITY_INVOICE, list(preset.key_columns)),
+                           database_name=DB, link_book="fakebook")
+    row = _iv_row(_lines=[_iv_line(ParentDtlKey=parent_value), _iv_line(DtlKey=2, ParentDtlKey="1")])
+    mapped = engine.map_document(row)
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    top, child = mapped.record.lines
+    assert top.parent_line_ref is None
+    assert child.parent_line_ref == f"{DB}:IV:88213:1"
+
+
 def test_the_package_fields_survive_the_staged_json_round_trip():
     record = _engine(ENTITY_INVOICE).map_document(_package_row()).record
     again = type(record).model_validate_json(record.model_dump_json())

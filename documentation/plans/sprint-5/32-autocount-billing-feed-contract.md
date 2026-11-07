@@ -98,8 +98,14 @@ keys, so an older CRM keeps receiving the 2.6 line exactly):
 
 A parent line is one that another line's `parent_line_ref` names. Today only invoices carry `parent_line_ref`
 (IVDTL `ParentDtlKey` is the only confirmed column); CS/CN/DN send both keys as null until their tables are
-checked (`presets.BILLING_PACKAGE_COLUMNS`). Line hashes are header-only, so documents already pushed get the
-keys on their next re-push (a header edit, a line-fingerprint change, or a reconcile).
+checked (`presets.BILLING_PACKAGE_COLUMNS`).
+
+**Rollout (read before deploying).** The staged/last-pushed canonical always carries the new keys; only the
+wire is gated on 2.13. So a document pushed BEFORE the CRM advertises 2.13 is not offered again when the CRM
+upgrades (nothing changed on our side), and keeps being double counted. Order: (1) ship the CRM accepting the
+keys and advertising 2.13, (2) deploy this shared-service change, (3) the first full re-read then restages
+every billing document once (its canonical gained keys) and pushes them with the keys. If the shared service
+was deployed first, run **Re-push** on each company's Invoices task after the CRM advertises 2.13.
 
 ## 14. ar_outstanding (contract 2.10) and the billing pull
 
