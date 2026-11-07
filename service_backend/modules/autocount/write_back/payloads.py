@@ -295,6 +295,11 @@ EDIT_HEADER_KEYS = (
 EDIT_LINE_KEYS = ("Qty", "UnitPrice", "Discount", "Location", "Description", "DeliveryDate")
 LINE_KEYS = tuple(k for k in ROW_KEYS if k != "DtlKey") + ("YourPONo",)
 REQUIRED_HEADER = ("DocDate", "DisplayTerm", "CurrencyCode", "CurrencyRate")
+# SS-QTSO-DISPLAYTERM: kinds whose blank DisplayTerm is filled from the debtor's own
+# AutoCount term (the caller - the CRM - has no debtor credit term).
+TERM_FROM_DEBTOR_KINDS = ("QT", "SO")
+DEBTOR_TERM_MISSING = "DEBTOR_TERM_MISSING"
+_TERM_PLACEHOLDER = "<<debtor term>>"
 REQUIRED_LINE = ("ItemCode", "UOM", "Qty", "UnitPrice", "Location")
 # Compared before / after to prove an edit touched nothing else.
 _COMPARE_HEADER = ("DocNo", "DocDate", "DebtorCode", "CreditorCode", "Cancelled") + EDIT_HEADER_KEYS
@@ -392,6 +397,27 @@ def build_create(kind_name: str, header: Mapping[str, Any], lines: Optional[Sequ
         body["ShippingPO"] = "T" if kind.name == "SPO" else "F"
     body["Details"] = [_vendor_line(ln, None, kind.name) for ln in lines]
     return VendorRequest("POST", kind.new_path, body)
+
+
+def create_needs_debtor_term(
+    kind_name: str, header: Mapping[str, Any], lines: Optional[Sequence[Mapping[str, Any]]]
+) -> bool:
+    """True when a QT / SO create carries no DisplayTerm and is otherwise complete
+    (every other refusal - FIELD_REQUIRED, DOCNO_REQUIRED - wins first, so a bad
+    request never costs a debtor read)."""
+    if kind_name not in TERM_FROM_DEBTOR_KINDS or not _blank(header.get("DisplayTerm")):
+        return False
+    build_create(kind_name, {**header, "DisplayTerm": _TERM_PLACEHOLDER}, lines)
+    return True
+
+
+def edit_needs_debtor_term(kind_name: str, doc: Doc, header_changes: Mapping[str, Any]) -> bool:
+    """True when a QT / SO edit would send a blank DisplayTerm: the caller blanks it,
+    or leaves it and the document has none."""
+    if kind_name not in TERM_FROM_DEBTOR_KINDS:
+        return False
+    term = header_changes["DisplayTerm"] if "DisplayTerm" in header_changes else doc.get("DisplayTerm")
+    return _blank(term)
 
 
 _ANSWER = re.compile(r"DocNo=(.+?)\s*,DocKey=(\d+)")
