@@ -28,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
 from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.repositories import CompanyRepository
-from modules.autocount.write_back import capabilities, frame, payloads
+from modules.autocount.write_back import capabilities, frame, guard, payloads
 from modules.autocount.write_back.client import WriteTransportError
 from modules.autocount.write_back.doc_kinds import DocKind, kind_of
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
@@ -285,6 +285,45 @@ class PrimitiveService(WriteFrame):
         finally:
             self.db.rollback()
 
+    def read_doc(
+        self, *, tenant_id: str, company_id: str, kind: str, doc_key: int, doc_date: Optional[date] = None,
+    ) -> PrimitiveResult:
+        """B6: the document as AutoCount holds it now (the read a CRM update needs for
+        ``LastModified`` and the row keys). The same gates as a write (company of this
+        tenant, write connection + db3 guard, test company, kind, date), no action row,
+        no write, nothing staged. ``refused`` with a code when a gate or the GET fails."""
+        company = CompanyRepository(self.db).get(tenant_id, company_id)
+        if company is None:
+            return PrimitiveResult(None, frame.OUTCOME_REFUSED, WRITE_DISABLED)
+        try:
+            kind_def = kind_of(kind)
+        except ValueError:
+            return PrimitiveResult(None, frame.OUTCOME_REFUSED, DOC_KIND_UNKNOWN)
+        base_url, refusal = self._resolve_write_base_url(company)
+        if base_url is None:
+            return PrimitiveResult(None, frame.OUTCOME_REFUSED, refusal[0])  # type: ignore[index]
+        try:
+            guard.assert_test_company(self.db, company.tenant_id, company.id)
+        except guard.WriteConnectionError as exc:
+            return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
+        found, code = self.find_date(company, kind_def.name, doc_key, doc_date)
+        if found is None:
+            return PrimitiveResult(None, frame.OUTCOME_REFUSED, code)
+        self.db.commit()  # no transaction open during the GET
+        try:
+            doc = self._reader_factory(base_url).get_document(kind_def.name, doc_key, found)
+        except DocReadError as exc:
+            return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
+        finally:
+            self.db.rollback()
+        try:
+            payloads._check_kind_doc(kind_def, doc, cancelled_ok=True)
+        except WriteRefusal as exc:
+            return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
+        return PrimitiveResult(
+            None, frame.OUTCOME_DONE, doc_key=doc.get("DocKey"), doc_no=doc.get("DocNo"), document=doc,
+        )
+
     def _new_row(self, call: _Call, company_id: str) -> AcWriteAction:
         return self.actions.add(
             AcWriteAction(
@@ -445,8 +484,9 @@ class PrimitiveService(WriteFrame):
                 row.response_json = {"message": message}  # the same safe text, never the stack
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message))
             # a bare failure (an IIS page, a stack): the status and redacted text only (AC-57-47)
-            row.response_json = {"text": vendor_message(response.body, base_url)}
-            return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR))
+            text = vendor_message(response.body, base_url)
+            row.response_json = {"text": text}
+            return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR, message=text))
         self.db.commit()
         self._check_deadline(row)
         try:

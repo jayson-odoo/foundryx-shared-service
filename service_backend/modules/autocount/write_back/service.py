@@ -93,6 +93,9 @@ _SPO = ("SPO", ENTITY_SHIPPING_ORDER)
 _SO = ("SO", ENTITY_SALES_ORDER)
 
 _VERIFY_FIELDS = ("ItemCode", "Location", "UOM", "Qty")
+# B4: a sent row must also read back with the price and delivery date it was sent with.
+_VERIFY_VALUE_FIELDS = ("UnitPrice", "DeliveryDate")
+ROW_VALUES_NOT_KEPT = "ROW_VALUES_NOT_KEPT"
 _UNTOUCHED_FIELDS = payloads.ROW_KEYS + ("FromSODtlKey",)
 _MAX_TEXT = 2000
 
@@ -157,8 +160,14 @@ def _header_unchanged(before: Doc, after: Doc, body: Doc) -> bool:
 
 
 def _row_ok(sent: Doc, got: Doc, is_spo: bool, check_location: bool = True) -> bool:
-    fields = _VERIFY_FIELDS if check_location else tuple(f for f in _VERIFY_FIELDS if f != "Location")
-    if not all(_same(sent.get(k), got.get(k)) for k in fields):
+    """``check_location`` False = a new SO-transferred row in the split's first write:
+    AutoCount resets its location, price and date (``TRANSFER_RESET_FIELDS``), the
+    second write restores them and is verified on its own (B4)."""
+    if check_location:
+        fields = _VERIFY_FIELDS + _VERIFY_VALUE_FIELDS
+    else:
+        fields = tuple(f for f in _VERIFY_FIELDS if f not in payloads.TRANSFER_RESET_FIELDS)
+    if not all(payloads.same_row_value(k, sent.get(k), got.get(k)) for k in fields if k in sent):
         return False
     key = "FromDocDtlKey" if is_spo else "FromSODtlKey"
     return int(got.get(key) or 0) == _expected_link(sent, is_spo)
@@ -200,9 +209,16 @@ def verify_readback(
     return True
 
 
-def verify_relocate(before: Doc, after: Doc, dtl_key: int, location: str, body: Doc) -> bool:
-    """The row is at ``location`` with everything else as before, and no other
-    row or header field changed."""
+def verify_relocate(
+    before: Doc, after: Doc, dtl_key: int, location: Optional[str], body: Doc,
+    values: Optional[Doc] = None,
+) -> bool:
+    """The row is at ``location`` (and carries ``values``, the split's restored
+    price / date) with everything else as before, and no other row or header
+    field changed."""
+    wanted: Doc = dict(values or {})
+    if location is not None:
+        wanted["Location"] = location
     if not _header_unchanged(before, after, body):
         return False
     before_rows = {r.get("DtlKey"): r for r in before.get("Details") or []}
@@ -212,8 +228,10 @@ def verify_relocate(before: Doc, after: Doc, dtl_key: int, location: str, body: 
     for key, row in before_rows.items():
         got = after_rows[key]
         for field in _UNTOUCHED_FIELDS:
-            want = location if key == dtl_key and field == "Location" else row.get(field)
-            if not _same(want, got.get(field)):
+            if key == dtl_key and field in wanted:
+                if not payloads.same_row_value(field, wanted[field], got.get(field)):
+                    return False
+            elif not _same(row.get(field), got.get(field)):
                 return False
     return True
 
@@ -664,8 +682,10 @@ class WriteBackService(WriteFrame):
         row.response_status = response.status_code
         # a failure keeps its status and the redacted text only (AC-57-47); a success as it came
         row.response_json = _safe_body(response.body) if response.ok else {"text": vendor_message(response.body, base_url)}
-        if not response.ok:
-            return self._finish(row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR")
+        if not response.ok:  # carry AutoCount's own (redacted, capped) text to the answer
+            return self._finish(
+                row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR", message=row.response_json["text"]
+            )
         self.db.commit()
         self._check_deadline(row)
         after = self._read_back(plan, reader, before)
@@ -713,9 +733,12 @@ class WriteBackService(WriteFrame):
         body1: Doc,
         so_doc: Doc,
     ) -> WriteActionResult:
-        """Second write of a split link: move the vendor-placed new row to the SO
-        row's location. Any failure there is ``done`` with ``LOCATION_NOT_MOVED``
-        (the link stands; the write is never retried)."""
+        """Second write of a split link: put the vendor-placed new row back to what
+        the split sent, at the SO row's location. AutoCount resets a new
+        SO-transferred row to HQ, price 0 and an empty date (B4). Never retried.
+        Only the location not landing is ``done`` with ``LOCATION_NOT_MOVED`` (the
+        link stands); a price / date not landing is ``mismatch``
+        ``ROW_VALUES_NOT_KEPT``, never a quiet ``done`` on a zero-priced row."""
         target = next(
             (r.get("Location") for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key),
             None,
@@ -728,11 +751,20 @@ class WriteBackService(WriteFrame):
             ),
             None,
         )
-        if new_row is None or not target or new_row.get("Location") == target:
+        sent_new = next((r for r in body1.get("Details") or [] if not r.get("DtlKey")), {})
+        wanted = {k: v for k, v in sent_new.items() if k in payloads.TRANSFER_RESET_FIELDS}
+        if target:
+            wanted["Location"] = target
+        else:
+            wanted.pop("Location", None)
+        restore = payloads.transfer_row_drift(wanted, new_row) if new_row is not None else {}
+        if not restore:
             result = self._finish(row, OUTCOME_DONE, document=after1)
             self._stage(company, plan.kind[0], after1)
             return result
-        body2 = payloads.build_relocate(after1, int(new_row["DtlKey"]), str(target))
+        new_key = int(new_row["DtlKey"])  # type: ignore[index]
+        values = {k: v for k, v in restore.items() if k != "Location"}
+        body2 = payloads.build_restore_transfer_row(after1, new_key, restore)
         first_status = row.response_status
         row.request_json = [body1, body2]
         row.response_json = [row.response_json, None]
@@ -740,8 +772,9 @@ class WriteBackService(WriteFrame):
         row.after_json = [after1, None]
         self.db.commit()  # no transaction open during the second write
         final, code = after1, LOCATION_NOT_MOVED
-        # The link is verified: past the deadline the move is simply not attempted
-        # (no vendor call after it) and the action still ends done.
+        verified = False
+        # The link is verified: past the deadline the restore is simply not attempted
+        # (no vendor call after it).
         try:
             if self._expired():
                 raise _SkipMove()
@@ -763,13 +796,16 @@ class WriteBackService(WriteFrame):
                 if not isinstance(after2, WriteActionResult):
                     row.after_json = [after1, after2]
                     final = after2
-                    if verify_relocate(after1, after2, int(new_row["DtlKey"]), str(target), body2):
+                    verified = True
+                    if verify_relocate(after1, after2, new_key, restore.get("Location"), body2, values):
                         code = None
-                    elif next(
-                        (r for r in after2.get("Details") or [] if r.get("DtlKey") == new_row["DtlKey"]), {}
-                    ).get("Location") == target:
-                        self.db.commit()
-                        return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
+        landed = next((r for r in final.get("Details") or [] if r.get("DtlKey") == new_key), {})
+        if values and (not verified or payloads.transfer_row_drift(values, landed)):
+            self.db.commit()
+            return self._finish(row, OUTCOME_MISMATCH, ROW_VALUES_NOT_KEPT, document=final)
+        if verified and code is not None and not payloads.transfer_row_drift(restore, landed):
+            self.db.commit()  # restored, but something else moved
+            return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
         result = self._finish(row, OUTCOME_DONE, code, document=final)
         self._stage(company, plan.kind[0], final)
         return result

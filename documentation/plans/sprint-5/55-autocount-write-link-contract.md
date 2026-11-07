@@ -145,6 +145,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
 | `refused` | 409 | any code below | Refused before anything was written |
 | `mismatch` | 502 | `READBACK_MISMATCH` | AutoCount accepted the write but the document read back differently from what was sent |
+| `mismatch` | 502 | `ROW_VALUES_NOT_KEPT` | Split link: the link landed, but the new row's unit price or delivery date could not be put back to the PO row's values (section 5) |
 | `vendor_error` | 502 | `VENDOR_ERROR` | AutoCount answered the write with an error; nothing is assumed written |
 
 `refused` 409 codes (nothing was changed in AutoCount):
@@ -172,11 +173,15 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
 
 **Split link is two writes.** Linking a quantity below the PO row edits the row down and adds a new
-linked row. AutoCount places that new row at its default location, so the server then sends a second
-write that moves only the new row to the SO row's location, and reads the document back. The call
-answers `done` once the link is verified. If the second write fails or the location did not move, it
-still answers `done` (200) with `errorCode` `LOCATION_NOT_MOVED`: the link stands, the row sits at the
-default location, and the CRM should offer "Move location" (the relocate route above). The second
+linked row. AutoCount stores that new row at its default location (HQ) with unit price 0 and no
+delivery date, whatever the first write sent (db3, 4 and 6 Nov). The server then sends a second write
+on the new row only: the SO row's location plus the PO row's unit price and delivery date, and reads
+the document back. The call answers `done` once the link and those values are verified. If only the
+location did not land, it still answers `done` (200) with `errorCode` `LOCATION_NOT_MOVED`: the link
+stands, the row sits at the default location, and the CRM should offer "Move location" (the relocate
+route above). If the unit price or delivery date did not land or could not be verified (second write
+failed, skipped at the deadline, ignored, or written but not read back before the deadline), it answers `mismatch` (502) with `errorCode` `ROW_VALUES_NOT_KEPT`: the link
+stands but the new row is mispriced; show "needs review" and fix the row in AutoCount. The second
 write is never retried.
 
 `DEADLINE_EXCEEDED`: an action has an overall time budget (under 5 minutes). Past it before any write was
