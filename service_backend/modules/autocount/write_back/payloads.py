@@ -665,8 +665,22 @@ def verify_edit(
             for k in _COMPARE_LINE
             if k in original and k not in change and not _same(original.get(k), row.get(k))
         )
-    out.extend(_drifted(before, after, list(header_changes), touched))
+    out.extend(k for k in _drifted(before, after, list(header_changes), touched) if not _remark_mirror(k, header_changes, after))
     return out
+
+
+_MIRRORED_REMARKS = ("Remark2", "Remark3", "Remark4")
+
+
+def _remark_mirror(key: str, header_changes: Mapping[str, Any], after: Doc) -> bool:
+    """AutoCount's wrapper copies Remark1 into Remark2..4 on an edit (db3 6 Nov, QT
+    DocKey 12147, F13). An untouched Remark2..4 that now reads back as the newly set
+    Remark1 is that copy, not a field AutoCount ignored."""
+    return (
+        key in _MIRRORED_REMARKS
+        and "Remark1" in header_changes
+        and _same(after.get(key), header_changes["Remark1"])
+    )
 
 
 def verify_delete_line(kind_name: str, before: Doc, dtl_key: int, after: Doc) -> Verdict:
