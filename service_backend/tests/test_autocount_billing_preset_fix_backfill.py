@@ -82,7 +82,15 @@ def _old(entity_type: str, key: str, database: str) -> str:
 
 
 def _new(entity_type: str, key: str, database: str) -> str:
-    return getattr(DOCUMENT_PRESETS[entity_type], KEYS[key]).replace("{database}", database)
+    """What plan 35 writes: its frozen new text where it changes ``key``,
+    else today's preset (SS-PACKAGE-LINES later moves the IV/CS lineQuery on;
+    `test_autocount_billing_package_lines` pins that hop)."""
+    from modules.autocount.backfill import _POST35_BILLING_TEXTS
+
+    text = _POST35_BILLING_TEXTS.get(entity_type, {}).get(key)
+    if text is None:
+        text = getattr(DOCUMENT_PRESETS[entity_type], KEYS[key])
+    return text.replace("{database}", database)
 
 
 def _config(
@@ -144,8 +152,15 @@ def _run(db, **kwargs) -> int:
 def test_the_frozen_new_texts_are_todays_preset():
     from modules.autocount.backfill import _BILLING_DRAFT_FILTER, _POST35_BILLING_TEXTS
 
+    from modules.autocount.backfill import _PRE_PACKAGE_BILLING_LINE_QUERIES
+
     for entity_type, texts in _POST35_BILLING_TEXTS.items():
         for key, text in texts.items():
+            if key == "lineQuery" and entity_type in _PRE_PACKAGE_BILLING_LINE_QUERIES:
+                # SS-PACKAGE-LINES moved the preset on; plan 35's output is
+                # exactly what that pass rewrites FROM.
+                assert text == _PRE_PACKAGE_BILLING_LINE_QUERIES[entity_type], entity_type
+                continue
             assert text == getattr(DOCUMENT_PRESETS[entity_type], KEYS[key]), (entity_type, key)
     for entity_type in BILLING:
         assert DOCUMENT_PRESETS[entity_type].filter_formula == _BILLING_DRAFT_FILTER
@@ -441,7 +456,10 @@ def test_a_tenant_below_0_17_gets_the_join_back_after_0032_removes_it(db):
     db.commit()
     db.expire_all()
     after = db.get(AcEntityConfig, config_id)
-    assert after.source_config["lineQuery"] == _new(ENTITY_INVOICE, "lineQuery", database)
+    # update_tenant from 0.16.0 also runs the SS-PACKAGE-LINES pass after it.
+    assert after.source_config["lineQuery"] == getattr(
+        DOCUMENT_PRESETS[ENTITY_INVOICE], "line_query",
+    ).replace("{database}", database)
     [row] = _rows(db, company.id, ENTITY_INVOICE, "LinkDODocKey")
     assert row.is_enabled is True
 

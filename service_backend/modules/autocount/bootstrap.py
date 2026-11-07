@@ -214,6 +214,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_entity_config_defaults,
         backfill_etl_defaults,
         backfill_billing_do_link_queries,
+        backfill_billing_package_lines,
         backfill_billing_preset_fix,
         backfill_consignment_transferred_qty,
         backfill_customer_debtor_type,
@@ -342,6 +343,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # on deploy.
     if parse_version(from_version) < (0, 21, 0):
         backfill_customer_debtor_type(db, schema=schema, tenant_id=tenant_id)
+    # 0.21.0 -> 0.22.0 (SS-PACKAGE-LINES, partner of sorento-crm #2230):
+    # every existing `invoice` / `cash_sale` task still on the plan-35 line
+    # query also selects `DtlType` + `ParentDtlKey` and gets their two line
+    # rows (`line_type`, `parent_dtl_key`). Runs AFTER the plan-35 pass, whose
+    # output is this pass's input. Module Alembic 0041 runs it on deploy.
+    if parse_version(from_version) < (0, 22, 0):
+        backfill_billing_package_lines(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

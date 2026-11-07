@@ -3422,3 +3422,184 @@ def backfill_billing_preset_fix(
         )
         touched += 1
     return touched
+
+
+# ── SS-PACKAGE-LINES - IV/CS lines select the package keys ───────────────────
+#
+# The stored IV/CS `lineQuery` that plan 35 (0033) writes, frozen: a later
+# preset edit must never change what this pass recognises. The pass rewrites
+# it to also select `DtlType` + `ParentDtlKey` (pinned equal to today's
+# preset by a test) and adds their two line rows.
+_PRE_PACKAGE_BILLING_LINE_QUERIES: Dict[str, str] = dict(_OLD_BILLING_DO_LINE_QUERIES)
+_PACKAGE_BILLING_LINE_QUERIES: Dict[str, str] = {
+    entity_type: old.replace(
+        "d.FromDocDtlKey AS FromDocDtlKey, so.DocKey AS LinkSODocKey",
+        "d.FromDocDtlKey AS FromDocDtlKey, d.DtlType AS DtlType, "
+        "d.ParentDtlKey AS ParentDtlKey, so.DocKey AS LinkSODocKey",
+        1,
+    )
+    for entity_type, old in _PRE_PACKAGE_BILLING_LINE_QUERIES.items()
+}
+# (source column, canonical field, transform), in preset order.
+_PACKAGE_LINE_FIELDS: Tuple[Tuple[str, str, str], ...] = (
+    ("DtlType", "line_type", "string"),
+    ("ParentDtlKey", "parent_dtl_key", "int"),
+)
+
+
+def backfill_billing_package_lines(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA, tenant_id: Optional[str] = None,
+) -> int:
+    """SS-PACKAGE-LINES - move every existing ``invoice`` / ``cash_sale``
+    task onto the line query that selects AutoCount's package keys
+    (``DtlType``, ``ParentDtlKey``), so the CRM can tell a package parent
+    from its children. Returns the number of changes made; 0 on a schema
+    that predates the columns this touches.
+
+    Per task: a ``lineQuery`` byte-identical to the company's substitution
+    of the frozen plan-35 text -> the frozen package text, the two columns
+    join ``line_result_columns`` (NULL stays NULL) and each gets an enabled
+    line row unless a row on its canonical field already exists (the
+    operator's, left alone). Already new or blank -> skipped silently;
+    anything else is customised: left untouched (no rows added - an enabled
+    row on an unselected column 422s the next Mapping-tab save), one WARNING.
+
+    ``tenant_id`` (``update_tenant``) scopes the pass; ``None`` (the deploy
+    migration) covers every tenant. Frozen ``sa.table`` only, company
+    resolved WITH the config's own ``tenant_id``. Never drops or rewrites a
+    line's values: that is the CRM's rule. Does not commit.
+    """
+    needed = {
+        "ac_entity_config": _CONSIGNMENT_BACKFILL_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _CONSIGNMENT_BACKFILL_COMPANY_COLUMNS,
+        "ac_field_mapping": _CONSIGNMENT_BACKFILL_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("line_result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+    select_configs = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.entity_type, entity_config.c.source_config,
+        entity_config.c.line_result_columns,
+    ).where(entity_config.c.entity_type.in_(sorted(_PRE_PACKAGE_BILLING_LINE_QUERIES)))
+    if tenant_id is not None:
+        select_configs = select_configs.where(entity_config.c.tenant_id == tenant_id)
+    configs = connectable.execute(select_configs).fetchall()
+
+    touched = 0
+    for config_id, config_tenant_id, company_id, entity_type, source_config, line_columns in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == config_tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            continue
+        database_name = company_row[0]
+        fresh = dict(source_config or {})
+        stored = fresh.get("lineQuery")
+        old = _PRE_PACKAGE_BILLING_LINE_QUERIES[entity_type].replace("{database}", database_name)
+        new = _PACKAGE_BILLING_LINE_QUERIES[entity_type].replace("{database}", database_name)
+        if stored != old:
+            if stored and stored != new:
+                logger.warning(
+                    "Billing task %s (%s) has a lineQuery the package-lines backfill does "
+                    "not recognise as the AutoCount preset - left untouched. Add "
+                    "d.DtlType AS DtlType, d.ParentDtlKey AS ParentDtlKey to it and map "
+                    "them to line_type / parent_dtl_key so the CRM can tell a package "
+                    "parent line from its children.",
+                    config_id, entity_type,
+                )
+            continue
+        fresh["lineQuery"] = new
+        line_list = None if line_columns is None else [str(c) for c in line_columns]
+        for source_path, canonical_field, transform in _PACKAGE_LINE_FIELDS:
+            if line_list is not None and source_path not in line_list:
+                line_list.append(source_path)
+            # Any row on the target (uq_ac_field_mapping is on canonical_field):
+            # one pointed at another column is the operator's and stays.
+            has_row = connectable.execute(
+                sa.select(field_mapping.c.id).where(
+                    field_mapping.c.tenant_id == config_tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == entity_type,
+                    field_mapping.c.scope == SCOPE_LINE,
+                    field_mapping.c.canonical_field == canonical_field,
+                )
+            ).first() is not None
+            if has_row:
+                continue
+            sort_order = connectable.execute(
+                sa.select(sa.func.count())
+                .select_from(field_mapping)
+                .where(
+                    field_mapping.c.tenant_id == config_tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == entity_type,
+                    field_mapping.c.scope == SCOPE_LINE,
+                )
+            ).scalar() or 0
+            connectable.execute(
+                sa.insert(field_mapping).values(
+                    id=str(uuid.uuid4()),
+                    tenant_id=config_tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    scope=SCOPE_LINE,
+                    source_path=source_path,
+                    canonical_field=canonical_field,
+                    transform=transform,
+                    formula=None,
+                    is_required=False,
+                    is_enabled=True,
+                    is_source_owned=True,
+                    sort_order=sort_order,
+                )
+            )
+            touched += 1
+        connectable.execute(
+            sa.update(entity_config)
+            .where(entity_config.c.id == config_id)
+            .values(source_config=fresh, line_result_columns=line_list)
+        )
+        touched += 1
+    return touched
