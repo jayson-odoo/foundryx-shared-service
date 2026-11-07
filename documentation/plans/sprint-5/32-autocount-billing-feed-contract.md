@@ -83,6 +83,24 @@ unknown ref is `not_found`.
 **Backfill.** Oldest first; IV and CS before CN and DN of the same day; batches up to 1000; start date is
 shared-service configuration (1 Jan 2023).
 
+**Package lines (contract 2.13, SS-PACKAGE-LINES, partner of sorento-crm #2230).** AutoCount sends a
+package sale as one PARENT line (blank `ItemCode`, `ParentDtlKey` 0, carrying qty/price/total) plus N CHILD
+lines whose `ParentDtlKey` is the parent's `DtlKey`; the FIRST child repeats the parent's `line_total`, the
+others are 0, and the header `total` is one copy (M2601-0858: parent 20448971 and child 20448973 both
+`17 x 329 = 5593`). The shared service sends every line unchanged and never drops one; the CRM decides what
+counts. Two additive line keys, sent ONLY when the CRM advertises contract >= 2.13 (the ingest refuses unknown
+keys, so an older CRM keeps receiving the 2.6 line exactly):
+
+| key | type | meaning |
+|---|---|---|
+| `parent_line_ref` | string or null | A CHILD line's parent: the parent line's own `source_ref` (`{database}:IV:{DocKey}:{ParentDtlKey}`). Null on a top-level or parent line (`ParentDtlKey` 0 or NULL). |
+| `line_type` | string or null | AutoCount's raw `DtlType`, as-is. Always null for now: not selected until the column is confirmed. |
+
+A parent line is one that another line's `parent_line_ref` names. Today only invoices carry `parent_line_ref`
+(IVDTL `ParentDtlKey` is the only confirmed column); CS/CN/DN send both keys as null until their tables are
+checked (`presets.BILLING_PACKAGE_COLUMNS`). Line hashes are header-only, so documents already pushed get the
+keys on their next re-push (a header edit, a line-fingerprint change, or a reconcile).
+
 ## 14. ar_outstanding (contract 2.10) and the billing pull
 
 | Call | Slug | Body |

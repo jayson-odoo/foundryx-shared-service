@@ -146,9 +146,14 @@ def test_invoice_and_cash_sale_join_dodtl_for_the_do_line(entity_type):
 def test_the_restored_line_query_is_the_plan_32_text_byte_for_byte(entity_type):
     """The restore is the PR #127 join exactly, so a task the 0032 pass never
     touched (a customised query) and a fresh task read the same SQL."""
-    from modules.autocount.backfill import _OLD_BILLING_DO_LINE_QUERIES
+    from modules.autocount.backfill import (
+        _OLD_BILLING_DO_LINE_QUERIES,
+        _PACKAGE_BILLING_LINE_QUERIES,
+    )
 
-    assert DOCUMENT_PRESETS[entity_type].line_query == _OLD_BILLING_DO_LINE_QUERIES[entity_type]
+    # SS-PACKAGE-LINES later added `ParentDtlKey` to the IV text (only).
+    expected = _PACKAGE_BILLING_LINE_QUERIES.get(entity_type, _OLD_BILLING_DO_LINE_QUERIES[entity_type])
+    assert DOCUMENT_PRESETS[entity_type].line_query == expected
 
 
 @pytest.mark.parametrize("entity_type", [ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE])
