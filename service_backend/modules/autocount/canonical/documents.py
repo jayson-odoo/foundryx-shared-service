@@ -1023,7 +1023,8 @@ class CanonicalBillingDocumentLine(CanonicalDocumentLine):
     # parent's amount: a plain line sum double counts. Both lines are sent
     # unchanged; the CRM decides which counts.
     # * `line_type` - AutoCount's raw `DtlType`, passed through as-is (no
-    #   vocabulary is invented here); null when the source has none.
+    #   vocabulary is invented here). Null until a table's `DtlType` is
+    #   confirmed and mapped (`presets.BILLING_PACKAGE_COLUMNS`).
     # * `parent_line_ref` - a CHILD line's parent, as the parent line's own
     #   `source_ref` (`{header ref}:{ParentDtlKey}`); null on a top-level or
     #   parent line (`ParentDtlKey` NULL or 0). Minted by the engine from the

@@ -4,10 +4,11 @@ A package sale is one PARENT line (blank ItemCode, ParentDtlKey 0) plus CHILD
 lines pointing at it, and the first child repeats the parent's amount, so the
 CRM double counts a plain line sum. This migration runs
 ``backfill_billing_package_lines`` (``modules/autocount/backfill.py``) for
-every ``invoice`` / ``cash_sale`` ``ac_entity_config`` row across every
-tenant: a stored ``lineQuery`` byte-identical to the frozen plan-35 text also
-selects ``DtlType`` + ``ParentDtlKey`` and gets their two line rows; a
-hand-written query is left untouched with one WARNING.
+every ``invoice`` ``ac_entity_config`` row across every tenant: a stored
+``lineQuery`` byte-identical to the frozen plan-35 text also selects
+``ParentDtlKey`` and gets its ``parent_dtl_key`` line row; a hand-written
+query is left untouched with one WARNING. CS / CN / DN are not touched
+(their tables are unconfirmed).
 
 Pure DATA, no column added; does not commit (Alembic's transaction owns that).
 The new wire fields reach only a CRM advertising contract >= 2.13.

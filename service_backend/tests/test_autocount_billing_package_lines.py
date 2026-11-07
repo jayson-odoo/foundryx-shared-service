@@ -38,7 +38,7 @@ from modules.autocount.canonical.documents import (
 from modules.autocount.mapping import SCOPE_LINE
 from modules.autocount.mapping_catalog import line_accepted_field_names
 from modules.autocount.models import SOURCE_IMPL_SQL_DB, AcCompany, AcEntityConfig, AcFieldMapping
-from modules.autocount.presets import DOCUMENT_PRESETS
+from modules.autocount.presets import BILLING_PACKAGE_COLUMNS, DOCUMENT_PRESETS
 from modules.autocount.sinks_sorento import (
     PACKAGE_LINES_CONTRACT_VERSION,
     REPLACES_LINE_REF_CONTRACT_VERSION,
@@ -50,12 +50,14 @@ from tests.test_autocount_billing_feed import DB, LINE_WIRE_KEYS, _engine, _iv_l
 
 PARENT_DTL, CHILD_DTL, CHILD2_DTL = 20448971, 20448973, 20448974
 DOC_KEY = 7700858
-PACKAGE_ENTITIES = (ENTITY_INVOICE, ENTITY_CASH_SALE)
+# Crew ruling 7 Nov: only IVDTL.ParentDtlKey is confirmed on the real schema.
+PACKAGE_ENTITIES = (ENTITY_INVOICE,)
+UNCONFIRMED_ENTITIES = (ENTITY_CASH_SALE, ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE)
 PACKAGE_WIRE_KEYS = {"line_type", "parent_line_ref"}
 NEW = ContractVersion(2, 13)
 
 
-def _package_row(entity_type: str = ENTITY_INVOICE) -> dict:
+def _package_row() -> dict:
     """M2601-0858: one parent, the first child repeating its price, a 0 child."""
     common = {
         "DocKey": DOC_KEY, "UOM": "UNIT", "TaxCode": None, "TaxRate": None,
@@ -67,19 +69,19 @@ def _package_row(entity_type: str = ENTITY_INVOICE) -> dict:
         **common, DtlKey=PARENT_DTL, Seq=16, ItemAutoKey=None, ItemCode=None,
         Description="Bedroom package", Qty=Decimal("17"), UnitPrice=Decimal("329"),
         SubTotalExTax=Decimal("5593.00"), SubTotal=Decimal("5593.00"),
-        DtlType="P", ParentDtlKey=0,
+        ParentDtlKey=0,
     )
     child = _iv_line(
         **common, DtlKey=CHILD_DTL, Seq=16, ItemAutoKey=10442, ItemCode="IBKS8050-BL",
         Description="Bed frame", Qty=Decimal("17"), UnitPrice=Decimal("329"),
         SubTotalExTax=Decimal("5593.00"), SubTotal=Decimal("5593.00"),
-        DtlType="C", ParentDtlKey=PARENT_DTL,
+        ParentDtlKey=PARENT_DTL,
     )
     child2 = _iv_line(
         **common, DtlKey=CHILD2_DTL, Seq=17, ItemAutoKey=10443, ItemCode="IBKS8050-MT",
         Description="Mattress", Qty=Decimal("17"), UnitPrice=Decimal("0"),
         SubTotalExTax=Decimal("0.00"), SubTotal=Decimal("0.00"),
-        DtlType="C", ParentDtlKey=PARENT_DTL,
+        ParentDtlKey=PARENT_DTL,
     )
     return _iv_row(
         DocKey=DOC_KEY, DocNo="M2601-0858", TotalExTax=Decimal("5593.00"),
@@ -88,40 +90,53 @@ def _package_row(entity_type: str = ENTITY_INVOICE) -> dict:
     )
 
 
-def _code(entity_type: str) -> str:
-    return {ENTITY_INVOICE: "IV", ENTITY_CASH_SALE: "CS"}[entity_type]
-
-
 # ── preset ───────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("entity_type", PACKAGE_ENTITIES)
-def test_iv_and_cs_lines_select_the_package_keys(entity_type):
-    preset = DOCUMENT_PRESETS[entity_type]
-    assert "d.DtlType AS DtlType" in preset.line_query
+def test_only_the_confirmed_column_is_configured():
+    assert BILLING_PACKAGE_COLUMNS == {"IVDTL": ("ParentDtlKey",)}
+
+
+def test_invoice_lines_select_parent_dtl_key_only():
+    preset = DOCUMENT_PRESETS[ENTITY_INVOICE]
     assert "d.ParentDtlKey AS ParentDtlKey" in preset.line_query
+    assert "DtlType" not in preset.line_query and "PackageDocKey" not in preset.line_query
     rows = {f.source_path: (f.canonical_field, f.transform, f.enabled) for f in preset.line}
-    assert rows["DtlType"] == ("line_type", "string", True)
     assert rows["ParentDtlKey"] == ("parent_dtl_key", "int", True)
+    assert "DtlType" not in rows
 
 
-@pytest.mark.parametrize("entity_type", [ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE])
-def test_notes_select_no_package_column_until_the_tables_are_checked(entity_type):
+@pytest.mark.parametrize("entity_type", UNCONFIRMED_ENTITIES)
+def test_unconfirmed_tables_select_no_package_column(entity_type):
     preset = DOCUMENT_PRESETS[entity_type]
-    assert "DtlType" not in preset.line_query and "ParentDtlKey" not in preset.line_query
+    for column in ("DtlType", "ParentDtlKey", "PackageDocKey"):
+        assert column not in preset.line_query
     assert {"DtlType", "ParentDtlKey"}.isdisjoint(f.source_path for f in preset.line)
 
 
-@pytest.mark.parametrize("entity_type", PACKAGE_ENTITIES)
-def test_no_line_is_cut_and_the_aggregates_are_unchanged(entity_type):
-    """SS never drops a package line: the cut and the sweep do not read the keys."""
-    preset = DOCUMENT_PRESETS[entity_type]
+def test_widening_is_one_config_entry(monkeypatch):
+    """A newly confirmed table/column needs only a BILLING_PACKAGE_COLUMNS
+    entry: the query and its line row follow from it."""
+    from modules.autocount import presets
+
+    monkeypatch.setitem(presets.BILLING_PACKAGE_COLUMNS, "CSDTL", ("ParentDtlKey", "DtlType"))
+    preset = presets._billing_preset(
+        "x", ENTITY_CASH_SALE, "CS", "CSDTL", transferred=True, doc_status=False,
+    )
+    assert "d.ParentDtlKey AS ParentDtlKey, d.DtlType AS DtlType" in preset.line_query
+    rows = {f.source_path: f.canonical_field for f in preset.line}
+    assert (rows["ParentDtlKey"], rows["DtlType"]) == ("parent_dtl_key", "line_type")
+
+
+def test_no_line_is_cut_and_the_aggregates_are_unchanged():
+    """SS never drops a package line: the cut and the sweep do not read the key."""
+    preset = DOCUMENT_PRESETS[ENTITY_INVOICE]
     for query in (preset.header_query, preset.fingerprint_query):
-        assert "DtlType" not in query and "ParentDtlKey" not in query
+        assert "ParentDtlKey" not in query
     assert "ParentDtlKey" not in preset.line_query.split("WHERE", 1)[1]
 
 
-@pytest.mark.parametrize("entity_type", PACKAGE_ENTITIES)
+@pytest.mark.parametrize("entity_type", [ENTITY_INVOICE, ENTITY_CASH_SALE])
 def test_the_catalog_accepts_line_type_and_the_parent_input_only(entity_type):
     accepted = line_accepted_field_names(entity_type)
     assert {"line_type", "parent_dtl_key"} <= set(accepted)
@@ -131,11 +146,10 @@ def test_the_catalog_accepts_line_type_and_the_parent_input_only(entity_type):
 # ── mapping (M2601-0858) ─────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("entity_type", PACKAGE_ENTITIES)
-def test_a_package_keeps_every_line_and_names_each_childs_parent(entity_type):
-    mapped = _engine(entity_type).map_document(_package_row(entity_type))
+def test_a_package_keeps_every_line_and_names_each_childs_parent():
+    mapped = _engine(ENTITY_INVOICE).map_document(_package_row())
     assert mapped.ok, [e.message() for e in mapped.errors]
-    header = f"{DB}:{_code(entity_type)}:{DOC_KEY}"
+    header = f"{DB}:IV:{DOC_KEY}"
     parent, child, child2 = mapped.record.lines
     assert [line.source_ref for line in mapped.record.lines] == [
         f"{header}:{PARENT_DTL}", f"{header}:{CHILD_DTL}", f"{header}:{CHILD2_DTL}",
@@ -143,14 +157,14 @@ def test_a_package_keeps_every_line_and_names_each_childs_parent(entity_type):
     assert parent.parent_line_ref is None
     assert child.parent_line_ref == parent.source_ref
     assert child2.parent_line_ref == parent.source_ref
-    assert [line.line_type for line in mapped.record.lines] == ["P", "C", "C"]
+    assert [line.line_type for line in mapped.record.lines] == [None, None, None]
     # Both copies of the price survive: the CRM's rule, not ours.
     assert parent.line_total == child.line_total == Decimal("5593.00")
     assert mapped.record.total == Decimal("5593.00")
 
 
 def test_a_null_parent_key_is_a_top_level_line():
-    row = _iv_row(_lines=[_iv_line(DtlType=None, ParentDtlKey=None)])
+    row = _iv_row(_lines=[_iv_line(ParentDtlKey=None)])
     [line] = _engine(ENTITY_INVOICE).map_document(row).record.lines
     assert line.parent_line_ref is None and line.line_type is None
 
@@ -187,8 +201,8 @@ def test_a_2_13_crm_gets_line_type_and_parent_line_ref():
     for line in payload["lines"]:
         assert set(line) == LINE_WIRE_KEYS | PACKAGE_WIRE_KEYS
         assert "parent_dtl_key" not in line
-    assert (parent["line_type"], parent["parent_line_ref"]) == ("P", None)
-    assert (child["line_type"], child["parent_line_ref"]) == ("C", f"{header}:{PARENT_DTL}")
+    assert (parent["line_type"], parent["parent_line_ref"]) == (None, None)
+    assert (child["line_type"], child["parent_line_ref"]) == (None, f"{header}:{PARENT_DTL}")
     assert child2["parent_line_ref"] == f"{header}:{PARENT_DTL}"
     assert (child["line_total"], child2["line_total"]) == (5593, 0)
 
@@ -296,20 +310,18 @@ def test_the_frozen_package_texts_are_todays_preset():
 
 
 @pytest.mark.parametrize("entity_type", PACKAGE_ENTITIES)
-def test_a_preset_task_gets_the_keys_and_their_rows(db, entity_type):
+def test_a_preset_task_gets_the_key_and_its_row(db, entity_type):
     company = _company(db, f"FAKE_DB_PKG_{entity_type.upper()}")
     config_id = _config(db, company, entity_type, line_columns=["DocKey", "DtlKey", "LinkDODocKey"])
 
-    assert _run(db) == 3  # the task + two rows
+    assert _run(db) == 2  # the task + one row
     after = db.get(AcEntityConfig, config_id)
     assert after.source_config["lineQuery"] == DOCUMENT_PRESETS[entity_type].line_query.replace(
         "{database}", company.database_name,
     )
     assert after.source_config["connectionId"] == "conn-x"
-    assert after.line_result_columns == ["DocKey", "DtlKey", "LinkDODocKey", "DtlType", "ParentDtlKey"]
-    [type_row] = _rows(db, company.id, entity_type, "DtlType")
+    assert after.line_result_columns == ["DocKey", "DtlKey", "LinkDODocKey", "ParentDtlKey"]
     [parent_row] = _rows(db, company.id, entity_type, "ParentDtlKey")
-    assert (type_row.canonical_field, type_row.transform, type_row.is_enabled) == ("line_type", "string", True)
     assert (parent_row.canonical_field, parent_row.transform, parent_row.is_enabled) == (
         "parent_dtl_key", "int", True,
     )
@@ -333,7 +345,7 @@ def test_an_operator_row_on_the_target_is_never_duplicated(db):
         is_enabled=True, sort_order=5,
     ))
     db.commit()
-    assert _run(db) == 2  # the task + the DtlType row only
+    assert _run(db) == 1  # the task only
     assert _rows(db, company.id, ENTITY_INVOICE, "ParentDtlKey") == []
     assert len(_rows(db, company.id, ENTITY_INVOICE, "MyParent")) == 1
 
@@ -345,16 +357,18 @@ def test_a_customised_query_is_left_alone_with_a_warning(db, caplog):
     with caplog.at_level(logging.WARNING, logger="foundryx.autocount"):
         assert _run(db) == 0
     assert db.get(AcEntityConfig, config_id).source_config["lineQuery"] == custom
-    assert _rows(db, company.id, ENTITY_INVOICE, "DtlType") == []
+    assert _rows(db, company.id, ENTITY_INVOICE, "ParentDtlKey") == []
     assert any("package-lines backfill" in r.getMessage() for r in caplog.records)
 
 
-def test_notes_and_other_entities_are_never_touched(db):
-    from modules.autocount.backfill import _PRE_PACKAGE_BILLING_LINE_QUERIES
+@pytest.mark.parametrize("entity_type", UNCONFIRMED_ENTITIES)
+def test_unconfirmed_entities_are_never_touched(db, entity_type):
+    from modules.autocount.backfill import _OLD_BILLING_DO_LINE_QUERIES
 
-    company = _company(db, "FAKE_DB_PKG_CN")
-    text = _PRE_PACKAGE_BILLING_LINE_QUERIES[ENTITY_INVOICE]
-    config_id = _config(db, company, ENTITY_CREDIT_NOTE, line_query=text)
+    company = _company(db, f"FAKE_DB_PKG_NO_{entity_type.upper()}")
+    text = _OLD_BILLING_DO_LINE_QUERIES.get(entity_type, _OLD_BILLING_DO_LINE_QUERIES[ENTITY_INVOICE])
+    text = text.replace("{database}", company.database_name)
+    config_id = _config(db, company, entity_type, line_query=text)
     assert _run(db) == 0
     assert db.get(AcEntityConfig, config_id).source_config["lineQuery"] == text
 
@@ -372,7 +386,7 @@ def test_update_tenant_runs_the_pass_below_0_22_only(db, from_version, rewritten
     from modules.autocount.bootstrap import update_tenant
 
     company = _company(db, f"FAKE_DB_PKG_UPD_{from_version.replace('.', '')}")
-    config_id = _config(db, company, ENTITY_CASH_SALE)
+    config_id = _config(db, company, ENTITY_INVOICE)
     update_tenant(db, DEFAULT_TENANT_ID, from_version)
     db.commit()
     db.expire_all()

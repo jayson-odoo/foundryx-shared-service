@@ -3424,25 +3424,27 @@ def backfill_billing_preset_fix(
     return touched
 
 
-# ── SS-PACKAGE-LINES - IV/CS lines select the package keys ───────────────────
+# ── SS-PACKAGE-LINES - IV lines select the package parent key ────────────────
 #
-# The stored IV/CS `lineQuery` that plan 35 (0033) writes, frozen: a later
-# preset edit must never change what this pass recognises. The pass rewrites
-# it to also select `DtlType` + `ParentDtlKey` (pinned equal to today's
-# preset by a test) and adds their two line rows.
-_PRE_PACKAGE_BILLING_LINE_QUERIES: Dict[str, str] = dict(_OLD_BILLING_DO_LINE_QUERIES)
+# The stored IV `lineQuery` that plan 35 (0033) writes, frozen: a later preset
+# edit must never change what this pass recognises. The pass rewrites it to
+# also select `ParentDtlKey` (frozen too, pinned equal to today's preset by a
+# test) and adds its line row. CS is not touched: CSDTL is unconfirmed
+# (crew ruling 7 Nov), so the CS preset selects no package column yet.
+_PRE_PACKAGE_BILLING_LINE_QUERIES: Dict[str, str] = {
+    "invoice": _OLD_BILLING_DO_LINE_QUERIES["invoice"],
+}
 _PACKAGE_BILLING_LINE_QUERIES: Dict[str, str] = {
     entity_type: old.replace(
         "d.FromDocDtlKey AS FromDocDtlKey, so.DocKey AS LinkSODocKey",
-        "d.FromDocDtlKey AS FromDocDtlKey, d.DtlType AS DtlType, "
-        "d.ParentDtlKey AS ParentDtlKey, so.DocKey AS LinkSODocKey",
+        "d.FromDocDtlKey AS FromDocDtlKey, d.ParentDtlKey AS ParentDtlKey, "
+        "so.DocKey AS LinkSODocKey",
         1,
     )
     for entity_type, old in _PRE_PACKAGE_BILLING_LINE_QUERIES.items()
 }
 # (source column, canonical field, transform), in preset order.
 _PACKAGE_LINE_FIELDS: Tuple[Tuple[str, str, str], ...] = (
-    ("DtlType", "line_type", "string"),
     ("ParentDtlKey", "parent_dtl_key", "int"),
 )
 
@@ -3450,15 +3452,14 @@ _PACKAGE_LINE_FIELDS: Tuple[Tuple[str, str, str], ...] = (
 def backfill_billing_package_lines(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA, tenant_id: Optional[str] = None,
 ) -> int:
-    """SS-PACKAGE-LINES - move every existing ``invoice`` / ``cash_sale``
-    task onto the line query that selects AutoCount's package keys
-    (``DtlType``, ``ParentDtlKey``), so the CRM can tell a package parent
-    from its children. Returns the number of changes made; 0 on a schema
+    """SS-PACKAGE-LINES - move every existing ``invoice`` task onto the line
+    query that selects AutoCount's ``ParentDtlKey``, so the CRM can tell a
+    package parent from its children. Returns the number of changes made; 0 on a schema
     that predates the columns this touches.
 
     Per task: a ``lineQuery`` byte-identical to the company's substitution
-    of the frozen plan-35 text -> the frozen package text, the two columns
-    join ``line_result_columns`` (NULL stays NULL) and each gets an enabled
+    of the frozen plan-35 text -> the frozen package text, the column
+    joins ``line_result_columns`` (NULL stays NULL) and gets an enabled
     line row unless a row on its canonical field already exists (the
     operator's, left alone). Already new or blank -> skipped silently;
     anything else is customised: left untouched (no rows added - an enabled
@@ -3544,9 +3545,8 @@ def backfill_billing_package_lines(
                 logger.warning(
                     "Billing task %s (%s) has a lineQuery the package-lines backfill does "
                     "not recognise as the AutoCount preset - left untouched. Add "
-                    "d.DtlType AS DtlType, d.ParentDtlKey AS ParentDtlKey to it and map "
-                    "them to line_type / parent_dtl_key so the CRM can tell a package "
-                    "parent line from its children.",
+                    "d.ParentDtlKey AS ParentDtlKey to it and map it to parent_dtl_key "
+                    "so the CRM can tell a package parent line from its children.",
                     config_id, entity_type,
                 )
             continue
