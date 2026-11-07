@@ -485,3 +485,11 @@ def test_f13_remark1_itself_ignored_is_still_reported():
     _remarks(before, "R1")
     after = copy.deepcopy(before)
     assert P.verify_edit("QT", before, {"Remark1": "R2"}, [], after) == ["Remark1"]
+
+
+def test_f13_remark2_cleared_without_a_remark1_change_is_still_reported():
+    before = qt_doc()
+    _remarks(before, "R1")
+    after = copy.deepcopy(before)
+    after["Remark2"] = None
+    assert P.verify_edit("QT", before, {}, [], after) == ["Remark2"]

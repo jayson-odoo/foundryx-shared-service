@@ -142,7 +142,7 @@ FIELD_NOT_EDITABLE`, the name in `message`. `qty` not above zero (or over 8 deci
 `errorCode: FIELD_IGNORED`, `message` `ignored: <names>` and the same names in `warnings`; the names are camelCase
 (for example `ref`).
 AutoCount copies `remark1` into `remark2`..`remark4` on an edit. When the edit sets `remark1`, a `remark2`..`remark4`
-the caller did not send that reads back as the new `remark1` is that copy, not an ignored field (F13, db3 6 Nov).
+the caller did not send that reads back as the new `remark1` is that copy, not an ignored field (F13, db3 6 Nov). The previous `remark2`..`remark4` values are lost.
 
 ### 3.3 Add line, delete line, cancel
 
