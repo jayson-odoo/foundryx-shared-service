@@ -1,4 +1,4 @@
-# SS-SO-FAST-QUEUE - plan card
+# SS-SO-FAST-QUEUE - plan card (as built)
 
 Lane: AutoCount SO edits reach the CRM ~5 min late (p90). Cause (owner prod probe 1-8 Nov):
 the shared `jobs` queue (`docker-compose.yml` `worker_jobs -c 2`) is ~82% busy in working hours,
@@ -39,22 +39,35 @@ With the split, a queued SO job should almost never exist.
 runs show "-") = job `started_at - created_at`, stamped when the run starts. Exposed on the run
 history wire (`queueWaitMs`) and in the run-history table ("Queue wait").
 
-## 4. Defaults / config
+## 4. Defaults / config (owner answers 8 Nov ~21:55-22:00)
 
-- `DEFAULT_INCREMENTAL_MINUTES` for document presets -> 1 (Mocha SO is on the old 15 default).
-- Reconcile "Daily at" gets a timezone: `source_config.reconcileTimezone` (IANA). New tasks default
-  `Asia/Kuala_Lumpur`; a task without the key keeps today's UTC meaning (no silent 8 h shift on
-  deploy). The editor shows the time with its zone.
-- Owner-run admin script `python -m modules.autocount.scripts.move_reconciles_off_hours`
-  (dry-run by default, `--apply` to write, idempotent): sets every Daily-at task to
-  `Asia/Kuala_Lumpur`, staggers reconciles 02:00-05:00 MYT (one company's tasks spaced out,
-  documents before masters), sets document incrementals to 1 min, re-arms `next_*_at`.
+- New document tasks default to a 1-minute incremental; new tasks write `reconcileTimezone =
+  Asia/Kuala_Lumpur`. A task without the key keeps its historical UTC reading (no silent 8 h
+  shift on deploy). The Schedule tab shows the zone (MYT/UTC) and edits it.
+- **Seconds cadence ("go 30s")**: `source_config.incrementalSeconds` (wins over minutes) for
+  document tasks with a watermark while the docs queue is on; floor 15 s, max 3600 s. The ETL
+  beat ticks every 15 s; the failure-alert pass that rides it stays once a minute; a sub-minute
+  task writes one skip row per in-flight job; the fast line check (60-day window) runs at most
+  once per `AUTOCOUNT_FINGERPRINT_FAST_MIN_INTERVAL_SECONDS` (60) per task, so the AutoCount
+  load of a 30 s task is +1 header watermark seek per minute. Seconds/minutes picker on
+  document task schedules.
+- Owner-run `python -m scripts.autocount_reconcile_off_hours` (dry-run by default, `--apply`,
+  idempotent): every Daily-at reconcile -> Asia/Kuala_Lumpur, staggered 02:00-05:00 MYT
+  (documents first); document incrementals -> 1 min; sales_order -> 30 s (`--so-seconds`);
+  ACTIVE tasks re-armed. stock_balance keeps its 5-minute cadence.
 
 ## 5. Mocha product + stock_balance
 
-Needs prod facts I cannot reach from the sandbox (see questions 4-5). Code-side candidates under
-investigation: product walk exceeding budget/timeouts on the open REST API, walk not verifying
-when the population changes mid-walk.
+Owner Q4 query (7 days, 410 runs): 245 success (~910 s), 87 "Interrupted" (avg 967 s),
+~70 HTTP 400 (pages 1-14), 9 timeouts after 2 halvings, 5 x 502/530.
+- **Interrupted = false orphan sweep.** The push path gave the HTTP source no per-page
+  heartbeat, so a ~900 s walk crossed `background_job_orphan_after_minutes` (15) and was failed
+  while alive. Fixed: per-page beat on the push walk (`sync.py`).
+- **HTTP 400 = transient wrapper answer** (same config succeeds most runs). A 400 now rides the
+  5xx retry ladder (1 s, 4 s); other 4xx still fail at once; page errors name the path and the
+  first 160 chars of AutoCount's answer.
+- stock_balance: the wrapper has no changed-since filter (BL-SS-204/214 open), so the full read
+  stays; it no longer blocks SO. Lookup cache = BL-SS-353. 30 s measurement = BL-SS-354.
 
 ## Deploy
 
