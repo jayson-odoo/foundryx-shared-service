@@ -149,6 +149,7 @@ export function ScheduleTab({
           fieldErrors={fieldErrors}
           nextIncrementalAt={isActive ? task.nextIncrementalAt : null}
           nextReconcileAt={isActive ? task.nextReconcileAt : null}
+          timezoneEditable
         >
           <Card>
             <CardHeader>

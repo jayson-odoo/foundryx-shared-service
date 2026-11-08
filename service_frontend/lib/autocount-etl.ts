@@ -569,6 +569,22 @@ export const RECONCILE_MODE_OPTIONS: { label: string; value: AutocountEtlSourceC
   { label: 'Every N hours', value: 'interval' },
 ];
 
+/** SS-SO-FAST-QUEUE - the zones a daily reconcile may be read in. Mirrors
+ * `DEFAULT_RECONCILE_TIMEZONE` / the legacy UTC reading in
+ * `modules/autocount/services/etl_service.py`. */
+export const DEFAULT_RECONCILE_TIMEZONE = 'Asia/Kuala_Lumpur';
+export const RECONCILE_TIMEZONE_OPTIONS: { label: string; value: string }[] = [
+  { label: 'MYT (Asia/Kuala_Lumpur)', value: 'Asia/Kuala_Lumpur' },
+  { label: 'UTC', value: 'UTC' },
+];
+
+/** Short zone label beside a reconcile time - no key = the legacy UTC reading. */
+export function reconcileTimezoneLabel(zone: string | null | undefined): string {
+  if (!zone || zone === 'UTC') return 'UTC';
+  if (zone === 'Asia/Kuala_Lumpur') return 'MYT';
+  return zone;
+}
+
 export function mappingSourceColumns(
   resultColumns: string[],
   previewColumns: string[],

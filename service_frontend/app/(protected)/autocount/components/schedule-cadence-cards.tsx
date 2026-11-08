@@ -6,6 +6,8 @@ import type { AutocountScheduleCadence } from '@/types/autocount';
 import {
   incrementalFloorMinutes,
   RECONCILE_MODE_OPTIONS,
+  RECONCILE_TIMEZONE_OPTIONS,
+  reconcileTimezoneLabel,
   validateIncrementalMinutes,
   validateReconcileAt,
   validateReconcileHours,
@@ -46,6 +48,9 @@ export interface ScheduleCadenceCardsProps {
    * cadence fields (the Document feeds' read window, DOC-FEED-WINDOW). */
   incrementalExtra?: ReactNode;
   reconcileExtra?: ReactNode;
+  /** SS-SO-FAST-QUEUE - the daily time's zone is editable (ETL tasks). Off =
+   * a fixed "UTC" label (Document feeds, whose sweep reads UTC). */
+  timezoneEditable?: boolean;
 }
 
 /** Live mirror of every cadence rule - the same messages the cards render.
@@ -88,6 +93,7 @@ export function ScheduleCadenceCards({
   children,
   incrementalExtra,
   reconcileExtra,
+  timezoneEditable = false,
 }: ScheduleCadenceCardsProps) {
   const { formatDateTime } = useDatetime();
   const floor = incrementalFloorMinutes(hasWatermark);
@@ -222,7 +228,21 @@ export function ScheduleCadenceCards({
                   {value.reconcileAt ?? '-'}
                 </span>
               )}
-              <span className="text-xs text-muted-foreground">UTC</span>
+              {timezoneEditable && editing ? (
+                <SearchSelect
+                  options={RECONCILE_TIMEZONE_OPTIONS}
+                  value={value.reconcileTimezone || 'UTC'}
+                  onChange={(v) => onChange({ reconcileTimezone: v })}
+                  ariaLabel={`${reconcileTitle} time zone`}
+                />
+              ) : (
+                <span
+                  className="text-xs text-muted-foreground"
+                  data-testid={id('reconcile-timezone')}
+                >
+                  {timezoneEditable ? reconcileTimezoneLabel(value.reconcileTimezone) : 'UTC'}
+                </span>
+              )}
               {reconcileAtError && (
                 <p
                   className="text-xs text-destructive"

@@ -92,6 +92,7 @@ describe('runs list config - task variant (plan 22 S2, AC-22-17)', () => {
       'deletedCount',
       'failedCount',
       'durationMs',
+      'queueWaitMs',
       'outcome',
     ]);
   });
