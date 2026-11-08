@@ -409,6 +409,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             entity_type=entity_type,
             job_id=job.id,
             mode=mode,
+            queue_wait_ms=queue_wait_ms(job),
         )
     )
     watermark_row.last_attempt_at = datetime.now(timezone.utc)
@@ -3325,9 +3326,58 @@ register_pull_snapshot_handler()
 # The SAME def object re-registers cleanly (the registry tolerates identity).
 # ``heartbeats=True``: this handler beats at every checkpoint (page / push
 # chunk), so the orphan sweep may fail a RUNNING sync whose beat went stale.
+def _docs_queue_entity_types() -> Tuple[str, ...]:
+    """Document entities whose INCREMENTAL rides the docs queue: every
+    document the CRM waits on (orders, linked, billing, GRN) - never the AR
+    outstanding snapshot (a whole-ledger read, not an edit stream)."""
+    from .canonical.documents import DOCUMENT_ENTITY_TYPES, ENTITY_AR_OUTSTANDING
+    from .canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
+
+    return tuple(
+        t for t in DOCUMENT_ENTITY_TYPES if t != ENTITY_AR_OUTSTANDING
+    ) + (ENTITY_GOODS_RECEIVED_NOTE,)
+
+
+def autocount_sync_queue_for(job: BackgroundJob) -> Optional[str]:
+    """SS-SO-FAST-QUEUE - the per-job route for ``autocount_sync``.
+
+    A scheduled document INCREMENTAL (seconds of work, the CRM is waiting on
+    it) goes to ``settings.autocount_docs_queue``. Everything else - masters,
+    product, stock_balance, AR outstanding, every reconcile (8-10 min on a
+    big SO table) and every manual "Run now" (may be an initial load) -
+    returns None and keeps the type's default route (``jobs``), so nothing
+    long can ever sit in front of an SO incremental."""
+    from app.config import settings
+
+    queue = (settings.autocount_docs_queue or "").strip()
+    if not queue:
+        return None
+    payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+    if payload.get("mode") != RUN_MODE_INCREMENTAL:
+        return None
+    if payload.get("entityType") not in _docs_queue_entity_types():
+        return None
+    return queue
+
+
+def queue_wait_ms(job: BackgroundJob) -> Optional[int]:
+    """How long ``job`` sat queued before a worker claimed it (``started_at -
+    created_at``), or None when either stamp is missing."""
+    if job.started_at is None or job.created_at is None:
+        return None
+    created = job.created_at
+    started = job.started_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return max(0, int((started - created).total_seconds() * 1000))
+
+
 _HANDLER_DEF = JobHandlerDef(
     AUTOCOUNT_SYNC, run_autocount_sync, "AutoCount sync", heartbeats=True,
     read_permission="autocount.sync.read",
+    queue_for=autocount_sync_queue_for,
 )
 
 

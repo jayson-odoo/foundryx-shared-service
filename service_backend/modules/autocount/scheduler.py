@@ -16,14 +16,12 @@ as it does for a manual run. **Per-task failure isolation**: one bad task's
 exception never stops the sweep or corrupts a sibling task's row (mirrors
 ``app/workflow_engine/scheduler.reevaluate_time_based``).
 
-**Timezone note (documented per plan §2.4).** Foundryx has NO tenant-level
-timezone setting today - only a per-user ``users.timezone`` preference, which
-has no natural owner for an unattended scheduled task. So a "Daily at HH:MM"
-reconcile is resolved as UTC, both when armed (``EtlService.next_run_times``,
-called at activate/resume) and here at the sweep (the SAME pure function,
-called fresh against ``now`` so drift never compounds). A genuine tenant
-timezone setting is a fair follow-up once a customer needs true local-wall-
-clock scheduling in a non-UTC tenant.
+**Timezone note.** A "Daily at HH:MM" reconcile is read in the task's own
+``source_config.reconcileTimezone`` (SS-SO-FAST-QUEUE, owner 8 Nov: new tasks
+are written Asia/Kuala_Lumpur so the admin sees MYT; a task saved before the
+key existed has none and keeps its historical UTC reading). Resolved by the
+SAME pure function at activate/resume (``EtlService.next_run_times``) and here
+at the sweep, called fresh against ``now`` so drift never compounds.
 """
 from __future__ import annotations
 
@@ -383,10 +381,7 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             reason = RECONCILE_DEFERRED_REASON
         else:
             write_row = True
-            reason = (
-                "A run for this task was still in progress when the incremental "
-                "schedule fired; this tick was skipped."
-            )
+            reason = _incremental_skip_reason(in_flight, now=now)
         if write_row:
             runs.add(
                 AcSyncRun(
@@ -452,6 +447,32 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
         db.commit()
     return "fired"
+
+
+def _incremental_skip_reason(in_flight, *, now: datetime) -> str:
+    """SS-SO-FAST-QUEUE - say WHICH kind of in-flight job blocked the tick.
+
+    A PENDING job never claimed by a worker is QUEUED, not running: the tick
+    is skipped either way (one job per task, never a pile of duplicates
+    behind a busy worker), but the run history must not call a job that is
+    waiting for a worker "in progress" - that hid a 38% SO skip rate caused
+    by queue wait, not by slow runs (prod 1-8 Nov)."""
+    if in_flight.status == JOB_PENDING and in_flight.started_at is None:
+        created = in_flight.created_at
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        waited = (
+            f" for {max(0, int((now - created).total_seconds()))} s"
+            if created is not None else ""
+        )
+        return (
+            f"The previous run for this task was queued{waited}, waiting for a "
+            "worker, when the incremental schedule fired; this tick was skipped."
+        )
+    return (
+        "A run for this task was still in progress when the incremental "
+        "schedule fired; this tick was skipped."
+    )
 
 
 def _refill_empty_line_check(db: Session, config: AcEntityConfig) -> None:

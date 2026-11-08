@@ -44,6 +44,12 @@ class JobHandlerDef:
     # True: jobs of this type are read only through the owning module's own
     # routes, which check each row; the generic Jobs routes never list them.
     module_read: bool = False
+    # SS-SO-FAST-QUEUE - a PER-JOB route, asked before ``queue``: one type
+    # whose jobs belong on different workers (``autocount_sync``: a document
+    # incremental rides ``jobs_docs`` so it never waits behind a 4-minute
+    # stock_balance walk). Returns a queue name, or None for "no override,
+    # use ``queue`` / the default route".
+    queue_for: Optional[Callable[[BackgroundJob], Optional[str]]] = None
 
 
 _REGISTRY: Dict[str, JobHandlerDef] = {}
@@ -83,6 +89,30 @@ def queue_for_type(job_type: str) -> Optional[str]:
     ``create()`` time."""
     handler_def = _REGISTRY.get(job_type)
     return handler_def.queue if handler_def is not None else None
+
+
+def queue_for_job(job: BackgroundJob) -> Optional[str]:
+    """The Celery queue ONE job is dispatched onto: the type's per-job
+    ``queue_for`` resolver first, then the type's static ``queue``, else None
+    (the default route). Quiet for an unknown type, like ``queue_for_type``.
+    A resolver that raises never blocks the enqueue - the job falls back to
+    the static route and the error is logged."""
+    handler_def = _REGISTRY.get(job.type)
+    if handler_def is None:
+        return None
+    if handler_def.queue_for is not None:
+        try:
+            routed = handler_def.queue_for(job)
+        except Exception:  # noqa: BLE001 - routing never loses a job
+            import logging
+
+            logging.getLogger("foundryx.jobs").exception(
+                "queue_for resolver failed for job %s; using the static route", job.id
+            )
+            routed = None
+        if routed:
+            return routed
+    return handler_def.queue
 
 
 def _reset_registry_for_tests() -> None:

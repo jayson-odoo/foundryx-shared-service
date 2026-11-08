@@ -218,6 +218,8 @@ def test_the_run_history_wire_carries_queue_wait():
     run = AcSyncRun(
         id="r1", tenant_id=DEFAULT_TENANT_ID, company_id="c1", entity_type="sales_order",
         mode="incremental", queue_wait_ms=1200,
+        fetched_count=0, staged_count=0, failed_count=0, pushed_count=0,
+        rows_scanned=0, added_count=0, updated_count=0, deleted_count=0, truncated=False,
     )
     assert SyncRunItem.model_validate(run).model_dump()["queueWaitMs"] == 1200
 

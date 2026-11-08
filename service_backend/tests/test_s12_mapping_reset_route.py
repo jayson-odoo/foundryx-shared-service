@@ -278,7 +278,9 @@ def test_ac_12_32_no_new_autocount_migration_added():
     lock, status list), moving it to 39, and AC-WRITE-QTSO (plan 57) ships
     `0040_autocount_write_ops` (write operation log and the action row columns),
     moving it to 40, and SS-PACKAGE-LINES the data-only
-    `0041_autocount_package_lines` backfill, moving it to 41; a
+    `0041_autocount_package_lines` backfill, moving it to 41, and
+    SS-SO-FAST-QUEUE `0042_autocount_queue_wait` (run queue wait column),
+    moving it to 42; a
     reviewer/coder adding one beyond THAT for a schema-free slice still trips
     this guard rather than the drift going unnoticed."""
     versions_dir = (
@@ -290,8 +292,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
         match = re.match(r"^(\d+)_", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    assert highest <= 41, (
-        f"a new autocount migration (>0041) exists ({highest}) - AC-12-32 "
+    assert highest <= 42, (
+        f"a new autocount migration (>0042) exists ({highest}) - AC-12-32 "
         "says THIS plan ships no schema change (a later plan may legitimately "
         "move this ceiling again, as AC-CONSIGN-PULL just did from 29 to 30, and "
         "SS-INTEGRATION-ALERT (plan 33) did from 30 to 31)"

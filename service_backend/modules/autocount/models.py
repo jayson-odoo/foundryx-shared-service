@@ -564,6 +564,10 @@ class AcSyncRun(AutocountBase):
     started_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     finished_at = Column(UTCDateTime(), nullable=True)
     duration_ms = Column(Integer, nullable=True)
+    # SS-SO-FAST-QUEUE - how long this run's job sat queued before a worker
+    # claimed it (job ``started_at - created_at``). NULL for skipped ticks,
+    # API-path runs and rows written before the column existed.
+    queue_wait_ms = Column(Integer, nullable=True)
 
 
 # ── integration failure alerts (plan 33) ─────────────────────────────────────

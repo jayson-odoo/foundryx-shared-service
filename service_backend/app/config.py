@@ -505,6 +505,13 @@ class Settings(BaseSettings):
     # startup - never silently clamped, which would look like a working
     # config while quietly extracting the whole 306k-header table per page.
     autocount_page_size: int = 2000
+    # SS-SO-FAST-QUEUE (owner 8 Nov) - the Celery queue a DOCUMENT
+    # incremental (`autocount_sync`, mode=incremental, SO/PO/IV/CN/...) is
+    # published on, consumed by the dedicated `worker_jobs_docs` compose
+    # service, so an SO edit never waits behind a stock_balance / product
+    # walk on the shared `jobs` queue. Empty = no split (rollback lever:
+    # documents ride `jobs` again). Read at enqueue time.
+    autocount_docs_queue: str = "jobs_docs"
     autocount_run_time_budget_seconds: int = 600
     # The Sorento sink's own HTTP client timeout (round 5) - a 1,000-record
     # document batch with lines can genuinely take Sorento longer than the

@@ -77,6 +77,11 @@ x-backend-env: &backend-env
   # concurrency per tenant from that Sorento connection's own Push concurrency
   # field instead (feat/sink-concurrency-ui), not by editing this default.
   AUTOCOUNT_SINK_CONCURRENCY: ${AUTOCOUNT_SINK_CONCURRENCY:-1}
+  # SS-SO-FAST-QUEUE - the queue document incrementals are published on
+  # (consumed by worker_jobs_docs). `-` not `:-` on purpose: an EMPTY value is
+  # the rollback lever (documents ride `jobs` again), it must not be replaced
+  # by the default.
+  AUTOCOUNT_DOCS_QUEUE: ${AUTOCOUNT_DOCS_QUEUE-jobs_docs}
   # Per-key limits on the API key routes (plan 50). Empty = the default in
   # app/config.py (10 in flight, 600 per minute, no overrides). Overrides =
   # JSON {"<key id>": {"max_per_minute": n, "max_in_flight": n}}.
@@ -240,6 +245,28 @@ services:
       WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-0}
       WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-0}
     command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "jobs", "-c", "2", "--loglevel", "info"]
+    healthcheck:
+      disable: true
+    networks:
+      - foundryx_ss_network
+
+  # SS-SO-FAST-QUEUE (owner 8 Nov) - document incrementals (SO/PO/IV/CN/DN/
+  # CS/DO/consignment/cancel_*, mode=incremental) are published on their OWN
+  # `jobs_docs` queue (`autocount_sync_queue_for`, modules/autocount/sync.py)
+  # so an AutoCount SO edit never waits behind a ~4-minute stock_balance or
+  # ~15-minute product walk on `worker_jobs` (prod 1-8 Nov: SO queue wait
+  # 231 s p90, 38% of SO ticks skipped). Reconciles, manual runs, masters,
+  # product and stock stay on `jobs`. Same image + Celery app as worker_jobs.
+  # Rollback: set AUTOCOUNT_DOCS_QUEUE= (empty) - routing falls back to `jobs`.
+  worker_jobs_docs:
+    <<: *backend-base
+    container_name: foundryx_ss_worker_jobs_docs
+    environment:
+      <<: *backend-env
+      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-0}
+      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-0}
+      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-0}
+    command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "jobs_docs", "-c", "2", "--loglevel", "info"]
     healthcheck:
       disable: true
     networks:

@@ -47,7 +47,8 @@ _CONTROL_TRANSPORT_OPTIONS = {
 # the shared `workflow` queue (every beat tick, `workflows.run_workflow`, ...)
 # and the new dedicated `jobs` queue (`jobs.run` only). A future queue (e.g.
 # `stt`/`bots`, meetings) adds its name here when it needs this same signal.
-KNOWN_QUEUES = ("workflow", "jobs")
+# SS-SO-FAST-QUEUE adds `jobs_docs` (document incrementals, worker_jobs_docs).
+KNOWN_QUEUES = ("workflow", "jobs", "jobs_docs")
 
 # Bounded socket waits for the liveness client.
 _SOCKET_CONNECT_TIMEOUT_SECONDS = 1.0

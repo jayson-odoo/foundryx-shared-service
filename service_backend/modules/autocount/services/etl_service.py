@@ -212,7 +212,32 @@ RECONCILE_MODE_INTERVAL = "interval"
 RECONCILE_MODE_DAILY_AT = "dailyAt"
 RECONCILE_MODES = (RECONCILE_MODE_INTERVAL, RECONCILE_MODE_DAILY_AT)
 DEFAULT_INCREMENTAL_MINUTES = 15
+# SS-SO-FAST-QUEUE (owner 8 Nov) - a document's edits are what the CRM waits
+# on, so a NEW document task starts at the 1-minute floor (Sorento SO already
+# runs at 1; Mocha SO was left on the 15 default). Masters keep 15.
+DEFAULT_DOCUMENT_INCREMENTAL_MINUTES = 1
 DEFAULT_RECONCILE_AT = "02:00"
+# SS-SO-FAST-QUEUE - the zone a "Daily at HH:MM" reconcile is read in. Every
+# AutoCount customer today is in Malaysia, so a NEW task is written with this
+# zone. A task saved before the key existed has NO ``reconcileTimezone`` and
+# keeps its historical UTC reading - a deploy never shifts a live schedule by
+# 8 h on its own (the owner moves them with
+# ``scripts.autocount_reconcile_off_hours``).
+DEFAULT_RECONCILE_TIMEZONE = "Asia/Kuala_Lumpur"
+LEGACY_RECONCILE_TIMEZONE = "UTC"
+
+
+def _zone(name: Any):
+    """The ``ZoneInfo`` for a stored zone name, or None when blank/unknown."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    text = str(name or "").strip()
+    if not text:
+        return None
+    try:
+        return ZoneInfo(text)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _QUERY_HEAD = 120
@@ -408,10 +433,15 @@ def default_source_config(entity_type: str, *, today: Optional[date] = None) -> 
         # are GONE - a document's line fields are persisted `ac_field_mapping`
         # rows now (AC-02-01), not source_config picks.
         "filterFormula": None,
-        "incrementalMinutes": DEFAULT_INCREMENTAL_MINUTES,
+        "incrementalMinutes": (
+            DEFAULT_DOCUMENT_INCREMENTAL_MINUTES
+            if document and entity_type != ENTITY_AR_OUTSTANDING
+            else DEFAULT_INCREMENTAL_MINUTES
+        ),
         "reconcileMode": RECONCILE_MODE_DAILY_AT,
         "reconcileHours": None,
         "reconcileAt": DEFAULT_RECONCILE_AT,
+        "reconcileTimezone": DEFAULT_RECONCILE_TIMEZONE,
     }
 
 
@@ -431,6 +461,7 @@ def default_http_source_config() -> Dict[str, Any]:
         "reconcileMode": RECONCILE_MODE_DAILY_AT,
         "reconcileHours": None,
         "reconcileAt": DEFAULT_RECONCILE_AT,
+        "reconcileTimezone": DEFAULT_RECONCILE_TIMEZONE,
     }
 
 
@@ -534,15 +565,22 @@ def validate_schedule(
         if at is None or not _TIME_RE.match(at):
             errors["reconcileAt"] = "Enter the daily reconcile time as HH:MM."
 
-    return (
-        {
-            "incrementalMinutes": minutes,
-            "reconcileMode": mode,
-            "reconcileHours": hours,
-            "reconcileAt": at,
-        },
-        errors,
-    )
+    cleaned: Dict[str, Any] = {
+        "incrementalMinutes": minutes,
+        "reconcileMode": mode,
+        "reconcileHours": hours,
+        "reconcileAt": at,
+    }
+    # SS-SO-FAST-QUEUE - carried only when sent: a save that never names a
+    # zone (an older client, a document feed) keeps the key absent, so the
+    # task keeps its legacy UTC reading rather than silently moving.
+    zone_name = str(raw.get("reconcileTimezone") or "").strip()
+    if zone_name:
+        if _zone(zone_name) is None:
+            errors["reconcileTimezone"] = "Choose a valid time zone."
+        else:
+            cleaned["reconcileTimezone"] = zone_name
+    return cleaned, errors
 
 
 # A document task's row-hash population (`ac_row_hash`) is a diff baseline
@@ -762,6 +800,8 @@ def validate_source_config(
         "reconcileHours": hours,
         "reconcileAt": at,
     }
+    if "reconcileTimezone" in schedule:
+        clean["reconcileTimezone"] = schedule["reconcileTimezone"]
     return clean, errors
 
 
@@ -1826,6 +1866,8 @@ class EtlService:
             "lookups": lookups,
             "combine": combine,
         }
+        if "reconcileTimezone" in schedule:
+            clean["reconcileTimezone"] = schedule["reconcileTimezone"]
         return clean, errors
 
     def _update_http_task(
@@ -2506,11 +2548,10 @@ class EtlService:
         """``(next_incremental_at, next_reconcile_at)`` in UTC.
 
         Armed at activation so the sweep (S3) has a due time to select on from
-        the first tick. The daily-at time is treated as UTC, full stop - there
-        is no tenant-level timezone setting to re-resolve against (only a
-        per-user preference, which has no natural owner for an unattended
-        scheduled task; see ``scheduler.py``'s own note). BL-SS-034 tracks
-        adding one. This stays a pure function of ``now`` either way.
+        the first tick. The daily-at time is read in the task's own
+        ``reconcileTimezone`` (SS-SO-FAST-QUEUE; new tasks: Asia/Kuala_Lumpur)
+        and in UTC for a task saved before that key existed. A tenant-level
+        zone is still BL-SS-034. This stays a pure function of ``now``.
         """
         now = now or datetime.now(timezone.utc)
         minutes = _clean_int(source_config.get("incrementalMinutes")) or (
@@ -2531,10 +2572,18 @@ class EtlService:
         if not _TIME_RE.match(at):
             at = DEFAULT_RECONCILE_AT
         hour, minute = (int(part) for part in at.split(":"))
-        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)
-        return incremental, target
+        # SS-SO-FAST-QUEUE - the wall clock is the task's own zone; a task
+        # without one (saved before the key) or with an unknown one reads UTC,
+        # exactly as before. Built on the zone's local DATE then converted,
+        # so a DST zone lands on the right instant too.
+        zone = _zone(source_config.get("reconcileTimezone")) or timezone.utc
+        local_now = now.astimezone(zone)
+        local_target = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if local_target <= local_now:
+            local_target = (local_target + timedelta(days=1)).replace(
+                hour=hour, minute=minute
+            )
+        return incremental, local_target.astimezone(timezone.utc)
 
     def validate_task_previewable(
         self, tenant_id: str, company_id: str, entity_type: str

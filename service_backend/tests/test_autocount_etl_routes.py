@@ -418,7 +418,8 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         # saves as; `customer` is one of the vendor-API seeded entities
         # (`CompanyService.SEEDED_ENTITIES`), so it is born `autocount_read`.
         "sourceImpl": "autocount_read",
-        "sourceConfig": _config(),
+        # SS-SO-FAST-QUEUE - a new draft names its reconcile zone (MYT).
+        "sourceConfig": _config(reconcileTimezone="Asia/Kuala_Lumpur"),
         # Read-only task state (plan 22 S2) - all empty on a never-saved task.
         "resultColumns": [],
         # sprint-5/02 (AC-02-07) - a document entity's picked LINE aggregate

@@ -63,7 +63,7 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 | backend (API) | `:8200` | `:8210` | gunicorn/UvicornWorker, `/health` |
 | frontend (Next standalone) | `:3200` | `:3210` | `node server.js` |
 | db / redis / pgbackups | - | - | infra, not blue/green; db host port `5433` |
-| worker_workflow / worker_jobs / worker_omni / beat | - | - | Celery; recreated in place each deploy |
+| worker_workflow / worker_jobs / worker_jobs_docs / worker_omni / beat | - | - | Celery; recreated in place each deploy |
 | code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
 
 **Frontend container.** `frontend_blue`/`frontend_green` run with all Linux
@@ -189,13 +189,26 @@ START (a `pydantic.ValidationError` at import) if
 Secrets without raising `BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES` to match
 - change the two together.
 
+**`worker_jobs_docs` (SS-SO-FAST-QUEUE, Nov 2026) - document incrementals on
+their own queue.** `autocount_sync` jobs with `mode=incremental` for a document
+entity (SO/PO/DO/GRN/IV/CS/CN/DN/consignment/cancel_*) are published on
+`jobs_docs` (`AUTOCOUNT_DOCS_QUEUE`, default `jobs_docs`); masters, product,
+stock_balance, AR outstanding, every reconcile and every manual run stay on
+`jobs`. Cost: one more `-c 2` Celery service, ~450-600 MB RSS, near-idle CPU.
+First deploy: the script force-recreates it (it is in the named worker list);
+check `docker compose ps worker_jobs_docs` and the `ops-ping-jobs_docs`
+liveness. **Rollback:** set `AUTOCOUNT_DOCS_QUEUE=` (empty) in `.env` and
+recreate the workers - documents ride `jobs` again; a message already on
+`jobs_docs` runs once `worker_jobs_docs` is up, or is failed by the undispatched
+sweep after 150 min and re-enqueued by the next tick.
+
 **Run `free -m` before `docker compose up -d`** when raising `worker_jobs`'
 concurrency above the R9 default; `-c 1` is the fallback if the host is
 memory-tight rather than CPU-bound.
 
 **Deploy-time step:** `blue_green_deploy.sh` never runs a bare `docker compose
 up -d` over every service - it pulls and force-recreates the Celery workers
-from an explicit, named list (`worker_workflow worker_jobs worker_omni beat`,
+from an explicit, named list (`worker_workflow worker_jobs worker_jobs_docs worker_omni beat`,
 twice in the script: the pull step and the force-recreate step). A new worker
 service (like `worker_jobs` itself, sprint-5/11 S1) is **not** picked up
 automatically - it must be added to both lists in `scripts/blue_green_deploy.sh`

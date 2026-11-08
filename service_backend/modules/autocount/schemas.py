@@ -589,6 +589,8 @@ class SyncRunItem(ApiModel):
     updatedCount: int = Field(default=0, validation_alias="updated_count")
     deletedCount: int = Field(default=0, validation_alias="deleted_count")
     durationMs: Optional[int] = Field(default=None, validation_alias="duration_ms")
+    # SS-SO-FAST-QUEUE - time the run's job waited for a worker.
+    queueWaitMs: Optional[int] = Field(default=None, validation_alias="queue_wait_ms")
     # Why a ``skipped`` tick never ran (the overlap guard, AC-22-14).
     skipReason: Optional[str] = Field(default=None, validation_alias="skip_reason")
     # ── push request accounting (fix/push-marks-per-chunk, prod 2026-09-07) ──
