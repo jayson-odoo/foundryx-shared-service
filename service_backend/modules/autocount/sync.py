@@ -2560,6 +2560,9 @@ def _stage_deletes(
     return count
 
 
+FAST_LINE_CHECK_SLACK_SECONDS = 15
+
+
 def fast_line_check_due(last_checked_at: Optional[datetime], *, now: datetime) -> bool:
     """SS-SO-FAST-QUEUE - whether the FAST line check may run again: never
     run, the gate is off (0), or at least the configured interval ago."""
@@ -2568,7 +2571,12 @@ def fast_line_check_due(last_checked_at: Optional[datetime], *, now: datetime) -
         return True
     if last_checked_at.tzinfo is None:
         last_checked_at = last_checked_at.replace(tzinfo=timezone.utc)
-    return (now - last_checked_at) >= timedelta(seconds=interval)
+    # Review: one sweep tick (15 s) of slack, so a 1-minute task whose runs
+    # start a few seconds early (queue wait / header time vary) never skips
+    # every other line check.
+    return (now - last_checked_at) >= timedelta(
+        seconds=max(0, interval - FAST_LINE_CHECK_SLACK_SECONDS)
+    )
 
 
 def _heartbeat(service: JobService, job_id: str) -> bool:
@@ -3368,8 +3376,9 @@ def _docs_queue_entity_types() -> Tuple[str, ...]:
 def autocount_sync_queue_for(job: BackgroundJob) -> Optional[str]:
     """SS-SO-FAST-QUEUE - the per-job route for ``autocount_sync``.
 
-    A scheduled document INCREMENTAL (seconds of work, the CRM is waiting on
-    it) goes to ``settings.autocount_docs_queue``. Everything else - masters,
+    A scheduled document INCREMENTAL the sweep marked ``fastLane`` (a task
+    with a completed run and no open paged pass - seconds of work, the CRM is
+    waiting on it) goes to ``settings.autocount_docs_queue``. Everything else - masters,
     product, stock_balance, AR outstanding, every reconcile (8-10 min on a
     big SO table) and every manual "Run now" (may be an initial load) -
     returns None and keeps the type's default route (``jobs``), so nothing
@@ -3380,7 +3389,7 @@ def autocount_sync_queue_for(job: BackgroundJob) -> Optional[str]:
     if not queue:
         return None
     payload = job.payload_json if isinstance(job.payload_json, dict) else {}
-    if payload.get("mode") != RUN_MODE_INCREMENTAL:
+    if payload.get("mode") != RUN_MODE_INCREMENTAL or payload.get("fastLane") is not True:
         return None
     if payload.get("entityType") not in _docs_queue_entity_types():
         return None

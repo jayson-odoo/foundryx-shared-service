@@ -123,8 +123,17 @@ def plan_off_hours_schedule(
     """The change set, computed from the CURRENT rows - writes nothing.
     ``so_seconds`` = the sales_order seconds cadence (None/0 = leave SO on
     minutes)."""
-    from .services.etl_service import seconds_cadence_allowed
+    from .services.etl_service import (
+        MAX_INCREMENTAL_SECONDS,
+        MIN_INCREMENTAL_SECONDS,
+        seconds_cadence_allowed,
+    )
     from .scheduler import sweep_order_key
+
+    if so_seconds and not MIN_INCREMENTAL_SECONDS <= so_seconds <= MAX_INCREMENTAL_SECONDS:
+        raise ValueError(
+            f"so_seconds must be {MIN_INCREMENTAL_SECONDS}-{MAX_INCREMENTAL_SECONDS} (or 0)."
+        )
 
     rows = (
         db.query(AcEntityConfig)
@@ -172,6 +181,8 @@ def plan_off_hours_schedule(
             if (
                 so_seconds
                 and row.entity_type == ENTITY_SALES_ORDER
+                and row.source_impl == SOURCE_IMPL_SQL_DB
+                and config.get("watermarkColumn")
                 and seconds_cadence_allowed(row.entity_type, has_watermark=True)
             ):
                 after_config["incrementalSeconds"] = so_seconds
@@ -215,7 +226,11 @@ def apply_off_hours_schedule(
                 config[key] = value
         row.source_config = config
         if row.etl_status == ETL_STATUS_ACTIVE:
-            next_incremental, next_reconcile = EtlService.next_run_times(config, now=now)
+            # The SAME translation activate/resume use (an HTTP task's
+            # watermark lives under ``watermarkField``).
+            next_incremental, next_reconcile = EtlService.next_run_times(
+                EtlService._schedule_source_config(row), now=now
+            )
             row.next_incremental_at = next_incremental
             row.next_reconcile_at = next_reconcile
         changed += 1

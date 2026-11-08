@@ -33,6 +33,8 @@ def main(argv=None) -> int:
         render_plan,
     )
 
+    if args.so_seconds and not 15 <= args.so_seconds <= 3600:
+        parser.error("--so-seconds must be 15-3600, or 0 to leave sales orders on minutes")
     db = SessionLocal()
     try:
         plan = plan_off_hours_schedule(db, so_seconds=args.so_seconds or None)

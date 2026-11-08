@@ -815,6 +815,12 @@ def validate_source_config(
             )
 
     # ── schedule floors (AC-22-12) ───────────────────────────────────────────
+    from app.config import settings
+
+    if not (settings.autocount_docs_queue or "").strip():
+        # Docs queue rolled back: a stored seconds cadence is dropped on save
+        # (the task falls back to its minutes) instead of blocking every save.
+        raw = {k: v for k, v in raw.items() if k != "incrementalSeconds"}
     schedule, schedule_errors = validate_schedule(
         raw,
         has_watermark=bool(watermark),
@@ -2611,7 +2617,16 @@ class EtlService:
         # ``seconds_cadence_allowed``) wins, floored again here so a stored
         # value can never tick faster than the beat.
         seconds = _clean_int(source_config.get("incrementalSeconds"))
-        if seconds and source_config.get("watermarkColumn"):
+        from app.config import settings
+
+        # Rollback lever (review): with the docs queue off, a stored seconds
+        # cadence is ignored - a 30 s tick onto the shared queue is exactly
+        # the starvation this lane removed.
+        if (
+            seconds
+            and source_config.get("watermarkColumn")
+            and (settings.autocount_docs_queue or "").strip()
+        ):
             incremental = now + timedelta(seconds=max(seconds, MIN_INCREMENTAL_SECONDS))
 
         if str(source_config.get("reconcileMode")) == RECONCILE_MODE_INTERVAL:

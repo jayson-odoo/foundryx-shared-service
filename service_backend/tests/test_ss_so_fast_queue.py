@@ -44,12 +44,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 11, 8, 4, 0, 0, tzinfo=timezone.utc)
 
 
-def _job(entity_type: str, mode: str = "incremental") -> BackgroundJob:
+def _job(entity_type: str, mode: str = "incremental", fast_lane: bool = True) -> BackgroundJob:
+    payload = {"companyId": "c1", "entityType": entity_type, "mode": mode}
+    if fast_lane:
+        payload["fastLane"] = True
     return BackgroundJob(
         tenant_id=DEFAULT_TENANT_ID,
         type=AUTOCOUNT_SYNC,
         status=JOB_PENDING,
-        payload_json={"companyId": "c1", "entityType": entity_type, "mode": mode},
+        payload_json=payload,
     )
 
 
@@ -83,6 +86,47 @@ def test_everything_else_keeps_the_shared_jobs_queue(entity_type, mode):
     assert queue_for_job(_job(entity_type, mode)) is None
 
 
+def test_an_incremental_not_marked_fast_lane_stays_on_jobs():
+    """Review: a continued initial load / first tick runs under
+    mode=incremental too, but can take the full 600 s budget."""
+    from app.jobs.registry import queue_for_job
+
+    assert queue_for_job(_job(ENTITY_SALES_ORDER, fast_lane=False)) is None
+
+
+def _swept_payload(
+    session_factory, *, succeeded_before: bool, open_pass: bool = False, db_name: str = "SWEEP_DB"
+):
+    from modules.autocount.repositories import WatermarkRepository
+    from modules.autocount.scheduler import sweep_etl_tasks
+    from tests.test_autocount_scheduler import _company, _jobs_for, _task
+
+    db = session_factory()
+    company = _company(db, database_name=db_name)
+    _task(db, company, next_incremental_at=NOW - timedelta(minutes=1))
+    watermark = WatermarkRepository(db).get_or_create(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER)
+    if succeeded_before:
+        watermark.last_success_at = NOW - timedelta(minutes=1)
+    if open_pass:
+        watermark.cursor_json = {"pass": {"kind": "incremental", "complete": False}}
+    db.commit()
+    sweep_etl_tasks(db, now=NOW)
+    jobs = _jobs_for(db, company.id, ENTITY_CUSTOMER)
+    assert len(jobs) == 1
+    return jobs[0].payload_json
+
+
+def test_the_sweep_marks_a_plain_incremental_fast_lane(session_factory):
+    assert _swept_payload(session_factory, succeeded_before=True).get("fastLane") is True
+
+
+def test_the_sweep_never_marks_a_first_tick_or_an_open_pass(session_factory):
+    assert "fastLane" not in _swept_payload(session_factory, succeeded_before=False)
+    assert "fastLane" not in _swept_payload(
+        session_factory, succeeded_before=True, open_pass=True, db_name="SWEEP_DB_2"
+    )
+
+
 def test_an_empty_docs_queue_setting_turns_the_split_off(monkeypatch):
     """Rollback lever: AUTOCOUNT_DOCS_QUEUE='' routes documents back onto
     `jobs` without a code change."""
@@ -109,7 +153,8 @@ def test_enqueue_publishes_a_document_incremental_on_the_docs_queue(session_fact
     service = JobService(db)
     so = service.create(
         type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
-        payload={"companyId": "c1", "entityType": ENTITY_SALES_ORDER, "mode": "incremental"},
+        payload={"companyId": "c1", "entityType": ENTITY_SALES_ORDER, "mode": "incremental",
+                 "fastLane": True},
     )
     stock = service.create(
         type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
@@ -521,18 +566,6 @@ def test_a_master_task_cannot_use_seconds():
     assert "incrementalSeconds" in errors
 
 
-def test_seconds_are_refused_while_the_docs_queue_is_off(monkeypatch):
-    from modules.autocount.services.etl_service import validate_source_config
-    from tests.test_autocount_documents import _HEADER_COLUMNS, _LINE_COLUMNS
-
-    monkeypatch.setattr(settings, "autocount_docs_queue", "")
-    _, errors = validate_source_config(
-        ENTITY_SALES_ORDER, _so_config(incrementalSeconds=30), _HEADER_COLUMNS,
-        line_columns=_LINE_COLUMNS,
-    )
-    assert "incrementalSeconds" in errors
-
-
 def test_next_run_honours_seconds_with_the_floor():
     from modules.autocount.services.etl_service import EtlService
 
@@ -603,4 +636,33 @@ def test_the_fast_line_check_runs_at_most_once_a_minute():
 
     assert fast_line_check_due(None, now=NOW) is True
     assert fast_line_check_due(NOW - timedelta(seconds=30), now=NOW) is False
+    # one sweep tick of slack: a 1-minute task starting a little early still checks
+    assert fast_line_check_due(NOW - timedelta(seconds=58), now=NOW) is True
     assert fast_line_check_due(NOW - timedelta(seconds=60), now=NOW) is True
+
+
+def test_with_the_docs_queue_off_a_stored_seconds_cadence_is_ignored(monkeypatch):
+    from modules.autocount.services.etl_service import EtlService, validate_source_config
+    from tests.test_autocount_documents import _HEADER_COLUMNS, _LINE_COLUMNS
+
+    monkeypatch.setattr(settings, "autocount_docs_queue", "")
+    incremental, _ = EtlService.next_run_times(
+        {"watermarkColumn": "LastModified", "incrementalMinutes": 1,
+         "incrementalSeconds": 30, "reconcileMode": "dailyAt", "reconcileAt": "02:00"},
+        now=NOW,
+    )
+    assert incremental == NOW + timedelta(minutes=1)
+    # and a save of that task drops the key instead of 422-ing every save
+    clean, errors = validate_source_config(
+        ENTITY_SALES_ORDER, _so_config(incrementalSeconds=30), _HEADER_COLUMNS,
+        line_columns=_LINE_COLUMNS,
+    )
+    assert "incrementalSeconds" not in errors
+    assert "incrementalSeconds" not in clean
+
+
+def test_the_script_refuses_an_out_of_range_so_cadence(session_factory):
+    from modules.autocount.schedule_tuning import plan_off_hours_schedule
+
+    with pytest.raises(ValueError):
+        plan_off_hours_schedule(session_factory(), so_seconds=5)

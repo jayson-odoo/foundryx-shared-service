@@ -198,7 +198,8 @@ stock_balance, AR outstanding, every reconcile and every manual run stay on
 First deploy: the script force-recreates it (it is in the named worker list);
 check `docker compose ps worker_jobs_docs` and the `ops-ping-jobs_docs`
 liveness. **Rollback:** set `AUTOCOUNT_DOCS_QUEUE=` (empty) in `.env` and
-recreate the workers - documents ride `jobs` again; a message already on
+recreate the workers - documents ride `jobs` again and a stored seconds
+cadence is ignored (it falls back to its minutes; a save drops it); a message already on
 `jobs_docs` runs once `worker_jobs_docs` is up, or is failed by the undispatched
 sweep after 150 min and re-enqueued by the next tick.
 

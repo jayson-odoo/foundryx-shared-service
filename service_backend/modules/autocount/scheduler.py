@@ -220,9 +220,13 @@ def alert_pass_due(now: datetime) -> bool:
 
 
 def _is_sub_minute(config: AcEntityConfig) -> bool:
+    from app.config import settings
+
     source_config = config.source_config or {}
-    return bool(source_config.get("incrementalSeconds")) and bool(
-        source_config.get("watermarkColumn")
+    return (
+        bool(source_config.get("incrementalSeconds"))
+        and bool(source_config.get("watermarkColumn"))
+        and bool((settings.autocount_docs_queue or "").strip())
     )
 
 
@@ -418,15 +422,17 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             # SS-SO-FAST-QUEUE - a 15-30 s task meets a 5-13 s run often;
             # one skip row per in-flight JOB, not one per tick (else ~5k
             # noise rows/day per task).
+            # Per prefix (review): a job that goes from queued to running
+            # (and then maybe hangs) writes one more row at that switch.
+            prefix = next(
+                (p for p in INCREMENTAL_SKIP_PREFIXES if reason.startswith(p)), reason
+            )
             write_row = not (
                 _is_sub_minute(config)
                 and in_flight.created_at is not None
-                and any(
-                    runs.has_skip_since(
-                        tenant_id, company_id, entity_type,
-                        since=in_flight.created_at, reason_prefix=prefix,
-                    )
-                    for prefix in INCREMENTAL_SKIP_PREFIXES
+                and runs.has_skip_since(
+                    tenant_id, company_id, entity_type,
+                    since=in_flight.created_at, reason_prefix=prefix,
                 )
             )
         if write_row:
@@ -448,11 +454,20 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
 
     _refill_empty_line_check(db, config)
 
+    payload: Dict[str, Any] = {"companyId": company_id, "entityType": entity_type, "mode": mode}
+    # SS-SO-FAST-QUEUE (review) - only a SHORT incremental may ride the docs
+    # queue: a plain incremental of a task that has completed a run before
+    # and has no open paged pass. A continued initial load (an open pass,
+    # even under mode=incremental) or a first tick with no watermark yet can
+    # run up to the 600 s budget and would fill the docs worker's slots.
+    if mode == RUN_MODE_INCREMENTAL and _is_short_incremental(watermark):
+        payload["fastLane"] = True
+
     try:
         JobService(db).create_and_enqueue(
             type=AUTOCOUNT_SYNC,
             tenant_id=tenant_id,
-            payload={"companyId": company_id, "entityType": entity_type, "mode": mode},
+            payload=payload,
         )
     except Exception as exc:  # noqa: BLE001
         if due_reconcile and mode != RUN_MODE_RECONCILE:
@@ -494,6 +509,17 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
         db.commit()
     return "fired"
+
+
+def _is_short_incremental(watermark) -> bool:
+    """A completed run exists (``last_success_at``) and no paged pass is open."""
+    if watermark is None or watermark.last_success_at is None:
+        return False
+    cursor = watermark.cursor_json if isinstance(watermark.cursor_json, dict) else {}
+    pass_state = cursor.get("pass")
+    if isinstance(pass_state, dict) and not pass_state.get("complete", False):
+        return False
+    return True
 
 
 def _incremental_skip_reason(in_flight, *, now: datetime) -> str:
