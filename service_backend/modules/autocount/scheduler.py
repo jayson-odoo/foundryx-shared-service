@@ -127,7 +127,9 @@ def sweep_order_key(entity_type: str) -> int:
     return 1 if entity_type in (ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE) else 0
 
 
-def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:
+def sweep_etl_tasks(
+    db: Session, *, now: Optional[datetime] = None, run_alerts: bool = True
+) -> Dict[str, int]:
     """The beat tick body. Returns ``{fired, skipped, failed}`` - a plain dict
     so the Celery task can hand it straight back as the task result."""
     now = now or datetime.now(timezone.utc)
@@ -187,6 +189,11 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
             skipped += 1
     # Plan 33 - the failure-alert check rides the same tick; its own crash
     # never changes what the sweep reports or whether the next tick enqueues.
+    # SS-SO-FAST-QUEUE - the beat task passes ``run_alerts=alert_pass_due()``
+    # so the pass runs at most once per wall-clock minute (the beat now ticks
+    # every 15 s; the pass loads every task, a minute is its resolution).
+    if not run_alerts:
+        return {"fired": fired, "skipped": skipped, "failed": failed}
     try:
         from .alerts import evaluate_integration_alerts
 
@@ -195,6 +202,33 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
         logger.exception("autocount failure-alert check failed")
         db.rollback()
     return {"fired": fired, "skipped": skipped, "failed": failed}
+
+
+# The wall-clock minute the failure-alert pass last ran in, per process. A
+# prefork worker child keeps its own, so with N children the pass runs at
+# most N times a minute - bounded, and each pass is idempotent.
+_last_alert_bucket: Optional[int] = None
+
+
+def alert_pass_due(now: datetime) -> bool:
+    global _last_alert_bucket
+    bucket = int(now.timestamp()) // 60
+    if _last_alert_bucket == bucket:
+        return False
+    _last_alert_bucket = bucket
+    return True
+
+
+def _is_sub_minute(config: AcEntityConfig) -> bool:
+    source_config = config.source_config or {}
+    return bool(source_config.get("incrementalSeconds")) and bool(
+        source_config.get("watermarkColumn")
+    )
+
+
+# Shared prefix of both incremental skip reasons (queued / still running), so
+# the sub-minute dedupe finds either.
+INCREMENTAL_SKIP_PREFIXES = ("The previous run for this task was queued", "A run for this task was still in progress when the incremental")
 
 
 def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
@@ -380,8 +414,21 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             )
             reason = RECONCILE_DEFERRED_REASON
         else:
-            write_row = True
             reason = _incremental_skip_reason(in_flight, now=now)
+            # SS-SO-FAST-QUEUE - a 15-30 s task meets a 5-13 s run often;
+            # one skip row per in-flight JOB, not one per tick (else ~5k
+            # noise rows/day per task).
+            write_row = not (
+                _is_sub_minute(config)
+                and in_flight.created_at is not None
+                and any(
+                    runs.has_skip_since(
+                        tenant_id, company_id, entity_type,
+                        since=in_flight.created_at, reason_prefix=prefix,
+                    )
+                    for prefix in INCREMENTAL_SKIP_PREFIXES
+                )
+            )
         if write_row:
             runs.add(
                 AcSyncRun(

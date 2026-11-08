@@ -207,6 +207,12 @@ MIN_INCREMENTAL_MINUTES = 1
 # (`scheduler.py`) already stops a slow walk from stacking, so one lower
 # constant is safe for EVERY no-watermark task, not a stock special case.
 MIN_INCREMENTAL_MINUTES_NO_WATERMARK = 5
+# SS-SO-FAST-QUEUE (owner 8 Nov "go 30s") - a DOCUMENT task with a watermark
+# may run every N SECONDS (``incrementalSeconds``, wins over minutes) while
+# the dedicated docs queue is on. 15 s = the ETL sweep's beat tick; below it
+# more ticks only buy overlap skips (an SO run is 4.7 s p50 / 13 s p90).
+MIN_INCREMENTAL_SECONDS = 15
+MAX_INCREMENTAL_SECONDS = 3600
 MIN_RECONCILE_HOURS = 1
 RECONCILE_MODE_INTERVAL = "interval"
 RECONCILE_MODE_DAILY_AT = "dailyAt"
@@ -524,8 +530,26 @@ def _clean_int(value: Any) -> Optional[int]:
     return None
 
 
+def seconds_cadence_allowed(entity_type: str, *, has_watermark: bool) -> bool:
+    """A seconds cadence needs a document entity the CRM waits on (not the AR
+    snapshot), a watermark (a no-watermark walk re-reads everything - 5-min
+    floor), and the docs queue (else a 30 s job queues behind stock/product)."""
+    from app.config import settings
+
+    return (
+        has_watermark
+        and is_document_entity(entity_type)
+        and entity_type != ENTITY_AR_OUTSTANDING
+        and bool((settings.autocount_docs_queue or "").strip())
+    )
+
+
 def validate_schedule(
-    raw: Dict[str, Any], *, has_watermark: bool, watermark_noun: str = "column"
+    raw: Dict[str, Any],
+    *,
+    has_watermark: bool,
+    watermark_noun: str = "column",
+    allow_seconds: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """The ONE schedule rule set (AC-22-12): incremental floor (1 min with a
     watermark, ``MIN_INCREMENTAL_MINUTES_NO_WATERMARK`` without), reconcile
@@ -574,6 +598,20 @@ def validate_schedule(
     # SS-SO-FAST-QUEUE - carried only when sent: a save that never names a
     # zone (an older client, a document feed) keeps the key absent, so the
     # task keeps its legacy UTC reading rather than silently moving.
+    seconds = _clean_int(raw.get("incrementalSeconds"))
+    if raw.get("incrementalSeconds") not in (None, "") and seconds is None:
+        errors["incrementalSeconds"] = "Enter the incremental interval in seconds."
+    elif seconds is not None:
+        if not allow_seconds:
+            errors["incrementalSeconds"] = (
+                "Seconds are available only for document tasks with a watermark."
+            )
+        elif seconds < MIN_INCREMENTAL_SECONDS:
+            errors["incrementalSeconds"] = f"At least {MIN_INCREMENTAL_SECONDS} seconds."
+        elif seconds > MAX_INCREMENTAL_SECONDS:
+            errors["incrementalSeconds"] = f"At most {MAX_INCREMENTAL_SECONDS} seconds."
+        else:
+            cleaned["incrementalSeconds"] = seconds
     zone_name = str(raw.get("reconcileTimezone") or "").strip()
     if zone_name:
         if _zone(zone_name) is None:
@@ -777,7 +815,11 @@ def validate_source_config(
             )
 
     # ── schedule floors (AC-22-12) ───────────────────────────────────────────
-    schedule, schedule_errors = validate_schedule(raw, has_watermark=bool(watermark))
+    schedule, schedule_errors = validate_schedule(
+        raw,
+        has_watermark=bool(watermark),
+        allow_seconds=seconds_cadence_allowed(entity_type, has_watermark=bool(watermark)),
+    )
     errors.update(schedule_errors)
     minutes = schedule["incrementalMinutes"]
     mode = schedule["reconcileMode"]
@@ -800,6 +842,8 @@ def validate_source_config(
         "reconcileHours": hours,
         "reconcileAt": at,
     }
+    if "incrementalSeconds" in schedule:
+        clean["incrementalSeconds"] = schedule["incrementalSeconds"]
     if "reconcileTimezone" in schedule:
         clean["reconcileTimezone"] = schedule["reconcileTimezone"]
     return clean, errors
@@ -2563,6 +2607,12 @@ class EtlService:
             else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
         )
         incremental = now + timedelta(minutes=max(minutes, floor))
+        # SS-SO-FAST-QUEUE - a seconds cadence (saved only where
+        # ``seconds_cadence_allowed``) wins, floored again here so a stored
+        # value can never tick faster than the beat.
+        seconds = _clean_int(source_config.get("incrementalSeconds"))
+        if seconds and source_config.get("watermarkColumn"):
+            incremental = now + timedelta(seconds=max(seconds, MIN_INCREMENTAL_SECONDS))
 
         if str(source_config.get("reconcileMode")) == RECONCILE_MODE_INTERVAL:
             hours = _clean_int(source_config.get("reconcileHours")) or MIN_RECONCILE_HOURS

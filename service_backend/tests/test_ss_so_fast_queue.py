@@ -443,6 +443,7 @@ def test_the_plan_moves_reconciles_into_the_myt_window_and_speeds_up_documents(s
     so_after = by_entity[ENTITY_SALES_ORDER].after
     assert so_after["reconcileTimezone"] == "Asia/Kuala_Lumpur"
     assert so_after["incrementalMinutes"] == 1
+    assert so_after["incrementalSeconds"] == 30
     for change in plan.changes:
         hh, mm = (int(x) for x in change.after["reconcileAt"].split(":"))
         assert 2 * 60 <= hh * 60 + mm < 5 * 60
@@ -560,10 +561,11 @@ def test_the_failure_alert_pass_runs_at_most_once_a_minute(session_factory, monk
 
     calls = []
     monkeypatch.setattr(alerts, "evaluate_integration_alerts", lambda db, now=None: calls.append(now))
-    monkeypatch.setattr(scheduler, "_last_alert_bucket", None, raising=False)
+    monkeypatch.setattr(scheduler, "_last_alert_bucket", None)
     db = session_factory()
     for seconds in (0, 15, 30, 45, 60, 75):
-        scheduler.sweep_etl_tasks(db, now=NOW + timedelta(seconds=seconds))
+        now = NOW + timedelta(seconds=seconds)
+        scheduler.sweep_etl_tasks(db, now=now, run_alerts=scheduler.alert_pass_due(now))
     assert len(calls) == 2
 
 

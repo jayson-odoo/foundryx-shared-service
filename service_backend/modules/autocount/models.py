@@ -397,6 +397,11 @@ class AcWatermark(AutocountBase):
     # the sweep" rule) so the next tick retries rather than waiting out a
     # full interval on a query that is still broken.
     last_fingerprint_sweep_at = Column(UTCDateTime(), nullable=True)
+    # SS-SO-FAST-QUEUE - when the FAST line check last ran cleanly (the gate
+    # that keeps it at most once per
+    # ``autocount_fingerprint_fast_min_interval_seconds`` on a seconds-cadence
+    # task). NULL = due.
+    last_fast_line_check_at = Column(UTCDateTime(), nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

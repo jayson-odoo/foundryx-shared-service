@@ -1515,6 +1515,12 @@ def _run_fingerprint_sweep(
     window_days = settings.autocount_fingerprint_fast_window_days
     if not full_pass and (not window_days or not _fast_window_applies(source)):
         return 0, 0, 0, 0, None
+    # SS-SO-FAST-QUEUE - a seconds-cadence task runs the FAST pass at most
+    # once per ``autocount_fingerprint_fast_min_interval_seconds``.
+    if not full_pass and not fast_line_check_due(
+        getattr(watermark_row, "last_fast_line_check_at", None), now=now
+    ):
+        return 0, 0, 0, 0, None
 
     try:
         if full_pass:
@@ -1600,6 +1606,7 @@ def _run_fingerprint_sweep(
 
         if full_pass:
             watermark_row.last_fingerprint_sweep_at = now
+        watermark_row.last_fast_line_check_at = now
         db.commit()
         return staged, failed, added, updated, None
     except Exception as exc:  # noqa: BLE001 - a broken sweep must never fail the run
@@ -2551,6 +2558,17 @@ def _stage_deletes(
             count += 1
     db.commit()
     return count
+
+
+def fast_line_check_due(last_checked_at: Optional[datetime], *, now: datetime) -> bool:
+    """SS-SO-FAST-QUEUE - whether the FAST line check may run again: never
+    run, the gate is off (0), or at least the configured interval ago."""
+    interval = settings.autocount_fingerprint_fast_min_interval_seconds
+    if not interval or last_checked_at is None:
+        return True
+    if last_checked_at.tzinfo is None:
+        last_checked_at = last_checked_at.replace(tzinfo=timezone.utc)
+    return (now - last_checked_at) >= timedelta(seconds=interval)
 
 
 def _heartbeat(service: JobService, job_id: str) -> bool:

@@ -608,6 +608,12 @@ class Settings(BaseSettings):
     # Read at CALL time ("retune without a restart").
     autocount_fingerprint_sweep_minutes: int = 15
     autocount_fingerprint_fast_window_days: int = 60
+    # SS-SO-FAST-QUEUE (owner 8 Nov) - the FAST pass above runs at most once
+    # per this many seconds per task. A document task may now run every 15-30
+    # s; its header watermark read stays every tick (header edits in seconds)
+    # while the 60-day line check - the expensive part of an SO incremental -
+    # keeps its old once-a-minute rate. 0 = every run (the old behaviour).
+    autocount_fingerprint_fast_min_interval_seconds: int = 60
 
     @field_validator("api_db_lock_timeout_seconds")
     @classmethod

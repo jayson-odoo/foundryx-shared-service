@@ -11,7 +11,8 @@ one idempotent change set, run by the owner through
   (documents first, then masters; deterministic order, so a re-run proposes
   the same slots and changes nothing);
 * every document task (not the AR snapshot) with a watermark gets a 1-minute
-  incremental;
+  incremental; every sales_order task with a watermark gets a 30-second one
+  (owner 8 Nov "go 30s" - Sorento SO and Mocha SO; ``--so-seconds``);
 * an ACTIVE task's ``next_*_at`` is re-armed from the new schedule.
 
 An ``interval`` reconcile ("every N hours") has no wall-clock time to move and
@@ -26,7 +27,11 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from .canonical.documents import ENTITY_AR_OUTSTANDING, is_document_entity
+from .canonical.documents import (
+    ENTITY_AR_OUTSTANDING,
+    ENTITY_SALES_ORDER,
+    is_document_entity,
+)
 from .canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from .models import (
     DELIVERY_MODE_PUSH,
@@ -48,6 +53,7 @@ from .services.etl_service import (
 WINDOW_START_MINUTES = 2 * 60
 WINDOW_END_MINUTES = 5 * 60
 MIN_SLOT_SPACING_MINUTES = 5
+DEFAULT_SO_INCREMENTAL_SECONDS = 30
 
 
 @dataclass
@@ -89,6 +95,7 @@ def _has_watermark(source_config: Dict[str, Any]) -> bool:
 def _schedule_view(source_config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "incrementalMinutes": source_config.get("incrementalMinutes"),
+        "incrementalSeconds": source_config.get("incrementalSeconds"),
         "reconcileMode": source_config.get("reconcileMode"),
         "reconcileAt": source_config.get("reconcileAt"),
         "reconcileTimezone": source_config.get("reconcileTimezone"),
@@ -110,8 +117,13 @@ def _slot_time(index: int, spacing: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
-def plan_off_hours_schedule(db: Session) -> TuningPlan:
-    """The change set, computed from the CURRENT rows - writes nothing."""
+def plan_off_hours_schedule(
+    db: Session, *, so_seconds: Optional[int] = DEFAULT_SO_INCREMENTAL_SECONDS
+) -> TuningPlan:
+    """The change set, computed from the CURRENT rows - writes nothing.
+    ``so_seconds`` = the sales_order seconds cadence (None/0 = leave SO on
+    minutes)."""
+    from .services.etl_service import seconds_cadence_allowed
     from .scheduler import sweep_order_key
 
     rows = (
@@ -157,6 +169,12 @@ def plan_off_hours_schedule(db: Session) -> TuningPlan:
             current = config.get("incrementalMinutes")
             if not isinstance(current, int) or current > DEFAULT_DOCUMENT_INCREMENTAL_MINUTES:
                 after_config["incrementalMinutes"] = DEFAULT_DOCUMENT_INCREMENTAL_MINUTES
+            if (
+                so_seconds
+                and row.entity_type == ENTITY_SALES_ORDER
+                and seconds_cadence_allowed(row.entity_type, has_watermark=True)
+            ):
+                after_config["incrementalSeconds"] = so_seconds
         elif _is_fast_document(row.entity_type):
             notes.append("no watermark: incremental left as is (5-minute floor)")
         change = TaskChange(
@@ -205,6 +223,12 @@ def apply_off_hours_schedule(
     return changed
 
 
+def _cadence(view: Dict[str, Any]) -> str:
+    if view.get("incrementalSeconds"):
+        return f"{view['incrementalSeconds']} s"
+    return f"{view.get('incrementalMinutes')} min"
+
+
 def render_plan(plan: TuningPlan) -> str:
     """The dry-run table the owner reads before ``--apply``."""
     lines = [
@@ -218,7 +242,7 @@ def render_plan(plan: TuningPlan) -> str:
         flag = "" if c.changed else "  (unchanged)"
         lines.append(
             f"{c.entity_type} | {c.company_id} | {c.etl_status} | "
-            f"{b['incrementalMinutes']} -> {a['incrementalMinutes']} min | "
+            f"{_cadence(b)} -> {_cadence(a)} | "
             f"{before_rc} -> {after_rc}{flag}"
             + (f"  [{c.note}]" if c.note else "")
         )
