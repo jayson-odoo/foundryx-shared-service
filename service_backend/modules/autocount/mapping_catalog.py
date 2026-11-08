@@ -319,7 +319,9 @@ del _entity_type, _model
 # fixed `source_ref` and `document_type`). A billing line needs only its key:
 # `quantity` is required by the CRM, but a charge line may carry a NULL `Qty`
 # (REF gotcha 1) - the CRM names it, the ESB does not invent a value. The link
-# INPUTS are mappable; the minted `from_line_ref` is not.
+# INPUTS are mappable; the minted `from_line_ref` is not. SS-PACKAGE-LINES:
+# `line_type` is mappable, `parent_line_ref` is minted from the
+# `parent_dtl_key` input (a LINK_INPUT_FIELDS entry).
 _REQUIRED_BILLING_HEADER_FIELDS = frozenset({
     "doc_no", "doc_date", "status", "net_total", "tax_total", "total", "local_net_total",
 })
@@ -329,7 +331,8 @@ _BILLING_HEADER_TARGETS = tuple(
     if name not in CanonicalBillingDocument.UNMAPPED_FIELDS
 )
 _BILLING_LINE_TARGETS = tuple(
-    name for name in CanonicalBillingDocumentLine.SINK_FIELDS if name != "from_line_ref"
+    name for name in CanonicalBillingDocumentLine.SINK_FIELDS + CanonicalBillingDocumentLine.PACKAGE_FIELDS
+    if name not in ("from_line_ref", "parent_line_ref")
 ) + CanonicalBillingDocumentLine.LINK_INPUT_FIELDS
 
 for _entity_type in BILLING_DOCUMENT_MODELS:

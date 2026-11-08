@@ -214,6 +214,24 @@ def advertises_replaces_line_ref(advertised: Any) -> bool:
     return (int(major), int(minor)) >= REPLACES_LINE_REF_MIN_CONTRACT
 
 
+# SS-PACKAGE-LINES: billing lines carry `line_type` + `parent_line_ref` only
+# to a consumer advertising at least this (the CRM's billing ingest is
+# ``extra="forbid"``). ``sinks_sorento.PACKAGE_LINES_CONTRACT_VERSION`` is the
+# same number as a ``ContractVersion``.
+PACKAGE_LINES_MIN_CONTRACT: Tuple[int, int] = (2, 13)
+
+
+def advertises_package_lines(advertised: Any) -> bool:
+    """True when the advertised contract is known and >= 2.13 (same
+    float-safe comparison as ``advertises_replaces_line_ref``)."""
+    if advertised is None:
+        return False
+    major, minor = getattr(advertised, "major", None), getattr(advertised, "minor", None)
+    if major is None or minor is None:
+        major, minor = int(advertised), 0
+    return (int(major), int(minor)) >= PACKAGE_LINES_MIN_CONTRACT
+
+
 class CanonicalDocumentLine(CanonicalLine):
     """Shared line rules (mirrors Sorento's ``_CanonicalLine``).
 
@@ -999,20 +1017,44 @@ class CanonicalBillingDocumentLine(CanonicalDocumentLine):
     link_so_doc_key: Optional[int] = None
     link_do_doc_key: Optional[int] = None
     link_iv_doc_key: Optional[int] = None
+    # SS-PACKAGE-LINES (contract 2.13) - package parent/child lines. AutoCount
+    # emits a package sale as a PARENT line (blank item, `ParentDtlKey` 0)
+    # plus CHILD lines pointing at it, and the first child repeats the
+    # parent's amount: a plain line sum double counts. Both lines are sent
+    # unchanged; the CRM decides which counts.
+    # * `line_type` - AutoCount's raw `DtlType`, passed through as-is (no
+    #   vocabulary is invented here). Null until a table's `DtlType` is
+    #   confirmed and mapped (`presets.BILLING_PACKAGE_COLUMNS`).
+    # * `parent_line_ref` - a CHILD line's parent, as the parent line's own
+    #   `source_ref` (`{header ref}:{ParentDtlKey}`); null on a top-level or
+    #   parent line (`ParentDtlKey` NULL or 0). Minted by the engine from the
+    #   `parent_dtl_key` INPUT, which never reaches the wire.
+    line_type: Optional[str] = Field(None, max_length=20)
+    parent_line_ref: Optional[str] = Field(None, max_length=255)
+    parent_dtl_key: Optional[int] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "line_number", "product_ref", "product_code", "description", "uom",
         "quantity", "unit_price", "discount_amount", "net_amount", "tax_code", "tax_rate",
         "tax_amount", "line_total", "from_doc_type", "from_doc_no", "from_line_ref",
     )
+    # Sent only to a CRM that advertises contract >= 2.13: its ingest is
+    # `extra="forbid"`, so an older CRM would reject the whole document.
+    PACKAGE_FIELDS: ClassVar[Tuple[str, ...]] = ("line_type", "parent_line_ref")
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = ()
     LINK_INPUT_FIELDS: ClassVar[Tuple[str, ...]] = (
         "from_doc_line_key", "link_so_doc_key", "link_do_doc_key", "link_iv_doc_key",
+        "parent_dtl_key",
     )
 
-    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+    def sink_payload(
+        self, *, contract_version: int = 1, advertised_contract: Any = None,
+    ) -> Dict[str, Any]:
         data = self.model_dump(mode="python")
-        return {key: _wire_number(data.get(key)) for key in self.SINK_FIELDS}
+        keys = self.SINK_FIELDS
+        if advertises_package_lines(advertised_contract):
+            keys = keys + self.PACKAGE_FIELDS
+        return {key: _wire_number(data.get(key)) for key in keys}
 
 
 class CanonicalBillingDocument(CanonicalDocument):
@@ -1085,7 +1127,9 @@ class CanonicalBillingDocument(CanonicalDocument):
                 return part.strip()
         return None
 
-    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+    def sink_payload(
+        self, *, contract_version: int = 1, advertised_contract: Any = None,
+    ) -> Dict[str, Any]:
         data = self.model_dump(mode="python")
         data["document_type"] = self.document_type
         payload: Dict[str, Any] = {}
@@ -1097,7 +1141,10 @@ class CanonicalBillingDocument(CanonicalDocument):
                 value = value.isoformat()
             payload[key] = _wire_number(value)
         payload["lines"] = [
-            line.sink_payload(contract_version=contract_version) for line in self.lines
+            line.sink_payload(
+                contract_version=contract_version, advertised_contract=advertised_contract,
+            )
+            for line in self.lines
         ]
         return payload
 

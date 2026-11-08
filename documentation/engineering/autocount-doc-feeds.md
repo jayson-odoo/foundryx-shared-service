@@ -384,6 +384,16 @@ matching CRM change is a review finding.
     name.
   - IVDTL and CSDTL also sum `TransferedQty`. `DNDTL` has no `FromDoc*` columns, so the DN preset
     has no `LineFpLinked` and no `FromDoc*` line fields (debit notes have no source document).
+- **Package lines** (SS-PACKAGE-LINES). A package is a PARENT line (`ParentDtlKey` 0) plus CHILD lines
+  pointing at it, and the first child repeats the parent's amount. The shared service never drops either:
+  the line query selects the columns listed per detail table in `presets.BILLING_PACKAGE_COLUMNS` (only
+  `IVDTL.ParentDtlKey` is confirmed; an unknown column fails the whole query), and the engine mints
+  `parent_line_ref` = `{header ref}:{ParentDtlKey}` from the `parent_dtl_key` input. `line_type` (raw
+  `DtlType`) and `parent_line_ref` go on the wire only when the CRM advertises 2.13
+  (`advertises_package_lines`). The CRM's `invoiced_sales.counted_line()` decides what counts. `Seq` is
+  not a safe key (M2601-1517). Module 0.22.0 / Alembic 0041 (`backfill_billing_package_lines`) moves stored
+  invoice line queries onto the new text. Widening to another table or column = one config entry plus a
+  backfill for stored queries; until then an operator can add it to one task's query on the Mapping tab.
 - **Drafts and `DocStatus`** (REF check 6.2, scout 27 Oct). `D` = draft: every IV/CS/CN/DN preset carries
   `filterFormula` `DocStatus != "D"`. `E` (5 IV in 2025, one with an AR row) is kept pending the
   owner (BL-SS-311). `CS` has no `DocStatus` column: its header selects `NULL AS DocStatus`, which

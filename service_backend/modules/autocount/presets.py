@@ -771,8 +771,19 @@ CONSIGNMENT_RETURN_PRESET = _linked_preset(
 #   25 Oct DO-feed-ledger lookup is gone): a line with `FromDocDtlKey` links
 #   to its DO line; a 2025-26 line carries only `FromDocNo` (key 100% NULL)
 #   and sends type + number, the DO header link, with no line ref.
-# * Not handled yet (REF check 6.5): package parent/child lines (`DtlType`,
-#   `ParentDtlKey`) are not de-duplicated - no rule exists yet.
+# * Package lines (SS-PACKAGE-LINES, crew evidence 7 Nov on db2 M2601-0858):
+#   a package sale is one PARENT row (blank `ItemCode`, `ParentDtlKey` 0,
+#   carrying Qty / UnitPrice / SubTotal) plus N CHILD rows whose
+#   `ParentDtlKey` is the parent's `DtlKey`; the FIRST child repeats the
+#   parent's SubTotal, the others are 0. The line cut keeps the parent and
+#   that first child, so summing lines double counts. The shared service does
+#   NOT drop or rewrite either line: the line query selects the package
+#   columns listed for its table in `BILLING_PACKAGE_COLUMNS` and the line
+#   carries `parent_line_ref` (`{header ref}:{ParentDtlKey}`, the parent
+#   line's own `source_ref`) and `line_type` (raw `DtlType`); the CRM decides
+#   what counts (`invoiced_sales.counted_line()`). `Seq` is not a safe key
+#   (M2601-1517: parent Seq 48, first child Seq 16). Not in the header
+#   aggregate nor the sweep: a package edit moves SubTotal/Qty/MAX(DtlKey).
 
 BILLING_DOCUMENT_STATUS_FORMULA = 'if(Cancelled == "T", "cancelled", "posted")'
 
@@ -840,6 +851,24 @@ def _billing_header_query(
     )
 
 
+# SS-PACKAGE-LINES - the package columns each billing line query selects,
+# per detail table. ONLY columns confirmed on the real AutoCount schema: an
+# unknown column fails the whole document query. Crew ruling 7 Nov: only
+# `ParentDtlKey` on IVDTL is confirmed (hapi Details[] on db2); `DtlType`,
+# `PackageDocKey` and CSDTL/CNDTL/DNDTL wait for the INFORMATION_SCHEMA check.
+# Widening = one entry here (the line rows follow from it) plus a stored-query
+# backfill for existing tasks; an operator can also add the column to one
+# task's line query and map it on the Mapping tab with no code change.
+BILLING_PACKAGE_COLUMNS: Dict[str, Tuple[str, ...]] = {
+    "IVDTL": ("ParentDtlKey",),
+}
+# Every package column a billing line can map, with its line row.
+_BILLING_PACKAGE_FIELDS: Dict[str, PresetField] = {
+    "ParentDtlKey": PresetField("ParentDtlKey", "parent_dtl_key", "int"),
+    "DtlType": PresetField("DtlType", "line_type", "string"),
+}
+
+
 def _billing_line_query(
     line_table: str, links: Tuple[Tuple[str, str, str, str], ...], *, from_doc: bool,
 ) -> str:
@@ -857,6 +886,7 @@ def _billing_line_query(
         "d.SubTotalExTax AS SubTotalExTax, d.TaxCode AS TaxCode, "
         "d.TaxRate AS TaxRate, d.Tax AS Tax, d.SubTotal AS SubTotal"
         + "".join(f", d.{column} AS {column}" for column in _BILLING_FROM_DOC_COLUMNS if from_doc)
+        + "".join(f", d.{column} AS {column}" for column in BILLING_PACKAGE_COLUMNS.get(line_table, ()))
         + f"{link_columns} "
         f"FROM {{database}}.dbo.{line_table} AS d "
         "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode"
@@ -932,6 +962,8 @@ def _billing_preset(
     line = tuple(
         field for field in _BILLING_LINE_FIELDS
         if from_doc or field.source_path not in _BILLING_FROM_DOC_COLUMNS
+    ) + tuple(
+        _BILLING_PACKAGE_FIELDS[column] for column in BILLING_PACKAGE_COLUMNS.get(line_table, ())
     )
     return DocumentPreset(
         label=label,
