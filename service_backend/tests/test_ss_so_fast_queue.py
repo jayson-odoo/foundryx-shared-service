@@ -408,3 +408,67 @@ def test_a_persistent_400_fails_naming_the_path_and_the_answer(http_rig):
     assert message.startswith("AutoCount answered HTTP 400 on page 1")
     assert "/itembypage" in message
     assert "Invalid page parameter" in message
+
+
+# ── owner-run admin script: reconciles to 02:00-05:00 MYT ───────────────────
+
+
+def _tuning_tasks(session_factory):
+    from tests.test_autocount_scheduler import _company, _task
+
+    from modules.autocount.models import AcEntityConfig
+
+    db = session_factory()
+    company = _company(db)
+    customer = _task(db, company, entity_type=ENTITY_CUSTOMER, next_incremental_at=NOW)
+    so = AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_SALES_ORDER,
+        source_impl="sql_db", etl_status="active", delivery_mode="push",
+        source_config={**customer.source_config, "watermarkColumn": "LastModified",
+                       "incrementalMinutes": 15, "reconcileAt": "04:18"},
+        next_incremental_at=NOW,
+    )
+    db.add(so)
+    db.commit()
+    return db, so, customer
+
+
+def test_the_plan_moves_reconciles_into_the_myt_window_and_speeds_up_documents(session_factory):
+    from modules.autocount.schedule_tuning import plan_off_hours_schedule
+
+    db, so, customer = _tuning_tasks(session_factory)
+    plan = plan_off_hours_schedule(db)
+    by_entity = {c.entity_type: c for c in plan.changes}
+
+    so_after = by_entity[ENTITY_SALES_ORDER].after
+    assert so_after["reconcileTimezone"] == "Asia/Kuala_Lumpur"
+    assert so_after["incrementalMinutes"] == 1
+    for change in plan.changes:
+        hh, mm = (int(x) for x in change.after["reconcileAt"].split(":"))
+        assert 2 * 60 <= hh * 60 + mm < 5 * 60
+    # documents are reconciled first
+    assert so_after["reconcileAt"] == "02:00"
+    assert by_entity[ENTITY_CUSTOMER].after["incrementalMinutes"] == 15
+
+
+def test_the_dry_run_writes_nothing_and_apply_is_idempotent(session_factory):
+    from modules.autocount.schedule_tuning import (
+        apply_off_hours_schedule,
+        plan_off_hours_schedule,
+        render_plan,
+    )
+
+    db, so, _ = _tuning_tasks(session_factory)
+    plan = plan_off_hours_schedule(db)
+    assert "04:18 UTC -> 02:00 Asia/Kuala_Lumpur" in render_plan(plan)
+    db.refresh(so)
+    assert so.source_config["reconcileAt"] == "04:18"  # planning wrote nothing
+
+    assert apply_off_hours_schedule(db, plan, now=NOW) == len(plan.pending) > 0
+    db.refresh(so)
+    assert so.source_config["reconcileAt"] == "02:00"
+    assert so.source_config["reconcileTimezone"] == "Asia/Kuala_Lumpur"
+    # ACTIVE task re-armed: 02:00 MYT on 9 Nov = 18:00 UTC on 8 Nov
+    assert so.next_reconcile_at == datetime(2026, 11, 8, 18, 0, tzinfo=timezone.utc)
+
+    assert plan_off_hours_schedule(db).pending == []
