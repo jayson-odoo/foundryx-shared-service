@@ -472,3 +472,133 @@ def test_the_dry_run_writes_nothing_and_apply_is_idempotent(session_factory):
     assert so.next_reconcile_at == datetime(2026, 11, 8, 18, 0, tzinfo=timezone.utc)
 
     assert plan_off_hours_schedule(db).pending == []
+
+
+# ── seconds cadence (owner 8 Nov ~22:00: "go 30s") ──────────────────────────
+# Document tasks with a watermark may run every N SECONDS (floor 15) while the
+# docs queue is on; the beat ticks every 15 s; a sub-minute task writes one
+# skip row per in-flight job; the fast line check runs at most once per 60 s.
+
+
+def _so_config(**over):
+    from tests.test_autocount_documents import _base_so_config
+
+    return _base_so_config(**over)
+
+
+def test_a_document_task_saves_an_incremental_in_seconds():
+    from modules.autocount.services.etl_service import validate_source_config
+    from tests.test_autocount_documents import _HEADER_COLUMNS, _LINE_COLUMNS
+
+    clean, errors = validate_source_config(
+        ENTITY_SALES_ORDER, _so_config(incrementalSeconds=30), _HEADER_COLUMNS,
+        line_columns=_LINE_COLUMNS,
+    )
+    assert "incrementalSeconds" not in errors, errors
+    assert clean["incrementalSeconds"] == 30
+
+
+def test_seconds_below_the_floor_are_refused():
+    from modules.autocount.services.etl_service import validate_source_config
+    from tests.test_autocount_documents import _HEADER_COLUMNS, _LINE_COLUMNS
+
+    _, errors = validate_source_config(
+        ENTITY_SALES_ORDER, _so_config(incrementalSeconds=10), _HEADER_COLUMNS,
+        line_columns=_LINE_COLUMNS,
+    )
+    assert "15" in errors["incrementalSeconds"]
+
+
+def test_a_master_task_cannot_use_seconds():
+    from modules.autocount.services.etl_service import validate_schedule
+
+    _, errors = validate_schedule(
+        {"incrementalMinutes": 15, "incrementalSeconds": 30, "reconcileMode": "dailyAt",
+         "reconcileAt": "02:00"},
+        has_watermark=True,
+    )
+    assert "incrementalSeconds" in errors
+
+
+def test_seconds_are_refused_while_the_docs_queue_is_off(monkeypatch):
+    from modules.autocount.services.etl_service import validate_source_config
+    from tests.test_autocount_documents import _HEADER_COLUMNS, _LINE_COLUMNS
+
+    monkeypatch.setattr(settings, "autocount_docs_queue", "")
+    _, errors = validate_source_config(
+        ENTITY_SALES_ORDER, _so_config(incrementalSeconds=30), _HEADER_COLUMNS,
+        line_columns=_LINE_COLUMNS,
+    )
+    assert "incrementalSeconds" in errors
+
+
+def test_next_run_honours_seconds_with_the_floor():
+    from modules.autocount.services.etl_service import EtlService
+
+    base = {"watermarkColumn": "LastModified", "incrementalMinutes": 1,
+            "reconcileMode": "dailyAt", "reconcileAt": "02:00"}
+    incremental, _ = EtlService.next_run_times({**base, "incrementalSeconds": 30}, now=NOW)
+    assert incremental == NOW + timedelta(seconds=30)
+    incremental, _ = EtlService.next_run_times({**base, "incrementalSeconds": 5}, now=NOW)
+    assert incremental == NOW + timedelta(seconds=15)
+    # no watermark: seconds never apply (5-minute floor stands)
+    incremental, _ = EtlService.next_run_times(
+        {**base, "watermarkColumn": None, "incrementalSeconds": 30}, now=NOW
+    )
+    assert incremental == NOW + timedelta(minutes=5)
+
+
+def test_the_etl_sweep_ticks_every_15_seconds():
+    from app.workflow_engine.worker import celery_app
+
+    assert celery_app.conf.beat_schedule["autocount-etl-sweep"]["schedule"] == 15.0
+
+
+def test_the_failure_alert_pass_runs_at_most_once_a_minute(session_factory, monkeypatch):
+    import modules.autocount.alerts as alerts
+    from modules.autocount import scheduler
+
+    calls = []
+    monkeypatch.setattr(alerts, "evaluate_integration_alerts", lambda db, now=None: calls.append(now))
+    monkeypatch.setattr(scheduler, "_last_alert_bucket", None, raising=False)
+    db = session_factory()
+    for seconds in (0, 15, 30, 45, 60, 75):
+        scheduler.sweep_etl_tasks(db, now=NOW + timedelta(seconds=seconds))
+    assert len(calls) == 2
+
+
+def test_a_sub_minute_task_writes_one_skip_row_per_in_flight_job(session_factory):
+    from tests.test_autocount_scheduler import _company, _task
+    from modules.autocount.scheduler import sweep_etl_tasks
+
+    db = session_factory()
+    company = _company(db)
+    config = _task(db, company, next_incremental_at=NOW - timedelta(seconds=1))
+    config.source_config = {**config.source_config, "watermarkColumn": "LastModified",
+                            "incrementalSeconds": 15}
+    db.add(
+        BackgroundJob(
+            tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status="running",
+            payload_json={"companyId": company.id, "entityType": ENTITY_CUSTOMER},
+            created_at=NOW - timedelta(seconds=20), started_at=NOW - timedelta(seconds=20),
+            heartbeat_at=NOW,
+        )
+    )
+    db.commit()
+    for tick in range(4):
+        now = NOW + timedelta(seconds=15 * tick)
+        db.query(type(config)).filter_by(id=config.id).update(
+            {"next_incremental_at": now - timedelta(seconds=1)}
+        )
+        db.commit()
+        assert sweep_etl_tasks(db, now=now)["skipped"] == 1
+    rows = db.query(AcSyncRun).filter(AcSyncRun.company_id == company.id).all()
+    assert len(rows) == 1
+
+
+def test_the_fast_line_check_runs_at_most_once_a_minute():
+    from modules.autocount.sync import fast_line_check_due
+
+    assert fast_line_check_due(None, now=NOW) is True
+    assert fast_line_check_due(NOW - timedelta(seconds=30), now=NOW) is False
+    assert fast_line_check_due(NOW - timedelta(seconds=60), now=NOW) is True
