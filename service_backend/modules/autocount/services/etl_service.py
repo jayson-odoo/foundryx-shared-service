@@ -1342,6 +1342,13 @@ class EtlService:
         )
         if config is not None and isinstance(config.source_config, dict):
             merged.update(config.source_config)
+            # SS-SO-FAST-QUEUE (crew browser pass) - a task SAVED before the
+            # zone existed runs on UTC (the scheduler reads the stored
+            # config), so it must also DISPLAY UTC: never fill the new-task
+            # MYT default into a stored config that lacks the key. Only a
+            # never-saved draft shows (and on first save stores) MYT.
+            if config.source_config and "reconcileTimezone" not in config.source_config:
+                merged["reconcileTimezone"] = None
         return EtlTaskView(
             company_id=company_id,
             entity_type=entity_type,

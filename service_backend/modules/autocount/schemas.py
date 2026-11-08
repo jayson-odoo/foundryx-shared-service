@@ -807,9 +807,15 @@ class EtlSourceConfigIn(ApiModel):
     # fingerprint rows.
     fingerprintQuery: Optional[str] = None
     incrementalMinutes: int = 15
+    # SS-SO-FAST-QUEUE - a seconds cadence (document tasks with a watermark,
+    # floor 15; ``validate_schedule`` gates it). None = minutes.
+    incrementalSeconds: Optional[int] = None
     reconcileMode: str = "dailyAt"
     reconcileHours: Optional[int] = None
     reconcileAt: Optional[str] = None
+    # SS-SO-FAST-QUEUE - the IANA zone ``reconcileAt`` is read in. None = the
+    # legacy UTC reading (never replaced by the new-task default).
+    reconcileTimezone: Optional[str] = None
     # ── HTTP (open REST API) shape only (sprint-5/08, AC-08-13) ──────────────
     path: Optional[str] = None
     keyFields: List[str] = []

@@ -935,3 +935,77 @@ def test_backfill_etl_defaults_is_idempotent(session_factory):
     assert backfill_etl_defaults(db, schema=schema) >= 0
     assert backfill_etl_defaults(db, schema=schema) == 0
     db.close()
+
+
+# ── SS-SO-FAST-QUEUE: seconds cadence + reconcile zone THROUGH the route ────
+# (crew browser pass on f6de5783: `EtlSourceConfigIn` dropped both keys, so a
+# PUT stored neither and a 10 s cadence saved clean.)
+
+
+def _so_body(conn_id: str, **over) -> Dict[str, object]:
+    return {
+        "sourceConfig": _config(
+            connectionId=conn_id,
+            query="SELECT acc_no AS doc_key, balance, last_modified FROM debtor",
+            lineQuery=(
+                "SELECT acc_no, company_name AS item_code FROM debtor "
+                "WHERE acc_no = :doc_key"
+            ),
+            keyColumns=["doc_key"],
+            watermarkColumn="balance",
+            fromDate="2026-01-01",
+            docDateColumn="last_modified",
+            **over,
+        )
+    }
+
+
+def test_put_then_get_round_trips_seconds_and_the_reconcile_zone(client, session_factory):
+    db = session_factory()
+    company = _company(db)
+    conn = _sql_connection(db)
+    db.close()
+    url = f"/autocount/companies/{company.id}/entities/sales_order/etl-task"
+    body = _so_body(conn.id, incrementalSeconds=30, reconcileTimezone="Asia/Kuala_Lumpur")
+    response = client.put(url, json=body, headers=_auth(client))
+    assert response.status_code == 200, response.text
+
+    got = client.get(url, headers=_auth(client)).json()["sourceConfig"]
+    assert got["incrementalSeconds"] == 30
+    assert got["reconcileTimezone"] == "Asia/Kuala_Lumpur"
+    db = session_factory()
+    row = db.query(AcEntityConfig).filter_by(company_id=company.id, entity_type="sales_order").one()
+    assert row.source_config["incrementalSeconds"] == 30
+    assert row.source_config["reconcileTimezone"] == "Asia/Kuala_Lumpur"
+    db.close()
+
+
+def test_put_rejects_a_seconds_cadence_below_the_floor(client, session_factory):
+    db = session_factory()
+    company = _company(db)
+    conn = _sql_connection(db)
+    db.close()
+    url = f"/autocount/companies/{company.id}/entities/sales_order/etl-task"
+    response = client.put(url, json=_so_body(conn.id, incrementalSeconds=10), headers=_auth(client))
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["fieldErrors"]["incrementalSeconds"] == "At least 15 seconds."
+
+
+def test_a_legacy_task_without_a_stored_zone_reads_utc(client, session_factory):
+    """A task saved before `reconcileTimezone` existed runs on UTC (the
+    scheduler reads the stored config) - so it must DISPLAY UTC too, never
+    the new-task MYT default filled in by the view."""
+    db = session_factory()
+    company = _company(db)
+    row = (
+        db.query(AcEntityConfig)
+        .filter_by(tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type="customer")
+        .one()
+    )
+    row.source_config = {**_config(), "reconcileAt": "02:00"}
+    db.commit()
+    db.close()
+    got = client.get(
+        f"/autocount/companies/{company.id}/entities/customer/etl-task", headers=_auth(client)
+    ).json()["sourceConfig"]
+    assert got.get("reconcileTimezone") in (None, "UTC")
