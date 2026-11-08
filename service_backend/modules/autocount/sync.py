@@ -450,6 +450,15 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
                 entity_type, "LastModified"
             ),
             mode=mode,
+            # SS-SO-FAST-QUEUE (owner probe 1-8 Nov) - a per-PAGE liveness
+            # beat for the walk itself. Without it a push walk beat only once
+            # before extraction, so a 15+ minute open-REST walk (Mocha
+            # product, ~900 s) crossed `background_job_orphan_after_minutes`
+            # and the orphan sweep failed a LIVE run as "Interrupted" (87 of
+            # 410 runs in 7 days). ``HttpApiSource`` fires it after every
+            # page of the main path and every lookup (the pull-snapshot build
+            # already passed one); the SQL and vendor factories swallow it.
+            heartbeat=lambda *_args, **_kw: _heartbeat(service, job.id),
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
         logger.exception("autocount sync setup failed for job %s", job.id)

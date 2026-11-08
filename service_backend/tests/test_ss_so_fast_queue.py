@@ -284,3 +284,127 @@ def test_new_document_tasks_default_to_one_minute_and_myt():
     doc = default_source_config(ENTITY_SALES_ORDER)
     assert doc["incrementalMinutes"] == 1
     assert doc["reconcileTimezone"] == "Asia/Kuala_Lumpur"
+
+
+# ── Mocha product: the push walk must keep its lease (owner probe Q4) ────────
+# 87 of 410 Mocha product runs in 7 days failed "Interrupted: the worker
+# stopped ..." at avg 967 s - right past `background_job_orphan_after_minutes`
+# (15). The push path beat ONCE before a 15+ minute HTTP walk and handed the
+# source no per-page callback (only the pull-snapshot build did), so the
+# orphan sweep failed a perfectly live run.
+
+
+def test_the_push_walk_beats_on_every_source_page(session_factory, monkeypatch):
+    import modules.autocount.sync as sync_module
+    from app.jobs.service import JobService
+    from tests.test_job_crash_text_handlers import _job, _sync_task
+
+    db = session_factory()
+    company, _ = _sync_task(db)
+    beats = []
+    real_beat = JobService.heartbeat
+
+    def counting_beat(self, job_id, **kw):
+        beats.append(job_id)
+        return real_beat(self, job_id, **kw)
+
+    monkeypatch.setattr(JobService, "heartbeat", counting_beat)
+
+    class _Stop(RuntimeError):
+        pass
+
+    class _Source:
+        entity_type = "product"
+
+        def __init__(self, heartbeat):
+            self._heartbeat = heartbeat
+
+        def fetch_changes(self, since):
+            for page in range(1, 6):
+                self._heartbeat("source", page, 5)
+            raise _Stop("walk ends")
+
+        def close(self):
+            pass
+
+    def factory(ctx, **kw):
+        assert callable(kw.get("heartbeat")), "the push walk must get a per-page beat"
+        return _Source(kw["heartbeat"])
+
+    monkeypatch.setattr(sync_module, "source_factory", lambda impl: factory)
+    job = _job(db, "autocount_sync", {"companyId": company.id, "entityType": "product"})
+    sync_module.run_autocount_sync(db, job)
+
+    # one beat before extraction + one per page
+    assert len([b for b in beats if b == job.id]) >= 6
+
+
+# ── Mocha product: AutoCount's intermittent HTTP 400 (owner probe Q4) ────────
+# ~70 of 410 runs died on "AutoCount answered HTTP 400 on page N", scattered
+# over pages 1-14 while the SAME config succeeded 245 times: a transient
+# wrapper answer, not a bad request. It now rides the transport ladder (1 s,
+# 4 s); a persistent one still fails, naming the path and what AutoCount said.
+
+
+@pytest.fixture
+def http_rig(session_factory, monkeypatch):
+    from tests import test_s10_http_retry as retry
+
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    gen = retry.rig.__wrapped__(session_factory)
+    db, company, conn = next(gen)
+    yield retry, db, company, conn
+
+
+def test_a_transient_400_is_retried_and_the_walk_succeeds(http_rig):
+    import httpx
+
+    from modules.autocount.http_source.source import HttpApiSource
+    from modules.autocount.sources import Watermark
+
+    retry, db, company, conn = http_rig
+    config = retry._config(db, company, conn.id)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(400, text="Server busy, try again")
+        return httpx.Response(200, json=retry._ok_page(
+            [{"ItemCode": "A1", "LastModified": "2026-08-01T09:00:00"}]
+        ))
+
+    source = HttpApiSource(
+        retry._ctx(db, company, config), entity_type="product",
+        transport=retry._transport(handler),
+    )
+    assert len(source.fetch_changes(Watermark()).records) == 1
+    assert len(calls) == 2
+
+
+def test_a_persistent_400_fails_naming_the_path_and_the_answer(http_rig):
+    import httpx
+
+    from modules.autocount.http_source.errors import HttpSourceError
+    from modules.autocount.http_source.source import HttpApiSource
+    from modules.autocount.sources import Watermark
+
+    retry, db, company, conn = http_rig
+    config = retry._config(db, company, conn.id)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(400, text="Invalid page parameter")
+
+    source = HttpApiSource(
+        retry._ctx(db, company, config), entity_type="product",
+        transport=retry._transport(handler),
+    )
+    with pytest.raises(HttpSourceError) as raised:
+        source.fetch_changes(Watermark())
+    assert len(calls) == 3  # first answer + 2 retries
+    message = str(raised.value)
+    assert message.startswith("AutoCount answered HTTP 400 on page 1")
+    assert "/itembypage" in message
+    assert "Invalid page parameter" in message
