@@ -126,7 +126,7 @@ abort_new_color() {
 # 1. Pull new images for the incoming color + the shared backend image (workers).
 echo "==> Pulling images"
 docker compose --profile "${NEW}" pull "backend_${NEW}" "frontend_${NEW}"
-docker compose pull worker_workflow worker_jobs worker_omni beat
+docker compose pull worker_workflow worker_jobs worker_jobs_docs worker_omni beat
 
 # 1b. Ensure shared infra is up (db/redis/pgbackups are profile-less, NOT
 #     blue/green). The color is started with --no-deps below, so its depends_on
@@ -253,7 +253,7 @@ sleep "$DRAIN_SECONDS"
 #    runs the module schema drift guard at start and exits if a module schema
 #    is behind its code.
 echo "==> Recreating Celery workers + beat on new image"
-docker compose up -d --force-recreate --no-deps worker_workflow worker_jobs worker_omni beat
+docker compose up -d --force-recreate --no-deps worker_workflow worker_jobs worker_jobs_docs worker_omni beat
 
 # 6b. Health-gate the celery containers (sorento-crm pattern: a positive
 #     startup line, not just "the process exists"). They have no HTTP
@@ -270,7 +270,7 @@ worker_gate_failed() {
   exit 1
 }
 echo "==> Verifying Celery containers"
-for svc in worker_workflow worker_jobs worker_omni beat; do
+for svc in worker_workflow worker_jobs worker_jobs_docs worker_omni beat; do
   cid=$(docker compose ps -q "$svc")
   if [ -z "$cid" ]; then echo "::error::DEPLOY FAILED AFTER SWAP (${svc} not found after recreate)" >&2; exit 1; fi
   i=0; ok=""; up_ticks=0

@@ -88,6 +88,37 @@ TRANSPORT_RETRY_BACKOFFS_SECONDS: Tuple[float, ...] = (1.0, 4.0)
 # response, not a transport exception - AC-10-75 is explicit this must be
 # treated as a TIMEOUT, never as "just another 5xx to give up on".
 CLOUDFLARE_TIMEOUT_STATUS = 524
+# SS-SO-FAST-QUEUE (owner probe 1-8 Nov) - the open REST wrapper answers a
+# bare 400 INTERMITTENTLY on a page it served fine a minute earlier (~70 of
+# 410 Mocha product runs, scattered over pages 1-14, while the same config
+# succeeded 245 times). A 400 therefore rides the SAME bounded transport
+# ladder as a 5xx (1 s, 4 s, never halving); a persistent one still fails.
+# Every other 4xx (401/403/404/422/...) stays a genuine fault, never retried.
+RETRYABLE_CLIENT_STATUSES = (400,)
+# How much of AutoCount's answer a failed-page error carries (what the
+# wrapper said is the only clue to WHY a page failed).
+ERROR_BODY_SNIPPET_CHARS = 160
+
+
+def _answer_snippet(response: httpx.Response) -> str:
+    try:
+        text = " ".join((response.text or "").split())
+    except Exception:  # noqa: BLE001 - a body we cannot decode adds nothing
+        return ""
+    return text[:ERROR_BODY_SNIPPET_CHARS]
+
+
+def _status_error_message(response: httpx.Response, *, page: int, path: Optional[str]) -> str:
+    """``AutoCount answered HTTP <n> on page <p>`` (the stable prefix every
+    caller and test reads) + the path and AutoCount's own words."""
+    message = f"AutoCount answered HTTP {response.status_code} on page {page}"
+    details = []
+    if path:
+        details.append(f"'{path}'")
+    snippet = _answer_snippet(response)
+    if snippet:
+        details.append(f"said: {snippet}")
+    return message + (f" ({'; '.join(details)})." if details else ".")
 
 # The 20% / 50-row safety net a reconcile's delete diff must clear before it
 # is trusted (mirrors ``sql_source.source``'s own constants exactly - shared
@@ -383,11 +414,14 @@ class HttpApiSource:
                     raise _PageTimedOutTwice()
                 time.sleep(TIMEOUT_RETRY_BACKOFF_SECONDS)
                 continue
-            if response.status_code >= 500:
+            if (
+                response.status_code >= 500
+                or response.status_code in RETRYABLE_CLIENT_STATUSES
+            ):
                 transport_attempts += 1
                 if transport_attempts > len(TRANSPORT_RETRY_BACKOFFS_SECONDS):
                     raise HttpSourceError(
-                        f"AutoCount answered HTTP {response.status_code} on page {page}.",
+                        _status_error_message(response, page=page, path=path),
                         code="http_status",
                         page=page,
                         status=response.status_code,
@@ -396,7 +430,9 @@ class HttpApiSource:
                 continue
             return response
 
-    def _parse_envelope(self, response: httpx.Response, *, page: int) -> EnvelopePage:
+    def _parse_envelope(
+        self, response: httpx.Response, *, page: int, path: Optional[str] = None
+    ) -> EnvelopePage:
         """Status + JSON + shape parsing for ONE already-fetched page
         response - the SAME three checks (``http_status``/``not_json``/
         ``shape``) every walker (serial, or a concurrent worker) raises for
@@ -404,7 +440,7 @@ class HttpApiSource:
         worker thread (AC-11-09)."""
         if not (200 <= response.status_code < 300):
             raise HttpSourceError(
-                f"AutoCount answered HTTP {response.status_code} on page {page}.",
+                _status_error_message(response, page=page, path=path),
                 code="http_status",
                 page=page,
                 status=response.status_code,
@@ -444,7 +480,7 @@ class HttpApiSource:
             return self._walk_path_serial(path, page_size)
 
         response1 = self._fetch_page(path, 1, page_size)
-        parsed1 = self._parse_envelope(response1, page=1)
+        parsed1 = self._parse_envelope(response1, page=1, path=path)
         eligible = (
             parsed1.kind == ENVELOPE_PAGED
             and parsed1.total_pages is not None
@@ -507,7 +543,7 @@ class HttpApiSource:
                 response, parsed = prefetched
             else:
                 response = self._fetch_page(path, page, page_size)
-                parsed = self._parse_envelope(response, page=page)
+                parsed = self._parse_envelope(response, page=page, path=path)
 
             if established_kind is None:
                 established_kind = parsed.kind
@@ -601,7 +637,7 @@ class HttpApiSource:
         response = self._fetch_page(path, page, page_size)
         if response.status_code == 429:
             raise _ConcurrentBackoff(response.headers.get("Retry-After"))
-        parsed = self._parse_envelope(response, page=page)
+        parsed = self._parse_envelope(response, page=page, path=path)
         if parsed.page is not None and parsed.page != page:
             raise HttpSourceError(
                 f"Page {page} echoed Page={parsed.page}, requested {page}.",

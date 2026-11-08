@@ -488,6 +488,24 @@ export function incrementalFloorMinutes(hasWatermark: boolean): number {
 
 /** Live mirror of the save-time floor guard - the server re-validates on
  * save regardless (422 `fieldErrors.incrementalMinutes`). */
+/** SS-SO-FAST-QUEUE - mirrors `MIN_INCREMENTAL_SECONDS`/`MAX_INCREMENTAL_SECONDS`
+ * in `modules/autocount/services/etl_service.py`. */
+export const MIN_INCREMENTAL_SECONDS = 15;
+export const MAX_INCREMENTAL_SECONDS = 3600;
+export const DEFAULT_INCREMENTAL_SECONDS = 30;
+export const INCREMENTAL_UNIT_OPTIONS: { label: string; value: 'seconds' | 'minutes' }[] = [
+  { label: 'seconds', value: 'seconds' },
+  { label: 'minutes', value: 'minutes' },
+];
+
+export function validateIncrementalSeconds(seconds: number | null | undefined): string | null {
+  if (seconds === null || seconds === undefined) return null;
+  if (!Number.isFinite(seconds)) return 'Enter the incremental interval in seconds.';
+  if (seconds < MIN_INCREMENTAL_SECONDS) return `At least ${MIN_INCREMENTAL_SECONDS} seconds.`;
+  if (seconds > MAX_INCREMENTAL_SECONDS) return `At most ${MAX_INCREMENTAL_SECONDS} seconds.`;
+  return null;
+}
+
 export function validateIncrementalMinutes(
   minutes: number | null | undefined,
   hasWatermark: boolean,
@@ -568,6 +586,22 @@ export const RECONCILE_MODE_OPTIONS: { label: string; value: AutocountEtlSourceC
   { label: 'Daily at', value: 'dailyAt' },
   { label: 'Every N hours', value: 'interval' },
 ];
+
+/** SS-SO-FAST-QUEUE - the zones a daily reconcile may be read in. Mirrors
+ * `DEFAULT_RECONCILE_TIMEZONE` / the legacy UTC reading in
+ * `modules/autocount/services/etl_service.py`. */
+export const DEFAULT_RECONCILE_TIMEZONE = 'Asia/Kuala_Lumpur';
+export const RECONCILE_TIMEZONE_OPTIONS: { label: string; value: string }[] = [
+  { label: 'MYT (Asia/Kuala_Lumpur)', value: 'Asia/Kuala_Lumpur' },
+  { label: 'UTC', value: 'UTC' },
+];
+
+/** Short zone label beside a reconcile time - no key = the legacy UTC reading. */
+export function reconcileTimezoneLabel(zone: string | null | undefined): string {
+  if (!zone || zone === 'UTC') return 'UTC';
+  if (zone === 'Asia/Kuala_Lumpur') return 'MYT';
+  return zone;
+}
 
 export function mappingSourceColumns(
   resultColumns: string[],

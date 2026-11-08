@@ -132,8 +132,12 @@ celery_app.conf.beat_schedule = {
     "meetings-dispatch-bots": {"task": "meetings.bot_dispatch_due", "schedule": 60.0},
     # AutoCount direct-DB ETL sweep (plan 22 S3, AC-22-13) - selects due
     # ACTIVE sql_db tasks and enqueues the SAME `autocount_sync` job the
-    # manual Run-now button uses. Same 60s tick; does no extraction itself.
-    "autocount-etl-sweep": {"task": "autocount.etl_sweep", "schedule": 60.0},
+    # manual Run-now button uses; does no extraction itself. 15 s, not 60
+    # (SS-SO-FAST-QUEUE, owner 8 Nov): a document task may run every N
+    # seconds (floor 15); a minute-cadence task is unaffected (its due time
+    # simply matches one of four ticks). The failure-alert pass that rides
+    # the sweep stays once a minute (`scheduler.alert_pass_due`).
+    "autocount-etl-sweep": {"task": "autocount.etl_sweep", "schedule": 15.0},
     # AutoCount pull snapshot prune (sprint-5/10 §2.4, AC-10-25) - deletes
     # every EXPIRED snapshot (+ its rows) and drops any READY snapshot beyond
     # the newest 3 per (tenant, company, entity) triple. Hourly, beside the
@@ -422,11 +426,14 @@ def autocount_etl_sweep_task() -> dict:
     """The AutoCount ETL beat sweep (plan 22 S3, AC-22-13). Failure-isolated
     like every other tick on this beat - a bad sweep never kills the loop."""
     from app.database import SessionLocal
-    from modules.autocount.scheduler import sweep_etl_tasks
+    from datetime import datetime, timezone
+
+    from modules.autocount.scheduler import alert_pass_due, sweep_etl_tasks
 
     db = SessionLocal()
     try:
-        return sweep_etl_tasks(db)
+        now = datetime.now(timezone.utc)
+        return sweep_etl_tasks(db, now=now, run_alerts=alert_pass_due(now))
     except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("autocount ETL sweep tick failed")
         db.rollback()

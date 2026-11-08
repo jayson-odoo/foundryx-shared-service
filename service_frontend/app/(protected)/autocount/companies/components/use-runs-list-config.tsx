@@ -252,6 +252,22 @@ export function useAutocountRunsListConfig(
         enableSorting: false,
       },
       {
+        id: 'queueWaitMs',
+        accessorFn: (row) => row.queueWaitMs ?? 0,
+        meta: { headerTitle: 'Queue wait' },
+        header: ({ column }) => <DataGridColumnHeader title="Queue wait" column={column} />,
+        cell: ({ row }) => (
+          <span
+            className="text-sm tabular-nums text-muted-foreground"
+            data-testid="run-queue-wait"
+          >
+            {formatDurationMs(row.original.queueWaitMs)}
+          </span>
+        ),
+        size: 100,
+        enableSorting: false,
+      },
+      {
         id: 'outcome',
         accessorFn: (row) => row.outcome ?? '',
         meta: { headerTitle: 'Outcome' },

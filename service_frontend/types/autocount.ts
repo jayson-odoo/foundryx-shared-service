@@ -316,6 +316,9 @@ export interface AutocountSyncRun {
   /** Delete intents pushed (reconcile only). */
   deletedCount: number;
   durationMs: number | null;
+  /** SS-SO-FAST-QUEUE - how long the run's job waited for a worker; null for
+   * skipped ticks and runs recorded before the field existed. */
+  queueWaitMs?: number | null;
   /** Why a `skipped` tick did not run (e.g. the previous run was still going). */
   skipReason: string | null;
 }
@@ -879,10 +882,16 @@ export interface AutocountEtlSourceConfig {
    */
   filterFormula: string | null;
   incrementalMinutes: number;
+  /** SS-SO-FAST-QUEUE - a seconds cadence (document tasks with a watermark,
+   * floor 15); wins over `incrementalMinutes` when set. */
+  incrementalSeconds?: number | null;
   reconcileMode: 'interval' | 'dailyAt';
   reconcileHours: number | null;
-  /** "HH:MM" in the tenant timezone (`reconcileMode === 'dailyAt'`). */
+  /** "HH:MM" in `reconcileTimezone` (`reconcileMode === 'dailyAt'`). */
   reconcileAt: string | null;
+  /** SS-SO-FAST-QUEUE - IANA zone `reconcileAt` is read in. New tasks are
+   * `Asia/Kuala_Lumpur`; absent on a task saved before the key = UTC. */
+  reconcileTimezone?: string | null;
   // ── sprint-5/08 (D13) - present only when the task's Source is API/`autocount_http` ──
   //
   // PHASE 1 MOCK simplification (see the contract block atop
@@ -1687,7 +1696,12 @@ export interface DocFeedBackfill {
  * incremental is a feed's poll, the reconcile its deletion sweep. */
 export type AutocountScheduleCadence = Pick<
   AutocountEtlSourceConfig,
-  'incrementalMinutes' | 'reconcileMode' | 'reconcileHours' | 'reconcileAt'
+  | 'incrementalMinutes'
+  | 'incrementalSeconds'
+  | 'reconcileMode'
+  | 'reconcileHours'
+  | 'reconcileAt'
+  | 'reconcileTimezone'
 >;
 
 /** A Document feed's schedule (sprint-5/19, AC-19-03) - always resolved by

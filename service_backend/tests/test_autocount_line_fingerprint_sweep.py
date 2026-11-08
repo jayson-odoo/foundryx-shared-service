@@ -256,6 +256,17 @@ def _stored_config(db, company: AcCompany, entity_type: str, **source_overrides)
     return config
 
 
+@pytest.fixture(autouse=True)
+def _fast_pass_every_run(monkeypatch):
+    """These tests pin the fast/full line-check semantics with runs fired
+    back-to-back in wall-clock time; the SS-SO-FAST-QUEUE once-a-minute gate
+    (`autocount_fingerprint_fast_min_interval_seconds`) is pinned separately
+    in `test_ss_so_fast_queue.py`, so it is off here."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "autocount_fingerprint_fast_min_interval_seconds", 0)
+
+
 @pytest.fixture
 def db(session_factory):
     session = session_factory()
@@ -1196,3 +1207,28 @@ def test_a_failing_scheduler_refill_still_enqueues_the_run(db, monkeypatch):
 
     assert sweep_etl_tasks(db)["fired"] == 1
     assert db.query(BackgroundJob).filter(BackgroundJob.type == AUTOCOUNT_SYNC).count() == 1
+
+
+def test_a_seconds_cadence_task_runs_the_fast_pass_at_most_once_a_minute(rig, monkeypatch):
+    """SS-SO-FAST-QUEUE - with the gate at 60 s, a second incremental fired
+    seconds after the first skips the fast line check (the header watermark
+    read still runs every tick); aged past the gate, the next run checks."""
+    from datetime import timedelta
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "autocount_fingerprint_fast_min_interval_seconds", 60)
+    rig.add_doc("D020", days_ago=5)
+    rig.run(RUN_MODE_MANUAL)
+    rig.run(RUN_MODE_INCREMENTAL)  # FULL (never swept) - stamps the gate too
+
+    rig.deliver("D020-1", "2")
+    rig.run(RUN_MODE_INCREMENTAL)
+    assert rig.sweep_statements("fast") == []
+
+    watermark = rig.watermark()
+    watermark.last_fast_line_check_at = watermark.last_fast_line_check_at - timedelta(seconds=61)
+    rig.db.commit()
+    job, _ = rig.run(RUN_MODE_INCREMENTAL)
+    assert len(rig.sweep_statements("fast")) == 1
+    assert set(rig.staged(job.id)) == {"D020"}

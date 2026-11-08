@@ -16,14 +16,12 @@ as it does for a manual run. **Per-task failure isolation**: one bad task's
 exception never stops the sweep or corrupts a sibling task's row (mirrors
 ``app/workflow_engine/scheduler.reevaluate_time_based``).
 
-**Timezone note (documented per plan §2.4).** Foundryx has NO tenant-level
-timezone setting today - only a per-user ``users.timezone`` preference, which
-has no natural owner for an unattended scheduled task. So a "Daily at HH:MM"
-reconcile is resolved as UTC, both when armed (``EtlService.next_run_times``,
-called at activate/resume) and here at the sweep (the SAME pure function,
-called fresh against ``now`` so drift never compounds). A genuine tenant
-timezone setting is a fair follow-up once a customer needs true local-wall-
-clock scheduling in a non-UTC tenant.
+**Timezone note.** A "Daily at HH:MM" reconcile is read in the task's own
+``source_config.reconcileTimezone`` (SS-SO-FAST-QUEUE, owner 8 Nov: new tasks
+are written Asia/Kuala_Lumpur so the admin sees MYT; a task saved before the
+key existed has none and keeps its historical UTC reading). Resolved by the
+SAME pure function at activate/resume (``EtlService.next_run_times``) and here
+at the sweep, called fresh against ``now`` so drift never compounds.
 """
 from __future__ import annotations
 
@@ -129,7 +127,9 @@ def sweep_order_key(entity_type: str) -> int:
     return 1 if entity_type in (ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE) else 0
 
 
-def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:
+def sweep_etl_tasks(
+    db: Session, *, now: Optional[datetime] = None, run_alerts: bool = True
+) -> Dict[str, int]:
     """The beat tick body. Returns ``{fired, skipped, failed}`` - a plain dict
     so the Celery task can hand it straight back as the task result."""
     now = now or datetime.now(timezone.utc)
@@ -189,6 +189,11 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
             skipped += 1
     # Plan 33 - the failure-alert check rides the same tick; its own crash
     # never changes what the sweep reports or whether the next tick enqueues.
+    # SS-SO-FAST-QUEUE - the beat task passes ``run_alerts=alert_pass_due()``
+    # so the pass runs at most once per wall-clock minute (the beat now ticks
+    # every 15 s; the pass loads every task, a minute is its resolution).
+    if not run_alerts:
+        return {"fired": fired, "skipped": skipped, "failed": failed}
     try:
         from .alerts import evaluate_integration_alerts
 
@@ -197,6 +202,37 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
         logger.exception("autocount failure-alert check failed")
         db.rollback()
     return {"fired": fired, "skipped": skipped, "failed": failed}
+
+
+# The wall-clock minute the failure-alert pass last ran in, per process. A
+# prefork worker child keeps its own, so with N children the pass runs at
+# most N times a minute - bounded, and each pass is idempotent.
+_last_alert_bucket: Optional[int] = None
+
+
+def alert_pass_due(now: datetime) -> bool:
+    global _last_alert_bucket
+    bucket = int(now.timestamp()) // 60
+    if _last_alert_bucket == bucket:
+        return False
+    _last_alert_bucket = bucket
+    return True
+
+
+def _is_sub_minute(config: AcEntityConfig) -> bool:
+    from app.config import settings
+
+    source_config = config.source_config or {}
+    return (
+        bool(source_config.get("incrementalSeconds"))
+        and bool(source_config.get("watermarkColumn"))
+        and bool((settings.autocount_docs_queue or "").strip())
+    )
+
+
+# Shared prefix of both incremental skip reasons (queued / still running), so
+# the sub-minute dedupe finds either.
+INCREMENTAL_SKIP_PREFIXES = ("The previous run for this task was queued", "A run for this task was still in progress when the incremental")
 
 
 def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
@@ -382,10 +418,22 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             )
             reason = RECONCILE_DEFERRED_REASON
         else:
-            write_row = True
-            reason = (
-                "A run for this task was still in progress when the incremental "
-                "schedule fired; this tick was skipped."
+            reason = _incremental_skip_reason(in_flight, now=now)
+            # SS-SO-FAST-QUEUE - a 15-30 s task meets a 5-13 s run often;
+            # one skip row per in-flight JOB, not one per tick (else ~5k
+            # noise rows/day per task).
+            # Per prefix (review): a job that goes from queued to running
+            # (and then maybe hangs) writes one more row at that switch.
+            prefix = next(
+                (p for p in INCREMENTAL_SKIP_PREFIXES if reason.startswith(p)), reason
+            )
+            write_row = not (
+                _is_sub_minute(config)
+                and in_flight.created_at is not None
+                and runs.has_skip_since(
+                    tenant_id, company_id, entity_type,
+                    since=in_flight.created_at, reason_prefix=prefix,
+                )
             )
         if write_row:
             runs.add(
@@ -406,11 +454,20 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
 
     _refill_empty_line_check(db, config)
 
+    payload: Dict[str, Any] = {"companyId": company_id, "entityType": entity_type, "mode": mode}
+    # SS-SO-FAST-QUEUE (review) - only a SHORT incremental may ride the docs
+    # queue: a plain incremental of a task that has completed a run before
+    # and has no open paged pass. A continued initial load (an open pass,
+    # even under mode=incremental) or a first tick with no watermark yet can
+    # run up to the 600 s budget and would fill the docs worker's slots.
+    if mode == RUN_MODE_INCREMENTAL and _is_short_incremental(watermark):
+        payload["fastLane"] = True
+
     try:
         JobService(db).create_and_enqueue(
             type=AUTOCOUNT_SYNC,
             tenant_id=tenant_id,
-            payload={"companyId": company_id, "entityType": entity_type, "mode": mode},
+            payload=payload,
         )
     except Exception as exc:  # noqa: BLE001
         if due_reconcile and mode != RUN_MODE_RECONCILE:
@@ -452,6 +509,43 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
         db.commit()
     return "fired"
+
+
+def _is_short_incremental(watermark) -> bool:
+    """A completed run exists (``last_success_at``) and no paged pass is open."""
+    if watermark is None or watermark.last_success_at is None:
+        return False
+    cursor = watermark.cursor_json if isinstance(watermark.cursor_json, dict) else {}
+    pass_state = cursor.get("pass")
+    if isinstance(pass_state, dict) and not pass_state.get("complete", False):
+        return False
+    return True
+
+
+def _incremental_skip_reason(in_flight, *, now: datetime) -> str:
+    """SS-SO-FAST-QUEUE - say WHICH kind of in-flight job blocked the tick.
+
+    A PENDING job never claimed by a worker is QUEUED, not running: the tick
+    is skipped either way (one job per task, never a pile of duplicates
+    behind a busy worker), but the run history must not call a job that is
+    waiting for a worker "in progress" - that hid a 38% SO skip rate caused
+    by queue wait, not by slow runs (prod 1-8 Nov)."""
+    if in_flight.status == JOB_PENDING and in_flight.started_at is None:
+        created = in_flight.created_at
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        waited = (
+            f" for {max(0, int((now - created).total_seconds()))} s"
+            if created is not None else ""
+        )
+        return (
+            f"The previous run for this task was queued{waited}, waiting for a "
+            "worker, when the incremental schedule fired; this tick was skipped."
+        )
+    return (
+        "A run for this task was still in progress when the incremental "
+        "schedule fired; this tick was skipped."
+    )
 
 
 def _refill_empty_line_check(db: Session, config: AcEntityConfig) -> None:

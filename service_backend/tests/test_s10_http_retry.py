@@ -179,13 +179,16 @@ def test_connect_error_then_success_is_one_retry(rig):
 
 
 def test_4xx_fails_immediately_with_no_retry(rig):
+    """SS-SO-FAST-QUEUE moved a bare 400 onto the retry ladder (the Mocha
+    wrapper answers it intermittently - 70 of 410 product runs); every OTHER
+    4xx (404 here) is still a genuine fault that fails on the first answer."""
     db, company, conn = rig
     config = _config(db, company, conn.id)
     calls: List[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        return httpx.Response(400, text="bad request")
+        return httpx.Response(404, text="not found")
 
     source = HttpApiSource(
         _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(handler),

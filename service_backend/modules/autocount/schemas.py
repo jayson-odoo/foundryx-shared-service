@@ -589,6 +589,8 @@ class SyncRunItem(ApiModel):
     updatedCount: int = Field(default=0, validation_alias="updated_count")
     deletedCount: int = Field(default=0, validation_alias="deleted_count")
     durationMs: Optional[int] = Field(default=None, validation_alias="duration_ms")
+    # SS-SO-FAST-QUEUE - time the run's job waited for a worker.
+    queueWaitMs: Optional[int] = Field(default=None, validation_alias="queue_wait_ms")
     # Why a ``skipped`` tick never ran (the overlap guard, AC-22-14).
     skipReason: Optional[str] = Field(default=None, validation_alias="skip_reason")
     # ── push request accounting (fix/push-marks-per-chunk, prod 2026-09-07) ──
@@ -805,9 +807,15 @@ class EtlSourceConfigIn(ApiModel):
     # fingerprint rows.
     fingerprintQuery: Optional[str] = None
     incrementalMinutes: int = 15
+    # SS-SO-FAST-QUEUE - a seconds cadence (document tasks with a watermark,
+    # floor 15; ``validate_schedule`` gates it). None = minutes.
+    incrementalSeconds: Optional[int] = None
     reconcileMode: str = "dailyAt"
     reconcileHours: Optional[int] = None
     reconcileAt: Optional[str] = None
+    # SS-SO-FAST-QUEUE - the IANA zone ``reconcileAt`` is read in. None = the
+    # legacy UTC reading (never replaced by the new-task default).
+    reconcileTimezone: Optional[str] = None
     # ── HTTP (open REST API) shape only (sprint-5/08, AC-08-13) ──────────────
     path: Optional[str] = None
     keyFields: List[str] = []

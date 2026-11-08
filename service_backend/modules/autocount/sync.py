@@ -409,6 +409,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             entity_type=entity_type,
             job_id=job.id,
             mode=mode,
+            queue_wait_ms=queue_wait_ms(job),
         )
     )
     watermark_row.last_attempt_at = datetime.now(timezone.utc)
@@ -449,6 +450,15 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
                 entity_type, "LastModified"
             ),
             mode=mode,
+            # SS-SO-FAST-QUEUE (owner probe 1-8 Nov) - a per-PAGE liveness
+            # beat for the walk itself. Without it a push walk beat only once
+            # before extraction, so a 15+ minute open-REST walk (Mocha
+            # product, ~900 s) crossed `background_job_orphan_after_minutes`
+            # and the orphan sweep failed a LIVE run as "Interrupted" (87 of
+            # 410 runs in 7 days). ``HttpApiSource`` fires it after every
+            # page of the main path and every lookup (the pull-snapshot build
+            # already passed one); the SQL and vendor factories swallow it.
+            heartbeat=lambda *_args, **_kw: _heartbeat(service, job.id),
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
         logger.exception("autocount sync setup failed for job %s", job.id)
@@ -1505,6 +1515,12 @@ def _run_fingerprint_sweep(
     window_days = settings.autocount_fingerprint_fast_window_days
     if not full_pass and (not window_days or not _fast_window_applies(source)):
         return 0, 0, 0, 0, None
+    # SS-SO-FAST-QUEUE - a seconds-cadence task runs the FAST pass at most
+    # once per ``autocount_fingerprint_fast_min_interval_seconds``.
+    if not full_pass and not fast_line_check_due(
+        getattr(watermark_row, "last_fast_line_check_at", None), now=now
+    ):
+        return 0, 0, 0, 0, None
 
     try:
         if full_pass:
@@ -1590,6 +1606,7 @@ def _run_fingerprint_sweep(
 
         if full_pass:
             watermark_row.last_fingerprint_sweep_at = now
+        watermark_row.last_fast_line_check_at = now
         db.commit()
         return staged, failed, added, updated, None
     except Exception as exc:  # noqa: BLE001 - a broken sweep must never fail the run
@@ -2543,6 +2560,25 @@ def _stage_deletes(
     return count
 
 
+FAST_LINE_CHECK_SLACK_SECONDS = 15
+
+
+def fast_line_check_due(last_checked_at: Optional[datetime], *, now: datetime) -> bool:
+    """SS-SO-FAST-QUEUE - whether the FAST line check may run again: never
+    run, the gate is off (0), or at least the configured interval ago."""
+    interval = settings.autocount_fingerprint_fast_min_interval_seconds
+    if not interval or last_checked_at is None:
+        return True
+    if last_checked_at.tzinfo is None:
+        last_checked_at = last_checked_at.replace(tzinfo=timezone.utc)
+    # Review: one sweep tick (15 s) of slack, so a 1-minute task whose runs
+    # start a few seconds early (queue wait / header time vary) never skips
+    # every other line check.
+    return (now - last_checked_at) >= timedelta(
+        seconds=max(0, interval - FAST_LINE_CHECK_SLACK_SECONDS)
+    )
+
+
 def _heartbeat(service: JobService, job_id: str) -> bool:
     """Best-effort liveness stamp (fix/job-lease-orphan-sweep): before and
     after every page, before extraction and before the push on the non-paged
@@ -3325,9 +3361,59 @@ register_pull_snapshot_handler()
 # The SAME def object re-registers cleanly (the registry tolerates identity).
 # ``heartbeats=True``: this handler beats at every checkpoint (page / push
 # chunk), so the orphan sweep may fail a RUNNING sync whose beat went stale.
+def _docs_queue_entity_types() -> Tuple[str, ...]:
+    """Document entities whose INCREMENTAL rides the docs queue: every
+    document the CRM waits on (orders, linked, billing, GRN) - never the AR
+    outstanding snapshot (a whole-ledger read, not an edit stream)."""
+    from .canonical.documents import DOCUMENT_ENTITY_TYPES, ENTITY_AR_OUTSTANDING
+    from .canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
+
+    return tuple(
+        t for t in DOCUMENT_ENTITY_TYPES if t != ENTITY_AR_OUTSTANDING
+    ) + (ENTITY_GOODS_RECEIVED_NOTE,)
+
+
+def autocount_sync_queue_for(job: BackgroundJob) -> Optional[str]:
+    """SS-SO-FAST-QUEUE - the per-job route for ``autocount_sync``.
+
+    A scheduled document INCREMENTAL the sweep marked ``fastLane`` (a task
+    with a completed run and no open paged pass - seconds of work, the CRM is
+    waiting on it) goes to ``settings.autocount_docs_queue``. Everything else - masters,
+    product, stock_balance, AR outstanding, every reconcile (8-10 min on a
+    big SO table) and every manual "Run now" (may be an initial load) -
+    returns None and keeps the type's default route (``jobs``), so nothing
+    long can ever sit in front of an SO incremental."""
+    from app.config import settings
+
+    queue = (settings.autocount_docs_queue or "").strip()
+    if not queue:
+        return None
+    payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+    if payload.get("mode") != RUN_MODE_INCREMENTAL or payload.get("fastLane") is not True:
+        return None
+    if payload.get("entityType") not in _docs_queue_entity_types():
+        return None
+    return queue
+
+
+def queue_wait_ms(job: BackgroundJob) -> Optional[int]:
+    """How long ``job`` sat queued before a worker claimed it (``started_at -
+    created_at``), or None when either stamp is missing."""
+    if job.started_at is None or job.created_at is None:
+        return None
+    created = job.created_at
+    started = job.started_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return max(0, int((started - created).total_seconds() * 1000))
+
+
 _HANDLER_DEF = JobHandlerDef(
     AUTOCOUNT_SYNC, run_autocount_sync, "AutoCount sync", heartbeats=True,
     read_permission="autocount.sync.read",
+    queue_for=autocount_sync_queue_for,
 )
 
 

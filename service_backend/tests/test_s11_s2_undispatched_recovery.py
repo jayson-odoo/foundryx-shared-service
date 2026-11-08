@@ -472,7 +472,9 @@ def test_a_fresh_pending_job_one_minute_old_still_skips_the_tick(session_factory
         .all()
     )
     assert len(skip_rows) == 1
-    assert "still in progress" in (skip_rows[0].skip_reason or "")
+    # SS-SO-FAST-QUEUE - a never-claimed job is reported as QUEUED, not
+    # "still in progress" (owner ruling 8 Nov, Q1 (a)).
+    assert "queued" in (skip_rows[0].skip_reason or "")
     db.close()
 
 

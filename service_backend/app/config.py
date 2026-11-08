@@ -505,6 +505,13 @@ class Settings(BaseSettings):
     # startup - never silently clamped, which would look like a working
     # config while quietly extracting the whole 306k-header table per page.
     autocount_page_size: int = 2000
+    # SS-SO-FAST-QUEUE (owner 8 Nov) - the Celery queue a DOCUMENT
+    # incremental (`autocount_sync`, mode=incremental, SO/PO/IV/CN/...) is
+    # published on, consumed by the dedicated `worker_jobs_docs` compose
+    # service, so an SO edit never waits behind a stock_balance / product
+    # walk on the shared `jobs` queue. Empty = no split (rollback lever:
+    # documents ride `jobs` again). Read at enqueue time.
+    autocount_docs_queue: str = "jobs_docs"
     autocount_run_time_budget_seconds: int = 600
     # The Sorento sink's own HTTP client timeout (round 5) - a 1,000-record
     # document batch with lines can genuinely take Sorento longer than the
@@ -601,6 +608,12 @@ class Settings(BaseSettings):
     # Read at CALL time ("retune without a restart").
     autocount_fingerprint_sweep_minutes: int = 15
     autocount_fingerprint_fast_window_days: int = 60
+    # SS-SO-FAST-QUEUE (owner 8 Nov) - the FAST pass above runs at most once
+    # per this many seconds per task. A document task may now run every 15-30
+    # s; its header watermark read stays every tick (header edits in seconds)
+    # while the 60-day line check - the expensive part of an SO incremental -
+    # keeps its old once-a-minute rate. 0 = every run (the old behaviour).
+    autocount_fingerprint_fast_min_interval_seconds: int = 60
 
     @field_validator("api_db_lock_timeout_seconds")
     @classmethod

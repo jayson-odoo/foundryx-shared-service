@@ -70,11 +70,11 @@ class JobService:
         if settings.celery_task_always_eager:
             run_job(self.db, job_id)
             return
-        from app.jobs.registry import queue_for_type
+        from app.jobs.registry import queue_for_job
         from app.jobs.worker import run_job_task
 
         job = self.repo.get_unscoped(job_id)
-        queue = queue_for_type(job.type) if job is not None else None
+        queue = queue_for_job(job) if job is not None else None
         if queue:
             run_job_task.apply_async(args=[job_id], queue=queue)
         else:
