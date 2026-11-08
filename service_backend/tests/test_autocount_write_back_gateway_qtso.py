@@ -354,7 +354,9 @@ def test_ac_57_11_from_quotation_only_on_sales_order_lines(client, gw):
     gw.h.no_http()
 
 
-@pytest.mark.parametrize("missing", ["debtorCode", "docDate", "displayTerm", "currencyCode", "currencyRate"])
+# displayTerm: a QT / SO without one takes the debtor's own AutoCount term
+# (SS-QTSO-DISPLAYTERM, tests/test_autocount_write_back_display_term.py).
+@pytest.mark.parametrize("missing", ["debtorCode", "docDate", "currencyCode", "currencyRate"])
 def test_ac_57_10_missing_header_field_is_422_field_required_naming_it(client, gw, missing):
     body = create_body()
     del body["header"][missing]

@@ -229,13 +229,23 @@ def test_ac_57_03_flag_is_read_at_call_time(h):
 
 # ---- AC-57-10: create preconditions (no HTTP) ---------------------------------------
 
-@pytest.mark.parametrize("missing", ["DebtorCode", "DocDate", "DisplayTerm", "CurrencyCode", "CurrencyRate"])
+# DisplayTerm: a QT / SO without one takes the debtor's own AutoCount term
+# (SS-QTSO-DISPLAYTERM); PO still needs it (test below).
+@pytest.mark.parametrize("missing", ["DebtorCode", "DocDate", "CurrencyCode", "CurrencyRate"])
 def test_ac_57_10_header_field_missing_is_field_required_naming_it(h, missing):
     head = _header("QT")
     head.pop(missing)
     res = h.create("QT", header=head)
     assert res.outcome == "refused" and res.error_code == "FIELD_REQUIRED"
     assert missing in json.dumps(h.action(res).response_json or "") + str(getattr(res, "message", "")) + str(res.warnings)
+    h.no_http()
+
+
+def test_ac_57_10_po_without_display_term_is_field_required(h):
+    head = _header("PO")
+    head.pop("DisplayTerm")
+    res = h.create("PO", header=head)
+    assert res.outcome == "refused" and res.error_code == "FIELD_REQUIRED" and "DisplayTerm" in res.message
     h.no_http()
 
 

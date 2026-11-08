@@ -52,7 +52,9 @@ from app.db_errors import db_error_in, stored_error_text
 
 from .canonical.base import CanonicalRecord
 from .canonical.documents import (
+    PACKAGE_LINES_MIN_CONTRACT,
     REPLACES_LINE_REF_MIN_CONTRACT,
+    CanonicalBillingDocument,
     CanonicalDocument,
     CanonicalPurchaseOrder,
     CanonicalSalesOrder,
@@ -362,6 +364,10 @@ ITEM_CLASSES_CONTRACT_VERSION = ContractVersion(2, 11)
 # Plan 57 S5 - ``replaces_line_ref`` on PO / SPO / SO lines (contract 2.12); sent only
 # when the consumer ADVERTISES at least this (Sorento ingest uses ``extra="forbid"``).
 REPLACES_LINE_REF_CONTRACT_VERSION = ContractVersion(*REPLACES_LINE_REF_MIN_CONTRACT)
+
+# SS-PACKAGE-LINES - `line_type` / `parent_line_ref` on billing lines (contract
+# 2.13); sent only when the CRM ADVERTISES at least this (``extra="forbid"``).
+PACKAGE_LINES_CONTRACT_VERSION = ContractVersion(*PACKAGE_LINES_MIN_CONTRACT)
 
 # plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
 # is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
@@ -898,6 +904,13 @@ class SorentoSink:
                     advertised_contract=self.advertised_contract_version,
                 ))
             elif isinstance(record, (CanonicalPurchaseOrder, CanonicalShippingOrder, CanonicalSalesOrder)):
+                out.append(payload(
+                    contract_version=self.contract_version,
+                    advertised_contract=self.advertised_contract_version,
+                ))
+            elif isinstance(record, CanonicalBillingDocument):
+                # SS-PACKAGE-LINES - package line fields ride the advertised
+                # contract (>= 2.13); an older CRM gets the 2.6 line unchanged.
                 out.append(payload(
                     contract_version=self.contract_version,
                     advertised_contract=self.advertised_contract_version,
