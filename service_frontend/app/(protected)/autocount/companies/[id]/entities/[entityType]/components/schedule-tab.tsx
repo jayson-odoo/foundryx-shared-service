@@ -150,6 +150,7 @@ export function ScheduleTab({
           nextIncrementalAt={isActive ? task.nextIncrementalAt : null}
           nextReconcileAt={isActive ? task.nextReconcileAt : null}
           timezoneEditable
+          secondsAllowed={isDocument && entityType !== 'ar_outstanding' && hasWatermark}
         >
           <Card>
             <CardHeader>

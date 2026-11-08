@@ -80,3 +80,33 @@ describe('ScheduleTab reconcile time zone (SS-SO-FAST-QUEUE)', () => {
     expect(reconcileTimezoneLabel('Asia/Kuala_Lumpur')).toBe('MYT');
   });
 });
+
+describe('ScheduleTab seconds cadence (SS-SO-FAST-QUEUE)', () => {
+  it('shows a seconds cadence on a document task', () => {
+    renderTab({ incrementalSeconds: 30 });
+    expect(screen.getByTestId('etl-incremental-unit')).toHaveTextContent('seconds');
+  });
+
+  it('keeps minutes on a document task without a watermark', () => {
+    renderTab({ incrementalSeconds: 30, watermarkColumn: null });
+    expect(screen.getByTestId('etl-incremental-unit')).toHaveTextContent('minutes');
+  });
+
+  it('edits seconds with the 15 s floor', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="sales_order"
+        config={config({ incrementalSeconds: 30 })}
+        onChange={vi.fn()}
+        task={task}
+        fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    const input = screen.getByTestId('etl-incremental-minutes');
+    expect(input).toHaveAttribute('min', '15');
+    expect(input).toHaveValue(30);
+  });
+});

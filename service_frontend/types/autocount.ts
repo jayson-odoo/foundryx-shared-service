@@ -882,6 +882,9 @@ export interface AutocountEtlSourceConfig {
    */
   filterFormula: string | null;
   incrementalMinutes: number;
+  /** SS-SO-FAST-QUEUE - a seconds cadence (document tasks with a watermark,
+   * floor 15); wins over `incrementalMinutes` when set. */
+  incrementalSeconds?: number | null;
   reconcileMode: 'interval' | 'dailyAt';
   reconcileHours: number | null;
   /** "HH:MM" in `reconcileTimezone` (`reconcileMode === 'dailyAt'`). */
@@ -1693,7 +1696,12 @@ export interface DocFeedBackfill {
  * incremental is a feed's poll, the reconcile its deletion sweep. */
 export type AutocountScheduleCadence = Pick<
   AutocountEtlSourceConfig,
-  'incrementalMinutes' | 'reconcileMode' | 'reconcileHours' | 'reconcileAt' | 'reconcileTimezone'
+  | 'incrementalMinutes'
+  | 'incrementalSeconds'
+  | 'reconcileMode'
+  | 'reconcileHours'
+  | 'reconcileAt'
+  | 'reconcileTimezone'
 >;
 
 /** A Document feed's schedule (sprint-5/19, AC-19-03) - always resolved by

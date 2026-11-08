@@ -5,10 +5,14 @@ import { CalendarClock, RefreshCcw } from 'lucide-react';
 import type { AutocountScheduleCadence } from '@/types/autocount';
 import {
   incrementalFloorMinutes,
+  DEFAULT_INCREMENTAL_SECONDS,
+  INCREMENTAL_UNIT_OPTIONS,
+  MIN_INCREMENTAL_SECONDS,
   RECONCILE_MODE_OPTIONS,
   RECONCILE_TIMEZONE_OPTIONS,
   reconcileTimezoneLabel,
   validateIncrementalMinutes,
+  validateIncrementalSeconds,
   validateReconcileAt,
   validateReconcileHours,
 } from '@/lib/autocount-etl';
@@ -51,6 +55,9 @@ export interface ScheduleCadenceCardsProps {
   /** SS-SO-FAST-QUEUE - the daily time's zone is editable (ETL tasks). Off =
    * a fixed "UTC" label (Document feeds, whose sweep reads UTC). */
   timezoneEditable?: boolean;
+  /** SS-SO-FAST-QUEUE - the incremental may be set in seconds (document
+   * tasks with a watermark); off = minutes only. */
+  secondsAllowed?: boolean;
 }
 
 /** Live mirror of every cadence rule - the same messages the cards render.
@@ -62,6 +69,8 @@ export function scheduleCadenceErrors(
   const errors: Record<string, string> = {};
   const incremental = validateIncrementalMinutes(value.incrementalMinutes, hasWatermark);
   if (incremental) errors.incrementalMinutes = incremental;
+  const seconds = validateIncrementalSeconds(value.incrementalSeconds);
+  if (seconds) errors.incrementalSeconds = seconds;
   if (value.reconcileMode === 'dailyAt') {
     const at = validateReconcileAt(value.reconcileAt);
     if (at) errors.reconcileAt = at;
@@ -94,12 +103,20 @@ export function ScheduleCadenceCards({
   incrementalExtra,
   reconcileExtra,
   timezoneEditable = false,
+  secondsAllowed = false,
 }: ScheduleCadenceCardsProps) {
   const { formatDateTime } = useDatetime();
   const floor = incrementalFloorMinutes(hasWatermark);
-  const incrementalError =
-    fieldErrors.incrementalMinutes ??
-    validateIncrementalMinutes(value.incrementalMinutes, hasWatermark);
+  const inSeconds =
+    secondsAllowed &&
+    value.incrementalSeconds !== null &&
+    value.incrementalSeconds !== undefined;
+  const incrementalError = inSeconds
+    ? (fieldErrors.incrementalSeconds ?? validateIncrementalSeconds(value.incrementalSeconds))
+    : (fieldErrors.incrementalMinutes ??
+      fieldErrors.incrementalSeconds ??
+      validateIncrementalMinutes(value.incrementalMinutes, hasWatermark));
+  const incrementalValue = inSeconds ? value.incrementalSeconds : value.incrementalMinutes;
   const reconcileAtError =
     value.reconcileMode === 'dailyAt'
       ? (fieldErrors.reconcileAt ?? validateReconcileAt(value.reconcileAt))
@@ -129,29 +146,47 @@ export function ScheduleCadenceCards({
                 <Input
                   id={id('incremental-minutes')}
                   type="number"
-                  min={floor}
+                  min={inSeconds ? MIN_INCREMENTAL_SECONDS : floor}
                   step={1}
                   className="w-24"
                   value={
-                    Number.isFinite(value.incrementalMinutes)
-                      ? value.incrementalMinutes
+                    incrementalValue !== null &&
+                    incrementalValue !== undefined &&
+                    Number.isFinite(incrementalValue)
+                      ? incrementalValue
                       : ''
                   }
-                  onChange={(e) =>
-                    onChange({
-                      incrementalMinutes:
-                        e.target.value === '' ? NaN : Number(e.target.value),
-                    })
-                  }
+                  onChange={(e) => {
+                    const next = e.target.value === '' ? NaN : Number(e.target.value);
+                    if (inSeconds) onChange({ incrementalSeconds: next });
+                    else onChange({ incrementalMinutes: next });
+                  }}
                   aria-invalid={Boolean(incrementalError)}
                   data-testid={id('incremental-minutes')}
                 />
               ) : (
-                <span className="text-sm font-medium">
-                  {value.incrementalMinutes}
+                <span className="text-sm font-medium">{incrementalValue}</span>
+              )}
+              {secondsAllowed && editing ? (
+                <SearchSelect
+                  options={INCREMENTAL_UNIT_OPTIONS}
+                  value={inSeconds ? 'seconds' : 'minutes'}
+                  onChange={(unit) =>
+                    onChange({
+                      incrementalSeconds:
+                        unit === 'seconds' ? DEFAULT_INCREMENTAL_SECONDS : null,
+                    })
+                  }
+                  ariaLabel={`${incrementalTitle} unit`}
+                />
+              ) : (
+                <span
+                  className="text-sm text-muted-foreground"
+                  data-testid={id('incremental-unit')}
+                >
+                  {inSeconds ? 'seconds' : 'minutes'}
                 </span>
               )}
-              <span className="text-sm text-muted-foreground">minutes</span>
             </div>
             {incrementalError && (
               <p

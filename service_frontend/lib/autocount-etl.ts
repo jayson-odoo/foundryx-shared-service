@@ -488,6 +488,24 @@ export function incrementalFloorMinutes(hasWatermark: boolean): number {
 
 /** Live mirror of the save-time floor guard - the server re-validates on
  * save regardless (422 `fieldErrors.incrementalMinutes`). */
+/** SS-SO-FAST-QUEUE - mirrors `MIN_INCREMENTAL_SECONDS`/`MAX_INCREMENTAL_SECONDS`
+ * in `modules/autocount/services/etl_service.py`. */
+export const MIN_INCREMENTAL_SECONDS = 15;
+export const MAX_INCREMENTAL_SECONDS = 3600;
+export const DEFAULT_INCREMENTAL_SECONDS = 30;
+export const INCREMENTAL_UNIT_OPTIONS: { label: string; value: 'seconds' | 'minutes' }[] = [
+  { label: 'seconds', value: 'seconds' },
+  { label: 'minutes', value: 'minutes' },
+];
+
+export function validateIncrementalSeconds(seconds: number | null | undefined): string | null {
+  if (seconds === null || seconds === undefined) return null;
+  if (!Number.isFinite(seconds)) return 'Enter the incremental interval in seconds.';
+  if (seconds < MIN_INCREMENTAL_SECONDS) return `At least ${MIN_INCREMENTAL_SECONDS} seconds.`;
+  if (seconds > MAX_INCREMENTAL_SECONDS) return `At most ${MAX_INCREMENTAL_SECONDS} seconds.`;
+  return null;
+}
+
 export function validateIncrementalMinutes(
   minutes: number | null | undefined,
   hasWatermark: boolean,
