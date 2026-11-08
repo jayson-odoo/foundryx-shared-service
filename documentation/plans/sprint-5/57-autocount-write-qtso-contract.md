@@ -96,11 +96,20 @@ Line names accepted: `itemCode`, `uom`, `qty`, `unitPrice`, `discount`, `locatio
 `deliveryDate`, `taxCode`, `desc2`, `projNo`, `focQty`, and `fromQuotation` (sales-order lines only).
 `docDate` and `deliveryDate` are `YYYY-MM-DD`.
 
-Required: header `docDate`, `displayTerm`, `currencyCode`, `currencyRate`, and `debtorCode` (quotations,
-sales orders) or `creditorCode` (purchase orders, shipping purchase orders); at least one line; per line
+Required: header `docDate`, `currencyCode`, `currencyRate`, and `debtorCode` (quotations,
+sales orders) or `creditorCode` (purchase orders, shipping purchase orders); `displayTerm` for purchase
+orders and shipping purchase orders; at least one line; per line
 `itemCode`, `uom`, `qty` above zero, `unitPrice` not negative, `location`. A miss is `422 FIELD_REQUIRED`
 and the field is named in `message` (`FIELD_REQUIRED: debtorCode`; a missing line list is `details`).
 A numeric field outside its rule (qty not above zero, negative price) is also `FIELD_REQUIRED`, naming it.
+
+`displayTerm` on quotations and sales orders (SS-QTSO-DISPLAYTERM) is optional. Sent and not blank: it is
+sent to AutoCount as is. Absent, `null` or blank: the service reads the debtor from the same AutoCount
+book (`GET /debtorbypage`, matched on `AccNo`, trimmed and case-insensitive) and sends that debtor's own
+`DisplayTerm` code. A debtor with no term, or not in the book, is `422 DEBTOR_TERM_MISSING` with the
+debtor code in `message` (`debtor 300-1001 has no credit term in AutoCount; send displayTerm`); a failed
+debtor read is `409 READ_FAILED`. Nothing is written on either. Every other refusal above wins first,
+so a bad request never costs a debtor read.
 The vendor's full row shape (project, FOC quantity, tax, transfer fields and the like) is filled by the
 service; callers send only the names above. Without `docNo`, AutoCount numbers the document (`docNo` in the
 answer).
@@ -126,6 +135,8 @@ FIELD_NOT_EDITABLE`, the name in `message`. `qty` not above zero (or over 8 deci
 `422 PRICE_INVALID`. Both are checked before AutoCount is read. A change AutoCount accepts but does not apply: `502`, `outcome: mismatch`,
 `errorCode: FIELD_IGNORED`, `message` `ignored: <names>` and the same names in `warnings`; the names are camelCase
 (for example `ref`).
+On a quotation or sales order, a `displayTerm` changed to blank (or a document that has none) takes the
+debtor's own AutoCount term the same way as a create (`DEBTOR_TERM_MISSING` / `READ_FAILED` as there).
 
 ### 3.3 Add line, delete line, cancel
 
@@ -192,7 +203,7 @@ Status mapping:
 |---|---|---|
 | `done` | null or none of section 5 (warnings may be set) | 200 |
 | `pending_verification` | (a transport or read-back code, section 5) | 202 |
-| `refused` | `FIELD_REQUIRED`, `FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED`, `QTY_INVALID`, `PRICE_INVALID` | 422 |
+| `refused` | `FIELD_REQUIRED`, `FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED`, `QTY_INVALID`, `PRICE_INVALID`, `DEBTOR_TERM_MISSING` | 422 |
 | `refused` | `WRITE_DISABLED`, `WRITE_NOT_ALLOWED` | 403 |
 | `refused` | any other code of section 5 | 409 |
 | `vendor_error`, `mismatch`, `recovered`, `needs_attention` | (section 5) | 502 |
@@ -217,15 +228,16 @@ IDEMPOTENCY_KEY_INVALID`, `429 TOO_MANY_REQUESTS`, `500` internal.
 
 Refusals (`outcome: refused`, no AutoCount write was made). 403: `WRITE_DISABLED` (no active write
 connection for the company), `WRITE_NOT_ALLOWED` (the connection is not the test book). 422: `FIELD_REQUIRED`,
-`FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED`, `QTY_INVALID`, `PRICE_INVALID`. All the rest are 409:
+`FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED`, `QTY_INVALID`, `PRICE_INVALID`, `DEBTOR_TERM_MISSING`
+(quotation / sales order without `displayTerm` whose debtor has no AutoCount term, section 3.1). All the rest are 409:
 
 - Switched off: `VENDOR_UNSUPPORTED` (delete line, cancel, whole-row link, unlink and relink, SPO create
   and add line).
 - Company: `WRITE_COMPANY_NOT_TEST` (the company now has SQL source data, so it is not a test book).
 - Document: `DOC_BUSY`, `DOC_STALE`, `DOC_CANCELLED`, `DOC_NOT_FOUND`, `DOC_DATE_REQUIRED`,
   `DOC_KIND_MISMATCH`, `DOC_AMBIGUOUS`, `DOC_UNKNOWN` (the linked sales order row is not in the synced
-  copy), `DOC_HAS_TRANSFERS`, `DEADLINE_EXCEEDED`, `READ_FAILED` (the document could not be read before
-  writing), `DOC_KIND_UNKNOWN`.
+  copy), `DOC_HAS_TRANSFERS`, `DEADLINE_EXCEEDED`, `READ_FAILED` (the document, or the debtor for a
+  missing `displayTerm`, could not be read before writing), `DOC_KIND_UNKNOWN`.
 - Row and quantity: `ROW_NOT_FOUND`, `ROW_HAS_TRANSFERS`, `QTY_BELOW_TRANSFERRED`, `ROW_RECEIVED`,
   `ROW_ON_SPO`, `ROW_ALREADY_LINKED`, `ROW_NOT_LINKED`, `ROW_HAS_OTHER_TRANSFER`, `NO_CHANGE`,
   `ITEM_MISMATCH`, `UOM_MISMATCH`, `QTY_ABOVE_OUTSTANDING`, `QTY_ABOVE_FREE`,
