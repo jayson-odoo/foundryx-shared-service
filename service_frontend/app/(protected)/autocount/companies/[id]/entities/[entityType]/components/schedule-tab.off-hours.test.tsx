@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutocountEtlSourceConfig, AutocountEtlTask } from '@/types/autocount';
@@ -117,5 +118,44 @@ describe('ScheduleTab off hours (SS-QUIET-HOURS)', () => {
     expect(
       Object.keys(quietHoursErrors({ quietHoursEnabled: true, quietHoursStart: '9pm', quietHoursEnd: '' })),
     ).toEqual(['quietHoursStart', 'quietHoursEnd']);
+  });
+
+  it('drops a refused save\'s server error once the times are fixed', () => {
+    // crew browser pass: a From=To save 422s; fixing To must clear that error.
+    const serverErrors = {
+      quietHoursEnd: 'The off hours must end at a different time than they start.',
+    };
+    function Harness() {
+      const [cfg, setCfg] = useState(
+        config({ quietHoursEnabled: true, quietHoursStart: '22:00', quietHoursEnd: '22:00' }),
+      );
+      return (
+        <ScheduleTab
+          editing
+          entityType="sales_order"
+          config={cfg}
+          onChange={(patch) => setCfg((c) => ({ ...c, ...patch }))}
+          task={task}
+          fieldErrors={serverErrors}
+          deliveryMode="push"
+          onDeliveryModeChange={vi.fn()}
+        />
+      );
+    }
+    render(<Harness />);
+    expect(screen.getByTestId('etl-quiet-end-error')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('etl-quiet-end'), { target: { value: '07:00' } });
+    expect(screen.queryByTestId('etl-quiet-end-error')).not.toBeInTheDocument();
+    // back to the refused value: the error is shown again
+    fireEvent.change(screen.getByTestId('etl-quiet-end'), { target: { value: '22:00' } });
+    expect(screen.getByTestId('etl-quiet-end-error')).toBeInTheDocument();
+  });
+});
+
+describe('OffHoursCard without fieldErrors', () => {
+  it('renders without a render loop when the prop is omitted', async () => {
+    const { OffHoursCard } = await import('../../../../../components/schedule-cadence-cards');
+    render(<OffHoursCard editing value={config()} onChange={vi.fn()} />);
+    expect(screen.getByTestId('etl-off-hours')).toBeInTheDocument();
   });
 });

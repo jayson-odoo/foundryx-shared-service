@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { CalendarClock, Moon, RefreshCcw } from 'lucide-react';
 import type { AutocountEtlSourceConfig, AutocountScheduleCadence } from '@/types/autocount';
 import {
@@ -365,18 +365,35 @@ export interface OffHoursCardProps {
  * no AutoCount query, inside it). Same card shell as the cadence cards; laid
  * into the Schedule tab's cadence grid.
  */
+
+/** Stable default: the card compares error-set identity across renders. */
+const NO_FIELD_ERRORS: Record<string, string> = {};
+
 export function OffHoursCard({
   editing,
   value,
   onChange,
-  fieldErrors = {},
+  fieldErrors = NO_FIELD_ERRORS,
   idPrefix = 'etl',
 }: OffHoursCardProps) {
   const id = (suffix: string) => `${idPrefix}-${suffix}`;
   const enabled = value.quietHoursEnabled === true;
   const live = quietHoursErrors(value);
-  const startError = fieldErrors.quietHoursStart ?? live.quietHoursStart ?? null;
-  const endError = fieldErrors.quietHoursEnd ?? live.quietHoursEnd ?? null;
+  // A refused save's server errors describe the window AS SUBMITTED: keep a
+  // snapshot of it per error set, and once the window differs from that
+  // snapshot fall back to the live check (crew browser pass, PR 228).
+  const windowKey = [
+    value.quietHoursEnabled === true,
+    value.quietHoursStart ?? '',
+    value.quietHoursEnd ?? '',
+  ].join('|');
+  const [submitted, setSubmitted] = useState({ errors: fieldErrors, key: windowKey });
+  if (submitted.errors !== fieldErrors) {
+    setSubmitted({ errors: fieldErrors, key: windowKey });
+  }
+  const server = submitted.key === windowKey ? fieldErrors : {};
+  const startError = server.quietHoursStart ?? live.quietHoursStart ?? null;
+  const endError = server.quietHoursEnd ?? live.quietHoursEnd ?? null;
   const zone = reconcileTimezoneLabel(value.quietHoursTimezone || 'Asia/Kuala_Lumpur');
 
   const timeField = (
