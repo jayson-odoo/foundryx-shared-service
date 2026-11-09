@@ -152,6 +152,37 @@ describe('ScheduleTab off hours (SS-QUIET-HOURS)', () => {
   });
 });
 
+describe('OffHoursCard with a parent that rebuilds fieldErrors every render', () => {
+  it('still drops the refused error once the times are fixed', () => {
+    // crew re-pass: task-editor-view merges its error maps into a NEW object
+    // on every render; the card must not treat that as a new server answer.
+    const serverErrors = {
+      quietHoursEnd: 'The off hours must end at a different time than they start.',
+    };
+    function Harness() {
+      const [cfg, setCfg] = useState(
+        config({ quietHoursEnabled: true, quietHoursStart: '22:00', quietHoursEnd: '22:00' }),
+      );
+      return (
+        <ScheduleTab
+          editing
+          entityType="sales_order"
+          config={cfg}
+          onChange={(patch) => setCfg((c) => ({ ...c, ...patch }))}
+          task={task}
+          fieldErrors={{ ...serverErrors }}
+          deliveryMode="push"
+          onDeliveryModeChange={vi.fn()}
+        />
+      );
+    }
+    render(<Harness />);
+    expect(screen.getByTestId('etl-quiet-end-error')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('etl-quiet-end'), { target: { value: '07:00' } });
+    expect(screen.queryByTestId('etl-quiet-end-error')).not.toBeInTheDocument();
+  });
+});
+
 describe('OffHoursCard without fieldErrors', () => {
   it('renders without a render loop when the prop is omitted', async () => {
     const { OffHoursCard } = await import('../../../../../components/schedule-cadence-cards');

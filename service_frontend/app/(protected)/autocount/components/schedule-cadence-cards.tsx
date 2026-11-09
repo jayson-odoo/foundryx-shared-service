@@ -366,7 +366,7 @@ export interface OffHoursCardProps {
  * into the Schedule tab's cadence grid.
  */
 
-/** Stable default: the card compares error-set identity across renders. */
+/** Shared empty error map (default prop + "no server errors"). */
 const NO_FIELD_ERRORS: Record<string, string> = {};
 
 export function OffHoursCard({
@@ -380,18 +380,26 @@ export function OffHoursCard({
   const enabled = value.quietHoursEnabled === true;
   const live = quietHoursErrors(value);
   // A refused save's server errors describe the window AS SUBMITTED: keep a
-  // snapshot of it per error set, and once the window differs from that
-  // snapshot fall back to the live check (crew browser pass, PR 228).
+  // snapshot of the window per server answer, and once the window differs
+  // from that snapshot fall back to the live check (crew browser pass, PR
+  // 228). The answer is compared by its off-hours error TEXT, never by
+  // object identity: the task editor merges its error maps into a new
+  // object on every render.
   const windowKey = [
     value.quietHoursEnabled === true,
     value.quietHoursStart ?? '',
     value.quietHoursEnd ?? '',
   ].join('|');
-  const [submitted, setSubmitted] = useState({ errors: fieldErrors, key: windowKey });
-  if (submitted.errors !== fieldErrors) {
-    setSubmitted({ errors: fieldErrors, key: windowKey });
+  const errorsKey = [
+    fieldErrors.quietHoursStart ?? '',
+    fieldErrors.quietHoursEnd ?? '',
+    fieldErrors.quietHoursTimezone ?? '',
+  ].join('|');
+  const [submitted, setSubmitted] = useState({ errors: errorsKey, key: windowKey });
+  if (submitted.errors !== errorsKey) {
+    setSubmitted({ errors: errorsKey, key: windowKey });
   }
-  const server = submitted.key === windowKey ? fieldErrors : {};
+  const server = submitted.key === windowKey ? fieldErrors : NO_FIELD_ERRORS;
   const startError = server.quietHoursStart ?? live.quietHoursStart ?? null;
   const endError = server.quietHoursEnd ?? live.quietHoursEnd ?? null;
   const zone = reconcileTimezoneLabel(value.quietHoursTimezone || 'Asia/Kuala_Lumpur');
