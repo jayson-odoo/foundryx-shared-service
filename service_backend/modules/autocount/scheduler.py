@@ -297,15 +297,24 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
     # deliberate pause. ``next_incremental_at`` is parked at the window end;
     # that first tick runs a normal incremental from the stored watermark, so
     # every change made overnight lands in one catch-up run. A due reconcile
-    # is left due (never consumed) and still runs on its own time below when
-    # it wins the mode. Activate/resume/a truncated pass may arm
+    # is never parked: it runs on its own time (inside the window too) and
+    # an open incremental pass continues ahead of it. Activate/resume/a truncated pass may arm
     # ``next_incremental_at = now`` inside the window; this is where that is
     # caught. Manual Run now never comes through the sweep.
+    # Review should-fix: a DUE RECONCILE is never parked. If an incremental
+    # pass is still open (the F3 override above made the mode incremental),
+    # that pass continues so the reconcile right behind it runs in the night
+    # too, instead of the whole lot landing on AutoCount at 07:00.
     source_config = config.source_config or {}
-    if mode == RUN_MODE_INCREMENTAL and in_quiet_hours(source_config, now):
+    if (
+        mode == RUN_MODE_INCREMENTAL
+        and not due_reconcile
+        and in_quiet_hours(source_config, now)
+    ):
         if due_incremental:
             db.query(AcEntityConfig).filter(
                 AcEntityConfig.id == config.id,
+                AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
                 AcEntityConfig.next_incremental_at <= now,
             ).update(
                 {AcEntityConfig.next_incremental_at: quiet_hours_end(source_config, now)},

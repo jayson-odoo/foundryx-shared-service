@@ -47,10 +47,11 @@ query the autocount when there is no data change like at night, should be config
 | Mocha masters (HTTP) | 15 min | 22:00-07:00 MYT | last run before 22:00, next 07:00 |
 | Sorento sales_order reconcile | daily 02:00 MYT | (any) | still runs at 02:00 |
 
-## Open questions (crew-ask on the PR)
+## Owner answers (9 Nov ~17:00, "quiet all rec")
 
-1. Default: none vs suggested 22:00-07:00 pre-filled but off. Rec: pre-filled, off.
-2. Days: every day only. Rec: every day (weekends/holidays later if asked).
-3. Manual Run now inside the window: Rec: always runs.
-4. Company-level default: Rec: per entity only + an "Apply to all tasks of this company" button.
-5. Timezone: Rec: MYT fixed default, stored per task.
+1. Default: 22:00-07:00 MYT pre-filled, **off** until switched on.
+2. Days: every day (no weekday / weekend / public-holiday options).
+3. Manual Run now inside the window: always runs.
+4. Scope: per entity only. A company-wide "apply to all tasks" button is a possible follow-up
+   (not built).
+5. Timezone: fixed MYT (`Asia/Kuala_Lumpur`), stored per task (`quietHoursTimezone`), no picker.

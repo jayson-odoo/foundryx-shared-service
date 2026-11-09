@@ -3361,7 +3361,11 @@ class EtlService:
             # FIRST tick after activation, not after a full
             # ``incrementalMinutes`` wait: 148k SO headers finish in hours
             # unattended only if the sweep fires immediately.
-            config.next_incremental_at = now
+            # SS-QUIET-HOURS (review) - inside the task's off hours the page
+            # shows the window end straight away (the sweep parks it anyway).
+            config.next_incremental_at = defer_past_quiet_hours(
+                config.source_config or {}, now
+            )
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
@@ -3464,7 +3468,11 @@ class EtlService:
             # change (AC-10-14). A draft/paused task stays disarmed either
             # way (nothing has activated it yet).
             now = datetime.now(timezone.utc)
-            config.next_incremental_at = now
+            # SS-QUIET-HOURS (review) - inside the task's off hours the page
+            # shows the window end straight away (the sweep parks it anyway).
+            config.next_incremental_at = defer_past_quiet_hours(
+                config.source_config or {}, now
+            )
             _, config.next_reconcile_at = self.next_run_times(
                 self._schedule_source_config(config), now=now
             )

@@ -289,3 +289,31 @@ def test_the_put_route_round_trips_the_window(client, session_factory):
     )
     assert bad.status_code == 422
     assert "quietHoursEnd" in bad.json()["detail"]["fieldErrors"]
+
+
+def test_an_open_incremental_pass_never_holds_the_night_reconcile(session_factory):
+    """Review should-fix: an incremental pass left open at 22:00 must not park
+    the 02:00 reconcile until morning. A due reconcile lets the open pass
+    continue (the reconcile that follows needs it closed), never 'quiet'."""
+    from modules.autocount.repositories import WatermarkRepository
+    from modules.autocount.scheduler import sweep_etl_tasks
+    from tests.test_autocount_scheduler import _jobs_for
+
+    now = _myt(10, 2, 0, 5)
+    db, company, _ = _night_task(
+        session_factory, due_at=_myt(10, 7, 0), reconcile_at=_myt(10, 2, 0), db_name="OPEN_DB"
+    )
+    watermark = WatermarkRepository(db).get_or_create(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER)
+    watermark.cursor_json = {"pass": {"kind": "incremental", "complete": False}}
+    db.commit()
+    assert sweep_etl_tasks(db, now=now, run_alerts=False)["fired"] == 1
+    assert len(_jobs_for(db, company.id, ENTITY_CUSTOMER)) == 1
+
+
+def test_activation_inside_the_window_shows_the_window_end():
+    """Review nit: activate/resume arm ``now``; inside the window the page must
+    show the window end straight away, not after the next sweep tick."""
+    from modules.autocount.services.etl_service import defer_past_quiet_hours
+
+    assert defer_past_quiet_hours(NIGHT, _myt(9, 23, 0)) == _myt(10, 7, 0)
+    assert defer_past_quiet_hours(NIGHT, _myt(9, 12, 0)) == _myt(9, 12, 0)
