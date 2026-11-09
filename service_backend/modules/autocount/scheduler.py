@@ -51,7 +51,7 @@ from .models import (
     AcSyncRun,
 )
 from .repositories import SyncJobRepository, SyncRunRepository, WatermarkRepository
-from .services.etl_service import EtlService
+from .services.etl_service import EtlService, in_quiet_hours, quiet_hours_end
 from .bootstrap import MODULE_NAME as AUTOCOUNT_MODULE_NAME
 
 logger = logging.getLogger("foundryx.autocount")
@@ -288,8 +288,33 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             elif open_kind:
                 mode = RUN_MODE_INCREMENTAL
 
+    #     !!  OFF HOURS: NO SCHEDULED INCREMENTAL, NO AUTOCOUNT QUERY
+    #         (SS-QUIET-HOURS, owner 9 Nov).  !!
+    # Inside the task's off-hours window an incremental tick (also the
+    # continuation of an open incremental pass) queues nothing and writes no
+    # skip row - a 15 s task would otherwise log ~2,000 rows a night for a
+    # deliberate pause. ``next_incremental_at`` is parked at the window end;
+    # that first tick runs a normal incremental from the stored watermark, so
+    # every change made overnight lands in one catch-up run. A due reconcile
+    # is left due (never consumed) and still runs on its own time below when
+    # it wins the mode. Activate/resume/a truncated pass may arm
+    # ``next_incremental_at = now`` inside the window; this is where that is
+    # caught. Manual Run now never comes through the sweep.
+    source_config = config.source_config or {}
+    if mode == RUN_MODE_INCREMENTAL and in_quiet_hours(source_config, now):
+        if due_incremental:
+            db.query(AcEntityConfig).filter(
+                AcEntityConfig.id == config.id,
+                AcEntityConfig.next_incremental_at <= now,
+            ).update(
+                {AcEntityConfig.next_incremental_at: quiet_hours_end(source_config, now)},
+                synchronize_session=False,
+            )
+            db.commit()
+        return "quiet"
+
     next_incremental, next_reconcile = EtlService.next_run_times(
-        config.source_config or {}, now=now
+        source_config, now=now
     )
     # The reconcile slot exactly as it stood before this tick's claim - a
     # tick that ends up NOT running a reconcile puts it back (see

@@ -248,6 +248,101 @@ def _zone(name: Any):
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _QUERY_HEAD = 120
 
+# ── SS-QUIET-HOURS (owner 9 Nov) - per-task off hours ────────────────────────
+# Inside ``quietHoursStart <= local time < quietHoursEnd`` (``start > end``
+# crosses midnight) a SCHEDULED incremental never runs, so AutoCount sees no
+# query; the first tick at the end catches up from the watermark. Reconcile,
+# delete-guard and manual Run now are untouched. A task without the keys (or
+# with ``quietHoursEnabled`` false / corrupt times) has no window.
+QUIET_HOURS_KEYS = (
+    "quietHoursEnabled", "quietHoursStart", "quietHoursEnd", "quietHoursTimezone",
+)
+DEFAULT_QUIET_HOURS_START = "22:00"
+DEFAULT_QUIET_HOURS_END = "07:00"
+DEFAULT_QUIET_HOURS_TIMEZONE = "Asia/Kuala_Lumpur"
+
+
+def _quiet_window(source_config: Dict[str, Any]):
+    """``(start_minute, end_minute, zone)`` of an ENABLED, well-formed window,
+    else None."""
+    if not isinstance(source_config, dict) or source_config.get("quietHoursEnabled") is not True:
+        return None
+    start = str(source_config.get("quietHoursStart") or "")
+    end = str(source_config.get("quietHoursEnd") or "")
+    if not (_TIME_RE.match(start) and _TIME_RE.match(end)) or start == end:
+        return None
+    zone = _zone(source_config.get("quietHoursTimezone") or DEFAULT_QUIET_HOURS_TIMEZONE)
+    if zone is None:
+        zone = _zone(DEFAULT_QUIET_HOURS_TIMEZONE)
+
+    def minute_of(text: str) -> int:
+        hour, minute = text.split(":")
+        return int(hour) * 60 + int(minute)
+
+    return minute_of(start), minute_of(end), zone
+
+
+def in_quiet_hours(source_config: Dict[str, Any], at: datetime) -> bool:
+    """True when ``at`` falls inside the task's enabled off-hours window."""
+    window = _quiet_window(source_config)
+    if window is None:
+        return False
+    start, end, zone = window
+    local = at.astimezone(zone)
+    minute = local.hour * 60 + local.minute
+    if start < end:
+        return start <= minute < end
+    return minute >= start or minute < end
+
+
+def quiet_hours_end(source_config: Dict[str, Any], at: datetime) -> datetime:
+    """The UTC instant the window holding ``at`` ends (the next local
+    ``quietHoursEnd`` strictly after ``at``). ``at`` itself when there is no
+    window."""
+    window = _quiet_window(source_config)
+    if window is None:
+        return at
+    _start, end, zone = window
+    local = at.astimezone(zone)
+    target = local.replace(hour=end // 60, minute=end % 60, second=0, microsecond=0)
+    if target <= local:
+        target = (target + timedelta(days=1)).replace(hour=end // 60, minute=end % 60)
+    return target.astimezone(timezone.utc)
+
+
+def defer_past_quiet_hours(source_config: Dict[str, Any], at: datetime) -> datetime:
+    """``at`` moved to the window end when it lands inside the window."""
+    if in_quiet_hours(source_config, at):
+        return quiet_hours_end(source_config, at)
+    return at
+
+
+def _validate_quiet_hours(
+    raw: Dict[str, Any], cleaned: Dict[str, Any], errors: Dict[str, str]
+) -> None:
+    """Carried only when sent (an older client / a document feed keeps the
+    keys absent = no window). Times are checked whenever the window is on;
+    a switched-off window keeps whatever valid times it has."""
+    if "quietHoursEnabled" not in raw:
+        return
+    enabled = raw.get("quietHoursEnabled") is True
+    start = str(raw.get("quietHoursStart") or "").strip()
+    end = str(raw.get("quietHoursEnd") or "").strip()
+    zone_name = str(raw.get("quietHoursTimezone") or "").strip() or DEFAULT_QUIET_HOURS_TIMEZONE
+    if enabled:
+        if not _TIME_RE.match(start):
+            errors["quietHoursStart"] = "Enter the start of the off hours as HH:MM."
+        if not _TIME_RE.match(end):
+            errors["quietHoursEnd"] = "Enter the end of the off hours as HH:MM."
+        elif start == end:
+            errors["quietHoursEnd"] = "The off hours must end at a different time than they start."
+    if _zone(zone_name) is None:
+        errors["quietHoursTimezone"] = "Choose a valid time zone."
+    cleaned["quietHoursEnabled"] = enabled
+    cleaned["quietHoursStart"] = start if _TIME_RE.match(start) else None
+    cleaned["quietHoursEnd"] = end if _TIME_RE.match(end) else None
+    cleaned["quietHoursTimezone"] = zone_name
+
 
 class EtlValidationError(AutocountServiceError):
     """A task save rejected per field (AC-22-11) - the HTTP layer renders
@@ -448,6 +543,12 @@ def default_source_config(entity_type: str, *, today: Optional[date] = None) -> 
         "reconcileHours": None,
         "reconcileAt": DEFAULT_RECONCILE_AT,
         "reconcileTimezone": DEFAULT_RECONCILE_TIMEZONE,
+        # SS-QUIET-HOURS (owner 9 Nov, card Q1) - a suggested night window,
+        # pre-filled but switched off.
+        "quietHoursEnabled": False,
+        "quietHoursStart": DEFAULT_QUIET_HOURS_START,
+        "quietHoursEnd": DEFAULT_QUIET_HOURS_END,
+        "quietHoursTimezone": DEFAULT_QUIET_HOURS_TIMEZONE,
     }
 
 
@@ -468,6 +569,12 @@ def default_http_source_config() -> Dict[str, Any]:
         "reconcileHours": None,
         "reconcileAt": DEFAULT_RECONCILE_AT,
         "reconcileTimezone": DEFAULT_RECONCILE_TIMEZONE,
+        # SS-QUIET-HOURS (owner 9 Nov, card Q1) - a suggested night window,
+        # pre-filled but switched off.
+        "quietHoursEnabled": False,
+        "quietHoursStart": DEFAULT_QUIET_HOURS_START,
+        "quietHoursEnd": DEFAULT_QUIET_HOURS_END,
+        "quietHoursTimezone": DEFAULT_QUIET_HOURS_TIMEZONE,
     }
 
 
@@ -618,6 +725,7 @@ def validate_schedule(
             errors["reconcileTimezone"] = "Choose a valid time zone."
         else:
             cleaned["reconcileTimezone"] = zone_name
+    _validate_quiet_hours(raw, cleaned, errors)
     return cleaned, errors
 
 
@@ -852,6 +960,9 @@ def validate_source_config(
         clean["incrementalSeconds"] = schedule["incrementalSeconds"]
     if "reconcileTimezone" in schedule:
         clean["reconcileTimezone"] = schedule["reconcileTimezone"]
+    for key in QUIET_HOURS_KEYS:
+        if key in schedule:
+            clean[key] = schedule[key]
     return clean, errors
 
 
@@ -1925,6 +2036,9 @@ class EtlService:
         }
         if "reconcileTimezone" in schedule:
             clean["reconcileTimezone"] = schedule["reconcileTimezone"]
+        for key in QUIET_HOURS_KEYS:
+            if key in schedule:
+                clean[key] = schedule[key]
         return clean, errors
 
     def _update_http_task(
@@ -2635,6 +2749,10 @@ class EtlService:
             and (settings.autocount_docs_queue or "").strip()
         ):
             incremental = now + timedelta(seconds=max(seconds, MIN_INCREMENTAL_SECONDS))
+        # SS-QUIET-HOURS - an incremental that would land inside the task's
+        # off hours waits for the window end (the reconcile below keeps its
+        # own time, normally inside the night window on purpose).
+        incremental = defer_past_quiet_hours(source_config, incremental)
 
         if str(source_config.get("reconcileMode")) == RECONCILE_MODE_INTERVAL:
             hours = _clean_int(source_config.get("reconcileHours")) or MIN_RECONCILE_HOURS

@@ -1,13 +1,14 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { CalendarClock, RefreshCcw } from 'lucide-react';
-import type { AutocountScheduleCadence } from '@/types/autocount';
+import { CalendarClock, Moon, RefreshCcw } from 'lucide-react';
+import type { AutocountEtlSourceConfig, AutocountScheduleCadence } from '@/types/autocount';
 import {
   incrementalFloorMinutes,
   DEFAULT_INCREMENTAL_SECONDS,
   INCREMENTAL_UNIT_OPTIONS,
   MIN_INCREMENTAL_SECONDS,
+  quietHoursErrors,
   RECONCILE_MODE_OPTIONS,
   RECONCILE_TIMEZONE_OPTIONS,
   reconcileTimezoneLabel,
@@ -27,6 +28,7 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { SearchSelect } from '@/components/platform/search-select';
 
 export interface ScheduleCadenceCardsProps {
@@ -343,5 +345,106 @@ export function ScheduleCadenceCards({
 
       {children}
     </div>
+  );
+}
+
+export interface OffHoursCardProps {
+  editing: boolean;
+  value: Pick<
+    AutocountEtlSourceConfig,
+    'quietHoursEnabled' | 'quietHoursStart' | 'quietHoursEnd' | 'quietHoursTimezone'
+  >;
+  onChange: (patch: Partial<AutocountEtlSourceConfig>) => void;
+  /** Server 422s from the last save; win over the live client mirror. */
+  fieldErrors?: Record<string, string>;
+  idPrefix?: string;
+}
+
+/**
+ * SS-QUIET-HOURS - a task's off-hours window (no scheduled incremental, so
+ * no AutoCount query, inside it). Same card shell as the cadence cards; laid
+ * into the Schedule tab's cadence grid.
+ */
+export function OffHoursCard({
+  editing,
+  value,
+  onChange,
+  fieldErrors = {},
+  idPrefix = 'etl',
+}: OffHoursCardProps) {
+  const id = (suffix: string) => `${idPrefix}-${suffix}`;
+  const enabled = value.quietHoursEnabled === true;
+  const live = quietHoursErrors(value);
+  const startError = fieldErrors.quietHoursStart ?? live.quietHoursStart ?? null;
+  const endError = fieldErrors.quietHoursEnd ?? live.quietHoursEnd ?? null;
+  const zone = reconcileTimezoneLabel(value.quietHoursTimezone || 'Asia/Kuala_Lumpur');
+
+  const timeField = (
+    key: 'quietHoursStart' | 'quietHoursEnd',
+    label: string,
+    error: string | null,
+  ) => (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={id(`quiet-${key === 'quietHoursStart' ? 'start' : 'end'}`)}>
+        {label}
+      </Label>
+      {editing ? (
+        <Input
+          id={id(`quiet-${key === 'quietHoursStart' ? 'start' : 'end'}`)}
+          type="time"
+          className="w-32"
+          value={value[key] ?? ''}
+          disabled={!enabled}
+          onChange={(e) => onChange({ [key]: e.target.value || null })}
+          aria-invalid={Boolean(error)}
+          data-testid={id(`quiet-${key === 'quietHoursStart' ? 'start' : 'end'}`)}
+        />
+      ) : (
+        <span className="text-sm font-medium">{value[key] ?? '-'}</span>
+      )}
+      {error && enabled && (
+        <p className="text-xs text-destructive" data-testid={id(`quiet-${key === 'quietHoursStart' ? 'start' : 'end'}-error`)}>
+          {error}
+        </p>
+      )}
+    </div>
+  );
+
+  return (
+    <Card data-testid={id('off-hours')}>
+      <CardHeader>
+        <CardHeading>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Moon className="size-4" />
+            Off hours
+          </CardTitle>
+        </CardHeading>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <Switch
+            id={id('quiet-enabled')}
+            checked={enabled}
+            disabled={!editing}
+            onCheckedChange={(checked) =>
+              onChange({
+                quietHoursEnabled: checked,
+                quietHoursTimezone: value.quietHoursTimezone || 'Asia/Kuala_Lumpur',
+              })
+            }
+            aria-label="Off hours"
+            data-testid={id('quiet-enabled')}
+          />
+          <Label htmlFor={id('quiet-enabled')}>{enabled ? 'On' : 'Off'}</Label>
+        </div>
+        <div className="flex flex-wrap gap-4">
+          {timeField('quietHoursStart', 'From', startError)}
+          {timeField('quietHoursEnd', 'To', endError)}
+        </div>
+        <span className="text-xs text-muted-foreground" data-testid={id('quiet-timezone')}>
+          {zone}, every day
+        </span>
+      </CardContent>
+    </Card>
   );
 }

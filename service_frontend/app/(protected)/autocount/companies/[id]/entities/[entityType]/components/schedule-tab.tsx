@@ -24,7 +24,7 @@ import { Switch } from '@/components/ui/switch';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { AC_DELIVERY_MODE_REGISTRY } from '../../../../../components/autocount-meta';
-import { ScheduleCadenceCards } from '../../../../../components/schedule-cadence-cards';
+import { OffHoursCard, ScheduleCadenceCards } from '../../../../../components/schedule-cadence-cards';
 
 export interface ScheduleTabProps {
   editing: boolean;
@@ -152,6 +152,12 @@ export function ScheduleTab({
           timezoneEditable
           secondsAllowed={isDocument && entityType !== 'ar_outstanding' && hasWatermark}
         >
+          <OffHoursCard
+            editing={editing}
+            value={config}
+            onChange={onChange}
+            fieldErrors={fieldErrors}
+          />
           <Card>
             <CardHeader>
               <CardHeading>
