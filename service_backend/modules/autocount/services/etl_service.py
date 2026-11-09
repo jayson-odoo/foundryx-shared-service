@@ -317,13 +317,24 @@ def defer_past_quiet_hours(source_config: Dict[str, Any], at: datetime) -> datet
     return at
 
 
+def _with_stored_quiet_hours(
+    stored: Optional[Dict[str, Any]], clean: Dict[str, Any]
+) -> Dict[str, Any]:
+    """A save that did not send the window (an older client) keeps the stored
+    one - a task save replaces ``source_config`` wholesale otherwise."""
+    if "quietHoursEnabled" in clean or not isinstance(stored, dict):
+        return clean
+    kept = {k: stored[k] for k in QUIET_HOURS_KEYS if k in stored}
+    return {**clean, **kept}
+
+
 def _validate_quiet_hours(
     raw: Dict[str, Any], cleaned: Dict[str, Any], errors: Dict[str, str]
 ) -> None:
     """Carried only when sent (an older client / a document feed keeps the
     keys absent = no window). Times are checked whenever the window is on;
     a switched-off window keeps whatever valid times it has."""
-    if "quietHoursEnabled" not in raw:
+    if raw.get("quietHoursEnabled") is None:
         return
     enabled = raw.get("quietHoursEnabled") is True
     start = str(raw.get("quietHoursStart") or "").strip()
@@ -2214,6 +2225,7 @@ class EtlService:
                 demote = True
 
         config.source_impl = SOURCE_IMPL_AUTOCOUNT_HTTP
+        clean = _with_stored_quiet_hours(config.source_config, clean)
         config.source_config = {**clean, **alert_keys}
         if demote and config.etl_status == ETL_STATUS_ACTIVE:
             config.etl_status = ETL_STATUS_DRAFT
@@ -2482,6 +2494,7 @@ class EtlService:
                     etl_status=ETL_STATUS_DRAFT,
                 )
             )
+        clean = _with_stored_quiet_hours(config.source_config, clean)
         config.source_config = {**clean, **alert_keys}
         #     !!  AC-08-28: sourceImpl CHANGE ON AN ACTIVE TASK DEMOTES IT TO
         #         DRAFT - EVERY DIRECTION, NOT JUST HTTP -> SQL (B2, review

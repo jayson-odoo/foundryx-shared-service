@@ -236,8 +236,9 @@ INCREMENTAL_SKIP_PREFIXES = ("The previous run for this task was queued", "A run
 
 
 def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
-    """One due task's tick. Returns ``"fired" | "skipped" | "not_due"`` (the
-    last only possible if a sibling beat won the claim first)."""
+    """One due task's tick. Returns ``"fired" | "skipped" | "quiet" |
+    "not_due"`` (``quiet`` = an incremental parked by the task's off hours,
+    SS-QUIET-HOURS; ``not_due`` only if a sibling beat won the claim first)."""
     from .sync import AUTOCOUNT_SYNC
 
     due_incremental = (

@@ -256,3 +256,36 @@ def test_a_task_without_off_hours_is_swept_as_before(session_factory):
     _task(db, company, next_incremental_at=now - timedelta(seconds=5))
     assert sweep_etl_tasks(db, now=now, run_alerts=False)["fired"] == 1
     assert len(_jobs_for(db, company.id, ENTITY_CUSTOMER)) == 1
+
+
+# ── save path ───────────────────────────────────────────────────────────────
+
+
+def test_a_save_without_the_window_keeps_the_stored_one():
+    from modules.autocount.services.etl_service import _with_stored_quiet_hours
+
+    stored = {**_BASE, **NIGHT}
+    assert _with_stored_quiet_hours(stored, dict(_BASE))["quietHoursStart"] == "22:00"
+    sent = {**_BASE, "quietHoursEnabled": False, "quietHoursStart": "23:00"}
+    assert _with_stored_quiet_hours(stored, sent)["quietHoursStart"] == "23:00"
+
+
+def test_the_put_route_round_trips_the_window(client, session_factory):
+    from tests.test_autocount_etl_routes import _auth, _company, _so_body, _sql_connection
+
+    db = session_factory()
+    conn = _sql_connection(db)
+    company = _company(db)
+    db.close()
+    url = f"/autocount/companies/{company.id}/entities/sales_order/etl-task"
+    response = client.put(url, json=_so_body(conn.id, **NIGHT), headers=_auth(client))
+    assert response.status_code == 200, response.text
+    got = response.json()["sourceConfig"]
+    assert got["quietHoursEnabled"] is True
+    assert (got["quietHoursStart"], got["quietHoursEnd"]) == ("22:00", "07:00")
+
+    bad = client.put(
+        url, json=_so_body(conn.id, **{**NIGHT, "quietHoursEnd": "22:00"}), headers=_auth(client)
+    )
+    assert bad.status_code == 422
+    assert "quietHoursEnd" in bad.json()["detail"]["fieldErrors"]

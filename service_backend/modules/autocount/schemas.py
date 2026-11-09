@@ -816,6 +816,13 @@ class EtlSourceConfigIn(ApiModel):
     # SS-SO-FAST-QUEUE - the IANA zone ``reconcileAt`` is read in. None = the
     # legacy UTC reading (never replaced by the new-task default).
     reconcileTimezone: Optional[str] = None
+    # SS-QUIET-HOURS - per-task off hours (no scheduled incremental inside
+    # the window). ``quietHoursEnabled`` None = not sent (an older client):
+    # the stored window is left as it is.
+    quietHoursEnabled: Optional[bool] = None
+    quietHoursStart: Optional[str] = None
+    quietHoursEnd: Optional[str] = None
+    quietHoursTimezone: Optional[str] = None
     # ── HTTP (open REST API) shape only (sprint-5/08, AC-08-13) ──────────────
     path: Optional[str] = None
     keyFields: List[str] = []

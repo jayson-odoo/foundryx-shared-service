@@ -26,6 +26,19 @@ query the autocount when there is no data change like at night, should be config
 - **Next-run times** on the page come from the same `EtlService.next_run_times`, which moves an
   incremental time that lands inside the window to the window end.
 
+## As built
+
+- `modules/autocount/services/etl_service.py`: `in_quiet_hours`, `quiet_hours_end`,
+  `defer_past_quiet_hours`, `_validate_quiet_hours` (called by the shared `validate_schedule`;
+  carried by both the SQL and HTTP task cleaners); `next_run_times` defers the incremental;
+  new-task defaults pre-fill 22:00-07:00 MYT, off.
+- `modules/autocount/scheduler.py` `_sweep_one`: an incremental-mode tick inside the window
+  re-arms `next_incremental_at` to the window end and returns `quiet` (no job, no skip row).
+  That also catches `next_incremental_at = now` set by activate, resume or a truncated pass.
+- Frontend: `OffHoursCard` in `components/schedule-cadence-cards.tsx` (same card shell as the
+  cadence cards) on the Schedule tab; `quietHoursErrors` in `lib/autocount-etl.ts` mirrors the server rules.
+- Document feeds don't send the keys, so they get no window (unchanged).
+
 ## Examples
 
 | Task | Cadence | Off hours | Result |
