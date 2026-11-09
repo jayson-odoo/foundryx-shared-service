@@ -892,6 +892,15 @@ export interface AutocountEtlSourceConfig {
   /** SS-SO-FAST-QUEUE - IANA zone `reconcileAt` is read in. New tasks are
    * `Asia/Kuala_Lumpur`; absent on a task saved before the key = UTC. */
   reconcileTimezone?: string | null;
+  /** SS-QUIET-HOURS - per-task off hours: no scheduled incremental (no
+   * AutoCount query) while local time is in `[start, end)`; `start > end`
+   * crosses midnight. Reconcile + manual Run now are unaffected. Absent on a
+   * task saved before the keys = no window. */
+  quietHoursEnabled?: boolean;
+  quietHoursStart?: string | null;
+  quietHoursEnd?: string | null;
+  /** IANA zone the window is read in (default `Asia/Kuala_Lumpur`). */
+  quietHoursTimezone?: string | null;
   // ── sprint-5/08 (D13) - present only when the task's Source is API/`autocount_http` ──
   //
   // PHASE 1 MOCK simplification (see the contract block atop

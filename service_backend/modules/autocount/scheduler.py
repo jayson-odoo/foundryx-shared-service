@@ -51,7 +51,7 @@ from .models import (
     AcSyncRun,
 )
 from .repositories import SyncJobRepository, SyncRunRepository, WatermarkRepository
-from .services.etl_service import EtlService
+from .services.etl_service import EtlService, in_quiet_hours, quiet_hours_end
 from .bootstrap import MODULE_NAME as AUTOCOUNT_MODULE_NAME
 
 logger = logging.getLogger("foundryx.autocount")
@@ -236,8 +236,9 @@ INCREMENTAL_SKIP_PREFIXES = ("The previous run for this task was queued", "A run
 
 
 def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
-    """One due task's tick. Returns ``"fired" | "skipped" | "not_due"`` (the
-    last only possible if a sibling beat won the claim first)."""
+    """One due task's tick. Returns ``"fired" | "skipped" | "quiet" |
+    "not_due"`` (``quiet`` = an incremental parked by the task's off hours,
+    SS-QUIET-HOURS; ``not_due`` only if a sibling beat won the claim first)."""
     from .sync import AUTOCOUNT_SYNC
 
     due_incremental = (
@@ -288,8 +289,42 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             elif open_kind:
                 mode = RUN_MODE_INCREMENTAL
 
+    #     !!  OFF HOURS: NO SCHEDULED INCREMENTAL, NO AUTOCOUNT QUERY
+    #         (SS-QUIET-HOURS, owner 9 Nov).  !!
+    # Inside the task's off-hours window an incremental tick (also the
+    # continuation of an open incremental pass) queues nothing and writes no
+    # skip row - a 15 s task would otherwise log ~2,000 rows a night for a
+    # deliberate pause. ``next_incremental_at`` is parked at the window end;
+    # that first tick runs a normal incremental from the stored watermark, so
+    # every change made overnight lands in one catch-up run. A due reconcile
+    # is never parked: it runs on its own time (inside the window too) and
+    # an open incremental pass continues ahead of it. Activate/resume/a truncated pass may arm
+    # ``next_incremental_at = now`` inside the window; this is where that is
+    # caught. Manual Run now never comes through the sweep.
+    # Review should-fix: a DUE RECONCILE is never parked. If an incremental
+    # pass is still open (the F3 override above made the mode incremental),
+    # that pass continues so the reconcile right behind it runs in the night
+    # too, instead of the whole lot landing on AutoCount at 07:00.
+    source_config = config.source_config or {}
+    if (
+        mode == RUN_MODE_INCREMENTAL
+        and not due_reconcile
+        and in_quiet_hours(source_config, now)
+    ):
+        if due_incremental:
+            db.query(AcEntityConfig).filter(
+                AcEntityConfig.id == config.id,
+                AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
+                AcEntityConfig.next_incremental_at <= now,
+            ).update(
+                {AcEntityConfig.next_incremental_at: quiet_hours_end(source_config, now)},
+                synchronize_session=False,
+            )
+            db.commit()
+        return "quiet"
+
     next_incremental, next_reconcile = EtlService.next_run_times(
-        config.source_config or {}, now=now
+        source_config, now=now
     )
     # The reconcile slot exactly as it stood before this tick's claim - a
     # tick that ends up NOT running a reconcile puts it back (see

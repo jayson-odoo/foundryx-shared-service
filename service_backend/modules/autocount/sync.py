@@ -2378,13 +2378,18 @@ def _run_paged_sql_db(
         # the INCREMENTAL cadence that wakes the next tick. ``next_run_times``
         # never returns ``None`` today, but the guard (R-NIT) is kept
         # explicit rather than assumed.
-        from .services.etl_service import EtlService
+        from .services.etl_service import EtlService, defer_past_quiet_hours
 
         next_incremental, _next_reconcile = EtlService.next_run_times(
             config.source_config or {}, now=datetime.now(timezone.utc)
         )
         if next_incremental is not None:
-            config.next_incremental_at = datetime.now(timezone.utc)
+            # SS-QUIET-HOURS (review) - a pass truncated inside the task's
+            # off hours continues at the window end (the sweep gate parks it
+            # there anyway; this keeps the page's "Next" honest at once).
+            config.next_incremental_at = defer_past_quiet_hours(
+                config.source_config or {}, datetime.now(timezone.utc)
+            )
     else:
         # A push fault (fix/push-marks-per-chunk) is still the reason THIS
         # run did not fully succeed even though the fetch itself is not

@@ -539,6 +539,28 @@ export function validateReconcileAt(value: string | null | undefined): string | 
   return null;
 }
 
+/** SS-QUIET-HOURS - live mirror of `etl_service._validate_quiet_hours`
+ * (the server re-validates on save). Only checked while the window is on. */
+export function quietHoursErrors(value: {
+  quietHoursEnabled?: boolean;
+  quietHoursStart?: string | null;
+  quietHoursEnd?: string | null;
+}): Record<string, string> {
+  const errors: Record<string, string> = {};
+  if (value.quietHoursEnabled !== true) return errors;
+  const start = value.quietHoursStart ?? '';
+  const end = value.quietHoursEnd ?? '';
+  if (!RECONCILE_TIME_RE.test(start)) {
+    errors.quietHoursStart = 'Enter the start of the off hours as HH:MM.';
+  }
+  if (!RECONCILE_TIME_RE.test(end)) {
+    errors.quietHoursEnd = 'Enter the end of the off hours as HH:MM.';
+  } else if (start === end) {
+    errors.quietHoursEnd = 'The off hours must end at a different time than they start.';
+  }
+  return errors;
+}
+
 /** A Document feed's default schedule (sprint-5/19) - the pre-19 hard-coded
  * cadence, mirrored from `doc_feed/schedule.py DEFAULT_DOC_FEED_SCHEDULE`. */
 export const DEFAULT_DOC_FEED_SCHEDULE: DocFeedSchedule = {
