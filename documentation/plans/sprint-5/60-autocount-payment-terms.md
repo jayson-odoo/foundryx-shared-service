@@ -43,8 +43,15 @@ is contract-gated and the customer field is field-gated, so either side can land
   projection) pass nothing and keep it. `SorentoSink._customer_contract` probes `/contract` lazily, at most once
   per sink, only when a batch holds a customer carrying the field (no extra call for deletes or term-less batches;
   a failed probe strips).
-- **D6 Backfill**: `backfill_customer_display_term` (the DebtorType rules) via module Alembic 0043 and
-  `update_tenant` from < 0.23.0; manifest and `USER_AGENT` 0.23.0. Data only, no column.
+- **D6 Backfill + rollout**: `backfill_customer_display_term` (the DebtorType rules) via module Alembic 0043 and
+  `update_tenant` from < 0.23.0; manifest and `USER_AGENT` 0.23.0. Data only, no column. The new row re-stages
+  nothing by itself (change detection hashes the raw AutoCount row), and the push strips the key below 2.14, so
+  existing customers only carry `payment_terms_code` after their next AutoCount edit. **Rollout step: once the
+  CRM advertises 2.14, press Re-push on the customer task of each company** (it clears the hashes and re-sends
+  every customer with the field). Payment terms need no such step (a refused push keeps them STAGED).
+- **D8 Blank debtor term**: a blank `DisplayTerm` is omitted, never `""` (the DebtorType precedent), so clearing a
+  debtor's term in AutoCount leaves the CRM's stored code; the term `rule` instead sends `""` because the
+  Payment Terms list must mirror AutoCount.
 - **D7 No new permission, route or credential.**
 
 ## Review follow-ups

@@ -613,3 +613,45 @@ def test_payment_terms_code_cap_matches_the_term_code_cap():
     CanonicalPaymentTerm(source_ref="DB:T", code="T" * 100)
     with pytest.raises(ValidationError):
         CanonicalCustomer(source_ref="DB:1", code="300-A", name="A", payment_terms_code="T" * 101)
+
+
+def test_a_failed_contract_probe_is_made_once_per_sink_not_per_chunk():
+    """AC-60-23: the lazy probe runs at most once per sink. A down `/contract`
+    (None) strips the field and must not be re-probed for every chunk."""
+    import httpx
+
+    from modules.autocount.sinks_sorento import SorentoSink, sorento_sink_from_connection
+
+    posts = []
+    sink = sorento_sink_from_connection(
+        {"baseUrl": "https://sorento.example.com"}, {"apiKey": "k" * 12},
+        entity_type=ENTITY_CUSTOMER, company_code="SRT",
+        transport=httpx.MockTransport(_crm_customer_posts(posts)),
+    )
+    probes = []
+    sink.fetch_contract_detail = lambda: probes.append(1)  # returns None: unreachable
+    assert isinstance(sink, SorentoSink)
+    batch = [CanonicalCustomer(source_ref="DB:1", code="300-A001", name="A", payment_terms_code="C.O.D.")]
+    sink.write_batch(batch, request_id="t1")
+    sink.write_batch(batch, request_id="t2")
+    assert len(probes) == 1
+    for post in posts:
+        for record in json.loads(post.content.decode("utf-8"))["records"]:
+            assert "payment_terms_code" not in record
+
+
+def test_a_batch_without_the_field_never_probes_the_contract():
+    import httpx
+
+    from modules.autocount.sinks_sorento import sorento_sink_from_connection
+
+    posts = []
+    sink = sorento_sink_from_connection(
+        {"baseUrl": "https://sorento.example.com"}, {"apiKey": "k" * 12},
+        entity_type=ENTITY_CUSTOMER, company_code="SRT",
+        transport=httpx.MockTransport(_crm_customer_posts(posts)),
+    )
+    probes = []
+    sink.fetch_contract_detail = lambda: probes.append(1)
+    sink.write_batch([CanonicalCustomer(source_ref="DB:1", code="300-A001", name="A")], request_id="t")
+    assert probes == []

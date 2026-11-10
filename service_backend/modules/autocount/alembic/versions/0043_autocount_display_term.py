@@ -7,9 +7,14 @@ payment_terms_code`` mapping row: this migration runs
 ``modules/autocount/backfill.py``) across every tenant, the 0035 DebtorType
 rules exactly.
 
-Pure DATA, no column added. A customer row with a non-blank DisplayTerm
-re-stages ONCE after deploy (the new key enters the payload); the push strips
-the key until the CRM advertises 2.14, so deploy order is free.
+Pure DATA, no column added. Adding a mapping row re-stages NOTHING by itself:
+change detection hashes the RAW AutoCount row, so an unchanged debtor is not
+re-sent. Existing customers reach the CRM with ``payment_terms_code`` only on
+their next AutoCount edit, or when an operator presses Re-push on the customer
+task (which clears the hashes). And the push strips the key until the CRM
+advertises 2.14, so a customer edited BEFORE the CRM upgrade goes without it.
+Rollout (plan 60 D6): after the CRM advertises 2.14, Re-push the customer task
+of each company once.
 
 Frozen ``sa.table`` backfill, never the live ORM model; does not commit -
 Alembic's own transaction owns that (0029 precedent).
