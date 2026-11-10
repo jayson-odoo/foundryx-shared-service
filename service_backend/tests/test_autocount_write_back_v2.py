@@ -811,7 +811,7 @@ def test_r3_gateway_link_and_relink_end_done_not_recovered(client, h, gw, world)
         "soDocKey": 7002, "soDtlKey": world.so_a, "qty": 4})
     assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
     assert len(puts(h)) == 2
-    new = r.json()["replacedLines"][0][1]
+    new = r.json()["replacedLines"][0]["newDtlKey"]
     _row_matches_old(row(h.vendor, "PO", 7001, new), old_link)
     h.vendor.calls.clear()
     old_re = dict(row(h.vendor, "PO", 7001, world.p_linked))
@@ -820,7 +820,7 @@ def test_r3_gateway_link_and_relink_end_done_not_recovered(client, h, gw, world)
         "soDocKey": 7002, "soDtlKey": world.so_b})
     assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
     assert len(puts(h)) == 2
-    _row_matches_old(row(h.vendor, "PO", 7001, r.json()["replacedLines"][0][1]), old_re)
+    _row_matches_old(row(h.vendor, "PO", 7001, r.json()["replacedLines"][0]["newDtlKey"]), old_re)
 
 
 @pytest.mark.parametrize("op", ["link_row", "relink_row"])
