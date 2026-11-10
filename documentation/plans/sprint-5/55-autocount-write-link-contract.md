@@ -91,7 +91,8 @@ not idempotent: do not blind-retry a call that ended `pending_verification`.
 row) is never linked in place (AutoCount does not change the link of an existing row): one PUT deletes
 the row and adds a new linked row with the same values (a new `DtlKey`, listed in `replacedLines` when
 the operation layer answers), then a second write puts the new row at the SO row's location and back on
-its delivery date (AutoCount forces HQ and clears the date on a new linked row). The location comes
+its unit price and delivery date (AutoCount forces HQ, sets the unit price to 0 and clears the date on a
+new linked row; db3 10-11 Nov, plan 61 F5). The location comes
 from the SO row; the caller does not send one.
 
 ### 4.2 `POST /api/v1/autocount/po-links/unlink`
