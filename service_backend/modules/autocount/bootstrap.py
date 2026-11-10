@@ -218,6 +218,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_billing_preset_fix,
         backfill_consignment_transferred_qty,
         backfill_customer_debtor_type,
+        backfill_customer_display_term,
         backfill_customer_sales_agent,
         backfill_product_item_class,
         backfill_product_item_type,
@@ -350,6 +351,12 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # runs it on deploy.
     if parse_version(from_version) < (0, 22, 0):
         backfill_billing_package_lines(db, schema=schema, tenant_id=tenant_id)
+    # 0.22.0 -> 0.23.0 (SS-PAYMENT-TERMS, partner of sorento-crm #2305):
+    # every existing `customer` task gets a `DisplayTerm ->
+    # payment_terms_code` row (the DebtorType rules). Module Alembic 0043
+    # runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 23, 0):
+        backfill_customer_display_term(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

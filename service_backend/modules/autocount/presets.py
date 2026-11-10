@@ -46,6 +46,7 @@ from .canonical.masters import (
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_ITEM_CLASS,
+    ENTITY_PAYMENT_TERM,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_STOCK_BALANCE,
@@ -1545,6 +1546,11 @@ CUSTOMER_HTTP_PRESET = HttpPreset(
         # existing tasks get this row from `backfill_customer_debtor_type`
         # (module Alembic 0035).
         PresetField("DebtorType", "market_segment_code", "string"),
+        # SS-PAYMENT-TERMS (CRM #2305, contract 2.14) - every `/debtorbypage`
+        # row carries `DisplayTerm`; existing tasks get this row from
+        # `backfill_customer_display_term` (module Alembic 0043). The push
+        # strips it below 2.14 (`CanonicalCustomer.sink_payload`).
+        PresetField("DisplayTerm", "payment_terms_code", "string"),
         PresetField("IsActive", "is_active", "t_f_bool"),
     ),
 )
@@ -1615,6 +1621,26 @@ ITEM_CLASS_HTTP_PRESET = HttpPreset(
         ),
         PresetField("Desc2", "description", "string"),
         PresetField("ItemClass", "is_active", "bool", formula="true"),
+    ),
+)
+
+# Plan 60 (SS-PAYMENT-TERMS, CRM #2305 contract 2.14) - AutoCount's Terms
+# master, the ItemClass shape: a plain list, no paging, no LastModified, no
+# active flag, read with GETs only. `DisplayTerm` is the AutoCount key and the
+# CRM `code`; a listed term is active (the formula reads the always-filled key,
+# and it reactivates a term an earlier sweep deactivated). A blank
+# `Description` is sent as "" by `CanonicalPaymentTerm.sink_payload`.
+PAYMENT_TERM_HTTP_PRESET = HttpPreset(
+    label="Payment terms (open REST API)",
+    path="/terms",
+    key_fields=("DisplayTerm",),
+    watermark_field=None,
+    distinct_of=None,
+    rows=(
+        PresetField("DisplayTerm", "code", "string", required=True),
+        PresetField("Description", "description", "string"),
+        PresetField("TermDays", "term_days", "int"),
+        PresetField("DisplayTerm", "is_active", "bool", formula="true"),
     ),
 )
 
@@ -1732,6 +1758,7 @@ HTTP_PRESETS: Dict[str, HttpPreset] = {
     ENTITY_PRODUCT_CATEGORY: PRODUCT_CATEGORY_HTTP_PRESET,
     ENTITY_BRAND: BRAND_HTTP_PRESET,
     ENTITY_ITEM_CLASS: ITEM_CLASS_HTTP_PRESET,
+    ENTITY_PAYMENT_TERM: PAYMENT_TERM_HTTP_PRESET,
     ENTITY_UNIT_OF_MEASURE: UNIT_OF_MEASURE_HTTP_PRESET,
     ENTITY_STOCK_BALANCE: STOCK_BALANCE_HTTP_PRESET,
     ENTITY_BRANCH: BRANCH_HTTP_PRESET,

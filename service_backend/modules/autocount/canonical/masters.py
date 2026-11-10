@@ -65,6 +65,10 @@ ENTITY_BRAND = "brand"
 # Plan 37 (ITEM-CLASS-SS, CRM contract 2.11) - the open REST API's ItemClass
 # list. Lives here for the same no-import-cycle reason as its siblings above.
 ENTITY_ITEM_CLASS = "item_class"
+# Plan 60 (SS-PAYMENT-TERMS, CRM contract 2.14) - AutoCount's Terms master
+# read from the open REST API. Lives here for the same no-import-cycle reason
+# as its siblings above.
+ENTITY_PAYMENT_TERM = "payment_term"
 # sprint-5/14 section 11 (D23) - the open REST API's `branchbypage` address
 # records, a regular HTTP master entity (formerly a doc feed). Lives here for
 # the same no-import-cycle reason as its siblings above.
@@ -96,6 +100,24 @@ VENDOR_ENTITY_CUSTOMER = "Debtor"
 VENDOR_DATA_KEY = "Data"
 VENDOR_AUTOKEY_PATH = "Data.0.AutoKey"
 VENDOR_LAST_MODIFIED_PATH = "Data.0.LastModified"
+
+
+# Plan 60 - the customer ``payment_terms_code`` field gate (CRM #2305).
+CUSTOMER_PAYMENT_TERMS_MIN_CONTRACT = (2, 14)
+_NOT_A_PUSH: Any = object()
+
+
+def advertises_customer_payment_terms(advertised: Any) -> bool:
+    """True when the consumer's advertised contract is KNOWN and >= 2.14.
+    (major, minor) integers, never a float compare (2.9 would beat 2.14);
+    the same duck-typed read as ``documents.advertises_package_lines``, so
+    this leaf module never imports the sink."""
+    if advertised is None:
+        return False
+    major, minor = getattr(advertised, "major", None), getattr(advertised, "minor", None)
+    if major is None or minor is None:
+        return False
+    return (int(major), int(minor)) >= CUSTOMER_PAYMENT_TERMS_MIN_CONTRACT
 
 
 class CanonicalMaster(CanonicalRecord):
@@ -214,6 +236,12 @@ class CanonicalCustomer(CanonicalMaster):
     # customer's AutoCount account type). Blank -> omitted, never ``null``, so
     # a blank never clears the CRM's value.
     market_segment_code: Optional[str] = None
+    # Plan 60 (SS-PAYMENT-TERMS, CRM #2305 contract 2.14 addendum) - AutoCount
+    # Debtor ``DisplayTerm``, the debtor's Terms code, sent VERBATIM (trimmed)
+    # as ``payment_terms_code`` so a new quotation can default its term from
+    # the customer. Blank -> omitted, never ``null``. FIELD-GATED on the push:
+    # see ``sink_payload`` below.
+    payment_terms_code: Optional[str] = Field(None, max_length=50)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
@@ -225,8 +253,28 @@ class CanonicalCustomer(CanonicalMaster):
         "tax_id",
         "sales_agent_code",
         "market_segment_code",
+        "payment_terms_code",
         "is_active",
     )
+
+    def sink_payload(self, *, advertised_contract: Any = _NOT_A_PUSH) -> Dict[str, Any]:
+        """The master payload, with ``payment_terms_code`` gated on the
+        consumer's contract when this is a PUSH.
+
+        Before 2.14 the CRM lists ``payment_terms_code`` in
+        ``fields_removed.customers`` and treated it as an unconditional
+        ``retryable`` (AC-14-12, the reason it was absent until now). So the
+        push (``SorentoSink._to_records``, which passes the probed
+        ``advertised_contract``) strips it unless the consumer is PROVABLY
+        >= 2.14; an unknown/unreachable contract (``None``) strips too. Every
+        non-push caller (preview, row projection) keeps the key, so an
+        operator sees what a 2.14 CRM will receive."""
+        payload = super().sink_payload()
+        if advertised_contract is not _NOT_A_PUSH and not advertises_customer_payment_terms(
+            advertised_contract
+        ):
+            payload.pop("payment_terms_code", None)
+        return payload
 
 
 class CanonicalProductCategory(CanonicalMaster):
@@ -305,6 +353,43 @@ class CanonicalItemClass(CanonicalMaster):
         import" placeholder a product push left. The mapping engine reads a
         blank value as absent (``t_string``), so the blank is written here;
         every other None stays omitted."""
+        payload = super().sink_payload()
+        payload.setdefault("description", "")
+        return payload
+
+
+class CanonicalPaymentTerm(CanonicalMaster):
+    """AutoCount ``Terms`` -> Sorento ``payment_terms`` (plan 60, CRM #2305
+    contract 2.14).
+
+    ``code`` = ``Terms.DisplayTerm`` (1..50, the CRM's own cap), ``description``
+    = ``Terms.Description`` (<= 200, what prints on the quotation),
+    ``term_days`` = ``Terms.TermDays`` (int 0..3650). Caps mirror the CRM so a
+    value that would 422 there fails at mapping instead. ``name`` / ``email``
+    are inherited but never sent (absent from ``SINK_FIELDS``).
+    """
+
+    entity_type: str = ENTITY_PAYMENT_TERM
+
+    code: Optional[str] = Field(None, max_length=50)
+    description: Optional[str] = Field(None, max_length=200)
+    term_days: Optional[int] = Field(None, ge=0, le=3650)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "code",
+        "description",
+        "term_days",
+        "is_active",
+    )
+
+    def sink_payload(self) -> Dict[str, Any]:
+        """AutoCount is master for the description: a blank one is sent as
+        ``""``, the CRM's explicit clear (#2305 D14), so a description emptied
+        in AutoCount empties on the quotation too (the CRM then prints the
+        code). The mapping engine reads a blank as absent (``t_string``), so
+        the blank is written here; every other None stays omitted (an unknown
+        ``term_days`` leaves the CRM's value alone)."""
         payload = super().sink_payload()
         payload.setdefault("description", "")
         return payload
@@ -577,6 +662,7 @@ MASTER_ENTITIES: List[str] = [
     ENTITY_BRAND,
     ENTITY_BRANCH,
     ENTITY_ITEM_CLASS,
+    ENTITY_PAYMENT_TERM,
 ]
 
 # sprint-5/14 section 11 (D27) - masters whose full-extract reconcile never

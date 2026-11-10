@@ -45,6 +45,7 @@ from .canonical.masters import (
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_ITEM_CLASS,
+    ENTITY_PAYMENT_TERM,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
@@ -57,6 +58,7 @@ from .canonical.masters import (
     CanonicalBrand,
     CanonicalBranch,
     CanonicalItemClass,
+    CanonicalPaymentTerm,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -1174,6 +1176,16 @@ ITEM_CLASS_PROFILE = EntityProfile(
     identity_path="Code",
 )
 
+# Plan 60 - the open REST API's Terms list, flat like item class; the ref is
+# minted from the preset key ``DisplayTerm`` (company-qualified).
+PAYMENT_TERM_PROFILE = EntityProfile(
+    entity_type=ENTITY_PAYMENT_TERM,
+    record_model=CanonicalPaymentTerm,
+    identity=company_qualified_identity,
+    display_path="DisplayTerm",
+    identity_path="DisplayTerm",
+)
+
 # sprint-5/14 section 11 (D23-D25) - the open REST API's `branchbypage` rows.
 # Runs FLAT like brand; `flat_source_ref` mints the CRM's own
 # `{book}:BR:{AccNo}:{BranchCode}` (the engine's `database_name` is the BOOK for
@@ -1324,6 +1336,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     SALES_AGENT_PROFILE.entity_type: SALES_AGENT_PROFILE,
     BRAND_PROFILE.entity_type: BRAND_PROFILE,
     ITEM_CLASS_PROFILE.entity_type: ITEM_CLASS_PROFILE,
+    PAYMENT_TERM_PROFILE.entity_type: PAYMENT_TERM_PROFILE,
     BRANCH_PROFILE.entity_type: BRANCH_PROFILE,
     STOCK_BALANCE_PROFILE.entity_type: STOCK_BALANCE_PROFILE,
     SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,
@@ -2023,8 +2036,10 @@ DEFAULT_GRN_MAPPING: Tuple[MappingRow, ...] = (
 # function (``company_qualified_identity``), exactly as GRN's DocKey is. An
 # operator can remap a field; they must not be able to remap identity.
 #
-#     !!  NO PAYMENT-TERMS ROW EXISTS HERE, AND ADDING ONE WOULD BE A BUG.  !!
-# ``payment_terms_code`` is an UNCONDITIONAL permanent-``retryable`` in the
+#     !!  NO SUPPLIER PAYMENT-TERMS ROW EXISTS HERE, AND ADDING ONE WOULD BE A BUG.  !!
+# (Plan 60: customers carry ``payment_terms_code`` again from CRM contract
+# 2.14, gated on the push; ``suppliers.payment_terms_code`` stays removed.)
+# ``payment_terms_code`` WAS an UNCONDITIONAL permanent-``retryable`` in the
 # consumer (it performs no lookup until their Phase D), so any value would build
 # a queue that can never drain. AutoCount's ``DisplayTerm`` is a code
 # (``"C.O.D."``), not a number of days, so ``payment_terms_days`` cannot be
@@ -2071,6 +2086,13 @@ DEFAULT_CUSTOMER_MAPPING: Tuple[MappingRow, ...] = _MASTER_COMMON + (
     # every row; existing tasks get this row from
     # ``backfill_customer_debtor_type`` (module Alembic 0035).
     MappingRow("DebtorType", "market_segment_code", "string", SCOPE_HEADER),
+    # SS-PAYMENT-TERMS - the vendor Debtor payload carries ``DisplayTerm``
+    # (the debtor's Terms code); existing tasks get this row from
+    # ``backfill_customer_display_term`` (module Alembic 0043). Contract 2.14
+    # accepts ``payment_terms_code`` on customers again, so the warning block
+    # above now applies to suppliers only; the push still strips it for an
+    # older consumer (``CanonicalCustomer.sink_payload``).
+    MappingRow("DisplayTerm", "payment_terms_code", "string", SCOPE_HEADER),
 )
 
 DEFAULT_MAPPINGS: Dict[str, Tuple[MappingRow, ...]] = {

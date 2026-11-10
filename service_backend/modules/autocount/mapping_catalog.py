@@ -40,6 +40,7 @@ from .canonical.masters import (
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_ITEM_CLASS,
+    ENTITY_PAYMENT_TERM,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
@@ -50,6 +51,7 @@ from .canonical.masters import (
     CanonicalBrand,
     CanonicalBranch,
     CanonicalItemClass,
+    CanonicalPaymentTerm,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -255,6 +257,8 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     ENTITY_BRAND: _accepted(CanonicalBrand.SINK_FIELDS),
     # Plan 37 - the brand shape.
     ENTITY_ITEM_CLASS: _accepted(CanonicalItemClass.SINK_FIELDS),
+    # Plan 60 - the item class shape; `code` (DisplayTerm) is required.
+    ENTITY_PAYMENT_TERM: _accepted(CanonicalPaymentTerm.SINK_FIELDS, ("code",)),
     # sprint-5/14 section 11 (D24) - `acc_no` + `code` (the row's identity pair)
     # are required; `name` is optional; `source_ref`/`source_record` are never
     # mapping targets.
@@ -375,7 +379,7 @@ _MASTER_COMMON_SOURCES: Tuple[str, ...] = (
 
 AC_SOURCE_FIELDS: Dict[str, Tuple[str, ...]] = {
     ENTITY_SUPPLIER: _MASTER_COMMON_SOURCES,
-    ENTITY_CUSTOMER: _MASTER_COMMON_SOURCES + ("Mobile", "TIN", "SalesAgent", "DebtorType"),
+    ENTITY_CUSTOMER: _MASTER_COMMON_SOURCES + ("Mobile", "TIN", "SalesAgent", "DebtorType", "DisplayTerm"),
 }
 
 

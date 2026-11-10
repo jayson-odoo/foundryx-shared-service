@@ -126,6 +126,7 @@ from ..sinks_sorento import (
     AR_OUTSTANDING_CONTRACT_VERSION,
     BILLING_DOCUMENTS_CONTRACT_VERSION,
     ITEM_CLASSES_CONTRACT_VERSION,
+    PAYMENT_TERMS_CONTRACT_VERSION,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -162,6 +163,7 @@ from ..canonical.masters import (  # noqa: E402
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_ITEM_CLASS,
+    ENTITY_PAYMENT_TERM,
     ENTITY_PRODUCT,
     ENTITY_SUPPLIER,
 )
@@ -988,6 +990,14 @@ class CompanyService:
                 # gated line columns too (consignment `TransferedQty` from
                 # 2.9), so the payload never needs a second probe.
                 sink.advertised_contract_version = contract.version if contract else None
+            elif entity_type == ENTITY_CUSTOMER:
+                # Plan 60 - the customer feed is not entity-gated, but its
+                # `payment_terms_code` is FIELD-gated on contract 2.14
+                # (`CanonicalCustomer.sink_payload`). One probe per sink; a
+                # failed probe is None, which strips the field (never sent to
+                # a consumer that cannot be shown to accept it).
+                contract = sink.fetch_contract_detail()
+                sink.advertised_contract_version = contract.version if contract else None
             if entity_type in LINKED_DOCUMENT_ENTITY_TYPES and not getattr(sink, "book", None):
                 raise AutocountServiceError(LINKED_DOCUMENT_NO_BOOK_MESSAGE)
             return sink
@@ -1136,6 +1146,8 @@ class CompanyService:
         ENTITY_AR_OUTSTANDING: AR_OUTSTANDING_CONTRACT_VERSION,
         # Plan 37 - item classes (2.11).
         ENTITY_ITEM_CLASS: ITEM_CLASSES_CONTRACT_VERSION,
+        # Plan 60 - payment terms (2.14).
+        ENTITY_PAYMENT_TERM: PAYMENT_TERMS_CONTRACT_VERSION,
     }
 
     def contract_gate(

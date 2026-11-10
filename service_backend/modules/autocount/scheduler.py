@@ -118,11 +118,16 @@ def sweep_order_key(entity_type: str) -> int:
     debit notes after every other entity (so after invoices and cash sales);
     every other entity keeps its relative order (a stable sort on 0).
     Plan 37 (D5) - item classes first, so they reach the CRM before the
-    brands and products that name them (the CRM adopts by code either way)."""
+    brands and products that name them (the CRM adopts by code either way).
+    Plan 60 - payment terms next, so they reach the CRM before the customers
+    whose ``payment_terms_code`` names them (the CRM matches by code at
+    quotation time, so correctness never depends on it)."""
     from .canonical.documents import ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE
-    from .canonical.masters import ENTITY_ITEM_CLASS
+    from .canonical.masters import ENTITY_ITEM_CLASS, ENTITY_PAYMENT_TERM
 
     if entity_type == ENTITY_ITEM_CLASS:
+        return -2
+    if entity_type == ENTITY_PAYMENT_TERM:
         return -1
     return 1 if entity_type in (ENTITY_CREDIT_NOTE, ENTITY_DEBIT_NOTE) else 0
 
