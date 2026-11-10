@@ -130,10 +130,14 @@ GET / DELETE), `response_status` (NULL when no answer), `response_body` (text, c
   logger as a code only).
 - Never stored: API keys, auth headers, the base URL host. Bodies are AutoCount document data already held in
   `ac_write_action.request_json`.
-- Scope: the write layer's client and reader (write-back, read-backs, runner, `pull_docs` on the write connection).
-  The master / doc-feed SYNC GETs (`http_source`) are out of scope: thousands of paged reads per run with large bodies,
-  already traced by run history. Asked to crew as a follow-up option, not built here.
-- Retention: none in this lane (write-layer volume is small); listed as an open item.
+- Scope (crew decision 10 Nov): (a) the write layer's client and reader (write-back, read-backs, runner, `pull_docs`
+  on the write connection), bodies kept, never auto-deleted. (b) sync GETs of `http_source`, metadata only, already
+  exist: `http_source/client.py:240-291` records every GET (failures and guard blocks too) with counters only
+  (`:331-353`, statusCode / rowCount / envelope, never bodies), `sync.py` persists them through
+  `activity.record_client_calls` into core `integration_activity` (Developer Logs, trace_id = the run), pruned per
+  tenant (`app/config.py:357` default 30 days, tenant override `activity_log/service.py:229-241`, beat
+  `workflow_engine/worker.py:225-230`). Not duplicated here; the 90-day window is a retention setting (crew asked).
+- Why not reuse `integration_activity` for (a): it is pruned by retention and caps bodies; write-layer rows must stay.
 - Crew test copy: `crew/state/migrations/SS-AC-WRITE-V2.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
 
 ## 5. Slices (red tests first for each, tester then coder)
