@@ -2652,13 +2652,21 @@ def test_the_canonical_supplier_claims_only_what_sorento_persists():
 
 
 def test_no_payment_terms_field_exists_on_either_master():
-    """AC-14-12: ``payment_terms_code`` is an UNCONDITIONAL permanent-retryable
-    in the consumer, so any value would build a queue that can never drain."""
+    """AC-14-12: ``payment_terms_code`` WAS an UNCONDITIONAL permanent-retryable
+    in the consumer. Plan 60 (CRM #2305, contract 2.14) re-admits it on
+    CUSTOMERS only, field-gated on the push (an older consumer never receives
+    it); suppliers stay without it and nobody sends ``payment_terms_days``."""
+    from modules.autocount.sinks_sorento import ContractVersion
+
     for model in (CanonicalSupplier, CanonicalCustomer):
-        assert "payment_terms_code" not in model.model_fields
         assert "payment_terms_days" not in model.model_fields
-        assert "payment_terms_code" not in model.SINK_FIELDS
         assert "payment_terms_days" not in model.SINK_FIELDS
+    assert "payment_terms_code" not in CanonicalSupplier.model_fields
+    assert "payment_terms_code" not in CanonicalSupplier.SINK_FIELDS
+    customer = CanonicalCustomer(source_ref="AED:1", code="300-A", name="A", payment_terms_code="C.O.D.")
+    assert "payment_terms_code" not in customer.sink_payload(advertised_contract=ContractVersion(2, 13))
+    assert "payment_terms_code" not in customer.sink_payload(advertised_contract=None)
+    assert customer.sink_payload(advertised_contract=ContractVersion(2, 14))["payment_terms_code"] == "C.O.D."
 
 
 def test_every_field_we_send_is_one_sorento_defines():

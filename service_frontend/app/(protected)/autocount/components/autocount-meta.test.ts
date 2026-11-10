@@ -105,12 +105,12 @@ describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
 
 describe('AC_HTTP_ONLY_ENTITY_TYPES (fix/autocount-add-http-only-entity-on-db-company)', () => {
   it('is exactly the HTTP entities with no sql_db variant - stock_balance, branch (AC-14-47) and item_class (plan 37)', () => {
-    expect([...AC_HTTP_ONLY_ENTITY_TYPES].sort()).toEqual(['branch', 'item_class', 'stock_balance']);
+    expect([...AC_HTTP_ONLY_ENTITY_TYPES].sort()).toEqual(['branch', 'item_class', 'payment_term', 'stock_balance']);
   });
 
   it('every other HTTP entity is also SQL-extractable', () => {
     for (const t of AC_HTTP_ENTITY_TYPES) {
-      if (t === 'stock_balance' || t === 'branch' || t === 'item_class') continue;
+      if (t === 'stock_balance' || t === 'branch' || t === 'item_class' || t === 'payment_term') continue;
       expect(AC_SQL_DB_ENTITY_TYPES).toContain(t);
     }
   });
@@ -119,6 +119,7 @@ describe('AC_HTTP_ONLY_ENTITY_TYPES (fix/autocount-add-http-only-entity-on-db-co
     expect(isHttpOnlyEntity('stock_balance')).toBe(true);
     expect(isHttpOnlyEntity('branch')).toBe(true);
     expect(isHttpOnlyEntity('item_class')).toBe(true);
+    expect(isHttpOnlyEntity('payment_term')).toBe(true);
     expect(isHttpOnlyEntity('product')).toBe(false);
     expect(isHttpOnlyEntity('goods_received_note')).toBe(false);
   });
@@ -137,6 +138,7 @@ describe('AC_HTTP_ENTITY_TYPES (AC-08-18)', () => {
         'stock_balance',
         'branch',
         'item_class',
+        'payment_term',
       ].sort(),
     );
   });

@@ -335,12 +335,20 @@ export function itemClassContractBanner(
   task: Pick<AutocountEtlTask, 'contractGate'>,
 ): string | null {
   const gate = task.contractGate;
-  if (!gate || gate.entity !== 'item_class') return null;
+  if (!gate) return null;
+  // Plan 60 - payment terms (contract 2.14) ride the same banner.
+  const noun = CONTRACT_BANNER_NOUNS[gate.entity];
+  if (!noun) return null;
   if (gate.version == null) {
-    return `Consumer contract unknown - item classes land when ${gate.requiredVersion} is deployed`;
+    return `Consumer contract unknown - ${noun} land when ${gate.requiredVersion} is deployed`;
   }
-  return `Consumer contract does not accept item classes yet - they land when ${gate.requiredVersion} is deployed`;
+  return `Consumer contract does not accept ${noun} yet - they land when ${gate.requiredVersion} is deployed`;
 }
+
+const CONTRACT_BANNER_NOUNS: Record<string, string> = {
+  item_class: 'item classes',
+  payment_term: 'payment terms',
+};
 
 /**
  * The Review & Activate banner for a `brand` task whose consumer contract
@@ -860,6 +868,8 @@ export const HTTP_PRESETS: Record<string, HttpPreset> = {
       { sourcePath: 'Phone1', transform: 'string', canonicalField: 'phone_number' },
       { sourcePath: 'SalesAgent', transform: 'string', canonicalField: 'sales_agent_code' },
       { sourcePath: 'DebtorType', transform: 'string', canonicalField: 'market_segment_code' },
+      // SS-PAYMENT-TERMS - mirrors `CUSTOMER_HTTP_PRESET`'s `DisplayTerm -> payment_terms_code` row.
+      { sourcePath: 'DisplayTerm', transform: 'string', canonicalField: 'payment_terms_code' },
       { sourcePath: 'IsActive', transform: 't_f_bool', canonicalField: 'is_active', required: true },
     ],
   },
@@ -903,6 +913,20 @@ export const HTTP_PRESETS: Record<string, HttpPreset> = {
   // Plan 37 - mirrors the backend's `ITEM_CLASS_HTTP_PRESET`: name falls back
   // to the code and is_active is `true`, both as formulas on the `ItemClass`
   // row (seeded by the backend on the first save).
+  // Plan 60 - mirrors the backend's `PAYMENT_TERM_HTTP_PRESET`: is_active is
+  // `true` as a formula on the `DisplayTerm` row (seeded by the backend).
+  payment_term: {
+    path: '/terms',
+    keyFields: ['DisplayTerm'],
+    watermarkField: null,
+    comparedFields: [],
+    distinctOf: null,
+    mapping: [
+      { sourcePath: 'DisplayTerm', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'Terms', transform: 'string', canonicalField: 'rule' },
+      { sourcePath: 'DisplayTerm', transform: 'bool', canonicalField: 'is_active' },
+    ],
+  },
   item_class: {
     path: '/ItemClass',
     keyFields: ['ItemClass'],

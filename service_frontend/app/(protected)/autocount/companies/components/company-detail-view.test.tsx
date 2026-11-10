@@ -156,9 +156,10 @@ describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17, AC-08-18)'
     // AC-CANCEL-PULL: + Cancel SO/PO, Consignment, Consignment return (17).
     // Plan 32: + Invoice, Cash sale, Credit note, Debit note, AR outstanding (22).
     // Plan 37: + Item class, HTTP-only (twenty-three).
-    expect(names).toHaveLength(23);
+    // Plan 60: + Payment term, HTTP-only (twenty-four).
+    expect(names).toHaveLength(24);
     expect(names).toEqual(
-      expect.arrayContaining(['Customer', 'Supplier', 'Brand', 'Stock balance', 'Branch', 'Item class']),
+      expect.arrayContaining(['Customer', 'Supplier', 'Brand', 'Stock balance', 'Branch', 'Item class', 'Payment term']),
     );
     expect(names).not.toContain('Goods received note');
   });
@@ -168,11 +169,11 @@ describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17, AC-08-18)'
     render(<AutocountCompanyDetailView companyId="c1" />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(10);
     expect(names).toEqual(
       expect.arrayContaining([
         'Product', 'Customer', 'Warehouse', 'Product category', 'Brand', 'Unit of measure',
-        'Stock balance', 'Branch', 'Item class',
+        'Stock balance', 'Branch', 'Item class', 'Payment term',
       ]),
     );
   });

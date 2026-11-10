@@ -842,7 +842,7 @@ def test_shipping_order_entity():
     # Consignment, Consignment Return) - fifteen. Plan 32: + invoice /
     # cash_sale / credit_note / debit_note / ar_outstanding - twenty.
     # Plan 37: `item_class` is HTTP-only too.
-    assert len(set(ENTITY_PROFILES) - {"goods_received_note", "stock_balance", "branch", "item_class"}) == 20
+    assert len(set(ENTITY_PROFILES) - {"goods_received_note", "stock_balance", "branch", "item_class", "payment_term"}) == 20
 
 
 def test_filter_formula_skips_headers(session_factory):

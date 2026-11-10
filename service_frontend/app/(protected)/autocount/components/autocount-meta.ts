@@ -162,6 +162,9 @@ export const AC_HTTP_ENTITY_TYPES: string[] = [
   'branch',
   // Plan 37 (ITEM-CLASS-SS) - the `/ItemClass` list, HTTP-only like branch.
   'item_class',
+  // Plan 60 (SS-PAYMENT-TERMS) - AutoCount's `/terms` list, HTTP-only like
+  // item class (CRM contract 2.14).
+  'payment_term',
 ];
 
 /**

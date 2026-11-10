@@ -2580,6 +2580,54 @@ def backfill_customer_debtor_type(
     )
 
 
+# ── SS-PAYMENT-TERMS (partner of sorento-crm #2305, contract 2.14) ──────────
+
+# FROZEN like the DebtorType pair above.
+_DISPLAY_TERM_HTTP_PATH = "/debtorbypage"
+_DISPLAY_TERM_SOURCE_COLUMN = "DisplayTerm"
+
+
+def backfill_customer_display_term(
+    bind: Any,
+    *,
+    schema: Optional[str] = AUTOCOUNT_SCHEMA,
+    tenant_id: Optional[str] = None,
+) -> int:
+    """Give every EXISTING ``customer`` task a ``DisplayTerm ->
+    payment_terms_code`` header row (``string``, not required, source-owned,
+    next ``sort_order``) when none exists in ANY state. The DebtorType rules
+    exactly: ENABLED on the vendor ``autocount_read`` Debtor API, an
+    ``autocount_http`` task still on the preset's ``/debtorbypage`` path, or
+    any task whose cached ``result_columns`` list ``DisplayTerm``; DISABLED
+    with one WARNING otherwise. A task with NO mapping rows is left to its
+    empty-gated default/preset seed, which already carries the row.
+
+    Version-gated (module Alembic 0043 once, ``update_tenant`` only from below
+    0.23.0 and only for THAT tenant) so an operator's deliberate delete is
+    never reseeded. The push still strips the field below contract 2.14
+    (``CanonicalCustomer.sink_payload``), so seeding before the CRM upgrades
+    is safe.
+    """
+    return _backfill_source_owned_header_row(
+        bind,
+        schema=schema,
+        tenant_id=tenant_id,
+        entity_type=ENTITY_CUSTOMER,
+        source_column=_DISPLAY_TERM_SOURCE_COLUMN,
+        canonical_field="payment_terms_code",
+        known_good=lambda source_impl, source_config: (
+            source_impl == SOURCE_IMPL_AUTOCOUNT_READ
+            or (
+                source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+                and source_config.get("path") == _DISPLAY_TERM_HTTP_PATH
+            )
+        ),
+        task_label="Customer",
+        known_good_label="the AutoCount Debtor API or the `/debtorbypage` preset",
+        skip_unmapped=True,
+    )
+
+
 # ── AC-CONSIGN-PULL - consignment `TransferedQty` (CRM contract 2.9) ────────
 #
 # The #122 consignment preset texts, pinned VERBATIM (the frozen-text rule of

@@ -72,6 +72,7 @@ from .canonical.masters import (
     ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_ITEM_CLASS,
+    ENTITY_PAYMENT_TERM,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
@@ -79,6 +80,7 @@ from .canonical.masters import (
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
+    CanonicalCustomer,
 )
 from .models import (
     DOC_FEED_DELIVERY_ORDERS,
@@ -132,6 +134,8 @@ _ENTITY_PATH: Dict[str, str] = {
     ENTITY_BRAND: "brands",
     # Plan 37 (CRM contract 2.11) - gated exactly like ``brand`` above.
     ENTITY_ITEM_CLASS: "item_classes",
+    # Plan 60 (CRM #2305, contract 2.14) - gated exactly like item classes.
+    ENTITY_PAYMENT_TERM: "payment_terms",
     # plan 13 (BL-SS-207) - contract 2.5 (Appendix A2). Present here
     # unconditionally, exactly like ``brand`` above; ``sorento_supports_
     # entity`` is what actually gates it behind the consumer's advertised
@@ -360,6 +364,10 @@ AR_OUTSTANDING_CONTRACT_VERSION = ContractVersion(2, 10)
 # Plan 37 (CRM #1988) - the item classes door (contract 2.11). A
 # ``ContractVersion`` for the same two-digit-minor reason as 2.10 above.
 ITEM_CLASSES_CONTRACT_VERSION = ContractVersion(2, 11)
+# Plan 60 (CRM #2305) - the payment terms door (contract 2.14); also the
+# version from which a customer record may carry `payment_terms_code`
+# (`masters.CUSTOMER_PAYMENT_TERMS_MIN_CONTRACT`, pinned equal by a test).
+PAYMENT_TERMS_CONTRACT_VERSION = ContractVersion(2, 14)
 
 # Plan 57 S5 - ``replaces_line_ref`` on PO / SPO / SO lines (contract 2.12); sent only
 # when the consumer ADVERTISES at least this (Sorento ingest uses ``extra="forbid"``).
@@ -402,6 +410,8 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
     ENTITY_AR_OUTSTANDING: (AR_OUTSTANDING_CONTRACT_VERSION, "ar_outstanding"),
     # Plan 37 - the consumer must advertise `item_classes`.
     ENTITY_ITEM_CLASS: (ITEM_CLASSES_CONTRACT_VERSION, "item_classes"),
+    # Plan 60 - the consumer must advertise `payment_terms`.
+    ENTITY_PAYMENT_TERM: (PAYMENT_TERMS_CONTRACT_VERSION, "payment_terms"),
 }
 
 # Gated entities that must NEVER be "delivered" through the logging-sink
@@ -417,6 +427,8 @@ PUSH_REFUSES_LOGGING_FALLBACK: Tuple[str, ...] = (
 ) + LINKED_DOCUMENT_ENTITY_TYPES + BILLING_DOCUMENT_ENTITY_TYPES + (
     ENTITY_AR_OUTSTANDING,
     ENTITY_ITEM_CLASS,
+    # Plan 60 - a full list with no watermark, the item class reason.
+    ENTITY_PAYMENT_TERM,
 )
 
 
@@ -792,6 +804,9 @@ class SorentoSink:
         # line columns of the linked documents (``TransferedQty`` from 2.9);
         # ``None`` (never probed) sends the older shape - fail closed.
         self.advertised_contract_version: Optional[ContractVersion] = None
+        # Plan 60 - set once `_customer_contract` has probed for the customer
+        # `payment_terms_code` field gate, so a sink probes at most once.
+        self._customer_contract_probed = False
         self.batch_size = max(1, min(int(batch_size), SORENTO_MAX_BATCH))
         # The Sorento company this sink delivers INTO (Appendix A6). Sent as the
         # top-level ``companyCode`` on every call; a blank one is deliberately
@@ -874,6 +889,28 @@ class SorentoSink:
             "to 2 (Settings > Integrations > Sorento > Edit), run Test, then retry."
         )
 
+    def _customer_contract(self, records: Sequence[CanonicalRecord]) -> Optional["ContractVersion"]:
+        """Plan 60 - the consumer contract that decides the customer
+        ``payment_terms_code`` field gate (>= 2.14, CRM #2305).
+
+        Probed LAZILY, only when this batch holds a customer that actually
+        carries the field, and at most once per sink: a customer feed without
+        DisplayTerm values, a delete, or any other entity makes no extra
+        ``/contract`` call. An already-known advertised version (set by the
+        factory or the write-back stager) is reused. A failed probe is None,
+        which strips the field: it is never sent to a consumer that cannot be
+        shown to accept it."""
+        if self.advertised_contract_version is not None or self._customer_contract_probed:
+            return self.advertised_contract_version
+        if not any(
+            isinstance(r, CanonicalCustomer) and r.payment_terms_code for r in records
+        ):
+            return None
+        self._customer_contract_probed = True
+        info = self.fetch_contract_detail()
+        self.advertised_contract_version = info.version if info else None
+        return self.advertised_contract_version
+
     def _to_records(self, records: Sequence[CanonicalRecord]) -> List[Dict[str, Any]]:
         """Project each canonical record to EXACTLY Sorento's field set.
 
@@ -882,6 +919,7 @@ class SorentoSink:
         wire and trip ``extra="forbid"``.
         """
         self._refuse_contract_1_line_drop(records)
+        customer_contract = self._customer_contract(records)
         out: List[Dict[str, Any]] = []
         for record in records:
             payload = getattr(record, "sink_payload", None)
@@ -917,6 +955,10 @@ class SorentoSink:
                 ))
             elif isinstance(record, CanonicalDocument):
                 out.append(payload(contract_version=self.contract_version))
+            elif isinstance(record, CanonicalCustomer):
+                # Plan 60 - `payment_terms_code` rides the advertised
+                # contract (>= 2.14); an older or unprovable CRM never sees it.
+                out.append(payload(advertised_contract=customer_contract))
             else:
                 out.append(payload())
         return out
