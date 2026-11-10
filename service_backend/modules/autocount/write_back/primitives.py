@@ -555,6 +555,9 @@ class PrimitiveService(WriteFrame):
         return total
 
     def _guard_transfers(self, call: _Call, company: AcCompany, doc: Doc) -> None:
+        if call.kind in ("PO", "SPO") and call.primitive == DELETE_LINE:
+            self._guard_po_line(call, company, doc)
+            return
         if call.kind != "SO":
             return
         if call.primitive == EDIT:
@@ -571,6 +574,16 @@ class PrimitiveService(WriteFrame):
         elif call.primitive == CANCEL:
             if any(self._so_linked_qty(company, r.get("DtlKey")) > 0 for r in doc.get("Details") or []):
                 raise WriteRefusal(DOC_HAS_TRANSFERS, "lines are linked by purchase order lines")
+
+    def _guard_po_line(self, call: _Call, company: AcCompany, doc: Doc) -> None:
+        """AC-61-20 / F15: a PO row an SPO points at, or with a receipt, is never sent a
+        "D" (AutoCount's own answer to a received row is unverified)."""
+        if call.kind == "PO" and self._spo_ref(company.tenant_id, company.id, int(call.dtl_key or 0)):
+            raise WriteRefusal("ROW_ON_SPO", "row is referenced by a shipping purchase order")
+        row = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == call.dtl_key), {})
+        received = self._row_received(company, call.kind, dict(row, DocKey=doc.get("DocKey")))
+        if received is not None and received > 0:  # unknown is left to AutoCount
+            raise WriteRefusal(ROW_RECEIVED, "row has received quantity")
 
     # ── the call, read-back, verify ──────────────────────────────────────────
 

@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from modules.autocount.canonical.documents import ENTITY_SHIPPING_ORDER
 from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.provider import PROVIDER_KEY
 from modules.autocount.repositories import ConnectionRepository
@@ -121,10 +122,12 @@ class WriteFrame:
         sink_factory: Optional[Callable[..., Any]] = None,
         actor: Optional[str] = None,
         request_id: Optional[str] = None,
+        operation_id: Optional[str] = None,
     ) -> None:
         self.db = db
         self._actor = actor  # "runner" for the db3 runner; None = the API key id, else "system"
         self.request_id = request_id
+        self._operation_id = operation_id  # set when an operation runs this flow (the split link)
         self._call_log: Optional[cl.CallLog] = None
         self.actions = WriteActionRepository(db)
         self.staged = StagedDocRepository(db)
@@ -148,7 +151,8 @@ class WriteFrame:
         context = cl.CallContext(
             tenant_id=company.tenant_id, company_id=company.id,
             actor=key_id or self._actor or cl.ACTOR_SYSTEM, request_id=self.request_id,
-            operation_id=operation_id, action_id=action_id, doc_type=kind, doc_no=doc_no, doc_key=doc_key,
+            operation_id=operation_id or self._operation_id, action_id=action_id, doc_type=kind,
+            doc_no=doc_no, doc_key=doc_key,
         )
         return cl.CallLog(self.db.get_bind(), context)
 
@@ -252,6 +256,16 @@ class WriteFrame:
             if isinstance(line, dict) and line.get("source_ref") == wanted:
                 value = line.get(field_name)
                 return None if value is None else _dec(value)
+        return None
+
+    def _spo_ref(self, tenant_id: str, company_id: str, po_dtl_key: int) -> Optional[str]:
+        """DocNo of a staged, non-cancelled SPO with a row pointing at the PO row."""
+        for staged in self.staged.for_entity(tenant_id, company_id, ENTITY_SHIPPING_ORDER):
+            raw = staged.raw_json or {}
+            if raw.get("Cancelled") == "T":
+                continue
+            if any(r.get("FromDocDtlKey") == po_dtl_key for r in _lines(raw)):
+                return str(raw.get("DocNo") or staged.doc_no or staged.source_ref)
         return None
 
     def _stage(

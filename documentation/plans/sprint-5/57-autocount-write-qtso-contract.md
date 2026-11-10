@@ -40,9 +40,9 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 | `POST /api/v1/autocount/documents/{kind}/{docKey}/lines` | primitive | Add one line |
 | `POST /api/v1/autocount/documents/{kind}/{docKey}/lines/{dtlKey}/delete` | primitive | Delete one line (quotations, sales orders, purchase orders) |
 | `POST /api/v1/autocount/documents/{kind}/{docKey}/cancel` | primitive | Cancel the document (quotations, sales orders, purchase orders) |
-| `POST /api/v1/autocount/po-links` | operation | Plan 55 body. Part of a row: split link. Whole row: one replace PUT (row deleted, linked row added) + move |
+| `POST /api/v1/autocount/po-links` | operation | Plan 55 body. Part of a row: split link. Whole row: one replace PUT (row deleted, linked row added) + a move PUT restoring the old row's location, unit price and delivery date |
 | `POST /api/v1/autocount/po-links/unlink` | operation | Plan 55 body; one replace PUT (linked row deleted, normal row added) |
-| `POST /api/v1/autocount/po-links/relink` | operation | New: move a PO row's link to another SO row |
+| `POST /api/v1/autocount/po-links/relink` | operation | New: move a PO row's link to another SO row (one replace PUT + the same move PUT: location, unit price, delivery date) |
 | `POST /api/v1/autocount/spo-links` | operation | New: link an SPO row to a PO row |
 | `POST /api/v1/autocount/spo-links/unlink` | operation | Plan 55 body; switched off (`VENDOR_UNSUPPORTED`): no SPO write is proven |
 | `POST /api/v1/autocount/spo-links/relink` | operation | New: move an SPO row's link to another PO row |
@@ -183,8 +183,10 @@ expectedLastModified? }`. Delete line sends one PUT with only that row, marked d
 show the row gone and every other row unchanged (else `mismatch LINE_NOT_DELETED` / `COLLATERAL_CHANGE`).
 The last remaining line may be deleted (the document then has no lines). A row AutoCount reports as
 transferred onward (a sales order row taken into a purchase order, a quotation row taken into a sales
-order) is refused `409 ROW_HAS_TRANSFERS` with AutoCount's text in `message`; SS's own receipt checks
-(`ROW_RECEIVED`, `ROW_HAS_TRANSFERS` from the synced copy) still run first, with no request. Cancel asks
+order) is refused `409 ROW_HAS_TRANSFERS` with AutoCount's text in `message`; SS's own checks still run
+first, with no request: `ROW_RECEIVED` (a received purchase order row or a delivered sales order row),
+`ROW_ON_SPO` (a purchase order row a shipping purchase order points at) and `ROW_HAS_TRANSFERS` (a sales
+order row the synced copy shows linked by purchase order rows). Cancel asks
 AutoCount to cancel the document by its number and reads it back: `Cancelled "T"` = `done`, otherwise
 `mismatch CANCEL_IGNORED`. AutoCount refusing because the document was transferred onward =
 `409 DOC_HAS_TRANSFERS`; because it is already void = `409 DOC_CANCELLED`; any other refusal =
@@ -212,9 +214,10 @@ split link on a PO whose date is not known is `409 DOC_DATE_REQUIRED`.
 Whole row versus part of a row on `po-links`: the service reads the PO row fresh and compares the caller's
 `qty` with the row's own quantity at that moment. Equal = the whole row: ONE PUT deletes the row and adds
 it back linked (a new row number, listed in `replacedLines`). AutoCount puts a new linked row at HQ with
-no delivery date, so a second write moves it to the target sales order row's location and puts the old
-delivery date back; if that second write fails the link stands, the answer is `done` with warning
-`LOCATION_NOT_MOVED`. `po-links/unlink` and `po-links/relink` are the same single replace PUT (an unlinked
+unit price 0 and no delivery date, so a second write moves it to the target sales order row's location
+and puts the old row's unit price and delivery date back (only when something differs); if that second
+write fails the link stands, the answer is `done` with warning `LOCATION_NOT_MOVED` (and
+`ROW_VALUES_NOT_KEPT` when the price or date did not go back); there is no third write. `po-links/unlink` and `po-links/relink` are the same single replace PUT (an unlinked
 row keeps its own location and date, so unlink needs no second write). AutoCount applies the PUT all or
 nothing: a refusal there is `vendor_error VENDOR_REFUSED` with nothing changed and no second write.
 Different = part of the row: the plan 55 split link, no delete, no `replacedLines`. Without an
@@ -311,7 +314,7 @@ Other outcomes:
   `VENDOR_ERROR` (a bare failure; no text is passed on; inside an operation it is `pending_verification`
   because the write may have landed).
 - `mismatch` (502; the write was accepted, the read-back differs): `FIELD_IGNORED`, `ROW_MISMATCH`,
-  `LINK_MISMATCH`, `ROWS_DROPPED`, `ROWS_UNEXPECTED`, `LINE_NOT_DELETED`, `DOC_NOT_DELETED`,
+  `LINK_MISMATCH`, `ROWS_DROPPED`, `ROWS_UNEXPECTED`, `LINE_NOT_DELETED`,
   `CANCEL_IGNORED`, `COLLATERAL_CHANGE`, `READBACK_MISMATCH` (plan 55 flows). Inside an operation a
   replace PUT that landed wrong is recovered from the snapshot (`recovered`, or `needs_attention` when the
   recovery fails too).
@@ -319,7 +322,9 @@ Other outcomes:
 For a part-row operation the alert mail names the cut quantity and the remainder quantity.
 
 Warnings (in `warnings`, on `done` or `recovered`; they do not fail the call): `LOCATION_NOT_MOVED` (the
-link stands but AutoCount left the new row at its default location; use relocate),
+link stands but AutoCount left the new row at its default location; use relocate), `ROW_VALUES_NOT_KEPT`
+(the link stands but the new row kept AutoCount's reset unit price or empty delivery date; fix it with an
+edit),
 `TRANSFER_STATE_UNKNOWN` (the received quantity could not be read, so AutoCount decided),
 `QT_ROW_VALUES_INHERITED`, `QT_ROW_LINK_UNCONFIRMED` (section 3.1). On `done` of an operation the
 `LOCATION_NOT_MOVED` warning is the only place the failed move shows (`errorCode` stays null).

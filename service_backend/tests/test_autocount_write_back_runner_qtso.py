@@ -29,7 +29,7 @@ from tests.test_autocount_write_back_operations import OpHarness, db, h  # noqa:
 from tests.test_autocount_write_back_primitives import DB3
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
-Q_IDS = [f"Q{n:02d}" for n in range(1, 10)]
+Q_IDS = [f"Q{n:02d}" for n in range(1, 11)]  # plan 61 adds Q10 (quotation delete line)
 EXTRA = {"DebtorName": "ACME TRADING SDN BHD", "InvAddr1": "12 SECRET LANE", "InvAddr2": "TAMAN RAHSIA",
          "DeliverAddr1": "99 HIDDEN ROAD", "Phone1": "012-3456789", "Attention": "MR PRIVATE PERSON",
          "DeliverContact": "MS CONTACT NAME"}

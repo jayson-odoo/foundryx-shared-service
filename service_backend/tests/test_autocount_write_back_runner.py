@@ -33,7 +33,7 @@ DB3 = "https://ac.example.test/api/db3"
 DB1 = "https://ac.example.test/api/db1"
 DBNAME = "AED_RUN"
 SECRETS = {"appId": "app-secret-run", "password": "pw-secret-run"}
-CASE_IDS = [f"C{n:02d}" for n in range(0, 13)]
+CASE_IDS = [f"C{n:02d}" for n in range(0, 18)]  # plan 61 adds C13..C17 (operation / primitive path)
 DEBTOR = "300-S057"
 CREDITOR = "400-N004"
 
@@ -123,6 +123,8 @@ class Wrapper:
             if name.endswith("bydocno"):  # plan 61 F1: one document by its DocNo
                 docs = [d for d in docs if d["DocNo"] == request.url.params.get("DocNo")]
             return httpx.Response(200, json=copy.deepcopy(docs))
+        if request.method == "DELETE" and name.startswith("cancel") and name.endswith("bydocno"):
+            return self._cancel(name, request.url.params.get("DocNo"))  # plan 61 F9: no body
         body = json.loads(request.content)
         self.bodies.append(body)
         if _has_ancient_date(body):  # vendor behaviour (plan 55 live run, C07)
@@ -154,6 +156,16 @@ class Wrapper:
         self._touch(doc)
         self.pos.append(doc)
         return httpx.Response(200, json={"DocKey": doc["DocKey"], "DocNo": doc["DocNo"]})
+
+    def _cancel(self, name, doc_no):
+        """DELETE /Cancel<Doc>bydocno?DocNo=: the document reads back Cancelled T (F9)."""
+        docs = self.pos if name.startswith("cancelpurchaseorder") else self.sos
+        doc = next((d for d in docs if d["DocNo"] == doc_no), None)
+        if doc is None:
+            return httpx.Response(400, json={"Message": f"DocNo={doc_no} ... failed to cancel."})
+        doc["Cancelled"] = "T"
+        self._touch(doc)
+        return httpx.Response(200, text=f"DocNo={doc_no} ... was cancelled.")
 
     def so(self, doc_no: str) -> Dict[str, Any]:
         return next(d for d in self.sos if d["DocNo"] == doc_no)
@@ -331,8 +343,9 @@ def test_ac_55_50_c04_whole_row_link_is_one_replace_put_then_the_move(db):
     row = db.get(AcWriteAction, c.action_id)
     assert row.outcome == "done" and row.error_code is None
     assert [r.get("FullTransferOption") for r in row.request_json[0]["Details"]] == ["D", " "]
-    # writes in the whole suite: C03 (2) + C04 (2) + C07 (1) + C08 (2)
-    assert _put_count(s) == 7
+    # writes in the whole suite: C03 (2) + C04 (2) + C07 (1) + C08 (2), then plan 61's
+    # C13 (1) + C14 (2) + C15 (2) + C16 (1)
+    assert _put_count(s) == 13
 
 
 def test_ac_55_50_c08_second_split_of_the_40_row_ends_at_brw_am(db):
@@ -340,7 +353,8 @@ def test_ac_55_50_c08_second_split_of_the_40_row_ends_at_brw_am(db):
     res = _run(db, s)
     c = _case(res, "C08")
     assert c.status == "PASS" and c.action_id
-    po = s.wrapper.po("FXT-T1-1")["Details"]
+    row = db.get(AcWriteAction, c.action_id)  # the PO as C08 left it (plan 61 cases C13..C17 change it later)
+    po = (row.after_json[-1] if isinstance(row.after_json, list) else row.after_json)["Details"]
     linked = {r["FromSODtlKey"]: r for r in po if r["FromSODtlKey"]}
     so1, so2 = _so_keys(s)
     assert set(linked) == {so1, so2}
@@ -392,7 +406,7 @@ def test_ac_55_50_c11_relocate_on_c08s_row_is_already_at_location(db):
     assert not [st for st in c.steps if st.method in ("PUT", "POST")]
     row = db.get(AcWriteAction, c.action_id)
     assert row.action == "relocate" and row.outcome == "refused"
-    assert _put_count(s) == 7  # C03 (2) + C04 (2) + C07 (1) + C08 (2), nothing from C11
+    assert _put_count(s) == 13  # C03 (2) + C04 (2) + C07 (1) + C08 (2) + C13..C16 (6), nothing from C11
 
 
 def test_ac_55_50_c12_guard_makes_zero_requests(db):
@@ -420,7 +434,7 @@ def test_ac_55_51_step_paths_are_vendor_paths_only(db):
     for c in res.cases:
         for st in c.steps:
             assert st.path.startswith("/") and "http" not in st.path and "example.test" not in st.path
-            assert st.method in ("GET", "POST", "PUT")
+            assert st.method in ("GET", "POST", "PUT", "DELETE")  # plan 61: cancel is a DELETE
 
 
 def test_ac_55_51_report_has_a_section_per_case_with_evidence(db):

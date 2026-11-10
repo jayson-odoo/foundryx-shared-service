@@ -237,6 +237,10 @@ def verify_relocate(
     wanted: Doc = dict(values or {})
     if location is not None:
         wanted["Location"] = location
+    sent_row = next((r for r in body.get("Details") or [] if r.get("DtlKey") == dtl_key), {})
+    for key in payloads.NORMAL_ROW_KEYS:  # plan 61 AC-61-16: we send the row as a normal row
+        if key in sent_row:
+            wanted.setdefault(key, sent_row[key])
     if not _header_unchanged(before, after, body):
         return False
     before_rows = {r.get("DtlKey"): r for r in before.get("Details") or []}
@@ -645,16 +649,6 @@ class WriteBackService(WriteFrame):
             )
         return total
 
-    def _spo_ref(self, tenant_id: str, company_id: str, po_dtl_key: int) -> Optional[str]:
-        """DocNo of a staged, non-cancelled SPO with a row pointing at the PO row."""
-        for staged in self.staged.for_entity(tenant_id, company_id, ENTITY_SHIPPING_ORDER):
-            raw = staged.raw_json or {}
-            if raw.get("Cancelled") == "T":
-                continue
-            if any(r.get("FromDocDtlKey") == po_dtl_key for r in _lines(raw)):
-                return str(raw.get("DocNo") or staged.doc_no or staged.source_ref)
-        return None
-
     def _put_and_verify(
         self,
         plan: _Plan,
@@ -746,11 +740,7 @@ class WriteBackService(WriteFrame):
             None,
         )
         sent_new = next((r for r in body1.get("Details") or [] if not r.get("DtlKey")), {})
-        wanted = {k: v for k, v in sent_new.items() if k in payloads.TRANSFER_RESET_FIELDS}
-        if target:
-            wanted["Location"] = target
-        else:
-            wanted.pop("Location", None)
+        wanted = payloads.transfer_restore(sent_new, target)
         restore = payloads.transfer_row_drift(wanted, new_row) if new_row is not None else {}
         if not restore:
             result = self._finish(row, OUTCOME_DONE, document=after1)

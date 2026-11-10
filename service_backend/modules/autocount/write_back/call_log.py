@@ -15,7 +15,9 @@ query as sent).
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import string
 import time
 from dataclasses import dataclass
@@ -74,6 +76,52 @@ class CallContext:
     doc_key: Optional[int] = None
 
 
+_STACK_KEY = re.compile(r"stack\s*trace", re.IGNORECASE)
+_WINDOWS_PATH = re.compile(r"(?:\b[A-Za-z]:\\|\\\\)[^\s\"'<>|]*")
+_STACK_LINE = re.compile(r"^\s*at .*$", re.MULTILINE)
+REDACTED_HOST = "[host]"
+REDACTED_PATH = "[path]"
+
+
+def _scrub_text(text: str, host: str) -> str:
+    if host:
+        text = re.sub(re.escape(host), REDACTED_HOST, text, flags=re.IGNORECASE)
+    return _WINDOWS_PATH.sub(REDACTED_PATH, text)
+
+
+def _scrub(value: Any, host: str) -> Any:
+    if isinstance(value, dict):
+        return {k: _scrub(v, host) for k, v in value.items() if not _STACK_KEY.search(str(k))}
+    if isinstance(value, list):
+        return [_scrub(v, host) for v in value]
+    if isinstance(value, str):
+        return _scrub_text(value, host)
+    return value
+
+
+def redact_error_body(text: str, base_url: str) -> str:
+    """A non-2xx answer as stored (AC-61-64): the write host removed everywhere, every
+    ``StackTrace`` (nested ``InnerException`` too) dropped, Windows paths gone; the
+    ``ExceptionMessage`` / ``Message`` text is kept. A non-JSON answer loses its
+    ``at ...`` stack lines the same way."""
+    host = urlsplit(base_url).hostname or ""
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return _scrub_text(_STACK_LINE.sub("", text), host)
+    if not isinstance(parsed, (dict, list)):
+        return _scrub_text(text, host)
+    return json.dumps(_scrub(parsed, host), ensure_ascii=False)
+
+
+def cap_bytes(text: str, cap: int = BODY_CAP) -> "tuple[str, bool]":
+    """``text`` cut to at most ``cap`` UTF-8 bytes on a character boundary, and whether it was cut."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= cap:
+        return text, False
+    return encoded[:cap].decode("utf-8", "ignore"), True
+
+
 def book_of(base_url: str) -> Optional[str]:
     """The base URL's last path segment (``db3``), never the host."""
     segments = [s for s in (urlsplit(base_url).path or "").split("/") if s]
@@ -103,6 +151,11 @@ class CallLog:
         try:
             at, t0 = started
             text = body if isinstance(body, str) else None
+            if text is not None and status is not None and not 200 <= status < 300:
+                text = redact_error_body(text, base_url)
+            truncated = False
+            if text is not None:
+                text, truncated = cap_bytes(text)
             ctx = self.context
             row = AcApiCallLog(
                 tenant_id=ctx.tenant_id, company_id=ctx.company_id, created_at=at, actor=ctx.actor,
@@ -110,8 +163,7 @@ class CallLog:
                 book=book_of(base_url), method=method, path=path, doc_type=ctx.doc_type,
                 doc_no=ctx.doc_no, doc_key=ctx.doc_key,
                 request_json=request_json if method in ("POST", "PUT") else None,
-                response_status=status, response_body=text[:BODY_CAP] if text is not None else None,
-                response_truncated=bool(text is not None and len(text) > BODY_CAP),
+                response_status=status, response_body=text, response_truncated=truncated,
                 duration_ms=max(int((time.monotonic() - t0) * 1000), 0), outcome=outcome,
                 error_code=error_code,
             )

@@ -80,6 +80,7 @@ INVALID_PARAMS = "INVALID_PARAMS"
 ROW_RECEIVED = "ROW_RECEIVED"
 TRANSFER_STATE_UNKNOWN = "TRANSFER_STATE_UNKNOWN"
 LOCATION_NOT_MOVED = "LOCATION_NOT_MOVED"
+ROW_VALUES_NOT_KEPT = "ROW_VALUES_NOT_KEPT"
 NOT_APPLIED = "OPERATION_NOT_APPLIED"
 SPLIT_LINK = "split_link"
 TEMPLATE_KEY = "autocount_write_needs_attention"
@@ -424,10 +425,10 @@ class OperationService:
         if found is None:
             return False
         doc_no = self.prims.find_doc_no(company, "PO", spec.doc_key)
+        reader = self._reader(company, base_url, "PO", spec.doc_key, doc_no)  # before the commit (row ids)
         self.db.commit()
         try:
-            fresh = self._reader(company, base_url, "PO", spec.doc_key, doc_no).get_document(
-                "PO", spec.doc_key, found, doc_no=doc_no)
+            fresh = reader.get_document("PO", spec.doc_key, found, doc_no=doc_no)
         except DocReadError:
             return False
         row = next((r for r in fresh.get("Details") or [] if r.get("DtlKey") == spec.dtl_key), None)
@@ -457,9 +458,9 @@ class OperationService:
         if found is None:
             raise _Done(REFUSED, code)
         doc_no = self.prims.find_doc_no(company, kind, doc_key)
+        reader = self._reader(company, self._base_url, kind, doc_key, doc_no)  # before the commit (row ids)
         self.db.commit()
         try:
-            reader = self._reader(company, self._base_url, kind, doc_key, doc_no)
             return found, reader.get_document(kind, doc_key, found, doc_no=doc_no)
         except DocReadError as exc:
             raise _Done(REFUSED, exc.code) from None
@@ -527,13 +528,7 @@ class OperationService:
 
     def _spo_ref(self, company: AcCompany, po_dtl_key: int) -> Optional[str]:
         """DocNo of a staged, non-cancelled SPO with a row pointing at the PO row."""
-        for staged in self.prims.staged.for_entity(company.tenant_id, company.id, ENTITY_SHIPPING_ORDER):
-            raw = staged.raw_json or {}
-            if raw.get("Cancelled") != "T" and any(
-                r.get("FromDocDtlKey") == po_dtl_key for r in _lines(raw)
-            ):
-                return str(raw.get("DocNo") or staged.doc_no or staged.source_ref)
-        return None
+        return self.prims._spo_ref(company.tenant_id, company.id, po_dtl_key)
 
     def _spo_linked_qty(self, company: AcCompany, fresh_spo: Doc, po_dtl_key: int, own_dtl: int) -> Decimal:
         """Qty of one PO row already taken by SPO rows: the fresh SPO (minus the row
@@ -670,24 +665,19 @@ class OperationService:
 
     def _move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, new_key: int,
               document: Optional[Doc], location: Optional[str], *, deadline: bool = True) -> Doc:
-        """Move the new row to ``location`` and back to the old row's DeliveryDate when the
-        read-back differs (db3 forces HQ and clears the date on a new linked row, F5); a
-        failed move is a warning, never a failure (the link stays)."""
+        """Put the new row back where and as the old row was when the read-back differs:
+        ``location`` and the old row's unit price and delivery date (AutoCount resets all
+        three on a new SO-linked row, F5; the split link's rule, ``payloads.transfer_restore``).
+        One edit PUT, never retried; a failed move is a warning, never a failure (the link
+        stays): ``LOCATION_NOT_MOVED``, plus ``ROW_VALUES_NOT_KEPT`` when price / date did
+        not go back."""
         document = document or {}
         landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
-        changes: Dict[str, Any] = {}
-        if location and landed.get("Location") != location:
-            changes["Location"] = location
-        want_date = snap["row"].get("DeliveryDate")
-        if payloads.day_of(want_date) and not payloads.same_row_value(
-            "DeliveryDate", want_date, landed.get("DeliveryDate")
-        ):
-            changes["DeliveryDate"] = want_date
+        changes = payloads.transfer_row_drift(payloads.transfer_restore(snap["row"], location), landed)
         if not changes:
             return document
         if deadline and time.monotonic() > self._op_deadline:  # move due, deadline past: skip it
-            if LOCATION_NOT_MOVED not in self._warnings:
-                self._warnings.append(LOCATION_NOT_MOVED)
+            self._move_warnings(changes)
             return document
         moved = self.prims.edit_doc(
             **self._call(row, company, snap, "move"), header_changes={},
@@ -696,9 +686,12 @@ class OperationService:
         self._step("move", moved)
         if moved.outcome == OUTCOME_DONE and moved.document:
             return moved.document
-        if LOCATION_NOT_MOVED not in self._warnings:
-            self._warnings.append(LOCATION_NOT_MOVED)
+        self._move_warnings(changes)
         return document
+
+    def _move_warnings(self, changes: Dict[str, Any]) -> None:
+        codes = [LOCATION_NOT_MOVED] + ([ROW_VALUES_NOT_KEPT] if set(changes) - {"Location"} else [])
+        self._warnings.extend(c for c in codes if c not in self._warnings)
 
     def _recover(self, row: AcWriteOperation, company: AcCompany, snap: Doc, failed_code: str,
                  partial: bool) -> OperationResult:
@@ -847,6 +840,7 @@ class OperationService:
         legacy = WriteBackService(
             self.db, client_factory=self.prims._client_factory, reader_factory=self.prims._reader_factory,
             sink_factory=self.prims._sink_factory, actor=self.prims._actor, request_id=self.prims.request_id,
+            operation_id=row.id,
         )
         qty = Decimal(str(params["qty"]))
         found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))

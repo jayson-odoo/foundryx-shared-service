@@ -1,6 +1,7 @@
 """Scripted db3 runner + AutoCount test report (plan 55 S6, AC-55-42/50/51).
 
-Drives each use case (C01..C12) through the same ``WriteBackService`` the
+Drives each use case (C00..C17) through the same services (``WriteBackService``,
+``OperationService``, ``PrimitiveService``) the
 gateway uses, over the db3 write connection only (the guard runs before the
 first request and on every write). Setup documents (the test PO and SPO) are
 created through the guarded write client at ``NEW_PO_PATH``; their DocNos come
@@ -44,7 +45,7 @@ from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteNotAllowed
 from modules.autocount.write_back.payloads import header_of, so_header_of
-from modules.autocount.write_back.operations import OperationService
+from modules.autocount.write_back.operations import OperationResult, OperationService
 from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService, vendor_message
 from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
@@ -167,6 +168,17 @@ class _Run:
             db, client_factory=client_factory, reader_factory=reader_factory,
             sink_factory=sink_factory, actor=cl.ACTOR_RUNNER,
         )
+        # plan 61 AC-61-50: the gateway's own path (operations and primitives) on the run's documents
+        self.ops = OperationService(
+            db, client_factory=client_factory, reader_factory=reader_factory,
+            sink_factory=sink_factory, actor=cl.ACTOR_RUNNER,
+        )
+        self.prims = PrimitiveService(
+            db, client_factory=client_factory, reader_factory=reader_factory,
+            sink_factory=sink_factory, actor=cl.ACTOR_RUNNER,
+        )
+        self.c07_key = 0
+        self.c14_key = 0
         self.today = myt_date(datetime.now(timezone.utc))
         self.po_no = f"{_doc_prefix(run_tag)}-1"
         self.spo_no = f"{_doc_prefix(run_tag)}-S1"
@@ -488,7 +500,10 @@ class _Run:
         )
         if self._service_case(case, result, "done") and result.error_code is None:
             rows = (result.document or {}).get("Details") or []  # type: ignore[union-attr]
-            if all(r.get("DtlKey") != linked["DtlKey"] for r in rows):  # type: ignore[union-attr]
+            known = {r.get("DtlKey") for r in self._test_rows()}
+            fresh = [r for r in rows if r.get("DtlKey") not in known]  # type: ignore[union-attr]
+            if all(r.get("DtlKey") != linked["DtlKey"] for r in rows) and len(fresh) == 1:  # type: ignore[union-attr]
+                self.c07_key = int(fresh[0]["DtlKey"])  # type: ignore[index]
                 self.po_doc = result.document
                 case.status = PASS
 
@@ -553,6 +568,134 @@ class _Run:
         case.observed = "client for the other book was constructed"
 
 
+    # ── plan 61 cases through the operation / primitive services (AC-61-50) ───
+
+    def _op_steps(self, case: CaseResult, operation_id: Optional[str]) -> None:
+        if not operation_id:
+            return
+        rows = (
+            self.db.query(AcWriteAction)
+            .filter(AcWriteAction.tenant_id == self.tenant_id, AcWriteAction.operation_id == operation_id)
+            .order_by(AcWriteAction.created_at, AcWriteAction.id)
+            .all()
+        )
+        for row in rows:
+            case.steps.extend(self._put_steps(row))
+
+    def _run_op(self, case: CaseResult, op: str, params: Dict[str, object]) -> OperationResult:
+        out = self.ops.run(
+            tenant_id=self.tenant_id, company_id=self.company.id, key_id=None,
+            idempotency_key=f"{self.tag}-{case.case_id.lower()}-{op}", op=op, params=params,
+        )
+        self._op_steps(case, out.operation_id)
+        case.observed = out.outcome + (f" {out.error_code}" if out.error_code else "") + (
+            f" warnings {','.join(out.warnings)}" if out.warnings else "")
+        if out.document:
+            self.po_doc = out.document
+        return out
+
+    def _po_params(self, dtl_key: int, **extra: object) -> Dict[str, object]:
+        return dict(doc_key=int(self.po_doc["DocKey"]), dtl_key=dtl_key, doc_date=self.today,  # type: ignore[index]
+                    **extra)
+
+    @staticmethod
+    def _kept_values(new: Optional[Row], old: Row) -> bool:
+        """The new row carries the old row's unit price and delivery date (the F5 restore)."""
+        return new is not None and _num(new.get("UnitPrice")) == _num(old.get("UnitPrice")) and (
+            str(new.get("DeliveryDate"))[:10] == str(old.get("DeliveryDate"))[:10])
+
+    def _row(self, dtl_key: int) -> Optional[Row]:
+        return next((r for r in self._test_rows() if r.get("DtlKey") == dtl_key), None)
+
+    def c13(self, case: CaseResult) -> None:
+        case.expected = ("unlink_row (operation) of the C03 row: ONE replace PUT, the first SO row freed; "
+                         "replacedLines names the new row")
+        if self._skip(case, "C08"):
+            return
+        linked = self._linked_new_row(self.po_doc, self._so_row(0))
+        if linked is None:
+            case.observed = "C03 left no linked row"
+            return
+        out = self._run_op(case, "unlink_row", self._po_params(int(linked["DtlKey"])))  # type: ignore[arg-type]
+        if out.outcome == "done" and len(out.replaced_lines) == 1:
+            case.status = PASS
+
+    def c14(self, case: CaseResult) -> None:
+        case.expected = ("link_row (operation, whole row) of the C07 row to the first SO row: ONE replace PUT, "
+                         "then the move PUT puts back the SO row's location and the old unit price and date")
+        if self._skip(case, "C13") or self._skip(case, "C07"):
+            return
+        old = self._row(self.c07_key)
+        if old is None:
+            case.observed = "C07 left no unlinked row"
+            return
+        out = self._run_op(case, "link_row", self._po_params(
+            self.c07_key, so_doc_key=self._so_key(), so_dtl_key=self._so_row(0), target_doc_date=self.today))
+        if out.outcome == "done" and not _move_warned(out.warnings) and len(out.replaced_lines) == 1:
+            new_key = out.replaced_lines[0][1]
+            new = self._row(new_key)
+            so_loc = ((self.so_doc or {}).get("Details") or [{}])[0].get("Location")  # type: ignore[index,union-attr]
+            if self._kept_values(new, old) and new is not None and new.get("Location") == so_loc:
+                self.c14_key = new_key
+                case.status = PASS
+
+    def c15(self, case: CaseResult) -> None:
+        case.expected = ("relink_row (operation) of the C14 row to the third SO row: ONE replace PUT and the "
+                         "move, unit price and delivery date kept")
+        if self._skip(case, "C14"):
+            return
+        old = self._row(self.c14_key)
+        out = self._run_op(case, "relink_row", self._po_params(
+            self.c14_key, so_doc_key=self._so_key(), so_dtl_key=self._so_row(2), target_doc_date=self.today))
+        if out.outcome == "done" and not _move_warned(out.warnings) and len(out.replaced_lines) == 1 and old is not None:
+            new = self._row(out.replaced_lines[0][1])
+            if self._kept_values(new, old) and new is not None and new.get("FromSODtlKey") == self._so_row(2):
+                case.status = PASS
+
+    def c16(self, case: CaseResult) -> None:
+        case.expected = "PO delete_line (primitive) of the free C03 remainder row: ONE PUT with the row marked D"
+        if self._skip(case, "C08"):
+            return
+        res = self.prims.delete_line(
+            tenant_id=self.tenant_id, company_id=self.company.id, kind="PO",
+            doc_key=int(self.po_doc["DocKey"]), dtl_key=self.big_key, doc_date=self.today)  # type: ignore[index]
+        case.steps.extend(self._put_steps(self._prim_action(res)))
+        case.action_id = res.action_id
+        case.observed = res.outcome + (f" {res.error_code}" if res.error_code else "")
+        if res.outcome == "done" and res.document is not None:
+            self.po_doc = res.document
+            if all(r.get("DtlKey") != self.big_key for r in self._test_rows()):
+                case.status = PASS
+
+    def c17(self, case: CaseResult) -> None:
+        case.expected = "PO cancel (primitive) of the test PO: DELETE /CancelPurchaseOrderbydocno, reads back Cancelled T"
+        if self._skip(case, "C01"):
+            return
+        res = self.prims.cancel_doc(
+            tenant_id=self.tenant_id, company_id=self.company.id, kind="PO",
+            doc_key=int(self.po_doc["DocKey"]), doc_date=self.today)  # type: ignore[index]
+        row = self._prim_action(res)
+        if row is not None and row.request_method:
+            case.steps.append(Step(str(row.request_method), str(row.request_path), row.response_status))  # type: ignore[arg-type]
+        case.action_id = res.action_id
+        case.observed = res.outcome + (f" {res.error_code}" if res.error_code else "")
+        if res.outcome == "done" and (res.document or {}).get("Cancelled") == "T":
+            case.status = PASS
+
+    def _prim_action(self, res: PrimitiveResult) -> Optional[AcWriteAction]:
+        if not res.action_id:
+            return None
+        return self.db.query(AcWriteAction).filter(
+            AcWriteAction.tenant_id == self.tenant_id, AcWriteAction.id == res.action_id).first()
+
+
+
+def _move_warned(warnings: Sequence[str]) -> bool:
+    """The restore move did not land (``TRANSFER_STATE_UNKNOWN`` alone is fine: db3's GET
+    never shows a received quantity)."""
+    return bool({"LOCATION_NOT_MOVED", "ROW_VALUES_NOT_KEPT"} & set(warnings))
+
+
 _CASES = (
     ("C00", "Create the test SO", "c00"),
     ("C01", "Create the test PO", "c01"),
@@ -567,6 +710,11 @@ _CASES = (
     ("C10", "SPO unlink refused by the capability gate", "c10"),
     ("C11", "Relocate of a row already at its location", "c11"),
     ("C12", "Other book refused with no request", "c12"),
+    ("C13", "Unlink through the operation layer (replace PUT)", "c13"),
+    ("C14", "Whole-row link through the operation layer (replace PUT + restore move)", "c14"),
+    ("C15", "Relink through the operation layer (replace PUT + restore move)", "c15"),
+    ("C16", "Delete a PO line (one PUT, row marked D)", "c16"),
+    ("C17", "Cancel the test PO", "c17"),
 )
 
 
@@ -582,7 +730,7 @@ def run_db3_suite(
     reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
     sink_factory: Optional[Callable[..., object]] = None,
 ) -> SuiteResult:
-    """Run C01..C12 in order. Refuses to start (``WriteNotAllowed`` /
+    """Run C00..C17 in order. Refuses to start (``WriteNotAllowed`` /
     ``WriteDisabled``) before any request when the company's write connection is
     not db3. A case fault is recorded as FAIL, never raised."""
     company = CompanyRepository(db).get(tenant_id, company_id)
@@ -659,7 +807,7 @@ def render_report(result: SuiteResult, *, run_date: date) -> str:
     return "\n".join(out)
 
 
-# ── plan 57: Quotation / Sales Order suite (Q01..Q09) ────────────────────────
+# ── plan 57: Quotation / Sales Order suite (Q01..Q10) ────────────────────────
 
 _SCRUB_KEYS = re.compile(
     r"^(DebtorName|InvAddr\d|DeliverAddr\d|Phone\d?|Fax\d?|DeliverPhone\d?|DeliverFax\d?|Attention|DeliverContact|SalesAgent|RefDocNo|ShipInfo|CreditorName|Remark\d|Note|CreatedUserID|LastModifiedUserID)$"
@@ -763,6 +911,7 @@ _Q_CASES = (
     ("Q07", "Delete a sales order line (one PUT, the row marked D)", "q07"),
     ("Q08", "Cancel the sales order", "q08"),
     ("Q09", "SPO link, unlink and relink refused (SPO stays off)", "q09"),
+    ("Q10", "Delete a quotation line (one PUT, the row marked D)", "q10"),
 )
 
 
@@ -1009,6 +1158,23 @@ class _QtRun:
             results.append(f"{op} {out.outcome}" + (f" {out.error_code}" if out.error_code else ""))
         self._refused(case, results)
 
+    def q10(self, case: CaseResult) -> None:
+        case.expected = "plan 61 F6: the Q03 line of the quotation deleted by ONE PUT with the row marked D"
+        qt = self.qt
+        if qt is None:
+            case.status, case.observed = SKIPPED, "no quotation was created"
+            return
+        fresh = self.prims.read_doc(**self._args("QT"), doc_key=int(qt.doc_key or 0), doc_date=self.today)
+        rows = (fresh.document or {}).get("Details") or []  # type: ignore[union-attr]
+        if len(rows) < 2:  # type: ignore[arg-type]
+            case.status, case.observed = SKIPPED, "the quotation has fewer than two lines"
+            return
+        dtl = int(rows[-1]["DtlKey"])  # type: ignore[index]
+        res = self.call(case, lambda: self.prims.delete_line(
+            **self._args("QT"), doc_key=int(qt.doc_key or 0), dtl_key=dtl, doc_date=self.today))
+        case.observed = self._note(res)
+        case.status = PASS if res.outcome == "done" else FAIL
+
 
 def run_qtso_suite(
     db: Session,
@@ -1022,7 +1188,7 @@ def run_qtso_suite(
     reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
     sink_factory: Optional[Callable[..., object]] = None,
 ) -> SuiteResult:
-    """Run Q01..Q09 through the real primitive / operation services. Refuses to
+    """Run Q01..Q10 through the real primitive / operation services. Refuses to
     start before any request (``WriteDisabled`` / ``WriteNotAllowed`` for the
     connection, ``WriteConnectionError`` ``WRITE_COMPANY_NOT_TEST`` for a company
     that reads SQL or holds documents staged by another job). A case fault is

@@ -155,6 +155,7 @@ def _refuse_other_transfer(row: Doc) -> None:
 # Every other row SS sends is a normal row (AC-61-16).
 DELETE_ROW = "D"
 _NORMAL_ROW = {"FullTransferOption": " ", "FullTransferFromDocList": ""}
+NORMAL_ROW_KEYS = tuple(_NORMAL_ROW)
 
 
 def _normal(row: Doc) -> Doc:
@@ -257,7 +258,7 @@ def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref
         raise WriteRefusal("DOC_UNKNOWN", "the linked sales order row is not in the synced copy")
     if row.get("Location") == location:
         raise WriteRefusal("ROW_ALREADY_AT_LOCATION", "row is already at that location")
-    moved = _row_fields(row)
+    moved = _normal(_row_fields(row))
     moved["Location"] = location
     body = _header(po)
     body["Details"] = [moved]
@@ -290,6 +291,18 @@ def same_row_value(field_name: str, want: Any, got: Any) -> bool:
     return _same(want, got)
 
 
+def transfer_restore(source: Mapping[str, Any], location: Optional[str]) -> Doc:
+    """The ``TRANSFER_RESET_FIELDS`` values a new SO-linked PO row must get back after
+    AutoCount reset them (F5): ``source``'s price and delivery date, at ``location``
+    (when given). The one rule the split link and the row operations share."""
+    wanted: Doc = {k: source[k] for k in TRANSFER_RESET_FIELDS if k in source}
+    if location:
+        wanted["Location"] = location
+    else:
+        wanted.pop("Location", None)
+    return wanted
+
+
 def transfer_row_drift(sent: Mapping[str, Any], got: Doc) -> Doc:
     """The ``TRANSFER_RESET_FIELDS`` the read-back row lost: ``{field: sent value}``.
     A field not sent (or an empty sent date) is never asked back."""
@@ -307,7 +320,7 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
     (location, unit price, delivery date) set back to what the split sent."""
     if not values:
         raise WriteRefusal("NO_CHANGE", "nothing to restore")
-    row = _row_fields(_find_row(po, dtl_key))
+    row = _normal(_row_fields(_find_row(po, dtl_key)))
     row.update(values)
     body = _header(po)
     if _is_spo(po):
@@ -756,9 +769,9 @@ def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after:
     added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]
     if len(added) != 1:
         return Verdict(MISMATCH, "ROWS_DROPPED" if not added else "ROWS_UNEXPECTED")
-    # AutoCount forces HQ on a new row that carries a link (db3, plan 55): the
-    # location is then moved by a later step, so it is not compared here.
-    relaxed = dict(line, Location=added[0].get("Location")) if line.get("FromDocDtlKey") else line
+    # AutoCount resets a new row that carries a link (HQ, price 0, no date; db3, F5): a
+    # later step puts them back, so they are not compared here.
+    relaxed = _relax_transfer(line, added[0]) if line.get("FromDocDtlKey") else line
     if not _same_line(relaxed, added[0]):
         return Verdict(MISMATCH, "ROW_MISMATCH")
     if _link_code(kind_name, line, added[0]):
@@ -779,7 +792,7 @@ def verify_row_replace(kind_name: str, before: Doc, old_key: int, line: Mapping[
     added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]
     if len(added) != 1:
         return Verdict(MISMATCH, "ROWS_DROPPED" if not added else "ROWS_UNEXPECTED")
-    relaxed = dict(line, Location=added[0].get("Location")) if line.get("FromDocType") else line
+    relaxed = _relax_transfer(line, added[0]) if line.get("FromDocType") else line
     if not _same_line(relaxed, added[0]):
         return Verdict(MISMATCH, "ROW_MISMATCH")
     if _link_code(kind_name, line, added[0]) or (not line.get("FromDocType") and _link_of_row(kind_name, added[0])):
@@ -787,6 +800,12 @@ def verify_row_replace(kind_name: str, before: Doc, old_key: int, line: Mapping[
     if _drifted(before, after, (), [old_key]):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
+
+
+def _relax_transfer(line: Mapping[str, Any], got: Doc) -> Doc:
+    """``line`` with the ``TRANSFER_RESET_FIELDS`` taken from the read-back row: AutoCount
+    resets them on a new linked row (F5) and the move step puts them back."""
+    return dict(line, **{k: got.get(k) for k in TRANSFER_RESET_FIELDS})
 
 
 def _link_of_row(kind_name: str, row: Doc) -> int:

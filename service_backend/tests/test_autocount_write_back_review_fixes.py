@@ -199,8 +199,9 @@ def test_ac_57_43_an_old_in_progress_operation_is_flipped_and_does_not_block(h, 
     from modules.autocount.write_back.frame import BUSY_WINDOW_SECONDS
     from modules.autocount.models import AcWriteOperation
 
-    h.vendor.timeout_next("DELETE", "deletepurchaseorderdetailbydtlkey")
+    h.vendor.timeout_next("PUT", "editpurchaseorderbydockey")  # plan 61: the replace PUT times out
     first = h.run("unlink_row", w.params["unlink_row"], key="k-old")
+    assert first.outcome == "pending_verification", first.outcome
     op_id = _strand(h, first, BUSY_WINDOW_SECONDS + 60)
     second = h.run("link_row", w.params["link_row"], key="k-new")
     assert second.error_code != "DOC_BUSY", second.error_code
@@ -212,8 +213,9 @@ def test_ac_57_43_an_old_in_progress_operation_is_flipped_and_does_not_block(h, 
 
 
 def test_ac_57_43_a_young_in_progress_operation_still_blocks(h, w):
-    h.vendor.timeout_next("DELETE", "deletepurchaseorderdetailbydtlkey")
+    h.vendor.timeout_next("PUT", "editpurchaseorderbydockey")  # plan 61: the replace PUT times out
     first = h.run("unlink_row", w.params["unlink_row"], key="k-old")
+    assert first.outcome == "pending_verification", first.outcome
     _strand(h, first, 5)
     second = h.run("link_row", w.params["link_row"], key="k-new")
     assert second.outcome == "refused" and second.error_code == "DOC_BUSY"
