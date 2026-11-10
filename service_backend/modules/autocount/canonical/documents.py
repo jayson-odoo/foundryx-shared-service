@@ -274,6 +274,9 @@ class CanonicalDocumentLine(CanonicalLine):
     # Sorento's stored value alone"; `null` means "clear it" - a linkage
     # field the engine could not resolve THIS run must never send the clear
     # signal. Empty on the shared base; PO/SPO lines populate it (Group A).
+    # Exception (SS-PO-LINK-NULL): a PO line's `from_so_line_ref` is NOT in
+    # its set - AutoCount's FromSODtlKey NULL/0 is a positive "this row has
+    # no SO link" fact, so an unminted ref there IS the clear signal.
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ()
 
     def sink_payload(
