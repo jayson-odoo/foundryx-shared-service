@@ -77,7 +77,9 @@ class CallContext:
 
 
 _STACK_KEY = re.compile(r"stack\s*trace", re.IGNORECASE)
-_WINDOWS_PATH = re.compile(r"(?:\b[A-Za-z]:\\|\\\\)[^\s\"'<>|]*")
+# A drive path (``X:\`` or ``X:/``) or a UNC path, cut to the end of the value / line or the
+# closing quote (a path may hold spaces); the readable text before it stays.
+_WINDOWS_PATH = re.compile(r"(?:\b[A-Za-z]:[\\/]|\\\\)[^\r\n\"'<>|]*")
 _STACK_LINE = re.compile(r"^\s*at .*$", re.MULTILINE)
 REDACTED_HOST = "[host]"
 REDACTED_PATH = "[path]"
@@ -91,7 +93,10 @@ def _scrub_text(text: str, host: str) -> str:
 
 def _scrub(value: Any, host: str) -> Any:
     if isinstance(value, dict):
-        return {k: _scrub(v, host) for k, v in value.items() if not _STACK_KEY.search(str(k))}
+        return {
+            (_scrub_text(k, host) if isinstance(k, str) else k): _scrub(v, host)
+            for k, v in value.items() if not _STACK_KEY.search(str(k))
+        }
     if isinstance(value, list):
         return [_scrub(v, host) for v in value]
     if isinstance(value, str):
