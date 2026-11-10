@@ -40,7 +40,9 @@ against the fake vendor (`tests/autocount_write_back_fake_vendor.py`, taught the
   row is gone, every other row unchanged, else `LINE_NOT_DELETED`.
 - AC-61-21 Vendor refusal of a "D" on a row transferred onward (500, `UnableToDelete...TransferredItemException`) ->
   `ROW_HAS_TRANSFERS`. Today's pre-send guards (`ROW_RECEIVED`, receipt split) still run first.
-- AC-61-22 Last remaining row: per card Q2 answer.
+- AC-61-22 Removing the LAST remaining row of a QT, SO or PO (any delete_line whose read shows one row) is refused
+  `ROW_LAST_LINE` with no write request (crew decision Q2, 10 Nov). The gateway maps it like the other row refusals
+  (409) and the contract doc lists it.
 
 ## Cancel
 - AC-61-30 `cancel_doc` (QT, SO, PO) = AC-61-01 request, then a bydocno read: `Cancelled "T"` -> `done`; otherwise

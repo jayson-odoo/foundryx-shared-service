@@ -78,7 +78,8 @@ The old `_unlinked` blank-link PUT (`build_unlink`, `build_spo_unlink`) and the 
 - Partial link (split) keeps today's shape but in ONE PUT: [original row with the cut qty, new linked row DtlKey 0].
 - delete_line: PUT [row "D"]. Today's pre-send guards stay (`ROW_RECEIVED`, `ROW_HAS_TRANSFERS` where our data shows
   it). AutoCount's own refusal (F7, exception type `UnableToDelete*TransferredItemException`) maps to
-  `ROW_HAS_TRANSFERS`; any other vendor 500 stays `VENDOR_REFUSED`. Last-row rule: card Q2.
+  `ROW_HAS_TRANSFERS`; any other vendor 500 stays `VENDOR_REFUSED`. Last row: refused `ROW_LAST_LINE` before any
+  write (decision Q2), so CRM offers Cancel instead.
 
 ### 4.3 Cancel (`cancel_doc`)
 `DELETE /Cancel{Quotation|SalesOrder|PurchaseOrder}bydocno?DocNo=<url-encoded DocNo>`, no body. `client.py` allows a
@@ -98,6 +99,14 @@ or no DocNo known). New row DtlKeys come from this read (after-keys minus before
 ON from probes: PO `unlink`, `link_existing_row`, `delete_line`, `cancel_doc`; SO `delete_line`, `cancel_doc`;
 QT `delete_line`, `cancel_doc`. OFF: SPO everything except today's `edit_doc` (F14), `spo_unlink`, `delete_doc` (no door).
 `ZERO_QTY_EMULATION` goes (the replace builder supersedes it). RQ: GET door exists (F1); no kind added (no caller).
+
+### 4.6 Crew decisions 10 Nov 2026 (behaviour card; owner: "verify ourselves", crew decides obvious defaults)
+- Rules (1)-(7) of the card accepted as written (SPO stays OFF, `ROW_RECEIVED` guard kept, every capability behind
+  CRM's admin switch, default OFF).
+- Q1 = (a): link / relink = the D+add PUT, then a 2nd PUT moves Location + DeliveryDate back; if that fails the row
+  stays linked at HQ and SS answers with warning `LOCATION_NOT_MOVED` (CRM shows it).
+- Q2 = (b): removing the LAST line of a document is refused `ROW_LAST_LINE` (new answer code, no write), so CRM offers
+  Cancel instead. The gateway contract (`57-autocount-write-qtso-contract.md` error codes) gains the code in this PR.
 
 ## 5. Slices (red tests first for each, tester then coder)
 - S1 client + reader: `delete_query`, bydocno GET, fallback; fake vendor learns bydocno, cancel DELETE, "D" rows,
