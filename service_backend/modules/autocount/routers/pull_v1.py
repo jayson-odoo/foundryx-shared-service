@@ -44,6 +44,7 @@ from ..doc_feed.clock import myt_date
 from ..models import AcPullApiKey
 from ..pull_auth import PullGatewayError, resolve_pull_key
 from ..services.pull_key_service import SCOPE_PULL, SCOPE_WRITE_BACK
+from ..write_back.call_log import REQUEST_ID_HEADER, give_request_id, request_id_of
 from ..write_back.deps import get_operation_service, get_write_back_service
 from ..write_back.operations import OperationService
 from ..write_back.service import WriteActionResult, WriteBackService
@@ -565,10 +566,13 @@ def _write_route(
     service: WriteBackService,
     action: str,
     call: WriteCall,
+    operations: Optional[OperationService] = None,
 ) -> JSONResponse:
     """The shared write-route frame. ``call(service, raw, tenant_id, company_id,
     key_id)`` invokes the service method; everything before it is auth, scope,
-    parse and company resolution (no service call on any failure)."""
+    parse and company resolution (no service call on any failure). The services
+    learn the caller's request id for the AutoCount call log (``X-Request-ID``,
+    else the ``Idempotency-Key``; plan 61 section 4.8)."""
     ctx = _CallContext()
     company_code_hint: Optional[str] = None
     try:
@@ -578,6 +582,9 @@ def _write_route(
             raise PullGatewayError(
                 403, "SCOPE_REQUIRED", "This key is not allowed to write."
             )
+        request_id = request_id_of(request.headers.get(REQUEST_ID_HEADER), request.headers.get("Idempotency-Key"))
+        for target in (service, operations):
+            give_request_id(target, request_id)
         raw = _parse_write_json(raw_body)
         company_code_hint = _safe_echo(raw.get("companyCode"))
         if not company_code_hint or not company_code_hint.strip():
@@ -618,7 +625,7 @@ def link_po_row(
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
-    return _write_route(request, db, raw_body, service, "write_link", call)
+    return _write_route(request, db, raw_body, service, "write_link", call, operations)
 
 
 @router.post("/po-links/unlink")
@@ -640,7 +647,7 @@ def unlink_po_row(
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
-    return _write_route(request, db, raw_body, service, "write_unlink", call)
+    return _write_route(request, db, raw_body, service, "write_unlink", call, operations)
 
 
 @router.post("/spo-links/unlink")
@@ -662,7 +669,7 @@ def unlink_spo_row(
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
-    return _write_route(request, db, raw_body, service, "write_spo_unlink", call)
+    return _write_route(request, db, raw_body, service, "write_spo_unlink", call, operations)
 
 
 @router.post("/po-links/relocate")

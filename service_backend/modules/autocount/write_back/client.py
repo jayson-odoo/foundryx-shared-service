@@ -4,7 +4,9 @@ POST / PUT / DELETE, JSON body, the allowlist guard re-run before every request,
 the house SSRF-guarded transport with redirects off, and never a retry (a
 ``DtlKey 0`` row would be added twice). A path never carries a query string; the
 one door that needs one (plan 61 cancel, ``DELETE /Cancel<Doc>bydocno?DocNo=``)
-goes through ``delete_query``, which lets httpx encode the parameters.
+goes through ``delete_query``, which lets httpx encode the parameters. Every
+request (and every request the guard refuses) is one ``ac_api_call_log`` row when
+the caller attached a ``CallLog`` (plan 61 section 4.8).
 """
 
 from __future__ import annotations
@@ -17,7 +19,8 @@ import httpx
 from app.services.url_guard import UrlGuardError
 
 from modules.autocount.http_client import autocount_guarded_client
-from modules.autocount.write_back.guard import assert_write_allowed
+from modules.autocount.write_back import call_log as cl
+from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,11 @@ class AutoCountWriteClient:
         self.base_url = base_url
         self._transport = transport
         self._timeout = timeout
+        self._call_log: Optional[cl.CallLog] = None
+
+    def attach_call_log(self, log: "cl.CallLog") -> None:
+        """Every request from now on writes one row to ``log`` (plan 61 section 4.8)."""
+        self._call_log = log
 
     def post(self, path: str, body: Any) -> WriteResponse:
         return self._send("POST", path, body)
@@ -87,21 +95,40 @@ class AutoCountWriteClient:
     def _send(
         self, method: str, path: str, body: Any, *, params: Optional[Mapping[str, str]] = None
     ) -> WriteResponse:
-        assert_write_allowed(self.base_url)
+        started = self._call_log.started() if self._call_log else None
+        sent_path = path if params is None else str(httpx.URL(path, params=dict(params)))
+        try:
+            assert_write_allowed(self.base_url)
+        except WriteNotAllowed as exc:  # refused before sending: logged, nothing sent
+            self._log(method, sent_path, body, started, None, None, cl.GUARD_REFUSED, exc.code)
+            raise
         _check_path(path)
         url = self.base_url.rstrip("/") + path
         try:
             with self._http() as http:
                 if params is not None:
-                    response = http.request(method, url, params=dict(params))
+                    request = http.build_request(method, url, params=dict(params))
                 else:
-                    response = http.request(method, url, json=body)
+                    request = http.build_request(method, url, json=body)
+                sent_path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
+                response = http.send(request)
         except httpx.TimeoutException:
+            self._log(method, sent_path, body, started, None, None, cl.TIMEOUT, "WRITE_TIMEOUT")
             raise WriteTransportError("WRITE_TIMEOUT") from None
         except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError):
+            self._log(method, sent_path, body, started, None, None, cl.CONNECT_ERROR, "WRITE_CONNECT")
             raise WriteTransportError("WRITE_CONNECT") from None
+        self._log(method, sent_path, body, started, response.status_code, response.text,
+                  cl.OK if response.is_success else cl.HTTP_ERROR, None)
         return WriteResponse(
             status_code=response.status_code,
             body=_parse_body(response),
             ok=response.is_success,
         )
+
+    def _log(self, method: str, path: str, body: Any, started: Any, status: Optional[int],
+             text: Optional[str], outcome: str, code: Optional[str]) -> None:
+        if self._call_log is None or started is None:
+            return
+        self._call_log.record(base_url=self.base_url, method=method, path=path, started=started,
+                              request_json=body, status=status, body=text, outcome=outcome, error_code=code)

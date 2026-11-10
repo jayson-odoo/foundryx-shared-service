@@ -300,7 +300,11 @@ class PrimitiveService(WriteFrame):
             self._check_test_company(row, company)
             if not self._capable(call):
                 raise self._refuse(row, VENDOR_UNSUPPORTED)
-            reader = self._reader_factory(base_url)
+            self._call_log = self.new_call_log(
+                company, kind=call.kind, doc_key=call.doc_key, key_id=call.key_id,
+                operation_id=call.operation_id, action_id=row.id,
+            )
+            reader = self._reader_for(base_url)
             doc, request, read_date = self._prepare(call, kind, company, row, reader)
             row.before_json = doc
             row.request_method, row.request_path = request.method, request.path
@@ -354,9 +358,10 @@ class PrimitiveService(WriteFrame):
         if found is None:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, code)
         doc_no = self.find_doc_no(company, kind_def.name, doc_key)
+        log = self.new_call_log(company, kind=kind_def.name, doc_key=doc_key, doc_no=doc_no)
         self.db.commit()  # no transaction open during the GET
         try:
-            doc = self._reader_factory(base_url).get_document(kind_def.name, doc_key, found, doc_no=doc_no)
+            doc = self._reader_for(base_url, log).get_document(kind_def.name, doc_key, found, doc_no=doc_no)
         except DocReadError as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
         finally:
@@ -404,6 +409,8 @@ class PrimitiveService(WriteFrame):
                 request = payloads.build_create(call.kind, header, call.lines)
             except WriteRefusal as exc:
                 raise self._refuse(row, exc.code, str(exc)) from None
+            sent_no = (request.body or {}).get("DocNo")
+            self._log_doc(None if sent_no == NEW_DOCNO else sent_no)
             return None, request, _doc_date(request.body)
         assert call.doc_key is not None
         if call.primitive == EDIT:  # value checks need no document: no request on a bad number
@@ -415,12 +422,14 @@ class PrimitiveService(WriteFrame):
             self._check_not_busy(row, call.tenant_id, company.id, call.doc_key)
         doc_date = self._resolve_date(call, kind, company, row)
         call.doc_no = call.doc_no or self.find_doc_no(company, kind.name, call.doc_key)
+        self._log_doc(call.doc_no)
         self._check_deadline(row)
         self.db.commit()  # no transaction open during the GET
         try:
             doc = reader.get_document(call.kind, call.doc_key, doc_date, doc_no=call.doc_no)
         except DocReadError as exc:
             raise self._refuse(row, exc.code) from None
+        self._log_doc(doc.get("DocNo"))
         if call.expected_last_modified and doc.get("LastModified") != call.expected_last_modified:
             raise self._refuse(row, DOC_STALE)
         try:
@@ -436,6 +445,15 @@ class PrimitiveService(WriteFrame):
             except WriteRefusal as exc:
                 raise self._refuse(row, exc.code, str(exc)) from None
         return doc, request, doc_date  # type: ignore[return-value]
+
+    def _log_doc(self, doc_no: Any, doc_key: Optional[int] = None) -> None:
+        """The document the next logged calls belong to (plan 61 section 4.8)."""
+        if self._call_log is None:
+            return
+        if doc_no:
+            self._call_log.context.doc_no = str(doc_no)
+        if doc_key is not None:
+            self._call_log.context.doc_key = doc_key
 
     def _debtor_term(self, row: AcWriteAction, reader: Any, debtor_code: Any) -> str:
         """SS-QTSO-DISPLAYTERM: the debtor's own AutoCount term code, read from the
@@ -561,7 +579,7 @@ class PrimitiveService(WriteFrame):
         reader: Any, before: Optional[Doc], request: VendorRequest, read_date: Optional[date],
         extra: Dict[str, Any],
     ) -> PrimitiveResult:
-        client = self._client_factory(base_url)
+        client = self._client_for(base_url)
         self._check_deadline(row)
         self._put_sent = True
         try:  # never retried
@@ -623,6 +641,7 @@ class PrimitiveService(WriteFrame):
             return reader.get_document(call.kind, int(call.doc_key or 0), read_date, doc_no=doc_no)
         parsed = payloads.parse_create_answer(answer)
         if parsed is not None:
+            self._log_doc(parsed[0], parsed[1])
             return reader.get_document(call.kind, parsed[1], read_date, doc_no=parsed[0])
         sent_no = request.body.get("DocNo")
         if not sent_no or sent_no == NEW_DOCNO:

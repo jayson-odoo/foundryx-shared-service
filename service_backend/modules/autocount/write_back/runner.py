@@ -40,6 +40,7 @@ from modules.autocount.write_back.constants import (
     SO_BY_DOC_DATE_PATH,
     PO_BY_DOC_DATE_PATH,
 )
+from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteNotAllowed
 from modules.autocount.write_back.payloads import header_of, so_header_of
@@ -157,12 +158,14 @@ class _Run:
         self.so_no = f"{_doc_prefix(run_tag)}-SO"
         self.so_doc: Optional[Doc] = None
         self.tag = run_tag
-        self.client_factory = client_factory
-        self.reader_factory = reader_factory
+        # plan 61 section 4.8: the runner's own calls are logged with actor "runner"
+        log = cl.CallLog(db.get_bind(), cl.CallContext(tenant_id, company.id, actor=cl.ACTOR_RUNNER))
+        self.client_factory = lambda url: cl.attach_call_log(client_factory(url), log)  # noqa: E731
+        self.reader_factory = lambda url: cl.attach_call_log(reader_factory(url), log)  # noqa: E731
         self.sink_factory = sink_factory
         self.service = WriteBackService(
             db, client_factory=client_factory, reader_factory=reader_factory,
-            sink_factory=sink_factory,
+            sink_factory=sink_factory, actor=cl.ACTOR_RUNNER,
         )
         self.today = myt_date(datetime.now(timezone.utc))
         self.po_no = f"{_doc_prefix(run_tag)}-1"
@@ -177,7 +180,7 @@ class _Run:
         return pull_documents(
             self.db, tenant_id=self.tenant_id, company_id=self.company.id,
             date_from=d_from, date_to=d_to, mode=MODE_DOC_DATE,
-            reader_factory=self.reader_factory, sink_factory=self.sink_factory,
+            reader_factory=self.reader_factory, sink_factory=self.sink_factory, actor=cl.ACTOR_RUNNER,
         )
 
     def _find_doc(self, doc_no: str, kind: str = "PO") -> Optional[Doc]:
@@ -686,6 +689,9 @@ class _TapClient:
     def __init__(self, inner: AutoCountWriteClient, tap: _Tap) -> None:
         self._inner, self._tap = inner, tap
 
+    def attach_call_log(self, log: cl.CallLog) -> None:
+        cl.attach_call_log(self._inner, log)
+
     def _send(self, method: str, path: str, body: object):
         self._tap.http += 1
         entry: Dict[str, object] = {"method": method, "path": path, "requestBody": body}
@@ -725,6 +731,9 @@ class _TapClient:
 class _TapReader:
     def __init__(self, inner: AutoCountDocReader, tap: _Tap) -> None:
         self._inner, self._tap = inner, tap
+
+    def attach_call_log(self, log: cl.CallLog) -> None:
+        cl.attach_call_log(self._inner, log)
 
     def get_document(self, *args, **kwargs):
         self._tap.http += 1
@@ -768,9 +777,9 @@ class _QtRun:
         wrapped_client = lambda url: _TapClient(client_factory(url), self.tap)  # noqa: E731
         wrapped_reader = lambda url: _TapReader(reader_factory(url), self.tap)  # noqa: E731
         self.prims = PrimitiveService(db, client_factory=wrapped_client, reader_factory=wrapped_reader,
-                                      sink_factory=sink_factory)
+                                      sink_factory=sink_factory, actor=cl.ACTOR_RUNNER)
         self.ops = OperationService(db, client_factory=wrapped_client, reader_factory=wrapped_reader,
-                                    sink_factory=sink_factory)
+                                    sink_factory=sink_factory, actor=cl.ACTOR_RUNNER)
         self.today = myt_date(datetime.now(timezone.utc))
         self.evidence: List[Dict[str, object]] = []
         self.qt_auto: Optional[PrimitiveResult] = None

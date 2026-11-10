@@ -7,6 +7,8 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 
 ## Changes
 
+- 2026-11-10 (plan 61 section 4.8): optional request header `X-Request-ID` (section 2a) on every write
+  and read route of this contract and on the plan 55 routes. Additive: nothing changes in the answer.
 - 2026-11-10 (plan 61, AutoCount write API v2, db3 probes F1..F15): delete line, cancel, whole-row link,
   unlink and relink are switched ON for quotations, sales orders and purchase orders (SPO stays off).
   Delete line = one PUT with the row marked `FullTransferOption "D"` (removing the last line is allowed:
@@ -87,6 +89,14 @@ company.
   `409 OPERATION_IN_PROGRESS`. Both are answer-shaped (section 4), `outcome: refused`.
 - On `/po-links` a stored key keeps its first operation (split or whole row), even if the row changed since.
 - Use a new key per user intent; reuse it only to retry the same intent after a timeout.
+
+## 2a. Request id (optional)
+
+Header `X-Request-ID: <1..128 printable ASCII characters>` on any route of this contract (and on the plan
+55 routes `po-links`, `po-links/unlink`, `spo-links/unlink`). SS stores it on every AutoCount call it makes
+for the request (its own per-call log, plan 61 section 4.8) so a CRM trace can be matched to what SS sent
+to AutoCount. Absent, blank, longer than 128 or not printable = ignored (never a refusal); SS then uses
+the `Idempotency-Key` when one was sent. It changes nothing else: not idempotency, not the answer.
 
 ## 3. Bodies (camelCase on the wire, mapped to AutoCount field names by an allowlist)
 

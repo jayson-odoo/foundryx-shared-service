@@ -6,19 +6,22 @@ expected one is never accepted. Only when that GET fails (transport error, non-2
 or no DocNo is known is the day list ``<doc>bydocdate?DocDate=YYYYMMDD`` read and
 filtered on ``DocKey``: none or more than one match is refused. Each GET is single,
 never retried (the doc-feed ladder sleeps and retries, wrong for a read that gates
-a write). Uses the house SSRF-guarded client with redirects off.
+a write). Uses the house SSRF-guarded client with redirects off. Every GET is one
+``ac_api_call_log`` row when the caller attached a ``CallLog`` (plan 61 section 4.8).
 """
 
 from __future__ import annotations
 
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import httpx
 
 from app.services.url_guard import UrlGuardError
 
 from modules.autocount.http_client import autocount_guarded_client
+from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back.doc_kinds import KINDS
 
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
@@ -69,6 +72,36 @@ class AutoCountDocReader:
         self.base_url = base_url
         self._transport = transport
         self._timeout = timeout
+        self._call_log: Optional[cl.CallLog] = None
+
+    def attach_call_log(self, log: "cl.CallLog") -> None:
+        """Every GET from now on writes one row to ``log`` (plan 61 section 4.8)."""
+        self._call_log = log
+
+    def _get(self, http: httpx.Client, url: str, params: Dict[str, str]) -> httpx.Response:
+        """One GET, logged (ok / http_error / timeout / connect_error); exceptions as httpx raised them."""
+        started = self._call_log.started() if self._call_log else None
+        path = cl.vendor_path(self.base_url, urlsplit(url).path)
+        try:
+            request = http.build_request("GET", url, params=params)
+            path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
+            response = http.send(request)
+        except httpx.TimeoutException:
+            self._log(path, started, None, None, cl.TIMEOUT, READ_FAILED)
+            raise
+        except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError):
+            self._log(path, started, None, None, cl.CONNECT_ERROR, READ_FAILED)
+            raise
+        self._log(path, started, response.status_code, response.text,
+                  cl.OK if response.is_success else cl.HTTP_ERROR, None if response.is_success else READ_FAILED)
+        return response
+
+    def _log(self, path: str, started: object, status: Optional[int], text: Optional[str], outcome: str,
+             code: Optional[str]) -> None:
+        if self._call_log is None or started is None:
+            return
+        self._call_log.record(base_url=self.base_url, method="GET", path=path, started=started,  # type: ignore[arg-type]
+                              status=status, body=text, outcome=outcome, error_code=code)
 
     def _http(self) -> httpx.Client:
         if self._transport is not None:
@@ -83,7 +116,7 @@ class AutoCountDocReader:
         url = self.base_url.rstrip("/") + path
         try:
             with self._http() as http:
-                response = http.get(url, params=params)
+                response = self._get(http, url, params)
             if not response.is_success:
                 raise DocReadError(READ_FAILED)
             body = response.json()
@@ -175,7 +208,7 @@ class AutoCountDocReader:
                 while page <= DEBTOR_MAX_PAGES:
                     if page > 1 and before_page is not None:
                         before_page()
-                    response = http.get(url, params={"page": str(page), "pageSize": str(DEBTOR_PAGE_SIZE)})
+                    response = self._get(http, url, {"page": str(page), "pageSize": str(DEBTOR_PAGE_SIZE)})
                     if not response.is_success:
                         raise DocReadError(READ_FAILED)
                     body: Any = response.json()

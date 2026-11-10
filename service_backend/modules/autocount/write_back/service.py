@@ -316,14 +316,14 @@ class WriteBackService(WriteFrame):
             stored = operations.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
             if stored is not None and stored.op in ("link_row", "split_link"):
                 return stored.op
-        fresh = self._fresh_row_qty(tenant_id, company_id, po_doc_key, po_dtl_key, qty, doc_date)
+        fresh = self._fresh_row_qty(tenant_id, company_id, po_doc_key, po_dtl_key, qty, doc_date, key_id)
         if fresh is not None and fresh == qty:
             return "link_row"
         return "split_link" if idempotency_key is not None else None
 
     def _fresh_row_qty(
         self, tenant_id: str, company_id: str, po_doc_key: int, po_dtl_key: int, qty: Decimal,
-        doc_date: Optional[date] = None,
+        doc_date: Optional[date] = None, key_id: Optional[str] = None,
     ) -> Optional[Decimal]:
         try:
             payloads.validate_qty(qty)
@@ -338,9 +338,10 @@ class WriteBackService(WriteFrame):
         if base_url is None or day is None:
             return None
         doc_no = _staged_doc_no(staged)
+        log = self.new_call_log(company, kind="PO", doc_key=po_doc_key, doc_no=doc_no, key_id=key_id)
         self.db.commit()  # no transaction open during the GET
         try:
-            fresh = self._reader_factory(base_url).get_document("PO", po_doc_key, day, doc_no=doc_no)
+            fresh = self._reader_for(base_url, log).get_document("PO", po_doc_key, day, doc_no=doc_no)
         except DocReadError:
             return None
         row = next((r for r in fresh.get("Details") or [] if r.get("DtlKey") == po_dtl_key), None)
@@ -441,6 +442,9 @@ class WriteBackService(WriteFrame):
         row = self._new_row(plan, tenant_id, company.id, key_id)
         self._deadline = time.monotonic() + ACTION_DEADLINE_SECONDS
         self._put_sent = False
+        self._call_log = self.new_call_log(
+            company, kind=plan.kind[0], doc_key=plan.doc_key, key_id=key_id, action_id=row.id,
+        )
         try:
             self._check_qty(plan, row)
             base_url = self._write_base_url(row, company)
@@ -522,7 +526,7 @@ class WriteBackService(WriteFrame):
         row: AcWriteAction,
         expected_last_modified: Optional[str],
     ) -> WriteActionResult:
-        reader = self._reader_factory(base_url)
+        reader = self._reader_for(base_url)
         doc = self._read_fresh(plan.kind, plan.doc_key, company, row, reader, plan.doc_date)
         if expected_last_modified and doc.get("LastModified") != expected_last_modified:
             raise self._refuse(row, DOC_STALE)
@@ -532,6 +536,7 @@ class WriteBackService(WriteFrame):
         so_doc = None
         if plan.so_doc_key is not None:
             so_doc = self._read_fresh(_SO, plan.so_doc_key, company, row, reader, plan.so_doc_date)
+            self._log_doc(plan.kind[0], plan.doc_key, doc.get("DocNo"))  # back to the written document
         body = self._build(plan, company, row, doc, so_doc)
         row.before_json = doc
         row.request_json = body
@@ -553,12 +558,19 @@ class WriteBackService(WriteFrame):
         if doc_date is None:
             raise self._refuse(row, self._missing_code(kind, company, ref))
         doc_no = _staged_doc_no(staged)
+        self._log_doc(kind[0], doc_key, doc_no)
         self._check_deadline(row)
         self.db.commit()  # no transaction open during the GET (AC-55-27)
         try:
             return reader.get_document(kind[0], doc_key, doc_date, doc_no=doc_no)
         except DocReadError as exc:
             raise self._refuse(row, exc.code) from None
+
+    def _log_doc(self, kind: str, doc_key: int, doc_no: Optional[str]) -> None:
+        """The document the next logged calls belong to (plan 61 section 4.8)."""
+        if self._call_log is not None:
+            ctx = self._call_log.context
+            ctx.doc_type, ctx.doc_key, ctx.doc_no = kind, doc_key, doc_no
 
     def _missing_code(self, kind: Tuple[str, str], company: AcCompany, ref: str) -> str:
         """``DOC_KIND_MISMATCH`` when the DocKey is staged as the OTHER PO-family
@@ -654,7 +666,7 @@ class WriteBackService(WriteFrame):
         body: Doc,
         so_doc: Optional[Doc] = None,
     ) -> WriteActionResult:
-        client = self._client_factory(base_url)
+        client = self._client_for(base_url)
         self._check_deadline(row)
         self._put_sent = True
         try:

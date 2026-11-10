@@ -197,10 +197,13 @@ class OperationService:
         sink_factory: Optional[Callable[..., Any]] = None,
         receipt_reader: Optional[ReceiptReader] = None,
         notifier: Optional[Notifier] = None,
+        actor: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> None:
         self.db = db
         self.prims = PrimitiveService(
-            db, client_factory=client_factory, reader_factory=reader_factory, sink_factory=sink_factory
+            db, client_factory=client_factory, reader_factory=reader_factory, sink_factory=sink_factory,
+            actor=actor, request_id=request_id,
         )
         self.ops = OperationRepository(db)
         self._receipt_reader = receipt_reader  # None = the default source order (frame)
@@ -213,6 +216,19 @@ class OperationService:
         self._op_deadline = 0.0
 
     # ── public ───────────────────────────────────────────────────────────────
+
+    def use_request_id(self, request_id: Optional[str]) -> None:
+        """The caller's request id for the call log of every step (plan 61 section 4.8)."""
+        self.prims.use_request_id(request_id)
+
+    def _reader(self, company: AcCompany, base_url: str, kind: str, doc_key: int, doc_no: Optional[str]) -> Any:
+        """A reader whose GETs are logged under this operation (plan 61 section 4.8)."""
+        row = self._row
+        log = self.prims.new_call_log(
+            company, kind=kind, doc_key=doc_key, doc_no=doc_no, key_id=row.key_id if row else None,
+            operation_id=row.id if row else None,
+        )
+        return self.prims._reader_for(base_url, log)
 
     def get(self, *, tenant_id: str, company_id: str, operation_id: str) -> OperationResult:
         row = self.ops.get(tenant_id, company_id, operation_id)
@@ -390,11 +406,10 @@ class OperationService:
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
         self._check_not_busy(company, spec.doc_key, defn.kind)
-        reader = self.prims._reader_factory(base_url)
-        doc_date, doc = self._read(company, reader, defn.kind, spec.doc_key, spec.doc_date)
+        doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date)
         if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
             raise _Done(REFUSED, DOC_STALE)
-        plan = self._guards(company, reader, defn, spec, doc)
+        plan = self._guards(company, defn, spec, doc)
         snapshot = self._snapshot(company, defn, spec, doc, doc_date, plan)
         row.snapshot_json = snapshot
         self.db.commit()
@@ -411,7 +426,8 @@ class OperationService:
         doc_no = self.prims.find_doc_no(company, "PO", spec.doc_key)
         self.db.commit()
         try:
-            fresh = self.prims._reader_factory(base_url).get_document("PO", spec.doc_key, found, doc_no=doc_no)
+            fresh = self._reader(company, base_url, "PO", spec.doc_key, doc_no).get_document(
+                "PO", spec.doc_key, found, doc_no=doc_no)
         except DocReadError:
             return False
         row = next((r for r in fresh.get("Details") or [] if r.get("DtlKey") == spec.dtl_key), None)
@@ -434,7 +450,7 @@ class OperationService:
         ) or self.ops.has_recent_pending(company.tenant_id, company.id, kind, doc_key, window):
             raise _Done(REFUSED, DOC_BUSY)
 
-    def _read(self, company: AcCompany, reader: Any, kind: str, doc_key: int,
+    def _read(self, company: AcCompany, kind: str, doc_key: int,
               doc_date: Optional[date]) -> Tuple[date, Doc]:
         """AC-57-20 date, then one fresh GET with no transaction open."""
         found, code = self.prims.find_date(company, kind, doc_key, _as_date(doc_date))
@@ -443,13 +459,14 @@ class OperationService:
         doc_no = self.prims.find_doc_no(company, kind, doc_key)
         self.db.commit()
         try:
+            reader = self._reader(company, self._base_url, kind, doc_key, doc_no)
             return found, reader.get_document(kind, doc_key, found, doc_no=doc_no)
         except DocReadError as exc:
             raise _Done(REFUSED, exc.code) from None
 
     # ── guards (AC-57-32, 33): every refusal before any write ────────────────
 
-    def _guards(self, company: AcCompany, reader: Any, defn: _OpDef, spec: _Spec, doc: Doc) -> Dict[str, Any]:
+    def _guards(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc) -> Dict[str, Any]:
         try:
             row = payloads.check_row(defn.kind, doc, spec.dtl_key)  # kind, cancelled, row exists
         except WriteRefusal as exc:
@@ -468,7 +485,7 @@ class OperationService:
         link_qty = qty - received if mode == "partial" else qty
         target: Optional[Doc] = None
         if defn.target and spec.target_doc_key is not None:
-            target = self._guard_target(company, reader, defn, spec, doc, row, link_qty)
+            target = self._guard_target(company, defn, spec, doc, row, link_qty)
         return {"mode": mode, "received": received, "target": target, "linkQty": link_qty}
 
     def _receipt(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Tuple[str, Optional[Decimal]]:
@@ -487,10 +504,10 @@ class OperationService:
             raise _Done(REFUSED, ROW_RECEIVED)
         return "partial", received
 
-    def _guard_target(self, company: AcCompany, reader: Any, defn: _OpDef, spec: _Spec, doc: Doc,
+    def _guard_target(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc,
                       row: Doc, link_qty: Decimal) -> Doc:
         assert defn.target and spec.target_doc_key is not None
-        _date, tdoc = self._read(company, reader, defn.target, spec.target_doc_key, spec.target_doc_date)
+        _date, tdoc = self._read(company, defn.target, spec.target_doc_key, spec.target_doc_date)
         if tdoc.get("Cancelled") == "T":
             raise _Done(REFUSED, "DOC_CANCELLED")
         trow = next((r for r in tdoc.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), None)
@@ -728,7 +745,7 @@ class OperationService:
         is re-added, so recovery never doubles the quantity. Returns the document as
         read (strays then gone); None when AutoCount cannot be read or a stray cannot be
         removed (needs_attention). A partial operation looks for the remainder (``qty``)."""
-        doc = self._read_snapshot_doc(snap)
+        doc = self._read_snapshot_doc(company, snap)
         if doc is None:
             return None
         known, base = set(snap["knownKeys"]), snap["row"]
@@ -746,10 +763,10 @@ class OperationService:
             doc = gone.document or doc
         return doc
 
-    def _read_snapshot_doc(self, snap: Doc) -> Optional[Doc]:
+    def _read_snapshot_doc(self, company: AcCompany, snap: Doc) -> Optional[Doc]:
         """The snapshot's document as AutoCount holds it now (bydocno, day list as the
         fallback), or None when it cannot be read."""
-        reader = self.prims._reader_factory(self._base_url)
+        reader = self._reader(company, self._base_url, snap["kind"], int(snap["docKey"]), snap.get("docNo"))
         self.db.commit()
         try:
             return reader.get_document(snap["kind"], int(snap["docKey"]), date.fromisoformat(snap["docDate"]),
@@ -774,7 +791,7 @@ class OperationService:
         self._base_url = base_url
         self._check_test_company(company, restore=was)
         kind, doc_date = snap["kind"], date.fromisoformat(snap["docDate"])
-        reader = self.prims._reader_factory(base_url)
+        reader = self._reader(company, base_url, kind, int(snap["docKey"]), snap.get("docNo"))
         self.db.commit()
         try:
             doc = reader.get_document(kind, int(snap["docKey"]), doc_date, doc_no=snap.get("docNo"))
@@ -829,7 +846,7 @@ class OperationService:
                     params: Dict[str, Any]) -> OperationResult:
         legacy = WriteBackService(
             self.db, client_factory=self.prims._client_factory, reader_factory=self.prims._reader_factory,
-            sink_factory=self.prims._sink_factory,
+            sink_factory=self.prims._sink_factory, actor=self.prims._actor, request_id=self.prims.request_id,
         )
         qty = Decimal(str(params["qty"]))
         found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))
