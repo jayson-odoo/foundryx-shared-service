@@ -24,8 +24,9 @@ against the fake vendor (`tests/autocount_write_back_fake_vendor.py`, taught the
   (no blank-link PUT, no DELETE): linked row "D" + a normal row with the same item, qty, unit price, UOM, Location and
   DeliveryDate. Read-back: old DtlKey gone, one new row, `FromSODtlKey 0`. Answer `done`, new DtlKey returned.
 - AC-61-12 PO link of a whole normal row (`link_row` and the service's whole-row link) = ONE PUT [normal row "D", new
-  row linked to the SO row]; no longer `VENDOR_UNSUPPORTED`. When the old row was not at HQ or had a DeliveryDate, a second
-  PUT moves the new row's Location + DeliveryDate; if that move fails the answer carries warning `LOCATION_NOT_MOVED`
+  row linked to the SO row]; no longer `VENDOR_UNSUPPORTED`. When the read-back differs from the target, a second PUT on the
+  new row sets Location = the operation's `moveTo` when given, else the old row's Location (today's `_move`,
+  `wb/operations.py:614`), and DeliveryDate = the old row's DeliveryDate (skipped when that was empty / 0001-01-01); if that move fails the answer carries warning `LOCATION_NOT_MOVED`
   and the link stays (F5).
 - AC-61-13 Relink (`relink_row`) = ONE PUT [linked row "D", new row linked to the target SO row] + the move of AC-61-12.
   No `delete_line` + `add_line` sequence, no DELETE request.
