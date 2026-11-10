@@ -549,6 +549,15 @@ describe('itemClassContractBanner (plan 37)', () => {
     ).toBe('Consumer contract unknown - item classes land when 2.11 is deployed');
   });
 
+  it('names payment terms for a payment_term task (plan 60, contract 2.14)', () => {
+    expect(
+      itemClassContractBanner({ contractGate: { entity: 'payment_term', version: 2.13, requiredVersion: 2.14 } }),
+    ).toBe('Consumer contract does not accept payment terms yet - they land when 2.14 is deployed');
+    expect(
+      itemClassContractBanner({ contractGate: { entity: 'payment_term', version: null, requiredVersion: 2.14 } }),
+    ).toBe('Consumer contract unknown - payment terms land when 2.14 is deployed');
+  });
+
   it('is null without a gate or for another entity', () => {
     expect(itemClassContractBanner({})).toBeNull();
     expect(itemClassContractBanner({ contractGate: null })).toBeNull();
@@ -702,6 +711,7 @@ describe('HTTP_PRESETS (AC-08-16)', () => {
         'stock_balance',
         'branch',
         'item_class',
+        'payment_term',
       ].sort(),
     );
     for (const preset of Object.values(HTTP_PRESETS)) {

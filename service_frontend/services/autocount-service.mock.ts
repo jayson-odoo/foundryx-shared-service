@@ -1309,6 +1309,7 @@ function itemRows(count = 30): Array<Record<string, unknown>> {
 // SS-DEBTOR-AGENT - level-suffixed codes for one person, as AutoCount holds them.
 const SALES_AGENTS = ['AGENT A', 'AGENT A II', 'AGENT B', 'AGENT C III'];
 const DEBTOR_TYPES = ['TYPEA', 'TYPEB', 'PROJECT'];
+const DISPLAY_TERMS = ['C.O.D.', 'C.B.D.', 'Net 30 days'];
 
 function debtorRows(count = 30): Array<Record<string, unknown>> {
   return Array.from({ length: count }, (_, i) => ({
@@ -1317,6 +1318,7 @@ function debtorRows(count = 30): Array<Record<string, unknown>> {
     Phone1: `03-77${String(1000 + i).slice(1)}`,
     SalesAgent: i % 7 === 3 ? '' : SALES_AGENTS[i % SALES_AGENTS.length],
     DebtorType: i % 6 === 2 ? '' : DEBTOR_TYPES[i % DEBTOR_TYPES.length],
+    DisplayTerm: i % 5 === 4 ? '' : DISPLAY_TERMS[i % DISPLAY_TERMS.length],
     IsActive: i % 13 === 6 ? 'F' : 'T',
     LastModified: isoStamp(i),
   }));
@@ -1336,6 +1338,15 @@ const ITEM_BRAND_ROWS: Array<Record<string, unknown>> = ITEM_BRANDS.map((b) => (
   ItemBrand: b,
   Description: '',
 }));
+
+// Plan 60 - the crew's recorded db1 `/terms` GET (10 Nov), a plain list of
+// `{DisplayTerm, Terms}` (Terms = AutoCount's calculation rule, not sent).
+const TERMS_ROWS: Array<Record<string, unknown>> = [
+  { DisplayTerm: 'C.B.D.', Terms: 'C.O.D.' },
+  { DisplayTerm: 'C.O.D.', Terms: 'C.O.D.' },
+  { DisplayTerm: 'Net 30 days', Terms: 'Net 0th Next 1 Month' },
+  { DisplayTerm: 'NET 30 DAYS UPON LOADING DATE', Terms: 'C.O.D.' },
+];
 
 // Plan 37 - the crew's recorded db1 `/ItemClass` GET (30 Oct): a plain list.
 const ITEM_CLASS_ROWS: Array<Record<string, unknown>> = [
@@ -1364,6 +1375,7 @@ const HTTP_PATH_FIXTURES: Record<string, HttpPathFixture> = {
   '/ItemGroup': { envelope: 'list', rows: ITEM_GROUP_ROWS },
   '/ItemBrand': { envelope: 'list', rows: ITEM_BRAND_ROWS },
   '/ItemClass': { envelope: 'list', rows: ITEM_CLASS_ROWS },
+  '/terms': { envelope: 'list', rows: TERMS_ROWS },
   // sprint-5/14 section 11 - the paged `branchbypage` rows (the committed vendor
   // fixtures branch-page-1.json + branch-page-2.json, walk order): one row has a
   // blank AccNo and one a blank BranchCode, as the live endpoint's edge cases.
@@ -3826,6 +3838,8 @@ function masterMappingView(entityType: string): AutocountMappingView {
       ...(entityType === 'customer' ? [{ field: 'sales_agent_code', required: false }] : []),
       // SS-DEBTOR-TYPE - customer-only (`Debtor.DebtorType`).
       ...(entityType === 'customer' ? [{ field: 'market_segment_code', required: false }] : []),
+      // SS-PAYMENT-TERMS - customer-only (`Debtor.DisplayTerm`).
+      ...(entityType === 'customer' ? [{ field: 'payment_terms_code', required: false }] : []),
     ],
     acFields: [
       'AccNo',
@@ -3834,7 +3848,7 @@ function masterMappingView(entityType: string): AutocountMappingView {
       'IsActive',
       'Mobile',
       'TIN',
-      ...(entityType === 'customer' ? ['SalesAgent', 'DebtorType'] : []),
+      ...(entityType === 'customer' ? ['SalesAgent', 'DebtorType', 'DisplayTerm'] : []),
       'Data.0.AutoKey',
       'Data.0.LastModified',
     ],
@@ -4477,6 +4491,8 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       { sourcePath: 'SalesAgent', canonicalField: 'sales_agent_code', transform: 'string', formula: null, required: false, enabled: true },
       // SS-DEBTOR-TYPE - mirrors `CUSTOMER_HTTP_PRESET`'s `DebtorType -> market_segment_code` row.
       { sourcePath: 'DebtorType', canonicalField: 'market_segment_code', transform: 'string', formula: null, required: false, enabled: true },
+      // SS-PAYMENT-TERMS - mirrors `CUSTOMER_HTTP_PRESET`'s `DisplayTerm -> payment_terms_code` row.
+      { sourcePath: 'DisplayTerm', canonicalField: 'payment_terms_code', transform: 'string', formula: null, required: false, enabled: true },
       { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
     ],
   },
@@ -4503,6 +4519,13 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       { sourcePath: 'ItemBrand', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'ItemBrand', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'Description', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  payment_term: {
+    label: 'Payment terms (open REST API)',
+    rows: [
+      { sourcePath: 'DisplayTerm', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'DisplayTerm', canonicalField: 'is_active', transform: 'bool', formula: 'true', required: false, enabled: true },
     ],
   },
   item_class: {

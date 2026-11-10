@@ -362,11 +362,16 @@ class CanonicalPaymentTerm(CanonicalMaster):
     """AutoCount ``Terms`` -> Sorento ``payment_terms`` (plan 60, CRM #2305
     contract 2.14).
 
-    ``code`` = ``Terms.DisplayTerm`` (1..50, the CRM's own cap), ``description``
-    = ``Terms.Description`` (<= 200, what prints on the quotation),
-    ``term_days`` = ``Terms.TermDays`` (int 0..3650). Caps mirror the CRM so a
-    value that would 422 there fails at mapping instead. ``name`` / ``email``
-    are inherited but never sent (absent from ``SINK_FIELDS``).
+    ``code`` = ``DisplayTerm`` (1..50, the CRM's own cap): the label
+    AutoCount prints, and the key. The AutoCount ``/terms`` row carries only
+    ``DisplayTerm`` and ``Terms`` (the calculation rule, e.g. "Net 0th Next 2
+    Month"), so ``description`` (<= 200) and ``term_days`` (int 0..3650) have
+    no source today: the preset maps neither, and a None is OMITTED (absent =
+    the CRM leaves its value alone; with no description the CRM prints the
+    code). They stay accepted mapping targets with the CRM caps, so an
+    operator can map them if a source appears. ``Terms`` is never sent: the
+    contract has no field for a rule. ``name`` / ``email`` are inherited but
+    never sent (absent from ``SINK_FIELDS``).
     """
 
     entity_type: str = ENTITY_PAYMENT_TERM
@@ -382,17 +387,6 @@ class CanonicalPaymentTerm(CanonicalMaster):
         "term_days",
         "is_active",
     )
-
-    def sink_payload(self) -> Dict[str, Any]:
-        """AutoCount is master for the description: a blank one is sent as
-        ``""``, the CRM's explicit clear (#2305 D14), so a description emptied
-        in AutoCount empties on the quotation too (the CRM then prints the
-        code). The mapping engine reads a blank as absent (``t_string``), so
-        the blank is written here; every other None stays omitted (an unknown
-        ``term_days`` leaves the CRM's value alone)."""
-        payload = super().sink_payload()
-        payload.setdefault("description", "")
-        return payload
 
 
 class CanonicalBranch(CanonicalMaster):

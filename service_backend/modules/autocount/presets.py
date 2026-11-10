@@ -1626,10 +1626,13 @@ ITEM_CLASS_HTTP_PRESET = HttpPreset(
 
 # Plan 60 (SS-PAYMENT-TERMS, CRM #2305 contract 2.14) - AutoCount's Terms
 # master, the ItemClass shape: a plain list, no paging, no LastModified, no
-# active flag, read with GETs only. `DisplayTerm` is the AutoCount key and the
-# CRM `code`; a listed term is active (the formula reads the always-filled key,
-# and it reactivates a term an earlier sweep deactivated). A blank
-# `Description` is sent as "" by `CanonicalPaymentTerm.sink_payload`.
+# active flag, read with GETs only. The recorded row (crew GET, 10 Nov) is
+# `{DisplayTerm, Terms}` only: `DisplayTerm` is the printed label, the key and
+# the CRM `code`; `Terms` is AutoCount's calculation rule, which the contract
+# has no field for, so it is not mapped. No description / term_days source
+# exists, so neither is mapped (the CRM prints the code). A listed term is
+# active (the formula reads the always-filled key, and it reactivates a term
+# an earlier sweep deactivated).
 PAYMENT_TERM_HTTP_PRESET = HttpPreset(
     label="Payment terms (open REST API)",
     path="/terms",
@@ -1638,8 +1641,6 @@ PAYMENT_TERM_HTTP_PRESET = HttpPreset(
     distinct_of=None,
     rows=(
         PresetField("DisplayTerm", "code", "string", required=True),
-        PresetField("Description", "description", "string"),
-        PresetField("TermDays", "term_days", "int"),
         PresetField("DisplayTerm", "is_active", "bool", formula="true"),
     ),
 )

@@ -804,6 +804,9 @@ class SorentoSink:
         # line columns of the linked documents (``TransferedQty`` from 2.9);
         # ``None`` (never probed) sends the older shape - fail closed.
         self.advertised_contract_version: Optional[ContractVersion] = None
+        # Plan 60 - set once `_customer_contract` has probed for the customer
+        # `payment_terms_code` field gate, so a sink probes at most once.
+        self._customer_contract_probed = False
         self.batch_size = max(1, min(int(batch_size), SORENTO_MAX_BATCH))
         # The Sorento company this sink delivers INTO (Appendix A6). Sent as the
         # top-level ``companyCode`` on every call; a blank one is deliberately
@@ -886,6 +889,28 @@ class SorentoSink:
             "to 2 (Settings > Integrations > Sorento > Edit), run Test, then retry."
         )
 
+    def _customer_contract(self, records: Sequence[CanonicalRecord]) -> Optional["ContractVersion"]:
+        """Plan 60 - the consumer contract that decides the customer
+        ``payment_terms_code`` field gate (>= 2.14, CRM #2305).
+
+        Probed LAZILY, only when this batch holds a customer that actually
+        carries the field, and at most once per sink: a customer feed without
+        DisplayTerm values, a delete, or any other entity makes no extra
+        ``/contract`` call. An already-known advertised version (set by the
+        factory or the write-back stager) is reused. A failed probe is None,
+        which strips the field: it is never sent to a consumer that cannot be
+        shown to accept it."""
+        if self.advertised_contract_version is not None or self._customer_contract_probed:
+            return self.advertised_contract_version
+        if not any(
+            isinstance(r, CanonicalCustomer) and r.payment_terms_code for r in records
+        ):
+            return None
+        self._customer_contract_probed = True
+        info = self.fetch_contract_detail()
+        self.advertised_contract_version = info.version if info else None
+        return self.advertised_contract_version
+
     def _to_records(self, records: Sequence[CanonicalRecord]) -> List[Dict[str, Any]]:
         """Project each canonical record to EXACTLY Sorento's field set.
 
@@ -894,6 +919,7 @@ class SorentoSink:
         wire and trip ``extra="forbid"``.
         """
         self._refuse_contract_1_line_drop(records)
+        customer_contract = self._customer_contract(records)
         out: List[Dict[str, Any]] = []
         for record in records:
             payload = getattr(record, "sink_payload", None)
@@ -932,7 +958,7 @@ class SorentoSink:
             elif isinstance(record, CanonicalCustomer):
                 # Plan 60 - `payment_terms_code` rides the advertised
                 # contract (>= 2.14); an older or unprovable CRM never sees it.
-                out.append(payload(advertised_contract=self.advertised_contract_version))
+                out.append(payload(advertised_contract=customer_contract))
             else:
                 out.append(payload())
         return out

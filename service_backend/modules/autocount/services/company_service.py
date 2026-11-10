@@ -990,14 +990,6 @@ class CompanyService:
                 # gated line columns too (consignment `TransferedQty` from
                 # 2.9), so the payload never needs a second probe.
                 sink.advertised_contract_version = contract.version if contract else None
-            elif entity_type == ENTITY_CUSTOMER:
-                # Plan 60 - the customer feed is not entity-gated, but its
-                # `payment_terms_code` is FIELD-gated on contract 2.14
-                # (`CanonicalCustomer.sink_payload`). One probe per sink; a
-                # failed probe is None, which strips the field (never sent to
-                # a consumer that cannot be shown to accept it).
-                contract = sink.fetch_contract_detail()
-                sink.advertised_contract_version = contract.version if contract else None
             if entity_type in LINKED_DOCUMENT_ENTITY_TYPES and not getattr(sink, "book", None):
                 raise AutocountServiceError(LINKED_DOCUMENT_NO_BOOK_MESSAGE)
             return sink

@@ -1,3 +1,86 @@
 [
-  {"DisplayTerm": "C.O.D.", "Description": "CASH ON DELIVERY", "TermDays": 0}
+  {
+    "DisplayTerm": "****Net C.O.D",
+    "Terms": "Net 120 days"
+  },
+  {
+    "DisplayTerm": "***Net 30 days",
+    "Terms": "Net 120 days"
+  },
+  {
+    "DisplayTerm": "***Net C.O.D",
+    "Terms": "Net 90 days"
+  },
+  {
+    "DisplayTerm": "**Net 30 days",
+    "Terms": "Net 90 days"
+  },
+  {
+    "DisplayTerm": "**Net 60 days",
+    "Terms": "Net 120 days"
+  },
+  {
+    "DisplayTerm": "**Net C.O.D",
+    "Terms": "Net 60 days"
+  },
+  {
+    "DisplayTerm": "*Net 30 days",
+    "Terms": "Net 60 days"
+  },
+  {
+    "DisplayTerm": "*Net 60 days",
+    "Terms": "Net 90 days"
+  },
+  {
+    "DisplayTerm": "*Net 90 days",
+    "Terms": "Net 120 days"
+  },
+  {
+    "DisplayTerm": "*Net C.O.D.",
+    "Terms": "Net 30 days"
+  },
+  {
+    "DisplayTerm": "C.O.D",
+    "Terms": "C.O.D."
+  },
+  {
+    "DisplayTerm": "C.O.D.",
+    "Terms": "C.O.D."
+  },
+  {
+    "DisplayTerm": "Cash",
+    "Terms": "Cash"
+  },
+  {
+    "DisplayTerm": "CASH - 30 DAYS",
+    "Terms": "Net 0th Next 0 Month"
+  },
+  {
+    "DisplayTerm": "CASH BEFORE DELIVERY",
+    "Terms": "C.O.D."
+  },
+  {
+    "DisplayTerm": "Net 120 days",
+    "Terms": "Net 120 days"
+  },
+  {
+    "DisplayTerm": "Net 150 days",
+    "Terms": "Net 150 days"
+  },
+  {
+    "DisplayTerm": "Net 30 days",
+    "Terms": "Net 30 days"
+  },
+  {
+    "DisplayTerm": "Net 45 days",
+    "Terms": "Net 45 days"
+  },
+  {
+    "DisplayTerm": "Net 60 days",
+    "Terms": "Net 60 days"
+  },
+  {
+    "DisplayTerm": "Net 90 days",
+    "Terms": "Net 90 days"
+  }
 ]

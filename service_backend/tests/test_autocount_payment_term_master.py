@@ -3,17 +3,20 @@
 (`/terms`) and pushed to the CRM's `payment_terms` ingest door, wired like
 `item_class` (plan 37).
 
-Wire facts pinned (#2305 crew-note, contract 2.14): `code` = Terms.DisplayTerm
-1..50, `description` = Terms.Description <= 200, `term_days` = Terms.TermDays
-int 0..3650, `is_active`; the door is `POST /api/v1/external/ingest/payment_terms`
-(+ `/deletions`, which only ever DEACTIVATES), advertised from contract 2.14
-with `payment_terms` in `entities`. A blank description is sent as `""` (blank
-= explicit clear, AutoCount is master) and every listed term is `is_active: true`.
+Wire facts pinned (#2305 crew-note, contract 2.14): `code` 1..50 (required),
+`description` <= 200 and `term_days` int 0..3650 (both optional), `is_active`;
+the door is `POST /api/v1/external/ingest/payment_terms` (+ `/deletions`, which
+only ever DEACTIVATES), advertised from contract 2.14 with `payment_terms` in
+`entities`.
 
-Vendor fixtures (`fixtures/autocount_http/terms-db{1,2}.json`) are RECORDED
-Terms rows in the owner's column list (DisplayTerm, Description, TermDays);
-no live AutoCount call is made anywhere in this file, and the source performs
-GETs only (never a write to AutoCount).
+Vendor fixtures (`fixtures/autocount_http/terms-db{1,2}.json`) are the crew's
+recorded hapi GET of 10 Nov (17 + 21 rows): each row is `{DisplayTerm, Terms}`
+only. `DisplayTerm` (the printed label, the key) is the CRM `code`; `Terms` is
+AutoCount's calculation rule, which the contract has no field for, so it is
+never sent; no description / term_days source exists, so both are omitted
+(absent = the CRM leaves them alone and prints the code). Every listed term is
+`is_active: true`. No live AutoCount call is made anywhere in this file, and the
+source performs GETs only (never a write to AutoCount).
 
 Every test imports its symbols INSIDE the body so each fails on its own missing
 symbol, never at collection.
@@ -222,10 +225,6 @@ def _ingested_records(posts: List[httpx.Request]) -> List[Dict[str, Any]]:
     return sorted(records, key=lambda r: r["code"])
 
 
-def _wire(record: Dict[str, Any]) -> Dict[str, Any]:
-    return {k: record.get(k, "<absent>") for k in ("source_ref", "code", "description", "term_days", "is_active")}
-
-
 def _staged(db, company, *, op: str = None) -> List[AcStagedRecord]:
     query = db.query(AcStagedRecord).filter(
         AcStagedRecord.company_id == company.id, AcStagedRecord.entity_type == ENTITY
@@ -272,10 +271,11 @@ def test_http_preset_path_keys_and_rows():
     assert preset.key_fields == ("DisplayTerm",)
     assert preset.watermark_field is None  # a full list every run
     rows = {r.canonical_field: r for r in preset.rows}
-    assert set(rows) == {"code", "description", "term_days", "is_active"}
+    # The recorded row has no description / day count; `Terms` (the rule) is
+    # not a contract field.
+    assert set(rows) == {"code", "is_active"}
     assert rows["code"].source_path == "DisplayTerm" and rows["code"].required is True
-    assert rows["description"].source_path == "Description" and rows["description"].formula is None
-    assert rows["term_days"].source_path == "TermDays" and rows["term_days"].transform == "int"
+    assert all(r.source_path != "Terms" for r in preset.rows)
     # A listed term is active; the formula reads the always-filled key column.
     assert rows["is_active"].source_path == "DisplayTerm" and rows["is_active"].formula == "true"
     assert all(r.enabled for r in preset.rows)
@@ -294,14 +294,14 @@ def test_sink_payload_keys_are_exactly_the_contract():
     }
 
 
-def test_a_blank_description_is_sent_as_an_empty_string_and_absent_days_are_omitted():
-    """Blank optional string = explicit clear (#2305 D14): AutoCount is master
-    for the description. An unknown day count is omitted (absent = untouched)."""
+def test_an_unsourced_description_and_day_count_are_omitted_never_cleared():
+    """No AutoCount source exists for either, so neither is sent: absent = the
+    CRM leaves its value alone (`""` would CLEAR a description a CRM user set,
+    #2305 D14)."""
     from modules.autocount.canonical.masters import CanonicalPaymentTerm
 
-    payload = CanonicalPaymentTerm(source_ref="R", code="C.O.D.").sink_payload()
-    assert payload["description"] == ""
-    assert "term_days" not in payload and "is_active" not in payload
+    payload = CanonicalPaymentTerm(source_ref="R", code="C.O.D.", is_active=True).sink_payload()
+    assert payload == {"source_ref": "R", "code": "C.O.D.", "is_active": True}
 
 
 def test_canonical_caps_match_the_crm_columns():
@@ -336,7 +336,7 @@ def test_first_save_seeds_the_preset_rows(db):
         AcFieldMapping.company_id == company.id, AcFieldMapping.entity_type == ENTITY,
         AcFieldMapping.scope == "header",
     ).all()
-    assert {r.canonical_field for r in rows} == {"code", "description", "term_days", "is_active"}
+    assert {r.canonical_field for r in rows} == {"code", "is_active"}
     assert all(r.is_enabled for r in rows)
 
 
@@ -356,21 +356,22 @@ def test_a_run_reads_the_db1_list_and_pushes_every_term(wired, monkeypatch):
     assert seen and seen[0].url.path == "/api/db1/terms"
     # Read only: every vendor call is a GET.
     assert {r.method for r in seen} == {"GET"}
-    assert [_wire(r) for r in _ingested_records(posts)] == [
-        {"source_ref": "AED_SORENTO:C.B.D.", "code": "C.B.D.", "description": "CASH BEFORE DELIVERY",
-         "term_days": 0, "is_active": True},
-        {"source_ref": "AED_SORENTO:C.O.D.", "code": "C.O.D.", "description": "CASH ON DELIVERY",
-         "term_days": 0, "is_active": True},
-        {"source_ref": "AED_SORENTO:Net 30 days", "code": "Net 30 days", "description": "NET 30 DAYS",
-         "term_days": 30, "is_active": True},
-        {"source_ref": "AED_SORENTO:Net 60 days", "code": "Net 60 days", "description": "",
-         "term_days": 60, "is_active": True},
-    ]
-    assert job.result_json.get("pushed") == 4, job.result_json
+    records = _ingested_records(posts)
+    assert len(records) == 17
+    by_code = {r["code"]: r for r in records}
+    assert by_code["NET 30 DAYS UPON LOADING DATE"] == {
+        "source_ref": "AED_SORENTO:NET 30 DAYS UPON LOADING DATE",
+        "code": "NET 30 DAYS UPON LOADING DATE", "is_active": True,
+    }
+    # The label is sent verbatim, leading asterisk included.
+    assert by_code["*C.O.D"]["source_ref"] == "AED_SORENTO:*C.O.D"
+    # Exactly the contract keys; the `Terms` rule never crosses the wire.
+    assert {frozenset(r) for r in records} == {frozenset({"source_ref", "code", "is_active"})}
+    assert job.result_json.get("pushed") == 17, job.result_json
     assert {r.status for r in _staged(db, company)} == {STAGED_PUSHED}
 
 
-def test_the_db2_list_pushes_its_single_term(wired, monkeypatch):
+def test_the_db2_list_pushes_its_21_terms_case_distinct_codes_kept(wired, monkeypatch):
     db, company = wired
     _stub_vendor_client(monkeypatch, _vendor(load_terms("db2"), []))
     _open_contract(monkeypatch)
@@ -379,33 +380,15 @@ def test_the_db2_list_pushes_its_single_term(wired, monkeypatch):
 
     _run_sync(db, company)
 
-    assert [r["code"] for r in _ingested_records(posts)] == ["C.O.D."]
-
-
-def test_term_days_as_a_string_is_an_int_and_blank_days_are_omitted(wired, monkeypatch):
-    db, company = wired
-    rows = [
-        {"DisplayTerm": "N45", "Description": "Net 45", "TermDays": "45"},
-        {"DisplayTerm": "NODAYS", "Description": "No days", "TermDays": None},
-    ]
-    _stub_vendor_client(monkeypatch, _vendor(rows, []))
-    _open_contract(monkeypatch)
-    posts: List[httpx.Request] = []
-    _inject_sink_transport(monkeypatch, _crm(posts))
-
-    _run_sync(db, company)
-
-    by_code = {r["code"]: r for r in _ingested_records(posts)}
-    assert by_code["N45"]["term_days"] == 45
-    assert "term_days" not in by_code["NODAYS"]
+    codes = [r["code"] for r in _ingested_records(posts)]
+    assert len(codes) == 21
+    # `C.O.D` and `C.O.D.` are two AutoCount terms; both travel.
+    assert {"C.O.D", "C.O.D.", "Cash", "CASH BEFORE DELIVERY"} <= set(codes)
 
 
 def test_an_over_cap_term_fails_that_term_only(wired, monkeypatch):
     db, company = wired
-    rows = load_terms("db2") + [
-        {"DisplayTerm": "X" * 51, "Description": "Too long", "TermDays": 0},
-        {"DisplayTerm": "FOREVER", "Description": "Too many days", "TermDays": 9999},
-    ]
+    rows = [{"DisplayTerm": "C.O.D.", "Terms": "C.O.D."}, {"DisplayTerm": "X" * 51, "Terms": "C.O.D."}]
     _stub_vendor_client(monkeypatch, _vendor(rows, []))
     _open_contract(monkeypatch)
     posts: List[httpx.Request] = []
@@ -425,18 +408,20 @@ def test_an_unchanged_rerun_pushes_nothing_and_a_changed_term_pushes_once(wired,
 
     _stub_vendor_client(monkeypatch, _vendor(load_terms("db1"), []))
     _run_sync(db, company)
-    assert len(_ingested_records(posts)) == 4
+    assert len(_ingested_records(posts)) == 17
 
     posts.clear()
     _stub_vendor_client(monkeypatch, _vendor(load_terms("db1"), []))
     _run_sync(db, company)
     assert _ingested_records(posts) == []
 
+    # A changed rule changes the row hash; the re-push carries the same keys.
     changed = load_terms("db1")
-    changed[2]["TermDays"] = 45
+    assert changed[9]["DisplayTerm"] == "Net 30 days"
+    changed[9]["Terms"] = "Net 30 days"
     _stub_vendor_client(monkeypatch, _vendor(changed, []))
     _run_sync(db, company)
-    assert [(r["code"], r["term_days"]) for r in _ingested_records(posts)] == [("Net 30 days", 45)]
+    assert [r["code"] for r in _ingested_records(posts)] == ["Net 30 days"]
 
 
 # ── a term gone from the list -> /ingest/payment_terms/deletions ────────────
@@ -452,7 +437,7 @@ def test_a_term_gone_from_the_list_is_sent_to_the_deactivating_deletions_door(wi
         seen_at=None,
     )
     db.commit()
-    _stub_vendor_client(monkeypatch, _vendor(load_terms("db2"), []))
+    _stub_vendor_client(monkeypatch, _vendor([{"DisplayTerm": "C.O.D.", "Terms": "C.O.D."}], []))
     _open_contract(monkeypatch)
     posts: List[httpx.Request] = []
     _inject_sink_transport(monkeypatch, _crm(posts))
@@ -509,7 +494,7 @@ def test_a_shut_gate_refuses_the_push_and_keeps_every_term_staged(wired, monkeyp
 
     assert not [p for p in posts if "payment_terms" in p.url.path]
     staged = _staged(db, company)
-    assert len(staged) == 4 and {r.status for r in staged} == {STAGED}
+    assert len(staged) == 17 and {r.status for r in staged} == {STAGED}
 
 
 def test_terms_held_back_on_2_13_are_pushed_once_the_crm_reaches_2_14(wired, monkeypatch):
@@ -525,7 +510,7 @@ def test_terms_held_back_on_2_13_are_pushed_once_the_crm_reaches_2_14(wired, mon
     _stub_vendor_client(monkeypatch, _vendor(load_terms("db1"), []))
     _run_sync(db, company)
 
-    assert len(_ingested_records(posts)) == 4
+    assert len(_ingested_records(posts)) == 17
     assert {r.status for r in _staged(db, company)} == {STAGED_PUSHED}
 
 
