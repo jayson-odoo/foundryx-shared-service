@@ -16,7 +16,7 @@ is contract-gated and the customer field is field-gated, so either side can land
 ]}
 ```
 
-`code` 1..100 (case kept), `rule` <= 200 (`""` clears), `is_active`. Customers: `payment_terms_code` (<= 50, from
+`code` 1..100 (case kept), `rule` <= 200 (`""` clears), `is_active`. Customers: `payment_terms_code` (<= 100, raised from 50 to equal the term code cap, from
 `Debtor.DisplayTerm`), accepted from 2.14 only (earlier contracts list it in `fields_removed.customers`).
 
 ## Source (crew GET, 10 Nov)

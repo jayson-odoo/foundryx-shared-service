@@ -600,3 +600,16 @@ def test_sink_for_company_probes_the_contract_for_the_customer_feed(db, monkeypa
     )
     sent_records = json.loads(posts[-1].content.decode("utf-8"))["records"]
     assert ("payment_terms_code" in sent_records[0]) is sent
+
+
+def test_payment_terms_code_cap_matches_the_term_code_cap():
+    """A customer must be able to name ANY term code exactly: both are capped
+    at 100 (CRM #2305, crew decision 10 Nov)."""
+    from pydantic import ValidationError
+
+    from modules.autocount.canonical.masters import CanonicalPaymentTerm
+
+    CanonicalCustomer(source_ref="DB:1", code="300-A", name="A", payment_terms_code="T" * 100)
+    CanonicalPaymentTerm(source_ref="DB:T", code="T" * 100)
+    with pytest.raises(ValidationError):
+        CanonicalCustomer(source_ref="DB:1", code="300-A", name="A", payment_terms_code="T" * 101)

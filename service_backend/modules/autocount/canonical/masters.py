@@ -239,9 +239,11 @@ class CanonicalCustomer(CanonicalMaster):
     # Plan 60 (SS-PAYMENT-TERMS, CRM #2305 contract 2.14 addendum) - AutoCount
     # Debtor ``DisplayTerm``, the debtor's Terms code, sent VERBATIM (trimmed)
     # as ``payment_terms_code`` so a new quotation can default its term from
-    # the customer. Blank -> omitted, never ``null``. FIELD-GATED on the push:
+    # the customer. Blank -> omitted, never ``null``. Capped at 100, the same
+    # cap as ``CanonicalPaymentTerm.code`` it must equal (CRM #2305, crew
+    # decision 10 Nov). FIELD-GATED on the push:
     # see ``sink_payload`` below.
-    payment_terms_code: Optional[str] = Field(None, max_length=50)
+    payment_terms_code: Optional[str] = Field(None, max_length=100)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
