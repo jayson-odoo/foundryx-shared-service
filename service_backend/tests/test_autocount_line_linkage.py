@@ -297,11 +297,37 @@ def test_v2_line_payload_never_carries_an_input_field():
         assert name not in payload, f"input field {name} leaked onto the wire: {sorted(payload)}"
 
 
-@pytest.mark.parametrize("name", WIRE_FIELDS)
+# SS-PO-LINK-NULL: a PO line's `from_so_line_ref` is the one wire field that is
+# NEVER omitted - an unlinked row sends an explicit null so the CRM clears a
+# link the row lost in AutoCount (absent = "keep stored value" on the CRM side).
+_OMITTED_PO_WIRE_FIELDS = tuple(f for f in WIRE_FIELDS if f != "from_so_line_ref")
+
+
+@pytest.mark.parametrize("name", _OMITTED_PO_WIRE_FIELDS)
 def test_v2_line_payload_omits_a_wire_field_when_none_never_null(name):
     line = _po_line_with_full_linkage(**{name: None})
     payload = line.sink_payload(contract_version=2)
     assert name not in payload, f"{name} must be omitted, not null, when unset: {payload.get(name)!r}"
+
+
+def test_v2_po_line_payload_sends_from_so_line_ref_as_explicit_null_when_unlinked():
+    line = _po_line_with_full_linkage(from_so_line_ref=None)
+    payload = line.sink_payload(contract_version=2)
+    assert "from_so_line_ref" in payload, sorted(payload)
+    assert payload["from_so_line_ref"] is None, payload["from_so_line_ref"]
+
+
+def test_v1_po_line_payload_still_omits_from_so_line_ref_when_unlinked():
+    line = _po_line_with_full_linkage(from_so_line_ref=None)
+    assert "from_so_line_ref" not in line.sink_payload(contract_version=1)
+
+
+def test_v2_spo_line_payload_still_omits_from_so_line_ref_when_unlinked():
+    """Other entities keep omit-when-empty (only the PO line changed)."""
+    line = CanonicalShippingOrderLine(
+        source_ref=f"{DB}:D2:L1", product_ref=f"{DB}:P2", qty_ordered=Decimal("5"),
+    )
+    assert "from_so_line_ref" not in line.sink_payload(contract_version=2)
 
 
 def test_v2_line_payload_omits_from_so_numbers_when_an_empty_list_never_empty_list():
@@ -385,6 +411,40 @@ def test_from_so_line_ref_is_none_when_either_key_is_missing(entity_type):
         database="AED_SORENTO",
     )
     assert getattr(line, "from_so_line_ref", _MISSING) is None
+
+
+@pytest.mark.parametrize("entity_type", [ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER])
+@pytest.mark.parametrize("transform", ["int", "string"])
+def test_from_so_line_ref_is_none_when_the_line_key_is_zero_never_a_dangling_ref(entity_type, transform):
+    """AutoCount reports an unlinked row as `FromSODtlKey 0`, not NULL
+    (SS-PO-LINK-NULL) - a 0 must never mint a `{db}:{dockey}:0` ref."""
+    extra = [
+        MappingRow("FromSODocKey", "from_so_doc_key", "int", SCOPE_LINE),
+        MappingRow("FromSODtlKey", "from_so_line_key", transform, SCOPE_LINE),
+    ]
+    line = _map_one_line(
+        entity_type, extra,
+        {"FromSODocKey": "45700100", "FromSODtlKey": "0"},
+        database="AED_SORENTO",
+    )
+    assert getattr(line, "from_so_line_ref", _MISSING) is None
+    if entity_type == ENTITY_PURCHASE_ORDER:
+        payload = line.sink_payload(contract_version=2)
+        assert "from_so_line_ref" in payload and payload["from_so_line_ref"] is None, payload
+
+
+def test_a_linked_po_row_still_sends_its_minted_ref():
+    extra = [
+        MappingRow("FromSODocKey", "from_so_doc_key", "int", SCOPE_LINE),
+        MappingRow("FromSODtlKey", "from_so_line_key", "int", SCOPE_LINE),
+    ]
+    line = _map_one_line(
+        ENTITY_PURCHASE_ORDER, extra,
+        {"FromSODocKey": "45700100", "FromSODtlKey": "45700148"},
+        database="AED_SORENTO",
+    )
+    payload = line.sink_payload(contract_version=2)
+    assert payload["from_so_line_ref"] == "AED_SORENTO:45700100:45700148", payload
 
 
 @pytest.mark.parametrize("entity_type", [ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER])
@@ -492,7 +552,10 @@ def test_a_doclist_only_line_sends_from_so_numbers_alone_with_no_ref_invented(en
     line = _map_one_line(entity_type, extra, {"FromSODocList": "SO1, SO2"})
     payload = line.sink_payload(contract_version=2)
     assert payload.get("from_so_numbers") == ["SO1", "SO2"], payload
-    assert "from_so_line_ref" not in payload, payload
+    # no ref invented: a PO line sends an explicit null (SS-PO-LINK-NULL),
+    # an SPO line still omits the key
+    assert payload.get("from_so_line_ref") is None, payload
+    assert ("from_so_line_ref" in payload) == (entity_type == ENTITY_PURCHASE_ORDER), payload
     assert getattr(line, "from_so_line_ref", _MISSING) is None
 
 

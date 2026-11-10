@@ -1683,7 +1683,15 @@ class MappingEngine:
             # :{DtlKey}` scheme the line's own `source_ref` just got above.
             so_doc_key = values.get("from_so_doc_key")
             so_line_key = values.get("from_so_line_key")
-            if so_doc_key is not None and so_line_key is not None:
+            # SS-PO-LINK-NULL: AutoCount reports "no SO link" on a row as
+            # `FromSODtlKey 0`, not NULL - a 0 (or "0" via a `string`
+            # transform) must never mint a dangling `{db}:{DocKey}:0` ref.
+            # Same normalise-then-guard as `parent_key` above.
+            try:
+                so_line_key_norm = t_int(so_line_key)
+            except TransformError:
+                so_line_key_norm = so_line_key
+            if so_doc_key is not None and so_line_key_norm not in (None, 0):
                 values["from_so_line_ref"] = f"{self.database_name}:{so_doc_key}:{so_line_key}"
             po_doc_key = values.get("from_po_doc_key")
             po_line_key = values.get("from_po_line_key")
