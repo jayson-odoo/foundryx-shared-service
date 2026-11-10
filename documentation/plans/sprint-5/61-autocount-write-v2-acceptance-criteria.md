@@ -26,7 +26,7 @@ against the fake vendor (`tests/autocount_write_back_fake_vendor.py`, taught the
 - AC-61-12 PO link of a whole normal row (`link_row` and the service's whole-row link) = ONE PUT [normal row "D", new
   row linked to the SO row]; no longer `VENDOR_UNSUPPORTED`. When the read-back differs from the target, a second PUT on the
   new row sets Location = the operation's `moveTo` when given, else the old row's Location (today's `_move`,
-  `wb/operations.py:614`), and DeliveryDate = the old row's DeliveryDate (skipped when that was empty / 0001-01-01); if that move fails the answer carries warning `LOCATION_NOT_MOVED`
+  `wb/operations.py:614`), DeliveryDate = the old row's DeliveryDate (skipped when that was empty / 0001-01-01), and UnitPrice = the old row's UnitPrice (AutoCount resets a new linked row's price to 0, F5); the replace read-back relaxes Location, UnitPrice and DeliveryDate on the new linked row; if that move fails the answer carries warning `LOCATION_NOT_MOVED`
   and the link stays (F5).
 - AC-61-13 Relink (`relink_row`) = ONE PUT [linked row "D", new row linked to the target SO row] + the move of AC-61-12.
   No `delete_line` + `add_line` sequence, no DELETE request.
@@ -37,7 +37,8 @@ against the fake vendor (`tests/autocount_write_back_fake_vendor.py`, taught the
   unless it is a "D" row, and `FullTransferFromDocList ""`.
 
 ## Delete line
-- AC-61-20 `delete_line` (QT, SO, PO) = PUT on the edit door with `[row "D"]` only. No DELETE request. Read-back: the
+- AC-61-20 `delete_line` (QT, SO, PO) = PUT on the edit door with `[row "D"]` only. A PO row with a receipt or an
+  SPO on it is refused before any request (`ROW_RECEIVED` / `ROW_ON_SPO`, F15: AutoCount's answer is unverified). No DELETE request. Read-back: the
   row is gone, every other row unchanged, else `LINE_NOT_DELETED`.
 - AC-61-21 Vendor refusal of a "D" on a row transferred onward (500, `UnableToDelete...TransferredItemException`) ->
   `ROW_HAS_TRANSFERS`. Today's pre-send guards (`ROW_RECEIVED`, receipt split) still run first.
@@ -72,9 +73,12 @@ against the fake vendor (`tests/autocount_write_back_fake_vendor.py`, taught the
   (`connect_error`), allowlist refusal (`guard_refused`, no request sent).
 - AC-61-63 Durable: the rows of a call survive a rollback of the caller's session; a log-write failure never fails
   the call.
-- AC-61-64 No secret, header value or base URL host is ever stored (scan every column of every row in the tests).
-- AC-61-65 Migration `0044` is additive (new table + indexes on tenant/company/created_at and doc_key only); the
-  global guards `tests/test_schema_uuid_id_principle.py` and `tests/test_list_pagination_limit.py` pass.
+- AC-61-64 No secret, header value or base URL host is ever stored (scan every column of every row in the tests),
+  including inside a vendor error body: a non-2xx body is stored with the write host removed and every `StackTrace`
+  dropped; the 32 KB cap counts UTF-8 bytes.
+- AC-61-65 Migration `0044` is additive (new table + indexes on tenant/company/created_at and doc_key only); applied
+  on a Postgres copy (`foundryx_service_acw2`, 0040 -> 0044, 10 Nov). The global guard files named in the crew brief
+  (`test_schema_uuid_id_principle.py`, `test_list_pagination_limit.py`) do not exist in this repo (checked `origin/main`).
 
 ## Evidence
 - AC-61-50 [db3] Runner rerun with the switches on: unlink, whole-row link, relink, delete line (QT/SO/PO), cancel

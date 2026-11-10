@@ -44,7 +44,7 @@ documents only, db3 only, nothing deleted. Exact requests and responses:
 | F2 | QT->SO full transfer, then a second SO from the same QT row (P-T1) | 500 `item already full transferred`: AutoCount enforces the outstanding qty. |
 | F3 | PUT SO with the QT-transferred row + `FullTransferOption "D"` (P-D1), then a new SO from the QT row (P-T2) | row removed; the new full-qty SO is accepted: "D" returns the qty to the QT (owner answer 2 confirmed). |
 | F4 | PO unlink: ONE PUT = linked row "D" + new normal row DtlKey 0 (P-U1, P-U4) | applied: linked row gone, new normal row keeps item/qty/price and the Location + DeliveryDate sent in the same PUT; the SO row's qty is freed (P-U0 cut refused before, P-U2 accepted after). |
-| F5 | PO link of a whole normal row: ONE PUT = normal row "D" + new row DtlKey 0 `FromDocType SO` (P-L1); relink to another SO row the same way (P-R1); a linked add on its own (P-L4) | applied; the new linked row is still forced to `Location HQ` and `DeliveryDate 0001-01-01` whatever was sent. A second PUT on the new row moves Location + DeliveryDate and keeps the link (P-L2). A PO row reads its link as `FromSODtlKey` (`FromDocType` reads ""). |
+| F5 | PO link of a whole normal row: ONE PUT = normal row "D" + new row DtlKey 0 `FromDocType SO` (P-L1); relink to another SO row the same way (P-R1); a linked add on its own (P-L4) | applied; the new linked row is still forced to `Location HQ`, `DeliveryDate 0001-01-01` and `UnitPrice 0` whatever was sent (S3, P-L1, P-R1, S8, P-L4; contract 55 section 4.1 saw the same on 4 and 6 Nov). A second PUT on the new row moves Location + DeliveryDate and keeps the link (P-L2); restoring UnitPrice the same way is today's split flow (`TRANSFER_RESET_FIELDS`, `wb/payloads.py:271`). A PO row reads its link as `FromSODtlKey` (`FromDocType` reads ""). |
 | F6 | Delete line: PUT with only `{DtlKey, FullTransferOption "D"}` (P-DL1) and with the full row shape (P-DL4 QT, P-DL5 SO) | applied on PO, QT and SO. "D" on the last row leaves a document with no rows (P-DL6). |
 | F7 | "D" on a row that was transferred onward: SO row linked from a PO (P-DL2), QT row transferred into an SO (P-DL3) | refused 500 `UnableToDeleteTransferredItemException` / `UnableToDeletePartialTransferredItemException`; nothing changed. |
 | F8 | Atomic: "D" + an invalid new row (unknown item P-AT1, missing SO row P-AT2) | 500 (`NotExistItemCodeException`, `InvalidTransferItemException`); the "D" did NOT land. One PUT is all or nothing. |
@@ -72,7 +72,10 @@ The old `_unlinked` blank-link PUT (`build_unlink`, `build_spo_unlink`) and the 
   write (F4). Verify: old DtlKey gone, exactly one new row, `FromSODtlKey 0`, values kept.
 - PO link of a whole normal row (`link_row` op, and the service whole-row link that answered VENDOR_UNSUPPORTED): ONE PUT
   [normal row "D", new row linked to the SO row]; then, when the old row was not at HQ or had a DeliveryDate, the
-  existing move PUT on the new row (F5). Move failure = row stays linked at HQ, warning `LOCATION_NOT_MOVED`.
+  existing move PUT on the new row (F5), which restores every `TRANSFER_RESET_FIELDS` value (Location, UnitPrice,
+  DeliveryDate) of the old row. The replace read-back relaxes those three fields on the new linked row. Move failure
+  = row stays linked, warning `LOCATION_NOT_MOVED` (and `ROW_VALUES_NOT_KEPT` for price / date, as the split does).
+  Review round 1 (10 Nov) found the operation layer checked and restored only Location / DeliveryDate.
 - Relink / move (`relink_row`): ONE PUT [linked row "D", new row linked to the new SO row] + the same move.
   The old 3-step flow (delete_line + add_line + move, with stray removal) shrinks to 2 writes; `_remove_strays` is no
   longer needed for step 1 (F8: atomic) but resume after a failed move stays.
@@ -148,4 +151,16 @@ GET / DELETE), `response_status` (NULL when no answer), `response_body` (text, c
 - S3 operations / service flows: unlink (route + op), whole-row link, relink, split in one PUT; gateway answers.
 - S4 db3 runner rerun of C01..C12 + QT/SO cases with the switches on; test report; docs.
 
-## 6. CRM follow-ups (separate lanes; filled at the end)
+## 6. Follow-ups (separate lanes)
+- CRM #2173 (AC-QTSO-CRM): cancel and remove-line now answer `done` for QT / SO / PO (switches on, CRM admin switch
+  still default OFF). Handle `DOC_HAS_TRANSFERS` (QT already in an SO, SO already in a PO), `DOC_CANCELLED`
+  (already void), `CANCEL_IGNORED`, `ROW_HAS_TRANSFERS` (line transferred onward), and the warnings
+  `LOCATION_NOT_MOVED` / `ROW_VALUES_NOT_KEPT`. Removing the last line is allowed (owner R1). No `DOC_NOT_DELETED`.
+- CRM #2222 (AC-E2E-DB3): docs / tests that assert the old refusals flip: PO unlink, whole-row link, relink, delete
+  line (QT / SO / PO) and cancel (QT / SO / PO) are now done; SPO stays `VENDOR_UNSUPPORTED`.
+- CRM #2223 (STOCKDEBT-LINK-IDEM-KEY): needed as is. SS still replays a stored answer for the same Idempotency-Key
+  and body (`wb/operations.py:314-328`), so a link / unlink refused `VENDOR_UNSUPPORTED` before this lane replays that
+  refusal until CRM sends a new attempt key; #2223's `attempt_key` covers it (a definite refusal). Optional: send
+  `X-Request-ID` per press so the SS call log ties each AutoCount call to the CRM action.
+- Vendor: the wrapper ignores `ShippingPO` on create and edit (F14b); SPO stays off until it is passed through.
+- Developer Logs retention for sync GETs is 30 days by default; 90 days = a tenant setting (crew, 10 Nov).

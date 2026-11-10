@@ -22,7 +22,7 @@ error); their documents (`FXT-1110a-QT1`, `FXT-1110a-SO2`, `FXT-1110b-QT1`, `FXT
 | F2 | AutoCount refuses a second transfer of a fully transferred quotation row. | P-T1 |
 | F3 | "D" on a sales order row taken from a quotation removes it and gives the quantity back to the quotation. | P-D1, P-T2 |
 | F4 | Unlink in one PUT works: the linked row with "D" plus a normal row (DtlKey 0). Location and DeliveryDate sent on the new row are kept, and the sales order row's quantity is freed. | P-U0..P-U4 |
-| F5 | Link and relink in one PUT work ("D" on the old row plus a new linked row). The new linked row is still placed at HQ with an empty DeliveryDate whatever was sent; a second PUT moves it and keeps the link. A purchase order row shows its link as `FromSODtlKey`. | P-L1, P-L2, P-R1, P-L4 |
+| F5 | Link and relink in one PUT work ("D" on the old row plus a new linked row). The new linked row is still placed at HQ with an empty DeliveryDate and a unit price of 0 whatever was sent; a second PUT moves it and keeps the link. A purchase order row shows its link as `FromSODtlKey`. | P-L1, P-L2, P-R1, P-L4 |
 | F6 | Delete line with "D" works on quotation, sales order and purchase order rows, with only `{DtlKey, FullTransferOption}` or the full row. "D" on the last row leaves a document without rows. | P-DL1, P-DL4..P-DL6 |
 | F7 | "D" on a row that was transferred onward is refused (sales order row linked from a purchase order; quotation row in a sales order). | P-DL2, P-DL3 |
 | F8 | One PUT is all or nothing: when the new row is invalid the "D" does not land either. | P-AT1, P-AT2 |
