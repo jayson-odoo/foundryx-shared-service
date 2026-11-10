@@ -1,0 +1,6 @@
+[
+  {"DisplayTerm": "C.O.D.", "Description": "CASH ON DELIVERY", "TermDays": 0},
+  {"DisplayTerm": "C.B.D.", "Description": "CASH BEFORE DELIVERY", "TermDays": 0},
+  {"DisplayTerm": "Net 30 days", "Description": "NET 30 DAYS", "TermDays": 30},
+  {"DisplayTerm": "Net 60 days", "Description": "", "TermDays": 60}
+]
