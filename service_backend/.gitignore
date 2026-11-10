@@ -7,5 +7,8 @@ venv/
 *.sqlite3
 media/
 
+# celery beat's local schedule store (dev-only; a fresh one is made on boot)
+celerybeat-schedule*
+
 # bare symlink (worktree convenience) - not just the dir
 .venv

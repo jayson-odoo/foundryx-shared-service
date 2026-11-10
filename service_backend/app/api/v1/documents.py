@@ -74,6 +74,7 @@ from app.services.document_service import (
     DocumentService,
     JobNotReady,
     QuotaExceeded,
+    READ_CAP_BYTES,
     UploadConflict,
     UploadRejected,
 )
@@ -90,9 +91,6 @@ from app.services.share_service import (
 router = APIRouter()
 public_router = APIRouter()
 
-# Hard read cap (a generous ceiling so an oversize body is never buffered whole;
-# the per-type / tenant-default policy cap is enforced in the service).
-READ_CAP_BYTES = 200 * 1024 * 1024
 
 
 def _none_if_blank(value: Optional[str]) -> Optional[str]:
@@ -100,14 +98,15 @@ def _none_if_blank(value: Optional[str]) -> Optional[str]:
 
 
 def _content_disposition(dispo: str, filename: str) -> str:
-    """Safe Content-Disposition - the file name is tenant-controlled (rename only
-    strips whitespace), so a quote/backslash/CRLF would inject the header. Emit a
-    sanitized ASCII fallback + an RFC 5987 ``filename*`` for the real (UTF-8) name."""
+    """Well-formed Content-Disposition - the file name is tenant-controlled (rename
+    only strips whitespace), so control bytes, quotes and backslashes are dropped
+    from the ASCII fallback, and the RFC 5987 ``filename*`` is encoded from UTF-8
+    bytes with replacement so any stored name can be encoded."""
     from urllib.parse import quote
 
-    ascii_name = re.sub(r'[\r\n"\\]', "", filename.encode("ascii", "ignore").decode("ascii")).strip()
+    ascii_name = re.sub(r'[\x00-\x1f\x7f"\\]', "", filename.encode("ascii", "ignore").decode("ascii")).strip()
     ascii_name = ascii_name or "download"
-    encoded = quote(filename, safe="")
+    encoded = quote(filename.encode("utf-8", "replace"), safe="")
     return f"{dispo}; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
 
 

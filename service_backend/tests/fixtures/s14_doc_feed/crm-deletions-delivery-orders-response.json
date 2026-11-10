@@ -1,0 +1,26 @@
+{
+  "dry_run": false,
+  "summary": {"total": 4, "deactivated": 1, "not_found": 1, "failed": 2},
+  "records": [
+    {
+      "source_ref": "db1:DO:55120",
+      "outcome": "deactivated",
+      "entity_id": "00000000-0000-0000-0000-000000000002"
+    },
+    {
+      "source_ref": "db1:DO:55130",
+      "outcome": "not_found"
+    },
+    {
+      "source_ref": "db1:DO:55140",
+      "outcome": "failed",
+      "entity_id": "00000000-0000-0000-0000-000000000004",
+      "errors": {"doc_date": "stored DocDate is outside the swept window"}
+    },
+    {
+      "source_ref": "db1:DO:ABC",
+      "outcome": "failed",
+      "errors": {"doc_key": "not an integer"}
+    }
+  ]
+}

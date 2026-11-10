@@ -1009,6 +1009,74 @@ def test_update_to_auto_validates_resulting_state(client):
     assert res.status_code == 200 and res.json()["triggerMode"] == "auto"
 
 
+def test_is_initial_still_converges_to_at_most_one(client):
+    """AC-20 pre-existing behaviour, unaffected by the new guard: marking a
+    SECOND status `isInitial` silently converges the first one off."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
+    b = _create_status(client, operator, "synthetic_ticket", "B", {"isInitial": True})
+    graph = _graph(client, operator, "synthetic_ticket")
+    initial = [s for s in graph["statuses"] if s["isInitial"]]
+    assert [s["id"] for s in initial] == [b["id"]]
+    assert next(s for s in graph["statuses"] if s["id"] == a["id"])["isInitial"] is False
+
+
+def test_is_initial_cannot_be_unset_on_the_last_initial_status(client):
+    """AC-20: EXACTLY one `is_initial` per set, never zero - `is_initial`
+    converging to AT MOST one (above) must never converge a set to ZERO
+    either, or a new record has nowhere to start. Generic - the guard lives
+    in `StatusService._apply_flags`, not any one entity's code."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
+    res = client.patch(
+        f"/statuses/{a['id']}", json={"flags": {"isInitial": False}}, headers=operator
+    )
+    assert res.status_code == 422, res.text
+    assert "initial" in res.json()["detail"].lower()
+    # Nothing was written - re-fetch confirms the flag is untouched.
+    graph = _graph(client, operator, "synthetic_ticket")
+    assert next(s for s in graph["statuses"] if s["id"] == a["id"])["isInitial"] is True
+
+
+def test_is_initial_status_cannot_be_deleted_when_it_is_the_last_one(client):
+    """Same AC-20 guard on delete (finding 6's second half) - even with zero
+    records referencing it (so the reference-count guard alone would allow
+    the delete), deleting the sole `isInitial` status must still 422."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
+    res = client.delete(f"/statuses/{a['id']}", headers=operator)
+    assert res.status_code == 422, res.text
+    assert "initial" in res.json()["detail"].lower()
+
+
+def test_first_status_of_an_empty_set_is_forced_initial(client):
+    """B1 (plan-25 round-3 codex triage): the very FIRST status created for a
+    brand new (entity_type, scope, scope_id) set must become `is_initial`
+    even if the caller omits the flag - otherwise the set converges to ZERO
+    initial statuses and a new record has nowhere to start. Generic guard in
+    `StatusService.create_status`, not any one entity's code."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A")
+    assert a["isInitial"] is True
+    graph = _graph(client, operator, "synthetic_ticket")
+    assert next(s for s in graph["statuses"] if s["id"] == a["id"])["isInitial"] is True
+    # A second status created afterwards must NOT be force-initialed - only
+    # the very first row of an empty set gets the auto-promote.
+    b = _create_status(client, operator, "synthetic_ticket", "B")
+    assert b["isInitial"] is False
+
+
+def test_is_initial_status_can_be_deleted_once_another_becomes_initial(client):
+    """The guard is about the SET, not the individual row - once a second
+    status has taken over as the initial one, the (now non-initial) first
+    status is free to be deleted."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
+    _create_status(client, operator, "synthetic_ticket", "B", {"isInitial": True})
+    res = client.delete(f"/statuses/{a['id']}", headers=operator)
+    assert res.status_code == 204, res.text
+
+
 def test_auto_edges_excluded_from_user_surfaces(client, session_factory):
     """AC-03-04 - auto edges never appear in available_transitions / fireable_edge_ids;
     manual edges from the same status still do."""
@@ -1033,6 +1101,107 @@ def test_auto_edges_excluded_from_user_surfaces(client, session_factory):
     ids = status_machine.fireable_edge_ids(db, "synthetic_ticket", [ticket], actor)
     # The probe ignores auto edges → no manual conditioned edge exists → None.
     assert ids is None
+    db.close()
+
+
+def test_fireable_edge_ids_always_true_bypasses_the_conditioned_short_circuit(
+    client, session_factory
+):
+    """Plan-94 (issue #94, ideation round 2) core extension: `fireable_edge_ids`
+    gains a keyword `always: bool = False`. The default behaviour (above) is
+    unchanged - no conditioned edge anywhere in the tier still short-circuits
+    to `None`. With `always=True` the per-record fireable-edge map is ALWAYS
+    computed and returned, even when nothing in the tier is conditioned -
+    ideation's `IdeaOut.transitions` needs the map on every request, not only
+    when a conditioned edge happens to exist somewhere in the graph.
+
+    TEST-FIRST: `fireable_edge_ids` has no `always` keyword yet - this fails
+    with a `TypeError` until the core extension lands (plan section 6,
+    `app/services/status_machine.py:324`)."""
+    from app.models.status_transition import StatusTransition
+
+    operator = _operator(client)
+    pending = _create_status(
+        client, operator, "synthetic_ticket", "Pending94", {"isInitial": True}
+    )
+    approved = _create_status(client, operator, "synthetic_ticket", "Approved94")
+    assert (
+        _create_edge(
+            client, operator, "synthetic_ticket", pending["id"], approved["id"], "Approve94"
+        ).status_code
+        == 201
+    )
+
+    db = session_factory()
+    actor = _demo_user(db)
+    ticket = TicketRecord(tenant_id=DEFAULT_TENANT_ID, name="always-true", status_id=pending["id"])
+    db.add(ticket)
+    db.commit()
+
+    # Default (unchanged): no conditioned edge in the tier -> None.
+    default_ids = status_machine.fireable_edge_ids(db, "synthetic_ticket", [ticket], actor)
+    assert default_ids is None
+
+    # `always=True` bypasses the short-circuit - a real per-record map, even
+    # though nothing here is conditioned.
+    always_ids = status_machine.fireable_edge_ids(
+        db, "synthetic_ticket", [ticket], actor, always=True
+    )
+    assert always_ids is not None
+    assert always_ids[ticket.id]
+    edges = (
+        db.query(StatusTransition).filter(StatusTransition.id.in_(always_ids[ticket.id])).all()
+    )
+    assert "Approve94" in {e.label for e in edges}
+    db.close()
+
+
+def test_fireable_edge_ids_preloaded_edges_matches_default(client, session_factory):
+    """Issue #94 review round 1 #14: an optional ``preloaded_edges`` skips the
+    internal tier-edge query and groups the GIVEN rows instead - a caller
+    that already loaded the same tier's edges (e.g. to hydrate ids into full
+    ``TransitionOut`` objects) never pays for a second, redundant query. The
+    result must be IDENTICAL to the default (no-arg) path; every existing
+    caller passes nothing, so this is purely additive."""
+    from app.repositories.status_repository import StatusRepository
+    from app.repositories.status_transition_repository import StatusTransitionRepository
+
+    operator = _operator(client)
+    pending = _create_status(
+        client, operator, "synthetic_ticket", "Pending9414", {"isInitial": True}
+    )
+    approved = _create_status(client, operator, "synthetic_ticket", "Approved9414")
+    assert (
+        _create_edge(
+            client, operator, "synthetic_ticket", pending["id"], approved["id"], "Approve9414"
+        ).status_code
+        == 201
+    )
+
+    db = session_factory()
+    actor = _demo_user(db)
+    ticket = TicketRecord(
+        tenant_id=DEFAULT_TENANT_ID, name="preloaded-edges", status_id=pending["id"]
+    )
+    db.add(ticket)
+    db.commit()
+
+    default_ids = status_machine.fireable_edge_ids(
+        db, "synthetic_ticket", [ticket], actor, always=True
+    )
+
+    # The tier's whole edge set, loaded ONCE by the caller - the same shape
+    # ideation's ``ideas.py`` already loads for its own `TransitionOut`
+    # hydration. Resolved the SAME way `fireable_edge_ids` resolves it
+    # internally (never hardcoded - a tenant edit forks the tier).
+    tier = StatusRepository(db).resolve_tier("synthetic_ticket", actor.tenant_id)
+    preloaded = StatusTransitionRepository(db).list_for_entity("synthetic_ticket", tier)
+    preloaded_ids = status_machine.fireable_edge_ids(
+        db, "synthetic_ticket", [ticket], actor, always=True, preloaded_edges=preloaded
+    )
+
+    assert preloaded_ids == default_ids
+    assert preloaded_ids[ticket.id]
     db.close()
 
 

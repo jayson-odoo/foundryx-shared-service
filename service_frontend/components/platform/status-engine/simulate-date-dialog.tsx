@@ -6,7 +6,7 @@
  * persists); Apply commits the would-advance transitions. Gated statuses.manage.
  */
 import { useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { LoaderCircleIcon } from 'lucide-react';
 import {
   Dialog,

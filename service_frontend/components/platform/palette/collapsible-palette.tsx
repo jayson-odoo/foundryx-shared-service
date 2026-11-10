@@ -8,8 +8,10 @@
  * button, click button, …) via `renderItem`; this owns search + collapse only.
  */
 import { useMemo, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, Search } from 'lucide-react';
-import { Input } from '@/components/ui/input';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ListSearchInput } from '@/components/platform/list-search-input';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 
 export interface PaletteCategory<T extends string> {
   id: string;
@@ -58,16 +60,7 @@ export function CollapsiblePalette<T extends string>({
 
   return (
     <div className="flex flex-col gap-2" data-testid={testId}>
-      <div className="relative">
-        <Search className="pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={searchPlaceholder}
-          aria-label={searchPlaceholder}
-          className="h-8 ps-8 text-xs"
-        />
-      </div>
+      <ListSearchInput size="sm" value={query} onChange={setQuery} placeholder={searchPlaceholder} ariaLabel={searchPlaceholder} />
       <div className="flex flex-col gap-1">
         {filtered.map((category) => {
           const open = term ? true : openIds.has(category.id);
@@ -77,11 +70,11 @@ export function CollapsiblePalette<T extends string>({
                 type="button"
                 data-testid={`palette-category-${category.id}`}
                 onClick={() => toggle(category.id)}
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                className={cn(PRESSED_CLASS, 'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground')}
               >
                 {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                 <span className="flex-1 text-start">{category.label}</span>
-                <span className="text-[10px] font-normal">{category.types.length}</span>
+                <span className="text-2xs font-normal">{category.types.length}</span>
               </button>
               {open && (
                 <div className="flex flex-col gap-1 px-1 pb-1.5 pt-0.5">

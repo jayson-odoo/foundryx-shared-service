@@ -1,0 +1,23 @@
+{
+  "dry_run": false,
+  "summary": {
+    "total": 2,
+    "deleted": 1,
+    "deactivated": 0,
+    "not_found": 0,
+    "failed": 1
+  },
+  "records": [
+    {
+      "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+      "outcome": "deleted"
+    },
+    {
+      "source_ref": "AED_SORENTO:MALFORMED|X",
+      "outcome": "failed",
+      "errors": {
+        "pairs": "location_code is required"
+      }
+    }
+  ]
+}

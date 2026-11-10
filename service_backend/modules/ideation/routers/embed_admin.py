@@ -1,7 +1,8 @@
 """Embed-connection admin router (PLAN-ideation-embed-sso §7, AC-E-5/12).
 
 Gated (NOT public): every endpoint requires ``ideation.triage.manage`` (reused -
-no new permission / grant sweep) AND the ideation module active for the caller's
+no new permission / grant sweep); create / patch / rotate ALSO require
+``ideation.business_requirements.manage`` AND the ideation module active for the caller's
 tenant (injected by the module loader). Registers the host applications allowed
 to embed THIS tenant's Ideas workspace.
 
@@ -23,7 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import require_permission
+from app.dependencies import effective_permission_keys, require_permission
 from app.models.user import User
 
 from ..models import EmbedConnection
@@ -37,6 +38,18 @@ from ..services.embed import (
 router = APIRouter()
 
 _MANAGE = require_permission("ideation.triage.manage")
+_PROMOTE_KEY = "ideation.business_requirements.manage"
+
+
+def _manage_with_promote(current_user: User = Depends(_MANAGE)) -> User:
+    """Create / patch / rotate mint or re-point the credential whose ``email`` claim
+    carries the authority for embed promote-to-BR, so they need the BR-manage key
+    IN ADDITION to triage (a triage-only user must not act as a higher-privileged
+    user). List and delete keep the plain triage gate."""
+    if _PROMOTE_KEY not in effective_permission_keys(current_user):
+        raise HTTPException(status_code=403, detail=f"Missing permission: {_PROMOTE_KEY}")
+    return current_user
+
 
 
 class EmbedConnectionCreate(BaseModel):
@@ -101,7 +114,7 @@ def list_embed_connections(
 @router.post("", response_model=EmbedConnectionOut, status_code=201)
 def create_embed_connection(
     body: EmbedConnectionCreate,
-    current_user: User = Depends(_MANAGE),
+    current_user: User = Depends(_manage_with_promote),
     db: Session = Depends(get_db),
 ) -> EmbedConnectionOut:
     """Register (or re-save) an embed connection for the caller's tenant. The
@@ -122,7 +135,7 @@ def create_embed_connection(
 def update_embed_connection(
     connection_id: str,
     body: EmbedConnectionPatch,
-    current_user: User = Depends(_MANAGE),
+    current_user: User = Depends(_manage_with_promote),
     db: Session = Depends(get_db),
 ) -> EmbedConnectionOut:
     """Enable/disable, re-scope, or edit the origin allow-list WITHOUT re-supplying
@@ -143,7 +156,7 @@ def update_embed_connection(
 def rotate_embed_connection_secret(
     connection_id: str,
     body: EmbedConnectionRotate,
-    current_user: User = Depends(_MANAGE),
+    current_user: User = Depends(_manage_with_promote),
     db: Session = Depends(get_db),
 ) -> EmbedConnectionOut:
     """Rotate the signing secret (new secret Fernet-encrypted at rest, never

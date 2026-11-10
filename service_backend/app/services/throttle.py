@@ -15,6 +15,7 @@ The guard runs BEFORE any credential work (cheap rejection under attack) and
 the 429 is deliberately distinct from the uniform 401 - locking is observable
 anyway; clarity beats theater.
 """
+import ipaddress
 import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol
@@ -25,12 +26,23 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.auth_throttle import (
+    THROTTLE_SCOPE_BUILD,
+    THROTTLE_SCOPE_CHANNEL_TOKEN,
+    THROTTLE_SCOPE_CONNECTOR,
+    THROTTLE_SCOPE_CONNECTOR_CALL,
     THROTTLE_SCOPE_DOC_SHARE,
     THROTTLE_SCOPE_EMAIL,
     THROTTLE_SCOPE_EMBED,
     THROTTLE_SCOPE_FORM_PUBLIC,
+    THROTTLE_SCOPE_IDEA_COMMENT_IP,
+    THROTTLE_SCOPE_IDEA_COMMENT_TOKEN,
+    THROTTLE_SCOPE_IDEA_PORTAL_COMMENT,
+    THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT,
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_PORTAL,
+    THROTTLE_SCOPE_PULL,
+    THROTTLE_SCOPE_PULL_KEY,
+    THROTTLE_SCOPE_WEBCHAT,
     AuthThrottle,
 )
 
@@ -79,6 +91,72 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_embed_max_fails,
             timedelta(minutes=settings.throttle_embed_window_minutes),
+            None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_CONNECTOR_CALL:
+        return (
+            settings.throttle_connector_call_max,
+            timedelta(minutes=settings.throttle_connector_call_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_CONNECTOR:
+        return (
+            settings.throttle_connector_max_fails,
+            timedelta(minutes=settings.throttle_connector_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_WEBCHAT:
+        return (
+            settings.throttle_webchat_max_fails,
+            timedelta(minutes=settings.throttle_webchat_window_minutes),
+            None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_PULL:
+        return (
+            settings.throttle_pull_max_fails,
+            timedelta(minutes=settings.throttle_pull_window_minutes),
+            None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_BUILD:
+        return (
+            settings.throttle_build_max_fails,
+            timedelta(minutes=settings.throttle_build_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_COMMENT_TOKEN:
+        return (
+            settings.throttle_idea_comment_token_max,
+            timedelta(minutes=settings.throttle_idea_comment_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_COMMENT_IP:
+        return (
+            settings.throttle_idea_comment_ip_max,
+            timedelta(minutes=settings.throttle_idea_comment_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT:
+        return (
+            settings.throttle_idea_portal_submit_max,
+            timedelta(minutes=settings.throttle_idea_portal_comment_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_PORTAL_COMMENT:
+        return (
+            settings.throttle_idea_portal_comment_max,
+            timedelta(minutes=settings.throttle_idea_portal_comment_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_CHANNEL_TOKEN:
+        return (
+            settings.throttle_channel_token_max,
+            timedelta(minutes=settings.throttle_channel_token_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_PULL_KEY:
+        return (
+            settings.throttle_pull_key_max_requests,
+            timedelta(minutes=settings.throttle_pull_key_window_minutes),
             None,  # over-limit throttles until the window rolls over (like IP)
         )
     return (
@@ -184,6 +262,7 @@ def prune_stale(db: Session) -> int:
             settings.throttle_email_window_minutes,
             settings.throttle_ip_window_minutes,
             settings.throttle_email_lock_minutes,
+            settings.throttle_idea_portal_comment_window_minutes,
         )
     )
     deleted = (
@@ -201,17 +280,64 @@ def prune_stale(db: Session) -> int:
 # ── request-level helpers (used by the auth router) ──────────────────────────
 
 
+def _parse_networks(raw: str) -> Optional[list]:
+    """`trusted_proxies` CSV -> networks. Any invalid entry = None (trust
+    nobody): a typo must fail closed, never widen trust."""
+    try:
+        return [ipaddress.ip_network(p.strip(), strict=False)
+                for p in (raw or "").split(",") if p.strip()]
+    except ValueError:
+        return None
+
+
+def _parse_ip(value: str):
+    try:
+        addr = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    # ::ffff:10.0.0.1 is 10.0.0.1 - one key, and it matches IPv4 ranges.
+    return getattr(addr, "ipv4_mapped", None) or addr
+
+
 def client_ip(request: Request) -> str:
-    """The throttle key for the caller's address. X-Forwarded-For (first hop)
-    is honored ONLY behind the known proxy (`trust_proxy_headers`) - otherwise
-    attackers mint fresh counters per spoofed header."""
-    if settings.trust_proxy_headers:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            first_hop = forwarded.split(",")[0].strip()
-            if first_hop:
-                return first_hop
-    return request.client.host if request.client else "unknown"
+    """The caller's address, for throttle keys and IP allowlists.
+
+    X-Forwarded-For is honored only when `trust_proxy_headers` is on AND the
+    socket peer is a configured trusted proxy (`trusted_proxies`, empty =
+    nobody). The chain is then walked RIGHT to left, skipping trusted hops, and
+    the first untrusted hop wins: everything left of it was written by the
+    client and is forgeable (issue #118 - the old first-hop read let any caller
+    claim an allowlisted IP or mint a fresh throttle bucket per request)."""
+    peer = request.client.host if request.client else None
+    if peer is None:
+        return "unknown"
+    if not settings.trust_proxy_headers:
+        return peer
+    networks = _parse_networks(settings.trusted_proxies)
+    if not networks:
+        return peer
+
+    def trusted(addr) -> bool:
+        return any(addr in net for net in networks if net.version == addr.version)
+
+    peer_addr = _parse_ip(peer)
+    if peer_addr is None or not trusted(peer_addr):
+        return peer if peer_addr is None else str(peer_addr)
+    # Every header line, in order: a forged first line must not hide a proxy's
+    # own line appended after it.
+    raw = ",".join(request.headers.getlist("x-forwarded-for"))
+    hops = [h.strip() for h in raw.split(",")]
+    resolved = peer
+    for hop in reversed([h for h in hops if h]):
+        addr = _parse_ip(hop)
+        if addr is None:
+            # Junk can only sit on the client side of the chain: keep the last
+            # address a trusted proxy vouched for, never key on the junk.
+            return resolved
+        resolved = str(addr)
+        if not trusted(addr):
+            return resolved
+    return resolved
 
 
 def normalize_email(email: str) -> str:
@@ -281,3 +407,126 @@ class ThrottleService:
 
     def record_embed(self, *, ip: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_EMBED, ip)
+
+    # ---- Claude connector OAuth (own bucket, plan sprint-4/19) ----
+
+    def enforce_connector(self, *, key: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_CONNECTOR, key)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_connector(self, *, key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_CONNECTOR, key)
+
+    def enforce_connector_call(self, *, grant_id: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_CONNECTOR_CALL, grant_id)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_connector_call(self, *, grant_id: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_CONNECTOR_CALL, grant_id)
+
+    # ---- omnichannel web chat public visitor API (own bucket, plan
+    # sprint-4/34 / A7b S2, AC-WEB-30, D-A7B-22) ----
+    #
+    # TWO independent key namespaces inside the ONE scope: `ip:<ip>` (the
+    # cheap, zero-DB-dependent gate checked first on every request) and
+    # `v:<visitorId>` (checked on `POST /messages` ONLY, after Bearer
+    # verification resolves the visitor id - review round 1, N6: the session
+    # endpoint has no verified visitor id to key on at the point it
+    # throttles, so it checks the IP namespace alone). Either tripping
+    # refuses the request - a single abusive visitor id is caught on ITS OWN
+    # counter without waiting for a whole office's shared IP budget to
+    # exhaust, and a single IP minting fresh visitor ids to dodge the visitor
+    # bucket still trips the IP bucket.
+
+    def enforce_webchat(self, *, ip: Optional[str] = None, visitor_id: Optional[str] = None) -> None:
+        """Either or both of `ip`/`visitor_id` may be checked in one call -
+        callers pass `ip` alone BEFORE a visitor id is known (session start,
+        pre-token-verify) and `visitor_id` alone for a SECOND, later check
+        once Bearer verification resolves it (avoids double-counting the IP
+        bucket per request)."""
+        retry = self.store.check(THROTTLE_SCOPE_WEBCHAT, f"ip:{ip}") if ip else None
+        if retry is None and visitor_id:
+            retry = self.store.check(THROTTLE_SCOPE_WEBCHAT, f"v:{visitor_id}")
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_webchat(self, *, ip: Optional[str] = None, visitor_id: Optional[str] = None) -> None:
+        if ip:
+            self.store.record_failure(THROTTLE_SCOPE_WEBCHAT, f"ip:{ip}")
+        if visitor_id:
+            self.store.record_failure(THROTTLE_SCOPE_WEBCHAT, f"v:{visitor_id}")
+
+    # ---- AutoCount pull gateway (own bucket, sprint-5/10 S4, AC-10-35) ----
+
+    def enforce_pull(self, *, ip: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_PULL, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_pull_failure(self, *, ip: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_PULL, ip)
+
+    # ---- AutoCount pull gateway - per-KEY request budget (own bucket,
+    # sprint-5/10 S4 security round 1, MEDIUM 4; additive to AC-10-35) ----
+
+    def enforce_pull_key(self, *, key_id: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_PULL_KEY, key_id)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_pull_key_request(self, *, key_id: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_PULL_KEY, key_id)
+
+    # ---- Omnichannel replace-token (own bucket, plan 42) ----
+
+    def enforce_channel_token(self, *, channel_id: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_CHANNEL_TOKEN, channel_id)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_channel_token(self, *, channel_id: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_CHANNEL_TOKEN, channel_id)
+
+    # ---- Ideation BR build write-back gateway (own bucket, AC-STB-16) ----
+
+    def enforce_build(self, *, ip: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_BUILD, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_build_failure(self, *, ip: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_BUILD, ip)
+
+    # ---- Ideation public status-page comments (own buckets, plan 19 AC-19-30) ----
+
+    def enforce_idea_comment(self, *, ip: str, token_key: str) -> None:
+        """``token_key`` = sha256 hex of the status token (never the raw token)."""
+        retry = self.store.check(THROTTLE_SCOPE_IDEA_COMMENT_TOKEN, token_key)
+        if retry is None:
+            retry = self.store.check(THROTTLE_SCOPE_IDEA_COMMENT_IP, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_idea_comment(self, *, ip: str, token_key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_COMMENT_TOKEN, token_key)
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_COMMENT_IP, ip)
+
+    # ---- Ideation idea portal (own buckets, lane IDEA-PORTAL) ----
+
+    def enforce_idea_portal_comment(self, *, principal_key: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_IDEA_PORTAL_COMMENT, principal_key)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_idea_portal_comment(self, *, principal_key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_PORTAL_COMMENT, principal_key)
+
+    def enforce_idea_portal_submit(self, *, principal_key: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT, principal_key)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_idea_portal_submit(self, *, principal_key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT, principal_key)

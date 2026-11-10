@@ -17,7 +17,7 @@ export interface IdeaFormViewProps {
 /** Loads + renders an idea form (create when ideaId is absent). */
 export function IdeaFormView({ ideaId, initialEditing }: IdeaFormViewProps) {
   const { paths } = useIdeationRuntime();
-  const { config, form, isLoading, notFound } = useIdeaForm(ideaId, initialEditing);
+  const { config, form, isLoading, notFound, mergeDialog } = useIdeaForm(ideaId, initialEditing);
 
   if (isLoading) {
     return (
@@ -47,6 +47,7 @@ export function IdeaFormView({ ideaId, initialEditing }: IdeaFormViewProps) {
       <Form {...form}>
         <ResourceForm config={config} />
       </Form>
+      {mergeDialog}
     </Container>
   );
 }

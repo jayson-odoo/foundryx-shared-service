@@ -211,17 +211,31 @@ def transition(
 
     # Workflow domain event (slice 09): buffered now, drained after commit →
     # matches `entity.status_changed` triggers. Loop-guarded by the run origin.
+    # Event entity_type = the entity's declared `workflow_entity_type` when set
+    # (plan 25 S2, generic) - a scoped machine's own `entity_type` may name the
+    # pipeline, not the record (e.g. `omnichannel_contact_lifecycle` vs the
+    # record's `omnichannel_contact` WorkflowEntity); defaults to `entity_type`
+    # for every existing adopter (unchanged behavior).
     from app.workflow_engine.entity_events import emit_entity_event
 
     emit_entity_event(
         db,
-        entity_type,
+        entity.workflow_entity_type or entity_type,
         "status_changed",
         record,
         tenant_id=notify_tenant_id,
         actor=actor,
         changes={"status": {"from": from_status_id, "to": to_status_id}},
-        extra={"from_status_id": from_status_id, "to_status_id": to_status_id},
+        # `to_status_label` (plan 31 S3 review SF-6): `edge.to_status` is
+        # already resolved here for the notification `context` above - a
+        # consumer's `context_extra` (e.g. omnichannel's
+        # `omnichannel.lifecycle_changed` trigger) can read the label straight
+        # off the event instead of a second tenant-scoped query.
+        extra={
+            "from_status_id": from_status_id,
+            "to_status_id": to_status_id,
+            "to_status_label": edge.to_status.label,
+        },
     )
 
     # Capture the event payload BEFORE commit - expire_on_commit would make
@@ -314,6 +328,8 @@ def fireable_edge_ids(
     actor: Optional[User] = None,
     *,
     tenant_id: Optional[str] = None,
+    always: bool = False,
+    preloaded_edges: Optional[list] = None,
 ) -> Optional[dict]:
     """Per-record fireable edge ids for LIST surfaces (sprint-2/02 D6, made
     generic in code review) - rule-blocked actions hide per record, and
@@ -321,7 +337,25 @@ def fireable_edge_ids(
     shared graph. Returns None while NO edge of the entity's resolved tier
     carries conditions (the common case costs one EXISTS probe). Batched:
     ONE edge query for the whole record set, facts resolved per record
-    limited to the keys the trees actually read."""
+    limited to the keys the trees actually read.
+
+    ``always=True`` (plan-94, issue #94) skips the "no conditioned edge in
+    the tier -> None" short-circuit and always computes + returns the
+    per-record map - a consumer (e.g. ideation's ``IdeaOut.transitions``)
+    that needs the fireable set on every request regardless of whether
+    anything happens to be conditioned. Default False keeps every existing
+    caller's behaviour unchanged.
+
+    ``preloaded_edges`` (issue #94 review round 1 #14) - an optional, ALREADY
+    LOADED list of the tier's ``StatusTransition`` rows: when given, this
+    function skips its own internal "ONE query for the tier's whole edge
+    set" below and groups these instead, so a caller that already fetched
+    the same tier's edges for another reason (e.g. to hydrate the edge ids
+    into full ``TransitionOut`` objects) never issues a second, redundant
+    query for the identical row set. The caller is responsible for having
+    loaded exactly this ``entity_type``'s resolved-tier edges - a mismatched
+    list would silently under/over-report fireability. Every existing caller
+    passes nothing, so behaviour is unchanged unless a caller opts in."""
     entity = get_status_entity(entity_type)
     if entity is None:
         raise UnknownStatusEntity(f"Unknown status entity '{entity_type}'.")
@@ -353,17 +387,29 @@ def fireable_edge_ids(
         .first()
         is not None
     )
-    if not has_conditioned:
+    if not has_conditioned and not always:
         return None
 
-    # ONE query for the tier's whole edge set, grouped by source status.
+    # ONE query for the tier's whole edge set, grouped by source status -
+    # skipped when the caller already loaded it (``preloaded_edges``).
     edges_by_from: dict = {}
-    for edge in (
-        db.query(StatusTransition)
+    source_edges = (
+        preloaded_edges
+        if preloaded_edges is not None
+        else db.query(StatusTransition)
         .filter(StatusTransition.entity_type == entity_type, tier_filter)
         .order_by(StatusTransition.sort_order)
         .all()
-    ):
+    )
+    for edge in source_edges:
+        # Defensive (issue #94 review round 2 optional nit): a caller-supplied
+        # ``preloaded_edges`` could carry a row for a DIFFERENT entity_type
+        # (a copy-paste bug in the caller, or a shared cache reused across
+        # entities) - skip it rather than mixing another entity's edges into
+        # this result. Never trips for the internally-queried default path
+        # (already filtered to ``entity_type``).
+        if edge.entity_type != entity_type:
+            continue
         edges_by_from.setdefault(edge.from_status_id, []).append(edge)
 
     result: dict = {}

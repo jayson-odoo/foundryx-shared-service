@@ -19,6 +19,7 @@ Two shapes deviate from the other providers, both forced by the vendor API:
 banned - the operator has to know whether to fix the URL, the AppId, or the
 credentials.
 """
+import time
 from typing import Any, Dict, List, Optional
 
 from app.integrations.base import TestResult
@@ -31,9 +32,56 @@ from .client import (
     AutoCountRelayError,
     AutoCountTransportError,
 )
+from .http_client import (
+    OpenProbeError,
+    assert_autocount_base_url_deliverable,
+    probe_open_connection,
+)
+from .http_source.client import (
+    MAX_CONCURRENT_PAGES_FIELD_DEFAULT,
+    MAX_CONCURRENT_PAGES_FIELD_MAX,
+    MAX_CONCURRENT_PAGES_FIELD_MIN,
+)
 
 PROVIDER_KEY = "autocount"
 CONNECTION_TYPE = "erp"
+
+# AC-10-85 (live-replay Finding 1) - per-CONNECTION overrides for the open
+# REST wrapper's own host-latency knobs, replacing the fixed module
+# constants ``http_source.client.DEFAULT_PAGE_SIZE`` /
+# ``http_source.client.DEFAULT_TIMEOUT_SECONDS`` used to always fall back
+# to. Duplicated here (rather than imported) to avoid a circular import -
+# ``http_source/source.py`` itself imports THIS module - and because these
+# are the FORM SCHEMA's own bounds, independent of the runtime fallback
+# value the source picks when a connection carries neither key at all.
+PAGE_SIZE_FIELD_DEFAULT = 1000
+PAGE_SIZE_FIELD_MIN = 50
+PAGE_SIZE_FIELD_MAX = 1000
+REQUEST_TIMEOUT_FIELD_DEFAULT = 90
+REQUEST_TIMEOUT_FIELD_MAX = 100
+
+# The two auth modes an ``autocount`` connection may carry (sprint-5/08,
+# AC-08-01). ``basic`` is the vendor session-auth grammar (AppId/UserId/
+# Password, today's ONLY behaviour); ``none`` is the open REST wrapper -
+# base URL only, no credentials, never a login attempt.
+AUTH_BASIC = "basic"
+AUTH_NONE = "none"
+
+
+def auth_mode(config: Dict[str, Any]) -> str:
+    """``config.auth``, defaulted to ``basic`` for a legacy row that predates
+    this field (AC-08-01) - never ``KeyError``, never a silent ``None``."""
+    value = str((config or {}).get("auth") or "").strip().lower()
+    return value if value in (AUTH_BASIC, AUTH_NONE) else AUTH_BASIC
+
+
+def is_open_connection(conn: Any) -> bool:
+    """Whether a stored ``Connection`` row is an open (no-auth) AutoCount
+    connection - the ``autocount`` provider AND ``auth_mode == 'none'``.
+    Any other provider, or a missing/legacy config, is never open."""
+    if conn is None or getattr(conn, "provider", None) != PROVIDER_KEY:
+        return False
+    return auth_mode(conn.config_json or {}) == AUTH_NONE
 
 
 def client_from_connection(
@@ -77,11 +125,27 @@ class AutoCountProvider:
     def fields(self) -> List[Dict[str, Any]]:
         """Config schema driving the integrations form.
 
-        Deliberately FOUR fields. No AppSecret (does not exist) and no company
-        picker (discovered from the login response) - offering either would be
+        ``auth`` leads (AC-08-01): ``basic`` is the vendor session-auth
+        grammar (AppId/UserId/Password, today's ONLY behaviour before this
+        field existed); ``none`` is the open REST wrapper - base URL only.
+        The three credential fields carry ``showWhen`` so the form hides
+        (and stops requiring) them when ``none`` is picked; ``baseUrl`` is
+        always shown. No AppSecret (does not exist) and no company picker
+        (discovered from the login response) - offering either would be
         asking the operator for something we cannot use.
         """
         return [
+            {
+                "key": "auth",
+                "label": "Auth",
+                "type": "select",
+                "required": True,
+                "default": AUTH_BASIC,
+                "options": [
+                    {"value": AUTH_BASIC, "label": "Basic auth (AppId + user + password)"},
+                    {"value": AUTH_NONE, "label": "No auth"},
+                ],
+            },
             {
                 "key": "baseUrl",
                 "label": "AutoCount API base URL",
@@ -95,6 +159,7 @@ class AutoCountProvider:
                 "type": "password",
                 "required": True,
                 "secret": True,
+                "showWhen": {"field": "auth", "values": [AUTH_BASIC]},
             },
             {
                 "key": "userId",
@@ -102,6 +167,7 @@ class AutoCountProvider:
                 "type": "text",
                 "required": True,
                 "placeholder": "ADMIN",
+                "showWhen": {"field": "auth", "values": [AUTH_BASIC]},
             },
             {
                 "key": "password",
@@ -109,31 +175,186 @@ class AutoCountProvider:
                 "type": "password",
                 "required": True,
                 "secret": True,
+                "showWhen": {"field": "auth", "values": [AUTH_BASIC]},
+            },
+            # AC-10-85 - the open REST wrapper's own host-latency knobs;
+            # meaningless for the vendor session-auth flavour, which never
+            # runs a page walk against this client, hence the `showWhen`.
+            # BOTH default keys are declared on purpose: `default` (numeric)
+            # is this field schema's own contract, and `defaultValue` (a
+            # string) is the key the connection wizard's generic prefill
+            # actually reads (`connection-schema.ts defaultsForProvider`) -
+            # without it the operator would face a blank box instead of the
+            # AC's stated 1000 / 90.
+            {
+                "key": "pageSize",
+                "label": "Page size",
+                "type": "number",
+                "required": False,
+                "default": PAGE_SIZE_FIELD_DEFAULT,
+                "defaultValue": str(PAGE_SIZE_FIELD_DEFAULT),
+                "min": PAGE_SIZE_FIELD_MIN,
+                "max": PAGE_SIZE_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "requestTimeoutSeconds",
+                "label": "Request timeout (seconds)",
+                "type": "number",
+                "required": False,
+                "default": REQUEST_TIMEOUT_FIELD_DEFAULT,
+                "defaultValue": str(REQUEST_TIMEOUT_FIELD_DEFAULT),
+                "max": REQUEST_TIMEOUT_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            # sprint-5/11 S6 (AC-11-01) - the bounded-concurrency page walk's
+            # own opt-in ceiling; default 1 (serial, byte-identical to today)
+            # so nothing changes until an operator explicitly raises it.
+            {
+                "key": "maxConcurrentPages",
+                "label": "Max concurrent pages",
+                "type": "number",
+                "required": False,
+                "default": MAX_CONCURRENT_PAGES_FIELD_DEFAULT,
+                "defaultValue": str(MAX_CONCURRENT_PAGES_FIELD_DEFAULT),
+                "min": MAX_CONCURRENT_PAGES_FIELD_MIN,
+                "max": MAX_CONCURRENT_PAGES_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
         ]
+
+    def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
+        """S5 (sprint-5/08 review round 1) - the SAME scheme rule `test()`
+        already applies, now also enforced at SAVE, not only when the
+        operator happens to click Test. Blank is fine here (the `required`
+        gate on `baseUrl` is the wizard's own job); only a present-but-bad
+        scheme is rejected.
+
+        AC-10-85 (live-replay Finding 1) - `pageSize`/`requestTimeoutSeconds`
+        are range-checked the same way, naming the offending field so the
+        422 is actionable.
+
+        AC-10-58 M2 - the outbound SSRF guard also runs here, at save time
+        (re-run again immediately before every actual request - see
+        `http_source.client.HttpApiClient.get`)."""
+        base_url = str((config or {}).get("baseUrl") or "").strip()
+        # This is only a cheap pre-filter for an obviously-wrong scheme
+        # (``javascript:``, ``ftp://``, no scheme at all) - it still accepts
+        # an ``http://`` prefix through to the authoritative check below
+        # (the egress guard), which is the ONE place that also knows about
+        # the development loopback carve-out (``http://localhost:PORT``
+        # stays allowed there). sprint-5/10 confirm-3 (owner ruling,
+        # overriding the round's own B1 draft) - the MESSAGE here no longer
+        # says "http:// or https://": outside the dev carve-out an
+        # ``http://`` baseUrl is refused anyway (by the guard, a few lines
+        # down), so the wizard must never advertise a scheme that 422s.
+        if base_url and not base_url.lower().startswith(("http://", "https://")):
+            return "The base URL must start with https://."
+
+        page_size_raw = str((config or {}).get("pageSize") or "").strip()
+        if page_size_raw:
+            try:
+                page_size_value = int(page_size_raw)
+            except ValueError:
+                return "pageSize must be a whole number."
+            if not (PAGE_SIZE_FIELD_MIN <= page_size_value <= PAGE_SIZE_FIELD_MAX):
+                return (
+                    f"pageSize must be between {PAGE_SIZE_FIELD_MIN} and "
+                    f"{PAGE_SIZE_FIELD_MAX}."
+                )
+
+        timeout_raw = str((config or {}).get("requestTimeoutSeconds") or "").strip()
+        if timeout_raw:
+            try:
+                timeout_value = float(timeout_raw)
+            except ValueError:
+                return "requestTimeoutSeconds must be a number."
+            if timeout_value <= 0 or timeout_value > REQUEST_TIMEOUT_FIELD_MAX:
+                return (
+                    f"requestTimeoutSeconds must be at most "
+                    f"{REQUEST_TIMEOUT_FIELD_MAX} seconds."
+                )
+
+        concurrency_raw = str((config or {}).get("maxConcurrentPages") or "").strip()
+        if concurrency_raw:
+            try:
+                concurrency_value = int(concurrency_raw)
+            except ValueError:
+                return "maxConcurrentPages must be a whole number."
+            if not (
+                MAX_CONCURRENT_PAGES_FIELD_MIN
+                <= concurrency_value
+                <= MAX_CONCURRENT_PAGES_FIELD_MAX
+            ):
+                return (
+                    f"maxConcurrentPages must be between "
+                    f"{MAX_CONCURRENT_PAGES_FIELD_MIN} and "
+                    f"{MAX_CONCURRENT_PAGES_FIELD_MAX}."
+                )
+
+        # LAST, because it is the only check here that can touch the network
+        # (the guard resolves the host to catch a name pointing at an internal
+        # address): a plain out-of-range number is refused without paying for
+        # a DNS lookup.
+        if base_url:
+            try:
+                assert_autocount_base_url_deliverable(base_url)
+            except OpenProbeError as exc:
+                return f"baseUrl: {exc.message}"
+        return None
 
     def test(
         self,
         config: Dict[str, Any],
         credentials: Dict[str, Any],
         target: Optional[str] = None,
+        *,
+        transport: Optional[Any] = None,
     ) -> TestResult:
-        """Verify the connection by signing in ONCE, and report which step failed.
+        """Verify the connection - branching on ``auth_mode`` (AC-08-02).
 
-        Success echoes the DISCOVERED company so the operator can confirm the
-        AppId selected the company they intended - the AppId is opaque, so this
-        readback is the only way to catch "right credentials, wrong company".
+        ``basic`` signs in ONCE (byte-for-byte the original behaviour) and
+        echoes the DISCOVERED company so the operator can confirm the AppId
+        selected the company they intended - the AppId is opaque, so this
+        readback is the only way to catch "right credentials, wrong
+        company". ``none`` NEVER attempts a login (credentials are not
+        required and are ignored even if present): it GETs ``{baseUrl}/
+        location`` and reports the row count, naming the failing STEP on any
+        error - never the raw response body.
         """
         base_url = str(config.get("baseUrl", "")).strip()
         if not base_url:
             return TestResult(ok=False, message="Enter the AutoCount API base URL.")
+        # Same cheap pre-filter as ``validate_config`` above - the message no
+        # longer advertises ``http://`` (sprint-5/10 confirm-3 owner
+        # ruling): outside the development loopback carve-out, an
+        # ``http://`` baseUrl still reaches ``probe_open_connection`` below,
+        # which 422s it via the same https-only egress guard.
         if not base_url.lower().startswith(("http://", "https://")):
             return TestResult(
                 ok=False,
-                message="The base URL must start with http:// or https://.",
+                message="The base URL must start with https://.",
             )
 
-        client = client_from_connection(config, credentials)
+        if auth_mode(config) == AUTH_NONE:
+            # AC-10-85 - the Test button reports the MEASURED probe latency
+            # (never a canned "Reachable"), the ONE number that tells the
+            # operator whether a legacy 30s or the new 90s ceiling is safe
+            # for this wrapper's own real-world response time.
+            started = time.monotonic()
+            try:
+                rows = probe_open_connection(base_url, transport=transport)
+            except OpenProbeError as exc:
+                return TestResult(ok=False, message=exc.message)
+            elapsed_seconds = time.monotonic() - started
+            count = len(rows)
+            noun = "location" if count == 1 else "locations"
+            return TestResult(
+                ok=True,
+                message=f"Reached in {elapsed_seconds:.2f} s, {count} {noun}.",
+            )
+
+        client = client_from_connection(config, credentials, transport=transport)
         try:
             session = client.login()
         except AutoCountTransportError as exc:

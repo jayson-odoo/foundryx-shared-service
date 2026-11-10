@@ -1,9 +1,16 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { render, renderHook, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { Product } from '@/types/ideation';
 import type { EmbedConnectionItem } from '@/types/embed-connection';
 import type { ListQuery } from '@/types/resource';
 import { useEmbedConnectionsListConfig } from './use-embed-connections-list-config';
+
+const canKeys: string[] = [];
+vi.mock('@/hooks/use-can', () => ({
+  useCan: () => ({ can: (k: string) => canKeys.includes(k), ready: true, permissions: new Set(canKeys) }),
+}));
 
 const list = vi.fn();
 const setActive = vi.fn();
@@ -52,12 +59,33 @@ function config(rows: EmbedConnectionItem[]) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('useEmbedConnectionsListConfig (PLAN-ideation-embed-sso §7)', () => {
-  it('exposes the create action gated by ideation.triage.manage', () => {
+  it('gates create / rotate / activate on BOTH keys (BR-manage here + triage on the page); delete stays triage-only', () => {
     const { config: c } = config([]);
     expect(c.createLabel).toBe('Add connection');
-    expect(c.createPermission).toBe('ideation.triage.manage');
+    expect(c.createPermission).toBe('ideation.business_requirements.manage');
     expect(c.actions.map((a) => a.id)).toEqual(['rotate', 'toggle-active', 'delete']);
-    expect(c.actions.every((a) => a.permission === 'ideation.triage.manage')).toBe(true);
+    const perm = (id: string) => c.actions.find((a) => a.id === id)?.permission;
+    expect(perm('rotate')).toBe('ideation.business_requirements.manage');
+    expect(perm('toggle-active')).toBe('ideation.business_requirements.manage');
+    expect(perm('delete')).toBe('ideation.triage.manage');
+  });
+
+  it('the row menu hides Rotate / Deactivate for a triage-only user and shows them with both keys', async () => {
+    const { config: c } = config([]);
+    const menu = async (keys: string[]) => {
+      canKeys.splice(0, canKeys.length, ...keys);
+      const { unmount } = render(
+        <ActionMenu actions={c.actions} rows={[conn()]} runtime={{ reload: vi.fn() }} surface="row" />,
+      );
+      await userEvent.click(screen.getByRole('button'));
+      const names = (await screen.findAllByRole('menuitem')).map((i) => i.textContent?.trim());
+      unmount();
+      return names;
+    };
+    const triageOnly = await menu(['ideation.triage.manage']);
+    expect(triageOnly).toEqual(['Delete']);
+    const both = await menu(['ideation.triage.manage', 'ideation.business_requirements.manage']);
+    expect(both).toEqual(expect.arrayContaining(['Rotate secret', 'Deactivate', 'Delete']));
   });
 
   it('fetcher returns the connection list, newest-first, and honours search', async () => {
@@ -79,27 +107,32 @@ describe('useEmbedConnectionsListConfig (PLAN-ideation-embed-sso §7)', () => {
     expect(acc(conn({ productId: null }))).toBe('All ideas');
   });
 
-  it('toggle-active action calls setActive with the flipped flag; label reflects state', async () => {
+  it('toggle-active is a deferred (grace-window) action - no confirm, no run; label reflects state and the payload carries the flipped flag (fix round 1, T5, item 15)', () => {
     const { config: c } = config([]);
     const toggle = c.actions.find((a) => a.id === 'toggle-active')!;
     expect((toggle.label as (rows: EmbedConnectionItem[]) => string)([conn({ isActive: true })])).toBe(
       'Deactivate',
     );
-    const rt = { reload: vi.fn() };
-    await toggle.run([conn({ connectionId: 'x', isActive: true })], rt);
-    expect(setActive).toHaveBeenCalledWith('x', false);
-    expect(rt.reload).toHaveBeenCalled();
+    expect(toggle.confirm).toBeUndefined();
+    expect(toggle.run).toBeUndefined();
+    expect(toggle.deferred).toEqual({
+      actionKey: 'ideation_embed_connections.set_active',
+      entityType: 'ideation_embed_connection',
+      payload: expect.any(Function),
+    });
+    expect(toggle.deferred?.payload?.([conn({ isActive: true })])).toEqual({ isActive: false });
   });
 
-  it('delete action is destructive, confirms, and calls remove', async () => {
+  it('delete is a deferred (grace-window) action - destructive, no confirm, no run (fix round 1, T5, item 15)', () => {
     const { config: c } = config([]);
     const del = c.actions.find((a) => a.id === 'delete')!;
     expect(del.tone).toBe('destructive');
-    expect(del.confirm?.title).toMatch(/delete embed connection/i);
-    const rt = { reload: vi.fn() };
-    await del.run([conn({ connectionId: 'x' })], rt);
-    expect(remove).toHaveBeenCalledWith('x');
-    expect(rt.reload).toHaveBeenCalled();
+    expect(del.confirm).toBeUndefined();
+    expect(del.run).toBeUndefined();
+    expect(del.deferred).toEqual({
+      actionKey: 'ideation_embed_connections.delete',
+      entityType: 'ideation_embed_connection',
+    });
   });
 
   it('rotate action delegates to the onRotate handler (opens the rotate dialog)', () => {

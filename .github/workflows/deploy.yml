@@ -7,7 +7,26 @@ on:
   pull_request:
     branches:
       - main
+  # Merge-queue entries: GitHub creates a temporary branch containing the
+  # candidate merge result (this PR merged onto main plus every entry queued
+  # ahead of it) and fires this event. Every validate/test job below runs for
+  # it because none of them filter on event name, so the queue gates on the
+  # exact same checks as a PR - this is what catches two individually-green
+  # branches that only break combined (two module migrations each adding
+  # their own head on top of the same base, a shared count assertion off by
+  # one). Only "Build, push, deploy" and "Notify owner" stay off merge_group
+  # (see their own `if:` below): a queue entry only validates the merge
+  # candidate. The deploy runs only on workflow_dispatch (batched releases).
+  merge_group:
   workflow_dispatch:
+    inputs:
+      force_sha:
+        # SS-DEPLOY-SKIP-STALE: a deploy normally SKIPS when its sha is not
+        # origin/main's head (a queued older run must never roll prod back).
+        # Tick this to deploy the dispatched ref's sha on purpose (rollback).
+        description: "Deploy this sha even if it is not main's head (rollback)"
+        type: boolean
+        default: false
 
 env:
   # Override IMAGE_REPO / RELEASE_TAG via repo Variables if your Docker Hub
@@ -19,6 +38,27 @@ env:
   CI_FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
 
 jobs:
+  # Fast pre-check: fail in under a minute when an alembic migration graph
+  # (core or any module) has more than one head, instead of consuming a full
+  # test-backend cycle to discover the same thing. Two branches each merging
+  # main and adding their own revision on top of the same head give that
+  # graph two heads once both land - green individually, broken combined,
+  # exactly the class of bug PR #91's stale-literal fixtures reproduced
+  # against #92's real 0011 migration. stdlib-only AST parse (no pip
+  # install: alembic's env.py imports the whole app); adapted from
+  # sorento_crm's `.github/workflows/deploy.yml` `check-migration-heads` job,
+  # generalized from one alembic directory to every directory this repo's
+  # per-module alembic convention creates (core `service_backend/alembic/`
+  # plus each `service_backend/modules/<name>/alembic/` - see the script's
+  # own docstring for exactly which directories it checks).
+  check-migration-heads:
+    name: Single alembic head per module (fast gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert exactly one head per alembic graph
+        run: python3 scripts/check_migration_heads.py
+
   lint-conventions:
     name: Lint conventions (no emdash, brand spelling)
     runs-on: ubuntu-latest
@@ -42,6 +82,23 @@ jobs:
           # filename references are a sanctioned exception (see PRINCIPLES.md).
           if git grep -I -n 'Foundry[X]' | grep -v 'TokensStudio'; then
             echo "::error::Found the banned brand misspelling (capital X after Foundry) - the brand is 'Foundryx'. See PRINCIPLES.md."
+            exit 1
+          fi
+      - name: No stray play[w]right mentions outside the allowed set (AC-DLA-69)
+        run: |
+          # 'play[w]right' so this script never matches itself, same trick as
+          # 'Foundry[X]' above. D15 (plan 23): that E2E tool is retired here -
+          # AGENTS.md and PRINCIPLES.md are the only files allowed to name it,
+          # each with one retirement sentence (checked by the frontend guard
+          # test, service_frontend/no-play[w]right.guard.test.ts).
+          all=$(git grep -Iil 'play[w]right' -- . ':!documentation/plans' ':!documentation/preliminary_planning' ':!service_backend/modules/meetings/bot' ':!service_frontend/package-lock.json' ':!service_frontend/no-play[w]right.guard.test.ts' || true)
+          hits=""
+          if [ -n "$all" ]; then
+            hits=$(printf '%s\n' "$all" | grep -v -x -e AGENTS.md -e PRINCIPLES.md || true)
+          fi
+          if [ -n "$hits" ]; then
+            echo "::error::Found tracked files mentioning the retired E2E tool outside AGENTS.md/PRINCIPLES.md:"
+            echo "$hits"
             exit 1
           fi
 
@@ -101,11 +158,109 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
+  test-backend:
+    name: Test backend (pytest)
+    runs-on: ubuntu-latest
+    # The suite runs under pytest-xdist here (PR #77): measured 3m26s at
+    # `-n 4` locally, and the hosted runner has 4 cores - 30 min is a wide
+    # margin, not a target.
+    timeout-minutes: 30
+    env:
+      # Conftest builds its own in-memory SQLite DB per test and disables the
+      # email dispatcher / startup orphan sweep, so nothing here ever opens a
+      # real connection - these are throwaway values so app.config.Settings
+      # (DATABASE_URL/JWT_SECRET have no default) and app.main import cleanly.
+      DATABASE_URL: postgresql://x:x@localhost/x
+      JWT_SECRET: ci-dummy-secret
+      FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
+      OMNICHANNEL_FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_TASK_ALWAYS_EAGER: "true"
+      # The zero-config AI stub (AC-BI-12) and every stateful-AI-runtime test
+      # that rides it only answer when settings.environment == "development"
+      # (app/ai/client.py) - "development" is also Settings' own default, so
+      # this just makes CI match what a coder's local .env already carries.
+      ENVIRONMENT: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: service_backend/requirements.txt
+      - name: Install WeasyPrint native dependencies (Pango/cairo/gdk-pixbuf)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libglib2.0-0 libpango-1.0-0 libpangoft2-1.0-0 libpangocairo-1.0-0 \
+            libgdk-pixbuf-2.0-0 libcairo2 libffi-dev shared-mime-info fonts-dejavu-core
+      - name: Install backend dependencies
+        working-directory: service_backend
+        run: pip install -r requirements.txt
+      - name: Run pytest
+        working-directory: service_backend
+        # Parallelism is opt-in on the command line by design (pytest.ini
+        # keeps a bare run serial for cheap single-file runs on the shared
+        # dev machine); `--dist loadfile` pins every test in a file to one
+        # worker so conftest's module-global registries stay coherent.
+        run: python -m pytest -q -n auto --dist loadfile -p no:cacheprovider --durations=15
+
+  test-frontend:
+    name: Test frontend (lint + vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: service_frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: service_frontend
+        run: npm ci --force
+      - name: Lint
+        working-directory: service_frontend
+        run: npm run lint
+      # CI-only knobs (vitest.config.mts stays untouched so local runs keep
+      # their defaults): the hosted runner has 4 cores and vitest's default
+      # worker count starves the RTL `waitFor` polls (a different
+      # timing-sensitive test flaked on every run - not a per-test bug), so
+      # cap the worker threads and give every test a CI-scale timeout. Both
+      # bounds are pinned: vitest derives its default `minThreads` from the
+      # core count and refuses a `maxWorkers` below it.
+      - name: Vitest
+        working-directory: service_frontend
+        run: npm test -- --run --minWorkers=2 --maxWorkers=2 --testTimeout=20000
+
   build-and-deploy:
     name: Build, push, deploy (blue/green)
-    needs: [lint-conventions, validate-backend, validate-frontend]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs:
+      [
+        check-migration-heads,
+        lint-conventions,
+        validate-backend,
+        validate-frontend,
+        test-backend,
+        test-frontend,
+      ]
+    # RELEASES ARE BATCHED (owner ruling 5 Nov 2026: "Don't deploy shared
+    # service on every merge"). A push to main runs the CI jobs above only;
+    # this job runs ONLY on workflow_dispatch (Actions > Run workflow on main),
+    # which crew uses to cut one release over many merges. The head guard
+    # below still refuses a non-head sha unless force_sha is ticked.
+    if: github.event_name == 'workflow_dispatch'
+    # ONE prod deploy at a time. Two main pushes a minute apart used to run two
+    # blue/green deploys at once (both read the same .active_color and brought
+    # up the same standby colour). Queue, never cancel: cancelling a run
+    # mid-switch could leave Caddy and .active_color disagreeing. The host-side
+    # flock in blue_green_deploy.sh also covers manual runs on the server.
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
     runs-on: ubuntu-latest
+    outputs:
+      skipped: ${{ steps.outcome.outputs.skipped }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -147,17 +302,42 @@ jobs:
 
       # Native ssh/scp wrapped in retries - the server's SSH dial is
       # intermittently flaky (i/o timeout), so each remote step auto-retries
-      # instead of failing the whole deploy. SSH opts skip host-key prompts
-      # (StrictHostKeyChecking=no) since runner IPs rotate.
+      # instead of failing the whole deploy. The host key is pinned: ssh runs
+      # with StrictHostKeyChecking=yes against a known-hosts file written from
+      # the SSH_KNOWN_HOSTS secret, so a changed or wrong host key fails fast.
       - name: Configure SSH key
         env:
           DEPLOY_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          if [ -z "$KNOWN_HOSTS" ]; then
+            echo "::error::SSH_KNOWN_HOSTS secret is empty - add the verified host key line (see DEPLOY.md 'SSH_KNOWN_HOSTS'); not connecting"
+            exit 1
+          fi
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts
+          chmod 600 ~/.ssh/deploy_known_hosts
+
+      # SS-DEPLOY-SKIP-STALE (5 Nov 2026): the queue above runs deploys one at
+      # a time but in COMPLETION order of their tests, so an older main commit
+      # could deploy after a newer one and roll prod back (cf831cb0 over
+      # c748c240). Skip (exit 0) unless this sha is origin/main's head right
+      # now; workflow_dispatch with force_sha deploys on purpose. The host
+      # script re-checks inside its flock (this check alone is racy).
+      - name: Skip if not main head (stale sha guard)
+        id: head
+        env:
+          FORCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.force_sha }}
+        run: |
+          git fetch --no-tags --quiet --unshallow origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null \
+            || git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+          MAIN_HEAD=$(git rev-parse --verify --quiet refs/remotes/origin/main || true)
+          bash scripts/deploy_head_guard.sh "${{ github.sha }}" "$MAIN_HEAD" "$FORCE_SHA"
 
       - name: Sync compose + deploy script, render .env (retry)
+        if: steps.head.outputs.skip != 'true'
         uses: nick-fields/retry@v3
         env:
           ENV_CONTENT: |
@@ -172,6 +352,9 @@ jobs:
             FERNET_KEY=${{ secrets.FERNET_KEY }}
             OMNICHANNEL_FERNET_KEY=${{ secrets.OMNICHANNEL_FERNET_KEY }}
             BACKEND_WORKERS=${{ vars.BACKEND_WORKERS || '4' }}
+            OMNI_KEY_MAX_IN_FLIGHT=${{ vars.OMNI_KEY_MAX_IN_FLIGHT }}
+            OMNI_KEY_MAX_PER_MINUTE=${{ vars.OMNI_KEY_MAX_PER_MINUTE }}
+            OMNI_KEY_LIMIT_OVERRIDES=${{ vars.OMNI_KEY_LIMIT_OVERRIDES }}
             TRUST_PROXY_HEADERS=true
             FRONTEND_URL=${{ vars.FRONTEND_URL }}
             CORS_ORIGINS=${{ vars.CORS_ORIGINS }}
@@ -195,24 +378,36 @@ jobs:
             PLATFORM_SMTP_FROM_EMAIL=${{ vars.PLATFORM_SMTP_FROM_EMAIL }}
             PLATFORM_SMTP_FROM_NAME=${{ vars.PLATFORM_SMTP_FROM_NAME || 'Foundryx EMS' }}
         with:
-          timeout_minutes: 3
+          timeout_minutes: 6   # 3 locked writes x up to 60s lock wait, plus the dial budget
           max_attempts: 2
           retry_wait_seconds: 10
           command: |
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
-            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
             # Wait for the SSH port to accept TCP before dialing - survives a
             # server reboot mid-deploy (a full ssh dial burns 20s per timeout;
             # a cheap /dev/tcp probe polls until it's back). ~5 min budget.
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts"
-            scp $O -P "$P" scripts/blue_green_deploy.sh "$U@$H:$D/scripts/"
-            scp $O -P "$P" docker-compose.yml "$U@$H:$D/docker-compose.yml"
-            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; cat > $D/.env"
-            echo ".env + files synced"
+            ssh $O -p "$P" "$U@$H" "mkdir -p $D/scripts" || { rc=$?; if [ "$rc" -eq 255 ]; then echo "::error::ssh could not connect or verify the host (exit 255). Check the SSH_KNOWN_HOSTS secret (see DEPLOY.md) and the SSH_HOST, SSH_PORT and SSH_PRIVATE_KEY values. Do not re-run this deploy until they are checked."; exit 1; fi; echo "::error::cannot mkdir $D/scripts - the deploy user cannot write DEPLOY_PATH. On the host run: sudo chown -R $U $D"; exit 1; }
+            # Every write below runs under the SAME host lock blue_green_deploy.sh
+            # holds for a whole deploy (SS-DEPLOY-LOCK-SHA): rewriting the script,
+            # compose or .env under a running (e.g. manual) deploy would make it
+            # execute a mix of old and new lines. Exit 75 = the lock stayed busy.
+            LOCK="$D/.blue_green_deploy.lock"
+            put() { ssh $O -p "$P" "$U@$H" "flock -E 75 -w 60 $LOCK sh -c 'cat > $1${2:+ && chmod $2 $1}'"; }
+            busy() { echo "::error::another blue/green deploy holds $LOCK on the host (waited 60s) - files NOT synced; re-run once it finishes"; exit 1; }
+            put "$D/scripts/blue_green_deploy.sh" 755 < scripts/blue_green_deploy.sh || { [ $? -eq 75 ] && busy; echo "::error::writing the deploy script failed - DEPLOY_PATH not writable by $U (sudo chown -R $U $D on the host)"; exit 1; }
+            # Compose MUST land or the host keeps a stale compose - fatal + diagnostic.
+            put "$D/docker-compose.yml" < docker-compose.yml || { [ $? -eq 75 ] && busy; echo "::error::writing docker-compose.yml failed - $D/docker-compose.yml not writable by $U. Fix on the host: sudo chown $U $D/docker-compose.yml (or sudo chown -R $U $D)"; exit 1; }
+            # .env: warn but do not block - the host keeps its existing .env if this
+            # write is refused (e.g. a root-owned .env from an earlier run).
+            # (A busy lock is still fatal: busy exits before the warning.)
+            printf '%s' "$ENV_CONTENT" | ssh $O -p "$P" "$U@$H" "umask 077; flock -E 75 -w 60 $LOCK sh -c 'cat > $D/.env && chmod 600 $D/.env'" || { [ $? -ne 75 ] || busy; false; } || echo "::warning::.env write or chmod refused (permission) - the host .env may be unchanged or keep its old mode. Fix: sudo chown $U $D/.env on the host"
+            echo "files synced (see any warnings above)"
 
       - name: Deploy blue/green via Caddy (retry)
+        if: steps.head.outputs.skip != 'true'
         uses: nick-fields/retry@v3
         env:
           APP_DOMAIN: ${{ vars.APP_DOMAIN }}
@@ -224,30 +419,61 @@ jobs:
           timeout_minutes: 18
           max_attempts: 2
           retry_wait_seconds: 15
+          shell: bash
           command: |
+            # -e + pipefail: the retry action runs `bash -c` without -e, so a
+            # failed ssh deploy must stop here (non-zero = retry / red step).
+            set -eo pipefail
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
-            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "cd $D && chmod +x scripts/blue_green_deploy.sh && IMAGE_TAG='${{ github.sha }}' APP_DOMAIN='$APP_DOMAIN' BACKEND_PATH='$BACKEND_PATH' TLS_EMAIL='$TLS_EMAIL' CADDY_SITE_FILE='$CADDY_SITE_FILE' CADDY_CONFIG='$CADDY_CONFIG' ./scripts/blue_green_deploy.sh"
+            # In-lock re-check input: every main commit newer than this sha (hex
+            # shas only, from git). The host skips if the RUNNING backend is one
+            # of them - i.e. a newer deploy won the race after the pre-check.
+            git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main || true
+            NEWER=$(git rev-list "${{ github.sha }}..refs/remotes/origin/main" 2>/dev/null | tr '\n' ' ' || true)
+            ssh $O -p "$P" "$U@$H" "cd $D && chmod +x scripts/blue_green_deploy.sh && DEPLOY_NEWER_SHAS='$NEWER' DEPLOY_FORCE='${{ (github.event_name == 'workflow_dispatch' && inputs.force_sha) && '1' || '0' }}' IMAGE_TAG='${{ github.sha }}' APP_DOMAIN='$APP_DOMAIN' BACKEND_PATH='$BACKEND_PATH' TLS_EMAIL='$TLS_EMAIL' CADDY_SITE_FILE='$CADDY_SITE_FILE' CADDY_CONFIG='$CADDY_CONFIG' ./scripts/blue_green_deploy.sh" | tee "$RUNNER_TEMP/deploy.out"
+            if grep -qx 'DEPLOY_SKIPPED_STALE_SHA' "$RUNNER_TEMP/deploy.out"; then echo "DEPLOY_SKIPPED=1" >> "$GITHUB_ENV"; fi
 
       - name: Verify public endpoints (retry)
+        if: steps.head.outputs.skip != 'true' && env.DEPLOY_SKIPPED != '1'
         uses: nick-fields/retry@v3
+        env:
+          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
         with:
           timeout_minutes: 4
           max_attempts: 3
           retry_wait_seconds: 10
           command: |
+            set -eo pipefail
             P="${{ vars.SSH_PORT || 22 }}"; H="${{ secrets.SSH_HOST }}"; U="${{ secrets.SSH_USER }}"; D="${{ secrets.DEPLOY_PATH }}"
-            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+            O="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+            [ -n "$APP_DOMAIN" ] || { echo "APP_DOMAIN repository variable is not set"; exit 1; }
             wait_for_port() { for i in $(seq 1 12); do timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && { echo "ssh $1:$2 up"; return 0; }; echo "waiting for ssh $1:$2 ($i/12)"; sleep 5; done; return 1; }
             wait_for_port "$H" "$P" || { echo "ssh port never came up"; exit 1; }
-            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; curl -fsS -o /dev/null http://127.0.0.1:\$BE/health && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
+            ssh $O -p "$P" "$U@$H" "ACTIVE=\$(cat $D/.active_color 2>/dev/null || echo blue); if [ \"\$ACTIVE\" = blue ]; then BE=8200; FE=3200; else BE=8210; FE=3210; fi; echo \"active=\$ACTIVE be=\$BE fe=\$FE\"; HEALTH=\$(curl -fsS http://127.0.0.1:\$BE/health) && echo \"health=\$HEALTH\" && echo \"\$HEALTH\" | grep -q '\"git_sha\": *\"${{ github.sha }}\"' && curl -fsS -o /dev/null http://127.0.0.1:\$FE/ && echo endpoints OK"
+            curl --fail --silent --show-error --output /dev/null "https://$APP_DOMAIN/"
+            echo "public HTTPS certificate verified"
+
+      - name: Report deploy outcome
+        id: outcome
+        if: always()
+        run: echo "skipped=${{ steps.head.outputs.skip == 'true' || env.DEPLOY_SKIPPED == '1' }}" >> "$GITHUB_OUTPUT"
 
   notify-owner:
     name: Notify owner by email
     runs-on: ubuntu-latest
-    needs: [build-and-deploy]
+    needs:
+      [
+        check-migration-heads,
+        lint-conventions,
+        validate-backend,
+        validate-frontend,
+        test-backend,
+        test-frontend,
+        build-and-deploy,
+      ]
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     steps:
       - name: Check SMTP configuration
@@ -267,7 +493,16 @@ jobs:
       - name: Compute notification content
         id: notify
         run: |
-          if [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # A merge to main never deploys (releases are batched).
+            if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+              echo "subject=❌ Foundryx main CI failed (CI only, not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            else
+              echo "subject=✅ Foundryx main CI passed (CI only, not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "${{ needs.build-and-deploy.result }}" = "success" ] && [ "${{ needs.build-and-deploy.outputs.skipped }}" = "true" ]; then
+            echo "subject=⏭️ Foundryx EMS release skipped, sha is not main head (re-run on main, or force_sha) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
             echo "subject=✅ Foundryx EMS deploy succeeded (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           else
             echo "subject=❌ Foundryx EMS deploy failed (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"

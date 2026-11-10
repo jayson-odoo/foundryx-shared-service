@@ -208,7 +208,7 @@ function SectionCard({
           <button
             type="button"
             aria-label="Drag section"
-            className="cursor-grab text-muted-foreground/60 hover:text-foreground"
+            className={cn('cursor-grab text-muted-foreground/60 hover:text-foreground')}
             {...listeners}
             {...attributes}
           >
@@ -330,14 +330,14 @@ function PageCard({
           <button
             type="button"
             aria-label="Drag page"
-            className="cursor-grab text-muted-foreground/60 hover:text-foreground"
+            className={cn('cursor-grab text-muted-foreground/60 hover:text-foreground')}
             {...listeners}
             {...attributes}
           >
             <GripVertical className="size-4" />
           </button>
         )}
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-2xs font-semibold uppercase text-muted-foreground">
           Page {index + 1}
         </span>
         {editing ? (

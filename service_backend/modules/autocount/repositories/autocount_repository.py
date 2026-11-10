@@ -2,6 +2,10 @@
 
     !!  EVERY query below filters ``tenant_id`` AND ``company_id`` (AC-13-41).  !!
 
+Only the plan 33 alert sweep reads across tenants (``all_open_config_ids``,
+``open_orphans``, ``list_for_alert_check``; the last is lifecycle-joined); every
+row it loads is re-resolved by its own ``tenant_id`` before use.
+
 Company scope is not decoration. One tenant legitimately runs several AutoCount
 companies (D16 - ``AppId`` IS the company selector), so a tenant-only filter
 would let company A's staged supplier documents surface under company B inside
@@ -13,23 +17,65 @@ primary key - scoping by ``(tenant_id, id)`` is the same guarantee.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, or_
+from sqlalchemy import Text, and_, cast, exists, func, not_, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.models.background_job import BackgroundJob
+from app.models.background_job import (
+    JOB_NEEDS_REVIEW,
+    JOB_PENDING,
+    JOB_RUNNING,
+    BackgroundJob,
+)
 from app.models.connection import Connection
+from app.models.permission import Permission
+from app.models.role import Role
+from app.models.user import User
 
 from ..models import (
+    DELIVERY_MODE_PUSH,
+    ETL_STATUS_ACTIVE,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
+    SOURCE_IMPL_SQL_DB,
+    PULL_SNAPSHOT_STATUS_BUILDING,
+    PULL_SNAPSHOT_STATUS_READY,
+    RUN_MODE_SKIPPED,
     STAGED,
+    STAGED_DISCARDED,
+    STAGED_FAILED,
+    STAGED_OP_DELETE,
+    STAGED_PUSHED,
     AcCompany,
+    AcDocFingerprint,
     AcEntityConfig,
     AcFieldMapping,
+    AcPullApiKey,
+    AcPullAudit,
+    AcPullSnapshot,
+    AcPullSnapshotRow,
+    AcRowHash,
     AcStagedRecord,
     AcSyncRun,
+    AcTaskIncident,
     AcWatermark,
 )
+
+# ``sync.py`` writes this exact note on a budget cut-short pass (plan 33).
+BUDGET_NOTE_LIKE = "Budget reached after page %; continues on the next tick."
+# ``sync.py`` starts a run's error with exactly this when the line-fingerprint
+# sweep alone failed (SS-RECONCILE-SKIP-FIX) - shown on the run, not alerted:
+# the watermark pass still delivered, and the sweep retries next run.
+SWEEP_NOTE_PREFIX = "Line fingerprint sweep failed: "
+
+# A job that is ACTUALLY EXECUTING. ``needs_review`` is deliberately absent -
+# it is non-terminal but parked on a human, not running (see
+# ``SyncJobRepository.first_unfinished``).
+RUNNING_JOB_STATUSES = (JOB_PENDING, JOB_RUNNING)
+
+# Chunk size for an ``IN (...)`` list - a 50k-row extract must never build one
+# enormous parameter list (several drivers cap it outright).
+_IN_CHUNK = 500
 
 
 class ConnectionRepository:
@@ -60,6 +106,54 @@ class ConnectionRepository:
                 Connection.provider == provider,
             )
             .first()
+        )
+
+    def get_for_providers(
+        self, tenant_id: str, connection_id: str, providers: Sequence[str]
+    ) -> Optional[Connection]:
+        """``get_for_provider`` for a connection that may be ANY of several
+        providers (a company's source connection is ``autocount`` OR
+        ``sql_database``, plan sprint-5/01 AC-01-01). Still tenant-scoped,
+        still one query - the caller branches on ``.provider``."""
+        return (
+            self.db.query(Connection)
+            .filter(
+                Connection.tenant_id == tenant_id,
+                Connection.id == connection_id,
+                Connection.provider.in_(list(providers)),
+            )
+            .first()
+        )
+
+    def get_many(
+        self, tenant_id: str, connection_ids: Sequence[str]
+    ) -> dict[str, Connection]:
+        """Batch, TENANT-scoped id→connection lookup (the companies list's
+        ``sourceKind`` derivation, AC-01-07) - ONE ``IN`` query, never one per
+        row. A stored id resolved here is filtered by tenant, so a company row
+        can never surface another tenant's connection."""
+        ids = list({cid for cid in connection_ids if cid})
+        if not ids:
+            return {}
+        rows = (
+            self.db.query(Connection)
+            .filter(Connection.tenant_id == tenant_id, Connection.id.in_(ids))
+            .all()
+        )
+        return {row.id: row for row in rows}
+
+    def list_for_provider(self, tenant_id: str, provider: str) -> List[Connection]:
+        """Every ACTIVE connection of one provider for THIS tenant (the task
+        editor's connection picker, AC-22-29) - never a bare provider fetch."""
+        return (
+            self.db.query(Connection)
+            .filter(
+                Connection.tenant_id == tenant_id,
+                Connection.provider == provider,
+                Connection.is_active.is_(True),
+            )
+            .order_by(Connection.name.asc(), Connection.id.asc())
+            .all()
         )
 
 
@@ -114,6 +208,37 @@ class CompanyRepository:
             .first()
         )
 
+    def find_by_sorento_company_code(
+        self, tenant_id: str, code: str
+    ) -> List[AcCompany]:
+        """Sprint-5/10 S4 (AC-10-30) - the gateway's own company resolution:
+        case-insensitive, trimmed, WITHIN the given tenant only. Compared in
+        Python (not SQL ``lower()``) so this behaves identically on SQLite
+        (tests) and Postgres (prod) - the company set per tenant is small.
+
+        Returns EVERY match, ordered deterministically (security round 1,
+        LOW 7): the save path does not (yet) prevent two companies in one
+        tenant from sharing a code, so the caller must refuse ambiguity
+        (409 `AMBIGUOUS_COMPANY`) rather than this method silently picking
+        one - an unordered single-row return previously let the DB's own
+        arbitrary row order decide."""
+        normalized = (code or "").strip().casefold()
+        if not normalized:
+            return []
+        rows = (
+            self.db.query(AcCompany)
+            .filter(
+                AcCompany.tenant_id == tenant_id,
+                AcCompany.sorento_company_code.isnot(None),
+            )
+            .order_by(AcCompany.created_at.asc(), AcCompany.id.asc())
+            .all()
+        )
+        return [
+            row for row in rows
+            if (row.sorento_company_code or "").strip().casefold() == normalized
+        ]
+
     def get_by_connection(
         self, tenant_id: str, connection_id: str
     ) -> Optional[AcCompany]:
@@ -155,6 +280,41 @@ class CompanyRepository:
         )
         return rows, total
 
+    def has_ref_namespace_state(self, tenant_id: str, company_id: str) -> bool:
+        """Whether this company has minted ANY ref under its current
+        ``database_name`` yet - a reconcile row-hash OR a delivered
+        (``PUSHED``) staged row (plan 22 S4 review B1.d).
+
+        Masters mint a COMPANY-QUALIFIED ``source_ref`` from ``database_name``
+        (AC-14-10); a rename after either of these exists mints a DIFFERENT
+        namespace on the very next run, which reads to the sink as a batch of
+        brand-new records - and, once reconcile notices the OLD refs are
+        "gone", a batch of deletes for what was never actually removed. This
+        is the guard that closes that incident class; the caller is
+        ``CompanyService.update_database_name``.
+        """
+        has_hash = (
+            self.db.query(AcRowHash.company_id)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+            )
+            .first()
+            is not None
+        )
+        if has_hash:
+            return True
+        return (
+            self.db.query(AcStagedRecord.id)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.status == STAGED_PUSHED,
+            )
+            .first()
+            is not None
+        )
+
 
 class EntityConfigRepository:
     def __init__(self, db: Session):
@@ -186,6 +346,26 @@ class EntityConfigRepository:
                 AcEntityConfig.company_id == company_id,
             )
             .order_by(AcEntityConfig.entity_type.asc())
+            .all()
+        )
+
+
+    def list_for_alert_check(self, tenant_join, open_ids: Sequence[str]) -> List[AcEntityConfig]:
+        """Plan 33 - every ACTIVE push integration of an active tenant/Service
+        (``tenant_join`` is the sweep's own lifecycle predicate), plus any
+        integration holding an open incident so it can be closed."""
+        return (
+            tenant_join(self.db.query(AcEntityConfig), AcEntityConfig.tenant_id)
+            .filter(
+                or_(
+                    and_(
+                        AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
+                        AcEntityConfig.source_impl.in_((SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)),
+                        AcEntityConfig.delivery_mode == DELIVERY_MODE_PUSH,
+                    ),
+                    AcEntityConfig.id.in_(list(open_ids)),
+                )
+            )
             .all()
         )
 
@@ -262,16 +442,20 @@ class FieldMappingRepository:
             .all()
         )
 
-    def count(self, tenant_id: str, company_id: str, entity_type: str) -> int:
-        return (
-            self.db.query(AcFieldMapping)
-            .filter(
-                AcFieldMapping.tenant_id == tenant_id,
-                AcFieldMapping.company_id == company_id,
-                AcFieldMapping.entity_type == entity_type,
-            )
-            .count()
+    def count(
+        self, tenant_id: str, company_id: str, entity_type: str, scope: Optional[str] = None
+    ) -> int:
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
         )
+        # ``scope`` (sprint-5/02 hotfix): the document preset seed is per SCOPE -
+        # a task whose LINE rows were backfilled by migration 0010 but whose
+        # header was never mapped must still get its header preset.
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
+        return query.count()
 
     def delete_by_canonical(
         self,
@@ -279,23 +463,74 @@ class FieldMappingRepository:
         company_id: str,
         entity_type: str,
         canonical_fields: Sequence[str],
+        *,
+        scope: Optional[str] = None,
     ) -> int:
         """Delete the mapping rows whose ``canonical_field`` is in the given set -
         the DELIVERABLE rows the operator is replacing (plan 15 §2). Rows whose
         canonical field is NOT listed (identity/watermark provenance like
         ``last_modified``) are left untouched, so a full re-map can never wipe the
-        watermark mapping and silently break delta sync."""
+        watermark mapping and silently break delta sync.
+
+        ``scope`` (sprint-5/02, AC-02-01) - when given, ONLY rows in that scope
+        are touched. A document's header and line scopes both accept
+        ``product_ref``-shaped canonical field NAMES independently (a header
+        catalog and a line catalog are disjoint sets in practice, but the
+        filter is the actual guarantee, not the disjointness) - without it, a
+        header-only re-map's ``delete_unknown`` sweep (below) would delete
+        every LINE row too (the bug AC-02-01 pins)."""
         fields = list(canonical_fields)
         if not fields:
             return 0
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
+            AcFieldMapping.canonical_field.in_(fields),
+        )
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
+        deleted = query.delete(synchronize_session=False)
+        self.db.flush()
+        return deleted
+
+    def delete_unknown(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        keep: Sequence[str],
+        *,
+        scope: Optional[str] = None,
+    ) -> int:
+        """Sweep STALE rows on a mapping save (plan 22 S4 review S4) - a row
+        whose ``canonical_field`` is neither an accepted Sorento target NOR an
+        explicitly-preserved provenance field (``keep``). Left behind by a
+        catalogue that changed shape since the row was written (a field
+        renamed/removed from ``SORENTO_FIELDS``, or a mapping row planted with
+        a garbage target), these rows are otherwise invisible - the mapping
+        editor only shows/writes ``accepted`` targets, so nothing surfaces
+        them, and they linger forever accumulating.
+
+        The caller is responsible for ``keep`` covering EVERY legitimate
+        non-deliverable field (``last_modified`` for masters); calling this
+        with an empty ``keep`` on an entity with no accepted Sorento fields at
+        all (GRN, whose ``SORENTO_FIELDS`` entry is deliberately empty) would
+        wipe its entire default mapping, so ``CompanyService.replace_mapping``
+        only calls this when the entity has a non-empty accepted set."""
+        names = list(keep)
+        if not names:
+            return 0
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
+            AcFieldMapping.canonical_field.notin_(names),
+        )
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
         deleted = (
-            self.db.query(AcFieldMapping)
-            .filter(
-                AcFieldMapping.tenant_id == tenant_id,
-                AcFieldMapping.company_id == company_id,
-                AcFieldMapping.entity_type == entity_type,
-                AcFieldMapping.canonical_field.in_(fields),
-            )
+            query
             .delete(synchronize_session=False)
         )
         self.db.flush()
@@ -394,6 +629,137 @@ class StagedRecordRepository:
             .all()
         )
 
+    def list_pending_for_entity(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        job_type: str,
+        limit: int = 5000,
+    ) -> List[AcStagedRecord]:
+        """Every AUTO-PUSHABLE staged row for one (company, entity), oldest
+        first - across jobs (plan 22 §2.6, AC-22-20).
+
+        Two rules, and the second one is a safety gate:
+
+        * **Across jobs**, because an auto-pushing task has no per-job review
+          gate and "what is still undelivered" is an ENTITY-level question: a
+          record the consumer called ``retryable`` stays STAGED and must be
+          re-offered by the NEXT run, which is a different job.
+        * **NEVER a row belonging to a batch that is still awaiting review.**
+          An entity switched from the API path to a DB task can carry old
+          ``needs_review`` batches (the API path parks them there by design).
+          Auto-pushing those would deliver records a human explicitly still
+          owns - the review gate bypassed by a source switch. Those rows stay
+          exactly where they are until somebody approves or discards them.
+
+        The per-JOB ``list_pending_for_job`` is untouched: the review gate is a
+        per-batch decision and must not widen.
+
+        **Ordered ``last_offered_at`` NULLS FIRST, then newest-source-first,
+        then oldest-created-first** (fix/push-marks-per-chunk, prod finding
+        2026-09-07; feat/line-fingerprint-sweep adds the middle term): a
+        permanently ``retryable`` head (a master its consumer keeps saying
+        isn't synced yet) sorts oldest-first FOREVER under a plain
+        ``created_at`` order, starving every row staged after it once the
+        offer cap is below the stuck count. Stamping ``last_offered_at`` on
+        every offer (``mark_offered``, called by the caller right after this
+        read) and sorting never-offered rows first means a fresh row is
+        offered within one extra tick even behind an arbitrarily large stuck
+        head. Among never-offered rows (and, after a full sweep, among
+        re-offered ones too), ``source_last_modified`` DESC breaks the tie
+        so the sweep's own re-staged documents - which can land in any
+        ``created_at`` order relative to the normal paged pass - are still
+        offered newest-source-change-first; NULLS LAST keeps a row with no
+        source stamp (never fetched with a watermark column) from jumping
+        ahead of one that has a real, recent change.
+        """
+        parked = (
+            self.db.query(BackgroundJob.id)
+            .filter(
+                BackgroundJob.tenant_id == tenant_id,
+                # ``background_jobs`` is a SHARED core table - pin the TYPE
+                # too (NIT, S2 review) so this can never widen onto another
+                # feature's needs_review jobs as the table grows, even though
+                # ``AcStagedRecord.job_id`` only ever references OUR job type
+                # today (defense-in-depth, not a behaviour change).
+                BackgroundJob.type == job_type,
+                BackgroundJob.status == JOB_NEEDS_REVIEW,
+            )
+            .subquery()
+        )
+        return (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.entity_type == entity_type,
+                AcStagedRecord.status == STAGED,
+                AcStagedRecord.job_id.notin_(select(parked.c.id)),
+            )
+            .order_by(
+                nulls_first(AcStagedRecord.last_offered_at.asc()),
+                nulls_last(AcStagedRecord.source_last_modified.desc()),
+                AcStagedRecord.created_at.asc(),
+                AcStagedRecord.id.asc(),
+            )
+            .limit(limit)
+            .all()
+        )
+
+    def mark_offered(self, rows: Sequence[AcStagedRecord], *, now: datetime) -> None:
+        """Stamp every row as OFFERED to a push (fix/push-marks-per-chunk) -
+        the starvation guard beside ``list_pending_for_entity``'s ordering.
+        Does not commit; the caller owns the transaction (``auto_push`` commits
+        this up front, before any sink call, so the stamp survives even a
+        push that then fails outright).
+
+        ONE set-based ``UPDATE`` (nit, review round 2) rather than a
+        per-row attribute assignment + ORM flush - up to 5,000 rows offered
+        in one call is the routine case, not the exception.
+        ``synchronize_session=False`` skips re-syncing the SESSION's already
+        -loaded objects against the bulk UPDATE (this call owns no other
+        pending changes to those rows to protect), so the in-memory rows are
+        stamped explicitly right after, for any caller that reads the
+        attribute back before the next fetch."""
+        ids = [row.id for row in rows]
+        if not ids:
+            return
+        self.db.execute(
+            update(AcStagedRecord)
+            .where(AcStagedRecord.id.in_(ids))
+            .values(last_offered_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        for row in rows:
+            row.last_offered_at = now
+
+    def list_staged_upserts(
+        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
+    ) -> List[AcStagedRecord]:
+        """Every STILL-OPEN (``STAGED``) upsert row for this ref (S4, review
+        round 2) - mirrors ``pending_delete_refs``'s dedup-at-stage-time rule
+        for the upsert side. Re-extracting a document that is already
+        staged (unresolved from a prior run - most commonly a ``retryable``
+        verdict) must UPDATE the existing row(s) in place rather than insert
+        a second one, which would offer the same document twice and (once
+        pushed) leave a duplicate delivered. A list, not one row, so a
+        legacy duplicate (pre-dating this fix) is refreshed on every row
+        rather than only the row this query happens to pick."""
+        return (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.entity_type == entity_type,
+                AcStagedRecord.source_ref == source_ref,
+                AcStagedRecord.op != STAGED_OP_DELETE,
+                AcStagedRecord.status == STAGED,
+            )
+            .all()
+        )
+
     def last_pushed(
         self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
     ) -> Optional[AcStagedRecord]:
@@ -426,6 +792,481 @@ class StagedRecordRepository:
             if pushed_at is not None:
                 row.pushed_at = pushed_at
         self.db.flush()
+
+    def discard_stale_deletes(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        current_refs: Sequence[str],
+    ) -> int:
+        """Cancel any pending delete intent whose ref REAPPEARED at source
+        (plan 22 S3 review BLOCKER 1). A delete intent must not outlive the
+        evidence that produced it: marks every STAGED ``op='delete'`` row for
+        a ref now present in ``current_refs`` as ``STAGED_DISCARDED`` - so a
+        ref that reappears with an UNCHANGED hash (nothing new staged for it)
+        still cancels its own stale intent, and one parked on a draft/paused
+        task never survives to fire once the task is later activated (this
+        runs on every extract, not just ones whose push is live). Does not
+        commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(current_refs) if r]
+        if not refs:
+            return 0
+        discarded = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            discarded += (
+                self.db.query(AcStagedRecord)
+                .filter(
+                    AcStagedRecord.tenant_id == tenant_id,
+                    AcStagedRecord.company_id == company_id,
+                    AcStagedRecord.entity_type == entity_type,
+                    AcStagedRecord.source_ref.in_(chunk),
+                    AcStagedRecord.op == STAGED_OP_DELETE,
+                    AcStagedRecord.status == STAGED,
+                )
+                .update({"status": STAGED_DISCARDED}, synchronize_session=False)
+            )
+        self.db.flush()
+        return discarded
+
+    def discard_for_job(self, tenant_id: str, company_id: str, job_id: str) -> int:
+        """Hard-delete every staged row THIS job wrote (NIT/R-S9, review round
+        2 - a paged run's own guard-failure rollback used to run this as a
+        raw ``db.query(AcStagedRecord)...delete()`` in ``sync.py`` instead of
+        through this repository). A guard trip is fail-SAFE: nothing this
+        job staged may survive it, so a hard delete (not a status flip) is
+        correct here - unlike ``mark(..., status=STAGED_DISCARDED)``, which
+        is for a row that DID legitimately exist and is merely being
+        superseded. Does not commit; the caller owns the transaction."""
+        return (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.job_id == job_id,
+            )
+            .delete(synchronize_session=False)
+        )
+
+    def pending_delete_refs(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> set[str]:
+        """Refs among ``source_refs`` that already carry a NON-TERMINAL delete
+        intent (``STAGED`` or ``STAGED_FAILED``, ``op='delete'``) - S6/S3
+        review: a reconcile that runs again before the first intent is
+        resolved must never pile up a second row for the same ref."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        if not refs:
+            return set()
+        out: set[str] = set()
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            rows = (
+                self.db.query(AcStagedRecord.source_ref)
+                .filter(
+                    AcStagedRecord.tenant_id == tenant_id,
+                    AcStagedRecord.company_id == company_id,
+                    AcStagedRecord.entity_type == entity_type,
+                    AcStagedRecord.source_ref.in_(chunk),
+                    AcStagedRecord.op == STAGED_OP_DELETE,
+                    AcStagedRecord.status.in_((STAGED, STAGED_FAILED)),
+                )
+                .all()
+            )
+            out.update(ref for (ref,) in rows)
+        return out
+
+
+class RowHashRepository:
+    """``ac_row_hash`` - reconcile state (plan 22 §2.4, AC-22-16).
+
+    ONE row per source record ever seen by a DB task, holding only the hash of
+    its compared columns. Every query is scoped by (tenant, company, entity) -
+    the PK's first three columns - so one company's refs can never classify
+    another's.
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def hashes_for(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> dict[str, str]:
+        """``{source_ref: row_hash}`` for the refs given - batched in chunks so
+        a 50k-row extract never builds one enormous ``IN`` list."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        out: dict[str, str] = {}
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            rows = (
+                self.db.query(AcRowHash.source_ref, AcRowHash.row_hash)
+                .filter(
+                    AcRowHash.tenant_id == tenant_id,
+                    AcRowHash.company_id == company_id,
+                    AcRowHash.entity_type == entity_type,
+                    AcRowHash.source_ref.in_(chunk),
+                )
+                .all()
+            )
+            out.update({ref: value for ref, value in rows})
+        return out
+
+    def upsert_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        hashes: dict[str, str],
+        *,
+        seen_at: datetime,
+    ) -> List[str]:
+        """Write/refresh the hash of every ref given. Returns the refs that
+        were genuinely NEW (an INSERT, not an UPDATE).
+
+        Set-based: ONE read of the existing refs - scoped to just the refs in
+        ``hashes``, never the whole population - then an UPDATE per changed
+        ref and a bulk INSERT for the new ones - never a SELECT per row. Does
+        not commit; the caller owns the transaction.
+
+        R-S4 (review round 2): a paged run's guard-failure rollback used to
+        snapshot the WHOLE known hash population up front just to work out
+        which refs it introduced this run, on every tick, success or not.
+        This ``existing`` lookup already answers exactly that question, for
+        free, scoped to only the rows THIS call is about to touch - so the
+        caller accumulates the returned inserted refs across pages instead
+        of diffing against a separate full-population snapshot.
+        """
+        if not hashes:
+            return []
+        existing = self.hashes_for(tenant_id, company_id, entity_type, list(hashes))
+        scope = {
+            "tenant_id": tenant_id,
+            "company_id": company_id,
+            "entity_type": entity_type,
+        }
+        updates = [
+            {**scope, "source_ref": ref, "row_hash": value, "last_seen_at": seen_at}
+            for ref, value in hashes.items()
+            if ref in existing
+        ]
+        inserted_refs = [ref for ref in hashes if ref not in existing]
+        inserts = [
+            {**scope, "source_ref": ref, "row_hash": hashes[ref], "last_seen_at": seen_at}
+            for ref in inserted_refs
+        ]
+        # Both take the FULL composite PK, so SQLAlchemy batches each set into
+        # one executemany - never a statement per row.
+        if updates:
+            self.db.bulk_update_mappings(AcRowHash, updates)
+        if inserts:
+            self.db.bulk_insert_mappings(AcRowHash, inserts)
+        self.db.flush()
+        return inserted_refs
+
+    def count(self, tenant_id: str, company_id: str, entity_type: str) -> int:
+        return (
+            self.db.query(AcRowHash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .count()
+        )
+
+    def touch_seen(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+        *,
+        seen_at: datetime,
+    ) -> int:
+        """Bump ``last_seen_at`` for every given ref WITHOUT touching
+        ``row_hash`` (plan sprint-5/03 S3, AC-03-15) - the primitive an
+        UNCHANGED row on a paged pass needs: it is not restaged, so
+        ``upsert_many`` never runs for it, but a completed reconcile's delete
+        diff (``stale_refs`` below) must still see it as seen THIS pass.
+        A single ``UPDATE ... WHERE ref IN (...)``, chunked like every other
+        ``IN`` list here. Does not commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        touched = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            touched += (
+                self.db.query(AcRowHash)
+                .filter(
+                    AcRowHash.tenant_id == tenant_id,
+                    AcRowHash.company_id == company_id,
+                    AcRowHash.entity_type == entity_type,
+                    AcRowHash.source_ref.in_(chunk),
+                )
+                .update({"last_seen_at": seen_at}, synchronize_session=False)
+            )
+        self.db.flush()
+        return touched
+
+    def stale_refs(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        before: datetime,
+    ) -> List[str]:
+        """Refs whose ``last_seen_at`` predates ``before`` (plan sprint-5/03
+        S3, AC-03-16/17) - a completed reconcile pass's delete candidates. A
+        pass may span several runs (D3), so this is DB-persisted rather than
+        an in-memory set (D6): every fetched ref (changed or not) gets
+        ``touch_seen``/``upsert_many`` on the page it was read, so a ref that
+        genuinely vanished at source is the only one whose stamp still
+        predates the pass start once the whole population has been walked."""
+        rows = (
+            self.db.query(AcRowHash.source_ref)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+                AcRowHash.last_seen_at < before,
+            )
+            .all()
+        )
+        return [ref for (ref,) in rows]
+
+    def all_hashes(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> dict[str, str]:
+        """Every stored ``{source_ref: row_hash}`` for one (tenant, company,
+        entity) - plan 22 S3's reconcile diff needs the WHOLE known population,
+        not just the refs a partial fetch happened to touch (that is the only
+        way a ref absent from an extract becomes visible at all, AC-22-16).
+
+        Bounded the same way a full extract is - a reconcile task's hash
+        population is the same order of magnitude as the table it mirrors.
+
+        N8: this is a genuinely UNBOUNDED load - every row for the (tenant,
+        company, entity) comes back in one query, no chunking, no LIMIT. That
+        is deliberate at today's scale (mirrors ``MAX_EXTRACT_ROWS`` in
+        ``sql_source/source.py`` - a table too big to hash-diff in memory is
+        already too big for the extract that populates this table to
+        succeed). Revisit with a streamed/paged diff if a reconciled entity
+        ever needs to exceed that ceiling.
+        """
+        rows = (
+            self.db.query(AcRowHash.source_ref, AcRowHash.row_hash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .all()
+        )
+        return {ref: value for ref, value in rows}
+
+    def delete_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> int:
+        """Remove the hash rows for CONFIRMED-DELETED refs (AC-22-21) - so a
+        later re-appearance at source has no prior hash to compare against and
+        stages as a fresh add, not a phantom update. Chunked like every other
+        ``IN`` list here. Does not commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        deleted = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            deleted += (
+                self.db.query(AcRowHash)
+                .filter(
+                    AcRowHash.tenant_id == tenant_id,
+                    AcRowHash.company_id == company_id,
+                    AcRowHash.entity_type == entity_type,
+                    AcRowHash.source_ref.in_(chunk),
+                )
+                .delete(synchronize_session=False)
+            )
+        self.db.flush()
+        return deleted
+
+    def clear_all(self, tenant_id: str, company_id: str, entity_type: str) -> int:
+        """Wipe EVERY hash row for one (tenant, company, entity) - the
+        re-baseline primitive a population-narrowing task save needs (F1,
+        sprint-5/02 review round): a header that merely fell out of a new,
+        narrower scope must never be diffed against a stale hash population
+        and read as a genuine deletion. The caller re-populates from a clean
+        slate on the next fetch (`upsert_many`), so a real deletion is only
+        ever detected again once the new population has had a chance to see
+        every record it is actually configured to see. Does not commit; the
+        caller owns the transaction."""
+        deleted = (
+            self.db.query(AcRowHash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db.flush()
+        return deleted
+
+    def invalidate_all(
+        self, tenant_id: str, company_id: str, entity_type: str, *, stamp: str
+    ) -> int:
+        """Plan 13 review round 2 (S1, S3 fixes) - Re-push and a sink-target
+        switch must INVALIDATE this task's known refs, never DELETE them
+        (``clear_all`` above, kept for the genuine ``push -> pull`` flip,
+        D10, where stale hashes really would mask a pair the pull period
+        zeroed). A plain ``UPDATE ... SET row_hash = stamp WHERE ...``
+        (no read-then-write): every ref then restages on its next fetch
+        (a stamped hash can never match a freshly computed content hash)
+        but stays KNOWN, so a genuine delete is still correctly derived
+        for a ref that has truly vanished - including one a truncated
+        walk (D8) held back - instead of that ref silently falling out of
+        the diff's ``known`` population the moment its row disappears.
+        ``stamp`` is a value the caller mints so it can never collide with
+        a genuine content hash (e.g. ``f"repush:{utcnow.isoformat()}"``).
+        Does not commit; the caller owns the transaction."""
+        updated = (
+            self.db.query(AcRowHash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .update({"row_hash": stamp}, synchronize_session=False)
+        )
+        self.db.flush()
+        return updated
+
+
+class DocFingerprintRepository:
+    """``ac_doc_fingerprint`` - the line-fingerprint sweep's own state
+    (feat/line-fingerprint-sweep). ONE row per document header ever seen
+    by a sweep, holding the sha256 of its own fingerprint query's ordered
+    aggregate values - a SEPARATE table from ``ac_row_hash``: this
+    refreshes on EVERY sweep tick regardless of whether the header's own
+    row hash changed. Every query scoped by (tenant, company, entity), the
+    same discipline as ``RowHashRepository`` above.
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def hashes_for(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> dict[str, str]:
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        out: dict[str, str] = {}
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            rows = (
+                self.db.query(AcDocFingerprint.source_ref, AcDocFingerprint.fingerprint)
+                .filter(
+                    AcDocFingerprint.tenant_id == tenant_id,
+                    AcDocFingerprint.company_id == company_id,
+                    AcDocFingerprint.entity_type == entity_type,
+                    AcDocFingerprint.source_ref.in_(chunk),
+                )
+                .all()
+            )
+            out.update({ref: value for ref, value in rows})
+        return out
+
+    def upsert_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        fingerprints: dict[str, str],
+        *,
+        seen_at: datetime,
+    ) -> None:
+        """Write/refresh the fingerprint of every ref given. Set-based, same
+        shape as ``RowHashRepository.upsert_many``. Does not commit; the
+        caller owns the transaction."""
+        if not fingerprints:
+            return
+        existing = self.hashes_for(tenant_id, company_id, entity_type, list(fingerprints))
+        scope = {"tenant_id": tenant_id, "company_id": company_id, "entity_type": entity_type}
+        updates = [
+            {**scope, "source_ref": ref, "fingerprint": value, "seen_at": seen_at}
+            for ref, value in fingerprints.items()
+            if ref in existing
+        ]
+        inserts = [
+            {**scope, "source_ref": ref, "fingerprint": value, "seen_at": seen_at}
+            for ref, value in fingerprints.items()
+            if ref not in existing
+        ]
+        if updates:
+            self.db.bulk_update_mappings(AcDocFingerprint, updates)
+        if inserts:
+            self.db.bulk_insert_mappings(AcDocFingerprint, inserts)
+        self.db.flush()
+
+    def delete_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> int:
+        """Drop the fingerprint rows for CONFIRMED-DELETED refs - the
+        reconcile-completion counterpart of ``RowHashRepository.
+        delete_many``, called on the SAME ``stale`` ref list so a vanished
+        document's fingerprint never outlives the document itself. Does not
+        commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        deleted = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            deleted += (
+                self.db.query(AcDocFingerprint)
+                .filter(
+                    AcDocFingerprint.tenant_id == tenant_id,
+                    AcDocFingerprint.company_id == company_id,
+                    AcDocFingerprint.entity_type == entity_type,
+                    AcDocFingerprint.source_ref.in_(chunk),
+                )
+                .delete(synchronize_session=False)
+            )
+        self.db.flush()
+        return deleted
+
+    def clear_all(self, tenant_id: str, company_id: str, entity_type: str) -> int:
+        """Drop EVERY fingerprint row of one task (plan 36): a new sweep
+        query text hashes every document differently, so the stored rows
+        would all mismatch at once and stage the whole window unpaced. With
+        none stored the next sweep re-seeds silently. Does not commit."""
+        deleted = (
+            self.db.query(AcDocFingerprint)
+            .filter(
+                AcDocFingerprint.tenant_id == tenant_id,
+                AcDocFingerprint.company_id == company_id,
+                AcDocFingerprint.entity_type == entity_type,
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db.flush()
+        return deleted
 
 
 class SyncRunRepository:
@@ -473,6 +1314,251 @@ class SyncRunRepository:
         )
         return rows, total
 
+    def has_skip_since(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        since: datetime,
+        reason_prefix: str,
+    ) -> bool:
+        """Whether a skipped-tick row with this reason was already written for
+        the task at or after ``since`` (the scheduler's one-row-per-deferred-
+        reconcile-slot dedupe)."""
+        return (
+            self.db.query(AcSyncRun.id)
+            .filter(
+                AcSyncRun.tenant_id == tenant_id,
+                AcSyncRun.company_id == company_id,
+                AcSyncRun.entity_type == entity_type,
+                AcSyncRun.mode == RUN_MODE_SKIPPED,
+                AcSyncRun.started_at >= since,
+                AcSyncRun.skip_reason.startswith(reason_prefix, autoescape=True),
+            )
+            .first()
+            is not None
+        )
+
+    # ── failure-alert evaluation (plan 33) ───────────────────────────────────
+
+    @staticmethod
+    def _budget_only():
+        """A run cut short by the run budget (``sync.py`` writes exactly this
+        note and sets ``truncated``). A push error is appended AFTER the note,
+        so a combined message no longer matches and stays a failure."""
+        return and_(AcSyncRun.truncated.is_(True), AcSyncRun.error.like(BUDGET_NOTE_LIKE))
+
+    @staticmethod
+    def _sweep_only():
+        """A run whose only fault is the line-fingerprint sweep. A push error
+        is written BEFORE the sweep note, so a combined message does not
+        match and stays a failure."""
+        return AcSyncRun.error.startswith(SWEEP_NOTE_PREFIX, autoescape=True)
+
+    def _clean_clause(self):
+        return and_(
+            AcSyncRun.outcome == "SUCCESS",
+            or_(
+                AcSyncRun.error.is_(None), AcSyncRun.error == "",
+                self._budget_only(), self._sweep_only(),
+            ),
+        )
+
+    def _failed_clause(self):
+        return or_(
+            AcSyncRun.outcome == "FAILED",
+            and_(
+                AcSyncRun.outcome == "SUCCESS",
+                AcSyncRun.error.isnot(None),
+                AcSyncRun.error != "",
+                not_(self._budget_only()),
+                not_(self._sweep_only()),
+            ),
+        )
+
+    def _scope(self, tenant_id: str, company_id: str, entity_type: str):
+        return (
+            AcSyncRun.tenant_id == tenant_id,
+            AcSyncRun.company_id == company_id,
+            AcSyncRun.entity_type == entity_type,
+            AcSyncRun.finished_at.isnot(None),
+        )
+
+    def last_clean_finished_at(
+        self, tenant_id: str, company_id: str, entity_type: str, clean_modes: Sequence[str]
+    ) -> Optional[datetime]:
+        """Finish time of the latest clean run (SUCCESS with no push error;
+        a budget cut-short run is clean)."""
+        return (
+            self.db.query(func.max(AcSyncRun.finished_at))
+            .filter(
+                *self._scope(tenant_id, company_id, entity_type),
+                AcSyncRun.mode.in_(tuple(clean_modes)),
+                self._clean_clause(),
+            )
+            .scalar()
+        )
+
+    def failed_runs_summary(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        since: Optional[datetime],
+        failed_modes: Sequence[str],
+    ) -> Tuple[int, Optional[datetime], Optional[str]]:
+        """``(count, earliest finish, latest error)`` of the finished scheduled
+        runs that failed after ``since`` - aggregates and ONE latest row, never
+        every failed run."""
+        conditions = (
+            *self._scope(tenant_id, company_id, entity_type),
+            AcSyncRun.mode.in_(tuple(failed_modes)),
+            self._failed_clause(),
+            *((AcSyncRun.finished_at > since,) if since is not None else ()),
+        )
+        count, earliest = (
+            self.db.query(func.count(AcSyncRun.id), func.min(AcSyncRun.finished_at))
+            .filter(*conditions)
+            .one()
+        )
+        if not count:
+            return 0, None, None
+        latest = (
+            self.db.query(AcSyncRun.error)
+            .filter(*conditions)
+            .order_by(AcSyncRun.finished_at.desc(), AcSyncRun.id.desc())
+            .limit(1)
+            .scalar()
+        )
+        return int(count), earliest, latest
+
+
+class TaskIncidentRepository:
+    """``ac_task_incident`` - plan 33. Every read carries the tenant."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, incident: AcTaskIncident) -> AcTaskIncident:
+        self.db.add(incident)
+        self.db.flush()
+        return incident
+
+    def get_open(self, tenant_id: str, entity_config_id: str) -> Optional[AcTaskIncident]:
+        return (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.entity_config_id == entity_config_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .first()
+        )
+
+    def open_for_company(
+        self, tenant_id: str, company_id: str
+    ) -> Dict[str, AcTaskIncident]:
+        """Open incidents of one company keyed by ``entity_config_id`` - ONE query."""
+        rows = (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.company_id == company_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .all()
+        )
+        return {row.entity_config_id: row for row in rows}
+
+    def users_with_permission(self, tenant_id: str, permission_key: str) -> List[User]:
+        """Users of THIS tenant holding ``permission_key`` through a role of
+        this same tenant (never a user or role of another tenant)."""
+        return (
+            self.db.query(User)
+            .join(User.roles)
+            .filter(
+                User.tenant_id == tenant_id,
+                Role.tenant_id == tenant_id,
+                Role.permissions.any(Permission.key == permission_key),
+            )
+            .distinct()
+            .all()
+        )
+
+    def claim_notice(
+        self, incident: AcTaskIncident, expected_last_notified: Optional[datetime], now: datetime
+    ) -> bool:
+        """Guarded claim of one reminder: only the check whose read of
+        ``last_notified_at`` is still current wins (rowcount 1)."""
+        result = self.db.execute(
+            update(AcTaskIncident)
+            .where(
+                AcTaskIncident.id == incident.id,
+                AcTaskIncident.tenant_id == incident.tenant_id,
+                AcTaskIncident.closed_at.is_(None),
+                AcTaskIncident.last_notified_at.is_not_distinct_from(expected_last_notified),
+            )
+            .values(last_notified_at=now, notices_sent=AcTaskIncident.notices_sent + 1)
+            .execution_options(synchronize_session=False)
+        )
+        won = result.rowcount == 1
+        if won:
+            self.db.refresh(incident)
+        return won
+
+    def claim_close(self, incident: AcTaskIncident, now: datetime, reason: str) -> bool:
+        """Guarded close: only one of two overlapping checks closes (and so
+        sends the recovered notice for) an incident."""
+        result = self.db.execute(
+            update(AcTaskIncident)
+            .where(
+                AcTaskIncident.id == incident.id,
+                AcTaskIncident.tenant_id == incident.tenant_id,
+                AcTaskIncident.closed_at.is_(None),
+            )
+            .values(closed_at=now, close_reason=reason)
+            .execution_options(synchronize_session=False)
+        )
+        won = result.rowcount == 1
+        if won:
+            self.db.refresh(incident)
+        return won
+
+    def last_notice_at(self, tenant_id: str, entity_config_id: str) -> Optional[datetime]:
+        """Latest notice for this integration across ALL its incidents, closed
+        ones included (the 4 h mail budget)."""
+        return (
+            self.db.query(func.max(AcTaskIncident.last_notified_at))
+            .filter(
+                AcTaskIncident.tenant_id == tenant_id,
+                AcTaskIncident.entity_config_id == entity_config_id,
+                AcTaskIncident.notices_sent > 0,
+            )
+            .scalar()
+        )
+
+    def open_orphans(self) -> List[AcTaskIncident]:
+        """Open incidents whose integration row no longer exists."""
+        return (
+            self.db.query(AcTaskIncident)
+            .filter(
+                AcTaskIncident.closed_at.is_(None),
+                ~exists().where(AcEntityConfig.id == AcTaskIncident.entity_config_id),
+            )
+            .all()
+        )
+
+    def all_open_config_ids(self) -> List[str]:
+        """Every open incident's integration id, all tenants (the sweep's
+        evaluator, which resolves each one tenant-scoped afterwards)."""
+        return [
+            row[0]
+            for row in self.db.query(AcTaskIncident.entity_config_id)
+            .filter(AcTaskIncident.closed_at.is_(None))
+            .all()
+        ]
+
 
 class SyncJobRepository:
     """READ-ONLY, TENANT-scoped access to core ``public.background_jobs``, pinned
@@ -488,6 +1574,36 @@ class SyncJobRepository:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def first_unfinished(
+        self, tenant_id: str, job_type: str, company_id: str, entity_type: str
+    ) -> Optional[BackgroundJob]:
+        """The oldest job for one (company, entity) that is ACTUALLY EXECUTING.
+
+        The overlap guard (AC-22-14) and the manual-run 409 both ask the same
+        question: "is a run for this task already in flight?" - so the answer
+        is ``pending``/``running`` only.
+
+            !!  ``needs_review`` IS NOT IN FLIGHT.  !!
+
+        It is a deliberately non-terminal status the pruner never reaps, and a
+        batch parked there is not executing - it is waiting on a human, maybe
+        forever. Counting it as in-flight would let an old API-path batch
+        permanently refuse every run of the DB task that replaced it (found in
+        live verify: four July batches blocked Run now outright).
+        """
+        return (
+            self.db.query(BackgroundJob)
+            .filter(
+                BackgroundJob.tenant_id == tenant_id,
+                BackgroundJob.type == job_type,
+                BackgroundJob.status.in_(RUNNING_JOB_STATUSES),
+                BackgroundJob.payload_json["companyId"].as_string() == company_id,
+                BackgroundJob.payload_json["entityType"].as_string() == entity_type,
+            )
+            .order_by(BackgroundJob.created_at.asc(), BackgroundJob.id.asc())
+            .first()
+        )
 
     def list(
         self,
@@ -529,3 +1645,389 @@ class SyncJobRepository:
             .all()
         )
         return rows, total
+
+
+class PullSnapshotRepository:
+    """Sprint-5/10 (§2.4, AC-10-18/19). Structurally immutability-preserving:
+    creation, an ordered row insert and the two TERMINAL stamps only - there
+    is NO update-row method and NO single-row delete, so a snapshot's own
+    composite-PK row store (``AcPullSnapshotRow``) can only ever be built up
+    once and torn down whole (``delete``, for pruning)."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, snapshot: AcPullSnapshot) -> AcPullSnapshot:
+        self.db.add(snapshot)
+        self.db.flush()
+        return snapshot
+
+    def get(self, tenant_id: str, snapshot_id: str) -> Optional[AcPullSnapshot]:
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+
+    def get_scoped(
+        self, tenant_id: str, company_id: str, snapshot_id: str
+    ) -> Optional[AcPullSnapshot]:
+        """The gateway's own read - additionally scoped to the key's allowed
+        COMPANY, never the id alone (AC-10-30: possession of an id is not
+        authorisation)."""
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+
+    def get_for_key_scope(
+        self, tenant_id: str, company_ids: Sequence[str], snapshot_id: str
+    ) -> Optional[AcPullSnapshot]:
+        """Sprint-5/10 S4 (AC-10-30/47) - the PUBLIC gateway's own read,
+        scoped to a KEY's full company SET (a key may be bound to more than
+        one company, unlike ``get_scoped``'s single id). Possession of an id
+        is not authorisation: a snapshot outside every one of these company
+        ids, or outside this tenant, reads identically to unknown."""
+        ids = list(dict.fromkeys(company_ids or []))
+        if not ids:
+            return None
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id.in_(ids),
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+
+    def list(
+        self,
+        tenant_id: str,
+        *,
+        company_id: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        exclude_entity_types: Sequence[str] = (),
+        page: int = 0,
+        page_size: int = 25,
+    ) -> Tuple[List[AcPullSnapshot], int]:
+        q = self.db.query(AcPullSnapshot).filter(AcPullSnapshot.tenant_id == tenant_id)
+        if company_id:
+            q = q.filter(AcPullSnapshot.company_id == company_id)
+        if entity_type:
+            q = q.filter(AcPullSnapshot.entity_type == entity_type)
+        if exclude_entity_types:
+            q = q.filter(AcPullSnapshot.entity_type.notin_(list(exclude_entity_types)))
+        total = q.count()
+        rows = (
+            q.order_by(AcPullSnapshot.created_at.desc(), AcPullSnapshot.id.desc())
+            .offset(page * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return rows, total
+
+    def latest_for_triple(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> Optional[AcPullSnapshot]:
+        """The most recently CREATED snapshot for one (tenant, company,
+        entity) triple, any status - ``PullService.request_build``'s
+        re-attach/cooldown check (AC-10-26)."""
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.entity_type == entity_type,
+            )
+            .order_by(AcPullSnapshot.created_at.desc(), AcPullSnapshot.id.desc())
+            .first()
+        )
+
+    def latest_ready_for_triple(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> Optional[AcPullSnapshot]:
+        """The newest READY snapshot for one triple - the zero-row guard's
+        (AC-10-46) "was there a genuine prior extract" check."""
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.entity_type == entity_type,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
+            )
+            .order_by(AcPullSnapshot.extracted_at.desc())
+            .first()
+        )
+
+    def latest_ready_source_refs(
+        self, tenant_id: str, company_id: str, entity_type: str, now: datetime
+    ) -> Dict[str, str]:
+        """Plan 13 review round 2 coordinator ruling (D9 revised) - the
+        baseline seed for a ``pull -> push`` flip. Unlike ``ready_source_
+        refs`` above (the union of EVERY READY, unexpired snapshot), this
+        reads ONLY the single latest-``extracted_at`` READY, unexpired
+        snapshot for the (company, entity) triple and returns its distinct
+        ``source_ref``s, each mapped to ``f"seed:{snapshot_id}"``.
+
+        Rationale: the runbook has the owner Pull + Confirm immediately
+        before flipping, so the latest snapshot IS the confirmed baseline
+        - an older snapshot's extra refs (rows the owner already knows are
+        gone, or belong to a prior, superseded extract) must never leak
+        into the seed. Recovery from a stale seed or a DELETE_GUARD trip is
+        never "Re-push" (`invalidate_all` keeps the union semantics for
+        THAT path on purpose - it must not drop deletes); it is flip to
+        Pull, run a fresh Pull + Confirm, then flip back to Push, which
+        re-seeds from that fresh single snapshot.
+
+        No READY, unexpired snapshot for the triple -> empty dict (the
+        flip itself is never refused here; ``_has_ready_snapshot``/
+        ``has_ready`` below is the actual push-gate for stock)."""
+        snapshot = (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.entity_type == entity_type,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
+                or_(
+                    AcPullSnapshot.expires_at.is_(None),
+                    AcPullSnapshot.expires_at > now,
+                ),
+            )
+            .order_by(AcPullSnapshot.extracted_at.desc())
+            .first()
+        )
+        if snapshot is None:
+            return {}
+        refs = (
+            self.db.query(AcPullSnapshotRow.source_ref)
+            .filter(
+                AcPullSnapshotRow.tenant_id == tenant_id,
+                AcPullSnapshotRow.snapshot_id == snapshot.id,
+            )
+            .all()
+        )
+        return {ref: f"seed:{snapshot.id}" for (ref,) in refs}
+
+    def has_ready(
+        self, tenant_id: str, company_id: str, entity_type: str, now: datetime
+    ) -> bool:
+        """Plan 13 review round 2 B2 fix - an EXISTS-only read answering
+        whether SOME READY, unexpired snapshot exists for this (company,
+        entity) triple, over every such snapshot (never only the single
+        latest one ``latest_ready_source_refs`` above seeds from): the
+        ``pushGate`` read (``EtlService._push_gate``, called on EVERY
+        stock task view GET) needs a boolean, never a full row population
+        (a company's stock snapshot can carry ~12k rows across up to 3
+        live snapshots - loading them just to answer "is there at least
+        one" turned every task-view GET into an N+1 that scaled with
+        extract size). ``LIMIT 1`` over an indexed join, never a
+        ``COUNT``."""
+        exists = (
+            self.db.query(AcPullSnapshotRow.snapshot_id)
+            .join(
+                AcPullSnapshot,
+                AcPullSnapshot.id == AcPullSnapshotRow.snapshot_id,
+            )
+            .filter(
+                AcPullSnapshotRow.tenant_id == tenant_id,
+                AcPullSnapshotRow.company_id == company_id,
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.entity_type == entity_type,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
+                or_(
+                    AcPullSnapshot.expires_at.is_(None),
+                    AcPullSnapshot.expires_at > now,
+                ),
+            )
+            .limit(1)
+            .first()
+        )
+        return exists is not None
+
+    def insert_row(self, row: AcPullSnapshotRow) -> None:
+        self.db.add(row)
+        self.db.flush()
+
+    def rows_page(
+        self, tenant_id: str, snapshot_id: str, *, page: int, page_size: int
+    ) -> Tuple[List[AcPullSnapshotRow], int]:
+        """``page`` is 1-BASED (AC-10-33) - the caller translates."""
+        q = self.db.query(AcPullSnapshotRow).filter(
+            AcPullSnapshotRow.tenant_id == tenant_id,
+            AcPullSnapshotRow.snapshot_id == snapshot_id,
+        )
+        total = q.count()
+        rows = (
+            q.order_by(AcPullSnapshotRow.row_index.asc())
+            .offset(max(page - 1, 0) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return rows, total
+
+    def expired_ids(self, now: datetime) -> List[Tuple[str, str]]:
+        """``(id, tenant_id)`` pairs for every snapshot past its
+        ``expires_at`` - the caller needs the tenant to scope the matching
+        ``delete`` call (AC-10-58 L2).
+
+        AC-10-58 L1 - excludes ``status == 'building'``: a snapshot only
+        ever gets an ``expires_at`` when it STAMPS ready (``SnapshotService.
+        stamp_ready``), so a building row's ``expires_at`` is always
+        ``None`` in practice - but a job that dies mid-build while carrying
+        a STALE ``expires_at`` from a prior attempt (re-attach reuses the
+        same row) must never be pruned out from under a build that is
+        genuinely still in flight."""
+        rows = (
+            self.db.query(AcPullSnapshot.id, AcPullSnapshot.tenant_id)
+            .filter(
+                AcPullSnapshot.expires_at.isnot(None),
+                AcPullSnapshot.expires_at <= now,
+                AcPullSnapshot.status != PULL_SNAPSHOT_STATUS_BUILDING,
+            )
+            .all()
+        )
+        return [(r[0], r[1]) for r in rows]
+
+    def ready_ids_beyond_newest(self, *, keep: int) -> List[Tuple[str, str]]:
+        """Every READY snapshot beyond the newest ``keep`` per (tenant,
+        company, entity) triple, ordered by ``extracted_at`` (AC-10-25) -
+        computed with a window function so the "per triple" cut is one
+        query, not an N+1 fan-out. Returns ``(id, tenant_id)`` pairs (AC-10-
+        58 L2) - the caller needs the tenant to scope the matching
+        ``delete`` call."""
+        row_number = (
+            func.row_number()
+            .over(
+                partition_by=(
+                    AcPullSnapshot.tenant_id,
+                    AcPullSnapshot.company_id,
+                    AcPullSnapshot.entity_type,
+                ),
+                order_by=AcPullSnapshot.extracted_at.desc(),
+            )
+            .label("rn")
+        )
+        subq = (
+            select(AcPullSnapshot.id, AcPullSnapshot.tenant_id, row_number)
+            .where(AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY)
+            .subquery()
+        )
+        rows = self.db.execute(
+            select(subq.c.id, subq.c.tenant_id).where(subq.c.rn > keep)
+        ).all()
+        return [(r[0], r[1]) for r in rows]
+
+    def delete(self, tenant_id: str, snapshot_id: str) -> None:
+        """Whole-snapshot deletion (pruning) - the ONE way a snapshot's rows
+        are ever removed; never a single-row delete (AC-10-19's immutability
+        holds even here - pruning tears down the whole thing, it never edits
+        one).
+
+        AC-10-58 L2 - now TENANT-SCOPED (house rule: every repository query
+        tenant-scoped, never a bare id) - a mismatched ``tenant_id`` is a
+        no-op, never a cross-tenant delete. The global pruning sweep
+        (``pull_service.prune_pull_snapshots``) already knows each row's
+        own tenant from ``expired_ids``/``ready_ids_beyond_newest`` above,
+        so this closes the class of bug without changing its cross-tenant
+        REACH (it still visits every tenant, one scoped delete at a time)."""
+        rows = (
+            self.db.query(AcPullSnapshotRow)
+            .filter(
+                AcPullSnapshotRow.tenant_id == tenant_id,
+                AcPullSnapshotRow.snapshot_id == snapshot_id,
+            )
+            .all()
+        )
+        for row in rows:
+            self.db.delete(row)
+        snapshot = (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+        if snapshot is not None:
+            self.db.delete(snapshot)
+        self.db.flush()
+
+
+class PullKeyRepository:
+    """Sprint-5/10 S4 (AC-10-27/47). Mirrors ``PullSnapshotRepository``'s own
+    scoping discipline: every method taking a ``key_id`` ALSO takes
+    ``tenant_id``, except ``by_prefix`` - the ONE deliberate exception,
+    because ``PullKeyService.resolve`` genuinely does not know the tenant
+    until AFTER this lookup runs."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, key: AcPullApiKey) -> AcPullApiKey:
+        self.db.add(key)
+        self.db.flush()
+        return key
+
+    def get(self, tenant_id: str, key_id: str) -> Optional[AcPullApiKey]:
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(AcPullApiKey.tenant_id == tenant_id, AcPullApiKey.id == key_id)
+            .first()
+        )
+
+    def list_for_tenant(self, tenant_id: str) -> List[AcPullApiKey]:
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(AcPullApiKey.tenant_id == tenant_id)
+            .order_by(AcPullApiKey.created_at.desc())
+            .all()
+        )
+
+    def by_prefix(self, prefix: str) -> List[AcPullApiKey]:
+        """UNSCOPED by design (see class docstring) - only ever called from
+        ``PullKeyService.resolve``, which then verifies the full hash with
+        ``hmac.compare_digest`` before trusting any candidate."""
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(
+                AcPullApiKey.key_prefix == prefix,
+                AcPullApiKey.revoked_at.is_(None),
+            )
+            .all()
+        )
+
+
+class PullAuditRepository:
+    """Sprint-5/10 S4 (AC-10-27/34) - append-only; no update, only the
+    bulk retention delete below (security round 1, MEDIUM 4)."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, row: AcPullAudit) -> AcPullAudit:
+        self.db.add(row)
+        self.db.commit()
+        return row
+
+    def delete_older_than(self, cutoff: datetime) -> int:
+        """Retention sweep only - never a single-row delete. The caller
+        (``pull_service.prune_pull_snapshots``) owns the commit."""
+        count = (
+            self.db.query(AcPullAudit).filter(AcPullAudit.created_at < cutoff).count()
+        )
+        if count:
+            self.db.query(AcPullAudit).filter(AcPullAudit.created_at < cutoff).delete(
+                synchronize_session=False
+            )
+        return count

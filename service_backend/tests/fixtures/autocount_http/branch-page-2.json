@@ -1,0 +1,10 @@
+{
+  "TotalCount": 4,
+  "Page": 2,
+  "PageSize": 2,
+  "TotalPages": 2,
+  "Data": [
+    {"BranchCode": "HQ", "BranchName": "Head Office (no AccNo)", "AccNo": ""},
+    {"BranchCode": "", "BranchName": "Unassigned branch row", "AccNo": "300-R777"}
+  ]
+}

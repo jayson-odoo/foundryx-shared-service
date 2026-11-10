@@ -1,13 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useSession } from 'next-auth/react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { KeyRound, Shield, User as UserIcon } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
+import { ApiError } from '@/lib/api-client';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { userService } from '@/services/user-service';
 import { rolesService } from '@/services/roles-service';
 import type { Role, User } from '@/types/user';
@@ -35,6 +37,14 @@ export interface UseUserFormResult {
   form: UseFormReturn<UserFormValues>;
   isLoading: boolean;
   notFound: boolean;
+  /**
+   * Set only for a genuine load failure that ISN'T a 404 (500, network,
+   * 403, ...) - fix round 1 item 2. `UserFormView` throws this during
+   * render so `app/(protected)/error.tsx` (Reset, chrome intact) catches
+   * it, instead of the record silently vanishing into Next's terminal
+   * not-found boundary.
+   */
+  loadError: Error | null;
 }
 
 /** Loads the record + roles, wires RHF, and assembles the form config. */
@@ -53,8 +63,10 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
   const [roles, setRoles] = useState<Role[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState<Error | null>(null);
 
   const form = useForm<UserFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(userFormSchema),
     defaultValues: toFormValues(null),
   });
@@ -74,6 +86,8 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
       return;
     }
     setIsLoading(true);
+    setNotFound(false);
+    setLoadError(null);
     userService
       .get(userId)
       .then((u) => {
@@ -82,7 +96,17 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
         form.reset(toFormValues(u));
         setNotFound(false);
       })
-      .catch(() => active && setNotFound(true))
+      .catch((err: unknown) => {
+        if (!active) return;
+        // Only a REAL 404 renders not-found - a 500/network/403 must surface
+        // as a recoverable error, not the record silently vanishing (fix
+        // round 1 item 2).
+        if (err instanceof ApiError && err.status === 404) {
+          setNotFound(true);
+        } else {
+          setLoadError(err instanceof Error ? err : new Error('Failed to load user.'));
+        }
+      })
       .finally(() => active && setIsLoading(false));
     return () => {
       active = false;
@@ -90,8 +114,25 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, creating]);
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - use-record-nav.ts's
+  // prefetch effect lists these in its deps array; an inline closure here
+  // would recreate them every render and re-arm the prefetch/total-resolve
+  // fetch on every render instead of only on ctx/index changes.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      userService.getAt(query, index).then((r) => ({
+        recordId: r.user?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => userFormHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<User> | null>(() => {
-    if (isLoading || notFound) return null;
+    if (isLoading || notFound || loadError) return null;
 
     const onSave = async (): Promise<boolean> => {
       let ok = false;
@@ -215,16 +256,26 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
       onCancel,
       recordNav: creating
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              userService.getAt(query, index).then((r) => ({
-                recordId: r.user?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => userFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
-  }, [isLoading, notFound, creating, isSelf, user, roles, actions, form, initialEditing, userId, router, can, userAvatar]);
+  }, [
+    isLoading,
+    notFound,
+    loadError,
+    creating,
+    isSelf,
+    user,
+    roles,
+    actions,
+    form,
+    initialEditing,
+    userId,
+    router,
+    can,
+    userAvatar,
+    fetchRecordAt,
+    buildRecordHref,
+  ]);
 
-  return { config, form, isLoading, notFound };
+  return { config, form, isLoading, notFound, loadError };
 }

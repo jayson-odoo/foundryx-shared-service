@@ -398,19 +398,36 @@ def test_forwarded_for_ignored_by_default(client, monkeypatch):
     assert res.status_code == 429
 
 
-def test_forwarded_for_honored_behind_trusted_proxy(client, monkeypatch):
+def test_forwarded_for_honored_behind_trusted_proxy(session_factory, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.database import get_db
+    from app.main import app
+
+    def override_get_db():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr(settings, "throttle_ip_max_fails", 2)
     monkeypatch.setattr(settings, "trust_proxy_headers", True)
-    for i in range(2):
-        client.post(
-            "/auth/login",
-            json={"email": f"u{i}@example.com", "password": "definitely-wrong"},
-            headers={"X-Forwarded-For": "10.0.0.1"},
-        )
-    # Same client IP, different first-hop → separate counter.
-    res = client.post(
-        "/auth/login",
-        json={"email": "u9@example.com", "password": "definitely-wrong"},
-        headers={"X-Forwarded-For": "10.0.0.2"},
-    )
-    assert res.status_code == 401
+    monkeypatch.setattr(settings, "trusted_proxies", "127.0.0.1")
+    try:
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
+            for i in range(2):
+                client.post(
+                    "/auth/login",
+                    json={"email": f"u{i}@example.com", "password": "definitely-wrong"},
+                    headers={"X-Forwarded-For": "10.0.0.1"},
+                )
+            # A different real client behind the same proxy → separate counter.
+            res = client.post(
+                "/auth/login",
+                json={"email": "u9@example.com", "password": "definitely-wrong"},
+                headers={"X-Forwarded-For": "10.0.0.2"},
+            )
+        assert res.status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_db, None)

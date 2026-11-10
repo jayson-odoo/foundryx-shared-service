@@ -39,16 +39,16 @@ const EntryCallout = ({ className }: IEntryCalloutProps) => {
               ]}
             />
             <h2 className="text-xl font-semibold text-mono">
-              Connect Today & Join <br />
-              the{' '}
+              See What&apos;s New <br />
+              in the{' '}
               <Button mode="link" asChild className="text-xl font-semibold">
-                <Link href="#">KeenThemes Network</Link>
+                <Link href="#">Release Notes</Link>
               </Button>
             </h2>
             <p className="text-sm font-normal text-secondary-foreground leading-5.5">
-              Enhance your projects with premium themes and <br />
-              templates. Join the KeenThemes community today <br />
-              for top-quality designs and resources.
+              Explore recent updates and improvements across every <br />
+              workspace, or check the docs for a walkthrough of what&apos;s <br />
+              new this month.
             </p>
           </div>
         </CardContent>

@@ -35,9 +35,38 @@ export IMAGE_TAG
 CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/foundryx.caddy}"
 CADDY_CONFIG="${CADDY_CONFIG:-/etc/caddy/Caddyfile}"
 DRAIN_SECONDS="${DRAIN_SECONDS:-30}"
-HEALTH_WAIT_TICKS="${HEALTH_WAIT_TICKS:-150}"   # 150 * 2s = 5 min max (bootstrap_db runs on API start)
-WORKER_WAIT_TICKS="${WORKER_WAIT_TICKS:-30}"    # 30 * 2s = 60s settle window for celery containers
+# Health budget for the NEW colour = sorento-crm's 4 minutes (issue #89). The
+# API container runs bootstrap_db (core + module migrations + seed) before
+# gunicorn; start.sh retries it BOOTSTRAP_ATTEMPTS times under a lock_timeout,
+# then exits non-zero. Past this budget, or on the first crash of the new
+# colour, the deploy aborts with a NAMED error and the old colour keeps serving.
+HEALTH_WAIT_TICKS="${HEALTH_WAIT_TICKS:-120}"   # 120 * 2s = 4 min max
+WORKER_WAIT_TICKS="${WORKER_WAIT_TICKS:-45}"    # 45 * 2s = 90s for each celery container to prove it started
 TICK_SECONDS=2
+
+# ONE deploy at a time on this host (SS-DEPLOY-LOCK-SHA). Two overlapping runs
+# both read the same .active_color and bring up the SAME standby colour. The CI
+# workflow queues deploys (concurrency: deploy-prod); this lock also covers a
+# manual run on the server, and a CI retry whose first attempt is still running
+# remotely. Taken BEFORE .active_color is read. The kernel drops the lock when
+# this process exits, however it exits (no stale-lock cleanup needed).
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-.blue_green_deploy.lock}"
+# 5 min: a full deploy itself can take ~11 min worst case (4 min health + drain
+# + 4 x 90s worker gates), and wait + deploy must fit the CI step's 18 min.
+DEPLOY_LOCK_TIMEOUT_SECONDS="${DEPLOY_LOCK_TIMEOUT_SECONDS:-300}"
+if ! command -v flock >/dev/null 2>&1; then
+  echo "::error::DEPLOY ABORTED (flock not found - install util-linux). Refusing to deploy without the deploy lock." >&2
+  exit 1
+fi
+exec 9>>"$DEPLOY_LOCK_FILE"
+echo "==> Waiting up to ${DEPLOY_LOCK_TIMEOUT_SECONDS}s for the deploy lock ${DEPLOY_LOCK_FILE}"
+if ! flock -w "$DEPLOY_LOCK_TIMEOUT_SECONDS" 9; then
+  echo "::error::DEPLOY ABORTED (another blue/green deploy holds ${DEPLOY_LOCK_FILE} after ${DEPLOY_LOCK_TIMEOUT_SECONDS}s; holder: $(cat "$DEPLOY_LOCK_FILE" 2>/dev/null || echo unknown)). Nothing pulled, started or swapped." >&2
+  exit 1
+fi
+# Record the holder for whoever waits next (truncating keeps the lock: it is
+# held on the open file, not the contents).
+printf 'pid=%s image_tag=%s started=%s\n' "$$" "$IMAGE_TAG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_LOCK_FILE"
 
 ACTIVE=$(cat .active_color 2>/dev/null || echo blue)
 if [ "$ACTIVE" = "blue" ]; then
@@ -48,19 +77,90 @@ else
   NEW_BE_PORT=8200; NEW_FE_PORT=3200
 fi
 
+# Stale-sha re-check INSIDE the lock (SS-DEPLOY-SKIP-STALE). CI skips a run
+# whose sha is not main's head before it gets here, but that check is racy: a
+# newer deploy can finish while this one waits for the lock. CI passes
+# DEPLOY_NEWER_SHAS = every main commit newer than IMAGE_TAG (the host has no
+# git history); if the RUNNING backend's GIT_SHA is one of them, prod already
+# carries this change and more, so skip (exit 0, touch nothing). Exact match
+# only. DEPLOY_FORCE=1 (workflow_dispatch force_sha) deploys on purpose. An
+# unknown running sha (first deploy, container gone) deploys as before.
+if [ "${DEPLOY_FORCE:-0}" != "1" ] && [ -n "${DEPLOY_NEWER_SHAS:-}" ]; then
+  running_cid=$(docker compose ps -q "backend_${ACTIVE}" 2>/dev/null || true)
+  running_sha=""
+  if [ -n "$running_cid" ]; then
+    running_env=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$running_cid" 2>/dev/null || true)
+    running_sha=$(sed -n 's/^GIT_SHA=//p' <<<"$running_env" | head -n 1)
+  fi
+  if [ -n "$running_sha" ] && [ "$running_sha" != "$IMAGE_TAG" ]; then
+    for newer in $DEPLOY_NEWER_SHAS; do
+      if [ "$newer" = "$running_sha" ]; then
+        echo "skip: ${IMAGE_TAG} is older than the running ${running_sha}; newer deploy owns prod"
+        echo "DEPLOY_SKIPPED_STALE_SHA"   # exact marker the CI step greps for
+        exit 0
+      fi
+    done
+  fi
+fi
+
 echo "==> Active=${ACTIVE} New=${NEW} IMAGE_TAG=${IMAGE_TAG}"
+
+# SKIP_MIGRATIONS=1 is the ONLY bypass of the container-start bootstrap (and it
+# does not bypass the module schema drift guard: an API or worker whose module
+# schema is BEHIND its code still refuses to start). Say so loudly when set.
+if [ "${SKIP_MIGRATIONS:-0}" = "1" ] || grep -qE '^SKIP_MIGRATIONS=1' .env 2>/dev/null; then
+  echo "::warning::SKIP_MIGRATIONS=1 - the ${NEW} API will NOT run bootstrap_db. It still refuses to start if a module schema is behind its code (ModuleSchemaDrift)."
+fi
+
+# Named abort for a NEW colour that never became healthy: dump its logs, STOP it
+# (a crash-looping container would otherwise re-run bootstrap, and its blocked
+# DDL, against the live database on every restart), never touch Caddy.
+abort_new_color() {
+  local svc="$1" reason="$2"
+  echo "::error::DEPLOY ABORTED (${svc}_${NEW} ${reason}). Swap NOT performed - ${OLD} keeps serving. Module migration lock timeout? See DEPLOY.md 'Module migration lock timeout'." >&2
+  docker compose logs --tail=200 "${svc}_${NEW}" || true
+  docker compose --profile "${NEW}" stop "backend_${NEW}" "frontend_${NEW}" || true
+  exit 1
+}
 
 # 1. Pull new images for the incoming color + the shared backend image (workers).
 echo "==> Pulling images"
 docker compose --profile "${NEW}" pull "backend_${NEW}" "frontend_${NEW}"
-docker compose pull worker_workflow worker_omni beat
+docker compose pull worker_workflow worker_jobs worker_jobs_docs worker_omni beat
 
 # 1b. Ensure shared infra is up (db/redis/pgbackups are profile-less, NOT
 #     blue/green). The color is started with --no-deps below, so its depends_on
 #     does NOT auto-start these - without this the API container waits on `db`
 #     forever ("db not ready"). Idempotent: already-running = no-op.
+#
+#     A change to the compose NETWORK definition (the pinned ipam subnet for the
+#     Sorento SQL relay, 2026-09-04) makes compose recreate
+#     foundryx_ss_network, which is impossible while the live color, the
+#     workers or a stale orphan still hold endpoints on it: `up -d` STOPS
+#     db/redis/pgbackups first, then dies on "has active endpoints", and the
+#     retry finds redis "not connected to the network" - production left
+#     without its database (run 34011403918, 2026-09-06). So: try the normal
+#     no-op path; if it fails with the network-recreate signature, take the
+#     whole stack down ONCE (every profile, orphans included, so nothing holds
+#     the old network), then bring infra up on the recreated network and
+#     continue the normal blue/green flow. A brief full outage, only on the
+#     deploy that changes the network; later deploys never enter this branch.
+#     Any other failure still aborts here, before a color is touched.
 echo "==> Ensuring infra (db/redis/pgbackups) is up"
-docker compose up -d db redis pgbackups
+NETWORK_RECREATE_SIGNATURE='has active endpoints|is not connected to the network|needs to be recreated'
+if ! infra_out=$(docker compose up -d db redis pgbackups 2>&1); then
+  echo "$infra_out"
+  if grep -qE "$NETWORK_RECREATE_SIGNATURE" <<<"$infra_out"; then
+    echo "==> Network recreate pending: taking the whole stack down once (brief full outage)"
+    docker compose --profile blue --profile green down --remove-orphans
+    docker compose up -d db redis pgbackups
+  else
+    echo "::error::infra up failed for a reason other than a pending network recreate - aborting before touching any color"
+    exit 1
+  fi
+else
+  echo "$infra_out"
+fi
 
 # 2. Bring up the new color. The API container's start.sh runs
 #    `python -m scripts.bootstrap_db` (alembic upgrade + seed + modules) before
@@ -70,25 +170,30 @@ docker compose up -d db redis pgbackups
 echo "==> Starting ${NEW} color"
 docker compose --profile "${NEW}" up -d --no-deps "backend_${NEW}" "frontend_${NEW}"
 
-# 3. Wait for both new containers to report healthy.
+# 3. Wait for both new containers to report healthy. A container that EXITS or
+#    restarts is a failed bootstrap (start.sh already retried inside it) or a
+#    ModuleSchemaDrift refusal: abort at once instead of burning the budget.
 echo "==> Waiting for healthchecks"
 for svc in backend frontend; do
   cid=$(docker compose ps -q "${svc}_${NEW}")
   if [ -z "$cid" ]; then
-    echo "ERROR: container ${svc}_${NEW} not found"; exit 1
+    abort_new_color "$svc" "container not found"
   fi
   i=0; state=starting
-  while [ $i -lt $HEALTH_WAIT_TICKS ]; do
+  while [ "$i" -lt "$HEALTH_WAIT_TICKS" ]; do
     state=$(docker inspect --format='{{.State.Health.Status}}' "$cid" 2>/dev/null || echo starting)
     if [ "$state" = "healthy" ]; then
       echo "    ${svc}_${NEW} healthy after $((i * TICK_SECONDS))s"; break
     fi
+    status=$(docker inspect --format='{{.State.Status}}' "$cid" 2>/dev/null || echo unknown)
+    restarts=$(docker inspect --format='{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
+    if [ "$status" = "exited" ] || [ "$status" = "dead" ] || [ "$restarts" -gt 0 ]; then
+      abort_new_color "$svc" "exited during start (status=${status} restarts=${restarts}) - bootstrap_db failed or ModuleSchemaDrift"
+    fi
     sleep $TICK_SECONDS; i=$((i + 1))
   done
   if [ "$state" != "healthy" ]; then
-    echo "ERROR: ${svc}_${NEW} not healthy after $((HEALTH_WAIT_TICKS * TICK_SECONDS))s"
-    docker compose logs --tail=200 "${svc}_${NEW}" || true
-    exit 1
+    abort_new_color "$svc" "not healthy after $((HEALTH_WAIT_TICKS * TICK_SECONDS))s"
   fi
 done
 
@@ -98,6 +203,16 @@ TMP_CADDY=$(mktemp)
 cat > "$TMP_CADDY" <<EOF
 # Managed by blue_green_deploy.sh - do not edit by hand. Active color: ${NEW}.
 ${APP_DOMAIN} {
+	# Claude connector OAuth discovery (RFC 9728 / RFC 8414 path insertion): for
+	# the resource/issuer ${BACKEND_PATH}/mcp/<p> an MCP client asks the host ROOT
+	# for /.well-known/oauth-*${BACKEND_PATH}/mcp/<p>. Forward those to the backend
+	# UNSTRIPPED (it checks the prefix against its public base URL).
+	@connector_wellknown path /.well-known/oauth-authorization-server${BACKEND_PATH}/* /.well-known/oauth-protected-resource${BACKEND_PATH}/*
+	handle @connector_wellknown {
+		reverse_proxy 127.0.0.1:${NEW_BE_PORT} {
+			header_up Host {host}
+		}
+	}
 	# Backend under ${BACKEND_PATH} - handle_path STRIPS the prefix so the
 	# backend receives root paths (/auth/login, /public/avatars/...).
 	# (Caddy already sets X-Forwarded-For/Proto/Host upstream; only Host needs
@@ -119,7 +234,7 @@ ${APP_DOMAIN} {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer-when-downgrade"
 	}
-	tls internal
+	tls ${TLS_EMAIL}
 }
 EOF
 sudo install -m 0644 "$TMP_CADDY" "$CADDY_SITE_FILE"
@@ -132,36 +247,55 @@ echo "==> Draining ${DRAIN_SECONDS}s"
 sleep "$DRAIN_SECONDS"
 
 # 6. Recreate the Celery workers + beat on the new image (brief background-job
-#    blip; safe - tasks pull atomically off Redis). Migrations already ran via
-#    the API container, so these skip bootstrap (command override in start.sh).
+#    blip; safe - tasks pull atomically off Redis). Only reached once the NEW
+#    API colour is healthy, i.e. migrations already ran via the API container,
+#    so these skip bootstrap (command override in start.sh). Each worker/beat
+#    runs the module schema drift guard at start and exits if a module schema
+#    is behind its code.
 echo "==> Recreating Celery workers + beat on new image"
-docker compose up -d --force-recreate --no-deps worker_workflow worker_omni beat
+docker compose up -d --force-recreate --no-deps worker_workflow worker_jobs worker_jobs_docs worker_omni beat
 
-# 6b. Verify the celery containers settle (running, no crash-loop). They have no
-#     HTTP healthcheck - liveness is the process + restart policy.
+# 6b. Health-gate the celery containers (sorento-crm pattern: a positive
+#     startup line, not just "the process exists"). They have no HTTP
+#     healthcheck. A worker must log Celery's "celery@<host> ready." line,
+#     which prints only AFTER worker_init (the drift guard) passed and the
+#     broker connected. Beat has no later startup line than its guard, so it
+#     must stay running with zero restarts for 5 consecutive ticks. Any
+#     restart/exit fails the gate. A failure here is AFTER the swap: ${NEW}
+#     serves, ${OLD} is left running (step 7 not reached) for a rollback.
+worker_gate_failed() {
+  local svc="$1" cid="$2" reason="$3"
+  echo "::error::DEPLOY FAILED AFTER SWAP (${svc} ${reason}). ${NEW} is serving; ${OLD} left running for rollback: IMAGE_TAG=<previous sha> ./scripts/blue_green_deploy.sh (a MODULE schema ahead of the old image is skipped with a warning; a rollback across a CORE migration fails its bootstrap - see DEPLOY.md 'Rollback')" >&2
+  docker logs --tail=120 "$cid" || true
+  exit 1
+}
 echo "==> Verifying Celery containers"
-for svc in worker_workflow worker_omni beat; do
+for svc in worker_workflow worker_jobs worker_jobs_docs worker_omni beat; do
   cid=$(docker compose ps -q "$svc")
-  if [ -z "$cid" ]; then echo "ERROR: $svc not found after recreate"; exit 1; fi
-  i=0; ok=""
+  if [ -z "$cid" ]; then echo "::error::DEPLOY FAILED AFTER SWAP (${svc} not found after recreate)" >&2; exit 1; fi
+  i=0; ok=""; up_ticks=0
   while [ $i -lt "$WORKER_WAIT_TICKS" ]; do
     status=$(docker inspect --format='{{.State.Status}}' "$cid" 2>/dev/null || echo unknown)
     restarts=$(docker inspect --format='{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
-    if [ "$status" = "running" ] && [ "$restarts" -eq 0 ]; then
-      sleep $TICK_SECONDS; i=$((i + 1))
-      # require it to stay up for a few consecutive ticks
-      if [ $i -ge 5 ]; then ok=1; echo "    $svc running"; break; fi
-      continue
-    fi
     if [ "$restarts" -gt 0 ] || { [ "$status" != "running" ] && [ "$status" != "created" ]; }; then
-      echo "ERROR: $svc unhealthy (status=$status restarts=$restarts)"
-      docker logs --tail=120 "$cid" || true; exit 1
+      worker_gate_failed "$svc" "$cid" "unhealthy: status=${status} restarts=${restarts} - ModuleSchemaDrift or a boot error"
+    fi
+    if [ "$svc" = "beat" ]; then
+      if [ "$status" = "running" ]; then up_ticks=$((up_ticks + 1)); fi
+      if [ "$up_ticks" -ge 5 ]; then ok=1; echo "    $svc running (no restarts for ${up_ticks} ticks)"; break; fi
+    else
+      # Capture first, then match: `docker logs | grep` under pipefail can die
+      # of SIGPIPE (141) when grep stops at the first match, reading a
+      # started worker as "never ready" (a false post-swap failure).
+      logs=$(docker logs "$cid" 2>&1 || true)
+      if grep -qE 'celery@[^ ]+ ready\.' <<<"$logs"; then
+        ok=1; echo "    $svc ready after $((i * TICK_SECONDS))s"; break
+      fi
     fi
     sleep $TICK_SECONDS; i=$((i + 1))
   done
   if [ -z "$ok" ]; then
-    echo "ERROR: $svc did not settle within $((WORKER_WAIT_TICKS * TICK_SECONDS))s"
-    docker logs --tail=120 "$cid" || true; exit 1
+    worker_gate_failed "$svc" "$cid" "did not prove startup within $((WORKER_WAIT_TICKS * TICK_SECONDS))s"
   fi
 done
 

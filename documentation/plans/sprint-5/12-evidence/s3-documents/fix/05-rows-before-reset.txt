@@ -1,0 +1,27 @@
+# header rows: 11
+H DocKey -> so_number string True
+H DebtorAutoKey -> customer_ref ref_customer True
+H SalesAgent -> sales_agent_ref ref_sales_agent True
+H DocDate -> doc_date date True
+H RequestedDeliveryDate -> requested_delivery_date date True
+H Note -> internal_note string True
+H Ref -> ref string True
+H Cancelled -> status string True
+H DebtorCode -> customer_code string True
+H DebtorName -> customer_name string True
+H SalesAgent -> agent_code string True
+# line rows: 14
+L DtlKey -> source_ref string True
+L ItemAutoKey -> product_ref ref_product True
+L LocationAutoKey -> warehouse_ref ref_warehouse True
+L Qty -> qty_ordered decimal True
+L TransferedQty -> qty_delivered decimal True
+L SubTotal -> unit_price decimal True
+L DiscountAmt -> discount decimal True
+L SubTotal -> line_total decimal True
+L UOM -> uom string True
+L DeliveryDate -> required_date date True
+L ItemCode -> product_code string True
+L Description -> product_name string True
+L Location -> warehouse_code string True
+L Seq -> line_number string True

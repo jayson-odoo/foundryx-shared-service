@@ -100,6 +100,7 @@ def _insert_idea(
     upvotes=0,
     priority=0,
     created_at=None,
+    is_test=False,
 ) -> str:
     from datetime import datetime, timedelta, timezone
 
@@ -126,6 +127,7 @@ def _insert_idea(
             upvotes=upvotes,
             priority=priority,
             created_at=created_at,
+            is_test=is_test,
         )
         db.add(idea)
         db.commit()
@@ -376,6 +378,33 @@ def test_list_ideas_active_vs_archived_filter(ideation_client):
         "/ideation/ideas", headers=h, params={"filter": "all"}
     ).json()
     assert len(all_rows) == 2
+
+
+def test_list_ideas_excludes_test_by_default_and_includes_on_request(ideation_client):
+    """issue #1179 - a console/``--say`` test idea (``is_test``) never appears in
+    the list by default; ``includeTest=true`` opts it back in."""
+    h = _auth(ideation_client)
+    pid = _create_software_product(ideation_client, h)
+    real = _insert_idea(ideation_client._factory, pid, problem="real idea")
+    test_idea = _insert_idea(
+        ideation_client._factory, pid, problem="test idea", is_test=True
+    )
+
+    default = ideation_client.get("/ideation/ideas", headers=h).json()
+    default_ids = {r["id"] for r in default}
+    assert real in default_ids
+    assert test_idea not in default_ids
+
+    with_test = ideation_client.get(
+        "/ideation/ideas", headers=h, params={"includeTest": "true"}
+    ).json()
+    with_test_ids = {r["id"] for r in with_test}
+    assert real in with_test_ids
+    assert test_idea in with_test_ids
+    row = next(r for r in with_test if r["id"] == test_idea)
+    assert row["isTest"] is True
+    real_row = next(r for r in with_test if r["id"] == real)
+    assert real_row["isTest"] is False
 
 
 # ── AC-A-12: detail read ──────────────────────────────────────────────────────

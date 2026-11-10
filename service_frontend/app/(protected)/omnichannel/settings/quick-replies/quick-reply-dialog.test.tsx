@@ -20,7 +20,7 @@ describe('QuickReplyDialog', () => {
     );
     expect(screen.getByText('New quick reply')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/Message/), { target: { value: '  Hello team  ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create quick reply' }));
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate).toHaveBeenCalledWith({ shortcut: null, body: 'Hello team' });
     expect(onUpdate).not.toHaveBeenCalled();
@@ -30,7 +30,7 @@ describe('QuickReplyDialog', () => {
     render(
       <QuickReplyDialog item={null} onClose={onClose} onCreate={onCreate} onUpdate={onUpdate} />,
     );
-    const save = screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
+    const save = screen.getByRole('button', { name: 'Create quick reply' }) as HTMLButtonElement;
     expect(save).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/Message/), { target: { value: 'x' } });
     expect(save).not.toBeDisabled();
@@ -49,7 +49,7 @@ describe('QuickReplyDialog', () => {
     const shortcut = screen.getByLabelText('Shortcut') as HTMLInputElement;
     expect(shortcut.value).toBe('/hi');
     fireEvent.change(screen.getByLabelText(/Message/), { target: { value: 'Hi there' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save quick reply' }));
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
     expect(onUpdate).toHaveBeenCalledWith('qr-1', { shortcut: '/hi', body: 'Hi there' });
   });
@@ -60,7 +60,7 @@ describe('QuickReplyDialog', () => {
       <QuickReplyDialog item={null} onClose={onClose} onCreate={onCreate} onUpdate={onUpdate} />,
     );
     fireEvent.change(screen.getByLabelText(/Message/), { target: { value: 'x' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create quick reply' }));
     await waitFor(() =>
       expect(screen.getByText('That shortcut is already in use.')).toBeInTheDocument(),
     );

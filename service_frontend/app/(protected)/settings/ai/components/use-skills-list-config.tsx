@@ -4,7 +4,6 @@ import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Pencil, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
   DataGridTableRowSelect,
@@ -44,16 +43,9 @@ export function useSkillActions(): ResourceAction<AiSkill>[] {
         // A shared platform default is not the tenant's to delete; the backend
         // 409s regardless, but hiding it keeps the menu honest (foolproof-UI).
         isVisible: (rows) => rows.length > 0 && rows.every((s) => !s.isPlatform && !s.isSystem),
-        confirm: {
-          title: 'Delete skill?',
-          description: 'Its version history is deleted with it. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, runtime) => {
-          for (const skill of rows) await aiService.removeSkill(skill.id);
-          toast.success(`Deleted ${rows.length} skill${rows.length === 1 ? '' : 's'}.`);
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `ai_skills.delete` handler commits it).
+        deferred: { actionKey: 'ai_skills.delete', entityType: 'ai_skill' },
       },
     ],
     [router],

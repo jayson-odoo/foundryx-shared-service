@@ -85,7 +85,7 @@ export function TermEditDialog({
             Cancel
           </Button>
           <Button onClick={() => void handleSave()} disabled={!valid || saving}>
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Saving…' : 'Save label'}
           </Button>
         </DialogFooter>
       </DialogContent>

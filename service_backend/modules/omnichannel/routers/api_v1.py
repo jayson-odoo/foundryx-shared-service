@@ -9,10 +9,15 @@ JWT `require_module` gate - service-active is re-checked inside the dependency.
 import json
 from typing import Optional, Union
 
-from fastapi import APIRouter, Depends, Header, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
+from app.gateway_body_cap import is_multipart
 from app.database import get_db
 
 from ..api_auth import ApiWorkspace, get_api_workspace
@@ -20,10 +25,28 @@ from ..schemas import (
     MessageItem,
     PublicContactListResponse,
     PublicMessageListResponse,
+    ContactEraseResponse,
+    ContactReadResponse,
     PublicCommentRequest,
     PublicContactUpdateRequest,
     PublicSendRequest,
     PublicSendResponse,
+    BusinessHoursUpdate,
+    PublicBusinessHoursResponse,
+    PublicCatalogResponse,
+    PublicValidateRequest,
+    PublicWorkflowActiveRequest,
+    PublicWorkflowRunDetail,
+    PublicWorkflowRunListResponse,
+    PublicWorkflowRunRequest,
+    PublicWorkflowVersionListResponse,
+    PublicWorkflowRunItem,
+    PublicValidateResponse,
+    PublicWorkflowCreateRequest,
+    PublicWorkflowItem,
+    PublicWorkflowListResponse,
+    PublicWorkflowUpdateRequest,
+    PublicChannelListResponse,
     PublicTemplateListResponse,
     RioContactItem,
     RioContactListResponse,
@@ -38,6 +61,8 @@ from ..schemas import (
     WebhookEndpointUpdateRequest,
     WebhookSecretResponse,
 )
+from ..services.business_hours import BusinessHoursService
+from ..services.key_workflows import KeyWorkflowService, put_business_hours
 from ..services.media_pipeline import META_CEILINGS
 from ..services.public_gateway_service import (
     FORMAT_GUIDE,
@@ -45,10 +70,27 @@ from ..services.public_gateway_service import (
     WIRE_FORMATS,
     PublicGatewayService,
 )
+from ..services.webchat_visitor_service import WebchatInvalidRequest, read_capped_json
 
 router = APIRouter()
 
+# Cap on a JSON body the gateway reads itself (the send route and the workflow routes).
+_JSON_BODY_CAP = 256 * 1024
+
+
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+_MULTIPART_MAX_FIELDS = 5  # `payload` + a little slack
+
+
+async def _read_capped_body(request: Request) -> bytes:
+    """Bytes of the request body, refused once over the cap (counted as read, so a
+    chunked body with no Content-Length is capped too). No content-type rule."""
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > _JSON_BODY_CAP:
+            raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", "Request body is too large.")
+    return bytes(body)
 
 
 def wire_format(
@@ -93,8 +135,18 @@ async def send_message(
     svc = PublicGatewayService(db)
     content_type = request.headers.get("content-type", "")
 
-    if content_type.startswith("multipart/"):
-        form = await request.form()
+    if is_multipart(content_type):
+        try:
+            # The send reads one file part and the `payload` part; the cap leaves slack.
+            form = await request.form(max_files=1, max_fields=_MULTIPART_MAX_FIELDS)
+        except StarletteHTTPException as exc:
+            # Starlette words its part and field limits "Too many files/fields ..."
+            too_many = str(exc.detail).startswith("Too many")
+            raise ApiError(
+                422,
+                "invalid_request",
+                "The multipart body has too many parts." if too_many else "The multipart body could not be read.",
+            ) from None
         upload = form.get("file")
         raw = form.get("payload")
         if upload is None or raw is None:
@@ -103,11 +155,23 @@ async def send_message(
             payload_obj = json.loads(raw)
         except (ValueError, TypeError):
             raise ApiError(422, "invalid_request", "payload must be valid JSON.")
+        if not isinstance(payload_obj, dict) or not isinstance(payload_obj.get("media") or {}, dict):
+            raise ApiError(422, "invalid_request", "payload must be a JSON object.")
         media = payload_obj.get("media") or {}
+        channel_id = payload_obj.get("channelId")
+        if channel_id is not None and not isinstance(channel_id, str):
+            raise ApiError(422, "invalid_channel", "channelId must be a string.")
+        reply_to = payload_obj.get("replyToMessageId")
+        if reply_to is not None and not isinstance(reply_to, str):
+            raise ApiError(422, "invalid_request", "replyToMessageId must be a string.")
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
-        message_id, replay = svc.send_multipart(
+        # The blocking work (database, media fetch, provider call) runs on a worker
+        # thread; the body reads above stay on the loop, and nothing on the loop
+        # touches `svc` or `db` while the thread holds them.
+        message_id, replay = await run_in_threadpool(
+            svc.send_multipart,
             api_ws.tenant_id,
             api_ws.workspace_id,
             api_ws.key_id,
@@ -117,18 +181,45 @@ async def send_message(
             caption=media.get("caption"),
             to=str(payload_obj.get("to") or ""),
             idempotency_key=idempotency_key,
+            channel_id=channel_id,
+            reply_to_message_id=reply_to,
         )
     else:
         try:
-            body = await request.json()
-        except (ValueError, TypeError):
+            body = json.loads(await _read_capped_body(request))
+        except (ValueError, TypeError, RecursionError):  # nesting too deep to parse is not JSON we accept
             raise ApiError(422, "invalid_request", "Request body must be valid JSON.")
-        payload = PublicSendRequest(**body)
-        message_id, replay = svc.send(
-            api_ws.tenant_id, api_ws.workspace_id, api_ws.key_id, payload, idempotency_key
+        if not isinstance(body, dict):
+            raise RequestValidationError(
+                [{"type": "dict_type", "loc": ("body",), "msg": "Input should be an object", "input": None}]
+            )
+        try:
+            payload = PublicSendRequest(**body)
+        except ValidationError as exc:
+            errors = exc.errors(include_url=False, include_context=False)
+            if any(tuple(e.get("loc", ())[:2]) == ("media", "url") for e in errors):
+                raise ApiError(422, "invalid_media_url", "The media url must be text.") from None
+            # Same answer the route's own validation handler gives.
+            raise RequestValidationError(errors) from None
+        message_id, replay = await run_in_threadpool(
+            svc.send,
+            api_ws.tenant_id,
+            api_ws.workspace_id,
+            api_ws.key_id,
+            payload,
+            idempotency_key,
         )
     # A replay is still 202 with the ORIGINAL message id (idempotent).
     return PublicSendResponse(id=message_id, status="queued", idempotencyReplay=replay)
+
+
+@router.get("/channels", response_model=PublicChannelListResponse)
+def list_channels(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicChannelListResponse:
+    items = PublicGatewayService(db).list_channels(api_ws.tenant_id, api_ws.workspace_id)
+    return PublicChannelListResponse(data=items)
 
 
 @router.get("/templates", response_model=PublicTemplateListResponse)
@@ -217,8 +308,15 @@ def update_contact(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ):
-    """Partial update - only sent fields change. Send ``assignedUserId``/
-    ``customFields`` as null to clear; omit to leave unchanged."""
+    """Partial update - only sent fields change. Send ``assignedUserId`` as
+    null to unassign. Send ``customFields`` as null (the whole value, not an
+    object) to clear EVERY registered field's value at once; send an object
+    with a key set to null to clear just that one key (partial merge, other
+    keys untouched); omit ``customFields`` entirely to leave it unchanged.
+    ``tags`` (names, auto-created if unknown) REPLACES the set; ``lifecycle``
+    (a stage key or label) moves the contact along the workspace's lifecycle
+    graph. ``assignedTeamId`` is a CORE team id, BY ID ONLY (never by name);
+    an unknown/foreign/inactive id is a `422 invalid_request`."""
     sent = payload.model_fields_set
     _S = ...  # sentinel = "not provided"
     return PublicGatewayService(db).update_contact(
@@ -227,7 +325,12 @@ def update_contact(
         last_name=payload.lastName if "lastName" in sent else _S,
         priority=payload.priority if "priority" in sent else None,
         assigned_user_id=payload.assignedUserId if "assignedUserId" in sent else _S,
+        assigned_team_id=payload.assignedTeamId if "assignedTeamId" in sent else _S,
         custom_fields=payload.customFields if "customFields" in sent else _S,
+        language=payload.language if "language" in sent else _S,
+        country_code=payload.countryCode if "countryCode" in sent else _S,
+        tags=payload.tags if "tags" in sent else _S,
+        lifecycle=payload.lifecycle if "lifecycle" in sent else _S,
         fmt=fmt,
     )
 
@@ -350,12 +453,36 @@ def add_comment(
     )
 
 
+# ── Mark a contact read (resets unread; WhatsApp read receipts) ──────────────
+@router.post("/contacts/{identifier}/read", response_model=ContactReadResponse)
+def mark_contact_read(
+    identifier: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> ContactReadResponse:
+    return PublicGatewayService(db).mark_contact_read(
+        api_ws.tenant_id, api_ws.workspace_id, identifier
+    )
+
+
+# ── Erase a contact (PDPA; every key has full power in its own workspace) ────
+@router.delete("/contacts/{identifier}", response_model=ContactEraseResponse)
+def erase_contact(
+    identifier: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> ContactEraseResponse:
+    return PublicGatewayService(db).erase_contact(
+        api_ws.tenant_id, api_ws.workspace_id, identifier, api_key_id=api_ws.key_id
+    )
+
+
 # ── Webhook endpoints (self-serve; BL-SS-025) ────────────────────────────────
 # A consumer holding only a workspace API key must be able to manage its OWN
 # callbacks: webhooks are the intended inbound path, and until now registration
 # was dashboard-only (session JWT + `webhooks.manage`), so a key-holder could
 # neither create nor even LIST its endpoints. These mirror the operator routes
-# but are scoped to the key's workspace and its active channel - a consumer can
+# but are scoped to the key's workspace - a consumer can
 # never see or touch another workspace's endpoints.
 def _webhook_service(db: Session):
     from ..services.webhook_service import WebhookService
@@ -394,23 +521,45 @@ def create_webhook(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookEndpointMintResponse:
-    """Register a callback on your workspace's active channel. The signing
-    secret is returned ONCE - store it; it is never shown again."""
-    from ..services.webhook_service import WebhookError
+    """Register a callback that covers every channel of your workspace. The
+    signing secret is returned ONCE - store it; it is never shown again."""
+    from ..services.webhook_service import (
+        WebhookError,
+        WebhookKeyRevoked,
+        WebhookNoActiveChannel,
+    )
 
-    svc = PublicGatewayService(db)
-    channel = svc._workspace_channel(api_ws.tenant_id, api_ws.workspace_id)
     try:
-        row, secret = _webhook_service(db).create(
-            api_ws.tenant_id, channel.id, payload.name, payload.url, payload.events,
+        _webhook_service(db).require_active_channel(api_ws.tenant_id, api_ws.workspace_id)
+        row, secret = _webhook_service(db).create_for_workspace(
+            api_ws.tenant_id, api_ws.workspace_id, payload.name, payload.url, payload.events,
             # No user behind an API key - record WHICH key, matching the
             # `apikey:<id>` actor convention used elsewhere in this service.
             # The activity log is pruned per tenant; this row is permanent.
             created_by=f"apikey:{api_ws.key_id}",
+            key_id=api_ws.key_id,
         )
+    except WebhookNoActiveChannel as exc:
+        raise ApiError(409, "no_active_channel", str(exc)) from exc
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
     return WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret)
+
+
+def _paused_by_staff() -> ApiError:
+    """The gateway's answer for a key write on an endpoint staff paused."""
+    return ApiError(409, "endpoint_paused_by_staff", "This endpoint was paused by staff.")
+
+
+def _endpoint_not_found() -> ApiError:
+    return ApiError(404, "not_found", "Webhook endpoint not found.")
+
+
+def _key_revoked() -> ApiError:
+    """The gateway's answer for a key revoked while its write was under way."""
+    return ApiError(401, "invalid_api_key", "Invalid API key.")
 
 
 def _own_endpoint(db: Session, api_ws: ApiWorkspace, endpoint_id: str):
@@ -434,14 +583,26 @@ def update_webhook(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookEndpointItem:
-    from ..services.webhook_service import WebhookError
+    from ..services.webhook_service import (
+        WebhookError,
+        WebhookKeyRevoked,
+        WebhookNotFound,
+        WebhookPausedByStaff,
+    )
 
     _own_endpoint(db, api_ws, endpoint_id)
     try:
         row = _webhook_service(db).update(
             api_ws.tenant_id, endpoint_id,
             name=payload.name, url=payload.url, events=payload.events,
+            key_id=api_ws.key_id,
         )
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
+    except WebhookPausedByStaff as exc:
+        raise _paused_by_staff() from exc
+    except WebhookNotFound as exc:
+        raise _endpoint_not_found() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
     return _wh_item(row)
@@ -456,7 +617,18 @@ def rotate_webhook_secret(
     """New signing secret, returned ONCE. The old one stops verifying at once -
     deploy the new secret before rotating."""
     _own_endpoint(db, api_ws, endpoint_id)
-    _row, secret = _webhook_service(db).rotate_secret(api_ws.tenant_id, endpoint_id)
+    from ..services.webhook_service import WebhookKeyRevoked, WebhookNotFound, WebhookPausedByStaff
+
+    try:
+        _row, secret = _webhook_service(db).rotate_secret(
+            api_ws.tenant_id, endpoint_id, key_id=api_ws.key_id
+        )
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
+    except WebhookPausedByStaff as exc:
+        raise _paused_by_staff() from exc
+    except WebhookNotFound as exc:
+        raise _endpoint_not_found() from exc
     return WebhookSecretResponse(signingSecret=secret)
 
 
@@ -467,8 +639,20 @@ def enable_webhook(
     db: Session = Depends(get_db),
 ) -> WebhookEndpointItem:
     """Re-enable a disabled endpoint (also clears an AUTO_DISABLED strike count)."""
+    from ..services.webhook_service import WebhookKeyRevoked, WebhookNotFound, WebhookPausedByStaff
+
     _own_endpoint(db, api_ws, endpoint_id)
-    return _wh_item(_webhook_service(db).set_status(api_ws.tenant_id, endpoint_id, True))
+    try:
+        row = _webhook_service(db).set_status(
+            api_ws.tenant_id, endpoint_id, True, key_id=api_ws.key_id
+        )
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
+    except WebhookPausedByStaff as exc:
+        raise _paused_by_staff() from exc
+    except WebhookNotFound as exc:
+        raise _endpoint_not_found() from exc
+    return _wh_item(row)
 
 
 @router.post("/webhooks/{endpoint_id}/disable", response_model=WebhookEndpointItem)
@@ -477,8 +661,18 @@ def disable_webhook(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> WebhookEndpointItem:
+    from ..services.webhook_service import WebhookKeyRevoked, WebhookNotFound
+
     _own_endpoint(db, api_ws, endpoint_id)
-    return _wh_item(_webhook_service(db).set_status(api_ws.tenant_id, endpoint_id, False))
+    try:
+        row = _webhook_service(db).set_status(
+            api_ws.tenant_id, endpoint_id, False, key_id=api_ws.key_id
+        )
+    except WebhookKeyRevoked as exc:
+        raise _key_revoked() from exc
+    except WebhookNotFound as exc:
+        raise _endpoint_not_found() from exc
+    return _wh_item(row)
 
 
 @router.delete("/webhooks/{endpoint_id}", status_code=204)
@@ -487,5 +681,252 @@ def delete_webhook(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> None:
+    from ..services.webhook_service import WebhookNotFound, WebhookPausedByStaff
+
     _own_endpoint(db, api_ws, endpoint_id)
-    _webhook_service(db).delete(api_ws.tenant_id, endpoint_id)
+    try:
+        _webhook_service(db).delete(api_ws.tenant_id, endpoint_id, key_id=api_ws.key_id)
+    except WebhookPausedByStaff as exc:
+        raise _paused_by_staff() from exc
+    except WebhookNotFound as exc:
+        raise _endpoint_not_found() from exc
+
+
+# ── Workflows (plan 38 gap 7) ────────────────────────────────────────────────
+# A key configures the workflows its own workspace owns. Tenant and workspace
+# come from the key only. The fixed paths (catalog, validate, runs/{runId}) are
+# registered BEFORE `/workflows/{workflow_id}` so they are never read as an id.
+
+
+async def _read_workflow_body(request: Request) -> dict:
+    """Capped JSON read, done on the loop with no transaction open."""
+    try:
+        return await read_capped_json(request, cap=_JSON_BODY_CAP)
+    except WebchatInvalidRequest as exc:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", exc.message)
+
+
+def _validated(model, body: dict):
+    try:
+        return model(**body)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors(include_url=False, include_context=False)) from None
+
+
+@router.get("/workflows", response_model=PublicWorkflowListResponse)
+def list_workflows(
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowListResponse:
+    return KeyWorkflowService(db).list(
+        api_ws.tenant_id, api_ws.workspace_id, limit=limit, cursor=cursor
+    )
+
+
+@router.post("/workflows", response_model=PublicWorkflowItem, status_code=status.HTTP_201_CREATED)
+async def create_workflow(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowCreateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).create,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        api_ws.key_id,
+        name=payload.name,
+        description=payload.description,
+        definition=payload.draftDefinition,
+    )
+
+
+@router.get("/workflows/catalog", response_model=PublicCatalogResponse)
+def workflow_catalog(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicCatalogResponse:
+    return KeyWorkflowService(db).catalog(api_ws.tenant_id, api_ws.workspace_id)
+
+
+@router.post("/workflows/validate", response_model=PublicValidateResponse)
+async def validate_workflow(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicValidateResponse:
+    payload = _validated(PublicValidateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).validate,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        payload.draftDefinition,
+    )
+
+
+@router.get("/workflows/runs/{run_id}", response_model=PublicWorkflowRunDetail)
+def get_workflow_run(
+    run_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunDetail:
+    return KeyWorkflowService(db).run_detail(api_ws.tenant_id, api_ws.workspace_id, run_id)
+
+
+@router.get("/workflows/{workflow_id}", response_model=PublicWorkflowItem)
+def get_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).get(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+
+
+@router.patch("/workflows/{workflow_id}", response_model=PublicWorkflowItem)
+async def update_workflow(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowUpdateRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).update,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        workflow_id,
+        name=payload.name,
+        description=payload.description,
+        definition=payload.draftDefinition,
+        expected_updated_at=payload.expectedUpdatedAt,
+    )
+
+
+@router.post("/workflows/{workflow_id}/publish", response_model=PublicWorkflowItem)
+def publish_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).publish(
+        api_ws.tenant_id, api_ws.workspace_id, api_ws.key_id, workflow_id
+    )
+
+
+@router.post("/workflows/{workflow_id}/unpublish", response_model=PublicWorkflowItem)
+def unpublish_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    return KeyWorkflowService(db).unpublish(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+
+
+@router.put("/workflows/{workflow_id}/active", response_model=PublicWorkflowItem)
+async def set_workflow_active(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowItem:
+    payload = _validated(PublicWorkflowActiveRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).set_active,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        workflow_id,
+        payload.isActive,
+    )
+
+
+@router.get("/workflows/{workflow_id}/versions", response_model=PublicWorkflowVersionListResponse)
+def list_workflow_versions(
+    workflow_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowVersionListResponse:
+    return KeyWorkflowService(db).list_versions(
+        api_ws.tenant_id, api_ws.workspace_id, workflow_id, limit=limit, cursor=cursor
+    )
+
+
+@router.get("/workflows/{workflow_id}/runs", response_model=PublicWorkflowRunListResponse)
+def list_workflow_runs(
+    workflow_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunListResponse:
+    return KeyWorkflowService(db).list_runs(
+        api_ws.tenant_id, api_ws.workspace_id, workflow_id, limit=limit, cursor=cursor
+    )
+
+
+@router.post(
+    "/workflows/{workflow_id}/runs",
+    response_model=PublicWorkflowRunItem,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_workflow_for_contact(
+    workflow_id: str,
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWorkflowRunItem:
+    payload = _validated(PublicWorkflowRunRequest, await _read_workflow_body(request))
+    return await run_in_threadpool(
+        KeyWorkflowService(db).run_for_contact,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        api_ws.key_id,
+        workflow_id,
+        contact=payload.contact,
+        inputs=payload.inputs,
+    )
+
+
+@router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_workflow(
+    workflow_id: str,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> Response:
+    KeyWorkflowService(db).archive(api_ws.tenant_id, api_ws.workspace_id, workflow_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Business hours (plan 38 gap 7): the key's own workspace only ─────────────
+@router.get("/business-hours", response_model=PublicBusinessHoursResponse)
+def get_business_hours(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicBusinessHoursResponse:
+    data = BusinessHoursService(db).get_with_source(api_ws.tenant_id, api_ws.workspace_id)
+    return PublicBusinessHoursResponse(workspaceId=api_ws.workspace_id, **data)
+
+
+@router.put("/business-hours", response_model=PublicBusinessHoursResponse)
+async def put_business_hours_route(
+    request: Request,
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicBusinessHoursResponse:
+    try:
+        raw = await read_capped_json(request)
+    except WebchatInvalidRequest as exc:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_request", exc.message)
+    payload = _validated(BusinessHoursUpdate, raw)
+    data = await run_in_threadpool(
+        put_business_hours,
+        db,
+        api_ws.tenant_id,
+        api_ws.workspace_id,
+        payload.timezone,
+        payload.windows,
+    )
+    return PublicBusinessHoursResponse(workspaceId=api_ws.workspace_id, **data)

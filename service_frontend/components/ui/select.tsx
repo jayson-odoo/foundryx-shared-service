@@ -15,6 +15,13 @@ const SelectContext = React.createContext<{
 }>({ indicatorPosition: 'left', indicator: null, indicatorVisibility: true });
 
 // Root Component
+//
+// Unlike Dialog/Sheet/Popover/DropdownMenu/ContextMenu/HoverCard, Select is
+// NOT wrapped in `useOpenState` here: Radix Select's own `Content` has no
+// `forceMount` escape hatch (see SelectContent below), so there is no exit
+// frame an `<AnimatePresence>` gate could ever animate - threading a
+// mirrored open state through the Root would be dead plumbing with nothing
+// downstream to consume it.
 const Select = ({
   indicatorPosition = 'left',
   indicatorVisibility = true,
@@ -115,30 +122,50 @@ function SelectContent({
   position = 'popper',
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
+  // Radix Select's `Content` has no `forceMount` escape hatch (unlike
+  // Dialog/Popover/DropdownMenu/HoverCard/ContextMenu/Menubar's own Content
+  // primitives) - it fully unmounts the instant the Root closes, so there is
+  // no exit frame an `<AnimatePresence>` could ever gate. T3 fix round 1
+  // finding 7: a ONE-SIDED spring (390ms in, instant out) reads as two
+  // different close behaviours next to a Menubar/DropdownMenu open right
+  // beside it - the honest simplification, matching `MenubarContent` (see
+  // menubar.tsx), is a SYMMETRIC CSS opacity fade instead: both sides run
+  // the same `--duration-fast` tween via Radix's own `data-state`
+  // (`animate-out` never actually gets to finish before unmount either, but
+  // it declares the same intent both ways rather than favouring open).
+  // No zoom - `origin-(--radix-select-content-transform-origin)` stays for
+  // whichever future entrance needs it, but a fade needs no explicit origin.
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
-          'relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-md border border-border bg-popover shadow-md shadow-black/5 text-secondary-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+          'relative z-(--z-modal) max-h-96 min-w-[8rem]',
+          'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 duration-(--duration-fast) ease-(--ease-standard)',
           position === 'popper' &&
             'data-[side=bottom]:translate-y-1.5 data-[side=left]:-translate-x-1.5 data-[side=right]:translate-x-1.5 data-[side=top]:-translate-y-1.5',
-          className,
         )}
         position={position}
         {...props}
       >
-        <SelectScrollUpButton />
-        <SelectPrimitive.Viewport
+        <div
           className={cn(
-            'p-1.5',
-            position === 'popper' &&
-              'h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]',
+            'overflow-hidden rounded-md border border-border bg-popover shadow-md shadow-black/5 text-secondary-foreground origin-(--radix-select-content-transform-origin)',
+            className,
           )}
         >
-          {children}
-        </SelectPrimitive.Viewport>
-        <SelectScrollDownButton />
+          <SelectScrollUpButton />
+          <SelectPrimitive.Viewport
+            className={cn(
+              'p-1.5',
+              position === 'popper' &&
+                'h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]',
+            )}
+          >
+            {children}
+          </SelectPrimitive.Viewport>
+          <SelectScrollDownButton />
+        </div>
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>
   );

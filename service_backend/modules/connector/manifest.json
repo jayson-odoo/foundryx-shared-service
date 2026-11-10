@@ -1,0 +1,21 @@
+{
+  "module_name": "connector",
+  "version": "0.1.0",
+  "author": "Foundryx",
+  "title": "Claude connector",
+  "description": "Let people use Claude to ask questions of a connected product, read-only, with the product's own permissions deciding every answer.",
+  "icon": "plug",
+  "required_core_version": ">=1.0.0",
+  "schema": "app_connector",
+  "alembic_version_table": "alembic_version_connector",
+  "requires": [],
+  "optional": [],
+  "provides": [],
+  "routers": [
+    {"name": "wellknown", "prefix": "", "public": true},
+    {"name": "oauth", "prefix": "/mcp", "public": true},
+    {"name": "mcp", "prefix": "/mcp", "public": true},
+    {"name": "admin", "prefix": "/connector"}
+  ],
+  "permissions_csv": "permissions/permissions.csv"
+}
