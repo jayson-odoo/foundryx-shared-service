@@ -540,28 +540,34 @@ def test_ac_61_21_received_guard_still_refuses_before_any_write(h, world):
     assert h.vendor.writes() == []
 
 
-# ============================== AC-61-22 last line ===========================================
+# ============================== AC-61-22 last line (owner ruling R1: never blocked) ==========
 
 @pytest.mark.parametrize("kind", ["QT", "SO", "PO"])
-def test_ac_61_22_removing_the_last_row_is_refused_row_last_line_with_no_write(h, kind):
+def test_ac_61_22_removing_the_last_row_is_one_put_with_the_row_marked_d_and_done(h, kind):
     _doc, keys = seed_plain(h, kind, 5400, rows=[_line("A", 10, 5.0)])
     res = h.service().delete_line(**call_args(h, kind, 5400, dtl_key=keys[0]))
-    assert res.outcome == "refused" and res.error_code == "ROW_LAST_LINE", res
-    assert h.vendor.writes() == []
-    assert len(h.vendor.rows(kind, 5400)) == 1
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert methods(h) == ["PUT"]
+    put = puts(h)[0]
+    assert put.leaf == EDIT_LEAF[kind]
+    assert [(r["DtlKey"], r["FullTransferOption"]) for r in put.body["Details"]] == [(keys[0], "D")]
+    assert h.vendor.rows(kind, 5400) == []  # the read-back has no rows
 
 
-def test_ac_61_22_the_gateway_maps_row_last_line_to_409(client, h, gw):
+def test_ac_61_22_the_gateway_passes_the_last_row_delete_through(client, h, gw):
     _doc, keys = seed_plain(h, "SO", 5400, rows=[_line("A", 10, 5.0)])
     r = client.post(f"{PREFIX}/documents/sales-orders/5400/lines/{keys[0]}/delete", headers=gw.hdr(),
                     json={"companyCode": "SRT"})
-    assert r.status_code == 409 and code(r) == "ROW_LAST_LINE", r.text
-    assert h.vendor.writes() == []
+    assert r.status_code == 200, r.text
+    assert r.json()["outcome"] == "done" and h.vendor.rows("SO", 5400) == []
 
 
-def test_ac_61_22_the_contract_doc_lists_row_last_line():
-    text = (REPO / "documentation" / "plans" / "sprint-5" / "57-autocount-write-qtso-contract.md").read_text("utf-8")
-    assert "ROW_LAST_LINE" in text
+def test_ac_61_22_no_row_last_line_code_exists_anywhere():
+    contract = REPO / "documentation" / "plans" / "sprint-5" / "57-autocount-write-qtso-contract.md"
+    assert "ROW_LAST_LINE" not in contract.read_text("utf-8")
+    module_dir = REPO / "service_backend" / "modules" / "autocount"
+    hits = [str(p) for p in module_dir.rglob("*.py") if "ROW_LAST_LINE" in p.read_text("utf-8")]
+    assert hits == []
 
 
 # ============================== AC-61-30 / 31 cancel =========================================
