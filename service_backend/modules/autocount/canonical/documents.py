@@ -379,8 +379,13 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
             "from_po_line_ref", "from_po_number", "replaces_line_ref",
         )
     )
+    # SS-PO-LINK-NULL: `from_so_line_ref` is deliberately NOT omit-when-empty
+    # on a PO line. An unlinked row (FromSODtlKey NULL or 0) sends an EXPLICIT
+    # null so Sorento clears a link the row lost in AutoCount - Sorento treats
+    # an ABSENT key as "keep the stored value", so omitting it kept a stale
+    # link forever. Every other wire field keeps omit-when-empty.
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = (
-        "from_so_numbers", "from_so_line_ref", "from_so_external",
+        "from_so_numbers", "from_so_external",
         "from_po_line_ref", "from_po_number", "replaces_line_ref",
     )
 
