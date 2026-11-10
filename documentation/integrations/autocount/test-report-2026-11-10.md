@@ -102,3 +102,13 @@ for a sales order row) and the DeliveryDate. `0001-01-01` is AutoCount's empty d
 | P-SPO7 | POST /NewPurchaseOrder SPO-FXT-1110f-1 (DocNo starting SPO), `ShippingPO "T"` | 200 created | `ShippingPO "F"` |
 
 Each document has one plain row (SRTKT38SS qty 1). The wrapper does not take `ShippingPO` on create or edit today.
+
+## Link follow-up (11 Nov 2026, db3, UTC)
+
+| Probe | Call | Status | Read back |
+|---|---|---|---|
+| P-L5 | PUT /EditPurchaseOrderbydockey FXT-1110d-PO1, the linked row 12249 (read: UnitPrice 0, HQ, empty date) sent with UnitPrice 1, Location BRW-AM, DeliveryDate 2026-11-24 | 200 `Done Edit.` | row 12249 UnitPrice 1, BRW-AM, 2026-11-24, still linked to SO row 12213 |
+| P-R2 | PUT /EditSalesOrderbydockey FXT-1110c-SO1, row 12213 qty 10 -> 2 (after P-R1 moved the 10-qty link to FXT-1110c-SO4 row 12219; 1 still linked from FXT-1110d-PO1) | 200 `Done Edit.` | row 12213 qty 2: the change link freed the old sales order row |
+
+A second PUT restores the price, location and date a new linked row loses (F5), and a change of link frees the old
+sales order row's quantity.
