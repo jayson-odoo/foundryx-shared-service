@@ -313,3 +313,22 @@ Book: db3. Run tag: 1111a. PASS 18, FAIL 0, SKIPPED 0.
 - Action: 7c2affbb-e20b-4c6a-b3c2-e61535f8af50
 
 - DELETE /CancelPurchaseOrderbydocno -> 200
+
+## SS end to end on db3 (11 Nov 2026): quotation and sales order suite
+
+Run `python -m modules.autocount.write_back.runner --suite qtso --run-tag 1111q` (same database copy), documents
+`FXT-1111q-*` plus one AutoCount-numbered quotation. 10 of 10 PASS. Exact requests and responses were recorded outside
+the repository.
+
+| Case | Result | Observed |
+|---|---|---|
+| Q01 Create a quotation (AutoCount numbers it, and an explicit number) | PASS | auto done QT-000007; explicit done FXT-1111q-QT |
+| Q02 Edit the quotation: header, quantity, price, discount, location | PASS | done |
+| Q03 Add a line to the quotation, then move the first line | PASS | add done new row 12289; move done |
+| Q04 Create a sales order from a quotation row | PASS | done warnings QT_ROW_LINK_UNCONFIRMED |
+| Q05 Edit the sales order and add a line | PASS | edit done; add done |
+| Q06 Cancel the quotations: the plain one is cancelled, the transferred one refused | PASS | plain done; transferred refused DOC_HAS_TRANSFERS |
+| Q07 Delete a sales order line (one PUT, the row marked D) | PASS | done |
+| Q08 Cancel the sales order | PASS | done |
+| Q09 SPO link, unlink and relink refused (SPO stays off) | PASS | spo_link_row refused VENDOR_UNSUPPORTED; spo_unlink_row refused VENDOR_UNSUPPORTED; spo_relink_row refused VENDOR_UNSUPPORTED |
+| Q10 Delete a quotation line (one PUT, the row marked D) | PASS | done |
