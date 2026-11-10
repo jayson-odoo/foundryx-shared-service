@@ -274,42 +274,33 @@ def test_ac_57_15_add_line_validates_line_fields():
 
 @pytest.mark.parametrize("kind", ["QT", "SO", "PO", "SPO"])
 def test_ac_57_16_delete_line_uses_kind_shape(kind):
+    """Plan 61 F6: the edit door with the row alone, marked "D"."""
     from modules.autocount.write_back import doc_kinds
 
-    shape = doc_kinds.kind_of(kind).delete_line
     doc = qt_doc()
     if kind in ("PO", "SPO"):
         doc["ShippingPO"] = "T" if kind == "SPO" else "F"
     dtl = doc["Details"][0]["DtlKey"]
     req = P.build_delete_line(kind, doc, dtl)
-    assert (req.method, req.path) == (shape.method, shape.path)
-    assert req.body == {"DocKey": 12060, "DtlKey": dtl}
+    assert (req.method, req.path) == ("PUT", doc_kinds.kind_of(kind).edit_path)
+    assert req.body["DocKey"] == 12060
+    assert [(r["DtlKey"], r["FullTransferOption"]) for r in req.body["Details"]] == [(dtl, "D")]
 
 
 def test_ac_57_18_delete_line_unknown_row():
     assert refusal(P.build_delete_line, "QT", qt_doc(), 424242).code == "ROW_NOT_FOUND"
 
 
-def test_ac_57_16_delete_doc_uses_kind_shape():
-    from modules.autocount.write_back import doc_kinds
-
-    shape = doc_kinds.kind_of("QT").delete_doc
-    req = P.build_delete_doc("QT", qt_doc())
-    assert (req.method, req.path) == (shape.method, shape.path)
-    assert req.body["DocKey"] == 12060
-
-
-def test_ac_57_17_cancel_body_is_edit_door_full_header_cancelled_t():
+def test_ac_57_17_cancel_is_delete_by_doc_no_with_no_body():
+    """Plan 61 F9: ``DELETE /CancelQuotationbydocno?DocNo=`` (the client encodes it)."""
     d = qt_doc()
     req = P.build_cancel("QT", d)
-    assert req.method == "PUT" and req.path == "/EditQuotationbydockey"
-    assert req.body["Cancelled"] == "T"
-    assert req.body["DocKey"] == 12060 and req.body["DebtorCode"] == "301-B018"
-    assert req.body["DocNo"] == "FXT-1104q-QT1"
+    assert req.method == "DELETE" and req.path == "/CancelQuotationbydocno"
+    assert req.body is None and req.params == {"DocNo": "FXT-1104q-QT1"}
 
 
 def test_ac_57_17_cancel_so_door():
-    assert P.build_cancel("SO", so_doc()).path == "/EditSalesOrderbydockey"
+    assert P.build_cancel("SO", so_doc()).path == "/CancelSalesOrderbydocno"
 
 
 def test_ac_57_18_cancelled_doc_refused_everywhere():
@@ -321,7 +312,6 @@ def test_ac_57_18_cancelled_doc_refused_everywhere():
         lambda: P.build_add_line("QT", d, line()),
         lambda: P.build_delete_line("QT", d, k),
         lambda: P.build_cancel("QT", d),
-        lambda: P.build_delete_doc("QT", d),
     ]
     for fn in calls:
         assert refusal(fn).code == "DOC_CANCELLED"
@@ -336,7 +326,7 @@ def test_ac_57_18_qt_with_target_document_cannot_cancel():
 def test_ac_57_18_qt_without_target_cancel_ok_control():
     d = qt_doc()
     d["ToDocType"] = ""
-    assert P.build_cancel("QT", d).body["Cancelled"] == "T"
+    assert P.build_cancel("QT", d).params == {"DocNo": d["DocNo"]}
 
 
 def test_ac_57_18_kind_mismatch():

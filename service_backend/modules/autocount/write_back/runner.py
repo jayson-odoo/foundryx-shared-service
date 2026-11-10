@@ -431,7 +431,8 @@ class _Run:
                 case.status = PASS
 
     def c04(self, case: CaseResult) -> None:
-        case.expected = "whole-row link refused: the vendor does not apply an edit of an existing row (VENDOR_UNSUPPORTED)"
+        case.expected = ("whole-row link (plan 61 F5): the free 10 row is replaced in ONE PUT by a row "
+                         "linked to the third SO row, then moved back to BRW-AM")
         if self._skip(case, "C03"):
             return
         small = next(r for r in self._test_rows() if _num(r.get("Qty")) == 10 and not r.get("FromSODtlKey"))
@@ -440,8 +441,12 @@ class _Run:
             po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=int(small["DtlKey"]),  # type: ignore[index,arg-type]
             so_doc_key=self._so_key(), so_dtl_key=self._so_row(2), qty=Decimal(10),
         )
-        if self._service_case(case, result, "refused", "VENDOR_UNSUPPORTED"):
-            case.status = PASS
+        if self._service_case(case, result, "done") and result.error_code is None:
+            rows = (result.document or {}).get("Details") or []  # type: ignore[union-attr]
+            gone = all(r.get("DtlKey") != small["DtlKey"] for r in rows)  # type: ignore[union-attr]
+            if gone and self._linked_new_row(result.document, self._so_row(2)) is not None:
+                self.po_doc = result.document
+                case.status = PASS
 
     def _refusal(self, case: CaseResult, code: str, **link: object) -> None:
         result = self.service.link(tenant_id=self.tenant_id, company_id=self.company.id, **link)  # type: ignore[arg-type]
@@ -459,20 +464,30 @@ class _Run:
         )
 
     def c06(self, case: CaseResult) -> None:
-        case.expected = "link refused: quantity above the PO row (QTY_ABOVE_FREE)"
+        case.expected = f"link of {REAL_PO_NO} row {FREE_PO_ROW} refused: quantity above the PO row (QTY_ABOVE_FREE)"
         self._refusal(
             case, "QTY_ABOVE_FREE", po_doc_key=REAL_PO_DOC_KEY, po_dtl_key=FREE_PO_ROW,
             so_doc_key=REAL_SO_DOC_KEY, so_dtl_key=SO_ROW_QTY_2_SIDE, qty=Decimal(2),
         )
 
     def c07(self, case: CaseResult) -> None:
-        case.expected = f"unlink of {REAL_PO_NO} row {LINKED_PO_ROW} refused: the vendor does not apply it (VENDOR_UNSUPPORTED), nothing sent"
+        case.expected = ("unlink (plan 61 F4) of the C04 row on the test PO: ONE PUT, the linked row "
+                         "deleted and a normal row with the same item, qty and location added")
+        if self._skip(case, "C04"):
+            return
+        linked = self._linked_new_row(self.po_doc, self._so_row(2))
+        if linked is None:
+            case.observed = "C04 left no linked row"
+            return
         result = self.service.unlink(
             tenant_id=self.tenant_id, company_id=self.company.id,
-            po_doc_key=REAL_PO_DOC_KEY, po_dtl_key=LINKED_PO_ROW,
+            po_doc_key=int(self.po_doc["DocKey"]), po_dtl_key=int(linked["DtlKey"]),  # type: ignore[index,arg-type]
         )
-        if self._service_case(case, result, "refused", "VENDOR_UNSUPPORTED"):
-            case.status = PASS
+        if self._service_case(case, result, "done") and result.error_code is None:
+            rows = (result.document or {}).get("Details") or []  # type: ignore[union-attr]
+            if all(r.get("DtlKey") != linked["DtlKey"] for r in rows):  # type: ignore[union-attr]
+                self.po_doc = result.document
+                case.status = PASS
 
     def c08(self, case: CaseResult) -> None:
         case.expected = "second split of the 40 row: 5 linked to SO row 11992 and moved to BRW-AM"
@@ -540,10 +555,10 @@ _CASES = (
     ("C01", "Create the test PO", "c01"),
     ("C02", "Pull SO then PO into staging", "c02"),
     ("C03", "Link with split", "c03"),
-    ("C04", "Whole-row link refused by the capability gate", "c04"),
+    ("C04", "Whole-row link in one replace PUT", "c04"),
     ("C05", "Over-link refused", "c05"),
     ("C06", "Quantity above the PO row refused", "c06"),
-    ("C07", "Unlink refused by the capability gate", "c07"),
+    ("C07", "Unlink in one replace PUT", "c07"),
     ("C08", "Second split of the 40 row", "c08"),
     ("C09", "Stale document refused", "c09"),
     ("C10", "SPO unlink refused by the capability gate", "c10"),
@@ -692,6 +707,20 @@ class _TapClient:
     def delete(self, path: str, body: object):
         return self._send("DELETE", path, body)
 
+    def delete_query(self, path: str, params: Dict[str, str]):
+        """Plan 61 cancel: DELETE with the query string, no body."""
+        self._tap.http += 1
+        entry: Dict[str, object] = {"method": "DELETE", "path": path, "requestBody": None,
+                                    "requestQuery": dict(params)}
+        self._tap.writes.append(entry)
+        try:
+            response = self._inner.delete_query(path, params)
+        except WriteTransportError as exc:
+            entry.update(responseStatus=None, responseBody={"error": exc.code})
+            raise
+        entry.update(responseStatus=response.status_code, responseBody=response.body)
+        return response
+
 
 class _TapReader:
     def __init__(self, inner: AutoCountDocReader, tap: _Tap) -> None:
@@ -705,6 +734,10 @@ class _TapReader:
         self._tap.http += 1
         return self._inner.find_by_doc_no(*args, **kwargs)
 
+    def get_by_doc_no(self, *args, **kwargs):
+        self._tap.http += 1
+        return self._inner.get_by_doc_no(*args, **kwargs)
+
     def list_day(self, *args, **kwargs):
         self._tap.http += 1
         return self._inner.list_day(*args, **kwargs)
@@ -717,10 +750,10 @@ _Q_CASES = (
     ("Q03", "Add a line to the quotation, then move the first line", "q03"),
     ("Q04", "Create a sales order from a quotation row", "q04"),
     ("Q05", "Edit the sales order and add a line", "q05"),
-    ("Q06", "Cancel the quotation refused (no AutoCount support yet)", "q06"),
-    ("Q07", "Cancel the sales order refused (no AutoCount support yet)", "q07"),
-    ("Q08", "Delete a sales order line refused (no AutoCount support yet)", "q08"),
-    ("Q09", "Link, unlink and relink refused while delete is off", "q09"),
+    ("Q06", "Cancel the quotations: the plain one is cancelled, the transferred one refused", "q06"),
+    ("Q07", "Delete a sales order line (one PUT, the row marked D)", "q07"),
+    ("Q08", "Cancel the sales order", "q08"),
+    ("Q09", "SPO link, unlink and relink refused (SPO stays off)", "q09"),
 )
 
 
@@ -911,31 +944,54 @@ class _QtRun:
         case.status = PASS if ok and self.tap.http == self._http_before else FAIL
 
     def q06(self, case: CaseResult) -> None:
-        case.expected = "refused VENDOR_UNSUPPORTED, no request"
-        res = self.call(case, lambda: self.prims.cancel_doc(
-            **self._args("QT"), doc_key=int((self.qt.doc_key if self.qt else 0) or 1)))
-        self._refused(case, [f"cancel QT {self._note(res)}"])
+        case.expected = ("plan 61 F9 / F11: the auto-numbered quotation cancelled (Cancelled T); the "
+                         "quotation Q04 transferred into the sales order refused DOC_HAS_TRANSFERS")
+        if self.qt_auto is None or self.qt is None:
+            case.status, case.observed = SKIPPED, "no quotation was created"
+            return
+        plain = self.call(case, lambda: self.prims.cancel_doc(
+            **self._args("QT"), doc_key=int(self.qt_auto.doc_key or 0), doc_date=self.today))  # type: ignore[union-attr]
+        moved = self.call(case, lambda: self.prims.cancel_doc(
+            **self._args("QT"), doc_key=int(self.qt.doc_key or 0), doc_date=self.today))  # type: ignore[union-attr]
+        case.observed = f"plain {self._note(plain)}; transferred {self._note(moved)}"
+        ok = plain.outcome == "done" and moved.error_code == "DOC_HAS_TRANSFERS"
+        case.status = PASS if ok and self.so is not None else FAIL
 
     def q07(self, case: CaseResult) -> None:
-        case.expected = "refused VENDOR_UNSUPPORTED, no request"
-        res = self.call(case, lambda: self.prims.cancel_doc(
-            **self._args("SO"), doc_key=int((self.so.doc_key if self.so else 0) or 1)))
-        self._refused(case, [f"cancel SO {self._note(res)}"])
+        case.expected = "plan 61 F6: the Q05 line deleted by ONE PUT with the row marked D; the other line kept"
+        so = self.so
+        if so is None:
+            case.status, case.observed = SKIPPED, "no sales order was created"
+            return
+        fresh = self.prims.read_doc(**self._args("SO"), doc_key=int(so.doc_key or 0), doc_date=self.today)
+        rows = (fresh.document or {}).get("Details") or []  # type: ignore[union-attr]
+        if len(rows) < 2:  # type: ignore[arg-type]
+            case.status, case.observed = SKIPPED, "the sales order has fewer than two lines"
+            return
+        dtl = int(rows[-1]["DtlKey"])  # type: ignore[index]
+        res = self.call(case, lambda: self.prims.delete_line(
+            **self._args("SO"), doc_key=int(so.doc_key or 0), dtl_key=dtl, doc_date=self.today))
+        case.observed = self._note(res)
+        case.status = PASS if res.outcome == "done" else FAIL
 
     def q08(self, case: CaseResult) -> None:
-        case.expected = "refused VENDOR_UNSUPPORTED, no request"
-        key = int((self.so.doc_key if self.so else 0) or 1)
-        dtl = self.line_of(self.so) if self.so else 1
-        res = self.call(case, lambda: self.prims.delete_line(**self._args("SO"), doc_key=key, dtl_key=dtl))
-        self._refused(case, [f"delete line SO {self._note(res)}"])
+        case.expected = "plan 61 F9 / F12: the sales order cancelled (DELETE by DocNo, reads back Cancelled T)"
+        so = self.so
+        if so is None:
+            case.status, case.observed = SKIPPED, "no sales order was created"
+            return
+        res = self.call(case, lambda: self.prims.cancel_doc(
+            **self._args("SO"), doc_key=int(so.doc_key or 0), doc_date=self.today))
+        case.observed = self._note(res)
+        case.status = PASS if res.outcome == "done" else FAIL
 
     def q09(self, case: CaseResult) -> None:
-        case.expected = "link_row, unlink_row and relink_row each refused VENDOR_UNSUPPORTED, no request"
+        case.expected = "spo_link_row, spo_unlink_row and spo_relink_row each refused VENDOR_UNSUPPORTED, no request (F14)"
         results: List[str] = []
         specs = (
-            ("link_row", {"doc_key": 1, "dtl_key": 1, "so_doc_key": 2, "so_dtl_key": 2}),
-            ("unlink_row", {"doc_key": 1, "dtl_key": 1}),
-            ("relink_row", {"doc_key": 1, "dtl_key": 1, "so_doc_key": 2, "so_dtl_key": 2}),
+            ("spo_link_row", {"spo_doc_key": 1, "spo_dtl_key": 1, "po_doc_key": 2, "po_dtl_key": 2}),
+            ("spo_unlink_row", {"spo_doc_key": 1, "spo_dtl_key": 1}),
+            ("spo_relink_row", {"spo_doc_key": 1, "spo_dtl_key": 1, "po_doc_key": 2, "po_dtl_key": 2}),
         )
         for op, params in specs:
             out = self.ops.run(

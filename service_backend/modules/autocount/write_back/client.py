@@ -2,13 +2,15 @@
 
 POST / PUT / DELETE, JSON body, the allowlist guard re-run before every request,
 the house SSRF-guarded transport with redirects off, and never a retry (a
-``DtlKey 0`` row would be added twice).
+``DtlKey 0`` row would be added twice). A path never carries a query string; the
+one door that needs one (plan 61 cancel, ``DELETE /Cancel<Doc>bydocno?DocNo=``)
+goes through ``delete_query``, which lets httpx encode the parameters.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 import httpx
 
@@ -67,6 +69,12 @@ class AutoCountWriteClient:
     def delete(self, path: str, body: Any) -> WriteResponse:
         return self._send("DELETE", path, body)
 
+    def delete_query(self, path: str, params: Mapping[str, str]) -> WriteResponse:
+        """DELETE with NO body and ``params`` as the query string, each value
+        URL-encoded by httpx (a ``/``, ``&``, ``#`` or ``?`` in a value can never
+        change the path or add a parameter)."""
+        return self._send("DELETE", path, None, params={str(k): str(v) for k, v in params.items()})
+
     def _http(self) -> httpx.Client:
         if self._transport is not None:
             return httpx.Client(
@@ -76,13 +84,18 @@ class AutoCountWriteClient:
             )
         return autocount_guarded_client(self._timeout)
 
-    def _send(self, method: str, path: str, body: Any) -> WriteResponse:
+    def _send(
+        self, method: str, path: str, body: Any, *, params: Optional[Mapping[str, str]] = None
+    ) -> WriteResponse:
         assert_write_allowed(self.base_url)
         _check_path(path)
         url = self.base_url.rstrip("/") + path
         try:
             with self._http() as http:
-                response = http.request(method, url, json=body)
+                if params is not None:
+                    response = http.request(method, url, params=dict(params))
+                else:
+                    response = http.request(method, url, json=body)
         except httpx.TimeoutException:
             raise WriteTransportError("WRITE_TIMEOUT") from None
         except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError):

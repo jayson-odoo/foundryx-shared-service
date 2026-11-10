@@ -63,20 +63,20 @@ def test_ac_57_01_unknown_kind_is_value_error(bad):
 
 
 @pytest.mark.parametrize("name", sorted(PATHS))
-def test_ac_57_16_one_delete_shape_per_kind(name):
+def test_ac_61_one_read_and_one_cancel_door_per_kind(name):
+    """Plan 61 F1 / F9: the placeholder delete doors are gone; each kind has its bydocno
+    read and its cancel door (a line is deleted through the edit door, AC-61-20)."""
     kind = _doc_kinds().kind_of(name)
-    assert kind.delete_line.method == "DELETE"
-    assert kind.delete_line.path.startswith("/Delete") and kind.delete_line.path.lower().endswith("bydtlkey")
-    assert kind.delete_doc.method == "DELETE"
-    assert kind.delete_doc.path.startswith("/Delete") and kind.delete_doc.path.lower().endswith("bydockey")
-    assert kind.delete_line.path != kind.delete_doc.path
+    assert not hasattr(kind, "delete_line") and not hasattr(kind, "delete_doc")
+    assert kind.by_doc_no_path.lower().endswith("bydocno") and kind.cancel_path.startswith("/Cancel")
+    assert kind.cancel_path.lower().endswith("bydocno") and kind.by_doc_no_path != kind.cancel_path
 
 
 def test_ac_57_03_shipped_capability_table():
-    on = {("QT", p) for p in ("create_doc", "edit_doc", "add_line")}
-    on |= {("SO", p) for p in ("create_doc", "edit_doc", "add_line")}
-    on |= {("PO", p) for p in ("create_doc", "edit_doc", "add_line")}
-    on |= {("SPO", "edit_doc")}
+    on = {("QT", p) for p in ("create_doc", "edit_doc", "add_line", "delete_line", "cancel_doc")}
+    on |= {("SO", p) for p in ("create_doc", "edit_doc", "add_line", "delete_line", "cancel_doc")}
+    on |= {("PO", p) for p in ("create_doc", "edit_doc", "add_line", "delete_line", "cancel_doc")}
+    on |= {("SPO", "edit_doc")}  # plan 61 section 4.5: delete_doc off everywhere, SPO edit only
     for kind in PATHS:
         for primitive in PRIMITIVES:
             assert capabilities.capable(kind, primitive) is ((kind, primitive) in on), (kind, primitive)
@@ -87,12 +87,12 @@ def test_ac_57_03_table_has_every_pair():
 
 
 def test_ac_57_03_capable_reads_table_at_call_time(monkeypatch):
-    assert capabilities.capable("QT", "cancel_doc") is False
+    assert capabilities.capable("QT", "delete_doc") is False
     flipped = dict(capabilities.CAPABILITIES)
-    flipped[("QT", "cancel_doc")] = True
+    flipped[("QT", "delete_doc")] = True
     flipped[("QT", "create_doc")] = False
     monkeypatch.setattr(capabilities, "CAPABILITIES", MappingProxyType(flipped), raising=True)
-    assert capabilities.capable("QT", "cancel_doc") is True
+    assert capabilities.capable("QT", "delete_doc") is True
     assert capabilities.capable("QT", "create_doc") is False
 
 

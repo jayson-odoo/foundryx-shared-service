@@ -150,9 +150,23 @@ def _refuse_other_transfer(row: Doc) -> None:
         raise WriteRefusal("ROW_HAS_OTHER_TRANSFER", "row comes from another document type")
 
 
-def _unlinked(row: Doc) -> Doc:
+# Plan 61 (db3 10 Nov, F3..F8): a row sent with ``FullTransferOption "D"`` is deleted, a
+# row with ``DtlKey 0`` is added, both in ONE PUT that AutoCount applies all or nothing.
+# Every other row SS sends is a normal row (AC-61-16).
+DELETE_ROW = "D"
+_NORMAL_ROW = {"FullTransferOption": " ", "FullTransferFromDocList": ""}
+
+
+def _normal(row: Doc) -> Doc:
+    """``row`` as a normal (not deleted, not transferred-from-list) row (AC-61-16)."""
+    row.update(_NORMAL_ROW)
+    return row
+
+
+def _deleted(row: Doc) -> Doc:
+    """The row exactly as read, marked for deletion."""
     out = _row_fields(row)
-    out.update(FromDocType="", FromDocNo="", FromDocDtlKey=0)
+    out["FullTransferOption"] = DELETE_ROW
     return out
 
 
@@ -188,12 +202,12 @@ def build_link(
     *,
     so_linked_qty: Decimal = Decimal(0),
     spo_ref: Optional[str] = None,
-    whole_row_as_split: bool = False,
 ) -> Doc:
-    """Link ``qty`` of a PO row to an SO row: in place when ``qty`` equals the
-    row qty (the row also takes the SO row's location), else split off a new row.
-    ``whole_row_as_split`` emulates a whole-row link as a split that leaves the
-    original row at quantity 0."""
+    """Link ``qty`` of a PO row to an SO row in ONE PUT. AutoCount never links an
+    existing row, so the whole row is replaced (the row ``"D"`` plus a new linked row,
+    plan 61 F5) and part of it is split (the row cut to the rest plus a new linked row).
+    The new row asks for the SO row's location; AutoCount forces HQ and the caller
+    moves it back in a second write."""
     _check_doc(po, want_spo=False)
     if so.get("Cancelled") == "T":
         raise WriteRefusal("DOC_CANCELLED", "sales order is cancelled")
@@ -220,15 +234,13 @@ def build_link(
         "Location": so_row.get("Location"),
     }
     body = _header(po)
-    if qty == free and not whole_row_as_split:
-        row = _row_fields(po_row)
-        row.update(link)
-        body["Details"] = [row]
-        return body
-    edited = _row_fields(po_row)
-    edited["Qty"] = _num(free - qty)
-    new = _row_fields(po_row)
+    new = _normal(_row_fields(po_row))
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
+    if qty == free:
+        body["Details"] = [_deleted(po_row), new]
+        return body
+    edited = _normal(_row_fields(po_row))
+    edited["Qty"] = _num(free - qty)
     body["Details"] = [edited, new]
     return body
 
@@ -266,6 +278,11 @@ def _day(value: Any) -> Optional[str]:
     return value[:10]
 
 
+def day_of(value: Any) -> Optional[str]:
+    """The ``YYYY-MM-DD`` day of a vendor date; None when empty or below 1753."""
+    return _day(value)
+
+
 def same_row_value(field_name: str, want: Any, got: Any) -> bool:
     """Row field equality for verify: dates by day (empty = empty), numbers by value."""
     if field_name == "DeliveryDate":
@@ -299,30 +316,22 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
     return body
 
 
-def build_unlink(po: Doc, po_dtl_key: int, *, spo_ref: Optional[str] = None) -> Doc:
-    """Clear the link of one PO row; the row keeps its own qty and location."""
+NO_LINK: Doc = {"FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+
+
+def build_unlink_row(po: Doc, po_dtl_key: int, *, spo_ref: Optional[str] = None) -> Doc:
+    """Unlink one PO row in ONE PUT (plan 61 F4, AC-61-11): the linked row ``"D"`` plus
+    a new normal row with the same item, qty, price, UOM, location and delivery date.
+    AutoCount never clears a link in place (db3 4 Nov), so there is no blank-link PUT."""
     _check_doc(po, want_spo=False)
     row = _find_row(po, po_dtl_key)
     _refuse_on_spo(spo_ref)
     _refuse_other_transfer(row)
     if not _row_linked(row):
         raise WriteRefusal("ROW_NOT_LINKED", "row is not linked")
-    body = _header(po)
-    body["Details"] = [_unlinked(row)]
-    return body
-
-
-def build_spo_unlink(spo: Doc, spo_dtl_key: int) -> Doc:
-    """Clear the PO link of one SPO row (SPO = PO document with ShippingPO "T")."""
-    _check_doc(spo, want_spo=True)
-    row = _find_row(spo, spo_dtl_key)
-    if not (row.get("FromDocDtlKey") or row.get("FromDocNo")):
-        raise WriteRefusal("ROW_NOT_LINKED", "row is not linked")
-    body = _header(spo)
-    body["ShippingPO"] = "T"
-    details: List[Doc] = [_unlinked(row)]
-    body["Details"] = details
-    return body
+    new = {k: v for k, v in row.items() if k != "DtlKey"}
+    new.update(NO_LINK)
+    return build_row_replace("PO", po, row, new).body or {}
 
 
 # ── plan 57 level-1 primitive builders (AC-57-10..18) ───────────────────────────
@@ -331,7 +340,8 @@ def build_spo_unlink(spo: Doc, spo_dtl_key: int) -> Doc:
 class VendorRequest:
     method: str
     path: str
-    body: Doc
+    body: Optional[Doc]
+    params: Optional[Dict[str, str]] = None  # a query string, encoded by the client (cancel only)
 
 
 @dataclass
@@ -422,10 +432,7 @@ def _check_line(line: Mapping[str, Any]) -> None:
 # AC-57-45: the vendor row shape a kind always gets (db3 answers 200 and DROPS a thin row,
 # live run 4 Nov). The caller's values win; these only fill what is absent.
 _ROW_DEFAULTS: Doc = {"ProjNo": "", "FOCQty": 0, "Discount": "", "TaxCode": "", "Desc2": ""}
-_TRANSFER_DEFAULTS: Doc = {
-    "YourPONo": "", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0,
-    "FullTransferOption": " ", "FullTransferFromDocList": "",
-}
+_TRANSFER_DEFAULTS: Doc = {"YourPONo": "", "FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
 
 
 def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None, kind: str = "QT") -> Doc:
@@ -435,6 +442,7 @@ def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None, kind: s
         defaults.update(_TRANSFER_DEFAULTS)
     for key, value in defaults.items():
         out.setdefault(key, value)
+    _normal(out)  # AC-61-16: every row SS sends is a normal row, QT too
     if dtl_key is not None:
         out["DtlKey"] = dtl_key
     return out
@@ -534,7 +542,7 @@ def build_edit(
         for key in edits:
             if key not in EDIT_LINE_KEYS:
                 raise WriteRefusal("FIELD_NOT_EDITABLE", key)
-        out = _row_fields(row)
+        out = _normal(_row_fields(row))
         out.update({k: _plain(v) for k, v in edits.items()})
         price = _num_of(out.get("UnitPrice"))
         if "Qty" in edits:
@@ -555,30 +563,46 @@ def build_add_line(kind_name: str, doc: Doc, line: Mapping[str, Any]) -> VendorR
     return VendorRequest("PUT", kind.edit_path, body)
 
 
+def check_row(kind_name: str, doc: Doc, dtl_key: int) -> Doc:
+    """The row ``dtl_key`` of a writable ``kind_name`` document (kind, cancelled, row exists)."""
+    _check_kind_doc(kind_of(kind_name), doc)
+    return _find_row(doc, dtl_key)
+
+
 def build_delete_line(kind_name: str, doc: Doc, dtl_key: int) -> VendorRequest:
+    """Plan 61 F6: the row as read with ``FullTransferOption "D"``, alone, on the edit door."""
     kind = kind_of(kind_name)
     _check_kind_doc(kind, doc)
-    _find_row(doc, dtl_key)
-    return VendorRequest(
-        kind.delete_line.method, kind.delete_line.path, {"DocKey": doc.get("DocKey"), "DtlKey": dtl_key}
-    )
+    body = _doc_header(kind, doc)
+    body["Details"] = [_deleted(_find_row(doc, dtl_key))]
+    return VendorRequest("PUT", kind.edit_path, body)
 
 
-def build_delete_doc(kind_name: str, doc: Doc) -> VendorRequest:
+def build_row_replace(kind_name: str, doc: Doc, old_row: Mapping[str, Any], new_row: Mapping[str, Any]) -> VendorRequest:
+    """Plan 61 section 4.1 (AC-61-10): ONE PUT on the edit door with ``Details [old row
+    as read + "D", new row DtlKey 0]``. The new row is a full vendor row; it carries
+    ``FromDocType / FromDocNo / FromDocDtlKey`` only when it is linked."""
     kind = kind_of(kind_name)
     _check_kind_doc(kind, doc)
-    return VendorRequest(kind.delete_doc.method, kind.delete_doc.path, {"DocKey": doc.get("DocKey")})
+    old = _find_row(doc, old_row.get("DtlKey"))  # type: ignore[arg-type]
+    new = _vendor_line(new_row, 0, kind.name)
+    if not new.get("FromDocType"):
+        new.update(FromDocType="", FromDocNo="", FromDocDtlKey=0)
+    body = _doc_header(kind, doc)
+    body["Details"] = [_deleted(old), new]
+    return VendorRequest("PUT", kind.edit_path, body)
 
 
 def build_cancel(kind_name: str, doc: Doc) -> VendorRequest:
+    """Plan 61 F9: ``DELETE /Cancel<Doc>bydocno?DocNo=<no>`` with no body."""
     kind = kind_of(kind_name)
     _check_kind_doc(kind, doc)
     if kind.name == "QT" and not _blank(doc.get("ToDocType")):
         raise WriteRefusal("DOC_HAS_TRANSFERS", "quotation has a target document")
-    body = _doc_header(kind, doc)
-    body["Cancelled"] = "T"
-    body["Details"] = [_row_fields(r) for r in doc.get("Details") or []]
-    return VendorRequest("PUT", kind.edit_path, body)
+    doc_no = doc.get("DocNo")
+    if _blank(doc_no):
+        raise WriteRefusal("DOC_NOT_FOUND", "document has no number")
+    return VendorRequest("DELETE", kind.cancel_path, None, {"DocNo": str(doc_no)})
 
 
 # ── verifiers (pure; compare the fresh read-back with what was sent) ─────────────
@@ -742,3 +766,34 @@ def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after:
     if _drifted(before, after, (), []):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
+
+
+def verify_row_replace(kind_name: str, before: Doc, old_key: int, line: Mapping[str, Any], after: Doc) -> Verdict:
+    """AC-61-11..13: the old row is gone, exactly one new row reads back as sent (its
+    location aside when it is linked: AutoCount forces HQ, F5) with its link, and no
+    other row or header field moved."""
+    kind_of(kind_name)
+    if _row_by_key(after, old_key) is not None:
+        return Verdict(MISMATCH, "LINE_NOT_DELETED")
+    known = {r.get("DtlKey") for r in before.get("Details") or []}
+    added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]
+    if len(added) != 1:
+        return Verdict(MISMATCH, "ROWS_DROPPED" if not added else "ROWS_UNEXPECTED")
+    relaxed = dict(line, Location=added[0].get("Location")) if line.get("FromDocType") else line
+    if not _same_line(relaxed, added[0]):
+        return Verdict(MISMATCH, "ROW_MISMATCH")
+    if _link_code(kind_name, line, added[0]) or (not line.get("FromDocType") and _link_of_row(kind_name, added[0])):
+        return Verdict(MISMATCH, "LINK_MISMATCH")
+    if _drifted(before, after, (), [old_key]):
+        return Verdict(MISMATCH, "COLLATERAL_CHANGE")
+    return Verdict(DONE)
+
+
+def _link_of_row(kind_name: str, row: Doc) -> int:
+    """The link a read-back row carries: ``FromSODtlKey`` on a PO row, ``FromDocDtlKey``
+    on an SPO row; a QT / SO row is linked when it names a source document."""
+    if kind_name == "PO":
+        return int(row.get("FromSODtlKey") or 0)
+    if kind_name == "SPO":
+        return int(row.get("FromDocDtlKey") or 0)
+    return 1 if row.get("FromDocType") else 0

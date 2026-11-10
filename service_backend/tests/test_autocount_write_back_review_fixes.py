@@ -32,9 +32,10 @@ from tests.test_autocount_write_back_gateway_qtso import (  # noqa: F401
     world,
 )
 from tests.test_autocount_write_back_operations import (  # noqa: F401
-    DEL_PO,
+    deleted_a_row,
     PUT_PO,
     OpHarness,
+    drop_new_row_once,
     World,
     db,
     h,
@@ -83,10 +84,12 @@ def test_ac_57_41_the_stray_row_is_deleted_before_the_original_is_re_added(h, w_
     w = w_far
     h.vendor.drop_link_next_add()
     h.run("link_row", w.params["link_row"])
-    steps = h.steps()
-    assert steps[0] == DEL_PO and steps[1] == PUT_PO  # delete original, add (link lost)
-    assert steps[2] == DEL_PO, steps  # the stray new row goes first
-    assert steps[3] == PUT_PO  # then the original is re-added
+    assert h.steps() == [PUT_PO, PUT_PO, PUT_PO]  # plan 61: replace (link lost), unstray, re-add
+    replace, unstray, readd = h.vendor.writes()
+    stray = [r["DtlKey"] for r in unstray.body["Details"]]
+    assert [r.get("FullTransferOption") for r in unstray.body["Details"]] == ["D"]  # the stray goes first
+    assert stray[0] not in [r["DtlKey"] for r in w.po["Details"]]
+    assert [r["DtlKey"] for r in readd.body["Details"]] == [0]  # then the original is re-added
 
 
 def test_ac_57_41_a_failed_add_that_applied_leaves_a_stray_row_that_recovery_removes(h, w):
@@ -102,12 +105,13 @@ def test_ac_57_41_a_failed_add_that_applied_leaves_a_stray_row_that_recovery_rem
 def test_ac_57_41_when_the_stray_row_cannot_be_removed_the_operation_needs_attention(h, w_far):
     w = w_far
     h.vendor.drop_link_next_add()
-    h.vendor.fail_next("DELETE", "DeletePurchaseOrderDetailbydtlkey", 500, "boom", after=1)
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "boom", after=1)  # the unstray "D" fails
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "needs_attention"
     assert len(h.alerts) == 1
     count, qty = n_item_a(h)
-    assert qty <= Decimal(20) and h.steps().count(PUT_PO) == 1  # no blind re-add on top of the stray row
+    assert qty <= Decimal(20) and h.steps() == [PUT_PO, PUT_PO]  # replace, failed unstray: no blind re-add
+    assert all(r["DtlKey"] for r in h.vendor.writes()[1].body["Details"])
 
 
 def test_ac_57_41_po_add_line_with_a_dropped_link_is_a_mismatch_not_done(h):
@@ -149,16 +153,16 @@ def test_ac_57_41_a_link_that_landed_is_still_done(h):
 
 @pytest.mark.parametrize("failure", ["boom", HTML_500, ""])
 def test_ac_57_42_a_bare_5xx_on_the_delete_is_pending_verification_and_resumable(h, w, failure):
-    h.vendor.fail_next("DELETE", "DeletePurchaseOrderDetailbydtlkey", 500, failure)
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, failure)  # plan 61: on the replace PUT
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "pending_verification", (res.outcome, res.error_code)
-    assert h.steps() == [DEL_PO]  # no add, no recovery on top of an unknown delete
+    assert h.steps() == [PUT_PO]  # no recovery on top of an unknown replace
     out = h.ops().resume(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=res.operation_id)
     assert out.outcome in ("done", "recovered")
 
 
 def test_ac_57_42_a_delete_that_landed_but_answered_5xx_is_resumed_by_re_creating_the_row(h, w):
-    h.vendor.apply_then_500_next("DELETE", "DeletePurchaseOrderDetailbydtlkey")
+    h.vendor.apply_then_500_next("PUT", "EditPurchaseOrderbydockey")  # plan 61: the replace landed
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "pending_verification"
     assert w.row_by_key(w.po_rows(), w.p_linked) is None
@@ -171,7 +175,7 @@ def test_ac_57_42_only_vendor_refused_means_the_delete_did_not_land(h, w):
     h.vendor.mark_received("PO", 7001, w.p_linked, "line already received")
     res = h.run("unlink_row", w.params["unlink_row"], receipt_reader=lambda *a: None)
     assert res.outcome == "vendor_error" and res.error_code == "VENDOR_REFUSED"
-    assert h.steps() == [DEL_PO]
+    assert h.steps() == [PUT_PO]
 
 
 # ======================================================================================
@@ -253,7 +257,8 @@ def test_ac_57_44_a_part_qty_is_a_split_even_when_autocount_holds_more_than_stag
 
 
 def test_ac_57_44_a_whole_row_qty_runs_the_operation_and_needs_the_delete_flag(client, h, db):
-    gw = Gw(h, db)  # delete_line off
+    gw = Gw(h, db)
+    h.flag("PO", "delete_line", False)  # plan 61 ships it on: switched off here
     world = World(h)
     _set_row_qty(h, world.p_free, 6)
     r = client.post(f"{PREFIX}/po-links", headers=gw.hdr(), json=_po_links_body(world, 6))
@@ -265,7 +270,8 @@ def test_ac_57_44_a_whole_row_qty_against_the_fresh_qty_deletes_and_adds(client,
     _set_row_qty(gw.h, world.p_free, 6)
     r = client.post(f"{PREFIX}/po-links", headers=gw.hdr(), json=_po_links_body(world, 6))
     assert r.status_code == 200, r.text
-    assert [c.method for c in gw.h.vendor.writes()][0] == "DELETE"
+    first = gw.h.vendor.writes()[0]  # plan 61: one replace PUT, the row "D" + a new linked row
+    assert first.method == "PUT" and [r.get("FullTransferOption") for r in first.body["Details"]][0] == "D"
     assert r.json()["replacedLines"]
 
 
@@ -460,7 +466,7 @@ def test_ac_57_47_a_clean_refusal_is_kept_whole():
 
 
 def test_ac_57_47_bare_5xx_body_is_stored_as_status_and_redacted_text_only(h, w):
-    h.vendor.fail_next("DELETE", "DeletePurchaseOrderDetailbydtlkey", 500, HTML_500)
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, HTML_500)
     res = h.run("unlink_row", w.params["unlink_row"])
     rows = h.op_actions(res)
     assert rows and rows[0].response_status == 500
@@ -481,8 +487,8 @@ def test_ac_57_47_bare_5xx_on_a_primitive_keeps_no_host_on_the_row_or_the_answer
 
 
 def _needs_attention(h, w):
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed")
+    drop_new_row_once(h)  # plan 61: the replace lost its new row
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed", after=1)
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "needs_attention"
     return res

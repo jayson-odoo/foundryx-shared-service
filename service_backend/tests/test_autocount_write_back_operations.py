@@ -27,7 +27,6 @@ from tests.test_autocount_write_back_primitives import Harness, _line
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 KEY_ID = "key-1"
-DEL_PO = ("DELETE", "deletepurchaseorderdetailbydtlkey")
 PUT_PO = ("PUT", "editpurchaseorderbydockey")
 ZERO = lambda kind, doc, row: Decimal(0)  # noqa: E731 - receipt known: nothing received
 OPS = ["link_row", "unlink_row", "relink_row", "spo_link_row", "spo_unlink_row", "spo_relink_row"]
@@ -79,6 +78,33 @@ class OpHarness(Harness):
 
         self.db.expire_all()
         return self.db.query(AcWriteOperation).filter(AcWriteOperation.id == res.operation_id).one()
+
+
+def drop_new_row_once(h) -> None:
+    """Plan 61: the next replace PUT deletes its "D" row but the vendor drops the new
+    row (answered 200): it landed wrong, so the operation must recover."""
+    original = h.vendor._edit
+    state = {"done": False}
+
+    def edit(kind, body):
+        if not state["done"] and any(r.get("FullTransferOption") == "D" for r in body.get("Details") or []):
+            state["done"] = True
+            body = dict(body, Details=[r for r in body["Details"] if r.get("DtlKey")])
+        return original(kind, body)
+
+    h.vendor._edit = edit
+
+
+def deleted_a_row(h) -> bool:
+    """Plan 61: some write sent a row with ``FullTransferOption "D"`` (the delete path; the
+    old placeholder DELETE door is gone)."""
+    return any(r.get("FullTransferOption") == "D" for c in h.vendor.writes() for r in (c.body or {}).get("Details") or [])
+
+
+def replace_rows(call):
+    """``(deleted DtlKeys, new rows)`` of a plan 61 replace PUT."""
+    rows = call.body["Details"]
+    return [r["DtlKey"] for r in rows if r.get("FullTransferOption") == "D"], [r for r in rows if r["DtlKey"] == 0]
 
 
 class World:
@@ -153,7 +179,8 @@ def w_far(h):
 
 @pytest.mark.parametrize("op", OPS)
 def test_ac_57_32_delete_flag_off_refuses_every_operation_without_http(h, op):
-    world = World(h)  # delete_line shipped off
+    world = World(h)  # SPO delete_line shipped off; plan 61 ships PO delete_line on, switched off here
+    h.flag("PO", "delete_line", False)
     res = h.run(op, world.params[op])
     assert res.outcome == "refused" and res.error_code == "VENDOR_UNSUPPORTED"
     h.no_http()
@@ -166,10 +193,10 @@ def test_ac_57_30_link_row_moves_the_new_row_to_the_so_rows_location(h, w_far):
     w = w_far
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "done", res.error_code
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]  # delete, add (vendor forces HQ), move to the SO row's place
-    delete, add, move = h.vendor.writes()
-    assert delete.body == {"DocKey": 7001, "DtlKey": w.p_free}
-    new_row = add.body["Details"][0]
+    assert h.steps() == [PUT_PO, PUT_PO]  # plan 61: one replace PUT (vendor forces HQ), move to the SO row's place
+    replace, move = h.vendor.writes()
+    gone, (new_row,) = replace_rows(replace)
+    assert gone == [w.p_free] and len(replace.body["Details"]) == 2 and replace.body["DocKey"] == 7001
     assert new_row["DtlKey"] == 0 and new_row["FromDocType"] == "SO" and new_row["FromDocDtlKey"] == w.so_a
     for field, value in (("ItemCode", "ITEM-A"), ("UOM", "UNIT"), ("Qty", 4), ("UnitPrice", 5.0),
                          ("Discount", "5%"), ("TaxCode", "SR"), ("Description", "d"),
@@ -179,6 +206,7 @@ def test_ac_57_30_link_row_moves_the_new_row_to_the_so_rows_location(h, w_far):
     assert old_key == w.p_free and new_key != old_key
     assert [r["DtlKey"] for r in move.body["Details"]] == [new_key]
     assert move.body["Details"][0]["Location"] == "BRW-AM"
+    assert move.body["Details"][0]["DeliveryDate"] == "2026-12-01T00:00:00"  # F5: the vendor cleared it
     stored = w.row_by_key(w.po_rows(), new_key)
     assert stored["FromSODtlKey"] == w.so_a and stored["Location"] == "BRW-AM"
     assert res.document and w.row_by_key(res.document["Details"], new_key)["Location"] == "BRW-AM"
@@ -189,7 +217,8 @@ def test_ac_57_30_link_row_moves_the_new_row_to_the_so_rows_location(h, w_far):
 def test_ac_57_30_link_row_to_an_so_row_at_hq_skips_the_move(h, w):
     res = h.run("link_row", w.params["link_row"])  # SO row at HQ = where the vendor already puts it
     assert res.outcome == "done", res.error_code
-    assert h.steps() == [DEL_PO, PUT_PO]
+    assert h.steps() == [PUT_PO, PUT_PO]  # replace, then only the cleared DeliveryDate goes back (F5)
+    assert h.vendor.writes()[1].body["Details"][0]["Location"] == "HQ"  # no location move
     (old_key, new_key), = res.replaced_lines
     row = w.row_by_key(w.po_rows(), new_key)
     assert row["FromSODtlKey"] == w.so_a and row["Location"] == "HQ"
@@ -203,13 +232,13 @@ def test_ac_57_30_link_row_location_move_failure_is_done_with_warning(h, w_far):
     assert res.outcome == "done" and "LOCATION_NOT_MOVED" in res.warnings
     (old_key, new_key), = res.replaced_lines
     assert w.row_by_key(w.po_rows(), new_key)["Location"] == "HQ"
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]
+    assert h.steps() == [PUT_PO, PUT_PO]
 
 
 def test_ac_57_31_unlink_row_delete_then_add_without_link(h, w):
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "done", res.error_code
-    assert h.steps() == [DEL_PO, PUT_PO]  # location kept, no move needed
+    assert h.steps() == [PUT_PO]  # plan 61: one replace PUT; location and date kept, no move needed
     (old_key, new_key), = res.replaced_lines
     assert old_key == w.p_linked
     row = w.row_by_key(w.po_rows(), new_key)
@@ -220,7 +249,7 @@ def test_ac_57_31_relink_row_moves_link_and_row_to_the_new_so_rows_location(h, w
     w = w_far
     res = h.run("relink_row", w.params["relink_row"])
     assert res.outcome == "done", res.error_code
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]
+    assert h.steps() == [PUT_PO, PUT_PO]
     (old_key, new_key), = res.replaced_lines
     row = w.row_by_key(w.po_rows(), new_key)
     assert old_key == w.p_linked and row["FromSODtlKey"] == w.so_b and row["Location"] == "BRW-AM"
@@ -229,7 +258,8 @@ def test_ac_57_31_relink_row_moves_link_and_row_to_the_new_so_rows_location(h, w
 def test_ac_57_31_relink_to_an_so_row_at_hq_skips_the_move(h, w):
     res = h.run("relink_row", w.params["relink_row"])
     assert res.outcome == "done", res.error_code
-    assert h.steps() == [DEL_PO, PUT_PO]
+    assert h.steps() == [PUT_PO, PUT_PO]  # replace, then only the cleared DeliveryDate goes back
+    assert h.vendor.writes()[1].body["Details"][0]["Location"] == "HQ"  # no location move
     (_old, new_key), = res.replaced_lines
     assert w.row_by_key(w.po_rows(), new_key)["Location"] == "HQ"
 
@@ -341,7 +371,7 @@ def test_ac_57_33_partly_received_link_row_edits_to_received_qty_and_adds_remain
     res = h.run("link_row", w.params["link_row"],
                 receipt_reader=lambda kind, doc, row: Decimal(1) if row["DtlKey"] == w.p_free else Decimal(0))
     assert res.outcome == "done", res.error_code
-    assert DEL_PO not in h.steps()
+    assert not deleted_a_row(h)
     assert h.steps() == [PUT_PO, PUT_PO, PUT_PO]  # cut, add remainder, move
     cut, add, _move = h.vendor.writes()
     assert cut.body["Details"] == [dict(cut.body["Details"][0], DtlKey=w.p_free, Qty=1)] or (
@@ -357,7 +387,7 @@ def test_ac_57_33_partly_received_unlink_keeps_link_on_received_part(h, w):
     res = h.run("unlink_row", w.params["unlink_row"],
                 receipt_reader=lambda kind, doc, row: Decimal(1) if row["DtlKey"] == w.p_linked else Decimal(0))
     assert res.outcome == "done", res.error_code
-    assert DEL_PO not in h.steps() and h.steps() == [PUT_PO, PUT_PO]
+    assert not deleted_a_row(h) and h.steps() == [PUT_PO, PUT_PO]
     kept = w.row_by_key(w.po_rows(), w.p_linked)
     assert kept["Qty"] == 1 and kept["FromSODtlKey"] == w.so_a
     remainder = [r for r in w.po_rows() if r["DtlKey"] not in (w.p_linked, w.p_free, w.p_spo, w.p_other)]
@@ -366,11 +396,11 @@ def test_ac_57_33_partly_received_unlink_keeps_link_on_received_part(h, w):
 
 def test_ac_57_33_unknown_received_qty_proceeds_with_warning(h, w_far):
     # owner ruling 4 Nov: the refusal comes from AutoCount, not from us
-    w = w_far  # SO at BRW-AM: delete, add, move
+    w = w_far  # SO at BRW-AM: replace, move
     res = h.run("link_row", w.params["link_row"], receipt_reader=lambda kind, doc, row: None)
     assert res.outcome == "done", res.error_code
     assert "TRANSFER_STATE_UNKNOWN" in res.warnings
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]
+    assert h.steps() == [PUT_PO, PUT_PO]
 
 
 def test_ac_57_33_known_received_qty_has_no_unknown_warning(h, w):
@@ -384,7 +414,7 @@ def test_ac_57_33_autocount_refusing_the_delete_is_vendor_refused_and_nothing_el
     assert res.outcome == "vendor_error" and res.error_code == "VENDOR_REFUSED"
     assert "Cannot delete: line already received." in (res.message or "")
     assert "ac.example.test" not in (res.message or "") and "api/db3" not in (res.message or "")
-    assert h.steps() == [DEL_PO]  # no add, no recovery: the delete did not land
+    assert h.steps() == [PUT_PO]  # the replace PUT only, no recovery: AutoCount applied nothing (F8)
     assert w.row_by_key(w.po_rows(), w.p_free) is not None and len(w.po_rows()) == 4
     assert h.alerts == []
     assert len(h.op_actions(res)) == 1
@@ -395,7 +425,7 @@ def test_ac_57_33_vendor_refused_delete_for_other_po_ops(h, w, op):
     h.vendor.mark_received("PO", 7001, w.p_linked, "line received")
     res = h.run(op, w.params[op], receipt_reader=lambda kind, doc, row: None)
     assert res.outcome == "vendor_error" and res.error_code == "VENDOR_REFUSED"
-    assert h.steps() == [DEL_PO]
+    assert h.steps() == [PUT_PO]
 
 
 def test_ac_57_33_switch_off_any_receipt_is_row_received(h, w, monkeypatch):
@@ -431,12 +461,12 @@ def test_ac_57_33_default_receipt_reader_full_receipt(h):
 # ---- AC-57-34 / 35: recovery, needs_attention -----------------------------------------------------------------
 
 def test_ac_57_34_add_fails_after_delete_original_is_readded_and_outcome_recovered(h, w):
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    drop_new_row_once(h)  # plan 61: the replace deleted the row but its new row did not land
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "recovered"
-    failed_step = [a for a in h.op_actions(res) if a.outcome == "vendor_error"]
+    failed_step = [a for a in h.op_actions(res) if a.outcome == "mismatch"]
     assert len(failed_step) == 1 and res.error_code == failed_step[0].error_code and res.error_code
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]  # delete, failed add, recovery add (unlinked: no move)
+    assert h.steps() == [PUT_PO, PUT_PO]  # replace that lost its new row, recovery add (unlinked: no move)
     (old_key, new_key), = res.replaced_lines
     assert old_key == w.p_free
     row = w.row_by_key(w.po_rows(), new_key)
@@ -446,7 +476,7 @@ def test_ac_57_34_add_fails_after_delete_original_is_readded_and_outcome_recover
 
 def test_ac_57_34_link_row_recovery_re_adds_at_the_snapshot_location_not_the_so_rows(h, w_far):
     w = w_far
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    drop_new_row_once(h)
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "recovered"
     (old_key, new_key), = res.replaced_lines
@@ -455,10 +485,10 @@ def test_ac_57_34_link_row_recovery_re_adds_at_the_snapshot_location_not_the_so_
 
 
 def test_ac_57_34_recovery_restores_old_link_and_moves_back_to_snapshot_location(h, w):
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    drop_new_row_once(h)
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "recovered"
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO, PUT_PO]  # delete, failed add, re-add linked, move
+    assert h.steps() == [PUT_PO, PUT_PO, PUT_PO]  # replace that lost its new row, re-add linked, move
     (old_key, new_key), = res.replaced_lines
     row = w.row_by_key(w.po_rows(), new_key)
     assert row["FromSODtlKey"] == w.so_a and row["Location"] == "BR1"
@@ -484,11 +514,11 @@ def test_ac_57_34_add_that_leaves_no_new_row_is_also_recovered(h, w):
 
 
 def test_ac_57_35_recovery_fails_too_needs_attention_snapshot_notifier_no_more_calls(h, w):
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed", after=0)
+    drop_new_row_once(h)
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed", after=1)
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "needs_attention"
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO]
+    assert h.steps() == [PUT_PO, PUT_PO]
     calls_before = len(h.vendor.calls)
     op = h.operation(res)
     assert op.status == "needs_attention"
@@ -510,8 +540,8 @@ def test_ac_57_35_default_notifier_writes_one_outbox_row_to_same_tenant_manager(
     _other_tenant(h.db)
     _user(h.db, "mgr@example.com", perms=[MANAGE])
     _user(h.db, "outsider@other.com", perms=[MANAGE], tenant_id=OTHER_TENANT)
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed")
+    drop_new_row_once(h)
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed", after=1)
     res = h.run("unlink_row", w.params["unlink_row"], notifier="default")
     assert res.outcome == "needs_attention"
     h.db.expire_all()
@@ -528,10 +558,10 @@ def _resume(h, res, **kw):
 
 
 def test_ac_57_36_resume_with_snapshot_row_still_present_makes_no_write(h, w):
-    h.vendor.timeout_next("DELETE", "deletepurchaseorderdetailbydtlkey")
+    h.vendor.timeout_next("PUT", "editpurchaseorderbydockey")  # the replace PUT never reached AutoCount
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "pending_verification"
-    assert w.row_by_key(w.po_rows(), w.p_free) is not None  # the delete never landed
+    assert w.row_by_key(w.po_rows(), w.p_free) is not None  # the "D" never landed
     writes_before = len(h.vendor.writes())
     out = _resume(h, res)
     assert out.outcome not in ("needs_attention", "pending_verification")
@@ -539,7 +569,8 @@ def test_ac_57_36_resume_with_snapshot_row_still_present_makes_no_write(h, w):
 
 
 def test_ac_57_36_resume_when_row_absent_recreates_from_snapshot(h, w):
-    h.vendor.timeout_next("PUT", "EditPurchaseOrderbydockey")  # delete landed, add timed out
+    drop_new_row_once(h)  # the "D" landed, the new row did not, and the answer was a bare 500
+    h.vendor.apply_then_500_next("PUT", "EditPurchaseOrderbydockey")
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "pending_verification"
     assert w.row_by_key(w.po_rows(), w.p_linked) is None
@@ -552,8 +583,8 @@ def test_ac_57_36_resume_when_row_absent_recreates_from_snapshot(h, w):
 
 
 def test_ac_57_36_resume_after_needs_attention_recreates_once(h, w):
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed")
+    drop_new_row_once(h)
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed", after=1)
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "needs_attention"
     out = _resume(h, res)
@@ -578,19 +609,21 @@ def test_ac_57_36_resume_is_tenant_scoped(h, w):
 # ---- AC-57-05 / 38: timeout mid-op, busy across steps --------------------------------------------------------------
 
 def test_ac_57_05_timeout_mid_operation_is_pending_verification_and_not_retried(h, w):
-    h.vendor.timeout_next("PUT", "EditPurchaseOrderbydockey")
+    h.vendor.timeout_next("PUT", "EditPurchaseOrderbydockey")  # the replace PUT times out
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "pending_verification"
-    assert h.steps() == [DEL_PO, PUT_PO]
+    assert h.steps() == [PUT_PO]  # never retried
     assert h.operation(res).status == "pending_verification"
     assert h.alerts == []
 
 
 def test_ac_57_38_document_stays_busy_across_all_steps(h, w):
     seen: Dict[str, Any] = {}
-    original = h.vendor._delete_line
+    original = h.vendor._edit
 
     def during(kind, body):
+        if seen:
+            return original(kind, body)
         db2 = h.session_factory()
         try:
             svc2 = h.ops(db=db2)
@@ -604,7 +637,7 @@ def test_ac_57_38_document_stays_busy_across_all_steps(h, w):
             db2.close()
         return original(kind, body)
 
-    h.vendor._delete_line = during
+    h.vendor._edit = during
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "done"
     assert seen["res"] == ("refused", "DOC_BUSY")
@@ -668,7 +701,7 @@ def _split(w, qty=4):
 def test_ac_57_40_split_link_keeps_plan_55_behaviour_and_is_idempotent(h, w):
     first = h.run("split_link", _split(w, 2))
     assert first.outcome == "done", first.error_code
-    assert DEL_PO not in h.steps() and PUT_PO in h.steps()
+    assert not deleted_a_row(h) and PUT_PO in h.steps()
     calls = len(h.vendor.calls)
     again = h.run("split_link", _split(w, 2))
     assert again.operation_id == first.operation_id and len(h.vendor.calls) == calls
@@ -682,11 +715,10 @@ def test_ac_57_19_every_vendor_write_of_an_operation_is_an_action_row_with_opera
     w = w_far
     res = h.run("link_row", w.params["link_row"])
     actions = h.op_actions(res)
-    assert len(actions) == len(h.vendor.writes()) == 3
+    assert len(actions) == len(h.vendor.writes()) == 2
     assert all(a.operation_id == res.operation_id and a.step for a in actions)
-    assert [(a.request_method, a.request_path) for a in actions] == [
-        ("DELETE", "/DeletePurchaseOrderDetailbydtlkey"),
-        ("PUT", "/EditPurchaseOrderbydockey"), ("PUT", "/EditPurchaseOrderbydockey")]
+    assert [(a.request_method, a.request_path, a.step) for a in actions] == [
+        ("PUT", "/EditPurchaseOrderbydockey", "replace"), ("PUT", "/EditPurchaseOrderbydockey", "move")]
     blob = json.dumps([[a.request_json, a.response_json, a.before_json, a.after_json, a.request_path]
                        for a in actions], default=str)
     assert "ac.example.test" not in blob and "api/db3" not in blob
@@ -697,8 +729,9 @@ def test_ac_57_19_every_vendor_write_of_an_operation_is_an_action_row_with_opera
 
 
 def test_ac_57_19_recovery_steps_are_recorded_too(h, w):
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    drop_new_row_once(h)
     res = h.run("link_row", w.params["link_row"])
+    assert res.outcome == "recovered" and len(h.vendor.writes()) == 2
     assert len(h.op_actions(res)) == len(h.vendor.writes())
 
 
@@ -754,9 +787,12 @@ def test_ac_57_20_staged_date_beats_the_action_log_and_callers_date_beats_staged
     staged.raw_json = raw
     h.db.commit()
     svc = h.service()
+    # plan 61: the date matters when the bydocno read fails and the day list is the fallback
+    h.vendor.fail_next("GET", "salesorderbydocno", 500, "boom")
     miss = svc.edit_doc(**h.args("SO", doc_key=9002, header_changes={"Remark1": "x"}, line_changes=[]))
     assert miss.outcome == "refused" and miss.error_code == "DOC_NOT_FOUND"
-    assert h.vendor.gets()[0].query["DocDate"] == "20261101"
+    assert [g.query for g in h.vendor.gets()][1] == {"DocDate": "20261101"}
+    h.vendor.fail_next("GET", "salesorderbydocno", 500, "boom")
     ok = svc.edit_doc(**h.args("SO", doc_key=9002, header_changes={"Remark1": "x"}, line_changes=[],
                                doc_date=date(2026, 11, 4)))
     assert ok.outcome == "done", ok.error_code
@@ -768,7 +804,8 @@ def test_ac_57_20_date_of_our_last_confirmed_read_back_is_used(h):
     h.vendor.calls.clear()
     res = h.service().add_line(**h.args("QT", doc_key=created.doc_key, line=_line("Z", 1, 2.0)))
     assert res.outcome == "done", res.error_code
-    assert h.vendor.gets()[0].query["DocDate"] == "20261104"
+    # plan 61: the confirmed read-back also gives the DocNo, so the read is bydocno
+    assert h.vendor.gets()[0].query == {"DocNo": created.doc_no}
 
 
 def test_ac_57_20_a_failed_create_does_not_supply_a_date(h):

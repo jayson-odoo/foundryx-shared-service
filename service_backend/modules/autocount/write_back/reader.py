@@ -1,10 +1,12 @@
-"""One-document GET by DocKey for write-back (plan 55 section 6b, AC-55-20).
+"""One-document GET for write-back (plan 55 section 6b, AC-55-20; plan 61 section 4.4).
 
-The vendor has no get-by-DocKey door, so the document is read through
-``<doc>bydocdate?DocDate=YYYYMMDD`` and filtered on ``DocKey``: none or more
-than one match is refused. A single GET, never retried (the doc-feed ladder
-sleeps and retries, wrong for a read that gates a write). Uses the house
-SSRF-guarded client with redirects off.
+The vendor has no get-by-DocKey door. When the DocNo is known the document is read
+with ``GET /<Doc>bydocno?DocNo=`` (plan 61 F1); a document whose DocKey is not the
+expected one is never accepted. Only when that GET fails (transport error, non-2xx)
+or no DocNo is known is the day list ``<doc>bydocdate?DocDate=YYYYMMDD`` read and
+filtered on ``DocKey``: none or more than one match is refused. Each GET is single,
+never retried (the doc-feed ladder sleeps and retries, wrong for a read that gates
+a write). Uses the house SSRF-guarded client with redirects off.
 """
 
 from __future__ import annotations
@@ -41,6 +43,11 @@ def _by_modified_path(kind: str) -> Optional[str]:
 def _by_date_path(kind: str) -> Optional[str]:
     found = KINDS.get(kind)
     return found.by_date_path if found else None
+
+
+def _by_doc_no_path(kind: str) -> Optional[str]:
+    found = KINDS.get(kind)
+    return found.by_doc_no_path if found else None
 
 
 class DocReadError(Exception):
@@ -98,8 +105,34 @@ class AutoCountDocReader:
             )
         return self._fetch_day(kind, day)
 
-    def get_document(self, kind: str, doc_key: int, doc_date: date) -> Document:
-        """The single document of ``kind`` (QT | SO | PO | SPO) with ``doc_key`` dated ``doc_date``."""
+    def get_by_doc_no(self, kind: str, doc_no: str) -> Document:
+        """The single ``kind`` document numbered ``doc_no`` (``GET /<Doc>bydocno``);
+        ``[]`` is ``DOC_NOT_FOUND``."""
+        matches = self._fetch(_by_doc_no_path(kind), {"DocNo": doc_no})
+        if not matches:
+            raise DocReadError(DOC_NOT_FOUND)
+        if len(matches) > 1:
+            raise DocReadError(DOC_AMBIGUOUS)
+        return matches[0]
+
+    def get_document(
+        self, kind: str, doc_key: int, doc_date: Optional[date], doc_no: Optional[str] = None
+    ) -> Document:
+        """The single document of ``kind`` (QT | SO | PO | SPO) with ``doc_key``: by its
+        ``doc_no`` when known, else (or when that GET fails) from the ``doc_date`` list.
+        A bydocno answer with another DocKey is ``DOC_NOT_FOUND`` (AC-61-02)."""
+        if doc_no:
+            try:
+                found = self.get_by_doc_no(kind, doc_no)
+            except DocReadError as exc:
+                if exc.code != READ_FAILED or doc_date is None:
+                    raise
+            else:
+                if found.get("DocKey") != doc_key:
+                    raise DocReadError(DOC_NOT_FOUND)
+                return found
+        if doc_date is None:
+            raise DocReadError(READ_FAILED)
         matches = [d for d in self._fetch_day(kind, doc_date) if d.get("DocKey") == doc_key]
         if not matches:
             raise DocReadError(DOC_NOT_FOUND)
@@ -108,7 +141,13 @@ class AutoCountDocReader:
         return matches[0]
 
     def find_by_doc_no(self, kind: str, doc_no: str, doc_date: date) -> Document:
-        """The single ``kind`` document numbered ``doc_no`` dated ``doc_date``."""
+        """The single ``kind`` document numbered ``doc_no``: the bydocno door, else
+        (when that GET fails) the ``doc_date`` list."""
+        try:
+            return self.get_by_doc_no(kind, doc_no)
+        except DocReadError as exc:
+            if exc.code != READ_FAILED:
+                raise
         matches = [d for d in self._fetch_day(kind, doc_date) if d.get("DocNo") == doc_no]
         if not matches:
             raise DocReadError(DOC_NOT_FOUND)

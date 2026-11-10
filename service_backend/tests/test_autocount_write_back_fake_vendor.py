@@ -82,14 +82,17 @@ def test_so_create_from_qt_reads_back_dtlkey_zero(v, http):
 
 
 def test_delete_shapes_and_call_log(v, http):
+    """Plan 61: a "D" row on the edit door deletes the line, DELETE /Cancel<Doc>bydocno
+    cancels the document; the old placeholder doors are 404."""
     v.seed("QT", new_doc("QT", 300, "QT-1", "D", [{}, {}]))
     gone = v.rows("QT", 300)[0]["DtlKey"]
-    r = http.request("DELETE", "/DeleteQuotationDetailbydtlkey", json={"DocKey": 300, "DtlKey": gone})
+    r = http.put("/EditQuotationbydockey", json={"DocKey": 300, "Details": [{"DtlKey": gone, "FullTransferOption": "D"}]})
     assert r.status_code == 200 and len(v.rows("QT", 300)) == 1
-    assert http.request("DELETE", "/DeleteQuotationbydockey", json={"DocKey": 300}).status_code == 200
-    assert v.docs["QT"] == []
+    assert http.request("DELETE", "/CancelQuotationbydocno", params={"DocNo": "QT-1"}).status_code == 200
+    assert v.find("QT", 300)["Cancelled"] == "T"
+    assert http.request("DELETE", "/DeleteQuotationbydockey", json={"DocKey": 300}).status_code == 404
     assert [(c.method, c.leaf) for c in v.calls] == [
-        ("DELETE", "deletequotationdetailbydtlkey"), ("DELETE", "deletequotationbydockey")]
+        ("PUT", "editquotationbydockey"), ("DELETE", "cancelquotationbydocno"), ("DELETE", "deletequotationbydockey")]
 
 
 def test_failure_injection_is_consumed_once(v, http):
@@ -129,7 +132,7 @@ def test_received_row_delete_is_refused_with_message_while_get_hides_it(v, http)
     v.seed("PO", new_doc("PO", 600, "PO-6", "C", [{}, {}]))
     key = v.rows("PO", 600)[0]["DtlKey"]
     v.mark_received("PO", 600, key, "line transferred")
-    r = http.request("DELETE", "/DeletePurchaseOrderDetailbydtlkey", json={"DocKey": 600, "DtlKey": key})
+    r = http.put("/EditPurchaseOrderbydockey", json={"DocKey": 600, "Details": [{"DtlKey": key, "FullTransferOption": "D"}]})
     assert r.status_code == 400 and r.text == "line transferred"
     assert len(v.rows("PO", 600)) == 2
     got = http.get("/purchaseorderbydocdate", params={"DocDate": "20261104"}).json()

@@ -192,6 +192,7 @@ def h(db, session_factory, monkeypatch):
 @pytest.mark.parametrize("kind", ALL_KINDS)
 @pytest.mark.parametrize("primitive", ["delete_line", "delete_doc", "cancel_doc"])
 def test_ac_57_03_shipped_off_primitives_refused_without_http(h, kind, primitive):
+    h.flag(kind, primitive, False)  # plan 61: delete_line / cancel_doc ship ON for QT / SO / PO
     svc = h.service()
     common = h.args(kind, doc_key=12345)
     if primitive == "delete_line":
@@ -282,7 +283,8 @@ def test_ac_57_12_create_qt_full_flow(h):
     post = h.vendor.writes()[0]
     assert post.leaf == "newquotation" and post.body["DocNo"] == "<<New>>"
     last = h.vendor.calls[-1]
-    assert last.method == "GET" and last.leaf == "quotationbydocdate" and last.query["DocDate"] == "20261104"
+    # plan 61 AC-61-03: the read-back uses the DocNo the answer named
+    assert last.method == "GET" and last.leaf == "quotationbydocno" and last.query == {"DocNo": "QT-000001"}
     assert len(res.document["Details"]) == 2 and all(r["DtlKey"] for r in res.document["Details"])
     stored = h.vendor.find("QT", res.doc_key)
     assert stored["DebtorCode"] == "PARTY-1" and len(stored["Details"]) == 2
@@ -410,13 +412,13 @@ def test_ac_57_15_add_line_returns_new_dtl_key(h):
 
 def test_ac_57_16_delete_line_removes_row_and_leaves_others(h):
     _doc, keys = _so(h)
-    h.flag("SO", "delete_line", True)
     before_other = copy.deepcopy(h.vendor.rows("SO", 5001)[1])
     res = h.service().delete_line(**h.args("SO", doc_key=5001, dtl_key=keys[0]))
     assert res.outcome == "done", res.error_code
-    call = h.vendor.writes()[0]
-    assert call.method == "DELETE" and call.leaf == "deletesalesorderdetailbydtlkey"
-    assert call.body == {"DocKey": 5001, "DtlKey": keys[0]}
+    call = h.vendor.writes()[0]  # plan 61 F6: the edit door with the row marked "D"
+    assert call.method == "PUT" and call.leaf == "editsalesorderbydockey"
+    assert call.body["DocKey"] == 5001
+    assert [(r["DtlKey"], r["FullTransferOption"]) for r in call.body["Details"]] == [(keys[0], "D")]
     rows = h.vendor.rows("SO", 5001)
     assert [r["DtlKey"] for r in rows] == [keys[1]] and rows[0] == before_other
 
@@ -425,27 +427,19 @@ def test_ac_57_16_delete_line_removes_row_and_leaves_others(h):
 
 def test_ac_57_17_cancel_applied_when_vendor_honours_it(h):
     _so(h)
-    h.flag("SO", "cancel_doc", True)
     h.vendor.docs["SO"][0]["Cancelled"] = "F"
-    original = h.vendor._edit
-
-    def honour(kind, body):
-        resp = original(kind, body)
-        if body.get("Cancelled") == "T":
-            h.vendor.find(kind, body["DocKey"])["Cancelled"] = "T"
-        return resp
-
-    h.vendor._edit = honour
     res = h.service().cancel_doc(**h.args("SO", doc_key=5001))
     assert res.outcome == "done", res.error_code
-    assert h.vendor.writes()[0].body["Cancelled"] == "T"
+    call = h.vendor.writes()[0]  # plan 61 F9: DELETE /CancelSalesOrderbydocno?DocNo=, no body
+    assert (call.method, call.leaf, call.body) == ("DELETE", "cancelsalesorderbydocno", None)
+    assert call.query == {"DocNo": h.vendor.docs["SO"][0]["DocNo"]}
 
 
 def test_ac_57_17_cancel_ignored_by_vendor_is_mismatch(h):
     _so(h)
-    h.flag("SO", "cancel_doc", True)
-    res = h.service().cancel_doc(**h.args("SO", doc_key=5001))  # db3 ignores Cancelled
-    assert res.outcome == "mismatch"
+    h.vendor.cancel_ignored = True  # answered 200, document unchanged
+    res = h.service().cancel_doc(**h.args("SO", doc_key=5001))
+    assert res.outcome == "mismatch" and res.error_code == "CANCEL_IGNORED"
 
 
 # ---- AC-57-18: refusals before any write ----------------------------------------------------------------

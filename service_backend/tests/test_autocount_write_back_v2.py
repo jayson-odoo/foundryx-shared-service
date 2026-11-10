@@ -334,7 +334,7 @@ def test_ac_61_11_unlink_route_is_exactly_one_put_and_answers_done_with_the_new_
     assert r.status_code == 200, r.text
     assert r.json()["outcome"] == "done" and r.json().get("errorCode") is None
     added = _assert_unlinked_in_one_put(h, world, old)
-    assert r.json()["replacedLines"] == [[world.p_linked, added["DtlKey"]]]
+    assert r.json()["replacedLines"] == [{"oldDtlKey": world.p_linked, "newDtlKey": added["DtlKey"]}]
 
 
 def test_ac_61_11_unlink_is_the_service_without_operations_too_never_a_blank_link_put(h, world):
@@ -572,9 +572,20 @@ def test_ac_61_22_no_row_last_line_code_exists_anywhere():
 
 # ============================== AC-61-30 / 31 cancel =========================================
 
+def seed_confirmed_create(h, kind, doc):
+    """The confirmed create action SS keeps for a document it made (its read-back carries
+    the DocNo): how production knows a QT's DocNo, a QT is never staged."""
+    from modules.autocount.models import AcWriteAction
+
+    h.db.add(AcWriteAction(tenant_id=h.company.tenant_id, company_id=h.company.id, action="create_doc",
+                           doc_type=kind, doc_key=doc["DocKey"], outcome="done", after_json=doc))
+    h.db.commit()
+
+
 @pytest.mark.parametrize("kind", ["QT", "SO", "PO"])
 def test_ac_61_30_cancel_is_the_delete_request_and_reads_back_cancelled(h, kind):
-    seed_plain(h, kind, 5500)
+    doc, _keys = seed_plain(h, kind, 5500)
+    seed_confirmed_create(h, kind, doc)
     res = h.service().cancel_doc(**call_args(h, kind, 5500))
     assert res.outcome == "done", (res.error_code, res.message)
     assert methods(h) == ["DELETE"]  # no PUT with a header Cancelled
@@ -583,6 +594,17 @@ def test_ac_61_30_cancel_is_the_delete_request_and_reads_back_cancelled(h, kind)
     assert res.document["Cancelled"] == "T"
     assert h.vendor.find(kind, 5500)["Cancelled"] == "T"
     assert by_no_gets(h) and by_day_gets(h) == []
+
+
+def test_ac_61_30_cancel_of_a_doc_ss_never_saw_learns_its_doc_no_from_the_day_list(h):
+    """No staged copy and no confirmed action: the DocNo is unknown, so the before-read is
+    the day list (AC-61-03 fallback); the DELETE then carries the DocNo it found."""
+    seed_plain(h, "QT", 5550)
+    res = h.service().cancel_doc(**call_args(h, "QT", 5550))
+    assert res.outcome == "done", (res.error_code, res.message)
+    assert by_day_gets(h) and by_day_gets(h)[0].query == {"DocDate": "20261104"}
+    assert methods(h) == ["DELETE"] and h.vendor.writes()[0].query == {"DocNo": "QT-5550"}
+    assert h.vendor.find("QT", 5550)["Cancelled"] == "T"
 
 
 def test_ac_61_30_a_200_that_changed_nothing_is_cancel_ignored(h):

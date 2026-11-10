@@ -101,29 +101,42 @@ def test_ac_57_72_q04_sales_order_from_the_quotation_row_warns_link_unconfirmed(
 
 
 def test_ac_57_72_q05_edit_sales_order_and_add_a_line(h):
-    run_suite(h)
-    so = h.vendor.docs["SO"][0]
-    assert len(so["Details"]) >= 2
-    leaves = [c.leaf for c in h.vendor.writes()]
-    assert leaves.count("editsalesorderbydockey") >= 2
+    suite = run_suite(h)
+    assert by_id(suite)["Q05"].status == "PASS"
+    so_puts = [c for c in h.vendor.writes() if c.leaf == "editsalesorderbydockey"]
+    assert len(so_puts) >= 2
+    assert any(r["DtlKey"] == 0 for c in so_puts for r in c.body["Details"])  # the added line
 
 
-@pytest.mark.parametrize("case_id,needle", [("Q06", "QT"), ("Q07", "SO")])
-def test_ac_57_72_q06_q07_cancel_is_refused_vendor_unsupported_with_zero_http(h, case_id, needle):
-    case = by_id(run_suite(h))[case_id]
-    assert case.status == "PASS" and "VENDOR_UNSUPPORTED" in case.observed
-    assert case.http_calls == 0 and case.steps == []
+def test_ac_57_72_q06_cancels_the_plain_quotation_and_refuses_the_transferred_one(h):
+    """Plan 61 F9 / F11: DELETE /CancelQuotationbydocno; a quotation taken into an SO is refused."""
+    case = by_id(run_suite(h))["Q06"]
+    assert case.status == "PASS" and "plain done" in case.observed and "DOC_HAS_TRANSFERS" in case.observed
+    assert [st.method for st in case.steps] == ["DELETE", "DELETE"]
+    cancelled = [d for d in h.vendor.docs["QT"] if d["Cancelled"] == "T"]
+    assert len(cancelled) == 1
 
 
-def test_ac_57_72_q08_delete_line_refused_with_zero_http(h):
+def test_ac_57_72_q07_deletes_a_sales_order_line_with_one_d_put(h):
+    case = by_id(run_suite(h))["Q07"]
+    assert case.status == "PASS" and "done" in case.observed
+    put = next(c for c in h.vendor.writes() if c.leaf == "editsalesorderbydockey"
+               and any(r.get("FullTransferOption") == "D" for r in c.body["Details"]))
+    assert [r["FullTransferOption"] for r in put.body["Details"]] == ["D"]
+    assert "DELETE" not in [st.method for st in case.steps]
+
+
+def test_ac_57_72_q08_cancels_the_sales_order(h):
     case = by_id(run_suite(h))["Q08"]
-    assert case.status == "PASS" and "VENDOR_UNSUPPORTED" in case.observed and case.http_calls == 0
+    assert case.status == "PASS" and "done" in case.observed
+    assert [st.method for st in case.steps] == ["DELETE"]
+    assert h.vendor.docs["SO"][0]["Cancelled"] == "T"
 
 
-def test_ac_57_72_q09_link_unlink_relink_refused_with_zero_http_while_delete_is_off(h):
-    case = by_id(run_suite(h))["Q09"]
+def test_ac_57_72_q09_spo_link_unlink_relink_refused_with_zero_http(h):
+    case = by_id(run_suite(h))["Q09"]  # plan 61: SPO stays off (F14); PO row operations are C04 / C07
     assert case.status == "PASS" and case.http_calls == 0
-    for op in ("link_row", "unlink_row", "relink_row"):
+    for op in ("spo_link_row", "spo_unlink_row", "spo_relink_row"):
         assert op in case.observed
     assert case.observed.count("VENDOR_UNSUPPORTED") >= 3
 
@@ -131,8 +144,10 @@ def test_ac_57_72_q09_link_unlink_relink_refused_with_zero_http_while_delete_is_
 def test_ac_57_72_http_calls_add_up_to_what_the_vendor_saw(h):
     suite = run_suite(h)
     assert sum(c.http_calls for c in suite.cases) == len(h.vendor.calls)
-    assert all(by_id(suite)[i].http_calls > 0 for i in ("Q01", "Q02", "Q03", "Q04", "Q05"))
-    assert not h.vendor.writes() or all(c.method in ("POST", "PUT") for c in h.vendor.writes())  # never DELETE
+    assert all(by_id(suite)[i].http_calls > 0 for i in ("Q01", "Q02", "Q03", "Q04", "Q05", "Q06", "Q07", "Q08"))
+    deletes = [c for c in h.vendor.writes() if c.method == "DELETE"]
+    assert all(c.method in ("POST", "PUT", "DELETE") for c in h.vendor.writes())
+    assert deletes and all(c.leaf.startswith("cancel") and c.body is None for c in deletes)  # plan 61: cancel only
 
 
 def test_ac_57_72_a_failing_case_is_recorded_not_raised_and_later_cases_still_run(h):
@@ -140,7 +155,7 @@ def test_ac_57_72_a_failing_case_is_recorded_not_raised_and_later_cases_still_ru
     suite = run_suite(h)
     assert by_id(suite)["Q01"].status == "FAIL"
     assert [c.case_id for c in suite.cases] == Q_IDS
-    assert by_id(suite)["Q06"].status == "PASS"
+    assert by_id(suite)["Q09"].status == "PASS"  # a later case that does not need Q01's quotation
 
 
 # ---- AC-57-70: exact evidence -------------------------------------------------------------------------------------
@@ -165,13 +180,14 @@ def test_ac_57_70_every_write_is_recorded_exactly_and_host_free(h):
 
 def test_ac_57_70_before_and_after_are_the_full_documents(h):
     suite = run_suite(h)
-    edits = [e for e in suite.evidence if e["path"] == "/EditSalesOrderbydockey"]
+    edits = [e for e in suite.evidence if e["path"] == "/EditSalesOrderbydockey" and e["case"] == "Q07"]
     assert edits
-    last = edits[-1]
+    last = edits[-1]  # plan 61: Q07 deletes a line, then Q08 cancels (header only)
     final = json.loads(json.dumps(h.vendor.docs["SO"][0]))
-    assert last["after"] == final  # every header field, every row, nothing trimmed
+    assert set(last["after"]) == set(final)  # every header field, nothing trimmed
+    assert last["after"]["Details"] == final["Details"]  # every row
     assert last["before"]["DocKey"] == final["DocKey"] and "Details" in last["before"]
-    assert len(last["after"]["Details"]) == len(last["before"]["Details"]) + 1
+    assert len(last["after"]["Details"]) == len(last["before"]["Details"]) - 1
 
 
 def test_ac_57_70_evidence_file_is_valid_json_with_no_host_or_secret(h, tmp_path):
