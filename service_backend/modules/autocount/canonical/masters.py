@@ -362,31 +362,37 @@ class CanonicalPaymentTerm(CanonicalMaster):
     """AutoCount ``Terms`` -> Sorento ``payment_terms`` (plan 60, CRM #2305
     contract 2.14).
 
-    ``code`` = ``DisplayTerm`` (1..50, the CRM's own cap): the label
-    AutoCount prints, and the key. The AutoCount ``/terms`` row carries only
-    ``DisplayTerm`` and ``Terms`` (the calculation rule, e.g. "Net 0th Next 2
-    Month"), so ``description`` (<= 200) and ``term_days`` (int 0..3650) have
-    no source today: the preset maps neither, and a None is OMITTED (absent =
-    the CRM leaves its value alone; with no description the CRM prints the
-    code). They stay accepted mapping targets with the CRM caps, so an
-    operator can map them if a source appears. ``Terms`` is never sent: the
-    contract has no field for a rule. ``name`` / ``email`` are inherited but
-    never sent (absent from ``SINK_FIELDS``).
+    The AutoCount ``/terms`` row is ``{DisplayTerm, Terms}`` only (crew GET,
+    10 Nov). ``code`` = ``DisplayTerm`` (1..100, the CRM's cap): the label
+    AutoCount prints, sent as AutoCount spells it (case matters on the CRM
+    side; only edge padding is ignored). ``rule`` = ``Terms`` (<= 200), the
+    calculation rule (e.g. "Net 0th Next 1 Month"), shown on the CRM's
+    Payment Terms list and never printed. The contract (2.14, revised) has no
+    description / day count: AutoCount holds neither. ``name`` / ``email``
+    are inherited but never sent (absent from ``SINK_FIELDS``).
     """
 
     entity_type: str = ENTITY_PAYMENT_TERM
 
-    code: Optional[str] = Field(None, max_length=50)
-    description: Optional[str] = Field(None, max_length=200)
-    term_days: Optional[int] = Field(None, ge=0, le=3650)
+    code: Optional[str] = Field(None, max_length=100)
+    rule: Optional[str] = Field(None, max_length=200)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
         "code",
-        "description",
-        "term_days",
+        "rule",
         "is_active",
     )
+
+    def sink_payload(self) -> Dict[str, Any]:
+        """AutoCount is master for the rule: a blank one is sent as ``""``,
+        the CRM's explicit clear (#2305), so a rule emptied in AutoCount empties
+        on the list page too. The mapping engine reads a blank as absent
+        (``t_string``), so the blank is written here (the item class
+        ``description`` precedent); every other None stays omitted."""
+        payload = super().sink_payload()
+        payload.setdefault("rule", "")
+        return payload
 
 
 class CanonicalBranch(CanonicalMaster):

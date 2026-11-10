@@ -923,6 +923,7 @@ export const HTTP_PRESETS: Record<string, HttpPreset> = {
     distinctOf: null,
     mapping: [
       { sourcePath: 'DisplayTerm', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'Terms', transform: 'string', canonicalField: 'rule' },
       { sourcePath: 'DisplayTerm', transform: 'bool', canonicalField: 'is_active' },
     ],
   },

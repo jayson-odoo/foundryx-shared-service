@@ -1340,7 +1340,7 @@ const ITEM_BRAND_ROWS: Array<Record<string, unknown>> = ITEM_BRANDS.map((b) => (
 }));
 
 // Plan 60 - the crew's recorded db1 `/terms` GET (10 Nov), a plain list of
-// `{DisplayTerm, Terms}` (Terms = AutoCount's calculation rule, not sent).
+// `{DisplayTerm, Terms}` (Terms = AutoCount's calculation rule -> `rule`).
 const TERMS_ROWS: Array<Record<string, unknown>> = [
   { DisplayTerm: 'C.B.D.', Terms: 'C.O.D.' },
   { DisplayTerm: 'C.O.D.', Terms: 'C.O.D.' },
@@ -4525,6 +4525,7 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
     label: 'Payment terms (open REST API)',
     rows: [
       { sourcePath: 'DisplayTerm', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Terms', canonicalField: 'rule', transform: 'string', formula: null, required: false, enabled: true },
       { sourcePath: 'DisplayTerm', canonicalField: 'is_active', transform: 'bool', formula: 'true', required: false, enabled: true },
     ],
   },

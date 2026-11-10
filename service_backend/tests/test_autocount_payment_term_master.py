@@ -3,19 +3,18 @@
 (`/terms`) and pushed to the CRM's `payment_terms` ingest door, wired like
 `item_class` (plan 37).
 
-Wire facts pinned (#2305 crew-note, contract 2.14): `code` 1..50 (required),
-`description` <= 200 and `term_days` int 0..3650 (both optional), `is_active`;
+Wire facts pinned (#2305 crew-note, contract 2.14 as revised): `code` 1..100
+(required, case kept), `rule` <= 200 (optional, `""` clears), `is_active`;
+`description` / `term_days` are gone from the contract;
 the door is `POST /api/v1/external/ingest/payment_terms` (+ `/deletions`, which
 only ever DEACTIVATES), advertised from contract 2.14 with `payment_terms` in
 `entities`.
 
 Vendor fixtures (`fixtures/autocount_http/terms-db{1,2}.json`) are the crew's
 recorded hapi GET of 10 Nov (17 + 21 rows): each row is `{DisplayTerm, Terms}`
-only. `DisplayTerm` (the printed label, the key) is the CRM `code`; `Terms` is
-AutoCount's calculation rule, which the contract has no field for, so it is
-never sent; no description / term_days source exists, so both are omitted
-(absent = the CRM leaves them alone and prints the code). Every listed term is
-`is_active: true`. No live AutoCount call is made anywhere in this file, and the
+only. `DisplayTerm` (the printed label, the key) is the CRM `code`; `Terms`
+(AutoCount's calculation rule) is the CRM `rule`, a blank one sent as `""`.
+Every listed term is `is_active: true`. No live AutoCount call is made anywhere in this file, and the
 source performs GETs only (never a write to AutoCount).
 
 Every test imports its symbols INSIDE the body so each fails on its own missing
@@ -271,11 +270,10 @@ def test_http_preset_path_keys_and_rows():
     assert preset.key_fields == ("DisplayTerm",)
     assert preset.watermark_field is None  # a full list every run
     rows = {r.canonical_field: r for r in preset.rows}
-    # The recorded row has no description / day count; `Terms` (the rule) is
-    # not a contract field.
-    assert set(rows) == {"code", "is_active"}
+    assert set(rows) == {"code", "rule", "is_active"}
     assert rows["code"].source_path == "DisplayTerm" and rows["code"].required is True
-    assert all(r.source_path != "Terms" for r in preset.rows)
+    assert rows["rule"].source_path == "Terms" and rows["rule"].formula is None
+    assert rows["rule"].required is False
     # A listed term is active; the formula reads the always-filled key column.
     assert rows["is_active"].source_path == "DisplayTerm" and rows["is_active"].formula == "true"
     assert all(r.enabled for r in preset.rows)
@@ -285,36 +283,35 @@ def test_sink_payload_keys_are_exactly_the_contract():
     from modules.autocount.canonical.masters import CanonicalPaymentTerm
 
     payload = CanonicalPaymentTerm(
-        source_ref="DB:C.O.D.", code="C.O.D.", description="CASH ON DELIVERY",
-        term_days=0, is_active=True, extras={"x": 1},
+        source_ref="DB:C.O.D.", code="C.O.D.", rule="Net 0th Next 1 Month",
+        is_active=True, extras={"x": 1},
     ).sink_payload()
     assert payload == {
-        "source_ref": "DB:C.O.D.", "code": "C.O.D.", "description": "CASH ON DELIVERY",
-        "term_days": 0, "is_active": True,
+        "source_ref": "DB:C.O.D.", "code": "C.O.D.", "rule": "Net 0th Next 1 Month", "is_active": True,
     }
 
 
-def test_an_unsourced_description_and_day_count_are_omitted_never_cleared():
-    """No AutoCount source exists for either, so neither is sent: absent = the
-    CRM leaves its value alone (`""` would CLEAR a description a CRM user set,
-    #2305 D14)."""
+def test_a_blank_rule_is_sent_as_an_empty_string_to_clear_it():
+    """AutoCount is master for the rule; `""` is the CRM's explicit clear."""
     from modules.autocount.canonical.masters import CanonicalPaymentTerm
 
     payload = CanonicalPaymentTerm(source_ref="R", code="C.O.D.", is_active=True).sink_payload()
-    assert payload == {"source_ref": "R", "code": "C.O.D.", "is_active": True}
+    assert payload == {"source_ref": "R", "code": "C.O.D.", "rule": "", "is_active": True}
+
+
+def test_the_removed_contract_fields_are_not_on_the_model():
+    from modules.autocount.canonical.masters import CanonicalPaymentTerm
+
+    assert "description" not in CanonicalPaymentTerm.model_fields
+    assert "term_days" not in CanonicalPaymentTerm.model_fields
+    assert set(CanonicalPaymentTerm.SINK_FIELDS) == {"source_ref", "code", "rule", "is_active"}
 
 
 def test_canonical_caps_match_the_crm_columns():
     from modules.autocount.canonical.masters import CanonicalPaymentTerm
 
-    CanonicalPaymentTerm(source_ref="R", code="C" * 50, description="D" * 200, term_days=3650)
-    CanonicalPaymentTerm(source_ref="R", code="C", term_days=0)
-    for bad in (
-        {"code": "C" * 51},
-        {"code": "C", "description": "D" * 201},
-        {"code": "C", "term_days": 3651},
-        {"code": "C", "term_days": -1},
-    ):
+    CanonicalPaymentTerm(source_ref="R", code="C" * 100, rule="R" * 200)
+    for bad in ({"code": "C" * 101}, {"code": "C", "rule": "R" * 201}):
         with pytest.raises(ValidationError):
             CanonicalPaymentTerm(source_ref="R", **bad)
 
@@ -322,7 +319,8 @@ def test_canonical_caps_match_the_crm_columns():
 def test_accepted_and_required_mapping_fields():
     from modules.autocount.mapping_catalog import accepted_field_names, required_field_names
 
-    assert {"code", "description", "term_days", "is_active"} <= accepted_field_names(ENTITY)
+    assert accepted_field_names(ENTITY) >= {"code", "rule", "is_active"}
+    assert not ({"description", "term_days"} & set(accepted_field_names(ENTITY)))
     assert "code" in required_field_names(ENTITY)
 
 
@@ -336,7 +334,7 @@ def test_first_save_seeds_the_preset_rows(db):
         AcFieldMapping.company_id == company.id, AcFieldMapping.entity_type == ENTITY,
         AcFieldMapping.scope == "header",
     ).all()
-    assert {r.canonical_field for r in rows} == {"code", "is_active"}
+    assert {r.canonical_field for r in rows} == {"code", "rule", "is_active"}
     assert all(r.is_enabled for r in rows)
 
 
@@ -361,12 +359,14 @@ def test_a_run_reads_the_db1_list_and_pushes_every_term(wired, monkeypatch):
     by_code = {r["code"]: r for r in records}
     assert by_code["NET 30 DAYS UPON LOADING DATE"] == {
         "source_ref": "AED_SORENTO:NET 30 DAYS UPON LOADING DATE",
-        "code": "NET 30 DAYS UPON LOADING DATE", "is_active": True,
+        "code": "NET 30 DAYS UPON LOADING DATE", "rule": "C.O.D.", "is_active": True,
     }
+    assert by_code["Net 30 days"]["rule"] == "Net 0th Next 1 Month"
+    assert by_code["Net 45 days"]["rule"] == "Net -14th Next 1 Month"
     # The label is sent verbatim, leading asterisk included.
     assert by_code["*C.O.D"]["source_ref"] == "AED_SORENTO:*C.O.D"
-    # Exactly the contract keys; the `Terms` rule never crosses the wire.
-    assert {frozenset(r) for r in records} == {frozenset({"source_ref", "code", "is_active"})}
+    # Exactly the contract keys.
+    assert {frozenset(r) for r in records} == {frozenset({"source_ref", "code", "rule", "is_active"})}
     assert job.result_json.get("pushed") == 17, job.result_json
     assert {r.status for r in _staged(db, company)} == {STAGED_PUSHED}
 
@@ -388,7 +388,11 @@ def test_the_db2_list_pushes_its_21_terms_case_distinct_codes_kept(wired, monkey
 
 def test_an_over_cap_term_fails_that_term_only(wired, monkeypatch):
     db, company = wired
-    rows = [{"DisplayTerm": "C.O.D.", "Terms": "C.O.D."}, {"DisplayTerm": "X" * 51, "Terms": "C.O.D."}]
+    rows = [
+        {"DisplayTerm": "C.O.D.", "Terms": "C.O.D."},
+        {"DisplayTerm": "X" * 101, "Terms": "C.O.D."},
+        {"DisplayTerm": "LONGRULE", "Terms": "R" * 201},
+    ]
     _stub_vendor_client(monkeypatch, _vendor(rows, []))
     _open_contract(monkeypatch)
     posts: List[httpx.Request] = []
@@ -415,13 +419,12 @@ def test_an_unchanged_rerun_pushes_nothing_and_a_changed_term_pushes_once(wired,
     _run_sync(db, company)
     assert _ingested_records(posts) == []
 
-    # A changed rule changes the row hash; the re-push carries the same keys.
     changed = load_terms("db1")
     assert changed[9]["DisplayTerm"] == "Net 30 days"
     changed[9]["Terms"] = "Net 30 days"
     _stub_vendor_client(monkeypatch, _vendor(changed, []))
     _run_sync(db, company)
-    assert [r["code"] for r in _ingested_records(posts)] == ["Net 30 days"]
+    assert [(r["code"], r["rule"]) for r in _ingested_records(posts)] == [("Net 30 days", "Net 30 days")]
 
 
 # ── a term gone from the list -> /ingest/payment_terms/deletions ────────────
@@ -557,3 +560,12 @@ def test_the_sweep_enqueues_payment_terms_before_customers():
     ordered = sorted(due, key=sweep_order_key)
     assert ordered.index(ENTITY) < ordered.index("customer")
     assert ordered[0] == "item_class"  # plan 37 order unchanged
+
+
+def test_no_display_term_in_the_recorded_books_differs_only_by_case():
+    """CRM first-push adoption by code is case-insensitive: two DisplayTerms
+    differing only by case in one book would ReferenceConflict. Pinned on the
+    recorded books (each still carries its own `source_ref` if one appears)."""
+    for book in ("db1", "db2"):
+        codes = [r["DisplayTerm"].strip() for r in load_terms(book)]
+        assert len({c.casefold() for c in codes}) == len(codes), book
