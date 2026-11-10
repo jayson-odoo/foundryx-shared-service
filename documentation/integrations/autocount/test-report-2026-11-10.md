@@ -112,3 +112,204 @@ Each document has one plain row (SRTKT38SS qty 1). The wrapper does not take `Sh
 
 A second PUT restores the price, location and date a new linked row loses (F5), and a change of link frees the old
 sales order row's quantity.
+
+## SS end to end on db3 (11 Nov 2026): the runner through the same services the gateway uses
+
+Run `python -m modules.autocount.write_back.runner --suite db3 --run-tag 1111a` against a migrated copy of a local
+database holding the db3 write connection. 18 of 18 cases PASS. The linking cases:
+- C13 unlink (operation layer): PO FXT-1111a-1 row 12274 (linked to SO FXT-1111a-SO row 12267) -> one PUT -> normal row
+  12280, same item / qty / location.
+- C14 whole-row link (operation layer): normal row 12277 -> one replace PUT -> row 12282 linked to SO row 12267 (AutoCount
+  put it at HQ) -> move PUT -> BRW-AM, link kept.
+- C15 change link (operation layer): row 12282 -> one replace PUT -> row 12284 linked to SO row 12269 -> move PUT.
+  Read back after the run: row 12284 UnitPrice 1 (AutoCount had set 0), DeliveryDate 2026-11-11, BRW-AM, link 12269.
+- C16 PO delete line (one PUT, row marked D) and C17 PO cancel (DELETE, reads back Cancelled T).
+The sales order quantity effects of these exact PUT shapes are the raw probes above (P-U0 / P-U2 unlink frees, P-R2
+change link frees the old row, P-C3 / P-C8 the new row holds the link until the PO is cancelled).
+Party codes are replaced by `<code>` below.
+
+### Runner report (db3 suite, run tag 1111a)
+
+Book: db3. Run tag: 1111a. PASS 18, FAIL 0, SKIPPED 0.
+
+#### C00 Create the test SO: PASS
+
+- Expected: test SO FXT-1111a-SO created with three SRTKT38SS rows at BRW-AM (10, 5 and 10)
+- Observed: created FXT-1111a-SO with 3 rows
+
+- GET /salesorderbydocdate -> 200 (FXT-1111a-SO absent)
+- POST /NewSalesOrder -> 200
+  - request: `{"DocNo":"FXT-1111a-SO","DocDate":"2026-11-11T00:00:00","DebtorCode":"<code>","Details":[{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - after: `[{"DtlKey":12267,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12268,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12269,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C01 Create the test PO: PASS
+
+- Expected: test PO created with two SRTKT38SS rows (50 and 10 at HQ)
+- Observed: created FXT-1111a-1 with 2 rows
+
+- GET /purchaseorderbydocdate -> 200 (baseline pull docs=3)
+- GET /purchaseorderbydocdate -> 200 (FXT-1111a-1 absent)
+- POST /NewPurchaseOrder -> 200
+  - request: `{"DocNo":"FXT-1111a-1","DocDate":"2026-11-11T00:00:00","CreditorCode":"<code>","ShippingPO":"F","Details":[{"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - after: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12272,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C02 Pull SO then PO into staging: PASS
+
+- Expected: SO days then PO days pulled; the test PO is staged
+- Observed: docs_seen=2 staged=2 pushed=2
+
+- GET /purchaseorderbydocdate -> 200 (docs=2 staged=2)
+
+#### C03 Link with split: PASS
+
+- Expected: split in two writes: 40 stay at HQ, a new 10 row linked to SO row 11989 and moved to BRW-AM
+- Observed: done
+- Action: bf2a147c-c0dd-4cd4-98b3-f38c2661a1d6
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12267}]}`
+  - before: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C04 Whole-row link in one replace PUT: PASS
+
+- Expected: whole-row link (plan 61 F5): the free 10 row is replaced in ONE PUT by a row linked to the third SO row, then moved back to BRW-AM
+- Observed: done
+- Action: 8d613647-5d2a-4c78-945d-901fe42a8718
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12272,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12269}]}`
+  - before: `[{"DtlKey":12272,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C05 Over-link refused: PASS
+
+- Expected: link refused: the SO row is already covered (QTY_ABOVE_OUTSTANDING)
+- Observed: refused QTY_ABOVE_OUTSTANDING
+- Action: 0bb3a649-484f-45d9-b076-0f9ecf7b5ff2
+
+
+#### C06 Quantity above the PO row refused: PASS
+
+- Expected: link of 202602-S0007 row 12009 refused: quantity above the PO row (QTY_ABOVE_FREE)
+- Observed: refused QTY_ABOVE_FREE
+- Action: 0455653a-2c24-4893-bc0b-1f7c667072b7
+
+
+#### C07 Unlink in one replace PUT: PASS
+
+- Expected: unlink (plan 61 F4) of the C04 row on the test PO: ONE PUT, the linked row deleted and a normal row with the same item, qty and location added
+- Observed: done
+- Action: 9839c50d-d0c5-4f59-bfc2-7f15d7dca002
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12277,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C08 Second split of the 40 row: PASS
+
+- Expected: second split of the 40 row: 5 linked to SO row 11992 and moved to BRW-AM
+- Observed: done
+- Action: 85613216-8179-481b-b5ec-548955c56314
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12268}]}`
+  - before: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12279,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12268,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12279,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12279,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12268,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12279,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12268,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C09 Stale document refused: PASS
+
+- Expected: stale document refused (DOC_STALE)
+- Observed: refused DOC_STALE
+- Action: 2a68cb0a-e0a6-4886-aede-f8be04204d3e
+
+
+#### C10 SPO unlink refused by the capability gate: PASS
+
+- Expected: SPO unlink refused: the vendor does not apply it (VENDOR_UNSUPPORTED), nothing sent
+- Observed: refused VENDOR_UNSUPPORTED
+- Action: 8d9dbb41-7e94-41c0-8e89-17ecd08b67fb
+
+
+#### C11 Relocate of a row already at its location: PASS
+
+- Expected: relocate of the C08 row, already at its SO location, is refused (ROW_ALREADY_AT_LOCATION)
+- Observed: refused ROW_ALREADY_AT_LOCATION
+- Action: 665ff525-90df-4bc4-9a5e-7ed06b1f674a
+
+
+#### C12 Other book refused with no request: PASS
+
+- Expected: a client for another book is refused at construction with no request (WRITE_NOT_ALLOWED)
+- Observed: refused WRITE_NOT_ALLOWED, 0 requests
+
+
+#### C13 Unlink through the operation layer (replace PUT): PASS
+
+- Expected: unlink_row (operation) of the C03 row: ONE replace PUT, the first SO row freed; replacedLines names the new row
+- Observed: done warnings TRANSFER_STATE_UNKNOWN
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12280,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C14 Whole-row link through the operation layer (replace PUT + restore move): PASS
+
+- Expected: link_row (operation, whole row) of the C07 row to the first SO row: ONE replace PUT, then the move PUT puts back the SO row's location and the old unit price and date
+- Observed: done warnings TRANSFER_STATE_UNKNOWN
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12277,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12267}]}`
+  - before: `[{"DtlKey":12277,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C15 Relink through the operation layer (replace PUT + restore move): PASS
+
+- Expected: relink_row (operation) of the C14 row to the third SO row: ONE replace PUT and the move, unit price and delivery date kept
+- Observed: done warnings TRANSFER_STATE_UNKNOWN
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12269}]}`
+  - before: `[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12284,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12284,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12284,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12284,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C16 Delete a PO line (one PUT, row marked D): PASS
+
+- Expected: PO delete_line (primitive) of the free C03 remainder row: ONE PUT with the row marked D
+- Observed: done
+- Action: 942c7584-f3cc-4fb4-8eea-751d9d6bad2c
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[]`
+
+#### C17 Cancel the test PO: PASS
+
+- Expected: PO cancel (primitive) of the test PO: DELETE /CancelPurchaseOrderbydocno, reads back Cancelled T
+- Observed: done
+- Action: 7c2affbb-e20b-4c6a-b3c2-e61535f8af50
+
+- DELETE /CancelPurchaseOrderbydocno -> 200
