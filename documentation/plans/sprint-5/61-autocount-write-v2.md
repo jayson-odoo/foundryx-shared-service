@@ -31,12 +31,79 @@ The AutoCount vendor changed the hapi write API on 10 Nov 2026 (condensed spec, 
 
 ## 3. db3 probes (before any code; results drive section 4 and the capability table)
 
-Run tag `FXT-1110a-`, own documents only, db3 only. Exact requests and responses go to
-`crew/state/files/autocount-api/db3-requests-10nov.json` (outside the repo); the sanitised summary to
-`documentation/integrations/autocount/test-report-2026-11-10.md`. Result table: section 3a (filled after the run).
+Run 10 Nov 2026, tags `FXT-1110a-` .. `FXT-1110e-` (a: credit-limit stop, b: script stop, c/d/e: full runs), own
+documents only, db3 only, nothing deleted. Exact requests and responses:
+`crew/state/files/autocount-api/db3-requests-10nov-run{1..5}.json` (outside the repo). Sanitised summary:
+`documentation/integrations/autocount/test-report-2026-11-10.md`.
 
-## 4. Design (filled after the probes)
+### 3a. Results (the facts the design rests on)
 
-## 5. Slices
+| # | Probe | Result |
+|---|---|---|
+| F1 | GET `/Quotationbydocno`, `/SalesOrderbydocno`, `/PurchaseOrderbydocno`, `/RequestQuotationbydocno` `?DocNo=` | 200, a JSON list with the doc (header + `Details`); unknown DocNo = `[]`. The vendor spelling `Quotaton` / `RequestQuotaton` = 404. Path case does not matter (GET and PUT `ByDocKey`). |
+| F2 | QT->SO full transfer, then a second SO from the same QT row (P-T1) | 500 `item already full transferred`: AutoCount enforces the outstanding qty. |
+| F3 | PUT SO with the QT-transferred row + `FullTransferOption "D"` (P-D1), then a new SO from the QT row (P-T2) | row removed; the new full-qty SO is accepted: "D" returns the qty to the QT (owner answer 2 confirmed). |
+| F4 | PO unlink: ONE PUT = linked row "D" + new normal row DtlKey 0 (P-U1, P-U4) | applied: linked row gone, new normal row keeps item/qty/price and the Location + DeliveryDate sent in the same PUT; the SO row's qty is freed (P-U0 cut refused before, P-U2 accepted after). |
+| F5 | PO link of a whole normal row: ONE PUT = normal row "D" + new row DtlKey 0 `FromDocType SO` (P-L1); relink to another SO row the same way (P-R1); a linked add on its own (P-L4) | applied; the new linked row is still forced to `Location HQ` and `DeliveryDate 0001-01-01` whatever was sent. A second PUT on the new row moves Location + DeliveryDate and keeps the link (P-L2). A PO row reads its link as `FromSODtlKey` (`FromDocType` reads ""). |
+| F6 | Delete line: PUT with only `{DtlKey, FullTransferOption "D"}` (P-DL1) and with the full row shape (P-DL4 QT, P-DL5 SO) | applied on PO, QT and SO. "D" on the last row leaves a document with no rows (P-DL6). |
+| F7 | "D" on a row that was transferred onward: SO row linked from a PO (P-DL2), QT row transferred into an SO (P-DL3) | refused 500 `UnableToDeleteTransferredItemException` / `UnableToDeletePartialTransferredItemException`; nothing changed. |
+| F8 | Atomic: "D" + an invalid new row (unknown item P-AT1, missing SO row P-AT2) | 500 (`NotExistItemCodeException`, `InvalidTransferItemException`); the "D" did NOT land. One PUT is all or nothing. |
+| F9 | DELETE `/Cancel<Doc>bydocno?DocNo=` on a plain QT, SO, PO (P-C1, P-C5, P-C6) | 200 `... was cancelled.`; GET reads `Cancelled "T"`, `DocStatus "V"`. |
+| F10 | Cancel again (P-C1b) / edit a cancelled doc (P-C1c) / unknown DocNo (P-C7) | 400 `Unable to (Cancel Document) ... (Void).` / 500 `not allowed to edit expired or void document` / 400 `... failed to cancel.` |
+| F11 | Cancel a QT transferred into an SO (P-C2), an SO transferred into a PO (P-C3) | 400 `The document was transfered to other document, so it is not allow to cancel.` / `The Sales Order was transfered to Purchase Order ...`; nothing changed. |
+| F12 | Cancel a PO linked to an SO (P-C4), an SO taken from a QT (P-C9) | 200 cancelled; the SO row's qty is freed (P-C8) and the QT qty returns (P-C9b). |
+| F13 | PUT with `Details []` and a header change (P-CASE) | header applied, every row kept (owner answer 1). |
+| F14 | SPO create: POST `/NewPurchaseOrder` `ShippingPO "T"`, full body, plain row (P-SPO1) | 200 but reads back `ShippingPO "F"`: a plain PO. db3 still cannot make an SPO, so no SPO probe can run. |
+| F15 | "D" on a partly received PO row | NOT TESTABLE on db3: there is no GRN write door. UNVERIFIED; our own receipt guard stays. |
 
-## 6. CRM follow-ups (separate lanes)
+## 4. Design
+
+### 4.1 One row-replace builder (`wb/payloads.py`)
+`build_row_replace(kind, doc, old_row, new_row)` = header + `Details [old row as read with FullTransferOption "D", new
+row DtlKey 0]`. The new row is a full vendor row (`_vendor_line`, `FullTransferOption " "`), with or without
+`FromDocType / FromDocNo / FromDocDtlKey`. `build_delete_line` = header + `[old row "D"]` on the edit door.
+Every row we send (create, edit, add, replace, QT too) defaults `FullTransferOption " "` and `FullTransferFromDocList ""`.
+The old `_unlinked` blank-link PUT (`build_unlink`, `build_spo_unlink`) and the placeholder DELETE shapes go.
+
+### 4.2 Flows that switch to the builder
+- PO unlink (`/po-links/unlink` route via `WriteBackService.unlink`, and the `unlink_row` operation): ONE PUT
+  [linked row "D", normal row with the same item / qty / price / UOM / Location / DeliveryDate / description]. Done in one
+  write (F4). Verify: old DtlKey gone, exactly one new row, `FromSODtlKey 0`, values kept.
+- PO link of a whole normal row (`link_row` op, and the service whole-row link that answered VENDOR_UNSUPPORTED): ONE PUT
+  [normal row "D", new row linked to the SO row]; then, when the old row was not at HQ or had a DeliveryDate, the
+  existing move PUT on the new row (F5). Move failure = row stays linked at HQ, warning `LOCATION_NOT_MOVED`.
+- Relink / move (`relink_row`): ONE PUT [linked row "D", new row linked to the new SO row] + the same move.
+  The old 3-step flow (delete_line + add_line + move, with stray removal) shrinks to 2 writes; `_remove_strays` is no
+  longer needed for step 1 (F8: atomic) but resume after a failed move stays.
+- Partial link (split) keeps today's shape but in ONE PUT: [original row with the cut qty, new linked row DtlKey 0].
+- delete_line: PUT [row "D"]. Today's pre-send guards stay (`ROW_RECEIVED`, `ROW_HAS_TRANSFERS` where our data shows
+  it). AutoCount's own refusal (F7, exception type `UnableToDelete*TransferredItemException`) maps to
+  `ROW_HAS_TRANSFERS`; any other vendor 500 stays `VENDOR_REFUSED`. Last-row rule: card Q2.
+
+### 4.3 Cancel (`cancel_doc`)
+`DELETE /Cancel{Quotation|SalesOrder|PurchaseOrder}bydocno?DocNo=<url-encoded DocNo>`, no body. `client.py` allows a
+query string only through a dedicated `delete_query(path, params)` that encodes the value (the general `?` ban in
+`_check_path` stays for every other call). Verify with GET bydocno: `Cancelled "T"` (else `CANCEL_IGNORED`).
+Answer mapping: 400 `transfered` -> `DOC_HAS_TRANSFERS`; 400 `(Void)` -> `DOC_CANCELLED`; other 4xx/5xx -> `VENDOR_REFUSED`.
+Header `Cancelled "T"` PUT goes. `delete_doc` has no vendor door: its path is removed and it stays refused `VENDOR_UNSUPPORTED`.
+
+### 4.4 Read-back
+`AutoCountDocReader.get_by_doc_no(kind, doc_no)` = GET `/<Doc>bydocno?DocNo=` (paths in `DocKind.by_doc_no_path`:
+`/Quotationbydocno`, `/SalesOrderbydocno`, `/PurchaseOrderbydocno`). Must match the expected DocKey (else
+`DOC_KIND_MISMATCH` / `DOC_NOT_FOUND`). DocNo comes from the caller, the staged copy, or the last confirmed action (same
+sources as `find_date`). The by-date day-list stays only as fallback when the bydocno GET fails (transport error, non-2xx,
+or no DocNo known). New row DtlKeys come from this read (after-keys minus before-keys).
+
+### 4.5 Capabilities (`wb/capabilities.py`), all still behind CRM's admin switch (default OFF)
+ON from probes: PO `unlink`, `link_existing_row`, `delete_line`, `cancel_doc`; SO `delete_line`, `cancel_doc`;
+QT `delete_line`, `cancel_doc`. OFF: SPO everything except today's `edit_doc` (F14), `spo_unlink`, `delete_doc` (no door).
+`ZERO_QTY_EMULATION` goes (the replace builder supersedes it). RQ: GET door exists (F1); no kind added (no caller).
+
+## 5. Slices (red tests first for each, tester then coder)
+- S1 client + reader: `delete_query`, bydocno GET, fallback; fake vendor learns bydocno, cancel DELETE, "D" rows,
+  forced HQ on linked add, atomic refusal, transferred-row "D" refusal.
+- S2 builder + FullTransferOption default + delete_line + cancel primitives + capability table.
+- S3 operations / service flows: unlink (route + op), whole-row link, relink, split in one PUT; gateway answers.
+- S4 db3 runner rerun of C01..C12 + QT/SO cases with the switches on; test report; docs.
+
+## 6. CRM follow-ups (separate lanes; filled at the end)
