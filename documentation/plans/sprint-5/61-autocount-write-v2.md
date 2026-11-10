@@ -78,8 +78,8 @@ The old `_unlinked` blank-link PUT (`build_unlink`, `build_spo_unlink`) and the 
 - Partial link (split) keeps today's shape but in ONE PUT: [original row with the cut qty, new linked row DtlKey 0].
 - delete_line: PUT [row "D"]. Today's pre-send guards stay (`ROW_RECEIVED`, `ROW_HAS_TRANSFERS` where our data shows
   it). AutoCount's own refusal (F7, exception type `UnableToDelete*TransferredItemException`) maps to
-  `ROW_HAS_TRANSFERS`; any other vendor 500 stays `VENDOR_REFUSED`. Last row: refused `ROW_LAST_LINE` before any
-  write (decision Q2), so CRM offers Cancel instead.
+  `ROW_HAS_TRANSFERS`; any other vendor 500 stays `VENDOR_REFUSED`. Last row: passed through like any other row
+  (owner ruling R1 below; AutoCount leaves a document without rows, F6).
 
 ### 4.3 Cancel (`cancel_doc`)
 `DELETE /Cancel{Quotation|SalesOrder|PurchaseOrder}bydocno?DocNo=<url-encoded DocNo>`, no body. `client.py` allows a
@@ -105,8 +105,36 @@ QT `delete_line`, `cancel_doc`. OFF: SPO everything except today's `edit_doc` (F
   CRM's admin switch, default OFF).
 - Q1 = (a): link / relink = the D+add PUT, then a 2nd PUT moves Location + DeliveryDate back; if that fails the row
   stays linked at HQ and SS answers with warning `LOCATION_NOT_MOVED` (CRM shows it).
-- Q2 = (b): removing the LAST line of a document is refused `ROW_LAST_LINE` (new answer code, no write), so CRM offers
-  Cancel instead. The gateway contract (`57-autocount-write-qtso-contract.md` error codes) gains the code in this PR.
+- Q2 = (b) `ROW_LAST_LINE`: SUPERSEDED by owner ruling R1 below (no new code).
+
+### 4.7 Owner rulings 10 Nov 2026 22:5x (verbatim: "i do not think we should block removing the last line of a
+document, I am okay with linking a row then changing its location, make sure all API call is logged yeah for traceability")
+- R1 (overrides crew Q2): removing the last line is NOT blocked. delete_line passes it through; no `ROW_LAST_LINE`.
+- R2 (confirms Q1 (a)): link / relink = the D+add PUT, then a 2nd PUT moves Location + DeliveryDate.
+- R3 NEW: every AutoCount hapi call SS makes through the write layer is logged durably for traceability.
+
+### 4.8 API call log (R3)
+New module table `app_autocount.ac_api_call_log` (additive module migration `0044`, no change to existing tables;
+`ac_write_action` stays one row per write action, this table is one row per HTTP call). Columns: `id` (uuid),
+`tenant_id`, `company_id`, `created_at` (UTC, call start), `actor` (API key id for gateway calls, `runner` for the db3
+runner, `system` otherwise), `request_id` (CRM's optional `X-Request-ID` header, else the `Idempotency-Key`),
+`operation_id`, `action_id`, `book` (the base URL's last path segment, e.g. `db3`; never the full URL), `method`,
+`path` (vendor path incl. query, no host), `doc_type`, `doc_no`, `doc_key`, `request_json` (body as sent, NULL for
+GET / DELETE), `response_status` (NULL when no answer), `response_body` (text, cut at 32 KB) + `response_truncated`,
+`duration_ms`, `outcome` (`ok` 2xx | `http_error` | `timeout` | `connect_error` | `guard_refused`), `error_code`.
+- Written from ONE seam: `AutoCountWriteClient._send` / `delete_query` and `AutoCountDocReader`'s GETs (writes,
+  read-backs, bydocno, day-list fallback, debtor term, cancel), so no call path can skip it. A call refused by the
+  allowlist guard before sending is logged with `guard_refused` (no request made).
+- Durable: the log row is committed on its own short session, so it survives a rollback of the business transaction
+  (a failed write still leaves its call rows). A failure to write the log never breaks the call (logged to the app
+  logger as a code only).
+- Never stored: API keys, auth headers, the base URL host. Bodies are AutoCount document data already held in
+  `ac_write_action.request_json`.
+- Scope: the write layer's client and reader (write-back, read-backs, runner, `pull_docs` on the write connection).
+  The master / doc-feed SYNC GETs (`http_source`) are out of scope: thousands of paged reads per run with large bodies,
+  already traced by run history. Asked to crew as a follow-up option, not built here.
+- Retention: none in this lane (write-layer volume is small); listed as an open item.
+- Crew test copy: `crew/state/migrations/SS-AC-WRITE-V2.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
 
 ## 5. Slices (red tests first for each, tester then coder)
 - S1 client + reader: `delete_query`, bydocno GET, fallback; fake vendor learns bydocno, cancel DELETE, "D" rows,

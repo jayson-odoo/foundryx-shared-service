@@ -41,9 +41,8 @@ against the fake vendor (`tests/autocount_write_back_fake_vendor.py`, taught the
   row is gone, every other row unchanged, else `LINE_NOT_DELETED`.
 - AC-61-21 Vendor refusal of a "D" on a row transferred onward (500, `UnableToDelete...TransferredItemException`) ->
   `ROW_HAS_TRANSFERS`. Today's pre-send guards (`ROW_RECEIVED`, receipt split) still run first.
-- AC-61-22 Removing the LAST remaining row of a QT, SO or PO (any delete_line whose read shows one row) is refused
-  `ROW_LAST_LINE` with no write request (crew decision Q2, 10 Nov). The gateway maps it like the other row refusals
-  (409) and the contract doc lists it.
+- AC-61-22 Removing the LAST remaining row is passed through like any other delete_line (owner ruling R1, 10 Nov:
+  never blocked); no `ROW_LAST_LINE` code exists.
 
 ## Cancel
 - AC-61-30 `cancel_doc` (QT, SO, PO) = AC-61-01 request, then a bydocno read: `Cancelled "T"` -> `done`; otherwise
@@ -60,6 +59,22 @@ against the fake vendor (`tests/autocount_write_back_fake_vendor.py`, taught the
 - AC-61-41 The placeholder DELETE paths (`Delete*bydtlkey`, `Delete*bydockey`) are gone from the code; `delete_doc`
   answers `VENDOR_UNSUPPORTED` without a request.
 - AC-61-42 CRM's admin switch is untouched (no SS default flips a CRM setting).
+
+## API call log (owner ruling R3)
+- AC-61-60 Every HTTP call through the write layer writes ONE `ac_api_call_log` row: POST create, PUT edit, the
+  replace PUT, the 2nd move PUT of a link (two PUT rows + their reads for one link), DELETE cancel (path with the
+  encoded query), GET bydocno, GET day-list fallback, GET debtor term.
+- AC-61-61 Row fields: tenant, company, created_at, actor, request_id (`X-Request-ID` when sent, else the
+  Idempotency-Key), operation_id / action_id when known, book (`db3`), method, path (no host), doc_type, doc_no /
+  doc_key when known, request_json (NULL for GET / DELETE), response_status, response_body cut at 32 KB with
+  `response_truncated`, duration_ms >= 0, outcome, error_code.
+- AC-61-62 Failed calls are logged: vendor 500 (`http_error`, body kept), timeout (`timeout`, no status), connect error
+  (`connect_error`), allowlist refusal (`guard_refused`, no request sent).
+- AC-61-63 Durable: the rows of a call survive a rollback of the caller's session; a log-write failure never fails
+  the call.
+- AC-61-64 No secret, header value or base URL host is ever stored (scan every column of every row in the tests).
+- AC-61-65 Migration `0044` is additive (new table + indexes on tenant/company/created_at and doc_key only); the
+  global guards `tests/test_schema_uuid_id_principle.py` and `tests/test_list_pagination_limit.py` pass.
 
 ## Evidence
 - AC-61-50 [db3] Runner rerun with the switches on: unlink, whole-row link, relink, delete line (QT/SO/PO), cancel
