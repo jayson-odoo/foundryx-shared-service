@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -25,6 +25,7 @@ from ..pull_auth import PullGatewayError, resolve_pull_key
 from ..services.pull_gateway_service import PullGatewayService
 from ..services.pull_key_service import SCOPE_WRITE_BACK
 from ..write_back import payloads
+from ..write_back.call_log import REQUEST_ID_HEADER, give_request_id, request_id_of
 from ..write_back.deps import get_operation_service, get_primitive_service
 from ..write_back.operations import OperationResult, OperationService
 from ..write_back.primitives import PrimitiveService
@@ -239,10 +240,12 @@ Run = Callable[[WriteBody, AcPullApiKey, AcCompany, Optional[str]], Tuple[int, D
 
 def _frame(
     request: Request, db: Session, raw_body: bytes, action: str, run: Run, *,
-    key_required: bool = False, with_body: bool = True,
+    key_required: bool = False, with_body: bool = True, services: Sequence[Any] = (),
 ) -> JSONResponse:
     """Auth, scope, idempotency header, body, company resolution (no service call
-    on any failure), then ``run``; one audit row at the end."""
+    on any failure), then ``run``; one audit row at the end. ``services`` learn the
+    caller's request id for the AutoCount call log (``X-Request-ID``, else the
+    ``Idempotency-Key``; plan 61 section 4.8)."""
     ctx = _CallContext()
     company_code: Optional[str] = None
     try:
@@ -250,6 +253,9 @@ def _frame(
         ctx.key_row = key_row
         _require_scope(key_row, SCOPE_WRITE_BACK)
         idem = idempotency_key_header(request, required=key_required)
+        request_id = request_id_of(request.headers.get(REQUEST_ID_HEADER), idem)
+        for service in services:
+            give_request_id(service, request_id)
         raw = _parse_write_json(raw_body) if with_body else {}
         hint = raw.get("companyCode") if with_body else request.query_params.get("companyCode")
         company_code = _safe_echo(hint)
@@ -290,7 +296,7 @@ def create_document(
         )
         return _respond(answer)
 
-    return _frame(request, db, raw_body, "write_create_doc", run, key_required=True)
+    return _frame(request, db, raw_body, "write_create_doc", run, key_required=True, services=(prims, ops))
 
 
 # B6: the read also takes the short kind names (the CRM read path); writes keep the contract slugs.
@@ -336,7 +342,7 @@ def read_document(
             "document": res.document,
         })
 
-    return _frame(request, db, b"", "write_read_doc", run, with_body=False)
+    return _frame(request, db, b"", "write_read_doc", run, with_body=False, services=(prims,))
 
 
 @router.patch("/documents/{kind}/{docKey}")
@@ -360,7 +366,7 @@ def edit_document(
         )
         return _respond(answer)
 
-    return _frame(request, db, raw_body, "write_edit_doc", run, key_required=True)
+    return _frame(request, db, raw_body, "write_edit_doc", run, key_required=True, services=(prims, ops))
 
 
 @router.post("/documents/{kind}/{docKey}/lines")
@@ -383,7 +389,7 @@ def add_document_line(
         )
         return _respond(answer)
 
-    return _frame(request, db, raw_body, "write_add_line", run, key_required=True)
+    return _frame(request, db, raw_body, "write_add_line", run, key_required=True, services=(prims, ops))
 
 
 @router.post("/documents/{kind}/{docKey}/lines/{dtlKey}/delete")
@@ -405,7 +411,7 @@ def delete_document_line(
         )
         return _respond(answer)
 
-    return _frame(request, db, raw_body, "write_delete_line", run, key_required=True)
+    return _frame(request, db, raw_body, "write_delete_line", run, key_required=True, services=(prims, ops))
 
 
 @router.post("/documents/{kind}/{docKey}/cancel")
@@ -427,7 +433,7 @@ def cancel_document(
         )
         return _respond(answer)
 
-    return _frame(request, db, raw_body, "write_cancel_doc", run, key_required=True)
+    return _frame(request, db, raw_body, "write_cancel_doc", run, key_required=True, services=(prims, ops))
 
 
 # ── operations ───────────────────────────────────────────────────────────────
@@ -454,7 +460,7 @@ def _operation_route(
             )
             return _respond(operation_answer(result, params[fields[0][1]]))
 
-        return _frame(request, db, raw_body, action, run, key_required=True)
+        return _frame(request, db, raw_body, action, run, key_required=True, services=(ops,))
 
     endpoint.__name__ = f"op_{op}"
     router.add_api_route(path, endpoint, methods=["POST"])
@@ -498,7 +504,7 @@ def resume_write_operation(
         # a resume that put the line back (done or recovered) succeeded as a resume
         return (200 if result.outcome in ("done", "recovered") else status), answer
 
-    return _frame(request, db, raw_body, "write_operation_resume", run)
+    return _frame(request, db, raw_body, "write_operation_resume", run, services=(ops,))
 
 
 @router.get("/write-capabilities")

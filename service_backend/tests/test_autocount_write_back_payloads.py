@@ -12,8 +12,7 @@ import pytest
 from modules.autocount.write_back.payloads import (
     WriteRefusal,
     build_link,
-    build_spo_unlink,
-    build_unlink,
+    build_unlink_row as build_unlink,
     so_outstanding,
 )
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
@@ -63,6 +62,17 @@ def D(v):
     return Decimal(str(v))
 
 
+def _new(body):
+    """Plan 61: the new row (DtlKey 0) of a replace PUT."""
+    (row,) = [r for r in body["Details"] if r["DtlKey"] == 0]
+    return row
+
+
+def _gone(body):
+    """Plan 61: the rows a replace PUT deletes (FullTransferOption "D")."""
+    return [r["DtlKey"] for r in body["Details"] if r.get("FullTransferOption") == "D"]
+
+
 def _refusal(code, fn, *a, **kw):
     with pytest.raises(WriteRefusal) as ei:
         fn(*a, **kw)
@@ -81,14 +91,15 @@ def test_ac_55_13_so_outstanding(so):
     assert so_outstanding({"Qty": 0.1}, Decimal("0.03")) == Decimal("0.07")
 
 
-# ---- AC-55-14 same qty: in place -------------------------------------------
+# ---- AC-55-14 same qty: plan 61 replace (row "D" + new linked row in one PUT) ----------
 
-def test_ac_55_14_same_qty_edits_in_place_and_moves_location(po, so):
+def test_ac_55_14_same_qty_replaces_the_row_and_asks_for_the_so_location(po, so):
     body = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
     # PO row 12009 qty 1 @BRW-AM item SRTKS7090; SO 11990 same item qty 10, outstanding 1
-    assert len(body["Details"]) == 1
-    row = body["Details"][0]
-    assert row["DtlKey"] == 12009
+    assert len(body["Details"]) == 2 and _gone(body) == [12009]
+    assert body["Details"][0]["FullTransferOption"] == "D"
+    row = _new(body)
+    assert row["FullTransferOption"] == " " and row["FullTransferFromDocList"] == ""
     assert row["FromDocType"] == "SO"
     assert row["FromDocNo"] == "SO389293"
     assert row["FromDocDtlKey"] == 11990
@@ -96,13 +107,12 @@ def test_ac_55_14_same_qty_edits_in_place_and_moves_location(po, so):
     assert D(row["Qty"]) == 1
 
 
-def test_ac_55_14_same_qty_location_changes_in_place(po, so):
+def test_ac_55_14_same_qty_new_row_asks_for_the_so_location(po, so):
     po2 = copy.deepcopy(po)
     _row(po2, 12009)["Location"] = "HQ"
     body = build_link(po2, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
-    assert len(body["Details"]) == 1
-    assert body["Details"][0]["Location"] == "BRW-AM"
-    assert body["Details"][0]["DtlKey"] == 12009
+    assert len(body["Details"]) == 2 and _gone(body) == [12009]
+    assert _new(body)["Location"] == "BRW-AM"
 
 
 # ---- AC-55-10 link in place ------------------------------------------------
@@ -120,7 +130,9 @@ def test_ac_55_10_header_whitelist_and_docKey(po, so):
 
 def test_ac_55_10_row_whitelist_and_copied_fields(po, so):
     body = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
-    row = body["Details"][0]
+    for r in body["Details"]:
+        assert set(r) <= ROW_KEYS and not (set(r) & FORBIDDEN_ROW)
+    row = _new(body)
     assert set(row) <= ROW_KEYS
     assert not (set(row) & FORBIDDEN_ROW)
     src = _row(po, 12009)
@@ -131,7 +143,7 @@ def test_ac_55_10_row_whitelist_and_copied_fields(po, so):
 def test_ac_55_10_only_touched_row_sent(po, so):
     body = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
     keys = [r["DtlKey"] for r in body["Details"]]
-    assert keys == [12009]
+    assert keys == [12009, 0]  # plan 61: the row "D" and its linked replacement
     assert 12011 not in keys  # linked rows are never re-sent
 
 
@@ -246,30 +258,8 @@ def test_ac_55_15_unlink_refused_when_spo_points_at_row(po):
     assert "SPO-2026/11-0001" in str(e)
 
 
-def test_ac_55_15_spo_unlink_body(spo):
-    row = spo["Details"][0]
-    body = build_spo_unlink(spo, row["DtlKey"])
-    assert body["DocKey"] == spo["DocKey"]
-    assert body["DocNo"] == spo["DocNo"]
-    assert {k for k in body if k != "Details"} <= HEADER_KEYS | {"ShippingPO"}  # SPO body only
-    assert body["ShippingPO"] == "T"
-    assert len(body["Details"]) == 1
-    r = body["Details"][0]
-    assert r["DtlKey"] == row["DtlKey"]
-    assert r["FromDocType"] == "" and r["FromDocNo"] == "" and r["FromDocDtlKey"] == 0
-    assert D(r["Qty"]) == D(row["Qty"])
-    assert r["Location"] == row["Location"]
-    assert set(r) <= ROW_KEYS
 
 
-def test_ac_55_15_spo_unlink_refusals(po, spo):
-    _refusal("DOC_KIND_MISMATCH", build_spo_unlink, po, 12011)
-    _refusal("ROW_NOT_FOUND", build_spo_unlink, spo, 999999)
-    spo2 = copy.deepcopy(spo)
-    spo2["Details"][0]["FromDocType"] = ""
-    spo2["Details"][0]["FromDocNo"] = ""
-    spo2["Details"][0]["FromDocDtlKey"] = 0
-    _refusal("ROW_NOT_LINKED", build_spo_unlink, spo2, spo2["Details"][0]["DtlKey"])
 
 
 # ---- AC-55-12 / AC-55-16 unlink --------------------------------------------
@@ -278,12 +268,13 @@ def test_ac_55_12_unlink_real_row_12013(po):
     body = build_unlink(po, 12013)
     assert body["DocKey"] == 12008
     assert {k for k in body if k != "Details"} <= HEADER_KEYS
-    assert [r["DtlKey"] for r in body["Details"]] == [12013]
-    r = body["Details"][0]
+    assert [r["DtlKey"] for r in body["Details"]] == [12013, 0]  # plan 61: "D" + a new normal row
+    assert _gone(body) == [12013]
+    r = _new(body)
     assert r["FromDocType"] == "" and r["FromDocNo"] == "" and r["FromDocDtlKey"] == 0
     assert D(r["Qty"]) == 10
     assert r["Location"] == "HQ"
-    assert set(r) <= ROW_KEYS
+    assert set(r) <= ROW_KEYS | {"YourPONo"}  # plan 61: the new row is the full vendor row (AC-57-45)
     assert not (set(r) & FORBIDDEN_ROW)
 
 
@@ -298,9 +289,8 @@ def test_ac_55_16_split_row_unlink_stays_own_row(po):
     split.update(DtlKey=12020, Qty=3.0, Location="BRW-AM", FromSODtlKey=11993)
     po2["Details"].append(split)
     body = build_unlink(po2, 12020)
-    assert len(body["Details"]) == 1
-    r = body["Details"][0]
-    assert r["DtlKey"] == 12020
+    assert len(body["Details"]) == 2 and _gone(body) == [12020]
+    r = _new(body)
     assert D(r["Qty"]) == 3
     assert r["Location"] == "BRW-AM"
     assert r["FromDocType"] == ""
@@ -328,7 +318,7 @@ def _all_rows(body):
 def test_vendor_unlink_real_row_12013_omits_the_empty_delivery_date(po):
     assert _row(po, 12013)["DeliveryDate"] == EMPTY
     body = build_unlink(po, 12013)
-    assert "DeliveryDate" not in body["Details"][0]
+    assert all("DeliveryDate" not in r for r in body["Details"])
     assert body["DocDate"] == po["DocDate"]
 
 
@@ -336,9 +326,9 @@ def test_vendor_link_in_place_omits_empty_date_keeps_valid_one(po, so):
     po2 = copy.deepcopy(po)
     _row(po2, 12009)["DeliveryDate"] = EMPTY
     body = build_link(po2, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
-    assert "DeliveryDate" not in body["Details"][0]
+    assert all("DeliveryDate" not in r for r in body["Details"])
     body_ok = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
-    assert body_ok["Details"][0]["DeliveryDate"] == "2026-03-15T00:00:00"
+    assert _new(body_ok)["DeliveryDate"] == "2026-03-15T00:00:00"
 
 
 def test_vendor_split_omits_empty_date_on_edited_and_new_row(po, so):
@@ -360,7 +350,7 @@ def test_vendor_missing_date_stays_missing(po, so):
     body = build_link(po2, 12017, so, 11989, Decimal(10))
     assert all("DeliveryDate" not in r for r in body["Details"])
     unlink = build_unlink(po2, 12013)
-    assert "DeliveryDate" not in unlink["Details"][0]
+    assert "DeliveryDate" not in _new(unlink)
 
 
 @pytest.mark.parametrize("value,kept", [
@@ -372,19 +362,12 @@ def test_vendor_missing_date_stays_missing(po, so):
 def test_vendor_date_cutoff_is_year_1753(po, value, kept):
     po2 = copy.deepcopy(po)
     _row(po2, 12013)["DeliveryDate"] = value
-    row = build_unlink(po2, 12013)["Details"][0]
+    row = _new(build_unlink(po2, 12013))
     assert ("DeliveryDate" in row) is kept
     if kept:
         assert row["DeliveryDate"] == value
 
 
-def test_vendor_spo_unlink_omits_empty_date_keeps_valid(spo):
-    spo2 = copy.deepcopy(spo)
-    spo2["Details"][0]["DeliveryDate"] = EMPTY
-    body = build_spo_unlink(spo2, spo2["Details"][0]["DtlKey"])
-    assert "DeliveryDate" not in body["Details"][0]
-    ok = build_spo_unlink(spo, spo["Details"][0]["DtlKey"])
-    assert ok["Details"][0]["DeliveryDate"] == "2026-10-29T00:00:00"
 
 
 def test_vendor_header_docdate_always_stays(po):

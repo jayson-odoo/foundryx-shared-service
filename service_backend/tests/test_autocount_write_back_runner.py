@@ -33,7 +33,7 @@ DB3 = "https://ac.example.test/api/db3"
 DB1 = "https://ac.example.test/api/db1"
 DBNAME = "AED_RUN"
 SECRETS = {"appId": "app-secret-run", "password": "pw-secret-run"}
-CASE_IDS = [f"C{n:02d}" for n in range(0, 13)]
+CASE_IDS = [f"C{n:02d}" for n in range(0, 18)]  # plan 61 adds C13..C17 (operation / primitive path)
 DEBTOR = "300-S057"
 CREDITOR = "400-N004"
 
@@ -120,7 +120,11 @@ class Wrapper:
         name = request.url.path.rsplit("/", 1)[-1].lower()
         if request.method == "GET":
             docs = self.pos if name.startswith("purchaseorder") else self.sos
+            if name.endswith("bydocno"):  # plan 61 F1: one document by its DocNo
+                docs = [d for d in docs if d["DocNo"] == request.url.params.get("DocNo")]
             return httpx.Response(200, json=copy.deepcopy(docs))
+        if request.method == "DELETE" and name.startswith("cancel") and name.endswith("bydocno"):
+            return self._cancel(name, request.url.params.get("DocNo"))  # plan 61 F9: no body
         body = json.loads(request.content)
         self.bodies.append(body)
         if _has_ancient_date(body):  # vendor behaviour (plan 55 live run, C07)
@@ -153,6 +157,16 @@ class Wrapper:
         self.pos.append(doc)
         return httpx.Response(200, json={"DocKey": doc["DocKey"], "DocNo": doc["DocNo"]})
 
+    def _cancel(self, name, doc_no):
+        """DELETE /Cancel<Doc>bydocno?DocNo=: the document reads back Cancelled T (F9)."""
+        docs = self.pos if name.startswith("cancelpurchaseorder") else self.sos
+        doc = next((d for d in docs if d["DocNo"] == doc_no), None)
+        if doc is None:
+            return httpx.Response(400, json={"Message": f"DocNo={doc_no} ... failed to cancel."})
+        doc["Cancelled"] = "T"
+        self._touch(doc)
+        return httpx.Response(200, text=f"DocNo={doc_no} ... was cancelled.")
+
     def so(self, doc_no: str) -> Dict[str, Any]:
         return next(d for d in self.sos if d["DocNo"] == doc_no)
 
@@ -180,10 +194,13 @@ class Wrapper:
         doc = next((d for d in self.pos if d["DocKey"] == body["DocKey"]), None)
         if doc is None:
             return httpx.Response(404, text="no doc")
+        base = dict(doc["Details"][0]) if doc["Details"] else {}
         for r in body["Details"]:
             linked_sent = r.get("FromDocType") == "SO"
-            if r["DtlKey"] == 0:
-                row = {**doc["Details"][0], **r, "DtlKey": self.next_dtl, "DocKey": doc["DocKey"]}
+            if r.get("FullTransferOption") == "D":  # plan 61 F4 / F5: the row is deleted
+                doc["Details"] = [x for x in doc["Details"] if x["DtlKey"] != r["DtlKey"]]
+            elif r["DtlKey"] == 0:
+                row = {**base, **r, "DtlKey": self.next_dtl, "DocKey": doc["DocKey"]}
                 self.next_dtl += 1
                 row["FromSODtlKey"] = r["FromDocDtlKey"] if linked_sent else 0
                 row["FromSODocList"] = r.get("FromDocNo", "") if linked_sent else ""
@@ -315,15 +332,20 @@ def test_ac_55_50_c03_is_a_two_write_split_ending_at_the_so_location(db):
     assert row.action == "link" and row.outcome == "done" and row.error_code is None
 
 
-def test_ac_55_50_c04_whole_row_link_is_refused_vendor_unsupported(db):
+def test_ac_55_50_c04_whole_row_link_is_one_replace_put_then_the_move(db):
+    """Plan 61 F5: the whole-row link is the row "D" + a new linked row in one PUT, then
+    the move PUT back to the SO row's place."""
     s = _setup(db)
     res = _run(db, s)
     c = _case(res, "C04")
-    assert c.status == "PASS" and "VENDOR_UNSUPPORTED" in c.observed
-    assert not [st for st in c.steps if st.method in ("PUT", "POST")]
-    assert db.get(AcWriteAction, c.action_id).error_code == "VENDOR_UNSUPPORTED"
-    # writes in the whole suite: C03 (2) + C08 (2), nothing from C04
-    assert _put_count(s) == 4
+    assert c.status == "PASS" and "done" in c.observed
+    assert [st.method for st in c.steps if st.method in ("PUT", "POST")] == ["PUT", "PUT"]
+    row = db.get(AcWriteAction, c.action_id)
+    assert row.outcome == "done" and row.error_code is None
+    assert [r.get("FullTransferOption") for r in row.request_json[0]["Details"]] == ["D", " "]
+    # writes in the whole suite: C03 (2) + C04 (2) + C07 (1) + C08 (2), then plan 61's
+    # C13 (1) + C14 (2) + C15 (2) + C16 (1)
+    assert _put_count(s) == 13
 
 
 def test_ac_55_50_c08_second_split_of_the_40_row_ends_at_brw_am(db):
@@ -331,7 +353,8 @@ def test_ac_55_50_c08_second_split_of_the_40_row_ends_at_brw_am(db):
     res = _run(db, s)
     c = _case(res, "C08")
     assert c.status == "PASS" and c.action_id
-    po = s.wrapper.po("FXT-T1-1")["Details"]
+    row = db.get(AcWriteAction, c.action_id)  # the PO as C08 left it (plan 61 cases C13..C17 change it later)
+    po = (row.after_json[-1] if isinstance(row.after_json, list) else row.after_json)["Details"]
     linked = {r["FromSODtlKey"]: r for r in po if r["FromSODtlKey"]}
     so1, so2 = _so_keys(s)
     assert set(linked) == {so1, so2}
@@ -350,14 +373,16 @@ def test_ac_55_50_refusal_cases_name_the_code_and_send_no_put(db, cid, code):
     assert not [st for st in c.steps if st.method == "PUT"]
 
 
-def test_ac_55_50_c07_unlink_is_refused_vendor_unsupported_with_no_request(db):
+def test_ac_55_50_c07_unlink_is_one_replace_put_on_the_test_po(db):
+    """Plan 61 F4: unlink of the C04 row is ONE PUT (the linked row "D" + a normal row)."""
     s = _setup(db)
     res = _run(db, s)
     c = _case(res, "C07")
-    assert c.status == "PASS" and "VENDOR_UNSUPPORTED" in c.observed
-    assert not c.steps
+    assert c.status == "PASS" and "done" in c.observed
+    assert [st.method for st in c.steps if st.method in ("PUT", "POST")] == ["PUT"]
     row = db.get(AcWriteAction, c.action_id)
-    assert row.action == "unlink" and row.outcome == "refused"
+    assert row.action == "unlink" and row.outcome == "done"
+    assert [r.get("FullTransferOption") for r in row.request_json["Details"]] == ["D", " "]
     # the real PO is untouched
     assert next(r for r in s.wrapper.po("202602-S0007")["Details"] if r["DtlKey"] == 12013)["FromSODtlKey"] == 11993
 
@@ -381,7 +406,7 @@ def test_ac_55_50_c11_relocate_on_c08s_row_is_already_at_location(db):
     assert not [st for st in c.steps if st.method in ("PUT", "POST")]
     row = db.get(AcWriteAction, c.action_id)
     assert row.action == "relocate" and row.outcome == "refused"
-    assert _put_count(s) == 4
+    assert _put_count(s) == 13  # C03 (2) + C04 (2) + C07 (1) + C08 (2) + C13..C16 (6), nothing from C11
 
 
 def test_ac_55_50_c12_guard_makes_zero_requests(db):
@@ -409,7 +434,7 @@ def test_ac_55_51_step_paths_are_vendor_paths_only(db):
     for c in res.cases:
         for st in c.steps:
             assert st.path.startswith("/") and "http" not in st.path and "example.test" not in st.path
-            assert st.method in ("GET", "POST", "PUT")
+            assert st.method in ("GET", "POST", "PUT", "DELETE")  # plan 61: cancel is a DELETE
 
 
 def test_ac_55_51_report_has_a_section_per_case_with_evidence(db):
@@ -659,12 +684,12 @@ def test_c04_whole_row_target_is_c00s_third_row_not_a_real_so_row(db, monkeypatc
     row3 = so["Details"][2]
     assert row3["Qty"] == 10  # uncovered, outstanding 10
     po = s.wrapper.po("FXT-T1-1")["Details"]
-    whole_key = next(r["DtlKey"] for r in po if r["Qty"] == 10 and r["Location"] == "HQ" and not r["FromSODtlKey"])
     kw, slice_, result = next(
-        c for c in calls if c[0]["po_dtl_key"] == whole_key and c[0]["qty"] == Decimal(10)
+        c for c in calls if c[0]["qty"] == Decimal(10) and c[0]["so_dtl_key"] == row3["DtlKey"]
     )
+    assert all(r["DtlKey"] != kw["po_dtl_key"] for r in po)  # plan 61: the whole row was replaced
     assert kw["so_doc_key"] == so["DocKey"] and kw["so_dtl_key"] == row3["DtlKey"]
     assert kw["so_dtl_key"] not in (11989, 11992, 11993, 11996)  # never a real SO389293 row
-    assert result.outcome == "refused" and result.error_code == "VENDOR_UNSUPPORTED"
-    assert len([r for r in slice_ if r.startswith("GET")]) == 1
-    assert not [r for r in slice_ if r.startswith(("PUT", "POST"))]
+    assert result.outcome == "done" and result.error_code is None  # plan 61 F5: replace + move
+    assert len([r for r in slice_ if r.startswith("PUT")]) == 2
+    assert not [r for r in slice_ if r.startswith("POST")]

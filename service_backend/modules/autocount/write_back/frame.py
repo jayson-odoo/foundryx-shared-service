@@ -17,10 +17,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from modules.autocount.canonical.documents import ENTITY_SHIPPING_ORDER
 from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.provider import PROVIDER_KEY
 from modules.autocount.repositories import ConnectionRepository
 from modules.autocount.write_back.client import AutoCountWriteClient
+from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader
@@ -118,8 +120,15 @@ class WriteFrame:
         client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
         reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
         sink_factory: Optional[Callable[..., Any]] = None,
+        actor: Optional[str] = None,
+        request_id: Optional[str] = None,
+        operation_id: Optional[str] = None,
     ) -> None:
         self.db = db
+        self._actor = actor  # "runner" for the db3 runner; None = the API key id, else "system"
+        self.request_id = request_id
+        self._operation_id = operation_id  # set when an operation runs this flow (the split link)
+        self._call_log: Optional[cl.CallLog] = None
         self.actions = WriteActionRepository(db)
         self.staged = StagedDocRepository(db)
         self.connections = ConnectionRepository(db)
@@ -128,6 +137,30 @@ class WriteFrame:
         self._sink_factory = sink_factory
         self._deadline = 0.0
         self._put_sent = False
+
+    def use_request_id(self, request_id: Optional[str]) -> None:
+        """The caller's request id (``X-Request-ID`` else ``Idempotency-Key``) for the call log."""
+        self.request_id = request_id
+
+    def new_call_log(
+        self, company: AcCompany, *, kind: Optional[str] = None, doc_key: Optional[int] = None,
+        doc_no: Optional[str] = None, key_id: Optional[str] = None, operation_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+    ) -> cl.CallLog:
+        """A call log (plan 61 section 4.8) for the HTTP calls of one flow, on its own session."""
+        context = cl.CallContext(
+            tenant_id=company.tenant_id, company_id=company.id,
+            actor=key_id or self._actor or cl.ACTOR_SYSTEM, request_id=self.request_id,
+            operation_id=operation_id or self._operation_id, action_id=action_id, doc_type=kind,
+            doc_no=doc_no, doc_key=doc_key,
+        )
+        return cl.CallLog(self.db.get_bind(), context)
+
+    def _reader_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
+        return cl.attach_call_log(self._reader_factory(base_url), log or self._call_log)
+
+    def _client_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
+        return cl.attach_call_log(self._client_factory(base_url), log or self._call_log)
 
     def _expired(self) -> bool:
         return time.monotonic() > self._deadline
@@ -223,6 +256,16 @@ class WriteFrame:
             if isinstance(line, dict) and line.get("source_ref") == wanted:
                 value = line.get(field_name)
                 return None if value is None else _dec(value)
+        return None
+
+    def _spo_ref(self, tenant_id: str, company_id: str, po_dtl_key: int) -> Optional[str]:
+        """DocNo of a staged, non-cancelled SPO with a row pointing at the PO row."""
+        for staged in self.staged.for_entity(tenant_id, company_id, ENTITY_SHIPPING_ORDER):
+            raw = staged.raw_json or {}
+            if raw.get("Cancelled") == "T":
+                continue
+            if any(r.get("FromDocDtlKey") == po_dtl_key for r in _lines(raw)):
+                return str(raw.get("DocNo") or staged.doc_no or staged.source_ref)
         return None
 
     def _stage(

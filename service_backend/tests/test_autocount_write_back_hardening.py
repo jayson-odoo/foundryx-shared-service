@@ -528,22 +528,10 @@ def test_h9_spo_edit_sends_shipping_po_flag():
     spo = _load("spo_db1_sample.json")
     spo["Details"][0]["FromDocType"] = "PO"
     spo["Details"][0]["FromDocDtlKey"] = 12013
-    body = payloads.build_spo_unlink(spo, spo["Details"][0]["DtlKey"])
+    body = payloads.build_edit("SPO", spo, {"Ref": "x"}, []).body  # plan 61: no SPO unlink builder
     assert body["ShippingPO"] == "T"
 
 
-def test_h9_spo_edit_through_service_puts_shipping_po_t(h, vendor_caps_all_on):
-    spo = _load("spo_db1_sample.json")
-    spo["Details"][0]["FromDocType"] = "PO"
-    spo["Details"][0]["FromDocDtlKey"] = 12013
-    h.stage_spo_pointing_at(12013)
-    h.ac.serve("purchaseorderbydocdate", spo)
-    h.service().spo_unlink(
-        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, spo_doc_key=spo["DocKey"],
-        spo_dtl_key=spo["Details"][0]["DtlKey"],
-    )
-    assert len(h.ac.put_bodies) == 1
-    assert h.ac.put_bodies[0]["ShippingPO"] == "T"
 
 
 # ---- H10 DOC_KIND_MISMATCH -------------------------------------------------------------------
@@ -912,7 +900,13 @@ def test_unexpected_error_before_put_is_refused_internal_error_and_does_not_bloc
 
 # ---- R-A: the whole-row gate also applies after the fresh SO read ------------------------------------
 
-def test_whole_row_gate_holds_when_only_the_fresh_so_read_shows_enough_outstanding(h):
+def test_whole_row_gate_holds_when_only_the_fresh_so_read_shows_enough_outstanding(h, monkeypatch):
+    from types import MappingProxyType
+
+    from modules.autocount.write_back import capabilities
+
+    flags = dict(capabilities.VENDOR_CAPABILITIES, link_existing_row=False)  # plan 61 ships it on
+    monkeypatch.setattr(capabilities, "VENDOR_CAPABILITIES", MappingProxyType(flags), raising=True)
     h.ac.docs["purchaseorderbydocdate"][0]["Details"][-1]["Qty"] = 10.0  # row 12017
     staged = h.staged_po()
     raw = copy.deepcopy(staged.raw_json)
@@ -939,7 +933,7 @@ def test_payload_unlink_refuses_a_row_with_another_transfer_type():
     row = next(r for r in po["Details"] if r["DtlKey"] == 12013)
     row.update(FromDocType="RQ", FromDocNo="RQ-1", FromDocDtlKey=777, FromSODtlKey=0, FromSODocList="")
     with pytest.raises(WriteRefusal) as exc:
-        payloads.build_unlink(po, 12013)
+        payloads.build_unlink_row(po, 12013)
     assert exc.value.code == "ROW_HAS_OTHER_TRANSFER"
 
 
@@ -948,7 +942,7 @@ def test_payload_unlink_row_with_no_link_at_all_is_not_linked():
     row = next(r for r in po["Details"] if r["DtlKey"] == 12013)
     row.update(FromDocType="", FromDocNo="", FromDocDtlKey=0, FromSODtlKey=0, FromSODocList="")
     with pytest.raises(WriteRefusal) as exc:
-        payloads.build_unlink(po, 12013)
+        payloads.build_unlink_row(po, 12013)
     assert exc.value.code == "ROW_NOT_LINKED"
 
 

@@ -3,13 +3,16 @@
 The level-2 unit a caller asks for: link / unlink / relink of a PO row (to an SO
 row) or an SPO row (to a PO row), and the plan 55 split link, each under an
 idempotency key. AutoCount never changes a link in place, so a row operation is
-snapshot -> delete -> add (with the new link or none) -> move the location,
-every step one primitive (``PrimitiveService``, no second write frame). The
-cross-step busy lock is the ``in_progress`` partial unique index of
-``ac_write_operation``. A failed add after the delete is recovered from the
-snapshot; when that fails too the operation is ``needs_attention``, one alert
-mail goes out and nothing is retried automatically; ``resume`` re-reads
-AutoCount and re-creates the line only when it is still absent.
+snapshot -> ONE replace PUT (the row ``"D"`` plus a new row with the new link or
+none, plan 61 F4 / F5, all or nothing F8) -> move the new row's location and
+delivery date back (AutoCount forces HQ and clears the date on a new linked row),
+every step one primitive (``PrimitiveService``, no second write frame). A partly
+received row is cut to its received qty and the remainder added. The cross-step
+busy lock is the ``in_progress`` partial unique index of ``ac_write_operation``.
+A replace that landed wrong (or a remainder add that failed) is recovered from the
+snapshot; when that fails too the operation is ``needs_attention``, one alert mail
+goes out and nothing is retried automatically; ``resume`` re-reads AutoCount and
+re-creates the line only when it is still absent.
 """
 
 from __future__ import annotations
@@ -77,6 +80,7 @@ INVALID_PARAMS = "INVALID_PARAMS"
 ROW_RECEIVED = "ROW_RECEIVED"
 TRANSFER_STATE_UNKNOWN = "TRANSFER_STATE_UNKNOWN"
 LOCATION_NOT_MOVED = "LOCATION_NOT_MOVED"
+ROW_VALUES_NOT_KEPT = "ROW_VALUES_NOT_KEPT"
 NOT_APPLIED = "OPERATION_NOT_APPLIED"
 SPLIT_LINK = "split_link"
 TEMPLATE_KEY = "autocount_write_needs_attention"
@@ -107,6 +111,18 @@ _PARAM_NAMES = {
     "SPO": ("spo_doc_key", "spo_dtl_key", "po_doc_key", "po_dtl_key"),
 }
 _NO_LINK = {"FromDocType": "", "FromDocNo": "", "FromDocDtlKey": 0}
+# The vendor switch an op needs on top of the primitives (plan 61 section 4.5).
+_OP_FLAGS = {("PO", "link"): "link_existing_row", ("PO", "relink"): "link_existing_row", ("PO", "unlink"): "unlink"}
+_OP_PRIMITIVES = ("delete_line", "add_line", "edit_doc")
+
+
+def op_capable(defn: "_OpDef") -> bool:
+    """A row op = one replace PUT (delete_line + add_line on the edit door) and the
+    move edit; a PO op also needs its vendor switch."""
+    if not all(capabilities.capable(defn.kind, p) for p in _OP_PRIMITIVES):
+        return False
+    flag = _OP_FLAGS.get((defn.kind, defn.mode))
+    return flag is None or bool(capabilities.VENDOR_CAPABILITIES.get(flag))
 
 
 @dataclass
@@ -182,10 +198,13 @@ class OperationService:
         sink_factory: Optional[Callable[..., Any]] = None,
         receipt_reader: Optional[ReceiptReader] = None,
         notifier: Optional[Notifier] = None,
+        actor: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> None:
         self.db = db
         self.prims = PrimitiveService(
-            db, client_factory=client_factory, reader_factory=reader_factory, sink_factory=sink_factory
+            db, client_factory=client_factory, reader_factory=reader_factory, sink_factory=sink_factory,
+            actor=actor, request_id=request_id,
         )
         self.ops = OperationRepository(db)
         self._receipt_reader = receipt_reader  # None = the default source order (frame)
@@ -198,6 +217,19 @@ class OperationService:
         self._op_deadline = 0.0
 
     # ── public ───────────────────────────────────────────────────────────────
+
+    def use_request_id(self, request_id: Optional[str]) -> None:
+        """The caller's request id for the call log of every step (plan 61 section 4.8)."""
+        self.prims.use_request_id(request_id)
+
+    def _reader(self, company: AcCompany, base_url: str, kind: str, doc_key: int, doc_no: Optional[str]) -> Any:
+        """A reader whose GETs are logged under this operation (plan 61 section 4.8)."""
+        row = self._row
+        log = self.prims.new_call_log(
+            company, kind=kind, doc_key=doc_key, doc_no=doc_no, key_id=row.key_id if row else None,
+            operation_id=row.id if row else None,
+        )
+        return self.prims._reader_for(base_url, log)
 
     def get(self, *, tenant_id: str, company_id: str, operation_id: str) -> OperationResult:
         row = self.ops.get(tenant_id, company_id, operation_id)
@@ -372,15 +404,13 @@ class OperationService:
         ):
             return self._split_link(row, company, spec, params)
         defn = OPS[op]
-        for primitive in ("delete_line", "add_line", "edit_doc"):
-            if not capabilities.capable(defn.kind, primitive):
-                raise _Done(REFUSED, VENDOR_UNSUPPORTED)
+        if not op_capable(defn):
+            raise _Done(REFUSED, VENDOR_UNSUPPORTED)
         self._check_not_busy(company, spec.doc_key, defn.kind)
-        reader = self.prims._reader_factory(base_url)
-        doc_date, doc = self._read(company, reader, defn.kind, spec.doc_key, spec.doc_date)
+        doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date)
         if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
             raise _Done(REFUSED, DOC_STALE)
-        plan = self._guards(company, reader, defn, spec, doc)
+        plan = self._guards(company, defn, spec, doc)
         snapshot = self._snapshot(company, defn, spec, doc, doc_date, plan)
         row.snapshot_json = snapshot
         self.db.commit()
@@ -394,9 +424,11 @@ class OperationService:
         found, _code = self.prims.find_date(company, "PO", spec.doc_key, spec.doc_date)
         if found is None:
             return False
+        doc_no = self.prims.find_doc_no(company, "PO", spec.doc_key)
+        reader = self._reader(company, base_url, "PO", spec.doc_key, doc_no)  # before the commit (row ids)
         self.db.commit()
         try:
-            fresh = self.prims._reader_factory(base_url).get_document("PO", spec.doc_key, found)
+            fresh = reader.get_document("PO", spec.doc_key, found, doc_no=doc_no)
         except DocReadError:
             return False
         row = next((r for r in fresh.get("Details") or [] if r.get("DtlKey") == spec.dtl_key), None)
@@ -419,26 +451,27 @@ class OperationService:
         ) or self.ops.has_recent_pending(company.tenant_id, company.id, kind, doc_key, window):
             raise _Done(REFUSED, DOC_BUSY)
 
-    def _read(self, company: AcCompany, reader: Any, kind: str, doc_key: int,
+    def _read(self, company: AcCompany, kind: str, doc_key: int,
               doc_date: Optional[date]) -> Tuple[date, Doc]:
         """AC-57-20 date, then one fresh GET with no transaction open."""
         found, code = self.prims.find_date(company, kind, doc_key, _as_date(doc_date))
         if found is None:
             raise _Done(REFUSED, code)
+        doc_no = self.prims.find_doc_no(company, kind, doc_key)
+        reader = self._reader(company, self._base_url, kind, doc_key, doc_no)  # before the commit (row ids)
         self.db.commit()
         try:
-            return found, reader.get_document(kind, doc_key, found)
+            return found, reader.get_document(kind, doc_key, found, doc_no=doc_no)
         except DocReadError as exc:
             raise _Done(REFUSED, exc.code) from None
 
     # ── guards (AC-57-32, 33): every refusal before any write ────────────────
 
-    def _guards(self, company: AcCompany, reader: Any, defn: _OpDef, spec: _Spec, doc: Doc) -> Dict[str, Any]:
+    def _guards(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc) -> Dict[str, Any]:
         try:
-            payloads.build_delete_line(defn.kind, doc, spec.dtl_key)  # kind, cancelled, row exists
+            row = payloads.check_row(defn.kind, doc, spec.dtl_key)  # kind, cancelled, row exists
         except WriteRefusal as exc:
             raise _Done(REFUSED, exc.code, str(exc)) from None
-        row = next(r for r in doc.get("Details") or [] if r.get("DtlKey") == spec.dtl_key)
         if defn.kind == "PO" and self._spo_ref(company, spec.dtl_key):
             raise _Done(REFUSED, "ROW_ON_SPO")
         linked = _link_of(defn.kind, row)
@@ -453,7 +486,7 @@ class OperationService:
         link_qty = qty - received if mode == "partial" else qty
         target: Optional[Doc] = None
         if defn.target and spec.target_doc_key is not None:
-            target = self._guard_target(company, reader, defn, spec, doc, row, link_qty)
+            target = self._guard_target(company, defn, spec, doc, row, link_qty)
         return {"mode": mode, "received": received, "target": target, "linkQty": link_qty}
 
     def _receipt(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Tuple[str, Optional[Decimal]]:
@@ -472,10 +505,10 @@ class OperationService:
             raise _Done(REFUSED, ROW_RECEIVED)
         return "partial", received
 
-    def _guard_target(self, company: AcCompany, reader: Any, defn: _OpDef, spec: _Spec, doc: Doc,
+    def _guard_target(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc,
                       row: Doc, link_qty: Decimal) -> Doc:
         assert defn.target and spec.target_doc_key is not None
-        _date, tdoc = self._read(company, reader, defn.target, spec.target_doc_key, spec.target_doc_date)
+        _date, tdoc = self._read(company, defn.target, spec.target_doc_key, spec.target_doc_date)
         if tdoc.get("Cancelled") == "T":
             raise _Done(REFUSED, "DOC_CANCELLED")
         trow = next((r for r in tdoc.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), None)
@@ -495,13 +528,7 @@ class OperationService:
 
     def _spo_ref(self, company: AcCompany, po_dtl_key: int) -> Optional[str]:
         """DocNo of a staged, non-cancelled SPO with a row pointing at the PO row."""
-        for staged in self.prims.staged.for_entity(company.tenant_id, company.id, ENTITY_SHIPPING_ORDER):
-            raw = staged.raw_json or {}
-            if raw.get("Cancelled") != "T" and any(
-                r.get("FromDocDtlKey") == po_dtl_key for r in _lines(raw)
-            ):
-                return str(raw.get("DocNo") or staged.doc_no or staged.source_ref)
-        return None
+        return self.prims._spo_ref(company.tenant_id, company.id, po_dtl_key)
 
     def _spo_linked_qty(self, company: AcCompany, fresh_spo: Doc, po_dtl_key: int, own_dtl: int) -> Decimal:
         """Qty of one PO row already taken by SPO rows: the fresh SPO (minus the row
@@ -579,40 +606,52 @@ class OperationService:
         old_key = int(snap["row"]["DtlKey"])
         qty = _dec(snap["row"].get("Qty"))
         received = None if snap["received"] is None else Decimal(snap["received"])
-        partial = snap["mode"] == "partial"
         # The deadline may stop an operation only HERE, before its first write. After the
-        # delete / cut has landed every further step runs (the heartbeat guards the lock).
+        # replace / cut has landed every further step runs (the heartbeat guards the lock).
         self._check_deadline()
-        if partial:
-            assert received is not None
-            cut = self.prims.edit_doc(
-                **self._call(row, company, snap, "cut"), header_changes={},
-                line_changes=[{"DtlKey": old_key, "Qty": received}],
-            )
-            self._step("cut", cut)
-            self._abort_unless_done(cut)
-        else:
-            gone = self.prims.delete_line(**self._call(row, company, snap, "delete"), dtl_key=old_key)
-            self._step("delete", gone)
-            if gone.outcome == OUTCOME_VENDOR_ERROR:
-                if gone.error_code == VENDOR_REFUSED:  # AutoCount said no: the delete did not land
-                    raise _Done(VENDOR_ERROR, gone.error_code, gone.message)
-                # a timeout or a bare 5xx: the delete may have landed; resume reads AutoCount (AC-57-42)
-                raise _Done(PENDING, gone.error_code, gone.message)
-            self._abort_unless_done(gone)
+        if not snap["mode"] == "partial":
+            return self._replace_run(row, company, snap, old_key)
+        assert received is not None
+        cut = self.prims.edit_doc(
+            **self._call(row, company, snap, "cut"), header_changes={},
+            line_changes=[{"DtlKey": old_key, "Qty": received}],
+        )
+        self._step("cut", cut)
+        self._abort_unless_done(cut)
         add = self.prims.add_line(
-            **self._call(row, company, snap, "add"),
-            line=self._line_of(snap, snap["newLink"], (qty - received) if partial else None),
+            **self._call(row, company, snap, "add"), line=self._line_of(snap, snap["newLink"], qty - received),
         )
         self._step("add", add)
         if add.outcome == OUTCOME_PENDING:
             raise _Done(PENDING, add.error_code)
         if add.outcome != OUTCOME_DONE or add.new_dtl_key is None:
-            return self._recover(row, company, snap, add.error_code or INTERNAL_ERROR, partial)
+            return self._recover(row, company, snap, add.error_code or INTERNAL_ERROR, True)
         new_key = int(add.new_dtl_key)
         document = self._move(row, company, snap, new_key, add.document, snap.get("moveTo") or snap["location"])
-        self.prims._stage(company, snap["kind"], document, None if partial else {new_key: old_key})
-        return self._finish(row, DONE, None, replaced=[] if partial else [(old_key, new_key)], document=document)
+        self.prims._stage(company, snap["kind"], document, None)
+        return self._finish(row, DONE, None, replaced=[], document=document)
+
+    def _replace_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int) -> OperationResult:
+        """Plan 61: ONE PUT [row "D", new row with the new link or none], then the move.
+        AutoCount applies the PUT all or nothing (F8): a refusal changed nothing."""
+        res = self.prims.replace_line(
+            **self._call(row, company, snap, "replace"), dtl_key=old_key, line=self._line_of(snap, snap["newLink"]),
+        )
+        self._step("replace", res)
+        if res.outcome == OUTCOME_VENDOR_ERROR:
+            if res.error_code == VENDOR_REFUSED:  # AutoCount said no: nothing landed
+                raise _Done(VENDOR_ERROR, res.error_code, res.message)
+            # a timeout or a bare 5xx: the replace may have landed; resume reads AutoCount (AC-57-42)
+            raise _Done(PENDING, res.error_code, res.message)
+        if res.outcome == OUTCOME_MISMATCH:  # the PUT landed but reads back wrong
+            return self._recover(row, company, snap, res.error_code or INTERNAL_ERROR, False)
+        if res.outcome != OUTCOME_DONE or res.new_dtl_key is None:
+            self._abort_unless_done(res)
+            raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
+        new_key = int(res.new_dtl_key)
+        document = self._move(row, company, snap, new_key, res.document, snap.get("moveTo") or snap["location"])
+        self.prims._stage(company, snap["kind"], document, {new_key: old_key})
+        return self._finish(row, DONE, None, replaced=[(old_key, new_key)], document=document)
 
     def _abort_unless_done(self, res: PrimitiveResult) -> None:
         """A first step that did not land cleanly: nothing to recover."""
@@ -626,26 +665,33 @@ class OperationService:
 
     def _move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, new_key: int,
               document: Optional[Doc], location: Optional[str], *, deadline: bool = True) -> Doc:
-        """Move the new row to ``location`` when the read-back differs (db3 forces
-        HQ on a new linked row); a failed move is a warning, never a failure."""
+        """Put the new row back where and as the old row was when the read-back differs:
+        ``location`` and the old row's unit price and delivery date (AutoCount resets all
+        three on a new SO-linked row, F5; the split link's rule, ``payloads.transfer_restore``).
+        One edit PUT, never retried; a failed move is a warning, never a failure (the link
+        stays): ``LOCATION_NOT_MOVED``, plus ``ROW_VALUES_NOT_KEPT`` when price / date did
+        not go back."""
         document = document or {}
         landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
-        if not location or landed.get("Location") == location:
+        changes = payloads.transfer_row_drift(payloads.transfer_restore(snap["row"], location), landed)
+        if not changes:
             return document
         if deadline and time.monotonic() > self._op_deadline:  # move due, deadline past: skip it
-            if LOCATION_NOT_MOVED not in self._warnings:
-                self._warnings.append(LOCATION_NOT_MOVED)
+            self._move_warnings(changes)
             return document
         moved = self.prims.edit_doc(
             **self._call(row, company, snap, "move"), header_changes={},
-            line_changes=[{"DtlKey": new_key, "Location": location}],
+            line_changes=[{"DtlKey": new_key, **changes}],
         )
         self._step("move", moved)
         if moved.outcome == OUTCOME_DONE and moved.document:
             return moved.document
-        if LOCATION_NOT_MOVED not in self._warnings:
-            self._warnings.append(LOCATION_NOT_MOVED)
+        self._move_warnings(changes)
         return document
+
+    def _move_warnings(self, changes: Dict[str, Any]) -> None:
+        codes = [LOCATION_NOT_MOVED] + ([ROW_VALUES_NOT_KEPT] if set(changes) - {"Location"} else [])
+        self._warnings.extend(c for c in codes if c not in self._warnings)
 
     def _recover(self, row: AcWriteOperation, company: AcCompany, snap: Doc, failed_code: str,
                  partial: bool) -> OperationResult:
@@ -653,7 +699,7 @@ class OperationService:
         old_key = int(snap["row"]["DtlKey"])
         if partial:
             remainder = _dec(snap["row"].get("Qty")) - Decimal(snap["received"])
-            if not self._remove_strays(row, company, snap, remainder):
+            if self._remove_strays(row, company, snap, remainder) is None:
                 return self._needs_attention(row, company, snap, failed_code)
             back = self.prims.edit_doc(
                 **self._call(row, company, snap, "recover"), header_changes={},
@@ -664,8 +710,13 @@ class OperationService:
                 self.prims._stage(company, snap["kind"], back.document or {})
                 return self._finish(row, RECOVERED, failed_code, document=back.document)
         else:
-            if not self._remove_strays(row, company, snap):
+            doc = self._remove_strays(row, company, snap)
+            if doc is None:
                 return self._needs_attention(row, company, snap, failed_code)
+            if any(r.get("DtlKey") == old_key for r in doc.get("Details") or []):
+                # the "D" never landed: the line is as it was once the strays are gone
+                self.prims._stage(company, snap["kind"], doc)
+                return self._finish(row, RECOVERED, failed_code, document=doc)
             res = self.prims.add_line(
                 **self._call(row, company, snap, "recover"), line=self._line_of(snap, snap["oldLink"])
             )
@@ -681,18 +732,15 @@ class OperationService:
 
     def _remove_strays(
         self, row: AcWriteOperation, company: AcCompany, snap: Doc, qty: Optional[Decimal] = None
-    ) -> bool:
-        """AC-57-41: a failed add may still have left a copy (link lost, or the add
-        landed and answered 5xx). Delete any new row that looks like the line before
-        the original is re-added, so recovery never doubles the quantity. False when
-        AutoCount cannot be read or a stray cannot be removed (needs_attention). A
-        partial operation looks for the remainder (``qty``): its add may have landed."""
-        reader = self.prims._reader_factory(self._base_url)
-        self.db.commit()
-        try:
-            doc = reader.get_document(snap["kind"], int(snap["docKey"]), date.fromisoformat(snap["docDate"]))
-        except DocReadError:
-            return False
+    ) -> Optional[Doc]:
+        """AC-57-41: a replace or add that read back wrong may still have left a copy
+        (link lost). Delete any new row that looks like the line before the original
+        is re-added, so recovery never doubles the quantity. Returns the document as
+        read (strays then gone); None when AutoCount cannot be read or a stray cannot be
+        removed (needs_attention). A partial operation looks for the remainder (``qty``)."""
+        doc = self._read_snapshot_doc(company, snap)
+        if doc is None:
+            return None
         known, base = set(snap["knownKeys"]), snap["row"]
         strays = [
             r for r in doc.get("Details") or []
@@ -704,8 +752,20 @@ class OperationService:
             gone = self.prims.delete_line(**self._call(row, company, snap, "unstray"), dtl_key=int(stray["DtlKey"]))
             self._step("unstray", gone)
             if gone.outcome != OUTCOME_DONE:
-                return False
-        return True
+                return None
+            doc = gone.document or doc
+        return doc
+
+    def _read_snapshot_doc(self, company: AcCompany, snap: Doc) -> Optional[Doc]:
+        """The snapshot's document as AutoCount holds it now (bydocno, day list as the
+        fallback), or None when it cannot be read."""
+        reader = self._reader(company, self._base_url, snap["kind"], int(snap["docKey"]), snap.get("docNo"))
+        self.db.commit()
+        try:
+            return reader.get_document(snap["kind"], int(snap["docKey"]), date.fromisoformat(snap["docDate"]),
+                                       doc_no=snap.get("docNo"))
+        except DocReadError:
+            return None
 
     def _needs_attention(self, row: AcWriteOperation, company: AcCompany, snap: Doc, code: str,
                          notify: bool = True) -> OperationResult:
@@ -724,10 +784,10 @@ class OperationService:
         self._base_url = base_url
         self._check_test_company(company, restore=was)
         kind, doc_date = snap["kind"], date.fromisoformat(snap["docDate"])
-        reader = self.prims._reader_factory(base_url)
+        reader = self._reader(company, base_url, kind, int(snap["docKey"]), snap.get("docNo"))
         self.db.commit()
         try:
-            doc = reader.get_document(kind, int(snap["docKey"]), doc_date)
+            doc = reader.get_document(kind, int(snap["docKey"]), doc_date, doc_no=snap.get("docNo"))
         except DocReadError as exc:
             raise _Done(was, exc.code) from None
         rows = doc.get("Details") or []
@@ -735,7 +795,7 @@ class OperationService:
         original = next((r for r in rows if r.get("DtlKey") == old_key), None)
         partial = snap["mode"] == "partial"
         if original is not None and not partial:
-            # the delete never landed: the line is as it was (no write)
+            # the replace never landed: the line is as it was (no write)
             return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
         known = set(snap["knownKeys"])
         fresh = [r for r in rows if r.get("DtlKey") not in known]
@@ -779,7 +839,8 @@ class OperationService:
                     params: Dict[str, Any]) -> OperationResult:
         legacy = WriteBackService(
             self.db, client_factory=self.prims._client_factory, reader_factory=self.prims._reader_factory,
-            sink_factory=self.prims._sink_factory,
+            sink_factory=self.prims._sink_factory, actor=self.prims._actor, request_id=self.prims.request_id,
+            operation_id=row.id,
         )
         qty = Decimal(str(params["qty"]))
         found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))
@@ -829,8 +890,7 @@ class OperationService:
         entry(SPLIT_LINK, "PO", capabilities.capable("PO", "edit_doc") and capabilities.capable("PO", "add_line")
               and bool(capabilities.VENDOR_CAPABILITIES.get("link_new_row")))
         for name, defn in OPS.items():
-            entry(name, defn.kind, all(
-                capabilities.capable(defn.kind, p) for p in ("delete_line", "add_line", "edit_doc")))
+            entry(name, defn.kind, op_capable(defn))
         return items
 
     def run_primitive(

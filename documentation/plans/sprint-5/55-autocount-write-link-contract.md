@@ -6,6 +6,11 @@ contract of record for the three write routes. Auth, company identity, the flat 
 `no-store` are the pull gateway's (`16-autocount-do-pull-snapshot-contract.md` and the contract it
 inherits from); this file restates only what a write caller needs.
 
+2026-11-10 (plan 61, `61-autocount-write-v2.md`): a whole-row link and `po-links/unlink` are done (no
+longer `VENDOR_UNSUPPORTED`): each is ONE PUT that deletes the row and adds its replacement, and a
+whole-row link then moves the new row to the SO row's location (sections 4.1, 4.2). `spo-links/unlink`
+stays `VENDOR_UNSUPPORTED`. Bodies, statuses and `replacedLines` are unchanged.
+
 ## 1. What it is
 
 Three routes on the existing public gateway (`/api/v1/autocount/*`) that change the link between a
@@ -83,9 +88,12 @@ not idempotent: do not blind-retry a call that ended `pending_verification`.
 
 `qty` must be BELOW the PO row qty: the PO row keeps `rowQty - qty` unlinked and a NEW PO row (new
 `DtlKey`) carries the linked `qty` (two writes, section 5). A `qty` equal to the PO row qty (a whole
-row) is not linked in place: AutoCount does not apply an edit of an existing row, so the call is
-refused `409 VENDOR_UNSUPPORTED` after one document read. The location comes from the SO row; the
-caller does not send one.
+row) is never linked in place (AutoCount does not change the link of an existing row): one PUT deletes
+the row and adds a new linked row with the same values (a new `DtlKey`, listed in `replacedLines` when
+the operation layer answers), then a second write puts the new row at the SO row's location and back on
+its unit price and delivery date (AutoCount forces HQ, sets the unit price to 0 and clears the date on a
+new linked row; db3 10-11 Nov, plan 61 F5). The location comes
+from the SO row; the caller does not send one.
 
 ### 4.2 `POST /api/v1/autocount/po-links/unlink`
 
@@ -93,8 +101,9 @@ caller does not send one.
 { "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12017, "expectedLastModified": null }
 ```
 
-`poDocKey`, `poDtlKey` integer, required; `expectedLastModified` optional as above. The row keeps
-its own qty and location.
+`poDocKey`, `poDtlKey` integer, required; `expectedLastModified` optional as above. One PUT deletes the
+linked row and adds a normal row with the same item, qty, unit price, UOM, location and delivery date
+(a new `DtlKey`, in `replacedLines`): AutoCount never clears a link in place.
 
 ### 4.3 `POST /api/v1/autocount/spo-links/unlink`
 
@@ -103,7 +112,8 @@ its own qty and location.
 ```
 
 `spoDocKey`, `spoDtlKey` integer, required (an SPO is a PO document marked as shipping); `expectedLastModified`
-optional. Clears the SPO row's link to its PO row.
+optional. Would clear the SPO row's link to its PO row; switched off (`409 VENDOR_UNSUPPORTED`, nothing
+sent): no SPO write is proven on the test book.
 
 ### 4.4 `POST /api/v1/autocount/po-links/relocate`
 
@@ -120,6 +130,8 @@ write guards as a link. Use it when a link ended `LOCATION_NOT_MOVED`.
 ### 4.5 Response (all four routes)
 
 Plan 57 (`57-autocount-write-qtso-contract.md`) rewired `po-links`, `po-links/unlink` and `spo-links/unlink`: an optional `Idempotency-Key`, `soDocDate` on `po-links`, and extra body fields (`operationId`, `message`, `warnings`, `docKey`, `docNo`, `replacedLines`) when an operation answers.
+Plan 61 adds the optional `X-Request-ID` header on these routes (57 contract section 2a): stored on SS's
+log of every AutoCount call made for the request, else the `Idempotency-Key` is used; ignored when invalid.
 
 ```json
 { "actionId": "c1a0...", "outcome": "done", "errorCode": null, "document": { "...": "..." } }
@@ -156,7 +168,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `DOC_UNKNOWN` | The document is not in the synced copy, so its date is unknown | Run or wait for the doc sync, then retry |
 | `DOC_STALE` | `expectedLastModified` no longer matches: the document changed in AutoCount | Refresh the document, re-check the row, retry with the new `LastModified` |
 | `DOC_NOT_FOUND` / `DOC_AMBIGUOUS` / `READ_FAILED` | (when raised before the write) the document could not be read exactly once | Retry later; if it persists, report with `actionId` |
-| `VENDOR_UNSUPPORTED` | AutoCount does not apply this edit yet: unlink, SPO row unlink, and a link of a WHOLE PO row (quantity equal to the row). Refused before anything is sent | Show 'not supported by AutoCount yet'; offer a split link (quantity below the row) instead |
+| `VENDOR_UNSUPPORTED` | AutoCount does not apply this edit yet: SPO row unlink (and any switch a deployment turns off). Refused before anything is sent | Show 'not supported by AutoCount yet' |
 | `ROW_HAS_OTHER_TRANSFER` | Unlink or link: the PO row was transferred from another document type (not an SO) | Nothing to do here; handle it in AutoCount |
 | `SO_LOCATION_AMBIGUOUS` | Relocate: two equally recent synced copies of the SO disagree on the row's location | Re-run the doc sync, then retry |
 | `ROW_ALREADY_AT_LOCATION` | Relocate: the row is already at its SO row's location | Nothing to do |
@@ -244,7 +256,7 @@ Tell the two 403 shapes apart by the body: a flat body has `code`; a write refus
   needs; do not round or convert through a float on your side.
 - **Send `expectedLastModified`** whenever the CRM shows a document the user has been looking at,
   so an edit made in AutoCount in the meantime is caught (`DOC_STALE`) instead of overwritten.
-- **Relink** = `po-links/unlink`, then `po-links`, as two calls; if the second fails the first stands.
+- **Relink** = `po-links/relink` (plan 57 contract): one replace PUT, then the move.
 - **Rows on a shipping PO:** a PO row that an SPO row points at cannot be linked or unlinked until
   that SPO row is unlinked (`ROW_ON_SPO`).
 
@@ -262,7 +274,7 @@ POST /api/v1/autocount/po-links
   "soDocKey": 11988, "soDtlKey": 11990, "qty": 1 }
 ```
 ```json
-409 { "actionId": "c1a0...", "outcome": "refused", "errorCode": "VENDOR_UNSUPPORTED", "document": null }
+200 { "actionId": "c1a0...", "outcome": "done", "errorCode": null, "document": { "...": "row 12009 gone, a new linked row" } }
 ```
 
 Link 4 of the 10 on row 12017 (split): row 12017 keeps 6 unlinked, a new row carries 4 linked to 11989.

@@ -74,11 +74,17 @@ QTY_BELOW_TRANSFERRED = "QTY_BELOW_TRANSFERRED"
 ROW_HAS_TRANSFERS = "ROW_HAS_TRANSFERS"
 ROW_RECEIVED = "ROW_RECEIVED"
 DOC_HAS_TRANSFERS = "DOC_HAS_TRANSFERS"
-DOC_NOT_DELETED = "DOC_NOT_DELETED"
+DOC_CANCELLED = "DOC_CANCELLED"
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
 
 CREATE, EDIT, ADD_LINE = "create_doc", "edit_doc", "add_line"
 DELETE_LINE, DELETE_DOC, CANCEL = "delete_line", "delete_doc", "cancel_doc"
+# Plan 61: one PUT deleting a row ("D") and adding its replacement (DtlKey 0). Not a
+# gateway primitive: the row operations use it; it needs delete_line AND add_line on.
+REPLACE_LINE = "replace_line"
+_REPLACE_NEEDS = (DELETE_LINE, ADD_LINE)
+# F7: AutoCount refuses a "D" on a row transferred onward with this exception type.
+_TRANSFERRED_ROW = re.compile(r"UnableToDelete\w*TransferredItemException")
 
 
 @dataclass
@@ -116,6 +122,7 @@ class _Call:
     line_changes: Sequence[Dict[str, Any]] = ()
     line: Optional[Dict[str, Any]] = None
     stage: bool = True
+    doc_no: Optional[str] = None
 
 
 # AC-57-47: what marks the start of an internal detail. The text is cut at the FIRST one:
@@ -179,6 +186,23 @@ def is_business_refusal(status: int, body: Any) -> bool:
     return isinstance(body, str) and 400 <= status < 500 and bool(body.strip())
 
 
+def _vendor_refusal(primitive: str, status: int, body: Any) -> Optional[str]:
+    """Plan 61 answer mapping: a "D" AutoCount refuses because the row was transferred
+    onward (F7) is ``ROW_HAS_TRANSFERS``; a cancel refused because the document was
+    transferred (F11) is ``DOC_HAS_TRANSFERS``, because it is void already (F10)
+    ``DOC_CANCELLED``. None = the general mapping."""
+    if primitive in (DELETE_LINE, REPLACE_LINE) and isinstance(body, dict):
+        if _TRANSFERRED_ROW.search(str(body.get("ExceptionType") or "")):
+            return ROW_HAS_TRANSFERS
+    if primitive == CANCEL and 400 <= status < 500:
+        text = vendor_message(body)
+        if "transfered" in text.lower() or "transferred" in text.lower():
+            return DOC_HAS_TRANSFERS
+        if "(void)" in text.lower():
+            return DOC_CANCELLED
+    return None
+
+
 class PrimitiveService(WriteFrame):
     # ── public primitives ────────────────────────────────────────────────────
 
@@ -234,6 +258,19 @@ class PrimitiveService(WriteFrame):
                      expected_last_modified=expected_last_modified)
         return self._run(call, company_id)
 
+    def replace_line(
+        self, *, tenant_id: str, company_id: str, kind: str, doc_key: int, dtl_key: int,
+        line: Dict[str, Any], doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
+        key_id: Optional[str] = None, operation_id: Optional[str] = None, step: Optional[str] = None,
+        stage: bool = True,
+    ) -> PrimitiveResult:
+        """Plan 61 section 4.1: ONE PUT ``[row dtl_key "D", line as a new row]``; done =
+        the old row gone and exactly one new row read back (``new_dtl_key``)."""
+        call = _Call(REPLACE_LINE, kind, tenant_id, doc_key=doc_key, dtl_key=dtl_key, key_id=key_id,
+                     operation_id=operation_id, step=step, doc_date=doc_date,
+                     expected_last_modified=expected_last_modified, line=line, stage=stage)
+        return self._run(call, company_id)
+
     def cancel_doc(
         self, *, tenant_id: str, company_id: str, kind: str, doc_key: int,
         doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
@@ -261,12 +298,17 @@ class PrimitiveService(WriteFrame):
                 raise self._refuse(row, DOC_KIND_UNKNOWN) from None
             base_url = self._write_base_url(row, company)
             self._check_test_company(row, company)
-            if not capabilities.capable(call.kind, call.primitive):
+            if not self._capable(call):
                 raise self._refuse(row, VENDOR_UNSUPPORTED)
-            reader = self._reader_factory(base_url)
+            self._call_log = self.new_call_log(
+                company, kind=call.kind, doc_key=call.doc_key, key_id=call.key_id,
+                operation_id=call.operation_id, action_id=row.id,
+            )
+            reader = self._reader_for(base_url)
             doc, request, read_date = self._prepare(call, kind, company, row, reader)
             row.before_json = doc
-            row.request_method, row.request_path, row.request_json = request.method, request.path, request.body
+            row.request_method, row.request_path = request.method, request.path
+            row.request_json = request.body if request.params is None else {"query": dict(request.params)}
             row.outcome = OUTCOME_IN_FLIGHT
             try:
                 self.db.commit()  # in_flight + the exact body committed before the call
@@ -284,6 +326,12 @@ class PrimitiveService(WriteFrame):
             return self._wrap(self._finish(row, outcome, INTERNAL_ERROR))
         finally:
             self.db.rollback()
+
+    @staticmethod
+    def _capable(call: _Call) -> bool:
+        if call.primitive == REPLACE_LINE:
+            return all(capabilities.capable(call.kind, p) for p in _REPLACE_NEEDS)
+        return capabilities.capable(call.kind, call.primitive)
 
     def read_doc(
         self, *, tenant_id: str, company_id: str, kind: str, doc_key: int, doc_date: Optional[date] = None,
@@ -309,9 +357,11 @@ class PrimitiveService(WriteFrame):
         found, code = self.find_date(company, kind_def.name, doc_key, doc_date)
         if found is None:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, code)
+        doc_no = self.find_doc_no(company, kind_def.name, doc_key)
+        log = self.new_call_log(company, kind=kind_def.name, doc_key=doc_key, doc_no=doc_no)
         self.db.commit()  # no transaction open during the GET
         try:
-            doc = self._reader_factory(base_url).get_document(kind_def.name, doc_key, found)
+            doc = self._reader_for(base_url, log).get_document(kind_def.name, doc_key, found, doc_no=doc_no)
         except DocReadError as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
         finally:
@@ -359,6 +409,8 @@ class PrimitiveService(WriteFrame):
                 request = payloads.build_create(call.kind, header, call.lines)
             except WriteRefusal as exc:
                 raise self._refuse(row, exc.code, str(exc)) from None
+            sent_no = (request.body or {}).get("DocNo")
+            self._log_doc(None if sent_no == NEW_DOCNO else sent_no)
             return None, request, _doc_date(request.body)
         assert call.doc_key is not None
         if call.primitive == EDIT:  # value checks need no document: no request on a bad number
@@ -369,12 +421,15 @@ class PrimitiveService(WriteFrame):
         if call.operation_id is None:  # an operation holds its own cross-step lock
             self._check_not_busy(row, call.tenant_id, company.id, call.doc_key)
         doc_date = self._resolve_date(call, kind, company, row)
+        call.doc_no = call.doc_no or self.find_doc_no(company, kind.name, call.doc_key)
+        self._log_doc(call.doc_no)
         self._check_deadline(row)
         self.db.commit()  # no transaction open during the GET
         try:
-            doc = reader.get_document(call.kind, call.doc_key, doc_date)
+            doc = reader.get_document(call.kind, call.doc_key, doc_date, doc_no=call.doc_no)
         except DocReadError as exc:
             raise self._refuse(row, exc.code) from None
+        self._log_doc(doc.get("DocNo"))
         if call.expected_last_modified and doc.get("LastModified") != call.expected_last_modified:
             raise self._refuse(row, DOC_STALE)
         try:
@@ -390,6 +445,15 @@ class PrimitiveService(WriteFrame):
             except WriteRefusal as exc:
                 raise self._refuse(row, exc.code, str(exc)) from None
         return doc, request, doc_date  # type: ignore[return-value]
+
+    def _log_doc(self, doc_no: Any, doc_key: Optional[int] = None) -> None:
+        """The document the next logged calls belong to (plan 61 section 4.8)."""
+        if self._call_log is None:
+            return
+        if doc_no:
+            self._call_log.context.doc_no = str(doc_no)
+        if doc_key is not None:
+            self._call_log.context.doc_key = doc_key
 
     def _debtor_term(self, row: AcWriteAction, reader: Any, debtor_code: Any) -> str:
         """SS-QTSO-DISPLAYTERM: the debtor's own AutoCount term code, read from the
@@ -421,9 +485,24 @@ class PrimitiveService(WriteFrame):
             return payloads.build_add_line(call.kind, doc, call.line or {})
         if call.primitive == DELETE_LINE:
             return payloads.build_delete_line(call.kind, doc, int(call.dtl_key or 0))
-        if call.primitive == DELETE_DOC:
-            return payloads.build_delete_doc(call.kind, doc)
-        return payloads.build_cancel(call.kind, doc)
+        if call.primitive == REPLACE_LINE:
+            return payloads.build_row_replace(call.kind, doc, {"DtlKey": call.dtl_key}, call.line or {})
+        if call.primitive == CANCEL:
+            return payloads.build_cancel(call.kind, doc)
+        raise WriteRefusal(VENDOR_UNSUPPORTED, "AutoCount has no door that deletes a document")
+
+    def find_doc_no(self, company: AcCompany, kind_name: str, doc_key: int) -> Optional[str]:
+        """Plan 61 section 4.4: the DocNo the bydocno read uses, from the same sources as
+        ``find_date`` (the staged copy, else our last confirmed read-back); None = unknown
+        (the read falls back to the day list)."""
+        ref = f"{company.database_name}:{doc_key}"
+        entity = ENTITY_BY_KIND.get(kind_name)
+        staged = self.staged.newest(company.tenant_id, company.id, entity, ref) if entity else None
+        number = ((staged.raw_json or {}).get("DocNo") or staged.doc_no) if staged else None
+        if not number:
+            after = self.actions.last_confirmed_after(company.tenant_id, company.id, kind_name, doc_key)
+            number = (after or {}).get("DocNo")
+        return str(number) if number else None
 
     def find_date(
         self, company: AcCompany, kind_name: str, doc_key: int, doc_date: Optional[date] = None
@@ -476,6 +555,9 @@ class PrimitiveService(WriteFrame):
         return total
 
     def _guard_transfers(self, call: _Call, company: AcCompany, doc: Doc) -> None:
+        if call.kind in ("PO", "SPO") and call.primitive == DELETE_LINE:
+            self._guard_po_line(call, company, doc)
+            return
         if call.kind != "SO":
             return
         if call.primitive == EDIT:
@@ -493,6 +575,16 @@ class PrimitiveService(WriteFrame):
             if any(self._so_linked_qty(company, r.get("DtlKey")) > 0 for r in doc.get("Details") or []):
                 raise WriteRefusal(DOC_HAS_TRANSFERS, "lines are linked by purchase order lines")
 
+    def _guard_po_line(self, call: _Call, company: AcCompany, doc: Doc) -> None:
+        """AC-61-20 / F15: a PO row an SPO points at, or with a receipt, is never sent a
+        "D" (AutoCount's own answer to a received row is unverified)."""
+        if call.kind == "PO" and self._spo_ref(company.tenant_id, company.id, int(call.dtl_key or 0)):
+            raise WriteRefusal("ROW_ON_SPO", "row is referenced by a shipping purchase order")
+        row = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == call.dtl_key), {})
+        received = self._row_received(company, call.kind, dict(row, DocKey=doc.get("DocKey")))
+        if received is not None and received > 0:  # unknown is left to AutoCount
+            raise WriteRefusal(ROW_RECEIVED, "row has received quantity")
+
     # ── the call, read-back, verify ──────────────────────────────────────────
 
     def _send(
@@ -500,14 +592,14 @@ class PrimitiveService(WriteFrame):
         reader: Any, before: Optional[Doc], request: VendorRequest, read_date: Optional[date],
         extra: Dict[str, Any],
     ) -> PrimitiveResult:
-        client = self._client_factory(base_url)
+        client = self._client_for(base_url)
         self._check_deadline(row)
         self._put_sent = True
         try:  # never retried
             if request.method == "POST":
                 response = client.post(request.path, request.body)
-            elif request.method == "DELETE":
-                response = client.delete(request.path, request.body)
+            elif request.method == "DELETE":  # plan 61 cancel: query string, no body
+                response = client.delete_query(request.path, request.params or {})
             else:
                 response = client.put(request.path, request.body)
         except WriteTransportError as exc:
@@ -516,6 +608,11 @@ class PrimitiveService(WriteFrame):
         if response.ok:
             row.response_json = _safe_body(response.body)
         if not response.ok:
+            refusal = _vendor_refusal(call.primitive, response.status_code, response.body)
+            if refusal is not None:  # AutoCount said why; nothing changed (F7, F10, F11)
+                message = vendor_message(response.body, base_url)
+                row.response_json = {"message": message}
+                return self._wrap(self._finish(row, OUTCOME_REFUSED, refusal, message=message))
             if is_business_refusal(response.status_code, response.body):
                 message = vendor_message(response.body, base_url)
                 row.response_json = {"message": message}  # the same safe text, never the stack
@@ -529,8 +626,6 @@ class PrimitiveService(WriteFrame):
         try:
             after = self._read_back(call, reader, response.body, request, before, read_date, row)
         except DocReadError as exc:
-            if call.primitive == DELETE_DOC and exc.code == DOC_NOT_FOUND:
-                return self._wrap(self._finish(row, OUTCOME_DONE))
             return self._wrap(self._finish(row, OUTCOME_PENDING, exc.code))
         row.after_json = after  # a read-back in hand is always verified
         verdict_code, message, warnings, new_key = self._verify(call, request, before, after)
@@ -555,10 +650,12 @@ class PrimitiveService(WriteFrame):
         if read_date is None:
             raise DocReadError("READ_FAILED")
         if call.primitive != CREATE:
-            return reader.get_document(call.kind, int(call.doc_key or 0), read_date)
+            doc_no = (before or {}).get("DocNo") or call.doc_no
+            return reader.get_document(call.kind, int(call.doc_key or 0), read_date, doc_no=doc_no)
         parsed = payloads.parse_create_answer(answer)
         if parsed is not None:
-            return reader.get_document(call.kind, parsed[1], read_date)
+            self._log_doc(parsed[0], parsed[1])
+            return reader.get_document(call.kind, parsed[1], read_date, doc_no=parsed[0])
         sent_no = request.body.get("DocNo")
         if not sent_no or sent_no == NEW_DOCNO:
             raise DocReadError(ANSWER_UNPARSEABLE)
@@ -582,10 +679,14 @@ class PrimitiveService(WriteFrame):
             added = [r.get("DtlKey") for r in after.get("Details") or [] if r.get("DtlKey") not in known]
             ok = v.outcome == payloads.DONE
             return (None if ok else v.code), "", [], (added[0] if ok and added else None)
+        if call.primitive == REPLACE_LINE:
+            v = payloads.verify_row_replace(call.kind, before, int(call.dtl_key or 0), call.line or {}, after)
+            known = {r.get("DtlKey") for r in before.get("Details") or []}
+            added = [r.get("DtlKey") for r in after.get("Details") or [] if r.get("DtlKey") not in known]
+            ok = v.outcome == payloads.DONE
+            return (None if ok else v.code), "", [], (added[0] if ok and added else None)
         if call.primitive == DELETE_LINE:
             v = payloads.verify_delete_line(call.kind, before, int(call.dtl_key or 0), after)
-        elif call.primitive == DELETE_DOC:
-            return DOC_NOT_DELETED, "", [], None  # the document still reads back
         else:
             v = payloads.verify_cancel(call.kind, after)
         return (v.code if v.outcome != payloads.DONE else None), "", [], None

@@ -1,8 +1,10 @@
 """The document kinds the write layer addresses (plan 57 section 5.1, AC-57-01).
 
 One frozen ``DocKind`` per kind. SPO is the PO door with header ``ShippingPO "T"``.
-The delete shapes are ONE placeholder entry per kind, UNVERIFIED (AQ23): AutoCount
-has not published the real delete door yet, so plugging it in = editing this table.
+Plan 61 (db3 10 Nov 2026, F1 / F9): one document is read with
+``GET /<Doc>bydocno?DocNo=`` and cancelled with ``DELETE /Cancel<Doc>bydocno?DocNo=``
+(no body). A line is deleted by the edit door (a row with ``FullTransferOption "D"``);
+AutoCount has no door that deletes a whole document.
 """
 
 from __future__ import annotations
@@ -13,12 +15,6 @@ from typing import Mapping
 
 
 @dataclass(frozen=True)
-class VendorShape:
-    method: str
-    path: str
-
-
-@dataclass(frozen=True)
 class DocKind:
     name: str
     new_path: str
@@ -26,32 +22,25 @@ class DocKind:
     by_date_path: str
     by_modified_path: str
     party_field: str
-    delete_line: VendorShape
-    delete_doc: VendorShape
-
-
-def _shape(path: str) -> VendorShape:
-    return VendorShape("DELETE", path)  # UNVERIFIED AQ23: placeholder, body {DocKey, DtlKey}
+    by_doc_no_path: str
+    cancel_path: str
 
 
 _QT = DocKind(
     "QT", "/NewQuotation", "/EditQuotationbydockey", "/quotationbydocdate",
-    "/quotationbyLastModified", "DebtorCode",
-    _shape("/DeleteQuotationDetailbydtlkey"), _shape("/DeleteQuotationbydockey"),
+    "/quotationbyLastModified", "DebtorCode", "/Quotationbydocno", "/CancelQuotationbydocno",
 )
 _SO = DocKind(
     "SO", "/NewSalesOrder", "/EditSalesOrderbydockey", "/salesorderbydocdate",
-    "/salesorderbyLastModified", "DebtorCode",
-    _shape("/DeleteSalesOrderDetailbydtlkey"), _shape("/DeleteSalesOrderbydockey"),
+    "/salesorderbyLastModified", "DebtorCode", "/SalesOrderbydocno", "/CancelSalesOrderbydocno",
 )
 _PO = DocKind(
     "PO", "/NewPurchaseOrder", "/EditPurchaseOrderbydockey", "/purchaseorderbydocdate",
-    "/purchaseorderbyLastModified", "CreditorCode",
-    _shape("/DeletePurchaseOrderDetailbydtlkey"), _shape("/DeletePurchaseOrderbydockey"),
+    "/purchaseorderbyLastModified", "CreditorCode", "/PurchaseOrderbydocno", "/CancelPurchaseOrderbydocno",
 )
 _SPO = DocKind(
     "SPO", _PO.new_path, _PO.edit_path, _PO.by_date_path, _PO.by_modified_path, "CreditorCode",
-    _PO.delete_line, _PO.delete_doc,
+    _PO.by_doc_no_path, _PO.cancel_path,
 )
 
 KINDS: Mapping[str, DocKind] = MappingProxyType({k.name: k for k in (_QT, _SO, _PO, _SPO)})

@@ -25,7 +25,7 @@ import pytest
 from app.models import DEFAULT_TENANT_ID
 from modules.autocount.models import SOURCE_IMPL_SQL_DB, AcEntityConfig, AcStagedRecord
 from tests.test_autocount_write_back_operations import (  # noqa: F401
-    DEL_PO,
+    deleted_a_row,
     PUT_PO,
     OpHarness,
     World,
@@ -87,7 +87,7 @@ def test_ac_57_33_sql_staged_zero_received_proceeds_without_warning_on_the_delet
     res = run_link(h, w)
     assert res.outcome == "done", res.error_code
     assert "TRANSFER_STATE_UNKNOWN" not in res.warnings
-    assert DEL_PO in h.steps()
+    assert deleted_a_row(h)
 
 
 def test_ac_57_33_sql_staged_partial_receipt_cuts_and_adds_the_remainder_without_delete(h):
@@ -95,7 +95,7 @@ def test_ac_57_33_sql_staged_partial_receipt_cuts_and_adds_the_remainder_without
     res = run_link(h, w)
     assert res.outcome == "done", res.error_code
     assert "TRANSFER_STATE_UNKNOWN" not in res.warnings
-    assert DEL_PO not in h.steps() and h.steps()[:2] == [PUT_PO, PUT_PO]
+    assert not deleted_a_row(h) and h.steps()[:2] == [PUT_PO, PUT_PO]
     cut, add = h.vendor.writes()[:2]
     assert cut.body["Details"][0]["DtlKey"] == w.p_free and cut.body["Details"][0]["Qty"] == 20
     assert add.body["Details"][0]["Qty"] == 15 and add.body["Details"][0]["FromDocDtlKey"] == w.so_a
@@ -113,7 +113,7 @@ def test_ac_57_33_sql_source_without_a_staged_line_is_unknown_with_warning(h):
     w = sql_world(h, None)  # entity is sql_db, the staged canonical has no such line
     res = run_link(h, w)
     assert res.outcome == "done" and "TRANSFER_STATE_UNKNOWN" in res.warnings
-    assert DEL_PO in h.steps()
+    assert deleted_a_row(h)
 
 
 def test_ac_57_33_sql_staged_line_with_a_null_qty_is_unknown(h):
@@ -128,7 +128,7 @@ def test_ac_57_33_http_sourced_company_is_unknown_even_if_canonical_lines_exist(
     w = sql_world(h, 35, source=source)  # a decoy full receipt that must be ignored
     res = run_link(h, w)
     assert res.outcome == "done" and "TRANSFER_STATE_UNKNOWN" in res.warnings
-    assert DEL_PO in h.steps()
+    assert deleted_a_row(h)
 
 
 def test_ac_57_33_the_get_rows_transfered_qty_beats_the_sql_staging(h):
@@ -137,7 +137,7 @@ def test_ac_57_33_the_get_rows_transfered_qty_beats_the_sql_staging(h):
     row["TransferedQty"] = 0  # AutoCount says nothing received; SQL staging says all
     res = run_link(h, w)
     assert res.outcome == "done" and "TRANSFER_STATE_UNKNOWN" not in res.warnings
-    assert DEL_PO in h.steps()
+    assert deleted_a_row(h)
 
 
 def test_ac_57_33_a_full_get_transfered_qty_beats_a_zero_in_sql_staging(h):

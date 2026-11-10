@@ -13,9 +13,14 @@ an ``httpx.MockTransport``. It honours the behaviour recorded on db3 on 4 Nov 20
 * GET /<doc>bydocdate?DocDate=YYYYMMDD.
 * GET /debtorbypage?page=&pageSize= - the paged envelope over ``debtors``
   (SS-QTSO-DISPLAYTERM: the debtor's own ``DisplayTerm``).
-* DELETE shapes are the PLACEHOLDERS of plan 57 section 5.1 (AQ23, unverified):
-  ``/Delete<Doc>Detailbydtlkey`` body ``{DocKey, DtlKey}`` and
-  ``/Delete<Doc>bydockey`` body ``{DocKey}``.
+* Plan 61 (db3 probes, 10 Nov 2026): GET ``/<Doc>bydocno?DocNo=`` (list, ``[]`` when
+  unknown); DELETE ``/Cancel<Doc>bydocno?DocNo=`` (no body; 200 and ``Cancelled "T"`` /
+  ``DocStatus "V"``; 400 when void, transferred onward or unknown); a PUT row with
+  ``FullTransferOption "D"`` deletes that DtlKey (refused 500 when the row was transferred
+  onward); a PUT is ALL OR NOTHING (a refused row changes nothing); a NEW PO row linked to
+  an SO row is forced to ``Location HQ`` / ``DeliveryDate 0001-01-01`` and reads its link as
+  ``FromSODtlKey`` (``FromDocType`` reads ``""``); an edit of a void document answers 500.
+  The old placeholder DELETE doors do not exist (404).
 
 Failure injection (each consumed by exactly one call): ``fail_next``,
 ``timeout_next``, ``apply_then_500_next``, ``drop_rows_next_create``. Every request
@@ -55,6 +60,7 @@ class Call:
     query: Dict[str, str]
     body: Any
     status: int = 0
+    raw_target: str = ""  # path + query exactly as sent (percent-encoded)
 
 
 @dataclass
@@ -125,6 +131,12 @@ class FakeAutoCountVendor:
         self.inherit_qt_values = False
         # SS-QTSO-DISPLAYTERM: Debtor master rows served by GET /debtorbypage
         self.debtors: List[Dict[str, Any]] = []
+        # plan 61: new PO rows with these ItemCodes are refused 500 (atomic-PUT probes P-AT1)
+        self.invalid_items: set = set()
+        # plan 61: a cancel is answered 200 but the document stays as it was (a vendor that ignores it)
+        self.cancel_ignored = False
+        # plan 61: (kind, doc_key) -> message, the document is refused for cancel as "transferred"
+        self.transferred_docs: Dict[tuple, str] = {}
         self.transport = httpx.MockTransport(self._handle)
 
     # ---- seeding / inspection ---------------------------------------------
@@ -189,7 +201,8 @@ class FakeAutoCountVendor:
         method = request.method.upper()
         leaf = request.url.path.rsplit("/", 1)[-1].lower()
         body: Any = json.loads(request.content) if request.content else None
-        call = Call(method, request.url.path, leaf, dict(request.url.params), body)
+        call = Call(method, request.url.path, leaf, dict(request.url.params), body,
+                    raw_target=request.url.raw_path.decode("ascii"))
         self.calls.append(call)
         inj = self._take(method, leaf)
         if inj and inj.mode == "timeout":
@@ -211,6 +224,9 @@ class FakeAutoCountVendor:
             for kind, spec in SPECS.items():
                 if spec["get"] == leaf:
                     return self._get(kind, call)
+            for kind, spec in SPECS.items():
+                if kind != "SPO" and leaf == f"{spec['noun'].lower()}bydocno":
+                    return self._get_by_doc_no(kind, call)
             return httpx.Response(404, text="no such door")
         for kind, spec in SPECS.items():
             if kind == "SPO":
@@ -220,10 +236,8 @@ class FakeAutoCountVendor:
                 return self._create(kind, call.body)
             if method == "PUT" and leaf == f"edit{noun}bydockey":
                 return self._edit(kind, call.body)
-            if method == "DELETE" and leaf == f"delete{noun}detailbydtlkey":
-                return self._delete_line(kind, call.body)
-            if method == "DELETE" and leaf == f"delete{noun}bydockey":
-                return self._delete_doc(kind, call.body)
+            if method == "DELETE" and leaf == f"cancel{noun}bydocno":
+                return self._cancel(kind, call)
         return httpx.Response(404, text="no such door")
 
     # ---- GET ---------------------------------------------------------------
@@ -233,6 +247,11 @@ class FakeAutoCountVendor:
             copy.deepcopy(d) for d in self.docs[SPECS[kind]["store"]]
             if self.any_date or str(d["DocDate"])[:10].replace("-", "") == wanted
         ]
+        return httpx.Response(200, json=out)
+
+    def _get_by_doc_no(self, kind: str, call: Call) -> httpx.Response:
+        wanted = call.query.get("DocNo", "")
+        out = [copy.deepcopy(d) for d in self.docs[SPECS[kind]["store"]] if d["DocNo"] == wanted]
         return httpx.Response(200, json=out)
 
     def _debtor_page(self, call: Call) -> httpx.Response:
@@ -294,7 +313,10 @@ class FakeAutoCountVendor:
         elif kind == "PO" and ftype == "SO":
             stored["FromSODtlKey"] = int(sent.get("FromDocDtlKey") or 0)
             stored["FromDocDtlKey"] = int(sent.get("FromDocDtlKey") or 0)
+            stored["FromDocType"] = ""  # a PO row reads its link as FromSODtlKey only (F5)
             stored["Location"] = "HQ"  # db3 forces HQ on a new row linked to an SO row
+            stored["DeliveryDate"] = "0001-01-01T00:00:00"  # and clears the delivery date (F5)
+            stored["UnitPrice"] = 0.0  # and resets the unit price to 0 (F5); a later edit PUT can set it
 
     def _inherit(self, stored: Dict[str, Any], sent: Dict[str, Any]) -> None:
         for qt in self.docs["QT"]:
@@ -311,55 +333,102 @@ class FakeAutoCountVendor:
             doc = self.find(kind, body.get("DocKey"))
         except KeyError:
             return httpx.Response(404, text="Document not found.")
+        if doc.get("Cancelled") == "T" or doc.get("DocStatus") == "V":
+            return httpx.Response(500, json={"ExceptionMessage": "not allowed to edit expired or void document",
+                                             "ExceptionType": "AutoCount.Invoicing.InvalidDocumentStatus"})
+        work = copy.deepcopy(doc)  # all or nothing: commit only when every row went through
         for key, value in body.items():
             if key in HEADER_SKIP_ON_EDIT or key in self.ignored_fields:
                 continue
-            if key in doc or key in ("Ref", "Description", "Remark1", "Remark2", "Remark3", "Remark4"):
-                doc[key] = value
+            if key in work or key in ("Ref", "Description", "Remark1", "Remark2", "Remark3", "Remark4"):
+                work[key] = value
         for sent in body.get("Details") or []:
-            if int(sent.get("DtlKey") or 0) == 0:
+            dtl = int(sent.get("DtlKey") or 0)
+            if sent.get("FullTransferOption") == "D":
+                refused = self._refuse_delete(kind, work, dtl)
+                if refused is not None:
+                    return refused
+                work["Details"] = [r for r in work["Details"] if r["DtlKey"] != dtl]
+            elif dtl == 0:
+                if sent.get("ItemCode") in self.invalid_items:
+                    return httpx.Response(500, json={
+                        "ExceptionMessage": "Item code does not exist.",
+                        "ExceptionType": "AutoCount.Invoicing.NotExistItemCodeException"})
                 if kind in self.require_full_row and not all(k in sent for k in FULL_ROW_KEYS):
                     continue  # answered 200, row dropped
                 self._next_key += 1
                 row = new_doc(kind, 0, "", "", [{}])["Details"][0]
                 row.update({k: v for k, v in sent.items() if k not in LINK_FIELDS})
-                row.update({"DtlKey": self._next_key, "DocKey": doc["DocKey"], "Seq": 16 * (len(doc["Details"]) + 1)})
-                self._apply_new_row_link("SPO" if doc.get("ShippingPO") == "T" else kind, row, sent)
-                doc["Details"].append(row)
+                row.update({"DtlKey": self._next_key, "DocKey": work["DocKey"], "Seq": 16 * (len(work["Details"]) + 1)})
+                self._apply_new_row_link("SPO" if work.get("ShippingPO") == "T" else kind, row, sent)
+                work["Details"].append(row)
             else:
-                target = next((r for r in doc["Details"] if r["DtlKey"] == sent["DtlKey"]), None)
+                target = next((r for r in work["Details"] if r["DtlKey"] == dtl), None)
                 if target is None:
                     return httpx.Response(500, text="Detail not found.")
                 for key, value in sent.items():
                     if key in LINK_FIELDS or key in ("DtlKey", "DocKey") or key in self.ignored_fields:
                         continue
                     target[key] = value
+        doc.clear()
+        doc.update(work)
         self._touch(doc)
         return httpx.Response(200, text=f"DocNo={doc['DocNo']} ,DocKey={doc['DocKey']} ... Done Edit.")
 
-    # ---- DELETE (placeholder shapes) -----------------------------------------
-    def _delete_line(self, kind: str, body: Dict[str, Any]) -> httpx.Response:
-        try:
-            doc = self.find(kind, body["DocKey"])
-        except KeyError:
-            return httpx.Response(404, text="Document not found.")
-        refused = self.received_rows.get((body["DocKey"], body["DtlKey"]))
+    def _refuse_delete(self, kind: str, doc: Dict[str, Any], dtl_key: int) -> Optional[httpx.Response]:
+        """None = the "D" row may go; else the vendor's refusal (F7)."""
+        refused = self.received_rows.get((doc["DocKey"], dtl_key))
         if refused:
             return httpx.Response(400, text=refused)
-        before = len(doc["Details"])
-        doc["Details"] = [r for r in doc["Details"] if r["DtlKey"] != body["DtlKey"]]
-        if len(doc["Details"]) == before:
-            return httpx.Response(404, text="Detail not found.")
-        self._touch(doc)
-        return httpx.Response(200, text="Deleted.")
+        if not any(r["DtlKey"] == dtl_key for r in doc["Details"]):
+            return httpx.Response(500, text="Detail not found.")
+        if kind == "SO" and any(
+            po.get("Cancelled") != "T" and any(r.get("FromSODtlKey") == dtl_key for r in po["Details"])
+            for po in self.docs["PO"]
+        ):
+            return httpx.Response(500, json={
+                "ExceptionMessage": "This item has been transferred to Purchase Order, you are not allow to delete it!",
+                "ExceptionType": "AutoCount.Invoicing.UnableToDeleteTransferredItemException"})
+        if kind == "QT" and any(
+            so.get("Cancelled") != "T"
+            and any(r.get("FromDocType") == "QT" and r.get("FromDocNo") == doc["DocNo"]
+                    and r.get("FromDocDtlKey") == dtl_key for r in so["Details"])
+            for so in self.docs["SO"]
+        ):
+            return httpx.Response(500, json={
+                "ExceptionMessage": "This item has been transferred to Sales Order, you are not allow to delete it!",
+                "ExceptionType": "AutoCount.Invoicing.UnableToDeletePartialTransferredItemException"})
+        return None
 
-    def _delete_doc(self, kind: str, body: Dict[str, Any]) -> httpx.Response:
-        store = self.docs[SPECS[kind]["store"]]
-        keep = [d for d in store if d["DocKey"] != body["DocKey"]]
-        if len(keep) == len(store):
-            return httpx.Response(404, text="Document not found.")
-        store[:] = keep
-        return httpx.Response(200, text="Deleted.")
+    # ---- DELETE /Cancel<Doc>bydocno?DocNo= (no body) ------------------------------
+    def _cancel(self, kind: str, call: Call) -> httpx.Response:
+        doc_no = call.query.get("DocNo", "")
+        doc = next((d for d in self.docs[SPECS[kind]["store"]] if d["DocNo"] == doc_no), None)
+        if doc is None:
+            return httpx.Response(400, json={"Message": f"DocNo={doc_no} ... failed to cancel."})
+        if doc.get("Cancelled") == "T" or doc.get("DocStatus") == "V":
+            return httpx.Response(400, json={
+                "Message": "Unable to (Cancel Document) for this document, due to current document status (Void)."})
+        message = self.transferred_docs.get((kind, doc["DocKey"]))
+        if message is None and kind == "QT" and any(
+            so.get("Cancelled") != "T" and any(
+                r.get("FromDocType") == "QT" and r.get("FromDocNo") == doc_no for r in so["Details"])
+            for so in self.docs["SO"]
+        ):
+            message = "The document was transfered to other document, so it is not allow to cancel."
+        if message is None and kind == "SO" and any(
+            po.get("Cancelled") != "T" and any(
+                r.get("FromSODtlKey") in {x["DtlKey"] for x in doc["Details"]} for r in po["Details"])
+            for po in self.docs["PO"]
+        ):
+            message = "The Sales Order was transfered to Purchase Order, so it is not allow to cancel."
+        if message is not None:
+            return httpx.Response(400, json={"Message": message})
+        if self.cancel_ignored:
+            return httpx.Response(200, text=f"DocNo={doc_no} ... was cancelled.")
+        doc["Cancelled"], doc["DocStatus"] = "T", "V"
+        self._touch(doc)
+        return httpx.Response(200, text=f"DocNo={doc_no} ... was cancelled.")
 
     def _touch(self, doc: Dict[str, Any]) -> None:
         self._clock += 1

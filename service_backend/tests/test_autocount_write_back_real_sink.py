@@ -24,7 +24,7 @@ from app.models.connection import Connection
 from app.secrets import encrypt_secret
 from modules.autocount.models import STAGED, STAGED_PUSHED, AcStagedRecord
 from tests.test_autocount_write_back_operations import (  # noqa: F401
-    DEL_PO,
+    deleted_a_row,
     PUT_PO,
     OpHarness,
     World,

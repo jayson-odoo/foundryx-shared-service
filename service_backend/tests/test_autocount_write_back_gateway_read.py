@@ -133,6 +133,7 @@ def test_get_without_a_write_connection_is_403_write_disabled(client, gw):
 
 def test_get_vendor_read_failure_is_502_read_failed(client, gw):
     _seed(gw, "SO")
+    gw.h.vendor.fail_next("GET", "salesorderbydocno", 500, "boom")  # plan 61: bydocno, then the day list
     gw.h.vendor.fail_next("GET", "salesorderbydocdate", 500, "boom")
     r = _get(client, gw, "sales-orders", KEYS["SO"])
     assert code(r) == "READ_FAILED" and r.status_code in (409, 502), r.text

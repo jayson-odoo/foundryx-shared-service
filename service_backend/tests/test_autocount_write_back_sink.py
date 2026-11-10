@@ -23,7 +23,7 @@ from modules.autocount.canonical.documents import (
 )
 from modules.autocount.sinks_sorento import ContractVersion, SorentoSink
 from modules.autocount.write_back.doc_mapping import map_wrapper_document
-from tests.test_autocount_write_back_operations import DEL_PO, PUT_PO, OpHarness, World  # noqa: F401
+from tests.test_autocount_write_back_operations import PUT_PO, deleted_a_row, drop_new_row_once, OpHarness, World  # noqa: F401
 from tests.test_autocount_write_back_operations import db, h, w  # noqa: F401
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
@@ -165,7 +165,7 @@ def test_ac_57_50_a_later_ordinary_edit_does_not_repeat_the_old_ref(h, w):
 
 
 def test_ac_57_50_recovery_re_added_line_carries_the_ref_of_the_deleted_row(h, w):
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    drop_new_row_once(h)  # plan 61: the replace deleted the row but lost its new row
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "recovered"
     (old_key, new_key), = res.replaced_lines
@@ -174,7 +174,8 @@ def test_ac_57_50_recovery_re_added_line_carries_the_ref_of_the_deleted_row(h, w
 
 
 def test_ac_57_50_a_refused_operation_pushes_nothing(h):
-    world = World(h)  # delete flag off
+    world = World(h)
+    h.flag("PO", "delete_line", False)  # plan 61 ships it on: switched off here
     res = h.run("link_row", world.params["link_row"])
     assert res.outcome == "refused"
     assert _pushed(h) == []

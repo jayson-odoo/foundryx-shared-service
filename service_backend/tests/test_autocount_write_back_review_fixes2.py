@@ -30,9 +30,10 @@ from tests.test_autocount_write_back_gateway_qtso import (  # noqa: F401
     world,
 )
 from tests.test_autocount_write_back_operations import (  # noqa: F401
-    DEL_PO,
+    deleted_a_row,
     PUT_PO,
     OpHarness,
+    drop_new_row_once,
     World,
     db,
     h,
@@ -120,7 +121,7 @@ def _other_session_op(h, op_id):
 
 def test_b_every_step_refreshes_the_operation_rows_updated_at(h, w):
     seen = {}
-    original_delete, original_edit = h.vendor._delete_line, h.vendor._edit
+    original_edit = h.vendor._edit  # plan 61: step 1 = the replace PUT, step 2 = the move PUT
 
     def op_id():
         db2 = h.session_factory()
@@ -129,7 +130,7 @@ def test_b_every_step_refreshes_the_operation_rows_updated_at(h, w):
         finally:
             db2.close()
 
-    def during_delete(kind, body):
+    def during_replace(kind, body):
         seen["id"] = op_id()
         db2 = h.session_factory()
         try:
@@ -137,9 +138,9 @@ def test_b_every_step_refreshes_the_operation_rows_updated_at(h, w):
             db2.commit()
         finally:
             db2.close()
-        return original_delete(kind, body)
+        return original_edit(kind, body)
 
-    def during_add(kind, body):
+    def during_move(kind, body):
         db2 = h.session_factory()
         try:
             seen["updated"] = db2.get(AcWriteOperation, seen["id"]).updated_at
@@ -147,8 +148,11 @@ def test_b_every_step_refreshes_the_operation_rows_updated_at(h, w):
             db2.close()
         return original_edit(kind, body)
 
-    h.vendor._delete_line, h.vendor._edit = during_delete, during_add
-    res = h.run("unlink_row", w.params["unlink_row"])
+    def during(kind, body):
+        return (during_move if "id" in seen else during_replace)(kind, body)
+
+    h.vendor._edit = during
+    res = h.run("link_row", w.params["link_row"])  # the vendor clears the date: a move is due
     assert res.outcome == "done", res.error_code
     updated = seen["updated"]
     updated = updated if updated.tzinfo else updated.replace(tzinfo=timezone.utc)
@@ -157,9 +161,11 @@ def test_b_every_step_refreshes_the_operation_rows_updated_at(h, w):
 
 def test_b_a_resume_cannot_claim_a_live_operation(h, w):
     seen = {}
-    original = h.vendor._delete_line
+    original = h.vendor._edit
 
     def during(kind, body):
+        if seen:
+            return original(kind, body)
         db2 = h.session_factory()
         try:
             op = db2.query(AcWriteOperation).filter(AcWriteOperation.status == "in_progress").one()
@@ -169,7 +175,7 @@ def test_b_a_resume_cannot_claim_a_live_operation(h, w):
             db2.close()
         return original(kind, body)
 
-    h.vendor._delete_line = during
+    h.vendor._edit = during
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "done"
     assert seen["resume"].outcome == "refused" and seen["resume"].error_code == "OPERATION_IN_PROGRESS"
@@ -185,15 +191,16 @@ def _clock_jump_after_writes(h, monkeypatch, writes):
     offset = {"s": 0.0}
     real = time.monotonic
     monkeypatch.setattr(time, "monotonic", lambda: real() + offset["s"])
-    original = h.vendor._get
+    def hooked(original):
+        def get(kind, call):
+            out = original(kind, call)
+            if len(h.vendor.writes()) == writes and not offset["s"]:
+                offset["s"] = BUSY_WINDOW_SECONDS + 1
+            return out
+        return get
 
-    def get(kind, call):
-        out = original(kind, call)
-        if len(h.vendor.writes()) == writes and not offset["s"]:
-            offset["s"] = BUSY_WINDOW_SECONDS + 1
-        return out
-
-    h.vendor._get = get
+    h.vendor._get = hooked(h.vendor._get)
+    h.vendor._get_by_doc_no = hooked(h.vendor._get_by_doc_no)  # plan 61: reads are bydocno
 
 
 def test_b_a_deadline_passed_before_the_first_write_stops_the_operation_with_zero_writes(h, w, monkeypatch):
@@ -210,39 +217,34 @@ def test_b_a_deadline_passed_before_the_first_write_stops_the_operation_with_zer
 # ======================================================================================
 
 def test_deadline_after_the_add_with_no_move_needed_is_done_with_replaced_lines_and_a_push(h, w, monkeypatch):
-    _clock_jump_after_writes(h, monkeypatch, 2)  # delete + add landed; SO at HQ so no move is due
-    res = h.run("link_row", w.params["link_row"])
+    _clock_jump_after_writes(h, monkeypatch, 1)  # plan 61: the replace landed; an unlink needs no move
+    res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "done", (res.outcome, res.error_code)
-    assert len(res.replaced_lines) == 1 and res.replaced_lines[0][0] == w.p_free
-    assert h.steps() == [DEL_PO, PUT_PO]
+    assert len(res.replaced_lines) == 1 and res.replaced_lines[0][0] == w.p_linked
+    assert h.steps() == [PUT_PO]
+    assert n_item_a(h) == (4, Decimal(16))  # never leaves the line missing
     assert any(hasattr(r, "lines") for r in h.sink_calls), "the read-back document must still be pushed"
 
 
 def test_deadline_after_the_add_when_a_move_is_due_is_done_with_location_not_moved(h, w_far, monkeypatch):
     w = w_far
-    _clock_jump_after_writes(h, monkeypatch, 2)
+    _clock_jump_after_writes(h, monkeypatch, 1)  # plan 61: after the replace PUT
     res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "done", (res.outcome, res.error_code)
     assert "LOCATION_NOT_MOVED" in res.warnings
     assert len(res.replaced_lines) == 1
-    assert h.steps() == [DEL_PO, PUT_PO]  # no move PUT after the deadline
+    assert h.steps() == [PUT_PO]  # no move PUT after the deadline
     assert any(hasattr(r, "lines") for r in h.sink_calls)
 
 
-def test_deadline_after_the_delete_landed_still_runs_the_add(h, w, monkeypatch):
-    _clock_jump_after_writes(h, monkeypatch, 1)
-    res = h.run("unlink_row", w.params["unlink_row"])
-    assert res.outcome == "done", (res.outcome, res.error_code)
-    assert h.steps() == [DEL_PO, PUT_PO]  # never leave the line missing
-    assert n_item_a(h) == (4, Decimal(16))
 
 
 def test_deadline_during_recovery_still_runs_the_recovery_add(h, w, monkeypatch):
-    _clock_jump_after_writes(h, monkeypatch, 1)  # the delete landed, then the clock is past the deadline
-    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    _clock_jump_after_writes(h, monkeypatch, 1)  # the replace landed wrong, then the clock is past the deadline
+    drop_new_row_once(h)
     res = h.run("unlink_row", w.params["unlink_row"])
     assert res.outcome == "recovered", (res.outcome, res.error_code)
-    assert h.steps() == [DEL_PO, PUT_PO, PUT_PO, PUT_PO]  # delete, failed add, recovery add, move back
+    assert h.steps() == [PUT_PO, PUT_PO, PUT_PO]  # replace that lost its row, recovery add, move back
     assert n_item_a(h) == (4, Decimal(16))
 
 
@@ -257,7 +259,8 @@ def test_c_a_remainder_that_loses_its_link_is_removed_before_the_cut_row_is_rest
     h.vendor.drop_link_next_add()
     res = h.run("link_row", w.params["link_row"], receipt_reader=PARTIAL(w))
     assert res.outcome == "recovered", (res.outcome, res.error_code)
-    assert DEL_PO in h.steps(), h.steps()  # the stray remainder (qty 3) goes
+    deletes = [r for c in h.vendor.writes() for r in c.body["Details"] if r.get("FullTransferOption") == "D"]
+    assert deletes, h.steps()  # the stray remainder (qty 3) goes (plan 61: a "D" row)
     assert n_item_a(h) == (4, Decimal(16))
     assert w.row_by_key(w.po_rows(), w.p_free)["Qty"] == 4  # the cut row is whole again
 
@@ -275,7 +278,7 @@ def test_c_a_failed_remainder_add_restores_the_cut_row_without_a_stray_delete(h,
     h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "remainder failed", after=1)
     res = h.run("link_row", w.params["link_row"], receipt_reader=PARTIAL(w))
     assert res.outcome == "recovered"
-    assert DEL_PO not in h.steps()  # nothing stray: the failed add never landed
+    assert not deleted_a_row(h)  # nothing stray: the failed add never landed
     assert n_item_a(h) == (4, Decimal(16))
 
 
@@ -490,7 +493,7 @@ def test_h_po_links_split_accepts_a_doc_date(client, gw, world):
 
 
 def test_h_write_capabilities_lists_split_link_and_uses_wire_kind_names(client, h, db):
-    gw = Gw(h, db)  # shipped flags: delete off
+    gw = Gw(h, db)  # shipped flags (plan 61: PO row operations on, SPO off)
     r = client.get(f"{PREFIX}/write-capabilities?companyCode=SRT", headers={"X-API-Key": gw.plain})
     assert r.status_code == 200, r.text
     body = r.json()
@@ -500,9 +503,10 @@ def test_h_write_capabilities_lists_split_link_and_uses_wire_kind_names(client, 
     by = {(i["op"], i["kind"]): i for i in items}
     assert by[("split_link", "purchase-orders")] == {
         "op": "split_link", "kind": "purchase-orders", "enabled": True, "reasonCode": None}
-    assert by[("link_row", "purchase-orders")]["enabled"] is False
-    assert by[("link_row", "purchase-orders")]["reasonCode"] == "VENDOR_UNSUPPORTED"
+    assert by[("link_row", "purchase-orders")]["enabled"] is True
+    assert by[("link_row", "purchase-orders")]["reasonCode"] is None
     assert by[("spo_link_row", "shipping-purchase-orders")]["enabled"] is False
+    assert by[("spo_link_row", "shipping-purchase-orders")]["reasonCode"] == "VENDOR_UNSUPPORTED"
     assert by[("create_doc", "quotations")]["enabled"] is True
 
 

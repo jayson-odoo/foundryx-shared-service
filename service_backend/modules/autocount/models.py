@@ -1174,3 +1174,39 @@ class AcWriteOperation(AutocountBase):
     result_json = Column(_JSON, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+
+class AcApiCallLog(AutocountBase):
+    """One row per HTTP call the write layer makes to AutoCount (plan 61 section 4.8,
+    owner ruling R3): writes, read-backs, bydocno and day-list reads, debtor term,
+    cancel. Written on its own short session so it survives a rollback of the
+    business transaction; never stores an API key, a header value or the base URL
+    host (``book`` is the URL's last path segment, ``path`` the vendor path + query)."""
+
+    __tablename__ = "ac_api_call_log"
+    __table_args__ = (
+        Index("ix_ac_api_call_log_tenant_company_created", "tenant_id", "company_id", "created_at"),
+        Index("ix_ac_api_call_log_doc_key", "doc_key"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    created_at = Column(UTCDateTime(), nullable=False)  # call start
+    actor = Column(String, nullable=False)  # API key id | runner | system
+    request_id = Column(String, nullable=True)  # X-Request-ID, else the Idempotency-Key
+    operation_id = Column(String, nullable=True)
+    action_id = Column(String, nullable=True)
+    book = Column(String, nullable=True)
+    method = Column(String, nullable=False)
+    path = Column(Text, nullable=False)  # vendor path incl. query, never the host
+    doc_type = Column(String, nullable=True)
+    doc_no = Column(String, nullable=True)
+    doc_key = Column(BigInteger, nullable=True)
+    request_json = Column(_JSON, nullable=True)  # NULL for GET / DELETE
+    response_status = Column(Integer, nullable=True)  # NULL when no answer
+    response_body = Column(Text, nullable=True)  # cut at 32 KB
+    response_truncated = Column(Boolean, nullable=False, default=False)
+    duration_ms = Column(Integer, nullable=False, default=0)
+    outcome = Column(String, nullable=False)  # ok | http_error | timeout | connect_error | guard_refused
+    error_code = Column(String, nullable=True)

@@ -7,6 +7,16 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 
 ## Changes
 
+- 2026-11-10 (plan 61 section 4.8): optional request header `X-Request-ID` (section 2a) on every write
+  and read route of this contract and on the plan 55 routes. Additive: nothing changes in the answer.
+- 2026-11-10 (plan 61, AutoCount write API v2, db3 probes F1..F15): delete line, cancel, whole-row link,
+  unlink and relink are switched ON for quotations, sales orders and purchase orders (SPO stays off).
+  Delete line = one PUT with the row marked `FullTransferOption "D"` (removing the last line is allowed:
+  the document then reads back with no lines). Cancel = AutoCount's `DELETE /Cancel<Doc>bydocno?DocNo=`.
+  Whole-row link, unlink and relink = ONE PUT that deletes the row and adds its replacement (all or
+  nothing), then a second write puts the new row's location and delivery date back. Answer shape,
+  statuses and `replacedLines` are unchanged; `DOC_HAS_TRANSFERS`, `DOC_CANCELLED` and
+  `ROW_HAS_TRANSFERS` can now also come from AutoCount's own refusal (section 5).
 - 2026-11-05: `GET /write-capabilities` adds top-level `book`, the AutoCount book SS writes to for
   the company (`null` when writes are off). Additive; refuse writes on documents keyed to another book.
 - 2026-11-04 (final review round): field names in `message` and `warnings` are the caller's camelCase
@@ -28,13 +38,13 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 | `POST /api/v1/autocount/documents/{kind}` | primitive | Create a document |
 | `PATCH /api/v1/autocount/documents/{kind}/{docKey}` | primitive | Edit header fields and existing lines |
 | `POST /api/v1/autocount/documents/{kind}/{docKey}/lines` | primitive | Add one line |
-| `POST /api/v1/autocount/documents/{kind}/{docKey}/lines/{dtlKey}/delete` | primitive | Delete one line (switched off until AutoCount ships delete) |
-| `POST /api/v1/autocount/documents/{kind}/{docKey}/cancel` | primitive | Cancel the document (switched off) |
-| `POST /api/v1/autocount/po-links` | operation | Plan 55 body. Part of a row: split link (works). Whole row: delete + add (waits for delete) |
-| `POST /api/v1/autocount/po-links/unlink` | operation | Plan 55 body; now delete + add unlinked (waits for delete) |
-| `POST /api/v1/autocount/po-links/relink` | operation | New: move a PO row's link to another SO row |
+| `POST /api/v1/autocount/documents/{kind}/{docKey}/lines/{dtlKey}/delete` | primitive | Delete one line (quotations, sales orders, purchase orders) |
+| `POST /api/v1/autocount/documents/{kind}/{docKey}/cancel` | primitive | Cancel the document (quotations, sales orders, purchase orders) |
+| `POST /api/v1/autocount/po-links` | operation | Plan 55 body. Part of a row: split link. Whole row: one replace PUT (row deleted, linked row added) + a move PUT restoring the old row's location, unit price and delivery date |
+| `POST /api/v1/autocount/po-links/unlink` | operation | Plan 55 body; one replace PUT (linked row deleted, normal row added) |
+| `POST /api/v1/autocount/po-links/relink` | operation | New: move a PO row's link to another SO row (one replace PUT + the same move PUT: location, unit price, delivery date) |
 | `POST /api/v1/autocount/spo-links` | operation | New: link an SPO row to a PO row |
-| `POST /api/v1/autocount/spo-links/unlink` | operation | Plan 55 body; now delete + add unlinked (waits for delete) |
+| `POST /api/v1/autocount/spo-links/unlink` | operation | Plan 55 body; switched off (`VENDOR_UNSUPPORTED`): no SPO write is proven |
 | `POST /api/v1/autocount/spo-links/relink` | operation | New: move an SPO row's link to another PO row |
 | `GET /api/v1/autocount/write-operations/{operationId}?companyCode=` | read | One operation's state and answer |
 | `POST /api/v1/autocount/write-operations/{operationId}/resume` | operation | Resume a `needs_attention` or `pending_verification` operation |
@@ -44,8 +54,9 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 `/po-links/relocate` (plan 55) is unchanged. `{kind}`: `quotations`, `sales-orders`, `purchase-orders`,
 `shipping-purchase-orders`; any other value is `404 UNKNOWN_KIND` (flat body). `{docKey}` and `{dtlKey}`
 are integers in 1..9223372036854775807, else `422 INVALID_REQUEST`. There is no route that deletes a
-document: cancel is the only way a document ends. Today the switched-on primitives are create, edit and
-add line for quotations, sales orders and purchase orders, and edit for shipping purchase orders.
+document: cancel is the only way a document ends. Today the switched-on primitives are create, edit, add
+line, delete line and cancel for quotations, sales orders and purchase orders, and edit for shipping
+purchase orders.
 
 ### 1a. Read a document
 
@@ -78,6 +89,14 @@ company.
   `409 OPERATION_IN_PROGRESS`. Both are answer-shaped (section 4), `outcome: refused`.
 - On `/po-links` a stored key keeps its first operation (split or whole row), even if the row changed since.
 - Use a new key per user intent; reuse it only to retry the same intent after a timeout.
+
+## 2a. Request id (optional)
+
+Header `X-Request-ID: <1..128 printable ASCII characters>` on any route of this contract (and on the plan
+55 routes `po-links`, `po-links/unlink`, `spo-links/unlink`). SS stores it on every AutoCount call it makes
+for the request (its own per-call log, plan 61 section 4.8) so a CRM trace can be matched to what SS sent
+to AutoCount. Absent, blank, longer than 128 or not printable = ignored (never a refusal); SS then uses
+the `Idempotency-Key` when one was sent. It changes nothing else: not idempotency, not the answer.
 
 ## 3. Bodies (camelCase on the wire, mapped to AutoCount field names by an allowlist)
 
@@ -160,7 +179,18 @@ debtor's own AutoCount term the same way as a create (`DEBTOR_TERM_MISSING` / `R
 Add: `{ companyCode, docDate?, expectedLastModified?, line: { ...as a create line } }`. The new row number
 is not a separate field: read it from `document.Details` (the row that was not there before).
 Delete line (the row is the `{dtlKey}` in the path) and cancel: `{ companyCode, docDate?,
-expectedLastModified? }`. Both are switched off today: `409 VENDOR_UNSUPPORTED`.
+expectedLastModified? }`. Delete line sends one PUT with only that row, marked deleted; the read-back must
+show the row gone and every other row unchanged (else `mismatch LINE_NOT_DELETED` / `COLLATERAL_CHANGE`).
+The last remaining line may be deleted (the document then has no lines). A row AutoCount reports as
+transferred onward (a sales order row taken into a purchase order, a quotation row taken into a sales
+order) is refused `409 ROW_HAS_TRANSFERS` with AutoCount's text in `message`; SS's own checks still run
+first, with no request: `ROW_RECEIVED` (a received purchase order row or a delivered sales order row),
+`ROW_ON_SPO` (a purchase order row a shipping purchase order points at) and `ROW_HAS_TRANSFERS` (a sales
+order row the synced copy shows linked by purchase order rows). Cancel asks
+AutoCount to cancel the document by its number and reads it back: `Cancelled "T"` = `done`, otherwise
+`mismatch CANCEL_IGNORED`. AutoCount refusing because the document was transferred onward =
+`409 DOC_HAS_TRANSFERS`; because it is already void = `409 DOC_CANCELLED`; any other refusal =
+`vendor_error VENDOR_REFUSED` with its text. Shipping purchase orders: both `409 VENDOR_UNSUPPORTED`.
 
 ### 3.4 Operations
 
@@ -170,7 +200,8 @@ All keys are integers (1..9223372036854775807).
   expectedLastModified? }`. `soDocDate` (`YYYY-MM-DD`) is the date to read the sales order by when its date
   is not known to the service.
 - `po-links/unlink`: `{ companyCode, poDocKey, poDtlKey, docDate?, expectedLastModified? }`.
-- `spo-links/unlink`: `{ companyCode, spoDocKey, spoDtlKey, docDate?, expectedLastModified? }`.
+- `spo-links/unlink`: `{ companyCode, spoDocKey, spoDtlKey, docDate?, expectedLastModified? }` (switched
+  off: `409 VENDOR_UNSUPPORTED`, no request).
 - `po-links/relink`: `{ companyCode, poDocKey, poDtlKey, soDocKey, soDtlKey, docDate?, soDocDate?,
   expectedLastModified? }` (`docDate` = the PO's date, `soDocDate` = the target sales order's date).
 - `spo-links` and `spo-links/relink`: `{ companyCode, spoDocKey, spoDtlKey, poDocKey, poDtlKey, docDate?,
@@ -181,8 +212,14 @@ The plan 55 routes `po-links`, `po-links/unlink` and `spo-links/unlink` also tak
 split link on a PO whose date is not known is `409 DOC_DATE_REQUIRED`.
 
 Whole row versus part of a row on `po-links`: the service reads the PO row fresh and compares the caller's
-`qty` with the row's own quantity at that moment. Equal = the whole row: delete the row and add it back
-linked (a new row number, listed in `replacedLines`; refused `VENDOR_UNSUPPORTED` while delete is off).
+`qty` with the row's own quantity at that moment. Equal = the whole row: ONE PUT deletes the row and adds
+it back linked (a new row number, listed in `replacedLines`). AutoCount puts a new linked row at HQ with
+unit price 0 and no delivery date, so a second write moves it to the target sales order row's location
+and puts the old row's unit price and delivery date back (only when something differs); if that second
+write fails the link stands, the answer is `done` with warning `LOCATION_NOT_MOVED` (and
+`ROW_VALUES_NOT_KEPT` when the price or date did not go back); there is no third write. `po-links/unlink` and `po-links/relink` are the same single replace PUT (an unlinked
+row keeps its own location and date, so unlink needs no second write). AutoCount applies the PUT all or
+nothing: a refusal there is `vendor_error VENDOR_REFUSED` with nothing changed and no second write.
 Different = part of the row: the plan 55 split link, no delete, no `replacedLines`. Without an
 `Idempotency-Key` the split case answers in the plain plan 55 shape (`actionId`, no `operationId`); with a
 key it is an operation and answers with `operationId`. `qty` must be above zero with at most 8 decimal
@@ -211,7 +248,7 @@ on `errorCode` and `outcome`. A primitive answers `operationId: null`; an operat
 The plan 55 routes answer the plan 55 shape, plus `operationId`, `message`, `warnings`, `docKey`, `docNo`
 and `replacedLines` whenever an operation answered.
 
-`replacedLines` lists every row whose number changed (delete + add, or a recovery). Anything the CRM
+`replacedLines` lists every row whose number changed (a replace PUT, or a recovery). Anything the CRM
 pinned to an old row moves to the new one; the same fact also arrives on the sink (section 6).
 
 Status mapping:
@@ -248,14 +285,17 @@ connection for the company), `WRITE_NOT_ALLOWED` (the connection is not the test
 `FIELD_NOT_EDITABLE`, `INVALID_PARAMS`, `DOCNO_REQUIRED`, `QTY_INVALID`, `PRICE_INVALID`, `DEBTOR_TERM_MISSING`
 (quotation / sales order without `displayTerm` whose debtor has no AutoCount term, section 3.1). All the rest are 409:
 
-- Switched off: `VENDOR_UNSUPPORTED` (delete line, cancel, whole-row link, unlink and relink, SPO create
-  and add line).
+- Switched off: `VENDOR_UNSUPPORTED` (every shipping purchase order write except edit: SPO create, add
+  line, delete line, cancel, and the SPO link / unlink / relink operations; delete of a whole document;
+  any switch a deployment turns off).
 - Company: `WRITE_COMPANY_NOT_TEST` (the company now has SQL source data, so it is not a test book).
 - Document: `DOC_BUSY`, `DOC_STALE`, `DOC_CANCELLED`, `DOC_NOT_FOUND`, `DOC_DATE_REQUIRED`,
   `DOC_KIND_MISMATCH`, `DOC_AMBIGUOUS`, `DOC_UNKNOWN` (the linked sales order row is not in the synced
-  copy), `DOC_HAS_TRANSFERS`, `DEADLINE_EXCEEDED`, `READ_FAILED` (the document, or the debtor for a
+  copy), `DOC_HAS_TRANSFERS` (also AutoCount refusing a cancel of a document transferred onward),
+  `DEADLINE_EXCEEDED`, `READ_FAILED` (the document, or the debtor for a
   missing `displayTerm`, could not be read before writing), `DOC_KIND_UNKNOWN`.
-- Row and quantity: `ROW_NOT_FOUND`, `ROW_HAS_TRANSFERS`, `QTY_BELOW_TRANSFERRED`, `ROW_RECEIVED`,
+- Row and quantity: `ROW_NOT_FOUND`, `ROW_HAS_TRANSFERS` (also AutoCount refusing to delete a row
+  transferred onward), `QTY_BELOW_TRANSFERRED`, `ROW_RECEIVED`,
   `ROW_ON_SPO`, `ROW_ALREADY_LINKED`, `ROW_NOT_LINKED`, `ROW_HAS_OTHER_TRANSFER`, `NO_CHANGE`,
   `ITEM_MISMATCH`, `UOM_MISMATCH`, `QTY_ABOVE_OUTSTANDING`, `QTY_ABOVE_FREE`,
   `ROW_ALREADY_AT_LOCATION`, `SO_LOCATION_AMBIGUOUS`.
@@ -269,17 +309,22 @@ Other outcomes:
   landed), `ANSWER_UNPARSEABLE`, `READ_FAILED` (the read-back failed after a write), `DOC_AMBIGUOUS`,
   `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` (an operation that ran past its overall deadline; for a
   primitive it stays a 409 refusal). For an operation, resume reads AutoCount and decides.
-- `vendor_error` (502): `VENDOR_REFUSED` (AutoCount refused the write, for example a delete of a received
-  line; its text is in `message`), `VENDOR_ERROR` (a bare failure; no text is passed on).
+- `vendor_error` (502): `VENDOR_REFUSED` (AutoCount refused the write, for example a replace PUT whose
+  new row it rejects, or a delete of a received line; nothing was applied; its text is in `message`),
+  `VENDOR_ERROR` (a bare failure; no text is passed on; inside an operation it is `pending_verification`
+  because the write may have landed).
 - `mismatch` (502; the write was accepted, the read-back differs): `FIELD_IGNORED`, `ROW_MISMATCH`,
-  `LINK_MISMATCH`, `ROWS_DROPPED`, `ROWS_UNEXPECTED`, `LINE_NOT_DELETED`, `DOC_NOT_DELETED`,
+  `LINK_MISMATCH`, `ROWS_DROPPED`, `ROWS_UNEXPECTED`, `LINE_NOT_DELETED`,
   `CANCEL_IGNORED`, `COLLATERAL_CHANGE`, `READBACK_MISMATCH` (plan 55 flows). Inside an operation a
-  mismatch step is reported as `pending_verification` (resume decides).
+  replace PUT that landed wrong is recovered from the snapshot (`recovered`, or `needs_attention` when the
+  recovery fails too).
 - `needs_attention` (502): `errorCode` is the code of the step that failed before the line went missing.
 For a part-row operation the alert mail names the cut quantity and the remainder quantity.
 
 Warnings (in `warnings`, on `done` or `recovered`; they do not fail the call): `LOCATION_NOT_MOVED` (the
-link stands but AutoCount left the new row at its default location; use relocate),
+link stands but AutoCount left the new row at its default location; use relocate), `ROW_VALUES_NOT_KEPT`
+(the link stands but the new row kept AutoCount's reset unit price or empty delivery date; fix it with an
+edit),
 `TRANSFER_STATE_UNKNOWN` (the received quantity could not be read, so AutoCount decided),
 `QT_ROW_VALUES_INHERITED`, `QT_ROW_LINK_UNCONFIRMED` (section 3.1). On `done` of an operation the
 `LOCATION_NOT_MOVED` warning is the only place the failed move shows (`errorCode` stays null).
@@ -300,7 +345,7 @@ Reads the switches now; no AutoCount call. Always `200`:
 ```json
 { "book": "db3",
   "capabilities": [ { "op": "create_doc", "kind": "quotations", "enabled": true, "reasonCode": null },
-                    { "op": "delete_line", "kind": "sales-orders", "enabled": false, "reasonCode": "VENDOR_UNSUPPORTED" } ] }
+                    { "op": "delete_line", "kind": "shipping-purchase-orders", "enabled": false, "reasonCode": "VENDOR_UNSUPPORTED" } ] }
 ```
 
 `book` is the AutoCount book (database) SS writes to for this company: the `<book>` of the write
@@ -319,5 +364,7 @@ one `split_link` on `purchase-orders` and one per operation (`link_row`, `unlink
 `reasonCode` is null when enabled, else `WRITE_DISABLED` or `WRITE_NOT_ALLOWED` (no usable write
 connection: every entry is off with that reason) or `VENDOR_UNSUPPORTED`. `split_link` (a part-row link on
 `po-links`) is enabled when purchase-order edit and add line and the vendor's link on a new row are on.
-The other operation entries are enabled only when delete line, add line and edit are all on for their kind,
-so `link_row` (whole row) reads off while delete is off.
+The other operation entries are enabled only when delete line, add line and edit are all on for their kind
+(the replace PUT deletes and adds in one write), and for `link_row` / `relink_row` / `unlink_row` the
+vendor's whole-row link / unlink switch too: today the purchase-order operations read on and the
+shipping-purchase-order operations off.

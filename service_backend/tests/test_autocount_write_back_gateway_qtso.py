@@ -31,7 +31,8 @@ from tests.test_autocount_write_back_gateway import (
     _other_tenant,
 )
 from tests.test_autocount_write_back_operations import (  # noqa: F401
-    DEL_PO,
+    deleted_a_row,
+    drop_new_row_once,
     PUT_PO,
     OpHarness,
     World,
@@ -460,7 +461,10 @@ def test_ac_57_20_doc_date_is_forwarded_and_required_for_an_unstaged_document(cl
     ok = client.patch(f"{PREFIX}/documents/quotations/6001", headers=gw.hdr("k2"),
                       json={"companyCode": "SRT", "docDate": "2026-11-04", "header": {"ref": "x"}})
     assert ok.status_code == 200, ok.text
-    bad = client.patch(f"{PREFIX}/documents/quotations/6001", headers=gw.hdr("k3"),
+    # plan 61: once SS confirmed a write it knows the DocNo (bydocno read); a QT it never
+    # saw is read from the caller's date, so a wrong date misses
+    gw.h.seed_doc("QT", 6002, [_line("A", 1, 9.0)], stage=False)
+    bad = client.patch(f"{PREFIX}/documents/quotations/6002", headers=gw.hdr("k3"),
                        json={"companyCode": "SRT", "docDate": "2026-11-05", "header": {"ref": "y"}})
     assert bad.status_code == 409 and code(bad) == "DOC_NOT_FOUND"
     assert client.patch(f"{PREFIX}/documents/quotations/6001", headers=gw.hdr("k4"),
@@ -477,7 +481,9 @@ def test_ac_57_15_add_line(client, gw):
 
 
 def test_ac_57_03_delete_line_and_cancel_are_vendor_unsupported_409_when_off(client, h, db):
-    gw = Gw(h, db)  # delete / cancel shipped off
+    gw = Gw(h, db)
+    h.flag("SO", "delete_line", False)  # plan 61 ships both on: switched off here
+    h.flag("SO", "cancel_doc", False)
     h.seed_doc("SO", 5001, [_line("A", 10, 5.0)])
     dtl = h.vendor.rows("SO", 5001)[0]["DtlKey"]
     r = client.post(f"{PREFIX}/documents/sales-orders/5001/lines/{dtl}/delete", headers=gw.hdr(),
@@ -518,7 +524,7 @@ def test_ac_57_61_status_mapping_for_every_outcome(client, gw, world):
     # 502 recovered, on its OWN document (PO 7101)
     link = dict(FromDocType="SO", FromDocNo="SO-7002", FromDocDtlKey=world.so_a, FromSODtlKey=world.so_a)
     doc = gw.h.seed_doc("PO", 7101, [_line("ITEM-A", 4, 5.0, "BR1", **link)])
-    gw.h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
+    drop_new_row_once(gw.h)  # plan 61: the replace deleted the row but lost its new row
     r = client.post(f"{PREFIX}/po-links/relink", headers=gw.hdr("k-recovered"), json={
         "companyCode": "SRT", "poDocKey": 7101, "poDtlKey": doc["Details"][0]["DtlKey"],
         "soDocKey": 7002, "soDtlKey": world.so_b})
@@ -526,8 +532,8 @@ def test_ac_57_61_status_mapping_for_every_outcome(client, gw, world):
 
 
 def test_ac_57_61_needs_attention_is_502_and_resume_is_available(client, gw, world):
-    gw.h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "add failed")
-    gw.h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed")
+    drop_new_row_once(gw.h)  # plan 61: the replace lost its new row, then the recovery add fails
+    gw.h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "recovery failed", after=1)
     r = client.post(f"{PREFIX}/po-links/unlink", headers=gw.hdr("k-na"),
                     json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked})
     assert r.status_code == 502 and r.json()["outcome"] == "needs_attention"
@@ -601,7 +607,8 @@ def test_ac_57_61_plan_55_unlink_routes_run_the_operations(client, gw, world):
 
 
 def test_ac_57_32_plan_55_unlink_routes_are_vendor_unsupported_with_delete_off(client, h, db):
-    gw = Gw(h, db)  # shipped flags: delete_line off
+    gw = Gw(h, db)
+    h.flag("PO", "delete_line", False)  # plan 61 ships it on for PO: switched off here (SPO ships off)
     world = World(h)
     for path, body in (("po-links/unlink", {"poDocKey": 7001, "poDtlKey": world.p_linked}),
                        ("spo-links/unlink", {"spoDocKey": 7003, "spoDtlKey": world.s_linked})):
@@ -652,15 +659,17 @@ def _caps(client, gw, **kw):
 
 
 def test_ac_57_61_write_capabilities_lists_enabled_and_reason_codes(client, h, db):
-    gw = Gw(h, db)  # shipped state: delete / cancel off, create / edit / add on
+    gw = Gw(h, db)  # shipped state (plan 61): QT / SO / PO all on but delete_doc, SPO edit only
     caps = _caps(client, gw)
     assert caps[("create_doc", "QT")] == {"op": "create_doc", "kind": "QT", "enabled": True, "reasonCode": None}
     assert caps[("edit_doc", "SO")]["enabled"] is True
-    for key in (("delete_line", "SO"), ("cancel_doc", "QT"), ("delete_line", "PO"), ("create_doc", "SPO")):
-        assert caps[key]["enabled"] is False and caps[key]["reasonCode"] == "VENDOR_UNSUPPORTED", key
+    for key in (("delete_line", "SO"), ("cancel_doc", "QT"), ("delete_line", "PO")):
+        assert caps[key]["enabled"] is True and caps[key]["reasonCode"] is None, key
+    assert caps[("create_doc", "SPO")]["enabled"] is False
+    assert caps[("create_doc", "SPO")]["reasonCode"] == "VENDOR_UNSUPPORTED"
     assert ("delete_doc", "QT") not in caps or caps[("delete_doc", "QT")]["enabled"] is False
     for op in ("link_row", "unlink_row", "relink_row"):
-        assert caps[(op, "PO")]["enabled"] is False and caps[(op, "PO")]["reasonCode"] == "VENDOR_UNSUPPORTED"
+        assert caps[(op, "PO")]["enabled"] is True and caps[(op, "PO")]["reasonCode"] is None
     for op in ("spo_link_row", "spo_unlink_row", "spo_relink_row"):
         assert caps[(op, "SPO")]["enabled"] is False
     h.no_http()

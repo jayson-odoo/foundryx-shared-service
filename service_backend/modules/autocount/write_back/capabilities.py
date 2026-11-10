@@ -1,9 +1,10 @@
-"""Vendor capability switches for write-back (plan 55 section 6a-2).
+"""Vendor capability switches for write-back (plan 55 section 6a-2, plan 61 section 4.5).
 
-db3 4 Nov: AutoCount's wrapper does not apply these edits yet; flip after a db3
-rerun proves them. Always read at call time (``capabilities.VENDOR_CAPABILITIES``),
-never through a from-import, so a flip takes effect without a restart of the
-reader's own copy.
+db3 10 Nov 2026 (plan 61 facts F4..F12): one PUT deletes a row (``FullTransferOption
+"D"``) and adds its replacement (``DtlKey 0``), so unlink, whole-row link, relink and
+delete line are applied; cancel is ``DELETE /Cancel<Doc>bydocno``. Always read at call
+time (``capabilities.VENDOR_CAPABILITIES``), never through a from-import, so a flip
+takes effect without a restart of the reader's own copy.
 """
 
 from __future__ import annotations
@@ -14,24 +15,20 @@ from typing import Mapping
 VENDOR_CAPABILITIES: Mapping[str, bool] = MappingProxyType(
     {
         "link_new_row": True,
-        "link_existing_row": False,
-        "unlink": False,
-        "spo_unlink": False,
+        "link_existing_row": True,  # F5: one replace PUT [normal row "D", new linked row]
+        "unlink": True,  # F4: one replace PUT [linked row "D", new normal row]
+        "spo_unlink": False,  # F14: db3 cannot make an SPO, nothing probed
     }
 )
 
-# Whole-row link emulated as: original row to Qty 0 plus a new linked row, then
-# the location move. Off until a db3 rerun shows the vendor accepts a zero qty.
-ZERO_QTY_EMULATION = False
-
-# Plan 57 section 5.1: per kind and primitive. Read at call time through
-# ``capable`` (db3 probes 4 Nov: the wrapper ignores a header Cancelled and has no
-# published delete door, so delete_line / delete_doc / cancel_doc stay off).
+# Plan 57 section 5.1: per kind and primitive, read at call time through ``capable``.
+# Plan 61 (db3 10 Nov): delete_line (F6) and cancel_doc (F9) on for QT / SO / PO; SPO
+# keeps only edit_doc (F14); delete_doc has no vendor door on any kind.
 _PRIMITIVES = ("create_doc", "edit_doc", "add_line", "delete_line", "delete_doc", "cancel_doc")
 _ON = {
-    ("QT", "create_doc"), ("QT", "edit_doc"), ("QT", "add_line"),
-    ("SO", "create_doc"), ("SO", "edit_doc"), ("SO", "add_line"),
-    ("PO", "create_doc"), ("PO", "edit_doc"), ("PO", "add_line"),
+    ("QT", "create_doc"), ("QT", "edit_doc"), ("QT", "add_line"), ("QT", "delete_line"), ("QT", "cancel_doc"),
+    ("SO", "create_doc"), ("SO", "edit_doc"), ("SO", "add_line"), ("SO", "delete_line"), ("SO", "cancel_doc"),
+    ("PO", "create_doc"), ("PO", "edit_doc"), ("PO", "add_line"), ("PO", "delete_line"), ("PO", "cancel_doc"),
     ("SPO", "edit_doc"),
 }
 CAPABILITIES: Mapping[tuple[str, str], bool] = MappingProxyType(

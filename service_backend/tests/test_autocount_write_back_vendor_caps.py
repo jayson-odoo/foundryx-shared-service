@@ -83,6 +83,9 @@ class VendorFake(FakeAutoCount):
         doc = next(d for lst in self.docs.values() for d in lst if d["DocKey"] == body["DocKey"])
         for r in body["Details"]:
             linked_sent = r.get("FromDocType") == "SO"
+            if r.get("FullTransferOption") == "D":  # plan 61 F4 / F5: the row is deleted
+                doc["Details"] = [x for x in doc["Details"] if x["DtlKey"] != r["DtlKey"]]
+                continue
             if r["DtlKey"] == 0:
                 row = {**doc["Details"][0], **r, "DtlKey": self.next_dtl}
                 self.next_dtl += 1
@@ -176,7 +179,9 @@ def test_cap_constants_are_the_owner_rulings():
 
 
 @pytest.mark.parametrize("po_dtl_key,po_doc_key", [(12013, PO_KEY), (999, 777777)])
-def test_cap_unlink_refused_before_any_request(h, po_dtl_key, po_doc_key):
+def test_cap_unlink_refused_before_any_request(h, po_dtl_key, po_doc_key, monkeypatch):
+    monkeypatch.setattr(capabilities, "VENDOR_CAPABILITIES",
+                        MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "unlink": False}))  # plan 61 ships it on
     res = h.service().unlink(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=po_doc_key, po_dtl_key=po_dtl_key
     )
@@ -195,7 +200,9 @@ def test_cap_spo_unlink_refused_before_any_request(h, spo_doc_key, spo_dtl_key):
     _no_http(h)
 
 
-def test_cap_whole_row_link_refused_after_exactly_one_get_and_no_put(h):
+def test_cap_whole_row_link_refused_after_exactly_one_get_and_no_put(h, monkeypatch):
+    monkeypatch.setattr(capabilities, "VENDOR_CAPABILITIES",
+                        MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "link_existing_row": False}))  # plan 61 ships it on
     _set_row_qty(h, 12017, 10.0)
     res = _split(h, qty=Decimal(10))  # q == row qty
     assert res.outcome == "refused" and res.error_code == "VENDOR_UNSUPPORTED"
@@ -209,45 +216,32 @@ def test_cap_q_above_row_qty_keeps_its_own_refusal(h):
     assert h.ac.put_calls == []
 
 
-def test_cap_flip_unlink_reenables_the_old_path(h, monkeypatch):
-    monkeypatch.setattr(
-        capabilities, "VENDOR_CAPABILITIES", MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "unlink": True})
-    )
-    h.ac.honor_unlink = True
+def test_cap_unlink_on_is_one_replace_put(h):
+    """Plan 61 F4: unlink ships on; the linked row "D" plus a new normal row, one PUT."""
+    before = next(r for r in h.ac.docs["purchaseorderbydocdate"][0]["Details"] if r["DtlKey"] == 12013)
     res = h.service().unlink(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=PO_KEY, po_dtl_key=12013
     )
     assert res.outcome == "done", res.error_code
-    assert h.ac.server_row(12013)["FromSODtlKey"] == 0
-
-
-def test_cap_flip_spo_unlink_reenables_the_old_path(h, monkeypatch):
-    monkeypatch.setattr(
-        capabilities, "VENDOR_CAPABILITIES", MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "spo_unlink": True})
-    )
-    h.ac.honor_unlink = True
-    spo = _load("spo_db1_sample.json")
-    spo["Details"][0].update(FromDocType="PO", FromDocDtlKey=12013)
-    h._stage("shipping_order", spo)
-    h.ac.serve("purchaseorderbydocdate", spo)
-    dtl = spo["Details"][0]["DtlKey"]
-    res = h.service().spo_unlink(
-        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, spo_doc_key=spo["DocKey"], spo_dtl_key=dtl
-    )
-    assert res.outcome != "refused" or res.error_code != "VENDOR_UNSUPPORTED"
     assert len(h.ac.put_calls) == 1
+    rows = h.ac.docs["purchaseorderbydocdate"][0]["Details"]
+    assert all(r["DtlKey"] != 12013 for r in rows)
+    new = rows[-1]
+    assert new["FromSODtlKey"] == 0 and new["Qty"] == before["Qty"] and new["Location"] == before["Location"]
 
 
-def test_cap_flip_link_existing_row_reenables_the_whole_row_path(h, monkeypatch):
-    monkeypatch.setattr(
-        capabilities, "VENDOR_CAPABILITIES", MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "link_existing_row": True})
-    )
-    h.ac.honor_existing_link = True
+
+
+def test_cap_whole_row_link_on_is_one_replace_put_then_the_move(h):
+    """Plan 61 F5: link_existing_row ships on; the row "D" plus a new linked row (forced HQ),
+    then the second write moves it to the SO row's place."""
     _set_row_qty(h, 12017, 10.0)
     res = _split(h, qty=Decimal(10))
     assert res.outcome == "done", res.error_code
-    assert len(h.ac.put_calls) == 1  # in place, same row, one write
-    row = h.ac.server_row(12017)
+    assert len(h.ac.put_calls) == 2
+    assert [r.get("FullTransferOption") for r in h.ac.put_bodies[0]["Details"]] == ["D", " "]
+    assert all(r["DtlKey"] != 12017 for r in h.ac.docs["purchaseorderbydocdate"][0]["Details"])
+    row = h.ac.linked_row(11989)
     assert row["Location"] == "BRW-AM" and row["FromSODtlKey"] == 11989
 
 
@@ -312,26 +306,6 @@ def test_split_put2_failure_is_done_with_location_not_moved(h, mode):
 def test_split_put1_verify_ignores_the_new_rows_forced_location(h):
     res = _split(h)  # fake forced HQ on PUT1 read-back
     assert res.outcome == "done", res.error_code  # not "mismatch"
-
-
-# ---- 4. zero-qty emulation switch ----------------------------------------------------
-
-def test_zero_qty_emulation_whole_row_link_is_edit_to_zero_plus_new_row_plus_move(h, monkeypatch):
-    monkeypatch.setattr(capabilities, "ZERO_QTY_EMULATION", True)
-    _set_row_qty(h, 12017, 10.0)
-    res = _split(h, qty=Decimal(10))
-    assert res.outcome == "done", res.error_code
-    put1 = h.ac.put_bodies[0]
-    by_key = {r["DtlKey"]: r for r in put1["Details"]}
-    assert Decimal(str(by_key[12017]["Qty"])) == 0
-    new_rows = [r for r in put1["Details"] if r["DtlKey"] == 0]
-    assert len(new_rows) == 1
-    assert Decimal(str(new_rows[0]["Qty"])) == 10
-    assert (new_rows[0]["FromDocType"], new_rows[0]["FromDocNo"], new_rows[0]["FromDocDtlKey"]) == ("SO", "SO389293", 11989)
-    assert len(h.ac.put_calls) == 2
-    new = h.ac.linked_row(11989)
-    assert new["Location"] == "BRW-AM" and new["Qty"] == 10
-    assert h.ac.server_row(12017)["Qty"] == 0
 
 
 # ---- 3. relocate ----------------------------------------------------------------------
@@ -439,7 +413,9 @@ def _gateway(client, h, scopes=("write_back",)):
     return {"X-API-Key": plain}
 
 
-def test_gateway_unlink_is_409_vendor_unsupported(client, h):
+def test_gateway_unlink_is_409_vendor_unsupported(client, h, monkeypatch):
+    monkeypatch.setattr(capabilities, "VENDOR_CAPABILITIES",
+                        MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "unlink": False}))  # plan 61 ships it on
     hdr = _gateway(client, h)
     r = client.post(UNLINK, json={"companyCode": "SRT", "poDocKey": PO_KEY, "poDtlKey": 12013}, headers=hdr)
     assert r.status_code == 409, r.text
@@ -447,7 +423,9 @@ def test_gateway_unlink_is_409_vendor_unsupported(client, h):
     _no_http(h)
 
 
-def test_gateway_whole_row_link_is_409_vendor_unsupported(client, h):
+def test_gateway_whole_row_link_is_409_vendor_unsupported(client, h, monkeypatch):
+    monkeypatch.setattr(capabilities, "VENDOR_CAPABILITIES",
+                        MappingProxyType({**capabilities.VENDOR_CAPABILITIES, "link_existing_row": False}))  # plan 61 ships it on
     hdr = _gateway(client, h)
     _set_row_qty(h, 12017, 10.0)
     body = {"companyCode": "SRT", "poDocKey": PO_KEY, "poDtlKey": 12017, "soDocKey": SO_KEY, "soDtlKey": 11989, "qty": 10}

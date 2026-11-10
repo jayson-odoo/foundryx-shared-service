@@ -83,6 +83,10 @@ class FakeAutoCount:
         if self.get_fail_after_put and self.put_calls:
             return httpx.Response(500, text="boom")
         path = request.url.path.rsplit("/", 1)[-1].lower()
+        if path.endswith("bydocno"):  # plan 61 F1: one document by its DocNo, a list
+            wanted = request.url.params.get("DocNo")
+            store = self.docs.get(path[: -len("bydocno")] + "bydocdate", [])
+            return httpx.Response(200, json=copy.deepcopy([d for d in store if d.get("DocNo") == wanted]))
         return httpx.Response(200, json=copy.deepcopy(self.docs.get(path, [])))
 
     def _on_put(self, request: httpx.Request) -> httpx.Response:
@@ -111,6 +115,9 @@ class FakeAutoCount:
     def _apply(self, body: Dict[str, Any]) -> None:
         doc = next(d for d in self.docs["purchaseorderbydocdate"] if d["DocKey"] == body["DocKey"])
         for r in body["Details"]:
+            if r.get("FullTransferOption") == "D":  # plan 61 F4: the row is deleted
+                doc["Details"] = [x for x in doc["Details"] if x["DtlKey"] != r["DtlKey"]]
+                continue
             if r["DtlKey"] == 0:
                 new = {**r, "DtlKey": self.next_dtl, "FromSODtlKey": 0, "FromSODocList": ""}
                 self.next_dtl += 1
@@ -334,10 +341,11 @@ def test_ac_55_20_unstaged_doc_is_doc_unknown(h):
 
 def test_ac_55_20_get_uses_staged_docdate(h):
     h.link_split()
-    queries = {str(r.url.params.get("DocDate")) for r in h.ac.get_calls}
-    assert "20260204" in queries  # PO DocDate 2026-02-04
-    assert "20260126" in queries  # SO DocDate
-    assert all(r.method == "GET" for r in h.ac.get_calls)
+    # plan 61: the staged copy gives the DocNo the bydocno read uses
+    queries = {str(r.url.params.get("DocNo")) for r in h.ac.get_calls}
+    assert h.ac.docs["purchaseorderbydocdate"][0]["DocNo"] in queries
+    assert h.ac.docs["salesorderbydocdate"][0]["DocNo"] in queries
+    assert all(r.method == "GET" and r.url.path.endswith("bydocno") for r in h.ac.get_calls)
 
 
 # ---- step 6: stale ------------------------------------------------------------
