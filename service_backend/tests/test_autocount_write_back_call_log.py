@@ -406,3 +406,26 @@ def test_r3_split_link_operation_rows_carry_the_operation_id(h, world):
     put_rows = [r for r in logs(h) if r.method == "PUT"]
     assert len(put_rows) == 2
     assert all(r.operation_id == res.operation_id for r in put_rows), [r.operation_id for r in put_rows]
+
+
+# ============================== round 4: stored error body nits =================================
+
+def test_r4_windows_paths_with_spaces_and_forward_slashes_are_cut_from_the_stored_body(h):
+    seed_so(h)
+    body = {"ExceptionMessage": "Credit limit hit at C:\\Users\\Admin\\source\\repos\\Auto Count\\Svc.cs line 12",
+            "Message": "Config read failed C:/inetpub/wwwroot/hapi/web.config"}
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, json.dumps(body))
+    h.edit("SO", 5001, {"Remark1": "hello"})
+    stored = next(r for r in logs(h) if r.method == "PUT").response_body
+    for fragment in ("Admin", "source", "repos", "Auto Count", "inetpub", "wwwroot", "web.config", "C:"):
+        assert fragment not in stored, (fragment, stored)
+    assert "Credit limit hit" in stored and "Config read failed" in stored
+
+
+def test_r4_the_write_host_as_a_json_key_is_removed_from_the_stored_body(h):
+    seed_so(h)
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, json.dumps({HOST: "x", "Message": "Refused"}))
+    h.edit("SO", 5001, {"Remark1": "hello"})
+    stored = next(r for r in logs(h) if r.method == "PUT").response_body
+    assert HOST not in stored
+    assert "Refused" in stored
