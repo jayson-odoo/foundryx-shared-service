@@ -80,14 +80,36 @@ def _pick(source: Doc, keys: Sequence[str]) -> Doc:
     return {k: source[k] for k in keys if k in source and not _empty_date(source[k])}
 
 
+# Header fields that hold an AutoCount master-file code (agent, terms, branch,
+# currency, ship-via, party). AutoCount reads a blank one back as "" but answers 500
+# "The value of column X ... does not exist in its master file" when "" is sent back
+# (db3 6 Nov, PO DocKey 12127). A blank one is omitted so the vendor keeps its own value.
+MASTER_REF_HEADER_KEYS = frozenset((
+    "PurchaseAgent", "SalesAgent", "DisplayTerm", "BranchCode", "CurrencyCode", "ShipVia",
+    "CreditorCode", "DebtorCode",
+))
+
+
+def _blank_text(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _pick_header(source: Doc, keys: Sequence[str]) -> Doc:
+    """``_pick`` for a document header: also omits a blank master-reference code."""
+    return {
+        k: v for k, v in _pick(source, keys).items()
+        if not (k in MASTER_REF_HEADER_KEYS and _blank_text(v))
+    }
+
+
 def _header(doc: Doc) -> Doc:
-    return _pick(doc, HEADER_KEYS)
+    return _pick_header(doc, HEADER_KEYS)
 
 
 def so_header_of(doc: Doc) -> Doc:
     """The whitelisted header of an existing SO (a template for a new one); dates
     below 1753 are omitted like everywhere else."""
-    return _pick(doc, SO_HEADER_KEYS)
+    return _pick_header(doc, SO_HEADER_KEYS)
 
 
 def header_of(doc: Doc) -> Doc:
@@ -227,6 +249,53 @@ def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref
     moved["Location"] = location
     body = _header(po)
     body["Details"] = [moved]
+    return body
+
+
+# B4 (db3 6 Nov; test report 2026-11-04 P6/P10/C03): AutoCount stores a NEW row
+# transferred from an SO with Location HQ, UnitPrice 0 and an empty DeliveryDate,
+# whatever the split body sent. An edit of the EXISTING row afterwards keeps the link
+# (probe P4), so the split flow restores these in its second write.
+TRANSFER_RESET_FIELDS = ("Location", "UnitPrice", "DeliveryDate")
+
+
+def _day(value: Any) -> Optional[str]:
+    """A date as its ``YYYY-MM-DD`` day; empty and pre-1753 dates are None."""
+    if not isinstance(value, str) or not value.strip() or _empty_date(value):
+        return None
+    return value[:10]
+
+
+def same_row_value(field_name: str, want: Any, got: Any) -> bool:
+    """Row field equality for verify: dates by day (empty = empty), numbers by value."""
+    if field_name == "DeliveryDate":
+        return _day(want) == _day(got)
+    return _same(want, got)
+
+
+def transfer_row_drift(sent: Mapping[str, Any], got: Doc) -> Doc:
+    """The ``TRANSFER_RESET_FIELDS`` the read-back row lost: ``{field: sent value}``.
+    A field not sent (or an empty sent date) is never asked back."""
+    out: Doc = {}
+    for key in TRANSFER_RESET_FIELDS:
+        if key not in sent or (key == "DeliveryDate" and _day(sent[key]) is None):
+            continue
+        if not same_row_value(key, sent[key], got.get(key)):
+            out[key] = sent[key]
+    return out
+
+
+def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any]) -> Doc:
+    """Second write of a split link: the new row exactly as read, with ``values``
+    (location, unit price, delivery date) set back to what the split sent."""
+    if not values:
+        raise WriteRefusal("NO_CHANGE", "nothing to restore")
+    row = _row_fields(_find_row(po, dtl_key))
+    row.update(values)
+    body = _header(po)
+    if _is_spo(po):
+        body["ShippingPO"] = "T"
+    body["Details"] = [row]
     return body
 
 
@@ -372,7 +441,7 @@ def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None, kind: s
 
 
 def _doc_header(kind: DocKind, doc: Doc) -> Doc:
-    body = _pick(doc, ("DocKey",) + CREATE_HEADER_KEYS)
+    body = _pick_header(doc, ("DocKey",) + CREATE_HEADER_KEYS)
     if kind.name == "SPO":
         body["ShippingPO"] = "T"
     return body
@@ -380,7 +449,7 @@ def _doc_header(kind: DocKind, doc: Doc) -> Doc:
 
 def build_create(kind_name: str, header: Mapping[str, Any], lines: Optional[Sequence[Mapping[str, Any]]]) -> VendorRequest:
     kind = kind_of(kind_name)
-    clean = _pick(dict(header), CREATE_HEADER_KEYS)
+    clean = _pick_header(dict(header), CREATE_HEADER_KEYS)
     for key in REQUIRED_HEADER + (kind.party_field,):
         if _blank(clean.get(key)):
             raise WriteRefusal("FIELD_REQUIRED", key)
@@ -622,8 +691,22 @@ def verify_edit(
             for k in _COMPARE_LINE
             if k in original and k not in change and not _same(original.get(k), row.get(k))
         )
-    out.extend(_drifted(before, after, list(header_changes), touched))
+    out.extend(k for k in _drifted(before, after, list(header_changes), touched) if not _remark_mirror(k, header_changes, after))
     return out
+
+
+_MIRRORED_REMARKS = ("Remark2", "Remark3", "Remark4")
+
+
+def _remark_mirror(key: str, header_changes: Mapping[str, Any], after: Doc) -> bool:
+    """AutoCount's wrapper copies Remark1 into Remark2..4 on an edit (db3 6 Nov, QT
+    DocKey 12147, F13). An untouched Remark2..4 that now reads back as the newly set
+    Remark1 is that copy, not a field AutoCount ignored."""
+    return (
+        key in _MIRRORED_REMARKS
+        and "Remark1" in header_changes
+        and _same(after.get(key), header_changes["Remark1"])
+    )
 
 
 def verify_delete_line(kind_name: str, before: Doc, dtl_key: int, after: Doc) -> Verdict:

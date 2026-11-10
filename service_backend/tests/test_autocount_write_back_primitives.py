@@ -644,3 +644,12 @@ def test_vendor_refused_message_is_recorded_on_the_action_row_without_a_host(h):
     row = h.action(res)
     assert row.error_code == "VENDOR_REFUSED" and row.response_status == 500
     assert "ac.example.test" not in json.dumps(row.response_json, default=str)
+
+
+def test_bare_vendor_500_carries_the_vendor_text_in_message(h):
+    """SS-AC-BLANK-MASTER-REF B2: a bare VENDOR_ERROR still names what AutoCount said."""
+    _so(h)
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, "kaput " * 200)
+    res = h.edit("SO", 5001, {"Remark1": "x"})
+    assert res.outcome == "vendor_error" and res.error_code == "VENDOR_ERROR"
+    assert res.message.startswith("kaput") and len(res.message) <= 300

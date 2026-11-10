@@ -127,7 +127,12 @@ def db(session_factory):
 def h(db, session_factory):
     harness = Harness(db, session_factory)
     fake = VendorFake(db, session_factory)
-    fake.serve("purchaseorderbydocdate", _load("po_202602_S0007.json"))
+    po = _load("po_202602_S0007.json")
+    # These cases pin the LOCATION rules: the source row carries no delivery date, so
+    # the only value AutoCount resets on the new row is its location. The price /
+    # date restore (B4) is pinned in test_autocount_write_back_transfer_values.py.
+    next(r for r in po["Details"] if r["DtlKey"] == 12017)["DeliveryDate"] = EMPTY
+    fake.serve("purchaseorderbydocdate", po)
     fake.serve("salesorderbydocdate", _so_with_dates())
     harness.ac = fake
     return harness

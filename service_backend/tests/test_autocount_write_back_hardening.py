@@ -708,7 +708,11 @@ def vh(db, session_factory):
     """Harness over a db3-style fake (new linked row forced to HQ)."""
     harness = Harness(db, session_factory)
     fake = VendorFake(db, session_factory)
-    fake.serve("purchaseorderbydocdate", _load("po_202602_S0007.json"))
+    po = _load("po_202602_S0007.json")
+    # location rules only: no source delivery date to restore (B4 is pinned in
+    # test_autocount_write_back_transfer_values.py)
+    next(r for r in po["Details"] if r["DtlKey"] == 12017)["DeliveryDate"] = "0001-01-01T00:00:00"
+    fake.serve("purchaseorderbydocdate", po)
     fake.serve("salesorderbydocdate", _load("so_SO389293.json"))
     harness.ac = fake
     return harness

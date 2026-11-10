@@ -435,3 +435,61 @@ def test_ac_57_17_verify_cancel():
     assert P.verify_cancel("QT", after).outcome == "done"
     after["Cancelled"] = "F"  # probe P-CX1: vendor answered 200 and changed nothing
     assert P.verify_cancel("QT", after).outcome == "mismatch"
+
+
+# F13 (AC-E2E-DB3, db3 6 Nov, QT DocKey 12147): the wrapper copies Remark1 into
+# Remark2..4 on an edit. Echoed old Remark2..4 reading back as the NEW Remark1 is the
+# vendor mirroring, not an ignored field.
+def _remarks(doc, value):
+    for n in (1, 2, 3, 4):
+        doc[f"Remark{n}"] = value
+
+
+@pytest.mark.parametrize("kind,make", [("QT", qt_doc), ("SO", so_doc)])
+def test_f13_remark1_mirrored_into_remark2_to_4_is_not_ignored(kind, make):
+    before = make()
+    _remarks(before, "QT-2026-0001 (R1)")
+    after = copy.deepcopy(before)
+    _remarks(after, "QT-2026-0001 (R2)")
+    assert P.verify_edit(kind, before, {"Remark1": "QT-2026-0001 (R2)"}, [], after) == []
+
+
+def test_f13_remark2_drift_to_another_value_is_still_reported():
+    before = qt_doc()
+    _remarks(before, "R1")
+    after = copy.deepcopy(before)
+    after["Remark1"] = "R2"
+    after["Remark2"] = "SOMETHING ELSE"
+    assert P.verify_edit("QT", before, {"Remark1": "R2"}, [], after) == ["Remark2"]
+
+
+def test_f13_remark2_drift_without_a_remark1_change_is_still_reported():
+    before = qt_doc()
+    _remarks(before, "R1")
+    after = copy.deepcopy(before)
+    after["Remark2"] = after["Remark3"] = after["Remark4"] = "R2"
+    assert P.verify_edit("QT", before, {"Ref": after.get("Ref")}, [], after) == ["Remark2", "Remark3", "Remark4"]
+
+
+def test_f13_explicit_remark2_overwritten_by_the_mirror_is_reported():
+    before = qt_doc()
+    _remarks(before, "R1")
+    after = copy.deepcopy(before)
+    _remarks(after, "R2")
+    ignored = P.verify_edit("QT", before, {"Remark1": "R2", "Remark2": "MINE"}, [], after)
+    assert ignored == ["Remark2"]
+
+
+def test_f13_remark1_itself_ignored_is_still_reported():
+    before = qt_doc()
+    _remarks(before, "R1")
+    after = copy.deepcopy(before)
+    assert P.verify_edit("QT", before, {"Remark1": "R2"}, [], after) == ["Remark1"]
+
+
+def test_f13_remark2_cleared_without_a_remark1_change_is_still_reported():
+    before = qt_doc()
+    _remarks(before, "R1")
+    after = copy.deepcopy(before)
+    after["Remark2"] = None
+    assert P.verify_edit("QT", before, {}, [], after) == ["Remark2"]
