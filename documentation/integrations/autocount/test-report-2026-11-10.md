@@ -32,6 +32,7 @@ error); their documents (`FXT-1110a-QT1`, `FXT-1110a-SO2`, `FXT-1110b-QT1`, `FXT
 | F12 | Cancel of a purchase order linked to a sales order frees the sales order quantity; cancel of a sales order taken from a quotation gives the quotation quantity back. | P-C4, P-C8, P-C9, P-C9b |
 | F13 | A PUT with no rows and a header change applies the header and keeps every row. | P-CASE |
 | F14 | A purchase order posted with `ShippingPO "T"` and a plain row is created as a normal purchase order (`ShippingPO` reads "F"). A shipping purchase order still cannot be made on db3, so no shipping purchase order probe could run. | P-SPO1 |
+| F14b | `ShippingPO` "Y", "1", `true`, "t" on create, "T" with a DocNo starting `SPO`, and "T" on an edit all read back "F": the field is not taken on create or edit. | P-SPO2..P-SPO7 |
 | F15 | "D" on a partly received purchase order row could not be tested: db3 has no goods received note write door. | none |
 
 ## Calls (runs `FXT-1110c-`, `FXT-1110d-`, `FXT-1110e-`)
@@ -88,3 +89,16 @@ for a sales order row) and the DeliveryDate. `0001-01-01` is AutoCount's empty d
 | S10 | 14:42:18 | POST /NewSalesOrder (new SO, 2 plain rows) | 200 | `DocNo=FXT-1110e-SO1 ,DocKey=12253 ... Created Successful.` | FXT-1110e-SO1 Cancelled F DocStatus A: 12254 SRTUB6213-BI 2 HQ date 2026-11-10; 12255 SRTKT38SS 3 HQ date 2026-11-10 |
 | P-DL5 | 14:42:18 | PUT /EditSalesOrderbydockey (D on a plain SO row (full row shape)) | 200 | `DocNo=FXT-1110e-SO1 ,DocKey=12253 ... Done Edit.` | FXT-1110e-SO1 Cancelled F DocStatus A: 12254 SRTUB6213-BI 2 HQ date 2026-11-10 |
 | P-DL6 | 14:42:19 | PUT /EditSalesOrderbydockey (D on the last remaining SO row (doc with no rows?)) | 200 | `DocNo=FXT-1110e-SO1 ,DocKey=12253 ... Done Edit.` | FXT-1110e-SO1 Cancelled F DocStatus A: no rows |
+
+## Shipping purchase order flag (10 Nov 2026, about 15:55 UTC)
+
+| Probe | Call | Status | Read back |
+|---|---|---|---|
+| P-SPO2 | POST /NewPurchaseOrder FXT-1110f-SPO1, `ShippingPO "Y"` | 200 created | `ShippingPO "F"` |
+| P-SPO3 | POST /NewPurchaseOrder FXT-1110f-SPO2, `ShippingPO "1"` | 200 created | `ShippingPO "F"` |
+| P-SPO4 | POST /NewPurchaseOrder FXT-1110f-SPO3, `ShippingPO true` | 200 created | `ShippingPO "F"` |
+| P-SPO5 | POST /NewPurchaseOrder FXT-1110f-SPO4, `ShippingPO "t"` | 200 created | `ShippingPO "F"` |
+| P-SPO6 | PUT /EditPurchaseOrderbydockey FXT-1110f-SPO1, header `ShippingPO "T"`, no rows | 200 `Done Edit.` | `ShippingPO "F"` |
+| P-SPO7 | POST /NewPurchaseOrder SPO-FXT-1110f-1 (DocNo starting SPO), `ShippingPO "T"` | 200 created | `ShippingPO "F"` |
+
+Each document has one plain row (SRTKT38SS qty 1). The wrapper does not take `ShippingPO` on create or edit today.

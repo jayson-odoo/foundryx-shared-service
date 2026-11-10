@@ -54,6 +54,7 @@ documents only, db3 only, nothing deleted. Exact requests and responses:
 | F12 | Cancel a PO linked to an SO (P-C4), an SO taken from a QT (P-C9) | 200 cancelled; the SO row's qty is freed (P-C8) and the QT qty returns (P-C9b). |
 | F13 | PUT with `Details []` and a header change (P-CASE) | header applied, every row kept (owner answer 1). |
 | F14 | SPO create: POST `/NewPurchaseOrder` `ShippingPO "T"`, full body, plain row (P-SPO1) | 200 but reads back `ShippingPO "F"`: a plain PO. db3 still cannot make an SPO, so no SPO probe can run. |
+| F14b | Owner 10 Nov 23:3x asked to find the Shipping PO flag value. db3 API, 10 Nov ~15:55 UTC (`FXT-1110f-SPO1`..`SPO4`, `SPO-FXT-1110f-1`): POST `/NewPurchaseOrder` with `ShippingPO` "Y", "1", `true`, "t", and "T" with a DocNo starting `SPO`; PUT `/EditPurchaseOrderbydockey` header `ShippingPO "T"` | every call 200, every doc reads `ShippingPO "F"`: the wrapper ignores the field on create AND edit whatever the value, so no database value can make it stick. A Shipping PO needs the vendor's wrapper to pass `ShippingPO` through. The read-only database check (column type, values on real SPO docs) was not run from the lane: the session's permission guard blocked the live-database read; the SELECTs are ready for the owner (`crew/state/files/autocount-api/spo-flag-selects.sql`). |
 | F15 | "D" on a partly received PO row | NOT TESTABLE on db3: there is no GRN write door. UNVERIFIED; our own receipt guard stays. |
 
 ## 4. Design
