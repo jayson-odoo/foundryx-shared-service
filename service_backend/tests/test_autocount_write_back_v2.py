@@ -380,7 +380,7 @@ def test_ac_61_12_link_row_operation_is_one_replace_put_plus_a_move_put(h, world
 def test_ac_61_12_link_of_a_row_already_at_hq_without_a_date_is_a_single_put(h):
     world = World(h)
     free = row(h.vendor, "PO", 7001, world.p_free)  # already where the vendor puts a linked row
-    free["Location"], free["DeliveryDate"] = "HQ", "0001-01-01T00:00:00"
+    free["Location"], free["DeliveryDate"], free["UnitPrice"] = "HQ", "0001-01-01T00:00:00", 0.0
     res = h.run("link_row", world.params["link_row"])
     assert res.outcome == "done", res.error_code
     assert methods(h) == ["PUT"] and not res.warnings
@@ -747,3 +747,163 @@ def test_ac_61_41_unlink_and_cancel_and_delete_builders_of_the_old_shapes_are_go
     assert not hasattr(payloads, "build_unlink")  # the blank-link PUT never lands (db3 ignored it)
     assert not hasattr(payloads, "build_spo_unlink")
     assert hasattr(payloads, "build_row_replace")
+
+
+# ============================== round 3: review round 1 findings ===============================
+
+def _row_matches_old(stored, old, *, location=None):
+    assert float(stored["UnitPrice"]) == float(old["UnitPrice"]), stored["UnitPrice"]
+    assert str(stored["DeliveryDate"])[:10] == str(old["DeliveryDate"])[:10], stored["DeliveryDate"]
+    if location is not None:
+        assert stored["Location"] == location
+
+
+def test_r3_fake_vendor_resets_a_new_linked_po_row_price_to_zero_and_a_later_edit_can_set_it(h, world):
+    res = h.service().add_line(**h.args("PO", doc_key=7001, line=_line(
+        "ITEM-A", 1, 9.0, "BR1", FromDocType="SO", FromDocNo="SO-7002", FromDocDtlKey=world.so_a)))
+    assert res.outcome in ("done", "mismatch"), res.error_code
+    added = [r for r in h.vendor.rows("PO", 7001)
+             if r["DtlKey"] not in (world.p_free, world.p_linked, world.p_spo, world.p_other)][0]
+    assert added["UnitPrice"] == 0.0 and added["Location"] == "HQ" and str(added["DeliveryDate"]).startswith("0001")
+    assert added["FromSODtlKey"] == world.so_a and added["FromDocType"] == ""
+    h.vendor._edit("PO", {"DocKey": 7001, "Details": [{"DtlKey": added["DtlKey"], "UnitPrice": 9.0,
+                                                       "Location": "BR1", "DeliveryDate": "2026-12-01T00:00:00"}]})
+    again = row(h.vendor, "PO", 7001, added["DtlKey"])
+    assert (again["UnitPrice"], again["Location"], str(again["DeliveryDate"])[:10]) == (9.0, "BR1", "2026-12-01")
+
+
+def test_r3_link_row_ends_done_with_the_old_rows_price_and_date_in_exactly_two_puts(h, world):
+    old = dict(row(h.vendor, "PO", 7001, world.p_free))
+    res = h.run("link_row", world.params["link_row"])
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert not res.warnings and len(puts(h)) == 2 and "DELETE" not in methods(h)
+    (_o, new), = res.replaced_lines
+    stored = row(h.vendor, "PO", 7001, new)
+    _row_matches_old(stored, old)
+    assert stored["FromSODtlKey"] == world.so_a
+    assert float(puts(h)[1].body["Details"][0]["UnitPrice"]) == float(old["UnitPrice"])
+
+
+def test_r3_link_row_moves_to_the_so_rows_location_when_it_differs(h):
+    world = World(h, so_loc="BRW-AM")
+    old = dict(row(h.vendor, "PO", 7001, world.p_free))
+    res = h.run("link_row", world.params["link_row"])
+    assert res.outcome == "done" and len(puts(h)) == 2, (res.outcome, res.error_code)
+    (_o, new), = res.replaced_lines
+    _row_matches_old(row(h.vendor, "PO", 7001, new), old, location="BRW-AM")
+
+
+def test_r3_relink_row_ends_done_with_the_old_rows_price_and_date_in_exactly_two_puts(h, world):
+    old = dict(row(h.vendor, "PO", 7001, world.p_linked))
+    res = h.run("relink_row", world.params["relink_row"])
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert not res.warnings and len(puts(h)) == 2
+    (_o, new), = res.replaced_lines
+    stored = row(h.vendor, "PO", 7001, new)
+    _row_matches_old(stored, old)
+    assert stored["FromSODtlKey"] == world.so_b
+
+
+def test_r3_gateway_link_and_relink_end_done_not_recovered(client, h, gw, world):
+    old_link = dict(row(h.vendor, "PO", 7001, world.p_free))
+    r = client.post(f"{PREFIX}/po-links", headers=gw.hdr(), json={
+        "companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_free,
+        "soDocKey": 7002, "soDtlKey": world.so_a, "qty": 4})
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+    assert len(puts(h)) == 2
+    new = r.json()["replacedLines"][0][1]
+    _row_matches_old(row(h.vendor, "PO", 7001, new), old_link)
+    h.vendor.calls.clear()
+    old_re = dict(row(h.vendor, "PO", 7001, world.p_linked))
+    r = client.post(f"{PREFIX}/po-links/relink", headers=gw.hdr("k2"), json={
+        "companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked,
+        "soDocKey": 7002, "soDtlKey": world.so_b})
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+    assert len(puts(h)) == 2
+    _row_matches_old(row(h.vendor, "PO", 7001, r.json()["replacedLines"][0][1]), old_re)
+
+
+@pytest.mark.parametrize("op", ["link_row", "relink_row"])
+def test_r3_a_failed_move_put_is_done_with_both_warnings_and_no_third_put(h, world, op):
+    h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
+    res = h.run(op, world.params[op])
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert "LOCATION_NOT_MOVED" in res.warnings and "ROW_VALUES_NOT_KEPT" in res.warnings
+    assert len(puts(h)) == 2  # the replace and the failed move: no recovery, no retry
+    (_o, new), = res.replaced_lines
+    assert row(h.vendor, "PO", 7001, new)["FromSODtlKey"] in (world.so_a, world.so_b)  # the link is kept
+
+
+def test_r3_old_row_at_hq_without_a_date_but_with_a_price_still_gets_the_move_put(h):
+    world = World(h)
+    free = row(h.vendor, "PO", 7001, world.p_free)
+    free["Location"], free["DeliveryDate"] = "HQ", "0001-01-01T00:00:00"  # UnitPrice stays 5.0
+    res = h.run("link_row", world.params["link_row"])
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert len(puts(h)) == 2
+    (_o, new), = res.replaced_lines
+    assert float(row(h.vendor, "PO", 7001, new)["UnitPrice"]) == 5.0
+
+
+# ---- AC-61-20: ROW_RECEIVED / ROW_ON_SPO before any request on a PO delete_line ----------------
+
+def test_r3_po_delete_line_on_a_received_row_is_row_received_with_zero_writes(h, world):
+    row(h.vendor, "PO", 7001, world.p_free)["TransferedQty"] = 4  # the GET shows a full receipt
+    res = h.service().delete_line(**h.args("PO", doc_key=7001, dtl_key=world.p_free))
+    assert res.outcome == "refused" and res.error_code == "ROW_RECEIVED", (res.outcome, res.error_code)
+    assert h.vendor.writes() == []
+
+
+def test_r3_po_delete_line_control_nothing_received_is_deleted(h, world):
+    row(h.vendor, "PO", 7001, world.p_free)["TransferedQty"] = 0
+    res = h.service().delete_line(**h.args("PO", doc_key=7001, dtl_key=world.p_free))
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert methods(h) == ["PUT"]
+
+
+def test_r3_po_delete_line_on_a_row_an_spo_points_at_is_row_on_spo_with_zero_writes(h, world):
+    res = h.service().delete_line(**h.args("PO", doc_key=7001, dtl_key=world.p_spo))
+    assert res.outcome == "refused" and res.error_code == "ROW_ON_SPO", (res.outcome, res.error_code)
+    assert h.vendor.writes() == []
+    assert row(h.vendor, "PO", 7001, world.p_spo) is not None
+
+
+# ---- replace PUT timeout ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("op", ["unlink_row", "link_row", "relink_row"])
+def test_r3_replace_put_timeout_is_pending_sent_once_and_never_moved(h, world, op):
+    h.vendor.timeout_next("PUT", "EditPurchaseOrderbydockey")
+    res = h.run(op, world.params[op])
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    sent_puts = [c for c in h.vendor.calls if c.method == "PUT"]
+    assert len(sent_puts) == 1  # exactly once: no retry, no move PUT
+    assert "DELETE" not in [c.method for c in h.vendor.calls]
+
+
+# ---- AC-61-16: FullTransferFromDocList "" on relocate and the split restore PUT ----------------------
+
+def _all_rows_blank_list(h):
+    rows = [r for c in puts(h) for r in c.body["Details"] if r.get("FullTransferOption") != "D"]
+    assert rows
+    for r in rows:
+        assert "FullTransferFromDocList" in r and r["FullTransferFromDocList"] == "", r
+
+
+def test_r3_relocate_put_rows_carry_a_blank_full_transfer_from_doc_list(h, world):
+    from modules.autocount.write_back.service import WriteBackService
+
+    row(h.vendor, "PO", 7001, world.p_linked)["Location"] = "BR1"  # SO row sits at HQ
+    svc = WriteBackService(h.db, **h.factories())
+    res = svc.relocate(tenant_id=h.company.tenant_id, company_id=h.company.id, po_doc_key=7001,
+                       po_dtl_key=world.p_linked, key_id="k1")
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert len(puts(h)) == 1
+    _all_rows_blank_list(h)
+
+
+def test_r3_split_link_restore_put_rows_carry_a_blank_full_transfer_from_doc_list(h, world):
+    res = h.run("split_link", dict(po_doc_key=7001, po_dtl_key=world.p_free, so_doc_key=7002,
+                                   so_dtl_key=world.so_a, qty=2))
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert len(puts(h)) == 2  # the split, then the restore of the fields the vendor reset
+    _all_rows_blank_list(h)

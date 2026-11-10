@@ -316,6 +316,7 @@ class FakeAutoCountVendor:
             stored["FromDocType"] = ""  # a PO row reads its link as FromSODtlKey only (F5)
             stored["Location"] = "HQ"  # db3 forces HQ on a new row linked to an SO row
             stored["DeliveryDate"] = "0001-01-01T00:00:00"  # and clears the delivery date (F5)
+            stored["UnitPrice"] = 0.0  # and resets the unit price to 0 (F5); a later edit PUT can set it
 
     def _inherit(self, stored: Dict[str, Any], sent: Dict[str, Any]) -> None:
         for qt in self.docs["QT"]:

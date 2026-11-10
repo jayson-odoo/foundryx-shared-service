@@ -356,3 +356,53 @@ def test_ac_61_64_no_column_of_any_row_holds_a_secret_or_the_host(client, h, gw,
                         "Authorization", "X-API-Key"):
                     continue  # the vendor's own error text is stored as it came, never our headers
                 assert needle not in text, (column.name, needle)
+
+
+# ============================== round 3: review round 1 findings ===============================
+
+HOST = "ac.example.test"
+
+
+def test_r3_a_vendor_error_body_is_stored_without_the_host_stack_traces_or_paths(h):
+    seed_so(h)
+    body = {
+        "Message": f"Call to https://{HOST}/api/db3/EditSalesOrderbydockey failed on {HOST}",
+        "ExceptionMessage": f"Credit limit hit for debtor D1 at {HOST}",
+        "ExceptionType": "AutoCount.Invoicing.CreditLimitException",
+        "StackTrace": "   at AutoCount.Foo() in C:\\src\\AutoCount\\Foo.cs:line 12",
+        "InnerException": {"Message": f"inner {HOST}", "StackTrace": "   at X() in C:\\src\\Inner.cs:line 3"},
+    }
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, json.dumps(body))
+    h.edit("SO", 5001, {"Remark1": "hello"})
+    row = next(r for r in logs(h) if r.method == "PUT")
+    stored = row.response_body
+    assert row.outcome == "http_error" and row.response_status == 500
+    assert HOST not in stored and "StackTrace" not in stored and "C:\\" not in stored
+    assert "Credit limit hit for debtor D1" in stored  # the vendor's message text is kept, minus the host
+
+
+def test_r3_a_2xx_get_body_is_stored_as_is(h):
+    seed_so(h)
+    h.edit("SO", 5001, {"Remark1": "hello"})
+    first = next(r for r in logs(h) if r.method == "GET")
+    stored = json.loads(first.response_body)
+    assert stored[0]["DocNo"] == "SO-5001" and len(stored[0]["Details"]) == 2
+    assert "[redacted]" not in first.response_body
+
+
+def test_r3_the_32kb_cap_counts_utf8_bytes(h):
+    seed_so(h)
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, "\u20ac" * 20000)  # 3 bytes each, 60000 bytes
+    h.edit("SO", 5001, {"Remark1": "hello"})
+    row = next(r for r in logs(h) if r.method == "PUT")
+    assert len(row.response_body.encode("utf-8")) <= CAP
+    assert row.response_truncated is True
+
+
+def test_r3_split_link_operation_rows_carry_the_operation_id(h, world):
+    res = h.run("split_link", dict(po_doc_key=7001, po_dtl_key=world.p_free, so_doc_key=7002,
+                                   so_dtl_key=world.so_a, qty=2))
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    put_rows = [r for r in logs(h) if r.method == "PUT"]
+    assert len(put_rows) == 2
+    assert all(r.operation_id == res.operation_id for r in put_rows), [r.operation_id for r in put_rows]
