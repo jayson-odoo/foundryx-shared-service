@@ -696,6 +696,13 @@ class _Run:
 
 
 
+def _require_test_book(base_url: str) -> None:
+    """The suites write test data: only a test book, whatever the environment."""
+    book = guard.book_of(base_url)
+    if book not in guard.TEST_BOOKS:
+        raise WriteNotAllowed(book or "")
+
+
 def _move_warned(warnings: Sequence[str]) -> bool:
     """The restore move did not land (``TRANSFER_STATE_UNKNOWN`` alone is fine: db3's GET
     never shows a received quantity)."""
@@ -737,14 +744,15 @@ def run_db3_suite(
     sink_factory: Optional[Callable[..., object]] = None,
 ) -> SuiteResult:
     """Run C00..C17 in order. Refuses to start (``WriteNotAllowed`` /
-    ``WriteDisabled``) before any request when the company's write connection is
-    not db3. A case fault is recorded as FAIL, never raised."""
+    ``WriteDisabled``) before any request, in every environment, when the company's
+    write connection is not a test book. A case fault is recorded as FAIL, never raised."""
     company = CompanyRepository(db).get(tenant_id, company_id)
     from modules.autocount.write_back.pull_docs import WriteDisabled
 
     if company is None:
         raise WriteDisabled()
-    base_url = write_base_url(db, company)  # resolves WITH tenant_id and runs the db3 guard
+    base_url = write_base_url(db, company)  # resolves WITH tenant_id and runs the write guard
+    _require_test_book(base_url)
     guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))  # AC-57-22: before any request
     run = _Run(
         db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
@@ -1202,8 +1210,8 @@ def run_qtso_suite(
     sink_factory: Optional[Callable[..., object]] = None,
 ) -> SuiteResult:
     """Run Q01..Q10 through the real primitive / operation services. Refuses to
-    start before any request (``WriteDisabled`` / ``WriteNotAllowed`` for the
-    connection, ``WriteConnectionError`` ``WRITE_COMPANY_NOT_TEST`` for a company
+    start before any request, in every environment (``WriteDisabled`` /
+    ``WriteNotAllowed`` for the connection or a book that is not a test book, ``WriteConnectionError`` ``WRITE_COMPANY_NOT_TEST`` for a company
     that reads SQL or holds documents staged by another job). A case fault is
     recorded as FAIL, never raised; every vendor write lands in ``evidence``."""
     from modules.autocount.write_back.pull_docs import WriteDisabled
@@ -1212,6 +1220,8 @@ def run_qtso_suite(
     if company is None:
         raise WriteDisabled()
     base_url = write_base_url(db, company)
+    _require_test_book(base_url)
+    write_auth_headers(db, company)  # an unusable API key setting refuses the run before any request
     guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))  # raises WriteConnectionError
     run = _QtRun(
         db, tenant_id, company, base_url, debtor_code, run_tag, header_extra or {},
