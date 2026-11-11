@@ -78,14 +78,18 @@ def upgrade() -> None:
     op.create_index("ix_ac_po_so_link_so_dtl", TABLE, ["tenant_id", "company_id", "so_dtl_key"], schema=SCHEMA)
     op.create_index("ix_ac_po_so_link_po_ref", TABLE, ["tenant_id", "company_id", "po_source_ref"], schema=SCHEMA)
 
-    # backfill: the newest staged row of each PO that is not a discarded (cancelled) delete intent; a live delete
-    # intent or a cancelled PO adds nothing, a discarded intent leaves the newest real copy in charge
+    # backfill: the newest staged row of each PO that is not a discarded delete intent (as the runtime newest()
+    # reads it); a live delete intent or a cancelled PO adds nothing
     newest = (
         sa.select(
             staged.c.tenant_id, staged.c.company_id, staged.c.source_ref, staged.c.op, staged.c.raw_json,
             staged.c.status,
         )
-        .where(staged.c.entity_type == ENTITY_PURCHASE_ORDER, staged.c.status != "DISCARDED")
+        .where(
+            staged.c.entity_type == ENTITY_PURCHASE_ORDER,
+            # a cancelled (DISCARDED) delete intent is ignored; every other row counts, as the runtime newest() reads
+            sa.not_(sa.and_(staged.c.op == "delete", staged.c.status == "DISCARDED")),
+        )
         .distinct(staged.c.tenant_id, staged.c.company_id, staged.c.source_ref)
         .order_by(staged.c.tenant_id, staged.c.company_id, staged.c.source_ref,
                   staged.c.created_at.desc(), staged.c.id)
