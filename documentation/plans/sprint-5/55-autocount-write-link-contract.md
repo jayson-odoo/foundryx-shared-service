@@ -92,6 +92,9 @@ resend does:
 
 A call that ended `pending_verification` is still never blind-resent with a NEW key.
 
+`POST /write-operations/{id}/resume` only exists for the link, unlink, relink and batch operations. On a document
+primitive (a create) it answers `409 OPERATION_NOT_RESUMABLE` and changes nothing; resend the create with the same key instead.
+
 Creating a document (`POST /documents/{kind}`) follows the same table with one difference, because a failed
 create may still have saved the document. A create AutoCount refused before saving (credit limit, unknown item,
 unknown debtor) or SS refused is released at once. Any other failure or an unfinished create is not re-run

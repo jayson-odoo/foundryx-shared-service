@@ -78,6 +78,7 @@ VENDOR_ERROR = "vendor_error"
 IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
 OPERATION_IN_PROGRESS = "OPERATION_IN_PROGRESS"
 UNKNOWN_OPERATION = "UNKNOWN_OPERATION"
+OPERATION_NOT_RESUMABLE = "OPERATION_NOT_RESUMABLE"
 INVALID_PARAMS = "INVALID_PARAMS"
 ROW_RECEIVED = "ROW_RECEIVED"
 TRANSFER_STATE_UNKNOWN = "TRANSFER_STATE_UNKNOWN"
@@ -325,6 +326,8 @@ class OperationService:
             raise LookupError("operation not found")
         if row.status == IN_PROGRESS:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
+        if row.op != SPLIT_LINK and row.op != LINK_BATCH and row.op not in OPS:
+            return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
         if row.status not in (NEEDS_ATTENTION, PENDING) or not row.snapshot_json:
             return self._from_row(row)
         company = CompanyRepository(self.db).get(tenant_id, company_id)
