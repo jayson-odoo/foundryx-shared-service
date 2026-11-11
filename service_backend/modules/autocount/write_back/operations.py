@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -87,6 +87,7 @@ ROW_VALUES_NOT_KEPT = "ROW_VALUES_NOT_KEPT"
 NOT_APPLIED = "OPERATION_NOT_APPLIED"
 SPLIT_LINK = "split_link"
 LINK_BATCH = "link_batch"  # plan 62: one PO row to N SO rows in one PUT
+ALL_LINKS_SKIPPED = "ALL_LINKS_SKIPPED"
 MAX_BATCH_LINKS = 20
 TEMPLATE_KEY = "autocount_write_needs_attention"
 
@@ -169,8 +170,9 @@ class _Spec:
 class _Done(Exception):
     """Internal early exit carrying a finished result."""
 
-    def __init__(self, status: str, code: Optional[str] = None, message: str = "") -> None:
-        self.status, self.code, self.message = status, code, message
+    def __init__(self, status: str, code: Optional[str] = None, message: str = "",
+                 batch: Optional[Dict[str, Any]] = None) -> None:
+        self.status, self.code, self.message, self.batch = status, code, message, batch
 
 
 def primitive_answer(res: PrimitiveResult, doc_key: Optional[int] = None) -> Dict[str, Any]:
@@ -361,7 +363,7 @@ class OperationService:
                 self.ops.delete(row)
                 self.db.commit()
                 return OperationResult(None, REFUSED, DOC_BUSY)
-            return self._finish(row, done.status, done.code, message=done.message)
+            return self._finish(row, done.status, done.code, message=done.message, batch=done.batch)
         except Exception:  # noqa: BLE001 - the in_progress lock must never be stranded
             logger.exception("autocount operation failed (%s)", row.id)
             self.db.rollback()
@@ -1018,8 +1020,8 @@ class OperationService:
     # ── link batch (plan 62 D1-D5): one PO row to N SO rows in ONE PUT ───────
 
     def _batch_params(self, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """The batch's links, checked before anything is read: 1..20, no repeated SO row, every
-        quantity valid (``QTY_INVALID``). A refusal here sends nothing."""
+        """The batch's links, checked before anything is read: 1..20, no repeated SO row. A quantity that is
+        not valid does not refuse the batch: that line is skipped (``QTY_INVALID``)."""
         raw = params["links"]
         if not 1 <= len(raw) <= MAX_BATCH_LINKS:
             raise _Done(REFUSED, INVALID_PARAMS, f"links must hold 1 to {MAX_BATCH_LINKS} entries")
@@ -1034,27 +1036,33 @@ class OperationService:
             if so_dtl in seen:
                 raise _Done(REFUSED, INVALID_PARAMS, f"SO row {so_dtl} is listed twice")
             seen.add(so_dtl)
+            skip = None
             try:
                 qty = payloads.validate_qty(qty)
-            except WriteRefusal as exc:
-                raise _Done(REFUSED, exc.code, str(exc)) from None
+            except WriteRefusal:
+                skip = "QTY_INVALID"
             links.append({"so_doc_key": so_doc, "so_dtl_key": so_dtl, "qty": qty,
-                          "so_doc_date": item.get("so_doc_date")})
+                          "so_doc_date": item.get("so_doc_date"), "skip": skip})
         return links
 
     def _batch_link(self, row: AcWriteOperation, company: AcCompany, spec: _Spec,
                     params: Dict[str, Any]) -> OperationResult:
         links = self._batch_params(params)
-        # the guard and PUT 1 run under a per-SO-row lock (link_lock); the restore PUT runs after it is released
+        # The guard and PUT 1 run under a per-SO-row lock (link_lock); the restore PUT runs after it is
+        # released. All requested SO rows are locked, in sorted order (no deadlock): which lines are valid is
+        # only known after reading, and a lock taken before the reads is the one that covers the guard.
         try:
             with so_row_locks(self.db, company.id, [link["so_dtl_key"] for link in links]):
-                snapshot, document = self._batch_locked(row, company, spec, links)
+                outcome = self._batch_locked(row, company, spec, links)
         except SoRowBusy:
             raise _Done(REFUSED, DOC_BUSY) from None
+        if isinstance(outcome, OperationResult):
+            return outcome
+        snapshot, document = outcome
         return self._batch_done(row, company, snapshot, document)
 
     def _batch_locked(self, row: AcWriteOperation, company: AcCompany, spec: _Spec,
-                      links: List[Dict[str, Any]]) -> Tuple[Doc, Doc]:
+                      links: List[Dict[str, Any]]) -> "Union[OperationResult, Tuple[Doc, Doc]]":
         defn = OPS["link_row"]  # D9: the batch rides the link switch and the delete / add / edit primitives
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
@@ -1075,62 +1083,92 @@ class OperationService:
         if mode == "partial":
             raise _Done(REFUSED, ROW_RECEIVED)
         free = _dec(old.get("Qty"))
-        if sum((link["qty"] for link in links), Decimal(0)) > free:
-            raise _Done(REFUSED, "QTY_ABOVE_FREE")
+        # Owner rule (plan 62, 12 Nov): a bad line never fails the batch. Each line is checked on its own,
+        # in request order; a failing line is skipped and named, the rest are linked.
         sources: Dict[int, Doc] = {}
         lines: List[Doc] = []
+        applied: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        running = Decimal(0)
         for link in links:
-            so = sources.get(link["so_doc_key"])
-            if so is None:
-                _d, so = self._read(company, "SO", link["so_doc_key"], _as_date(link["so_doc_date"]))
-                sources[link["so_doc_key"]] = so
-            if so.get("Cancelled") == "T":
-                raise _Done(REFUSED, "DOC_CANCELLED", f"sales order {so.get('DocNo')} is cancelled")
-            so_row = next((r for r in so.get("Details") or [] if r.get("DtlKey") == link["so_dtl_key"]), None)
-            if so_row is None:
-                raise _Done(REFUSED, "ROW_NOT_FOUND", f"SO row {link['so_dtl_key']} not found")
-            if old.get("ItemCode") != so_row.get("ItemCode"):
-                raise _Done(REFUSED, "ITEM_MISMATCH", f"SO row {link['so_dtl_key']} has another item")
-            if old.get("UOM") != so_row.get("UOM"):
-                raise _Done(REFUSED, "UOM_MISMATCH", f"SO row {link['so_dtl_key']} has another unit")
-            used = self.prims._so_linked_qty(company, link["so_dtl_key"], fresh_po=doc)
-            if link["qty"] > payloads.so_outstanding(so_row, used):
-                raise _Done(REFUSED, "QTY_ABOVE_OUTSTANDING",
-                            f"quantity above the outstanding of SO row {link['so_dtl_key']}")
-            link["so_no"], link["location"] = so.get("DocNo"), so_row.get("Location")
+            code = link["skip"] or self._line_skip(company, doc, old, link, sources, free, running)
+            if code:
+                skipped.append({"soDocKey": link["so_doc_key"], "soDtlKey": link["so_dtl_key"], "code": code})
+                continue
+            running += link["qty"]
+            applied.append(link)
             lines.append(dict(
                 {k: v for k, v in old.items() if k != "DtlKey"},
-                FromDocType="SO", FromDocNo=so.get("DocNo"), FromDocDtlKey=link["so_dtl_key"],
-                Location=so_row.get("Location"), Qty=float(link["qty"]), FOCQty=0,
+                FromDocType="SO", FromDocNo=link["so_no"], FromDocDtlKey=link["so_dtl_key"],
+                Location=link["location"], Qty=float(link["qty"]), FOCQty=0,
             ))
+        if not applied:  # nothing to link: refused, nothing sent, the key is released
+            return self._finish(row, REFUSED, ALL_LINKS_SKIPPED, message="every link was skipped",
+                                batch={"links": [], "skipped": skipped, "freeLine": None})
         snapshot = _json_safe({
             "kind": "PO", "mode": "batch", "docKey": spec.doc_key, "docNo": doc.get("DocNo"),
             "docDate": doc_date.isoformat(), "lastModified": doc.get("LastModified"),
             "knownKeys": [r.get("DtlKey") for r in doc.get("Details") or []], "row": old,
             "received": None, "location": old.get("Location"), "companyName": company.company_name or company.name,
             "links": [{"soDocKey": link["so_doc_key"], "soDtlKey": link["so_dtl_key"], "qty": str(link["qty"]),
-                       "soNo": link["so_no"], "location": link["location"]} for link in links],
+                       "soNo": link["so_no"], "location": link["location"]} for link in applied],
+            "skipped": skipped,
         })
         row.snapshot_json = snapshot
         self.db.commit()
-        self._check_deadline()
-        res = self.prims.batch_link(
-            **self._call(row, company, snapshot, "link"), dtl_key=spec.dtl_key, lines=lines,
-        )
-        self._step("link", res)
-        if res.outcome == OUTCOME_VENDOR_ERROR:
-            if res.error_code == VENDOR_REFUSED:  # AutoCount said no (all or nothing): nothing landed
-                raise _Done(VENDOR_ERROR, res.error_code, res.message)
-            raise _Done(PENDING, res.error_code, res.message)  # a bare 5xx or timeout: resume reads
-        if res.outcome == OUTCOME_MISMATCH:  # the PUT landed but reads back wrong
-            raise _Done(NEEDS_ATTENTION, res.error_code or INTERNAL_ERROR, res.message)
-        if res.outcome != OUTCOME_DONE or res.document is None:
-            self._abort_unless_done(res)
-            raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
+        none_linked = {"links": [], "skipped": skipped, "freeLine": None}
+        try:
+            self._check_deadline()
+            res = self.prims.batch_link(
+                **self._call(row, company, snapshot, "link"), dtl_key=spec.dtl_key, lines=lines,
+            )
+            self._step("link", res)
+            if res.outcome == OUTCOME_VENDOR_ERROR:
+                if res.error_code == VENDOR_REFUSED:  # AutoCount said no (all or nothing): nothing landed
+                    raise _Done(VENDOR_ERROR, res.error_code, res.message)
+                raise _Done(PENDING, res.error_code, res.message)  # a bare 5xx or timeout: resume reads
+            if res.outcome == OUTCOME_MISMATCH:  # the PUT landed but reads back wrong
+                raise _Done(NEEDS_ATTENTION, res.error_code or INTERNAL_ERROR, res.message)
+            if res.outcome != OUTCOME_DONE or res.document is None:
+                self._abort_unless_done(res)
+                raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
+        except _Done as done:
+            if done.batch is None:
+                done.batch = none_linked  # the skipped lines are part of every answer
+            raise
         refresh_po_links_from_doc(self.db, company.tenant_id, company.id,
                                   f"{company.database_name}:{spec.doc_key}", res.document)
         self.db.commit()  # the next guard sees these links before the lock is released
         return snapshot, res.document
+
+    def _line_skip(self, company: AcCompany, doc: Doc, old: Doc, link: Dict[str, Any], sources: Dict[int, Doc],
+                   free: Decimal, running: Decimal) -> Optional[str]:
+        """The reason one line cannot be linked (None = it can); fills ``so_no`` and ``location``."""
+        so = sources.get(link["so_doc_key"])
+        if so is None:
+            try:
+                _d, so = self._read(company, "SO", link["so_doc_key"], _as_date(link["so_doc_date"]))
+            except _Done as done:
+                if done.status != REFUSED:
+                    raise
+                return done.code or "ROW_NOT_FOUND"
+            sources[link["so_doc_key"]] = so
+        if so.get("Cancelled") == "T":
+            return "DOC_CANCELLED"
+        so_row = next((r for r in so.get("Details") or [] if r.get("DtlKey") == link["so_dtl_key"]), None)
+        if so_row is None:
+            return "ROW_NOT_FOUND"
+        if old.get("ItemCode") != so_row.get("ItemCode"):
+            return "ITEM_MISMATCH"
+        if old.get("UOM") != so_row.get("UOM"):
+            return "UOM_MISMATCH"
+        used = self.prims._so_linked_qty(company, link["so_dtl_key"], fresh_po=doc)
+        if link["qty"] > payloads.so_outstanding(so_row, used):
+            return "QTY_ABOVE_OUTSTANDING"
+        if running + link["qty"] > free:
+            return "QTY_ABOVE_FREE"
+        link["so_no"], link["location"] = so.get("DocNo"), so_row.get("Location")
+        return None
 
     def _batch_done(self, row: AcWriteOperation, company: AcCompany, snap: Doc, document: Doc,
                     *, deadline: bool = True) -> OperationResult:
@@ -1153,7 +1191,7 @@ class OperationService:
         self.prims._stage(company, snap["kind"], document, None)
         old_key = int(snap["row"]["DtlKey"])
         kept = next((r for r in document.get("Details") or [] if r.get("DtlKey") == old_key), None)
-        batch = {"links": answer,
+        batch = {"links": answer, "skipped": list(snap.get("skipped") or []),
                  "freeLine": None if kept is None else {"poDtlKey": old_key, "qty": str(_dec(kept.get("Qty")))}}
         return self._finish(row, DONE, None, document=document, batch=batch)
 

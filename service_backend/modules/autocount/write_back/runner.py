@@ -1256,6 +1256,7 @@ _B_CASES = (
     ("B08", "Create resend: the POST landed, the answer was lost; the resend finds the document (<<New>> body)", "b08"),
     ("B09", "Create resend: nothing was sent; the resend finds nothing and POSTs once (<<New>> body)", "b09"),
     ("B10", "Create resend: the POST landed, the answer was lost; the resend finds the document (numbered body)", "b10"),
+    ("B11", "Mixed batch: two good lines and one above the SO row's outstanding; the two link, the third is skipped", "b11"),
 )
 _B_PRICE = 1.0
 _B_SO_LOCATION = "HQ"  # the unlink merge needs the batch rows and the free row at one location (D7)
@@ -1538,8 +1539,8 @@ class _BatchRun:
 
 
     def b07(self, case: CaseResult) -> None:
-        case.expected = ("a batch whose quantity is within the PO row's free quantity but above the SO row's "
-                         "outstanding: refused QTY_ABOVE_OUTSTANDING, naming the SO row, 0 PUTs")
+        case.expected = ("a batch whose only line is within the PO row's free quantity but above the SO row's "
+                         "outstanding: every line skipped, refused ALL_LINKS_SKIPPED naming QTY_ABOVE_OUTSTANDING, 0 PUTs")
         if self.po is None or "SO2" not in self.so:
             case.status, case.observed = SKIPPED, "B00 did not pass"
             return
@@ -1556,9 +1557,34 @@ class _BatchRun:
         params = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys["A"], "links": [link], "doc_date": self.today}
         res = self._timed(case, "refused above outstanding", 1, lambda: self._run_op("link_batch", "b07", params))
         puts = self.timings[-1]["puts"]
-        case.observed = f"{res.outcome} {res.error_code or ''} (qty {qty}, outstanding {outstanding}, free {free}, {puts} PUT)".strip()
-        case.status = PASS if (res.outcome == "refused" and res.error_code == "QTY_ABOVE_OUTSTANDING"
-                               and puts == 0 and str(so_key) in res.message) else FAIL
+        skipped = (res.batch or {}).get("skipped") or []
+        codes = [(x["soDtlKey"], x["code"]) for x in skipped]
+        case.observed = (f"{res.outcome} {res.error_code or ''}, skipped {codes} (qty {qty}, outstanding {outstanding}, "
+                         f"free {free}, {puts} PUT)").strip()
+        case.status = PASS if (res.outcome == "refused" and res.error_code == "ALL_LINKS_SKIPPED" and puts == 0
+                               and codes == [(so_key, "QTY_ABOVE_OUTSTANDING")]) else FAIL
+
+    def b11(self, case: CaseResult) -> None:
+        case.expected = ("owner rule: one bad line never fails the batch. Two good lines and one above the SO row's "
+                         "outstanding: done, 2 linked rows, the third named in skipped with QTY_ABOVE_OUTSTANDING, "
+                         "2 PUTs (PUT 1 with the two lines, one restore PUT)")
+        if self.po is None or "SO3" not in self.so or "SO2" not in self.so:
+            case.status, case.observed = SKIPPED, "B00 did not pass"
+            return
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        so3 = self._so_row("SO3", 0)
+        linked3 = sum((_num(r.get("Qty")) for r in self._rows(doc) if r.get("FromSODtlKey") == so3), Decimal(0))
+        bad_qty = Decimal(5) - linked3 + 1
+        links = [self._link("SO2", 0, 1), self._link("SO2", 1, 1), self._link("SO3", 0, bad_qty)]
+        params = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys["A"], "links": links, "doc_date": self.today}
+        res = self._timed(case, "mixed batch (2 good, 1 skipped)", 3, lambda: self._run_op("link_batch", "b11", params))
+        puts = self.timings[-1]["puts"]
+        batch = res.batch or {}
+        codes = [(x["soDtlKey"], x["code"]) for x in batch.get("skipped") or []]
+        case.observed = (f"{res.outcome} {res.error_code or ''}, {len(batch.get('links') or [])} linked, skipped {codes}, "
+                         f"{puts} PUT").strip()
+        case.status = PASS if (res.outcome == "done" and len(batch.get("links") or []) == 2 and puts == 2
+                               and codes == [(so3, "QTY_ABOVE_OUTSTANDING")]) else FAIL
 
     def _create_case(self, case: CaseResult, key: str, fault: str, number: Optional[str], qty: int) -> None:
         """A QT create through ``run_primitive`` with an armed fault, then the SAME key resent."""

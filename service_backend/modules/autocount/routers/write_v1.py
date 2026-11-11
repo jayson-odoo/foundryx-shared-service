@@ -121,7 +121,8 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
         "document": result.document,
     }
     if result.batch is not None:  # link_batch (plan 62 D5): the new PO row per SO row + the free row
-        answer.update(links=result.batch.get("links") or [], freeLine=result.batch.get("freeLine"))
+        answer.update(links=result.batch.get("links") or [], skipped=result.batch.get("skipped") or [],
+                      freeLine=result.batch.get("freeLine"))
     return answer
 
 
@@ -479,35 +480,40 @@ def link_po_row_batch(
     """Plan 62 D1: link one PO row to 1..20 SO rows in one operation (one idempotency key)."""
 
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
-        entries = raw.get("links")
-        if not isinstance(entries, list) or not entries:
-            raise _bad("INVALID_REQUEST", "links must be a non-empty array.")
-        if len(entries) > 20:
-            raise _bad("INVALID_REQUEST", "links must hold at most 20 entries.")
-        links = []
-        seen: set = set()
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise _bad("INVALID_REQUEST", "each link must be an object.")
-            so_dtl = _int_field(entry, "soDtlKey")
-            if so_dtl in seen:
-                raise _bad("INVALID_REQUEST", "a soDtlKey is listed twice.")
-            seen.add(so_dtl)
-            links.append({
-                "so_doc_key": _int_field(entry, "soDocKey"), "so_dtl_key": so_dtl,
-                "qty": _qty_field(entry), "so_doc_date": _optional_date(entry, "soDocDate"),
-            })
-        params: Dict[str, Any] = {
-            "doc_key": _int_field(raw, "poDocKey"), "dtl_key": _int_field(raw, "poDtlKey"), "links": links,
-            "doc_date": _optional_date(raw, "docDate"),
-            "expected_last_modified": _optional_text(raw, "expectedLastModified"),
-        }
+        try:
+            entries = raw.get("links")
+            if not isinstance(entries, list) or not entries:
+                raise _bad("INVALID_REQUEST", "links must be a non-empty array.")
+            if len(entries) > 20:
+                raise _bad("INVALID_REQUEST", "links must hold at most 20 entries.")
+            links = []
+            seen: set = set()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise _bad("INVALID_REQUEST", "each link must be an object.")
+                so_dtl = _int_field(entry, "soDtlKey")
+                if so_dtl in seen:
+                    raise _bad("INVALID_REQUEST", "a soDtlKey is listed twice.")
+                seen.add(so_dtl)
+                links.append({
+                    "so_doc_key": _int_field(entry, "soDocKey"), "so_dtl_key": so_dtl,
+                    "qty": _qty_field(entry), "so_doc_date": _optional_date(entry, "soDocDate"),
+                })
+            params: Dict[str, Any] = {
+                "doc_key": _int_field(raw, "poDocKey"), "dtl_key": _int_field(raw, "poDtlKey"), "links": links,
+                "doc_date": _optional_date(raw, "docDate"),
+                "expected_last_modified": _optional_text(raw, "expectedLastModified"),
+            }
+        except PullGatewayError as exc:  # a request-shape error still carries the batch fields
+            exc.extra = {"links": [], "skipped": [], "freeLine": None}
+            raise
         result = ops.run(
             tenant_id=key.tenant_id, company_id=company.id, key_id=key.id,
             idempotency_key=idem or "", op="link_batch", params=params,
         )
         answer = operation_answer(result, params["doc_key"])
-        answer.setdefault("links", [])  # every outcome of this route carries both fields (contract section 4.1a)
+        answer.setdefault("links", [])  # every outcome of this route carries these fields (contract section 4.1a)
+        answer.setdefault("skipped", [])
         answer.setdefault("freeLine", None)
         return _respond(answer)
 
