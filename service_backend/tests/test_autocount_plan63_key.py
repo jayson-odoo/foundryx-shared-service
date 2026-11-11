@@ -32,7 +32,8 @@ from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 KEY = "k1-SEKRET-7f3a9c"
 KEY2 = "k2-ROTATED-51b8e0"
-PROBE_URL = "https://autocount-wrapper.example.com/api/db2"
+PROBE_URL = "https://ac.example.test/api/db2"  # a host on the write host allowlist (the test pin adds it)
+OTHER_HOST_URL = "https://autocount-wrapper.example.com/api/db2"
 BASELINE_NAMES = {"host", "accept", "accept-encoding", "connection", "user-agent", "content-type", "content-length"}
 AUTH_LIKE = {"x-api-key", "authorization", "proxy-authorization", "x-auth-token", "api-key"}
 
