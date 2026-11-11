@@ -22,7 +22,7 @@ from app.repositories.permission_repository import PermissionRepository
 from app.security import hash_password
 from modules.autocount.models import AcApiCallLog, AcCompany
 
-CALLS = "/api/v1/autocount/calls"
+CALLS = "/autocount/calls"
 OTHER_TENANT = "tenant-other-plan63-calls"
 T0 = datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc)
 MODULE = Path(__file__).resolve().parents[1] / "modules" / "autocount"
