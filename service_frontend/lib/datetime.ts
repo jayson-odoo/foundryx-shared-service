@@ -44,14 +44,14 @@ const STYLE_OPTIONS: Record<FormatStyle, Intl.DateTimeFormatOptions> = {
     minute: '2-digit',
   },
   time: { hour: '2-digit', minute: '2-digit' },
-  // 05/11/2026, 3:04 pm
+  // 05/11/2026, 3:04 pm - the 12-hour value is built in formatDmy, never left to the ICU hour cycle
   dmy: {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
-    hour: 'numeric',
+    hour: '2-digit',
     minute: '2-digit',
-    hour12: true,
+    hourCycle: 'h23',
   },
 };
 
@@ -85,7 +85,17 @@ function format(
   options?: DatetimeFormatOptions,
 ): string {
   const d = parseUtc(iso);
-  return d ? getFormatter(style, options?.timeZone).format(d) : '-';
+  if (!d) return '-';
+  const formatter = getFormatter(style, options?.timeZone);
+  return style === 'dmy' ? formatDmy(formatter, d) : formatter.format(d);
+}
+
+/** "05/11/2026, 3:04 pm" from 24-hour parts (0 -> 12 am, 12 -> 12 pm), whatever the locale data says. */
+function formatDmy(formatter: Intl.DateTimeFormat, d: Date): string {
+  const part = (type: string) => formatter.formatToParts(d).find((p) => p.type === type)?.value ?? '';
+  const hour24 = Number(part('hour')) % 24;
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${part('day')}/${part('month')}/${part('year')}, ${hour12}:${part('minute')} ${hour24 < 12 ? 'am' : 'pm'}`;
 }
 
 /** "02 Jan 2024" in the viewer's timezone. */
