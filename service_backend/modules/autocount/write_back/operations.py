@@ -251,7 +251,9 @@ class OperationService:
         ).hexdigest()
         existing = self.ops.by_key(tenant_id, company.id, key_id, idempotency_key)
         if existing is not None:
-            return self._replay(existing, op, request_hash)
+            settled = self._settle_existing(existing, tenant_id, company, op, request_hash)
+            if settled is not None:
+                return settled
         try:
             spec = self._spec(op, params)
         except (KeyError, TypeError, ValueError):
@@ -342,6 +344,36 @@ class OperationService:
             int(params[names[2]]) if target else None, int(params[names[3]]) if target else None,
             params.get("doc_date"), params.get("expected_last_modified"), params.get("target_doc_date"),
         )
+
+    @staticmethod
+    def _nothing_landed(status: Optional[str], code: Optional[str]) -> bool:
+        """Plan 62 D6: the stored outcome proves nothing reached AutoCount: a refusal, or AutoCount's
+        own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed."""
+        return status == REFUSED or (status == VENDOR_ERROR and code == VENDOR_REFUSED)
+
+    def _release_key(self, row: AcWriteOperation) -> None:
+        """Free the idempotency key of a confirmed not-landed operation: the row is kept for history
+        under a re-keyed value, so a resend runs fresh (any body)."""
+        self.ops.rekey(row, f"{row.idempotency_key}~released~{row.id}")
+        self.db.commit()
+
+    def _settle_existing(self, row: AcWriteOperation, tenant_id: str, company: AcCompany, op: str,
+                         request_hash: str) -> Optional[OperationResult]:
+        """The answer for a key that already has a row, or None when the key was released and the
+        operation must run fresh (plan 62 D6)."""
+        if self._nothing_landed(row.status, row.error_code):
+            self._release_key(row)
+            return None
+        if (row.status == PENDING and row.op == op and row.request_hash == request_hash
+                and row.snapshot_json):
+            res = self.resume(tenant_id=tenant_id, company_id=company.id, operation_id=row.id)
+            if res.error_code == NOT_APPLIED and res.outcome in (RECOVERED, REFUSED):
+                fresh = self.ops.get(tenant_id, company.id, row.id)
+                if fresh is not None:  # reconciled: the first request never changed AutoCount
+                    self._release_key(fresh)
+                    return None
+            return res
+        return self._replay(row, op, request_hash)
 
     def _replay(self, row: AcWriteOperation, op: str, request_hash: str) -> OperationResult:
         if row.op != op or row.request_hash != request_hash:
@@ -660,7 +692,9 @@ class OperationService:
         if res.outcome == OUTCOME_REFUSED:
             raise _Done(REFUSED, res.error_code, res.message)
         if res.outcome == OUTCOME_VENDOR_ERROR:
-            raise _Done(VENDOR_ERROR, res.error_code, res.message)
+            if res.error_code == VENDOR_REFUSED:  # AutoCount said no: nothing landed
+                raise _Done(VENDOR_ERROR, res.error_code, res.message)
+            raise _Done(PENDING, res.error_code, res.message)  # a bare 5xx may have landed: resume reads
         raise _Done(PENDING, res.error_code, res.message)  # mismatch / pending: resume decides
 
     def _move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, new_key: int,
@@ -917,7 +951,10 @@ class OperationService:
 
         existing = self.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
         if existing is not None:
-            return replay(existing)
+            if self._nothing_landed(existing.status, existing.error_code):  # plan 62 D6: run fresh
+                self._release_key(existing)
+            else:
+                return replay(existing)
         if doc_key is not None:  # a crashed run of ANY kind no longer holds the document (AC-57-43)
             window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
             if self.ops.expire_stale_in_progress(tenant_id, company_id, kind, doc_key, window):

@@ -137,6 +137,10 @@ class OperationRepository:
         self.db.flush()
         return row
 
+    def rekey(self, row: AcWriteOperation, idempotency_key: str) -> None:
+        row.idempotency_key = idempotency_key
+        self.db.flush()
+
     def delete(self, row: AcWriteOperation) -> None:
         self.db.delete(row)
         self.db.flush()
