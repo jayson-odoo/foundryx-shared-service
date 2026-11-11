@@ -46,7 +46,7 @@ Test names are `test_ac_62_<nn>_*` in the file shown. "db3" = the runner suite `
 | AC-62-32 | PASS [db3] | runner B05 (unlink merge, 1 PUT, raises the B01 free row) and the S0 proof case (c) in `crew/state/files/autocount-api/db3-requests-11nov-po-link-batch.json` |
 | AC-62-40 | PASS | link_index: `test_ac_62_40_service_sum_is_fresh_rows_plus_the_index_of_other_pos`, `..._primitives_sum_is_the_index_and_never_scans_staged_pos` (spy: `for_entity` raises for the PO entity), `..._the_fresh_po_replaces_its_own_index_rows`, `..._other_tenants_index_rows_never_count`, `..._double_count_regression_two_staged_copies_of_one_other_po_count_once` |
 | AC-62-41 | PASS | link_index: `test_ac_62_41_write_back_staging_writes_the_pos_rows_and_replaces_them_on_a_newer_copy`, `..._a_cancelled_po_leaves_no_rows`, `..._sync_pull_writes_and_rewrites_the_pos_rows` |
-| AC-62-42 | PARTIAL | PASS in pytest: `test_ac_62_42_migration_0045_exists_with_a_short_revision_id`, `test_s12_mapping_reset_route.py::test_ac_12_32` (bumped). DEFERRED: `alembic upgrade head` / `run_module_migrations` against the live local Postgres and the backfill of existing staged POs were NOT run by the tester (the suite cannot see migrations; the shared dev DB was deliberately not touched after the engine-url split-brain finding). Unblock: run `python -m scripts.bootstrap_db` or `run_module_migrations(engine, "autocount")` on a scratch Postgres and compare `ac_po_so_link` row counts with the newest staged copies |
+| AC-62-42 | PASS | pytest: `test_ac_62_42_migration_0045_exists_with_a_short_revision_id`, `test_s12_mapping_reset_route.py::test_ac_12_32` (bumped). Live Postgres (coder, scratch copy `foundryx_service_plb` of the db3 write DB, `DATABASE_URL` exported in the same command): `run_module_migrations(engine, "autocount")` -> `0045_autocount_po_so_link`, table + 3 indexes (pkey, `ix_ac_po_so_link_so_dtl`, `ix_ac_po_so_link_po_ref`); backfill 7 rows over 3 POs = an independent SQL count over the newest non-cancelled staged copies; cancelled PO gave none. Re-checked by the captain after the S5 db3 runs: still 0045, 31 rows (runner staging writes), same 3 indexes; shared `foundryx_service` stays at 0044 (crew reverted the accidental upgrade) |
 | AC-62-50 | PASS (doc check) | `55-autocount-write-link-contract.md` carries section 4.1a (`po-links/batch`), the retry rule and the unlink merge (commit 123d10d6); read by the tester, not machine-checked |
 
 ## Found in the lane (not an AC)
@@ -58,6 +58,5 @@ Test names are `test_ac_62_<nn>_*` in the file shown. "db3" = the runner suite `
 
 ## Deferred / open
 
-- AC-62-42 live Postgres migration + backfill (above).
 - AC-62-22 kill test (release `done` on resend, see a test fail) and mutation checks for the retry rule: not run.
 - No agent-browser evidence: backend only.
