@@ -31,7 +31,7 @@ from ..http_client import (
     autocount_guarded_client,
 )
 from ..payloads import bound_payload, mark_truncated
-from ..write_back.auth import mask as auth_mask
+from ..write_back.auth import mask as auth_mask, secrets_of as auth_secrets_of
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -189,7 +189,7 @@ class HttpApiClient:
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self._auth_headers: Dict[str, str] = dict(auth_headers or {})
-        self._secrets: Tuple[str, ...] = tuple(getattr(auth_headers, "secrets", ()))
+        self._secrets: Tuple[str, ...] = auth_secrets_of(auth_headers or {})
         self.timeout_seconds = timeout_seconds
         self._transport = transport
         self._owns_transport = transport is None

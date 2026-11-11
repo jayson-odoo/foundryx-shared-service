@@ -44,6 +44,12 @@ def mask(text: str, secrets: Tuple[str, ...]) -> str:
     return text
 
 
+def secrets_of(headers: Mapping[str, str]) -> Tuple[str, ...]:
+    """Every string to mask for these headers: the carried secrets, else the header values."""
+    carried = tuple(getattr(headers, "secrets", ()))
+    return carried or tuple(v for v in headers.values() if v)
+
+
 class AuthConfigInvalid(Exception):
     """The key settings of a connection cannot produce a valid header. Code only, never a value."""
 

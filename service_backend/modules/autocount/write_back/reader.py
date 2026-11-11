@@ -79,7 +79,7 @@ class AutoCountDocReader:
     def set_auth_headers(self, headers: Mapping[str, str]) -> None:
         """The optional API key header this client sends on every request (plan 63); never logged."""
         self._auth_headers = dict(headers)
-        self._secrets: Tuple[str, ...] = tuple(getattr(headers, "secrets", ()))
+        self._secrets: Tuple[str, ...] = auth.secrets_of(headers)
 
     def attach_call_log(self, log: "cl.CallLog") -> None:
         """Every GET from now on writes one row to ``log`` (plan 61 section 4.8)."""

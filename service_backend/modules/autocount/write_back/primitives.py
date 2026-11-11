@@ -607,19 +607,19 @@ class PrimitiveService(WriteFrame):
             return self._wrap(self._finish(row, OUTCOME_PENDING, exc.code))
         row.response_status = response.status_code
         if response.ok:
-            row.response_json = _safe_body(response.body)
+            row.response_json = _safe_body(response.stored)
         if not response.ok:
             refusal = _vendor_refusal(call.primitive, response.status_code, response.body)
             if refusal is not None:  # AutoCount said why; nothing changed (F7, F10, F11)
-                message = vendor_message(response.body, base_url)
+                message = vendor_message(response.stored, base_url)
                 row.response_json = {"message": message}
                 return self._wrap(self._finish(row, OUTCOME_REFUSED, refusal, message=message))
             if is_business_refusal(response.status_code, response.body):
-                message = vendor_message(response.body, base_url)
+                message = vendor_message(response.stored, base_url)
                 row.response_json = {"message": message}  # the same safe text, never the stack
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message))
             # a bare failure (an IIS page, a stack): the status and redacted text only (AC-57-47)
-            text = vendor_message(response.body, base_url)
+            text = vendor_message(response.stored, base_url)
             row.response_json = {"text": text}
             return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR, message=text))
         self.db.commit()

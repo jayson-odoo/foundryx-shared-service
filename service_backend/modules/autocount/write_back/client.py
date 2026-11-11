@@ -29,6 +29,14 @@ class WriteResponse:
     status_code: int
     body: Any
     ok: bool
+    # The same answer with the API key masked: what is stored and relayed. ``body`` stays the
+    # vendor's own values for the write logic.
+    safe_body: Any = None
+    has_safe: bool = False
+
+    @property
+    def stored(self) -> Any:
+        return self.safe_body if self.has_safe else self.body
 
 
 class WriteTransportError(Exception):
@@ -77,7 +85,7 @@ class AutoCountWriteClient:
     def set_auth_headers(self, headers: Mapping[str, str]) -> None:
         """The optional API key header this client sends on every request (plan 63); never logged."""
         self._auth_headers = dict(headers)
-        self._secrets: Tuple[str, ...] = tuple(getattr(headers, "secrets", ()))
+        self._secrets: Tuple[str, ...] = auth.secrets_of(headers)
 
     def attach_call_log(self, log: "cl.CallLog") -> None:
         """Every request from now on writes one row to ``log`` (plan 61 section 4.8)."""
@@ -138,7 +146,9 @@ class AutoCountWriteClient:
                   cl.OK if response.is_success else cl.HTTP_ERROR, None)
         return WriteResponse(
             status_code=response.status_code,
-            body=_parse_text(text) if self._secrets else _parse_body(response),
+            body=_parse_body(response),
+            safe_body=_parse_text(text) if self._secrets else None,
+            has_safe=bool(self._secrets),
             ok=response.is_success,
         )
 

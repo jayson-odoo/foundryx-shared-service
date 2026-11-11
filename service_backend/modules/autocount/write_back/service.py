@@ -670,7 +670,7 @@ class WriteBackService(WriteFrame):
             return self._finish(row, OUTCOME_PENDING, exc.code)
         row.response_status = response.status_code
         # a failure keeps its status and the redacted text only (AC-57-47); a success as it came
-        row.response_json = _safe_body(response.body) if response.ok else {"text": vendor_message(response.body, base_url)}
+        row.response_json = _safe_body(response.stored) if response.ok else {"text": vendor_message(response.stored, base_url)}
         if not response.ok:  # carry AutoCount's own (redacted, capped) text to the answer
             return self._finish(
                 row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR", message=row.response_json["text"]
@@ -771,8 +771,8 @@ class WriteBackService(WriteFrame):
         else:
             row.response_json = [
                 row.response_json[0],
-                _safe_body(response.body) if response.ok
-                else {"text": vendor_message(response.body, getattr(client, "base_url", ""))},
+                _safe_body(response.stored) if response.ok
+                else {"text": vendor_message(response.stored, getattr(client, "base_url", ""))},
             ]
             row.response_status = [first_status, response.status_code]
             if response.ok and not self._expired():
