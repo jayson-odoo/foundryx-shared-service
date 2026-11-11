@@ -91,6 +91,14 @@ resend does:
 
 A call that ended `pending_verification` is still never blind-resent with a NEW key.
 
+Creating a document (`POST /documents/{kind}`) follows the same table with one difference, because a failed
+create may still have saved the document. A create AutoCount refused before saving (credit limit, unknown item,
+unknown debtor) or SS refused is released at once. Any other failure or an unfinished create is not re-run
+blindly: SS first looks the document up in AutoCount (by `docNo` when the body names one, otherwise among the
+documents created around the first attempt for the same debtor or creditor with the same lines). One match:
+the call is `done` with that document and the key is locked. No match: the key is released and the create runs
+once. More than one match: `needs_attention` (`CREATE_AMBIGUOUS`), locked, nothing is created.
+
 ### 4.1 `POST /api/v1/autocount/po-links`
 
 ```json
@@ -188,8 +196,8 @@ unit of measure, location, unit price and delivery date, the PUT deletes the lin
 row's quantity by the freed quantity instead of adding a new row; the first such row in row order is used.
 No location move follows. The answer then has `replacedLines` `[{"oldDtlKey": <the unlinked row>,
 "newDtlKey": <the free row that took the quantity>}]`: `newDtlKey` is the EXISTING free row's `DtlKey`, not a
-new one. With no matching free row, or a received quantity that cannot be read, the behaviour above applies
-unchanged (a new row). No request field and no new answer field: read `replacedLines`.
+new one. With no matching free row, or a free row with a known received quantity above zero, the behaviour above
+applies unchanged (a new row). A received quantity AutoCount does not expose (unknown) does not stop the merge. No request field and no new answer field: read `replacedLines`.
 
 ### 4.3 `POST /api/v1/autocount/spo-links/unlink`
 

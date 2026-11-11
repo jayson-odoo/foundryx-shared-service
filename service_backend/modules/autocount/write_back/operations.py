@@ -584,7 +584,8 @@ class OperationService:
     def _merge_target(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Optional[int]:
         """Plan 62 D7: the DtlKey of the FIRST free row (row order) the unlinked quantity can join:
         same item, unit, location, price and delivery date, not linked, no SPO row pointing at it,
-        nothing received. None = no merge (today's new free row); an unknown receipt is no merge."""
+        no known receipt above zero. An UNKNOWN receipt (the vendor hides it) allows the merge, like the
+        linked row's own receipt check. None = no merge (today's new free row)."""
         if defn.kind != "PO" or defn.mode != "unlink":
             return None
         for cand in doc.get("Details") or []:
