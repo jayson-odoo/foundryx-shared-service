@@ -623,23 +623,39 @@ class _Run:
             case.status = PASS
 
     def c14(self, case: CaseResult) -> None:
-        case.expected = ("link_row (operation, whole row) of the C07 row to the first SO row: ONE replace PUT, "
-                         "then the move PUT puts back the SO row's location and the old unit price and date")
+        case.expected = ("link_row (operation) of the row C13 left (the C07 row; C13's unlink merges into it, plan 62 D7) "
+                         "to the first SO row, for the quantity that SO row still has outstanding: one write, then the "
+                         "move puts back the SO row's location and the old unit price and date")
         if self._skip(case, "C13") or self._skip(case, "C07"):
             return
         old = self._row(self.c07_key)
         if old is None:
             case.observed = "C07 left no unlinked row"
             return
+        so_row = ((self.so_doc or {}).get("Details") or [{}])[0]  # type: ignore[union-attr]
+        so_key = self._so_row(0)
+        taken = sum((_num(r.get("Qty")) for r in self._test_rows() if r.get("FromSODtlKey") == so_key), Decimal(0))
+        qty = min(_num(old.get("Qty")), _num(so_row.get("Qty")) - taken)
+        if qty <= 0:
+            case.observed = "the first SO row has nothing outstanding"
+            return
+        extra: Dict[str, object] = {} if qty == _num(old.get("Qty")) else {"qty": qty}
+        before_keys = {r.get("DtlKey") for r in self._test_rows()}
         out = self._run_op(case, "link_row", self._po_params(
-            self.c07_key, so_doc_key=self._so_key(), so_dtl_key=self._so_row(0), target_doc_date=self.today))
-        if out.outcome == "done" and not _move_warned(out.warnings) and len(out.replaced_lines) == 1:
-            new_key = out.replaced_lines[0][1]
-            new = self._row(new_key)
-            so_loc = ((self.so_doc or {}).get("Details") or [{}])[0].get("Location")  # type: ignore[index,union-attr]
-            if self._kept_values(new, old) and new is not None and new.get("Location") == so_loc:
-                self.c14_key = new_key
-                case.status = PASS
+            self.c07_key, so_doc_key=self._so_key(), so_dtl_key=so_key, target_doc_date=self.today, **extra))
+        if out.outcome != "done" or _move_warned(out.warnings):
+            return
+        if out.replaced_lines:  # a whole row: replaced by one linked row
+            new_key: Optional[int] = out.replaced_lines[0][1]
+        else:  # part of the row: the linked row is the one new row carrying the SO link
+            fresh = [r for r in self._test_rows()
+                     if r.get("DtlKey") not in before_keys and r.get("FromSODtlKey") == so_key]
+            new_key = int(fresh[0]["DtlKey"]) if len(fresh) == 1 else None  # type: ignore[arg-type]
+        new = self._row(new_key) if new_key is not None else None
+        if new is not None and self._kept_values(new, old) and new.get("Location") == so_row.get("Location") \
+                and _num(new.get("Qty")) == qty:
+            self.c14_key = int(new_key)  # type: ignore[arg-type]
+            case.status = PASS
 
     def c15(self, case: CaseResult) -> None:
         case.expected = ("relink_row (operation) of the C14 row to the third SO row: ONE replace PUT and the "
@@ -713,7 +729,7 @@ _CASES = (
     ("C11", "Relocate of a row already at its location", "c11"),
     ("C12", "Other book refused with no request", "c12"),
     ("C13", "Unlink through the operation layer (replace PUT)", "c13"),
-    ("C14", "Whole-row link through the operation layer (replace PUT + restore move)", "c14"),
+    ("C14", "Link the row C13 left through the operation layer (write + restore move)", "c14"),
     ("C15", "Relink through the operation layer (replace PUT + restore move)", "c15"),
     ("C16", "Delete a PO line (one PUT, row marked D)", "c16"),
     ("C17", "Cancel the test PO", "c17"),

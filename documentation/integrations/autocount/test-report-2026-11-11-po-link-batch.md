@@ -28,10 +28,9 @@ Findings:
 - SO row lock (Postgres only, so no unit test drives it): this run had the lock live. Every case passed with no
   `DOC_BUSY` for a single caller; after the run `pg_locks` held 0 advisory locks, and the lock connections showed in
   `pg_stat_activity` as `foundryx-runner-lock` (idle, pooled, nothing held).
-- The plan 55 suite (`--suite db3`, tag `1112B`, no-key link path, which now takes the same lock) passed C00 to C13
-  and C16, C17 with 0 advisory locks left. C14 was refused `QTY_ABOVE_OUTSTANDING`: C13's unlink now merges into the
-  C07 row (10 + 10 = 20), so C14's whole-row link of that row exceeds the SO row's outstanding. The case needs a
-  setup where C13 does not merge; no product fault.
+- The plan 55 suite (`--suite db3`, tag `1112C`, run after the runner followed the unlink merge) passed C00 to C17.
+  The no-key link path takes the same lock (0 advisory locks left). C13's unlink now merges into the C07 row, so
+  C14 links the row C13 left for the quantity the first SO row still has outstanding, and C15 relinks that row.
 
 Book: db3. Run tag: 1112A. PASS 11, FAIL 0, SKIPPED 0.
 
