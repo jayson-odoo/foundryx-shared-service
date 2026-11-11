@@ -396,6 +396,8 @@ class OperationService:
                  params: Dict[str, Any]) -> OperationResult:
         base_url, refusal = self.prims._resolve_write_base_url(company)
         if base_url is None:
+            if refusal:
+                self.prims._log_refused_connection(company, refusal[0], doc_key=spec.doc_key)
             raise _Done(REFUSED, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
         self._check_test_company(company)
@@ -436,7 +438,8 @@ class OperationService:
 
     def _check_test_company(self, company: AcCompany, restore: Optional[str] = None) -> None:
         try:
-            guard.assert_test_company(self.db, company.tenant_id, company.id)
+            guard.assert_test_company(
+                self.db, company.tenant_id, company.id, book=self.prims._company_book(company))
         except WriteConnectionError as exc:
             raise _Done(restore or REFUSED, exc.code) from None
 

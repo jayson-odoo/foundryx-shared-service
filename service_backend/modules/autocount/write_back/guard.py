@@ -1,8 +1,8 @@
-"""Code-level write allowlist (plan 55 section 6, AC-55-02..04).
+"""Code-level write allowlist (plan 55 section 6, plan 63 section 3.2).
 
-Only books named in ``WRITE_ALLOWED_BOOKS`` may be written. The set is a module
-constant on purpose: opening a live book needs a code change and a review,
-never an env var or a setting.
+``WRITE_ALLOWED_BOOKS`` is the code ceiling: no setting can widen it past this
+set. Inside it, ``writable_books()`` narrows per call: the operator's
+``AUTOCOUNT_WRITE_ALLOWED_BOOKS`` list, and off production only the test books.
 """
 
 from __future__ import annotations
@@ -12,7 +12,13 @@ import re
 from typing import Optional
 from urllib.parse import urlsplit
 
-WRITE_ALLOWED_BOOKS = frozenset({"db3"})
+from app.config import settings
+
+# Books that are test copies: writable on any environment (still host-pinned).
+TEST_BOOKS = frozenset({"db3"})
+# The code ceiling; widening it needs a change and a review.
+WRITE_ALLOWED_BOOKS = frozenset({"db1", "db3"})
+_PRODUCTION = "production"
 
 # sha256 (lowercase hex) of each allowed AutoCount test wrapper host. A code
 # constant, like the book list: widening it needs a change and a review, never
@@ -38,12 +44,25 @@ class WriteConnectionError(Exception):
         super().__init__(code)
 
 
-def assert_test_company(db, tenant_id: str, company_id: str) -> None:
+def writable_books() -> frozenset[str]:
+    """The books a write may name right now: the code ceiling AND the operator list AND,
+    unless the environment is exactly ``production``, the test books. Read per call."""
+    listed = frozenset(settings.autocount_write_allowed_books_list)
+    books = WRITE_ALLOWED_BOOKS & listed
+    if settings.environment != _PRODUCTION:
+        books = books & TEST_BOOKS
+    return books
+
+
+def assert_test_company(db, tenant_id: str, company_id: str, book: Optional[str] = None) -> None:
     """AC-57-22 / AC-57-47: the ONE write-time check that a company is a test book. A
     company that reads SQL, or holds a staged PO / SPO / SO row of a job other than
     write-back, is a live book: ``WriteConnectionError("WRITE_COMPANY_NOT_TEST")``.
     ``set_write_connection`` and every write frame call it as ``guard.assert_test_company``
-    (the module attribute), so opening a live book is one reviewed change here."""
+    (the module attribute), so opening a live book is one reviewed change here. The live-book
+    check is skipped only for ``book`` that is writable and not a test book (production only)."""
+    if book is not None and book in writable_books() - TEST_BOOKS:
+        return
     from modules.autocount.write_back.constants import STAGING_JOB_ID
     from modules.autocount.write_back.repository import CompanyDataRepository
 
@@ -99,6 +118,14 @@ def assert_write_allowed(base_url: str) -> str:
     else raise ``WriteNotAllowed``."""
     segments = _clean_segments(base_url)
     book = segments[-1] if len(segments) == 2 and segments[0] == _API_SEGMENT else ""
-    if book not in WRITE_ALLOWED_BOOKS:
+    if book not in writable_books():
         raise WriteNotAllowed(book if _SAFE_BOOK.match(book) else "")
     return book
+
+
+def book_of(base_url: str) -> Optional[str]:
+    """The book segment of a ``/api/<book>`` URL on the pinned host, whether or not it is
+    writable (None when the shape is refused). For ``assert_test_company``."""
+    segments = _clean_segments(base_url)
+    book = segments[-1] if len(segments) == 2 and segments[0] == _API_SEGMENT else ""
+    return book if _SAFE_BOOK.match(book) else None

@@ -351,7 +351,7 @@ class PrimitiveService(WriteFrame):
         if base_url is None:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, refusal[0])  # type: ignore[index]
         try:
-            guard.assert_test_company(self.db, company.tenant_id, company.id)
+            guard.assert_test_company(self.db, company.tenant_id, company.id, book=guard.book_of(base_url))
         except guard.WriteConnectionError as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
         found, code = self.find_date(company, kind_def.name, doc_key, doc_date)

@@ -739,7 +739,7 @@ def run_db3_suite(
     if company is None:
         raise WriteDisabled()
     base_url = write_base_url(db, company)  # resolves WITH tenant_id and runs the db3 guard
-    guard.assert_test_company(db, tenant_id, company.id)  # AC-57-22: before any request
+    guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))  # AC-57-22: before any request
     run = _Run(
         db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
         client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory,
@@ -1199,7 +1199,7 @@ def run_qtso_suite(
     if company is None:
         raise WriteDisabled()
     base_url = write_base_url(db, company)
-    guard.assert_test_company(db, tenant_id, company.id)  # raises WriteConnectionError
+    guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))  # raises WriteConnectionError
     run = _QtRun(
         db, tenant_id, company, base_url, debtor_code, run_tag, header_extra or {},
         client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory,

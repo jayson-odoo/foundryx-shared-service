@@ -809,12 +809,13 @@ def set_write_connection(
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
     # AC-57-22: company-scoped data first. A company that reads SQL, or already holds
     # documents staged by another job, is a live book: it never gets a write connection.
-    guard.assert_test_company(db, tenant_id, company.id)
     conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+    base_url = "" if conn is None else str((conn.config_json or {}).get("baseUrl") or "")
+    guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))
     if conn is None:
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
     try:
-        assert_write_allowed(str((conn.config_json or {}).get("baseUrl") or ""))
+        assert_write_allowed(base_url)
     except WriteNotAllowed as exc:
         raise WriteConnectionError(exc.code) from None
     company.write_connection_id = conn.id

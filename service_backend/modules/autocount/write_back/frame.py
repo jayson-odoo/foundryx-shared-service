@@ -129,6 +129,7 @@ class WriteFrame:
         self.request_id = request_id
         self._operation_id = operation_id  # set when an operation runs this flow (the split link)
         self._call_log: Optional[cl.CallLog] = None
+        self._refused_base_url: Optional[str] = None
         self.actions = WriteActionRepository(db)
         self.staged = StagedDocRepository(db)
         self.connections = ConnectionRepository(db)
@@ -202,29 +203,53 @@ class WriteFrame:
     def _refuse(self, row: AcWriteAction, code: str, message: str = "") -> _Stop:
         return _Stop(self._finish(row, OUTCOME_REFUSED, code, message=message))
 
-    def _resolve_write_base_url(self, company: AcCompany) -> "Tuple[Optional[str], Optional[Tuple[str, str]]]":
-        """``(url, None)`` or ``(None, (code, message))``: the company's write
-        connection URL resolved WITH tenant_id and the db3 guard applied."""
+    def _write_connection(self, company: AcCompany) -> Any:
+        """The company's active write connection resolved WITH tenant_id, or None."""
         conn = None
         if company.is_active and company.write_connection_id:
             conn = self.connections.get_for_provider(
                 company.tenant_id, company.write_connection_id, PROVIDER_KEY
             )
-        if conn is None or not conn.is_active:
+        return conn if conn is not None and conn.is_active else None
+
+    def _resolve_write_base_url(self, company: AcCompany) -> "Tuple[Optional[str], Optional[Tuple[str, str]]]":
+        """``(url, None)`` or ``(None, (code, message))``: the company's write
+        connection URL resolved WITH tenant_id and the write guard applied."""
+        self._refused_base_url = None
+        conn = self._write_connection(company)
+        if conn is None:
             return None, (WRITE_DISABLED, "")
         base_url = str((conn.config_json or {}).get("baseUrl") or "")
         try:
             assert_write_allowed(base_url)
         except WriteNotAllowed as exc:
+            self._refused_base_url = base_url  # kept for the guard_refused call-log row only
             return None, (exc.code, "")  # the code only: never the book name (AC-57-47)
         return base_url, None
+
+    def _company_book(self, company: AcCompany) -> Optional[str]:
+        """The book of the company's write connection URL (for the live-book check)."""
+        conn = self._write_connection(company)
+        return None if conn is None else guard.book_of(str((conn.config_json or {}).get("baseUrl") or ""))
+
+    def _log_refused_connection(
+        self, company: AcCompany, code: str, *, kind: Optional[str] = None, doc_key: Optional[int] = None,
+        action_id: Optional[str] = None,
+    ) -> None:
+        """One ``guard_refused`` call-log row for a write refused before any client existed."""
+        base_url = getattr(self, "_refused_base_url", None)
+        if not base_url:
+            return
+        log = self._call_log or self.new_call_log(company, kind=kind, doc_key=doc_key, action_id=action_id)
+        log.record(base_url=base_url, method="-", path="-", started=log.started(),
+                   outcome=cl.GUARD_REFUSED, error_code=code)
 
     def _check_test_company(self, row: AcWriteAction, company: AcCompany) -> None:
         """AC-57-47: the write-time test-company check, through the guard module's one
         function, before any request (a company can gain SQL data after its connection
         was set)."""
         try:
-            guard.assert_test_company(self.db, company.tenant_id, company.id)
+            guard.assert_test_company(self.db, company.tenant_id, company.id, book=self._company_book(company))
         except WriteConnectionError as exc:
             raise self._refuse(row, exc.code) from None
 
@@ -233,6 +258,7 @@ class WriteFrame:
         base_url, refusal = self._resolve_write_base_url(company)
         if base_url is None:
             code, message = refusal  # type: ignore[misc]
+            self._log_refused_connection(company, code, kind=row.doc_type, doc_key=row.doc_key, action_id=row.id)
             raise self._refuse(row, code, message)
         return base_url
 
