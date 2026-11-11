@@ -25,7 +25,7 @@ from modules.autocount.models import (
 )
 from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
 from modules.autocount.write_back.constants import STAGING_JOB_ID  # noqa: F401 (re-exported)
-from modules.autocount.write_back.link_index import refresh_po_links
+from modules.autocount.write_back.link_index import refresh_po_links, refresh_po_links_from_doc
 from modules.autocount.write_back.doc_mapping import (
     ENTITY_BY_KIND,
     WrapperMappingError,
@@ -63,6 +63,10 @@ class DocStager:
         try:
             if self._left_alone(company, doc, kind):
                 logger.info("autocount write-back left a document staged by another job alone (STAGED_BY_OTHER_JOB)")
+                if kind == "PO":  # plan 62: the over-link index still follows the verified read-back
+                    refresh_po_links_from_doc(
+                        self.db, company.tenant_id, company.id, f"{company.database_name}:{doc.get('DocKey')}", doc)
+                    self.db.commit()
                 return StageOutcome(False, False)
             row, changed = self._stage_raw(company, doc, kind, skip_unchanged)
             self.db.commit()

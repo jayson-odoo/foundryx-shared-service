@@ -53,3 +53,10 @@ def refresh_po_links(db: Session, tenant_id: str, company_id: str, source_ref: s
         if newest is not None and raw.get("Cancelled") != "T":
             links = links_of(raw)
     PoSoLinkRepository(db).replace_for_po(tenant_id, company_id, source_ref, links)
+
+
+def refresh_po_links_from_doc(db: Session, tenant_id: str, company_id: str, source_ref: str, doc: Dict[str, Any]) -> None:
+    """Rewrite one PO's index rows from a document AutoCount just read back (a verified write), for
+    the case where the staged copy belongs to another job and is left alone."""
+    links = [] if doc.get("Cancelled") == "T" else links_of({"_lines": doc.get("Details")})
+    PoSoLinkRepository(db).replace_for_po(tenant_id, company_id, source_ref, links)

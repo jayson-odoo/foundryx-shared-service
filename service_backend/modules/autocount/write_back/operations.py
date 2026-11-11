@@ -54,6 +54,8 @@ from modules.autocount.write_back.frame import (
     _lines,
 )
 from modules.autocount.write_back.doc_kinds import KINDS, WIRE_SLUGS
+from modules.autocount.write_back.link_index import refresh_po_links_from_doc
+from modules.autocount.write_back.link_lock import SoRowBusy, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.primitives import VENDOR_REFUSED, PrimitiveResult, PrimitiveService
 from modules.autocount.write_back.reader import DocReadError
@@ -469,6 +471,18 @@ class OperationService:
 
     def _execute(self, row: AcWriteOperation, company: AcCompany, op: str, spec: _Spec,
                  params: Dict[str, Any]) -> OperationResult:
+        """Link-type operations run under a per-SO-row lock (``link_lock``): the over-link guard and the
+        write that follows must not interleave with another caller's on the same SO row."""
+        if op in (SPLIT_LINK, "link_row", "relink_row") and spec.target_dtl_key:
+            try:
+                with so_row_locks(self.db, company.id, [spec.target_dtl_key]):
+                    return self._execute_unlocked(row, company, op, spec, params)
+            except SoRowBusy:
+                raise _Done(REFUSED, DOC_BUSY) from None
+        return self._execute_unlocked(row, company, op, spec, params)
+
+    def _execute_unlocked(self, row: AcWriteOperation, company: AcCompany, op: str, spec: _Spec,
+                          params: Dict[str, Any]) -> OperationResult:
         base_url, refusal = self.prims._resolve_write_base_url(company)
         if base_url is None:
             raise _Done(REFUSED, refusal[0] if refusal else WRITE_DISABLED)
@@ -1017,6 +1031,16 @@ class OperationService:
     def _batch_link(self, row: AcWriteOperation, company: AcCompany, spec: _Spec,
                     params: Dict[str, Any]) -> OperationResult:
         links = self._batch_params(params)
+        # the guard and PUT 1 run under a per-SO-row lock (link_lock); the restore PUT runs after it is released
+        try:
+            with so_row_locks(self.db, company.id, [link["so_dtl_key"] for link in links]):
+                snapshot, document = self._batch_locked(row, company, spec, links)
+        except SoRowBusy:
+            raise _Done(REFUSED, DOC_BUSY) from None
+        return self._batch_done(row, company, snapshot, document)
+
+    def _batch_locked(self, row: AcWriteOperation, company: AcCompany, spec: _Spec,
+                      links: List[Dict[str, Any]]) -> Tuple[Doc, Doc]:
         defn = OPS["link_row"]  # D9: the batch rides the link switch and the delete / add / edit primitives
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
@@ -1089,7 +1113,10 @@ class OperationService:
         if res.outcome != OUTCOME_DONE or res.document is None:
             self._abort_unless_done(res)
             raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
-        return self._batch_done(row, company, snapshot, res.document)
+        refresh_po_links_from_doc(self.db, company.tenant_id, company.id,
+                                  f"{company.database_name}:{spec.doc_key}", res.document)
+        self.db.commit()  # the next guard sees these links before the lock is released
+        return snapshot, res.document
 
     def _batch_done(self, row: AcWriteOperation, company: AcCompany, snap: Doc, document: Doc,
                     *, deadline: bool = True) -> OperationResult:
