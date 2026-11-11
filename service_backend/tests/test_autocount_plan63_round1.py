@@ -77,6 +77,29 @@ def test_ac_63_16_control_the_runner_suites_do_run_on_db3_in_production(h, monke
     assert h.vendor.calls, "the control suite sent no request, so the refusal tests prove nothing"
 
 
+def _run_batch(h):
+    h.vendor.stamp_created = True
+    return _runner().run_batch_suite(h.db, tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id,
+                                     creditor_code="400-N004", debtor_code="301-B018", run_tag="R1", **h.factories())
+
+
+@pytest.mark.parametrize("env", ["production", "development"])
+def test_ac_63_16_the_batch_suite_refuses_db1_in_every_environment(h, monkeypatch, env):
+    _set(monkeypatch, env=env, books="db1,db3")
+    _point_at(h, DB1)
+    with pytest.raises(Exception) as ei:
+        _run_batch(h)
+    assert getattr(ei.value, "code", None) == "WRITE_NOT_ALLOWED", repr(ei.value)
+    h.no_http()
+
+
+def test_ac_63_16_control_the_batch_suite_does_run_on_db3_in_production(h, monkeypatch):
+    _set(monkeypatch, env="production", books="db1,db3")
+    result = _run_batch(h)
+    assert result.cases
+    assert h.vendor.calls, "the control suite sent no request, so the refusal test proves nothing"
+
+
 def _cli_runner(h, monkeypatch, session_factory, tmp_path, suite):
     import app.database as database
 
