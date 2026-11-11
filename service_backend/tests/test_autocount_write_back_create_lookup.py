@@ -105,12 +105,21 @@ def _not_a_match(client, h, gw, key, mutate):
     assert len(h.vendor.docs["PO"]) == 2
 
 
-def test_a_matching_document_created_five_minutes_earlier_is_not_ours(client, h, gw):
-    _not_a_match(client, h, gw, "cl-4a", lambda d: shift(d, seconds=-300))
+def test_a_matching_document_created_thirty_minutes_earlier_is_not_ours(client, h, gw):
+    _not_a_match(client, h, gw, "cl-4a", lambda d: shift(d, seconds=-1800))
 
 
-def test_a_matching_document_created_five_minutes_later_is_not_ours(client, h, gw):
-    _not_a_match(client, h, gw, "cl-4b", lambda d: shift(d, seconds=300))
+def test_a_matching_document_created_thirty_minutes_later_is_not_ours(client, h, gw):
+    _not_a_match(client, h, gw, "cl-4b", lambda d: shift(d, seconds=1800))
+
+
+@pytest.mark.parametrize("seconds", [-480, 480], ids=["clock_behind", "clock_ahead"])
+def test_a_document_eight_minutes_off_the_attempt_is_ours_clock_skew_is_tolerated(client, h, gw, seconds):
+    first_attempt_landed(client, h, gw, f"cl-skew{seconds}", body())
+    shift(h.vendor.docs["PO"][0], seconds=seconds)  # the AutoCount server's clock is not ours
+    r = client.post(URL, json=body(), headers=gw.hdr(f"cl-skew{seconds}"))
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+    assert len(posts(h)) == 1  # found, so no second POST
 
 
 def test_a_document_for_another_party_is_not_ours(client, h, gw):
@@ -130,7 +139,8 @@ def test_a_window_straddling_midnight_reads_both_day_lists(client, h, gw, db):
     r = client.post(URL, json=body(), headers=gw.hdr("cl-5"))
     assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
     assert len(posts(h)) == 1
-    assert sorted(c.query["lastModified"] for c in lookups(h)) == ["20261110", "20261111"]
+    days = sorted(c.query["lastModified"] for c in lookups(h))
+    assert days[:2] == ["20261110", "20261111"], days  # both sides of the midnight (later days may follow, up to today)
 
 
 def test_every_lookup_get_is_in_the_api_call_log(client, h, gw):
