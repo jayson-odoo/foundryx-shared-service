@@ -274,7 +274,6 @@ interface ConditionRowProps {
 
 function ConditionRow({ condition, fields, fieldDef, onChange, onRemove }: ConditionRowProps) {
   const def = fieldDef(condition.field);
-  const type: FilterFieldType = def?.type ?? 'text';
   const ops = operatorsFor(def);
 
   return (
