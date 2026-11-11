@@ -41,6 +41,14 @@ const OPERATORS: Record<FilterFieldType, { value: FilterOperator; label: string 
   ],
 };
 
+/** The operators a field offers: its type's list, narrowed by the field's own `operators`. */
+function operatorsFor(def: FilterFieldDef | undefined): { value: FilterOperator; label: string }[] {
+  const all = OPERATORS[def?.type ?? 'text'];
+  const allowed = def?.operators;
+  const narrowed = allowed && allowed.length > 0 ? all.filter((o) => allowed.includes(o.value)) : all;
+  return narrowed.length > 0 ? narrowed : all;
+}
+
 // ---- Internal draft tree (carries a stable React key per node) ----
 interface DraftCondition {
   key: string;
@@ -106,7 +114,7 @@ export function FilterBuilder({ fields, onApply, onClose, initialValue }: Filter
     key: nextKey(),
     kind: 'condition',
     field: fields[0]?.field ?? '',
-    operator: OPERATORS[fields[0]?.type ?? 'text'][0].value,
+    operator: operatorsFor(fields[0])[0].value,
     value: '',
   });
 
@@ -267,7 +275,7 @@ interface ConditionRowProps {
 function ConditionRow({ condition, fields, fieldDef, onChange, onRemove }: ConditionRowProps) {
   const def = fieldDef(condition.field);
   const type: FilterFieldType = def?.type ?? 'text';
-  const ops = OPERATORS[type];
+  const ops = operatorsFor(def);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -277,8 +285,7 @@ function ConditionRow({ condition, fields, fieldDef, onChange, onRemove }: Condi
         options={fields.map((f) => ({ label: f.label, value: f.field }))}
         value={condition.field}
         onChange={(field) => {
-          const t = fieldDef(field)?.type ?? 'text';
-          onChange({ ...condition, field, operator: OPERATORS[t][0].value, value: '' });
+          onChange({ ...condition, field, operator: operatorsFor(fieldDef(field))[0].value, value: '' });
         }}
       />
 
@@ -376,23 +383,24 @@ function DateRangeCondition({
   const v = Array.isArray(condition.value) ? (condition.value as string[]) : [];
   const from = v[0] ?? '';
   const to = v[1] ?? '';
-  const complete = Boolean(from && to);
+  const present = Boolean(from || to);
 
-  // A fresh `between` condition starts on a real range, never an empty one.
+  // A fresh `between` condition starts on a real range; a saved start-only or end-only
+  // range keeps its half (the picker shows the present day for both ends until edited).
   useEffect(() => {
-    if (complete) return;
+    if (present) return;
     const range = resolvePresetRange('last7', timeZone);
     setPreset('last7');
     onChange({ ...condition, value: [range.from, range.to] });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- seeds once per empty value
-  }, [complete]);
+  }, [present]);
 
-  if (!complete) return null;
+  if (!present) return null;
   return (
     <DateRangePicker
       className="w-full sm:flex-row"
       timeZone={timeZone}
-      value={{ preset, from, to }}
+      value={{ preset, from: from || to, to: to || from }}
       onChange={(next) => {
         setPreset(next.preset);
         onChange({ ...condition, value: [next.from, next.to] });

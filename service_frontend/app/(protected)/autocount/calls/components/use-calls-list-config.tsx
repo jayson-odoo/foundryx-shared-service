@@ -224,7 +224,7 @@ export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}):
       defaultSort: { id: 'createdAt', desc: true },
       enableStatusViews: false,
       filterFields: [
-        { field: 'createdAt', label: 'Time', type: 'date' },
+        { field: 'createdAt', label: 'Time', type: 'date', operators: ['between'] },
         { field: 'companyId', label: 'Company', type: 'enum', options: companies },
         { field: 'book', label: 'Book', type: 'enum', options: options.books.map((b) => ({ label: b, value: b })) },
         {
@@ -243,7 +243,7 @@ export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}):
           field: 'person',
           label: 'Person',
           type: 'enum',
-          options: options.persons.map((p) => ({ label: p.name || p.id, value: p.id })),
+          options: options.persons.map((p) => ({ label: p.name || 'Unnamed', value: p.id })),
         },
       ],
       exportColumns: [],
