@@ -57,14 +57,14 @@ calls db1 or db2.
   on live Postgres.
 
 ## D. "AutoCount calls" view
-- AC-63-30 `GET /api/v1/autocount/calls` (JWT, `autocount.sync.read`, tenant from the JWT only) pages
+- AC-63-30 `GET /autocount/calls` (JWT, `autocount.sync.read`, tenant from the JWT only) pages
   `ac_api_call_log` newest first; another tenant's rows never appear; no permission = 403.
 - AC-63-31 Filters (combine with AND, multi values with OR): date range (from / to instants), company, book,
   document type, outcome, person (acting user id); search matches document no, request id or path (case-insensitive).
 - AC-63-32 Server sort on every column (time, company, book, person, method, path, document type, document no,
   outcome, HTTP status, duration, error code, request id), asc / desc, unknown field = 422; the order holds on page 2.
-- AC-63-33 `GET /api/v1/autocount/calls/filter-options` returns the tenant's distinct books, document types, outcomes
-  and persons (id + latest name); `GET /api/v1/autocount/calls/{id}` returns one row with request JSON and the stored
+- AC-63-33 `GET /autocount/calls/filter-options` returns the tenant's distinct books, document types, outcomes
+  and persons (id + latest name); `GET /autocount/calls/{id}` returns one row with request JSON and the stored
   (already redacted) response body; another tenant's id = 404.
 - AC-63-34 [FE] The page "AutoCount calls" is the shared ResourceList: one toolbar row (Search, Filters, Columns), every
   row one line with "..." + hover for long text, columns hideable / reorderable and kept per user, every filter

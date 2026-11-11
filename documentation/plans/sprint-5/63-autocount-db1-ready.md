@@ -70,8 +70,10 @@ is coming from shared service right, between SS and CRM are different key"
   writable_books() - TEST_BOOKS`. Every caller passes the book of the write connection URL. Host digest unchanged.
 - Settings `autocount_write_allowed_books: str = "db3"` (env `AUTOCOUNT_WRITE_ALLOWED_BOOKS`), list property like
   `cors_origins_list`. Compose + deploy lines per AC-63-15.
-- Known limit, stated: a local `.env` with BOTH `ENVIRONMENT=production` and `AUTOCOUNT_WRITE_ALLOWED_BOOKS=db1` and a
-  db1 write connection would open db1. Three deliberate edits; the env file is the prod deploy's, written by deploy.yml.
+- The plan-55 guard tests that pin the ceiling to {db3} (`test_autocount_write_back_guard.py::test_ac_55_02_*`) are
+  updated to the new ceiling on purpose; the test-book rule they protected now lives in `TEST_BOOKS`.
+- A write refused at connection resolve time (`wb/frame.py:205-229`, before any client exists) also writes one
+  `guard_refused` call-log row, so a refused db1 attempt is visible on the calls view.
 
 ### 3.3 Person (UAC C)
 - Headers `X-Acting-User-Id`, `X-Acting-User-Name` (percent-encoded UTF-8), parsed next to `X-Request-ID` in
@@ -82,7 +84,7 @@ is coming from shared service right, between SS and CRM are different key"
 - Migration `0045_autocount_call_person` (AC-63-23). Backfill: none; old rows have no known person, NULL shows "-".
 
 ### 3.4 Calls view (UAC D)
-- BE: `M/routers/calls.py` (JWT, `require_permission("autocount.sync.read")`, no new permission, no grant sweep) ->
+- BE: `M/routers/calls.py` mounted at `/autocount/calls` (the JWT prefix, never the public `/api/v1/autocount` gateway) (JWT, `require_permission("autocount.sync.read")`, no new permission, no grant sweep) ->
   `M/services/call_log_service.py` -> `M/repositories/call_log_repository.py` (tenant-scoped, sort whitelist, ilike
   search, filters). Routes: list, filter-options, detail.
 - FE: `/autocount/calls` page, `use-calls-list-config.tsx` (ResourceList), service methods in
