@@ -506,7 +506,10 @@ def link_po_row_batch(
             tenant_id=key.tenant_id, company_id=company.id, key_id=key.id,
             idempotency_key=idem or "", op="link_batch", params=params,
         )
-        return _respond(operation_answer(result, params["doc_key"]))
+        answer = operation_answer(result, params["doc_key"])
+        answer.setdefault("links", [])  # every outcome of this route carries both fields (contract section 4.1a)
+        answer.setdefault("freeLine", None)
+        return _respond(answer)
 
     return _frame(request, db, raw_body, "write_link_batch", run, key_required=True, services=(ops,))
 
