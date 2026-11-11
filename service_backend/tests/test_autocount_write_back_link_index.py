@@ -173,9 +173,12 @@ def test_ac_62_41_sync_pull_writes_and_rewrites_the_pos_rows(session_factory):
             elif m.source_path == "from_so_dtl_key":
                 m.source_path = "FromSODtlKey"
         db.commit()
+        with engine.begin() as conn:  # the rig's D001-1 has an SO doc key but NO SO line key: give it a real link
+            conn.exec_driver_sql("UPDATE po_line SET from_so_dtl_key = '45700101' WHERE dtl_key = 'D001-1'")
         _run_po(db, company, RUN_MODE_MANUAL)
         AcPoSoLink = _model()
-        assert db.query(AcPoSoLink).filter_by(company_id=company.id).count() == 1  # D001-1 is linked (45700100 doc)
+        first = db.query(AcPoSoLink).filter_by(company_id=company.id).all()
+        assert [(r.so_dtl_key, Decimal(r.qty)) for r in first] == [(45700101, Decimal(10))], first
         with engine.begin() as conn:
             conn.exec_driver_sql("UPDATE po_line SET from_so_dtl_key = '45700148' WHERE dtl_key = 'D001-1'")
         db.expire_all()
