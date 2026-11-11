@@ -556,7 +556,7 @@ class OperationService:
                 received = self._receipt_reader("PO", doc, cand)
             else:
                 received = self.prims._row_received(company, "PO", dict(cand, DocKey=doc.get("DocKey")))
-            if received is None or received > 0:
+            if received is not None and received > 0:  # unknown (the vendor hides it) joins the rule of _receipt
                 continue
             return int(cand["DtlKey"])
         return None
