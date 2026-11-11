@@ -133,6 +133,9 @@ class FakeAutoCountVendor:
         self.debtors: List[Dict[str, Any]] = []
         # plan 61: new PO rows with these ItemCodes are refused 500 (atomic-PUT probes P-AT1)
         self.invalid_items: set = set()
+        # plan 62: created docs carry CreatedTimeStamp + LastModified = now in AutoCount local time (MYT, no zone, ms)
+        self.stamp_created: bool = False
+        self.reject_unknown_so_link: bool = False  # plan 62 F-G: a new PO row linked to a missing SO row refuses the whole PUT
         # plan 61: a cancel is answered 200 but the document stays as it was (a vendor that ignores it)
         self.cancel_ignored = False
         # plan 61: (kind, doc_key) -> message, the document is refused for cancel as "transferred"
@@ -227,6 +230,9 @@ class FakeAutoCountVendor:
             for kind, spec in SPECS.items():
                 if kind != "SPO" and leaf == f"{spec['noun'].lower()}bydocno":
                     return self._get_by_doc_no(kind, call)
+            for kind, spec in SPECS.items():
+                if kind != "SPO" and leaf == f"{spec['noun'].lower()}bylastmodified":
+                    return self._get_by_last_modified(kind, call)
             return httpx.Response(404, text="no such door")
         for kind, spec in SPECS.items():
             if kind == "SPO":
@@ -246,6 +252,15 @@ class FakeAutoCountVendor:
         out = [
             copy.deepcopy(d) for d in self.docs[SPECS[kind]["store"]]
             if self.any_date or str(d["DocDate"])[:10].replace("-", "") == wanted
+        ]
+        return httpx.Response(200, json=out)
+
+    def _get_by_last_modified(self, kind: str, call: Call) -> httpx.Response:
+        """GET /<doc>byLastModified?lastModified=YYYYMMDD: every document whose LastModified is that day."""
+        wanted = call.query.get("lastModified", "")
+        out = [
+            copy.deepcopy(d) for d in self.docs[SPECS[kind]["store"]]
+            if str(d.get("LastModified", ""))[:10].replace("-", "") == wanted
         ]
         return httpx.Response(200, json=out)
 
@@ -295,6 +310,9 @@ class FakeAutoCountVendor:
             if self.inherit_qt_values and kind == "SO" and original.get("FromDocType") == "QT":
                 self._inherit(stored, original)
         self._touch(doc)
+        if self.stamp_created:
+            stamp = self.now_myt()
+            doc["CreatedTimeStamp"] = doc["LastModified"] = stamp
         self.docs[spec["store"]].append(doc)
         return httpx.Response(200, text=f"DocNo={doc_no} ,DocKey={doc_key} ... Created Successful.")
 
@@ -354,6 +372,13 @@ class FakeAutoCountVendor:
                     return httpx.Response(500, json={
                         "ExceptionMessage": "Item code does not exist.",
                         "ExceptionType": "AutoCount.Invoicing.NotExistItemCodeException"})
+                if self.reject_unknown_so_link and kind == "PO" and sent.get("FromDocType") == "SO" and not any(
+                    r["DtlKey"] == int(sent.get("FromDocDtlKey") or 0)
+                    for so in self.docs["SO"] for r in so["Details"]
+                ):  # plan 62 F-G: one bad new linked row refuses the WHOLE PUT, nothing lands
+                    return httpx.Response(500, json={
+                        "ExceptionMessage": "The linked Sales Order detail does not exist.",
+                        "ExceptionType": "AutoCount.Invoicing.NotExistFromDocDetailException"})
                 if kind in self.require_full_row and not all(k in sent for k in FULL_ROW_KEYS):
                     continue  # answered 200, row dropped
                 self._next_key += 1
@@ -429,6 +454,13 @@ class FakeAutoCountVendor:
         doc["Cancelled"], doc["DocStatus"] = "T", "V"
         self._touch(doc)
         return httpx.Response(200, text=f"DocNo={doc_no} ... was cancelled.")
+
+    @staticmethod
+    def now_myt() -> str:
+        """AutoCount local time (MYT, UTC+8) as the vendor writes it: no zone, milliseconds."""
+        from datetime import datetime, timedelta, timezone
+
+        return datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None).isoformat(timespec="milliseconds")
 
     def _touch(self, doc: Dict[str, Any]) -> None:
         self._clock += 1

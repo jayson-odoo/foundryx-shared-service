@@ -27,6 +27,7 @@ from sqlalchemy import (
     Date,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -1217,3 +1218,24 @@ class AcApiCallLog(AutocountBase):
     # plan 63: the person in the calling system who caused the write (NULL = unknown)
     acting_user_id = Column(String, nullable=True)
     acting_user_name = Column(String, nullable=True)
+
+
+class AcPoSoLink(AutocountBase):
+    """Over-link index (plan 62 D8): one row per linked line (``FromSODtlKey``) of a purchase
+    order's NEWEST staged copy, so ``_so_linked_qty`` sums an indexed table instead of walking every
+    staged PO (and counts a PO's history copies once). A cancelled or deleted PO has no rows.
+    Rewritten by ``write_back/link_index.py`` on every PO staging write."""
+
+    __tablename__ = "ac_po_so_link"
+    __table_args__ = (
+        Index("ix_ac_po_so_link_so_dtl", "tenant_id", "company_id", "so_dtl_key"),
+        Index("ix_ac_po_so_link_po_ref", "tenant_id", "company_id", "po_source_ref"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    po_source_ref = Column(String, nullable=False)
+    po_dtl_key = Column(BigInteger, nullable=True)
+    so_dtl_key = Column(BigInteger, nullable=False)
+    qty = Column(Numeric(20, 8), nullable=False)

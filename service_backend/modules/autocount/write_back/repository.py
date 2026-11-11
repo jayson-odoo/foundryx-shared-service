@@ -6,11 +6,19 @@ Pure SQLAlchemy, every query tenant-scoped.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from modules.autocount.models import AcEntityConfig, AcStagedRecord, AcWriteAction, AcWriteOperation
+from modules.autocount.models import (
+    AcEntityConfig,
+    AcPoSoLink,
+    AcStagedRecord,
+    AcWriteAction,
+    AcWriteOperation,
+)
 
 OUTCOME_IN_FLIGHT = "in_flight"
 OUTCOME_PENDING = "pending_verification"
@@ -136,6 +144,62 @@ class OperationRepository:
         self.db.add(row)
         self.db.flush()
         return row
+
+    def rekey(self, row: AcWriteOperation, idempotency_key: str) -> None:
+        row.idempotency_key = idempotency_key
+        self.db.flush()
+
+    def pending_link_qty(self, tenant_id: str, company_id: str, so_dtl_key: int, exclude_doc_key: Optional[int]) -> Decimal:
+        """Quantity of one SO row that PENDING link operations (outcome unknown, they may have landed) of
+        this company would cover, from their stored snapshot; the operations on ``exclude_doc_key`` (the PO
+        being written, whose fresh rows already say) are left out."""
+        total = Decimal(0)
+        rows = self.db.query(AcWriteOperation).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.status == OUTCOME_PENDING,
+            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
+        )
+        for op in rows:
+            snap = op.snapshot_json
+            if not isinstance(snap, dict) or (exclude_doc_key is not None and op.doc_key == exclude_doc_key):
+                continue
+            if op.op in ("link_batch", "split_link"):
+                for link in snap.get("links") or []:
+                    if int(link.get("soDtlKey") or 0) == so_dtl_key:
+                        total += Decimal(str(link.get("qty") or 0))
+                continue
+            target = int((snap.get("newLink") or {}).get("FromDocDtlKey") or 0)
+            if target == so_dtl_key:
+                qty = Decimal(str((snap.get("row") or {}).get("Qty") or 0))
+                if snap.get("received") is not None:
+                    qty -= Decimal(str(snap["received"]))
+                total += qty
+        return total
+
+    def created_documents(self, tenant_id: str, company_id: str, exclude_id: str, since: datetime,
+                          until: datetime) -> "tuple[set, set]":
+        """``(DocKeys, DocNos)`` already recorded as the result of a DONE create of this company, other than
+        ``exclude_id`` and started between ``since`` and ``until`` (the lookup window): a lookup never adopts a
+        document another create owns, and never reads further back than the window."""
+        keys: set = set()
+        numbers: set = set()
+        rows = self.db.query(AcWriteOperation.result_json).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.op.like("create_doc:%"),
+            AcWriteOperation.status == "done",
+            AcWriteOperation.id != exclude_id,
+            AcWriteOperation.created_at >= since,
+            AcWriteOperation.created_at <= until,
+        )
+        for (result,) in rows:
+            if isinstance(result, dict):
+                if result.get("docKey") is not None:
+                    keys.add(result["docKey"])
+                if result.get("docNo"):
+                    numbers.add(result["docNo"])
+        return keys, numbers
 
     def delete(self, row: AcWriteOperation) -> None:
         self.db.delete(row)
@@ -283,3 +347,39 @@ class EntitySourceRepository:
             )
             .scalar()
         )
+
+
+class PoSoLinkRepository:
+    """The over-link index ``ac_po_so_link`` (plan 62 D8); every call is tenant + company scoped."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def replace_for_po(
+        self, tenant_id: str, company_id: str, po_source_ref: str, links: "List[tuple[Optional[int], int, Decimal]]"
+    ) -> None:
+        """Swap one PO's rows for ``links`` (``(po_dtl_key, so_dtl_key, qty)``)."""
+        self.db.query(AcPoSoLink).filter(
+            AcPoSoLink.tenant_id == tenant_id,
+            AcPoSoLink.company_id == company_id,
+            AcPoSoLink.po_source_ref == po_source_ref,
+        ).delete(synchronize_session=False)
+        for po_dtl_key, so_dtl_key, qty in links:
+            self.db.add(AcPoSoLink(
+                tenant_id=tenant_id, company_id=company_id, po_source_ref=po_source_ref,
+                po_dtl_key=po_dtl_key, so_dtl_key=so_dtl_key, qty=qty,
+            ))
+        self.db.flush()
+
+    def linked_qty(
+        self, tenant_id: str, company_id: str, so_dtl_key: int, *, except_ref: Optional[str] = None
+    ) -> Decimal:
+        """Qty of one SO row covered by the indexed POs, leaving out ``except_ref``."""
+        query = self.db.query(func.coalesce(func.sum(AcPoSoLink.qty), 0)).filter(
+            AcPoSoLink.tenant_id == tenant_id,
+            AcPoSoLink.company_id == company_id,
+            AcPoSoLink.so_dtl_key == so_dtl_key,
+        )
+        if except_ref is not None:
+            query = query.filter(AcPoSoLink.po_source_ref != except_ref)
+        return Decimal(str(query.scalar() or 0))

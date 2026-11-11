@@ -121,6 +121,7 @@ class SuiteResult:
     cases: List[CaseResult] = field(default_factory=list)
     # plan 57: one exact, UNSCRUBBED dict per vendor write (private file, never the report)
     evidence: List[Dict[str, object]] = field(default_factory=list)
+    summary: str = ""  # markdown shown under the report header (the batch suite's timing table)
 
 
 def _doc_prefix(run_tag: str) -> str:
@@ -614,8 +615,9 @@ class _Run:
         return next((r for r in self._test_rows() if r.get("DtlKey") == dtl_key), None)
 
     def c13(self, case: CaseResult) -> None:
-        case.expected = ("unlink_row (operation) of the C03 row: ONE replace PUT, the first SO row freed; "
-                         "replacedLines names the new row")
+        case.expected = ("unlink_row (operation) of the C03 row: ONE PUT, the first SO row freed; replacedLines "
+                         "names the new free row, or the existing free row it merged into (plan 62 D7; "
+                         "C07 uses the plan 55 service path and never merges)")
         if self._skip(case, "C08"):
             return
         linked = self._linked_new_row(self.po_doc, self._so_row(0))
@@ -627,23 +629,39 @@ class _Run:
             case.status = PASS
 
     def c14(self, case: CaseResult) -> None:
-        case.expected = ("link_row (operation, whole row) of the C07 row to the first SO row: ONE replace PUT, "
-                         "then the move PUT puts back the SO row's location and the old unit price and date")
+        case.expected = ("link_row (operation) of the row C13 left (the C07 row; C13's unlink merges into it, plan 62 D7) "
+                         "to the first SO row, for the quantity that SO row still has outstanding: one write, then the "
+                         "move puts back the SO row's location and the old unit price and date")
         if self._skip(case, "C13") or self._skip(case, "C07"):
             return
         old = self._row(self.c07_key)
         if old is None:
             case.observed = "C07 left no unlinked row"
             return
+        so_row = ((self.so_doc or {}).get("Details") or [{}])[0]  # type: ignore[union-attr]
+        so_key = self._so_row(0)
+        taken = sum((_num(r.get("Qty")) for r in self._test_rows() if r.get("FromSODtlKey") == so_key), Decimal(0))
+        qty = min(_num(old.get("Qty")), _num(so_row.get("Qty")) - taken)
+        if qty <= 0:
+            case.observed = "the first SO row has nothing outstanding"
+            return
+        extra: Dict[str, object] = {} if qty == _num(old.get("Qty")) else {"qty": qty}
+        before_keys = {r.get("DtlKey") for r in self._test_rows()}
         out = self._run_op(case, "link_row", self._po_params(
-            self.c07_key, so_doc_key=self._so_key(), so_dtl_key=self._so_row(0), target_doc_date=self.today))
-        if out.outcome == "done" and not _move_warned(out.warnings) and len(out.replaced_lines) == 1:
-            new_key = out.replaced_lines[0][1]
-            new = self._row(new_key)
-            so_loc = ((self.so_doc or {}).get("Details") or [{}])[0].get("Location")  # type: ignore[index,union-attr]
-            if self._kept_values(new, old) and new is not None and new.get("Location") == so_loc:
-                self.c14_key = new_key
-                case.status = PASS
+            self.c07_key, so_doc_key=self._so_key(), so_dtl_key=so_key, target_doc_date=self.today, **extra))
+        if out.outcome != "done" or _move_warned(out.warnings):
+            return
+        if out.replaced_lines:  # a whole row: replaced by one linked row
+            new_key: Optional[int] = out.replaced_lines[0][1]
+        else:  # part of the row: the linked row is the one new row carrying the SO link
+            fresh = [r for r in self._test_rows()
+                     if r.get("DtlKey") not in before_keys and r.get("FromSODtlKey") == so_key]
+            new_key = int(fresh[0]["DtlKey"]) if len(fresh) == 1 else None  # type: ignore[arg-type]
+        new = self._row(new_key) if new_key is not None else None
+        if new is not None and self._kept_values(new, old) and new.get("Location") == so_row.get("Location") \
+                and _num(new.get("Qty")) == qty:
+            self.c14_key = int(new_key)  # type: ignore[arg-type]
+            case.status = PASS
 
     def c15(self, case: CaseResult) -> None:
         case.expected = ("relink_row (operation) of the C14 row to the third SO row: ONE replace PUT and the "
@@ -724,7 +742,7 @@ _CASES = (
     ("C11", "Relocate of a row already at its location", "c11"),
     ("C12", "Other book refused with no request", "c12"),
     ("C13", "Unlink through the operation layer (replace PUT)", "c13"),
-    ("C14", "Whole-row link through the operation layer (replace PUT + restore move)", "c14"),
+    ("C14", "Link the row C13 left through the operation layer (write + restore move)", "c14"),
     ("C15", "Relink through the operation layer (replace PUT + restore move)", "c15"),
     ("C16", "Delete a PO line (one PUT, row marked D)", "c16"),
     ("C17", "Cancel the test PO", "c17"),
@@ -809,6 +827,8 @@ def render_report(result: SuiteResult, *, run_date: date) -> str:
         f"PASS {counts[PASS]}, FAIL {counts[FAIL]}, SKIPPED {counts[SKIPPED]}.",
         "",
     ]
+    if result.summary:
+        out += [result.summary, ""]
     for case in result.cases:
         out += [f"## {case.case_id} {case.title}: {case.status}", ""]
         out.append(f"- Expected: {case.expected}")
@@ -1245,6 +1265,452 @@ def run_qtso_suite(
     return suite
 
 
+# ── plan 62: PO link batch suite (B00..B06) ──────────────────────────────────
+
+_B_CASES = (
+    ("B00", "Create the test documents (3 sales orders, 1 purchase order)", "b00"),
+    ("B01", "Batch of 1 SO line (sum below the row quantity: a free row stays)", "b01"),
+    ("B02", "Batch of 3 SO lines across 2 sales orders (sum equals the row quantity: the row is deleted)", "b02"),
+    ("B03", "Batch of 5 SO lines across 2 sales orders (sum below the row quantity)", "b03"),
+    ("B04", "Today's flow: the same 3 SO lines linked one call at a time (timing baseline)", "b04"),
+    ("B05", "Unlink one batch row: it merges into the free row in one PUT", "b05"),
+    ("B06", "Retry rule: a refused batch, the body fixed, the SAME key resent", "b06"),
+    ("B07", "A batch above the SO row's outstanding (within the PO row's free quantity) is refused with no PUT", "b07"),
+    ("B08", "Create resend: the POST landed, the answer was lost; the resend finds the document (<<New>> body)", "b08"),
+    ("B09", "Create resend: nothing was sent; the resend finds nothing and POSTs once (<<New>> body)", "b09"),
+    ("B10", "Create resend: the POST landed, the answer was lost; the resend finds the document (numbered body)", "b10"),
+    ("B11", "Mixed batch: two good lines and one above the SO row's outstanding; the two link, the third is skipped", "b11"),
+)
+_B_PRICE = 1.0
+_B_SO_LOCATION = "HQ"  # the unlink merge needs the batch rows and the free row at one location (D7)
+
+
+class _FaultClient:
+    """Wraps the tapped client: when the run's ``fault`` is armed, the next POST either lands and then
+    times out ("after": the answer is lost) or times out before anything is sent ("before")."""
+
+    def __init__(self, inner, run) -> None:
+        self._inner, self._run = inner, run
+
+    def attach_call_log(self, log: cl.CallLog) -> None:
+        self._inner.attach_call_log(log)
+
+    def post(self, path: str, body: object):
+        mode, self._run.fault = self._run.fault, None
+        if mode == "before":
+            raise WriteTransportError("WRITE_TIMEOUT")
+        response = self._inner.post(path, body)
+        if mode == "after":
+            raise WriteTransportError("WRITE_TIMEOUT")
+        return response
+
+    def put(self, path: str, body: object):
+        return self._inner.put(path, body)
+
+    def delete(self, path: str, body: object):
+        return self._inner.delete(path, body)
+
+    def delete_query(self, path: str, params: Dict[str, str]):
+        return self._inner.delete_query(path, params)
+
+
+class _BatchRun:
+    """The batch suite: documents created through the real create primitive, links and unlinks through
+    ``OperationService.run`` (the code the gateway runs), every vendor request tapped and call-logged."""
+
+    def __init__(self, db: Session, tenant_id: str, company: AcCompany, base_url: str, creditor: str,
+                 debtor: str, run_tag: str, client_factory, reader_factory, sink_factory) -> None:
+        self.db, self.tenant_id, self.company, self.base_url = db, tenant_id, company, base_url
+        self.creditor, self.debtor, self.tag = creditor, debtor, run_tag
+        self.tap = _Tap()
+        self.fault: Optional[str] = None
+        wrapped_client = lambda url: _FaultClient(_TapClient(client_factory(url), self.tap), self)  # noqa: E731
+        wrapped_reader = lambda url: _TapReader(reader_factory(url), self.tap)  # noqa: E731
+        self.prims = PrimitiveService(db, client_factory=wrapped_client, reader_factory=wrapped_reader,
+                                      sink_factory=sink_factory, actor=cl.ACTOR_RUNNER)
+        self.ops = OperationService(db, client_factory=wrapped_client, reader_factory=wrapped_reader,
+                                    sink_factory=sink_factory, actor=cl.ACTOR_RUNNER)
+        self.today = myt_date(datetime.now(timezone.utc))
+        self.evidence: List[Dict[str, object]] = []
+        self.timings: List[Dict[str, object]] = []
+        self.case_id = ""
+        self.so: Dict[str, PrimitiveResult] = {}
+        self.po: Optional[PrimitiveResult] = None
+        self.keys: Dict[str, int] = {}  # PO row name -> DtlKey
+        self.batch_rows: Dict[str, int] = {}  # B03 SO line name -> new PO DtlKey
+        self.po_no = f"{_doc_prefix(run_tag)}-PO"
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _args(self, kind: str) -> Dict[str, object]:
+        return {"tenant_id": self.tenant_id, "company_id": self.company.id, "kind": kind}
+
+    def _day(self) -> str:
+        return f"{self.today.isoformat()}T00:00:00"
+
+    def _row(self, qty: float, location: str, **over: object) -> Dict[str, object]:
+        row: Dict[str, object] = dict(_Q_ITEM, Qty=qty, UnitPrice=_B_PRICE, Location=location, DeliveryDate=self._day())
+        row.update(over)
+        return row
+
+    def _header(self, **over: object) -> Dict[str, object]:
+        head: Dict[str, object] = {"DocDate": self._day(), "DisplayTerm": "C.B.D.", "CurrencyCode": "MYR",
+                                   "CurrencyRate": 1.0}
+        head.update(over)
+        return head
+
+    def _read(self, kind: str, doc_key: int) -> Dict[str, object]:
+        res = self.prims.read_doc(**self._args(kind), doc_key=doc_key, doc_date=self.today)
+        return res.document or {}
+
+    def _rows(self, doc: Dict[str, object]) -> List[Dict[str, object]]:
+        return list(doc.get("Details") or [])  # type: ignore[call-overload]
+
+    def _po_row(self, doc: Dict[str, object], key: int) -> Optional[Dict[str, object]]:
+        return next((r for r in self._rows(doc) if r.get("DtlKey") == key), None)
+
+    def _record(self, case: CaseResult, first_write: int) -> None:
+        for entry in self.tap.writes[first_write:]:
+            self.evidence.append({
+                "case": case.case_id, "method": entry["method"], "path": entry["path"],
+                "requestBody": entry["requestBody"], "responseStatus": entry["responseStatus"],
+                "responseBody": entry["responseBody"],
+            })
+            status = entry["responseStatus"]
+            answer = _scrub(entry["responseBody"]) if isinstance(status, int) and 200 <= status < 300 else (
+                vendor_message(entry["responseBody"], self.base_url) or f"status {status}")
+            case.steps.append(Step(str(entry["method"]), str(entry["path"]), status,  # type: ignore[arg-type]
+                                   _scrub(entry["requestBody"]), response=answer))  # type: ignore[arg-type]
+
+    def _posts_since(self, since: datetime) -> int:
+        from sqlalchemy import func as sa_func
+        from modules.autocount.models import AcApiCallLog
+
+        self.db.rollback()
+        return int(self.db.query(sa_func.count(AcApiCallLog.id)).filter(
+            AcApiCallLog.tenant_id == self.tenant_id, AcApiCallLog.company_id == self.company.id,
+            AcApiCallLog.actor == cl.ACTOR_RUNNER, AcApiCallLog.created_at >= since,
+            AcApiCallLog.method == "POST").scalar() or 0)
+
+    def _call_log_counts(self, since: datetime) -> "tuple[int, int]":
+        """``(rows, PUT rows)`` this company's runner calls added to ``ac_api_call_log`` since ``since``."""
+        from sqlalchemy import func as sa_func
+        from modules.autocount.models import AcApiCallLog
+
+        self.db.rollback()
+        base = self.db.query(sa_func.count(AcApiCallLog.id)).filter(
+            AcApiCallLog.tenant_id == self.tenant_id, AcApiCallLog.company_id == self.company.id,
+            AcApiCallLog.actor == cl.ACTOR_RUNNER, AcApiCallLog.created_at >= since,
+        )
+        return int(base.scalar() or 0), int(base.filter(AcApiCallLog.method == "PUT").scalar() or 0)
+
+    def _timed(self, case: CaseResult, label: str, n: int, fn):
+        """Run ``fn`` (one or more operations), keep wall time, PUT count and call-log rows."""
+        import time
+
+        start_write, since = len(self.tap.writes), datetime.now(timezone.utc)
+        t0 = time.monotonic()
+        out = fn()
+        ms = int((time.monotonic() - t0) * 1000)
+        self._record(case, start_write)
+        rows, puts = self._call_log_counts(since)
+        self.timings.append({"case": case.case_id, "label": label, "lines": n, "ms": ms, "puts": puts, "logRows": rows})
+        case.http_calls = len(self.tap.writes) - start_write
+        return out
+
+    def _run_op(self, op: str, key: str, params: Dict[str, object]):
+        return self.ops.run(tenant_id=self.tenant_id, company_id=self.company.id, key_id=None,
+                            idempotency_key=f"{self.tag}-{key}", op=op, params=params)
+
+    # ── cases ────────────────────────────────────────────────────────────────
+
+    def b00(self, case: CaseResult) -> None:
+        case.expected = "SO1 (3 rows qty 10), SO2 (2 rows qty 10), SO3 (1 row qty 5), PO with rows A10 B12 C10 D6 E4"
+        prefix = _doc_prefix(self.tag)
+        start = len(self.tap.writes)
+        for name, qtys in (("SO1", (10, 10, 10)), ("SO2", (10, 10)), ("SO3", (5,))):
+            res = self.prims.create_doc(
+                **self._args("SO"), header=self._header(DebtorCode=self.debtor, DocNo=f"{prefix}-{name}"),
+                lines=[self._row(q, _B_SO_LOCATION) for q in qtys])
+            if res.outcome != "done":
+                case.observed = f"{name} {res.outcome} {res.error_code or ''}".strip()
+                self._record(case, start)
+                return
+            self.so[name] = res
+        po = self.prims.create_doc(
+            **self._args("PO"), header=self._header(CreditorCode=self.creditor, DocNo=self.po_no),
+            lines=[self._row(q, "HQ") for q in (10, 12, 10, 6, 4)])
+        self._record(case, start)
+        if po.outcome != "done":
+            case.observed = f"PO {po.outcome} {po.error_code or ''}".strip()
+            return
+        self.po = po
+        for name, row in zip("ABCDE", self._rows(po.document or {})):
+            self.keys[name] = int(row["DtlKey"])  # type: ignore[call-overload]
+        case.status = PASS
+        case.observed = f"created {', '.join(f'{k} {v.doc_no}' for k, v in self.so.items())} and {po.doc_no}"
+
+    def _so_row(self, name: str, index: int) -> int:
+        return int(self._rows(self.so[name].document or {})[index]["DtlKey"])  # type: ignore[call-overload]
+
+    def _link(self, name: str, index: int, qty: object) -> Dict[str, object]:
+        return {"so_doc_key": int(self.so[name].doc_key or 0), "so_dtl_key": self._so_row(name, index), "qty": qty}
+
+    def _batch(self, case: CaseResult, row: str, links: List[Dict[str, object]], key: str, label: str) -> bool:
+        if self.po is None or any(n not in self.so for n in ("SO1", "SO2", "SO3")):
+            case.status, case.observed = SKIPPED, "B00 did not pass"
+            return False
+        params = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys[row], "links": links,
+                  "doc_date": self.today}
+        res = self._timed(case, label, len(links), lambda: self._run_op("link_batch", key, params))
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        ok = res.outcome == "done" and res.batch is not None
+        notes = [f"{res.outcome}" + (f" {res.error_code}" if res.error_code else "")]
+        if ok:
+            answer = {a["soDtlKey"]: a for a in res.batch["links"]}  # type: ignore[index]
+            taken = Decimal(0)
+            for link in links:
+                got = self._po_row(doc, int(answer[link["so_dtl_key"]]["poDtlKey"])) if link["so_dtl_key"] in answer else None
+                taken += _num(link["qty"])
+                good = (got is not None and got.get("FromSODtlKey") == link["so_dtl_key"]
+                        and _num(got.get("Qty")) == _num(link["qty"]) and got.get("Location") == _B_SO_LOCATION
+                        and _num(got.get("UnitPrice")) == Decimal(str(_B_PRICE))
+                        and str(got.get("DeliveryDate") or "")[:10] == self.today.isoformat())
+                ok = ok and good
+            free = res.batch.get("freeLine")  # type: ignore[union-attr]
+            want_free = _num(self.qtys[row]) - taken
+            ok = ok and ((free is None and want_free == 0) or (free is not None and _num(free["qty"]) == want_free))
+            notes.append(f"{len(answer)} linked rows, free line {free['qty'] if free else 'none'}, warnings {','.join(res.warnings) or 'none'}")
+            for link in links:
+                self.batch_rows[f"{link['so_dtl_key']}:{row}"] = int(answer[link["so_dtl_key"]]["poDtlKey"])
+        case.observed = "; ".join(notes) + f"; {self.timings[-1]['ms']} ms, {self.timings[-1]['puts']} PUT"
+        case.status = PASS if ok else FAIL
+        return ok
+
+    qtys = {"A": 10, "B": 12, "C": 10, "D": 6, "E": 4}
+
+    def b01(self, case: CaseResult) -> None:
+        case.expected = "one PUT 1 (+ at most one PUT 2), 1 linked row at the SO row's location, price and date kept, free row 7"
+        self._batch(case, "A", [self._link("SO1", 0, 3)], "b01", "batch of 1")
+
+    def b02(self, case: CaseResult) -> None:
+        case.expected = "one PUT 1 (+ at most one PUT 2), 3 linked rows, the row deleted (sum equals its quantity)"
+        self._batch(case, "B", [self._link("SO1", 1, 4), self._link("SO1", 2, 4), self._link("SO2", 0, 4)],
+                    "b02", "batch of 3")
+
+    def b03(self, case: CaseResult) -> None:
+        case.expected = "one PUT 1 (+ at most one PUT 2), 5 linked rows, free row 5"
+        self._batch(case, "C", [self._link("SO1", 0, 1), self._link("SO1", 1, 1), self._link("SO1", 2, 1),
+                                self._link("SO2", 0, 1), self._link("SO2", 1, 1)], "b03", "batch of 5")
+
+    def b04(self, case: CaseResult) -> None:
+        case.expected = "three link_row calls, each its own split (PUT 1 + restore PUT)"
+        if self.po is None or "SO1" not in self.so:
+            case.status, case.observed = SKIPPED, "B00 did not pass"
+            return
+        calls = [("SO1", 0), ("SO1", 1), ("SO2", 1)]
+
+        def go():
+            outs = []
+            for i, (name, idx) in enumerate(calls):
+                outs.append(self._run_op("link_row", f"b04-{i}", {
+                    "doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys["D"],  # type: ignore[union-attr]
+                    "so_doc_key": int(self.so[name].doc_key or 0), "so_dtl_key": self._so_row(name, idx),
+                    "qty": 1, "doc_date": self.today}))
+            return outs
+
+        outs = self._timed(case, "today: 3 calls", 3, go)
+        case.observed = ", ".join(o.outcome + (f" {o.error_code}" if o.error_code else "") for o in outs) + (
+            f"; {self.timings[-1]['ms']} ms, {self.timings[-1]['puts']} PUT")
+        case.status = PASS if all(o.outcome == "done" for o in outs) else FAIL
+
+    def b05(self, case: CaseResult) -> None:
+        case.expected = ("unlink of a B03 batch row: ONE PUT, the row deleted, the FIRST matching free row (the B01 free "
+                         "row, row order) raised by its quantity, the answer names it")
+        key = self.batch_rows.get(f"{self._so_row('SO1', 0)}:C") if "SO1" in self.so else None
+        if key is None or self.po is None:
+            case.status, case.observed = SKIPPED, "B03 did not pass"
+            return
+        before = self._po_row(self._read("PO", int(self.po.doc_key or 0)), self.keys["A"])
+        res = self._timed(case, "unlink merge", 1, lambda: self._run_op("unlink_row", "b05", {
+            "doc_key": int(self.po.doc_key or 0), "dtl_key": key, "doc_date": self.today}))  # type: ignore[union-attr]
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        free = self._po_row(doc, self.keys["A"])
+        ok = (res.outcome == "done" and res.replaced_lines == [(key, self.keys["A"])]
+              and free is not None and before is not None and self._po_row(doc, key) is None
+              and _num(free.get("Qty")) == _num(before.get("Qty")) + 1 and self.timings[-1]["puts"] == 1)
+        case.observed = (f"{res.outcome}, replaced {res.replaced_lines}, free row {free.get('Qty') if free else 'gone'}, "
+                         f"{self.timings[-1]['ms']} ms, {self.timings[-1]['puts']} PUT")
+        case.status = PASS if ok else FAIL
+
+    def b06(self, case: CaseResult) -> None:
+        case.expected = ("a batch with one quantity above the SO row's outstanding is refused before any PUT; the "
+                         "body fixed and the SAME key resent runs fresh and is done (plan 62 D6)")
+        if self.po is None or "SO2" not in self.so:
+            case.status, case.observed = SKIPPED, "B00 did not pass"
+            return
+        bad = [self._link("SO2", 1, 100)]
+        good = [self._link("SO2", 1, 1)]
+        base = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys["E"], "doc_date": self.today}
+        first = self._timed(case, "retry: refused batch", 1, lambda: self._run_op("link_batch", "b06", dict(base, links=bad)))
+        puts_first = self.timings[-1]["puts"]
+        second = self._timed(case, "retry: fixed batch, same key", 1,
+                             lambda: self._run_op("link_batch", "b06", dict(base, links=good)))
+        case.observed = (f"first {first.outcome} {first.error_code or ''} ({puts_first} PUT); resend with the same key "
+                         f"{second.outcome} {second.error_code or ''}").strip()
+        case.status = PASS if first.outcome == "refused" and puts_first == 0 and second.outcome == "done" else FAIL
+
+
+    def b07(self, case: CaseResult) -> None:
+        case.expected = ("a batch whose only line is within the PO row's free quantity but above the SO row's "
+                         "outstanding: every line skipped, refused ALL_LINKS_SKIPPED naming QTY_ABOVE_OUTSTANDING, 0 PUTs")
+        if self.po is None or "SO2" not in self.so:
+            case.status, case.observed = SKIPPED, "B00 did not pass"
+            return
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        so_key = self._so_row("SO2", 1)
+        linked = sum((_num(r.get("Qty")) for r in self._rows(doc) if r.get("FromSODtlKey") == so_key), Decimal(0))
+        outstanding = Decimal(10) - linked
+        free = _num((self._po_row(doc, self.keys["A"]) or {}).get("Qty"))
+        qty = outstanding + 1
+        if qty > free:
+            case.observed = f"setup: free row {free} cannot carry {qty}"
+            return
+        link = {"so_doc_key": int(self.so["SO2"].doc_key or 0), "so_dtl_key": so_key, "qty": qty}
+        params = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys["A"], "links": [link], "doc_date": self.today}
+        res = self._timed(case, "refused above outstanding", 1, lambda: self._run_op("link_batch", "b07", params))
+        puts = self.timings[-1]["puts"]
+        skipped = (res.batch or {}).get("skipped") or []
+        codes = [(x["soDtlKey"], x["code"]) for x in skipped]
+        case.observed = (f"{res.outcome} {res.error_code or ''}, skipped {codes} (qty {qty}, outstanding {outstanding}, "
+                         f"free {free}, {puts} PUT)").strip()
+        case.status = PASS if (res.outcome == "refused" and res.error_code == "ALL_LINKS_SKIPPED" and puts == 0
+                               and codes == [(so_key, "QTY_ABOVE_OUTSTANDING")]) else FAIL
+
+    def b11(self, case: CaseResult) -> None:
+        case.expected = ("owner rule: one bad line never fails the batch. Two good lines and one above the SO row's "
+                         "outstanding: done, 2 linked rows, the third named in skipped with QTY_ABOVE_OUTSTANDING, "
+                         "2 PUTs (PUT 1 with the two lines, one restore PUT)")
+        if self.po is None or "SO3" not in self.so or "SO2" not in self.so:
+            case.status, case.observed = SKIPPED, "B00 did not pass"
+            return
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        so3 = self._so_row("SO3", 0)
+        linked3 = sum((_num(r.get("Qty")) for r in self._rows(doc) if r.get("FromSODtlKey") == so3), Decimal(0))
+        bad_qty = Decimal(5) - linked3 + 1
+        links = [self._link("SO2", 0, 1), self._link("SO2", 1, 1), self._link("SO3", 0, bad_qty)]
+        params = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys["A"], "links": links, "doc_date": self.today}
+        res = self._timed(case, "mixed batch (2 good, 1 skipped)", 3, lambda: self._run_op("link_batch", "b11", params))
+        puts = self.timings[-1]["puts"]
+        batch = res.batch or {}
+        codes = [(x["soDtlKey"], x["code"]) for x in batch.get("skipped") or []]
+        case.observed = (f"{res.outcome} {res.error_code or ''}, {len(batch.get('links') or [])} linked, skipped {codes}, "
+                         f"{puts} PUT").strip()
+        case.status = PASS if (res.outcome == "done" and len(batch.get("links") or []) == 2 and puts == 2
+                               and codes == [(so3, "QTY_ABOVE_OUTSTANDING")]) else FAIL
+
+    def _create_case(self, case: CaseResult, key: str, fault: str, number: Optional[str], qty: int) -> None:
+        """A QT create through ``run_primitive`` with an armed fault, then the SAME key resent."""
+        header: Dict[str, object] = {"docNo": number} if number else {}
+        header["debtorCode"] = self.debtor
+        params = {"header": header, "lines": [{"itemCode": _Q_ITEM["ItemCode"], "qty": qty, "uom": _Q_ITEM["UOM"]}]}
+        vendor_header = self._header(DebtorCode=self.debtor, **({"DocNo": number} if number else {}))
+        lines = [self._row(qty, "HQ")]
+
+        def send():
+            return self.ops.run_primitive(
+                tenant_id=self.tenant_id, company_id=self.company.id, key_id=None,
+                idempotency_key=f"{self.tag}-{key}", name="create_doc", kind="QT", doc_key=None, params=params,
+                call=lambda: self.prims.create_doc(**self._args("QT"), header=vendor_header, lines=lines))
+
+        since = datetime.now(timezone.utc)
+        start = len(self.tap.writes)
+        self.fault = fault
+        first = send()
+        second = send()
+        third = send()  # the key is settled now: a further resend changes nothing
+        self._record(case, start)
+        posts = self._posts_since(since)
+        found = second.get("outcome") == "done" and second.get("docNo")
+        landed = fault == "after"
+        ok = (first.get("outcome") == "pending_verification" and second.get("outcome") == "done" and bool(found)
+              and third.get("docNo") == second.get("docNo") and posts == 1)
+        if landed:
+            try:  # the document the resend named is the one AutoCount saved
+                ok = ok and self.prims._reader_for(self.base_url).get_by_doc_no("QT", str(found)).get("DocNo") == found
+            except DocReadError:
+                ok = False
+        case.observed = (f"first {first.get('outcome')} {first.get('errorCode') or ''}; resend {second.get('outcome')} "
+                         f"{second.get('docNo') or ''}; {posts} POST in ac_api_call_log").strip()
+        case.status = PASS if ok else FAIL
+
+    def b08(self, case: CaseResult) -> None:
+        case.expected = ("the POST lands, then times out; the resend of the SAME key looks the document up "
+                         "(<<New>> body: day list, debtor, time window, lines), answers done with its DocNo, 0 second POST")
+        self._create_case(case, "b08", "after", None, 3)
+
+    def b09(self, case: CaseResult) -> None:
+        case.expected = ("the call times out before anything is sent; the resend finds no document, releases the "
+                         "key and POSTs once: 1 POST in total")
+        self._create_case(case, "b09", "before", None, 4)
+
+    def b10(self, case: CaseResult) -> None:
+        case.expected = ("numbered body: the POST lands, then times out; the resend finds the document by DocNo, "
+                         "answers done, 0 second POST")
+        self._create_case(case, "b10", "after", f"{_doc_prefix(self.tag)}-QTN", 5)
+
+
+def _timing_table(rows: List[Dict[str, object]]) -> str:
+    out = ["## Timings", "", "| Case | Calls | SO lines | Wall ms | PUTs | ac_api_call_log rows |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        calls = 3 if str(r["label"]).startswith("today") else 1
+        out.append(f"| {r['case']} {r['label']} | {calls} | {r['lines']} | {r['ms']} | {r['puts']} | {r['logRows']} |")
+    return "\n".join(out)
+
+
+def run_batch_suite(
+    db: Session,
+    *,
+    tenant_id: str,
+    company_id: str,
+    creditor_code: str,
+    debtor_code: str,
+    run_tag: str,
+    client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
+    reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
+    sink_factory: Optional[Callable[..., object]] = None,
+) -> SuiteResult:
+    """Run B00..B06 (plan 62) through the real ``OperationService``. Same guards as the other suites:
+    a test book (in every environment) and a test company, all BEFORE any request."""
+    from modules.autocount.write_back.pull_docs import WriteDisabled
+
+    company = CompanyRepository(db).get(tenant_id, company_id)
+    if company is None:
+        raise WriteDisabled()
+    base_url = write_base_url(db, company)
+    _require_test_book(base_url)
+    write_auth_headers(db, company)  # an unusable API key setting refuses the run before any request
+    guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))
+    run = _BatchRun(db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
+                    client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory)
+    suite = SuiteResult(run_tag=run_tag)
+    for case_id, title, method in _B_CASES:
+        case = CaseResult(case_id, title)
+        run.case_id = case_id
+        try:
+            getattr(run, method)(case)
+        except Exception as exc:  # noqa: BLE001 - one case never stops the suite
+            logger.exception("write-back runner case %s failed", case_id)
+            case.status = FAIL
+            case.observed = f"{case.observed} {type(exc).__name__}".strip()
+        db.rollback()
+        suite.cases.append(case)
+    suite.evidence = run.evidence
+    suite.summary = _timing_table(run.timings)
+    return suite
+
+
+
 def write_evidence(result: SuiteResult, path: str) -> None:
     """The exact, unscrubbed evidence (private): one entry per vendor write."""
     with open(path, "w", encoding="utf-8") as handle:
@@ -1259,11 +1725,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--run-tag", required=True)
     parser.add_argument("--debtor", default=DEFAULT_DEBTOR)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--suite", choices=("db3", "qtso"), default="db3")
+    parser.add_argument("--suite", choices=("db3", "qtso", "batch"), default="db3")
     parser.add_argument("--evidence", help="qtso: path of the exact (private) evidence JSON")
     parser.add_argument("--header-extra", help="qtso: JSON file of header fields (names, addresses) to send")
     args = parser.parse_args(argv)
-    if args.suite == "db3" and not args.creditor:
+    if args.suite in ("db3", "batch") and not args.creditor:
         parser.error("--creditor is required for the db3 suite")
 
     from app.database import SessionLocal
@@ -1283,6 +1749,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 result = run_qtso_suite(
                     db, tenant_id=tenant.id, company_id=args.company_id, debtor_code=args.debtor,
                     run_tag=args.run_tag, header_extra=extra,
+                )
+            elif args.suite == "batch":
+                result = run_batch_suite(
+                    db, tenant_id=tenant.id, company_id=args.company_id, creditor_code=args.creditor,
+                    debtor_code=args.debtor, run_tag=args.run_tag,
                 )
             else:
                 result = run_db3_suite(

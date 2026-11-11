@@ -64,7 +64,7 @@ calls db1 or db2.
 - AC-63-21 Missing or invalid person headers store NULL and the write runs exactly as today (never 4xx for them).
   A non-ASCII name (`%E9%99%88%E5%A4%A7%E6%96%87`) is stored decoded.
 - AC-63-22 Runner and system calls store NULL person. Existing rows keep NULL (no invented person).
-- AC-63-23 Migration `0045_autocount_call_person` adds nullable `acting_user_id`, `acting_user_name` to
+- AC-63-23 Migration `0046_autocount_call_person` adds nullable `acting_user_id`, `acting_user_name` to
   `ac_api_call_log` and `request_id`, `acting_user_id`, `acting_user_name` to `ac_write_action`; single head; upgrades
   on live Postgres.
 

@@ -12,6 +12,7 @@ committed as it is reached.
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack
 import time
 import uuid
 from datetime import date
@@ -69,10 +70,12 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 )
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
+from modules.autocount.write_back.link_index import refresh_po_links_from_doc
+from modules.autocount.write_back.link_lock import SoRowBusy, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
 from modules.autocount.write_back.primitives import vendor_message
-from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, OperationRepository, PoSoLinkRepository
 
 if TYPE_CHECKING:  # operations imports this module
     from modules.autocount.write_back.operations import OperationService
@@ -261,6 +264,9 @@ def verify_relocate(
 
 
 class WriteBackService(WriteFrame):
+    #: True when the caller (an operation) already holds the SO row lock for this link
+    so_lock_held: bool = False
+    _lock_stack: ExitStack = ExitStack()
 
     # ── public flows ─────────────────────────────────────────────────────────
 
@@ -465,7 +471,16 @@ class WriteBackService(WriteFrame):
         except _Stop as stop:
             return stop.result
         row_id = row.id
+        self._lock_stack = ExitStack()
         try:
+            if plan.action == ACTION_LINK and plan.so_dtl_key and not self.so_lock_held:
+                # the over-link guard and PUT 1 run under the per-SO-row lock (link_lock), released once PUT 1
+                # is verified and the index follows it; an operation that already holds it (split_link)
+                # sets ``so_lock_held``
+                try:
+                    self._lock_stack.enter_context(so_row_locks(self.db, company.id, [plan.so_dtl_key]))
+                except SoRowBusy:
+                    return self._finish(row, OUTCOME_REFUSED, DOC_BUSY)
             return self._execute(plan, company, base_url, row, expected_last_modified)
         except _Stop as stop:
             return stop.result
@@ -476,9 +491,8 @@ class WriteBackService(WriteFrame):
             outcome = OUTCOME_PENDING if self._put_sent else OUTCOME_REFUSED
             return self._finish(row, outcome, INTERNAL_ERROR)
         finally:
+            self._lock_stack.close()
             self.db.rollback()
-
-
 
     def _check_capability(self, plan: _Plan, row: AcWriteAction) -> None:
         """Unlink and SPO unlink are refused outright while the vendor does not
@@ -634,21 +648,18 @@ class WriteBackService(WriteFrame):
         return locations.pop()
 
     def _so_linked_qty(self, company: AcCompany, fresh_po: Doc, so_dtl_key: int) -> Decimal:
-        """Qty of the SO row already covered by PO rows: the fresh edited PO plus
-        every OTHER staged, non-cancelled PO (db3 scale; AQ11)."""
-        total = Decimal(0)
+        """Qty of the SO row already covered by PO rows: the fresh edited PO plus the
+        indexed rows of every OTHER PO (``ac_po_so_link``, plan 62 D8)."""
         own_ref = f"{company.database_name}:{fresh_po.get('DocKey')}"
-        sources: List[List[Doc]] = [list(fresh_po.get("Details") or [])]
-        for staged in self.staged.for_entity(company.tenant_id, company.id, ENTITY_PURCHASE_ORDER):
-            raw = staged.raw_json or {}
-            if staged.source_ref != own_ref and raw.get("Cancelled") != "T":
-                sources.append(_lines(raw))
-        for lines in sources:
-            total += sum(
-                (_dec(r.get("Qty")) for r in lines if r.get("FromSODtlKey") == so_dtl_key),
-                Decimal(0),
-            )
-        return total
+        total = sum(
+            (_dec(r.get("Qty")) for r in fresh_po.get("Details") or [] if r.get("FromSODtlKey") == so_dtl_key),
+            Decimal(0),
+        )
+        pending = OperationRepository(self.db).pending_link_qty(
+            company.tenant_id, company.id, so_dtl_key, fresh_po.get("DocKey"))
+        return total + pending + PoSoLinkRepository(self.db).linked_qty(
+            company.tenant_id, company.id, so_dtl_key, except_ref=own_ref
+        )
 
     def _put_and_verify(
         self,
@@ -692,6 +703,11 @@ class WriteBackService(WriteFrame):
             ok = verify_readback(before, after, body, ignore_new_row_location=is_split)
         if not ok:
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
+        if plan.action == ACTION_LINK:  # the next guard sees PUT 1 before the SO row lock is released
+            refresh_po_links_from_doc(self.db, company.tenant_id, company.id,
+                                      f"{company.database_name}:{plan.doc_key}", after)
+            self.db.commit()
+        self._lock_stack.close()
         if is_split and so_doc is not None and plan.so_dtl_key is not None:
             return self._finish_split(plan, company, client, row, reader, before, after, body, so_doc)
         result = self._finish(row, OUTCOME_DONE, document=after)

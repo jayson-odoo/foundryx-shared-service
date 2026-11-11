@@ -107,13 +107,13 @@ def test_ac_63_23_models_carry_the_new_nullable_columns():
             assert col.nullable is True
 
 
-def test_ac_63_23_migration_0045_exists_with_the_planned_columns():
+def test_ac_63_23_migration_0046_exists_with_the_planned_columns():
     root = Path(__file__).resolve().parents[1] / "modules" / "autocount" / "alembic" / "versions"
-    files = list(root.glob("0045_autocount_call_person*.py"))
+    files = list(root.glob("0046_autocount_call_person*.py"))
     assert len(files) == 1, files
     text = files[0].read_text()
-    assert re.search(r"revision\s*(?::\s*str\s*)?=\s*[\"']0045_autocount_call_person[\"']", text)
-    assert "0044_autocount_api_call_log" in text
+    assert re.search(r"revision\s*(?::\s*str\s*)?=\s*[\"']0046_autocount_call_person[\"']", text)
+    assert "0045_autocount_po_so_link" in text
     for name in ("acting_user_id", "acting_user_name", "request_id", "ac_write_action", "ac_api_call_log"):
         assert name in text
 
@@ -130,7 +130,7 @@ def test_ac_63_23_there_is_a_single_module_migration_head():
         if d:
             downs.add(d.group(1))
     heads = revisions - downs
-    assert heads == {"0045_autocount_call_person"}, heads
+    assert heads == {"0046_autocount_call_person"}, heads
 
 
 # ------------------------------------------------------------------ rig

@@ -6,8 +6,8 @@
   Additive only. No backfill: rows written before this have no known person, NULL reads "-".
   Never commits.
 
-Revision ID: 0045_autocount_call_person   (28 chars <= 32)
-Revises: 0044_autocount_api_call_log
+Revision ID: 0046_autocount_call_person   (27 chars <= 32)
+Revises: 0045_autocount_po_so_link
 Create Date: 2026-11-11
 """
 from typing import Sequence, Union
@@ -15,8 +15,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0045_autocount_call_person"
-down_revision: Union[str, Sequence[str], None] = "0044_autocount_api_call_log"
+revision: str = "0046_autocount_call_person"
+down_revision: Union[str, Sequence[str], None] = "0045_autocount_po_so_link"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

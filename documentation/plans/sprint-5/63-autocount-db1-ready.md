@@ -81,7 +81,7 @@ is coming from shared service right, between SS and CRM are different key"
   (`give_request_id` becomes `give_trace(target, request_id, person)`), stored in `CallContext` and on every
   `ac_write_action` row. Invalid = NULL, never a refusal. Header names posted to CRM lanes OI-PO-LINK / AC-QTSO-CRM-2
   (crew note `crew/state/files/AC-DB1-READY-person-headers.md`).
-- Migration `0045_autocount_call_person` (AC-63-23). Backfill: none; old rows have no known person, NULL shows "-".
+- Migration `0046_autocount_call_person` (AC-63-23). Backfill: none; old rows have no known person, NULL shows "-".
 
 ### 3.4 Calls view (UAC D)
 - BE: `M/routers/calls.py` mounted at `/autocount/calls` (the JWT prefix, never the public `/api/v1/autocount` gateway) (JWT, `require_permission("autocount.sync.read")`, no new permission, no grant sweep) ->
@@ -110,7 +110,7 @@ filters map to query params, row click opens dialog. Kill tests: reviewer mutate
 "no key -> no header" branch.
 
 ## 6. Owner prod checklist (goes in the PR body)
-1. Merge and deploy; confirm the deploy log shows module migration `0045_autocount_call_person` applied.
+1. Merge and deploy; confirm the deploy log shows module migration `0046_autocount_call_person` applied.
 2. Set GitHub repo variable `AUTOCOUNT_WRITE_ALLOWED_BOOKS` = `db1,db3`, redeploy (env change needs container recreate).
 3. When AutoCount sends the key: Settings > Integrations > the db1 AutoCount connection: API key, header, format as
    AutoCount says; "Send API key on reads" = Yes only if AutoCount says reads need it. Save.
