@@ -97,7 +97,8 @@ def write_base_url(db: Session, company: AcCompany) -> str:
 def write_auth_headers(db: Session, company: AcCompany) -> Tuple[Dict[str, str], Dict[str, str]]:
     """``(write_headers, read_headers)`` of the company's write connection, read fresh;
     ``AuthConfigInvalid`` when its key settings cannot produce a header."""
-    return auth.connection_headers(_write_connection(db, company))
+    conn = _write_connection(db, company)
+    return auth.write_headers(conn), auth.read_headers(conn)
 
 
 def pull_documents(
@@ -118,7 +119,7 @@ def pull_documents(
         raise WriteDisabled()
     reader = (reader_factory or AutoCountDocReader)(write_base_url(db, company))
     try:
-        auth.attach_headers(reader, write_auth_headers(db, company)[1])
+        auth.attach_headers(reader, auth.read_headers(_write_connection(db, company)))
     except auth.AuthConfigInvalid as exc:
         return PullDocsResult(failed=True, error_code=exc.code)
     log = call_log.CallLog(db.get_bind(), call_log.CallContext(company.tenant_id, company.id, actor=actor))

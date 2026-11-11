@@ -14,6 +14,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from cryptography.fernet import InvalidToken
 
 from app.secrets import decrypt_secret
+from modules.autocount.write_back import guard
 
 AUTH_CONFIG_INVALID = "AUTH_CONFIG_INVALID"
 DEFAULT_HEADER = "X-API-Key"
@@ -47,9 +48,15 @@ def settings_problem(config: Optional[Mapping[str, Any]]) -> Optional[str]:
     fmt = str(cfg.get("apiKeyFormat") or "") or DEFAULT_FORMAT
     if not _TOKEN.match(header) or header.lower() in _RESERVED:
         return "The API key header is not a usable header name."
-    if fmt.count(PLACEHOLDER) != 1 or not _printable(fmt):
-        return "The API key format must contain {key} exactly once."
+    if fmt.count(PLACEHOLDER) != 1 or not _printable(fmt) or fmt != fmt.strip():
+        return "The API key format must contain {key} exactly once, without spaces around it."
     return None
+
+
+def _field_value_ok(value: str) -> bool:
+    """RFC 7230 field-value as the HTTP stack accepts it: visible ASCII (inner spaces allowed),
+    no leading or trailing whitespace."""
+    return bool(value) and _printable(value) and value == value.strip()
 
 
 def auth_headers(
@@ -57,16 +64,25 @@ def auth_headers(
 ) -> Dict[str, str]:
     """``{}`` with no key, or on a read when the reads flag is not Yes; else the one key header."""
     cfg, creds = config or {}, credentials or {}
-    key = str(creds.get("apiKey") or "").strip()
-    if not key:
+    key = str(creds.get("apiKey") or "")
+    if not key.strip():
         return {}
-    if for_read and str(cfg.get("apiKeyOnReads") or "").strip().lower() != READS_YES:
+    if for_read and not _reads_enabled(cfg):
         return {}
-    if settings_problem(cfg) is not None or not _printable(key):
-        raise AuthConfigInvalid()
     header = str(cfg.get("apiKeyHeader") or "").strip() or DEFAULT_HEADER
     fmt = str(cfg.get("apiKeyFormat") or "") or DEFAULT_FORMAT
-    return {header: fmt.replace(PLACEHOLDER, key)}
+    if settings_problem(cfg) is not None or key != key.strip():
+        raise AuthConfigInvalid()
+    value = fmt.replace(PLACEHOLDER, key)
+    if not _field_value_ok(value):
+        raise AuthConfigInvalid()
+    if for_read and cfg.get("baseUrl") and not guard.host_allowlisted(str(cfg.get("baseUrl"))):
+        return {}  # a read to a host off the write allowlist never carries the key
+    return {header: value}
+
+
+def _reads_enabled(cfg: Mapping[str, Any]) -> bool:
+    return str(cfg.get("apiKeyOnReads") or "").strip().lower() == READS_YES
 
 
 def credentials_of(conn: Any) -> Dict[str, Any]:
@@ -80,16 +96,28 @@ def credentials_of(conn: Any) -> Dict[str, Any]:
         raise AuthConfigInvalid() from None
 
 
-def connection_headers(conn: Any) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """``(write_headers, read_headers)`` for a stored connection, read fresh (no cache)."""
+def write_headers(conn: Any) -> Dict[str, str]:
+    """The headers a WRITE through this connection carries; undecryptable credentials refuse."""
     cfg = getattr(conn, "config_json", None) or {}
-    creds = credentials_of(conn)
-    return auth_headers(cfg, creds, for_read=False), auth_headers(cfg, creds, for_read=True)
+    return auth_headers(cfg, credentials_of(conn), for_read=False)
+
+
+def connection_headers(conn: Any) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """``(write_headers, read_headers)`` read fresh (no cache), for callers that only read the
+    second: the read side never touches the credentials unless reads are on, so an
+    undecryptable blob leaves the first empty here. A write path calls ``write_headers``."""
+    try:
+        write = write_headers(conn)
+    except AuthConfigInvalid:
+        write = {}
+    return write, read_headers(conn)
 
 
 def read_headers(conn: Any) -> Dict[str, str]:
     """The headers a READ (pull sync, probe, doc feed) of this connection carries."""
     cfg = getattr(conn, "config_json", None) or {}
+    if not _reads_enabled(cfg):
+        return {}  # reads without the flag never need the key, so never decrypt
     return auth_headers(cfg, credentials_of(conn), for_read=True)
 
 

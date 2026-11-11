@@ -243,7 +243,7 @@ class WriteFrame:
             self._refused_base_url = base_url  # kept for the guard_refused call-log row only
             return None, (exc.code, "")  # the code only: never the book name (AC-57-47)
         try:  # the optional API key, read fresh on every action (no cache: rotation = next action)
-            self._write_headers, self._read_headers = auth.connection_headers(conn)
+            self._write_headers, self._read_headers = auth.write_headers(conn), auth.read_headers(conn)
         except auth.AuthConfigInvalid as exc:
             self._refused_base_url = base_url
             return None, (exc.code, "")

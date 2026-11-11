@@ -89,6 +89,15 @@ def _host_allowed(host: str) -> bool:
     return digest in ALLOWED_WRITE_HOST_SHA256
 
 
+def host_allowlisted(base_url: str) -> bool:
+    """Whether the URL's host is on the pinned wrapper host allowlist (any path)."""
+    try:
+        host = urlsplit(base_url or "").hostname
+    except ValueError:
+        return False
+    return bool(host) and _host_allowed(host)
+
+
 def _clean_segments(base_url: str) -> list[str]:
     """Path segments of a strictly-shaped https URL, or [] when the shape is
     refused (not https, userinfo, query, fragment, params, encoded or dot
