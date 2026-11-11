@@ -4,7 +4,7 @@
   staged copy, so the over-link check sums an indexed table instead of walking every staged PO
   (and counts a PO's history copies once). Two indexes: (tenant, company, so_dtl_key) for the
   sum, (tenant, company, po_source_ref) for the per-PO rewrite.
-* BACKFILL: every existing PO gets its rows from its newest staged copy (a cancelled PO gets none; a delete intent is ignored, the last real copy counts). Read through a frozen ``sa.table``; never commits.
+* BACKFILL: every existing PO gets its rows from its newest staged copy (a cancelled PO or a PO with a live delete intent gets none; a discarded intent is ignored). Read through a frozen ``sa.table``; never commits.
 
 Revision ID: 0045_autocount_po_so_link   (26 chars <= 32)
 Revises: 0044_autocount_api_call_log
@@ -35,6 +35,7 @@ staged = sa.table(
     sa.column("entity_type", sa.String),
     sa.column("source_ref", sa.String),
     sa.column("op", sa.String),
+    sa.column("status", sa.String),
     sa.column("raw_json", sa.JSON),
     sa.column("created_at", sa.DateTime(timezone=True)),
     schema=SCHEMA,
@@ -77,19 +78,21 @@ def upgrade() -> None:
     op.create_index("ix_ac_po_so_link_so_dtl", TABLE, ["tenant_id", "company_id", "so_dtl_key"], schema=SCHEMA)
     op.create_index("ix_ac_po_so_link_po_ref", TABLE, ["tenant_id", "company_id", "po_source_ref"], schema=SCHEMA)
 
-    # backfill: the newest NON-delete staged copy of each PO (as StagedDocRepository.newest); a cancelled PO adds nothing
+    # backfill: the newest staged row of each PO that is not a discarded (cancelled) delete intent; a live delete
+    # intent or a cancelled PO adds nothing, a discarded intent leaves the newest real copy in charge
     newest = (
         sa.select(
             staged.c.tenant_id, staged.c.company_id, staged.c.source_ref, staged.c.op, staged.c.raw_json,
+            staged.c.status,
         )
-        .where(staged.c.entity_type == ENTITY_PURCHASE_ORDER, staged.c.op != "delete")
+        .where(staged.c.entity_type == ENTITY_PURCHASE_ORDER, staged.c.status != "DISCARDED")
         .distinct(staged.c.tenant_id, staged.c.company_id, staged.c.source_ref)
         .order_by(staged.c.tenant_id, staged.c.company_id, staged.c.source_ref,
                   staged.c.created_at.desc(), staged.c.id)
     )
     batch = []
-    for tenant_id, company_id, source_ref, row_op, raw in bind.execute(newest).yield_per(500):
-        if not isinstance(raw, dict) or raw.get("Cancelled") == "T":
+    for tenant_id, company_id, source_ref, row_op, raw, _status in bind.execute(newest).yield_per(500):
+        if row_op == "delete" or not isinstance(raw, dict) or raw.get("Cancelled") == "T":
             continue
         for line in raw.get("_lines") or []:
             if not isinstance(line, dict):
