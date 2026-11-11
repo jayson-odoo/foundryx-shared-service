@@ -34,7 +34,7 @@ BASE_PATH = "/api/db3"
 COLUMNS = {
     "id", "tenant_id", "company_id", "created_at", "actor", "request_id", "operation_id", "action_id", "book",
     "method", "path", "doc_type", "doc_no", "doc_key", "request_json", "response_status", "response_body",
-    "response_truncated", "duration_ms", "outcome", "error_code",
+    "response_truncated", "duration_ms", "outcome", "error_code", "acting_user_id", "acting_user_name",
 }
 CAP = 32768
 

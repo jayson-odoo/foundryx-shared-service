@@ -381,6 +381,7 @@ class PrimitiveService(WriteFrame):
                 doc_type=str(call.kind)[:16], doc_key=call.doc_key, dtl_key=call.dtl_key,
                 outcome=OUTCOME_REFUSED, key_id=call.key_id, operation_id=call.operation_id,
                 step=call.step, created_at=datetime.now(timezone.utc),  # step order = time order
+                **self._trace_columns(),
             )
         )
 

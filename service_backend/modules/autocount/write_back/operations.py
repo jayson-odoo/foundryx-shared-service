@@ -218,9 +218,11 @@ class OperationService:
 
     # ── public ───────────────────────────────────────────────────────────────
 
-    def use_request_id(self, request_id: Optional[str]) -> None:
-        """The caller's request id for the call log of every step (plan 61 section 4.8)."""
-        self.prims.use_request_id(request_id)
+    def use_trace(
+        self, request_id: Optional[str], person: "Tuple[Optional[str], Optional[str]]" = (None, None)
+    ) -> None:
+        """The caller's request id and acting person for every step (plan 61 section 4.8, plan 63)."""
+        self.prims.use_trace(request_id, person)
 
     def _reader(self, company: AcCompany, base_url: str, kind: str, doc_key: int, doc_no: Optional[str]) -> Any:
         """A reader whose GETs are logged under this operation (plan 61 section 4.8)."""

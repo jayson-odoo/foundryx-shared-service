@@ -128,6 +128,8 @@ class WriteFrame:
         self.db = db
         self._actor = actor  # "runner" for the db3 runner; None = the API key id, else "system"
         self.request_id = request_id
+        self.acting_user_id: Optional[str] = None
+        self.acting_user_name: Optional[str] = None
         self._operation_id = operation_id  # set when an operation runs this flow (the split link)
         self._call_log: Optional[cl.CallLog] = None
         self._refused_base_url: Optional[str] = None
@@ -142,9 +144,13 @@ class WriteFrame:
         self._deadline = 0.0
         self._put_sent = False
 
-    def use_request_id(self, request_id: Optional[str]) -> None:
-        """The caller's request id (``X-Request-ID`` else ``Idempotency-Key``) for the call log."""
+    def use_trace(
+        self, request_id: Optional[str], person: "Tuple[Optional[str], Optional[str]]" = (None, None)
+    ) -> None:
+        """The caller's request id (``X-Request-ID`` else ``Idempotency-Key``) and acting person
+        for the call log and the action rows."""
         self.request_id = request_id
+        self.acting_user_id, self.acting_user_name = person
 
     def new_call_log(
         self, company: AcCompany, *, kind: Optional[str] = None, doc_key: Optional[int] = None,
@@ -156,9 +162,15 @@ class WriteFrame:
             tenant_id=company.tenant_id, company_id=company.id,
             actor=key_id or self._actor or cl.ACTOR_SYSTEM, request_id=self.request_id,
             operation_id=operation_id or self._operation_id, action_id=action_id, doc_type=kind,
-            doc_no=doc_no, doc_key=doc_key,
+            doc_no=doc_no, doc_key=doc_key, acting_user_id=self.acting_user_id,
+            acting_user_name=self.acting_user_name,
         )
         return cl.CallLog(self.db.get_bind(), context)
+
+    def _trace_columns(self) -> Dict[str, Optional[str]]:
+        """The request id and acting person every action row of this request carries."""
+        return {"request_id": self.request_id, "acting_user_id": self.acting_user_id,
+                "acting_user_name": self.acting_user_name}
 
     def _reader_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
         reader = auth.attach_headers(self._reader_factory(base_url), self._read_headers)

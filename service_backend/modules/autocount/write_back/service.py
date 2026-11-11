@@ -516,6 +516,7 @@ class WriteBackService(WriteFrame):
                 dtl_key=plan.dtl_key,
                 outcome=OUTCOME_REFUSED,
                 key_id=key_id,
+                **self._trace_columns(),
             )
         )
 

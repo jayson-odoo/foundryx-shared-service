@@ -25,7 +25,14 @@ from ..pull_auth import PullGatewayError, resolve_pull_key
 from ..services.pull_gateway_service import PullGatewayService
 from ..services.pull_key_service import SCOPE_WRITE_BACK
 from ..write_back import payloads
-from ..write_back.call_log import REQUEST_ID_HEADER, give_request_id, request_id_of
+from ..write_back.call_log import (
+    ACTING_USER_ID_HEADER,
+    ACTING_USER_NAME_HEADER,
+    REQUEST_ID_HEADER,
+    give_trace,
+    person_of,
+    request_id_of,
+)
 from ..write_back.deps import get_operation_service, get_primitive_service
 from ..write_back.operations import OperationResult, OperationService
 from ..write_back.primitives import PrimitiveService
@@ -254,8 +261,11 @@ def _frame(
         _require_scope(key_row, SCOPE_WRITE_BACK)
         idem = idempotency_key_header(request, required=key_required)
         request_id = request_id_of(request.headers.get(REQUEST_ID_HEADER), idem)
+        person = person_of(
+            request.headers.get(ACTING_USER_ID_HEADER), request.headers.get(ACTING_USER_NAME_HEADER)
+        )
         for service in services:
-            give_request_id(service, request_id)
+            give_trace(service, request_id, person)
         raw = _parse_write_json(raw_body) if with_body else {}
         hint = raw.get("companyCode") if with_body else request.query_params.get("companyCode")
         company_code = _safe_echo(hint)
