@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SearchSelect } from '@/components/platform/search-select';
-import { dateKey } from '@/lib/datetime';
+import { dateKey, formatDmyDate } from '@/lib/datetime';
 import { cn } from '@/lib/utils';
 
 export type DateRangePreset = 'last7' | 'last30' | 'thisMonth' | 'lastMonth' | 'custom';
@@ -130,15 +130,10 @@ export function localDateKey(date: Date): string {
 }
 
 function displayLabel(from: string, to: string): string {
-  // No `timeZone` override - `parseKey` now returns LOCAL midnight, so
-  // formatting it in UTC would shift the label a day west of UTC.
-  const fmt = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' });
-  // An open range (a saved start-only or end-only filter) reads as open, not as one day.
-  if (from && !to) return `From ${fmt.format(parseKey(from))}`;
-  if (!from && to) return `Until ${fmt.format(parseKey(to))}`;
-  const fromLabel = fmt.format(parseKey(from));
-  const toLabel = fmt.format(parseKey(to));
-  return from === to ? fromLabel : `${fromLabel} - ${toLabel}`;
+  // dd/mm/yyyy; an open range (a saved start-only or end-only filter) reads as open, not as one day.
+  if (from && !to) return `From ${formatDmyDate(from)}`;
+  if (!from && to) return `Until ${formatDmyDate(to)}`;
+  return from === to ? formatDmyDate(from) : `${formatDmyDate(from)} - ${formatDmyDate(to)}`;
 }
 
 export function DateRangePicker({ value, onChange, timeZone, className, minDate, maxDate }: DateRangePickerProps) {

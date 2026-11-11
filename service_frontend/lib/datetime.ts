@@ -212,3 +212,9 @@ export function dateKey(
     return new Intl.DateTimeFormat('en-CA').format(d);
   }
 }
+
+/** "05/11/2026" from a calendar-day key ("2026-11-05"); a pure string rewrite, so no timezone can shift the day. */
+export function formatDmyDate(dayKey: string | null | undefined): string {
+  const m = (dayKey ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '-';
+}

@@ -62,7 +62,7 @@ describe('DateRangePicker', () => {
         timeZone={KL}
       />,
     );
-    expect(screen.getByText('1 Mar - 7 Mar')).toBeInTheDocument();
+    expect(screen.getByText('01/03/2026 - 07/03/2026')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Date range preset' }));
     fireEvent.click(screen.getByText('Last 30 days'));
@@ -80,7 +80,7 @@ describe('DateRangePicker', () => {
         timeZone={KL}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /10 Mar - 16 Mar/ }));
+    fireEvent.click(screen.getByRole('button', { name: /10\/03\/2026 - 16\/03\/2026/ }));
 
     // Click a day BEFORE the existing range's start - react-day-picker's own
     // range-merge can hand back {from: newDay, to: oldTo} on this very first
@@ -104,6 +104,6 @@ describe('DateRangePicker', () => {
         timeZone={KL}
       />,
     );
-    expect(screen.getByText('5 Mar')).toBeInTheDocument();
+    expect(screen.getByText('05/03/2026')).toBeInTheDocument();
   });
 });

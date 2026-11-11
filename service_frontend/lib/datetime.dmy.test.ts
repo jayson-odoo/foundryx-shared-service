@@ -46,3 +46,13 @@ describe('formatDmyDateTime (AC-63-35)', () => {
     expect(dmy('2026-11-05T07:04:00Z', { timeZone: 'Not/AZone' })).toMatch(/^\d{2}\/\d{2}\/\d{4}, \d{1,2}:\d{2} (am|pm)$/);
   });
 });
+
+describe('formatDmyDate', () => {
+  it('rewrites a day key to dd/mm/yyyy and is null-safe', () => {
+    expect((datetime as Record<string, unknown>).formatDmyDate).toBeTypeOf('function');
+    const fn = (datetime as unknown as { formatDmyDate: (v: string | null | undefined) => string }).formatDmyDate;
+    expect(fn('2026-11-05')).toBe('05/11/2026');
+    expect(fn('')).toBe('-');
+    expect(fn(null)).toBe('-');
+  });
+});
