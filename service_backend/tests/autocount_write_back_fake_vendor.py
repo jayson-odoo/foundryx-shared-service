@@ -133,6 +133,7 @@ class FakeAutoCountVendor:
         self.debtors: List[Dict[str, Any]] = []
         # plan 61: new PO rows with these ItemCodes are refused 500 (atomic-PUT probes P-AT1)
         self.invalid_items: set = set()
+        self.reject_unknown_so_link: bool = False  # plan 62 F-G: a new PO row linked to a missing SO row refuses the whole PUT
         # plan 61: a cancel is answered 200 but the document stays as it was (a vendor that ignores it)
         self.cancel_ignored = False
         # plan 61: (kind, doc_key) -> message, the document is refused for cancel as "transferred"
@@ -354,6 +355,13 @@ class FakeAutoCountVendor:
                     return httpx.Response(500, json={
                         "ExceptionMessage": "Item code does not exist.",
                         "ExceptionType": "AutoCount.Invoicing.NotExistItemCodeException"})
+                if self.reject_unknown_so_link and kind == "PO" and sent.get("FromDocType") == "SO" and not any(
+                    r["DtlKey"] == int(sent.get("FromDocDtlKey") or 0)
+                    for so in self.docs["SO"] for r in so["Details"]
+                ):  # plan 62 F-G: one bad new linked row refuses the WHOLE PUT, nothing lands
+                    return httpx.Response(500, json={
+                        "ExceptionMessage": "The linked Sales Order detail does not exist.",
+                        "ExceptionType": "AutoCount.Invoicing.NotExistFromDocDetailException"})
                 if kind in self.require_full_row and not all(k in sent for k in FULL_ROW_KEYS):
                     continue  # answered 200, row dropped
                 self._next_key += 1
