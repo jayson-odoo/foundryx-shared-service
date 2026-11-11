@@ -6,11 +6,19 @@ Pure SQLAlchemy, every query tenant-scoped.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from modules.autocount.models import AcEntityConfig, AcStagedRecord, AcWriteAction, AcWriteOperation
+from modules.autocount.models import (
+    AcEntityConfig,
+    AcPoSoLink,
+    AcStagedRecord,
+    AcWriteAction,
+    AcWriteOperation,
+)
 
 OUTCOME_IN_FLIGHT = "in_flight"
 OUTCOME_PENDING = "pending_verification"
@@ -287,3 +295,39 @@ class EntitySourceRepository:
             )
             .scalar()
         )
+
+
+class PoSoLinkRepository:
+    """The over-link index ``ac_po_so_link`` (plan 62 D8); every call is tenant + company scoped."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def replace_for_po(
+        self, tenant_id: str, company_id: str, po_source_ref: str, links: "List[tuple[Optional[int], int, Decimal]]"
+    ) -> None:
+        """Swap one PO's rows for ``links`` (``(po_dtl_key, so_dtl_key, qty)``)."""
+        self.db.query(AcPoSoLink).filter(
+            AcPoSoLink.tenant_id == tenant_id,
+            AcPoSoLink.company_id == company_id,
+            AcPoSoLink.po_source_ref == po_source_ref,
+        ).delete(synchronize_session=False)
+        for po_dtl_key, so_dtl_key, qty in links:
+            self.db.add(AcPoSoLink(
+                tenant_id=tenant_id, company_id=company_id, po_source_ref=po_source_ref,
+                po_dtl_key=po_dtl_key, so_dtl_key=so_dtl_key, qty=qty,
+            ))
+        self.db.flush()
+
+    def linked_qty(
+        self, tenant_id: str, company_id: str, so_dtl_key: int, *, except_ref: Optional[str] = None
+    ) -> Decimal:
+        """Qty of one SO row covered by the indexed POs, leaving out ``except_ref``."""
+        query = self.db.query(func.coalesce(func.sum(AcPoSoLink.qty), 0)).filter(
+            AcPoSoLink.tenant_id == tenant_id,
+            AcPoSoLink.company_id == company_id,
+            AcPoSoLink.so_dtl_key == so_dtl_key,
+        )
+        if except_ref is not None:
+            query = query.filter(AcPoSoLink.po_source_ref != except_ref)
+        return Decimal(str(query.scalar() or 0))

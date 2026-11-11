@@ -58,7 +58,7 @@ from modules.autocount.write_back.payloads import (
     WriteRefusal,
 )
 from modules.autocount.write_back.reader import DocReadError
-from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, PoSoLinkRepository
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -539,20 +539,16 @@ class PrimitiveService(WriteFrame):
     def _so_linked_qty(
         self, company: AcCompany, so_dtl_key: int, fresh_po: Optional[Doc] = None
     ) -> Decimal:
-        """Qty of one SO row already covered by non-cancelled PO rows: the staged
-        copies, with ``fresh_po`` (when given) standing in for its own staged copy."""
-        total = Decimal(0)
+        """Qty of one SO row already covered by non-cancelled PO rows: the indexed rows
+        (``ac_po_so_link``, plan 62 D8), with ``fresh_po`` (when given) standing in for its own."""
         own_ref = f"{company.database_name}:{fresh_po.get('DocKey')}" if fresh_po else None
-        sources: List[List[Doc]] = [list(fresh_po.get("Details") or [])] if fresh_po else []
-        for staged in self.staged.for_entity(company.tenant_id, company.id, ENTITY_PURCHASE_ORDER):
-            raw = staged.raw_json or {}
-            if raw.get("Cancelled") != "T" and staged.source_ref != own_ref:
-                sources.append(_lines(raw))
-        for lines in sources:
-            total += sum(
-                (_dec(r.get("Qty")) for r in lines if r.get("FromSODtlKey") == so_dtl_key), Decimal(0)
-            )
-        return total
+        total = sum(
+            (_dec(r.get("Qty")) for r in (fresh_po or {}).get("Details") or [] if r.get("FromSODtlKey") == so_dtl_key),
+            Decimal(0),
+        )
+        return total + PoSoLinkRepository(self.db).linked_qty(
+            company.tenant_id, company.id, so_dtl_key, except_ref=own_ref
+        )
 
     def _guard_transfers(self, call: _Call, company: AcCompany, doc: Doc) -> None:
         if call.kind in ("PO", "SPO") and call.primitive == DELETE_LINE:

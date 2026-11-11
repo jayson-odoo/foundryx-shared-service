@@ -72,7 +72,7 @@ from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAll
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
 from modules.autocount.write_back.primitives import vendor_message
-from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, PoSoLinkRepository
 
 if TYPE_CHECKING:  # operations imports this module
     from modules.autocount.write_back.operations import OperationService
@@ -633,21 +633,16 @@ class WriteBackService(WriteFrame):
         return locations.pop()
 
     def _so_linked_qty(self, company: AcCompany, fresh_po: Doc, so_dtl_key: int) -> Decimal:
-        """Qty of the SO row already covered by PO rows: the fresh edited PO plus
-        every OTHER staged, non-cancelled PO (db3 scale; AQ11)."""
-        total = Decimal(0)
+        """Qty of the SO row already covered by PO rows: the fresh edited PO plus the
+        indexed rows of every OTHER PO (``ac_po_so_link``, plan 62 D8)."""
         own_ref = f"{company.database_name}:{fresh_po.get('DocKey')}"
-        sources: List[List[Doc]] = [list(fresh_po.get("Details") or [])]
-        for staged in self.staged.for_entity(company.tenant_id, company.id, ENTITY_PURCHASE_ORDER):
-            raw = staged.raw_json or {}
-            if staged.source_ref != own_ref and raw.get("Cancelled") != "T":
-                sources.append(_lines(raw))
-        for lines in sources:
-            total += sum(
-                (_dec(r.get("Qty")) for r in lines if r.get("FromSODtlKey") == so_dtl_key),
-                Decimal(0),
-            )
-        return total
+        total = sum(
+            (_dec(r.get("Qty")) for r in fresh_po.get("Details") or [] if r.get("FromSODtlKey") == so_dtl_key),
+            Decimal(0),
+        )
+        return total + PoSoLinkRepository(self.db).linked_qty(
+            company.tenant_id, company.id, so_dtl_key, except_ref=own_ref
+        )
 
     def _put_and_verify(
         self,

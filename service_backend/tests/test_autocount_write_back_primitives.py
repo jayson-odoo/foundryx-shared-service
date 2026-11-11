@@ -491,6 +491,10 @@ def test_ac_57_18_so_qty_below_transferred_refused(h):
     _doc, keys = _so(h, rows=[_line("A", 10, 5.0)])
     po = h.seed_doc("PO", 5002, [_line("A", 6, 5.0, FromSODtlKey=keys[0], FromDocType="SO", FromDocDtlKey=keys[0])])
     assert po["Details"][0]["FromSODtlKey"] == keys[0]
+    from modules.autocount.write_back.link_index import refresh_po_links  # plan 62 D8: the over-link index
+
+    refresh_po_links(h.db, DEFAULT_TENANT_ID, h.company.id, f"{DBNAME}:5002")  # h.stage inserts raw rows only
+    h.db.commit()
     res = h.edit("SO", 5001, {}, [{"DtlKey": keys[0], "Qty": 4}])
     assert res.outcome == "refused" and res.error_code == "QTY_BELOW_TRANSFERRED"
     assert h.vendor.writes() == []
