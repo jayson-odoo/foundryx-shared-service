@@ -158,6 +158,16 @@ export function ResourceList<T extends object>({
   });
   const prefs = useViewPreferences(config.viewKey);
 
+  // Opt-in (config.urlState): mirror the live query into the address bar's
+  // `ctx` so reload / a shared link restores the exact view.
+  const urlState = config.urlState;
+  useEffect(() => {
+    if (!urlState || typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('ctx', encodeListQuery(list.query));
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [urlState, list.query]);
+
   // Mirror the current ad-hoc filter tree out to the parent page (opt-in,
   // plan 26 "Save as segment") - purely additive, no behavior change for
   // configs that don't set onFilterChange.

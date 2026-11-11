@@ -441,6 +441,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/autocount/find',
         permission: 'autocount.pull.read',
       },
+      {
+        title: 'Calls',
+        path: '/autocount/calls',
+        permission: 'autocount.sync.read',
+      },
     ],
   },
 ];
@@ -641,6 +646,11 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/autocount/find',
                 permission: 'autocount.pull.read',
               },
+              {
+                title: 'Calls',
+                path: '/autocount/calls',
+                permission: 'autocount.sync.read',
+              },
             ],
           },
         ],
@@ -819,6 +829,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Find document',
         path: '/autocount/find',
         permission: 'autocount.pull.read',
+      },
+      {
+        title: 'Calls',
+        path: '/autocount/calls',
+        permission: 'autocount.sync.read',
       },
     ],
   },

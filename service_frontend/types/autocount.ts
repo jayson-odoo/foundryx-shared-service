@@ -1849,3 +1849,42 @@ export interface DocFeedBackfillStartInput {
   fromDay?: string; // YYYY-MM-DD
   toDay?: string; // YYYY-MM-DD
 }
+
+// ── AutoCount calls (plan 63) ────────────────────────────────────────────────
+
+export type CallOutcome = 'ok' | 'http_error' | 'timeout' | 'connect_error' | 'guard_refused';
+
+/** `GET /autocount/calls` row (`ac_api_call_log`, no bodies). */
+export interface AutocountCall {
+  id: string;
+  createdAt: string; // ISO Z
+  companyId: string;
+  companyName: string | null;
+  book: string | null;
+  actingUserId: string | null;
+  actingUserName: string | null;
+  method: string;
+  path: string;
+  docType: string | null;
+  docNo: string | null;
+  outcome: CallOutcome | string;
+  responseStatus: number | null;
+  durationMs: number;
+  errorCode: string | null;
+  requestId: string | null;
+}
+
+/** `GET /autocount/calls/{id}` - the row plus the request JSON and stored response body. */
+export interface AutocountCallDetail extends AutocountCall {
+  requestJson: unknown;
+  responseBody: string | null;
+  responseTruncated: boolean;
+}
+
+/** `GET /autocount/calls/filter-options`. */
+export interface AutocountCallFilterOptions {
+  books: string[];
+  docTypes: string[];
+  outcomes: string[];
+  persons: { id: string; name: string | null }[];
+}

@@ -10,6 +10,7 @@ import type {
   AutocountRunOutcome,
   AutocountSourceKind,
   AutocountStagedStatus,
+  CallOutcome,
   DocFeedBackfillStatus,
   DocFeedContractGate,
   DocFeedIssueKind,
@@ -33,6 +34,7 @@ export const AC_COMPANIES_PATH = '/autocount/companies';
 export const AC_COMPANY_NEW_PATH = '/autocount/companies/new';
 export const AC_REVIEW_PATH = '/autocount/review';
 export const AC_PULL_PATH = '/autocount/pull';
+export const AC_CALLS_PATH = '/autocount/calls';
 
 export function acCompanyHref(id: string): string {
   return `${AC_COMPANIES_PATH}/${id}`;
@@ -588,3 +590,14 @@ export function docFeedGateWarning(gate: DocFeedContractGate): string {
   const version = gate.version ?? 'unknown';
   return `Consumer contract ${version} - this feed needs ${gate.requiredVersion}.`;
 }
+
+/** Plain-word outcome of one logged AutoCount call (plan 63). */
+export const AC_CALL_OUTCOME_REGISTRY: StatusRegistry<CallOutcome> = {
+  ok: { label: 'OK', tone: 'success' },
+  http_error: { label: 'Refused by AutoCount', tone: 'destructive' },
+  timeout: { label: 'Timed out', tone: 'warning' },
+  connect_error: { label: 'Could not connect', tone: 'warning' },
+  guard_refused: { label: 'Blocked by SS', tone: 'secondary' },
+};
+
+export const AC_CALL_OUTCOMES: CallOutcome[] = ['ok', 'http_error', 'timeout', 'connect_error', 'guard_refused'];

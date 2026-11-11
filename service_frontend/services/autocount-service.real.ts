@@ -7,6 +7,9 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   AutocountApiConnection,
   AutocountApprovalResult,
+  AutocountCall,
+  AutocountCallDetail,
+  AutocountCallFilterOptions,
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
@@ -50,6 +53,7 @@ import type {
 import type { ListResult } from '@/types/resource';
 import type { AutocountStagedQuery } from '@/types/autocount';
 import type {
+  AutocountCallsQuery,
   AutocountListQuery,
   AutocountService,
   DocFeedIssuesQuery,
@@ -588,6 +592,35 @@ export const realAutocountService: AutocountService = {
     return apiFetch<ListResult<DocFeedIssue>>(
       `/autocount/doc-feeds/${companyId}/issues?${p.toString()}`,
     );
+  },
+
+  listCalls(query: AutocountCallsQuery = {}) {
+    const p = new URLSearchParams();
+    if (query.page !== undefined) p.set('page', String(query.page));
+    if (query.pageSize !== undefined) p.set('pageSize', String(Math.min(query.pageSize, 200)));
+    if (query.sort) p.set('sort', query.sort);
+    if (query.order) p.set('order', query.order);
+    if (query.dateFrom) p.set('dateFrom', query.dateFrom);
+    if (query.dateTo) p.set('dateTo', query.dateTo);
+    if (query.search) p.set('search', query.search);
+    const many: [string, string[] | undefined][] = [
+      ['companyId', query.companyId],
+      ['book', query.book],
+      ['docType', query.docType],
+      ['outcome', query.outcome],
+      ['person', query.person],
+    ];
+    for (const [key, values] of many) for (const value of values ?? []) p.append(key, value);
+    const qs = p.toString();
+    return apiFetch<ListResult<AutocountCall>>(`/autocount/calls${qs ? `?${qs}` : ''}`);
+  },
+
+  getCallFilterOptions() {
+    return apiFetch<AutocountCallFilterOptions>('/autocount/calls/filter-options');
+  },
+
+  getCall(id: string) {
+    return apiFetch<AutocountCallDetail>(`/autocount/calls/${encodeURIComponent(id)}`);
   },
 };
 

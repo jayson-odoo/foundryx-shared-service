@@ -31,7 +31,7 @@ export function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-type FormatStyle = 'date' | 'datetime' | 'time';
+type FormatStyle = 'date' | 'datetime' | 'time' | 'dmy';
 
 const STYLE_OPTIONS: Record<FormatStyle, Intl.DateTimeFormatOptions> = {
   // en-GB keeps the established display shape: 02 Jan 2024 13:45
@@ -44,6 +44,15 @@ const STYLE_OPTIONS: Record<FormatStyle, Intl.DateTimeFormatOptions> = {
     minute: '2-digit',
   },
   time: { hour: '2-digit', minute: '2-digit' },
+  // 05/11/2026, 3:04 pm
+  dmy: {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  },
 };
 
 // Intl.DateTimeFormat construction is expensive and list cells render in the
@@ -93,6 +102,14 @@ export function formatDateTime(
   options?: DatetimeFormatOptions,
 ): string {
   return format('datetime', iso, options);
+}
+
+/** "05/11/2026, 3:04 pm" (dd/mm/yyyy, h:mm am/pm) in the viewer's timezone. */
+export function formatDmyDateTime(
+  iso: string | null | undefined,
+  options?: DatetimeFormatOptions,
+): string {
+  return format('dmy', iso, options);
 }
 
 /** "13:45" in the viewer's timezone. */

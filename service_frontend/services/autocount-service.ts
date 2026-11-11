@@ -17,6 +17,9 @@
 import type {
   AutocountApiConnection,
   AutocountApprovalResult,
+  AutocountCall,
+  AutocountCallDetail,
+  AutocountCallFilterOptions,
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
@@ -80,6 +83,20 @@ export interface DocFeedRunsQuery extends AutocountListQuery {
 export interface DocFeedIssuesQuery extends AutocountListQuery {
   feed?: DocFeedKey;
   kind?: 'retryable' | 'failed';
+  search?: string;
+}
+
+/** `GET /autocount/calls` query (plan 63). Empty arrays and blanks are not sent. */
+export interface AutocountCallsQuery extends AutocountListQuery {
+  sort?: string;
+  order?: 'asc' | 'desc';
+  dateFrom?: string; // ISO instant
+  dateTo?: string; // ISO instant
+  companyId?: string[];
+  book?: string[];
+  docType?: string[];
+  outcome?: string[];
+  person?: string[];
   search?: string;
 }
 
@@ -663,6 +680,12 @@ export interface AutocountService {
   /** Newest first (AC-14-94). */
   listDocFeedRuns(companyId: string, query?: DocFeedRunsQuery): Promise<ListResult<DocFeedRun>>;
   listDocFeedIssues(companyId: string, query?: DocFeedIssuesQuery): Promise<ListResult<DocFeedIssue>>;
+  /** Logged AutoCount calls, newest first by default (`GET /autocount/calls`). */
+  listCalls(query?: AutocountCallsQuery): Promise<ListResult<AutocountCall>>;
+  /** Distinct books, document types, outcomes and persons of the tenant's calls. */
+  getCallFilterOptions(): Promise<AutocountCallFilterOptions>;
+  /** One call with its request JSON and response body. */
+  getCall(id: string): Promise<AutocountCallDetail>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

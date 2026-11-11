@@ -1,11 +1,14 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useDatetime } from '@/hooks/use-datetime';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { DateRangePicker, resolvePresetRange } from '@/components/platform/date-range-picker';
+import type { DateRangePreset } from '@/components/platform/date-range-picker';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { SearchSelect } from '@/components/platform/search-select';
 import type {
@@ -337,24 +340,7 @@ function ConditionValue({
 
   if (type === 'date') {
     if (condition.operator === 'between') {
-      const v = Array.isArray(condition.value) ? (condition.value as string[]) : ['', ''];
-      return (
-        <div className="flex items-center gap-1">
-          <Input
-            type="date"
-            className="h-8 w-36"
-            value={v[0] ?? ''}
-            onChange={(e) => onChange({ ...condition, value: [e.target.value, v[1] ?? ''] })}
-          />
-          <span className="text-xs text-muted-foreground">to</span>
-          <Input
-            type="date"
-            className="h-8 w-36"
-            value={v[1] ?? ''}
-            onChange={(e) => onChange({ ...condition, value: [v[0] ?? '', e.target.value] })}
-          />
-        </div>
-      );
+      return <DateRangeCondition condition={condition} onChange={onChange} />;
     }
     return (
       <Input
@@ -373,6 +359,44 @@ function ConditionValue({
       placeholder="Value"
       value={typeof condition.value === 'string' ? condition.value : ''}
       onChange={(e) => onChange({ ...condition, value: e.target.value })}
+    />
+  );
+}
+
+/** The `between` date condition: the shared range picker (value stays `[from, to]` as YYYY-MM-DD). */
+function DateRangeCondition({
+  condition,
+  onChange,
+}: {
+  condition: DraftCondition;
+  onChange: (next: DraftCondition) => void;
+}) {
+  const { timeZone } = useDatetime();
+  const [preset, setPreset] = useState<DateRangePreset>('custom');
+  const v = Array.isArray(condition.value) ? (condition.value as string[]) : [];
+  const from = v[0] ?? '';
+  const to = v[1] ?? '';
+  const complete = Boolean(from && to);
+
+  // A fresh `between` condition starts on a real range, never an empty one.
+  useEffect(() => {
+    if (complete) return;
+    const range = resolvePresetRange('last7', timeZone);
+    setPreset('last7');
+    onChange({ ...condition, value: [range.from, range.to] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seeds once per empty value
+  }, [complete]);
+
+  if (!complete) return null;
+  return (
+    <DateRangePicker
+      className="w-full sm:flex-row"
+      timeZone={timeZone}
+      value={{ preset, from, to }}
+      onChange={(next) => {
+        setPreset(next.preset);
+        onChange({ ...condition, value: [next.from, next.to] });
+      }}
     />
   );
 }
