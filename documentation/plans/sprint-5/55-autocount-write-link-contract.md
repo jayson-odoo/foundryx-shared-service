@@ -25,7 +25,7 @@ purchase order row and a sales order row in the customer's AutoCount book:
 | Route | Does |
 |---|---|
 | `POST /api/v1/autocount/po-links` | Link a quantity of one PO row to one SO row (in place, or by splitting the PO row) |
-| `POST /api/v1/autocount/po-links/batch` | Link one PO row to 1 to 20 SO rows in one call, all or nothing (section 4.1a) |
+| `POST /api/v1/autocount/po-links/batch` | Link one PO row to 1 to 20 SO rows in one call; a bad line is skipped and named, the rest are linked (section 4.1a) |
 | `POST /api/v1/autocount/po-links/unlink` | Clear the SO link of one PO row |
 | `POST /api/v1/autocount/spo-links/unlink` | Clear the PO link of one shipping purchase order (SPO) row |
 
@@ -149,18 +149,26 @@ Links one PO row to several SO rows (plan 62). Header `Idempotency-Key` required
 | `docDate` | string, optional | `YYYY-MM-DD`; the PO's document date, a hint for the read |
 | `links` | array, required | 1 to 20 entries, each an object. Not an array, empty, over 20, an entry not an object, an SO row (`soDtlKey`) listed twice, or a `qty` that is not a JSON number: `422 INVALID_REQUEST` (nothing is stored, the key stays free) |
 | `links[].soDocKey`, `links[].soDtlKey` | integer | as `soDocKey`, `soDtlKey` in section 4.1 (a missing or non-integer key: `422 INVALID_REQUEST`) |
-| `links[].qty` | number | same rules as section 4.1 (`QTY_INVALID`, 422) |
+| `links[].qty` | number | a JSON number (anything else: `422 INVALID_REQUEST`); a number that is zero, negative, above 1,000,000,000 or has more than 8 decimal places skips that line (`QTY_INVALID`) |
 | `links[].soDocDate` | string, optional | `YYYY-MM-DD`; the SO's date, a hint for the read |
 
-All checks run before AutoCount is written; the sum of the `qty` values may not exceed the PO row qty
-(`QTY_ABOVE_FREE`), each must fit the outstanding of its SO row (`QTY_ABOVE_OUTSTANDING`), and the PO row
-must have the same item and unit as every SO row (`ITEM_MISMATCH`, `UOM_MISMATCH`). The other refusals are
-those of a link (section 5): `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_HAS_OTHER_TRANSFER`, `ROW_RECEIVED`,
-`DOC_CANCELLED`, `ROW_NOT_FOUND`, `DOC_STALE`, `DOC_BUSY`, `VENDOR_UNSUPPORTED`.
+**One bad line never fails the batch** (owner rule, 12 Nov 2026). The checks that concern the PO row refuse the
+whole request and nothing is written: `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_HAS_OTHER_TRANSFER`, `ROW_RECEIVED`,
+`DOC_CANCELLED` (the PO), `ROW_NOT_FOUND` (the PO row), `DOC_STALE`, `DOC_BUSY`, `VENDOR_UNSUPPORTED`. Every other
+check is made line by line, in request order, and a line that fails is skipped: it is not sent, the other lines are
+linked. The reasons are `ROW_NOT_FOUND` (the SO row), `ITEM_MISMATCH`, `UOM_MISMATCH`, `DOC_CANCELLED` (its sales
+order), `QTY_ABOVE_OUTSTANDING`, `QTY_INVALID`, and `QTY_ABOVE_FREE` (the running total of the lines linked so
+far plus this one would pass the PO row quantity; a later, smaller line that still fits is linked). The answer
+names every skipped line in `skipped`: `[{ "soDocKey": 11988, "soDtlKey": 11989, "code": "QTY_ABOVE_OUTSTANDING" }]`,
+`[]` when none. `skipped` is on every answer of this route (also the refusals and the replay). When every line is
+skipped nothing is written and the answer is `refused` with `errorCode` `ALL_LINKS_SKIPPED` (HTTP 409) and all the
+lines in `skipped`; the key is released, so a corrected resend under the same key runs. AutoCount itself refusing
+the write (`vendor_error`, `VENDOR_REFUSED`) is still the whole request: nothing is linked, `skipped` lists only
+the lines skipped before the write, and the key is released.
 
-**All or nothing, two writes.** The first write is ONE edit of the PO: the PO row is kept with the quantity
-that is left (or removed when the links take all of it) and one new linked row is added per entry. AutoCount
-accepts or rejects that edit as a whole, so either every link is made or none is. Each new row arrives at
+**Two writes.** The first write is ONE edit of the PO: the PO row is kept with the quantity
+that is left (or removed when the links take all of it) and one new linked row is added per linked line. AutoCount
+accepts or rejects that edit as a whole, so either every valid line is linked or none is. Each new row arrives at
 the default location (HQ), unit price 0 and no delivery date; a second write, only if a read-back shows
 that, puts all the new rows at their SO row's location and back on the PO row's unit price and delivery
 date, in one edit. If that second write does not land, the answer is still `done` and `warnings` carries
@@ -174,11 +182,12 @@ Answer (HTTP 200, `outcome` `done`):
   "warnings": [], "docKey": 12008, "docNo": "202602-S0007", "replacedLines": [],
   "links": [ { "soDocKey": 11988, "soDtlKey": 11989, "qty": "4", "poDtlKey": 12031 },
              { "soDocKey": 12101, "soDtlKey": 12102, "qty": "3", "poDtlKey": 12032 } ],
+  "skipped": [],
   "freeLine": { "poDtlKey": 12017, "qty": "3" },
   "document": { "...": "the PO as read back" } }
 ```
 
-`links[]` has one entry per request entry: the `poDtlKey` of the new PO row that carries that link. `qty`
+`links[]` has one entry per linked line (a skipped line has none): the `poDtlKey` of the new PO row that carries that link. `qty`
 there, and in `freeLine`, is a decimal STRING. `freeLine` is the PO row that stays with the unlinked
 remainder (`poDtlKey` is the original `poDtlKey`), or `null` when the links took the whole row. The other
 fields are those of section 4.5, with `actionId` null on this route. Other outcomes (`pending_verification`
@@ -287,6 +296,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `IDEMPOTENCY_CONFLICT` | The `Idempotency-Key` was used for a different body or route and its first call did not release it | Use a new key for a new change |
 | `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
+| `ALL_LINKS_SKIPPED` | `po-links/batch`: every line failed its own check, so nothing was linked; `skipped` names each line and its code | Fix the lines and resend (same key is fine) |
 
 **Split link is two writes.** Linking a quantity below the PO row edits the row down and adds a new
 linked row. AutoCount stores that new row at its default location (HQ) with unit price 0 and no

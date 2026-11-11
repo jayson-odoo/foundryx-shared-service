@@ -43,7 +43,7 @@ SS once PER SO line. Each SS call = a split (PUT 1 cut + linked row, PUT 2 resto
   (all or nothing): PO not cancelled, row exists, row not linked / not transferred onward / not partly received (same
   refusals as `build_link`), every SO row exists, same ItemCode + UOM as the PO row, SO not cancelled, sum(qty) <= row
   Qty (`QTY_ABOVE_FREE`), each qty <= that SO row's outstanding minus its already-linked qty (`QTY_ABOVE_OUTSTANDING`,
-  answer names the `soDtlKey`). Any refusal = nothing sent.
+  answer names the `soDtlKey`). Any refusal = nothing sent. Amended (owner rule 12 Nov via crew): one bad line never fails the batch. The per-line checks (SO row, item, UOM, SO cancelled, outstanding, qty, running sum against the free qty) skip that line and name it in `skipped`; only the PO-level checks refuse the request; every line skipped = `ALL_LINKS_SKIPPED`.
 - D3 PUT 1 (edit door, one PUT): sum == row Qty -> [row X "D", N new linked rows]; sum < row Qty -> [row X with
   Qty = rest (stays the free row), N new linked rows]. Each new row = the row's full vendor shape, `DtlKey 0`,
   `FromDocType SO`, `FromDocNo` = its own SO DocNo, `FromDocDtlKey` = its SO row, Qty, Location = that SO row's.
