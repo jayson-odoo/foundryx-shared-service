@@ -399,7 +399,7 @@ function DateRangeCondition({
     <DateRangePicker
       className="w-full sm:flex-row"
       timeZone={timeZone}
-      value={{ preset, from: from || to, to: to || from }}
+      value={{ preset, from, to }}
       onChange={(next) => {
         setPreset(next.preset);
         onChange({ ...condition, value: [next.from, next.to] });

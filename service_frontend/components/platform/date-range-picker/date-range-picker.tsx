@@ -133,6 +133,9 @@ function displayLabel(from: string, to: string): string {
   // No `timeZone` override - `parseKey` now returns LOCAL midnight, so
   // formatting it in UTC would shift the label a day west of UTC.
   const fmt = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' });
+  // An open range (a saved start-only or end-only filter) reads as open, not as one day.
+  if (from && !to) return `From ${fmt.format(parseKey(from))}`;
+  if (!from && to) return `Until ${fmt.format(parseKey(to))}`;
   const fromLabel = fmt.format(parseKey(from));
   const toLabel = fmt.format(parseKey(to));
   return from === to ? fromLabel : `${fromLabel} - ${toLabel}`;
@@ -160,9 +163,10 @@ export function DateRangePicker({ value, onChange, timeZone, className, minDate,
     onChange({ preset: next, from, to });
   };
 
-  const calendarValue: DateRange | undefined = value.from
-    ? { from: parseKey(value.from), to: value.to ? parseKey(value.to) : undefined }
-    : undefined;
+  const calendarValue: DateRange | undefined =
+    value.from || value.to
+      ? { from: value.from ? parseKey(value.from) : undefined, to: value.to ? parseKey(value.to) : undefined }
+      : undefined;
 
   const disabledMatchers: Matcher[] = [];
   if (minDate) disabledMatchers.push({ before: parseKey(minDate) });
@@ -204,7 +208,7 @@ export function DateRangePicker({ value, onChange, timeZone, className, minDate,
             // would force a user editing a March range to page forward/back
             // several months just to see it (Popover content unmounts on
             // close, so this recomputes fresh on every open).
-            defaultMonth={value.from ? parseKey(value.from) : undefined}
+            defaultMonth={value.from || value.to ? parseKey(value.from || value.to) : undefined}
             selected={calendarValue}
             disabled={disabledMatcher}
             onSelect={(_range, selectedDay) => {
