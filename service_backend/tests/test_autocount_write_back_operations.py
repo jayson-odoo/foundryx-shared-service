@@ -119,7 +119,7 @@ class World:
         base = dict(Discount="5%", TaxCode="SR", DeliveryDate="2026-12-01T00:00:00", Description="d")
         po_rows = [
             _line("ITEM-A", 4, 5.0, "BR1", **base, **(po_over or {})),        # 0 unlinked
-            _line("ITEM-A", 4, 5.0, "BR1", **base, **link_a),                  # 1 linked to so_a
+            _line("ITEM-A", 4, 5.5, "BR1", **base, **link_a),                  # 1 linked to so_a (price 5.5: NOT a unlink-merge match for the 5.0 free rows, plan 62)
             _line("ITEM-A", 4, 5.0, "BR1", **base),                            # 2 target of the SPO row
             _line("ITEM-A", 4, 5.0, "BR1", **base),                            # 3 second PO row for spo_relink
         ]

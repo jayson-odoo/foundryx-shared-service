@@ -181,6 +181,8 @@ def test_ac_62_41_sync_pull_writes_and_rewrites_the_pos_rows(session_factory):
         assert [(r.so_dtl_key, Decimal(r.qty)) for r in first] == [(45700101, Decimal(10))], first
         with engine.begin() as conn:
             conn.exec_driver_sql("UPDATE po_line SET from_so_dtl_key = '45700148' WHERE dtl_key = 'D001-1'")
+            conn.exec_driver_sql(  # a real AutoCount edit bumps the header LastModified too
+                "UPDATE po_header SET last_modified = '2026-08-05 09:00:00' WHERE doc_key = 'D001'")
         db.expire_all()
         _run_po(db, company, RUN_MODE_RECONCILE)
         rows = db.query(AcPoSoLink).filter_by(company_id=company.id).all()

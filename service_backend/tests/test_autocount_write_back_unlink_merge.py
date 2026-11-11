@@ -31,7 +31,11 @@ DIFFERENT = {"ItemCode": "ITEM-Z", "UOM": "BOX", "Location": "BR9", "UnitPrice":
 @pytest.fixture
 def world(h):
     h.delete_on()
-    return World(h)
+    w = World(h)
+    # World's linked row carries price 5.5 so the OLD unlink tests stay on the plain path; here it is made
+    # identical to the free rows (ItemCode, UOM, Location, 5.0, DeliveryDate) so the merge is explicit.
+    h.vendor.find("PO", 7001)["Details"][1]["UnitPrice"] = 5.0
+    return w
 
 
 @pytest.fixture
@@ -180,14 +184,19 @@ def test_ac_62_31_a_received_free_row_is_never_merged_into(h, world):
     assert qty(row(h, world.p_free)) == Decimal(4)
 
 
-def test_ac_62_31_a_free_row_the_vendor_marks_received_is_never_merged_into(h, world):
-    h.vendor.mark_received("PO", 7001, world.p_free)
-    h.vendor.mark_received("PO", 7001, world.p_other)
+def test_ac_62_31_a_free_row_the_receipt_reader_reports_received_is_never_merged_into(h, world):
+    """The real signal SS has is the operation's receipt reader (operations.py ReceiptReader / _receipt)."""
+    received = {world.p_free, world.p_other}
     mutate(h, [world.p_spo], UnitPrice=9.5)
+
+    def reader(kind, doc, r):
+        return Decimal(4) if r.get("DtlKey") in received else Decimal(0)
+
     before = keys_before(h)
-    res = h.run("unlink_row", world.params["unlink_row"], key="m-recv2")
-    assert res.outcome == "done"
+    res = h.run("unlink_row", world.params["unlink_row"], key="m-recv2", receipt_reader=reader)
+    assert res.outcome == "done", (res.outcome, res.error_code)
     assert_todays_unlink(h, world, before)
+    assert qty(row(h, world.p_free)) == Decimal(4) and qty(row(h, world.p_other)) == Decimal(4)
 
 
 def test_ac_62_31_route_without_a_match_answers_the_new_free_row_key(client, h, gw, world):

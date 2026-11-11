@@ -85,6 +85,11 @@ def linked_rows(h) -> Dict[int, Dict[str, Any]]:
     return {r["FromSODtlKey"]: r for r in h.vendor.rows("PO", 7001) if r.get("FromSODtlKey")}
 
 
+def batch_rows(h, rig) -> Dict[int, Dict[str, Any]]:
+    """The batch's own new rows only ({SO DtlKey: PO row}); World's pre-linked row is not one of them."""
+    return {k: r for k, r in linked_rows(h).items() if k in rig.s5}
+
+
 def run(h, rig, links, key="b-1", **kw):
     return h.run(OP, rig.params(links), key=key, **kw)
 
@@ -113,7 +118,7 @@ def test_ac_62_01_put_2_restores_price_and_date_on_all_new_rows_and_the_links_st
     res = run(h, rig, rig.three())
     assert res.outcome == "done" and res.warnings == []
     second = puts(h)[1]
-    linked = linked_rows(h)
+    linked = batch_rows(h, rig)
     assert sorted(linked) == sorted(rig.s5)  # all three links survived PUT 2
     sent_keys = sorted(r["DtlKey"] for r in second.body["Details"])
     assert sent_keys == sorted(r["DtlKey"] for r in linked.values())  # PUT 2 covers ALL new rows
@@ -315,7 +320,7 @@ def test_ac_62_06_put_2_failure_is_done_with_the_warnings_and_the_links_kept(h, 
     assert res.outcome == "done", (res.outcome, res.error_code)
     assert "LOCATION_NOT_MOVED" in res.warnings and "ROW_VALUES_NOT_KEPT" in res.warnings
     assert len(puts(h)) == 2  # PUT 2 is never retried
-    assert sorted(linked_rows(h)) == sorted(rig.s5)
+    assert sorted(batch_rows(h, rig)) == sorted(rig.s5)
 
 
 # ============================== AC-62-07 replay =================================================
