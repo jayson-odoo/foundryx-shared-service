@@ -132,6 +132,8 @@ write guards as a link. Use it when a link ended `LOCATION_NOT_MOVED`.
 Plan 57 (`57-autocount-write-qtso-contract.md`) rewired `po-links`, `po-links/unlink` and `spo-links/unlink`: an optional `Idempotency-Key`, `soDocDate` on `po-links`, and extra body fields (`operationId`, `message`, `warnings`, `docKey`, `docNo`, `replacedLines`) when an operation answers.
 Plan 61 adds the optional `X-Request-ID` header on these routes (57 contract section 2a): stored on SS's
 log of every AutoCount call made for the request, else the `Idempotency-Key` is used; ignored when invalid.
+Plan 63 adds the optional `X-Acting-User-Id` and `X-Acting-User-Name` headers on these routes: format and
+rules in 57 contract sections 2a.1 and 8. Absent or invalid = stored empty, never a refusal.
 
 ```json
 { "actionId": "c1a0...", "outcome": "done", "errorCode": null, "document": { "...": "..." } }
