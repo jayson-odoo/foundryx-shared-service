@@ -133,7 +133,7 @@ Links one PO row to several SO rows (plan 62). Header `Idempotency-Key` required
 |---|---|---|
 | `companyCode`, `poDocKey`, `poDtlKey`, `expectedLastModified` | | as section 4.1 |
 | `docDate` | string, optional | `YYYY-MM-DD`; the PO's document date, a hint for the read |
-| `links` | array, required | 1 to 20 entries, each an object. Not an array, empty, or an entry not an object: `422 INVALID_REQUEST`. Over 20, an SO row (`soDtlKey`) listed twice, or a `qty` that is not a number: `409 INVALID_PARAMS` |
+| `links` | array, required | 1 to 20 entries, each an object. Not an array, empty, over 20, an entry not an object, an SO row (`soDtlKey`) listed twice, or a `qty` that is not a JSON number: `422 INVALID_REQUEST` (nothing is stored, the key stays free) |
 | `links[].soDocKey`, `links[].soDtlKey` | integer | as `soDocKey`, `soDtlKey` in section 4.1 (a missing or non-integer key: `422 INVALID_REQUEST`) |
 | `links[].qty` | number | same rules as section 4.1 (`QTY_INVALID`, 422) |
 | `links[].soDocDate` | string, optional | `YYYY-MM-DD`; the SO's date, a hint for the read |
@@ -269,7 +269,6 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `UOM_MISMATCH` | Different units of measure | Do not offer this pair |
 | `QTY_INVALID` | `qty` is zero or negative, above 1,000,000,000, or has more than 8 decimal places (checked before AutoCount is read) | Fix the input |
 | `QTY_ABOVE_FREE` | `qty` is above the PO row qty | Lower `qty` |
-| `INVALID_PARAMS` | `po-links/batch`: more than 20 links, an SO row listed twice, or a `qty` that is not a number | Fix the body and resend (same key is fine) |
 | `ROW_RECEIVED` | The PO row has goods received against it | Handle it in AutoCount |
 | `IDEMPOTENCY_CONFLICT` | The `Idempotency-Key` was used for a different body or route and its first call did not release it | Use a new key for a new change |
 | `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |

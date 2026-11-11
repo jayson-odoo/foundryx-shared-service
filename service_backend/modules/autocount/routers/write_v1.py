@@ -40,6 +40,7 @@ from .pull_v1 import (
     _merge_error_context,
     _optional_text,
     _parse_write_json,
+    _qty_field,
     _read_request_body_bytes,
     _require_scope,
     _safe_echo,
@@ -481,13 +482,20 @@ def link_po_row_batch(
         entries = raw.get("links")
         if not isinstance(entries, list) or not entries:
             raise _bad("INVALID_REQUEST", "links must be a non-empty array.")
+        if len(entries) > 20:
+            raise _bad("INVALID_REQUEST", "links must hold at most 20 entries.")
         links = []
+        seen: set = set()
         for entry in entries:
             if not isinstance(entry, dict):
                 raise _bad("INVALID_REQUEST", "each link must be an object.")
+            so_dtl = _int_field(entry, "soDtlKey")
+            if so_dtl in seen:
+                raise _bad("INVALID_REQUEST", "a soDtlKey is listed twice.")
+            seen.add(so_dtl)
             links.append({
-                "so_doc_key": _int_field(entry, "soDocKey"), "so_dtl_key": _int_field(entry, "soDtlKey"),
-                "qty": entry.get("qty"), "so_doc_date": _optional_date(entry, "soDocDate"),
+                "so_doc_key": _int_field(entry, "soDocKey"), "so_dtl_key": so_dtl,
+                "qty": _qty_field(entry), "so_doc_date": _optional_date(entry, "soDocDate"),
             })
         params: Dict[str, Any] = {
             "doc_key": _int_field(raw, "poDocKey"), "dtl_key": _int_field(raw, "poDtlKey"), "links": links,
