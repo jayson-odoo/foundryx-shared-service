@@ -21,7 +21,12 @@ SS once PER SO line. Each SS call = a split (PUT 1 cut + linked row, PUT 2 resto
   (`operations.py:641-645`). So a retry after fixing the cause replays the old refusal (breaks the owner rule).
 - F-E Unlink = one PUT [linked row "D", new free row] (`operations.py:634-654`); it never merges back, so free rows pile
   up (FXT-HT-PO-B rows 12320/12332/12370).
-- F-F The over-link check `_so_linked_qty` (`service.py:635-650`) walks every staged PO of the company per link.
+- F-F The over-link check `_so_linked_qty` (`service.py:635-650`, and the operation path `primitives.py:539` called from
+  `operations.py:522`) walks every staged PO of the company per link, and `StagedRepository.for_entity`
+  (`repository.py:220-233`) returns ALL staged copies (sync keeps history, `sync.py:1406`), so an older copy of the
+  same PO is counted again (over-count = a false `QTY_ABOVE_OUTSTANDING`).
+- F-H `run_primitive` replays a stored refused / vendor_error answer as is (`operations.py:911-917`); only refused
+  `DOC_BUSY` is not stored (`operations.py:948-949`).
 - F-G UNPROVEN until S0: one PUT that cuts (or "D"s) row X AND adds 2+ new rows, each linked to its own SO row (only a
   multi-row CREATE is proven). Also unproven: one PUT that "D"s a linked row AND raises another row's Qty (S4 merge).
 
@@ -45,7 +50,7 @@ SS once PER SO line. Each SS call = a split (PUT 1 cut + linked row, PUT 2 resto
 - D5 Answer = operation shape (`operationId`, `outcome`, `errorCode`, `message`, `warnings`, `docKey`, `docNo`,
   `document`) plus `links: [{soDocKey, soDtlKey, qty, poDtlKey}]` (new PO DtlKey per SO row) and
   `freeLine: {poDtlKey, qty} | null`.
-- D6 Retry rule (owner 11 Nov, every operation, not only the batch): a stored operation whose outcome is a confirmed
+- D6 Retry rule (owner 11 Nov, every operation AND `run_primitive`, not only the batch): a stored operation whose outcome is a confirmed
   "nothing landed" (`refused`, `vendor_error`) RELEASES its key: a resend with the same key runs fresh (any body; the
   old row is kept for history, re-keyed so the unique key frees). `pending_verification` (unknown outcome) on resend
   with the same body = reconcile first (read the PO back, today's `resume` path): landed -> finish as `done`
@@ -57,8 +62,9 @@ SS once PER SO line. Each SS call = a split (PUT 1 cut + linked row, PUT 2 resto
   `/po-links/unlink` route and the `unlink_row` operation. Relink is unchanged (its freed qty moves to the new SO row).
 - D8 Over-link index: new table `app_autocount.ac_po_so_link` (tenant_id, company_id, po_source_ref, po_dtl_key,
   so_dtl_key, qty) with index (tenant_id, company_id, so_dtl_key); rewritten for a PO whenever a PO staged record is
-  written (sync pull + write-back `_stage`), cancelled PO = no rows. `_so_linked_qty` = fresh PO rows + indexed sum
-  over OTHER POs. Migration 0045 + backfill from the newest staged copy of every PO. Plan-12 guard
+  written (sync `sync.py:1223 _stage_documents` + deletes `:2549`, write-back `staging.py:83 _stage_raw`), from that
+  PO's NEWEST copy only; cancelled or deleted PO = no rows. Both `_so_linked_qty` (service + primitives) = fresh PO
+  rows + indexed sum over OTHER POs (fixes the history double count, F-F). Migration 0045 + backfill from the newest staged copy of every PO. Plan-12 guard
   `test_s12_mapping_reset_route.py::test_ac_12_32` bumped.
 - D9 Capability: the batch rides the existing `link_existing_row` flag + `delete_line/add_line/edit_doc` primitives
   (`_OP_FLAGS`), no new switch (owner rule: ERP writes behind an admin switch OFF by default = already true).
