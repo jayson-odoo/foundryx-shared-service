@@ -168,12 +168,14 @@ def test_ac_62_03_links_across_two_sos_each_row_carries_its_own_doc_no(h, rig):
 # ============================== AC-62-04 pre-check refusals send NO PUT =========================
 
 def _item_differs(h, rig):
-    h.vendor.find("SO", 7005)["Details"][0]["ItemCode"] = "ITEM-Z"
+    for row in h.vendor.find("SO", 7005)["Details"]:  # every line mismatched: one bad line would only be skipped
+        row["ItemCode"] = "ITEM-Z"
     return rig.three(), {}
 
 
 def _uom_differs(h, rig):
-    h.vendor.find("SO", 7005)["Details"][0]["UOM"] = "BOX"
+    for row in h.vendor.find("SO", 7005)["Details"]:
+        row["UOM"] = "BOX"
     return rig.three(), {}
 
 

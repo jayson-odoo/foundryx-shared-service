@@ -3,15 +3,15 @@
 Lane PO-LINK-BATCH, branch `crew/po-link-batch`. UAC: `62-autocount-po-link-batch-acceptance-criteria.md`.
 Backend only, no screen: browser / agent-browser runs are N/A (no UI surface, nothing at 375px or 1280px).
 
-## Final run (12 Nov 2026, after review rounds 1-4)
+## Final run (12 Nov 2026, after review rounds 1-5 and the skip rule)
 
 Command (every `tests/test_autocount_write_back_*.py` plus `test_module_migrations_engine_url.py`,
 `test_s12_mapping_reset_route.py`, `test_autocount_line_linkage.py`, `test_deploy_module_bootstrap_wiring.py`,
-`test_deploy_lock_holder_report.py`; 43 files):
+`test_deploy_lock_holder_report.py`; 46 files):
 
     cd service_backend && xargs .venv/bin/python -m pytest -q -n 2 --dist loadfile < files.txt
 
-Result: **1448 passed, 0 failed, 0 skipped.** The full 3 minute suite was not run by the tester.
+Result: **1468 passed, 0 failed, 0 skipped.** The full 3 minute suite was not run by the tester.
 
 Plan 62 test files (each written red first): `test_autocount_write_back_retry_rule.py`,
 `test_autocount_write_back_link_batch.py`, `test_autocount_write_back_unlink_merge.py`,
@@ -29,6 +29,8 @@ listed below. Existing tests adapted, no assertion weakened: `World` in `test_au
 | create lookup | `test_autocount_write_back_create_lookup.py` | the real `find_created_doc` against a fake vendor that stamps `CreatedTimeStamp` / `LastModified` (MYT): found / none / ambiguous, window (30 min off is not ours, 8 min skew is ours), MYT midnight, numbered body, call log |
 | 3 | `test_autocount_write_back_review_round3.py` | lookup only for stored create rows, lock connection failure = busy refusal, lookup reach and ownership, lookup logged under the stored operation, pending links count against the guard, resume of a create row |
 | 4 | `test_autocount_write_back_review_round4.py` | backfill honours a live delete intent and ignores a discarded one, needs-attention notice from batch and merge reconcile, bounded ownership check |
+| 5 | `test_autocount_write_back_review_round5.py`, `..._round5b.py` | plan-55 link takes the SO row lock, pending split link counts, old create row stays locked, lock engine named, truthful notice subject; own-PO pending not double counted, backfill follows the runtime row choice |
+| skip rule | `test_autocount_write_back_link_batch_skip.py` | owner rule: a bad line is skipped and named, never fails the batch |
 
 ## AC matrix
 
@@ -37,10 +39,10 @@ Test names are `test_ac_62_<nn>_*` in the file shown. "db3" = the runner suite `
 
 | AC | Status | Evidence |
 |---|---|---|
-| AC-62-01 | PASS | link_batch: `test_ac_62_01_three_links_below_the_row_qty_is_one_put_1_and_one_put_2`, `..._put_2_restores_price_and_date_on_all_new_rows_and_the_links_stay`, `..._route_answer_carries_each_new_po_dtl_key_and_the_free_line` |
-| AC-62-02 | PASS | link_batch: `test_ac_62_02_sum_equal_to_the_row_qty_deletes_the_row_and_has_no_free_line` |
-| AC-62-03 | PASS | link_batch: `test_ac_62_03_links_across_two_sos_each_row_carries_its_own_doc_no` |
-| AC-62-04 | PASS | link_batch: `test_ac_62_04_every_pre_check_refusal_sends_zero_puts` (15 cases: unknown SO row, item, UOM, SO cancelled, PO cancelled, linked, transferred onward, received, sum above free, above outstanding, duplicate, empty, over 20, qty 0, qty negative), `..._qty_above_outstanding_names_the_so_dtl_key`, `..._an_so_row_linked_from_another_po_by_the_index_counts_against_outstanding`, `..._route_refusal_is_a_4xx_with_the_code_and_zero_puts`, `..._route_requires_the_idempotency_key` (422), `..._route_bad_links_shape_is_rejected_with_zero_puts`; db3 B07 (line above outstanding, within the PO row's free quantity: `ALL_LINKS_SKIPPED` naming `QTY_ABOVE_OUTSTANDING`, 0 PUTs) and B11 (2 good + 1 over outstanding: 2 linked, 1 skipped, 2 PUTs) |
+| AC-62-01 | PASS | link_batch: `test_ac_62_01_three_links_below_the_row_qty_is_one_put_1_and_one_put_2`, `..._put_2_restores_price_and_date_on_all_new_rows_and_the_links_stay`, `..._route_answer_carries_each_new_po_dtl_key_and_the_free_line`. Skip rule (owner change): `test_autocount_write_back_link_batch_skip.py::test_skip_two_good_and_one_above_outstanding_link_the_two_and_name_the_third` (one PUT 1 with the good lines only, `skipped` names the bad one, `freeLine` = row Qty minus the linked) |
+| AC-62-02 | PASS | link_batch: `test_ac_62_02_sum_equal_to_the_row_qty_deletes_the_row_and_has_no_free_line`. Skip rule: `..._skip.py::test_skip_the_line_that_overflows_the_free_quantity_is_skipped_and_later_lines_that_fit_are_linked` (the later lines that fit use the whole row: "D" row, `freeLine` null) |
+| AC-62-03 | PASS | link_batch: `test_ac_62_03_links_across_two_sos_each_row_carries_its_own_doc_no`. Skip rule: `..._skip.py::test_skip_every_bad_line_is_named_with_its_own_code`, `..._a_cancelled_so_skips_its_lines_only` (lines of other SOs still link) |
+| AC-62-04 | PASS | link_batch: `test_ac_62_04_every_pre_check_refusal_sends_zero_puts` (15 cases: unknown SO row, item, UOM, SO cancelled, PO cancelled, linked, transferred onward, received, sum above free, above outstanding, duplicate, empty, over 20, qty 0, qty negative), `..._qty_above_outstanding_names_the_so_dtl_key`, `..._an_so_row_linked_from_another_po_by_the_index_counts_against_outstanding`, `..._route_refusal_is_a_4xx_with_the_code_and_zero_puts`, `..._route_requires_the_idempotency_key` (422), `..._route_bad_links_shape_is_rejected_with_zero_puts`; db3 B07 (line above outstanding, within the PO row's free quantity: `ALL_LINKS_SKIPPED` naming `QTY_ABOVE_OUTSTANDING`, 0 PUTs) and B11 (2 good + 1 over outstanding: 2 linked, 1 skipped, 2 PUTs). Skip rule: a PER-LINE pre-check (unknown SO row, item, UOM, SO cancelled, above outstanding, qty invalid, above free by running sum) skips that line and names it in `skipped`; the parametrized refusal cases above now expect `ALL_LINKS_SKIPPED` with zero writes when every line is skipped (item and UOM setups mismatch every line); PO-level checks (PO cancelled, linked / transferred / received PO row, shape, duplicate key) still refuse the request: `..._skip.py::test_skip_all_lines_bad_is_refused_with_zero_writes_naming_every_line_and_the_key_is_released`, `..._po_level_refusals_still_refuse_the_whole_request_with_zero_writes`, `..._key_is_present_on_every_batch_answer`, `..._a_vendor_refusal_of_put_1_stays_whole_...`, `..._pending_reconcile_expects_only_the_applied_lines`, `..._done_with_skips_locks_the_key_and_replays_links_and_skipped` |
 | AC-62-05 | PASS | link_batch: `test_ac_62_05_vendor_refusal_is_vendor_error_with_no_put_2_and_nothing_linked`, `..._route_vendor_error_reports_no_linked_row`, `..._the_fake_vendor_refuses_a_put_with_one_bad_linked_row_and_lands_nothing` |
 | AC-62-06 | PASS | link_batch: `test_ac_62_06_put_2_failure_is_done_with_the_warnings_and_the_links_kept` |
 | AC-62-07 | PASS | link_batch: `test_ac_62_07_done_replay_is_the_stored_answer_with_no_vendor_call`, `..._done_key_with_another_body_is_an_idempotency_conflict`, `..._route_replay_and_conflict` |
