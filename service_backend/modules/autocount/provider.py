@@ -37,6 +37,7 @@ from .http_client import (
     assert_autocount_base_url_deliverable,
     probe_open_connection,
 )
+from .write_back.guard import host_allowlisted
 from .write_back.auth import (
     DEFAULT_FORMAT,
     DEFAULT_HEADER,
@@ -345,6 +346,12 @@ class AutoCountProvider:
         auth_problem = settings_problem(config)
         if auth_problem:
             return auth_problem
+        if (
+            base_url
+            and str((config or {}).get("apiKeyOnReads") or "").strip().lower() == "yes"
+            and not host_allowlisted(base_url)
+        ):
+            return "Sending the API key on reads is only available for the AutoCount write host."
 
         # LAST, because it is the only check here that can touch the network
         # (the guard resolves the host to catch a name pointing at an internal
