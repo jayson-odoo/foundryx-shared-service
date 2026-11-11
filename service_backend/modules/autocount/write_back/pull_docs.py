@@ -20,14 +20,14 @@ import argparse
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
 from modules.autocount.models import AcCompany
 from modules.autocount.provider import PROVIDER_KEY
 from modules.autocount.repositories import CompanyRepository, ConnectionRepository
-from modules.autocount.write_back import call_log
+from modules.autocount.write_back import auth, call_log
 from modules.autocount.write_back.doc_mapping import KIND_PO, KIND_SO, detect_kind
 from modules.autocount.write_back.guard import assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
@@ -76,7 +76,7 @@ def _days(date_from: date, date_to: date) -> List[date]:
     return [date_from + timedelta(days=i) for i in range(span)]
 
 
-def write_base_url(db: Session, company: AcCompany) -> str:
+def _write_connection(db: Session, company: AcCompany) -> Any:
     conn = None
     if company.is_active and company.write_connection_id:
         conn = ConnectionRepository(db).get_for_provider(
@@ -84,9 +84,20 @@ def write_base_url(db: Session, company: AcCompany) -> str:
         )
     if conn is None or not conn.is_active:
         raise WriteDisabled()
+    return conn
+
+
+def write_base_url(db: Session, company: AcCompany) -> str:
+    conn = _write_connection(db, company)
     base_url = str((conn.config_json or {}).get("baseUrl") or "")
-    assert_write_allowed(base_url)  # db3 only, read or write
+    assert_write_allowed(base_url)  # writable books only, read or write
     return base_url
+
+
+def write_auth_headers(db: Session, company: AcCompany) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """``(write_headers, read_headers)`` of the company's write connection, read fresh;
+    ``AuthConfigInvalid`` when its key settings cannot produce a header."""
+    return auth.connection_headers(_write_connection(db, company))
 
 
 def pull_documents(
@@ -106,6 +117,10 @@ def pull_documents(
     if company is None:
         raise WriteDisabled()
     reader = (reader_factory or AutoCountDocReader)(write_base_url(db, company))
+    try:
+        auth.attach_headers(reader, write_auth_headers(db, company)[1])
+    except auth.AuthConfigInvalid as exc:
+        return PullDocsResult(failed=True, error_code=exc.code)
     log = call_log.CallLog(db.get_bind(), call_log.CallContext(company.tenant_id, company.id, actor=actor))
     call_log.attach_call_log(reader, log)  # plan 61 section 4.8: every GET is one log row
     stager = DocStager(db, sink_factory)

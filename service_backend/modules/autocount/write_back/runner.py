@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -41,6 +41,7 @@ from modules.autocount.write_back.constants import (
     SO_BY_DOC_DATE_PATH,
     PO_BY_DOC_DATE_PATH,
 )
+from modules.autocount.write_back import auth
 from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteNotAllowed
@@ -51,6 +52,7 @@ from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
     PullDocsResult,
     pull_documents,
+    write_auth_headers,
     write_base_url,
 )
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
@@ -149,11 +151,13 @@ class _Run:
         client_factory: Callable[[str], AutoCountWriteClient],
         reader_factory: Callable[[str], AutoCountDocReader],
         sink_factory: Optional[Callable[..., object]],
+        auth_headers: Optional[Tuple[Dict[str, str], Dict[str, str]]] = None,
     ) -> None:
         self.db = db
         self.tenant_id = tenant_id
         self.company = company
         self.base_url = base_url
+        write_auth, read_auth = auth_headers or ({}, {})
         self.creditor = creditor_code
         self.debtor = debtor_code
         self.so_no = f"{_doc_prefix(run_tag)}-SO"
@@ -161,8 +165,10 @@ class _Run:
         self.tag = run_tag
         # plan 61 section 4.8: the runner's own calls are logged with actor "runner"
         log = cl.CallLog(db.get_bind(), cl.CallContext(tenant_id, company.id, actor=cl.ACTOR_RUNNER))
-        self.client_factory = lambda url: cl.attach_call_log(client_factory(url), log)  # noqa: E731
-        self.reader_factory = lambda url: cl.attach_call_log(reader_factory(url), log)  # noqa: E731
+        self.client_factory = lambda url: cl.attach_call_log(  # noqa: E731
+            auth.attach_headers(client_factory(url), write_auth), log)
+        self.reader_factory = lambda url: cl.attach_call_log(  # noqa: E731
+            auth.attach_headers(reader_factory(url), read_auth), log)
         self.sink_factory = sink_factory
         self.service = WriteBackService(
             db, client_factory=client_factory, reader_factory=reader_factory,
@@ -743,6 +749,7 @@ def run_db3_suite(
     run = _Run(
         db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
         client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory,
+        auth_headers=write_auth_headers(db, company),
     )
     suite = SuiteResult(run_tag=run_tag)
     for case_id, title, method in _CASES:
@@ -840,6 +847,9 @@ class _TapClient:
     def attach_call_log(self, log: cl.CallLog) -> None:
         cl.attach_call_log(self._inner, log)
 
+    def set_auth_headers(self, headers: Dict[str, str]) -> None:
+        auth.attach_headers(self._inner, headers)
+
     def _send(self, method: str, path: str, body: object):
         self._tap.http += 1
         entry: Dict[str, object] = {"method": method, "path": path, "requestBody": body}
@@ -882,6 +892,9 @@ class _TapReader:
 
     def attach_call_log(self, log: cl.CallLog) -> None:
         cl.attach_call_log(self._inner, log)
+
+    def set_auth_headers(self, headers: Dict[str, str]) -> None:
+        auth.attach_headers(self._inner, headers)
 
     def get_document(self, *args, **kwargs):
         self._tap.http += 1

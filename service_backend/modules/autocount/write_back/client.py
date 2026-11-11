@@ -12,7 +12,7 @@ the caller attached a ``CallLog`` (plan 61 section 4.8).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import httpx
 
@@ -63,6 +63,11 @@ class AutoCountWriteClient:
         self._transport = transport
         self._timeout = timeout
         self._call_log: Optional[cl.CallLog] = None
+        self._auth_headers: Dict[str, str] = {}
+
+    def set_auth_headers(self, headers: Mapping[str, str]) -> None:
+        """The optional API key header this client sends on every request (plan 63); never logged."""
+        self._auth_headers = dict(headers)
 
     def attach_call_log(self, log: "cl.CallLog") -> None:
         """Every request from now on writes one row to ``log`` (plan 61 section 4.8)."""
@@ -107,9 +112,9 @@ class AutoCountWriteClient:
         try:
             with self._http() as http:
                 if params is not None:
-                    request = http.build_request(method, url, params=dict(params))
+                    request = http.build_request(method, url, params=dict(params), headers=self._auth_headers)
                 else:
-                    request = http.build_request(method, url, json=body)
+                    request = http.build_request(method, url, json=body, headers=self._auth_headers)
                 sent_path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
                 response = http.send(request)
         except httpx.TimeoutException:

@@ -22,6 +22,7 @@ from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.provider import PROVIDER_KEY
 from modules.autocount.repositories import ConnectionRepository
 from modules.autocount.write_back.client import AutoCountWriteClient
+from modules.autocount.write_back import auth
 from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
@@ -130,6 +131,8 @@ class WriteFrame:
         self._operation_id = operation_id  # set when an operation runs this flow (the split link)
         self._call_log: Optional[cl.CallLog] = None
         self._refused_base_url: Optional[str] = None
+        self._write_headers: Dict[str, str] = {}
+        self._read_headers: Dict[str, str] = {}
         self.actions = WriteActionRepository(db)
         self.staged = StagedDocRepository(db)
         self.connections = ConnectionRepository(db)
@@ -158,10 +161,12 @@ class WriteFrame:
         return cl.CallLog(self.db.get_bind(), context)
 
     def _reader_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
-        return cl.attach_call_log(self._reader_factory(base_url), log or self._call_log)
+        reader = auth.attach_headers(self._reader_factory(base_url), self._read_headers)
+        return cl.attach_call_log(reader, log or self._call_log)
 
     def _client_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
-        return cl.attach_call_log(self._client_factory(base_url), log or self._call_log)
+        client = auth.attach_headers(self._client_factory(base_url), self._write_headers)
+        return cl.attach_call_log(client, log or self._call_log)
 
     def _expired(self) -> bool:
         return time.monotonic() > self._deadline
@@ -225,6 +230,11 @@ class WriteFrame:
         except WriteNotAllowed as exc:
             self._refused_base_url = base_url  # kept for the guard_refused call-log row only
             return None, (exc.code, "")  # the code only: never the book name (AC-57-47)
+        try:  # the optional API key, read fresh on every action (no cache: rotation = next action)
+            self._write_headers, self._read_headers = auth.connection_headers(conn)
+        except auth.AuthConfigInvalid as exc:
+            self._refused_base_url = base_url
+            return None, (exc.code, "")
         return base_url, None
 
     def _company_book(self, company: AcCompany) -> Optional[str]:

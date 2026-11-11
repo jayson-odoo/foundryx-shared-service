@@ -105,6 +105,7 @@ from ..models import (
 # strategy and look like it worked.
 SOURCE_IMPLS = (SOURCE_IMPL_AUTOCOUNT_READ, SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
 from ..http_client import OpenProbeError, probe_open_connection
+from ..write_back.auth import MESSAGE as AUTH_INVALID_MESSAGE, AuthConfigInvalid, read_headers as auth_read_headers
 from .. import presets
 from ..presets import HTTP_ENTITY_TYPES as _PRESET_HTTP_ENTITY_TYPES
 from ..provider import PROVIDER_KEY, auth_mode, client_from_connection, is_open_connection
@@ -1743,6 +1744,14 @@ class CompanyService:
             )
         return prefix
 
+    @staticmethod
+    def _read_auth(conn: Connection) -> Dict[str, str]:
+        """The key headers a read of this connection carries (none without a key)."""
+        try:
+            return auth_read_headers(conn)
+        except AuthConfigInvalid:
+            raise OpenProbeError(AUTH_INVALID_MESSAGE) from None
+
     def create_from_open_connection(
         self,
         tenant_id: str,
@@ -1786,7 +1795,9 @@ class CompanyService:
         base_url = str(config.get("baseUrl") or "").strip()
         trace_id = f"acdiscover-{uuid.uuid4()}"
         try:
-            rows = probe_open_connection(base_url, transport=transport)
+            rows = probe_open_connection(
+                base_url, transport=transport, headers=self._read_auth(conn)
+            )
         except OpenProbeError as exc:
             record_activity(
                 self.db,

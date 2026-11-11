@@ -45,6 +45,7 @@ from ..mapping import IdentityError, flat_source_ref
 from ..models import RUN_MODE_MANUAL, RUN_MODE_RECONCILE, SOURCE_IMPL_AUTOCOUNT_HTTP
 from ..repositories import ConnectionRepository, RowHashRepository
 from ..provider import PROVIDER_KEY, is_open_connection
+from ..write_back.auth import AuthConfigInvalid, read_headers as auth_read_headers
 from ..sources import (
     FetchResult,
     LookupVerification,
@@ -348,8 +349,15 @@ class HttpApiSource:
         # ceiling (1..8, default 1 = byte-identical to today); read ONCE here
         # exactly like ``self._page_size``, never re-read mid-walk.
         self._page_concurrency = sizing.max_concurrent_pages
+        try:
+            read_auth = auth_read_headers(conn)
+        except AuthConfigInvalid:
+            raise HttpApiTaskNotConfigured(
+                "The API key settings of this task's connection are not valid."
+            ) from None
         self._client = HttpApiClient(
-            base_url, transport=transport, timeout_seconds=sizing.request_timeout_seconds
+            base_url, transport=transport, timeout_seconds=sizing.request_timeout_seconds,
+            auth_headers=read_auth,
         )
         # sprint-5/14 section 11 (D25) - the identity qualifier: the company's
         # database name for every entity but `branch`, which is qualified by

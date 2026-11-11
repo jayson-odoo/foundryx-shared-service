@@ -105,7 +105,8 @@ def assert_autocount_base_url_deliverable(base_url: str) -> None:
 
 
 def probe_open_connection(
-    base_url: str, *, transport: Optional[httpx.Client] = None
+    base_url: str, *, transport: Optional[httpx.Client] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> List[Any]:
     """``GET {base_url}/location`` -> the parsed JSON array, or raise
     ``OpenProbeError``.
@@ -129,7 +130,7 @@ def probe_open_connection(
         try:
             response = client.get(
                 url,
-                headers={"Accept": "application/json"},
+                headers={"Accept": "application/json", **(headers or {})},
                 timeout=OPEN_PROBE_TIMEOUT_SECONDS,
             )
         except UrlGuardError as exc:

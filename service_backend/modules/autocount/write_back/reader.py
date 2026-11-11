@@ -13,7 +13,7 @@ a write). Uses the house SSRF-guarded client with redirects off. Every GET is on
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -73,6 +73,11 @@ class AutoCountDocReader:
         self._transport = transport
         self._timeout = timeout
         self._call_log: Optional[cl.CallLog] = None
+        self._auth_headers: Dict[str, str] = {}
+
+    def set_auth_headers(self, headers: Mapping[str, str]) -> None:
+        """The optional API key header this client sends on every request (plan 63); never logged."""
+        self._auth_headers = dict(headers)
 
     def attach_call_log(self, log: "cl.CallLog") -> None:
         """Every GET from now on writes one row to ``log`` (plan 61 section 4.8)."""
@@ -83,7 +88,7 @@ class AutoCountDocReader:
         started = self._call_log.started() if self._call_log else None
         path = cl.vendor_path(self.base_url, urlsplit(url).path)
         try:
-            request = http.build_request("GET", url, params=params)
+            request = http.build_request("GET", url, params=params, headers=self._auth_headers)
             path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
             response = http.send(request)
         except httpx.TimeoutException:

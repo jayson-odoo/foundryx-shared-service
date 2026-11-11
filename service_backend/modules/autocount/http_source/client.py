@@ -184,8 +184,10 @@ class HttpApiClient:
         *,
         transport: Optional[httpx.Client] = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        auth_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
+        self._auth_headers: Dict[str, str] = dict(auth_headers or {})
         self.timeout_seconds = timeout_seconds
         self._transport = transport
         self._owns_transport = transport is None
@@ -266,7 +268,7 @@ class HttpApiClient:
             response = self._client.get(
                 url,
                 params=params,
-                headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+                headers={"Accept": "application/json", "User-Agent": USER_AGENT, **self._auth_headers},
                 timeout=self.timeout_seconds,
             )
         except UrlGuardError as exc:

@@ -131,6 +131,7 @@ from ..presets import (
 )
 from ..mapping import SCOPE_HEADER, SCOPE_LINE, TransformError
 from ..http_source.book import billing_link_book, identity_scope
+from ..write_back.auth import AuthConfigInvalid, read_headers as auth_read_headers
 from ..http_source.combine import (
     CombineDropError,
     CombineMeasureError,
@@ -1023,6 +1024,16 @@ class EtlService:
         self.configs = EntityConfigRepository(db)
         self.companies = CompanyService(db)
 
+    @staticmethod
+    def _read_auth(conn: Connection) -> Dict[str, str]:
+        """The key headers a read of this connection carries (none without a key)."""
+        try:
+            return auth_read_headers(conn)
+        except AuthConfigInvalid:
+            raise EtlValidationError(
+                {"connectionId": "The API key settings of this connection are not valid."}
+            ) from None
+
     # ── connections ──────────────────────────────────────────────────────────
 
     def list_connections(self, tenant_id: str) -> List[SqlConnectionView]:
@@ -1203,7 +1214,8 @@ class EtlService:
         )
         try:
             result = run_http_preview(
-                base_url, path, transport=transport, timeout_seconds=timeout_seconds
+                base_url, path, transport=transport, timeout_seconds=timeout_seconds,
+                auth_headers=self._read_auth(conn),
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
@@ -1316,6 +1328,7 @@ class EtlService:
                 lookups=clean_lookups,
                 transport=transport,
                 timeout_seconds=timeout_seconds,
+                auth_headers=self._read_auth(conn),
                 on_page=on_page,
             )
         except HttpPreviewError as exc:
