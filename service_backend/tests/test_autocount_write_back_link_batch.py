@@ -196,23 +196,25 @@ def _received(h, rig):
     return rig.three(), dict(receipt_reader=lambda kind, doc, row: Decimal(4))
 
 
-# id, setup(h, rig) -> (links, ops kwargs), params override, expected code (None = any real refusal)
+# id, setup(h, rig) -> (links, ops kwargs), params override, expected code (None = any real refusal).
+# Owner rule (plan 62 change): a PER-LINE pre-check skips the line; a request whose every line is skipped is
+# refused ALL_LINKS_SKIPPED. PO-level checks (cancelled PO, the PO row, shape) still refuse the request itself.
 REFUSALS = [
-    ("unknown_so_row", lambda h, r: ([(7002, 999999, 1)], {}), {}, "ROW_NOT_FOUND"),
-    ("item_differs", _item_differs, {}, "ITEM_MISMATCH"),
-    ("uom_differs", _uom_differs, {}, "UOM_MISMATCH"),
-    ("so_cancelled", _so_cancelled, {}, "DOC_CANCELLED"),
+    ("unknown_so_row", lambda h, r: ([(7002, 999999, 1)], {}), {}, "ALL_LINKS_SKIPPED"),
+    ("item_differs", _item_differs, {}, "ALL_LINKS_SKIPPED"),
+    ("uom_differs", _uom_differs, {}, "ALL_LINKS_SKIPPED"),
+    ("so_cancelled", _so_cancelled, {}, "ALL_LINKS_SKIPPED"),
     ("po_cancelled", _po_cancelled, {}, "DOC_CANCELLED"),
     ("row_already_linked", lambda h, r: (r.three(), {}), {"dtl": "p_linked"}, "ROW_ALREADY_LINKED"),
     ("row_transferred_onward", lambda h, r: (r.three(), {}), {"dtl": "p_spo"}, None),
     ("row_received", _received, {}, "ROW_RECEIVED"),
-    ("sum_above_free", lambda h, r: ([(7005, r.s5[0], 3), (7005, r.s5[1], 2)], {}), {}, "QTY_ABOVE_FREE"),
-    ("one_above_outstanding", _outstanding, {}, "QTY_ABOVE_OUTSTANDING"),
+    ("line_above_free", lambda h, r: ([(7005, r.s5[0], 5)], {}), {}, "ALL_LINKS_SKIPPED"),
+    ("one_above_outstanding", _outstanding, {}, "ALL_LINKS_SKIPPED"),
     ("duplicate_so_dtl_key", lambda h, r: ([(7005, r.s5[0], 1), (7005, r.s5[0], 1)], {}), {}, None),
     ("empty_links", lambda h, r: ([], {}), {}, None),
     ("more_than_20_links", lambda h, r: ([(7005, 100000 + i, 1) for i in range(21)], {}), {}, None),
-    ("qty_zero", lambda h, r: ([(7005, r.s5[0], 0)], {}), {}, "QTY_INVALID"),
-    ("qty_negative", lambda h, r: ([(7005, r.s5[0], -1)], {}), {}, "QTY_INVALID"),
+    ("qty_zero", lambda h, r: ([(7005, r.s5[0], 0)], {}), {}, "ALL_LINKS_SKIPPED"),
+    ("qty_negative", lambda h, r: ([(7005, r.s5[0], -1)], {}), {}, "ALL_LINKS_SKIPPED"),
 ]
 
 
@@ -228,13 +230,14 @@ def test_ac_62_04_every_pre_check_refusal_sends_zero_puts(h, rig, setup, over, w
     assert h.vendor.writes() == []  # nothing was sent: no PUT, no DELETE
 
 
-def test_ac_62_04_qty_above_outstanding_names_the_so_dtl_key(h, rig):
+def test_ac_62_04_one_line_above_outstanding_is_skipped_and_the_other_line_is_linked(h, rig):
     h.vendor.find("SO", 7005)["Details"][1]["Qty"] = 2
     links = [(7005, rig.s5[0], 1), (7005, rig.s5[1], 3)]
     res = h.run(OP, rig.params(links), key="b-out")
-    assert res.outcome == "refused" and res.error_code == "QTY_ABOVE_OUTSTANDING"
-    assert str(rig.s5[1]) in res.message and str(rig.s5[0]) not in res.message
-    assert h.vendor.writes() == []
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    first = puts(h)[0]
+    assert [r["FromDocDtlKey"] for r in new_rows(first)] == [rig.s5[0]]  # the skipped line is not sent
+    assert len(puts(h)) <= 2
 
 
 def test_ac_62_04_an_so_row_linked_from_another_po_by_the_index_counts_against_outstanding(h, rig):
@@ -244,8 +247,7 @@ def test_ac_62_04_an_so_row_linked_from_another_po_by_the_index_counts_against_o
                         po_dtl_key=1, so_dtl_key=rig.s5[0], qty=Decimal(9)))
     h.db.commit()  # SO row qty 10, 9 already linked from PO 9999: 1 outstanding
     res = h.run(OP, rig.params([(7005, rig.s5[0], 2)]), key="b-idx")
-    assert res.outcome == "refused" and res.error_code == "QTY_ABOVE_OUTSTANDING", (res.outcome, res.error_code)
-    assert str(rig.s5[0]) in res.message
+    assert res.outcome == "refused" and res.error_code == "ALL_LINKS_SKIPPED", (res.outcome, res.error_code)
     assert h.vendor.writes() == []
     ok = h.run(OP, rig.params([(7005, rig.s5[0], 1)]), key="b-idx-ok")  # control: the remaining 1 is allowed
     assert ok.outcome == "done", (ok.outcome, ok.error_code)
@@ -255,7 +257,8 @@ def test_ac_62_04_route_refusal_is_a_4xx_with_the_code_and_zero_puts(client, h, 
     h.vendor.find("SO", 7005)["Details"][0]["Qty"] = 2
     r = client.post(ROUTE, json=rig.body([(7005, rig.s5[0], 3)]), headers=gw.hdr("b-r4"))
     assert r.status_code in (409, 422), r.text
-    assert code(r) == "QTY_ABOVE_OUTSTANDING" and str(rig.s5[0]) in r.json()["message"]
+    assert code(r) == "ALL_LINKS_SKIPPED"
+    assert [(x["soDtlKey"], x["code"]) for x in r.json()["skipped"]] == [(rig.s5[0], "QTY_ABOVE_OUTSTANDING")]
     assert h.vendor.writes() == []
 
 

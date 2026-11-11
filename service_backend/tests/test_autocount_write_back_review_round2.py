@@ -94,7 +94,7 @@ def assert_empty_batch_fields(r):
 def test_r2b_refused_pre_check_carries_empty_links_and_a_null_free_line(client, h, gw, rig):
     h.vendor.find("SO", 7005)["Details"][0]["Qty"] = 2
     r = client.post(ROUTE, json=rig.body([(7005, rig.s5[0], 3)]), headers=gw.hdr("w-1"))
-    assert r.status_code in (409, 422) and code(r) == "QTY_ABOVE_OUTSTANDING"
+    assert r.status_code in (409, 422) and code(r) == "ALL_LINKS_SKIPPED"  # owner rule: the only line was skipped
     assert_empty_batch_fields(r)
 
 
