@@ -1007,7 +1007,7 @@ class OperationService:
         landed = (free is not None and before is not None
                   and _dec(free.get("Qty")) == _dec(before) + _dec(snap["row"].get("Qty")))
         if not landed:
-            return self._finish(row, NEEDS_ATTENTION, "RESUMED", document=doc)
+            return self._needs_attention(row, company, snap, "RESUMED")
         self.prims._stage(company, snap["kind"], doc, None)
         return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc)
 
@@ -1181,7 +1181,7 @@ class OperationService:
         any_batch_row = any(_link_of("PO", r) in batch_keys for r in fresh)
         if not any_batch_row and old is not None and _dec(old.get("Qty")) == _dec(snap["row"].get("Qty")):
             return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
-        return self._finish(row, NEEDS_ATTENTION, "RESUMED", document=doc)
+        return self._needs_attention(row, company, snap, "RESUMED")
 
     # ── split link (plan 55 wrapped, AC-57-40) ───────────────────────────────
 
@@ -1442,7 +1442,7 @@ class OperationService:
 
     def _notify(self, company: AcCompany, row: AcWriteOperation, snap: Doc) -> None:
         base = snap["row"]
-        link = snap["oldLink"]
+        link = snap.get("oldLink") or {}
         text = ""
         if link.get("FromDocDtlKey"):
             text = f"{link.get('FromDocType')} {link.get('FromDocNo')} row {link.get('FromDocDtlKey')}"
@@ -1459,6 +1459,8 @@ class OperationService:
                 note=f"the line was cut to the received quantity {Decimal(snap['received'])} and its "
                      f"remainder {remainder} could not be added",
             )
+        if snap.get("mode") == "batch" or snap.get("mergeInto"):  # a change whose outcome could not be confirmed
+            event["mode"] = "check"
         try:
             self._notifier(event)
         except Exception:  # noqa: BLE001 - a mail fault never changes the outcome
@@ -1474,6 +1476,8 @@ class OperationService:
             ("Location", event["location"]), ("Linked to", event["link"]),
         ]
         lead = "A line was deleted in AutoCount and could not be re-created. Re-key it:"
+        if event.get("mode") == "check":
+            lead = "A change to this line may or may not have reached AutoCount. Check the document there:"
         if event.get("mode") == "partial":
             rows[4] = ("Remainder quantity", event["remainderQty"])
             rows.insert(5, ("Cut to (received)", event["cutQty"]))
