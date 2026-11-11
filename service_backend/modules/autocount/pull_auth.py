@@ -63,6 +63,7 @@ class PullGatewayError(Exception):
         self.company_id = company_id
         self.entity_type = entity_type
         self.headers: Dict[str, str] = {}
+        self.extra: Dict[str, object] = {}  # more keys for the body (a route that always answers certain fields)
 
     def with_retry_after(self, seconds: int) -> "PullGatewayError":
         self.headers["Retry-After"] = str(int(seconds))
@@ -86,6 +87,7 @@ class PullGatewayError(Exception):
             "message": self.message,
             "companyCode": self.company_code,
             "entity": self.entity,
+            **self.extra,
         }
         # Security round 1 MEDIUM 6 - this surface serves a customer's ERP
         # master data behind a bearer-style key; nothing on it is ever

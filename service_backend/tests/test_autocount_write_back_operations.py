@@ -119,7 +119,7 @@ class World:
         base = dict(Discount="5%", TaxCode="SR", DeliveryDate="2026-12-01T00:00:00", Description="d")
         po_rows = [
             _line("ITEM-A", 4, 5.0, "BR1", **base, **(po_over or {})),        # 0 unlinked
-            _line("ITEM-A", 4, 5.0, "BR1", **base, **link_a),                  # 1 linked to so_a
+            _line("ITEM-A", 4, 5.5, "BR1", **base, **link_a),                  # 1 linked to so_a (price 5.5: NOT a unlink-merge match for the 5.0 free rows, plan 62)
             _line("ITEM-A", 4, 5.0, "BR1", **base),                            # 2 target of the SPO row
             _line("ITEM-A", 4, 5.0, "BR1", **base),                            # 3 second PO row for spo_relink
         ]
@@ -677,11 +677,16 @@ def test_ac_57_37_same_key_other_op_is_idempotency_conflict(h, w):
 
 
 def test_ac_57_37_a_refused_answer_is_stored_too(h, w):
+    """AC-57-37 + AC-62-20 (plan 62 D6): a refused answer is stored for history, but nothing
+    landed, so its key is released: the same key resent runs fresh instead of replaying it."""
     first = h.run("link_row", w.params["link_row"], receipt_reader=lambda kind, doc, row: Decimal(4))
     assert first.error_code == "ROW_RECEIVED"
+    stored = h.ops().get(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=first.operation_id)
+    assert stored.outcome == "refused" and stored.error_code == "ROW_RECEIVED"  # kept for history
     calls = len(h.vendor.calls)
-    again = h.run("link_row", w.params["link_row"])  # reader now fine, same key: stored answer
-    assert again.error_code == "ROW_RECEIVED" and len(h.vendor.calls) == calls
+    again = h.run("link_row", w.params["link_row"])  # reader now fine, same key: runs fresh
+    assert again.outcome == "done" and again.operation_id != first.operation_id
+    assert len(h.vendor.calls) > calls
 
 
 def test_ac_57_37_key_scope_is_per_api_key_and_company(h, w):

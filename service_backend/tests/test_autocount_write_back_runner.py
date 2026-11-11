@@ -47,6 +47,16 @@ def db(session_factory):
         session.close()
 
 
+@pytest.fixture(autouse=True)
+def plain_unlink_path(monkeypatch):
+    """Plan 62 D7: an unlink now merges into an identical free row. The plan 55 runner cases (C07, C13..C15)
+    prove the PLAIN unlink path (a new free row), so the merge is switched off here; it is proven explicitly in
+    test_autocount_write_back_unlink_merge.py and by the db3 batch suite."""
+    from modules.autocount.write_back.operations import OperationService
+
+    monkeypatch.setattr(OperationService, "_merge_target", lambda self, *a, **k: None)
+
+
 _DATE = re.compile(r"^(\d{4})-\d{2}-\d{2}T")
 
 

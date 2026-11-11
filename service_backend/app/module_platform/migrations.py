@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from sqlalchemy import inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import URL, Engine
 
 from app.module_loader import MODULES_DIR, discover_manifests
 
@@ -287,6 +287,18 @@ def _db_is_ahead_of_code(engine, name: str, manifest: dict) -> bool:
     return True
 
 
+def _alembic_url(engine: Engine, fallback: str) -> str:
+    """The database Alembic must migrate: the one of the engine the caller passed (state and
+    schema checks already run on it), ``fallback`` (settings) only when the engine carries no
+    usable URL. ``%`` is doubled: ``Config.set_main_option`` runs configparser interpolation."""
+    url = getattr(engine, "url", None)
+    try:
+        rendered = url.render_as_string(hide_password=False) if isinstance(url, URL) else fallback
+    except Exception:  # noqa: BLE001 - an unrenderable URL falls back, never breaks the migration
+        rendered = fallback
+    return rendered.replace("%", "%%")
+
+
 def run_module_migrations(engine: Engine, name: str) -> None:
     """Stamp-if-legacy-else-upgrade for one module. Safe no-op when not
     applicable (see module docstring).
@@ -313,7 +325,7 @@ def run_module_migrations(engine: Engine, name: str) -> None:
     cfg.set_main_option("script_location", str(alembic_dir))
     from app.config import settings
 
-    cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    cfg.set_main_option("sqlalchemy.url", _alembic_url(engine, settings.database_url))
     cfg.attributes["version_table"] = version_table
     cfg.attributes["version_table_schema"] = schema
     cfg.attributes["target_metadata"] = metadata
