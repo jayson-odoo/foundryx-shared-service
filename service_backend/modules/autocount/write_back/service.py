@@ -69,6 +69,7 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 )
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
+from modules.autocount.write_back.link_lock import SoRowBusy, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
 from modules.autocount.write_back.primitives import vendor_message
@@ -261,6 +262,8 @@ def verify_relocate(
 
 
 class WriteBackService(WriteFrame):
+    #: True when the caller (an operation) already holds the SO row lock for this link
+    so_lock_held: bool = False
 
     # ── public flows ─────────────────────────────────────────────────────────
 
@@ -466,6 +469,14 @@ class WriteBackService(WriteFrame):
             return stop.result
         row_id = row.id
         try:
+            if plan.action == ACTION_LINK and plan.so_dtl_key and not self.so_lock_held:
+                # the over-link guard and the PUT run under the per-SO-row lock (link_lock); an operation that
+                # already holds it (split_link) sets ``so_lock_held``
+                try:
+                    with so_row_locks(self.db, company.id, [plan.so_dtl_key]):
+                        return self._execute(plan, company, base_url, row, expected_last_modified)
+                except SoRowBusy:
+                    return self._finish(row, OUTCOME_REFUSED, DOC_BUSY)
             return self._execute(plan, company, base_url, row, expected_last_modified)
         except _Stop as stop:
             return stop.result

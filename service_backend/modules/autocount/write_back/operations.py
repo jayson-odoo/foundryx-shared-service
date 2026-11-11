@@ -1192,6 +1192,7 @@ class OperationService:
             sink_factory=self.prims._sink_factory, actor=self.prims._actor, request_id=self.prims.request_id,
             operation_id=row.id,
         )
+        legacy.so_lock_held = True  # _execute holds the SO row lock around this call
         qty = Decimal(str(params["qty"]))
         found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))
         if found is None and missing == frame.DOC_KIND_MISMATCH or found is None and missing:
