@@ -25,6 +25,8 @@ SS once PER SO line. Each SS call = a split (PUT 1 cut + linked row, PUT 2 resto
   `operations.py:522`) walks every staged PO of the company per link, and `StagedRepository.for_entity`
   (`repository.py:220-233`) returns ALL staged copies (sync keeps history, `sync.py:1406`), so an older copy of the
   same PO is counted again (over-count = a false `QTY_ABOVE_OUTSTANDING`).
+- F-I AutoCount does NOT refuse an over-link: db3 run 1111B linked 8 against an SO row of 5 (S5). The over-link guard
+  is SS-only (`_so_linked_qty` + `ac_po_so_link`), so it must stay on every link path.
 - F-H `run_primitive` replays a stored refused / vendor_error answer as is (`operations.py:911-917`); only refused
   `DOC_BUSY` is not stored (`operations.py:948-949`).
 - F-G PROVEN on db3 11 Nov (S0, PR #232 crew-note; evidence `crew/state/files/autocount-api/db3-requests-11nov-po-link-batch.json`):
@@ -62,6 +64,9 @@ SS once PER SO line. Each SS call = a split (PUT 1 cut + linked row, PUT 2 resto
   UnitPrice and DeliveryDate (not linked, not transferred onward, no receipt). Found -> ONE PUT [linked row "D", free row
   Qty += freed qty]; answer carries the free row's DtlKey. None -> today's PUT (new free row). Applies to the
   `/po-links/unlink` route and the `unlink_row` operation. Relink is unchanged (its freed qty moves to the new SO row).
+  Receipt: a free row with a KNOWN receipt > 0 is skipped; an UNKNOWN receipt (db3 never exposes `TransferedQty`) allows
+  the merge, the same rule the unlink applies to the linked row itself (S5 finding, commit 8ed77585). Raising a free
+  row's Qty leaves the PO's outstanding qty identical to adding a new free row, so the merge cannot over-open a PO.
 - D8 Over-link index: new table `app_autocount.ac_po_so_link` (tenant_id, company_id, po_source_ref, po_dtl_key,
   so_dtl_key, qty) with index (tenant_id, company_id, so_dtl_key); rewritten for a PO whenever a PO staged record is
   written (sync `sync.py:1223 _stage_documents` + deletes `:2549`, write-back `staging.py:83 _stage_raw`), from that
