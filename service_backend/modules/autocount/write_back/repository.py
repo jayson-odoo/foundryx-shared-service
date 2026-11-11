@@ -149,6 +149,34 @@ class OperationRepository:
         row.idempotency_key = idempotency_key
         self.db.flush()
 
+    def pending_link_qty(self, tenant_id: str, company_id: str, so_dtl_key: int, exclude_doc_key: Optional[int]) -> Decimal:
+        """Quantity of one SO row that PENDING link operations (outcome unknown, they may have landed) of
+        this company would cover, from their stored snapshot; the operations on ``exclude_doc_key`` (the PO
+        being written, whose fresh rows already say) are left out."""
+        total = Decimal(0)
+        rows = self.db.query(AcWriteOperation).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.status == OUTCOME_PENDING,
+            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch")),
+        )
+        for op in rows:
+            snap = op.snapshot_json
+            if not isinstance(snap, dict) or (exclude_doc_key is not None and op.doc_key == exclude_doc_key):
+                continue
+            if op.op == "link_batch":
+                for link in snap.get("links") or []:
+                    if int(link.get("soDtlKey") or 0) == so_dtl_key:
+                        total += Decimal(str(link.get("qty") or 0))
+                continue
+            target = int((snap.get("newLink") or {}).get("FromDocDtlKey") or 0)
+            if target == so_dtl_key:
+                qty = Decimal(str((snap.get("row") or {}).get("Qty") or 0))
+                if snap.get("received") is not None:
+                    qty -= Decimal(str(snap["received"]))
+                total += qty
+        return total
+
     def created_documents(self, tenant_id: str, company_id: str, exclude_id: str) -> "tuple[set, set]":
         """``(DocKeys, DocNos)`` already recorded as the result of a DONE create of this company, other than
         ``exclude_id``: a lookup never adopts a document another create owns."""

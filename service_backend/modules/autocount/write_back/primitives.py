@@ -58,7 +58,7 @@ from modules.autocount.write_back.payloads import (
     WriteRefusal,
 )
 from modules.autocount.write_back.reader import DocReadError
-from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, PoSoLinkRepository
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, OperationRepository, PoSoLinkRepository
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -590,7 +590,9 @@ class PrimitiveService(WriteFrame):
             (_dec(r.get("Qty")) for r in (fresh_po or {}).get("Details") or [] if r.get("FromSODtlKey") == so_dtl_key),
             Decimal(0),
         )
-        return total + PoSoLinkRepository(self.db).linked_qty(
+        pending = OperationRepository(self.db).pending_link_qty(
+            company.tenant_id, company.id, so_dtl_key, fresh_po.get("DocKey") if fresh_po else None)
+        return total + pending + PoSoLinkRepository(self.db).linked_qty(
             company.tenant_id, company.id, so_dtl_key, except_ref=own_ref
         )
 
