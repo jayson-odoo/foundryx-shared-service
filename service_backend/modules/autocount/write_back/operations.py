@@ -87,6 +87,14 @@ LINK_BATCH = "link_batch"  # plan 62: one PO row to N SO rows in one PUT
 MAX_BATCH_LINKS = 20
 TEMPLATE_KEY = "autocount_write_needs_attention"
 
+# Plan 62 review: vendor exception classes proven to refuse BEFORE anything is saved (db3 probe, 11 Nov
+# 2026): a create refused with one of these created no document, so its key is released at once.
+PRE_SAVE_REFUSALS = frozenset({
+    "ViolateCreditLimitNotAllowToSaveException", "NotExistItemCodeException", "DebtorRecordNotFoundException",
+})
+CREATE_AMBIGUOUS = "CREATE_AMBIGUOUS"
+LOOKUP_WINDOW_SECONDS = 60
+
 ReceiptReader = Callable[[str, Doc, Doc], Optional[Decimal]]
 Notifier = Callable[[Dict[str, Any]], None]
 
@@ -189,6 +197,29 @@ def _link_of(kind: str, row: Doc) -> int:
     """The link key a row reads back with: PO rows carry ``FromSODtlKey``, SPO
     rows ``FromDocDtlKey``."""
     return int((row.get("FromSODtlKey") if kind == "PO" else row.get("FromDocDtlKey")) or 0)
+
+
+class _AmbiguousCreate(Exception):
+    """More than one document matches a create that may have landed."""
+
+
+class _LookupFailed(Exception):
+    """The document could not be looked up (no write connection, a failed read)."""
+
+
+def _create_info(kind: str, params: Dict[str, Any], started: datetime) -> Dict[str, Any]:
+    """What a later lookup needs to find the document this create may have saved."""
+    header = params.get("header") if isinstance(params.get("header"), dict) else {}
+    number = str(header.get("docNo") or "").strip()
+    lines = []
+    for line in params.get("lines") if isinstance(params.get("lines"), list) else []:
+        if isinstance(line, dict):
+            lines.append([line.get("itemCode"), str(line.get("qty")), line.get("uom")])
+    return {
+        "kind": kind, "docNo": None if number in ("", "<<New>>") else number,
+        "party": header.get("debtorCode") or header.get("creditorCode"), "lines": lines,
+        "start": started.isoformat(),
+    }
 
 
 class OperationService:
@@ -1196,7 +1227,11 @@ class OperationService:
 
         existing = self.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
         if existing is not None:
-            if self._nothing_landed(existing.status, existing.error_code):  # plan 62 D6: run fresh
+            if name == "create_doc":
+                early = self._create_resend(existing, tenant_id, company_id, replay)
+                if early is not None:
+                    return early
+            elif self._nothing_landed(existing.status, existing.error_code):  # plan 62 D6: run fresh
                 self._release_key(existing)
             else:
                 return replay(existing)
@@ -1204,9 +1239,11 @@ class OperationService:
             window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
             if self.ops.expire_stale_in_progress(tenant_id, company_id, kind, doc_key, window):
                 self.db.commit()
+        info = _create_info(kind, params, datetime.now(timezone.utc)) if name == "create_doc" else None
         row = AcWriteOperation(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id, idempotency_key=idempotency_key,
             request_hash=request_hash, op=label, doc_type=kind, doc_key=doc_key, status=IN_PROGRESS,
+            snapshot_json=info,
         )
         try:
             self.ops.add(row)
@@ -1217,12 +1254,14 @@ class OperationService:
             if raced is not None:
                 return replay(raced)
             return primitive_answer(PrimitiveResult(None, OUTCOME_REFUSED, DOC_BUSY), doc_key)
+        vendor_class: Optional[str] = None
         status, code = PENDING, INTERNAL_ERROR
         answer = primitive_answer(PrimitiveResult(None, OUTCOME_PENDING, INTERNAL_ERROR), doc_key)
         try:
             result = call()
             answer = primitive_answer(result, doc_key)
             status, code = result.outcome, result.error_code
+            vendor_class = result.vendor_class
         except Exception:  # noqa: BLE001 - the in_progress lock must never be stranded
             logger.exception("autocount primitive call failed (%s)", row.id)
             self.db.rollback()
@@ -1232,8 +1271,113 @@ class OperationService:
                 self.ops.delete(row)
             else:
                 row.status, row.error_code, row.result_json = status, code, _json_safe(answer)
+                if info is not None:  # what a resend needs to look the document up (class name only)
+                    row.snapshot_json = dict(info, end=datetime.now(timezone.utc).isoformat(),
+                                             vendorClass=vendor_class)
             self.db.commit()
         return answer
+
+    # ── create resend (plan 62 review): look the document up before re-running ──
+
+    def _create_resend(self, existing: AcWriteOperation, tenant_id: str, company_id: str,
+                       replay: Callable[[AcWriteOperation], Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """The answer for a resent create, or None when the key was released and the create must run.
+        A stored refusal and a refusal AutoCount raised before saving release at once; any other
+        stored failure or pending outcome looks the document up first: found -> done (locked),
+        several -> needs attention (locked), none -> released."""
+        info = existing.snapshot_json or {}
+        if existing.status == OUTCOME_REFUSED or (
+            existing.status == OUTCOME_VENDOR_ERROR and info.get("vendorClass") in PRE_SAVE_REFUSALS
+        ):
+            self._release_key(existing)
+            return None
+        if existing.status not in (OUTCOME_VENDOR_ERROR, OUTCOME_PENDING):
+            return replay(existing)
+        company = CompanyRepository(self.db).get(tenant_id, company_id)
+        if company is None:
+            return replay(existing)
+        try:
+            found = self.find_created_doc(company, existing.doc_type or "", info)
+        except _AmbiguousCreate:
+            existing.status, existing.error_code = NEEDS_ATTENTION, CREATE_AMBIGUOUS
+            existing.result_json = _json_safe(primitive_answer(PrimitiveResult(
+                None, NEEDS_ATTENTION, CREATE_AMBIGUOUS,
+                "More than one matching document exists in AutoCount; check it there."), None))
+            self.db.commit()
+            return replay(existing)
+        except _LookupFailed:
+            return replay(existing)  # cannot prove nothing was saved: the stored answer stands
+        if found is None:
+            self._release_key(existing)
+            return None
+        existing.status, existing.error_code = OUTCOME_DONE, None
+        existing.result_json = _json_safe(primitive_answer(PrimitiveResult(
+            None, OUTCOME_DONE, None, "The document was found in AutoCount.",
+            doc_key=found.get("DocKey"), doc_no=found.get("DocNo")), None))
+        self.db.commit()
+        return replay(existing)
+
+    def find_created_doc(self, company: AcCompany, kind: str, info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The one document a create that may have landed produced, ``{"DocKey", "DocNo"}``, else None.
+        A numbered body is read by DocNo; a ``<<New>>`` body is matched in the ``byLastModified`` day
+        list(s) covering the first attempt (AutoCount local time, MYT): same party, ``CreatedTimeStamp``
+        within a minute of the attempt, same line multiset (ItemCode, Qty, UOM). Several matches raise
+        ``_AmbiguousCreate``. Every GET is logged under the company."""
+        from modules.autocount.doc_feed.clock import MYT
+
+        base_url, _refusal = self.prims._resolve_write_base_url(company)
+        if base_url is None or kind not in KINDS:
+            raise _LookupFailed()
+        reader = self.prims._reader_for(base_url, self.prims.new_call_log(company, kind=kind))
+        party_field = KINDS[kind].party_field
+        wanted = [(str(i), _dec(q), u) for i, q, u in info.get("lines") or []]
+        use_uom = bool(wanted) and all(u for _i, _q, u in wanted)
+
+        def shape(rows: List[Doc]) -> List[Tuple[Any, ...]]:
+            out = [(str(r.get("ItemCode")), _dec(r.get("Qty"))) + ((r.get("UOM"),) if use_uom else ()) for r in rows]
+            return sorted(out, key=str)
+
+        want_shape = sorted([(i, q) + ((u,) if use_uom else ()) for i, q, u in wanted], key=str)
+
+        def ours(doc: Doc) -> bool:
+            if info.get("party") and doc.get(party_field) != info["party"]:
+                return False
+            if kind in ("PO", "SPO") and (kind == "SPO") != (doc.get("ShippingPO") == "T"):
+                return False
+            return not wanted or shape(doc.get("Details") or []) == want_shape
+
+        self.db.commit()  # no transaction open during a GET
+        try:
+            if info.get("docNo"):
+                try:
+                    doc = reader.get_by_doc_no(kind, str(info["docNo"]))
+                except DocReadError as exc:
+                    if exc.code == "DOC_NOT_FOUND":
+                        return None
+                    if exc.code == "DOC_AMBIGUOUS":
+                        raise _AmbiguousCreate() from None
+                    raise _LookupFailed() from None
+                return {"DocKey": doc.get("DocKey"), "DocNo": doc.get("DocNo")} if ours(doc) else None
+            start = datetime.fromisoformat(info["start"])
+            end = datetime.fromisoformat(info["end"]) if info.get("end") else datetime.now(timezone.utc)
+            low = (start - timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
+            high = (end + timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
+            matches: List[Doc] = []
+            day = low.date()
+            while day <= high.date():
+                for doc in reader.list_day(kind, day, by_last_modified=True):
+                    try:
+                        created = datetime.fromisoformat(str(doc.get("CreatedTimeStamp"))).replace(tzinfo=MYT)
+                    except ValueError:
+                        continue
+                    if low <= created <= high and ours(doc) and doc.get("DocKey") not in {m.get("DocKey") for m in matches}:
+                        matches.append(doc)
+                day += timedelta(days=1)
+        except DocReadError:
+            raise _LookupFailed() from None
+        if len(matches) > 1:
+            raise _AmbiguousCreate()
+        return {"DocKey": matches[0].get("DocKey"), "DocNo": matches[0].get("DocNo")} if matches else None
 
     # ── needs_attention mail (AC-57-35) ──────────────────────────────────────
 

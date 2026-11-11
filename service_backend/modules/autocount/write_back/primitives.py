@@ -105,6 +105,15 @@ class PrimitiveResult:
     doc_no: Optional[str] = None
     new_dtl_key: Optional[int] = None
     document: Optional[Doc] = None
+    vendor_class: Optional[str] = None  # the vendor's exception class name (no message, no stack), on a vendor_error
+
+
+def vendor_class_of(body: Any) -> Optional[str]:
+    """The short exception class AutoCount named in an error answer (``ViolateCreditLimit...``), else None."""
+    if isinstance(body, dict):
+        kind = str(body.get("ExceptionType") or "").strip()
+        return kind.rsplit(".", 1)[-1][:120] or None if kind else None
+    return None
 
 
 @dataclass
@@ -647,11 +656,13 @@ class PrimitiveService(WriteFrame):
             if is_business_refusal(response.status_code, response.body):
                 message = vendor_message(response.body, base_url)
                 row.response_json = {"message": message}  # the same safe text, never the stack
-                return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message))
+                return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message),
+                                  vendor_class=vendor_class_of(response.body))
             # a bare failure (an IIS page, a stack): the status and redacted text only (AC-57-47)
             text = vendor_message(response.body, base_url)
             row.response_json = {"text": text}
-            return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR, message=text))
+            return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR, message=text),
+                              vendor_class=vendor_class_of(response.body))
         self.db.commit()
         self._check_deadline(row)
         try:
