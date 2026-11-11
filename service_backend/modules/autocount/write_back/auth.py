@@ -27,6 +27,23 @@ _RESERVED = frozenset({"host", "content-length", "content-type", "transfer-encod
 MESSAGE = "The AutoCount API key settings are not valid."
 
 
+MASK = "***"
+
+
+class AuthHeaders(dict):
+    """The key header plus the secret strings (the key and the rendered value) a vendor
+    answer must never echo back into a record."""
+
+    secrets: Tuple[str, ...] = ()
+
+
+def mask(text: str, secrets: Tuple[str, ...]) -> str:
+    """``text`` with every secret replaced by ``***`` (longest first)."""
+    for secret in sorted((s for s in secrets if s), key=len, reverse=True):
+        text = text.replace(secret, MASK)
+    return text
+
+
 class AuthConfigInvalid(Exception):
     """The key settings of a connection cannot produce a valid header. Code only, never a value."""
 
@@ -78,7 +95,9 @@ def auth_headers(
         raise AuthConfigInvalid()
     if for_read and cfg.get("baseUrl") and not guard.host_allowlisted(str(cfg.get("baseUrl"))):
         return {}  # a read to a host off the write allowlist never carries the key
-    return {header: value}
+    out = AuthHeaders({header: value})
+    out.secrets = (key, value)
+    return out
 
 
 def _reads_enabled(cfg: Mapping[str, Any]) -> bool:
@@ -125,5 +144,5 @@ def attach_headers(target: Any, headers: Mapping[str, str]) -> Any:
     """Hand ``headers`` to a client or reader (or a wrapper that forwards them); returns ``target``."""
     setter = getattr(target, "set_auth_headers", None)
     if headers and callable(setter):
-        setter(dict(headers))
+        setter(headers)
     return target

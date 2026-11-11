@@ -21,7 +21,7 @@ import httpx
 from app.services.url_guard import UrlGuardError
 
 from modules.autocount.http_client import autocount_guarded_client
-from modules.autocount.write_back import call_log as cl
+from modules.autocount.write_back import auth, call_log as cl
 from modules.autocount.write_back.doc_kinds import KINDS
 
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
@@ -74,10 +74,12 @@ class AutoCountDocReader:
         self._timeout = timeout
         self._call_log: Optional[cl.CallLog] = None
         self._auth_headers: Dict[str, str] = {}
+        self._secrets: Tuple[str, ...] = ()
 
     def set_auth_headers(self, headers: Mapping[str, str]) -> None:
         """The optional API key header this client sends on every request (plan 63); never logged."""
         self._auth_headers = dict(headers)
+        self._secrets: Tuple[str, ...] = tuple(getattr(headers, "secrets", ()))
 
     def attach_call_log(self, log: "cl.CallLog") -> None:
         """Every GET from now on writes one row to ``log`` (plan 61 section 4.8)."""
@@ -97,7 +99,8 @@ class AutoCountDocReader:
         except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError):
             self._log(path, started, None, None, cl.CONNECT_ERROR, READ_FAILED)
             raise
-        self._log(path, started, response.status_code, response.text,
+        self._log(path, started, response.status_code,
+                  auth.mask(response.text, self._secrets) if self._secrets else response.text,
                   cl.OK if response.is_success else cl.HTTP_ERROR, None if response.is_success else READ_FAILED)
         return response
 

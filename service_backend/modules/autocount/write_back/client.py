@@ -11,15 +11,16 @@ the caller attached a ``CallLog`` (plan 61 section 4.8).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import httpx
 
 from app.services.url_guard import UrlGuardError
 
 from modules.autocount.http_client import autocount_guarded_client
-from modules.autocount.write_back import call_log as cl
+from modules.autocount.write_back import auth, call_log as cl
 from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
 
 
@@ -50,6 +51,13 @@ def _parse_body(response: httpx.Response) -> Any:
         return response.text
 
 
+def _parse_text(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
 class AutoCountWriteClient:
     def __init__(
         self,
@@ -64,10 +72,12 @@ class AutoCountWriteClient:
         self._timeout = timeout
         self._call_log: Optional[cl.CallLog] = None
         self._auth_headers: Dict[str, str] = {}
+        self._secrets: Tuple[str, ...] = ()
 
     def set_auth_headers(self, headers: Mapping[str, str]) -> None:
         """The optional API key header this client sends on every request (plan 63); never logged."""
         self._auth_headers = dict(headers)
+        self._secrets: Tuple[str, ...] = tuple(getattr(headers, "secrets", ()))
 
     def attach_call_log(self, log: "cl.CallLog") -> None:
         """Every request from now on writes one row to ``log`` (plan 61 section 4.8)."""
@@ -123,11 +133,12 @@ class AutoCountWriteClient:
         except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError):
             self._log(method, sent_path, body, started, None, None, cl.CONNECT_ERROR, "WRITE_CONNECT")
             raise WriteTransportError("WRITE_CONNECT") from None
-        self._log(method, sent_path, body, started, response.status_code, response.text,
+        text = auth.mask(response.text, self._secrets) if self._secrets else response.text
+        self._log(method, sent_path, body, started, response.status_code, text,
                   cl.OK if response.is_success else cl.HTTP_ERROR, None)
         return WriteResponse(
             status_code=response.status_code,
-            body=_parse_body(response),
+            body=_parse_text(text) if self._secrets else _parse_body(response),
             ok=response.is_success,
         )
 
