@@ -606,6 +606,29 @@ def build_row_replace(kind_name: str, doc: Doc, old_row: Mapping[str, Any], new_
     return VendorRequest("PUT", kind.edit_path, body)
 
 
+def build_link_batch(kind_name: str, doc: Doc, old_key: int, new_rows: Sequence[Mapping[str, Any]]) -> VendorRequest:
+    """Plan 62 D3: ONE PUT on the edit door linking one row to N source rows. The row is
+    marked ``"D"`` when the new rows take all of its quantity, else kept with the rest;
+    every new row is a full vendor row, ``DtlKey 0``, with its own ``FromDocType /
+    FromDocNo / FromDocDtlKey``. AutoCount applies the PUT all or nothing (plan 62 S0)."""
+    kind = kind_of(kind_name)
+    _check_kind_doc(kind, doc)
+    old = _find_row(doc, old_key)
+    taken = sum((_dec(r.get("Qty")) for r in new_rows), Decimal(0))
+    rest = _dec(old.get("Qty")) - taken
+    if rest < 0:
+        raise WriteRefusal("QTY_ABOVE_FREE", "quantity above the PO row quantity")
+    added = [_vendor_line(r, 0, kind.name) for r in new_rows]
+    body = _doc_header(kind, doc)
+    if rest == 0:
+        body["Details"] = [_deleted(old)] + added
+    else:
+        kept = _normal(_row_fields(old))
+        kept["Qty"] = _num(rest)
+        body["Details"] = [kept] + added
+    return VendorRequest("PUT", kind.edit_path, body)
+
+
 def build_cancel(kind_name: str, doc: Doc) -> VendorRequest:
     """Plan 61 F9: ``DELETE /Cancel<Doc>bydocno?DocNo=<no>`` with no body."""
     kind = kind_of(kind_name)
@@ -797,6 +820,38 @@ def verify_row_replace(kind_name: str, before: Doc, old_key: int, line: Mapping[
         return Verdict(MISMATCH, "ROW_MISMATCH")
     if _link_code(kind_name, line, added[0]) or (not line.get("FromDocType") and _link_of_row(kind_name, added[0])):
         return Verdict(MISMATCH, "LINK_MISMATCH")
+    if _drifted(before, after, (), [old_key]):
+        return Verdict(MISMATCH, "COLLATERAL_CHANGE")
+    return Verdict(DONE)
+
+
+def verify_link_batch(
+    kind_name: str, before: Doc, old_key: int, lines: Sequence[Mapping[str, Any]], after: Doc
+) -> Verdict:
+    """Plan 62: the old row is gone (all taken) or kept with the rest, exactly one new row per
+    link reads back with its link and quantity (location, price and date aside: AutoCount resets
+    them, the move step restores them), and no other row or header field moved."""
+    kind_of(kind_name)
+    old = _find_row(before, old_key)
+    rest = _dec(old.get("Qty")) - sum((_dec(r.get("Qty")) for r in lines), Decimal(0))
+    now = _row_by_key(after, old_key)
+    if rest == 0:
+        if now is not None:
+            return Verdict(MISMATCH, "LINE_NOT_DELETED")
+    elif now is None or _dec(now.get("Qty")) != rest:
+        return Verdict(MISMATCH, "ROW_MISMATCH")
+    known = {r.get("DtlKey") for r in before.get("Details") or []}
+    added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]
+    if len(added) != len(lines):
+        return Verdict(MISMATCH, "ROWS_DROPPED" if len(added) < len(lines) else "ROWS_UNEXPECTED")
+    left = list(added)
+    for line in lines:
+        match = next((r for r in left if _link_of_row(kind_name, r) == int(line.get("FromDocDtlKey") or 0)
+                      and _dec(r.get("Qty")) == _dec(line.get("Qty"))
+                      and r.get("ItemCode") == line.get("ItemCode") and r.get("UOM") == line.get("UOM")), None)
+        if match is None:
+            return Verdict(MISMATCH, "LINK_MISMATCH")
+        left.remove(match)
     if _drifted(before, after, (), [old_key]):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
