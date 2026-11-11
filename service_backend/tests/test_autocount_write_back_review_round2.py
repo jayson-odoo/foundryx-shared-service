@@ -170,8 +170,9 @@ def test_r2c_a_cancelled_delete_intent_brings_the_pos_index_rows_back(h):
 
 
 def test_r2c_the_backfill_reads_the_newest_non_delete_copy(monkeypatch):
-    """The migration's select must ignore delete intents (a PO whose newest row is a cancelled intent
-    still has its last real copy). The statement is captured and compiled for PostgreSQL."""
+    """The migration's select must not let a CANCELLED (discarded) delete intent hide the PO's last real copy,
+    and must not drop live delete intents by a blanket filter either (round 4 rule: newest non-discarded row,
+    skipped when it is a live delete). The statement is captured and compiled for PostgreSQL."""
     path = next((Path(__file__).resolve().parents[1] / "modules" / "autocount" / "alembic" / "versions").glob("0045_*.py"))
     spec = importlib.util.spec_from_file_location("mig_0045_probe", path)
     mod = importlib.util.module_from_spec(spec)
@@ -198,9 +199,10 @@ def test_r2c_the_backfill_reads_the_newest_non_delete_copy(monkeypatch):
 
     selects = [s for s in seen if hasattr(s, "whereclause")]
     assert selects, "the backfill ran no select"
-    sql = str(selects[0].compile(dialect=postgresql.dialect())).lower()
+    sql = str(selects[0].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
     where = sql.split("where", 1)[1]
-    assert ".op != " in where or ".op <> " in where or ".op is distinct" in where, sql
+    assert "discarded" in where, sql
+    assert "order by" in sql and "created_at desc" in sql, sql
 
 
 # ============================== (d) pending unlink merge reconcile ==============================
