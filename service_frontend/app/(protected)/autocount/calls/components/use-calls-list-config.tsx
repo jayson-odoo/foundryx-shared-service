@@ -137,7 +137,8 @@ export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}):
         id: 'actingUserName',
         accessorFn: (row) => row.actingUserName ?? '',
         ...header('Person'),
-        cell: ({ row }) => cell(row.original.actingUserName ?? row.original.actingUserId),
+        cell: ({ row }) =>
+          cell(row.original.actingUserName ?? (row.original.actingUserId ? 'Unnamed' : null)),
         size: 150,
       },
       {
