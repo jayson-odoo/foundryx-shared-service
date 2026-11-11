@@ -1086,17 +1086,30 @@ class OperationService:
         return self._finish(row, DONE, None, document=document, batch=batch)
 
     def _resume_batch(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc) -> OperationResult:
-        """A pending batch is landed when every expected (FromSODtlKey, qty) new row is on the PO
-        (the PUT is all or nothing); landed -> finish it, else nothing changed (``NOT_APPLIED``)."""
+        """A pending batch. Everything landed (every expected (FromSODtlKey, qty) new row is on the PO)
+        -> finish it. Nothing landed (no new row carries any batch SO row, and the old row reads back at
+        its snapshot quantity) -> ``NOT_APPLIED``, the caller runs it fresh. Anything in between needs a
+        person: no PUT is sent."""
         known = set(snap["knownKeys"])
         fresh = [r for r in doc.get("Details") or [] if r.get("DtlKey") not in known]
+        batch_keys = {int(link["soDtlKey"]) for link in snap["links"]}
+        pool = list(fresh)
+        landed = True
         for link in snap["links"]:
-            match = next((r for r in fresh if _link_of("PO", r) == int(link["soDtlKey"])
+            match = next((r for r in pool if _link_of("PO", r) == int(link["soDtlKey"])
                           and _dec(r.get("Qty")) == _dec(link["qty"])), None)
             if match is None:
-                return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
-            fresh.remove(match)
-        return self._batch_done(row, company, snap, doc, deadline=False)
+                landed = False
+                break
+            pool.remove(match)
+        if landed:
+            return self._batch_done(row, company, snap, doc, deadline=False)
+        old_key = int(snap["row"]["DtlKey"])
+        old = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == old_key), None)
+        any_batch_row = any(_link_of("PO", r) in batch_keys for r in fresh)
+        if not any_batch_row and old is not None and _dec(old.get("Qty")) == _dec(snap["row"].get("Qty")):
+            return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
+        return self._finish(row, NEEDS_ATTENTION, "RESUMED", document=doc)
 
     # ── split link (plan 55 wrapped, AC-57-40) ───────────────────────────────
 
