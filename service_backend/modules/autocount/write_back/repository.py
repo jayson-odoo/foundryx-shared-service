@@ -177,9 +177,11 @@ class OperationRepository:
                 total += qty
         return total
 
-    def created_documents(self, tenant_id: str, company_id: str, exclude_id: str) -> "tuple[set, set]":
+    def created_documents(self, tenant_id: str, company_id: str, exclude_id: str, since: datetime,
+                          until: datetime) -> "tuple[set, set]":
         """``(DocKeys, DocNos)`` already recorded as the result of a DONE create of this company, other than
-        ``exclude_id``: a lookup never adopts a document another create owns."""
+        ``exclude_id`` and started between ``since`` and ``until`` (the lookup window): a lookup never adopts a
+        document another create owns, and never reads further back than the window."""
         keys: set = set()
         numbers: set = set()
         rows = self.db.query(AcWriteOperation.result_json).filter(
@@ -188,6 +190,8 @@ class OperationRepository:
             AcWriteOperation.op.like("create_doc:%"),
             AcWriteOperation.status == "done",
             AcWriteOperation.id != exclude_id,
+            AcWriteOperation.created_at >= since,
+            AcWriteOperation.created_at <= until,
         )
         for (result,) in rows:
             if isinstance(result, dict):

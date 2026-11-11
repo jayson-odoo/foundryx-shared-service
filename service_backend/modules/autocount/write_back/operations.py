@@ -96,7 +96,7 @@ PRE_SAVE_REFUSALS = frozenset({
     "ViolateCreditLimitNotAllowToSaveException", "NotExistItemCodeException", "DebtorRecordNotFoundException",
 })
 CREATE_AMBIGUOUS = "CREATE_AMBIGUOUS"
-LOOKUP_WINDOW_SECONDS = 60
+LOOKUP_WINDOW_SECONDS = 600  # AutoCount stamps with the customer server's clock, which may be minutes off ours
 LOOKUP_MAX_DAYS = 7
 
 ReceiptReader = Callable[[str, Doc, Doc], Optional[Decimal]]
@@ -1377,7 +1377,11 @@ class OperationService:
             raise _LookupFailed()
         reader = self.prims._reader_for(base_url, self.prims.new_call_log(
             company, kind=kind, key_id=key_id, operation_id=operation_id))
-        owned_keys, owned_numbers = self.ops.created_documents(company.tenant_id, company.id, operation_id or "")
+        start_at = datetime.fromisoformat(info["start"])
+        end_at = datetime.fromisoformat(info["end"]) if info.get("end") else datetime.now(timezone.utc)
+        owned_keys, owned_numbers = self.ops.created_documents(
+            company.tenant_id, company.id, operation_id or "",
+            start_at - timedelta(seconds=LOOKUP_WINDOW_SECONDS), end_at + timedelta(seconds=LOOKUP_WINDOW_SECONDS))
         party_field = KINDS[kind].party_field
         wanted = [(str(i), _dec(q), u) for i, q, u in info.get("lines") or []]
         use_uom = bool(wanted) and all(u for _i, _q, u in wanted)
@@ -1409,8 +1413,7 @@ class OperationService:
                         raise _AmbiguousCreate() from None
                     raise _LookupFailed() from None
                 return {"DocKey": doc.get("DocKey"), "DocNo": doc.get("DocNo")} if ours(doc) else None
-            start = datetime.fromisoformat(info["start"])
-            end = datetime.fromisoformat(info["end"]) if info.get("end") else datetime.now(timezone.utc)
+            start, end = start_at, end_at
             low = (start - timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
             high = (end + timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
             matches: List[Doc] = []

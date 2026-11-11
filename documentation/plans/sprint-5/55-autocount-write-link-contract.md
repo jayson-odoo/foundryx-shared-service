@@ -99,7 +99,9 @@ Creating a document (`POST /documents/{kind}`) follows the same table with one d
 create may still have saved the document. A create AutoCount refused before saving (credit limit, unknown item,
 unknown debtor) or SS refused is released at once. Any other failure or an unfinished create is not re-run
 blindly: SS first looks the document up in AutoCount (by `docNo` when the body names one, otherwise among the
-documents created around the first attempt for the same debtor or creditor with the same lines). One match:
+documents created within ten minutes before or after the first attempt, for the same debtor or creditor, with the same
+lines; the ten minutes allow for AutoCount's server clock being off ours). A document that another completed create
+of the same company already owns (created within that window) is never taken. One match:
 the call is `done` with that document and the key is locked. No match: the key is released and the create runs
 once. More than one match: `needs_attention` (`CREATE_AMBIGUOUS`), locked, nothing is created.
 
