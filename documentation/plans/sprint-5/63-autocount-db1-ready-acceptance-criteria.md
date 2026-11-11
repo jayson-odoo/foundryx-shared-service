@@ -16,14 +16,21 @@ calls db1 or db2.
 - AC-63-04 Key set, "Send API key on reads" = No: write-back read GETs (bydocno, day-list, debtor term, read-back),
   pull-sync GETs and the connection probe carry no key header. Same with "Yes": they carry it.
 - AC-63-05 Rotation: change the key on the connection, the very next write sends the new value (no restart, no cache).
-  Clear the key: the next write sends no key header.
+  Removing a stored key follows the house secret rule (a blank secret keeps the stored one): rotate it, or recreate
+  the connection; the env list is the rollback lever.
 - AC-63-06 Invalid header name (not an RFC 7230 token, or one of Host / Content-Length / Content-Type /
   Transfer-Encoding / Connection / Cookie), a format without exactly one `{key}`, or CR / LF / non-printable in key or
   format: the write is refused BEFORE any request with `AUTH_CONFIG_INVALID`, logged as a guard refusal; never a 500,
   never the key in the message. Saving such a connection is refused 422 with a plain message when the provider has a
   save-time validator.
 - AC-63-07 The key value never appears in: `ac_api_call_log` (any column), `ac_write_action` (any column), the
-  http_source call records, any log line (caplog at DEBUG), any exception text or API answer, the connection GET.
+  http_source call records, any log line (caplog at DEBUG), any exception text or API answer, the connection GET,
+  and a vendor answer that echoes it is stored with the key replaced by `***`.
+- AC-63-08 A key or a format with leading / trailing whitespace, or a rendered header value outside the RFC 7230
+  field-value rule, is refused like AC-63-06 (so no HTTP library ever raises with the key in its text).
+- AC-63-09 With reads = Yes the key is sent on a read only to a host on the write host allowlist; other hosts get no key.
+  With reads = No the stored credentials are never decrypted for a read (undecryptable credentials leave reads as on
+  main); a write with undecryptable credentials is refused `AUTH_CONFIG_INVALID` before any request.
 
 ## B. Production-only gate
 - AC-63-10 Writable books = code constant `WRITE_ALLOWED_BOOKS` {db1, db3} AND env `AUTOCOUNT_WRITE_ALLOWED_BOOKS`
@@ -43,11 +50,16 @@ calls db1 or db2.
   next write without re-creating the client.
 - AC-63-15 `docker-compose.yml` x-backend-env carries `AUTOCOUNT_WRITE_ALLOWED_BOOKS: ${AUTOCOUNT_WRITE_ALLOWED_BOOKS:-db3}`;
   `deploy.yml` ENV_CONTENT carries `AUTOCOUNT_WRITE_ALLOWED_BOOKS=${{ vars.AUTOCOUNT_WRITE_ALLOWED_BOOKS || 'db3' }}`.
+- AC-63-16 The test runner suites (`run_db3_suite`, `run_qtso_suite`) write only to a test book (`TEST_BOOKS`) in every
+  environment: any other book is refused `WRITE_NOT_ALLOWED` before any request. The runner CLI prints a refusal code
+  (incl. `AUTH_CONFIG_INVALID`) and exits 2, never a traceback.
+- AC-63-17 `set-write-connection` checks the URL gate before the live-book check, so a db1 URL off production prints
+  `error: WRITE_NOT_ALLOWED` even for a company with synced rows.
 
 ## C. Person and request id on every write
 - AC-63-20 Every write route (`/api/v1/autocount/documents/...`, `/write-operations/...`, PO link routes) reads
   optional `X-Acting-User-Id` (1..64 printable ASCII) and `X-Acting-User-Name` (UTF-8 percent-encoded, 1..128 chars
-  after decoding, control characters removed). Both reach every `ac_api_call_log` row and every `ac_write_action` row
+  after decoding, control and format characters (Unicode Cc, Cf) removed). Both reach every `ac_api_call_log` row and every `ac_write_action` row
   the request causes; `X-Request-ID` (existing rule) also lands on `ac_write_action.request_id`.
 - AC-63-21 Missing or invalid person headers store NULL and the write runs exactly as today (never 4xx for them).
   A non-ASCII name (`%E9%99%88%E5%A4%A7%E6%96%87`) is stored decoded.
@@ -69,7 +81,8 @@ calls db1 or db2.
 - AC-63-34 [FE] The page "AutoCount calls" is the shared ResourceList: one toolbar row (Search, Filters, Columns), every
   row one line with "..." + hover for long text, columns hideable / reorderable and kept per user, every filter
   multi-select, date range through the shared date range picker (no native date input), filters + sort + page in the
-  address bar. No Create button (a log has nothing to create).
+  address bar. No Create button (a log has nothing to create). The Time filter offers only a date range (no
+  before / after with a native date input); a saved range with only a start or only an end keeps that half.
 - AC-63-35 [FE] Time reads `dd/mm/yyyy, h:mm am/pm`; a missing person, status or error reads "-"; outcomes read in
   plain words (OK, Refused by AutoCount, Timed out, Could not connect, Blocked by SS).
 - AC-63-36 [FE] Clicking a row opens a centred dialog with the request JSON and the response body; nothing opens in a
@@ -79,4 +92,4 @@ calls db1 or db2.
 
 ## E. Unchanged
 - AC-63-40 Pull sync, doc feeds and every read path behave as on main when no key is set (their existing suites pass
-  untouched); db3 writes off production behave as on main.
+  untouched); db3 writes off production behave as on main when the stored credentials decrypt.
