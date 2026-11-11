@@ -1,0 +1,63 @@
+# Plan 62 Test Execution Report: AutoCount PO link batch, retry rule, unlink merge, over-link index
+
+Lane PO-LINK-BATCH, branch `crew/po-link-batch`. UAC: `62-autocount-po-link-batch-acceptance-criteria.md`.
+Backend only, no screen: browser / agent-browser runs are N/A (no UI surface, nothing at 375px or 1280px).
+
+## Final run (11 Nov 2026)
+
+Command (file list = every `tests/test_autocount_write_back_*.py` plus `test_module_migrations_engine_url.py`,
+`test_s12_mapping_reset_route.py`, `test_autocount_line_linkage.py`, `test_deploy_module_bootstrap_wiring.py`,
+`test_deploy_lock_holder_report.py`, 38 files):
+
+    cd service_backend && xargs .venv/bin/python -m pytest -q -n 2 --dist loadfile < files.txt
+
+Result: **1386 passed, 0 failed, 0 skipped.** The full 3 minute suite was not run by the tester.
+
+Plan 62 test files (written red first, commits 9a23872a, 4e6cc84e, 39e4b81c, 08a93620, 382a2bda):
+`test_autocount_write_back_retry_rule.py`, `test_autocount_write_back_link_batch.py`,
+`test_autocount_write_back_unlink_merge.py`, `test_autocount_write_back_link_index.py`,
+`test_module_migrations_engine_url.py` (side bug found in the lane: `run_module_migrations` must migrate the engine
+it is given). Existing tests adapted, no assertion weakened: `World` in `test_autocount_write_back_operations.py`
+(linked row price 5.5 so the 25 old unlink tests stay on the plain path) and an autouse fixture in
+`test_autocount_write_back_runner.py` (merge off, the plain path stays proven there).
+
+## AC matrix
+
+Test names are `test_ac_62_<nn>_*` in the file shown. "db3" = the runner suite `--suite batch`
+(`documentation/integrations/autocount/test-report-2026-11-11-po-link-batch.md`, tag 1111C, PASS 7 / FAIL 0).
+
+| AC | Status | Evidence |
+|---|---|---|
+| AC-62-01 | PASS | link_batch: `test_ac_62_01_three_links_below_the_row_qty_is_one_put_1_and_one_put_2`, `..._put_2_restores_price_and_date_on_all_new_rows_and_the_links_stay`, `..._route_answer_carries_each_new_po_dtl_key_and_the_free_line` |
+| AC-62-02 | PASS | link_batch: `test_ac_62_02_sum_equal_to_the_row_qty_deletes_the_row_and_has_no_free_line` |
+| AC-62-03 | PASS | link_batch: `test_ac_62_03_links_across_two_sos_each_row_carries_its_own_doc_no` |
+| AC-62-04 | PASS | link_batch: `test_ac_62_04_every_pre_check_refusal_sends_zero_puts` (15 cases: unknown SO row, item, UOM, SO cancelled, PO cancelled, linked, transferred onward, received, sum above free, above outstanding, duplicate, empty, over 20, qty 0, qty negative), `..._qty_above_outstanding_names_the_so_dtl_key`, `..._an_so_row_linked_from_another_po_by_the_index_counts_against_outstanding`, `..._route_refusal_is_a_4xx_with_the_code_and_zero_puts`, `..._route_requires_the_idempotency_key` (422), `..._route_bad_links_shape_is_rejected_with_zero_puts` |
+| AC-62-05 | PASS | link_batch: `test_ac_62_05_vendor_refusal_is_vendor_error_with_no_put_2_and_nothing_linked`, `..._route_vendor_error_reports_no_linked_row`, `..._the_fake_vendor_refuses_a_put_with_one_bad_linked_row_and_lands_nothing` |
+| AC-62-06 | PASS | link_batch: `test_ac_62_06_put_2_failure_is_done_with_the_warnings_and_the_links_kept` |
+| AC-62-07 | PASS | link_batch: `test_ac_62_07_done_replay_is_the_stored_answer_with_no_vendor_call`, `..._done_key_with_another_body_is_an_idempotency_conflict`, `..._route_replay_and_conflict` |
+| AC-62-08 | PASS | link_batch: `test_ac_62_08_no_key_is_401_and_nothing_is_sent`, `..._a_pull_only_key_is_403_scope_required`, `..._another_tenants_company_is_never_resolved`, `..._body_tenant_and_company_ids_are_ignored`; `test_ac_62_every_vendor_call_of_a_batch_is_in_the_api_call_log` covers the call-log line of the UAC preamble |
+| AC-62-09 | PASS [db3] | runner B01 (batch of 1), B02 (3), B03 (5), B04 (today's 3 calls): 2 PUTs per batch whatever the size, 6 PUTs for today's flow; timings 9.0 / 10.7 / 10.5 s vs 24.4 s. Runner unit tests: `test_autocount_write_back_runner_batch.py` |
+| AC-62-20 | PASS | retry_rule: `test_ac_62_20_vendor_error_resend_same_key_runs_fresh[unlink_row,link_row]`, `..._with_a_corrected_body_runs_the_corrected_body`, `..._the_old_row_is_kept_re_keyed_for_history`, `..._refused_resend_same_key_runs_fresh`, `..._gateway_unlink_route_resend_after_vendor_error_runs_fresh`, `..._run_primitive_resend_after_refused_or_vendor_error_runs_fresh[2]`, `..._run_primitive_with_a_corrected_body_is_not_a_conflict`; db3 B06 (refused batch then the fixed batch under the same key runs fresh) |
+| AC-62-21 | PASS | retry_rule: `test_ac_62_21_pending_resend_that_had_landed_is_done_with_no_second_replace_put[unlink_row,link_row]`, `..._that_had_not_landed_sends_the_put_once[unlink_row,link_row]` |
+| AC-62-22 | PASS | retry_rule: `test_ac_62_22_done_resend_is_the_stored_answer_with_no_vendor_call`, `..._changed_body_is_an_idempotency_conflict`, `..._gateway_done_resend_answers_the_stored_result_without_the_vendor`. The kill test (release `done` too, a test must fail) was not run in this pass |
+| AC-62-23 | PASS | retry_rule: `test_ac_62_23_needs_attention_resend_is_the_stored_answer_not_a_rerun` |
+| AC-62-30 | PASS | unlink_merge: `test_ac_62_30_unlink_merges_into_the_first_matching_free_row_with_one_put`, `..._leaves_the_other_free_row_and_the_spo_row_alone`, `..._with_several_matches_the_first_by_row_order_wins_and_an_spo_target_is_skipped`, `..._the_unlinked_qty_leaves_the_so_row`, `..._route_answer_names_the_free_rows_dtl_key`, `..._relink_is_unchanged_it_still_replaces_with_a_new_linked_row` |
+| AC-62-31 | PASS | unlink_merge: `test_ac_62_31_a_field_that_differs_on_every_candidate_means_no_merge[ItemCode,UOM,Location,UnitPrice,DeliveryDate]`, `..._a_linked_free_row_candidate_is_never_merged_into`, `..._a_row_an_spo_points_at_is_never_merged_into`, `..._a_received_free_row_the_receipt_reader_reports_received_is_never_merged_into`, `..._route_without_a_match_answers_the_new_free_row_key`. Plan D7 was amended by the coder: an UNKNOWN receipt allows the merge (commit 8ed77585); the test pins the known-received case |
+| AC-62-32 | PASS [db3] | runner B05 (unlink merge, 1 PUT, raises the B01 free row) and the S0 proof case (c) in `crew/state/files/autocount-api/db3-requests-11nov-po-link-batch.json` |
+| AC-62-40 | PASS | link_index: `test_ac_62_40_service_sum_is_fresh_rows_plus_the_index_of_other_pos`, `..._primitives_sum_is_the_index_and_never_scans_staged_pos` (spy: `for_entity` raises for the PO entity), `..._the_fresh_po_replaces_its_own_index_rows`, `..._other_tenants_index_rows_never_count`, `..._double_count_regression_two_staged_copies_of_one_other_po_count_once` |
+| AC-62-41 | PASS | link_index: `test_ac_62_41_write_back_staging_writes_the_pos_rows_and_replaces_them_on_a_newer_copy`, `..._a_cancelled_po_leaves_no_rows`, `..._sync_pull_writes_and_rewrites_the_pos_rows` |
+| AC-62-42 | PARTIAL | PASS in pytest: `test_ac_62_42_migration_0045_exists_with_a_short_revision_id`, `test_s12_mapping_reset_route.py::test_ac_12_32` (bumped). DEFERRED: `alembic upgrade head` / `run_module_migrations` against the live local Postgres and the backfill of existing staged POs were NOT run by the tester (the suite cannot see migrations; the shared dev DB was deliberately not touched after the engine-url split-brain finding). Unblock: run `python -m scripts.bootstrap_db` or `run_module_migrations(engine, "autocount")` on a scratch Postgres and compare `ac_po_so_link` row counts with the newest staged copies |
+| AC-62-50 | PASS (doc check) | `55-autocount-write-link-contract.md` carries section 4.1a (`po-links/batch`), the retry rule and the unlink merge (commit 123d10d6); read by the tester, not machine-checked |
+
+## Found in the lane (not an AC)
+
+- `run_module_migrations(engine, name)` ignored the passed engine for Alembic's URL: red tests in
+  `test_module_migrations_engine_url.py`, fixed in d082d60b.
+- The batch tests were written before the code; 37 of 39 and 3 of 16 were red for the right reason
+  (`UNKNOWN_OPERATION`, 404, missing model) before the coder started.
+
+## Deferred / open
+
+- AC-62-42 live Postgres migration + backfill (above).
+- AC-62-22 kill test (release `done` on resend, see a test fail) and mutation checks for the retry rule: not run.
+- No agent-browser evidence: backend only.
