@@ -328,7 +328,7 @@ class OperationService:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
         if row.op != SPLIT_LINK and row.op != LINK_BATCH and row.op not in OPS:
             return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
-        if row.status not in (NEEDS_ATTENTION, PENDING) or not row.snapshot_json:
+        if row.status not in (NEEDS_ATTENTION, PENDING) or not row.snapshot_json or row.op == SPLIT_LINK:
             return self._from_row(row)
         company = CompanyRepository(self.db).get(tenant_id, company_id)
         if company is None:
@@ -1194,6 +1194,9 @@ class OperationService:
         )
         legacy.so_lock_held = True  # _execute holds the SO row lock around this call
         qty = Decimal(str(params["qty"]))
+        # the over-link guard of other callers counts this link while its outcome is unknown (pending_link_qty)
+        row.snapshot_json = {"mode": "split", "links": [{"soDtlKey": spec.target_dtl_key, "qty": str(qty)}]}
+        self.db.commit()
         found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))
         if found is None and missing == frame.DOC_KIND_MISMATCH or found is None and missing:
             raise _Done(REFUSED, missing)

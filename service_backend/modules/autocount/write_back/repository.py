@@ -158,13 +158,13 @@ class OperationRepository:
             AcWriteOperation.tenant_id == tenant_id,
             AcWriteOperation.company_id == company_id,
             AcWriteOperation.status == OUTCOME_PENDING,
-            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch")),
+            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
         )
         for op in rows:
             snap = op.snapshot_json
             if not isinstance(snap, dict) or (exclude_doc_key is not None and op.doc_key == exclude_doc_key):
                 continue
-            if op.op == "link_batch":
+            if op.op in ("link_batch", "split_link"):
                 for link in snap.get("links") or []:
                     if int(link.get("soDtlKey") or 0) == so_dtl_key:
                         total += Decimal(str(link.get("qty") or 0))
