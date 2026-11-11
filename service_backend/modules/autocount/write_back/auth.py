@@ -121,17 +121,6 @@ def write_headers(conn: Any) -> Dict[str, str]:
     return auth_headers(cfg, credentials_of(conn), for_read=False)
 
 
-def connection_headers(conn: Any) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """``(write_headers, read_headers)`` read fresh (no cache), for callers that only read the
-    second: the read side never touches the credentials unless reads are on, so an
-    undecryptable blob leaves the first empty here. A write path calls ``write_headers``."""
-    try:
-        write = write_headers(conn)
-    except AuthConfigInvalid:
-        write = {}
-    return write, read_headers(conn)
-
-
 def read_headers(conn: Any) -> Dict[str, str]:
     """The headers a READ (pull sync, probe, doc feed) of this connection carries."""
     cfg = getattr(conn, "config_json", None) or {}

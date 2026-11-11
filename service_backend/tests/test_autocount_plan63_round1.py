@@ -294,9 +294,7 @@ def test_ac_63_09_the_reader_helpers_follow_the_host_allowlist():
     off = _fake_conn(OTHER_HOST_URL, "yes", encrypt_secret({"apiKey": KEY}))
     on = _fake_conn(PROBE_URL, "yes", encrypt_secret({"apiKey": KEY}))
     assert auth.read_headers(off) == {}
-    assert auth.connection_headers(off)[1] == {}
     assert auth.read_headers(on) == {"X-API-Key": KEY}
-    assert auth.connection_headers(on)[1] == {"X-API-Key": KEY}
 
 
 @pytest.mark.parametrize("reads", [None, "no"])
@@ -305,7 +303,7 @@ def test_ac_63_09_reads_no_never_decrypts_the_credentials(reads):
     if reads is None:
         conn.config_json.pop("apiKeyOnReads")
     assert auth.read_headers(conn) == {}
-    assert auth.connection_headers(conn)[1] == {}
+    assert auth.read_headers(conn) == {}
 
 
 def test_ac_63_09_pull_sync_with_undecryptable_credentials_and_reads_no_runs_as_on_main(pull_rig):
