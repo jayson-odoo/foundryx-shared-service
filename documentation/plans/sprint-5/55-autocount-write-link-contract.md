@@ -160,7 +160,7 @@ linked. The reasons are `ROW_NOT_FOUND` (the SO row), `ITEM_MISMATCH`, `UOM_MISM
 order), `QTY_ABOVE_OUTSTANDING`, `QTY_INVALID`, and `QTY_ABOVE_FREE` (the running total of the lines linked so
 far plus this one would pass the PO row quantity; a later, smaller line that still fits is linked). The answer
 names every skipped line in `skipped`: `[{ "soDocKey": 11988, "soDtlKey": 11989, "code": "QTY_ABOVE_OUTSTANDING" }]`,
-`[]` when none. `skipped` is on every answer of this route (also the refusals and the replay). When every line is
+`[]` when none. `skipped` is on every answer of this route that reads the body (done, refused, vendor_error, pending, the replay and the request-shape 422s, which carry `links: []`, `skipped: []`, `freeLine: null`). Errors raised before the body is read (401, 403, `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_INVALID`) are the gateway's flat error and carry none of the three. A reconcile that settles as needs_attention or recovered answers `skipped: []`. When every line is
 skipped nothing is written and the answer is `refused` with `errorCode` `ALL_LINKS_SKIPPED` (HTTP 409) and all the
 lines in `skipped`; the key is released, so a corrected resend under the same key runs. AutoCount itself refusing
 the write (`vendor_error`, `VENDOR_REFUSED`) is still the whole request: nothing is linked, `skipped` lists only
