@@ -629,6 +629,20 @@ def build_link_batch(kind_name: str, doc: Doc, old_key: int, new_rows: Sequence[
     return VendorRequest("PUT", kind.edit_path, body)
 
 
+def build_unlink_merge(kind_name: str, doc: Doc, linked_key: int, free_key: int) -> VendorRequest:
+    """Plan 62 D7: ONE PUT unlinking a row by merging it into a free row: the linked row ``"D"``
+    and the free row raised by the freed quantity (no new row, so no free row piles up)."""
+    kind = kind_of(kind_name)
+    _check_kind_doc(kind, doc)
+    linked = _find_row(doc, linked_key)
+    free = _find_row(doc, free_key)
+    raised = _normal(_row_fields(free))
+    raised["Qty"] = _num(_dec(free.get("Qty")) + _dec(linked.get("Qty")))
+    body = _doc_header(kind, doc)
+    body["Details"] = [_deleted(linked), raised]
+    return VendorRequest("PUT", kind.edit_path, body)
+
+
 def build_cancel(kind_name: str, doc: Doc) -> VendorRequest:
     """Plan 61 F9: ``DELETE /Cancel<Doc>bydocno?DocNo=<no>`` with no body."""
     kind = kind_of(kind_name)
@@ -853,6 +867,23 @@ def verify_link_batch(
             return Verdict(MISMATCH, "LINK_MISMATCH")
         left.remove(match)
     if _drifted(before, after, (), [old_key]):
+        return Verdict(MISMATCH, "COLLATERAL_CHANGE")
+    return Verdict(DONE)
+
+
+def verify_unlink_merge(kind_name: str, before: Doc, linked_key: int, free_key: int, after: Doc) -> Verdict:
+    """The linked row is gone, the free row holds the sum, no new row, nothing else moved."""
+    kind_of(kind_name)
+    if _row_by_key(after, linked_key) is not None:
+        return Verdict(MISMATCH, "LINE_NOT_DELETED")
+    free = _row_by_key(after, free_key)
+    want = _dec(_row_by_key(before, free_key).get("Qty")) + _dec(_row_by_key(before, linked_key).get("Qty"))  # type: ignore[union-attr]
+    if free is None or _dec(free.get("Qty")) != want:
+        return Verdict(MISMATCH, "ROW_MISMATCH")
+    known = {r.get("DtlKey") for r in before.get("Details") or []}
+    if [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]:
+        return Verdict(MISMATCH, "ROWS_UNEXPECTED")
+    if _drifted(before, after, (), [linked_key, free_key]):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 

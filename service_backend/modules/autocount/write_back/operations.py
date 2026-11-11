@@ -532,7 +532,34 @@ class OperationService:
         target: Optional[Doc] = None
         if defn.target and spec.target_doc_key is not None:
             target = self._guard_target(company, defn, spec, doc, row, link_qty)
-        return {"mode": mode, "received": received, "target": target, "linkQty": link_qty}
+        merge = self._merge_target(company, defn, doc, row) if mode == "delete" else None
+        return {"mode": mode, "received": received, "target": target, "linkQty": link_qty, "merge": merge}
+
+    def _merge_target(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Optional[int]:
+        """Plan 62 D7: the DtlKey of the FIRST free row (row order) the unlinked quantity can join:
+        same item, unit, location, price and delivery date, not linked, no SPO row pointing at it,
+        nothing received. None = no merge (today's new free row); an unknown receipt is no merge."""
+        if defn.kind != "PO" or defn.mode != "unlink":
+            return None
+        for cand in doc.get("Details") or []:
+            if cand.get("DtlKey") == row.get("DtlKey") or _link_of("PO", cand):
+                continue
+            if cand.get("FromDocType") not in ("", None):
+                continue
+            if any(cand.get(k) != row.get(k) for k in ("ItemCode", "UOM", "Location")):
+                continue
+            if not all(payloads.same_row_value(k, row.get(k), cand.get(k)) for k in ("UnitPrice", "DeliveryDate")):
+                continue
+            if self._spo_ref(company, int(cand["DtlKey"])):
+                continue
+            if self._receipt_reader is not None:
+                received = self._receipt_reader("PO", doc, cand)
+            else:
+                received = self.prims._row_received(company, "PO", dict(cand, DocKey=doc.get("DocKey")))
+            if received is None or received > 0:
+                continue
+            return int(cand["DtlKey"])
+        return None
 
     def _receipt(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Tuple[str, Optional[Decimal]]:
         """``("delete" | "partial", received)``; an unknown received qty goes the
@@ -610,7 +637,7 @@ class OperationService:
             "docDate": doc_date.isoformat(), "lastModified": doc.get("LastModified"),
             "knownKeys": [r.get("DtlKey") for r in doc.get("Details") or []],
             "row": row, "received": None if plan["received"] is None else str(plan["received"]),
-            "newLink": new_link, "oldLink": self._old_link(company, defn, row),
+            "newLink": new_link, "oldLink": self._old_link(company, defn, row), "mergeInto": plan.get("merge"),
             "location": row.get("Location"), "companyName": company.company_name or company.name,
         })
 
@@ -654,6 +681,8 @@ class OperationService:
         # The deadline may stop an operation only HERE, before its first write. After the
         # replace / cut has landed every further step runs (the heartbeat guards the lock).
         self._check_deadline()
+        if snap.get("mergeInto"):
+            return self._merge_run(row, company, snap, old_key, int(snap["mergeInto"]))
         if not snap["mode"] == "partial":
             return self._replace_run(row, company, snap, old_key)
         assert received is not None
@@ -675,6 +704,24 @@ class OperationService:
         document = self._move(row, company, snap, new_key, add.document, snap.get("moveTo") or snap["location"])
         self.prims._stage(company, snap["kind"], document, None)
         return self._finish(row, DONE, None, replaced=[], document=document)
+
+    def _merge_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int,
+                   free_key: int) -> OperationResult:
+        """Plan 62 D7: ONE PUT [linked row "D", free row raised]. All or nothing: a refusal changed
+        nothing; no move step (no new row, so nothing was reset)."""
+        res = self.prims.unlink_merge(**self._call(row, company, snap, "merge"), dtl_key=old_key, merge_key=free_key)
+        self._step("merge", res)
+        if res.outcome == OUTCOME_VENDOR_ERROR:
+            if res.error_code == VENDOR_REFUSED:  # AutoCount said no: nothing landed
+                raise _Done(VENDOR_ERROR, res.error_code, res.message)
+            raise _Done(PENDING, res.error_code, res.message)  # a bare 5xx or timeout: resume reads
+        if res.outcome == OUTCOME_MISMATCH:  # the PUT landed but reads back wrong
+            raise _Done(NEEDS_ATTENTION, res.error_code or INTERNAL_ERROR, res.message)
+        if res.outcome != OUTCOME_DONE or res.document is None:
+            self._abort_unless_done(res)
+            raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
+        self.prims._stage(company, snap["kind"], res.document, None)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document)
 
     def _replace_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int) -> OperationResult:
         """Plan 61: ONE PUT [row "D", new row with the new link or none], then the move.
@@ -853,6 +900,8 @@ class OperationService:
         rows = doc.get("Details") or []
         old_key = int(snap["row"]["DtlKey"])
         original = next((r for r in rows if r.get("DtlKey") == old_key), None)
+        if snap.get("mergeInto"):
+            return self._resume_merge(row, company, snap, doc, original, old_key)
         partial = snap["mode"] == "partial"
         if original is not None and not partial:
             # the replace never landed: the line is as it was (no write)
@@ -888,6 +937,19 @@ class OperationService:
         if res.outcome == NEEDS_ATTENTION and was == NEEDS_ATTENTION:
             return res
         return res
+
+    def _resume_merge(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc,
+                      original: Optional[Doc], old_key: int) -> OperationResult:
+        """A pending merge: the linked row still there = it never landed; gone and the free row
+        holds the sum = it landed; anything else is for a person."""
+        if original is not None:
+            return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
+        free_key = int(snap["mergeInto"])
+        free = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == free_key), None)
+        if free is None or _dec(free.get("Qty")) < _dec(snap["row"].get("Qty")):
+            return self._needs_attention(row, company, snap, "RESUMED")
+        self.prims._stage(company, snap["kind"], doc, None)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc)
 
     def _resume_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, key: int, doc: Doc,
                      location: Optional[str]) -> Doc:

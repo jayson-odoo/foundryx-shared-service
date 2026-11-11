@@ -86,6 +86,8 @@ _REPLACE_NEEDS = (DELETE_LINE, ADD_LINE)
 # Plan 62: ONE PUT linking one row to N source rows (the row "D" or kept with the rest, N new
 # linked rows). Not a gateway primitive: the ``link_batch`` operation uses it.
 BATCH_LINK = "batch_link"
+# Plan 62 D7: ONE PUT unlinking a row into a free row (the row "D", the free row raised).
+UNLINK_MERGE = "unlink_merge"
 # F7: AutoCount refuses a "D" on a row transferred onward with this exception type.
 _TRANSFERRED_ROW = re.compile(r"UnableToDelete\w*TransferredItemException")
 
@@ -126,6 +128,7 @@ class _Call:
     line: Optional[Dict[str, Any]] = None
     stage: bool = True
     doc_no: Optional[str] = None
+    merge_key: Optional[int] = None  # unlink_merge: the free row that takes the quantity
 
 
 # AC-57-47: what marks the start of an internal detail. The text is cut at the FIRST one:
@@ -287,6 +290,18 @@ class PrimitiveService(WriteFrame):
                      expected_last_modified=expected_last_modified, lines=lines, stage=stage)
         return self._run(call, company_id)
 
+    def unlink_merge(
+        self, *, tenant_id: str, company_id: str, kind: str, doc_key: int, dtl_key: int, merge_key: int,
+        doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
+        key_id: Optional[str] = None, operation_id: Optional[str] = None, step: Optional[str] = None,
+        stage: bool = True,
+    ) -> PrimitiveResult:
+        """Plan 62 D7: ONE PUT ``[row dtl_key "D", free row merge_key raised by its quantity]``."""
+        call = _Call(UNLINK_MERGE, kind, tenant_id, doc_key=doc_key, dtl_key=dtl_key, key_id=key_id,
+                     operation_id=operation_id, step=step, doc_date=doc_date,
+                     expected_last_modified=expected_last_modified, stage=stage, merge_key=merge_key)
+        return self._run(call, company_id)
+
     def cancel_doc(
         self, *, tenant_id: str, company_id: str, kind: str, doc_key: int,
         doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
@@ -345,7 +360,7 @@ class PrimitiveService(WriteFrame):
 
     @staticmethod
     def _capable(call: _Call) -> bool:
-        if call.primitive in (REPLACE_LINE, BATCH_LINK):
+        if call.primitive in (REPLACE_LINE, BATCH_LINK, UNLINK_MERGE):
             return all(capabilities.capable(call.kind, p) for p in _REPLACE_NEEDS)
         return capabilities.capable(call.kind, call.primitive)
 
@@ -505,6 +520,8 @@ class PrimitiveService(WriteFrame):
             return payloads.build_row_replace(call.kind, doc, {"DtlKey": call.dtl_key}, call.line or {})
         if call.primitive == BATCH_LINK:
             return payloads.build_link_batch(call.kind, doc, int(call.dtl_key or 0), call.lines or [])
+        if call.primitive == UNLINK_MERGE:
+            return payloads.build_unlink_merge(call.kind, doc, int(call.dtl_key or 0), int(call.merge_key or 0))
         if call.primitive == CANCEL:
             return payloads.build_cancel(call.kind, doc)
         raise WriteRefusal(VENDOR_UNSUPPORTED, "AutoCount has no door that deletes a document")
@@ -701,6 +718,10 @@ class PrimitiveService(WriteFrame):
             return (None if ok else v.code), "", [], (added[0] if ok and added else None)
         if call.primitive == BATCH_LINK:
             v = payloads.verify_link_batch(call.kind, before, int(call.dtl_key or 0), call.lines or [], after)
+            return (v.code if v.outcome == payloads.MISMATCH else None), "", [], None
+        if call.primitive == UNLINK_MERGE:
+            v = payloads.verify_unlink_merge(
+                call.kind, before, int(call.dtl_key or 0), int(call.merge_key or 0), after)
             return (v.code if v.outcome == payloads.MISMATCH else None), "", [], None
         if call.primitive == DELETE_LINE:
             v = payloads.verify_delete_line(call.kind, before, int(call.dtl_key or 0), after)
