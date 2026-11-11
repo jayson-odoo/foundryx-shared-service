@@ -392,7 +392,8 @@ class OperationService:
     def _nothing_landed(status: Optional[str], code: Optional[str]) -> bool:
         """Plan 62 D6: the stored outcome proves nothing reached AutoCount: a refusal, or AutoCount's
         own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed."""
-        return status == REFUSED or (status == VENDOR_ERROR and code == VENDOR_REFUSED)
+        return (status == REFUSED or (status == VENDOR_ERROR and code == VENDOR_REFUSED)
+                or (status == RECOVERED and code == NOT_APPLIED))  # resume proved the write never landed
 
     def _release_key(self, row: AcWriteOperation) -> None:
         """Free the idempotency key of a confirmed not-landed operation: the row is kept for history
@@ -579,7 +580,11 @@ class OperationService:
         if defn.target and spec.target_doc_key is not None:
             target = self._guard_target(company, defn, spec, doc, row, link_qty)
         merge = self._merge_target(company, defn, doc, row) if mode == "delete" else None
-        return {"mode": mode, "received": received, "target": target, "linkQty": link_qty, "merge": merge}
+        merge_qty = None
+        if merge is not None:  # the free row's quantity now: a pending merge is judged against it
+            merge_qty = str(_dec(next(r for r in doc.get("Details") or [] if r.get("DtlKey") == merge).get("Qty")))
+        return {"mode": mode, "received": received, "target": target, "linkQty": link_qty, "merge": merge,
+                "mergeQty": merge_qty}
 
     def _merge_target(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Optional[int]:
         """Plan 62 D7: the DtlKey of the FIRST free row (row order) the unlinked quantity can join:
@@ -684,7 +689,7 @@ class OperationService:
             "docDate": doc_date.isoformat(), "lastModified": doc.get("LastModified"),
             "knownKeys": [r.get("DtlKey") for r in doc.get("Details") or []],
             "row": row, "received": None if plan["received"] is None else str(plan["received"]),
-            "newLink": new_link, "oldLink": self._old_link(company, defn, row), "mergeInto": plan.get("merge"),
+            "newLink": new_link, "oldLink": self._old_link(company, defn, row), "mergeInto": plan.get("merge"), "mergeBeforeQty": plan.get("mergeQty"),
             "location": row.get("Location"), "companyName": company.company_name or company.name,
         })
 
@@ -987,14 +992,18 @@ class OperationService:
 
     def _resume_merge(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc,
                       original: Optional[Doc], old_key: int) -> OperationResult:
-        """A pending merge: the linked row still there = it never landed; gone and the free row
-        holds the sum = it landed; anything else is for a person."""
+        """A pending merge. The linked row still there: it never landed. Gone and the free row holds
+        exactly its quantity before plus the freed quantity: it landed. Anything else (the row deleted by
+        hand, the free row changed since) needs a person; no PUT is sent."""
         if original is not None:
             return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
         free_key = int(snap["mergeInto"])
         free = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == free_key), None)
-        if free is None or _dec(free.get("Qty")) < _dec(snap["row"].get("Qty")):
-            return self._needs_attention(row, company, snap, "RESUMED")
+        before = snap.get("mergeBeforeQty")
+        landed = (free is not None and before is not None
+                  and _dec(free.get("Qty")) == _dec(before) + _dec(snap["row"].get("Qty")))
+        if not landed:
+            return self._finish(row, NEEDS_ATTENTION, "RESUMED", document=doc)
         self.prims._stage(company, snap["kind"], doc, None)
         return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc)
 

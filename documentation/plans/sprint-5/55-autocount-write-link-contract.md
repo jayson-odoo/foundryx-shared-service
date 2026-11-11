@@ -83,9 +83,10 @@ resend does:
 | Stored outcome of the first call | A resend with the same key |
 |---|---|
 | `refused` (any code), or `vendor_error` with `errorCode` `VENDOR_REFUSED` (AutoCount itself said no) | Nothing reached AutoCount, so the key is released: the resend runs fresh, with the same or a corrected body |
+| `recovered` with `errorCode` `OPERATION_NOT_APPLIED` (a resume found the write never landed) | The key is released, like the first row: the resend runs fresh |
 | `pending_verification` and the same body | Reconciles: the server re-reads the document. If the first call landed, it is finished and answered (`done`); if it provably never landed, the key is released and the resend runs fresh. Never a second write |
 | `done` | Locked: the stored answer is replayed (same `operationId`), nothing is written again |
-| `mismatch`, `recovered`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
+| `mismatch`, any other `recovered`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
 | any stored outcome, but a DIFFERENT body or route | `409 IDEMPOTENCY_CONFLICT` (`outcome` `refused`) unless the stored outcome released the key (first two rows) |
 | first call still running | `409 OPERATION_IN_PROGRESS` |
 
