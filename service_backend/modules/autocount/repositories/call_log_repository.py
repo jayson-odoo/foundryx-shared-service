@@ -134,14 +134,25 @@ class CallLogRepository:
 
     def persons(self, tenant_id: str) -> List[Tuple[str, Optional[str]]]:
         """Each acting user id once, with the latest name any of its rows carries."""
-        rows = (
-            self.db.query(AcApiCallLog.acting_user_id, AcApiCallLog.acting_user_name)
-            .filter(AcApiCallLog.tenant_id == tenant_id, AcApiCallLog.acting_user_id.isnot(None))
-            .order_by(AcApiCallLog.created_at.desc())
+        log = AcApiCallLog
+        newest = (
+            self.db.query(log.acting_user_id.label("uid"), func.max(log.created_at).label("at"))
+            .filter(log.tenant_id == tenant_id, log.acting_user_id.isnot(None), log.acting_user_name.isnot(None))
+            .group_by(log.acting_user_id)
+            .subquery()
+        )
+        named = (
+            self.db.query(log.acting_user_id, func.max(log.acting_user_name))
+            .join(newest, (log.acting_user_id == newest.c.uid) & (log.created_at == newest.c.at))
+            .filter(log.tenant_id == tenant_id)
+            .group_by(log.acting_user_id)
             .all()
         )
-        latest: Dict[str, Optional[str]] = {}
-        for user_id, name in rows:
-            if latest.get(user_id) is None:
-                latest[user_id] = name
-        return sorted(latest.items())
+        names: Dict[str, Optional[str]] = {user_id: name for user_id, name in named}
+        ids = (
+            self.db.query(log.acting_user_id)
+            .filter(log.tenant_id == tenant_id, log.acting_user_id.isnot(None))
+            .distinct()
+            .all()
+        )
+        return sorted((row[0], names.get(row[0])) for row in ids)

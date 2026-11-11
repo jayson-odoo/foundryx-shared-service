@@ -812,13 +812,14 @@ def set_write_connection(
     # documents staged by another job, is a live book: it never gets a write connection.
     conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
     base_url = "" if conn is None else str((conn.config_json or {}).get("baseUrl") or "")
+    if conn is not None:
+        try:  # the URL gate first: a book that may not be written is reported as such
+            assert_write_allowed(base_url)
+        except WriteNotAllowed as exc:
+            raise WriteConnectionError(exc.code) from None
     guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))
     if conn is None:
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
-    try:
-        assert_write_allowed(base_url)
-    except WriteNotAllowed as exc:
-        raise WriteConnectionError(exc.code) from None
     company.write_connection_id = conn.id
     db.commit()
     return company

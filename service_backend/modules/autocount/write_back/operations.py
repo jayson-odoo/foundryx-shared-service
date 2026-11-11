@@ -785,6 +785,8 @@ class OperationService:
         snap = row.snapshot_json or {}
         base_url, refusal = self.prims._resolve_write_base_url(company)
         if base_url is None:
+            if refusal:
+                self.prims._log_refused_connection(company, refusal[0], doc_key=int(snap.get("docKey") or 0) or None)
             raise _Done(was, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
         self._check_test_company(company, restore=was)

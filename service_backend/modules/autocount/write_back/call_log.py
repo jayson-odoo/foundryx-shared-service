@@ -81,7 +81,7 @@ def _person_name(value: Optional[str]) -> Optional[str]:
         decoded = unquote_to_bytes(value).decode("utf-8")
     except UnicodeDecodeError:
         return None
-    cleaned = "".join(c for c in decoded if unicodedata.category(c) != "Cc")
+    cleaned = "".join(c for c in decoded if unicodedata.category(c) not in ("Cc", "Cf"))
     return cleaned if 1 <= len(cleaned) <= ACTING_USER_NAME_MAX else None
 
 
