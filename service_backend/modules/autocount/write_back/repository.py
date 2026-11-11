@@ -149,6 +149,26 @@ class OperationRepository:
         row.idempotency_key = idempotency_key
         self.db.flush()
 
+    def created_documents(self, tenant_id: str, company_id: str, exclude_id: str) -> "tuple[set, set]":
+        """``(DocKeys, DocNos)`` already recorded as the result of a DONE create of this company, other than
+        ``exclude_id``: a lookup never adopts a document another create owns."""
+        keys: set = set()
+        numbers: set = set()
+        rows = self.db.query(AcWriteOperation.result_json).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.op.like("create_doc:%"),
+            AcWriteOperation.status == "done",
+            AcWriteOperation.id != exclude_id,
+        )
+        for (result,) in rows:
+            if isinstance(result, dict):
+                if result.get("docKey") is not None:
+                    keys.add(result["docKey"])
+                if result.get("docNo"):
+                    numbers.add(result["docNo"])
+        return keys, numbers
+
     def delete(self, row: AcWriteOperation) -> None:
         self.db.delete(row)
         self.db.flush()

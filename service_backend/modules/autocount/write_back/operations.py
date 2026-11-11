@@ -96,6 +96,7 @@ PRE_SAVE_REFUSALS = frozenset({
 })
 CREATE_AMBIGUOUS = "CREATE_AMBIGUOUS"
 LOOKUP_WINDOW_SECONDS = 60
+LOOKUP_MAX_DAYS = 7
 
 ReceiptReader = Callable[[str, Doc, Doc], Optional[Decimal]]
 Notifier = Callable[[Dict[str, Any]], None]
@@ -1335,7 +1336,8 @@ class OperationService:
         if company is None:
             return replay(existing)
         try:
-            found = self.find_created_doc(company, existing.doc_type or "", info)
+            found = self.find_created_doc(company, existing.doc_type or "", info, key_id=existing.key_id,
+                                          operation_id=existing.id)
         except _AmbiguousCreate:
             existing.status, existing.error_code = NEEDS_ATTENTION, CREATE_AMBIGUOUS
             existing.result_json = _json_safe(primitive_answer(PrimitiveResult(
@@ -1355,18 +1357,24 @@ class OperationService:
         self.db.commit()
         return replay(existing)
 
-    def find_created_doc(self, company: AcCompany, kind: str, info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def find_created_doc(self, company: AcCompany, kind: str, info: Dict[str, Any], *,
+                         key_id: Optional[str] = None, operation_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """The one document a create that may have landed produced, ``{"DocKey", "DocNo"}``, else None.
         A numbered body is read by DocNo; a ``<<New>>`` body is matched in the ``byLastModified`` day
         list(s) covering the first attempt (AutoCount local time, MYT): same party, ``CreatedTimeStamp``
         within a minute of the attempt, same line multiset (ItemCode, Qty, UOM). Several matches raise
-        ``_AmbiguousCreate``. Every GET is logged under the company."""
+        ``_AmbiguousCreate``. The day lists run from the first attempt's MYT day to today (a later edit moves a
+        document to a later list), at most ``LOOKUP_MAX_DAYS`` back; an attempt older than that and not found
+        stays locked. A document another done create of this company already owns is never adopted. Every GET
+        is logged under the stored operation (``key_id``, ``operation_id``)."""
         from modules.autocount.doc_feed.clock import MYT
 
         base_url, _refusal = self.prims._resolve_write_base_url(company)
         if base_url is None or kind not in KINDS:
             raise _LookupFailed()
-        reader = self.prims._reader_for(base_url, self.prims.new_call_log(company, kind=kind))
+        reader = self.prims._reader_for(base_url, self.prims.new_call_log(
+            company, kind=kind, key_id=key_id, operation_id=operation_id))
+        owned_keys, owned_numbers = self.ops.created_documents(company.tenant_id, company.id, operation_id or "")
         party_field = KINDS[kind].party_field
         wanted = [(str(i), _dec(q), u) for i, q, u in info.get("lines") or []]
         use_uom = bool(wanted) and all(u for _i, _q, u in wanted)
@@ -1378,6 +1386,8 @@ class OperationService:
         want_shape = sorted([(i, q) + ((u,) if use_uom else ()) for i, q, u in wanted], key=str)
 
         def ours(doc: Doc) -> bool:
+            if doc.get("DocKey") in owned_keys or doc.get("DocNo") in owned_numbers:
+                return False
             if info.get("party") and doc.get(party_field) != info["party"]:
                 return False
             if kind in ("PO", "SPO") and (kind == "SPO") != (doc.get("ShippingPO") == "T"):
@@ -1401,8 +1411,11 @@ class OperationService:
             low = (start - timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
             high = (end + timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
             matches: List[Doc] = []
-            day = low.date()
-            while day <= high.date():
+            today = datetime.now(timezone.utc).astimezone(MYT).date()
+            oldest = today - timedelta(days=LOOKUP_MAX_DAYS)
+            day = max(low.date(), oldest)
+            too_old = low.date() < oldest
+            while day <= max(high.date(), today):
                 for doc in reader.list_day(kind, day, by_last_modified=True):
                     try:
                         created = datetime.fromisoformat(str(doc.get("CreatedTimeStamp"))).replace(tzinfo=MYT)
@@ -1415,6 +1428,8 @@ class OperationService:
             raise _LookupFailed() from None
         if len(matches) > 1:
             raise _AmbiguousCreate()
+        if not matches and too_old:
+            raise _LookupFailed()  # past the scan reach: nothing proves it was not saved
         return {"DocKey": matches[0].get("DocKey"), "DocNo": matches[0].get("DocNo")} if matches else None
 
     # ── needs_attention mail (AC-57-35) ──────────────────────────────────────
