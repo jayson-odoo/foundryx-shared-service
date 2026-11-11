@@ -11,14 +11,21 @@ longer `VENDOR_UNSUPPORTED`): each is ONE PUT that deletes the row and adds its 
 whole-row link then moves the new row to the SO row's location (sections 4.1, 4.2). `spo-links/unlink`
 stays `VENDOR_UNSUPPORTED`. Bodies, statuses and `replacedLines` are unchanged.
 
+2026-11-11 (plan 62, `62-autocount-po-link-batch.md`): new `POST /api/v1/autocount/po-links/batch` links one PO
+row to 1 to 20 SO rows in ONE call (section 4.1a); `po-links/unlink` joins the freed quantity to a matching
+free PO row instead of adding a new one when it can (section 4.2); the retry rule of every operation route
+changed: a key whose first call provably changed nothing is released for a resend (section 4.0). Existing
+bodies and statuses are unchanged.
+
 ## 1. What it is
 
-Three routes on the existing public gateway (`/api/v1/autocount/*`) that change the link between a
+Four routes on the existing public gateway (`/api/v1/autocount/*`) that change the link between a
 purchase order row and a sales order row in the customer's AutoCount book:
 
 | Route | Does |
 |---|---|
 | `POST /api/v1/autocount/po-links` | Link a quantity of one PO row to one SO row (in place, or by splitting the PO row) |
+| `POST /api/v1/autocount/po-links/batch` | Link one PO row to 1 to 20 SO rows in one call, all or nothing (section 4.1a) |
 | `POST /api/v1/autocount/po-links/unlink` | Clear the SO link of one PO row |
 | `POST /api/v1/autocount/spo-links/unlink` | Clear the PO link of one shipping purchase order (SPO) row |
 
@@ -65,8 +72,24 @@ company or tenant is never reachable.
 ## 4. Requests and responses
 
 All bodies are JSON objects, camelCase. Body over the size cap: `413 PAYLOAD_TOO_LARGE`. Not a JSON
-object, or a field of the wrong type: `422 INVALID_REQUEST` (flat error, section 6). The routes are
-not idempotent: do not blind-retry a call that ended `pending_verification`.
+object, or a field of the wrong type: `422 INVALID_REQUEST` (flat error, section 6).
+
+### 4.0 Idempotency and retry (plan 62, every operation route and every document primitive)
+
+`Idempotency-Key` is REQUIRED on `po-links/batch` (missing: `422 INVALID_REQUEST`) and as stated by plan 57
+on the other operation routes. The key names one intended change; the stored first outcome decides what a
+resend does:
+
+| Stored outcome of the first call | A resend with the same key |
+|---|---|
+| `refused` (any code), or `vendor_error` with `errorCode` `VENDOR_REFUSED` (AutoCount itself said no) | Nothing reached AutoCount, so the key is released: the resend runs fresh, with the same or a corrected body |
+| `pending_verification` and the same body | Reconciles: the server re-reads the document. If the first call landed, it is finished and answered (`done`); if it provably never landed, the key is released and the resend runs fresh. Never a second write |
+| `done` | Locked: the stored answer is replayed (same `operationId`), nothing is written again |
+| `mismatch`, `recovered`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
+| any stored outcome, but a DIFFERENT body or route | `409 IDEMPOTENCY_CONFLICT` (`outcome` `refused`) unless the stored outcome released the key (first two rows) |
+| first call still running | `409 OPERATION_IN_PROGRESS` |
+
+A call that ended `pending_verification` is still never blind-resent with a NEW key.
 
 ### 4.1 `POST /api/v1/autocount/po-links`
 
@@ -95,6 +118,60 @@ its unit price and delivery date (AutoCount forces HQ, sets the unit price to 0 
 new linked row; db3 10-11 Nov, plan 61 F5). The location comes
 from the SO row; the caller does not send one.
 
+### 4.1a `POST /api/v1/autocount/po-links/batch`
+
+Links one PO row to several SO rows (plan 62). Header `Idempotency-Key` required (section 4.0).
+
+```json
+{ "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12017, "docDate": "2026-11-02",
+  "expectedLastModified": "2026-11-03T09:14:22",
+  "links": [ { "soDocKey": 11988, "soDtlKey": 11989, "qty": 4, "soDocDate": "2026-10-30" },
+             { "soDocKey": 12101, "soDtlKey": 12102, "qty": 3 } ] }
+```
+
+| Field | Type | Rule |
+|---|---|---|
+| `companyCode`, `poDocKey`, `poDtlKey`, `expectedLastModified` | | as section 4.1 |
+| `docDate` | string, optional | `YYYY-MM-DD`; the PO's document date, a hint for the read |
+| `links` | array, required | 1 to 20 entries, each an object. Not an array, empty, or an entry not an object: `422 INVALID_REQUEST`. Over 20, an SO row (`soDtlKey`) listed twice, or a `qty` that is not a number: `409 INVALID_PARAMS` |
+| `links[].soDocKey`, `links[].soDtlKey` | integer | as `soDocKey`, `soDtlKey` in section 4.1 (a missing or non-integer key: `422 INVALID_REQUEST`) |
+| `links[].qty` | number | same rules as section 4.1 (`QTY_INVALID`, 422) |
+| `links[].soDocDate` | string, optional | `YYYY-MM-DD`; the SO's date, a hint for the read |
+
+All checks run before AutoCount is written; the sum of the `qty` values may not exceed the PO row qty
+(`QTY_ABOVE_FREE`), each must fit the outstanding of its SO row (`QTY_ABOVE_OUTSTANDING`), and the PO row
+must have the same item and unit as every SO row (`ITEM_MISMATCH`, `UOM_MISMATCH`). The other refusals are
+those of a link (section 5): `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_HAS_OTHER_TRANSFER`, `ROW_RECEIVED`,
+`DOC_CANCELLED`, `ROW_NOT_FOUND`, `DOC_STALE`, `DOC_BUSY`, `VENDOR_UNSUPPORTED`.
+
+**All or nothing, two writes.** The first write is ONE edit of the PO: the PO row is kept with the quantity
+that is left (or removed when the links take all of it) and one new linked row is added per entry. AutoCount
+accepts or rejects that edit as a whole, so either every link is made or none is. Each new row arrives at
+the default location (HQ), unit price 0 and no delivery date; a second write, only if a read-back shows
+that, puts all the new rows at their SO row's location and back on the PO row's unit price and delivery
+date, in one edit. If that second write does not land, the answer is still `done` and `warnings` carries
+`LOCATION_NOT_MOVED` (and `ROW_VALUES_NOT_KEPT` when unit price or delivery date were involved); the links
+stand. Use `po-links/relocate` for a row left at the default location.
+
+Answer (HTTP 200, `outcome` `done`):
+
+```json
+{ "operationId": "5b0c...", "actionId": null, "outcome": "done", "errorCode": null, "message": "",
+  "warnings": [], "docKey": 12008, "docNo": "202602-S0007", "replacedLines": [],
+  "links": [ { "soDocKey": 11988, "soDtlKey": 11989, "qty": "4", "poDtlKey": 12031 },
+             { "soDocKey": 12101, "soDtlKey": 12102, "qty": "3", "poDtlKey": 12032 } ],
+  "freeLine": { "poDtlKey": 12017, "qty": "3" },
+  "document": { "...": "the PO as read back" } }
+```
+
+`links[]` has one entry per request entry: the `poDtlKey` of the new PO row that carries that link. `qty`
+there, and in `freeLine`, is a decimal STRING. `freeLine` is the PO row that stays with the unlinked
+remainder (`poDtlKey` is the original `poDtlKey`), or `null` when the links took the whole row. The other
+fields are those of section 4.5, with `actionId` null on this route. Other outcomes (`pending_verification`
+202, `mismatch` 502, `vendor_error` 502, `refused`) carry the same body without `links` content
+(`links` `[]`, `freeLine` null). A `pending_verification` is reconciled by resending with the same key and
+the same body (section 4.0).
+
 ### 4.2 `POST /api/v1/autocount/po-links/unlink`
 
 ```json
@@ -104,6 +181,15 @@ from the SO row; the caller does not send one.
 `poDocKey`, `poDtlKey` integer, required; `expectedLastModified` optional as above. One PUT deletes the
 linked row and adds a normal row with the same item, qty, unit price, UOM, location and delivery date
 (a new `DtlKey`, in `replacedLines`): AutoCount never clears a link in place.
+
+**Merge into a free row (plan 62).** When the PO has another row that is free (not linked, nothing received,
+no SPO row pointing at it, not transferred from another document) and equals the unlinked row in item,
+unit of measure, location, unit price and delivery date, the PUT deletes the linked row and raises that free
+row's quantity by the freed quantity instead of adding a new row; the first such row in row order is used.
+No location move follows. The answer then has `replacedLines` `[{"oldDtlKey": <the unlinked row>,
+"newDtlKey": <the free row that took the quantity>}]`: `newDtlKey` is the EXISTING free row's `DtlKey`, not a
+new one. With no matching free row, or a received quantity that cannot be read, the behaviour above applies
+unchanged (a new row). No request field and no new answer field: read `replacedLines`.
 
 ### 4.3 `POST /api/v1/autocount/spo-links/unlink`
 
@@ -159,6 +245,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `mismatch` | 502 | `READBACK_MISMATCH` | AutoCount accepted the write but the document read back differently from what was sent |
 | `mismatch` | 502 | `ROW_VALUES_NOT_KEPT` | Split link: the link landed, but the new row's unit price or delivery date could not be put back to the PO row's values (section 5) |
 | `vendor_error` | 502 | `VENDOR_ERROR` | AutoCount answered the write with an error; nothing is assumed written |
+| `vendor_error` | 502 | `VENDOR_REFUSED` | AutoCount refused the write by its own rules; nothing was written and the key is released (section 4.0) |
 
 `refused` 409 codes (nothing was changed in AutoCount):
 
@@ -182,6 +269,10 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `UOM_MISMATCH` | Different units of measure | Do not offer this pair |
 | `QTY_INVALID` | `qty` is zero or negative, above 1,000,000,000, or has more than 8 decimal places (checked before AutoCount is read) | Fix the input |
 | `QTY_ABOVE_FREE` | `qty` is above the PO row qty | Lower `qty` |
+| `INVALID_PARAMS` | `po-links/batch`: more than 20 links, an SO row listed twice, or a `qty` that is not a number | Fix the body and resend (same key is fine) |
+| `ROW_RECEIVED` | The PO row has goods received against it | Handle it in AutoCount |
+| `IDEMPOTENCY_CONFLICT` | The `Idempotency-Key` was used for a different body or route and its first call did not release it | Use a new key for a new change |
+| `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
 
 **Split link is two writes.** Linking a quantity below the PO row edits the row down and adds a new
@@ -256,6 +347,10 @@ Tell the two 403 shapes apart by the body: a flat body has `code`; a write refus
   needs; do not round or convert through a float on your side.
 - **Send `expectedLastModified`** whenever the CRM shows a document the user has been looking at,
   so an edit made in AutoCount in the meantime is caught (`DOC_STALE`) instead of overwritten.
+- **Resend rule** (section 4.0): reuse the same `Idempotency-Key` to resend after a `refused` or
+  `VENDOR_REFUSED` answer (the key is free again) and to reconcile a `pending_verification`; use a new key
+  only for a deliberately new change.
+- **Linking one PO row to many SO rows** = one `po-links/batch` call, not N sequential `po-links` calls.
 - **Relink** = `po-links/relink` (plan 57 contract): one replace PUT, then the move.
 - **Rows on a shipping PO:** a PO row that an SPO row points at cannot be linked or unlinked until
   that SPO row is unlinked (`ROW_ON_SPO`).
