@@ -1264,7 +1264,8 @@ class OperationService:
 
         existing = self.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
         if existing is not None:
-            if name == "create_doc":
+            looked_up = name == "create_doc" and existing.op == label and "start" in (existing.snapshot_json or {})
+            if looked_up:
                 early = self._create_resend(existing, tenant_id, company_id, replay)
                 if early is not None:
                     return early
