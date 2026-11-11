@@ -364,7 +364,8 @@ class OperationService:
     def _release_key(self, row: AcWriteOperation) -> None:
         """Free the idempotency key of a confirmed not-landed operation: the row is kept for history
         under a re-keyed value, so a resend runs fresh (any body)."""
-        self.ops.rekey(row, f"{row.idempotency_key}~released~{row.id}")
+        # \x1f is outside the printable range the Idempotency-Key header accepts, so no client can send this form
+        self.ops.rekey(row, f"{row.idempotency_key}\x1freleased\x1f{row.id}")
         self.db.commit()
 
     def _settle_existing(self, row: AcWriteOperation, tenant_id: str, company: AcCompany, op: str,
