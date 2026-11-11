@@ -447,3 +447,77 @@ def test_resume_refused_by_the_gate_leaves_one_guard_refused_row(client, db, h, 
     assert len(h.vendor.calls) == before
     refused = [x for x in _logs(h) if x.outcome == "guard_refused"]
     assert len(refused) == 1 and refused[0].error_code == "WRITE_NOT_ALLOWED"
+
+
+# ------------------------------------------------------------------ round 2
+
+SHORT_KEYS = ["1", "12"]
+
+
+@pytest.mark.parametrize("key", SHORT_KEYS)
+def test_round2_a_short_key_never_alters_the_business_values_the_write_logic_sees(h, key):
+    from modules.autocount.write_back import call_log as cl
+    from modules.autocount.write_back.client import AutoCountWriteClient
+
+    answer = {"DocKey": 12345, "DocNo": "PO-1"}
+    client = AutoCountWriteClient(
+        DB3, transport=httpx.MockTransport(lambda request: httpx.Response(200, json=answer)))
+    auth.attach_headers(client, {"X-API-Key": key})
+    cl.attach_call_log(client, cl.CallLog(h.db.get_bind(), cl.CallContext(DEFAULT_TENANT_ID, h.company.id)))
+    response = client.post("/NewPurchaseOrder", {"a": 1})
+    assert response.body == answer and response.body["DocKey"] == 12345 and response.body["DocNo"] == "PO-1"
+    stored = [x for x in _logs(h) if x.method == "POST"]
+    assert len(stored) == 1
+    text = stored[0].response_body or ""
+    assert "***" in text and key not in text.replace("***", "")  # the key is masked in storage only
+
+
+@pytest.mark.parametrize("key", SHORT_KEYS)
+def test_round2_a_short_key_leaves_the_route_answer_with_the_vendor_values(client, gw, key):
+    h = gw.h
+    _conn(h, key=key)
+    r = client.post(f"{PREFIX}/documents/quotations", headers=gw.hdr(f"short-{key}"),
+                    json=__import__("tests.test_autocount_write_back_gateway_qtso", fromlist=["x"]).create_body("QT"))
+    assert r.status_code == 200, r.text
+    docs = h.vendor.docs["QT"]
+    created = docs[0] if isinstance(docs, list) else next(iter(docs.values()))
+    assert r.json()["docKey"] == created["DocKey"] and r.json()["docNo"] == created["DocNo"]
+
+
+def test_round2_control_a_long_key_echoed_in_an_error_body_is_still_masked(client, gw):
+    h = gw.h
+    _conn(h, key=KEY)
+    _seed_so(h, 8600)
+    h.vendor.fail_next("PUT", "EditSalesOrderbydockey", 500, f"rejected {KEY}")
+    _edit(client, gw, 8600, "r2-long")
+    row = next(x for x in _logs(h) if x.method == "PUT")
+    assert KEY not in (row.response_body or "") and "***" in (row.response_body or "")
+
+
+# N4: reads=yes needs an allowlisted host at save
+
+def test_round2_saving_reads_yes_for_a_host_off_the_allowlist_is_a_422_without_key_or_host(client):
+    res = client.post("/integrations/connections", headers=_demo_headers(client),
+                      json=_payload(baseUrl=OTHER_HOST_URL, apiKeyOnReads="yes"))
+    assert res.status_code == 422, res.text
+    detail = str(res.json().get("detail"))
+    assert detail and KEY not in detail and "autocount-wrapper" not in detail and "example.com" not in detail
+
+
+def test_round2_reads_yes_on_an_allowlisted_host_saves(client):
+    res = client.post("/integrations/connections", headers=_demo_headers(client),
+                      json=_payload(baseUrl=PROBE_URL, apiKeyOnReads="yes"))
+    assert res.status_code == 201, res.text
+
+
+def test_round2_reads_no_on_any_host_still_saves(client):
+    res = client.post("/integrations/connections", headers=_demo_headers(client),
+                      json=_payload(baseUrl=OTHER_HOST_URL, apiKeyOnReads="no"))
+    assert res.status_code == 201, res.text
+
+
+def test_round2_control_the_same_create_without_a_key_answers_200(client, gw):
+    _conn(gw.h)
+    r = client.post(f"{PREFIX}/documents/quotations", headers=gw.hdr("short-none"),
+                    json=__import__("tests.test_autocount_write_back_gateway_qtso", fromlist=["x"]).create_body("QT"))
+    assert r.status_code == 200, r.text

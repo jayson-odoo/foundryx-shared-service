@@ -74,3 +74,34 @@ describe('a half-open saved range keeps its half (AC-63-34)', () => {
     expect(rule.kind === 'condition' && rule.value).toEqual(['2026-11-05', '2026-11-06']);
   });
 });
+
+describe('a half-open saved range reads as open, not as a one-day range (AC-63-34, round 2)', () => {
+  function shown(value: string[]): string {
+    const { container, unmount } = render(
+      <FilterBuilder fields={[RANGE_ONLY]} onApply={vi.fn()} initialValue={saved(value)} />,
+    );
+    const text = container.textContent ?? '';
+    unmount();
+    return text;
+  }
+
+  it('start only differs from the one-day range of that start and still shows the start', () => {
+    const oneDay = shown(['2026-11-05', '2026-11-05']);
+    const startOnly = shown(['2026-11-05', '']);
+    expect(oneDay).toContain('5 Nov');
+    expect(startOnly).toContain('5 Nov');
+    expect(startOnly).not.toBe(oneDay);
+  });
+
+  it('end only differs from the one-day range of that end and still shows the end', () => {
+    const oneDay = shown(['2026-11-06', '2026-11-06']);
+    const endOnly = shown(['', '2026-11-06']);
+    expect(oneDay).toContain('6 Nov');
+    expect(endOnly).toContain('6 Nov');
+    expect(endOnly).not.toBe(oneDay);
+  });
+
+  it('control: a complete range reads as both ends', () => {
+    expect(shown(['2026-11-05', '2026-11-06'])).toMatch(/5 Nov.*6 Nov/);
+  });
+});

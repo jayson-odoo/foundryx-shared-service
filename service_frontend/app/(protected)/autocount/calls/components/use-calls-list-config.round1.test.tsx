@@ -2,6 +2,7 @@
  * Plan 63 round 1 (AC-63-34, RED): the Time filter is range-only, a half-open range maps to one
  * instant bound, and the list query round-trips through the address bar (restored once on load).
  */
+import type { ReactNode } from 'react';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSearchParams } from 'next/navigation';
@@ -149,5 +150,32 @@ describe('urlState round trip (AC-63-34)', () => {
     render(<Harness />);
     await waitFor(() => expect(listCalls).toHaveBeenCalled());
     expect(listCalls.mock.calls[0][0]).toMatchObject({ page: 0, sort: 'createdAt', order: 'desc' });
+  });
+});
+
+describe('Person cell (AC-63-35, round 2)', () => {
+  type PersonRow = { actingUserId: string | null; actingUserName: string | null };
+  type Cell = (ctx: { row: { original: PersonRow } }) => ReactNode;
+
+  function personText(row: PersonRow): string {
+    const { result } = renderHook(() => useCallsListConfig());
+    const col = result.current.columns.find((c) => c.id === 'actingUserName');
+    const cellFn = col?.cell as unknown as Cell;
+    const { container, unmount } = render(<>{cellFn({ row: { original: row } })}</>);
+    const text = container.textContent?.trim() ?? '';
+    unmount();
+    return text;
+  }
+
+  it('an id with no name reads "Unnamed", never the raw id', () => {
+    expect(personText({ actingUserId: 'u-secret-42', actingUserName: null })).toBe('Unnamed');
+  });
+
+  it('neither id nor name reads "-"', () => {
+    expect(personText({ actingUserId: null, actingUserName: null })).toBe('-');
+  });
+
+  it('control: a name is shown as is', () => {
+    expect(personText({ actingUserId: 'u1', actingUserName: 'Una' })).toBe('Una');
   });
 });
