@@ -245,7 +245,7 @@ def test_ac_63_20_the_plan_55_link_routes_stamp_the_person_too(client, gw, world
     {NAME_HEADER: "%FF%FE"},
     {NAME_HEADER: "A" * 129},
     {ID_HEADER: "x" * 65, NAME_HEADER: "%E9%99"},
-    {ID_HEADER: "café"},
+    {ID_HEADER: "café".encode("latin-1")},
 ])
 def test_ac_63_21_missing_or_invalid_headers_store_null_and_the_write_runs(client, gw, headers):
     h = gw.h
