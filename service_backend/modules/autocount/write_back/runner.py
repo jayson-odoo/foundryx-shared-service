@@ -609,8 +609,9 @@ class _Run:
         return next((r for r in self._test_rows() if r.get("DtlKey") == dtl_key), None)
 
     def c13(self, case: CaseResult) -> None:
-        case.expected = ("unlink_row (operation) of the C03 row: ONE replace PUT, the first SO row freed; "
-                         "replacedLines names the new row")
+        case.expected = ("unlink_row (operation) of the C03 row: ONE PUT, the first SO row freed; replacedLines "
+                         "names the new free row, or the existing free row it merged into (plan 62 D7; "
+                         "C07 uses the plan 55 service path and never merges)")
         if self._skip(case, "C08"):
             return
         linked = self._linked_new_row(self.po_doc, self._so_row(0))
@@ -1235,9 +1236,42 @@ _B_CASES = (
     ("B04", "Today's flow: the same 3 SO lines linked one call at a time (timing baseline)", "b04"),
     ("B05", "Unlink one batch row: it merges into the free row in one PUT", "b05"),
     ("B06", "Retry rule: a refused batch, the body fixed, the SAME key resent", "b06"),
+    ("B07", "A batch above the SO row's outstanding (within the PO row's free quantity) is refused with no PUT", "b07"),
+    ("B08", "Create resend: the POST landed, the answer was lost; the resend finds the document (<<New>> body)", "b08"),
+    ("B09", "Create resend: nothing was sent; the resend finds nothing and POSTs once (<<New>> body)", "b09"),
+    ("B10", "Create resend: the POST landed, the answer was lost; the resend finds the document (numbered body)", "b10"),
 )
 _B_PRICE = 1.0
 _B_SO_LOCATION = "HQ"  # the unlink merge needs the batch rows and the free row at one location (D7)
+
+
+class _FaultClient:
+    """Wraps the tapped client: when the run's ``fault`` is armed, the next POST either lands and then
+    times out ("after": the answer is lost) or times out before anything is sent ("before")."""
+
+    def __init__(self, inner, run) -> None:
+        self._inner, self._run = inner, run
+
+    def attach_call_log(self, log: cl.CallLog) -> None:
+        self._inner.attach_call_log(log)
+
+    def post(self, path: str, body: object):
+        mode, self._run.fault = self._run.fault, None
+        if mode == "before":
+            raise WriteTransportError("WRITE_TIMEOUT")
+        response = self._inner.post(path, body)
+        if mode == "after":
+            raise WriteTransportError("WRITE_TIMEOUT")
+        return response
+
+    def put(self, path: str, body: object):
+        return self._inner.put(path, body)
+
+    def delete(self, path: str, body: object):
+        return self._inner.delete(path, body)
+
+    def delete_query(self, path: str, params: Dict[str, str]):
+        return self._inner.delete_query(path, params)
 
 
 class _BatchRun:
@@ -1249,7 +1283,8 @@ class _BatchRun:
         self.db, self.tenant_id, self.company, self.base_url = db, tenant_id, company, base_url
         self.creditor, self.debtor, self.tag = creditor, debtor, run_tag
         self.tap = _Tap()
-        wrapped_client = lambda url: _TapClient(client_factory(url), self.tap)  # noqa: E731
+        self.fault: Optional[str] = None
+        wrapped_client = lambda url: _FaultClient(_TapClient(client_factory(url), self.tap), self)  # noqa: E731
         wrapped_reader = lambda url: _TapReader(reader_factory(url), self.tap)  # noqa: E731
         self.prims = PrimitiveService(db, client_factory=wrapped_client, reader_factory=wrapped_reader,
                                       sink_factory=sink_factory, actor=cl.ACTOR_RUNNER)
@@ -1306,6 +1341,16 @@ class _BatchRun:
                 vendor_message(entry["responseBody"], self.base_url) or f"status {status}")
             case.steps.append(Step(str(entry["method"]), str(entry["path"]), status,  # type: ignore[arg-type]
                                    _scrub(entry["requestBody"]), response=answer))  # type: ignore[arg-type]
+
+    def _posts_since(self, since: datetime) -> int:
+        from sqlalchemy import func as sa_func
+        from modules.autocount.models import AcApiCallLog
+
+        self.db.rollback()
+        return int(self.db.query(sa_func.count(AcApiCallLog.id)).filter(
+            AcApiCallLog.tenant_id == self.tenant_id, AcApiCallLog.company_id == self.company.id,
+            AcApiCallLog.actor == cl.ACTOR_RUNNER, AcApiCallLog.created_at >= since,
+            AcApiCallLog.method == "POST").scalar() or 0)
 
     def _call_log_counts(self, since: datetime) -> "tuple[int, int]":
         """``(rows, PUT rows)`` this company's runner calls added to ``ac_api_call_log`` since ``since``."""
@@ -1474,6 +1519,80 @@ class _BatchRun:
         case.observed = (f"first {first.outcome} {first.error_code or ''} ({puts_first} PUT); resend with the same key "
                          f"{second.outcome} {second.error_code or ''}").strip()
         case.status = PASS if first.outcome == "refused" and puts_first == 0 and second.outcome == "done" else FAIL
+
+
+    def b07(self, case: CaseResult) -> None:
+        case.expected = ("a batch whose quantity is within the PO row's free quantity but above the SO row's "
+                         "outstanding: refused QTY_ABOVE_OUTSTANDING, naming the SO row, 0 PUTs")
+        if self.po is None or "SO2" not in self.so:
+            case.status, case.observed = SKIPPED, "B00 did not pass"
+            return
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        so_key = self._so_row("SO2", 1)
+        linked = sum((_num(r.get("Qty")) for r in self._rows(doc) if r.get("FromSODtlKey") == so_key), Decimal(0))
+        outstanding = Decimal(10) - linked
+        free = _num((self._po_row(doc, self.keys["A"]) or {}).get("Qty"))
+        qty = outstanding + 1
+        if qty > free:
+            case.observed = f"setup: free row {free} cannot carry {qty}"
+            return
+        link = {"so_doc_key": int(self.so["SO2"].doc_key or 0), "so_dtl_key": so_key, "qty": qty}
+        params = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys["A"], "links": [link], "doc_date": self.today}
+        res = self._timed(case, "refused above outstanding", 1, lambda: self._run_op("link_batch", "b07", params))
+        puts = self.timings[-1]["puts"]
+        case.observed = f"{res.outcome} {res.error_code or ''} (qty {qty}, outstanding {outstanding}, free {free}, {puts} PUT)".strip()
+        case.status = PASS if (res.outcome == "refused" and res.error_code == "QTY_ABOVE_OUTSTANDING"
+                               and puts == 0 and str(so_key) in res.message) else FAIL
+
+    def _create_case(self, case: CaseResult, key: str, fault: str, number: Optional[str], qty: int) -> None:
+        """A QT create through ``run_primitive`` with an armed fault, then the SAME key resent."""
+        header: Dict[str, object] = {"docNo": number} if number else {}
+        header["debtorCode"] = self.debtor
+        params = {"header": header, "lines": [{"itemCode": _Q_ITEM["ItemCode"], "qty": qty, "uom": _Q_ITEM["UOM"]}]}
+        vendor_header = self._header(DebtorCode=self.debtor, **({"DocNo": number} if number else {}))
+        lines = [self._row(qty, "HQ")]
+
+        def send():
+            return self.ops.run_primitive(
+                tenant_id=self.tenant_id, company_id=self.company.id, key_id=None,
+                idempotency_key=f"{self.tag}-{key}", name="create_doc", kind="QT", doc_key=None, params=params,
+                call=lambda: self.prims.create_doc(**self._args("QT"), header=vendor_header, lines=lines))
+
+        since = datetime.now(timezone.utc)
+        start = len(self.tap.writes)
+        self.fault = fault
+        first = send()
+        second = send()
+        third = send()  # the key is settled now: a further resend changes nothing
+        self._record(case, start)
+        posts = self._posts_since(since)
+        found = second.get("outcome") == "done" and second.get("docNo")
+        landed = fault == "after"
+        ok = (first.get("outcome") == "pending_verification" and second.get("outcome") == "done" and bool(found)
+              and third.get("docNo") == second.get("docNo") and posts == 1)
+        if landed:
+            try:  # the document the resend named is the one AutoCount saved
+                ok = ok and self.prims._reader_for(self.base_url).get_by_doc_no("QT", str(found)).get("DocNo") == found
+            except DocReadError:
+                ok = False
+        case.observed = (f"first {first.get('outcome')} {first.get('errorCode') or ''}; resend {second.get('outcome')} "
+                         f"{second.get('docNo') or ''}; {posts} POST in ac_api_call_log").strip()
+        case.status = PASS if ok else FAIL
+
+    def b08(self, case: CaseResult) -> None:
+        case.expected = ("the POST lands, then times out; the resend of the SAME key looks the document up "
+                         "(<<New>> body: day list, debtor, time window, lines), answers done with its DocNo, 0 second POST")
+        self._create_case(case, "b08", "after", None, 3)
+
+    def b09(self, case: CaseResult) -> None:
+        case.expected = ("the call times out before anything is sent; the resend finds no document, releases the "
+                         "key and POSTs once: 1 POST in total")
+        self._create_case(case, "b09", "before", None, 4)
+
+    def b10(self, case: CaseResult) -> None:
+        case.expected = ("numbered body: the POST lands, then times out; the resend finds the document by DocNo, "
+                         "answers done, 0 second POST")
+        self._create_case(case, "b10", "after", f"{_doc_prefix(self.tag)}-QTN", 5)
 
 
 def _timing_table(rows: List[Dict[str, object]]) -> str:

@@ -1,4 +1,4 @@
-"""Plan 62 S5: the db3 runner's ``--suite batch`` (B00..B06), run against the fake vendor.
+"""Plan 62 S5: the db3 runner's ``--suite batch`` (B00..B10), run against the fake vendor.
 
 ``run_batch_suite`` drives the REAL ``OperationService`` (ops ``link_batch`` / ``link_row`` /
 ``unlink_row``) over documents it creates, taps every vendor request into the exact evidence, and renders
@@ -16,7 +16,7 @@ from tests.test_autocount_write_back_operations import OpHarness, db, h  # noqa:
 from tests.test_autocount_write_back_primitives import DB3
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
-IDS = [f"B{n:02d}" for n in range(0, 7)]
+IDS = [f"B{n:02d}" for n in range(0, 11)]
 DB1 = "https://ac.example.test/api/db1"
 
 
@@ -27,6 +27,7 @@ def _runner():
 
 
 def run_suite(h: OpHarness):
+    h.vendor.stamp_created = True  # created documents carry CreatedTimeStamp, as db3 does (the create-resend lookup)
     return _runner().run_batch_suite(
         h.db, tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, creditor_code="400-N004",
         debtor_code="301-B018", run_tag="T1", **h.factories())
