@@ -38,6 +38,15 @@ class SoRowBusy(Exception):
     connection is available."""
 
 
+def _connect_args(url: Any) -> Dict[str, str]:
+    """The app's ``application_name`` (so the lock connections show up in pg_stat_activity like every other
+    connection of this process, ``-lock`` appended); nothing else of the app's connect args."""
+    from app.database import app_connect_args
+
+    name = app_connect_args(str(url)).get("application_name")
+    return {"application_name": f"{name}-lock"} if name else {}
+
+
 def _lock_engine(bind: Any) -> Any:
     """The dedicated lock engine for the database of ``bind`` (built once per URL); ``bind`` itself when it
     carries no URL (a test double)."""
@@ -51,6 +60,7 @@ def _lock_engine(bind: Any) -> Any:
             engine = create_engine(
                 url, pool_size=LOCK_POOL_SIZE, max_overflow=0, pool_timeout=LOCK_POOL_TIMEOUT,
                 pool_pre_ping=True, isolation_level="AUTOCOMMIT",
+                connect_args=_connect_args(url),
             )
             _engines[key] = engine
     return engine
