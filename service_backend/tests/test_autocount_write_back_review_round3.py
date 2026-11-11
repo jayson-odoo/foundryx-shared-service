@@ -80,6 +80,7 @@ def test_r3_1_a_stored_create_row_without_first_attempt_info_resends_without_a_5
 def test_r3_2_a_lock_connection_failure_is_a_busy_refusal_with_nothing_stored(h, monkeypatch):
     w = World(h)
     orig = h.db.get_bind
+    broken = {"on": True}
 
     class Engine:
         dialect = SimpleNamespace(name="postgresql")
@@ -92,7 +93,7 @@ def test_r3_2_a_lock_connection_failure_is_a_busy_refusal_with_nothing_stored(h,
             raise OperationalError("connect", {}, Exception("QueuePool limit reached, connection timed out"))
 
     def get_bind(*a, **k):
-        if sys._getframe(1).f_globals.get("__name__") == "modules.autocount.write_back.link_lock":
+        if broken["on"] and sys._getframe(1).f_globals.get("__name__") == "modules.autocount.write_back.link_lock":
             return Engine()  # force the Postgres branch for the lock only
         return orig(*a, **k)
 
@@ -102,7 +103,7 @@ def test_r3_2_a_lock_connection_failure_is_a_busy_refusal_with_nothing_stored(h,
     assert h.vendor.writes() == []
     h.db.expire_all()
     assert h.db.query(AcWriteOperation).filter_by(idempotency_key="lk-1").count() == 0  # the key stays usable
-    monkeypatch.undo()
+    broken["on"] = False  # the pool recovers
     again = h.run("link_row", w.params["link_row"], key="lk-1")
     assert again.outcome == "done", (again.outcome, again.error_code)
 
