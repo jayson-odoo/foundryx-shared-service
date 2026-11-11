@@ -12,6 +12,7 @@ committed as it is reached.
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack
 import time
 import uuid
 from datetime import date
@@ -69,6 +70,7 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 )
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
+from modules.autocount.write_back.link_index import refresh_po_links_from_doc
 from modules.autocount.write_back.link_lock import SoRowBusy, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
@@ -264,6 +266,7 @@ def verify_relocate(
 class WriteBackService(WriteFrame):
     #: True when the caller (an operation) already holds the SO row lock for this link
     so_lock_held: bool = False
+    _lock_stack: ExitStack = ExitStack()
 
     # ── public flows ─────────────────────────────────────────────────────────
 
@@ -468,13 +471,14 @@ class WriteBackService(WriteFrame):
         except _Stop as stop:
             return stop.result
         row_id = row.id
+        self._lock_stack = ExitStack()
         try:
             if plan.action == ACTION_LINK and plan.so_dtl_key and not self.so_lock_held:
-                # the over-link guard and the PUT run under the per-SO-row lock (link_lock); an operation that
-                # already holds it (split_link) sets ``so_lock_held``
+                # the over-link guard and PUT 1 run under the per-SO-row lock (link_lock), released once PUT 1
+                # is verified and the index follows it; an operation that already holds it (split_link)
+                # sets ``so_lock_held``
                 try:
-                    with so_row_locks(self.db, company.id, [plan.so_dtl_key]):
-                        return self._execute(plan, company, base_url, row, expected_last_modified)
+                    self._lock_stack.enter_context(so_row_locks(self.db, company.id, [plan.so_dtl_key]))
                 except SoRowBusy:
                     return self._finish(row, OUTCOME_REFUSED, DOC_BUSY)
             return self._execute(plan, company, base_url, row, expected_last_modified)
@@ -487,9 +491,8 @@ class WriteBackService(WriteFrame):
             outcome = OUTCOME_PENDING if self._put_sent else OUTCOME_REFUSED
             return self._finish(row, outcome, INTERNAL_ERROR)
         finally:
+            self._lock_stack.close()
             self.db.rollback()
-
-
 
     def _check_capability(self, plan: _Plan, row: AcWriteAction) -> None:
         """Unlink and SPO unlink are refused outright while the vendor does not
@@ -699,6 +702,11 @@ class WriteBackService(WriteFrame):
             ok = verify_readback(before, after, body, ignore_new_row_location=is_split)
         if not ok:
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
+        if plan.action == ACTION_LINK:  # the next guard sees PUT 1 before the SO row lock is released
+            refresh_po_links_from_doc(self.db, company.tenant_id, company.id,
+                                      f"{company.database_name}:{plan.doc_key}", after)
+            self.db.commit()
+        self._lock_stack.close()
         if is_split and so_doc is not None and plan.so_dtl_key is not None:
             return self._finish_split(plan, company, client, row, reader, before, after, body, so_doc)
         result = self._finish(row, OUTCOME_DONE, document=after)
