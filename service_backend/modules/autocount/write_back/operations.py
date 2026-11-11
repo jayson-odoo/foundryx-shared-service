@@ -1497,7 +1497,8 @@ class OperationService:
         )
         body = (f'<div style="font-family:Arial,sans-serif;font-size:14px;color:#111827">'
                 f"<p>{html.escape(lead)}</p><table>{cells}</table></div>")
-        subject = _safe_subject(f"AutoCount line needs re-keying: {event['company']} {event['docNo']}")
+        what = "AutoCount line to check" if event.get("mode") == "check" else "AutoCount line needs re-keying"
+        subject = _safe_subject(f"{what}: {event['company']} {event['docNo']}")
         for address, _zone in alert_recipients(self.db, event["tenantId"], []):
             email_service.enqueue_raw(
                 self.db, event["tenantId"], address, subject, body, text,
