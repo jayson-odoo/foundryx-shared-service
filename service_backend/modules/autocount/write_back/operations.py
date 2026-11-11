@@ -1277,7 +1277,10 @@ class OperationService:
                 early = self._create_resend(existing, tenant_id, company_id, replay)
                 if early is not None:
                     return early
-            elif self._nothing_landed(existing.status, existing.error_code):  # plan 62 D6: run fresh
+            elif (existing.status == OUTCOME_REFUSED if name == "create_doc"
+                  else self._nothing_landed(existing.status, existing.error_code)):
+                # plan 62 D6: run fresh. A create stored before its first attempt was recorded cannot be
+                # looked up, so only SS's own refusal releases it; a vendor failure stays locked
                 self._release_key(existing)
             else:
                 return replay(existing)
