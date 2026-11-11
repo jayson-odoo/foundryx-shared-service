@@ -76,7 +76,7 @@ object, or a field of the wrong type: `422 INVALID_REQUEST` (flat error, section
 
 ### 4.0 Idempotency and retry (plan 62, every operation route and every document primitive)
 
-`Idempotency-Key` is REQUIRED on `po-links/batch` (missing: `422 INVALID_REQUEST`) and as stated by plan 57
+`Idempotency-Key` is REQUIRED on `po-links/batch` (missing: `422 IDEMPOTENCY_KEY_REQUIRED`; over 128 or unprintable characters: `422 IDEMPOTENCY_KEY_INVALID`) and as stated by plan 57
 on the other operation routes. The key names one intended change; the stored first outcome decides what a
 resend does:
 
