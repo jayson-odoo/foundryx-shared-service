@@ -457,6 +457,9 @@ async function chooseSkipFor(text: RegExp | string) {
   fireEvent.click(rowSelect(text));
   const options = await screen.findAllByRole('option');
   fireEvent.click(options.find((o) => o.textContent === 'Skip this channel') as HTMLElement);
+  // The popover closes through a motion exit that unmounts on a later task, and the
+  // page behind it stays aria-hidden until then, so wait for the picker to be gone.
+  await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
 }
 
 async function renderWithUnreadable(pf: MigrationPreflight = unreadablePreflight()) {
