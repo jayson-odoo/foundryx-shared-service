@@ -104,16 +104,77 @@ def _shape(statement):
     return re.sub(r"IN \(\?(?:, ?\?)*\)", "IN (?)", statement)
 
 
+def _pin_preview(rig, cid, n):
+    """A final channel-bearing message with a distinct, ordered created_at, so the contact's list
+    preview is this message (never a tie broken by random ids)."""
+    from datetime import datetime, timedelta, timezone
+
+    db = rig.sf()
+    try:
+        db.add(ConversationMessage(tenant_id=DEFAULT_TENANT_ID, contact_id=cid, channel_id=rig.channel,
+                                   sender_type="CONTACT", message_type="TEXT", body="latest",
+                                   created_at=datetime(2099, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=n)))
+        db.commit()
+    finally:
+        db.close()
+
+
 def test_the_list_counts_with_the_same_number_of_statements_for_3_and_10_contacts(client, rig):
     cids = [rig.footprint(f"+6010000070{i}", f"p{i}")["cid"] for i in range(3)]
+    for n, cid in enumerate(cids):
+        _pin_preview(rig, cid, n)
     run = _measured_list_request(client, rig)
     first = run()
-    assert all(first[c]["messageCount"] == 6 for c in cids)  # control: the fields exist and are filled
+    assert all(first[c]["lastMessagePreview"] == "latest" for c in cids)  # control: the pinned preview
+    assert all(first[c]["messageCount"] == 7 for c in cids)  # control: the fields exist and are filled
     n3 = [_shape(x) for x in _count_statements(rig.sf, run)]
     for i in range(3, 10):
-        rig.footprint(f"+6010000070{i}", f"p{i}")
-    assert len(run()) == 10
+        _pin_preview(rig, rig.footprint(f"+6010000070{i}", f"p{i}")["cid"], i)
+    page10 = run()
+    assert len(page10) == 10
+    assert all(c["lastMessagePreview"] == "latest" for c in page10.values())  # control: pinned on every row
     n10 = [_shape(x) for x in _count_statements(rig.sf, run)]
+    more, fewer = Counter(n10) - Counter(n3), Counter(n3) - Counter(n10)
+    assert len(n10) == len(n3), (
+        f"statements grew with the page: {len(n3)} -> {len(n10)}; extra in 10: {dict(more)}; extra in 3: {dict(fewer)}"
+    )
+
+
+def _contact_with_preview(rig, phone, *, with_channel):
+    """One contact whose ONLY non-SYSTEM message (so its list preview) carries a channel id or not."""
+    from datetime import datetime, timezone
+
+    cid = _contact(rig.sf, rig.ws, phone)
+    db = rig.sf()
+    try:
+        db.add(ConversationMessage(tenant_id=DEFAULT_TENANT_ID, contact_id=cid,
+                                   channel_id=rig.channel if with_channel else None,
+                                   sender_type="CONTACT", message_type="TEXT", body="hello",
+                                   created_at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)))
+        db.commit()
+    finally:
+        db.close()
+    return cid
+
+
+def _statements_for_page(client, rig, run):
+    assert len(run()) >= 1  # warm
+    return [_shape(x) for x in _count_statements(rig.sf, run)]
+
+
+@pytest.mark.parametrize("with_channel", [False, True])
+def test_the_statement_count_compares_pages_with_the_same_preview_shape(client, rig, with_channel):
+    """The list resolves channel types and identity windows only when some preview carries a
+    channel id, so only pages of the SAME preview shape (every preview channel-bearing, or none)
+    may be compared: the count must not grow with the rows either way."""
+    for i in range(3):
+        _contact_with_preview(rig, f"+6010000072{i}", with_channel=with_channel)
+    run = _measured_list_request(client, rig)
+    n3 = _statements_for_page(client, rig, run)
+    for i in range(3, 10):
+        _contact_with_preview(rig, f"+6010000072{i}", with_channel=with_channel)
+    assert len(run()) == 10
+    n10 = _statements_for_page(client, rig, run)
     more, fewer = Counter(n10) - Counter(n3), Counter(n3) - Counter(n10)
     assert len(n10) == len(n3), (
         f"statements grew with the page: {len(n3)} -> {len(n10)}; extra in 10: {dict(more)}; extra in 3: {dict(fewer)}"
