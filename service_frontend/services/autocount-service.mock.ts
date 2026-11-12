@@ -38,6 +38,9 @@ import {
 import type {
   AutocountApiConnection,
   AutocountApprovalResult,
+  AutocountCall,
+  AutocountCallDetail,
+  AutocountCallFilterOptions,
   AutocountCombineConfig,
   AutocountCompany,
   AutocountCompanyCreateInput,
@@ -109,6 +112,7 @@ import type {
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import type {
+  AutocountCallsQuery,
   AutocountListQuery,
   AutocountService,
   DocFeedIssuesQuery,
@@ -3768,7 +3772,42 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
   ): Promise<ListResult<DocFeedIssue>> {
     return mockListDocFeedIssues(companyId, query);
   },
+
+  async listCalls(query: AutocountCallsQuery = {}): Promise<ListResult<AutocountCall>> {
+    const rows = MOCK_CALLS.filter(
+      (c) =>
+        (!query.book?.length || query.book.includes(c.book ?? '')) &&
+        (!query.outcome?.length || query.outcome.includes(c.outcome)),
+    );
+    const page = query.page ?? 0;
+    const size = query.pageSize ?? 25;
+    return { data: rows.slice(page * size, page * size + size), total: rows.length, page };
+  },
+
+  async getCallFilterOptions(): Promise<AutocountCallFilterOptions> {
+    return { books: ['db3'], docTypes: ['SO'], outcomes: ['ok', 'http_error'], persons: [] };
+  },
+
+  async getCall(id: string): Promise<AutocountCallDetail> {
+    const row = MOCK_CALLS.find((c) => c.id === id) ?? MOCK_CALLS[0];
+    return { ...row, requestJson: null, responseBody: null, responseTruncated: false };
+  },
 };
+
+const MOCK_CALLS: AutocountCall[] = [
+  {
+    id: 'mock-call-1', createdAt: '2026-11-05T07:04:00Z', companyId: 'company-1', companyName: 'AED VSoft',
+    book: 'db3', actingUserId: null, actingUserName: null, method: 'PUT', path: '/EditSalesOrderbydockey',
+    docType: 'SO', docNo: 'SO-100', outcome: 'ok', responseStatus: 200, durationMs: 42, errorCode: null,
+    requestId: null,
+  },
+  {
+    id: 'mock-call-2', createdAt: '2026-11-05T07:05:00Z', companyId: 'company-1', companyName: 'AED VSoft',
+    book: 'db3', actingUserId: null, actingUserName: null, method: 'POST', path: '/NewQuotation',
+    docType: 'QT', docNo: null, outcome: 'http_error', responseStatus: 500, durationMs: 120, errorCode: null,
+    requestId: null,
+  },
+];
 
 /** A realistic supplier/customer mapping view for the editor's tunable states. */
 function masterMappingView(entityType: string): AutocountMappingView {

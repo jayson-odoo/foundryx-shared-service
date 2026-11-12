@@ -16,7 +16,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -31,6 +31,7 @@ from ..http_client import (
     autocount_guarded_client,
 )
 from ..payloads import bound_payload, mark_truncated
+from ..write_back.auth import mask as auth_mask, secrets_of as auth_secrets_of
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -184,8 +185,11 @@ class HttpApiClient:
         *,
         transport: Optional[httpx.Client] = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        auth_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
+        self._auth_headers: Dict[str, str] = dict(auth_headers or {})
+        self._secrets: Tuple[str, ...] = auth_secrets_of(auth_headers or {})
         self.timeout_seconds = timeout_seconds
         self._transport = transport
         self._owns_transport = transport is None
@@ -266,14 +270,14 @@ class HttpApiClient:
             response = self._client.get(
                 url,
                 params=params,
-                headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+                headers={"Accept": "application/json", "User-Agent": USER_AGENT, **self._auth_headers},
                 timeout=self.timeout_seconds,
             )
         except UrlGuardError as exc:
-            self._record_call(path, params, None, started, error=f"blocked: {exc}")
+            self._record_call(path, params, None, started, error=self._masked(f"blocked: {exc}"))
             raise HttpTransportError(str(exc), is_timeout=False) from exc
         except httpx.TimeoutException as exc:
-            self._record_call(path, params, None, started, error=f"timeout: {exc}")
+            self._record_call(path, params, None, started, error=self._masked(f"timeout: {exc}"))
             raise HttpTransportError(
                 f"{self.base_url}{path} did not respond within "
                 f"{self.timeout_seconds:g}s.",
@@ -281,7 +285,7 @@ class HttpApiClient:
             ) from exc
         except httpx.HTTPError as exc:
             self._record_call(
-                path, params, None, started, error=f"{type(exc).__name__}: {exc}"
+                path, params, None, started, error=self._masked(f"{type(exc).__name__}: {exc}")
             )
             raise HttpTransportError(
                 f"Could not reach {self.base_url}{path} ({type(exc).__name__}).",
@@ -289,6 +293,10 @@ class HttpApiClient:
             ) from exc
         self._record_call(path, params, response, started)
         return response
+
+    def _masked(self, text: str) -> str:
+        """Exception text with the API key (if one is attached) replaced by ``***``."""
+        return auth_mask(text, self._secrets) if self._secrets else text
 
     def _record_call(
         self,

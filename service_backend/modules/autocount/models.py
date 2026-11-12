@@ -1133,6 +1133,10 @@ class AcWriteAction(AutocountBase):
     step = Column(String, nullable=True)
     request_method = Column(String, nullable=True)
     request_path = Column(String, nullable=True)
+    # plan 63: the caller's request id and the person who caused the write (NULL = unknown)
+    request_id = Column(String, nullable=True)
+    acting_user_id = Column(String, nullable=True)
+    acting_user_name = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
 
@@ -1211,6 +1215,9 @@ class AcApiCallLog(AutocountBase):
     duration_ms = Column(Integer, nullable=False, default=0)
     outcome = Column(String, nullable=False)  # ok | http_error | timeout | connect_error | guard_refused
     error_code = Column(String, nullable=True)
+    # plan 63: the person in the calling system who caused the write (NULL = unknown)
+    acting_user_id = Column(String, nullable=True)
+    acting_user_name = Column(String, nullable=True)
 
 
 class AcPoSoLink(AutocountBase):

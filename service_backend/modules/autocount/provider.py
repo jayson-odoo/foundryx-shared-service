@@ -37,6 +37,15 @@ from .http_client import (
     assert_autocount_base_url_deliverable,
     probe_open_connection,
 )
+from .write_back.guard import host_allowlisted
+from .write_back.auth import (
+    DEFAULT_FORMAT,
+    DEFAULT_HEADER,
+    MESSAGE as AUTH_INVALID_MESSAGE,
+    AuthConfigInvalid,
+    auth_headers,
+    settings_problem,
+)
 from .http_source.client import (
     MAX_CONCURRENT_PAGES_FIELD_DEFAULT,
     MAX_CONCURRENT_PAGES_FIELD_MAX,
@@ -221,6 +230,48 @@ class AutoCountProvider:
                 "max": MAX_CONCURRENT_PAGES_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
+            # plan 63 - the optional AutoCount API key. Blank key = no auth
+            # header at all (a connection saved before this has none of these
+            # keys and behaves as "no key"). Defaults apply only once a key is set.
+            {
+                "key": "apiKey",
+                "label": "API key",
+                "type": "password",
+                "required": False,
+                "secret": True,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "apiKeyHeader",
+                "label": "API key header",
+                "type": "text",
+                "required": False,
+                "default": DEFAULT_HEADER,
+                "defaultValue": DEFAULT_HEADER,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "apiKeyFormat",
+                "label": "API key format",
+                "type": "text",
+                "required": False,
+                "default": DEFAULT_FORMAT,
+                "defaultValue": DEFAULT_FORMAT,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "apiKeyOnReads",
+                "label": "Send API key on reads",
+                "type": "select",
+                "required": False,
+                "default": "no",
+                "defaultValue": "no",
+                "options": [
+                    {"value": "no", "label": "No"},
+                    {"value": "yes", "label": "Yes"},
+                ],
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
         ]
 
     def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
@@ -292,6 +343,16 @@ class AutoCountProvider:
                     f"{MAX_CONCURRENT_PAGES_FIELD_MAX}."
                 )
 
+        auth_problem = settings_problem(config)
+        if auth_problem:
+            return auth_problem
+        if (
+            base_url
+            and str((config or {}).get("apiKeyOnReads") or "").strip().lower() == "yes"
+            and not host_allowlisted(base_url)
+        ):
+            return "Sending the API key on reads is only available for the AutoCount write host."
+
         # LAST, because it is the only check here that can touch the network
         # (the guard resolves the host to catch a name pointing at an internal
         # address): a plain out-of-range number is refused without paying for
@@ -343,7 +404,12 @@ class AutoCountProvider:
             # for this wrapper's own real-world response time.
             started = time.monotonic()
             try:
-                rows = probe_open_connection(base_url, transport=transport)
+                rows = probe_open_connection(
+                    base_url, transport=transport,
+                    headers=auth_headers(config, credentials, for_read=True),
+                )
+            except AuthConfigInvalid:
+                return TestResult(ok=False, message=AUTH_INVALID_MESSAGE)
             except OpenProbeError as exc:
                 return TestResult(ok=False, message=exc.message)
             elapsed_seconds = time.monotonic() - started

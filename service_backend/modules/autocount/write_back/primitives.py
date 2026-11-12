@@ -391,7 +391,7 @@ class PrimitiveService(WriteFrame):
         if base_url is None:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, refusal[0])  # type: ignore[index]
         try:
-            guard.assert_test_company(self.db, company.tenant_id, company.id)
+            guard.assert_test_company(self.db, company.tenant_id, company.id, book=guard.book_of(base_url))
         except guard.WriteConnectionError as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
         found, code = self.find_date(company, kind_def.name, doc_key, doc_date)
@@ -421,6 +421,7 @@ class PrimitiveService(WriteFrame):
                 doc_type=str(call.kind)[:16], doc_key=call.doc_key, dtl_key=call.dtl_key,
                 outcome=OUTCOME_REFUSED, key_id=call.key_id, operation_id=call.operation_id,
                 step=call.step, created_at=datetime.now(timezone.utc),  # step order = time order
+                **self._trace_columns(),
             )
         )
 
@@ -648,20 +649,20 @@ class PrimitiveService(WriteFrame):
             return self._wrap(self._finish(row, OUTCOME_PENDING, exc.code))
         row.response_status = response.status_code
         if response.ok:
-            row.response_json = _safe_body(response.body)
+            row.response_json = _safe_body(response.stored)
         if not response.ok:
             refusal = _vendor_refusal(call.primitive, response.status_code, response.body)
             if refusal is not None:  # AutoCount said why; nothing changed (F7, F10, F11)
-                message = vendor_message(response.body, base_url)
+                message = vendor_message(response.stored, base_url)
                 row.response_json = {"message": message}
                 return self._wrap(self._finish(row, OUTCOME_REFUSED, refusal, message=message))
             if is_business_refusal(response.status_code, response.body):
-                message = vendor_message(response.body, base_url)
+                message = vendor_message(response.stored, base_url)
                 row.response_json = {"message": message}  # the same safe text, never the stack
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message),
                                   vendor_class=vendor_class_of(response.body))
             # a bare failure (an IIS page, a stack): the status and redacted text only (AC-57-47)
-            text = vendor_message(response.body, base_url)
+            text = vendor_message(response.stored, base_url)
             row.response_json = {"text": text}
             return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR, message=text),
                               vendor_class=vendor_class_of(response.body))

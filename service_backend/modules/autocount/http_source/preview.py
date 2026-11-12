@@ -108,6 +108,7 @@ def run_http_preview(
     lookups: Optional[List[Dict[str, Any]]] = None,
     transport: Optional[httpx.Client] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    auth_headers: Optional[Dict[str, str]] = None,
     # sprint-5/11 review round 2 (item 5, AC-11-40) - the SAME progress
     # checkpoint shape ``HttpApiSource``'s own ``heartbeat`` uses, stamped
     # before the page-1 request and before each lookup's own request.
@@ -127,7 +128,8 @@ def run_http_preview(
     # preview_http``/``preview_http_columns``) now pass the SAME value
     # ``http_source.source.HttpApiSource`` builds a real run's client with
     # (``http_source.client.connection_sizing``).
-    client = HttpApiClient(base_url, transport=transport, timeout_seconds=timeout_seconds)
+    extra: Dict[str, Any] = {"auth_headers": auth_headers} if auth_headers else {}
+    client = HttpApiClient(base_url, transport=transport, timeout_seconds=timeout_seconds, **extra)
     started = time.monotonic()
     try:
         if on_page is not None:

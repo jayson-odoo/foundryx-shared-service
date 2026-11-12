@@ -39,6 +39,7 @@ from ..models import (
     AcDocFeedRun,
 )
 from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
+from ..write_back.auth import AuthConfigInvalid, read_headers as auth_read_headers
 from ..repositories import CompanyRepository, ConnectionRepository
 from ..scheduler import active_tenant_service_join
 from ..repositories.doc_feed_repository import (
@@ -186,9 +187,16 @@ def resolve_vendor(db, feed_row: AcDocFeed, *, vendor_transport=None) -> Resolve
     # `HttpApiSource.__init__` (`http_source/source.py:302-318`) - dropping
     # the path down to scheme+host (the former `_host_root`) sent every GET
     # to the bare host and 404d on every real vendor read.
+    try:
+        read_auth = auth_read_headers(conn)
+    except AuthConfigInvalid:
+        raise RunRefusal(
+            "AUTH_CONFIG_INVALID", "The API key settings of this feed's connection are not valid."
+        ) from None
     vendor_client = HttpApiClient(
         str((conn.config_json or {}).get("baseUrl") or ""),
         transport=vendor_transport, timeout_seconds=sizing.request_timeout_seconds,
+        auth_headers=read_auth,
     )
     return ResolvedVendor(
         company=company, vendor_client=vendor_client, vendor=DocFeedVendor(vendor_client),

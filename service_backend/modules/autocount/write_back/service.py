@@ -530,6 +530,7 @@ class WriteBackService(WriteFrame):
                 dtl_key=plan.dtl_key,
                 outcome=OUTCOME_REFUSED,
                 key_id=key_id,
+                **self._trace_columns(),
             )
         )
 
@@ -680,7 +681,7 @@ class WriteBackService(WriteFrame):
             return self._finish(row, OUTCOME_PENDING, exc.code)
         row.response_status = response.status_code
         # a failure keeps its status and the redacted text only (AC-57-47); a success as it came
-        row.response_json = _safe_body(response.body) if response.ok else {"text": vendor_message(response.body, base_url)}
+        row.response_json = _safe_body(response.stored) if response.ok else {"text": vendor_message(response.stored, base_url)}
         if not response.ok:  # carry AutoCount's own (redacted, capped) text to the answer
             return self._finish(
                 row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR", message=row.response_json["text"]
@@ -786,8 +787,8 @@ class WriteBackService(WriteFrame):
         else:
             row.response_json = [
                 row.response_json[0],
-                _safe_body(response.body) if response.ok
-                else {"text": vendor_message(response.body, getattr(client, "base_url", ""))},
+                _safe_body(response.stored) if response.ok
+                else {"text": vendor_message(response.stored, getattr(client, "base_url", ""))},
             ]
             row.response_status = [first_status, response.status_code]
             if response.ok and not self._expired():
@@ -825,14 +826,16 @@ def set_write_connection(
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
     # AC-57-22: company-scoped data first. A company that reads SQL, or already holds
     # documents staged by another job, is a live book: it never gets a write connection.
-    guard.assert_test_company(db, tenant_id, company.id)
     conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+    base_url = "" if conn is None else str((conn.config_json or {}).get("baseUrl") or "")
+    if conn is not None:
+        try:  # the URL gate first: a book that may not be written is reported as such
+            assert_write_allowed(base_url)
+        except WriteNotAllowed as exc:
+            raise WriteConnectionError(exc.code) from None
+    guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))
     if conn is None:
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
-    try:
-        assert_write_allowed(str((conn.config_json or {}).get("baseUrl") or ""))
-    except WriteNotAllowed as exc:
-        raise WriteConnectionError(exc.code) from None
     company.write_connection_id = conn.id
     db.commit()
     return company

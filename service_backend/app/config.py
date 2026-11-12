@@ -169,6 +169,14 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> List[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
+    # AutoCount write gate (plan 63): comma list of books that may be written, inside the
+    # code ceiling in modules/autocount/write_back/guard.py.
+    autocount_write_allowed_books: str = "db3"
+
+    @property
+    def autocount_write_allowed_books_list(self) -> List[str]:
+        return [b.strip() for b in self.autocount_write_allowed_books.split(",") if b.strip()]
+
     # Environment
     environment: str = "development"
     debug: bool = False

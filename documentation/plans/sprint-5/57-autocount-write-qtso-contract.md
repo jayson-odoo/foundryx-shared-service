@@ -7,6 +7,11 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 
 ## Changes
 
+- 2026-11-12 (plan 63): two optional request headers, `X-Acting-User-Id` and `X-Acting-User-Name`
+  (section 2a), on every write route of this contract and on the plan 55 routes; `X-Request-ID` is now
+  also stored on the write action rows (new section 8). Additive: nothing changes in the answer. No
+  version bump (this contract keeps a change log, not a version number; the sink `ContractVersion` in
+  section 6 is unchanged).
 - 2026-11-10 (plan 61 section 4.8): optional request header `X-Request-ID` (section 2a) on every write
   and read route of this contract and on the plan 55 routes. Additive: nothing changes in the answer.
 - 2026-11-10 (plan 61, AutoCount write API v2, db3 probes F1..F15): delete line, cancel, whole-row link,
@@ -97,6 +102,19 @@ Header `X-Request-ID: <1..128 printable ASCII characters>` on any route of this 
 for the request (its own per-call log, plan 61 section 4.8) so a CRM trace can be matched to what SS sent
 to AutoCount. Absent, blank, longer than 128 or not printable = ignored (never a refusal); SS then uses
 the `Idempotency-Key` when one was sent. It changes nothing else: not idempotency, not the answer.
+
+### 2a.1 Acting user (optional)
+
+Two further optional headers on the same routes, naming the CRM user who acted:
+
+- `X-Acting-User-Id: <1..64 printable ASCII characters>` (the CRM user id).
+- `X-Acting-User-Name: <display name>`, UTF-8 percent-encoded exactly as Python
+  `urllib.parse.quote(name, safe="")` does. After decoding it is at most 128 characters; Unicode control
+  and format characters (categories Cc, Cf) are removed.
+
+SS stores both on the write action row and in its per-call log, for audit only. Absent or invalid
+= stored empty, never a refusal; they change nothing else: not idempotency, not the answer. The CRM does
+not send or see any AutoCount-side API key: SS holds it on its own AutoCount connection.
 
 ## 3. Bodies (camelCase on the wire, mapped to AutoCount field names by an allowlist)
 
@@ -368,3 +386,10 @@ The other operation entries are enabled only when delete line, add line and edit
 (the replace PUT deletes and adds in one write), and for `link_row` / `relink_row` / `unlink_row` the
 vendor's whole-row link / unlink switch too: today the purchase-order operations read on and the
 shipping-purchase-order operations off.
+
+## 8. Correlation and tracing
+
+Per request the CRM may send `X-Request-ID` (section 2a) and the acting-user headers (section 2a.1). SS
+stores the request id on every AutoCount call it makes for the request and, since plan 63, on the write
+action rows too, together with the acting user id and name. Nothing is echoed back and nothing is
+required: a request with none of these headers behaves exactly as before.

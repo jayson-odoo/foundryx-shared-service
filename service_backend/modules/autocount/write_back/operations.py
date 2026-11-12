@@ -258,9 +258,11 @@ class OperationService:
 
     # ── public ───────────────────────────────────────────────────────────────
 
-    def use_request_id(self, request_id: Optional[str]) -> None:
-        """The caller's request id for the call log of every step (plan 61 section 4.8)."""
-        self.prims.use_request_id(request_id)
+    def use_trace(
+        self, request_id: Optional[str], person: "Tuple[Optional[str], Optional[str]]" = (None, None)
+    ) -> None:
+        """The caller's request id and acting person for every step (plan 61 section 4.8, plan 63)."""
+        self.prims.use_trace(request_id, person)
 
     def _reader(self, company: AcCompany, base_url: str, kind: str, doc_key: int, doc_no: Optional[str]) -> Any:
         """A reader whose GETs are logged under this operation (plan 61 section 4.8)."""
@@ -492,6 +494,8 @@ class OperationService:
                           params: Dict[str, Any]) -> OperationResult:
         base_url, refusal = self.prims._resolve_write_base_url(company)
         if base_url is None:
+            if refusal:
+                self.prims._log_refused_connection(company, refusal[0], doc_key=spec.doc_key)
             raise _Done(REFUSED, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
         self._check_test_company(company)
@@ -534,7 +538,8 @@ class OperationService:
 
     def _check_test_company(self, company: AcCompany, restore: Optional[str] = None) -> None:
         try:
-            guard.assert_test_company(self.db, company.tenant_id, company.id)
+            guard.assert_test_company(
+                self.db, company.tenant_id, company.id, book=self.prims._company_book(company))
         except WriteConnectionError as exc:
             raise _Done(restore or REFUSED, exc.code) from None
 
@@ -943,6 +948,8 @@ class OperationService:
         snap = row.snapshot_json or {}
         base_url, refusal = self.prims._resolve_write_base_url(company)
         if base_url is None:
+            if refusal:
+                self.prims._log_refused_connection(company, refusal[0], doc_key=int(snap.get("docKey") or 0) or None)
             raise _Done(was, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
         self._check_test_company(company, restore=was)
@@ -1230,6 +1237,7 @@ class OperationService:
             sink_factory=self.prims._sink_factory, actor=self.prims._actor, request_id=self.prims.request_id,
             operation_id=row.id,
         )
+        legacy.use_trace(self.prims.request_id, (self.prims.acting_user_id, self.prims.acting_user_name))
         legacy.so_lock_held = True  # _execute holds the SO row lock around this call
         qty = Decimal(str(params["qty"]))
         # the over-link guard of other callers counts this link while its outcome is unknown (pending_link_qty)

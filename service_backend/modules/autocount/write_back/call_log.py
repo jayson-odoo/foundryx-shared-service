@@ -20,10 +20,11 @@ import logging
 import re
 import string
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
-from urllib.parse import urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
@@ -60,6 +61,35 @@ def request_id_of(x_request_id: Optional[str], idempotency_key: Optional[str]) -
     return clean_request_id(x_request_id) or clean_request_id(idempotency_key)
 
 
+# The acting person (plan 63 section 3.3): who in the calling system caused the write.
+ACTING_USER_ID_HEADER = "X-Acting-User-Id"
+ACTING_USER_NAME_HEADER = "X-Acting-User-Name"
+ACTING_USER_ID_MAX = 64
+ACTING_USER_NAME_MAX = 128
+
+
+def _person_id(value: Optional[str]) -> Optional[str]:
+    if not value or len(value) > ACTING_USER_ID_MAX or not all(0x20 <= ord(c) <= 0x7E for c in value):
+        return None
+    return value
+
+
+def _person_name(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        decoded = unquote_to_bytes(value).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    cleaned = "".join(c for c in decoded if unicodedata.category(c) not in ("Cc", "Cf"))
+    return cleaned if 1 <= len(cleaned) <= ACTING_USER_NAME_MAX else None
+
+
+def person_of(user_id: Optional[str], user_name: Optional[str]) -> "tuple[Optional[str], Optional[str]]":
+    """``(id, name)`` from the two optional headers; an invalid one is None, never a refusal."""
+    return _person_id(user_id), _person_name(user_name)
+
+
 @dataclass
 class CallContext:
     """Who and what one call belongs to; the frame fills ``action_id`` / ``doc_no`` as
@@ -74,6 +104,8 @@ class CallContext:
     doc_type: Optional[str] = None
     doc_no: Optional[str] = None
     doc_key: Optional[int] = None
+    acting_user_id: Optional[str] = None
+    acting_user_name: Optional[str] = None
 
 
 _STACK_KEY = re.compile(r"stack\s*trace", re.IGNORECASE)
@@ -170,7 +202,8 @@ class CallLog:
                 request_json=request_json if method in ("POST", "PUT") else None,
                 response_status=status, response_body=text, response_truncated=truncated,
                 duration_ms=max(int((time.monotonic() - t0) * 1000), 0), outcome=outcome,
-                error_code=error_code,
+                error_code=error_code, acting_user_id=ctx.acting_user_id,
+                acting_user_name=ctx.acting_user_name,
             )
             session = Session(bind=self._bind)
             try:
@@ -182,11 +215,13 @@ class CallLog:
             logger.warning("autocount call log write failed (%s)", type(exc).__name__)
 
 
-def give_request_id(target: Any, request_id: Optional[str]) -> None:
-    """Hand the caller's request id to a write service (any object without the hook is left alone)."""
-    use = getattr(target, "use_request_id", None)
+def give_trace(
+    target: Any, request_id: Optional[str], person: "tuple[Optional[str], Optional[str]]" = (None, None)
+) -> None:
+    """Hand the caller's request id and acting person to a write service (any object without the hook is left alone)."""
+    use = getattr(target, "use_trace", None)
     if callable(use):
-        use(request_id)
+        use(request_id, person)
 
 
 def attach_call_log(target: Any, log: Optional[CallLog]) -> Any:

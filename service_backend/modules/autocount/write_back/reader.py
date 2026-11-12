@@ -13,7 +13,7 @@ a write). Uses the house SSRF-guarded client with redirects off. Every GET is on
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -21,7 +21,7 @@ import httpx
 from app.services.url_guard import UrlGuardError
 
 from modules.autocount.http_client import autocount_guarded_client
-from modules.autocount.write_back import call_log as cl
+from modules.autocount.write_back import auth, call_log as cl
 from modules.autocount.write_back.doc_kinds import KINDS
 
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
@@ -73,6 +73,13 @@ class AutoCountDocReader:
         self._transport = transport
         self._timeout = timeout
         self._call_log: Optional[cl.CallLog] = None
+        self._auth_headers: Dict[str, str] = {}
+        self._secrets: Tuple[str, ...] = ()
+
+    def set_auth_headers(self, headers: Mapping[str, str]) -> None:
+        """The optional API key header this client sends on every request (plan 63); never logged."""
+        self._auth_headers = dict(headers)
+        self._secrets: Tuple[str, ...] = auth.secrets_of(headers)
 
     def attach_call_log(self, log: "cl.CallLog") -> None:
         """Every GET from now on writes one row to ``log`` (plan 61 section 4.8)."""
@@ -83,7 +90,7 @@ class AutoCountDocReader:
         started = self._call_log.started() if self._call_log else None
         path = cl.vendor_path(self.base_url, urlsplit(url).path)
         try:
-            request = http.build_request("GET", url, params=params)
+            request = http.build_request("GET", url, params=params, headers=self._auth_headers)
             path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
             response = http.send(request)
         except httpx.TimeoutException:
@@ -92,7 +99,8 @@ class AutoCountDocReader:
         except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError):
             self._log(path, started, None, None, cl.CONNECT_ERROR, READ_FAILED)
             raise
-        self._log(path, started, response.status_code, response.text,
+        self._log(path, started, response.status_code,
+                  auth.mask(response.text, self._secrets) if self._secrets else response.text,
                   cl.OK if response.is_success else cl.HTTP_ERROR, None if response.is_success else READ_FAILED)
         return response
 

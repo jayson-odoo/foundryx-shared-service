@@ -31,7 +31,7 @@ export function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-type FormatStyle = 'date' | 'datetime' | 'time';
+type FormatStyle = 'date' | 'datetime' | 'time' | 'dmy';
 
 const STYLE_OPTIONS: Record<FormatStyle, Intl.DateTimeFormatOptions> = {
   // en-GB keeps the established display shape: 02 Jan 2024 13:45
@@ -44,6 +44,15 @@ const STYLE_OPTIONS: Record<FormatStyle, Intl.DateTimeFormatOptions> = {
     minute: '2-digit',
   },
   time: { hour: '2-digit', minute: '2-digit' },
+  // 05/11/2026, 3:04 pm - the 12-hour value is built in formatDmy, never left to the ICU hour cycle
+  dmy: {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  },
 };
 
 // Intl.DateTimeFormat construction is expensive and list cells render in the
@@ -76,7 +85,17 @@ function format(
   options?: DatetimeFormatOptions,
 ): string {
   const d = parseUtc(iso);
-  return d ? getFormatter(style, options?.timeZone).format(d) : '-';
+  if (!d) return '-';
+  const formatter = getFormatter(style, options?.timeZone);
+  return style === 'dmy' ? formatDmy(formatter, d) : formatter.format(d);
+}
+
+/** "05/11/2026, 3:04 pm" from 24-hour parts (0 -> 12 am, 12 -> 12 pm), whatever the locale data says. */
+function formatDmy(formatter: Intl.DateTimeFormat, d: Date): string {
+  const part = (type: string) => formatter.formatToParts(d).find((p) => p.type === type)?.value ?? '';
+  const hour24 = Number(part('hour')) % 24;
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${part('day')}/${part('month')}/${part('year')}, ${hour12}:${part('minute')} ${hour24 < 12 ? 'am' : 'pm'}`;
 }
 
 /** "02 Jan 2024" in the viewer's timezone. */
@@ -93,6 +112,14 @@ export function formatDateTime(
   options?: DatetimeFormatOptions,
 ): string {
   return format('datetime', iso, options);
+}
+
+/** "05/11/2026, 3:04 pm" (dd/mm/yyyy, h:mm am/pm) in the viewer's timezone. */
+export function formatDmyDateTime(
+  iso: string | null | undefined,
+  options?: DatetimeFormatOptions,
+): string {
+  return format('dmy', iso, options);
 }
 
 /** "13:45" in the viewer's timezone. */
@@ -194,4 +221,10 @@ export function dateKey(
   } catch {
     return new Intl.DateTimeFormat('en-CA').format(d);
   }
+}
+
+/** "05/11/2026" from a calendar-day key ("2026-11-05"); a pure string rewrite, so no timezone can shift the day. */
+export function formatDmyDate(dayKey: string | null | undefined): string {
+  const m = (dayKey ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '-';
 }

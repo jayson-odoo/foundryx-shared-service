@@ -38,7 +38,7 @@ describe('DocFeedBackfillDialog (AC-14-93)', () => {
     const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
     render(<DocFeedBackfillDialog feed="delivery_orders" mode="push" fullBackfillDoneAt={null} backfill={null} onClose={vi.fn()} onStart={vi.fn()} onStop={vi.fn()} />);
 
-    expect(screen.getByText('1 Jan - 11 Mar')).toBeInTheDocument();
+    expect(screen.getByText('01/01/2023 - 11/03/2026')).toBeInTheDocument();
   });
 
   it('has a Dry run switch, on by default', async () => {

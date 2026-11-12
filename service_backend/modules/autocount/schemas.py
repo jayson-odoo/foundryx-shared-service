@@ -1433,3 +1433,60 @@ class DocFeedIssueListOut(BaseModel):
     data: List[DocFeedIssueOut]
     total: int
     page: int = 0
+
+
+# ── calls view (plan 63 section 3.4) ─────────────────────────────────────────
+
+CallSortField = Literal[
+    "createdAt", "companyName", "book", "actingUserName", "method", "path", "docType", "docNo",
+    "outcome", "responseStatus", "durationMs", "errorCode", "requestId",
+]
+
+
+class CallRowOut(ApiModel):
+    """One logged AutoCount call as a list row (no bodies)."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    createdAt: datetime = Field(validation_alias="created_at")
+    companyId: str = Field(validation_alias="company_id")
+    companyName: Optional[str] = Field(default=None, validation_alias="company_name")
+    book: Optional[str] = None
+    actingUserId: Optional[str] = Field(default=None, validation_alias="acting_user_id")
+    actingUserName: Optional[str] = Field(default=None, validation_alias="acting_user_name")
+    method: str
+    path: str
+    docType: Optional[str] = Field(default=None, validation_alias="doc_type")
+    docNo: Optional[str] = Field(default=None, validation_alias="doc_no")
+    outcome: str
+    responseStatus: Optional[int] = Field(default=None, validation_alias="response_status")
+    durationMs: int = Field(default=0, validation_alias="duration_ms")
+    errorCode: Optional[str] = Field(default=None, validation_alias="error_code")
+    requestId: Optional[str] = Field(default=None, validation_alias="request_id")
+
+
+class CallDetailOut(CallRowOut):
+    """One call with the request JSON and the stored (already redacted) response body."""
+
+    requestJson: Optional[Any] = Field(default=None, validation_alias="request_json")
+    responseBody: Optional[str] = Field(default=None, validation_alias="response_body")
+    responseTruncated: bool = Field(default=False, validation_alias="response_truncated")
+
+
+class CallListResponse(ApiModel):
+    data: List[CallRowOut]
+    total: int
+    page: int = 0
+
+
+class CallPersonOut(ApiModel):
+    id: str
+    name: Optional[str] = None
+
+
+class CallFilterOptionsOut(ApiModel):
+    books: List[str]
+    docTypes: List[str]
+    outcomes: List[str]
+    persons: List[CallPersonOut]

@@ -63,7 +63,9 @@ def _forbidden_transport():
 
 
 def test_ac_55_02_allowlist_is_exactly_db3():
-    assert WRITE_ALLOWED_BOOKS == frozenset({"db3"})
+    # plan 63: the test books stay {db3}; the code ceiling also names db1 (production only)
+    assert guard_mod.TEST_BOOKS == frozenset({"db3"})
+    assert WRITE_ALLOWED_BOOKS == frozenset({"db1", "db3"})
     assert isinstance(WRITE_ALLOWED_BOOKS, frozenset)
 
 
@@ -89,10 +91,16 @@ def test_ac_55_03_refusal_names_the_book():
 def test_ac_55_02_allowlist_not_widened_by_env_or_settings(monkeypatch):
     for name in ("AUTOCOUNT_WRITE_ALLOWED_BOOKS", "WRITE_ALLOWED_BOOKS", "AUTOCOUNT_WRITE_BOOKS"):
         monkeypatch.setenv(name, "db1,db2,db3")
-    monkeypatch.setattr(guard_mod, "WRITE_ALLOWED_BOOKS", frozenset({"db3"}), raising=True)
-    with pytest.raises(WriteNotAllowed):
-        assert_write_allowed("https://ac.example.test/api/db1")
-    assert WRITE_ALLOWED_BOOKS == frozenset({"db3"})
+    from app.config import settings
+
+    # off production nothing but db3 is writable, whatever the env or the setting says
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "autocount_write_allowed_books", "db1,db2,db3")
+    assert guard_mod.writable_books() == frozenset({"db3"})
+    for book in ("db1", "db2"):
+        with pytest.raises(WriteNotAllowed):
+            assert_write_allowed(f"https://ac.example.test/api/{book}")
+    assert WRITE_ALLOWED_BOOKS == frozenset({"db1", "db3"})
 
 
 def test_ac_55_02_constructing_with_db1_raises():

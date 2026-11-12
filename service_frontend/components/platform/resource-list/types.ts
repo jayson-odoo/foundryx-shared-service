@@ -212,6 +212,12 @@ export interface ResourceListConfig<T extends object> {
   getEntityId?: (row: T) => string;
   searchPlaceholder?: string;
   /**
+   * Keep the list query (page, sort, filters, search) in the address bar so a
+   * reload or a shared link reopens the same view. Opt-in; the query rides the
+   * same `ctx` parameter a restored list already reads.
+   */
+  urlState?: boolean;
+  /**
    * Human labels for the fields the general search matches (e.g. ['Name',
    * 'Email']). Shown in a friendly "what can I search?" hint beside the box.
    */
