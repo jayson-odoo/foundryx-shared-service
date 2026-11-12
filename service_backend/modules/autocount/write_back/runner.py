@@ -887,7 +887,7 @@ class _TapClient:
         except WriteTransportError as exc:
             entry.update(responseStatus=None, responseBody={"error": exc.code})
             raise
-        entry.update(responseStatus=response.status_code, responseBody=response.body)
+        entry.update(responseStatus=response.status_code, responseBody=response.stored)
         return response
 
     def post(self, path: str, body: object):
@@ -910,7 +910,7 @@ class _TapClient:
         except WriteTransportError as exc:
             entry.update(responseStatus=None, responseBody={"error": exc.code})
             raise
-        entry.update(responseStatus=response.status_code, responseBody=response.body)
+        entry.update(responseStatus=response.status_code, responseBody=response.stored)
         return response
 
 

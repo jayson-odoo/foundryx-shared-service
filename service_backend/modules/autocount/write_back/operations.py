@@ -1237,6 +1237,7 @@ class OperationService:
             sink_factory=self.prims._sink_factory, actor=self.prims._actor, request_id=self.prims.request_id,
             operation_id=row.id,
         )
+        legacy.use_trace(self.prims.request_id, (self.prims.acting_user_id, self.prims.acting_user_name))
         legacy.so_lock_held = True  # _execute holds the SO row lock around this call
         qty = Decimal(str(params["qty"]))
         # the over-link guard of other callers counts this link while its outcome is unknown (pending_link_qty)
