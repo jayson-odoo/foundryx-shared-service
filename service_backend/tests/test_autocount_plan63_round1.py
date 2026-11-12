@@ -544,3 +544,16 @@ def test_round2_control_the_same_create_without_a_key_answers_200(client, gw):
     r = client.post(f"{PREFIX}/documents/quotations", headers=gw.hdr("short-none"),
                     json=__import__("tests.test_autocount_write_back_gateway_qtso", fromlist=["x"]).create_body("QT"))
     assert r.status_code == 200, r.text
+
+
+def test_round3_runner_evidence_holds_the_masked_vendor_answer(h):
+    import json as _json
+
+    seen = _seen(h)
+    _conn(h, key=KEY)
+    h.vendor.fail_next("POST", "NewQuotation", 500, f"upstream rejected {KEY}")
+    suite = run_suite(h)
+    assert any(q.headers.get("x-api-key") == KEY for q in seen), "control: the run sent the key"
+    dumped = _json.dumps(suite.evidence, default=str)
+    assert "upstream rejected" in dumped, "control: the failed answer is in the evidence"
+    assert KEY not in dumped and "***" in dumped

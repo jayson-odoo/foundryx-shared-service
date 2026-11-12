@@ -330,3 +330,37 @@ def test_ac_63_22_existing_rows_keep_null_columns_default(h):
         assert row.acting_user_id is None and row.acting_user_name is None
     finally:
         s.close()
+
+
+# ------------------------------------------------------------------ a split link carries the person
+
+TRACE = {ID_HEADER: "crm-user-101", NAME_HEADER: "Test%20Buyer", "X-Request-ID": "req-split-1"}
+
+
+def _assert_all_traced(h, *, min_actions: int, min_calls: int) -> None:
+    actions = _actions(h)
+    rows = _call_rows(h)
+    assert len(actions) >= min_actions and len(rows) >= min_calls, (len(actions), len(rows))
+    for a in actions:
+        assert (a.request_id, a.acting_user_id, a.acting_user_name) == (
+            "req-split-1", "crm-user-101", "Test Buyer"), (a.action, a.request_id, a.acting_user_id)
+    for r in rows:
+        assert (r.request_id, r.acting_user_id, r.acting_user_name) == (
+            "req-split-1", "crm-user-101", "Test Buyer"), (r.method, r.path, r.request_id, r.acting_user_id)
+
+
+def test_a_whole_row_link_carries_request_id_and_person_control(client, gw, world):
+    body = {"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked, "soDocKey": 7002,
+            "soDtlKey": world.so_b}
+    r = client.post(f"{PREFIX}/po-links/relink", json=body, headers=gw.hdr("whole-1", **TRACE))
+    assert r.status_code == 200, r.text
+    _assert_all_traced(gw.h, min_actions=1, min_calls=2)
+
+
+def test_a_partial_row_link_carries_request_id_and_person_on_every_row(client, gw, world):
+    body = {"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_free, "soDocKey": 7002,
+            "soDtlKey": world.so_a, "qty": 2}
+    r = client.post(f"{PREFIX}/po-links", json=body, headers=gw.hdr("split-1", **TRACE))
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+    assert [c.method for c in gw.h.vendor.writes()], "control: the split link wrote"
+    _assert_all_traced(gw.h, min_actions=1, min_calls=2)
