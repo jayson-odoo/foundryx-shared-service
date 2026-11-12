@@ -261,7 +261,7 @@ class MetaConnectService:
                 # The server-derived page is the ONLY source of truth for
                 # which IG account is being connected (polymorphic-stored-id
                 # rule - this id becomes the unauthenticated webhook routing
-                # key, `InboundService._resolve_channel`). A client
+                # key, `InboundService._resolve_parts`). A client
                 # `igAccountId` is accepted only when it MATCHES the page's
                 # own linked account; anything else (including one the
                 # caller does not administer) is refused rather than

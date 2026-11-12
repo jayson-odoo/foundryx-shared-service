@@ -661,7 +661,7 @@ class WebchatVisitorService:
             "external_message_id": external_message_id,
             "body": text,
         }
-        InboundService(self.db).process_payload(channel.id, payload)
+        InboundService(self.db).process_direct(channel, payload)
 
         row = (
             self.db.query(ConversationMessage)
@@ -671,9 +671,9 @@ class WebchatVisitorService:
             )
             .first()
         )
-        if row is None:  # pragma: no cover - defensive; process_payload always inserts
+        if row is None:  # pragma: no cover - defensive; process_direct always inserts
             logger.error(
-                "webchat message %s vanished after process_payload (channel %s)",
+                "webchat message %s vanished after process_direct (channel %s)",
                 external_message_id,
                 channel.id,
             )
