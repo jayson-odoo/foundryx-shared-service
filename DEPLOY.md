@@ -714,7 +714,8 @@ ssh -L 6379:127.0.0.1:6379 -L 5433:127.0.0.1:5433 user@host -N
 (`6379` = redis, loopback-published in `docker-compose.yml` for exactly this;
 `5433` = the `POSTGRES_PORT` mapping from "Topology" above - the Mini's stt
 worker still needs `DATABASE_URL` to write transcript rows.) With the tunnel up,
-point the Mini's `.env` at `REDIS_URL=redis://127.0.0.1:6379/0` and the tunneled
+point the Mini's `.env` at `REDIS_URL=redis://:<REDIS_PASSWORD>@127.0.0.1:6379/0`
+(Redis requires the password since the 3 Nov incident) and the tunneled
 Postgres port, then start each worker (both need the macOS fork-safety prefix -
 see `modules/meetings/worker.py`'s module docstring for why):
 
