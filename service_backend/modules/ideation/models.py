@@ -99,6 +99,26 @@ class ProductAdapter(IdeationBase):
     )
 
 
+class IdeaType(IdeationBase):
+    """The ONE catalog of allowed Idea types (``idea`` default, ``issue``).
+
+    Global (not tenant-scoped) module catalog: a new type = a new ROW (seeded via
+    ``seed_idea_types`` + a backfill migration), never a new code path. ``key`` is
+    the stable wire value every caller sends/receives; ``label`` is display only.
+    Exactly one row carries ``is_default`` (the value a create without ``type``
+    falls back to)."""
+
+    __tablename__ = "idea_types"
+
+    key = Column(String, primary_key=True)
+    label = Column(String, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_default = Column(Boolean, nullable=False, default=False)
+
+
+_IDEA_TYPE_FK = IdeaType.__table__.c.key
+
+
 class Idea(IdeationBase):
     """The rawest capture in the pipeline (Idea → BR → FR → delivery), against a
     core Product (AC-A-09). Rides the core **status engine** as a tenant-owned
@@ -121,6 +141,16 @@ class Idea(IdeationBase):
     # Cross-schema FK into core public.statuses (the status engine's row).
     status_id = Column(String, ForeignKey(_STATUS_FK), nullable=False, index=True)
     intake_definition_key = Column(String, nullable=False, default="ideation")
+    # What the submission IS (``idea`` = feature idea, ``issue`` = a problem with
+    # the system) - a key into the ``idea_types`` catalog. Same intake path, same
+    # status engine; only the classification differs (SS-IDEA-TYPE).
+    type = Column(
+        String,
+        ForeignKey(_IDEA_TYPE_FK, name="fk_ideas_type_idea_types"),
+        nullable=False,
+        default="idea",
+        server_default="idea",
+    )
     problem = Column(Text, nullable=False)
     # First-class segregated intake fields (mirror the captured_json answer keys -
     # problem / proposed_solution / impact / department). Nullable: they fill in as
@@ -152,6 +182,9 @@ class Idea(IdeationBase):
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+    # Explicit index name so migration 0009 and create_all agree (no duplicate).
+    __table_args__ = (Index("ix_ideas_type", "type"),)
 
 
 # Same-schema FK target = the Idea above. Reference the column object (the table
