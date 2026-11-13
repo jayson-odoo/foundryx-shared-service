@@ -21,7 +21,7 @@ import { IDEA_SOURCE_LABEL, type Idea } from '@/types/ideation';
 import { toCsv } from '@/lib/csv';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
-import { selectIdeaRows } from './select-idea-rows';
+import { ideaTypeKey, ideaTypeLabel, selectIdeaRows } from './select-idea-rows';
 import { VoteCell } from './components/vote-cell';
 import { statusRegistryFor } from './components/status-registry';
 
@@ -239,6 +239,9 @@ export function useIdeasListConfig(
           )}
         </div>
       ), 340),
+      col('type', 'Type', (i) => ideaTypeKey(i), ({ row }) => (
+        <Badge variant="outline" appearance="light">{ideaTypeLabel(ideaTypeKey(row.original))}</Badge>
+      ), 100),
       col('submitter', 'Submitter', (i) => i.submitterName, ({ row }) => (
         <span className="text-muted-foreground">{row.original.submitterName}</span>
       ), 130),
@@ -291,9 +294,10 @@ export function useIdeasListConfig(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Idea', 'Submitter', 'Channel', 'Product', 'Status', 'Votes', 'Submitted'],
+        ['Idea', 'Type', 'Submitter', 'Channel', 'Product', 'Status', 'Votes', 'Submitted'],
         data.map((r) => [
           r.problem,
+          ideaTypeLabel(ideaTypeKey(r)),
           r.submitterName,
           IDEA_SOURCE_LABEL[r.source],
           r.productName,
@@ -329,6 +333,15 @@ export function useIdeasListConfig(
           ),
         },
         {
+          field: 'type',
+          label: 'Type',
+          type: 'enum',
+          options: Array.from(new Set(ideas.map(ideaTypeKey))).map((key) => ({
+            label: ideaTypeLabel(key),
+            value: key,
+          })),
+        },
+        {
           field: 'submitter',
           label: 'Submitter',
           type: 'enum',
@@ -348,6 +361,7 @@ export function useIdeasListConfig(
       defaultSort: { id: 'votes', desc: true },
       exportColumns: [
         { id: 'problem', label: 'Idea' },
+        { id: 'type', label: 'Type' },
         { id: 'submitter', label: 'Submitter' },
         { id: 'status', label: 'Status' },
         { id: 'submitted', label: 'Submitted' },

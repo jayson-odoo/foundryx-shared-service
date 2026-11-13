@@ -108,6 +108,26 @@ describe('selectIdeaRows - filter (AC-15-01/02)', () => {
   });
 });
 
+describe('selectIdeaRows - type filter + sort (SS-IDEA-TYPE)', () => {
+  const ideas = [
+    anIdea({ id: 'i', type: 'idea' }),
+    anIdea({ id: 's', type: 'issue' }),
+    anIdea({ id: 'n', type: undefined }),
+  ];
+  it('type `in` keeps every ticked type (multi-select); a missing type counts as idea', () => {
+    expect(ids(selectIdeaRows(ideas, q({ filter: group('type', 'in', ['issue']) })))).toEqual(['s']);
+    expect(ids(selectIdeaRows(ideas, q({ filter: group('type', 'in', ['idea']) }))).sort()).toEqual(['i', 'n']);
+    expect(ids(selectIdeaRows(ideas, q({ filter: group('type', 'in', ['idea', 'issue']) }))).sort()).toEqual([
+      'i',
+      'n',
+      's',
+    ]);
+  });
+  it('sorts by type key', () => {
+    expect(ids(selectIdeaRows(ideas, q({ sort: { id: 'type', desc: true } })))[0]).toBe('s');
+  });
+});
+
 describe('selectIdeaRows - channel + submitted filters', () => {
   it('channel `in` keeps only that source', () => {
     const ideas = [

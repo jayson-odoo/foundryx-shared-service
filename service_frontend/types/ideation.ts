@@ -81,6 +81,9 @@ export interface Idea {
   /** Trait flag - true when `status` is one of the tier's archived statuses
    * (AC-94-54/60) - never inferred from the key. */
   statusIsArchived?: boolean;
+  /** Idea type key from the backend `idea_types` catalog (`idea` | `issue`
+   * today; more = new catalog rows). Absent on a pre-type payload = `idea`. */
+  type?: string;
   /** The edges fireable from this idea's current status, for THIS caller
    * (role/condition filtered, `always=True`, AC-94-51). */
   transitions?: IdeaTransition[];
