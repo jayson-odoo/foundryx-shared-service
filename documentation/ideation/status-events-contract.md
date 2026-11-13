@@ -98,6 +98,7 @@ item:
   "idea_id": "idea-uuid",
   "idea_number": "IDEA-0031",
   "idea_title": "Faster quotation",
+  "idea_type": "idea",
   "product_id": "product-uuid",
   "status_label": "Discussed",
   "from_status_label": "New",
@@ -118,6 +119,7 @@ item:
 | `separated_from` | `null`, or `{"idea_number", "title"}` of the FORMER survivor - set only on an `unmerged` event. |
 | `requester_phone` | The recipient's own resolved contact phone (tenant-scoped lookup - never a cross-tenant stored id). |
 | `is_test` | Copied from the recipient idea, independent of the idea that triggered the fan-out. |
+| `idea_type` | The recipient idea's type key (`idea` \| `issue`, from the `idea_types` table; SS-IDEA-TYPE) so the host can word an issue update differently. Additive. |
 
 ## 4. Merge and unmerge semantics (owner Q3, 28 Sep 2026)
 

@@ -183,7 +183,8 @@ def test_one_shot_create_returns_id_and_number(ctx):
     res = _one_shot(client, key, product_id)
     assert res.status_code == 201, res.text
     body = res.json()
-    assert set(body) == {"idea_id", "idea_number", "status", "title", "link"}
+    assert set(body) == {"idea_id", "idea_number", "status", "title", "type", "link"}
+    assert body["type"] == "idea"  # SS-IDEA-TYPE: omitted type = idea
     assert body["idea_id"]
     assert body["idea_number"] == "IDEA-0001"
     assert body["status"] == "captured"
@@ -327,7 +328,7 @@ def test_similar_own_matches_same_phone_only(ctx):
     m = matches[0]
     assert set(m) == {
         "idea_id", "idea_number", "title", "problem", "status",
-        "status_label", "similarity", "created_at", "link",
+        "status_label", "type", "similarity", "created_at", "link",
     }
     assert m["status"] == "captured"
     assert m["created_at"].endswith("Z")

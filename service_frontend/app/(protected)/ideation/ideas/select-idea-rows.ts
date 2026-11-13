@@ -3,6 +3,13 @@ import type { ListQuery } from '@/types/resource';
 import { evalGroup, type QueryAdapter } from '@/services/mock-query';
 
 const votes = (i: Idea): number => i.upvotes ?? 0;
+
+/** The idea's type key (`idea` when a payload predates the field). */
+export const ideaTypeKey = (i: Idea): string => i.type || 'idea';
+
+/** Display word for a type key (`issue` -> `Issue`). */
+export const ideaTypeLabel = (key: string): string =>
+  key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Idea';
 const time = (iso: string): number => {
   const t = Date.parse(iso);
   return Number.isNaN(t) ? 0 : t;
@@ -19,6 +26,8 @@ const ADAPTER: QueryAdapter<Idea> = {
         return i.submitterName;
       case 'channel':
         return i.source;
+      case 'type':
+        return ideaTypeKey(i);
       case 'product':
         return i.productName;
       case 'votes':
@@ -48,6 +57,8 @@ function compareBy(id: string, a: Idea, b: Idea): number {
       return a.submitterName.localeCompare(b.submitterName);
     case 'channel':
       return String(a.source).localeCompare(String(b.source));
+    case 'type':
+      return ideaTypeKey(a).localeCompare(ideaTypeKey(b));
     case 'product':
       return a.productName.localeCompare(b.productName);
     case 'status':

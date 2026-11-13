@@ -120,6 +120,25 @@ class ProductAdapter(IdeationBase):
     )
 
 
+class IdeaType(IdeationBase):
+    """The ONE catalog of allowed Idea types (``idea`` default, ``issue``).
+
+    Global (not tenant-scoped) module catalog: a new type = a new ROW (seeded via
+    ``seed_idea_types`` + migration 0019), never a new code path. ``key`` is the
+    stable wire value every caller sends/receives; ``label`` is display only.
+    Exactly one row carries ``is_default`` (what a create without ``type`` gets)."""
+
+    __tablename__ = "idea_types"
+
+    key = Column(String, primary_key=True)
+    label = Column(String, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_default = Column(Boolean, nullable=False, default=False)
+
+
+_IDEA_TYPE_FK = IdeaType.__table__.c.key
+
+
 class Idea(IdeationBase):
     """The rawest capture in the pipeline (Idea → BR → FR → delivery), against a
     core Product (AC-A-09). Rides the core **status engine** as a tenant-owned
@@ -142,6 +161,16 @@ class Idea(IdeationBase):
     # Cross-schema FK into core public.statuses (the status engine's row).
     status_id = Column(String, ForeignKey(_STATUS_FK), nullable=False, index=True)
     intake_definition_key = Column(String, nullable=False, default="ideation")
+    # What the submission IS (``idea`` = feature idea, ``issue`` = a problem with
+    # the system / complaint) - a key into the ``idea_types`` catalog. Same intake
+    # path, same status engine; only the classification differs (SS-IDEA-TYPE).
+    type = Column(
+        String,
+        ForeignKey(_IDEA_TYPE_FK, name="fk_ideas_type_idea_types"),
+        nullable=False,
+        default="idea",
+        server_default="idea",
+    )
     # A short (1-8 word) headline the submitter can name the idea (S1,
     # AC-1105) - distinct from ``problem`` (the full statement). Nullable: a
     # pre-lane idea and any draft that never sends one have none; the read/
@@ -246,6 +275,8 @@ class Idea(IdeationBase):
 # One-shot create idempotency (SS-IDEATION-OWN): a host ``intake_ref`` maps to at
 # most one idea per tenant. NULLs are distinct, so every other path is unaffected.
 Index("uq_ideas_tenant_intake_ref", Idea.tenant_id, Idea.intake_ref, unique=True)
+# Explicit name so migration 0019 and create_all agree (list filter by type).
+Index("ix_ideas_type", Idea.type)
 
 
 # Same-schema FK target = the Idea above. Reference the column object (the table

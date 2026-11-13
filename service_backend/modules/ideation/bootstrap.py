@@ -203,6 +203,17 @@ def install(engine: Engine, db: Session) -> None:
     ``install_tenant`` when a tenant actually installs the module.
     """
     create_schema_and_tables(engine)
+    # Idea type catalog (SS-IDEA-TYPE): seed the rows (insert-if-missing), then on
+    # Postgres apply the idempotent column/FK/index DDL - create_all never ALTERs
+    # the pre-existing ``ideas`` table and a legacy create_all DB only gets the
+    # Alembic stamp path, so install() carries the same DDL as migration 0019.
+    from .services.idea_types import seed_idea_types, upgrade_idea_type_sql
+
+    seed_idea_types(db)
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conn:
+            for stmt in upgrade_idea_type_sql(IDEATION_SCHEMA):
+                conn.execute(text(stmt))
     created_permissions = PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
     # Existing tenants: every role holding `.promote` gets `.send_to_build` -
     # ONE-SHOT, only when the permission row is created by this very sync (install

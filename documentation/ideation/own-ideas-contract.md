@@ -71,8 +71,9 @@ Request:
 | `attachments` | array? | same shape as `/create-idea` (`source_msg_id`, `type`, `url`, `filename?`, `caption?`) |
 | `is_test` | bool | default false |
 | `intake_ref` | string? | idempotency key (e.g. the confirming Respond.io message id) |
+| `type` | string? | idea type (SS-IDEA-TYPE): `idea` (default when omitted) or `issue` (a problem with the system / complaint); case-insensitive; unknown = 422 `unknown_type`. Allowed values = the `idea_types` table (`GET /ideation/intake/idea-types`) |
 
-Response: `{"idea_id", "idea_number", "status": "captured", "title", "link"}`
+Response: `{"idea_id", "idea_number", "status": "captured", "title", "type", "link"}`
 (`link` = the public status link, null when no `status_token`).
 No cross-submitter dedup on this call: run the own-similar lookup first.
 
@@ -88,10 +89,11 @@ omnichannel workspace to attach the contact copy to).
 
 Request: `product_id` (required), `text` (the new idea's problem text),
 `submitter_crm_user_id?`, `submitter_phone?` (at least one usable, else 422
-`submitter_required`), `is_test` (default false).
+`submitter_required`), `is_test` (default false), `type?` (only the sender's own
+ideas of that type; omitted = every type; unknown = 422 `unknown_type`).
 
 Response: `{"matches": [{"idea_id", "idea_number", "title", "problem", "status",
-"status_label", "similarity", "created_at", "link"}]}` - at most 3, best first.
+"status_label", "type", "similarity", "created_at", "link"}]}` - at most 3, best first.
 Same submitter only, same product, same test/real lane, survivors only (not
 merged away), live only (the shared dedup candidacy predicate: not draft /
 rejected / duplicate / archived; `closed` counts as live, as in dedup). Score =
@@ -100,12 +102,41 @@ the existing dedup thresholds. `created_at` is ISO-8601 `Z`.
 
 ### 3. Embed - `isMine` + `mine=true`
 
+(Idea type, SS-IDEA-TYPE: every embed idea also carries `type`; `POST /embed/ideas`
+and `PATCH /embed/ideas/{id}` accept `type`; `GET /embed/ideas?type=issue` filters,
+repeat `type` or comma-separate for several. See section 3b.)
+
 - Every embed idea response (`GET /embed/ideas`, `/embed/board`,
   `/embed/ideas/{id}`, `/merged`, and every write that returns ideas) carries
   `isMine: bool` for the viewing CRM user. Operator surfaces always return false.
 - `GET /embed/ideas?mine=true` returns only the viewer's own ideas.
 - Embed `POST /embed/ideas` stamps `submitter_crm_user_id = sub` and
   `submitter_name = name`, so the creator sees `isMine: true`.
+
+### 3b. Idea type (SS-IDEA-TYPE)
+
+ONE catalog table `app_ideation.idea_types` holds the allowed values: `idea`
+(default) and `issue` (a problem with the system or a feature complaint). A new
+type later = a new row, no new endpoint or field.
+
+- Write: `type` on `POST /ideation/intake/ideas`, `POST /ideation/intake/create-idea`
+  (turn 1 sets it; a later turn without `type` keeps the draft's type, with
+  `type` reclassifies the open draft), `POST /embed/ideas`, operator
+  `POST /ideation/ideas`; reclassify via `PATCH` (embed + operator). Missing =
+  `idea`; unknown = 422 `unknown_type` with nothing written.
+- Read: `type` on every idea (`IdeaOut`: embed + operator list/detail/board),
+  on the one-shot response, on own-similar matches, and as `idea_type` on every
+  status-event feed item.
+- Filter: `?type=issue` on `GET /embed/ideas` and `GET /ideation/ideas`
+  (repeat or comma-separate for any-of).
+- Catalog: `GET /ideation/intake/idea-types` (workspace key) ->
+  `[{"key","label","is_default"}]`; `GET /ideation/ideas/types` (staff) ->
+  `[{"key","label","isDefault"}]`.
+- Dedup and own-similar stay inside one type: an issue is never offered an idea
+  with similar wording as its duplicate (and the reverse).
+- The `/create-idea` reply text names the type from its label ("Issue IDEA-0042
+  is in.", "Similar issue exists: ..."); the idea wording is unchanged.
+- Statuses, triage permissions and status moves are the same for every type.
 
 ### 4. Assertion claims (sorento `mint_embed_assertion`)
 
