@@ -288,6 +288,7 @@ def test_event_payload_exact_keys(ideation_client):
         "event_id", "seq", "kind", "occurred_at", "idea_id", "idea_number",
         "idea_title", "product_id", "status_label", "from_status_label",
         "track_url", "requester_phone", "merged_into", "separated_from", "is_test",
+        "idea_type",
     }
     assert payload["kind"] == "status_changed"
     assert payload["status_label"] == "Triaged"
