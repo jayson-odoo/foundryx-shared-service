@@ -61,18 +61,23 @@ class DedupService:
         product_id: str,
         problem_text: str,
         exclude_id: Optional[str],
+        idea_type: Optional[str] = None,
     ) -> Optional[str]:
         """Return the id of an existing (non-draft) Idea in the same
         ``(tenant, product)`` whose problem text is a high similarity match to
         ``problem_text``, or ``None``. Deterministic; picks the single best match.
+        ``idea_type`` (when given) keeps dedup within one type - an ``issue`` never
+        upvotes an ``idea`` with similar wording (SS-IDEA-TYPE).
         """
         needle = _normalize(problem_text)
         if not needle:
             return None
 
         if self._is_postgres():
-            return self._find_duplicate_pg(tenant_id, product_id, needle, exclude_id)
-        return self._find_duplicate_fallback(tenant_id, product_id, needle, exclude_id)
+            return self._find_duplicate_pg(tenant_id, product_id, needle, exclude_id, idea_type)
+        return self._find_duplicate_fallback(
+            tenant_id, product_id, needle, exclude_id, idea_type
+        )
 
     # ── dialect detection ─────────────────────────────────────────────────────
     def _is_postgres(self) -> bool:
@@ -81,7 +86,12 @@ class DedupService:
 
     # ── Postgres path - pg_trgm similarity() over the same (tenant, product) ────
     def _find_duplicate_pg(
-        self, tenant_id: str, product_id: str, needle: str, exclude_id: Optional[str]
+        self,
+        tenant_id: str,
+        product_id: str,
+        needle: str,
+        exclude_id: Optional[str],
+        idea_type: Optional[str] = None,
     ) -> Optional[str]:
         draft_id = initial_idea_status_id(self.db, tenant_id)
         sql = text(
@@ -90,6 +100,7 @@ class DedupService:
             "WHERE tenant_id = :tenant AND product_id = :product "
             "AND (:exclude IS NULL OR id <> :exclude) "
             "AND (:draft IS NULL OR status_id <> :draft) "
+            "AND (CAST(:idea_type AS VARCHAR) IS NULL OR type = :idea_type) "
             "AND similarity(lower(problem), :needle) >= :threshold "
             "ORDER BY sim DESC, id ASC LIMIT 1"
         )
@@ -101,6 +112,7 @@ class DedupService:
                 "product": product_id,
                 "exclude": exclude_id,
                 "draft": draft_id,
+                "idea_type": idea_type,
                 "threshold": PG_SIMILARITY_THRESHOLD,
             },
         ).first()
@@ -108,7 +120,12 @@ class DedupService:
 
     # ── Fallback path - difflib ratio in Python (SQLite tests) ─────────────────
     def _find_duplicate_fallback(
-        self, tenant_id: str, product_id: str, needle: str, exclude_id: Optional[str]
+        self,
+        tenant_id: str,
+        product_id: str,
+        needle: str,
+        exclude_id: Optional[str],
+        idea_type: Optional[str] = None,
     ) -> Optional[str]:
         draft_id = initial_idea_status_id(self.db, tenant_id)
         q = (
@@ -119,6 +136,8 @@ class DedupService:
             q = q.filter(Idea.id != exclude_id)
         if draft_id is not None:
             q = q.filter(Idea.status_id != draft_id)
+        if idea_type is not None:
+            q = q.filter(Idea.type == idea_type)
 
         best: Tuple[float, Optional[str]] = (0.0, None)
         matcher = difflib.SequenceMatcher()

@@ -26,6 +26,7 @@ from modules.omnichannel.models import Contact, Workspace
 
 from ..models import Idea, IdeaAttachment, IdeaVote
 from .dedup import DedupService
+from .idea_types import idea_type_label, resolve_idea_type
 from .intake_definitions import (
     IDEATION_FIELD_LABELS,
     IDEATION_INTAKE_KEY,
@@ -58,10 +59,20 @@ class IntakeService:
         fields: Optional[Dict[str, object]] = None,
         remove: Optional[List[str]] = None,
         confirm: bool = False,
+        idea_type: Optional[str] = None,
     ) -> dict:
         definition = get_intake_definition(IDEATION_INTAKE_KEY)
         if definition is None:  # pragma: no cover - registered at boot
             raise ApiError(500, "intake_unavailable", "Intake definition not registered.")
+
+        # Validate ``type`` FIRST (against the ``idea_types`` table) so an unknown
+        # value is a clean 422 with nothing written. ``None`` = not supplied: a new
+        # draft takes the default type, an open draft keeps its own.
+        type_key = (
+            resolve_idea_type(self.db, idea_type)
+            if idea_type is not None and idea_type.strip()
+            else None
+        )
 
         # is_new_idea restart (DC-10): the host opened a fresh draft (no draft_id)
         # and named the abandoned one - reject it so it does not linger as a phantom.
@@ -89,7 +100,9 @@ class IntakeService:
         idea = self._load_or_create_draft(
             tenant_id, product_id, submitter_contact_id, message_text, draft_id,
             raw_transcript=raw_transcript,
+            idea_type=type_key or resolve_idea_type(self.db, None),
         )
+        noun = idea_type_label(self.db, idea.type).lower()
 
         # Persist media pointers idempotently on every turn (DC-9) - before the
         # draft-status branching so attachments land on collecting/review/complete
@@ -100,7 +113,12 @@ class IntakeService:
         # idempotent complete result (AC-A-20 / AC-A-16 re-fire no-op).
         if not self._is_draft(idea):
             self.db.commit()
-            return self._complete_output(definition, idea)
+            return self._complete_output(definition, idea, noun)
+
+        # A continuation turn that names a type reclassifies the open draft.
+        if type_key is not None and idea.type != type_key:
+            idea.type = type_key
+            noun = idea_type_label(self.db, type_key).lower()
 
         # Stamp the submitter display name on the draft (WS-A). Latest non-blank
         # wins across turns; a blank/absent name never clobbers a set one.
@@ -118,6 +136,7 @@ class IntakeService:
             product_id,
             str((idea.captured_json or {}).get("problem") or idea.problem or ""),
             idea.id,
+            idea_type=idea.type,
         )
         if dup_id is not None:
             # Upvote the existing idea once per submitter (idempotent), then relay.
@@ -128,7 +147,7 @@ class IntakeService:
                 "status": "duplicate",
                 "captured": captured,
                 "missing": missing,
-                "reply_text": _reply_duplicate(),
+                "reply_text": _reply_duplicate(noun),
                 "duplicate_of": dup_id,
             }
 
@@ -151,7 +170,7 @@ class IntakeService:
                 "status": "review",
                 "captured": captured,
                 "missing": missing,
-                "reply_text": _reply_review(captured),
+                "reply_text": _reply_review(captured, noun),
             }
 
         # complete - explicit confirm: the sink is the ONLY promotion path.
@@ -162,7 +181,7 @@ class IntakeService:
             "status": "complete",
             "captured": captured,
             "missing": missing,
-            "reply_text": _reply_complete(link),
+            "reply_text": _reply_complete(link, noun),
             "link": link,
         }
 
@@ -328,6 +347,7 @@ class IntakeService:
         message_text: str,
         draft_id: Optional[str],
         raw_transcript: Optional[str] = None,
+        idea_type: str = "idea",
     ) -> Idea:
         if draft_id:
             idea = (
@@ -350,6 +370,7 @@ class IntakeService:
             product_id=product_id,
             status_id=initial_idea_status_id(self.db, tenant_id),
             intake_definition_key=IDEATION_INTAKE_KEY,
+            type=idea_type,
             problem=raw,
             raw_text=transcript or raw,
             source="whatsapp",
@@ -399,7 +420,7 @@ class IntakeService:
         # Force SQLAlchemy to detect the JSON mutation (reassigned above - safe).
         self.db.flush()
 
-    def _complete_output(self, definition, idea: Idea) -> dict:
+    def _complete_output(self, definition, idea: Idea, noun: str = "idea") -> dict:
         captured, missing = definition.completion_rule(idea.captured_json or {})
         link = mint_idea_link(self.db, idea)
         return {
@@ -407,7 +428,7 @@ class IntakeService:
             "status": "complete",
             "captured": captured,
             "missing": missing,
-            "reply_text": _reply_complete(link),
+            "reply_text": _reply_complete(link, noun),
             "link": link,
         }
 
@@ -430,19 +451,19 @@ def _reply_collecting(captured: Dict[str, object], missing: List[str]) -> str:
     return f"{prefix}Still need: {still}."
 
 
-def _reply_review(captured: Dict[str, object]) -> str:
+def _reply_review(captured: Dict[str, object], noun: str = "idea") -> str:
     return (
-        "Here's your idea:\n"
+        f"Here's your {noun}:\n"
         + _captured_lines(captured)
         + "\n\nReply 'confirm' to submit it, or tell me what to change."
     )
 
 
-def _reply_complete(link: Optional[str]) -> str:
+def _reply_complete(link: Optional[str], noun: str = "idea") -> str:
     if link:
-        return f"Your idea has been captured. Track it here: {link}"
-    return "Your idea has been captured."
+        return f"Your {noun} has been captured. Track it here: {link}"
+    return f"Your {noun} has been captured."
 
 
-def _reply_duplicate() -> str:
-    return "This is similar to an existing idea - I've upvoted it for you."
+def _reply_duplicate(noun: str = "idea") -> str:
+    return f"This is similar to an existing {noun} - I've upvoted it for you."

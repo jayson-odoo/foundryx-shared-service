@@ -67,6 +67,7 @@ class IdeaReadService:
             productId=idea.product_id,
             productName=product.name if product else "Unknown product",
             status=status.key if status else "draft",
+            type=idea.type or "idea",
             problem=idea.problem,
             proposedSolution=idea.proposed_solution,
             impact=idea.impact,
@@ -163,8 +164,11 @@ class IdeaReadService:
         filter: str = "active",
         product_id: Optional[str] = None,
         voter_id: Optional[str] = None,
+        types: Optional[List[str]] = None,
     ) -> List[IdeaOut]:
-        """Ideas for a tenant, newest first. ``search`` matches problem/raw_text
+        """Ideas for a tenant, newest first. ``types`` (already-resolved catalog
+        keys, see ``idea_types.resolve_idea_type_filter``) narrows to those idea
+        types (any of them); ``None`` = every type. ``search`` matches problem/raw_text
         (case-insensitive); ``filter`` = ``active`` (non-archived statuses) |
         ``archived`` | ``all``. ``product_id`` (optional) additionally scopes to a
         single product - the canonical ideation scope (an idea belongs to a
@@ -174,6 +178,8 @@ class IdeaReadService:
         q = self.db.query(Idea).filter(Idea.tenant_id == tenant_id)
         if product_id:
             q = q.filter(Idea.product_id == product_id)
+        if types:
+            q = q.filter(Idea.type.in_(types))
         if search:
             like = f"%{search.strip()}%"
             q = q.filter(Idea.problem.ilike(like) | Idea.raw_text.ilike(like))

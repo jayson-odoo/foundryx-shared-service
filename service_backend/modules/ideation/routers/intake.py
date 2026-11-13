@@ -42,4 +42,5 @@ def create_idea(
         fields=body.fields,
         remove=body.remove,
         confirm=body.confirm,
+        idea_type=body.type,
     )

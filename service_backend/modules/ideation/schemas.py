@@ -33,6 +33,8 @@ class IdeaOut(ApiModel):
     productId: str
     productName: str
     status: str
+    # Idea type KEY from the ``idea_types`` catalog (``idea`` | ``issue`` | ...).
+    type: str = "idea"
     problem: str
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
@@ -115,6 +117,8 @@ class IdeaCreateIn(ApiModel):
     department: Optional[str] = None
     rawText: str = ""
     source: str = "manual"
+    # Idea type key (``idea_types`` catalog); omitted = the default (``idea``).
+    type: Optional[str] = None
 
 
 class IdeaUpdateIn(ApiModel):
@@ -128,6 +132,16 @@ class IdeaUpdateIn(ApiModel):
     impact: Optional[str] = None
     department: Optional[str] = None
     rawText: Optional[str] = None
+    # Reclassify (e.g. idea -> issue); validated against the ``idea_types`` table.
+    type: Optional[str] = None
+
+
+class IdeaTypeOut(ApiModel):
+    """One row of the idea-type catalog (``GET /ideation/ideas/types``)."""
+
+    key: str
+    label: str
+    isDefault: bool
 
 
 class CreateIdeaAttachmentIn(ApiModel):
@@ -338,3 +352,8 @@ class CreateIdeaIn(ApiModel):
     fields: Optional[Dict[str, Any]] = None
     remove: Optional[List[str]] = None
     confirm: bool = False
+    # What this submission IS - a key of the ``idea_types`` catalog (``idea`` =
+    # feature idea, ``issue`` = a problem with the system / complaint). Omitted =
+    # ``idea`` on a new draft; on a continuation turn omitted = keep the draft's
+    # type, present = reclassify the open draft. Unknown = 422 ``unknown_type``.
+    type: Optional[str] = None

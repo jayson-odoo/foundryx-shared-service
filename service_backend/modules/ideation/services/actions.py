@@ -21,6 +21,7 @@ from app.services.status_machine import (
 
 from ..models import Idea, IdeaVote
 from ..schemas import IdeaOut
+from .idea_types import resolve_idea_type
 from .ideas import IdeaReadService
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
 
@@ -62,6 +63,7 @@ class IdeaActionService:
         raw_text: str = "",
         source: str = "manual",
         actor: Optional[User] = None,
+        idea_type: Optional[str] = None,
     ) -> IdeaOut:
         """Operator-authored create (no draft/collect/confirm gate - an operator
         typing an idea IS deliberate). Validates the product, seeds the idea at the
@@ -72,6 +74,8 @@ class IdeaActionService:
         The segregated intake fields (proposed_solution / impact / department) are
         persisted to their first-class columns and mirrored into ``captured_json``."""
         self._product_or_422(tenant_id, product_id)
+        # Validated against the ``idea_types`` table; missing = default (idea).
+        type_key = resolve_idea_type(self.db, idea_type)
         problem = (problem or "").strip()
         proposed_solution = (proposed_solution or "").strip() or None
         impact = (impact or "").strip() or None
@@ -91,6 +95,7 @@ class IdeaActionService:
             product_id=product_id,
             status_id=initial_idea_status_id(self.db, tenant_id),
             intake_definition_key="ideation",
+            type=type_key,
             problem=problem,
             proposed_solution=proposed_solution,
             impact=impact,
@@ -122,6 +127,7 @@ class IdeaActionService:
         department: Optional[str] = None,
         raw_text: Optional[str] = None,
         voter_id: Optional[str] = None,
+        idea_type: Optional[str] = None,
     ) -> IdeaOut:
         """Operator edit of the mutable idea fields (partial). Status moves ride
         the dedicated ``/{id}/status`` route - never duplicated here. Each provided
@@ -129,6 +135,8 @@ class IdeaActionService:
         clears the optional ones; ``problem`` keeps its NOT-NULL value)."""
         idea = self._idea_or_404(tenant_id, idea_id)
         captured: dict = dict(idea.captured_json or {})
+        if idea_type is not None and idea_type.strip():
+            idea.type = resolve_idea_type(self.db, idea_type)
         if product_id is not None:
             self._product_or_422(tenant_id, product_id)
             idea.product_id = product_id
