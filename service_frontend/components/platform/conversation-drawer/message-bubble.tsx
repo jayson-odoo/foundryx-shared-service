@@ -213,7 +213,7 @@ export function MessageBubble({
             >
               {message.replyTo && <QuotedBlock replyTo={message.replyTo} contactName={contactName} />}
               {message.messageType === 'TEMPLATE' && (
-                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-primary-accent">
+                <div className="mb-1 text-2xs font-medium uppercase tracking-wide text-primary-accent">
                   Template
                 </div>
               )}
@@ -237,7 +237,7 @@ export function MessageBubble({
                   <HighlightedText text={message.body ?? ''} term={highlight} />
                 </p>
               )}
-              <div className="mt-0.5 flex items-center justify-end gap-1 text-[10px] text-muted-foreground">
+              <div className="mt-0.5 flex items-center justify-end gap-1 text-2xs text-muted-foreground">
                 {time}
                 {isAgent && <DeliveryTicks status={message.deliveryStatus} />}
               </div>
@@ -278,7 +278,7 @@ export function MessageBubble({
                 <ContextMenuSubContent className="max-h-64 w-64 overflow-y-auto p-2">
                   {EMOJI_GROUPS.map((group) => (
                     <div key={group.label}>
-                      <div className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      <div className="px-1 pb-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
                         {group.label}
                       </div>
                       <div className="grid grid-cols-8 gap-0.5 pb-1">

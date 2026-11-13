@@ -25,9 +25,28 @@ class SendError(Exception):
     Meta 5xx → the send task retries with backoff) from a permanent rejection
     (bad number, 4xx, template issue → stamp FAILED, plan 12 review)."""
 
-    def __init__(self, message: str, *, transient: bool = False):
+    def __init__(
+        self,
+        message: str,
+        *,
+        transient: bool = False,
+        code: Optional[str] = None,
+        rate_limited: bool = False,
+        retry_after: Optional[int] = None,
+    ):
         super().__init__(message)
         self.transient = transient
+        # The provider's own error code (e.g. Meta `error.code`) when it gave one.
+        self.code = code
+        # Meta throttled the call (plan 56 A): the send task retries on its own
+        # slower schedule and the sync key routes answer HTTP 429. `retry_after`
+        # is Meta's `Retry-After` header in whole seconds when it sent one.
+        self.rate_limited = rate_limited
+        self.retry_after = retry_after
+
+
+class UnexpectedSendError(SendError):
+    """An error the adapter did not expect, reported with fixed text and a class name only."""
 
 
 class ChannelAdapter(Protocol):
@@ -49,7 +68,7 @@ class ChannelAdapter(Protocol):
         """Lightweight ping to verify the number is reachable."""
         ...
 
-    # ── Message processing (plan 05) ─────────────────────────────────────────
+    # ── Message processing (plan 05; plan 32 / A7a generalizes addressing) ──
     def send(
         self,
         credentials: Dict[str, Any],
@@ -58,9 +77,23 @@ class ChannelAdapter(Protocol):
         *,
         text: Optional[str] = None,
         template: Optional[Dict[str, Any]] = None,
+        structured: Optional[Dict[str, Any]] = None,
+        messaging_type: Optional[str] = None,
+        tag: Optional[str] = None,
         context_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Send a text/template message; returns {"external_message_id": ...}."""
+        """Send a text/template message; returns {"external_message_id": ...}.
+
+        Plan 32 (A7a) adds three optional, provider-specific params that keep
+        `send_runner` type-blind: ``structured`` is the RAW friendly
+        interactive/location/contacts definition (`ConversationMessage.
+        payload_json`) - WhatsApp ignores it (it already receives a pre-built
+        native object via ``interactive``/``location``/``contacts``);
+        Messenger/Instagram read it to build Meta quick replies
+        (`structured.build_quick_replies`). ``messaging_type``/``tag`` are the
+        Meta send parameters `messaging_policy.authorize` resolved at enqueue
+        (`RESPONSE`/`MESSAGE_TAG`+`HUMAN_AGENT`) - WhatsApp ignores both (its
+        own re-engagement mode is "template", not a Meta send parameter)."""
         ...
 
     def parse_inbound(self, payload: Dict[str, Any]) -> list:

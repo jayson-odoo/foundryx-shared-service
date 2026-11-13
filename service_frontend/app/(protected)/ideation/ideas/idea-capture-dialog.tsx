@@ -18,6 +18,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import type { IdeaCreateInput } from '@/services/ideation-service';
 import type { Product } from '@/types/ideation';
 import { AttachmentDrop, type DroppedAttachment } from './components/attachment-drop';
+import { UseCasesInput } from './components/idea-form-fields';
 
 interface IdeaCaptureDialogProps {
   products: Product[];
@@ -34,9 +35,10 @@ interface IdeaCaptureDialogProps {
 export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDialogProps) {
   const [productId, setProductId] = useState<string | null>(products[0]?.id ?? null);
   const [problem, setProblem] = useState('');
-  const [proposedSolution, setProposedSolution] = useState('');
-  const [impact, setImpact] = useState('');
-  const [department, setDepartment] = useState('');
+  const [title, setTitle] = useState('');
+  const [desiredOutcome, setDesiredOutcome] = useState('');
+  const [useCases, setUseCases] = useState<string[]>([]);
+  const [currentWorkaround, setCurrentWorkaround] = useState('');
   const [rawText, setRawText] = useState('');
   const [attachments, setAttachments] = useState<DroppedAttachment[]>([]);
   const [saving, setSaving] = useState(false);
@@ -52,9 +54,10 @@ export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDi
       await onCreate({
         productId,
         problem: problem.trim(),
-        proposedSolution: proposedSolution.trim(),
-        impact: impact.trim(),
-        department: department.trim(),
+        title: title.trim(),
+        desiredOutcome: desiredOutcome.trim(),
+        useCases: useCases.map((u) => u.trim()).filter(Boolean),
+        currentWorkaround: currentWorkaround.trim(),
         rawText: rawText.trim(),
         attachments,
       });
@@ -87,54 +90,58 @@ export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDi
             />
           </div>
           <div className="space-y-1.5">
+            <Label htmlFor="idea-title">Title</Label>
+            <Input
+              id="idea-title"
+              value={title}
+              placeholder="A short name for the idea"
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
             <Label htmlFor="idea-problem">
-              Problem statement <span className="text-destructive">*</span>
+              Business problem <span className="text-destructive">*</span>
             </Label>
             <Textarea
               id="idea-problem"
               value={problem}
               rows={3}
-              placeholder="What's the problem or observation? e.g. CS can't export orders to Excel"
+              placeholder="What problem does the business have?"
               onChange={(e) => setProblem(e.target.value)}
               autoFocus
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="idea-proposed-solution">Proposed solution</Label>
+            <Label htmlFor="idea-desired-outcome">Desired outcome</Label>
             <Textarea
-              id="idea-proposed-solution"
-              value={proposedSolution}
-              rows={3}
-              placeholder="How could we solve it? e.g. Add an Export to Excel button on the orders list"
-              onChange={(e) => setProposedSolution(e.target.value)}
+              id="idea-desired-outcome"
+              value={desiredOutcome}
+              rows={2}
+              placeholder="What should be true once it is solved?"
+              onChange={(e) => setDesiredOutcome(e.target.value)}
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="idea-impact">Impact</Label>
+            <Label>Use cases</Label>
+            <UseCasesInput value={useCases} onChange={setUseCases} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="idea-current-workaround">Current workaround</Label>
             <Textarea
-              id="idea-impact"
-              value={impact}
-              rows={3}
-              placeholder="What does it improve? e.g. Saves CS 30 minutes a day"
-              onChange={(e) => setImpact(e.target.value)}
+              id="idea-current-workaround"
+              value={currentWorkaround}
+              rows={2}
+              placeholder="How is it handled today?"
+              onChange={(e) => setCurrentWorkaround(e.target.value)}
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="idea-department">Department</Label>
-            <Input
-              id="idea-department"
-              value={department}
-              placeholder="Which team is this for? e.g. Customer Service"
-              onChange={(e) => setDepartment(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="idea-raw">Raw notes</Label>
+            <Label htmlFor="idea-raw">Original message</Label>
             <Textarea
               id="idea-raw"
               value={rawText}
               rows={3}
-              placeholder="Verbatim context - paste the message, or add detail."
+              placeholder="The message as it was sent"
               onChange={(e) => setRawText(e.target.value)}
             />
           </div>

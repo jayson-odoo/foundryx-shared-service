@@ -1,8 +1,8 @@
 @layer components {
   /* Variables */
   .demo1 {
-    --sidebar-transition-duration: 0.3s;
-    --sidebar-transition-timing: ease;
+    --sidebar-transition-duration: var(--duration-slow);
+    --sidebar-transition-timing: var(--ease-standard);
     --sidebar-width: 280px;
     --sidebar-width-collapse: 80px;
     --sidebar-default-width: 280px;
@@ -25,16 +25,44 @@
     width: var(--sidebar-width);
   }
 
+  /* --shell-top-offset is the impersonation banner's REAL measured height (0 when
+     absent/collapsed - components/impersonation/impersonation-banner.tsx). The
+     header/sidebar read it alone for their own `top`; the wrapper (content) has to
+     clear BOTH the banner and the header stacked on top of it, so it adds
+     --header-height on top - T1 fix round 1 finding 1 (the wrapper staying at
+     --header-height alone left the page title hidden under the dropped header). */
   .demo1.header-fixed .wrapper {
-    padding-top: var(--header-height);
+    padding-top: calc(var(--header-height) + var(--shell-top-offset, 0px));
   }
 
   /* Desktop mode */
   @media (min-width: theme(--breakpoint-lg)) {
     .demo1 .sidebar {
       width: var(--sidebar-width);
-      transition: width var(--sidebar-transition-duration)
-        var(--sidebar-transition-timing);
+    }
+
+    /* The width transition itself (AC-DLA-24) - a reader who asked their OS
+       for less motion gets an instant collapse/expand, not a travelling
+       width. The `--duration-slow`/`--ease-standard` tokens already
+       collapse to 1ms under reduced motion (css/config.reui.css) and
+       styles.css's own reduced-motion block resets `.demo1 .sidebar` to
+       `transition: none` as a second belt-and-suspenders layer - this
+       media-query wrap is the third, explicit one the AC asks for: no
+       `transition` DECLARATION exists at all when the preference is set,
+       rather than relying on the value collapsing to near-zero.
+
+       KNOWN EXCEPTION (T3 fix round 1 finding 13): this animates the LAYOUT
+       property `width` (and, below, `padding-inline-start`/
+       `inset-inline-start`), not a `transform` - normally an escalation
+       trigger. A DevTools trace of a collapse on the Users list at 1280
+       showed ZERO dropped frames (23-evidence/T3), so a transform-only
+       rewrite is left as a follow-up rather than a requirement here -
+       tracked as BL-SS-046, only worth opening if a future trace regresses. */
+    @media (prefers-reduced-motion: no-preference) {
+      .demo1 .sidebar {
+        transition: width var(--sidebar-transition-duration)
+          var(--sidebar-transition-timing);
+      }
     }
 
     .demo1 .sidebar .sidebar-header {
@@ -62,36 +90,47 @@
     }
 
     .demo1.sidebar-fixed.header-fixed .wrapper {
-      padding-top: var(--header-height);
+      padding-top: calc(var(--header-height) + var(--shell-top-offset, 0px));
     }
 
     .demo1.sidebar-collapse {
       --sidebar-width: var(--sidebar-width-collapse);
     }
 
-    .demo1.sidebar-collapse .sidebar {
-      transition: width var(--sidebar-transition-duration)
-        var(--sidebar-transition-timing);
+    @media (prefers-reduced-motion: no-preference) {
+      .demo1.sidebar-collapse .sidebar {
+        transition: width var(--sidebar-transition-duration)
+          var(--sidebar-transition-timing);
+      }
     }
 
-    .demo1.sidebar-collapse .sidebar:hover {
-      width: var(--sidebar-default-width);
-    }
-
-    .demo1.sidebar-collapse .sidebar:not(:hover) .default-logo {
+    /* Collapsed-rail PRESENTATION (T3 fix round 2 finding 2): what the 80px
+       rail actually looks like - logo swap, hiding labels/badges/sub-menu
+       indicators - is now UNCONDITIONAL whenever `.sidebar-collapse` is
+       set, on ANY pointer. T3 fix round 1 already moved this outside the
+       hover-pointer gate, but qualified every selector with a NEGATED
+       `:hover` pseudo-class on `.sidebar` - `:hover` STICKS after a tap
+       on a coarse (touch) pointer (there is no "unhover" event), so the
+       moment a coarse-pointer user tapped anywhere in the rail, that
+       negation stopped matching and every label/badge silently un-hid
+       inside the still-80px-wide rail. Base rules below carry NO hover
+       qualifier at all; the RESTORE-on-hover half (undoing them back to
+       the full sidebar's presentation) lives inside the hover-pointer
+       media query below, next to the width-expand rule it belongs with -
+       `:hover` itself is only trustworthy as "the pointer is really
+       hovering, right now" behind `(hover: hover) and (pointer: fine)`. */
+    .demo1.sidebar-collapse .sidebar .default-logo {
       display: none;
     }
 
-    .demo1.sidebar-collapse .sidebar:not(:hover) .small-logo {
+    .demo1.sidebar-collapse .sidebar .small-logo {
       display: flex;
     }
 
+    .demo1.sidebar-collapse .sidebar [data-slot='accordion-menu-title'],
+    .demo1.sidebar-collapse .sidebar [data-slot='badge'],
     .demo1.sidebar-collapse
-      .sidebar:not(:hover)
-      [data-slot='accordion-menu-title'],
-    .demo1.sidebar-collapse .sidebar:not(:hover) [data-slot='badge'],
-    .demo1.sidebar-collapse
-      .sidebar:not(:hover)
+      .sidebar
       [data-slot='accordion-menu-sub-indicator'] {
       display: none !important;
       transition: none !important;
@@ -99,7 +138,7 @@
     }
 
     .demo1.sidebar-collapse
-      .sidebar:not(:hover)
+      .sidebar
       [data-slot='accordion-menu-sub-content'] {
       visibility: hidden;
       position: absolute;
@@ -107,15 +146,13 @@
       width: 0;
     }
 
-    .demo1.sidebar-collapse
-      .sidebar:not(:hover)
-      [data-slot='accordion-menu-label'] {
+    .demo1.sidebar-collapse .sidebar [data-slot='accordion-menu-label'] {
       visibility: hidden;
       position: relative;
     }
 
     .demo1.sidebar-collapse
-      .sidebar:not(:hover)
+      .sidebar
       [data-slot='accordion-menu-label']::before {
       content: '...';
       color: currentColor;
@@ -129,15 +166,87 @@
       top: 0.25rem;
       transform: translateX(100%);
     }
+
+    /* Hover-EXPAND (AC-DLA-24) + the RESTORE half of the presentation
+       above, both gated to a device that actually HAS a precise hover
+       pointer. Without this gate, a touch device simulating `:hover` on
+       tap would expand the collapsed rail back to full width on a stray
+       tap instead of navigating, and never reliably collapse it back -
+       the same reasoning that keeps the base rules above unqualified by
+       `:hover` at all. `.sidebar:hover`'s selectors are all HIGHER
+       specificity than their unqualified base-rule counterparts (an extra
+       pseudo-class), so they win the cascade without needing `!important`
+       except where the base rule itself carries one (display/transition/
+       animation on title/badge/sub-indicator). */
+    @media (hover: hover) and (pointer: fine) {
+      .demo1.sidebar-collapse .sidebar:hover {
+        width: var(--sidebar-default-width);
+      }
+
+      .demo1.sidebar-collapse .sidebar:hover .default-logo {
+        display: flex;
+      }
+
+      .demo1.sidebar-collapse .sidebar:hover .small-logo {
+        display: none;
+      }
+
+      .demo1.sidebar-collapse
+        .sidebar:hover
+        [data-slot='accordion-menu-title'] {
+        display: inline !important;
+        transition: revert !important;
+        animation: revert !important;
+      }
+
+      .demo1.sidebar-collapse .sidebar:hover [data-slot='badge'] {
+        display: inline-flex !important;
+        transition: revert !important;
+        animation: revert !important;
+      }
+
+      .demo1.sidebar-collapse
+        .sidebar:hover
+        [data-slot='accordion-menu-sub-indicator'] {
+        display: block !important;
+        transition: revert !important;
+        animation: revert !important;
+      }
+
+      .demo1.sidebar-collapse
+        .sidebar:hover
+        [data-slot='accordion-menu-sub-content'] {
+        visibility: visible;
+        position: static;
+        height: auto;
+        width: auto;
+      }
+
+      .demo1.sidebar-collapse
+        .sidebar:hover
+        [data-slot='accordion-menu-label'] {
+        visibility: visible;
+        position: static;
+      }
+
+      .demo1.sidebar-collapse
+        .sidebar:hover
+        [data-slot='accordion-menu-label']::before {
+        content: none;
+        display: none;
+      }
+    }
   }
 
-  .demo1.layout-initialized .wrapper {
-    transition: padding-inline-start var(--sidebar-transition-duration)
-      var(--sidebar-transition-timing);
-  }
+  @media (prefers-reduced-motion: no-preference) {
+    .demo1.layout-initialized .wrapper {
+      transition: padding-inline-start var(--sidebar-transition-duration)
+        var(--sidebar-transition-timing);
+    }
 
-  .demo1.layout-initialized .header {
-    transition: inset-inline-start var(--sidebar-transition-duration)
-      var(--sidebar-transition-timing);
+    .demo1.layout-initialized .header {
+      transition: inset-inline-start var(--sidebar-transition-duration)
+        var(--sidebar-transition-timing);
+    }
   }
 }

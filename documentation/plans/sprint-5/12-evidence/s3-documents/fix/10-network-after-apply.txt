@@ -1,0 +1,4 @@
+[87167.742] PUT http://localhost:8012/autocount/companies/7eab8612-86af-439f-a3e3-c404b9f4de9a/entities/sales_order/mapping (Fetch) 200
+[E32A798A3991D0AB04F7DD267FFE5523] OPTIONS http://localhost:8012/autocount/companies/7eab8612-86af-439f-a3e3-c404b9f4de9a/entities/sales_order/mapping (Other) 200
+[87167.744] POST http://localhost:8012/autocount/companies/7eab8612-86af-439f-a3e3-c404b9f4de9a/entities/sales_order/mapping/reset-preset (Fetch) 200
+[87167.746] POST http://localhost:8012/autocount/companies/7eab8612-86af-439f-a3e3-c404b9f4de9a/entities/sales_order/mapping/reset-preset (Fetch) 200

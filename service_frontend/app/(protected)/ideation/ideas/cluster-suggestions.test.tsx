@@ -33,6 +33,7 @@ const idea = (id: string, problem: string): Idea => ({
   priority: 0,
   attachments: [],
   createdAt: '2026-07-20T10:00:00Z',
+  isTest: false,
 });
 
 const SUGGESTIONS: IdeaClusterSuggestions = {

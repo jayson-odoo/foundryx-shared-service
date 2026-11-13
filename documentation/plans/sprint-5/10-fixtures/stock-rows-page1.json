@@ -1,0 +1,89 @@
+{
+  "snapshotId": "c22a5d8e-3f1b-4c6a-8e9d-2b7c4f1a9d3e",
+  "page": 1,
+  "pageSize": 1000,
+  "totalPages": 13,
+  "recordCount": 12133,
+  "rows": [
+    {
+      "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+      "item_code": "1/2\" ULTRA CIRCULAR",
+      "item_description": "15MM X 500MM ULTRAGAL PIPE 1/2\"",
+      "location_code": "BRW-BB",
+      "uom_code": "PC",
+      "qty": 672
+    },
+    {
+      "source_ref": "AED_SORENTO:32MM TAIL PIECE COUPLING|BRW",
+      "item_code": "32MM TAIL PIECE COUPLING",
+      "item_description": "32MM TAIL PIECE COUPLING (CHROME) FOR BOTTLE TRAP",
+      "location_code": "BRW",
+      "uom_code": "UNIT",
+      "qty": 1216
+    },
+    {
+      "source_ref": "AED_SORENTO:32MM TAIL PIECE COUPLING|BRW-DISP",
+      "item_code": "32MM TAIL PIECE COUPLING",
+      "item_description": "32MM TAIL PIECE COUPLING (CHROME) FOR BOTTLE TRAP",
+      "location_code": "BRW-DISP",
+      "uom_code": "UNIT",
+      "qty": 1
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-CB8001|MWH",
+      "item_code": "ACC-CB8001",
+      "item_description": "CABANA KITCHEN SINK TRIANGLE  BASKET  ONLY ACC-CB8001",
+      "location_code": "MWH",
+      "uom_code": "UNIT",
+      "qty": 104
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-KS7001-YG|WH3",
+      "item_code": "ACC-KS7001-YG",
+      "item_description": "KITCHEN SINK S/STEEL WASTE ONLY ACC-KS7001-YG",
+      "location_code": "WH3",
+      "uom_code": "UNIT",
+      "qty": 1477
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-SRT1024|MKT-D",
+      "item_code": "ACC-SRT1024",
+      "item_description": "SORENTO SEAT COVER DISPLAY RACKING  ACC-SRT1024",
+      "location_code": "MKT-D",
+      "uom_code": "UNIT",
+      "qty": 1
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-SRT6010|PARTS",
+      "item_code": "ACC-SRT6010",
+      "item_description": "SORENTO SRTWT9600-HP & SRTWT9615 EXPOSE SHOWER SET BODY ONLY ACC-SRT6010",
+      "location_code": "PARTS",
+      "uom_code": "UNIT",
+      "qty": 9
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-SRT8003|BRW-IR",
+      "item_code": "ACC-SRT8003",
+      "item_description": "SORENTO JACCUZI / BATHTUB OUTLET WASTE  ACC-SRT8003",
+      "location_code": "BRW-IR",
+      "uom_code": "UNIT",
+      "qty": 43
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-SRT9013|PJ-SR",
+      "item_code": "ACC-SRT9013",
+      "item_description": "SORENTO FLOOR TRAP DISPLAY RACKING WITH LED (700MM) ACC-SRT9013",
+      "location_code": "PJ-SR",
+      "uom_code": "UNIT",
+      "qty": 1
+    },
+    {
+      "source_ref": "AED_SORENTO:B2154-NL|MAINTANC",
+      "item_code": "B2154-NL",
+      "item_description": "ANGLE VALVE (NO LOGO)  B2154-NL",
+      "location_code": "MAINTANC",
+      "uom_code": "UNIT",
+      "qty": 34
+    }
+  ]
+}

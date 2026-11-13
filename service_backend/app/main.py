@@ -1,4 +1,5 @@
 """FastAPI application factory and router wiring."""
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -22,14 +23,17 @@ from app.api.v1 import (
     jobs,
     me,
     permissions,
+    platform_ops,
     platform_tenant_branding,
     platform_tenant_modules,
     platform_tenants,
     numbering,
+    pending_actions,
     reviews,
     roles,
     rules,
     statuses,
+    teams,
     templates,
     terminology,
     users,
@@ -40,8 +44,22 @@ from app.module_loader import load_modules
 from app.services.email_dispatcher import start_dispatcher, stop_dispatcher
 
 
+class _SweepDisabled(Exception):
+    """``background_job_orphan_sweep_on_startup`` is off - skip, silently."""
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Module schema drift guard (issue #89, prod 26 Sep 2026): refuse to serve
+    # when any installed module's database schema is BEHIND this code (named
+    # ModuleSchemaDrift; the gunicorn worker fails to boot, the container never
+    # goes healthy, the blue/green swap aborts). A DB AHEAD of this code (the
+    # new colour already migrated) only warns. No-op on non-Postgres engines.
+    # Runs after start.sh's bootstrap and even when SKIP_MIGRATIONS=1 skipped it.
+    from app.database import engine as _engine
+    from app.module_platform.drift_guard import run_startup_guard
+
+    run_startup_guard(_engine)
     # Derived / computed status (sprint-4/03) - register the re-eval subscriber
     # on the domain-event bus (idempotent). Child/owner changes auto-advance
     # records along their AUTO edges.
@@ -57,6 +75,41 @@ async def lifespan(_: FastAPI):
     ensure_core_locations()
     # Storage migration is the first background-job type (sprint-4/10 Slice 2).
     register_storage_migration_handler()
+    # Deferred actions - the grace-window engine (sprint-4/23, T5). Idempotent;
+    # module-provided deferred actions register at their own boot hook.
+    from app.deferred_actions.handlers import register_deferred_actions
+
+    register_deferred_actions()
+    # Teams capability seam (plan 28 S1, D-A8-3) - idempotent; must also run on
+    # the module_loader entry points (API router-load + Celery worker boot) so
+    # every process that can resolve `team.resolve@1`/etc. has them registered.
+    from app.services.team_capabilities import ensure_team_capabilities
+
+    ensure_team_capabilities()
+    # Orphaned-job sweep (fix/job-lease-orphan-sweep, prod 2026-09-07): a job
+    # left RUNNING by the previous process (deploy drain, crash) is failed
+    # here so the scheduler stops skipping its task forever. Guarded like the
+    # other startup hooks - a sweep failure must never keep the app down.
+    try:
+        from app.database import SessionLocal
+        from app.jobs.service import sweep_orphaned_jobs
+
+        if not settings.background_job_orphan_sweep_on_startup:
+            raise _SweepDisabled()
+
+        _db = SessionLocal()
+        try:
+            _swept = sweep_orphaned_jobs(_db)
+        finally:
+            _db.close()
+        if _swept:
+            logging.getLogger("foundryx.jobs").warning(
+                "startup orphan sweep failed %d job(s) left running by a previous process", _swept
+            )
+    except _SweepDisabled:
+        pass
+    except Exception:  # noqa: BLE001 - startup must not die on the sweep
+        logging.getLogger("foundryx.jobs").exception("startup orphan sweep failed")
     # Email outbox dispatcher (plan 09 §5) - daemon thread, gated by an
     # explicit settings flag (conftest turns it off; tests drive
     # dispatch_pending() directly against their own session).
@@ -67,12 +120,26 @@ async def lifespan(_: FastAPI):
         stop_dispatcher()
 
 
+# Request URLs (which can carry query secrets) must never reach INFO logs, whatever
+# the root level becomes.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 app = FastAPI(title="Foundryx Shared Service API", debug=settings.debug, lifespan=lifespan)
 
 # Structured error envelope for the public gateway API (`/api/v1/*`, AC-01-36).
 from app.api_errors import install_api_error_handler  # noqa: E402
 
 install_api_error_handler(app)
+
+# Body size cap for the API-key gateway. Registered BEFORE the activity
+# middleware, so it sits just INSIDE it: the activity row of a refused call is
+# written with its real 422 answer (the cap swallows the disconnect it handed the
+# app, so nothing surfaces as a 500). It stays inside both CORS layers (the 422
+# carries CORS headers) and runs before routing and the key dependency. A call
+# refused on its declared length has no resolved key yet, so it has no row.
+from app.gateway_body_cap import GatewayBodyCapMiddleware  # noqa: E402
+
+app.add_middleware(GatewayBodyCapMiddleware)
 
 # Developer Logs / Integration Activity (sprint-4/12) - logs one inbound_api row
 # per public-gateway request (path-prefix scoped, failure-isolated, records
@@ -91,10 +158,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Module-registered public CORS prefixes (plan sprint-4/34 review round 1,
+# S9). A module that mounts a `"public": true` router whose allowed origins
+# are TENANT data - a web chat channel's own `allowedOrigins`, which this
+# service's `CORS_ORIGINS` env knows nothing about - registers its prefix +
+# an origin resolver at boot (`register_public_cors_prefix`), and this ONE
+# generic, pure-ASGI middleware answers the preflight and strips the stray
+# `Access-Control-Allow-Credentials` that `CORSMiddleware` stamps on before
+# it even checks the origin. Core holds no module path constants; a request
+# outside every registered prefix is handed straight down untouched.
+#
+# Registered AFTER `CORSMiddleware`: `add_middleware` inserts at index 0
+# (LIFO), so this ends up OUTSIDE it - the only position from which it can
+# short-circuit an `OPTIONS` before `CORSMiddleware` refuses it, and edit the
+# header `CORSMiddleware` has already added.
+from app.module_platform.public_cors_middleware import PublicCorsMiddleware  # noqa: E402
+
+app.add_middleware(PublicCorsMiddleware)
+
+# Plan 34 - one read-transaction scope per request, so a network seam can end
+# the read transaction an earlier threadpool hop of the SAME request began
+# (the sync auth dependency reads the user) and never another request's.
+# Added last = outermost, so every middleware's own session shares it too.
+from app.database import ReadTransactionScopeMiddleware  # noqa: E402
+
+app.add_middleware(ReadTransactionScopeMiddleware)
+
 # Frontend NextAuth calls ${BACKEND_API_URL}/auth/login
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(roles.router, prefix="/roles", tags=["roles"])
+# Teams (plan 28, roadmap A8) - core grouping of tenant users, next to roles.
+app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(permissions.router, prefix="/permissions", tags=["permissions"])
 app.include_router(impersonation.router, prefix="/impersonation", tags=["impersonation"])
 app.include_router(me.router, prefix="/me", tags=["me"])
@@ -173,7 +268,14 @@ app.include_router(
 app.include_router(
     platform_tenant_branding.router, prefix="/platform/tenants", tags=["platform"]
 )
+# Worker liveness (sprint-5/11 S1, AC-11-86) - per-queue Celery freeze
+# visibility; reuses the existing tenants.read platform permission (R11).
+app.include_router(platform_ops.router, prefix="/platform/ops", tags=["platform"])
 app.include_router(health.router, tags=["health"])
+# Deferred actions - the grace-window engine (sprint-4/23, T5).
+app.include_router(
+    pending_actions.router, prefix="/api/v1/pending-actions", tags=["pending-actions"]
+)
 
 # Installed App-Store modules (omnichannel, …) hook in via the loader.
 load_modules(app)

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { FileText, History } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Alert, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent } from '@/components/ui/card';
 import { FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { FormRow, type ResourceFormConfig } from '@/components/platform/resource-form';
 import { aiService } from '@/services/ai-service';
 import type { AiSkill } from '@/types/ai';
+import type { ListQuery } from '@/types/resource';
 import { AI_SKILLS_PATH, skillFormHref, skillPath } from './paths';
 import { SkillVersionsTab } from './skill-versions-tab';
 import { useSkillActions } from './use-skills-list-config';
@@ -145,6 +146,20 @@ export function useSkillForm(
     }
     if (skill) form.reset(toValues(skill));
   }, [form, isNew, router, skill]);
+
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      aiService.getSkillAt(query, index).then((r) => ({
+        recordId: r.skill?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => skillFormHref(recordId, { ctx, index }),
+    [],
+  );
 
   const config = useMemo<ResourceFormConfig<AiSkill> | null>(() => {
     if (!isNew && !skill) return null;
@@ -282,14 +297,7 @@ export function useSkillForm(
       onCancel,
       recordNav: isNew
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              aiService.getSkillAt(query, index).then((r) => ({
-                recordId: r.skill?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => skillFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     actions,
@@ -302,6 +310,8 @@ export function useSkillForm(
     skill,
     skillId,
     versionsToken,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, form, isLoading, notFound };

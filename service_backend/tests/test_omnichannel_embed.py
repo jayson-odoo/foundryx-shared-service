@@ -808,3 +808,18 @@ def test_embed_session_throttled(client, session_factory):
         assert "Retry-After" in res.headers
     finally:
         settings.throttle_embed_max_fails = original
+
+
+# ── Review round 1, finding 13: lifecycle-moves is native-only ──────────────
+def test_embed_token_cannot_read_lifecycle_moves(client, session_factory):
+    """`GET /omnichannel/contacts/{id}/lifecycle-moves` is a native-only
+    surface, consistent with the two lifecycle WRITE routes
+    (`move_lifecycle` / the `wants_profile` gate on `patch_thread`) - an
+    embed principal must be refused (403), never silently answered."""
+    cid_conn = _make_connection(session_factory)
+    wid = _workspace_id(session_factory)
+    contact_id = _seed_contact(session_factory, workspace_id=wid)
+    token = _exchange(client, _assertion(iss=cid_conn, workspace_id=wid)).json()["accessToken"]
+
+    res = client.get(f"/omnichannel/contacts/{contact_id}/lifecycle-moves", headers=_bearer(token))
+    assert res.status_code == 403, res.text

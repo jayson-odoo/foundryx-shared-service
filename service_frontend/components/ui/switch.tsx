@@ -4,6 +4,7 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Switch as SwitchPrimitive } from 'radix-ui';
+import { COARSE_HIT_TARGET_CLASS, PRESSED_CLASS } from '@/components/ui/primitive-classes';
 
 // Define a context for `permanent` state
 const SwitchContext = React.createContext<{ permanent: boolean }>({
@@ -21,8 +22,9 @@ const useSwitchContext = () => {
 // Define classes for variants
 const switchVariants = cva(
   `
-    relative peer inline-flex shrink-0 cursor-pointer items-center rounded-full transition-colors 
-    focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background 
+    ${PRESSED_CLASS} ${COARSE_HIT_TARGET_CLASS}
+    peer inline-flex shrink-0 cursor-pointer items-center rounded-full
+    focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background
     disabled:cursor-not-allowed disabled:opacity-50 data-[state=unchecked]:bg-input
     aria-invalid:border aria-invalid:border-destructive/60 aria-invalid:ring-destructive/10 dark:aria-invalid:border-destructive dark:aria-invalid:ring-destructive/20
     [[data-invalid=true]_&]:border [[data-invalid=true]_&]:border-destructive/60 [[data-invalid=true]_&]:ring-destructive/10  dark:[[data-invalid=true]_&]:border-destructive dark:[[data-invalid=true]_&]:ring-destructive/20
@@ -83,7 +85,7 @@ const switchThumbVariants = cva(
 );
 
 const switchIndicatorVariants = cva(
-  'text-sm font-medium absolute mx-[2px] top-1/2 w-1/2 -translate-y-1/2 flex pointer-events-none items-center justify-center text-center transition-transform duration-300 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)]',
+  'text-sm font-medium absolute mx-[2px] top-1/2 w-1/2 -translate-y-1/2 flex pointer-events-none items-center justify-center text-center transition-transform ease-(--ease-standard) duration-(--duration-slow)',
   {
     variants: {
       state: {

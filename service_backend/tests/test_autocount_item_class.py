@@ -1,0 +1,498 @@
+"""AutoCount ``ItemClass`` on the product feed (lane ITEM-CLASS, partner of
+sorento-crm ITEM-CLASS).
+
+RED before the implementation. The ItemType lane exactly (``test_autocount_item_type.py``):
+the open REST API's ``/itembypage`` row already carries ``ItemClass`` (``SERENE``,
+``DIY``; empty on most items) and the ESB dropped it. It now travels as
+``item_class_code`` on the product row, right after ``item_type_code``, on the
+push payload AND the pull-gateway snapshot rows (both
+``CanonicalProduct.sink_payload()``).
+
+Wire contract (what the CRM builds against):
+* key ``item_class_code``, a string, trimmed (same as ``item_type_code``);
+* SENT AS ``""`` when the product task maps ``ItemClass`` and the item's value is blank (crew
+  ruling 29 Oct, security M1: item class is an access attribute, so the CRM must clear a class
+  AutoCount cleared); OMITTED when no mapping row targets it, or the source row does not carry
+  the column at all (the source said nothing, so the CRM leaves the class alone).
+
+Existing tenants: every existing ``product`` task gets an
+``ItemClass -> item_class_code`` row via ``backfill_product_item_class``
+(module Alembic 0034 + ``update_tenant`` from < 0.20.0).
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import logging
+import pathlib
+import re
+from typing import Any, Dict
+
+import pytest
+import sqlalchemy as sa
+
+import modules.autocount as autocount_module
+from app.models import DEFAULT_TENANT_ID
+from app.models.connection import Connection
+from app.secrets import encrypt_secret
+from modules.autocount.canonical.masters import ENTITY_PRODUCT, CanonicalProduct
+from modules.autocount.mapping import SCOPE_HEADER, MappingEngine, MappingRow, flat_profile
+from modules.autocount.mapping_catalog import accepted_field_names
+from modules.autocount.models import (
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
+    SOURCE_IMPL_SQL_DB,
+    AcCompany,
+    AcEntityConfig,
+    AcFieldMapping,
+)
+from modules.autocount.presets import PRODUCT_HTTP_PRESET
+
+MODULE_ROOT = pathlib.Path(autocount_module.__file__).resolve().parent
+VERSIONS_DIR = MODULE_ROOT / "alembic" / "versions"
+FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "autocount_http" / "item_page.json"
+
+HELPER_NAME = "backfill_product_item_class"
+PREVIOUS_REVISION = "0033_autocount_billing_fix"
+
+
+def _backfill():
+    from modules.autocount import backfill
+
+    helper = getattr(backfill, HELPER_NAME, None)
+    if helper is None:
+        pytest.fail(f"modules.autocount.backfill has no `{HELPER_NAME}` helper yet")
+    return helper
+
+
+# ═════════════════════════ Group A - canonical, preset, wire ════════════════
+
+
+def test_canonical_product_sends_item_class_code_right_after_item_type_code():
+    fields = CanonicalProduct.SINK_FIELDS
+    assert "item_class_code" in fields
+    assert fields.index("item_class_code") == fields.index("item_type_code") + 1
+
+
+def test_sink_payload_carries_item_class_code():
+    product = CanonicalProduct(source_ref="1861", code="1861", brand_code="SORENTO",
+                               item_class_code="SERENE")
+    payload = product.sink_payload()
+    assert payload["item_class_code"] == "SERENE"
+    assert payload["brand_code"] == "SORENTO"
+
+
+def test_sink_payload_omits_item_class_code_when_no_mapping_sets_it():
+    payload = CanonicalProduct(source_ref="X", code="X").sink_payload()
+    assert "item_class_code" not in payload
+
+
+def test_sink_payload_sends_blank_when_a_mapping_set_it_to_none():
+    payload = CanonicalProduct(source_ref="X", code="X", item_class_code=None).sink_payload()
+    assert payload["item_class_code"] == ""
+
+
+def test_other_none_fields_are_still_omitted():
+    """Only item_class_code clears: brand/item type keep the "absent = untouched" rule."""
+    payload = CanonicalProduct(source_ref="X", code="X", item_class_code=None, brand_code=None,
+                               item_type_code=None).sink_payload()
+    assert "brand_code" not in payload and "item_type_code" not in payload
+
+
+def test_mapping_catalog_accepts_item_class_code_for_product():
+    assert "item_class_code" in accepted_field_names(ENTITY_PRODUCT)
+
+
+def test_product_preset_maps_item_class_enabled_right_after_item_type():
+    pairs = [(f.source_path, f.canonical_field) for f in PRODUCT_HTTP_PRESET.rows]
+    assert ("ItemClass", "item_class_code") in pairs
+    assert pairs.index(("ItemClass", "item_class_code")) == pairs.index(("ItemType", "item_type_code")) + 1
+    row = PRODUCT_HTTP_PRESET.rows[pairs.index(("ItemClass", "item_class_code"))]
+    assert row.transform == "string"
+    assert row.enabled is True
+    assert row.required is False
+    assert row.formula is None
+
+
+def _engine() -> MappingEngine:
+    rows = [
+        MappingRow(
+            source_path=f.source_path, canonical_field=f.canonical_field,
+            transform=f.transform, formula=f.formula, is_required=f.required,
+            is_enabled=f.enabled,
+        )
+        for f in PRODUCT_HTTP_PRESET.rows
+    ]
+    return MappingEngine(
+        rows, entity_type=ENTITY_PRODUCT,
+        profile=flat_profile(ENTITY_PRODUCT, list(PRODUCT_HTTP_PRESET.key_fields)),
+        database_name="AED_SORENTO",
+    )
+
+
+def _raw(**overrides: Any) -> Dict[str, Any]:
+    base: Dict[str, Any] = {
+        "ItemCode": "SRTWB302", "Description": "BASIN", "Desc2": "", "ItemGroup": "WB-CB",
+        "ItemType": "WB-CB", "ItemClass": "SERENE", "ItemBrand": "SORENTO", "BaseUOM": "UNIT",
+        "IsActive": "T", "Discontinued": "F", "BaseUOMPrice": 10.0,
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.parametrize(
+    "item_class, expected",
+    [("SERENE", "SERENE"), ("DIY", "DIY"), ("  DIY ", "DIY")],
+)
+def test_preset_maps_owner_sample_item_classes_onto_the_wire(item_class, expected):
+    mapped = _engine().map_document(_raw(ItemClass=item_class))
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert mapped.record.sink_payload()["item_class_code"] == expected
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_blank_item_class_is_sent_as_blank_never_null(blank):
+    mapped = _engine().map_document(_raw(ItemClass=blank))
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert mapped.record.sink_payload()["item_class_code"] == ""
+
+
+def test_absent_item_class_column_is_omitted():
+    """No column = no information: the engine skips the row, so the CRM is left alone."""
+    raw = _raw()
+    raw.pop("ItemClass")
+    mapped = _engine().map_document(raw)
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert "item_class_code" not in mapped.record.sink_payload()
+
+
+def test_a_task_without_the_item_class_row_omits_the_key():
+    rows = [
+        MappingRow(
+            source_path=f.source_path, canonical_field=f.canonical_field,
+            transform=f.transform, formula=f.formula, is_required=f.required,
+            is_enabled=f.enabled,
+        )
+        for f in PRODUCT_HTTP_PRESET.rows
+        if f.canonical_field != "item_class_code"
+    ]
+    engine = MappingEngine(
+        rows, entity_type=ENTITY_PRODUCT,
+        profile=flat_profile(ENTITY_PRODUCT, list(PRODUCT_HTTP_PRESET.key_fields)),
+        database_name="AED_SORENTO",
+    )
+    mapped = engine.map_document(_raw())
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    assert "item_class_code" not in mapped.record.sink_payload()
+
+
+def test_fixture_item_row_with_empty_item_class_sends_blank():
+    """The real recorded ``/itembypage`` row carries ``ItemClass: ""`` (96% of
+    db1 items do): sent as ``""`` so the CRM clears any class it holds."""
+    row = json.loads(FIXTURE.read_text())["Data"][0]
+    assert row["ItemClass"] == ""
+    payload = _engine().map_document(dict(row)).record.sink_payload()
+    assert payload["item_class_code"] == ""
+    assert payload["item_type_code"] == "MISC"
+    assert payload["brand_code"] == "OTHERS"
+
+
+# ═════════════════════════ Group B - backfill for existing tasks ════════════
+
+
+@pytest.fixture
+def db(session_factory):
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def _company(db, *, database: str, tenant_id: str = DEFAULT_TENANT_ID) -> AcCompany:
+    api = Connection(
+        tenant_id=tenant_id, provider="autocount", type="erp", name=f"AutoCount {database}",
+        config_json={"baseUrl": "https://ac.example.com", "userId": "ADMIN"},
+        credentials_json=encrypt_secret({"appId": "app-1", "password": "secret"}),
+        is_active=True,
+    )
+    db.add(api)
+    db.flush()
+    company = AcCompany(
+        tenant_id=tenant_id, connection_id=api.id, database_name=database,
+        company_name=f"{database} Sdn Bhd", name=database, is_active=True,
+    )
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
+def _product_config(db, company: AcCompany, *, source_impl: str = SOURCE_IMPL_AUTOCOUNT_HTTP,
+                    path: str = "/itembypage", result_columns=None,
+                    tenant_id: str = None, mapped: bool = True) -> AcEntityConfig:
+    config = AcEntityConfig(
+        tenant_id=tenant_id or company.tenant_id, company_id=company.id,
+        entity_type=ENTITY_PRODUCT, source_impl=source_impl,
+    )
+    if source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+        config.source_config = {"connectionId": "conn-x", "path": path, "keyFields": ["ItemCode"]}
+    else:
+        config.source_config = {"connectionId": "conn-x", "query": "SELECT 1", "keyColumns": ["ItemCode"]}
+    config.result_columns = list(result_columns or [])
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    if mapped:
+        _seed_existing_rows(db, company)
+    return config
+
+
+def _seed_existing_rows(db, company: AcCompany) -> None:
+    for order, (src, dst) in enumerate(
+        (("ItemCode", "code"), ("ItemGroup", "category_code"), ("ItemBrand", "brand_code"))
+    ):
+        db.add(AcFieldMapping(
+            tenant_id=company.tenant_id, company_id=company.id, entity_type=ENTITY_PRODUCT,
+            scope=SCOPE_HEADER, source_path=src, canonical_field=dst,
+            transform="string", is_enabled=True, is_required=(dst == "code"), sort_order=order,
+        ))
+    db.commit()
+
+
+def _rows(db, company_id: str, field: str = "item_class_code"):
+    return [
+        r for r in (
+            db.query(AcFieldMapping)
+            .filter(
+                AcFieldMapping.company_id == company_id,
+                AcFieldMapping.entity_type == ENTITY_PRODUCT,
+                AcFieldMapping.scope == SCOPE_HEADER,
+            )
+            .order_by(AcFieldMapping.sort_order)
+            .all()
+        )
+        if r.canonical_field == field
+    ]
+
+
+def test_backfill_seeds_an_enabled_row_on_an_http_item_task(db):
+    company = _company(db, database="AED_IC_HTTP")
+    _product_config(db, company)
+    db.expire_all()
+
+    assert _backfill()(db, schema=None) == 1
+    db.expire_all()
+
+    rows = _rows(db, company.id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.source_path, row.transform, row.formula) == ("ItemClass", "string", None)
+    assert row.is_enabled is True and row.is_required is False and row.is_source_owned is True
+    assert row.sort_order == 3  # next after the existing rows
+    assert row.tenant_id == company.tenant_id
+
+
+def test_backfill_enables_when_result_columns_carry_item_class(db):
+    company = _company(db, database="AED_IC_SQL_OK")
+    _product_config(db, company, source_impl=SOURCE_IMPL_SQL_DB,
+                    result_columns=["ItemCode", "ItemBrand", "ItemClass"])
+    _backfill()(db, schema=None)
+    db.expire_all()
+    assert [r.is_enabled for r in _rows(db, company.id)] == [True]
+
+
+def test_backfill_seeds_disabled_with_a_warning_when_source_lacks_item_class(db, caplog):
+    company = _company(db, database="AED_IC_SQL_NO")
+    config = _product_config(db, company, source_impl=SOURCE_IMPL_SQL_DB,
+                             result_columns=["ItemCode", "ItemBrand"])
+    config_id = config.id
+    with caplog.at_level(logging.WARNING):
+        _backfill()(db, schema=None)
+    db.expire_all()
+    assert [r.is_enabled for r in _rows(db, company.id)] == [False]
+    assert [r for r in caplog.records if config_id in r.getMessage()]
+
+
+def test_backfill_disables_on_a_custom_http_path(db):
+    company = _company(db, database="AED_IC_PATH")
+    _product_config(db, company, path="/somethingelse")
+    _backfill()(db, schema=None)
+    db.expire_all()
+    assert [r.is_enabled for r in _rows(db, company.id)] == [False]
+
+
+def test_backfill_leaves_an_existing_row_alone_in_any_state(db):
+    company = _company(db, database="AED_IC_OWN")
+    _product_config(db, company)
+    db.add(AcFieldMapping(
+        tenant_id=company.tenant_id, company_id=company.id, entity_type=ENTITY_PRODUCT,
+        scope=SCOPE_HEADER, source_path="ItemType", canonical_field="item_class_code",
+        transform="string", is_enabled=False, is_required=False, sort_order=0,
+    ))
+    db.commit()
+    existing_id = _rows(db, company.id)[0].id
+    db.expire_all()
+
+    assert _backfill()(db, schema=None) == 0
+    db.expire_all()
+    rows = _rows(db, company.id)
+    assert [r.id for r in rows] == [existing_id]
+    assert rows[0].source_path == "ItemType" and rows[0].is_enabled is False
+
+
+def test_backfill_is_idempotent(db):
+    company = _company(db, database="AED_IC_TWICE")
+    _product_config(db, company)
+    helper = _backfill()
+    assert helper(db, schema=None) == 1
+    assert helper(db, schema=None) == 0
+    db.expire_all()
+    assert len(_rows(db, company.id)) == 1
+
+
+def test_backfill_touches_only_product_tasks(db):
+    company = _company(db, database="AED_IC_OTHER")
+    config = AcEntityConfig(
+        tenant_id=company.tenant_id, company_id=company.id,
+        entity_type="brand", source_impl=SOURCE_IMPL_AUTOCOUNT_HTTP,
+    )
+    config.source_config = {"connectionId": "conn-x", "path": "/ItemBrand"}
+    db.add(config)
+    db.commit()
+    assert _backfill()(db, schema=None) == 0
+    assert db.query(AcFieldMapping).filter(
+        AcFieldMapping.canonical_field == "item_class_code"
+    ).count() == 0
+
+
+def test_backfill_skips_a_config_whose_company_belongs_to_another_tenant(db, caplog):
+    leaking = _company(db, database="AED_IC_LEAK", tenant_id="tenant-leak-item-class")
+    config = _product_config(db, leaking, tenant_id=DEFAULT_TENANT_ID)
+    config_id = config.id
+    with caplog.at_level(logging.WARNING):
+        _backfill()(db, schema=None)
+    db.expire_all()
+    assert db.query(AcFieldMapping).filter(
+        AcFieldMapping.company_id == leaking.id,
+        AcFieldMapping.canonical_field == "item_class_code",
+    ).count() == 0
+    assert [r for r in caplog.records if config_id in r.getMessage()]
+
+
+def test_backfill_is_a_no_op_on_a_schema_that_predates_its_tables():
+    helper = _backfill()
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE ac_entity_config (id TEXT PRIMARY KEY, tenant_id TEXT, "
+            "company_id TEXT, entity_type TEXT)"
+        )
+        conn.exec_driver_sql("INSERT INTO ac_entity_config VALUES ('c', 't', 'c', 'product')")
+    with engine.begin() as conn:
+        assert helper(conn, schema=None) == 0
+    with sa.create_engine("sqlite://").begin() as conn:
+        assert helper(conn, schema=None) == 0
+
+
+def test_revision_0034_chains_onto_0033_and_calls_the_helper():
+    candidates = sorted(VERSIONS_DIR.glob("0034_*.py"))
+    assert len(candidates) == 1, [p.name for p in candidates]
+    path = candidates[0]
+    text = path.read_text()
+    revision = re.search(r'^revision[^=]*=\s*"([^"]+)"', text, re.M)
+    assert revision and len(revision.group(1)) <= 32
+    spec = importlib.util.spec_from_file_location("_ac_rev_0034", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.down_revision == PREVIOUS_REVISION
+    assert HELPER_NAME in text
+    for other in VERSIONS_DIR.glob("*.py"):
+        if other == path:
+            continue
+        down = re.search(r'^down_revision[^=]*=\s*"([^"]+)"', other.read_text(), re.M)
+        assert not (down and down.group(1) == PREVIOUS_REVISION), other.name
+
+
+def test_manifest_version_is_bumped_past_0_19_0():
+    manifest = json.loads((MODULE_ROOT / "manifest.json").read_text())
+    assert tuple(int(p) for p in manifest["version"].split(".")) >= (0, 20, 0)
+
+
+def test_update_tenant_from_0_19_seeds_the_row(db):
+    from modules.autocount.bootstrap import update_tenant
+
+    company = _company(db, database="AED_IC_UPD")
+    _product_config(db, company)
+    update_tenant(db, DEFAULT_TENANT_ID, "0.19.0")
+    db.commit()
+    db.expire_all()
+    assert [r.is_enabled for r in _rows(db, company.id)] == [True]
+
+
+def test_update_tenant_from_0_20_never_reseeds_a_row_an_operator_deleted(db):
+    """No query text marks a product HTTP task as "already migrated", so the
+    gate is the version: past 0.20.0 the backfill never runs again and an
+    operator's deliberate delete sticks."""
+    from modules.autocount.bootstrap import update_tenant
+
+    company = _company(db, database="AED_IC_DEL")
+    _product_config(db, company)
+    update_tenant(db, DEFAULT_TENANT_ID, "0.19.0")
+    db.commit()
+    rows = _rows(db, company.id)
+    assert len(rows) == 1
+    db.delete(rows[0])
+    db.commit()
+
+    update_tenant(db, DEFAULT_TENANT_ID, "0.20.0")
+    db.commit()
+    db.expire_all()
+    assert _rows(db, company.id) == []
+
+
+def test_scoped_backfill_touches_only_that_tenant(db):
+    """The `update_tenant` gate is PER TENANT, so its backfill must be too:
+    tenant A's late update must never reseed a row tenant B (already past
+    0.20.0) deliberately deleted."""
+    mine = _company(db, database="AED_IC_SCOPE_A")
+    other = _company(db, database="AED_IC_SCOPE_B", tenant_id="tenant-item-class-b")
+    _product_config(db, mine)
+    _product_config(db, other)
+
+    assert _backfill()(db, schema=None, tenant_id=DEFAULT_TENANT_ID) == 1
+    db.expire_all()
+    assert len(_rows(db, mine.id)) == 1
+    assert _rows(db, other.id) == []
+
+
+def test_update_tenant_never_reseeds_another_tenants_deleted_row(db):
+    from modules.autocount.bootstrap import update_tenant
+
+    mine = _company(db, database="AED_IC_UPD_A")
+    other = _company(db, database="AED_IC_UPD_B", tenant_id="tenant-item-class-del")
+    _product_config(db, mine)
+    _product_config(db, other)
+    # the deploy migration (unscoped) seeds both; tenant B deletes its row
+    _backfill()(db, schema=None)
+    db.commit()
+    rows = _rows(db, other.id)
+    assert len(rows) == 1 and rows[0].tenant_id == "tenant-item-class-del"
+    db.delete(rows[0])
+    db.commit()
+
+    update_tenant(db, DEFAULT_TENANT_ID, "0.19.0")
+    db.commit()
+    db.expire_all()
+    assert _rows(db, other.id) == []
+    assert len(_rows(db, mine.id)) == 1
+
+
+def test_backfill_leaves_an_empty_product_task_to_its_first_save_seed(db):
+    """BL-SS-300: a task saved before its first mapping (zero header rows)
+    must not get a lone ``item_class_code`` row, or the full preset seed on
+    its first save (only while the mapping is empty) never runs."""
+    company = _company(db, database="AED_IC_EMPTY")
+    _product_config(db, company, mapped=False)
+    assert _backfill()(db, schema=None) == 0
+    db.expire_all()
+    assert db.query(AcFieldMapping).filter(AcFieldMapping.company_id == company.id).count() == 0

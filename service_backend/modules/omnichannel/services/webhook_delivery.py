@@ -1,26 +1,41 @@
 """Consumer webhook delivery outbox (Slice 4, AC-01-23/24).
 
 The inbound pipeline calls ``enqueue_event`` after it persists a message/status/
-contact change. That fans the event to every ACTIVE endpoint on the channel that
-subscribed to the type, writing a durable ``webhook_deliveries`` row per endpoint
-and queuing the HTTP POST. ``dispatch`` runs one attempt with an HMAC signature;
+contact change. That fans the event to every ACTIVE endpoint that subscribed to
+the type and covers the channel (its own, or an all-channels endpoint of the
+channel's tenant and workspace), writing a durable ``webhook_deliveries`` row per endpoint
+and queuing the HTTP POST. While the workspace is off (tenant may not sign in,
+module inactive, workspace trashed) nothing is queued, and a queued delivery that
+reaches its attempt in that state ends FAILED with no change to the endpoint's
+failure counter. ``dispatch`` runs one attempt with an HMAC signature;
 on failure it backs off, and after N dead-letters the endpoint auto-disables.
 
 Delivery NEVER runs synchronously inside inbound processing and is fully failure-
 isolated - a broken/slow consumer can't 500 or block a WhatsApp message landing
 in the inbox.
 """
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
+import threading
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
+import anyio
 import httpx
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ..models import Channel, WebhookDelivery, WebhookEndpoint
+from app.database import release_read_transactions
+from app.services.url_guard import GuardedAsyncTransport as GuardedTransport
+from app.services.url_guard import UrlGuardError
+
+from ..api_auth import gateway_key_enabled
+from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
+from ..schemas import MessageItem
 from ..security import decrypt_secret
 from .webhook_service import AUTO_DISABLE_THRESHOLD, WebhookError, assert_deliverable
 
@@ -29,7 +44,14 @@ logger = logging.getLogger(__name__)
 # Exponential backoff between attempts (seconds): ~1m, 5m, 25m, 1h, 6h.
 _BACKOFF = [60, 300, 1500, 3600, 21600]
 MAX_ATTEMPTS = len(_BACKOFF) + 1  # 6 total attempts before dead-letter
-DELIVERY_TIMEOUT = 10.0
+# One attempt (connect, headers and body together) ends by this deadline; read
+# at call time. An httpx timeout is per read, so the total is enforced here.
+DELIVERY_DEADLINE_SECONDS = 10
+# Most response-body bytes read; the status code alone decides success.
+RESPONSE_BYTE_CAP = 65536
+DEADLINE_ERROR = "Consumer did not answer within {seconds} seconds."
+# Below the worker's 300 second soft limit (app/workflow_engine/worker.py:84-85).
+DUE_RUN_BUDGET_SECONDS = 240
 # Reject a timestamp older than this on the consumer side (advisory - documented).
 SIGNATURE_TOLERANCE_SECONDS = 300
 
@@ -42,17 +64,19 @@ def _backoff_seconds(attempt: int) -> int:
 
 def build_envelope(
     event_type: str,
-    channel: Channel,
+    workspace_id: str,
+    channel_id: Optional[str],
     event_id: str,
     data: Dict[str, Any],
     occurred_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
+    """``channel_id`` is None for a workspace-level event with no channel."""
     when = occurred_at or datetime.now(timezone.utc)
     return {
         "id": event_id,
         "type": event_type,
-        "workspaceId": channel.workspace_id,
-        "channelId": channel.id,
+        "workspaceId": workspace_id,
+        "channelId": channel_id,
         "occurredAt": when.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         "data": data,
     }
@@ -70,12 +94,25 @@ def sign_body(secret: str, timestamp: str, body: bytes) -> str:
 
 
 def _active_endpoints(
-    db: Session, channel_id: str, event_type: str
+    db: Session,
+    tenant_id: str,
+    workspace_id: str,
+    channel_id: Optional[str],
+    event_type: str,
 ) -> List[WebhookEndpoint]:
+    """Subscribed ACTIVE endpoints for an event. With a ``channel_id``: that
+    channel's own endpoints plus the all-channels ones (``channel_id`` NULL);
+    with None: the all-channels ones only. Always filtered by tenant and
+    workspace, which is the only boundary of an all-channels row."""
+    covers = WebhookEndpoint.channel_id.is_(None)
+    if channel_id is not None:
+        covers = or_(WebhookEndpoint.channel_id == channel_id, covers)
     rows = (
         db.query(WebhookEndpoint)
         .filter(
-            WebhookEndpoint.channel_id == channel_id,
+            WebhookEndpoint.tenant_id == tenant_id,
+            WebhookEndpoint.workspace_id == workspace_id,
+            covers,
             WebhookEndpoint.status == "ACTIVE",
         )
         .all()
@@ -83,21 +120,53 @@ def _active_endpoints(
     return [r for r in rows if event_type in (r.events_json or [])]
 
 
-def enqueue_event(
+def consumer_message_payload(item: MessageItem, row: ConversationMessage) -> Dict[str, Any]:
+    """The consumer-facing message object shared by `message.inbound` and
+    `message.outbound`: media rides an ABSOLUTE, API-key-authed gateway URL
+    (plan 12 AC-12-11) and uses mimeType/filename/size, distinct from the
+    internal FE naming."""
+    from app.config import settings
+
+    payload = item.model_dump(mode="json")
+    if row.media_key:
+        payload["mediaUrl"] = f"{settings.public_base_url}/omnichannel/media/{row.id}"
+        payload["mimeType"] = payload.pop("mediaMime", None)
+        payload["filename"] = payload.pop("mediaFilename", None)
+        payload["size"] = payload.pop("mediaSize", None)
+    return payload
+
+
+def _fan_out(
     db: Session,
-    channel: Channel,
+    tenant_id: str,
+    workspace_id: str,
+    channel_id: Optional[str],
     event_type: str,
     event_id: str,
-    data: Dict[str, Any],
+    data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
+    extra_channel_ids: Optional[List[str]] = None,
 ) -> int:
-    """Fan an event to the channel's subscribed endpoints. Creates durable
-    delivery rows + queues each POST. Fully failure-isolated: returns the number
-    queued, never raises into the inbound pipeline."""
+    """Shared body of ``enqueue_event`` / ``enqueue_workspace_event``. Creates
+    durable delivery rows + queues each POST. Failure-isolated: never raises.
+    ``data`` may be a callable: it runs only when at least one endpoint
+    subscribes, so a scope with no subscriber pays nothing to build the payload."""
     try:
-        endpoints = _active_endpoints(db, channel.id, event_type)
+        endpoints = _active_endpoints(db, tenant_id, workspace_id, channel_id, event_type)
+        # Further channels whose own endpoints are also told: one delivery per endpoint.
+        seen = {ep.id for ep in endpoints}
+        for extra in extra_channel_ids or []:
+            for ep in _active_endpoints(db, tenant_id, workspace_id, extra, event_type):
+                if ep.id not in seen:
+                    seen.add(ep.id)
+                    endpoints.append(ep)
         if not endpoints:
             return 0
-        envelope = build_envelope(event_type, channel, event_id, data)
+        # Same state check as the key routes; an error here is logged below.
+        if not gateway_key_enabled(db, tenant_id, workspace_id):
+            return 0
+        envelope = build_envelope(
+            event_type, workspace_id, channel_id, event_id, data() if callable(data) else data
+        )
         delivery_ids: List[str] = []
         for ep in endpoints:
             row = WebhookDelivery(
@@ -114,8 +183,14 @@ def enqueue_event(
             delivery_ids.append(row.id)
         db.commit()
     except Exception:  # noqa: BLE001 - forwarding must never break inbound
-        logger.exception("webhook enqueue failed for channel %s (%s)", channel.id, event_type)
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.exception(
+            "webhook enqueue failed for workspace %s channel %s (%s)",
+            workspace_id, channel_id, event_type,
+        )
         return 0
 
     # Queue the POSTs out-of-band (eager dev runs them inline).
@@ -127,6 +202,148 @@ def enqueue_event(
         except Exception:  # noqa: BLE001
             logger.exception("webhook dispatch enqueue failed for delivery %s", delivery_id)
     return len(delivery_ids)
+
+
+def enqueue_event(
+    db: Session,
+    channel: Channel,
+    event_type: str,
+    event_id: str,
+    data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
+) -> int:
+    """Fan an event on ``channel`` to the subscribed endpoints that cover it
+    (its own and the workspace's all-channels ones). Returns the number queued,
+    never raises into the inbound pipeline."""
+    return _fan_out(
+        db, channel.tenant_id, channel.workspace_id, channel.id, event_type, event_id, data
+    )
+
+
+def enqueue_workspace_event(
+    db: Session,
+    tenant_id: str,
+    workspace_id: str,
+    event_type: str,
+    event_id: str,
+    data: Union[Dict[str, Any], Callable[[], Dict[str, Any]]],
+    also_channel_ids: Optional[List[str]] = None,
+) -> int:
+    """Fan an event that belongs to no channel (envelope ``channelId`` is null)
+    to the workspace's all-channels endpoints, plus the own endpoints of
+    ``also_channel_ids`` when given (each endpoint once). Never raises."""
+    return _fan_out(
+        db, tenant_id, workspace_id, None, event_type, event_id, data,
+        extra_channel_ids=also_channel_ids,
+    )
+
+
+class DeliveryDeadlineError(Exception):
+    """The attempt ran past its total deadline."""
+
+
+class _Reply:
+    """What one attempt needs from a response."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+def _run_under_deadline(make_coro: Callable[[], Any], timeout: float) -> Any:
+    """Run one coroutine on a fresh loop, cancelled at ``timeout`` (cancelling
+    closes the connection in every phase). Raises DeliveryDeadlineError at the
+    deadline. From inside a running loop (an async route reaching an eager
+    task) the same work runs on a short-lived thread with its own loop.
+    The loop's default executor is not joined: a host lookup cannot be
+    interrupted and may finish on its own, but nothing is sent after the deadline."""
+
+    def run() -> Any:
+        async def bounded() -> Any:
+            # Level-triggered: keeps cancelling until the work really ends, even
+            # if something inside swallows one cancellation.
+            with anyio.fail_after(timeout):
+                return await make_coro()
+
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(bounded())
+        except TimeoutError:
+            raise DeliveryDeadlineError() from None
+        finally:
+            try:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            finally:
+                loop.close()
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return run()
+    box: Dict[str, Any] = {}
+
+    def in_thread() -> None:
+        try:
+            box["value"] = run()
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=in_thread, name="webhook-post", daemon=True)
+    worker.start()
+    worker.join()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def _check_address(url: str, budget: float) -> float:
+    """Run the address check inside the attempt's budget; return what is left."""
+    started = time.monotonic()
+
+    async def check() -> None:
+        await asyncio.to_thread(assert_deliverable, url)
+
+    _run_under_deadline(check, budget)
+    left = budget - (time.monotonic() - started)
+    if left <= 0:
+        raise DeliveryDeadlineError()
+    return left
+
+
+async def _post_async(
+    url: str, content: bytes, headers: Dict[str, str], budget: float
+) -> _Reply:
+    # Building the transport loads the CA bundle (blocking). Do it off the event
+    # loop, inside the attempt's deadline, so a slow build is abandoned at the
+    # deadline instead of stalling the loop past it.
+    transport = await anyio.to_thread.run_sync(
+        lambda: GuardedTransport(subject="Callback URL"), abandon_on_cancel=True
+    )
+    async with httpx.AsyncClient(
+        transport=transport, timeout=budget, follow_redirects=False
+    ) as client:
+        async with client.stream("POST", url, content=content, headers=headers) as resp:
+            if not resp.is_stream_consumed:
+                read = 0
+                async for chunk in resp.aiter_raw():
+                    read += len(chunk)
+                    if read >= RESPONSE_BYTE_CAP:
+                        break  # enough; the connection is closed without the rest
+            return _Reply(resp.status_code)
+
+
+def _post(
+    url: str, *, content: bytes, headers: Dict[str, str], timeout: float
+) -> _Reply:
+    """One POST through the guarded transport (the connection goes only to an
+    address that passed the guard at connect time). ``timeout`` is the TOTAL
+    budget for the attempt: connect, TLS, headers and body run as one task that
+    is cancelled at the deadline. Module-level so a test can replace the
+    outbound call."""
+    return _run_under_deadline(lambda: _post_async(url, content, headers, timeout), timeout)
 
 
 def dispatch(db: Session, delivery_id: str) -> str:
@@ -145,6 +362,12 @@ def dispatch(db: Session, delivery_id: str) -> str:
     if endpoint is None or endpoint.status != "ACTIVE":
         delivery.status = "FAILED"
         delivery.error = "Endpoint inactive."
+        db.commit()
+        return "skip"
+    if not gateway_key_enabled(db, delivery.tenant_id, endpoint.workspace_id):
+        delivery.status = "FAILED"
+        delivery.next_attempt_at = None
+        delivery.error = "Service not enabled for this workspace."
         db.commit()
         return "skip"
 
@@ -168,28 +391,36 @@ def dispatch(db: Session, delivery_id: str) -> str:
 
     delivery.attempt_count += 1
     delivery.last_attempt_at = datetime.now(timezone.utc)
+    endpoint_url = endpoint.url
+    # The attempt is counted before the network call, and no transaction stays
+    # open across it (nothing is read from the rows until the POST returns).
+    db.commit()
+    release_read_transactions()
     started = datetime.now(timezone.utc)
     ok = False
     status_code: Optional[int] = None
     error: Optional[str] = None
     try:
-        # SSRF guard, re-run per attempt: the URL passed validation at
+        # SSRF guard, run inside the deadline and re-run per attempt: the URL passed validation at
         # registration, but DNS may have been re-pointed since (and the URL is
         # externally supplied on the API-key surface). Never POST to a target
         # that resolves internally NOW.
-        assert_deliverable(endpoint.url)
-        resp = httpx.post(
-            endpoint.url, content=body, headers=headers, timeout=DELIVERY_TIMEOUT
-        )
+        left = _check_address(endpoint_url, DELIVERY_DEADLINE_SECONDS)
+        resp = _post(endpoint_url, content=body, headers=headers, timeout=left)
         status_code = resp.status_code
         ok = 200 <= resp.status_code < 300
         if not ok:
             error = f"Consumer returned {resp.status_code}."
-    except WebhookError as exc:
+    except (WebhookError, UrlGuardError) as exc:
         # Blocked target - a real failure, but never a network call.
-        error = f"Delivery refused: {exc}"
+        error = f"Delivery refused: {exc}"  # guard text names no host
+    except (DeliveryDeadlineError, httpx.TimeoutException):
+        error = DEADLINE_ERROR.format(seconds=DELIVERY_DEADLINE_SECONDS)
     except httpx.HTTPError as exc:
-        error = f"Delivery failed: {exc}"
+        error = f"Delivery failed: {type(exc).__name__}."
+    except Exception:  # noqa: BLE001 - any other send error is a failed attempt
+        logger.exception("webhook delivery %s could not be attempted", delivery.id)
+        error = "Delivery could not be attempted."
 
     delivery.response_status = status_code
     delivery.response_ms = int(
@@ -221,6 +452,18 @@ def dispatch(db: Session, delivery_id: str) -> str:
     # Dead-letter: attempts preserved, endpoint failure counter bumped.
     delivery.status = "FAILED"
     delivery.next_attempt_at = None
+    # Re-read under lock: staff may have paused or deleted the endpoint while
+    # the send was under way; only an ACTIVE one is counted and auto-disabled.
+    endpoint = (
+        db.query(WebhookEndpoint)
+        .filter(WebhookEndpoint.id == endpoint.id, WebhookEndpoint.tenant_id == endpoint.tenant_id)
+        .with_for_update(key_share=True)
+        .populate_existing()
+        .first()
+    )
+    if endpoint is None or endpoint.status != "ACTIVE":
+        db.commit()
+        return "dead"
     endpoint.consecutive_failures += 1
     if endpoint.consecutive_failures >= AUTO_DISABLE_THRESHOLD:
         endpoint.status = "AUTO_DISABLED"
@@ -280,10 +523,14 @@ def _record_webhook_activity(
 
 
 def run_due_deliveries(db: Session, limit: int = 100) -> int:
-    """Re-drive PENDING deliveries whose backoff has elapsed (beat/backstop)."""
+    """Re-drive PENDING deliveries whose backoff has elapsed (beat/backstop).
+
+    Stops starting new rows once DUE_RUN_BUDGET_SECONDS has passed; rows not
+    reached stay PENDING for the next run. Returns the number of rows attempted."""
     now = datetime.now(timezone.utc)
-    due = (
-        db.query(WebhookDelivery)
+    due_ids = [
+        row_id
+        for (row_id,) in db.query(WebhookDelivery.id)
         .filter(
             WebhookDelivery.status == "PENDING",
             WebhookDelivery.next_attempt_at <= now,
@@ -291,7 +538,16 @@ def run_due_deliveries(db: Session, limit: int = 100) -> int:
         .order_by(WebhookDelivery.next_attempt_at.asc())
         .limit(limit)
         .all()
-    )
-    for row in due:
-        dispatch(db, row.id)
-    return len(due)
+    ]
+    deadline = time.monotonic() + DUE_RUN_BUDGET_SECONDS
+    attempted = 0
+    for delivery_id in due_ids:
+        if time.monotonic() >= deadline:
+            break  # the rest stay PENDING for the next run
+        attempted += 1
+        try:
+            dispatch(db, delivery_id)
+        except Exception:  # noqa: BLE001 - one bad delivery must not stop the rest
+            logger.exception("webhook delivery %s failed in the due run", delivery_id)
+            db.rollback()
+    return attempted

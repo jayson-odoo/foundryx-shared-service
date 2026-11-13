@@ -4,6 +4,8 @@ Publishers (API send path, Celery worker) call ``publish(workspace_id, event)``;
 the FastAPI WS endpoint subscribes to ``omnichannel:ws:{workspace_id}`` and
 relays to connected sockets. Publish is BEST-EFFORT: a dead Redis must never
 fail a send or a webhook task - events are a delivery nicety, the DB is truth.
+The publish client bounds connect and read at ``_SOCKET_TIMEOUT_SECONDS`` so a
+black-holed Redis cannot hang a send or a webhook task.
 """
 import json
 import logging
@@ -15,6 +17,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+_SOCKET_TIMEOUT_SECONDS = 2.0
+
 _client: Optional[redis.Redis] = None
 
 
@@ -25,7 +29,12 @@ def channel_for(workspace_id: str) -> str:
 def _get_client() -> redis.Redis:
     global _client
     if _client is None:
-        _client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        _client = redis.Redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=_SOCKET_TIMEOUT_SECONDS,
+            socket_timeout=_SOCKET_TIMEOUT_SECONDS,
+        )
     return _client
 
 

@@ -129,6 +129,27 @@ def validate_submission(
     return clean, errors
 
 
+def visible_input_fields(doc: "FormDocument | Dict[str, Any]", answers: Dict[str, Any]):
+    """The input fields VISIBLE for ``answers`` (hidden fields and whole hidden
+    sections excluded), evaluated with the same rule engine and the same
+    visible-answers facts ``validate_submission`` uses."""
+    form = doc if isinstance(doc, FormDocument) else FormDocument.model_validate(doc)
+    clean, _errors = validate_submission(form, answers or {}, enforce_required=False)
+    facts = {f"answers.{k}": v for k, v in clean.items()}
+    visible = []
+    for page in form.pages:
+        for section in page.sections:
+            if not rule_eval(section.conditions_json, facts):
+                continue
+            for field in section.fields:
+                if field.type not in INPUT_FIELD_TYPES or not field.key:
+                    continue
+                if not rule_eval(field.conditions_json, facts):
+                    continue
+                visible.append(field)
+    return visible
+
+
 # ---- per-field validation ----
 
 

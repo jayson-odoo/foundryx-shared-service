@@ -1,14 +1,8 @@
 'use client';
 
-import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 import { MediaCapsForm } from './media-caps-form';
 
 /**
@@ -19,21 +13,10 @@ import { MediaCapsForm } from './media-caps-form';
 export default function MediaLimitsPage() {
   return (
     <RequirePermission permission="channels.manage">
-      <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Maximum upload sizes and accepted file types for WhatsApp media.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
-        <Container width="fluid">
-          <MediaCapsForm />
-        </Container>
-      </Fragment>
+      <Container width="fluid">
+        <PageHeader description="Maximum upload sizes and accepted file types for WhatsApp media." />
+        <MediaCapsForm />
+      </Container>
     </RequirePermission>
   );
 }

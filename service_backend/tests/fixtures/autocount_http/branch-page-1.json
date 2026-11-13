@@ -1,0 +1,10 @@
+{
+  "TotalCount": 4,
+  "Page": 1,
+  "PageSize": 2,
+  "TotalPages": 2,
+  "Data": [
+    {"BranchCode": "HQ", "BranchName": "Head Office", "AccNo": "300-R009"},
+    {"BranchCode": "PJ", "BranchName": "Petaling Jaya Branch", "AccNo": "300-R014"}
+  ]
+}

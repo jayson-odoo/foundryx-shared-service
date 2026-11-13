@@ -229,6 +229,32 @@ def test_if_routes_false_branch(session_factory):
     assert by_node["yes"] == "skipped"
 
 
+def test_if_true_port_fans_out_to_two_targets(session_factory):
+    """AC-FAN-06 (plan sprint-4/21) - an IF node's `true` port can fan out to
+    MULTIPLE targets: both run when the condition is true, and the `false`
+    port's target is never reached."""
+    db = session_factory()
+    doc = {"schemaVersion": 1, "nodes": [
+        _node("trg", "trigger", "manual", {"inputs": [{"key": "score", "label": "Score", "type": "number"}]}),
+        _node("cond", "if", "if", {"conditions": _gt_tree("trigger.input.score", 10)}),
+        _email("yes1", "yes1@x.com"),
+        _email("yes2", "yes2@x.com"),
+        _email("no", "no@x.com"),
+    ], "edges": [
+        _edge("trg", "cond"),
+        # Fan-out: TWO edges on the same "true" port.
+        _edge("cond", "yes1", "true"),
+        _edge("cond", "yes2", "true"),
+        _edge("cond", "no", "false"),
+    ]}
+    wid = _publish(db, doc)
+    run = WorkflowService(db).run(wid, DEFAULT_TENANT_ID, inputs={"score": 20}, is_test=False, actor=_actor(db))
+    by_node = {n.node_id: n.status for n in db.query(WorkflowRun).filter(WorkflowRun.id == run.id).first().nodes}
+    assert by_node["yes1"] == "success"
+    assert by_node["yes2"] == "success"
+    assert by_node["no"] == "skipped"
+
+
 # ---- CRUD event bus → match → enqueue --------------------------------------
 
 

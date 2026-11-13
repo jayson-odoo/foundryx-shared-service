@@ -63,6 +63,13 @@ def load_modules(app: FastAPI) -> None:
     check). Plan 05 §7.
     """
     from app.dependencies import require_module
+    from app.services.team_capabilities import ensure_team_capabilities
+
+    # Core-provided capabilities (plan 28 S1, D-A8-3) must be registered
+    # BEFORE any module boots, so a module's own `register_capabilities()`
+    # (which may resolve a core capability at import/boot time) never races
+    # against an unregistered provider. Idempotent.
+    ensure_team_capabilities()
 
     for manifest in discover_manifests():
         name = manifest["module_name"]
@@ -88,8 +95,9 @@ def load_modules(app: FastAPI) -> None:
 
 def register_module_boot(name: str) -> None:
     """Call a module's boot-time registration hooks if present: capabilities
-    (D5) + engine entities (status/fact/terminology/importer, plan 11 D9). Both
-    are idempotent - safe to call at every boot/bootstrap."""
+    (D5), engine entities (status/fact/terminology/importer, plan 11 D9), and
+    public CORS prefixes (plan 34 review round 1, S9). All are idempotent -
+    safe to call at every boot/bootstrap."""
     from app.services.app_store_service import module_hooks
 
     hooks = module_hooks(name)
@@ -99,6 +107,40 @@ def register_module_boot(name: str) -> None:
         hooks.register_capabilities()
     if hasattr(hooks, "register_engine_entities"):
         hooks.register_engine_entities()
+    # Public CORS prefixes (plan sprint-4/34 review round 1, S9) - a module
+    # whose `"public": true` router is called cross-origin from sites the
+    # CORE cannot know (they live in tenant data) registers its own prefix +
+    # origin resolver here, next to capabilities. Idempotent.
+    if hasattr(hooks, "register_public_cors"):
+        hooks.register_public_cors()
+
+
+def boot_module_hooks() -> None:
+    """Run every discovered module's boot hooks (capabilities + engine
+    entities) WITHOUT a FastAPI app - for worker processes.
+
+    ``load_modules`` does this as a side effect of router inclusion, so the API
+    process always has module-registered workflow triggers/actions. A Celery
+    worker never calls ``load_modules``; without this the workflow worker only
+    knows core nodes and a run touching ``omnichannel.send_message`` fails
+    ``Unknown action`` in prod (invisible in eager dev, which runs inline in the
+    API process). Same D8 isolation as ``load_modules``: a broken module is
+    marked errored + skipped, siblings continue. Idempotent.
+    """
+    from app.services.team_capabilities import ensure_team_capabilities
+
+    # Same reasoning as `load_modules` - a worker process never calls
+    # `load_modules`, so this is the ONLY place a worker registers core's
+    # teams capabilities before any module's boot hooks run.
+    ensure_team_capabilities()
+
+    for manifest in discover_manifests():
+        name = manifest["module_name"]
+        try:
+            register_module_boot(name)
+        except Exception as exc:  # noqa: BLE001 - D8 isolation
+            ERRORED_MODULES[name] = f"{type(exc).__name__}: {exc}"
+            logger.error("Module '%s' boot hooks failed: %s", name, exc, exc_info=True)
 
 
 def sync_module_catalog(db: Session, modules_dir: Optional[Path] = None) -> None:
@@ -131,10 +173,31 @@ def _backfill_tenant_modules(db: Session) -> None:
     """Pre-App-Store tenants already had module data seeded - mark them
     installed ACTIVE at the current code version (plan 08 §4). Detection is the
     module's optional ``tenant_has_data`` hook; without it nothing backfills.
+
+    B4 (plan-25 round-3 codex triage): a normal ``AppStoreService.install``
+    also runs the module's ``install_tenant`` seed hook + grants the module's
+    permission keys to the tenant's Admin role (`_grant_admin`) - this backfill
+    path used to skip BOTH, silently stamping the tenant ACTIVE at the
+    CURRENT code version with no later ``update_tenant`` ever firing (install
+    == current version, so the App Store never offers an update either).
+    Generic fix, not an omnichannel special case: mirror the same two steps
+    here for every module, isolated per-tenant so one tenant's failure never
+    blocks the others or the rest of bootstrap. Each tenant's row + hook +
+    grant runs inside its own SAVEPOINT (``db.begin_nested()``) so a failure
+    rolls back exactly that tenant's work and leaves the session usable for
+    the next tenant / the rest of bootstrap, instead of leaving it in
+    ``PendingRollbackError`` (or committing a half-applied seed alongside the
+    ACTIVE ``TenantModule`` row on a non-DB error).
+
+    Unlike ``AppStoreService.install`` this path skips ``check_requires`` and
+    unconditionally re-grants the module's permission keys to the tenant's
+    Admin role - both are only reachable here for tenants that have no
+    ``TenantModule`` row yet (the pre-App-Store backfill case), never for an
+    already-installed tenant.
     """
     from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
     from app.models.tenant import Tenant
-    from app.services.app_store_service import module_hooks
+    from app.services.app_store_service import AppStoreService, module_hooks
 
     tenants = db.query(Tenant).filter(Tenant.is_platform.is_(False)).all()
     for module in db.query(Module).filter(Module.is_listed.is_(True)).all():
@@ -149,14 +212,25 @@ def _backfill_tenant_modules(db: Session) -> None:
         for tenant in tenants:
             if tenant.id in installed or not has_data(db, tenant.id):
                 continue
-            db.add(
-                TenantModule(
-                    tenant_id=tenant.id,
-                    module_id=module.id,
-                    status=MODULE_STATUS_ACTIVE,
-                    installed_version=module.version,
+            try:
+                with db.begin_nested():
+                    db.add(
+                        TenantModule(
+                            tenant_id=tenant.id,
+                            module_id=module.id,
+                            status=MODULE_STATUS_ACTIVE,
+                            installed_version=module.version,
+                        )
+                    )
+                    db.flush()
+                    if hooks and hasattr(hooks, "install_tenant"):
+                        hooks.install_tenant(db, tenant.id)
+                    AppStoreService(db)._grant_admin(tenant.id, module.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Module '%s' backfill install_tenant failed for tenant %s: %s",
+                    module.name, tenant.id, exc, exc_info=True,
                 )
-            )
     db.flush()
 
 
@@ -185,14 +259,24 @@ def bootstrap_modules(engine=None, db: Optional[Session] = None) -> None:
             manifest = manifests.get(name)
             if manifest is None:
                 continue
-            # Per-module isolation (D8): a failing module is marked errored,
-            # skipped (install + migration + capabilities), siblings continue.
+            # A failing module ABORTS bootstrap (issue #89, prod 26 Sep 2026).
+            # D8 isolation used to mark it errored and continue; bootstrap_db
+            # then printed "bootstrap complete", the container went healthy
+            # and prod served module code ahead of its schema. Now the error
+            # is logged (module name + the failing SQL, which str(exc) of a
+            # DBAPIError carries) and re-raised: bootstrap_db exits non-zero,
+            # start.sh retries then aborts, the swap never happens. Runtime
+            # boot isolation (load_modules / boot_module_hooks) is unchanged.
             try:
                 _bootstrap_one_module(engine, db, name)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 db.rollback()
                 ERRORED_MODULES[name] = f"{type(exc).__name__}: {exc}"
-                logger.error("Module '%s' bootstrap failed: %s", name, exc, exc_info=True)
+                logger.error(
+                    "Module '%s' bootstrap failed; aborting bootstrap: %s",
+                    name, exc, exc_info=True,
+                )
+                raise
         _backfill_tenant_modules(db)
         db.commit()
     finally:
@@ -201,15 +285,44 @@ def bootstrap_modules(engine=None, db: Optional[Session] = None) -> None:
 
 
 def _bootstrap_one_module(engine, db: Session, name: str) -> None:
-    """One module's global install + per-module Alembic + capabilities (D3/D5)."""
-    from app.module_platform.migrations import run_module_migrations
+    """One module's global install + per-module Alembic + capabilities (D3/D5).
+
+    Issue #89 (root cause of the 26 Sep 2026 prod incident): the install hook
+    used to run FIRST and its seed writes (ideation's ``seed_br_template``)
+    stayed uncommitted on the shared ``db`` session while Alembic, on its OWN
+    connection, needed a lock that open transaction held - a lock timeout
+    every time, with no other session alive. Two rules now:
+
+    1. Bootstrap never holds a write across a migration: ``db`` is committed
+       before ``run_module_migrations`` runs, always.
+    2. Schema before seed: a module already in this database migrates FIRST,
+       then its install hook seeds against the up-to-date schema. A module
+       brand-new to this database keeps install-then-stamp (``create_all``
+       builds today's shape, the migration step stamps head), because the
+       revision chains were never written to replay from zero on top of
+       their ``create_all`` baselines.
+    """
+    from app.module_platform.migrations import (
+        module_migration_state,
+        run_module_migrations,
+    )
     from app.services.app_store_service import module_hooks
 
     hooks = module_hooks(name)
-    if hooks and hasattr(hooks, "install"):
-        hooks.install(engine, db)
+    install = getattr(hooks, "install", None) if hooks else None
+    fresh = module_migration_state(engine, name) == "fresh"
+
+    # Commit whatever earlier steps left open (catalog sync, a previous
+    # module's seed) so no bootstrap write can block this module's DDL.
+    db.commit()
+    if fresh and install is not None:
+        install(engine, db)
+        db.commit()
     # Per-module Alembic (D3, BL-029): stamp-if-legacy-else-upgrade. No-op on
     # SQLite test engines (module schema-isolation needs Postgres) and on
     # modules without an alembic/ dir (legacy create_all path).
     run_module_migrations(engine, name)
+    if not fresh and install is not None:
+        install(engine, db)
+        db.commit()
     register_module_boot(name)

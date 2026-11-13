@@ -26,8 +26,10 @@ import {
   Upload,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useCan } from '@/hooks/use-can';
 import { cn } from '@/lib/utils';
 import { documentService } from '@/services/document-service';
@@ -343,6 +345,7 @@ export function DriveExplorer() {
               <button
                 type="button"
                 className={cn(
+                  PRESSED_CLASS,
                   'inline-flex items-center gap-1 rounded px-1.5 py-1 hover:bg-muted',
                   section === 'drive' && drive.folderId === null && 'font-medium text-primary',
                 )}
@@ -356,7 +359,7 @@ export function DriveExplorer() {
                     <ChevronRight className="size-3.5 text-muted-foreground" />
                     <button
                       type="button"
-                      className="whitespace-nowrap rounded px-1.5 py-1 hover:bg-muted"
+                      className={cn(PRESSED_CLASS, 'whitespace-nowrap rounded px-1.5 py-1 hover:bg-muted')}
                       onClick={() => goDrive(c.id)}
                     >
                       {c.name}
@@ -369,7 +372,7 @@ export function DriveExplorer() {
                   {openedShare ? (
                     <button
                       type="button"
-                      className="whitespace-nowrap rounded px-1.5 py-1 hover:bg-muted"
+                      className={cn(PRESSED_CLASS, 'whitespace-nowrap rounded px-1.5 py-1 hover:bg-muted')}
                       onClick={() => setOpenedShare(null)}
                     >
                       Shared with me
@@ -394,6 +397,7 @@ export function DriveExplorer() {
                   aria-label="Card view"
                   onClick={() => setView('card')}
                   className={cn(
+                    PRESSED_CLASS,
                     'rounded p-1.5',
                     view === 'card' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted',
                   )}
@@ -405,6 +409,7 @@ export function DriveExplorer() {
                   aria-label="List view"
                   onClick={() => setView('list')}
                   className={cn(
+                    PRESSED_CLASS,
                     'rounded p-1.5',
                     view === 'list' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted',
                   )}
@@ -435,7 +440,7 @@ export function DriveExplorer() {
               <span>{drive.selectedCount} selected</span>
               <button
                 type="button"
-                className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                className={cn(PRESSED_CLASS, 'text-xs text-muted-foreground underline-offset-2 hover:underline')}
                 onClick={drive.clearSelection}
               >
                 Clear
@@ -473,7 +478,11 @@ export function DriveExplorer() {
               ) : section === 'trash' ? (
                 <TrashView view={view} onChanged={afterStructuralChange} />
               ) : drive.loading ? (
-                <p className="p-10 text-center text-sm text-muted-foreground">Loading…</p>
+                <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4">
+                  {Array.from({ length: 8 }).map((_, index) => (
+                    <Skeleton key={index} className="h-24 w-full" />
+                  ))}
+                </div>
               ) : drive.error ? (
                 <p className="p-10 text-center text-sm text-destructive">{drive.error}</p>
               ) : drive.listing ? (
@@ -506,7 +515,7 @@ export function DriveExplorer() {
         open={newFolderParent !== null}
         title="New folder"
         label="Folder name"
-        confirmLabel="Create"
+        confirmLabel="Create folder"
         onSubmit={async (name) => {
           await drive.createFolder(name, newFolderParent?.parentId ?? null);
           setTreeKey((k) => k + 1);
@@ -517,6 +526,7 @@ export function DriveExplorer() {
         open={!!rename}
         title={rename?.kind === 'folder' ? 'Rename folder' : 'Rename file'}
         label="Name"
+        confirmLabel={rename?.kind === 'folder' ? 'Rename folder' : 'Rename file'}
         initialValue={rename?.name}
         onSubmit={async (name) => {
           if (!rename) return;

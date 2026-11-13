@@ -12,12 +12,19 @@ integration provider. Companies, watermarks, entity config, staging and the sync
 job handler are filled in by later slices - the hooks are wired now so the
 module contract is complete from day one.
 """
+import logging
 from pathlib import Path
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+if TYPE_CHECKING:  # pragma: no cover - typing only, core never imported at runtime here
+    from app.models.background_job import BackgroundJob
+
+from app.models.module import parse_version
 from app.repositories.permission_repository import PermissionRepository
 from app.services.permission_service import load_csv
 
@@ -26,6 +33,36 @@ from .db import AUTOCOUNT_SCHEMA, AutocountBase
 
 MODULE_NAME = "autocount"
 MODULE_CSV = Path(__file__).resolve().parent / "permissions" / "permissions.csv"
+
+
+def _evict_deleted_connection(session: Session, ev: Dict[str, Any]) -> None:
+    """CRUD event-bus subscriber (S6 merge-gate review SHOULD-FIX 4).
+
+    ``sql_source.runtime.SqlSourceRuntime.evict`` existed with no production
+    caller: deleting a ``sql_database`` connection left its cached engine (up
+    to 5 live pooled sessions to the CUSTOMER's own database) and its
+    ``SCHEMA_CACHE`` entry alive until the process restarted. There is no
+    core connection-deleted hook to import into (core must never import a
+    module) - but the core CRUD event bus already emits ``connection``/
+    ``deleted`` on every delete (``IntegrationService.delete``), so this
+    registers as an ordinary subscriber (``register_event_subscriber``,
+    plan sprint-2/10 D5 - the audit-log seam, generic to any consumer) at
+    boot instead of a bespoke hook. Runs for EVERY connection delete, any
+    provider - harmless no-op when the id was never a SQL-source engine
+    (nothing cached for it).
+    """
+    if ev.get("entity_type") != "connection" or ev.get("action") != "deleted":
+        return
+    connection_id = ev.get("record_id")
+    if not connection_id:
+        return
+    from .sql_source.introspect import SCHEMA_CACHE
+    from .sql_source.runtime import RUNTIME
+
+    RUNTIME.evict(connection_id)
+    tenant_id = ev.get("tenant_id")
+    if tenant_id:
+        SCHEMA_CACHE.invalidate(f"{tenant_id}:{connection_id}")
 
 
 def register_capabilities() -> None:
@@ -61,17 +98,42 @@ def register_engine_entities() -> None:
     describe in later slices.
     """
     from app.integrations import register_provider
+    from app.workflow_engine.entity_events import register_event_subscriber
 
     from .provider import AutoCountProvider
     from .sorento_provider import SorentoProvider
-    from .sync import register_autocount_sync_handler
+    from .sql_provider import SqlDatabaseProvider
+    from .sync import register_autocount_sync_handler, register_pull_snapshot_handler
+    from .http_source.source import register_http_source
 
     register_provider(AutoCountProvider())
     # The OUTBOUND consumer target (hop 2). Registered beside the inbound ``erp``
     # provider so the Sorento connection is configured from the same
     # `/settings/integrations` surface (AC-14-15).
     register_provider(SorentoProvider())
+    # The direct-DB read-only source (plan 22, AC-22-01) - a second ``erp``
+    # provider, configured from the same surface.
+    register_provider(SqlDatabaseProvider())
     register_autocount_sync_handler()
+    # sprint-5/10 (§2.4) - the human-invoked pull build job. Same reasoning
+    # as ``register_autocount_sync_handler`` above: the API process needs
+    # this at boot, the Celery worker gets it via an explicit import in
+    # ``app/workflow_engine/worker.py``.
+    register_pull_snapshot_handler()
+    # The open (no-auth) REST API source (sprint-5/08, AC-08-12) - the third
+    # ``EntitySource`` implementation the per-entity ``source_impl`` may pick.
+    register_http_source()
+    # S6 review SHOULD-FIX 4 - drop the cached engine + schema cache the
+    # instant a ``sql_database`` connection is deleted (see the subscriber's
+    # own docstring). Idempotent (the bus dedupes by function identity).
+    register_event_subscriber(_evict_deleted_connection)
+
+    # Deferred (grace-window) actions (sprint-5/07 review round): "Re-push
+    # all" registers into the CORE grace-window engine here, the same way
+    # `omnichannel`/`ideation` extend it - never a fork.
+    from .deferred_actions import register_autocount_deferred_actions
+
+    register_autocount_deferred_actions()
 
 
 def create_schema_and_tables(engine: Engine) -> None:
@@ -90,6 +152,23 @@ def install(engine: Engine, db: Session) -> None:
     """
     create_schema_and_tables(engine)
     PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    # SS-RECONCILE-SKIP-FIX: every deploy refills an EMPTY line-check query
+    # from the task's preset (never a custom one) - an empty one silently
+    # switches the line check off. BEST-EFFORT: the permission sync above is
+    # committed first, and a refill failure (a lock/statement timeout on a
+    # task row) is logged, never allowed to abort the deploy (module_loader
+    # re-raises install errors, issue #89) - the scheduler retries per task.
+    from .backfill import refill_empty_fingerprint_queries
+
+    db.commit()
+    try:
+        refill_empty_fingerprint_queries(db)
+        db.commit()
+    except Exception:  # noqa: BLE001 - never block a deploy on a refill
+        db.rollback()
+        logging.getLogger("foundryx.autocount").exception(
+            "autocount line-check refill failed at bootstrap; the scheduler retries per task"
+        )
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:
@@ -127,7 +206,26 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
        time.
     """
     from .backfill import (
+        backfill_db_company_entity_sources,
+        backfill_delivery_mode_defaults,
+        backfill_disable_credit_limit_mapping_rows,
+        backfill_document_fingerprint_queries,
+        backfill_document_line_linkage,
         backfill_entity_config_defaults,
+        backfill_etl_defaults,
+        backfill_billing_do_link_queries,
+        backfill_billing_package_lines,
+        backfill_billing_preset_fix,
+        backfill_consignment_transferred_qty,
+        backfill_customer_debtor_type,
+        backfill_customer_display_term,
+        backfill_customer_sales_agent,
+        backfill_product_item_class,
+        backfill_product_item_type,
+        backfill_sales_order_ref,
+        backfill_sales_order_transferable,
+        backfill_so_remark_fields,
+        backfill_shipping_order_container_number,
         backfill_sink_impl_defaults,
         default_schema,
     )
@@ -140,6 +238,125 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # ``'logging'`` no-op (its pre-hop-2 behaviour), not sit NULL against a
     # NOT NULL column on a create_all-first host.
     backfill_sink_impl_defaults(db, schema=schema)
+    # 0.3.0 → plan 22: every pre-existing task/staged/run row gets its ETL
+    # defaults (draft / upsert / manual) on a create_all-first host too.
+    backfill_etl_defaults(db, schema=schema)
+    # sprint-5/04 (Sorento contract 2.1): an ENABLED customer row saved before
+    # ``credit_limit`` left ``CanonicalCustomer.SINK_FIELDS`` is a dead row
+    # (mapped, never sent). Disable it so the table matches the accepted
+    # target set. Module Alembic 0013 does the same on deploy; this covers the
+    # App Store 0.4.0 -> 0.5.0 update path (idempotent either way).
+    backfill_disable_credit_limit_mapping_rows(db, schema=schema)
+    # 0.5.0 -> 0.6.0 (prod incident 2026-09-06): a DATABASE company's stranded
+    # never-run ``autocount_read`` rows (the old seed ran on every company) are
+    # pointed at ``sql_db`` BEFORE the seed loop below - which now returns
+    # early for a DB company (D13: born empty), so this upgrade and every
+    # later one stop seeding onto one. Module Alembic 0014 runs the same
+    # sweep on deploy.
+    backfill_db_company_entity_sources(db, schema=schema)
+    # 0.6.0 -> feat/spo-container-number: Sorento held 68,519 SPO allocations
+    # with no container because the SPO task's header query never selected
+    # AutoCount `PO.Ref`. Module Alembic 0016 runs the same repair on deploy.
+    backfill_shipping_order_container_number(db, schema=schema)
+    # 0.6.1 -> feat/line-fingerprint-sweep: every document task lacking a
+    # fingerprintQuery gets the preset's own sweep query. Module Alembic
+    # 0017 runs the same repair on deploy.
+    backfill_document_fingerprint_queries(db, schema=schema)
+    # 0.7.0 -> 0.8.0 (sprint-5/06 S2): every existing PO/SPO task gets the
+    # six FromSO*/FromPO* line mapping rows, and a byte-identical old
+    # statement is rewritten to the NEW preset text carrying line linkage.
+    # Module Alembic 0018 runs the same repair on deploy.
+    backfill_document_line_linkage(db, schema=schema)
+    # 0.8.0 -> sprint-5/07: every existing `sales_order` task gets a
+    # `Ref -> ref` header mapping row (enabled when the query already selects
+    # `Ref`, disabled + one warning otherwise), and a byte-identical old
+    # preset query is rewritten to the NEW text carrying `h.Ref AS Ref`.
+    # Module Alembic 0019 runs the same repair on deploy.
+    backfill_sales_order_ref(db, schema=schema)
+    # 0.10.0 -> 0.11.0 (sprint-5/10, AC-10-10): every existing
+    # `ac_entity_config` row gets a `delivery_mode` of `push` - today's
+    # behaviour before this plan existed. Module Alembic 0020 runs the same
+    # repair on deploy.
+    backfill_delivery_mode_defaults(db, schema=schema)
+    # 0.12.0 -> 0.13.0 (SS-SO-TRANSFERABLE, partner of sorento #1421): every
+    # existing `sales_order` task gets a `Transferable -> transferable` header
+    # row (enabled when the query already selects it, disabled + one warning
+    # otherwise), and a byte-identical 0019 preset query is rewritten to the
+    # NEW text carrying `h.Transferable AS Transferable`. Runs AFTER the `Ref`
+    # backfill (0019 -> 0025 order). Module Alembic 0025 runs the same repair.
+    backfill_sales_order_transferable(db, schema=schema)
+    # 0.13.0 -> 0.14.0 (ITEM-TYPE-SS, partner of sorento #1450): every
+    # existing `product` task gets an `ItemType -> item_type_code` row.
+    # Version-GATED, unlike its siblings above: a product HTTP task has no
+    # query text to mark it migrated, so an ungated pass would reseed a row
+    # an operator deliberately deleted on every later update. Module Alembic
+    # 0028 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 14, 0):
+        backfill_product_item_type(db, schema=schema, tenant_id=tenant_id)
+    # 0.14.0 -> 0.15.0 (SS-DEBTOR-AGENT, partner of sorento
+    # CUSTOMER-SALES-AGENT): every existing `customer` task gets a
+    # `SalesAgent -> sales_agent_code` row. Version-GATED and tenant-scoped
+    # for the same reason as the ItemType pass above. Module Alembic 0029
+    # runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 15, 0):
+        backfill_customer_sales_agent(db, schema=schema, tenant_id=tenant_id)
+    # 0.15.0 -> 0.16.0 (AC-CONSIGN-PULL, partner of sorento-crm#1654): every
+    # existing `consignment` task still on the #122 preset text is rewritten
+    # to carry `TransferedQty` (+ the `TransferedSum` aggregate) and gets a
+    # `TransferedQty -> qty_transferred` line row. Version-GATED like the two
+    # passes above (an operator-deleted row must not be reseeded on every
+    # later update). Module Alembic 0030 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 16, 0):
+        backfill_consignment_transferred_qty(db, schema=schema, tenant_id=tenant_id)
+    # 0.16.0 -> 0.17.0 (SS-BILLING-DO-API, owner ruling 25 Oct: no DODTL
+    # grant): every existing `invoice` / `cash_sale` task still on the plan-32
+    # line query is moved off its DODTL join (the DO DocKey now comes from the
+    # Delivery Orders feed ledger). Version-GATED like the passes above.
+    # Module Alembic 0032 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 17, 0):
+        backfill_billing_do_link_queries(db, schema=schema, tenant_id=tenant_id)
+    # 0.17.0 -> 0.18.0 (FULFIL-SO-REMARK, partner of the Sorento CRM): every
+    # existing `sales_order` task gets `ShipInfo -> ship_info` (header) and
+    # `FurtherDescription -> line_remark` / `SectionHeading -> section_heading`
+    # (line) rows - enabled when the query is rewritten to the new preset text,
+    # disabled + one warning for a hand-written query. Version-GATED so an
+    # operator-deleted row is not reseeded on every later update. Module
+    # Alembic 0032 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 18, 0):
+        backfill_so_remark_fields(db, schema=schema, tenant_id=tenant_id)
+    # 0.18.0 -> 0.19.0 (SS-BILLING-PRESET-FIX, plan 35): every existing billing
+    # / AR task still on the plan-32 text moves to the preset fixed against the
+    # real AutoCount schema (drafts filtered, CS NULL DocStatus, DN without
+    # FromDoc*, cancelled ARDN/ARCN out, IV/CS DODTL join back). Version-GATED
+    # like the passes above. Module Alembic 0033 runs the same repair on deploy.
+    if parse_version(from_version) < (0, 19, 0):
+        backfill_billing_preset_fix(db, schema=schema, tenant_id=tenant_id)
+    # 0.19.0 -> 0.20.0 (ITEM-CLASS, partner of sorento-crm ITEM-CLASS): every
+    # existing `product` task gets an `ItemClass -> item_class_code` row.
+    # Version-GATED and tenant-scoped like the ItemType pass. Module Alembic
+    # 0034 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 20, 0):
+        backfill_product_item_class(db, schema=schema, tenant_id=tenant_id)
+    # 0.20.0 -> 0.21.0 (SS-DEBTOR-TYPE, partner of sorento-crm
+    # SALES-ACCOUNT-TYPE): every existing `customer` task gets a
+    # `DebtorType -> market_segment_code` row. Version-GATED and tenant-scoped
+    # like the SalesAgent pass. Module Alembic 0035 runs the same repair once
+    # on deploy.
+    if parse_version(from_version) < (0, 21, 0):
+        backfill_customer_debtor_type(db, schema=schema, tenant_id=tenant_id)
+    # 0.21.0 -> 0.22.0 (SS-PACKAGE-LINES, partner of sorento-crm #2230):
+    # every existing `invoice` task still on the plan-35 line query also
+    # selects `ParentDtlKey` and gets its `parent_dtl_key` line row. Runs AFTER
+    # the plan-35 pass, whose output is this pass's input. Module Alembic 0041
+    # runs it on deploy.
+    if parse_version(from_version) < (0, 22, 0):
+        backfill_billing_package_lines(db, schema=schema, tenant_id=tenant_id)
+    # 0.22.0 -> 0.23.0 (SS-PAYMENT-TERMS, partner of sorento-crm #2305):
+    # every existing `customer` task gets a `DisplayTerm ->
+    # payment_terms_code` row (the DebtorType rules). Module Alembic 0043
+    # runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 23, 0):
+        backfill_customer_display_term(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0
@@ -152,6 +369,178 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         page += 1
         if (page * 50) >= total:
             break
+    db.flush()
+
+
+def on_job_orphaned(
+    db: Session, job: "BackgroundJob", *, now: Optional[datetime] = None
+) -> None:
+    """Core's orphan sweep (``JobService.fail_orphaned_running_jobs``) just
+    failed ``job``; close THIS module's bookkeeping for it.
+
+    An ``autocount_sync`` job's open ``ac_sync_run`` row(s) (``job_id``
+    match, ``finished_at IS NULL``) get ``outcome=FAILED``, the same
+    "Interrupted" error, ``finished_at`` and a ``duration_ms`` from their
+    own ``started_at`` - the Runs list then shows what happened instead of a
+    run that is forever in progress. Staged rows are deliberately untouched:
+    the watermark HELD, so the next run re-reads the window and re-offers
+    them (prod incident 2026-09-07, PO sync killed by a deploy drain).
+
+    sprint-5/10 (AC-10-26 risk "a building snapshot wedged forever") - an
+    ``autocount_pull_snapshot`` job ALSO closes its own OPEN ``ac_sync_run``
+    row(s) the same way, plus fails the ``building`` snapshot itself
+    (``BUILD_ABANDONED``) so a crashed build never blocks the next request
+    forever. A DIRECT column write here, deliberately NOT
+    ``SnapshotService.stamp_failed`` - that method commits, and this hook
+    runs inside the sweep's own per-hook SAVEPOINT
+    (``self.db.begin_nested()``, ``app/jobs/service.py``); committing here
+    would end the sweep's outer transaction early. Same convention the
+    ``ac_sync_run`` writes above already use in this function.
+
+    sprint-5/11 (AC-11-23/52) - an ``autocount_source_preview`` job releases
+    ``ac_entity_config.preview_job_id`` (a DIRECT column write, same
+    reasoning as the snapshot branch above) - the ONLY module bookkeeping
+    this job type carries; it stages nothing and owns no ``ac_sync_run``
+    row, so a hook-closed preview leaves the claim NULL and the next Test is
+    never blocked forever.
+
+    No commit here - the sweep owns the transaction.
+    """
+    from .models import (
+        PULL_SNAPSHOT_STATUS_BUILDING,
+        PULL_SNAPSHOT_STATUS_FAILED,
+        RUN_FAILED,
+        AcEntityConfig,
+        AcPullSnapshot,
+        AcSyncRun,
+    )
+    from .preview_job import PREVIEW_JOB_TYPE
+    from .sync import AUTOCOUNT_PULL_SNAPSHOT, AUTOCOUNT_SYNC, ERROR_CODE_BUILD_ABANDONED
+
+    job_type = getattr(job, "type", None)
+    # sprint-5/14 (D15, AC-14-83) - an orphaned ``autocount_doc_feed_run``
+    # closes its own open run row(s) exactly like ``autocount_sync`` above;
+    # an orphaned ``autocount_doc_feed_backfill`` leaves the durable
+    # backfill record ``stopped`` and resumable (Q6 "crash-safe").
+    if job_type in ("autocount_doc_feed_run", "autocount_doc_feed_backfill"):
+        from .models import (
+            DOC_FEED_BACKFILL_RUNNING,
+            DOC_FEED_BACKFILL_STOPPED,
+            DOC_FEED_BACKFILL_STOPPING,
+            AcDocFeedBackfill,
+            AcDocFeedRun,
+        )
+
+        # RS3 - BOTH job types close their open run rows (a backfill job also
+        # opens run rows under its own job_id, which otherwise
+        # stay Running forever).
+        now_ = now or datetime.now(timezone.utc)
+        open_feed_runs = (
+            db.query(AcDocFeedRun)
+            .filter(
+                AcDocFeedRun.tenant_id == job.tenant_id,
+                AcDocFeedRun.job_id == job.id,
+                AcDocFeedRun.finished_at.is_(None),
+            )
+            .all()
+        )
+        for run in open_feed_runs:
+            run.outcome = "FAILED"
+            if run.summary_json is None:
+                run.summary_json = {}
+            run.error = (
+                getattr(job, "error", None)
+                or "Interrupted: the worker stopped before this run finished."
+            )
+            run.finished_at = now_
+            started = run.started_at
+            run.duration_ms = int((now_ - started).total_seconds() * 1000) if started else 0
+        if job_type == "autocount_doc_feed_run":
+            db.flush()
+            return
+        # autocount_doc_feed_backfill (its runs are closed above).
+        payload = job.payload_json or {}
+        backfill_id = str(payload.get("backfillId") or "")
+        backfill = None
+        if backfill_id:
+            backfill = (
+                db.query(AcDocFeedBackfill)
+                .filter(
+                    AcDocFeedBackfill.tenant_id == job.tenant_id,
+                    AcDocFeedBackfill.id == backfill_id,
+                )
+                .first()
+            )
+        if backfill is None:
+            backfill = (
+                db.query(AcDocFeedBackfill)
+                .filter(
+                    AcDocFeedBackfill.tenant_id == job.tenant_id,
+                    AcDocFeedBackfill.job_id == job.id,
+                )
+                .first()
+            )
+        # RS3 - only an in-flight backfill flips; a `done` one (the worker
+        # crashed after committing DONE, before the job row finished) and an
+        # already-`stopped` one stay exactly as they are.
+        if backfill is not None and backfill.status in (
+            DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING,
+        ):
+            backfill.status = DOC_FEED_BACKFILL_STOPPED
+            backfill.error = (
+                getattr(job, "error", None)
+                or "Interrupted: the worker stopped before this backfill finished."
+            )
+            backfill.error_code = "ORPHANED"
+        db.flush()
+        return
+    if job_type == PREVIEW_JOB_TYPE:
+        payload = job.payload_json or {}
+        company_id = str(payload.get("companyId") or "")
+        entity_type = str(payload.get("entityType") or "")
+        if company_id and entity_type:
+            db.query(AcEntityConfig).filter(
+                AcEntityConfig.tenant_id == job.tenant_id,
+                AcEntityConfig.company_id == company_id,
+                AcEntityConfig.entity_type == entity_type,
+                AcEntityConfig.preview_job_id == job.id,
+            ).update({AcEntityConfig.preview_job_id: None})
+        db.flush()
+        return
+    if job_type not in (AUTOCOUNT_SYNC, AUTOCOUNT_PULL_SNAPSHOT):
+        return
+    # The sweep's own clock, so the run's ``finished_at`` equals the job's.
+    now = now or datetime.now(timezone.utc)
+    open_runs = (
+        db.query(AcSyncRun)
+        .filter(
+            AcSyncRun.tenant_id == job.tenant_id,
+            AcSyncRun.job_id == job.id,
+            AcSyncRun.finished_at.is_(None),
+        )
+        .all()
+    )
+    for run in open_runs:
+        run.outcome = RUN_FAILED
+        run.error = getattr(job, "error", None) or "Interrupted: the worker stopped before this run finished."
+        run.finished_at = now
+        started = run.started_at
+        run.duration_ms = int((now - started).total_seconds() * 1000) if started else 0
+
+    if job_type == AUTOCOUNT_PULL_SNAPSHOT:
+        snapshot = (
+            db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == job.tenant_id,
+                AcPullSnapshot.job_id == job.id,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_BUILDING,
+            )
+            .first()
+        )
+        if snapshot is not None:
+            snapshot.status = PULL_SNAPSHOT_STATUS_FAILED
+            snapshot.error = "The worker stopped before this build finished."
+            snapshot.error_code = ERROR_CODE_BUILD_ABANDONED
     db.flush()
 
 

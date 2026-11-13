@@ -133,9 +133,11 @@ describe('EmbedConnectionCreateDialog (PLAN-ideation-embed-sso §7)', () => {
     });
     fireEvent.change(screen.getByLabelText(/signing secret/i), { target: { value: TYPED_SECRET } });
     fireEvent.click(screen.getByRole('button', { name: /create connection/i }));
-    await waitFor(() => screen.getByDisplayValue(TYPED_SECRET));
-
-    fireEvent.click(screen.getByRole('button', { name: /done/i }));
+    // The form's own signing-secret input also carries TYPED_SECRET, so a
+    // display-value wait is satisfied BEFORE `create` settles and the reveal
+    // view mounts - wait for the Done button itself (it only exists once
+    // `revealed` is set) instead of racing it with a synchronous query.
+    fireEvent.click(await screen.findByRole('button', { name: /done/i }));
     await waitFor(() => {
       expect(screen.queryByDisplayValue(TYPED_SECRET)).not.toBeInTheDocument();
     });

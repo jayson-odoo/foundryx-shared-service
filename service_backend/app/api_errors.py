@@ -4,12 +4,18 @@ Every public-API error returns ``{"error": {"code", "message", "details"?}}``
 with a stable, machine-readable ``code`` (plan sprint-1/01 AC-01-36). Internal
 (session-authed) endpoints keep FastAPI's default ``{"detail": …}`` shape.
 """
+import logging
 from typing import Any, Optional
 
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
+
+from app.db_errors import error_code_of
+
+logger = logging.getLogger(__name__)
 
 PUBLIC_API_PREFIX = "/api/v1/"
 
@@ -44,7 +50,46 @@ class ApiError(Exception):
         return {"error": err}
 
 
+def _encodable(value: Any) -> Any:
+    """Scrub lone UTF-16 surrogates from echoed validation input: they cannot be
+    UTF-8 encoded, so the 422 response itself would otherwise 500 (AC-19-44)."""
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, list):
+        return [_encodable(v) for v in value]
+    if isinstance(value, dict):
+        return {_encodable(k): _encodable(v) for k, v in value.items()}
+    return value
+
+
+BUSY_MESSAGE = "This record is busy with another change. Please try again in a moment."
+BUSY_RETRY_AFTER_SECONDS = 5
+_LOCK_NOT_AVAILABLE = "55P03"
+
+
 def install_api_error_handler(app: FastAPI) -> None:
+    @app.exception_handler(DBAPIError)
+    async def _handle_db_error(request: Request, exc: DBAPIError) -> JSONResponse:  # noqa: ANN202
+        # Only a lock-wait timeout becomes the busy answer; every other
+        # database error keeps today's unhandled 500 behaviour.
+        if error_code_of(exc) != _LOCK_NOT_AVAILABLE:
+            raise exc
+        route = request.scope.get("route")
+        template = getattr(route, "path", None) or "<unmatched>"
+        logger.warning("lock wait timed out on %s %s", request.method, template)
+        headers = {"Retry-After": str(BUSY_RETRY_AFTER_SECONDS)}
+        if request.url.path.startswith(PUBLIC_API_PREFIX):
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content=ApiError(503, "busy_try_again", BUSY_MESSAGE).to_body(),
+                headers=headers,
+            )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": BUSY_MESSAGE},
+            headers=headers,
+        )
+
     @app.exception_handler(ApiError)
     async def _handle_api_error(_: Request, exc: ApiError) -> JSONResponse:  # noqa: ANN202
         return JSONResponse(
@@ -66,10 +111,10 @@ def install_api_error_handler(app: FastAPI) -> None:
                     422,
                     "invalid_request",
                     "Request validation failed.",
-                    jsonable_encoder(exc.errors()),
+                    _encodable(jsonable_encoder(exc.errors())),
                 ).to_body(),
             )
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"detail": jsonable_encoder(exc.errors())},
+            content={"detail": _encodable(jsonable_encoder(exc.errors()))},
         )

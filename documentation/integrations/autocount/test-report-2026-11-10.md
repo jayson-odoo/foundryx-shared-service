@@ -1,0 +1,334 @@
+# AutoCount write API on db3: vendor update of 10 Nov 2026 (probes, 10 Nov 2026)
+
+From Foundryx, lane SS-AC-WRITE-V2 (plan 61, `documentation/plans/sprint-5/61-autocount-write-v2.md`). Companion to
+`test-report-2026-11-04.md` and `test-report-2026-11-04-qtso.md`. The vendor's 10 Nov update: delete a row with
+`FullTransferOption "D"` and add a row (DtlKey 0) in the same PUT; cancel with `DELETE /Cancel<Doc>bydocno?DocNo=`;
+read one document with `GET /<Doc>bydocno?DocNo=`.
+
+All calls went to the `db3` test book, on documents we created (DocNo prefixes `FXT-1110a-` .. `FXT-1110e-`), with
+unit price 1 so no credit limit is touched. Nothing was deleted. Every request, response and before / after read was
+recorded exactly outside the repository; this report shows the sanitised summary (document numbers, row keys, item
+codes, quantities, locations, dates). Times are UTC (add 8 h for Malaysia time).
+
+Runs `FXT-1110a-` and `FXT-1110b-` stopped early on our side (a credit-limit refusal on large unit prices, then a script
+error); their documents (`FXT-1110a-QT1`, `FXT-1110a-SO2`, `FXT-1110b-QT1`, `FXT-1110b-SO1`, `FXT-1110b-SO3`,
+`FXT-1110b-SO4`, `FXT-1110b-PO1`) are left in place. Their results match run `c` below.
+
+## Findings
+
+| # | Finding | Probes |
+|---|---|---|
+| F1 | GET `/Quotationbydocno`, `/SalesOrderbydocno`, `/PurchaseOrderbydocno`, `/RequestQuotationbydocno` with `?DocNo=` answer a list holding the document; an unknown DocNo answers `[]`. The spelling `Quotaton` / `RequestQuotaton` answers 404. Path case does not matter. | P-RQ, P-CASE, every read below |
+| F2 | AutoCount refuses a second transfer of a fully transferred quotation row. | P-T1 |
+| F3 | "D" on a sales order row taken from a quotation removes it and gives the quantity back to the quotation. | P-D1, P-T2 |
+| F4 | Unlink in one PUT works: the linked row with "D" plus a normal row (DtlKey 0). Location and DeliveryDate sent on the new row are kept, and the sales order row's quantity is freed. | P-U0..P-U4 |
+| F5 | Link and relink in one PUT work ("D" on the old row plus a new linked row). The new linked row is still placed at HQ with an empty DeliveryDate and a unit price of 0 whatever was sent; a second PUT moves it and keeps the link. A purchase order row shows its link as `FromSODtlKey`. | P-L1, P-L2, P-R1, P-L4 |
+| F6 | Delete line with "D" works on quotation, sales order and purchase order rows, with only `{DtlKey, FullTransferOption}` or the full row. "D" on the last row leaves a document without rows. | P-DL1, P-DL4..P-DL6 |
+| F7 | "D" on a row that was transferred onward is refused (sales order row linked from a purchase order; quotation row in a sales order). | P-DL2, P-DL3 |
+| F8 | One PUT is all or nothing: when the new row is invalid the "D" does not land either. | P-AT1, P-AT2 |
+| F9 | Cancel of a plain quotation, sales order and purchase order works; the document then reads `Cancelled "T"`, `DocStatus "V"`. | P-C1, P-C5, P-C6 |
+| F10 | Cancel again, edit after cancel, and cancel of an unknown DocNo are refused with clear text. | P-C1b, P-C1c, P-C7 |
+| F11 | Cancel of a quotation already in a sales order, and of a sales order already in a purchase order, is refused. | P-C2, P-C3 |
+| F12 | Cancel of a purchase order linked to a sales order frees the sales order quantity; cancel of a sales order taken from a quotation gives the quotation quantity back. | P-C4, P-C8, P-C9, P-C9b |
+| F13 | A PUT with no rows and a header change applies the header and keeps every row. | P-CASE |
+| F14 | A purchase order posted with `ShippingPO "T"` and a plain row is created as a normal purchase order (`ShippingPO` reads "F"). A shipping purchase order still cannot be made on db3, so no shipping purchase order probe could run. | P-SPO1 |
+| F14b | `ShippingPO` "Y", "1", `true`, "t" on create, "T" with a DocNo starting `SPO`, and "T" on an edit all read back "F": the field is not taken on create or edit. | P-SPO2..P-SPO7 |
+| F15 | "D" on a partly received purchase order row could not be tested: db3 has no goods received note write door. | none |
+
+## Calls (runs `FXT-1110c-`, `FXT-1110d-`, `FXT-1110e-`)
+
+Rows read as `DtlKey item qty location`, then the link (`link SO row <DtlKey>` for a purchase order row, `from QT <DocNo>`
+for a sales order row) and the DeliveryDate. `0001-01-01` is AutoCount's empty date.
+
+| Probe | Time (UTC) | Call | Status | Answer text | Read back after the call |
+|---|---|---|---|---|---|
+| S1 | 14:40:24 | POST /NewQuotation (new QT, 2 rows) | 200 | `DocNo=FXT-1110c-QT1 ,DocKey=12207 ... Created Successful.` | FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10 |
+| S2 | 14:40:25 | POST /NewSalesOrder (new SO: row from QT row A full qty 5 + normal row) | 200 | `DocNo=FXT-1110c-SO1 ,DocKey=12210 ... Created Successful.` | FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10<br>FXT-1110c-SO1 Cancelled F DocStatus A: 12211 SRTUB6213-BI 5 HQ from QT FXT-1110c-QT1 date 2026-11-10; 12213 SRTKT38SS 10 HQ date 2026-11-10 |
+| P-T1 | 14:40:25 | POST /NewSalesOrder (over-transfer: SO from QT row A again (qty 1) while A is fully transferred) | 500 | `Either no item found or item already full transferred at DocNo FXT-1110c-QT1.` | FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10<br>none |
+| P-D1 | 14:40:26 | PUT /EditSalesOrderbydockey ("D" on the SO row transferred from QT row A (only that row sent)) | 200 | `DocNo=FXT-1110c-SO1 ,DocKey=12210 ... Done Edit.` | FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10<br>FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10 |
+| P-T2 | 14:40:27 | POST /NewSalesOrder (after the D: SO from QT row A full qty 5 again (qty returned?)) | 200 | `DocNo=FXT-1110c-SO3 ,DocKey=12215 ... Created Successful.` | FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10<br>FXT-1110c-SO3 Cancelled F DocStatus A: 12216 SRTUB6213-BI 5 HQ from QT FXT-1110c-QT1 date 2026-11-10 |
+| S4 | 14:40:28 | POST /NewSalesOrder (new SO4 normal row (relink target)) | 200 | `DocNo=FXT-1110c-SO4 ,DocKey=12218 ... Created Successful.` | FXT-1110c-SO4 Cancelled F DocStatus A: 12219 SRTKT38SS 10 BRW-AM date 2026-11-10 |
+| S3 | 14:40:28 | POST /NewPurchaseOrder (new PO1: normal row 10 + row linked to SO1 row N qty 4) | 200 | `DocNo=FXT-1110c-PO1 ,DocKey=12220 ... Created Successful.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10<br>FXT-1110c-PO1 Cancelled F DocStatus A: 12221 SRTKT38SS 10 HQ date 2026-11-10; 12223 SRTKT38SS 4 HQ link SO row 12213 date 0001-01-01 |
+| P-U0 | 14:40:29 | PUT /EditSalesOrderbydockey (control: cut SO1 row N to 3 (< linked 4) before unlink) | 500 | `The quantity of the item code SRTKT38SS is less than the quantity it was partially transferred to Purchase Ord` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10 |
+| P-U1 | 14:40:30 | PUT /EditPurchaseOrderbydockey (unlink: linked row D + new normal row DtlKey 0 (one PUT)) | 200 | `DocNo=FXT-1110c-PO1 ,DocKey=12220 ... Done Edit.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10<br>FXT-1110c-PO1 Cancelled F DocStatus A: 12221 SRTKT38SS 10 HQ date 2026-11-10; 12224 SRTKT38SS 4 HQ date 2026-11-20 |
+| P-U2 | 14:40:31 | PUT /EditSalesOrderbydockey (after unlink: cut SO1 row N to 3 (freed?)) | 200 | `DocNo=FXT-1110c-SO1 ,DocKey=12210 ... Done Edit.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 3 HQ date 2026-11-10 |
+| P-U3 | 14:40:32 | PUT /EditSalesOrderbydockey (restore SO1 row N to 10) | 200 | `DocNo=FXT-1110c-SO1 ,DocKey=12210 ... Done Edit.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10 |
+| P-L1 | 14:40:33 | PUT /EditPurchaseOrderbydockey (link whole normal row: D + new linked row DtlKey 0, Location BRW-AM, DeliveryDate 21 Nov) | 200 | `DocNo=FXT-1110c-PO1 ,DocKey=12220 ... Done Edit.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10<br>FXT-1110c-PO1 Cancelled F DocStatus A: 12224 SRTKT38SS 4 HQ date 2026-11-20; 12226 SRTKT38SS 10 HQ link SO row 12213 date 0001-01-01 |
+| P-L2 | 14:40:33 | PUT /EditPurchaseOrderbydockey (move: Location BRW-AM + DeliveryDate on the new linked row (second PUT)) | 200 | `DocNo=FXT-1110c-PO1 ,DocKey=12220 ... Done Edit.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10<br>FXT-1110c-PO1 Cancelled F DocStatus A: 12224 SRTKT38SS 4 HQ date 2026-11-20; 12226 SRTKT38SS 10 BRW-AM link SO row 12213 date 2026-11-21 |
+| P-R1 | 14:40:34 | PUT /EditPurchaseOrderbydockey (relink: row linked to SO1 N -> D + new row linked to SO4 M) | 200 | `DocNo=FXT-1110c-PO1 ,DocKey=12220 ... Done Edit.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10<br>FXT-1110c-SO4 Cancelled F DocStatus A: 12219 SRTKT38SS 10 BRW-AM date 2026-11-10<br>FXT-1110c-PO1 Cancelled F DocStatus A: 12224 SRTKT38SS 4 HQ date 2026-11-20; 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01 |
+| P-DL1 | 14:40:35 | PUT /EditPurchaseOrderbydockey (delete line, minimal row {DtlKey, FullTransferOption D}) | 200 | `DocNo=FXT-1110c-PO1 ,DocKey=12220 ... Done Edit.` | FXT-1110c-PO1 Cancelled F DocStatus A: 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01 |
+| P-AT0 | 14:40:35 | PUT /EditPurchaseOrderbydockey (add a normal row (setup for atomicity)) | 200 | `DocNo=FXT-1110c-PO1 ,DocKey=12220 ... Done Edit.` | FXT-1110c-PO1 Cancelled F DocStatus A: 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01; 12229 SRTKT38SS 2 HQ date 2026-11-10 |
+| P-AT1 | 14:40:36 | PUT /EditPurchaseOrderbydockey (atomic? D on row + invalid new row (unknown item)) | 500 | `The following item codes are not exist, save aborted. (Not Exist Item Code: FXT-NO-SUCH-ITEM)` | FXT-1110c-PO1 Cancelled F DocStatus A: 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01; 12229 SRTKT38SS 2 HQ date 2026-11-10 |
+| P-AT2 | 14:40:37 | PUT /EditPurchaseOrderbydockey (atomic? D on row + new row linked to a missing SO row) | 500 | `Invalid transfer item.` | FXT-1110c-PO1 Cancelled F DocStatus A: 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01; 12229 SRTKT38SS 2 HQ date 2026-11-10 |
+| P-DL2 | 14:40:37 | PUT /EditSalesOrderbydockey (D on an SO row a PO row links to (SO4 M <- PO1)) | 500 | `This item has been transferred to Purchase Order, you are not allow to delete it!` | FXT-1110c-PO1 Cancelled F DocStatus A: 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01; 12229 SRTKT38SS 2 HQ date 2026-11-10<br>FXT-1110c-SO4 Cancelled F DocStatus A: 12219 SRTKT38SS 10 BRW-AM date 2026-11-10 |
+| P-DL3 | 14:40:38 | PUT /EditQuotationbydockey (D on a QT row that is transferred into SO3) | 500 | `This item has been partial transferred to Sales Order, you are not allow to delete it!` | FXT-1110c-SO3 Cancelled F DocStatus A: 12216 SRTUB6213-BI 5 HQ from QT FXT-1110c-QT1 date 2026-11-10<br>FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10 |
+| P-CASE | 14:40:38 | PUT /EditPurchaseOrderByDocKey (path case: /EditPurchaseOrderByDocKey, header Remark1 only, no rows) | 200 | `DocNo=FXT-1110c-PO1 ,DocKey=12220 ... Done Edit.` | FXT-1110c-PO1 Cancelled F DocStatus A: 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01; 12229 SRTKT38SS 2 HQ date 2026-11-10 |
+| S5 | 14:40:39 | POST /NewQuotation (new QT5 plain) | 200 | `DocNo=FXT-1110c-QT5 ,DocKey=12233 ... Created Successful.` | FXT-1110c-QT5 Cancelled F DocStatus A: 12234 SRTKT38SS 1 HQ date 2026-11-10 |
+| P-C1 | 14:40:40 | DELETE /CancelQuotationbydocno?DocNo=FXT-1110c-QT5 (DELETE cancel plain QT) | 200 | `DocNo=FXT-1110c-QT5 ... was cancelled.` | FXT-1110c-QT5 Cancelled T DocStatus V: 12234 SRTKT38SS 1 HQ date 2026-11-10 |
+| P-C1b | 14:40:40 | DELETE /CancelQuotationbydocno?DocNo=FXT-1110c-QT5 (DELETE cancel again (already cancelled)) | 400 | `Unable to (Cancel Document) for this document, due to current document status (Void).` | FXT-1110c-QT5 Cancelled T DocStatus V: 12234 SRTKT38SS 1 HQ date 2026-11-10 |
+| P-C1c | 14:40:41 | PUT /EditQuotationbydockey (edit a cancelled QT (Remark1)) | 500 | `You are not allowed to edit expired or void document.` | FXT-1110c-QT5 Cancelled T DocStatus V: 12234 SRTKT38SS 1 HQ date 2026-11-10 |
+| P-C2 | 14:40:41 | DELETE /CancelQuotationbydocno?DocNo=FXT-1110c-QT1 (DELETE cancel QT1 whose row A is transferred into SO3) | 400 | `The document was transfered to other document, so it is not allow to cancel.` | FXT-1110c-SO3 Cancelled F DocStatus A: 12216 SRTUB6213-BI 5 HQ from QT FXT-1110c-QT1 date 2026-11-10<br>FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10 |
+| P-C3 | 14:40:41 | DELETE /CancelSalesOrderbydocno?DocNo=FXT-1110c-SO4 (DELETE cancel SO4 whose row M is linked from PO1) | 400 | `The Sales Order was transfered to Purchase Order, so it is not allow to cancel.` | FXT-1110c-PO1 Cancelled F DocStatus A: 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01; 12229 SRTKT38SS 2 HQ date 2026-11-10<br>FXT-1110c-SO4 Cancelled F DocStatus A: 12219 SRTKT38SS 10 BRW-AM date 2026-11-10 |
+| P-C4 | 14:40:42 | DELETE /CancelPurchaseOrderbydocno?DocNo=FXT-1110c-PO1 (DELETE cancel PO1 (rows linked to SO4)) | 200 | `DocNo=FXT-1110c-PO1 ... was cancelled.` | FXT-1110c-SO4 Cancelled F DocStatus A: 12219 SRTKT38SS 10 BRW-AM date 2026-11-10<br>FXT-1110c-PO1 Cancelled T DocStatus V: 12228 SRTKT38SS 10 HQ link SO row 12219 date 0001-01-01; 12229 SRTKT38SS 2 HQ date 2026-11-10 |
+| S6 | 14:40:42 | POST /NewSalesOrder (new SO6 plain) | 200 | `DocNo=FXT-1110c-SO6 ,DocKey=12235 ... Created Successful.` | FXT-1110c-SO6 Cancelled F DocStatus A: 12236 SRTKT38SS 1 HQ date 2026-11-10 |
+| P-C5 | 14:40:43 | DELETE /CancelSalesOrderbydocno?DocNo=FXT-1110c-SO6 (DELETE cancel plain SO) | 200 | `DocNo=FXT-1110c-SO6 ... was cancelled.` | FXT-1110c-SO6 Cancelled T DocStatus V: 12236 SRTKT38SS 1 HQ date 2026-11-10 |
+| S7 | 14:40:43 | POST /NewPurchaseOrder (new PO7 plain) | 200 | `DocNo=FXT-1110c-PO7 ,DocKey=12237 ... Created Successful.` | FXT-1110c-PO7 Cancelled F DocStatus A: 12238 SRTKT38SS 1 HQ date 2026-11-10 |
+| P-C6 | 14:40:44 | DELETE /CancelPurchaseOrderbydocno?DocNo=FXT-1110c-PO7 (DELETE cancel plain PO) | 200 | `DocNo=FXT-1110c-PO7 ... was cancelled.` | FXT-1110c-PO7 Cancelled T DocStatus V: 12238 SRTKT38SS 1 HQ date 2026-11-10 |
+| P-C7 | 14:40:45 | DELETE /CancelSalesOrderbydocno?DocNo=FXT-1110c-NOPE (DELETE cancel a DocNo that does not exist) | 400 | `DocNo=FXT-1110c-NOPE ... failed to cancel.` | none |
+| P-SPO1 | 14:40:45 | POST /NewPurchaseOrder (SPO create: NewPurchaseOrder ShippingPO T, full body) | 200 | `DocNo=FXT-1110c-SPO1 ,DocKey=12239 ... Created Successful.` | FXT-1110c-SPO1 Cancelled F DocStatus A: 12240 SRTKT38SS 3 HQ date 2026-11-10 |
+| P-RQ | 14:40:45 | GET /RequestQuotationbydocno?DocNo=FXT-1110c-X (RQ GET path exists?) | 200 | `[]` |  |
+| P-RQ | 14:40:45 | GET /RequestQuotatonbydocno?DocNo=FXT-1110c-X (RQ GET path exists?) | 404 | `{'Message': "No HTTP resource was found that matches the request URI 'http://hapi.sorento.cc.cd/api/db3/Reques` |  |
+| P-C8 | 14:41:38 | PUT /EditSalesOrderbydockey (after PO1 cancel: cut SO4 row (was PO-linked 10) to 3 (freed?)) | 200 | `DocNo=FXT-1110c-SO4 ,DocKey=12218 ... Done Edit.` | FXT-1110c-SO4 Cancelled F DocStatus A: 12219 SRTKT38SS 3 BRW-AM date 2026-11-10 |
+| P-C9 | 14:41:39 | DELETE /CancelSalesOrderbydocno?DocNo=FXT-1110c-SO3 (DELETE cancel SO3 (its row came from QT1 row A)) | 200 | `DocNo=FXT-1110c-SO3 ... was cancelled.` | FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10<br>FXT-1110c-SO3 Cancelled T DocStatus V: 12216 SRTUB6213-BI 5 HQ from QT FXT-1110c-QT1 date 2026-11-10 |
+| P-C9b | 14:41:40 | POST /NewSalesOrder (after SO3 cancel: SO from QT1 row A full qty 5 (qty returned by cancel?)) | 200 | `DocNo=FXT-1110d-SO1 ,DocKey=12241 ... Created Successful.` | FXT-1110c-QT1 Cancelled F DocStatus A: 12208 SRTUB6213-BI 5 HQ date 2026-11-10; 12209 SRTKT38SS 5 HQ date 2026-11-10<br>FXT-1110d-SO1 Cancelled F DocStatus A: 12242 SRTUB6213-BI 5 HQ from QT FXT-1110c-QT1 date 2026-11-10 |
+| S8 | 14:41:41 | POST /NewPurchaseOrder (new PO linked to SO1 row N qty 4) | 200 | `DocNo=FXT-1110d-PO1 ,DocKey=12244 ... Created Successful.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10<br>FXT-1110d-PO1 Cancelled F DocStatus A: 12246 SRTKT38SS 4 HQ link SO row 12213 date 0001-01-01 |
+| P-U4 | 14:41:42 | PUT /EditPurchaseOrderbydockey (unlink with Location BRW-AM + DeliveryDate 23 Nov on the new normal row, same PUT) | 200 | `DocNo=FXT-1110d-PO1 ,DocKey=12244 ... Done Edit.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10<br>FXT-1110d-PO1 Cancelled F DocStatus A: 12247 SRTKT38SS 4 BRW-AM date 2026-11-23 |
+| P-L4 | 14:41:43 | PUT /EditPurchaseOrderbydockey (add a linked row only (DtlKey 0), Location BRW-AM: still forced HQ?) | 200 | `DocNo=FXT-1110d-PO1 ,DocKey=12244 ... Done Edit.` | FXT-1110c-SO1 Cancelled F DocStatus A: 12213 SRTKT38SS 10 HQ date 2026-11-10<br>FXT-1110d-PO1 Cancelled F DocStatus A: 12247 SRTKT38SS 4 BRW-AM date 2026-11-23; 12249 SRTKT38SS 1 HQ link SO row 12213 date 0001-01-01 |
+| S9 | 14:42:16 | POST /NewQuotation (new QT, 2 plain rows) | 200 | `DocNo=FXT-1110e-QT1 ,DocKey=12250 ... Created Successful.` | FXT-1110e-QT1 Cancelled F DocStatus A: 12251 SRTUB6213-BI 2 HQ date 2026-11-10; 12252 SRTKT38SS 3 HQ date 2026-11-10 |
+| P-DL4 | 14:42:17 | PUT /EditQuotationbydockey (D on a plain QT row (full row shape)) | 200 | `DocNo=FXT-1110e-QT1 ,DocKey=12250 ... Done Edit.` | FXT-1110e-QT1 Cancelled F DocStatus A: 12251 SRTUB6213-BI 2 HQ date 2026-11-10 |
+| S10 | 14:42:18 | POST /NewSalesOrder (new SO, 2 plain rows) | 200 | `DocNo=FXT-1110e-SO1 ,DocKey=12253 ... Created Successful.` | FXT-1110e-SO1 Cancelled F DocStatus A: 12254 SRTUB6213-BI 2 HQ date 2026-11-10; 12255 SRTKT38SS 3 HQ date 2026-11-10 |
+| P-DL5 | 14:42:18 | PUT /EditSalesOrderbydockey (D on a plain SO row (full row shape)) | 200 | `DocNo=FXT-1110e-SO1 ,DocKey=12253 ... Done Edit.` | FXT-1110e-SO1 Cancelled F DocStatus A: 12254 SRTUB6213-BI 2 HQ date 2026-11-10 |
+| P-DL6 | 14:42:19 | PUT /EditSalesOrderbydockey (D on the last remaining SO row (doc with no rows?)) | 200 | `DocNo=FXT-1110e-SO1 ,DocKey=12253 ... Done Edit.` | FXT-1110e-SO1 Cancelled F DocStatus A: no rows |
+
+## Shipping purchase order flag (10 Nov 2026, about 15:55 UTC)
+
+| Probe | Call | Status | Read back |
+|---|---|---|---|
+| P-SPO2 | POST /NewPurchaseOrder FXT-1110f-SPO1, `ShippingPO "Y"` | 200 created | `ShippingPO "F"` |
+| P-SPO3 | POST /NewPurchaseOrder FXT-1110f-SPO2, `ShippingPO "1"` | 200 created | `ShippingPO "F"` |
+| P-SPO4 | POST /NewPurchaseOrder FXT-1110f-SPO3, `ShippingPO true` | 200 created | `ShippingPO "F"` |
+| P-SPO5 | POST /NewPurchaseOrder FXT-1110f-SPO4, `ShippingPO "t"` | 200 created | `ShippingPO "F"` |
+| P-SPO6 | PUT /EditPurchaseOrderbydockey FXT-1110f-SPO1, header `ShippingPO "T"`, no rows | 200 `Done Edit.` | `ShippingPO "F"` |
+| P-SPO7 | POST /NewPurchaseOrder SPO-FXT-1110f-1 (DocNo starting SPO), `ShippingPO "T"` | 200 created | `ShippingPO "F"` |
+
+Each document has one plain row (SRTKT38SS qty 1). The wrapper does not take `ShippingPO` on create or edit today.
+
+## Link follow-up (11 Nov 2026, db3, UTC)
+
+| Probe | Call | Status | Read back |
+|---|---|---|---|
+| P-L5 | PUT /EditPurchaseOrderbydockey FXT-1110d-PO1, the linked row 12249 (read: UnitPrice 0, HQ, empty date) sent with UnitPrice 1, Location BRW-AM, DeliveryDate 2026-11-24 | 200 `Done Edit.` | row 12249 UnitPrice 1, BRW-AM, 2026-11-24, still linked to SO row 12213 |
+| P-R2 | PUT /EditSalesOrderbydockey FXT-1110c-SO1, row 12213 qty 10 -> 2 (after P-R1 moved the 10-qty link to FXT-1110c-SO4 row 12219; 1 still linked from FXT-1110d-PO1) | 200 `Done Edit.` | row 12213 qty 2: the change link freed the old sales order row |
+
+A second PUT restores the price, location and date a new linked row loses (F5), and a change of link frees the old
+sales order row's quantity.
+
+## SS end to end on db3 (11 Nov 2026): the runner through the same services the gateway uses
+
+Run `python -m modules.autocount.write_back.runner --suite db3 --run-tag 1111a` against a migrated copy of a local
+database holding the db3 write connection. 18 of 18 cases PASS. The linking cases:
+- C13 unlink (operation layer): PO FXT-1111a-1 row 12274 (linked to SO FXT-1111a-SO row 12267) -> one PUT -> normal row
+  12280, same item / qty / location.
+- C14 whole-row link (operation layer): normal row 12277 -> one replace PUT -> row 12282 linked to SO row 12267 (AutoCount
+  put it at HQ) -> move PUT -> BRW-AM, link kept.
+- C15 change link (operation layer): row 12282 -> one replace PUT -> row 12284 linked to SO row 12269 -> move PUT.
+  Read back after the run: row 12284 UnitPrice 1 (AutoCount had set 0), DeliveryDate 2026-11-11, BRW-AM, link 12269.
+- C16 PO delete line (one PUT, row marked D) and C17 PO cancel (DELETE, reads back Cancelled T).
+The sales order quantity effects of these exact PUT shapes are the raw probes above (P-U0 / P-U2 unlink frees, P-R2
+change link frees the old row, P-C3 / P-C8 the new row holds the link until the PO is cancelled).
+Party codes are replaced by `<code>` below.
+
+### Runner report (db3 suite, run tag 1111a)
+
+Book: db3. Run tag: 1111a. PASS 18, FAIL 0, SKIPPED 0.
+
+#### C00 Create the test SO: PASS
+
+- Expected: test SO FXT-1111a-SO created with three SRTKT38SS rows at BRW-AM (10, 5 and 10)
+- Observed: created FXT-1111a-SO with 3 rows
+
+- GET /salesorderbydocdate -> 200 (FXT-1111a-SO absent)
+- POST /NewSalesOrder -> 200
+  - request: `{"DocNo":"FXT-1111a-SO","DocDate":"2026-11-11T00:00:00","DebtorCode":"<code>","Details":[{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - after: `[{"DtlKey":12267,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12268,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12269,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C01 Create the test PO: PASS
+
+- Expected: test PO created with two SRTKT38SS rows (50 and 10 at HQ)
+- Observed: created FXT-1111a-1 with 2 rows
+
+- GET /purchaseorderbydocdate -> 200 (baseline pull docs=3)
+- GET /purchaseorderbydocdate -> 200 (FXT-1111a-1 absent)
+- POST /NewPurchaseOrder -> 200
+  - request: `{"DocNo":"FXT-1111a-1","DocDate":"2026-11-11T00:00:00","CreditorCode":"<code>","ShippingPO":"F","Details":[{"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - after: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12272,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C02 Pull SO then PO into staging: PASS
+
+- Expected: SO days then PO days pulled; the test PO is staged
+- Observed: docs_seen=2 staged=2 pushed=2
+
+- GET /purchaseorderbydocdate -> 200 (docs=2 staged=2)
+
+#### C03 Link with split: PASS
+
+- Expected: split in two writes: 40 stay at HQ, a new 10 row linked to SO row 11989 and moved to BRW-AM
+- Observed: done
+- Action: bf2a147c-c0dd-4cd4-98b3-f38c2661a1d6
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12267}]}`
+  - before: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":50.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C04 Whole-row link in one replace PUT: PASS
+
+- Expected: whole-row link (plan 61 F5): the free 10 row is replaced in ONE PUT by a row linked to the third SO row, then moved back to BRW-AM
+- Observed: done
+- Action: 8d613647-5d2a-4c78-945d-901fe42a8718
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12272,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12269}]}`
+  - before: `[{"DtlKey":12272,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C05 Over-link refused: PASS
+
+- Expected: link refused: the SO row is already covered (QTY_ABOVE_OUTSTANDING)
+- Observed: refused QTY_ABOVE_OUTSTANDING
+- Action: 0bb3a649-484f-45d9-b076-0f9ecf7b5ff2
+
+
+#### C06 Quantity above the PO row refused: PASS
+
+- Expected: link of 202602-S0007 row 12009 refused: quantity above the PO row (QTY_ABOVE_FREE)
+- Observed: refused QTY_ABOVE_FREE
+- Action: 0455653a-2c24-4893-bc0b-1f7c667072b7
+
+
+#### C07 Unlink in one replace PUT: PASS
+
+- Expected: unlink (plan 61 F4) of the C04 row on the test PO: ONE PUT, the linked row deleted and a normal row with the same item, qty and location added
+- Observed: done
+- Action: 9839c50d-d0c5-4f59-bfc2-7f15d7dca002
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12276,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12277,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C08 Second split of the 40 row: PASS
+
+- Expected: second split of the 40 row: 5 linked to SO row 11992 and moved to BRW-AM
+- Observed: done
+- Action: 85613216-8179-481b-b5ec-548955c56314
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12268}]}`
+  - before: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":40.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":12279,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12268,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12279,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12279,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12268,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12279,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":5.0,"FromSODtlKey":12268,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C09 Stale document refused: PASS
+
+- Expected: stale document refused (DOC_STALE)
+- Observed: refused DOC_STALE
+- Action: 2a68cb0a-e0a6-4886-aede-f8be04204d3e
+
+
+#### C10 SPO unlink refused by the capability gate: PASS
+
+- Expected: SPO unlink refused: the vendor does not apply it (VENDOR_UNSUPPORTED), nothing sent
+- Observed: refused VENDOR_UNSUPPORTED
+- Action: 8d9dbb41-7e94-41c0-8e89-17ecd08b67fb
+
+
+#### C11 Relocate of a row already at its location: PASS
+
+- Expected: relocate of the C08 row, already at its SO location, is refused (ROW_ALREADY_AT_LOCATION)
+- Observed: refused ROW_ALREADY_AT_LOCATION
+- Action: 665ff525-90df-4bc4-9a5e-7ed06b1f674a
+
+
+#### C12 Other book refused with no request: PASS
+
+- Expected: a client for another book is refused at construction with no request (WRITE_NOT_ALLOWED)
+- Observed: refused WRITE_NOT_ALLOWED, 0 requests
+
+
+#### C13 Unlink through the operation layer (replace PUT): PASS
+
+- Expected: unlink_row (operation) of the C03 row: ONE replace PUT, the first SO row freed; replacedLines names the new row
+- Observed: done warnings TRANSFER_STATE_UNKNOWN
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12274,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12280,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C14 Whole-row link through the operation layer (replace PUT + restore move): PASS
+
+- Expected: link_row (operation, whole row) of the C07 row to the first SO row: ONE replace PUT, then the move PUT puts back the SO row's location and the old unit price and date
+- Observed: done warnings TRANSFER_STATE_UNKNOWN
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12277,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12267}]}`
+  - before: `[{"DtlKey":12277,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C15 Relink through the operation layer (replace PUT + restore move): PASS
+
+- Expected: relink_row (operation) of the C14 row to the third SO row: ONE replace PUT and the move, unit price and delivery date kept
+- Observed: done warnings TRANSFER_STATE_UNKNOWN
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0},{"DtlKey":0,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"SO","FromDocNo":"FXT-1111a-SO","FromDocDtlKey":12269}]}`
+  - before: `[{"DtlKey":12282,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12267,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12284,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12284,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12284,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[{"DtlKey":12284,"ItemCode":"SRTKT38SS","Location":"BRW-AM","UOM":"UNIT","Qty":10.0,"FromSODtlKey":12269,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+
+#### C16 Delete a PO line (one PUT, row marked D): PASS
+
+- Expected: PO delete_line (primitive) of the free C03 remainder row: ONE PUT with the row marked D
+- Observed: done
+- Action: 942c7584-f3cc-4fb4-8eea-751d9d6bad2c
+
+- PUT /EditPurchaseOrderbydockey -> 200
+  - request: `{"DocKey":12270,"DocNo":"FXT-1111a-1","Details":[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]}`
+  - before: `[{"DtlKey":12271,"ItemCode":"SRTKT38SS","Location":"HQ","UOM":"UNIT","Qty":35.0,"FromSODtlKey":0,"FromDocType":"","FromDocNo":"","FromDocDtlKey":0}]`
+  - after: `[]`
+
+#### C17 Cancel the test PO: PASS
+
+- Expected: PO cancel (primitive) of the test PO: DELETE /CancelPurchaseOrderbydocno, reads back Cancelled T
+- Observed: done
+- Action: 7c2affbb-e20b-4c6a-b3c2-e61535f8af50
+
+- DELETE /CancelPurchaseOrderbydocno -> 200
+
+## SS end to end on db3 (11 Nov 2026): quotation and sales order suite
+
+Run `python -m modules.autocount.write_back.runner --suite qtso --run-tag 1111q` (same database copy), documents
+`FXT-1111q-*` plus one AutoCount-numbered quotation. 10 of 10 PASS. Exact requests and responses were recorded outside
+the repository.
+
+| Case | Result | Observed |
+|---|---|---|
+| Q01 Create a quotation (AutoCount numbers it, and an explicit number) | PASS | auto done QT-000007; explicit done FXT-1111q-QT |
+| Q02 Edit the quotation: header, quantity, price, discount, location | PASS | done |
+| Q03 Add a line to the quotation, then move the first line | PASS | add done new row 12289; move done |
+| Q04 Create a sales order from a quotation row | PASS | done warnings QT_ROW_LINK_UNCONFIRMED |
+| Q05 Edit the sales order and add a line | PASS | edit done; add done |
+| Q06 Cancel the quotations: the plain one is cancelled, the transferred one refused | PASS | plain done; transferred refused DOC_HAS_TRANSFERS |
+| Q07 Delete a sales order line (one PUT, the row marked D) | PASS | done |
+| Q08 Cancel the sales order | PASS | done |
+| Q09 SPO link, unlink and relink refused (SPO stays off) | PASS | spo_link_row refused VENDOR_UNSUPPORTED; spo_unlink_row refused VENDOR_UNSUPPORTED; spo_relink_row refused VENDOR_UNSUPPORTED |
+| Q10 Delete a quotation line (one PUT, the row marked D) | PASS | done |

@@ -1,11 +1,11 @@
 # AI Agent Orchestration & TDD Guide
 
-This guide details how to technically set up your local multi-agent "virtual development team" using Claude, CrewAI/LangGraph, and Playwright for the Foundryx EMS project.
+This guide details how to technically set up your local multi-agent "virtual development team" using Claude, CrewAI/LangGraph, and browser automation for the Foundryx EMS project.
 
 ---
 
 ## 1. What is E2E Testing?
-**E2E (End-to-End)** testing means testing your application exactly as a real user would experience it. Instead of just testing a backend function, an E2E test opens a real headless browser (like Chrome), navigates to your local React frontend, clicks the "Create Lead" button, types into the input fields, submits the form, and verifies the success message appears. **Playwright** is the industry standard for writing these tests.
+**E2E (End-to-End)** testing means testing your application exactly as a real user would experience it. Instead of just testing a backend function, an E2E run opens a real browser, navigates to your local React frontend, clicks the "Create Lead" button, types into the input fields, submits the form, and verifies the success message appears. This repo drives that browser via the **`agent-browser` CLI**, real clicks from the sidebar only - never a typed URL.
 
 ---
 
@@ -18,7 +18,7 @@ Instead, you use the **Anthropic API** combined with a Python framework like **C
 
 ### Spawning the Agents (The Setup)
 To spawn this team, you will write a single Python application:
-1. **Install Dependencies:** `pip install crewai langchain-anthropic playwright pytest`
+1. **Install Dependencies:** `pip install crewai langchain-anthropic pytest`
 2. **Setup API Key:** Export your `ANTHROPIC_API_KEY` to your local environment.
 3. **Define Agents:** You define Python objects for each agent, assigning them a specific system prompt (their "Role") and their Tools (their "Skills").
 
@@ -32,8 +32,8 @@ llm = ChatAnthropic(model="claude-3-5-sonnet-20240620")
 
 qa_agent = Agent(
     role='Lead QA Automation Engineer',
-    goal='Write robust Playwright E2E test scripts based strictly on functional specs.',
-    backstory='You are an expert in TypeScript, React, and Playwright testing.',
+    goal='Drive robust agent-browser E2E verification runs based strictly on functional specs.',
+    backstory='You are an expert in TypeScript, React, and browser-based E2E verification.',
     tools=[read_file_tool, write_file_tool, run_bash_tool],
     llm=llm
 )
@@ -56,14 +56,13 @@ This allows you to go to sleep while the agents code overnight, automatically pa
 
 ---
 
-## 4. Writing Playwright Scripts with Claude
+## 4. Driving agent-browser Verification with Claude
 
-Claude is exceptionally good at writing Playwright scripts. The workflow works like this:
+Claude is exceptionally good at driving a real browser session. The workflow works like this:
 1. The **Spec Agent** saves `lead_creation_spec.md`.
 2. The **QA Agent** reads that file.
-3. The QA Agent uses its `write_file_tool` to generate `tests/e2e/lead_creation.spec.ts`.
-4. The QA Agent uses the `run_bash_tool` to execute `npx playwright test`.
-5. It reads the terminal output. If the test fails because the Developer Agent hasn't written the UI yet, it waits. If it fails due to a syntax error in the test, it rewrites the test and tries again.
+3. The QA Agent uses the `run_bash_tool` to drive the `agent-browser` CLI through the flow - real clicks from the sidebar, never a typed URL - and records the run under the evidence directory.
+4. It reads the run output. If the flow fails because the Developer Agent hasn't written the UI yet, it waits. If it fails due to a mistake in the click sequence, it retries.
 
 ---
 
@@ -77,7 +76,7 @@ To make this workflow autonomous, you must equip your CrewAI/LangGraph agents wi
 * **`multi_replace_file_content` / `edit_file`**: Critical for modifying existing code without rewriting the entire file (saves massive amounts of tokens).
 
 ### Execution & Testing Skills
-* **`run_bash_command`**: The most important skill. Allows the Developer Agent to run `npm run dev` or the QA Agent to run `pytest` and `npx playwright test`. It must return the terminal output (STDOUT/STDERR) back to the agent so it knows if it succeeded or failed.
+* **`run_bash_command`**: The most important skill. Allows the Developer Agent to run `npm run dev` or the QA Agent to run `pytest` and the `agent-browser` CLI. It must return the terminal output (STDOUT/STDERR) back to the agent so it knows if it succeeded or failed.
 * **`get_command_status`**: Allows the agent to check on a background command (like a running dev server).
 
 ### Architectural Skills
@@ -88,17 +87,17 @@ To make this workflow autonomous, you must equip your CrewAI/LangGraph agents wi
 
 ## 6. Automated Test Execution Reporting (Documentation)
 
-To ensure you can verify the agent's work without reading raw code, the QA Agent is strictly instructed to generate a **Test Execution Report** in Markdown format after running its Playwright/Pytest scripts. 
+To ensure you can verify the agent's work without reading raw code, the QA Agent is strictly instructed to generate a **Test Execution Report** in Markdown format after running its agent-browser / Pytest runs. 
 
 You can easily export this Markdown into an Excel/CSV file if needed later. The QA Agent will generate a file (e.g., `docs/tests/US-01_Lead_Creation_Report.md`) structured exactly like a manual testing sheet:
 
 | User Story | Scenario | Precondition | Steps | Expected Result | Actual Result | QA Remarks |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **US-01** | Create Client via Wizard | Admin is logged in. No client exists named "Acme". | 1. Go to `/leads/new`<br>2. Click 'Select Customer'<br>3. Click 'Quick Create Client'<br>4. Type 'Acme' | Client 'Acme' is created and auto-selected in the wizard. | Client 'Acme' created. Wizard retained state. | **PASS**. Playwright trace attached. No console errors detected. |
+| **US-01** | Create Client via Wizard | Admin is logged in. No client exists named "Acme". | 1. Go to `/leads/new`<br>2. Click 'Select Customer'<br>3. Click 'Quick Create Client'<br>4. Type 'Acme' | Client 'Acme' is created and auto-selected in the wizard. | Client 'Acme' created. Wizard retained state. | **PASS**. agent-browser screenshots attached. No console errors detected. |
 | **US-01** | Wizard Validation | Admin is logged in. | 1. Go to `/leads/new`<br>2. Leave 'Source' blank<br>3. Click 'Next' | UI blocks progression and shows red validation error. | Form blocked, but error message was not visible. | **FAIL**. *Remark:* Developer Agent needs to fix z-index of the toast notification. Sent back to Dev. |
 
 **How the Agent creates this:**
-1. The QA Agent reads the Playwright terminal STDOUT (using `run_bash_command`).
+1. The QA Agent reads the `agent-browser` run output (using `run_bash_command`).
 2. It parses the pass/fail results.
 3. It uses the `write_file` tool to append the test results to the Markdown report table, strictly filling out the `Actual Result` and `QA Remarks` based on the terminal output.
 4. As the Orchestrator, you simply review this Markdown table (or copy it to Excel) to verify the system's integrity without ever having to look at the code yourself.

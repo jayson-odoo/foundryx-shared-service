@@ -26,12 +26,33 @@ export interface WorkflowNodeData {
   [key: string]: unknown;
 }
 
+/** Handle color per named port (D-A5-14 - generalizes the IF node's
+ * true/green false/red convention to any branching action). An unlisted port
+ * falls back to the plain `out` color. */
+const PORT_COLOR: Record<string, string> = {
+  true: '!bg-green-500',
+  false: '!bg-destructive',
+  answer: '!bg-blue-500',
+  timeout: '!bg-amber-500',
+  inside: '!bg-green-500',
+  outside: '!bg-slate-400',
+};
+
+/** Evenly-spaced left offsets for N source ports - 2 ports keep the IF node's
+ * exact 30% / 70% split; N > 2 spreads evenly. */
+function portLeft(index: number, total: number): string {
+  if (total <= 1) return '50%';
+  if (total === 2) return index === 0 ? '30%' : '70%';
+  return `${Math.round((100 / (total + 1)) * (index + 1))}%`;
+}
+
 const RUN_RING: Record<WorkflowNodeRunStatus, string> = {
   success: 'ring-2 ring-green-500',
   failed: 'ring-2 ring-destructive',
   running: 'ring-2 ring-amber-500 animate-pulse',
   skipped: 'ring-1 ring-muted-foreground/40 opacity-60',
   pending: 'ring-1 ring-muted-foreground/30',
+  waiting: 'ring-2 ring-sky-500',
 };
 
 export function WorkflowFlowNode({ data, selected }: NodeProps & { data: WorkflowNodeData }) {
@@ -79,7 +100,7 @@ export function WorkflowFlowNode({ data, selected }: NodeProps & { data: Workflo
         </span>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
               {isTrigger ? 'Trigger' : isIf ? 'Condition' : 'Action'}
             </span>
           </div>
@@ -88,14 +109,41 @@ export function WorkflowFlowNode({ data, selected }: NodeProps & { data: Workflo
         </div>
       </div>
 
-      {isIf ? (
-        <>
-          <Handle id="true" type="source" data-testid="source-handle-true" position={Position.Bottom} style={{ left: '30%' }} className="!size-2.5 !bg-green-500" />
-          <Handle id="false" type="source" data-testid="source-handle-false" position={Position.Bottom} style={{ left: '70%' }} className="!size-2.5 !bg-destructive" />
-        </>
-      ) : (
-        <Handle id="out" type="source" position={Position.Bottom} data-testid="source-handle" className="!size-2.5 !bg-primary" />
-      )}
+      {(() => {
+        // IF's true/false are built-in ports; a branching action (Ask a
+        // question, Business hours - D-A5-14) declares `ports` the same way.
+        const ports = isIf
+          ? ['true', 'false']
+          : catalog?.kind === 'action' && catalog.ports?.length
+            ? catalog.ports
+            : [];
+        if (!ports.length) {
+          return (
+            <Handle
+              id="out"
+              type="source"
+              position={Position.Bottom}
+              data-testid="source-handle"
+              className="!size-2.5 !bg-primary"
+            />
+          );
+        }
+        return (
+          <>
+            {ports.map((port, i) => (
+              <Handle
+                key={port}
+                id={port}
+                type="source"
+                data-testid={`source-handle-${port}`}
+                position={Position.Bottom}
+                style={{ left: portLeft(i, ports.length) }}
+                className={cn('!size-2.5', PORT_COLOR[port] ?? '!bg-primary')}
+              />
+            ))}
+          </>
+        );
+      })()}
     </div>
   );
 }
@@ -133,6 +181,20 @@ function nodeSummary(node: WorkflowNode): string {
       return str('key') || 'no key set';
     case 'if':
       return node.config.conditions ? 'conditional' : 'always true';
+    case 'ai_agent.run': {
+      const outputs = node.config.outputParams;
+      const count = Array.isArray(outputs) ? outputs.length : 0;
+      return count ? `${count} output${count === 1 ? '' : 's'}` : 'no outputs';
+    }
+    case 'ai_agent.clear_state':
+      return 'retained values';
+    case 'redis.command':
+      return `${str('operation') || 'get'}${str('key') ? ` · ${str('key')}` : ''}`;
+    case 'code.run': {
+      const outputs = node.config.outputs;
+      const count = Array.isArray(outputs) ? outputs.length : 0;
+      return `${str('language') || 'python'} · ${count} output${count === 1 ? '' : 's'}`;
+    }
     default:
       return node.type.startsWith('entity.') ? str('entityType') || 'pick an entity' : '';
   }

@@ -1,0 +1,25 @@
+{
+  "note": "GET /autocount/companies/{id}/entities/product/mapping response, captured live after the first clean save of the product HTTP task on db1 (SRT). Confirms AC-10-04 (pre-filled ItemUOM lookup), AC-10-59 (clamp formula), AC-10-60/D17 (trim rule, via the description formula's own trim()), AC-10-73 (description-parity raw-join formula), AC-10-74 (uom_code row present but isEnabled: false).",
+  "rows": [
+    { "sourcePath": "ItemCode", "transform": "string", "formula": null, "sorentoField": "code", "isEnabled": true },
+    { "sourcePath": "Description", "transform": "string", "formula": null, "sorentoField": "name", "isEnabled": true },
+    { "sourcePath": "Description", "transform": "string", "formula": "trim(if(default(Desc2, \"\") != \"\", concat(Description, \" \", Desc2), Description))", "sorentoField": "description", "isEnabled": true },
+    { "sourcePath": "ItemGroup", "transform": "string", "formula": null, "sorentoField": "category_code", "isEnabled": true },
+    { "sourcePath": "ItemBrand", "transform": "string", "formula": null, "sorentoField": "brand_code", "isEnabled": true },
+    { "sourcePath": "BaseUOM", "transform": "string", "formula": null, "sorentoField": "uom_code", "isEnabled": false },
+    { "sourcePath": "IsActive", "transform": "t_f_bool", "formula": null, "sorentoField": "is_active", "isEnabled": true },
+    { "sourcePath": "Discontinued", "transform": "t_f_bool", "formula": null, "sorentoField": null, "canonicalField": "is_discontinued", "isEnabled": true },
+    { "sourcePath": "BaseUOMPrice", "transform": "string", "formula": "if(number(value) <= 0, 0, number(value))", "sorentoField": "list_price", "isEnabled": true }
+  ],
+  "sourceConfigLookups": [
+    {
+      "path": "/itemuombypage",
+      "as": "uom",
+      "on": [
+        { "local": "ItemCode", "remote": "ItemCode" },
+        { "local": "BaseUOM", "remote": "UOM", "match": "casefold_trim" }
+      ],
+      "fields": [ { "remote": "Price", "as": "BaseUOMPrice" } ]
+    }
+  ]
+}

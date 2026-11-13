@@ -1,0 +1,14 @@
+line|DtlKey|source_ref|string||t|t
+line|ItemAutoKey|product_ref|ref_product||t|t
+line|LocationAutoKey|warehouse_ref|ref_warehouse||t|f
+line|Qty|qty_ordered|decimal||t|t
+line|TransferedQty|qty_delivered|decimal||t|f
+line|SubTotal|unit_price|decimal||t|f
+line|DiscountAmt|discount|decimal||t|f
+line|SubTotal|line_total|decimal||t|f
+line|UOM|uom|string||t|f
+line|DeliveryDate|required_date|date||t|f
+line|ItemCode|product_code|string||t|f
+line|Description|product_name|string||t|f
+line|Location|warehouse_code|string||t|f
+line|Seq|line_number|string||t|f

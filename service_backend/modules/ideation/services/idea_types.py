@@ -15,7 +15,7 @@ from app.api_errors import ApiError
 
 from ..models import IdeaType
 
-# (key, label, sort_order, is_default). Insert-if-missing seed + migration 0009.
+# (key, label, sort_order, is_default). Insert-if-missing seed + migration 0019.
 DEFAULT_IDEA_TYPES = (
     ("idea", "Idea", 0, True),
     ("issue", "Issue", 1, False),
@@ -94,7 +94,7 @@ def resolve_idea_type_filter(
 
 def upgrade_idea_type_sql(schema: str) -> List[str]:
     """Idempotent Postgres DDL+seed for the idea-type rollout. ONE source used by
-    migration 0009 AND ``install()`` (so a legacy create_all DB that only gets the
+    migration 0019 AND ``install()`` (so a legacy create_all DB that only gets the
     stamp path still gains the column), and handed to crew as ``crew-migration``.
     Order matters: catalog → seed rows → column (existing rows = 'idea') → FK
     (needs the 'idea' row) → index."""

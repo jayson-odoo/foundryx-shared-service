@@ -33,6 +33,27 @@ describe('omnichannel + AI Agent catalog entries (plan sprint-4/17)', () => {
     expect(catalogEntry('omnichannel.send_message')).toBe(sendMessage);
   });
 
+  it('registers omnichannel.assign_conversation matching the backend ActionDef (plan 28, tester D1; plan 31 A5 merge folds in round_robin)', () => {
+    const entry = ACTION_CATALOG.find((e) => e.type === 'omnichannel.assign_conversation');
+    expect(entry).toBeDefined();
+    expect(entry?.kind).toBe('action');
+    expect(entry?.module).toBe('omnichannel');
+    expect(entry?.label).toBe('Assign Conversation');
+    expect(entry?.fields.map((f) => f.key)).toEqual(['contactId', 'mode', 'userId', 'teamId', 'strategy']);
+    expect(entry?.fields.find((f) => f.key === 'mode')?.options?.map((o) => o.value)).toEqual([
+      'user', 'team', 'round_robin', 'unassign',
+    ]);
+    expect(entry?.fields.find((f) => f.key === 'userId')?.showWhen).toEqual({ field: 'mode', value: 'user' });
+    expect(entry?.fields.find((f) => f.key === 'teamId')).toMatchObject({
+      type: 'team', required: true, showWhen: { field: 'mode', value: 'team' },
+    });
+    expect(entry?.fields.find((f) => f.key === 'strategy')?.options?.map((o) => o.value)).toEqual([
+      'default', 'round_robin', 'least_open',
+    ]);
+    expect(entry?.outputs?.map((o) => o.key)).toEqual(['assignedUserId', 'assignedTeamId', 'assigned']);
+    expect(catalogEntry('omnichannel.assign_conversation')).toBe(entry);
+  });
+
   it('registers ai_agent.run as a core (unmodule-tagged) action', () => {
     const entry = ACTION_CATALOG.find((e) => e.type === 'ai_agent.run');
     expect(entry).toBeDefined();
@@ -44,7 +65,7 @@ describe('omnichannel + AI Agent catalog entries (plan sprint-4/17)', () => {
   it('the AI Agent action declares its config fields and no static outputs', () => {
     const entry = catalogEntry('ai_agent.run');
     const keys = (entry?.fields ?? []).map((f) => f.key);
-    expect(keys).toEqual(['agentId', 'instructions', 'inputText', 'outputParams']);
+    expect(keys).toEqual(['agentId', 'instructions', 'inputText', 'outputParams', 'clarificationOutputKey']);
     const outputSchemaField = entry?.fields.find((f) => f.key === 'outputParams');
     expect(outputSchemaField?.type).toBe('outputSchema');
     const agentField = entry?.fields.find((f) => f.key === 'agentId');
@@ -52,10 +73,21 @@ describe('omnichannel + AI Agent catalog entries (plan sprint-4/17)', () => {
     expect(entry?.outputs).toEqual([]);
   });
 
-  it('the incoming-message trigger exposes an omnichannelChannel field', () => {
+  it('registers generic state, Redis, and permission-gated Code actions', () => {
+    expect(catalogEntry('ai_agent.clear_state')?.fields[0]).toMatchObject({ type: 'agentNode' });
+    const redis = catalogEntry('redis.command');
+    expect(redis?.fields.find((field) => field.key === 'operation')?.options?.map((option) => option.label)).toEqual([
+      'Get', 'Set', 'Delete', 'Increment', 'List Push', 'List Pop', 'List Length',
+    ]);
+    expect(catalogEntry('code.run')).toMatchObject({ permission: 'workflows.code' });
+  });
+
+  it('the incoming-message trigger exposes omnichannelChannel + omnichannelChannelType fields', () => {
+    // Plan 32 / A7a S6 (AC-CHN-58) - the independent channel-TYPE filter.
     const entry = catalogEntry('omnichannel.message_received');
     expect(entry?.fields).toEqual([
       { key: 'channelId', label: 'Channel', type: 'omnichannelChannel' },
+      { key: 'channelType', label: 'Channel type', type: 'omnichannelChannelType' },
     ]);
   });
 });

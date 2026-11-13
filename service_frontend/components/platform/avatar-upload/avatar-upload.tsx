@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { LoaderCircleIcon, Pencil, Trash2, Upload } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { AVATAR_ACCEPT, validateAvatarFile } from '@/lib/image-crop';
 import {
   DropdownMenu,
@@ -11,6 +11,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { UserAvatar } from '@/components/platform/user-avatar';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { AvatarCropDialog } from './crop-dialog';
 
 export interface AvatarUploadProps {
@@ -112,7 +114,7 @@ export function AvatarUpload({
               <button
                 type="button"
                 aria-label="Edit avatar"
-                className="absolute inset-0 cursor-pointer rounded-full"
+                className={cn(PRESSED_CLASS, 'absolute inset-0 cursor-pointer rounded-full')}
                 disabled={busy}
               >
                 {penBadge}
@@ -136,7 +138,7 @@ export function AvatarUpload({
           <button
             type="button"
             aria-label="Upload avatar"
-            className="absolute inset-0 cursor-pointer rounded-full"
+            className={cn(PRESSED_CLASS, 'absolute inset-0 cursor-pointer rounded-full')}
             onClick={pick}
             disabled={busy}
           >

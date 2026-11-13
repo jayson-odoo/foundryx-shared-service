@@ -45,6 +45,8 @@ export interface FilterFieldDef {
   type: FilterFieldType;
   /** For `enum` fields: the selectable options. */
   options?: { label: string; value: string }[];
+  /** Restrict the operators offered for this field (default: every operator of its type). */
+  operators?: FilterOperator[];
 }
 
 /** Which records are in scope (soft-trash aware). */

@@ -16,7 +16,7 @@ from app.models.email_outbox import (
 )
 from app.models.tenant import DEFAULT_TENANT_ID, PLATFORM_TENANT_ID
 from app.secrets import encrypt_secret
-from app.services.email_dispatcher import dispatch_pending, prune_sent
+from app.services.email_dispatcher import _THROTTLE_RETRY_SECONDS, dispatch_pending, prune_sent
 from app.services.email_service import email_service
 from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 
@@ -162,12 +162,15 @@ def test_rate_limit_defers_excess_sends(db, monkeypatch):
     db.commit()
 
     monkeypatch.setattr(get_provider("smtp"), "send", lambda *a, **k: None)
+    before = datetime.now(timezone.utc)
     assert dispatch_pending(db) == 1  # second send deferred by the 1/min limit
 
     statuses = sorted(r.status for r in db.query(EmailOutbox).all())
     assert statuses == [OUTBOX_PENDING, OUTBOX_SENT]
     deferred = db.query(EmailOutbox).filter(EmailOutbox.status == OUTBOX_PENDING).one()
-    assert deferred.next_attempt_at > datetime.now(timezone.utc)
+    # Anchored to a timestamp taken BEFORE dispatch: comparing against a fresh
+    # now() raced the 5s throttle delay on a slow CI runner (flaky red).
+    assert deferred.next_attempt_at >= before + timedelta(seconds=_THROTTLE_RETRY_SECONDS)
 
 
 def test_prune_sent_respects_retention(db):

@@ -1,0 +1,55 @@
+{
+  "envelope": "paged",
+  "totalCount": 11840,
+  "lookups": [
+    {
+      "alias": "uom",
+      "matched": 50,
+      "missed": 0
+    }
+  ],
+  "columns_names": [
+    "ItemCode",
+    "Description",
+    "Desc2",
+    "ItemGroup",
+    "ItemType",
+    "ItemBrand",
+    "ItemCategory",
+    "ItemClass",
+    "BaseUOM",
+    "SalesUOM",
+    "PurchaseUOM",
+    "CreatedUserID",
+    "CreatedTimeStamp",
+    "LastModifiedUserID",
+    "LastModified",
+    "StockControl",
+    "IsActive",
+    "BackOrderControl",
+    "Discontinued",
+    "BaseUOMPrice"
+  ],
+  "sample_row_0": {
+    "ItemCode": "**NEW",
+    "Description": "**NEW STOCK",
+    "Desc2": "",
+    "ItemGroup": "MISC",
+    "ItemType": "MISC",
+    "ItemBrand": "OTHERS",
+    "ItemCategory": "",
+    "ItemClass": "",
+    "BaseUOM": "UNIT",
+    "SalesUOM": "UNIT",
+    "PurchaseUOM": "UNIT",
+    "CreatedUserID": "DATUN",
+    "CreatedTimeStamp": "2023-09-28T17:37:06.783",
+    "LastModifiedUserID": "ACCEXE",
+    "LastModified": "2026-07-21T14:21:21.86",
+    "StockControl": "F",
+    "IsActive": "T",
+    "BackOrderControl": "T",
+    "Discontinued": "F",
+    "BaseUOMPrice": 0.0
+  }
+}

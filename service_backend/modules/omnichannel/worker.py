@@ -8,17 +8,28 @@ task owns parse → resolve → persist → broadcast. DB down → autoretry wit
 backoff (≈5s/10s/.../10m, spec §3.3); the payload stays safe in Redis until
 the task succeeds or exhausts retries.
 """
+import logging
 from typing import Optional
 
 from celery import Celery
 
 from app.config import settings
 
+# Request URLs are not logged at INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 celery_app = Celery(
     "omnichannel",
     broker=settings.redis_url,
     backend=settings.redis_url,
 )
+
+# Module schema drift guard (issue #89): a worker/beat process refuses to start
+# when a module's database schema is BEHIND this code (fires on worker_init /
+# beat_init only - never when the API merely imports this module to enqueue).
+from app.module_platform.drift_guard import install_celery_drift_guard  # noqa: E402
+
+install_celery_drift_guard()
 celery_app.conf.update(
     task_always_eager=settings.celery_task_always_eager,
     task_eager_propagates=True,
@@ -53,6 +64,7 @@ def process_inbound_webhook(channel_id: str, payload: dict) -> dict:
 
 
 @celery_app.task(
+    bind=True,
     name="omnichannel.send_message",
     autoretry_for=(Exception,),
     retry_backoff=5,
@@ -60,7 +72,7 @@ def process_inbound_webhook(channel_id: str, payload: dict) -> dict:
     retry_jitter=True,
     max_retries=3,
 )
-def omnichannel_send_message(message_id: str, trace_id: Optional[str] = None) -> str:
+def omnichannel_send_message(self, message_id: str, trace_id: Optional[str] = None) -> str:
     """Execute one QUEUED outbound message (plan 12 AC-12-03): transcode/upload/
     ``adapter.send`` → SENT/FAILED + WS status. Runs on a FRESH session (a worker
     process has its own DB engine); in eager dev the service calls ``run_send``
@@ -71,11 +83,116 @@ def omnichannel_send_message(message_id: str, trace_id: Optional[str] = None) ->
     ``trace_id_var`` defaults to None, so without this the outbound Meta row would
     lose the trace in prod. ``run_send`` re-seeds the contextvar from it."""
     from app.database import SessionLocal
-    from modules.omnichannel.services.send_runner import run_send
+    from modules.omnichannel.services.send_runner import (
+        RATE_LIMIT_MAX_RETRIES,
+        TransientSendError,
+        fail_unfinished,
+        rate_limit_countdown,
+        run_send,
+    )
 
     db = SessionLocal()
     try:
         return run_send(db, message_id, trace_id=trace_id)
+    except Exception as exc:
+        retries = self.request.retries
+        # A Meta rate limit has its own, slower schedule and budget (plan 56 A).
+        if isinstance(exc, TransientSendError) and exc.rate_limited:
+            if retries < RATE_LIMIT_MAX_RETRIES:
+                raise self.retry(
+                    exc=exc,
+                    countdown=rate_limit_countdown(retries, exc.retry_after),
+                    max_retries=RATE_LIMIT_MAX_RETRIES,
+                )
+            # Budget spent: the row ends FAILED and the task ends with it (no
+            # raise, so autoretry cannot queue a further attempt).
+            return fail_unfinished(db, message_id, "retries exhausted")
+        # Last attempt: end the row FAILED (one status event) instead of
+        # leaving it QUEUED. Earlier attempts just let Celery retry.
+        if retries >= self.max_retries:
+            fail_unfinished(db, message_id, "retries exhausted")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="omnichannel.purge_erased_files",
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_backoff_max=3600,
+    retry_jitter=True,
+    max_retries=6,
+)
+def purge_erased_files(tenant_id: str, keys: list) -> int:
+    """Delete the stored files of an erased contact (plan 56 C). Keys were
+    collected before the rows went; a failed delete retries with backoff and
+    never touches the already-committed erase."""
+    from modules.omnichannel.services.contact_erase_service import purge_files
+
+    purge_files(tenant_id, list(keys))
+    return len(keys)
+
+
+@celery_app.task(name="omnichannel.check_channel_token")
+def check_channel_token_task(channel_id: str) -> Optional[str]:
+    """One WhatsApp token health check (plan 42). Queued by the 6-hourly scan
+    onto the omni queue; failure-isolated, the verdict is the only result."""
+    from app.database import SessionLocal
+    from modules.omnichannel.services.token_health import check_channel_token
+
+    db = SessionLocal()
+    try:
+        return check_channel_token(db, channel_id)
+    except Exception:  # noqa: BLE001 - one bad check never fails the queue
+        logging.getLogger(__name__).exception("token check failed for channel %s", channel_id)
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+
+@celery_app.task(name="omnichannel.broadcast_chunk")
+def broadcast_chunk(job_id: str) -> None:
+    """One CHAINED link in a broadcast send job's chunk loop (plan 29 S2,
+    D-A4-7/AC-BRD-30) - at most one chunk per broadcast is ever in flight.
+    Re-schedules itself with a rate-derived countdown while dispatchable
+    recipients remain; finalizes the broadcast once none do. Eager dev/tests
+    never reach this task - the job handler loops the same chunk function
+    (`broadcast_send_service.run_one_chunk`) inline instead."""
+    from app.database import SessionLocal
+    from app.jobs.service import JobService
+    from app.models.background_job import JOB_FAILED
+    from modules.omnichannel.models import Broadcast
+    from modules.omnichannel.services.broadcast_send_service import (
+        CHUNK_SIZE,
+        channel_or_none,
+        compute_chunk_pacing,
+        finalize_broadcast,
+        rate_for_channel,
+        run_one_chunk,
+    )
+
+    db = SessionLocal()
+    try:
+        job = JobService(db).repo.get_unscoped(job_id)
+        if job is None:
+            return
+        broadcast_id = (job.payload_json or {}).get("broadcastId")
+        broadcast = (
+            db.query(Broadcast)
+            .filter(Broadcast.id == broadcast_id, Broadcast.tenant_id == job.tenant_id)
+            .first()
+        )
+        if broadcast is None:
+            JobService(db).finish(job, status=JOB_FAILED, error="Broadcast not found.")
+            return
+        more = run_one_chunk(db, broadcast, job)
+        if more:
+            delay = compute_chunk_pacing(CHUNK_SIZE, rate_for_channel(channel_or_none(db, broadcast)))
+            broadcast_chunk.apply_async((job_id,), countdown=max(1, int(delay)) if delay else 1)
+        else:
+            finalize_broadcast(db, broadcast, job)
     finally:
         db.close()
 

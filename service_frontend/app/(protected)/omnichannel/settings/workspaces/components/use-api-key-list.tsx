@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { KeyRound, Ban } from 'lucide-react';
-import { toast } from 'sonner';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -49,6 +48,8 @@ function sortItems(rows: ApiKeyItem[], sort: ListQuery['sort']): ApiKeyItem[] {
         return i.lastUsedAt ?? '';
       case 'created':
         return i.createdAt;
+      case 'endpoints':
+        return String(i.webhookEndpointCount).padStart(8, '0');
       default:
         return '';
     }
@@ -56,6 +57,9 @@ function sortItems(rows: ApiKeyItem[], sort: ListQuery['sort']): ApiKeyItem[] {
   const sorted = [...rows].sort((a, b) => val(a).localeCompare(val(b)));
   return sort.desc ? sorted.reverse() : sorted;
 }
+
+/** Parks the revoke with the choice made in the dialog. */
+export type RevokePark = (extraPayload?: Record<string, unknown>) => Promise<void>;
 
 export interface UseApiKeyListResult {
   config: ResourceListConfig<ApiKeyItem>;
@@ -66,11 +70,14 @@ export interface UseApiKeyListResult {
  * Resource shell embedded in the workspace detail. The key set per workspace is
  * small, so the fetcher pulls it whole and applies search/filter/sort/paginate
  * client-side (mirrors the terminology list adapter). No detail page (`rowHref`
- * '#'); Mint = the create action, Revoke = a row action.
+ * '#'); Mint = the create action, Revoke = a row action. Revoke on a key that
+ * registered webhook endpoints hands over to `onRevokeWithEndpoints` (a dialog
+ * with the pause choice); a key with none parks straight away.
  */
 export function useApiKeyList(
   workspaceId: string,
   onMint: () => void,
+  onRevokeWithEndpoints: (key: ApiKeyItem, park: RevokePark) => void,
 ): UseApiKeyListResult {
   const { formatDate, formatDateTime } = useDatetime();
 
@@ -84,26 +91,26 @@ export function useApiKeyList(
         permission: 'api_keys.manage',
         surfaces: { row: true },
         isVisible: (rows) => rows.length === 1 && rows[0]?.status === 'ACTIVE',
-        confirm: {
-          title: 'Revoke API key?',
-          description:
-            'Consumers using this key will stop authenticating immediately. This cannot be undone - mint a new key to restore access.',
-          confirmLabel: 'Revoke',
-        },
-        run: async (rows, rt) => {
-          const [k] = rows;
-          if (!k) return;
-          try {
-            await apiKeysService.revoke(workspaceId, k.id);
-            toast.success('API key revoked.');
-            rt.reload();
-          } catch {
-            toast.error('Could not revoke the key. Please retry.');
-          }
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `api_keys.revoke`
+        // handler commits it server-side - it resolves the owning workspace
+        // from the key row itself, so `entityId` stays the bare key id).
+        // `intercept` hands a key that registered endpoints to the pause
+        // dialog, which parks with `pauseEndpoints`; a key with none parks
+        // straight away.
+        deferred: {
+          actionKey: 'api_keys.revoke',
+          entityType: 'api_key',
+          intercept: (rows, park) => {
+            const [key] = rows;
+            if (!key || key.webhookEndpointCount === 0) return false;
+            onRevokeWithEndpoints(key, park);
+            return true;
+          },
         },
       },
     ],
-    [workspaceId],
+    [onRevokeWithEndpoints],
   );
 
   const config = useMemo<ResourceListConfig<ApiKeyItem>>(() => {
@@ -148,6 +155,17 @@ export function useApiKeyList(
           </div>
         ),
         size: 130,
+        enableSorting: true,
+      },
+      {
+        id: 'endpoints',
+        accessorFn: (r) => r.webhookEndpointCount,
+        meta: { headerTitle: 'Webhook endpoints' },
+        header: ({ column }) => <DataGridColumnHeader title="Webhook endpoints" column={column} />,
+        cell: ({ row }) => (
+          <span className="text-sm text-muted-foreground">{row.original.webhookEndpointCount}</span>
+        ),
+        size: 150,
         enableSorting: true,
       },
       {
@@ -220,11 +238,12 @@ export function useApiKeyList(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Name', 'Key', 'Status', 'Last used', 'Created'],
+        ['Name', 'Key', 'Status', 'Webhook endpoints', 'Last used', 'Created'],
         data.map((r) => [
           r.name,
           r.maskedKey,
           r.status,
+          String(r.webhookEndpointCount),
           r.lastUsedAt ?? '',
           r.createdAt,
         ]),
@@ -245,6 +264,7 @@ export function useApiKeyList(
         { id: 'name', label: 'Name' },
         { id: 'key', label: 'Key' },
         { id: 'status', label: 'Status' },
+        { id: 'endpoints', label: 'Webhook endpoints' },
         { id: 'lastUsed', label: 'Last used' },
         { id: 'created', label: 'Created' },
       ],

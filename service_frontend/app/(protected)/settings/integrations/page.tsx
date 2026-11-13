@@ -1,15 +1,9 @@
 'use client';
 
 import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
-import { ResourceList } from '@/components/platform/resource-list';
 import { RequirePermission } from '@/components/common/require-permission';
+import { ResourceList } from '@/components/platform/resource-list';
 import { useConnectionsListConfig } from './components/use-connections-list-config';
 
 /**
@@ -24,16 +18,6 @@ export default function IntegrationsPage() {
   return (
     <RequirePermission permission="integrations.read">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Connect external services - email, storage and more.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
         <Container width="fluid">
           <ResourceList config={config} />
         </Container>

@@ -6,18 +6,36 @@ pipeline: resolve/create the contact from the raw `to` phone, reuse
 translate rejections into the structured `/api/v1/*` error envelope. Idempotency
 dedup is workspace-scoped with a 24h TTL.
 """
+import asyncio
+import contextlib
+import logging
+import re
+import threading
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Tuple
 
+import anyio
 import httpx
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
+from app.services.url_guard import GuardedAsyncTransport, UrlGuardError
 
-from ..models import MEDIA_MESSAGE_TYPES, Channel, Contact, WhatsappTemplate
+from ..adapters.meta_graph import client_retry_after
+from ..models import (
+    MEDIA_MESSAGE_TYPES,
+    Channel,
+    Contact,
+    ContactChannelIdentity,
+    WhatsappTemplate,
+)
+from ..phone import digits_only
+from ..repositories.channel_repository import ChannelRepository
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
     PublicSendRequest,
+    PublicChannelItem,
     PublicTemplateItem,
     RioAssignee,
     RioContactItem,
@@ -35,17 +53,74 @@ from .media_pipeline import META_CEILINGS, MediaRejected
 from .message_service import (
     CSW_CLOSED_MESSAGE,
     MessageService,
+    MetaRateLimited,
     SendRejected,
-    _window_open,
     template_body_text,
     template_variable_count,
 )
-from . import idempotency, statuses
+from . import event_service, idempotency, messaging_policy, statuses
 
 if TYPE_CHECKING:  # forward ref used in a signature below
     from ..schemas import ThreadItem
 
+logger = logging.getLogger(__name__)
+READ_RECEIPT_MARKER = "read_receipt_sent_at"
+READ_RECEIPT_BUDGET_SECONDS = 12.0
+_PHONE_NUMBER_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
+# Total time one media fetch may take (connect, headers and body together).
+MEDIA_FETCH_TOTAL_SECONDS = 60.0
+# Media fetches allowed at once in this server process, and per tenant.
+MEDIA_FETCH_MAX_CONCURRENT = 4
+MEDIA_FETCH_MAX_PER_TENANT = 2
+_FETCH_FAILED_TEXT = "The media url could not be fetched."
+_REPLY_ID_SHAPE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_REPLY_NOT_FOUND_TEXT = "The message you are replying to was not found."
+
+
+class _FetchGate:
+    """Per-process counter of running media fetches. ``acquire`` never waits; a
+    tenant's entry is removed when its count returns to zero."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._total = 0
+        self._per_tenant: dict = {}
+
+    def acquire(self, tenant_id: str) -> bool:
+        with self._lock:
+            if self._total >= MEDIA_FETCH_MAX_CONCURRENT:
+                return False
+            if self._per_tenant.get(tenant_id, 0) >= MEDIA_FETCH_MAX_PER_TENANT:
+                return False
+            self._total += 1
+            self._per_tenant[tenant_id] = self._per_tenant.get(tenant_id, 0) + 1
+            return True
+
+    def release(self, tenant_id: str) -> None:
+        with self._lock:
+            self._total = max(0, self._total - 1)
+            left = self._per_tenant.get(tenant_id, 0) - 1
+            if left > 0:
+                self._per_tenant[tenant_id] = left
+            else:
+                self._per_tenant.pop(tenant_id, None)
+
+    @contextlib.contextmanager
+    def slot(self, tenant_id: str):
+        """Hold one fetch slot for the block, or answer ``429 media_fetch_busy``
+        straight away. Freed on every outcome."""
+        if not self.acquire(tenant_id):
+            raise ApiError(
+                429, "media_fetch_busy", "Too many media fetches are running. Retry shortly."
+            )
+        try:
+            yield
+        finally:
+            self.release(tenant_id)
+
+
+_FETCH_GATE = _FetchGate()
 
 # Wire-format switch on the read endpoints (`?format=`). GUIDE is the DEFAULT
 # and the documented contract (`MessageItem`/`ThreadItem`, the richer flat
@@ -58,7 +133,9 @@ WIRE_FORMATS = (FORMAT_GUIDE, FORMAT_RIO)
 
 
 def _digits(value: str) -> str:
-    return "".join(ch for ch in (value or "") if ch.isdigit())
+    # Delegates to the shared normalizer (plan 26 S1, D-A2-9) so this write
+    # path and `find_by_phone_in_workspace`'s lookup always agree.
+    return digits_only(value)
 
 
 def _epoch(dt) -> Optional[int]:
@@ -75,7 +152,7 @@ def _iso_z(dt) -> Optional[str]:
     # SQLite can hand back a naive datetime (and an in-session assignment may be
     # read off the identity map before refresh) - treat naive as UTC, never as
     # local, or the CSW deadline shifts by the host offset. Mirrors
-    # `message_service._window_open`.
+    # `messaging_policy._whatsapp_window_open`.
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -100,23 +177,201 @@ class PublicGatewayService:
         self.contacts = ContactRepository(db)
 
     # ── Channel + contact resolution ─────────────────────────────────────────
-    def _workspace_channel(self, tenant_id: str, workspace_id: str) -> Channel:
-        channel = (
-            self.db.query(Channel)
-            .filter(
-                Channel.tenant_id == tenant_id,
-                Channel.workspace_id == workspace_id,
-                Channel.is_active.is_(True),
-                Channel.is_trashed.is_(False),
-            )
-            .order_by(Channel.created_at.asc())
-            .first()
+    def _workspace_channel(
+        self, tenant_id: str, workspace_id: str, *, channel_id: Optional[str] = None
+    ) -> Channel:
+        """The channel a gateway send/read targets (plan 32 / A7a, D-A7-18,
+        AC-CHN-53). ``channel_id`` (optional, ``PublicSendRequest.channelId``)
+        WINS when given - an unknown id, a foreign one, or one belonging to
+        another workspace/tenant is a typed 4xx, NEVER a silent fallback to a
+        different channel. With no explicit id the pool is the ACTIVE `WHATSAPP`
+        channels (so one WhatsApp plus web chat or Messenger keeps sending on
+        WhatsApp, as the guide promises), else every active channel. An empty
+        pool is `409 no_active_channel`; a pool of several is `422
+        channel_required`, because picking one would be a guess; exactly one is
+        used."""
+        base = self.db.query(Channel).filter(
+            Channel.tenant_id == tenant_id,
+            Channel.workspace_id == workspace_id,
+            Channel.is_active.is_(True),
+            Channel.is_trashed.is_(False),
         )
-        if channel is None:
+        if channel_id:
+            channel = base.filter(Channel.id == channel_id).first()
+            if channel is None:
+                raise ApiError(
+                    422, "invalid_channel", "Unknown or inactive channel for this workspace."
+                )
+            return channel
+        pool = (
+            base.filter(Channel.channel_type == "WHATSAPP")
+            .order_by(Channel.created_at.asc())
+            .limit(2)
+            .all()
+        )
+        if not pool:
+            pool = base.order_by(Channel.created_at.asc()).limit(2).all()
+        if not pool:
             raise ApiError(
                 409, "no_active_channel", "No active channel is connected to this workspace."
             )
-        return channel
+        if len(pool) > 1:
+            raise ApiError(
+                422,
+                "channel_required",
+                "This workspace has more than one active channel. Pass channelId "
+                "to choose one (see GET /channels).",
+            )
+        return pool[0]
+
+    # ── Send-target ("to") resolution (plan 32 / A7a, AC-CHN-54) ─────────────
+    def _resolve_send_target(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        channel: Channel,
+        to: str,
+        *,
+        create: bool = True,
+    ) -> Optional[Contact]:
+        """Resolve the gateway's ``to`` field against the CHOSEN channel.
+
+        ``psid:``/``igsid:`` resolve an EXISTING identity's contact on THAT
+        channel only (a PSID/IGSID is meaningless on any other channel) - a
+        miss is a `422 invalid_recipient` and NEVER creates a contact (we
+        cannot fabricate an identity Meta will accept). ``id:<contactId>``
+        resolves an existing workspace contact the same way. A bare value or
+        ``phone:`` keeps the unchanged phone resolve-or-create behaviour.
+
+        ``webchat:<value>`` (plan 34 / A7b, AC-WEB-58) follows the identical
+        psid:/igsid: rule: EXISTING identity only, never created. ``value``
+        is the identity's own `external_user_id` verbatim, which on a
+        WEBCHAT channel already carries its own `visitor:`/`host:` namespace
+        prefix (`webchat_visitor_service`/`webchat_service`) - splitting on
+        the FIRST colon only (below) leaves that inner prefix intact, so a
+        caller passes `webchat:visitor:<visitorId>` or
+        `webchat:host:<userRef>` exactly as it would read the value off
+        `GET .../contacts` (no second encoding to invent, no new decoding
+        rule to document)."""
+        ident = (to or "").strip()
+        lower = ident.lower()
+        if lower.startswith("psid:") or lower.startswith("igsid:") or lower.startswith("webchat:"):
+            external_user_id = ident.split(":", 1)[1].strip()
+            if not external_user_id:
+                raise ApiError(422, "invalid_recipient", "A recipient identifier is required.")
+            identity = (
+                self.db.query(ContactChannelIdentity)
+                .filter(
+                    ContactChannelIdentity.tenant_id == tenant_id,
+                    ContactChannelIdentity.channel_id == channel.id,
+                    ContactChannelIdentity.external_user_id == external_user_id,
+                )
+                .first()
+            )
+            contact = (
+                self.contacts.get_by_id(identity.contact_id, tenant_id)
+                if identity is not None
+                else None
+            )
+            if contact is None or contact.workspace_id != workspace_id:
+                raise ApiError(
+                    422, "invalid_recipient",
+                    "No contact found for that identity on the selected channel.",
+                )
+            return contact
+        if lower.startswith("id:"):
+            cid = ident.split(":", 1)[1].strip()
+            contact = self.contacts.get_by_id(cid, tenant_id) if cid else None
+            if contact is None or contact.workspace_id != workspace_id:
+                raise ApiError(422, "invalid_recipient", "Contact not found for this workspace.")
+            return contact
+        return self._resolve_or_create_contact(tenant_id, workspace_id, ident, create=create)
+
+    @staticmethod
+    def _override_for(channel: Channel) -> Optional[str]:
+        """The `channel_id_override` to hand `MessageService` (plan 32 / A7a
+        S6). Always the CHOSEN channel's id - an explicit `channelId` in the
+        request must win outright, never be silently re-resolved to a
+        different channel (AC-CHN-53). `_channel_for_contact`'s override
+        path (`message_service.py`) accepts a WHATSAPP override with or
+        without a stored identity row (a business-initiated,
+        never-messaged-in WhatsApp contact addresses by PHONE, not by
+        identity), so returning the id unconditionally is safe for every
+        channel type; Messenger/Instagram overrides still require the
+        identity, already proved to exist by `_assert_channel_identity`
+        before this is ever called."""
+        return channel.id
+
+    def _assert_channel_identity(
+        self, tenant_id: str, channel: Channel, contact: Contact
+    ) -> None:
+        """Synchronous pre-flight for the "no identity on the chosen channel"
+        case (plan §5.2 `channel_not_available_for_contact`, 422) - WhatsApp
+        addresses by phone (no identity row needed) so this is a no-op there;
+        Messenger/Instagram need the contact's OWN identity on THIS channel.
+        Checked BEFORE enqueueing so the gateway answers synchronously rather
+        than accepting a 202 that fails asynchronously in `send_runner`
+        (`channel_addressing.NoChannelIdentity`, which stays the runner's own
+        - unrelated - safety net for a race after this check passes)."""
+        if channel.channel_type == "WHATSAPP":
+            return
+        identity = ContactRepository(self.db).find_identity_for_channel(
+            contact.id, channel.id, tenant_id
+        )
+        if identity is None or not identity.external_user_id:
+            raise ApiError(
+                422, "channel_not_available_for_contact",
+                "This contact has no identity on the selected channel.",
+            )
+
+    @staticmethod
+    def _meta_rate_limited(retry_after: Optional[int]) -> ApiError:
+        """Meta throttled a call made inside the request (plan 56 A): 429
+        `meta_rate_limited` + `Retry-After` seconds, distinct from the per-key
+        limiter's own `rate_limited`."""
+        return ApiError(
+            429, "meta_rate_limited", "Meta is rate limiting this channel. Try again shortly."
+        ).with_retry_after(client_retry_after(retry_after))
+
+    @staticmethod
+    def _map_send_rejected(exc: "SendRejected", *, default_code: str = "send_rejected") -> ApiError:
+        """`SendRejected.code` (plan 32 / A7a, AC-CHN-55) → the gateway's
+        structured error. WhatsApp's `csw_window_closed` is checked FIRST and
+        by both code and the legacy message string (belt and suspenders - a
+        caller that still raises the bare, code-less `SendRejected(msg)` with
+        the byte-identical WhatsApp string keeps working). Messenger/
+        Instagram's two distinct policy codes (`messaging_window_closed` -
+        outside every window, `automation_outside_window` - inside the
+        human-agent window but the gateway is never a human actor, D-A7-6)
+        both surface as the ONE new public code - the gateway gives no
+        actionable difference between them (an API key can never send with
+        the tag either way)."""
+        if exc.code == "csw_window_closed" or exc.message == CSW_CLOSED_MESSAGE:
+            return ApiError(409, "csw_window_closed", exc.message)
+        if exc.code in ("messaging_window_closed", "automation_outside_window"):
+            return ApiError(409, "messaging_window_closed", exc.message)
+        if exc.code == "channel_not_available_for_contact":
+            return ApiError(422, "channel_not_available_for_contact", exc.message)
+        return ApiError(422, default_code, exc.message)
+
+    def erase_contact(self, tenant_id: str, workspace_id: str, identifier: str, *, api_key_id: str):
+        """API-key erase of one contact in the key's own workspace (plan 56 C).
+        A miss, a foreign workspace/tenant and a second call all answer the
+        same 404."""
+        from ..schemas import ContactEraseResponse
+        from .contact_erase_service import ContactEraseService, ContactNotFound, EraseActor
+
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+        try:
+            result = ContactEraseService(self.db).erase(
+                tenant_id, workspace_id, contact.id, actor=EraseActor.api_key(api_key_id)
+            )
+        except ContactNotFound as exc:
+            raise ApiError(404, "contact_not_found", "Contact not found for this workspace.") from exc
+        return ContactEraseResponse(
+            contactId=result.contact_id, erasedAt=result.erased_at,
+            messages=result.messages, files=result.files,
+        )
 
     # ── Contact identifier resolution (respond.io-style) ─────────────────────
     def _resolve_contact(self, tenant_id: str, workspace_id: str, identifier: str) -> Contact:
@@ -152,39 +407,48 @@ class PublicGatewayService:
         )
         return {u.id: u for u in rows}
 
-    def _rio_contact(
-        self, contact: Contact, *, thread: "ThreadItem", users: dict
-    ) -> RioContactItem:
-        """Map the internal ThreadItem (+ the ORM row, which carries `email` and
-        custom fields the ThreadItem omits) to the respond.io shape.
+    def _rio_contact(self, *, thread: "ThreadItem", users: dict) -> RioContactItem:
+        """Map the internal `ThreadItem` to the respond.io shape - ONE data
+        path (plan 25 S3): `language`/`countryCode`/`customFields`/`tags`/
+        `lifecycle` are read straight off `thread` (already resolved
+        tenant+workspace-scoped by `ConversationService._thread_items`), never
+        re-queried here. `lifecycle` renders as the stage LABEL text (which
+        already carries the emoji, D3); `tags` as bare names (respond.io
+        parity, D8 - ids stay an internal-only concept).
 
         Anything ThreadItem carries that respond.io has no field for is kept as
         an explicit Foundryx extension rather than dropped - a gateway consumer
         has no other read source for `unreadCount`/`lastMessagePreview`, and an
         inbox list cannot be built without them (BL-SS-026)."""
-        cf = contact.custom_fields_json or {}
-        custom = [RioCustomField(name=str(k), value=None if v is None else str(v)) for k, v in cf.items()]
+        custom = [
+            RioCustomField(name=str(k), value=None if v is None else str(v))
+            for k, v in (thread.customFields or {}).items()
+        ]
         assignee = None
-        if contact.assigned_user_id and contact.assigned_user_id in users:
-            u = users[contact.assigned_user_id]
+        if thread.assignedUserId and thread.assignedUserId in users:
+            u = users[thread.assignedUserId]
             assignee = RioAssignee(id=u.id, firstName=u.name, lastName=None, email=u.email)
         return RioContactItem(
-            id=contact.id,
-            firstName=contact.first_name,
-            lastName=contact.last_name,
-            phone=contact.phone,
-            email=contact.email,
-            language=None,          # not modeled (respond.io parity field)
-            profilePic=contact.avatar_url,
-            countryCode=None,       # not modeled
+            id=thread.id,
+            firstName=thread.firstName,
+            lastName=thread.lastName,
+            phone=thread.phone,
+            email=thread.email,
+            language=thread.language,
+            profilePic=thread.avatarUrl,
+            countryCode=thread.countryCode,
             custom_fields=custom,
             status=(thread.status or "OPEN").lower(),
-            tags=[],                # not modeled
+            tags=[t.name for t in thread.tags],
             assignee=assignee,
-            lifecycle=None,         # not modeled
-            created_at=_epoch(contact.created_at),
+            lifecycle=thread.lifecycle.label if thread.lifecycle else None,
+            created_at=_epoch(thread.createdAt),
             isBlocked=False,        # not modeled
             cswExpiresAt=_iso_z(thread.cswExpiresAt),
+            windowExpiresAt=_iso_z(thread.windowExpiresAt),
+            humanAgentExpiresAt=_iso_z(thread.humanAgentExpiresAt),
+            visitorLastSeenAt=_iso_z(thread.visitorLastSeenAt),
+            visitorProfile=thread.visitorProfile,
             priority=thread.priority,
             channelId=thread.channelId,
             channelType=thread.channelType,
@@ -192,9 +456,28 @@ class PublicGatewayService:
             lastMessageAt=_iso_z(thread.lastMessageAt),
             lastIncomingMessageAt=_iso_z(thread.lastIncomingMessageAt),
             lastMessagePreview=thread.lastMessagePreview,
+            assignedTeamId=thread.assignedTeamId,
+            assignedTeamName=thread.assignedTeamName,
         )
 
-    def _rio_message(self, m, *, reactions: Optional[list] = None) -> RioMessageItem:
+    def _channel_types(self, channel_ids, tenant_id: str) -> dict:
+        """Tenant-scoped `channel_id -> channel_type`, mirroring
+        `ConversationService._channel_types` (plan 32 / A7a, AC-CHN-56) -
+        kept local rather than imported so this stays a plain, cheap lookup
+        without instantiating a second service."""
+        ids = [c for c in set(channel_ids) if c]
+        if not ids:
+            return {}
+        rows = (
+            self.db.query(Channel)
+            .filter(Channel.tenant_id == tenant_id, Channel.id.in_(ids))
+            .all()
+        )
+        return {c.id: c.channel_type for c in rows}
+
+    def _rio_message(
+        self, m, *, reactions: Optional[list] = None, channel_type: Optional[str] = None
+    ) -> RioMessageItem:
         meta = m.metadata_json or {}
         traffic = "incoming" if m.sender_type == "CONTACT" else "outgoing"
         # Media URL: a stored blob becomes an absolute, signed, clickable link;
@@ -210,6 +493,18 @@ class PublicGatewayService:
         # conversely an inbound media row whose blob failed to store has no
         # `url` but is still media, and its body is still a caption.
         is_media = (m.message_type or "").upper() in MEDIA_MESSAGE_TYPES
+        # `{"mediaUnavailable": True}` is an internal placeholder (D-A7-12),
+        # not a structured payload - promote it to the typed flag (mirrors
+        # `ConversationService.message_items`) instead of leaking it as
+        # `message.payload.mediaUnavailable`.
+        raw_payload = m.payload_json if isinstance(m.payload_json, dict) else None
+        # The marker can land on a row whose `message_type` did NOT resolve
+        # to a known media kind (an unmapped Messenger attachment kind falls
+        # through to `UNSUPPORTED`, `message_type.py::_ATTACHMENT_TYPES`) -
+        # key on the marker's PRESENCE, not on `is_media`, so the flag stays
+        # lossless vs the internal item (nit, security review round 1).
+        had_marker = bool(raw_payload) and "mediaUnavailable" in raw_payload
+        media_unavailable = bool(raw_payload.get("mediaUnavailable")) if had_marker else False
         payload = RioMessagePayload(
             type=(m.message_type or "text").lower(),
             # A media message's body IS its caption - expose it once, in
@@ -224,8 +519,9 @@ class PublicGatewayService:
             # template binding - flattening these into `text` loses them.
             # `payload_json` is free-form JSON: guard the stored shape (same
             # treatment as `reply_to` below) so a rogue row can't 500 a read.
-            payload=m.payload_json if isinstance(m.payload_json, dict) else None,
+            payload=None if had_marker else raw_payload,
             messageTag=meta.get("message_tag"),
+            mediaUnavailable=media_unavailable if (is_media or had_marker) else None,
         )
         # `metadata_json` is free-form: never assume the stored shape (a legacy
         # or hand-written row must not 500 a read).
@@ -261,6 +557,7 @@ class PublicGatewayService:
             channelMessageId=m.external_message_id,
             contactId=m.contact_id,
             channelId=m.channel_id,
+            channelType=channel_type,
             traffic=traffic,
             # Inbound messages never carry a delivery receipt, so `status[]` is
             # empty for them - this is the ONE time key present on every message.
@@ -285,8 +582,8 @@ class PublicGatewayService:
         thread = ConversationService(self.db).thread_item(contact)
         if fmt != FORMAT_RIO:
             return thread
-        users = self._users_by_id(tenant_id, [contact.assigned_user_id])
-        return self._rio_contact(contact, thread=thread, users=users)
+        users = self._users_by_id(tenant_id, [thread.assignedUserId])
+        return self._rio_contact(thread=thread, users=users)
 
     def list_contacts(
         self,
@@ -318,22 +615,11 @@ class PublicGatewayService:
         )
         if fmt != FORMAT_RIO:
             return items, total
-        # Rio needs the ORM rows too - ThreadItem omits email + custom fields.
-        ids = [t.id for t in items]
-        contacts = (
-            self.db.query(Contact)
-            .filter(Contact.tenant_id == tenant_id, Contact.id.in_(ids))
-            .all()
-            if ids
-            else []
-        )
-        by_id = {c.id: c for c in contacts}
-        users = self._users_by_id(tenant_id, [c.assigned_user_id for c in contacts])
-        rio = [
-            self._rio_contact(by_id[t.id], thread=t, users=users)
-            for t in items
-            if t.id in by_id
-        ]
+        # ThreadItem already carries everything the Rio shape needs (plan 25 -
+        # language/countryCode/customFields/tags/lifecycle included) - no
+        # second query path, just the assignee-name batch.
+        users = self._users_by_id(tenant_id, [t.assignedUserId for t in items])
+        rio = [self._rio_contact(thread=t, users=users) for t in items]
         return rio, total
 
     def list_contact_messages(
@@ -362,8 +648,12 @@ class PublicGatewayService:
             return contact.id, ConversationService(self.db).message_items(rows)
         # Reaction chips: ONE batched query for the whole page (never per-row).
         reactions = self.contacts.reactions_for([m.id for m in rows], tenant_id)
+        channel_types = self._channel_types([m.channel_id for m in rows], tenant_id)
         return contact.id, [
-            self._rio_message(m, reactions=reactions.get(m.id)) for m in rows
+            self._rio_message(
+                m, reactions=reactions.get(m.id), channel_type=channel_types.get(m.channel_id)
+            )
+            for m in rows
         ]
 
     def get_contact_message(
@@ -379,7 +669,8 @@ class PublicGatewayService:
         if fmt != FORMAT_RIO:
             return ConversationService(self.db).message_items([msg])[0]
         reactions = self.contacts.reactions_for([msg.id], tenant_id)
-        return self._rio_message(msg, reactions=reactions.get(msg.id))
+        channel_type = self._channel_types([msg.channel_id], tenant_id).get(msg.channel_id)
+        return self._rio_message(msg, reactions=reactions.get(msg.id), channel_type=channel_type)
 
     # ── Contact / conversation mutation ──────────────────────────────────────
     def update_contact(
@@ -392,24 +683,99 @@ class PublicGatewayService:
         last_name=...,
         priority: Optional[str] = None,
         assigned_user_id=...,
+        assigned_team_id=...,
         custom_fields=...,
+        language=...,
+        country_code=...,
+        tags=...,
+        lifecycle=...,
         fmt: str = FORMAT_GUIDE,
     ):
+        """Gateway PATCH (AC-CDM-26, AC-TEM-37). `tags` is a list of NAMES
+        (respond.io parity, D8) - unknown names are auto-created in this
+        contact's workspace; `null` replaces the set with empty (clears every
+        tag). `lifecycle` is a stage KEY or LABEL, resolved in this contact's
+        own workspace - a value that matches no stage is a 422
+        `fieldErrors.lifecycle`, a value that matches a stage with no fireable
+        edge from the current one is a `409 lifecycle_move_not_allowed`.
+        `assignedTeamId` (plan 28 S4) is a CORE team id BY ID ONLY, feeding
+        the SAME `patch_thread` four-combination assignee rules as the
+        internal PATCH (§5.2); an unknown/foreign/inactive id is a 422
+        `{assignedTeamId: "Team not found or inactive."}`. Everything (system
+        fields, customFields, tags, the lifecycle move, the assignment)
+        applies in ONE unit of work via `ConversationService.patch_thread` - a
+        4xx from any part leaves nothing written."""
+        from .contact_profile_service import ProfilePatchError
+        from .contact_tag_service import ContactTagService, TagValidationError
         from .conversation_service import ConversationService, InvalidPatch
+        from .lifecycle_service import LifecycleStageNotFound, find_stage_by_key_or_label
+
+        from app.services.status_machine import (
+            TransitionConditionsNotMet,
+            TransitionForbidden,
+            TransitionNotAllowed,
+        )
 
         contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+
+        tag_ids = ...
+        if tags is not ...:
+            if tags is None:
+                tag_ids = []  # explicit null - replace the set with empty (clears all tags)
+            else:
+                try:
+                    tag_ids = ContactTagService(self.db).resolve_or_create_by_name(
+                        workspace_id, tenant_id, tags
+                    )
+                except TagValidationError as exc:
+                    raise ApiError(
+                        422, "invalid_request", exc.message, {exc.field: exc.message}
+                    ) from exc
+
+        lifecycle_status_id = ...
+        if lifecycle is not ...:
+            if lifecycle is None:
+                msg = "lifecycle cannot be cleared."
+                raise ApiError(422, "invalid_request", msg, {"lifecycle": msg})
+            stage = find_stage_by_key_or_label(self.db, tenant_id, workspace_id, lifecycle)
+            if stage is None:
+                msg = "Unknown lifecycle stage."
+                raise ApiError(422, "invalid_request", msg, {"lifecycle": msg})
+            lifecycle_status_id = stage.id
+
         try:
             thread = ConversationService(self.db).patch_thread(
                 contact.id,
                 tenant_id,
                 assigned_user_id=assigned_user_id,
+                assigned_team_id=assigned_team_id,
                 priority=priority,
                 first_name=first_name,
                 last_name=last_name,
+                language=language,
+                country_code=country_code,
                 custom_fields=custom_fields,
+                tag_ids=tag_ids,
+                lifecycle_status_id=lifecycle_status_id,
+                # API-key context has no acting User - fails closed on any
+                # actor-conditioned lifecycle edge, by design (matches the
+                # embed principal's `_native_actor` convention).
+                actor=None,
+                # Plan 30 AC-RPT-27: an assignment written by the public
+                # gateway is never attributable to an agent - the reports
+                # assignment log renders its `source` as "api".
+                assignment_source="api",
             )
         except InvalidPatch as exc:
-            raise ApiError(422, "invalid_request", str(exc)) from exc
+            details = {exc.field: exc.message} if exc.field else None
+            raise ApiError(422, "invalid_request", exc.message, details) from exc
+        except ProfilePatchError as exc:
+            raise ApiError(422, "invalid_request", "Validation failed.", exc.errors) from exc
+        except LifecycleStageNotFound as exc:
+            msg = "Unknown lifecycle stage."
+            raise ApiError(422, "invalid_request", msg, {"lifecycle": msg}) from exc
+        except (TransitionNotAllowed, TransitionForbidden, TransitionConditionsNotMet) as exc:
+            raise ApiError(409, "lifecycle_move_not_allowed", exc.message) from exc
         return self._after_patch(tenant_id, contact.id, thread, fmt=fmt)
 
     def set_conversation_state(
@@ -428,13 +794,14 @@ class PublicGatewayService:
         return self._after_patch(tenant_id, contact.id, thread, fmt=fmt)
 
     def _after_patch(self, tenant_id: str, contact_id: str, thread, *, fmt: str = FORMAT_GUIDE):
-        """Re-read the mutated contact and render it in the requested shape, so
-        a write echoes exactly what the matching GET would return."""
+        """Render the just-mutated `ThreadItem` (already the post-commit,
+        post-refresh state from `patch_thread`) in the requested shape, so a
+        write echoes exactly what the matching GET would return - no second
+        read of the contact."""
         if fmt != FORMAT_RIO:
             return thread
-        contact = self.contacts.get_by_id(contact_id, tenant_id)
-        users = self._users_by_id(tenant_id, [contact.assigned_user_id])
-        return self._rio_contact(contact, thread=thread, users=users)
+        users = self._users_by_id(tenant_id, [thread.assignedUserId])
+        return self._rio_contact(thread=thread, users=users)
 
     def add_comment(self, tenant_id: str, workspace_id: str, identifier: str, body: str):
         """Add an internal note (comment) to a contact's thread - SYSTEM bubble,
@@ -444,9 +811,120 @@ class PublicGatewayService:
             raise ApiError(422, "invalid_request", "Comment body is required.")
         return self.messages.add_internal_note(contact.id, tenant_id, None, body)
 
+    def mark_contact_read(self, tenant_id: str, workspace_id: str, identifier: str):
+        """Reset the contact's unread count and send a WhatsApp read receipt for
+        the customer's latest provider-identified message on each channel.
+
+        The reset is committed before the first provider call and no transaction
+        stays open across any provider call: everything needed is copied into
+        plain values first. A failure on one channel never affects another."""
+        from ..adapters.base import SendError, UnexpectedSendError
+        from ..schemas import ContactReadResponse, ReadReceiptItem
+        from ..security import decrypt_credentials
+        from .activity import build_meta_recorder
+        from ..adapters import get_adapter
+        from . import channel_addressing
+
+        started = time.monotonic()
+        contact = self._resolve_contact(tenant_id, workspace_id, identifier)
+        contact_id = contact.id
+        targets = self.contacts.latest_customer_messages_by_channel(contact_id, tenant_id)
+        channels = {
+            c.id: c
+            for c in self.contacts.channels_in_workspace(
+                [t[1] for t in targets], tenant_id, workspace_id
+            )
+        }
+        plan = []
+        for message_id, channel_id, wamid, meta in targets:
+            ch = channels.get(channel_id)
+            if ch is None:
+                continue  # outside the key's tenant or workspace: left out
+            plan.append(
+                {
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "wamid": wamid,
+                    "marked": isinstance(meta, dict) and bool(meta.get(READ_RECEIPT_MARKER)),
+                    "type": ch.channel_type,
+                    "available": bool(ch.is_active) and not ch.is_trashed,
+                    "sender_ref": channel_addressing.sender_ref(ch),
+                    "credentials_json": ch.credentials_json,
+                }
+            )
+
+        self.contacts.mark_read(contact)
+        self.db.commit()  # nothing below touches an ORM object before a provider call
+
+        receipts = []
+        throttled_retry_after: Optional[int] = None
+        throttled = False
+        for p in plan:
+            if not p["available"] or (
+                p["type"] == "WHATSAPP" and not _PHONE_NUMBER_ID_RE.fullmatch(p["sender_ref"] or "")
+            ):
+                status = "channel_unavailable"
+            elif p["type"] != "WHATSAPP":
+                status = "not_supported"
+            elif p["marked"]:
+                status = "already_sent"
+            elif time.monotonic() - started > READ_RECEIPT_BUDGET_SECONDS:
+                logger.warning(
+                    "read receipt skipped on channel %s: time budget used", p["channel_id"]
+                )
+                status = "failed"
+            else:
+                status = "sent"
+                try:
+                    credentials = decrypt_credentials(p["credentials_json"])
+                    adapter = get_adapter(
+                        p["type"],
+                        recorder=build_meta_recorder(self.db, tenant_id, workspace_id),
+                    )
+                    adapter.mark_read(credentials, p["sender_ref"], p["wamid"])
+                except UnexpectedSendError as exc:
+                    logger.warning(
+                        "read receipt failed on channel %s: %s", p["channel_id"], exc
+                    )
+                    status = "failed"
+                except SendError as exc:
+                    status = "failed"
+                    if getattr(exc, "rate_limited", False):
+                        # Keep trying the other channels; the throttle is
+                        # answered after the loop (plan 56 A).
+                        throttled = True
+                        # A channel with no Meta Retry-After counts as the default.
+                        retry_after = client_retry_after(getattr(exc, "retry_after", None))
+                        throttled_retry_after = max(throttled_retry_after or 0, retry_after)
+                except Exception:  # noqa: BLE001 - one channel never stops the others.
+                    logger.warning("read receipt failed on channel %s", p["channel_id"])
+                    status = "failed"
+                if status == "failed":
+                    self.db.rollback()
+                else:
+                    try:
+                        self.contacts.set_message_metadata_key(
+                            p["message_id"],
+                            tenant_id,
+                            READ_RECEIPT_MARKER,
+                            datetime.now(timezone.utc).isoformat(),
+                        )
+                        self.db.commit()
+                    except Exception:  # noqa: BLE001 - the receipt itself already went out.
+                        logger.warning("read receipt marker not stored on %s", p["channel_id"])
+                        self.db.rollback()
+            receipts.append(
+                ReadReceiptItem(
+                    channelId=p["channel_id"], messageId=p["message_id"], status=status
+                )
+            )
+        if throttled:
+            raise self._meta_rate_limited(throttled_retry_after)
+        return ContactReadResponse(contactId=contact_id, receipts=receipts)
+
     def _resolve_or_create_contact(
-        self, tenant_id: str, workspace_id: str, phone: str
-    ) -> Contact:
+        self, tenant_id: str, workspace_id: str, phone: str, *, create: bool = True
+    ) -> Optional[Contact]:
         digits = _digits(phone)
         if not digits:
             raise ApiError(422, "invalid_recipient", "A valid recipient phone number is required.")
@@ -454,15 +932,25 @@ class PublicGatewayService:
         existing = self.contacts.find_by_phone_in_workspace(digits, workspace_id, tenant_id)
         if existing is not None:
             return existing
+        if not create:
+            return None  # find-only: a refusal path must write nothing
+        from .lifecycle_service import initial_status_id
+
         contact = Contact(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             phone=digits,
+            phone_digits=digits,
             priority="MEDIUM",
             status_id=statuses.status_id_for(self.db, tenant_id, "THREAD", "OPEN"),
             created_at=datetime.now(timezone.utc),
+            lifecycle_status_id=initial_status_id(self.db, tenant_id, workspace_id),
         )
         self.db.add(contact)
+        self.db.flush()
+        # `opened` event (plan 27 A3, AC-IVE-03) - SAME unit of work as the
+        # contact create, before the commit below.
+        event_service.record(self.db, contact, "opened", to_value=contact.status_id)
         self.db.commit()
         self.db.refresh(contact)
         return contact
@@ -486,6 +974,50 @@ class PublicGatewayService:
             raise ApiError(422, "template_not_found", "Template not found for this workspace.")
         return row.id
 
+    # ── Reply threading (plan 38 gap 4) ───────────────────────────────────────
+    def _check_reply(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        channel: Channel,
+        to: str,
+        msg_type: str,
+        reply_to: Optional[str],
+    ) -> Optional[str]:
+        """Validate ``replyToMessageId`` BEFORE anything is queued and return it
+        (None when absent). One helper for the JSON and the multipart path.
+        Order: reaction rule, id shape (no lookup), the recipient through the
+        same resolver the send uses, then ONE lookup scoped by tenant and
+        contact that excludes internal notes, then the channel comparison.
+        Every miss gives the one not-found answer."""
+        if reply_to is None:
+            return None
+        if msg_type == "reaction":
+            raise ApiError(
+                422, "invalid_request", "replyToMessageId cannot be used with a reaction."
+            )
+        not_found = ApiError(422, "invalid_request", _REPLY_NOT_FOUND_TEXT)
+        if (
+            not isinstance(reply_to, str)
+            or not _REPLY_ID_SHAPE.fullmatch(reply_to)
+        ):
+            raise not_found
+        # Find-only: a reply to a number with no contact yet creates nothing.
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, to, create=False)
+        if contact is None:
+            raise not_found
+        quoted = self.messages.repo.get_reply_target(reply_to, tenant_id, contact.id)
+        if quoted is None:
+            raise not_found
+        if quoted.channel_id and quoted.channel_id != channel.id:
+            raise ApiError(
+                422,
+                "reply_channel_mismatch",
+                "The quoted message was sent on another channel. "
+                "Pass the quoted message's channelId to reply on that number.",
+            )
+        return reply_to
+
     # ── Send ─────────────────────────────────────────────────────────────────
     def send(
         self,
@@ -497,121 +1029,229 @@ class PublicGatewayService:
     ) -> Tuple[str, bool]:
         """Returns (our_message_id, was_idempotency_replay)."""
         store = idempotency.get_store()
-        reserved = False
+        reservation = None
         if idempotency_key:
             # Reserve-before-send: atomically claim the slot so two concurrent
             # identical requests can't both send.
-            claimed = store.reserve(workspace_id, idempotency_key)
+            reservation = store.reserve(workspace_id, idempotency_key)
+            claimed = reservation.existing
             if claimed is not None:
-                if claimed == idempotency.PENDING:
+                if idempotency.is_pending(claimed):
                     raise ApiError(
                         409,
                         "idempotency_in_progress",
                         "A request with this Idempotency-Key is still being processed.",
                     )
                 return claimed, True  # completed → replay the stored id
-            reserved = True
 
+        self.messages.stored_message_id = None
         try:
             message_id = self._do_send(tenant_id, workspace_id, key_id, req)
         except Exception:
-            if reserved:
-                store.release(workspace_id, idempotency_key)  # let a retry re-claim
+            self._settle_reservation_on_error(store, workspace_id, idempotency_key, reservation)
             raise
 
-        if reserved:
-            store.finalize(workspace_id, idempotency_key, message_id)
+        if reservation is not None and reservation.existing is None:
+            store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
         return message_id, False
+
+    def _settle_reservation_on_error(
+        self, store, workspace_id: str, idempotency_key: Optional[str], reservation
+    ) -> None:
+        """A send failed. Before the message row was committed the key is
+        released so a retry can re-claim it; once the row is stored the
+        reservation is finalized with its id, so a same-key retry replays that
+        message instead of sending a second one."""
+        if reservation is None or reservation.existing is not None:
+            return
+        stored_id = self.messages.stored_message_id
+        if stored_id:
+            store.finalize(workspace_id, idempotency_key, stored_id, reservation.token)
+        else:
+            store.release(workspace_id, idempotency_key, reservation.token)
 
     def _do_send(
         self, tenant_id: str, workspace_id: str, key_id: str, req: PublicSendRequest
     ) -> str:
         msg_type = (req.type or "text").lower()
-        channel = self._workspace_channel(tenant_id, workspace_id)
+        reply_to = req.replyToMessageId
+        # Plan 32 / A7a (D-A7-18, AC-CHN-53): `channelId` (optional) wins over
+        # the WHATSAPP-preferred implicit choice - an unknown/foreign one is a
+        # typed 4xx from `_workspace_channel`, never a silent fallback.
+        try:
+            channel = self._workspace_channel(tenant_id, workspace_id, channel_id=req.channelId)
+        except ApiError as exc:
+            # A reaction goes out on the channel of the message it targets and
+            # uses no default, so an ambiguous default does not stop it
+            # (AC-38-101).
+            if exc.code != "channel_required" or msg_type != "reaction":
+                raise
+            channel = None
+
+        reply_to = self._check_reply(
+            tenant_id, workspace_id, channel, req.to, msg_type, reply_to
+        )
 
         if msg_type == "text":
             if req.text is None or not (req.text.body or "").strip():
                 raise ApiError(422, "invalid_request", "text.body is required.")
-            payload = SendMessageRequest(messageType="TEXT", body=req.text.body)
+            payload = SendMessageRequest(
+                messageType="TEXT", body=req.text.body, replyToMessageId=reply_to
+            )
         elif msg_type == "template":
             template_id = self._resolve_template_id(tenant_id, channel.id, req)
             payload = SendMessageRequest(
                 messageType="TEMPLATE",
                 templateId=template_id,
                 templateVariables=(req.template.variables if req.template else None) or [],
+                replyToMessageId=reply_to,
             )
         elif msg_type.upper() in MEDIA_MESSAGE_TYPES:
             # Media-by-URL (plan 12 AC-12-10): fetch the bytes + re-upload through
             # the SAME upload-by-id pipeline (never pass Meta a bare `link`).
             if req.media is None or not (req.media.url or "").strip():
                 raise ApiError(422, "invalid_request", "media.url is required.")
-            # Enforce the 24h CSW BEFORE fetching (don't do SSRF-fetch work on a
+            contact = self._resolve_send_target(tenant_id, workspace_id, channel, req.to)
+            self._assert_channel_identity(tenant_id, channel, contact)
+            # Enforce the window BEFORE fetching (don't do SSRF-fetch work on a
             # closed window; media is free-form → an open window is required).
-            contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
-            if not _window_open(contact):
-                raise ApiError(409, "csw_window_closed", CSW_CLOSED_MESSAGE)
-            content = self._fetch_url(req.media.url)
-            return self._send_media(
-                tenant_id,
-                workspace_id,
-                key_id,
-                kind=msg_type.upper(),
-                content=content,
-                filename=req.media.filename,
-                caption=req.media.caption,
-                to=req.to,
-            )
+            # Cheap pre-flight peek (plan 32 / A7a) - `send_media` below still
+            # runs the AUTHORITATIVE `authorize` call (automation is refused
+            # past 24h even when a human-agent window remains, D-A7-6 - the
+            # gateway is API-key automation by construction, never a human
+            # actor).
+            if not messaging_policy.window_open(self.db, contact, channel):
+                code = (
+                    "csw_window_closed"
+                    if channel.channel_type == "WHATSAPP"
+                    else "messaging_window_closed"
+                )
+                raise ApiError(409, code, messaging_policy.closed_window_message(channel.channel_type))
+            # The slot covers the URL lookup, the fetch and the store.
+            with _FETCH_GATE.slot(tenant_id):
+                content = self._fetch_url(req.media.url)
+                return self._send_media(
+                    tenant_id,
+                    workspace_id,
+                    key_id,
+                    kind=msg_type.upper(),
+                    content=content,
+                    filename=req.media.filename,
+                    caption=req.media.caption,
+                    to=req.to,
+                    channel=channel,
+                    reply_to_message_id=reply_to,
+                )
         elif msg_type in ("interactive", "location", "contacts"):
-            return self._send_structured(tenant_id, workspace_id, key_id, msg_type, req)
+            return self._send_structured(
+                tenant_id, workspace_id, key_id, msg_type, req, channel,
+                reply_to_message_id=reply_to,
+            )
         elif msg_type == "reaction":
             return self._send_reaction(tenant_id, workspace_id, key_id, req)
         else:
             raise ApiError(400, "unsupported_type", f"Unknown message type '{msg_type}'.")
 
-        contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, req.to)
+        self._assert_channel_identity(tenant_id, channel, contact)
+        # `actor` is an opaque attribution string ("apikey:<id>"), NOT a human
+        # actor - the gateway is API-key automation by construction
+        # (D-A7-6): `actor_is_human=False` explicitly, never inferred from
+        # this string's truthiness.
         actor = f"apikey:{key_id}"
         try:
-            item = self.messages.send_message(contact.id, tenant_id, actor, payload)
+            item = self.messages.send_message(
+                contact.id, tenant_id, actor, payload, actor_is_human=False,
+                channel_id_override=self._override_for(channel),
+            )
         except SendRejected as exc:
-            if exc.message == CSW_CLOSED_MESSAGE:
-                raise ApiError(409, "csw_window_closed", exc.message) from exc
-            raise ApiError(422, "send_rejected", exc.message) from exc
+            raise self._map_send_rejected(exc) from exc
         return item.id
 
     def _fetch_url(self, url: str) -> bytes:
         """Fetch a media URL so it can be re-uploaded by id (plan 12 review - SSRF).
 
-        Reuses the consumer-webhook SSRF guard (``validate_callback_url``): https
-        only, blocks private/loopback/link-local/reserved/metadata targets given
+        Reuses the consumer-webhook address guard (``validate_callback_url``): https
+        only, refuses private/loopback/link-local/reserved/metadata targets given
         as a literal, numeric/hex IP, OR a hostname that resolves to one. Redirects
-        are DISABLED (a 3xx to an internal host would bypass the guard); the read
-        is streamed + capped so a hostile body can't exhaust memory."""
+        are DISABLED (a 3xx to an internal host would sidestep the guard); the read
+        is streamed + capped so an oversized body can't exhaust memory.
+
+        The fetch runs on its own short event loop under one hard deadline
+        (``MEDIA_FETCH_TOTAL_SECONDS``), after the session's read transactions are
+        released. The caller holds the fetch slot (``_FETCH_GATE.slot``) around
+        the lookup, this fetch and the store."""
+        from app.database import release_read_transactions
+
+        from app.services.url_guard import UnparseableUrlError
+
         from .webhook_service import WebhookError, validate_callback_url
 
+        if not isinstance(url, str):
+            raise ApiError(422, "invalid_media_url", "The media url must be text.")
+        # Nothing below touches the session: the caller holds what it needs.
+        release_read_transactions()
         try:
             safe = validate_callback_url(url)
         except WebhookError as exc:
+            if isinstance(exc.__cause__, UnparseableUrlError):
+                raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
             raise ApiError(422, "invalid_media_url", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
         try:
-            with httpx.Client(timeout=15.0, follow_redirects=False) as client:
-                with client.stream("GET", safe) as resp:
-                    if resp.is_redirect:
-                        raise ApiError(
-                            422, "invalid_media_url", "Redirects are not allowed for media URLs."
-                        )
-                    if resp.status_code >= 400:
-                        raise ApiError(
-                            422, "media_fetch_failed", f"Media url returned {resp.status_code}."
-                        )
-                    chunks: list[bytes] = []
-                    total = 0
-                    for chunk in resp.iter_bytes():
-                        total += len(chunk)
-                        if total > _MEDIA_HARD_CAP:
-                            raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
-                        chunks.append(chunk)
-        except httpx.HTTPError as exc:
-            raise ApiError(422, "media_fetch_failed", f"Could not fetch media url: {exc}") from exc
+            return asyncio.run(self._fetch_url_bounded(safe))
+        except ApiError:
+            raise
+        except UrlGuardError as exc:
+            raise ApiError(422, "invalid_media_url", str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            # Broad on purpose: the client and the TLS layer raise many unrelated
+            # types (including exception groups) for a bad address, port or record.
+            # Whatever the cause, the answer is the same fixed text, never the
+            # remote or network detail.
+            raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT) from exc
+
+    async def _fetch_url_bounded(self, safe: str) -> bytes:
+        # Level-triggered deadline: keeps cancelling until the fetch really ends.
+        with anyio.fail_after(MEDIA_FETCH_TOTAL_SECONDS):
+            return await self._fetch_url_async(safe)
+
+    async def _fetch_url_async(self, safe: str) -> bytes:
+        # Building the transport loads the CA bundle (blocking): do it off the event
+        # loop, inside the fetch deadline, so a slow build is abandoned at the deadline.
+        transport = await anyio.to_thread.run_sync(
+            lambda: GuardedAsyncTransport(subject="Callback URL"), abandon_on_cancel=True
+        )
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            follow_redirects=False,
+            transport=transport,
+        ) as client:
+            async with client.stream(
+                "GET", safe, headers={"Accept-Encoding": "identity"}
+            ) as resp:
+                if resp.is_redirect:
+                    raise ApiError(
+                        422, "invalid_media_url", "Redirects are not allowed for media URLs."
+                    )
+                if resp.status_code >= 400:
+                    raise ApiError(
+                        422, "media_fetch_failed", f"Media url returned {resp.status_code}."
+                    )
+                encoding = resp.headers.get("content-encoding", "").strip().lower()
+                if encoding and encoding != "identity":
+                    raise ApiError(422, "media_fetch_failed", _FETCH_FAILED_TEXT)
+                declared = resp.headers.get("content-length", "").strip()
+                if declared.isascii() and declared.isdigit() and int(declared) > _MEDIA_HARD_CAP:
+                    raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_raw():
+                    total += len(chunk)
+                    if total > _MEDIA_HARD_CAP:
+                        raise ApiError(422, "oversize", "The fetched media exceeds the maximum size.")
+                    chunks.append(chunk)
         return b"".join(chunks)
 
     def _send_media(
@@ -625,8 +1265,14 @@ class PublicGatewayService:
         filename: Optional[str],
         caption: Optional[str],
         to: str,
+        channel: Optional[Channel] = None,
+        reply_to_message_id: Optional[str] = None,
     ) -> str:
-        contact = self._resolve_or_create_contact(tenant_id, workspace_id, to)
+        # Callers pass the resolved channel; `None` resolves the implicit one
+        # (refused when it would be a guess).
+        channel = channel or self._workspace_channel(tenant_id, workspace_id)
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, to)
+        self._assert_channel_identity(tenant_id, channel, contact)
         actor = f"apikey:{key_id}"
         try:
             item = self.messages.send_media(
@@ -637,22 +1283,32 @@ class PublicGatewayService:
                 content=content,
                 filename=filename,
                 caption=caption,
+                actor_is_human=False,
+                channel_id_override=self._override_for(channel),
+                reply_to_message_id=reply_to_message_id,
             )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         except SendRejected as exc:
-            if exc.message == CSW_CLOSED_MESSAGE:
-                raise ApiError(409, "csw_window_closed", exc.message) from exc
-            raise ApiError(422, "send_rejected", exc.message) from exc
+            raise self._map_send_rejected(exc) from exc
         return item.id
 
     # ── Structured send (interactive / location / contacts) ───────────────────
     def _send_structured(
-        self, tenant_id: str, workspace_id: str, key_id: str, msg_type: str, req: PublicSendRequest
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        key_id: str,
+        msg_type: str,
+        req: PublicSendRequest,
+        channel: Optional[Channel] = None,
+        reply_to_message_id: Optional[str] = None,
     ) -> str:
-        # Ensure the workspace has a channel (uniform error shape) before sending.
-        self._workspace_channel(tenant_id, workspace_id)
-        contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
+        # `channel` is resolved by `_do_send` (honours the explicit selector);
+        # a direct legacy caller with none falls back to the implicit choice.
+        channel = channel or self._workspace_channel(tenant_id, workspace_id)
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, req.to)
+        self._assert_channel_identity(tenant_id, channel, contact)
         actor = f"apikey:{key_id}"
         messages = self.messages
         try:
@@ -673,33 +1329,43 @@ class PublicGatewayService:
                 # A media header may reference a URL - fetch it (SSRF-guarded) so it
                 # rides the upload-by-id pipeline (never a bare Meta link).
                 header = defn.get("header") or {}
-                if str(header.get("type") or "") in ("image", "video", "document") and header.get("url"):
-                    header_content = self._fetch_url(header["url"])
-                    header_filename = header.get("filename")
-                item = messages.send_interactive(
-                    contact.id,
-                    tenant_id,
-                    actor,
-                    defn=defn,
-                    header_content=header_content,
-                    header_filename=header_filename,
-                )
+                with contextlib.ExitStack() as stack:
+                    if str(header.get("type") or "") in ("image", "video", "document") and header.get("url"):
+                        # The slot covers the lookup, the fetch and the store.
+                        stack.enter_context(_FETCH_GATE.slot(tenant_id))
+                        header_content = self._fetch_url(header["url"])
+                        header_filename = header.get("filename")
+                    item = messages.send_interactive(
+                        contact.id,
+                        tenant_id,
+                        actor,
+                        defn=defn,
+                        header_content=header_content,
+                        header_filename=header_filename,
+                        actor_is_human=False,
+                        channel_id_override=self._override_for(channel),
+                        reply_to_message_id=reply_to_message_id,
+                    )
             elif msg_type == "location":
                 if not req.location:
                     raise ApiError(422, "invalid_request", "location is required.")
-                item = messages.send_location(contact.id, tenant_id, actor, defn=dict(req.location))
+                item = messages.send_location(
+                    contact.id, tenant_id, actor, defn=dict(req.location), actor_is_human=False,
+                    channel_id_override=self._override_for(channel),
+                    reply_to_message_id=reply_to_message_id,
+                )
             else:  # contacts
                 if not req.contacts:
                     raise ApiError(422, "invalid_request", "contacts is required.")
                 item = messages.send_contacts(
-                    contact.id, tenant_id, actor, defn={"contacts": req.contacts}
+                    contact.id, tenant_id, actor, defn={"contacts": req.contacts},
+                    actor_is_human=False, channel_id_override=self._override_for(channel),
+                    reply_to_message_id=reply_to_message_id,
                 )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         except SendRejected as exc:
-            if exc.message == CSW_CLOSED_MESSAGE:
-                raise ApiError(409, "csw_window_closed", exc.message) from exc
-            raise ApiError(422, "invalid_request", exc.message) from exc
+            raise self._map_send_rejected(exc, default_code="invalid_request") from exc
         return item.id
 
     # ── Reaction send (targets OUR durable id - AC-12-21) ─────────────────────
@@ -719,12 +1385,13 @@ class PublicGatewayService:
         actor = f"apikey:{key_id}"
         try:
             self.messages.react(
-                req.reaction.messageId, tenant_id, actor, emoji=req.reaction.emoji
+                req.reaction.messageId, tenant_id, actor, emoji=req.reaction.emoji,
+                actor_is_human=False,
             )
+        except MetaRateLimited as exc:
+            raise self._meta_rate_limited(exc.retry_after) from exc
         except SendRejected as exc:
-            if exc.message == CSW_CLOSED_MESSAGE:
-                raise ApiError(409, "csw_window_closed", exc.message) from exc
-            raise ApiError(422, "invalid_request", exc.message) from exc
+            raise self._map_send_rejected(exc, default_code="invalid_request") from exc
         return target.id
 
     # ── Multipart media send (file part) ──────────────────────────────────────
@@ -740,27 +1407,36 @@ class PublicGatewayService:
         caption: Optional[str],
         to: str,
         idempotency_key: Optional[str],
+        channel_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
     ) -> Tuple[str, bool]:
         """Gateway multipart media send (plan 12 AC-12-10). Same idempotency
-        semantics as the JSON ``send`` path."""
+        semantics as the JSON ``send`` path. ``channel_id`` (plan 32 / A7a S6)
+        - the multipart payload's own optional explicit channel selector."""
         if kind.upper() not in MEDIA_MESSAGE_TYPES:
             raise ApiError(400, "unsupported_type", f"Unknown media type '{kind}'.")
         if not (to or "").strip():
             raise ApiError(422, "invalid_recipient", "A recipient phone number is required.")
         store = idempotency.get_store()
-        reserved = False
+        reservation = None
         if idempotency_key:
-            claimed = store.reserve(workspace_id, idempotency_key)
+            reservation = store.reserve(workspace_id, idempotency_key)
+            claimed = reservation.existing
             if claimed is not None:
-                if claimed == idempotency.PENDING:
+                if idempotency.is_pending(claimed):
                     raise ApiError(
                         409,
                         "idempotency_in_progress",
                         "A request with this Idempotency-Key is still being processed.",
                     )
                 return claimed, True
-            reserved = True
+        self.messages.stored_message_id = None
         try:
+            # After the replay check, as the JSON path does; a refusal releases the key.
+            channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
+            reply_to = self._check_reply(
+                tenant_id, workspace_id, channel, to, kind.lower(), reply_to_message_id
+            )
             message_id = self._send_media(
                 tenant_id,
                 workspace_id,
@@ -770,14 +1446,65 @@ class PublicGatewayService:
                 filename=filename,
                 caption=caption,
                 to=to,
+                channel=channel,
+                reply_to_message_id=reply_to,
             )
         except Exception:
-            if reserved:
-                store.release(workspace_id, idempotency_key)
+            self._settle_reservation_on_error(store, workspace_id, idempotency_key, reservation)
             raise
-        if reserved:
-            store.finalize(workspace_id, idempotency_key, message_id)
+        if reservation is not None and reservation.existing is None:
+            store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
         return message_id, False
+
+    # ── Channels (read-only) ─────────────────────────────────────────────────
+    def list_channels(self, tenant_id: str, workspace_id: str) -> list[PublicChannelItem]:
+        """The workspace's channels, oldest first. Paused (inactive) rows are
+        listed with their real status (a consumer must see a number that
+        stopped working); disconnected (trashed) rows are not. ``isDefault`` is the channel
+        ``_workspace_channel`` returns for an omitted ``channelId`` - the SAME
+        resolver, so the flag can never drift from what a send does; with no
+        active channel, or when the default would be a guess
+        (``channel_required``), nothing is default."""
+        rows = ChannelRepository(self.db).list_by_workspace(
+            workspace_id, tenant_id, oldest_first=True
+        )
+        try:
+            default_id: Optional[str] = self._workspace_channel(tenant_id, workspace_id).id
+        except ApiError as exc:
+            if exc.code not in ("no_active_channel", "channel_required"):
+                raise
+            default_id = None
+        smap = statuses.id_to_key_map(self.db, tenant_id)
+
+        def _is_provider_id(value: Optional[str], c: Channel) -> bool:
+            # On a WhatsApp channel, a display field that holds (or is built
+            # from) the provider's number id, because details were not available
+            # at connect, is not shown. Short, blank or missing ids change nothing.
+            if c.channel_type != "WHATSAPP" or not value:
+                return False
+            pid = (c.phone_number_id or "").strip()
+            return len(pid) >= 6 and pid in value
+
+        def _status(c: Channel) -> str:
+            # A missing status row reads ACTIVE only for an active channel.
+            return smap.get(c.status_id) or ("ACTIVE" if c.is_active else "INACTIVE")
+
+        return [
+            PublicChannelItem(
+                id=c.id,
+                channelType=c.channel_type,
+                name="WhatsApp channel" if _is_provider_id(c.name, c) else c.name,
+                status=_status(c),
+                isActive=c.is_active,
+                isDefault=c.id == default_id,
+                displayPhoneNumber=(
+                    None if _is_provider_id(c.display_phone_number, c) else c.display_phone_number
+                ),
+                verifiedName=None if _is_provider_id(c.verified_name, c) else c.verified_name,
+                createdAt=c.created_at,
+            )
+            for c in rows
+        ]
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
     def list_templates(
@@ -790,7 +1517,8 @@ class PublicGatewayService:
         category: Optional[str] = None,
     ) -> list[PublicTemplateItem]:
         """Approved templates for the workspace. ``channel_id`` targets a specific
-        channel (default = the workspace's active channel); a channel in another
+        channel (omitted: the workspace's only default channel, else
+        ``422 channel_required``); a channel in another
         workspace/tenant is a uniform 404. ``search`` filters by name substring
         (case-insensitive); ``category`` filters by Meta category (UTILITY|…)."""
         if channel_id:

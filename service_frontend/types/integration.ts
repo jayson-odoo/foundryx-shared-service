@@ -12,7 +12,17 @@ export type IntegrationType =
   | 'llm'
   | 'erp'
   | 'payment'
-  | 'consumer';
+  | 'consumer'
+  // Meetings module (S0): the calendar reader and the notetaker bot account.
+  // Two categories, not one, because the one-active-per-type invariant must
+  // let a tenant hold BOTH at once.
+  | 'calendar'
+  | 'meeting_bot'
+  // Plan 33 (roadmap A6): the respond.io migration source connection. A
+  // distinct type (D-A6-2, not reused `erp`/`consumer`) so a tenant can hold
+  // it alongside every other connection type without tripping the
+  // one-active-per-type index.
+  | 'migration';
 
 /** Connection health - UNVERIFIED until a test passes, ERROR on failures. */
 export type ConnectionStatus = 'ACTIVE' | 'UNVERIFIED' | 'ERROR';
@@ -30,8 +40,34 @@ export interface ProviderField {
   /** Select options (type === 'select'). */
   options?: Array<{ value: string; label: string }>;
   defaultValue?: string;
+  /**
+   * What this field actually runs at RIGHT NOW when unset (feat/sink-
+   * concurrency-ui) - the provider computes it per request (e.g. the
+   * platform default), so read mode and the edit prefill can show the truth
+   * instead of a blank required field. See `storedOrEffective`.
+   */
+  effectiveValue?: string;
   /** Collapsed under the wizard's "Advanced" section. */
   advanced?: boolean;
+  /**
+   * Registry-driven dependent default (plan 22, AC-22-04): when the named
+   * sibling `select` field changes, this field is reset to `values[<choice>]`
+   * PROVIDED it still holds a stock default (blank or one of `values`) - an
+   * operator-typed value is never clobbered. First use: the SQL provider's
+   * port following its dialect (1433 / 5432 / 3306). Emitted by the backend
+   * provider's `fields()`; the form handles it generically.
+   */
+  defaultsFrom?: { field: string; values: Record<string, string> };
+  /**
+   * Show this field ONLY when the named sibling non-secret field currently
+   * holds one of `values` (plan sprint-5/08, D11) - conditional credentials
+   * (an `autocount` connection's AppId/user/password fields, hidden when its
+   * `auth` select is "none"). Absent = always shown. Generic, mirrors
+   * `NodeField.show_when` on the workflow engine. Hidden fields are dropped
+   * from the required-field check AND from the submitted config/credentials
+   * (`connection-schema.ts requiredFieldErrors`/`toConnectionInput`).
+   */
+  showWhen?: { field: string; values: string[] };
 }
 
 /** Catalog entry (GET /integrations/providers) - config schema drives the wizard. */
