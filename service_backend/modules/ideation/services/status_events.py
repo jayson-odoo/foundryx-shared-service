@@ -131,6 +131,7 @@ def _write_event(
         "idea_id": recipient.id,
         "idea_number": recipient.idea_number,
         "idea_title": _idea_title(recipient),
+        "idea_type": recipient.type or "idea",
         "product_id": recipient.product_id,
         "status_label": status_label,
         "from_status_label": from_status_label,

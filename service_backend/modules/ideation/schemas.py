@@ -88,6 +88,8 @@ class IdeaOut(ApiModel):
     statusLabel: str
     statusColor: str
     statusIsArchived: bool = False
+    # Idea type KEY from the ``idea_types`` catalog (``idea`` | ``issue`` | ...).
+    type: str = "idea"
     transitions: List[TransitionOut] = []
     advanceTransitionId: Optional[str] = None
     # A short (1-8 word) headline (S1, AC-1105/1106) - null for a pre-lane
@@ -349,6 +351,10 @@ class IdeaCreateIn(ApiModel):
     department: Optional[str] = None
     rawText: str = ""
     source: str = "manual"
+    # What this submission IS - a key of the ``idea_types`` catalog (``idea`` =
+    # feature idea, ``issue`` = a problem with the system / complaint; more types
+    # = new catalog rows). Omitted = ``idea``. Unknown = 422 ``unknown_type``.
+    type: Optional[str] = None
 
 
 class IdeaUpdateIn(ApiModel):
@@ -366,6 +372,16 @@ class IdeaUpdateIn(ApiModel):
     impact: Optional[str] = None
     department: Optional[str] = None
     rawText: Optional[str] = None
+    # Reclassify (e.g. idea -> issue); validated against the ``idea_types`` table.
+    type: Optional[str] = None
+
+
+class IdeaTypeOut(ApiModel):
+    """One row of the idea-type catalog (``GET /ideation/ideas/types``)."""
+
+    key: str
+    label: str
+    isDefault: bool
 
 
 class CreateIdeaAttachmentIn(ApiModel):
@@ -669,6 +685,12 @@ class CreateIdeaIn(ApiModel):
     # Stamped once on the draft's creation turn; later turns keep whatever the
     # draft was created with regardless of what this carries.
     is_test: bool = False
+    # What this submission IS - a key of the ``idea_types`` catalog (``idea`` =
+    # feature idea, ``issue`` = a problem with the system / complaint; more types
+    # = new catalog rows). Omitted = ``idea``. Unknown = 422 ``unknown_type``.
+    # On a continuation turn: omitted = keep the draft's type, present =
+    # reclassify the open draft.
+    type: Optional[str] = None
     # ── S1 intake-contract additions (all additive, optional) ────────────────
     # A short (1-8 word) headline (AC-1105) - 1-8 words checked server-side
     # (``title_too_long`` 422 otherwise); blank/whitespace is treated as
@@ -772,6 +794,10 @@ class OneShotIdeaIn(ApiModel):
     # Host idempotency key (e.g. the confirming Respond.io message id): a retry
     # with the same key returns the idea already created, never a second one.
     intake_ref: Optional[str] = None
+    # What this submission IS - a key of the ``idea_types`` catalog (``idea`` =
+    # feature idea, ``issue`` = a problem with the system / complaint; more types
+    # = new catalog rows). Omitted = ``idea``. Unknown = 422 ``unknown_type``.
+    type: Optional[str] = None
 
 
 class SimilarOwnIn(ApiModel):
@@ -784,6 +810,9 @@ class SimilarOwnIn(ApiModel):
     submitter_crm_user_id: Optional[str] = None
     submitter_phone: Optional[str] = None
     is_test: bool = False
+    # Optional type lane: only the sender's own ideas of this type match.
+    # Omitted = every type (unchanged behaviour).
+    type: Optional[str] = None
 
 
 # ── Idea portal (lane IDEA-PORTAL) ────────────────────────────────────────────

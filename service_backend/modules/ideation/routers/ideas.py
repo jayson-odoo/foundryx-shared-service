@@ -25,6 +25,7 @@ from ..schemas import (
     ClusterSuggestionsOut,
     IdeaCreateIn,
     IdeaOut,
+    IdeaTypeOut,
     IdeaUpdateIn,
     MergeIn,
     ReorderIn,
@@ -37,6 +38,7 @@ from ..services.attachments import IdeaAttachmentService
 from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
 from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
+from ..services.idea_types import list_idea_types
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
 from ..services.similar import SimilarIdeasService
@@ -65,10 +67,12 @@ def list_ideas(
     filter: str = Query("active", pattern="^(active|archived|all)$"),
     product_id: Optional[str] = Query(None, alias="productId"),
     include_test: bool = Query(False, alias="includeTest"),
+    type: Optional[List[str]] = Query(None),
     current_user: User = Depends(require_permission("ideation.ideas.view")),
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
-    """All ideas for the tenant, newest first. ``search`` matches problem/raw
+    """All ideas for the tenant, newest first. ``type`` (SS-IDEA-TYPE) filters by
+    idea type - repeat it or comma-separate for several (any-of); unknown = 422. ``search`` matches problem/raw
     text; ``filter`` selects active (default) / archived / all; optional
     ``productId`` scopes to a single product (the canonical ideation scope -
     omitted = every product in the tenant). ``myVote`` is resolved for the
@@ -83,7 +87,21 @@ def list_ideas(
         voter_id=current_user.id,
         include_test=include_test,
         actor=current_user,
+        types=type,
     )
+
+
+@router.get("/types", response_model=List[IdeaTypeOut])
+def list_types(
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> List[IdeaTypeOut]:
+    """The idea-type catalog (``idea`` default, ``issue``, ...) in display order -
+    the options for a type picker / filter. Declared before ``/{idea_id}``."""
+    return [
+        IdeaTypeOut(key=t.key, label=t.label, isDefault=bool(t.is_default))
+        for t in list_idea_types(db)
+    ]
 
 
 @router.post("", response_model=IdeaOut, status_code=status.HTTP_201_CREATED)
@@ -110,6 +128,7 @@ def create_idea(
         desired_outcome=body.desiredOutcome,
         use_cases=body.useCases,
         current_workaround=body.currentWorkaround,
+        idea_type=body.type,
     )
 
 
@@ -294,6 +313,7 @@ def update_idea(
         desired_outcome=body.desiredOutcome,
         use_cases=body.useCases,
         current_workaround=body.currentWorkaround,
+        idea_type=body.type,
     )
 
 

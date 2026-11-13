@@ -57,6 +57,7 @@ from .intake_definitions import (
 )
 from .ownership import SubmitterIdentity, find_contacts_by_phone, phone_digits
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
+from .idea_types import idea_type_label, resolve_idea_type
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
 from .status_events import _iso_z
 
@@ -155,10 +156,17 @@ class IntakeService:
         cancel: Optional[bool] = None,
         duplicate_choice: Optional[str] = None,
         submitter_tier: Optional[str] = None,
+        idea_type: Optional[str] = None,
     ) -> dict:
         definition = get_intake_definition(IDEATION_INTAKE_KEY)
         if definition is None:  # pragma: no cover - registered at boot
             raise ApiError(500, "intake_unavailable", "Intake definition not registered.")
+
+        # ``type`` is validated FIRST against the ``idea_types`` table so an
+        # unknown value is a clean 422 with nothing written (SS-IDEA-TYPE).
+        # ``None`` = not supplied: a new draft takes the default type (``idea``),
+        # an open draft keeps its own; a supplied value reclassifies the draft.
+        type_key = _supplied_type(self.db, idea_type)
 
         # is_new_idea restart (DC-10): the host opened a fresh draft (no draft_id)
         # and named the abandoned one - reject it so it does not linger as a phantom.
@@ -180,6 +188,7 @@ class IntakeService:
         idea = self._load_or_create_draft(
             tenant_id, product_id, submitter_contact_id, message_text, draft_id,
             raw_transcript=raw_transcript, is_test=is_test,
+            idea_type=type_key or resolve_idea_type(self.db, None),
         )
 
         # Persist media pointers idempotently on every turn (DC-9) - before the
@@ -192,6 +201,9 @@ class IntakeService:
         # idempotent / AC-A-20 complete re-fire no-op).
         if not self._is_draft(idea):
             return self._terminal_echo(definition, idea)
+
+        if type_key is not None:
+            idea.type = type_key
 
         # Stamp title/submitter_tier on every turn while draft (S1, AC-1105/1115).
         # A blank/whitespace title is treated as absent; latest non-blank value
@@ -256,6 +268,7 @@ class IntakeService:
             problem_text,
             [idea.id, *state.declined_candidates],
             is_test=idea.is_test,
+            idea_type=idea.type,
         )
         state.pending_candidate = dup_id
         state.save(idea)
@@ -298,7 +311,7 @@ class IntakeService:
         return _response(
             status="complete",
             draft_id=idea.id,
-            reply_text=_reply_complete(idea.title, idea.idea_number, link),
+            reply_text=_reply_complete(idea.title, idea.idea_number, link, self._noun(idea)),
             missing=missing,
             title=idea.title,
             captured=captured,
@@ -328,6 +341,7 @@ class IntakeService:
         attachments: Optional[List[Dict[str, object]]] = None,
         is_test: bool = False,
         intake_ref: Optional[str] = None,
+        idea_type: Optional[str] = None,
     ) -> dict:
         """Create a REAL idea in one call. The chatbot host has already
         collected AND confirmed the fields, so there is no draft/collect/confirm
@@ -352,6 +366,8 @@ class IntakeService:
         crm_user_id = (submitter_crm_user_id or "").strip()
         if not crm_user_id:
             raise ApiError(422, "submitter_required", "submitter_crm_user_id is required.")
+        # Validated against the ``idea_types`` table; omitted = ``idea``.
+        type_key = resolve_idea_type(self.db, idea_type)
         ref = (intake_ref or "").strip() or None
         if ref is not None:
             existing = self._idea_by_intake_ref(tenant_id, ref)
@@ -390,6 +406,7 @@ class IntakeService:
             product_id=product_id,
             status_id=initial_idea_status_id(self.db, tenant_id),
             intake_definition_key=IDEATION_INTAKE_KEY,
+            type=type_key,
             title=clean_title,
             problem=problem,
             raw_text=transcript or problem,
@@ -442,6 +459,7 @@ class IntakeService:
             "idea_number": idea.idea_number,
             "status": status.key if status else "",
             "title": idea.title,
+            "type": idea.type or "idea",
             "link": mint_idea_link(self.db, idea),
         }
 
@@ -454,6 +472,7 @@ class IntakeService:
         submitter_crm_user_id: Optional[str] = None,
         submitter_phone: Optional[str] = None,
         is_test: bool = False,
+        idea_type: Optional[str] = None,
     ) -> dict:
         """The sender's OWN live ideas similar to ``text_`` (top 3, best first).
         Identity = CRM user id and/or phone - at least one must be real (422
@@ -467,8 +486,10 @@ class IntakeService:
                 "submitter_crm_user_id or a valid submitter_phone is required.",
             )
         self._product_or_404(tenant_id, product_id)
+        # Optional type lane (SS-IDEA-TYPE): omitted = every type (unchanged).
+        type_key = _supplied_type(self.db, idea_type)
         hits = self._dedup.find_similar_own(
-            tenant_id, product_id, text_, ident, is_test=bool(is_test)
+            tenant_id, product_id, text_, ident, is_test=bool(is_test), idea_type=type_key
         )
         if not hits:
             return {"matches": []}
@@ -498,6 +519,7 @@ class IntakeService:
                     "problem": idea.problem,
                     "status": st.key if st else "",
                     "status_label": st.label if st else "",
+                    "type": idea.type or "idea",
                     "similarity": round(score, 3),
                     "created_at": _iso_z(idea.created_at),
                     "link": mint_idea_link(self.db, idea),
@@ -536,6 +558,11 @@ class IntakeService:
         return contact_id
 
     # ── internals ─────────────────────────────────────────────────────────────
+    def _noun(self, idea: Idea) -> str:
+        """Display word for the idea's type in reply_text (``Idea`` / ``Issue``),
+        from the ``idea_types`` catalog label - the idea path stays byte-identical."""
+        return idea_type_label(self.db, idea.type)
+
     def _is_draft(self, idea: Idea) -> bool:
         return idea.status_id == initial_idea_status_id(self.db, idea.tenant_id)
 
@@ -759,6 +786,7 @@ class IntakeService:
         draft_id: Optional[str],
         raw_transcript: Optional[str] = None,
         is_test: bool = False,
+        idea_type: str = "idea",
     ) -> Idea:
         if draft_id:
             idea = (
@@ -784,6 +812,7 @@ class IntakeService:
             product_id=product_id,
             status_id=initial_idea_status_id(self.db, tenant_id),
             intake_definition_key=IDEATION_INTAKE_KEY,
+            type=idea_type,
             problem=raw,
             raw_text=transcript or raw,
             source="whatsapp",
@@ -854,7 +883,7 @@ class IntakeService:
             raise ApiError(409, "transition_blocked", "This idea cannot be cancelled right now.")
         self.db.commit()
         return _response(
-            status="cancelled", draft_id=idea.id, reply_text=_reply_cancelled(), title=idea.title
+            status="cancelled", draft_id=idea.id, reply_text=_reply_cancelled(self._noun(idea).lower()), title=idea.title
         )
 
     def _vote_duplicate(
@@ -917,7 +946,7 @@ class IntakeService:
         return _response(
             status="duplicate_candidate",
             draft_id=idea.id,
-            reply_text=_reply_duplicate_candidate(cand_title or ""),
+            reply_text=_reply_duplicate_candidate(cand_title or "", self._noun(idea).lower()),
             missing=missing,
             title=title,
             captured=captured,
@@ -932,7 +961,7 @@ class IntakeService:
         if status_key == "rejected":
             self.db.commit()
             return _response(
-                status="cancelled", draft_id=idea.id, reply_text=_reply_cancelled(), title=idea.title
+                status="cancelled", draft_id=idea.id, reply_text=_reply_cancelled(self._noun(idea).lower()), title=idea.title
             )
         if status_key == "duplicate":
             state = _IntakeState.load(idea)
@@ -955,7 +984,7 @@ class IntakeService:
         return _response(
             status="complete",
             draft_id=idea.id,
-            reply_text=_reply_complete(idea.title, idea.idea_number, link),
+            reply_text=_reply_complete(idea.title, idea.idea_number, link, self._noun(idea)),
             missing=missing,
             title=idea.title,
             captured=captured,
@@ -965,6 +994,14 @@ class IntakeService:
 
 
 # ── deterministic reply_text templates (no LLM, D20; S1 point-form R10/R16) ────
+
+
+def _supplied_type(db: Session, value: Optional[str]) -> Optional[str]:
+    """A caller-supplied ``type`` -> catalog key, or ``None`` when not supplied
+    (absent/blank). Unknown -> 422 ``unknown_type`` (via ``resolve_idea_type``)."""
+    if value is None or not value.strip():
+        return None
+    return resolve_idea_type(db, value)
 
 
 def _title_line(title: Optional[str]) -> Optional[str]:
@@ -1011,21 +1048,26 @@ def _reply_review(title: Optional[str], captured: Dict[str, object]) -> str:
     return _compose(title, _recap_lines(captured), "Submit it?")
 
 
-def _reply_duplicate_candidate(candidate_title: str) -> str:
+def _reply_duplicate_candidate(candidate_title: str, noun: str = "idea") -> str:
     return "\n".join(
         [
-            f"Similar idea exists: {candidate_title}",
+            f"Similar {noun} exists: {candidate_title}",
             "Vote for that one, or keep yours separate?",
         ]
     )
 
 
-def _reply_complete(title: Optional[str], idea_number: Optional[str], link: Optional[str]) -> str:
+def _reply_complete(
+    title: Optional[str],
+    idea_number: Optional[str],
+    link: Optional[str],
+    noun: str = "Idea",
+) -> str:
     lines: List[str] = []
     t = _title_line(title)
     if t:
         lines.append(t)
-    lines.append(f"Idea {idea_number} is in. We'll update you on WhatsApp.")
+    lines.append(f"{noun} {idea_number} is in. We'll update you on WhatsApp.")
     if link:
         lines.append(f"Track it here: {link}")
     return "\n".join(lines)
@@ -1038,5 +1080,5 @@ def _reply_voted(idea_number: Optional[str], link: Optional[str]) -> str:
     return "\n".join(lines)
 
 
-def _reply_cancelled() -> str:
-    return "No worries, I've dropped that idea. Say the word anytime you want to start again."
+def _reply_cancelled(noun: str = "idea") -> str:
+    return f"No worries, I've dropped that {noun}. Say the word anytime you want to start again."

@@ -68,44 +68,98 @@ def test_new_type_is_a_row_not_a_path(setup):
 # ── intake create (WhatsApp path) ─────────────────────────────────────────────
 
 
-def test_intake_without_type_defaults_to_idea(setup):
-    res = _create_idea(setup["client"], setup["key"], setup["contact_id"], setup["product_id"])
-    assert res.status_code == 200, res.text
-    assert _idea_row(setup["factory"], res.json()["draft_id"]).type == "idea"
+def _one_shot(c, key, pid, **over):
+    body = {
+        "product_id": pid,
+        "problem": over.pop("problem", "Orders page crashes on save"),
+        "title": "Orders crash",
+        "submitter_crm_user_id": "crm-1",
+        "submitter_phone": "+60100000001",
+    }
+    body.update(over)
+    return c.post("/ideation/intake/ideas", headers=_key_auth(key), json=body)
 
 
-def test_intake_issue_type_is_stored_and_kept_across_turns(setup):
+def test_one_shot_without_type_defaults_to_idea(setup):
+    res = _one_shot(setup["client"], setup["key"], setup["product_id"])
+    assert res.status_code == 201, res.text
+    assert res.json()["type"] == "idea"
+    assert _idea_row(setup["factory"], res.json()["idea_id"]).type == "idea"
+
+
+def test_one_shot_issue_stored_and_echoed(setup):
+    res = _one_shot(setup["client"], setup["key"], setup["product_id"], type="issue")
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["type"] == "issue"
+    assert body["status"] == "captured"
+    assert _idea_row(setup["factory"], body["idea_id"]).type == "issue"
+
+
+def test_one_shot_unknown_type_is_422_and_creates_nothing(setup):
+    from tests.test_ideation_create_idea import _idea_count
+
+    before = _idea_count(setup["factory"])
+    res = _one_shot(setup["client"], setup["key"], setup["product_id"], type="complaint")
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "unknown_type"
+    assert _idea_count(setup["factory"]) == before
+
+
+def test_one_shot_type_is_case_insensitive(setup):
+    res = _one_shot(setup["client"], setup["key"], setup["product_id"], type=" Issue ")
+    assert res.status_code == 201, res.text
+    assert res.json()["type"] == "issue"
+
+
+def test_similar_own_type_lane(setup):
+    c, key, pid = setup["client"], setup["key"], setup["product_id"]
+    text = "Let CS export orders to Excel from the list"
+    a = _one_shot(c, key, pid, problem=text).json()["idea_id"]
+    b = _one_shot(c, key, pid, problem=text, type="issue").json()["idea_id"]
+    body = {"product_id": pid, "text": text, "submitter_crm_user_id": "crm-1"}
+    url = "/ideation/intake/ideas/similar-own"
+    both = c.post(url, headers=_key_auth(key), json=body).json()["matches"]
+    assert {m["idea_id"] for m in both} == {a, b}
+    assert {m["idea_id"]: m["type"] for m in both} == {a: "idea", b: "issue"}
+    only = c.post(url, headers=_key_auth(key), json={**body, "type": "issue"}).json()
+    assert [m["idea_id"] for m in only["matches"]] == [b]
+
+
+def test_turn_flow_issue_stored_kept_and_reply_says_issue(setup):
     c, key, cid, pid = setup["client"], setup["key"], setup["contact_id"], setup["product_id"]
     r1 = _create_idea(c, key, cid, pid, type="issue", message_text="Orders page crashes on save")
     assert r1.status_code == 200, r1.text
     draft_id = r1.json()["draft_id"]
-    # Continuation turn without ``type`` keeps it (never silently reset to idea).
-    r2 = _create_idea(c, key, cid, pid, draft_id=draft_id, fields=_FULL_FIELDS)
+    assert _idea_row(setup["factory"], draft_id).type == "issue"
+    # Continuation turns without ``type`` keep it (never silently reset to idea).
+    r2 = _create_idea(c, key, cid, pid, draft_id=draft_id, fields=_FULL_FIELDS, skip=["impact", "proposed_solution"])
     assert r2.status_code == 200, r2.text
-    assert r2.json()["status"] == "review"
-    assert "issue" in r2.json()["reply_text"].lower()
+    assert r2.json()["status"] == "review", r2.json()
     r3 = _create_idea(c, key, cid, pid, draft_id=draft_id, confirm=True)
-    assert r3.json()["status"] == "complete"
-    assert "issue" in r3.json()["reply_text"].lower()
+    assert r3.json()["status"] == "complete", r3.json()
+    assert "Issue " in r3.json()["reply_text"]
     assert _idea_row(setup["factory"], draft_id).type == "issue"
 
 
-def test_intake_idea_reply_text_unchanged(setup):
-    """The idea path's reply wording is byte-identical to before."""
+def test_turn_flow_idea_reply_unchanged(setup):
     c, key, cid, pid = setup["client"], setup["key"], setup["contact_id"], setup["product_id"]
     r1 = _create_idea(c, key, cid, pid, fields=_FULL_FIELDS)
-    assert r1.json()["reply_text"].startswith("Here's your idea:\n")
+    r2 = _create_idea(c, key, cid, pid, draft_id=r1.json()["draft_id"], confirm=True)
+    assert r2.json()["status"] == "complete", r2.json()
+    assert "Idea " in r2.json()["reply_text"]
+    assert _idea_row(setup["factory"], r1.json()["draft_id"]).type == "idea"
 
 
-def test_intake_type_is_case_insensitive(setup):
-    res = _create_idea(
-        setup["client"], setup["key"], setup["contact_id"], setup["product_id"], type=" Issue "
-    )
-    assert res.status_code == 200, res.text
-    assert _idea_row(setup["factory"], res.json()["draft_id"]).type == "issue"
+def test_turn_flow_can_reclassify_open_draft(setup):
+    c, key, cid, pid = setup["client"], setup["key"], setup["contact_id"], setup["product_id"]
+    r1 = _create_idea(c, key, cid, pid)
+    draft_id = r1.json()["draft_id"]
+    _create_idea(c, key, cid, pid, draft_id=draft_id, type="issue")
+    assert _idea_row(setup["factory"], draft_id).type == "issue"
 
 
-def test_intake_unknown_type_is_422_envelope_and_creates_nothing(setup):
+def test_turn_flow_unknown_type_is_422_and_creates_nothing(setup):
     from tests.test_ideation_create_idea import _idea_count
 
     before = _idea_count(setup["factory"])
@@ -118,22 +172,32 @@ def test_intake_unknown_type_is_422_envelope_and_creates_nothing(setup):
 
 
 def test_issue_does_not_dedup_against_an_idea(setup):
-    """Same text filed as an issue must not upvote an existing IDEA (and v.v.)."""
+    """An issue never folds into an existing IDEA with the same wording (and a
+    second issue with that wording IS offered the first issue)."""
     c, key, cid, pid = setup["client"], setup["key"], setup["contact_id"], setup["product_id"]
     text = "Let CS export orders to Excel from the list"
-    r1 = _create_idea(c, key, cid, pid, message_text=text, fields=_FULL_FIELDS)
-    _create_idea(c, key, cid, pid, draft_id=r1.json()["draft_id"], confirm=True)
-    r2 = _create_idea(c, key, "+60111111111", pid, message_text=text, type="issue")
-    assert r2.json()["status"] != "duplicate"
-    # ...but a second issue with the same text IS a duplicate of the first issue.
-    _create_idea(
-        c, key, "+60111111111", pid, draft_id=r2.json()["draft_id"],
-        fields=_FULL_FIELDS,
-    )
-    _create_idea(c, key, "+60111111111", pid, draft_id=r2.json()["draft_id"], confirm=True)
-    r3 = _create_idea(c, key, "+60122222222", pid, message_text=text, type="issue")
-    assert r3.json()["status"] == "duplicate"
-    assert r3.json()["duplicate_of"] == r2.json()["draft_id"]
+    _one_shot(c, key, pid, problem=text)
+    r = _create_idea(c, key, cid, pid, message_text=text, type="issue")
+    assert r.json()["status"] != "duplicate_candidate", r.json()
+    issue = _one_shot(c, key, pid, problem=text, title="Excel issue", type="issue").json()
+    r2 = _create_idea(c, key, "+60122222222", pid, message_text=text, type="issue")
+    assert r2.json()["status"] == "duplicate_candidate", r2.json()
+    assert r2.json()["duplicate_candidate"]["idea_number"] == issue["idea_number"]
+    assert "Similar issue exists" in r2.json()["reply_text"]
+
+
+def test_status_event_payload_carries_idea_type(setup):
+    """The CRM's status-update feed tells an issue apart from an idea."""
+    c, key, pid = setup["client"], setup["key"], setup["product_id"]
+    issue = _one_shot(c, key, pid, type="issue").json()["idea_id"]
+    h = _auth(c)
+    res = c.post(f"/ideation/ideas/{issue}/status", headers=h, json={"status": "triaged"})
+    assert res.status_code == 200, res.text
+    from tests.test_ideation_status_events import _events_for
+
+    events = _events_for(setup["factory"], issue)
+    assert events
+    assert all(e.payload_json["idea_type"] == "issue" for e in events)
 
 
 # ── read / list ───────────────────────────────────────────────────────────────

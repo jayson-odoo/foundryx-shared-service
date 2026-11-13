@@ -31,6 +31,7 @@ from fastapi import (
     File,
     Header,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -114,6 +115,9 @@ class EmbedIdeaCreateIn(BaseModel):
     department: Optional[str] = None
     rawText: str = ""
     source: str = "embed"
+    # Idea type key (``idea_types`` catalog: ``idea`` | ``issue``); omitted =
+    # ``idea``, unknown = 422 ``unknown_type`` (SS-IDEA-TYPE).
+    type: Optional[str] = None
 
 
 class EmbedPromoteIn(BaseModel):
@@ -267,6 +271,7 @@ def embed_list_ideas(
     search: Optional[str] = None,
     filter: str = "active",
     mine: bool = False,
+    type: Optional[List[str]] = Query(None),
     principal: EmbedTokenPrincipal = Depends(require_embed_principal),
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
@@ -286,6 +291,7 @@ def embed_list_ideas(
         product_id=principal.product_id,
         voter_id=_embed_voter_id(principal),
         owner=_viewer(principal) if mine else None,
+        types=type,
     )
     return _mark_mine(db, principal, outs)
 
@@ -386,7 +392,7 @@ def embed_create_idea(
         desired_outcome=body.desiredOutcome,
         use_cases=body.useCases,
         current_workaround=body.currentWorkaround,
-
+        idea_type=body.type,
         # The viewing CRM user is the submitter (the isMine ownership link).
         submitter_crm_user_id=principal.sub,
         submitter_name=principal.name,
@@ -522,6 +528,7 @@ def embed_update_idea(
         desired_outcome=body.desiredOutcome,
         use_cases=body.useCases,
         current_workaround=body.currentWorkaround,
+        idea_type=body.type,
     )
     return _mark_one(db, principal, out)
 

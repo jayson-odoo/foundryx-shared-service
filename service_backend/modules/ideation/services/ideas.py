@@ -35,6 +35,7 @@ from ..schemas import (
     IdeaSourceOut,
     TransitionOut,
 )
+from .idea_types import resolve_idea_type_filter
 from .card_fields import clean_use_cases
 from .ownership import SubmitterIdentity, owned_filter
 from .statuses import IDEA_ENTITY
@@ -111,6 +112,7 @@ class IdeaReadService:
             statusLabel=status.label if status else "",
             statusColor=status.color if status else "gray",
             statusIsArchived=bool(status.is_archived) if status else False,
+            type=idea.type or "idea",
             transitions=transitions or [],
             advanceTransitionId=advance_transition_id,
             title=idea.title,
@@ -483,6 +485,7 @@ class IdeaReadService:
         include_test: bool = False,
         actor: Optional[User] = None,
         owner: Optional[SubmitterIdentity] = None,
+        types: Optional[List[str]] = None,
     ) -> List[IdeaOut]:
         """Ideas for a tenant, rank order (priority ascending, then newest
         first). ``search`` matches problem/raw_text (case-insensitive);
@@ -500,7 +503,11 @@ class IdeaReadService:
 
         ``owner`` (SS-IDEATION-OWN, embed ``mine=true``): narrow to that
         submitter's own ideas (CRM user id or phone - never name). An owner with
-        no usable identity narrows to NOTHING, never to "all"."""
+        no usable identity narrows to NOTHING, never to "all".
+
+        ``types`` (SS-IDEA-TYPE): raw filter values (repeated and/or
+        comma-separated ``idea_types`` keys) - any-of; ``None``/empty = every
+        type; an unknown key is 422 ``unknown_type``."""
         q = self.db.query(Idea).filter(
             Idea.tenant_id == tenant_id, Idea.merged_into_id.is_(None)
         )  # AC-94-02: survivors only, every filter mode
@@ -510,6 +517,9 @@ class IdeaReadService:
             q = q.filter(Idea.product_id == product_id)
         if owner is not None:
             q = owned_filter(self.db, q, tenant_id, owner)
+        type_keys = resolve_idea_type_filter(self.db, types)
+        if type_keys:
+            q = q.filter(Idea.type.in_(type_keys))
         if search:
             like = f"%{search.strip()}%"
             q = q.filter(Idea.problem.ilike(like) | Idea.raw_text.ilike(like))

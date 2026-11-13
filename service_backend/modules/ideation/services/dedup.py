@@ -102,6 +102,7 @@ class DedupService:
         problem_text: str,
         exclude_id: ExcludeIds = None,
         is_test: bool = False,
+        idea_type: Optional[str] = None,
     ) -> Optional[str]:
         """Return the id of an existing (non-draft) Idea in the same
         ``(tenant, product)`` whose problem text is a high similarity match to
@@ -117,6 +118,10 @@ class DedupService:
         ever matches other real ideas - a console/``--say`` walk can never
         upvote a real idea, and a real submitter can never get folded into a
         test one.
+
+        ``idea_type`` (when given) keeps candidates in the SAME type lane
+        (SS-IDEA-TYPE): an ``issue`` never folds into an ``idea`` with similar
+        wording, and vice versa.
         """
         needle = _normalize(problem_text)
         if not needle:
@@ -124,8 +129,12 @@ class DedupService:
 
         excludes = _normalize_exclude_ids(exclude_id)
         if self._is_postgres():
-            return self._find_duplicate_pg(tenant_id, product_id, needle, excludes, is_test)
-        return self._find_duplicate_fallback(tenant_id, product_id, needle, excludes, is_test)
+            return self._find_duplicate_pg(
+                tenant_id, product_id, needle, excludes, is_test, idea_type
+            )
+        return self._find_duplicate_fallback(
+            tenant_id, product_id, needle, excludes, is_test, idea_type
+        )
 
     def find_similar_own(
         self,
@@ -135,6 +144,7 @@ class DedupService:
         ident: SubmitterIdentity,
         is_test: bool = False,
         limit: int = OWN_SIMILAR_LIMIT,
+        idea_type: Optional[str] = None,
     ) -> List[Tuple[str, float]]:
         """The submitter's OWN live ideas in ``(tenant, product)`` similar to
         ``text_`` - ``[(idea_id, score)]`` best first, at most ``limit``, at/above
@@ -155,6 +165,8 @@ class DedupService:
             Idea.is_test.is_(bool(is_test)),
             Idea.merged_into_id.is_(None),
         )
+        if idea_type is not None:
+            base = base.filter(Idea.type == idea_type)
         if dead_ids:
             base = base.filter(~Idea.status_id.in_(dead_ids))
         base = owned_filter(self.db, base, tenant_id, ident)
@@ -194,10 +206,12 @@ class DedupService:
         needle: str,
         excludes: List[str],
         is_test: bool = False,
+        idea_type: Optional[str] = None,
     ) -> Optional[str]:
         dead_ids = dead_candidate_status_ids(self.db, tenant_id)
         exclude_clause = "AND id NOT IN :excludes " if excludes else ""
         dead_clause = "AND status_id NOT IN :dead_statuses " if dead_ids else ""
+        type_clause = "AND type = :idea_type " if idea_type is not None else ""
         sql = text(
             f'SELECT id, similarity(lower(problem), :needle) AS sim '
             f'FROM "{IDEATION_SCHEMA}".ideas '
@@ -205,6 +219,7 @@ class DedupService:
             "AND is_test = :is_test AND merged_into_id IS NULL "
             f"{exclude_clause}"
             f"{dead_clause}"
+            f"{type_clause}"
             "AND similarity(lower(problem), :needle) >= :threshold "
             "ORDER BY sim DESC, id ASC LIMIT 1"
         )
@@ -215,6 +230,8 @@ class DedupService:
             "is_test": is_test,
             "threshold": PG_SIMILARITY_THRESHOLD,
         }
+        if idea_type is not None:
+            params["idea_type"] = idea_type
         if excludes:
             sql = sql.bindparams(bindparam("excludes", expanding=True))
             params["excludes"] = excludes
@@ -232,6 +249,7 @@ class DedupService:
         needle: str,
         excludes: List[str],
         is_test: bool = False,
+        idea_type: Optional[str] = None,
     ) -> Optional[str]:
         dead_ids = dead_candidate_status_ids(self.db, tenant_id)
         q = (
@@ -245,6 +263,8 @@ class DedupService:
         )
         if excludes:
             q = q.filter(~Idea.id.in_(excludes))
+        if idea_type is not None:
+            q = q.filter(Idea.type == idea_type)
         if dead_ids:
             q = q.filter(~Idea.status_id.in_(dead_ids))
 

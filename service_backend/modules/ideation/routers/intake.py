@@ -49,6 +49,7 @@ def create_idea(
         cancel=body.cancel,
         duplicate_choice=body.duplicate_choice,
         submitter_tier=body.submitter_tier,
+        idea_type=body.type,
     )
 
 
@@ -85,6 +86,7 @@ def create_idea_one_shot(
         attachments=[a.model_dump() for a in body.attachments] if body.attachments else None,
         is_test=body.is_test,
         intake_ref=body.intake_ref,
+        idea_type=body.type,
     )
 
 
@@ -107,4 +109,5 @@ def similar_own_ideas(
         submitter_crm_user_id=body.submitter_crm_user_id,
         submitter_phone=body.submitter_phone,
         is_test=body.is_test,
+        idea_type=body.type,
     )

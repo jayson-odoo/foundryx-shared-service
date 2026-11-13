@@ -21,6 +21,7 @@ from app.database import get_db
 from app.models.catalog import Product
 from modules.omnichannel.api_auth import ApiWorkspace, get_api_workspace
 
+from ..services.idea_types import list_idea_types
 from ..services.status_events import (
     DEFAULT_FEED_LIMIT,
     MAX_FEED_LIMIT,
@@ -51,6 +52,20 @@ def list_intake_products(
         .all()
     )
     return [{"id": r.id, "name": r.name, "kind": r.kind} for r in rows]
+
+
+@router.get("/idea-types")
+def list_intake_idea_types(
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """The idea-type catalog (SS-IDEA-TYPE) - ``[{key, label, is_default}]`` in
+    display order (``idea`` default, ``issue``, ...). The values the host may send
+    as ``type`` on create; one table, so a new type needs no host-side code."""
+    return [
+        {"key": t.key, "label": t.label, "is_default": bool(t.is_default)}
+        for t in list_idea_types(db)
+    ]
 
 
 @router.get("/status-events")
