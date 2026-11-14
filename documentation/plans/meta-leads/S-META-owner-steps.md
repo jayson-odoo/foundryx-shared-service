@@ -10,6 +10,12 @@ What crew already read with the app's own key (no owner click, 14/11/2026 ~23:30
 
 Never paste a token into a chat, PR, comment or screenshot. Steps 3 and 4 put it straight into a private file.
 
+**Progress (15/11/2026):** step 1 DONE 23:27 (use case "Capture & manage ad leads with Marketing API", all five
+permissions "Ready for testing"). Step 2 DONE 23:45: Page **Foundryx**, ID **1407353105803175**, owned by the
+"Foundryx" portfolio (used instead of a new "Foundryx Leads Test" Page; read "Foundryx" wherever the steps below
+say "Foundryx Leads Test"). The app key sees it as a real Page that needs `pages_read_engagement` to read, unlike
+the earlier candidate id. **Next: step 3.**
+
 ## 1. Add the lead permissions to the app (2 min)
 
 1. Open developers.facebook.com/apps and click **Foundryx WA App**.
