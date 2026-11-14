@@ -314,18 +314,37 @@ def test_successful_handler_writes_are_kept(session_factory):
         db.close()
 
 
-def test_omnichannel_reserves_its_message_fields():
-    from modules.omnichannel import bootstrap
-
-    bootstrap.register_capabilities()
-    for obj, field in (("whatsapp_business_account", "messages"), ("page", "messages"),
-                       ("instagram", "messages"), ("whatsapp_business_account", "message_template_status_update")):
+def test_omnichannel_message_traffic_is_reserved_in_core():
+    """Reserved before any module boots: another module claiming it fails, no
+    matter the boot order, and the reservation is never dispatched."""
+    for obj, field in (("whatsapp_business_account", "messages"),
+                       ("whatsapp_business_account", "smb_message_echoes"),
+                       ("whatsapp_business_account", "history"),
+                       ("page", "messages"), ("instagram", "messages"),
+                       ("page", "message_echoes")):
         with pytest.raises(reg.DuplicateMetaChangeHandler):
             reg.register_meta_change_handler(obj, field, "lead_capture", lambda *a: None)
-    # Reservations are not dispatched and leave `leadgen` free.
-    assert reg.meta_change_handlers() == []
+        with pytest.raises(reg.DuplicateMetaChangeHandler):
+            reg.reserve_meta_change_fields(obj, [field], "lead_capture")
     reg.register_meta_change_handler("page", "leadgen", "lead_capture", lambda *a: None)
-    bootstrap.register_capabilities()  # idempotent re-boot
+    assert [r.field for r in reg.meta_change_handlers()] == ["leadgen"]
+
+
+def test_handler_writes_survive_when_omnichannel_returns_early(session_factory):
+    """No channel for the Page: omnichannel returns without committing, yet
+    what the handler enqueued is kept."""
+    from modules.omnichannel.models import Workspace
+
+    def enqueue(db, obj, eid, value):
+        db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, name="kept-no-channel"))
+
+    reg.register_meta_change_handler("page", "leadgen", "lead_capture", enqueue)
+    _process(session_factory, "no-such-channel", _leadgen_payload("pg-nochan"))
+    db = session_factory()
+    try:
+        assert db.query(Workspace).filter(Workspace.name == "kept-no-channel").count() == 1
+    finally:
+        db.close()
 
 
 def test_handler_that_breaks_the_session_is_isolated(session_factory):

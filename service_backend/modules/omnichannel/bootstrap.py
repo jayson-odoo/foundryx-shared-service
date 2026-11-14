@@ -50,29 +50,6 @@ def register_capabilities() -> None:
         )
     )
 
-    # Plan 64 D5: the webhook `changes[]` fields omnichannel's own parsers
-    # consume. Reserved so no other module can register a handler that would
-    # receive message traffic before any tenant is resolved.
-    from app.integrations.meta.webhook_registry import reserve_meta_change_fields
-
-    reserve_meta_change_fields(
-        "whatsapp_business_account",
-        (
-            "messages",
-            "message_template_status_update",
-            "message_template_quality_update",
-            "message_template_category_update",
-        ),
-        MODULE_NAME,
-    )
-    for meta_object in ("page", "instagram"):
-        reserve_meta_change_fields(
-            meta_object,
-            ("messages", "messaging_postbacks", "message_reads", "message_deliveries",
-             "message_reactions", "message_echoes"),
-            MODULE_NAME,
-        )
-
 
 def register_public_cors() -> None:
     """Boot-time public-CORS registration (plan 34 review round 1, S9).
