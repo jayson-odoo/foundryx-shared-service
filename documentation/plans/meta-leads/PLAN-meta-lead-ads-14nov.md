@@ -259,3 +259,83 @@ its spike.
 
 The plan 64 lane order changes slightly: L4 moves ahead of L2 so delivery is testable before any wizard exists.
 security-reviewer stays mandatory on lanes 2, 4, 5 and 6.
+
+## 10. Which Meta app, and do we really need App Review? (owner question 14/11/2026 ~22:50)
+
+### 10.1 We already have a Meta app, and plan 64 reuses it
+
+**What the code shows:**
+
+- **App id and secret** come from deploy secrets `META_APP_ID` / `META_APP_SECRET`
+  (`.github/workflows/deploy.yml:366-367`, `docker-compose.yml:55-56`, `service_backend/app/config.py:375-376`).
+  The values are not in the repo.
+- **Products added:** WhatsApp and Facebook Login for Business, per the go-live runbook
+  (`documentation/plans/sprint-1/04-omnichannel-embedded-signup-runbook.md:7-8`).
+- **One webhook address for all Meta traffic:** `https://<host>/be/omnichannel/webhooks/<id>`. The route is
+  `service_backend/modules/omnichannel/routers/webhooks.py:54` mounted at `modules/omnichannel/manifest.json:131`, and
+  Caddy strips `/be` (`DEPLOY.md:45`). Meta's payload, not the address, decides the company
+  (`modules/omnichannel/services/inbound_service.py:76-78`).
+- **Verify token:** `META_WEBHOOK_VERIFY_TOKEN` (`deploy.yml:370`).
+
+**Permissions the app uses today:**
+
+- WhatsApp: `whatsapp_business_management` and `whatsapp_business_messaging`
+  (`modules/omnichannel/adapters/whatsapp_cloud.py:123-124`).
+- Messenger and Instagram: the Messenger and Instagram connect use Login for Business config ids
+  (`service_frontend/lib/embedded-signup.ts:31-34`). Their permission lists live in Meta's dashboard, not in the repo.
+
+**App Review status:** the repo records it as NOT done. Backlog BL-017 "Meta App Review + Business Verification" is
+still Open (`documentation/backlogs/backlog.md:40`). WhatsApp therefore works only for numbers whose owner has a role
+on the app (Development mode or Standard Access). **Owner to confirm** what Meta's dashboard shows today.
+
+**Conclusion:** plan 64 adds the lead permissions and the Page `leadgen` webhook field to this same app. One
+App Review submission can cover both BL-017 (WhatsApp) and the lead permissions.
+
+### 10.2 When App Review is needed (unconfirmed: Meta's pages cannot be opened from this sandbox)
+
+| Who connects | Needs App Review? |
+|---|---|
+| Foundryx's own Page, connected by someone with a role on the app (admin, developer, tester) | **No.** Standard Access covers people with a role on the app, so lane 1 and every Foundryx hand test run today |
+| An EcoHub customer's Page, connected by that customer's own staff | **Yes.** Advanced Access for `leads_retrieval`, `pages_manage_ads`, `pages_manage_metadata`, `pages_show_list`, `pages_read_engagement`. Business Verification of Foundryx's business portfolio is required for Advanced Access. If decision 2's system-user connection is used, Login for Business may add `business_management` (lane 1 checks) |
+| Workaround without App Review | Each customer could make a Foundryx staff member an admin of their Page, or share the Page with Foundryx's business portfolio as a partner. Foundryx would then connect it for them. This breaks "self-serve from EcoHub" and puts staff on every customer's Page. **Not recommended** beyond the first one or two pilot customers |
+
+So: **yes, App Review is needed** for the product you described (customers connect their own Pages from EcoHub). It
+is not needed to build and test everything on the Foundryx Page. Lanes 1-7 do not wait for it; only going live for
+customers does.
+
+### 10.3 What the owner provides or clicks, and what crew prepares
+
+| # | Item | Who | Notes |
+|---|---|---|---|
+| 1 | **Business portfolio** (Meta Business Manager) that owns the app, with its id | Owner | The app must belong to the business being verified |
+| 2 | **Business Verification:** legal company name exactly as registered, registration document, business address, business phone, website domain, and an email on that domain (or domain verified by DNS / meta tag) | Owner | Documents only the owner holds. Meta may call or email the phone/email for a code |
+| 3 | **Domain verification** of the website domain in Business Settings | Owner clicks; crew can add the meta tag if the domain is ours | Needed if Meta asks for it during verification |
+| 4 | **App roles:** owner stays Admin; add any staff who will test (Admin or Tester). Crew has no Facebook account, so every Facebook-side click in testing is the owner's or staff's | Owner | Also needed for lane 1 |
+| 5 | **App settings > Basic:** app icon (1024x1024), category (Business), contact email, Privacy Policy URL, Terms URL, Data Deletion URL | Owner pastes; crew prepares the pages and the icon file | The three URLs must be public pages |
+| 6 | **Privacy Policy page** covering lead data: what is collected, why, the 180-day retention, deletion, contact | Crew drafts, owner approves the wording | Public page on our domain. White-label question: Foundryx-branded, since it is the app's policy |
+| 7 | **Terms of Service page** | Crew drafts, owner approves | Same |
+| 8 | **Data deletion:** a public instructions page, plus optionally Meta's data deletion callback endpoint | Crew builds | Callback = one small endpoint; can be added to lane 4 |
+| 9 | **Use-case text per permission** (why we need each, how it is used, what the user sees) | Crew writes | From the wizard copy |
+| 10 | **Screencasts per permission:** sign in, pick Page, pick forms, test lead, lead appears | Crew scripts; **owner records** (Facebook login is his) | Recorded on the Foundryx Page in Development mode after lane 6 |
+| 11 | **Reviewer test access:** a Shared Service test company login + written steps; Meta reviewers use their own Facebook test account to connect | Crew prepares the test company and steps; owner pastes them into the submission | No real customer data |
+| 12 | **Submit** the review and answer Meta's follow-up questions | Owner submits (dashboard access); crew drafts every answer | Typical wait: days to weeks (unconfirmed) |
+| 13 | **Annual Data Use Checkup / Data Protection Assessment** when Meta asks | Owner signs; crew drafts | Recurring, yearly (unconfirmed) |
+
+### 10.4 What lane 1 (Meta test, 1 day) needs from the owner
+
+Secrets go through crew's secret channel only, never in a PR or comment.
+
+1. **App id + app secret** of the existing app, for the test copy.
+2. **Foundryx Page id**, with at least one Instant Form. Crew can guide the owner through creating one; no running
+   ad is needed.
+3. **A system-user token** from the Foundryx business, assigned to the Foundryx Page with the lead permissions, for
+   the API checks. Alternative: the owner signs in once through the test copy's "Continue with Facebook".
+4. **Owner's yes for crew to add the `leadgen` field** to the app's Page webhook subscription. It is the same app
+   and the same address, and Messenger is unaffected. This can be done by API with the app token, or by the owner
+   in the dashboard.
+5. **A public address for the test copy** so Meta can reach it (crew sets up a tunnel), and **network access to
+   graph.facebook.com** from the test machine.
+6. **About 20 minutes of the owner's time:**
+   - one Facebook sign-in
+   - one Lead Ads Testing Tool submission
+   - one new test form, to prove new forms arrive with no action
