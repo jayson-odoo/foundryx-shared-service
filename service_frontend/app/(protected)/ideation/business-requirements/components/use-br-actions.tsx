@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import type { StatusGraph } from '@/types/status-engine';
@@ -16,6 +16,14 @@ import { businessRequirementService } from '@/services/business-requirement-serv
 /** The BR promote edge id (Gate 0, AC-BI-34) - the ONE edge gated by the
  * separate `.promote` permission. A code contract, not a tenant-editable key. */
 const PROMOTE_EDGE_ID = 'br-tr-promote';
+
+/** The Send-to-build edges belong to the header button (its endpoint is the only
+ * path into `sent_to_build`) - never offered as a status move. */
+const SEND_EDGE_PREFIX = 'br-tr-send-to-build';
+/** "Back to ready" on a sent BR rides `send_to_build`, not `.manage`. */
+/** Fired only by the crew write-back (merged/released), never from the menu. */
+const BUILD_DELIVERED_EDGE_ID = 'br-tr-build-delivered';
+const BUILD_BACK_EDGE_ID = 'br-tr-build-back';
 
 export interface UseBrActionsHandlers {
   /** Refresh the form with the moved BR (status + answers). */
@@ -70,7 +78,7 @@ export function useBrActions(
     if (!current) return [];
 
     const edges = graph.transitions
-      .filter((t) => t.fromStatusId === current.id)
+      .filter((t) => t.fromStatusId === current.id && !t.id.startsWith(SEND_EDGE_PREFIX) && t.id !== BUILD_DELIVERED_EDGE_ID)
       .sort((a, b) => a.sortOrder - b.sortOrder);
 
     return edges.map((edge) => {
@@ -87,6 +95,9 @@ export function useBrActions(
         // every other BR edge rides .manage (the form's editPermission).
         ...(isPromote
           ? { permission: 'ideation.business_requirements.promote' as const }
+          : {}),
+        ...(edge.id === BUILD_BACK_EDGE_ID
+          ? { permission: 'ideation.business_requirements.send_to_build' as const }
           : {}),
         run: async (_rows, rt) => {
           try {

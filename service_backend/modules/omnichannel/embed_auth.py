@@ -30,8 +30,12 @@ from app.database import get_db
 from app.dependencies import (
     _maybe_apply_impersonation,
     _resolve_user,
+    assert_staff_token,
     effective_permission_keys,
+    read_request_body,
+    tenant_signin_allowed,
 )
+from app.models.user import User
 from app.repositories.module_repository import ModuleRepository
 from app.security import decode_access_token
 
@@ -39,14 +43,28 @@ from .models import Workspace
 
 MODULE_NAME = "omnichannel"
 
-_CREDENTIALS_EXC = HTTPException(
-    status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Could not validate credentials",
-    headers={"WWW-Authenticate": "Bearer"},
-)
-_MODULE_EXC = HTTPException(
-    status_code=status.HTTP_403_FORBIDDEN, detail="Module not installed"
-)
+
+
+def _credentials_exc() -> HTTPException:
+    # A new instance per raise (a shared one would accumulate request frames).
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _module_exc() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Module not installed"
+    )
+
+
+def _tenant_exc() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="This tenant is suspended. Contact support.",
+    )
 
 
 @dataclass
@@ -69,6 +87,13 @@ class ConversationPrincipal:
     is_embed: bool
     # Native attribution (real admin under impersonation); None for embed.
     actor_user_id: Optional[str] = None
+    # Native EFFECTIVE user (impersonation target when active, else same as
+    # `actor_user_id`) - B5: the identity `status_machine.transition` must
+    # authorize edge-role/condition checks AS, matching every other caller in
+    # the codebase (form_service, tenant_service, ideation all pass the
+    # effective `current_user`, never the real-admin attribution id). None
+    # for embed.
+    effective_user_id: Optional[str] = None
     # Federated attribution; None for native.
     external_agent_id: Optional[str] = None
     # Embed: the token's workspace (scope boundary). Native: None = all workspaces.
@@ -102,6 +127,25 @@ class ConversationPrincipal:
             )
         # Any embed token may READ within its scope (scope enforced separately).
 
+    def require_read_or_contacts(self) -> None:
+        """Like `require_read()` but ALSO accepts `contacts.read` (plan 26
+        review round 1, AC-CTM-22 phase-2 fix). The Contacts module's detail
+        page reuses THIS single-thread read (`get_thread`) and its message
+        history (`list_messages`) via the A1 `<ConversationDrawer>` - a role
+        holding only `contacts.read` (no `conversations.read`) must still be
+        able to open a contact's own detail page, mirroring the existing
+        "or" gate `get_lifecycle_moves` already applies. Deliberately
+        scoped to PER-RECORD reads only - `list_threads` (the shared Inbox
+        LIST) stays `conversations.read`-only, so `contacts.read` never
+        silently grants Inbox visibility (`app/permissions/... implied-read`
+        does not span module boundaries either)."""
+        if not self.is_embed and not ({"conversations.read", "contacts.read"} & self.permission_keys):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing permission: one of conversations.read, contacts.read",
+            )
+        # Any embed token may READ within its scope (scope enforced separately).
+
     def require_native_read(self, native_perm: str) -> None:
         """Gate a READ helper that both auth schemes reach (workspace templates /
         quick-replies / members). Native → the permission must be held (preserves
@@ -109,6 +153,22 @@ class ConversationPrincipal:
         workspace's catalog (workspace scope enforced by ``enforce_workspace`` /
         ``enforce_channel_workspace``); no write-cap needed for a read."""
         if not self.is_embed and native_perm not in self.permission_keys:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing permission: {native_perm}",
+            )
+
+    def require_native(self, native_perm: str) -> None:
+        """Gate a route with NO embed equivalent AT ALL - any embed token is
+        refused regardless of its caps (plan sprint-4/27 AC-IVE-40: the
+        shortcut list/run routes are not part of the embed widget's surface -
+        no embed cap grants them, ever)."""
+        if self.is_embed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This action is not available to embedded/federated callers.",
+            )
+        if native_perm not in self.permission_keys:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing permission: {native_perm}",
@@ -140,6 +200,18 @@ def _parse_bearer(authorization: Optional[str]) -> Optional[str]:
     return parts[1].strip() or None
 
 
+def _embed_claims(payload: dict):
+    """The four identity claims an embed token must carry (no database); refuses
+    a token missing any of them."""
+    tenant_id = payload.get("tenant_id")
+    workspace_id = payload.get("workspaceId")
+    agent_id = payload.get("external_agent_id")
+    connection_id = payload.get("connection_id")
+    if not (tenant_id and workspace_id and agent_id and connection_id):
+        raise _credentials_exc()
+    return tenant_id, workspace_id, agent_id, connection_id
+
+
 def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
     """Return an EmbedPrincipal iff ``token`` is a valid embed access token, else
     None (the caller falls through to the native path). A malformed/expired token
@@ -150,15 +222,13 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
         return None
     if payload.get("typ") != "embed":
         return None
-    tenant_id = payload.get("tenant_id")
-    workspace_id = payload.get("workspaceId")
-    agent_id = payload.get("external_agent_id")
-    connection_id = payload.get("connection_id")
-    if not (tenant_id and workspace_id and agent_id and connection_id):
-        raise _CREDENTIALS_EXC
+    tenant_id, workspace_id, agent_id, connection_id = _embed_claims(payload)
+    # The tenant must still be allowed to sign in (not suspended or archived).
+    if not tenant_signin_allowed(db, tenant_id):
+        raise _tenant_exc()
     # Module must be active for the tenant (mounted public - re-apply the gate).
     if not ModuleRepository(db).is_active(tenant_id, MODULE_NAME):
-        raise _MODULE_EXC
+        raise _module_exc()
     # The workspace must still belong to the tenant (a moved/trashed workspace
     # invalidates the token).
     ws = (
@@ -171,7 +241,7 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
         .first()
     )
     if ws is None:
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
     caps = payload.get("caps") or []
     return EmbedPrincipal(
         tenant_id=tenant_id,
@@ -183,6 +253,30 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
     )
 
 
+async def read_body_after_bearer_check(
+    request: Request, authorization: Optional[str] = Header(default=None)
+) -> None:
+    """Route-level dependency: no query runs before the body has arrived. Native and
+    embed tokens verify with the same signature check (no database); the principal
+    lookup in ``get_conversation_principal`` stays after the body."""
+    token = _parse_bearer(authorization)
+    if token is None:
+        raise _credentials_exc()
+    try:
+        payload = decode_access_token(token)
+    except JWTError:
+        raise _credentials_exc()
+    # Embed tokens keep their later checks in _resolve_embed; every other token
+    # takes the staff path, so it gets the same database-free refusals.
+    if payload.get("typ") == "embed":
+        _embed_claims(payload)
+    else:
+        if not payload.get("sub") or payload.get("typ"):
+            raise _credentials_exc()
+        assert_staff_token(payload)
+    await read_request_body(request)
+
+
 def get_conversation_principal(
     request: Request,
     authorization: Optional[str] = Header(default=None),
@@ -190,7 +284,7 @@ def get_conversation_principal(
 ) -> ConversationPrincipal:
     token = _parse_bearer(authorization)
     if token is None:
-        raise _CREDENTIALS_EXC
+        raise _credentials_exc()
 
     embed = _resolve_embed(token, db)
     if embed is not None:
@@ -209,12 +303,13 @@ def get_conversation_principal(
     real_user = _resolve_user(token, db)
     effective = _maybe_apply_impersonation(request, db, real_user)
     if not ModuleRepository(db).is_active(effective.tenant_id, MODULE_NAME):
-        raise _MODULE_EXC
+        raise _module_exc()
     actor = getattr(request.state, "real_user", real_user)
     return ConversationPrincipal(
         tenant_id=effective.tenant_id,
         is_embed=False,
         actor_user_id=str(actor.id),
+        effective_user_id=str(effective.id),
         permission_keys=effective_permission_keys(effective),
     )
 
@@ -262,6 +357,43 @@ def enforce_workspace(principal: ConversationPrincipal, workspace_id: str) -> No
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This resource is outside the token's workspace.",
         )
+
+
+def resolve_native_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
+    """Native-only actor resolution for edge-role auth (embed has none -
+    `actor=None` fails closed on any actor-conditioned edge, by design). Tenant-
+    scoped (the polymorphic stored-id rule - `actor_user_id` is a stored id,
+    never resolved unscoped). Lives here, not in a router, so a router never
+    runs its own `db.query(User)` (review round 1, finding 3)."""
+    if principal.is_embed or not principal.actor_user_id:
+        return None
+    return (
+        db.query(User)
+        .filter(User.id == principal.actor_user_id, User.tenant_id == principal.tenant_id)
+        .first()
+    )
+
+
+def resolve_effective_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
+    """B5: the EFFECTIVE-user counterpart to `resolve_native_actor`, for the
+    ONE use that is an AUTHORIZATION check, not attribution -
+    `status_machine.transition`'s edge-role/rule-condition gate for the
+    contact's lifecycle STAGE (`move_lifecycle` / `get_lifecycle_moves`).
+    `patch_thread`'s `status`/`priority` fields move the THREAD's own
+    open/snoozed/closed status, a separate concept from the lifecycle stage,
+    and resolve their actor via `resolve_native_actor` (attribution), not this
+    function. Under impersonation this is the TARGET (matches
+    `permission_keys`, which already reads the target's grants) -
+    `resolve_native_actor` stays the real admin for attribution (entity-event
+    actor facts, `actor_id`). Tenant-scoped (polymorphic stored-id rule);
+    embed has no native actor at all."""
+    if principal.is_embed or not principal.effective_user_id:
+        return None
+    return (
+        db.query(User)
+        .filter(User.id == principal.effective_user_id, User.tenant_id == principal.tenant_id)
+        .first()
+    )
 
 
 def enforce_channel_workspace(

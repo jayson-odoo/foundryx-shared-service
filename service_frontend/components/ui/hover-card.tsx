@@ -3,9 +3,31 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 import * as HoverCardPrimitive from '@radix-ui/react-hover-card';
+import { AnimatePresence, motion } from 'motion/react';
+import {
+  surfaceExitTransition,
+  surfaceTransition,
+  surfaceVariants,
+  useOpenState,
+  useReducedMotion,
+} from '@/lib/motion';
 
-function HoverCard({ ...props }: React.ComponentProps<typeof HoverCardPrimitive.Root>) {
-  return <HoverCardPrimitive.Root data-slot="hover-card" {...props} />;
+// Mirrors the Root's open state so HoverCardContent can gate its own
+// <AnimatePresence> - see the identical DialogOpenContext in dialog.tsx.
+const HoverCardOpenContext = React.createContext(true);
+
+function HoverCard({
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof HoverCardPrimitive.Root>) {
+  const [open, setOpen] = useOpenState(openProp, defaultOpen, onOpenChange);
+  return (
+    <HoverCardOpenContext.Provider value={open}>
+      <HoverCardPrimitive.Root data-slot="hover-card" open={open} onOpenChange={setOpen} {...props} />
+    </HoverCardOpenContext.Provider>
+  );
 }
 
 function HoverCardTrigger({ ...props }: React.ComponentProps<typeof HoverCardPrimitive.Trigger>) {
@@ -14,23 +36,48 @@ function HoverCardTrigger({ ...props }: React.ComponentProps<typeof HoverCardPri
 
 function HoverCardContent({
   className,
+  children,
   align = 'center',
   sideOffset = 4,
   ...props
 }: React.ComponentProps<typeof HoverCardPrimitive.Content>) {
+  const open = React.useContext(HoverCardOpenContext);
+  const prefersReducedMotion = useReducedMotion();
+  const variants = surfaceVariants(prefersReducedMotion);
+  const transition = surfaceTransition(prefersReducedMotion, 'menu');
+  const exitTransition = surfaceExitTransition(prefersReducedMotion);
+
+  // Same split as PopoverContent/DropdownMenuContent: Radix Popper owns
+  // Content's own positioning transform, so the spring animates an inner
+  // div instead.
   return (
-    <HoverCardPrimitive.Portal data-slot="hover-card-portal">
-      <HoverCardPrimitive.Content
-        data-slot="hover-card-content"
-        align={align}
-        sideOffset={sideOffset}
-        className={cn(
-          'bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 w-64 origin-(--radix-hover-card-content-transform-origin) rounded-md border p-4 shadow-md outline-hidden',
-          className,
-        )}
-        {...props}
-      />
-    </HoverCardPrimitive.Portal>
+    <AnimatePresence>
+      {open && (
+        <HoverCardPrimitive.Portal forceMount data-slot="hover-card-portal">
+          <HoverCardPrimitive.Content
+            forceMount
+            data-slot="hover-card-content"
+            align={align}
+            sideOffset={sideOffset}
+            className="z-(--z-modal) outline-hidden"
+            {...props}
+          >
+            <motion.div
+              className={cn(
+                'bg-popover text-popover-foreground w-64 origin-(--radix-hover-card-content-transform-origin) rounded-md border p-4 shadow-md',
+                className,
+              )}
+              initial={variants.initial}
+              animate={variants.animate}
+              exit={{ ...variants.exit, transition: exitTransition }}
+              transition={transition}
+            >
+              {children}
+            </motion.div>
+          </HoverCardPrimitive.Content>
+        </HoverCardPrimitive.Portal>
+      )}
+    </AnimatePresence>
   );
 }
 

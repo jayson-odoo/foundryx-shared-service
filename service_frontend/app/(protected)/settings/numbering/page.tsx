@@ -1,19 +1,13 @@
 'use client';
 
 import { Fragment, useState } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { ResourceList } from '@/components/platform/resource-list';
-import { RequirePermission } from '@/components/common/require-permission';
-import { numberingService } from '@/services/numbering-service';
 import type { NumberCatalogItem, NumberReset } from '@/types/numbering';
-import { useNumberingListConfig } from './use-numbering-list-config';
+import { numberingService } from '@/services/numbering-service';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
+import { ResourceList } from '@/components/platform/resource-list';
 import { NumberEditDialog } from './number-edit-dialog';
+import { useNumberingListConfig } from './use-numbering-list-config';
 
 /**
  * Numbering settings (sprint-4/07, Cluster F - AC-07-07) - the per-tenant
@@ -43,16 +37,6 @@ export default function NumberingPage() {
   return (
     <RequirePermission permission="numbering.read">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Set the prefix, format and reset cadence for each numbered document.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
         <Container width="fluid">
           <ResourceList key={nonce} config={config} />
         </Container>

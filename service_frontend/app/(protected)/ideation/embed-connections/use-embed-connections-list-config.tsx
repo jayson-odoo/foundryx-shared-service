@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Link2, PowerOff, RefreshCw, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -16,7 +15,11 @@ import type { EmbedConnectionItem } from '@/types/embed-connection';
 import type { Product } from '@/types/ideation';
 import { toCsv } from '@/lib/csv';
 
+// The page itself requires triage; create / rotate / activate-deactivate ALSO need
+// the BR-manage key (the backend gate for connection create/patch/rotate), so
+// only actions that will work are offered. Delete + list stay triage-only.
 const MANAGE = 'ideation.triage.manage';
+const MINT = 'ideation.business_requirements.manage';
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 function sortItems(rows: EmbedConnectionItem[], sort: ListQuery['sort']): EmbedConnectionItem[] {
@@ -73,7 +76,7 @@ export function useEmbedConnectionsListConfig(
         id: 'rotate',
         label: 'Rotate secret',
         icon: RefreshCw,
-        permission: MANAGE,
+        permission: MINT,
         surfaces: { row: true },
         run: (rows) => {
           const [c] = rows;
@@ -84,24 +87,18 @@ export function useEmbedConnectionsListConfig(
         id: 'toggle-active',
         label: (rows) => (rows[0]?.isActive ? 'Deactivate' : 'Activate'),
         icon: PowerOff,
-        permission: MANAGE,
+        permission: MINT,
         surfaces: { row: true },
-        confirm: {
-          title: 'Change connection status?',
-          description:
-            'Deactivating stops the host from starting new embed sessions and kills live embed tokens on their next request. Reactivating restores it.',
-          confirmLabel: 'Confirm',
-        },
-        run: async (rows, rt) => {
-          const [c] = rows;
-          if (!c) return;
-          try {
-            await embedConnectionService.setActive(c.connectionId, !c.isActive);
-            toast.success(c.isActive ? 'Connection deactivated.' : 'Connection activated.');
-            rt.reload();
-          } catch (e) {
-            toast.error(e instanceof Error ? e.message : 'Could not update the connection.');
-          }
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered
+        // `ideation_embed_connections.set_active` handler commits it
+        // server-side); the payload carries the TARGET state (the toggle's
+        // direction is derived from the row's current state at click time,
+        // same as the label above).
+        deferred: {
+          actionKey: 'ideation_embed_connections.set_active',
+          entityType: 'ideation_embed_connection',
+          payload: (rows) => ({ isActive: !rows[0]?.isActive }),
         },
       },
       {
@@ -111,22 +108,12 @@ export function useEmbedConnectionsListConfig(
         tone: 'destructive',
         permission: MANAGE,
         surfaces: { row: true },
-        confirm: {
-          title: 'Delete embed connection?',
-          description:
-            'This permanently removes the connection and its stored secret. Any live embed token stops resolving on its next request. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, rt) => {
-          const [c] = rows;
-          if (!c) return;
-          try {
-            await embedConnectionService.remove(c.connectionId);
-            toast.success('Embed connection deleted.');
-            rt.reload();
-          } catch (e) {
-            toast.error(e instanceof Error ? e.message : 'Could not delete the connection.');
-          }
+        // Grace-window deferred action - no confirm, no `run` (the
+        // registered `ideation_embed_connections.delete` handler commits it
+        // server-side).
+        deferred: {
+          actionKey: 'ideation_embed_connections.delete',
+          entityType: 'ideation_embed_connection',
         },
       },
     ],
@@ -220,6 +207,7 @@ export function useEmbedConnectionsListConfig(
                 rows={[row.original]}
                 runtime={{ ctx: meta?.resourceCtx, index, reload: meta?.reload ?? (() => {}) }}
                 surface="row"
+                getEntityId={(c) => c.connectionId}
               />
             </div>
           );
@@ -285,7 +273,7 @@ export function useEmbedConnectionsListConfig(
       exportFilename: 'embed-connections',
       enableStatusViews: false,
       createLabel: 'Add connection',
-      createPermission: MANAGE,
+      createPermission: MINT,
       onCreate,
     };
   }, [actions, onCreate, formatDateTime, productName]);

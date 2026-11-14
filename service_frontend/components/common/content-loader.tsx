@@ -1,17 +1,39 @@
 import { cn } from '@/lib/utils';
-import { LoaderCircleIcon } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
 
-export function ContentLoader({ className }: { className?: string }) {
-  return (
-    <div
-      className={cn('flex items-center justify-center grow w-full', className)}
-    >
-      <div className="flex items-center gap-2.5">
-        <LoaderCircleIcon className="animate-spin text-muted-foreground opacity-50" />
-        <span className="text-muted-foreground font-medium text-sm">
-          Loading...
-        </span>
+export type ContentLoaderVariant = 'block' | 'card' | 'inline';
+
+export interface ContentLoaderProps {
+  /**
+   * `block` (default) - a filled rectangle standing in for a chunk of
+   * content (drop-in for a spinner+text placeholder that used to fill a
+   * grown container). `card` - a few text-line bars, for a card-shaped
+   * region. `inline` - one short bar, for a small in-line spot.
+   */
+  variant?: ContentLoaderVariant;
+  className?: string;
+}
+
+/**
+ * Generic ad-hoc content placeholder (AC-DLA-49) - a `Skeleton` shape, not
+ * a spinner+text pill (the bare "loading" word is banned repo-wide as UI
+ * copy; a skeleton holds the space and communicates "content is arriving"
+ * without narrating it).
+ */
+export function ContentLoader({ variant = 'block', className }: ContentLoaderProps) {
+  if (variant === 'inline') {
+    return <Skeleton className={cn('h-4 w-24', className)} />;
+  }
+
+  if (variant === 'card') {
+    return (
+      <div className={cn('flex w-full flex-col gap-2', className)}>
+        <Skeleton className="h-4 w-1/3" />
+        <Skeleton className="h-3.5 w-full" />
+        <Skeleton className="h-3.5 w-5/6" />
       </div>
-    </div>
-  );
+    );
+  }
+
+  return <Skeleton className={cn('h-24 w-full grow', className)} />;
 }

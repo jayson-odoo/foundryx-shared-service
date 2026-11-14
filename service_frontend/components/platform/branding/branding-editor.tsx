@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { LoaderCircleIcon } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { BrandingFooter, BrandingSocials, BrandingTokens } from '@/types/branding';
 import { isValidColor } from '@/lib/branding-tokens';
 import { useBrandingAdmin } from '@/hooks/use-branding';
@@ -200,7 +200,7 @@ export function BrandingEditor({ tenantId, canManage }: BrandingEditorProps) {
       />
 
       {canManage && (
-        <div className="sticky bottom-4 z-10 flex items-center justify-end gap-2">
+        <div className="sticky bottom-4 z-(--z-sticky-content) flex items-center justify-end gap-2">
           {isDirty && (
             <>
               <Button

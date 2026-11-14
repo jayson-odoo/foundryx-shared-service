@@ -6,6 +6,7 @@ import {
   browserTimeZone,
   formatDate,
   formatDateTime,
+  formatDmyDateTime,
   formatTime,
 } from '@/lib/datetime';
 
@@ -15,6 +16,8 @@ export interface UseDatetimeReturn {
   formatDate: (iso: string | null | undefined) => string;
   formatDateTime: (iso: string | null | undefined) => string;
   formatTime: (iso: string | null | undefined) => string;
+  /** "05/11/2026, 3:04 pm" */
+  formatDmyDateTime: (iso: string | null | undefined) => string;
 }
 
 /**
@@ -34,6 +37,7 @@ export function useDatetime(): UseDatetimeReturn {
       formatDate: (iso) => formatDate(iso, { timeZone: preferred }),
       formatDateTime: (iso) => formatDateTime(iso, { timeZone: preferred }),
       formatTime: (iso) => formatTime(iso, { timeZone: preferred }),
+      formatDmyDateTime: (iso) => formatDmyDateTime(iso, { timeZone: preferred }),
     };
   }, [preferred]);
 }

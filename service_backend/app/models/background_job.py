@@ -71,4 +71,13 @@ class BackgroundJob(Base):
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     started_at = Column(UTCDateTime(), nullable=True)
+    # Liveness (fix/job-lease-orphan-sweep, prod incident 2026-09-07): the
+    # executing worker stamps this in its OWN short transaction (page / push
+    # batch); ``JobService.fail_orphaned_running_jobs`` fails a RUNNING row
+    # whose ``coalesce(heartbeat_at, started_at, created_at)`` is older than
+    # ``settings.background_job_orphan_after_minutes``. NULL = legacy row or
+    # a run that has not reached its first checkpoint (falls back to
+    # ``started_at``). A deploy's 30s drain cannot cover a multi-minute run,
+    # so ``running`` is NOT "rolled back on death" - this is what tells us.
+    heartbeat_at = Column(UTCDateTime(), nullable=True)
     finished_at = Column(UTCDateTime(), nullable=True)

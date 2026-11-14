@@ -7,7 +7,7 @@
  * transition actions. Row click → the read-only submission page. */
 import { useEffect, useMemo, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
@@ -220,6 +220,11 @@ export function FormSubmissionsTab({ form }: FormSubmissionsTabProps) {
         { id: 'all', label: 'All statuses' },
         ...(graph?.statuses ?? []).map((s) => ({ id: s.key, label: s.label })),
       ],
+      // Round-3 fix: `graph` (the submission-status graph, incl. the real
+      // segment list) loads async - same "all sentinel always present"
+      // trap as Contacts' segmentOptions(). Defer the shell's segment
+      // fallback until the graph has actually resolved.
+      segmentsReady: graph !== null,
       defaultSegment: 'all',
       columns,
       filterFields: [],
@@ -234,5 +239,5 @@ export function FormSubmissionsTab({ form }: FormSubmissionsTabProps) {
     };
   }, [form.id, form.slug, form.pinnedColumns, form.draftDefinition, graph, formatDateTime]);
 
-  return <ResourceList config={config} />;
+  return <ResourceList config={config} hideHeader />;
 }

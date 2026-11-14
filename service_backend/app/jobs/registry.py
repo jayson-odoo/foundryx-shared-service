@@ -6,7 +6,7 @@ Mirrors the engine registries (status entities / rule facts / importers): a
 for the same ``type`` is a loud error too (mirrors the capability registry).
 """
 from dataclasses import dataclass
-from typing import Callable, Dict, List
+from typing import Callable, Collection, Dict, List, Optional, Set
 
 from sqlalchemy.orm import Session
 
@@ -20,11 +20,36 @@ JobHandler = Callable[[Session, BackgroundJob], None]
 
 @dataclass(frozen=True)
 class JobHandlerDef:
-    """One job ``type`` and the callable that executes it."""
+    """One job ``type`` and the callable that executes it.
+
+    ``queue`` is the Celery queue this type must be dispatched onto - None (the
+    default) rides the ``workflow`` worker's default queue like every other
+    job. A type declares one when its work cannot run on that shared worker
+    (sprint-5: ``meetings.transcribe`` needs the Metal-bound mlx STT venv that
+    only exists on the pilot host)."""
 
     type: str
     handler: JobHandler
     label: str
+    queue: Optional[str] = None
+    # Liveness contract (fix/job-lease-orphan-sweep): True means the handler
+    # stamps ``JobService.heartbeat`` at every checkpoint, so a RUNNING job of
+    # this type with a stale beat IS an orphan and the sweep may fail it. A
+    # type that does not beat (a 45-minute meetings transcription, an import)
+    # is never swept - silence is not evidence for it.
+    heartbeats: bool = False
+    # The permission key that lets a user read jobs of this type (list and
+    # detail). A type naming none is readable by nobody.
+    read_permission: Optional[str] = None
+    # True: jobs of this type are read only through the owning module's own
+    # routes, which check each row; the generic Jobs routes never list them.
+    module_read: bool = False
+    # SS-SO-FAST-QUEUE - a PER-JOB route, asked before ``queue``: one type
+    # whose jobs belong on different workers (``autocount_sync``: a document
+    # incremental rides ``jobs_docs`` so it never waits behind a 4-minute
+    # stock_balance walk). Returns a queue name, or None for "no override,
+    # use ``queue`` / the default route".
+    queue_for: Optional[Callable[[BackgroundJob], Optional[str]]] = None
 
 
 _REGISTRY: Dict[str, JobHandlerDef] = {}
@@ -55,6 +80,55 @@ def list_job_handlers() -> List[JobHandlerDef]:
     return list(_REGISTRY.values())
 
 
+def queue_for_type(job_type: str) -> Optional[str]:
+    """The Celery queue a registered ``type`` declares, or None when it has no
+    override (the default queue) - including for a ``type`` that is not
+    registered at all. ``JobService.enqueue`` only cares whether there is an
+    override to route onto, so this stays quiet rather than raising the way
+    ``handler_for`` does; the loud unknown-type check already happened at
+    ``create()`` time."""
+    handler_def = _REGISTRY.get(job_type)
+    return handler_def.queue if handler_def is not None else None
+
+
+def queue_for_job(job: BackgroundJob) -> Optional[str]:
+    """The Celery queue ONE job is dispatched onto: the type's per-job
+    ``queue_for`` resolver first, then the type's static ``queue``, else None
+    (the default route). Quiet for an unknown type, like ``queue_for_type``.
+    A resolver that raises never blocks the enqueue - the job falls back to
+    the static route and the error is logged."""
+    handler_def = _REGISTRY.get(job.type)
+    if handler_def is None:
+        return None
+    if handler_def.queue_for is not None:
+        try:
+            routed = handler_def.queue_for(job)
+        except Exception:  # noqa: BLE001 - routing never loses a job
+            import logging
+
+            logging.getLogger("foundryx.jobs").exception(
+                "queue_for resolver failed for job %s; using the static route", job.id
+            )
+            routed = None
+        if routed:
+            return routed
+    return handler_def.queue
+
+
 def _reset_registry_for_tests() -> None:
     """Test seam - clears the registry (handlers re-register idempotently)."""
     _REGISTRY.clear()
+
+
+def types_that_heartbeat() -> List[str]:
+    """Job types whose handler declared ``heartbeats=True`` - the only types
+    the orphan sweep may judge by a stale heartbeat."""
+    return [d.type for d in _REGISTRY.values() if d.heartbeats]
+
+
+def readable_job_types(permission_keys: Collection[str]) -> Set[str]:
+    """Registered job types whose read permission is among ``permission_keys``."""
+    keys = set(permission_keys)
+    return {
+        d.type for d in _REGISTRY.values() if not d.module_read and d.read_permission and d.read_permission in keys
+    }

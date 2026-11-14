@@ -15,6 +15,8 @@ import { useRef, useState } from 'react';
 import { Eye, EyeOff, Maximize2, Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import {
   Dialog,
   DialogBody,
@@ -104,7 +106,7 @@ export function MergeFieldEditor({
           disabled={disabled}
           onClick={() => insert(field.key)}
           aria-label={`Insert ${field.label}`}
-          className="disabled:opacity-50"
+          className={cn(PRESSED_CLASS, 'disabled:opacity-50')}
         >
           <Badge variant="secondary" appearance="light" size="sm" className="cursor-pointer">
             <Plus className="size-2.5" />

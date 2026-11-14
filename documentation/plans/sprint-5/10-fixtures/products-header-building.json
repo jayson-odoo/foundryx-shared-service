@@ -1,0 +1,11 @@
+{
+  "snapshotId": "b2a9c7e1-4f3d-4a8b-9c2e-7d1f6a3b8c4e",
+  "entity": "products",
+  "companyCode": "MCH",
+  "status": "building",
+  "progress": {
+    "pagesDone": 2,
+    "pagesTotal": 4,
+    "stage": "lookup:uom"
+  }
+}

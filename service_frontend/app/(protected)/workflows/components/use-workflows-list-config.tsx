@@ -53,7 +53,11 @@ export function useWorkflowsListConfig(): ResourceListConfig<WorkflowListItem> {
         header: ({ column }) => <DataGridColumnHeader title="Name" column={column} />,
         cell: ({ row }) => (
           <div className="flex flex-col">
-            <span className="font-medium leading-tight text-foreground">{row.original.name}</span>
+            <ClampedText
+              text={row.original.name}
+              lines={1}
+              className="font-medium leading-tight text-foreground"
+            />
             <ClampedText
               text={row.original.description}
               lines={1}

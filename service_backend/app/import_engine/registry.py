@@ -85,6 +85,13 @@ class ImporterDef:
     create_rows: Optional[Callable[[Session, str, List[dict], dict], List[str]]] = None
     update_rows: Optional[Callable[[Session, str, List[dict], dict], List[str]]] = None
     existing_ids: Optional[Callable[[Session, str, List[str]], set]] = None
+    # Context-aware variant (plan 26 S3) - preferred over ``existing_ids`` when
+    # set. An importer whose match key needs more than tenant scoping (e.g. a
+    # workspace-scoped entity, where an id belonging to ANOTHER workspace of
+    # the same tenant must never resolve as "exists") declares this instead so
+    # the existence check narrows by the job's own context (D17's
+    # ``context_keys``), not just the tenant.
+    existing_ids_ctx: Optional[Callable[[Session, str, List[str], dict], set]] = None
     # Imperative cross-column escape hatch (D6) - returns {colKey: msg} or {}.
     validate_row: Optional[Callable[[dict, dict], Dict[str, str]]] = None
     # Aggregate/set-based validation hook (sprint-4/05) - runs ONCE over the whole
@@ -92,6 +99,9 @@ class ImporterDef:
     # constraint (e.g. GA capacity ``sold + held + import_qty <= capacity``) blocks
     # the commit, never oversells. Returns a list of error dicts
     # ``{"row": int|None, "column": str, "message": str}`` (row None = aggregate).
+    # Each row dict also carries ``__op__`` ("create"|"update") so a hook can
+    # apply create-only rules (e.g. a uniqueness check that must not flag a
+    # round-tripped export→edit→re-import row against its OWN existing value).
     validate_prepared: Optional[
         Callable[[Session, str, List[dict], dict], List[dict]]
     ] = None
@@ -99,6 +109,19 @@ class ImporterDef:
     context_keys: Tuple[str, ...] = ()
     module: str = "core"
     write_permission: str = ""  # the entity write perm gating import (D12)
+    # Dynamic EXTRA columns beyond the static ``columns`` tuple (plan 26 S3) -
+    # e.g. one column per a workspace's REGISTERED custom fields, which cannot
+    # be known at boot-time registration. Resolved from the job's own tenant +
+    # context (``job.context_json``), so it is only meaningful once a job
+    # exists (``_prepare``/``preview``/``commit_job``) - the pre-upload
+    # ``GET /config``/``GET /template`` screens still see only the static set
+    # unless a future caller threads a ``context`` query param through them.
+    dynamic_columns: Optional[Callable[[Session, str, dict], Sequence[ImportColumn]]] = None
+    # The WORKFLOW-engine entity_type to emit ``entity.created``/``updated``
+    # against when this differs from ``entity_type`` (plan 26 S3) - mirrors
+    # ``StatusEntity.workflow_entity_type``. None = use ``entity_type`` as-is
+    # (every pre-existing importer's behaviour, unchanged).
+    workflow_entity_type: Optional[str] = None
 
     def column(self, key: str) -> Optional[ImportColumn]:
         for c in self.columns:
@@ -109,6 +132,17 @@ class ImporterDef:
     @property
     def required_columns(self) -> List[ImportColumn]:
         return [c for c in self.columns if c.required]
+
+    def effective_columns(
+        self, db: Session, tenant_id: str, context: Optional[dict]
+    ) -> Tuple[ImportColumn, ...]:
+        """``columns`` plus this importer's ``dynamic_columns`` (if any),
+        resolved for THIS tenant + context. Backward compatible - an importer
+        with no ``dynamic_columns`` returns exactly ``self.columns``."""
+        if self.dynamic_columns is None:
+            return self.columns
+        extra = tuple(self.dynamic_columns(db, tenant_id, context or {}) or ())
+        return self.columns + extra
 
 
 _REGISTRY: Dict[str, ImporterDef] = {}

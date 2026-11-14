@@ -39,6 +39,7 @@ import {
   type DocumentService,
   type UploadProgress,
 } from './document-service';
+import { openedType } from '@/lib/file-display-type';
 
 function listParams(query: ListQuery): URLSearchParams {
   const p = new URLSearchParams();
@@ -201,7 +202,7 @@ export const realDocumentService: DocumentService = {
 
   async previewUrl(fileId) {
     const blob = await apiFetchBlob(`/documents/files/${fileId}/content?disposition=inline`);
-    return URL.createObjectURL(blob);
+    return URL.createObjectURL(new Blob([blob], { type: openedType(blob.type) }));
   },
 
   downloadFile(fileId) {
@@ -338,7 +339,7 @@ export const realDocumentService: DocumentService = {
     const blob = await apiFetchBlob(
       `/documents/shares/by-token/${encodeURIComponent(token)}/file/${encodeURIComponent(fileId)}?disposition=inline`,
     );
-    return URL.createObjectURL(blob);
+    return URL.createObjectURL(new Blob([blob], { type: openedType(blob.type) }));
   },
 
   async downloadShareFile(token, fileId, name) {

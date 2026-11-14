@@ -2,8 +2,8 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { PlugZap, Pencil, PowerOff, RotateCcw, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { KeyRound, PlugZap, Pencil, PowerOff, RotateCcw, Trash2 } from 'lucide-react';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import type { Channel } from '@/types/omnichannel';
@@ -14,7 +14,12 @@ import { channelFormHref } from './paths';
  * toolbar, and the form "…" menu (plan 04 §7). Channels are CREATED via the
  * Connect wizard, not an action; here we edit / test / disconnect.
  */
-export function useChannelActions(): ResourceAction<Channel>[] {
+export interface UseChannelActionsOptions {
+  /** Open the Replace token dialog for a channel (the parent owns the dialog state). */
+  onReplaceToken?: (channel: Channel) => void;
+}
+
+export function useChannelActions({ onReplaceToken }: UseChannelActionsOptions = {}): ResourceAction<Channel>[] {
   const router = useRouter();
 
   return useMemo<ResourceAction<Channel>[]>(() => {
@@ -47,6 +52,20 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         },
       },
       {
+        id: 'replace-token',
+        label: 'Replace token',
+        icon: KeyRound,
+        permission: 'channels.manage',
+        surfaces: { row: true, form: true },
+        isVisible: (rows) =>
+          rows.length === 1 && rows.every((r) => r.channelType === 'WHATSAPP' && !r.isTrashed),
+        // Opens the dialog (a `run`, not a confirm): the list page or the record
+        // owns the dialog, like `onConnect` on the list config.
+        run: ([channel]) => {
+          if (channel) onReplaceToken?.(channel);
+        },
+      },
+      {
         id: 'disconnect',
         label: 'Disconnect',
         icon: PowerOff,
@@ -55,17 +74,10 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         surfaces: { row: true, bulk: true, form: true },
         // Active (non-trashed) channels only → moves them to the Trashed view.
         isVisible: (rows) => rows.length > 0 && rows.every((r) => !r.isTrashed),
-        confirm: {
-          title: 'Disconnect channel?',
-          description:
-            'The channel will stop sending and receiving messages and move to Trashed. You can reconnect it later via Connect with Facebook.',
-          confirmLabel: 'Disconnect',
-        },
-        run: async (rows, rt) => {
-          await channelService.disconnect(ids(rows));
-          toast.success(`Disconnected ${rows.length} channel(s).`);
-          rt.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `channels.disconnect`
+        // handler commits it server-side).
+        deferred: { actionKey: 'channels.disconnect', entityType: 'channel' },
       },
       {
         id: 'restore',
@@ -90,18 +102,10 @@ export function useChannelActions(): ResourceAction<Channel>[] {
         surfaces: { row: true, bulk: true },
         // Only from the Trashed view - hard delete.
         isVisible: (rows) => rows.length > 0 && rows.every((r) => r.isTrashed),
-        confirm: {
-          title: 'Delete channel permanently?',
-          description:
-            'This permanently removes the channel and its configuration. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, rt) => {
-          await channelService.remove(ids(rows));
-          toast.success(`Deleted ${rows.length} channel(s).`);
-          rt.reload();
-        },
+        // Grace-window deferred action - no confirm, no `run` (the
+        // registered `channels.delete` handler commits it server-side).
+        deferred: { actionKey: 'channels.delete', entityType: 'channel' },
       },
     ];
-  }, [router]);
+  }, [router, onReplaceToken]);
 }

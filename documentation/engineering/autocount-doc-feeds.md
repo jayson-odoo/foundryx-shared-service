@@ -1,0 +1,425 @@
+# AutoCount document feeds: Delivery Orders and Goods Receive Notes
+
+Scope: the `autocount` module's HTTP-source feeds that push vendor documents (open REST API,
+`hapi` books) to the Sorento CRM. Plan and decisions: `documentation/plans/sprint-5/14-*`
+(D1..D22). **Contract of record: section 13 of the CRM's
+`documentation/plans/autocount/PLAN-autocount-cross-repo-contract.md`** (Sorento repo). A wire
+change here without the matching change there is a review finding. Engine-wide rules (layering,
+tenancy, Resource shell) are in `AGENTS.md`.
+
+Code: `service_backend/modules/autocount/doc_feed/` (`runner.py`, `vendor.py`, `scheduler.py`,
+`jobs.py`, `constants.py`), `services/doc_feed_service.py`, `routers/doc_feeds.py` (mounted at
+`/autocount/doc-feeds`, existing keys `autocount.companies.read|manage`, `autocount.sync.read|run`,
+no new permission), models `AcDocFeed*` and module migration `0023_autocount_doc_feed`;
+`service_frontend/app/(protected)/autocount/companies/components/doc-feed*`.
+
+## 0. Branches are NOT a feed (plan 14 section 11, D23-D28)
+
+`branches` started life as a third doc feed and became the regular HTTP master entity **`branch`**
+(owner ruling after the hand test: "it is a master data though with pagination, it is just like
+product"). It is wired exactly like `brand` (plan 08) and paged like `product`: an Add-entity task
+on an open (`http`) company, `HTTP_PRESETS["branch"]` (path `/branchbypage`, key fields `AccNo` +
+`BranchCode`, mapping rows `AccNo -> acc_no` and `BranchCode -> code` required, `BranchName -> name`),
+sync modes, first-run window, Runs and health all from the ETL framework. Facts a maintainer needs:
+
+- **Wire (D24):** `CanonicalBranch.sink_payload()` is the **raw vendor row** with the mapped
+  `AccNo` / `BranchCode` / `BranchName` written over it (the CRM stores the row and reads only those
+  three); no canonical keys reach the wire. The raw row rides in `source_record`, filled by the
+  mapping engine (`EntityProfile.raw_record_field`), never a mapping target.
+- **Identity (D25):** `source_ref` = `{book}:BR:{AccNo}:{BranchCode}` verbatim, the CRM's own
+  derivation (the ETL matches verdicts by the string it sent). `book` comes from the task
+  connection's base URL (`http_source/book.py`, `derive_book` / `identity_scope`); every other
+  entity keeps `{database_name}:{key}`.
+- **Sink (D26):** `_ENTITY_PATH["branch"] = "branches"`, `CONTRACT_GATED_ENTITIES["branch"] = (2.7,
+  "branches")`, one row in `CompanyService._CONTRACT_GATE_REQUIRED_VERSIONS` (the generic
+  `contractGate` banner, never a brand-style method). `sink_for_company` passes `book` (from the
+  company's own HTTP source connection) for a branch only, so the ingest body carries the
+  top-level `book` the CRM requires; other entities' bodies are unchanged.
+- **No deletions (D27):** `NO_DELETION_ENTITY_TYPES = {branch}`. The full-extract reconcile stages
+  no delete for a vanished branch, counts it as the run summary key `vanished` ("known but absent from this full extract": recounted on every full run, not a running total), the delete guard
+  has nothing to guard, and `sync_service` never calls `delete_batch` for it (the CRM has no
+  branches deletions door and DOs reference branches).
+- **Removed from the doc feed (D28):** the branches feed key, its vendor door, the branch-pull
+  runner and run kind, the daily branch schedule, the backfill's branch step and its column
+  (edited out of the unmerged migration `0023`; a dev DB that already ran it keeps a stray
+  nullable column, harmless), the matching field on the backfill wire, and the third feeds row. A
+  `branches` feed path answers 404.
+
+## 1. Feeds and modes
+
+One `ac_doc_feed` row per (tenant, company, feed); a never-configured feed reads `off`.
+
+| Feed | Vendor doors | Kinds |
+|---|---|---|
+| `delivery_orders`, `goods_receive_notes` | `.../<doc>byLastModified` (poll), `.../<doc>bydocdate` (sweep, backfill) | poll, sweep, backfill |
+
+Modes: `off` | `dry_run` | `push`. A feed carries its own open (no-auth) `autocount` connection;
+the **book** is the last path segment of that connection's base URL
+(`^[A-Za-z0-9_-]{1,20}$`). Turning a feed on (dry run or push) is refused unless the company's
+Sorento sink is ready and the CRM contract is **>= 2.7 and lists the entity** (probed at config
+time AND at the start of every run, fail closed). Explicit `connectionId: null` clears the
+connection; an omitted key keeps it.
+
+## 2. Cursor rule (poll)
+
+Per (book, entity) the cursor is the first MYT day still to re-read. A tick reads
+`min(cursor, today - pollLookbackDays) .. today` (MYT is fixed UTC+8, no DST; lookback default 1 =
+yesterday), from the `byLastModified` door or, when the feed's `pollBasis` is `doc_date`, the
+`bydocdate` door (DOC-FEED-WINDOW, §4a), capped at **31 days per tick**
+(catch-up). The whole window is read BEFORE anything is pushed; any day failing = nothing pushed
+and nothing advanced. One copy per DocKey (greatest `LastModified`), pushed oldest first. The
+cursor advances **only on a fully successful live tick**; a dry run never advances it, never
+writes the ledger and never writes issue rows. A record with no integer DocKey is `skippedNoKey`, never sent.
+
+## 3. Verdicts, ledger, issues, D9 re-send
+
+Verdicts match by `source_ref` (`{book}:DO|GRN:{DocKey}`).
+`created | updated | unchanged` are delivered (**global sink change: `unchanged` counts as
+delivered for every entity**); `unchanged` + warning `stale_ignored` never overwrites the ledger.
+The ledger (what the CRM holds) is written only from delivered live verdicts. `retryable` and
+unknown verdicts become a `retryable` issue row that keeps the **stored vendor record**
+(capped at 64 KB; an over-cap document is stored without its record and is a `failed` row with a
+named error, since it cannot be re-sent); each live poll re-sends retryable rows the fresh read
+did not supersede (D9). `failed` is never re-sent and is cleared by a later delivery.
+
+## 4. Re-check (content re-push + deletion sweep)
+
+Daily per document feed (run kind `sweep`, shown as **Re-check**): read every day of the
+`recheckDays` doc-date window (default **45**; all days must read). **Content step first
+(DOC-FEED-WINDOW):** every document whose `content_digest` (sha256 of the canonical JSON of the
+whole record, header + `Details`, `records.content_digest`) differs from the ledger's - or whose
+ledger row has no digest yet, or has no ledger row - is pushed through the normal ingest path
+(same verdict/ledger/issue rules as the poll; summary `rechecked` = documents read, `changed` =
+documents pushed). A delivered verdict stores the record's digest on the ledger (poll and backfill
+do the same), so after the first re-check only real edits re-push. This catches a line edit that
+did not bump the header `LastModified` (unverified AutoCount behaviour, BL-SS-036): the CRM's
+stale guard is strict `incoming < stored`, so an equal `LastModified` with changed lines answers
+`updated`. A document whose open issue row already holds this exact content is skipped (`failed`
+is never re-sent until it changes; `retryable` is the poll's D9 re-send). A `stale_ignored`
+verdict records the digest without touching the rest of the ledger row (the CRM has seen it).
+Keyless records count as `skippedNoKey`. A content-push sink error fails the run before any
+deletion; a `DELETE_GUARD` refusal still FAILS the run, but the content pushes before it are
+committed and their counters kept. The deletions endpoint's own `failed`/`total` are stored as
+`deleteFailed`/`deleteTotal` (never added into the content step's `failed`). **Then deletions:**
+union the DocKeys, and every ledger row in the window with no vendor copy is a candidate. A
+candidate count over **max(50, 20% of the window's ledger rows)** refuses the sweep
+(`DELETE_GUARD`). Otherwise the candidates go to the CRM deletions endpoint; a `deactivated` /
+`not_found` verdict stamps `vanished_at`.
+
+## 4a. Read window settings (DOC-FEED-WINDOW)
+
+`ac_doc_feed.window_config` (JSON, module Alembic 0027; NULL = the defaults, i.e. the
+pre-window behaviour): `pollBasis` `last_modified` (default) | `doc_date`; `pollLookbackDays`
+0..30 (default 1); `recheckDays` 1..180 (default 45). Validated before any write
+(`doc_feed/window.py validate_doc_feed_window`, per-field 422); omitted on a PUT = kept; a window
+change never re-arms the schedule. Edited in the Configure dialog inside the same cadence cards
+(Poll card: Read by + Look back; Re-check card: Window). Load: `recheckDays` vendor GETs per
+re-check run, `pollLookbackDays + 1` per poll tick while the cursor is current (catch-up after an
+outage still reads up to 31 days); never a write to AutoCount. Lookback 0 is safe: the cursor is
+the previous tick's MYT day, so the first tick after midnight still re-reads the day before.
+**DocDate basis trade-off:** the poll only sees documents dated inside its window - an edit to an
+older document, or a document dated in the future, is picked up by the Re-check (or not at all
+beyond `recheckDays`).
+
+## 5. Backfill
+
+A durable `ac_doc_feed_backfill` record: day by day, sequential, resumable, at most one OPEN
+(`running|stopping|stopped`) per feed (partial unique index; a lost Start race is a 409
+`BACKFILL_OPEN`). The day loop reads `bydocdate` per day and pushes it. Range floor `2023-01-01`
+(a `fromDay` below it is a 422); `toDay` <= MYT today. Live needs the feed in `push`; Start is
+refused (422) on an `off` feed even for a dry run. **Run-once guard:** a live range starting on
+or before the floor 409s `BACKFILL_ALREADY_DONE` once `full_backfill_done_at` is set (a later
+live range is allowed).
+
+**Delivery-order backfill pushes are marked (DO-BACKFILL-SS).** Every ingest POST a
+`delivery_orders` backfill run makes carries `"backfill": true` in the envelope, after
+`companyCode`/`book`/`records`. A dry-run backfill sends it too, alongside `?dry_run=true`. The
+CRM uses the flag for its quiet ingest mode, which skips the cancel relink and the embeddings for
+old documents. The CRM accepts the flag on `delivery_orders` only and answers 422 on any other
+entity, so a `goods_receive_notes` backfill leaves it out. Only `run_backfill` sets it
+(`write_batch(backfill=(feed_row.feed == FEED_DELIVERY_ORDERS))`, `doc_feed/runner.py`). The poll,
+the sweep's re-check push and every sync push leave the key out entirely, so their body is
+unchanged. Pinned by `tests/test_doc_feed_backfill_flag.py`.
+
+**Delivery accounting is by identity.** A chunk whose transient retries ran out is reported to
+`on_chunk(error)` and is NOT credited while later chunks are; credited `source_ref`s are
+tracked across 429 waits so a credited chunk is never re-sent and a failed one is never
+dropped. A day with an uncredited failed chunk ends as a `SINK_ERROR` stop (the day is not
+marked done). 429s wait up to 10 times per day, heartbeating the job and checking the orphan
+fence before every sleep.
+
+**Stop conditions** (backfill ends `stopped`, resumable, with a named `error_code`): operator
+Stop (`stopping` -> `stopped` at the next day boundary); `JOB_ORPHANED`; `FEED_GONE`;
+`FEED_OFF`; `FEED_NOT_PUSH` (live backfill, feed left push); `TENANT_INACTIVE` (tenant
+suspended/archived or the module no longer active, the same predicate the beat uses); a vendor
+day that cannot be read; a sink error. These are re-checked at the top of every day, because a
+suspended tenant 403s every route and nobody can press Stop. Resume 409s `BACKFILL_JOB_LIVE`
+while the previous job is still live and re-checks the Push rule. The orphan hook flips only
+`running|stopping` backfills to `stopped` (never a `done` one) and closes any open run row by
+`job_id` for both job types.
+
+## 6. Failure text
+
+A sink failure is stored on `run.error` / `backfill.error` through
+`describe_consumer_failure(exc, sink=...)` (status + captured body, URL removed, API key
+redacted, capped), never `str(exc)`.
+
+A run row carries a summary dict from creation; a failed run keeps the counters of the steps that committed before the failure; the frontend still tolerates a null summary for legacy rows.
+
+## 7. Scheduler and jobs
+
+A 60 s beat tick claims due feeds with a guarded UPDATE (two beats never both enqueue) and
+enqueues the SAME `autocount_doc_feed_run` job "Run now" uses; a busy feed is skipped, not
+re-armed.
+
+**Per-feed schedule (sprint-5/19).** `ac_doc_feed.schedule_config` (JSON, module Alembic 0026)
+holds the cadence in the Entities task-schedule shape: `incrementalMinutes` = the poll (floor
+1 minute, the with-watermark floor, since the poll reads `byLastModified`), `reconcileMode`
+`interval` (`reconcileHours` >= 1) | `dailyAt` (`reconcileAt` `HH:MM`, UTC) = the deletion sweep.
+NULL = poll every 60 minutes, sweep every 24 hours (the pre-19 hard-coded cadence).
+`doc_feed/schedule.py` reuses `etl_service.validate_schedule` and `EtlService.next_run_times`.
+The beat re-arms the claimed half from the feed's schedule. A PUT that carries `schedule` is
+validated before any write; on an armed feed only the CHANGED half re-arms from now (editing the
+poll never delays a sweep). An `off` feed stores it unarmed; arming from off sets
+`next_poll_at = now` and `next_sweep_at` from the stored rule. Edited in the Configure dialog
+with the same cadence cards as the Entities Schedule tab (`ScheduleCadenceCards`). The predicate is `active_tenant_service_join`
+(`modules/autocount/scheduler.py`). Job types `autocount_doc_feed_run` and
+`autocount_doc_feed_backfill` both heartbeat; the worker must import `modules.autocount.sync`
+(which imports the handlers) or every doc-feed job stays Pending.
+
+## 8. Wire (frontend contract)
+
+A `DocFeedItem` carries `schedule` (`{incrementalMinutes, reconcileMode, reconcileHours,
+reconcileAt}`, always resolved, never null) and `nextPollAt` / `nextSweepAt`. The PUT body is
+`{connectionId?, mode, schedule?}`; omitting `schedule` keeps the stored one.
+
+Lists answer the house envelope `{data, total, page}` and take `page`, `page_size` (the same as
+`companies.py`). A `DocFeedIssue` row carries `id` (`<feed>:<book>:<docKey>`), `book`, `docKey`,
+`docNo`, `docDate`, `sourceModifiedAt`, `kind`, `errors`, `warnings`, `attempts`, `firstAt`,
+`lastAt`. A 422 is `{detail: {fieldErrors: {field: message}}, message}`; a 409 is
+`{detail: {code, message}}`.
+
+## 9. Sink changes (global, not feed-scoped)
+
+`SorentoSink` gained: `book` (sent as a body key when set, absent otherwise, so every older
+caller is byte-identical), `dry_run` on `write_batch` (`?dry_run=true` on every chunk),
+`delete_doc_keys`, `errors` on `WriteResult`, and `unchanged` in the delivered set.
+
+## 10. Migration and indexes
+
+`0023_autocount_doc_feed` creates five new tables (no backfill needed: rows appear on first
+configure). The models declare the migration's own index names explicitly (never
+`index=True`, which auto-names `ix_app_autocount_...` and would double up on a create_all-first
+host).
+
+## 11. Delivery-orders pull snapshot (plan 16, BL-SS-286)
+
+The CRM's "Pull from AutoCount" on Delivery Orders is NOT a run-now of this feed: it is a
+third `entity` (`delivery_orders`) on the public pull gateway (`/api/v1/autocount/snapshots`,
+plan 10 Appendix A), built by the same `autocount_pull_snapshot` job, stored in the same
+`ac_pull_snapshot` / `ac_pull_snapshot_row` tables, pruned / expired / audited the same way.
+**Contract of record: `documentation/plans/sprint-5/16-autocount-do-pull-snapshot-contract.md`.**
+Facts a maintainer needs:
+
+- **Scope:** flat `fromDay` / `toDay` / `docNo` on the build body (MYT doc-date days, 31-day
+  cap, floor 2023-01-01, `toDay` <= MYT today; `docNo` alone = the 31 days ending today, filter
+  only, the vendor has no by-DocNo door). Stored in `metadata_json` from creation and echoed on
+  every response for this entity.
+- **Source:** this feed's own `ac_doc_feed` row for `delivery_orders` (its connection and book)
+  and the `bydocdate` door via `DocFeedVendor`, one GET per day. `doc_feed/runner.py`'s
+  `resolve_vendor` is the shared vendor-side resolution (`_resolve` = `resolve_vendor` + the
+  sink / contract-gate half). The feed's `mode` never gates a pull; the pull never touches the
+  cursor, ledger, issue rows or the sink.
+- **Rows:** the raw vendor DO dict verbatim (D18), one per `DocKey` (greatest `LastModified`),
+  ordered `DocDate` asc / `DocKey` asc, `source_ref` column `{book}:DO:{DocKey}`; `book` on the
+  header. No `EMPTY_EXTRACT` guard (a scoped range may be empty); any failed day =
+  `SOURCE_PAGE_FAILED`, nothing partial; over 10,000 documents = `ROW_LIMIT`.
+- **Lifecycle:** same-scope re-attach; a different scope while one is building = 409
+  `BUILD_IN_FLIGHT`; the 60 s cooldown applies to the same scope only. The DO build body is
+  `doc_feed/snapshot.py`, dispatched from `sync._run_pull_snapshot`.
+
+### 11.1 Goods-received-notes pull snapshot (GRN mirror, lane GRN-PULL-SS)
+
+`goods_receive_notes` is a fourth gateway `entity` built by the SAME code. The snapshot path is
+generic over the doc feed: `pull_gateway_service.DOC_FEED_SNAPSHOT_ENTITIES` +
+`is_doc_feed_entity`, `parse_doc_scope`, and `doc_feed/snapshot.build_doc_feed_snapshot`, which
+reads `feed_row.feed`. Do not add a second builder. The differences from DO: the gate is the
+company's `goods_receive_notes` feed row, the door is `/goodsreceivenotebydocdate`, and
+`source_ref` is `{book}:GRN:{DocKey}`. **Operator reads** (`/autocount/pull/snapshots*`, session
+auth) of a GRN snapshot also need `autocount.sync.read`
+(`pull_service.SNAPSHOT_ENTITY_READ_PERMISSION`). Without it, the list hides GRN snapshots and
+the header and rows read as an unknown id. Supplier and cost data never widens to
+`autocount.pull.read` alone, the same rule as the doc finder's GRN type. The gateway itself is
+key + company scoped, like DO, so `autocount.pull.manage` (who can issue a key) can still read
+GRN through it (accepted with option (a); a per-key entity allowlist is the fix if needed). Contract: section 8 of the plan 16 contract.
+
+## 12. Linked documents on the doc-feed wire (AC-CANCEL-PULL, CRM contract 2.8)
+
+Cancel SO (`XS`), Cancel PO (`XP`), Consignment (`Consignment`) and Consignment Return
+(`ConsignmentReturn`) are pulled by the regular `sql_db` ETL tasks (presets in `presets.py`,
+`DOCUMENT_PRESETS`), not by this feed. They are delivered on THIS feed's wire shape, because CRM
+#1623 ingests them through the same door shape as DO/GRN. Plan and AC:
+`documentation/plans/sprint-5/30-autocount-cancel-consignment-pull-acceptance-criteria.md`.
+
+- **Paths and gate:** `cancel_sales_orders`, `cancel_purchase_orders`, `consignments`,
+  `consignment_returns`. Each needs contract >= 2.8 with its own name in `entities`
+  (`CONTRACT_GATED_ENTITIES`). Below that gate `auto_push` and `approve()` refuse with
+  `CONTRACT_GATE`, and rows stay STAGED (`PUSH_REFUSES_LOGGING_FALLBACK`).
+- **Body:** `{companyCode, book, records}`. `book` is the book of the company's own `delivery_orders`
+  feed row, else its `goods_receive_notes` row (`http_source.book.linked_document_book`). It fails
+  closed when the company has none.
+- **Record:** the SQL header row under its AutoCount column names, with lines under `Details`
+  (`CanonicalLinkedDocument.sink_payload`):
+  - the ESB's join and fingerprint columns are stripped;
+  - decimals are JSON numbers;
+  - datetimes are naive MYT `YYYY-MM-DDTHH:MM:SS.fff`;
+  - `Note` is capped at 4000 chars.
+
+  The typed canonical fields are the mapping layer only.
+- **Identity:** `source_ref` = `{book}:{XS|XP|CSGN|CSGR}:{DocKey}`, the CRM's own derivation, which
+  verdicts are matched by. `SqlDbSource.source_ref` uses the same `identity_scope`, so row hashes and
+  delete intents agree.
+- **Deletions:** a reconcile delete intent goes to `SorentoSink.delete_doc_keys`
+  (`{doc_date_from, doc_date_to, doc_keys}`), one chunk at a time, with each chunk's verdicts
+  committed before the next is sent.
+  - **Window:** the task's `fromDate` (parsed; an invalid value falls back to `2023-01-01`) to MYT
+    today.
+  - **Owner ruling:** a deleted cancel document must lower the CRM's cancelled qty.
+  - **Only refs under the sink's CURRENT `{book}:{CODE}:` prefix are sent.** The body names a book
+    and bare DocKeys, so a ref pushed under an older book would delete the CRM's live document with
+    the same DocKey in the new book. Such a ref, or one with no integer DocKey, is quarantined with
+    a named reason.
+- **Raw values:** `SqlDbSource._record_safe` keeps vendor values for these four
+  (`vendor_json_value`). Every other document still goes through `json_safe`, whose
+  decimal-to-string conversion must never reach this wire.
+- **One identity scope everywhere:** every `MappingEngine` construction (paged run, non-paged run,
+  preview, simulate) and `SqlDbSource.source_ref` take `identity_scope(...)`. A new construction
+  site that passes `company.database_name` makes every verdict miss.
+- **Prerequisite:** a company with no doc-feed book shows `delivery_orders` as a blocker on its
+  document prerequisite card. A push then fails closed after the contract gate (below 2.8 the
+  answer is `CONTRACT_GATE`).
+
+### 12.1 Consignment `TransferedQty` (AC-CONSIGN-PULL, CRM contract 2.9, sorento-crm#1654)
+
+- **What is added.** The `consignment` preset adds `d.TransferedQty AS TransferedQty` to its lines (the quantity
+  already transferred out of the consignment). It also adds a `TransferedSum` aggregate to the header `OUTER APPLY`
+  and to the fingerprint sweep, because a transfer may not bump the header `LastModified`.
+  - `TransferedSum` is ESB-internal (`LINKED_HEADER_INTERNAL_COLUMNS`) and never sent.
+  - The mapping layer gains the optional line field `qty_transferred` (`CanonicalConsignmentLine`).
+- **Additive and contract-gated.** `CanonicalLinkedDocument.CONTRACT_GATED_LINE_COLUMNS` (consignment:
+  `{"TransferedQty": 2.9}`) keeps the column in `Details` only when the consumer's LIVE advertised `/contract`
+  version reaches it.
+  - The advertised version is `SorentoSink.advertised_contract_version`, set by `sink_for_company` from the probe
+    its gate already makes.
+  - An unknown or older contract sends the unchanged 2.8 shape. Any other linked document never carries the column.
+- **Existing tasks.** `backfill_consignment_transferred_qty` runs in module Alembic `0030_autocount_consign_xfer`,
+  and in `update_tenant` gated `< 0.16.0`.
+  - Trigger: a task whose stored header is still the #122 text. Every stored query that is still a #122 text is
+    rewritten, and `TransferedSum` joins `result_columns`.
+  - `TransferedQty` joins `line_result_columns`, and the `qty_transferred` line row is created enabled, only when the
+    stored `lineQuery` is now the preset text. A customised line query beside a preset header gets no
+    `TransferedQty` and a disabled row, and no warning.
+  - A customised header query is left alone with a WARNING (its row is created disabled).
+  - Every consignment re-stages once after deploy, by design.
+
+## 13. Billing documents + AR outstanding (plan 32, CRM #1770, contracts 2.6 and 2.10)
+
+Like section 12 these are regular `sql_db` ETL tasks (presets in `presets.py`), not doc feeds. Unlike
+section 12 their wire is a **canonical snake_case record**, not the doc-feed shape. Contract copy:
+`documentation/plans/sprint-5/32-autocount-billing-feed-contract.md`; plan and UAC: `sprint-5/32-*`.
+The CRM's own section 12 and section 14 stay the contract of record. A wire change here without the
+matching CRM change is a review finding.
+
+- **Entities and doors.** `invoice` (IV/IVDTL), `cash_sale` (CS/CSDTL), `credit_note` (CN/CNDTL) and
+  `debit_note` (DN/DNDTL) all post to `ingest/billing_documents`. The entity name IS the CRM
+  `document_type`. `ar_outstanding` posts to `ingest/ar_outstanding`. Neither body carries `book`.
+- **Gates.** `billing_documents` needs contract >= 2.6 and `billing_documents` advertised;
+  `ar_outstanding` needs >= `ContractVersion(2, 10)` and `ar_outstanding` advertised. All five are in
+  `PUSH_REFUSES_LOGGING_FALLBACK`.
+  - **Contract versions compare as `(major, minor)` integers** (`ContractVersion`, BL-SS-289): the
+    float literal `2.10` is 2.1. A new two-digit-minor threshold must be built as
+    `ContractVersion(2, 10)`.
+  - The float wire fields still show 2.10 as `2.1` in the contract-gate banner (BL-SS-307,
+    display only).
+- **Identity.**
+  - Billing header: `{database}:{IV|CS|CN|DN}:{DocKey}`. The ref is filed under the company's database
+    name, not the doc-feed book. Billing line: `{header ref}:{DtlKey}`.
+  - AR: `{database}:debtor:{Debtor.AutoKey}`. An AR item's ref is the billing document's own ref,
+    never prefixed.
+  - The `flat_source_ref` branches serve both, so row hashes, delete intents and staged records
+    agree.
+- **Wire rules** (`CanonicalBillingDocument.sink_payload`):
+  - Every listed key is sent every time, null when empty. A push names the whole document, so the
+    order family's omit-when-empty rule does not apply.
+  - Decimals are JSON numbers.
+  - `source_modified_at` is AutoCount's MYT wall time with `+08:00`. The `datetime` transform keeps
+    the wall time and labels it UTC; the CRM reads a naive value as UTC.
+  - `against_doc_no` is the first non-blank entry of `OurInvoiceNo`. `against_source_ref` is always
+    null (the CRM matches by number).
+  - Status is `posted` or `cancelled` (`status_values_for`, which the mapping save gate applies too).
+- **Line links** (`MappingEngine._mint_plan32_line_refs`). Each preset joins the source line table
+  (`SODTL`, `DODTL`, `IVDTL`) only on its own `FromDocType` and reads the owning header's DocKey. The link
+  inputs are `link_*_doc_key` and `from_doc_line_key`, and they never go on the wire.
+  - **`SO`**: `{database}:{SO DocKey}:{DtlKey}`.
+  - **`DO`**: `{book}:DO:{DO DocKey}:{DtlKey}`, DocKey from the `DODTL` join (plan 35, crew ruling 27 Oct:
+    the grant exists; the 25 Oct DO-feed-ledger lookup is gone, module 0033 puts the join back on stored
+    IV/CS line queries).
+    - The book comes from the company's Delivery Orders feed (`billing_link_book`). It is passed as
+      `MappingEngine(link_book=)` at every construction site.
+    - A DO line that `DODTL` resolves but whose company has no book is a named mapping error, never an
+      unlinked push (owner ruling 20 Oct: exact links only).
+    - 2025-26 IV lines carry only `FromDocNo` (`FromDocDtlKey` 100% NULL, scout 27 Oct): they go out with
+      type + number (the DO header link) and no line ref. A key `DODTL` cannot resolve also sends no ref.
+      Never a line guessed from the DO number.
+    - An invoice or cash-sale task on a company whose Delivery Orders feed has no book shows
+      `delivery_orders` on the document prerequisite card (`has_delivery_order_book`). The
+      GRN feed's book does not count.
+  - **`IV`** (CN lines): `{database}:IV:{IV DocKey}:{DtlKey}`.
+  - Anything else, a NULL key, or an unresolved line sends type + number and no ref.
+- **Line cut and fingerprint.**
+  - The cut is `(d.SubTotal <> 0 OR d.Qty IS NOT NULL)`. Charge lines with no `ItemCode` are kept;
+    pure text lines are dropped. The same cut applies in the header `OUTER APPLY`, the line query and
+    the sweep.
+  - The fingerprint columns are `LineFp*`, never `LineCount`, because the LineCount guard keys on that
+    name.
+  - IVDTL and CSDTL also sum `TransferedQty`. `DNDTL` has no `FromDoc*` columns, so the DN preset
+    has no `LineFpLinked` and no `FromDoc*` line fields (debit notes have no source document).
+- **Package lines** (SS-PACKAGE-LINES). A package is a PARENT line (`ParentDtlKey` 0) plus CHILD lines
+  pointing at it, and the first child repeats the parent's amount. The shared service never drops either:
+  the line query selects the columns listed per detail table in `presets.BILLING_PACKAGE_COLUMNS` (only
+  `IVDTL.ParentDtlKey` is confirmed; an unknown column fails the whole query), and the engine mints
+  `parent_line_ref` = `{header ref}:{ParentDtlKey}` from the `parent_dtl_key` input. `line_type` (raw
+  `DtlType`) and `parent_line_ref` go on the wire only when the CRM advertises 2.13
+  (`advertises_package_lines`). The CRM's `invoiced_sales.counted_line()` decides what counts. `Seq` is
+  not a safe key (M2601-1517). Module 0.22.0 / Alembic 0041 (`backfill_billing_package_lines`) moves stored
+  invoice line queries onto the new text. Widening to another table or column = one config entry plus a
+  backfill for stored queries; until then an operator can add it to one task's query on the Mapping tab.
+- **Drafts and `DocStatus`** (REF check 6.2, scout 27 Oct). `D` = draft: every IV/CS/CN/DN preset carries
+  `filterFormula` `DocStatus != "D"`. `E` (5 IV in 2025, one with an AR row) is kept pending the
+  owner (BL-SS-311). `CS` has no `DocStatus` column: its header selects `NULL AS DocStatus`, which
+  the filter keeps.
+- **AR as a debtor-keyed document.** The header is one row per debtor that has any AR row, open or
+  not, so a paid-off debtor re-pushes `0` / `[]`. The lines are its open AR items that match exactly
+  one billing document by `DocNo` + `DebtorCode`; an item with no single match counts in the total
+  only.
+  - The match is one-to-one both ways (`ArHits = 1`). Two AR rows on one document would mint a
+    duplicate ref and reject the debtor's whole snapshot.
+  - A NULL `KnockOffAmt` counts as 0, and a NULL `LastModified` counts as the floor date.
+  - Every preset's fingerprint query aliases its key column `DocKey`
+    (`SqlDbSource.fetch_fingerprints` reads that exact name).
+  - The watermark and date column are the debtor's latest AR `LastModified`. The fingerprint sweep
+    catches a knock-off that bumps no `LastModified`.
+  - `as_of` is stamped at mapping time (the model default) and is never a SQL column, which would
+    re-push every debtor on every run.
+  - `ar_outstanding` is in `NO_DELETION_ENTITY_TYPES`: a vanished debtor is counted as `vanished`,
+    never deleted.
+  - Cancelled rows (`COALESCE(Cancelled, 'F') = 'T'`) are out of the total and the lines on all three
+    AR tables (ARDN / ARCN carry `Cancelled`, scout 27 Oct).
+  - The remaining REF section 6 confirmations are listed in BL-SS-305.
+- **Deletions.** A billing delete intent goes through the ordinary `delete_batch`, with body
+  `{companyCode, source_refs}` sent to `ingest/billing_documents/deletions`.
+- **Push order.** The beat sweep enqueues credit and debit notes after every other due task
+  (`scheduler.sweep_order_key`). This is best effort: jobs run independently, and the CRM fills a
+  note's link when its invoice lands later.
+- **Not in this lane** (owner, after 25 Oct): the S4 backfill. The SELECT grant (incl. `DODTL`), the REF
+  section 6 checks and the draft `filterFormula` landed in plan 35 (`sprint-5/35-autocount-billing-preset-fix.md`).

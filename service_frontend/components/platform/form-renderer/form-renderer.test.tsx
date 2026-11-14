@@ -86,7 +86,7 @@ describe('required validation message on submit', () => {
         onSubmit={onSubmit}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit form' }));
     expect(screen.getByRole('alert')).toHaveTextContent('required');
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -171,7 +171,7 @@ describe('submit returns only visible answers', () => {
       }),
     ]);
     render(<Harness definition={def} initial={{ subscribe: false, hiddenWhenNo: 'leaked' }} onSubmit={onSubmit} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit form' }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     expect(onSubmit.mock.calls[0][0]).toEqual({ subscribe: false });
   });

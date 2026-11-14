@@ -10,7 +10,7 @@
  * renders against ITS pinned version, and resubmits into the same row (R3,
  * "rides the existing submit/transition flow"). */
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { FormSubmitError, formService } from '@/services/form-service';
 import type { FormAnswers, FormFieldErrors, FormFillView } from '@/types/forms';
 

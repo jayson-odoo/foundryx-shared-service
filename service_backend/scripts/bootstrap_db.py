@@ -17,7 +17,7 @@ from alembic import command
 from alembic.config import Config
 
 from app.config import settings
-from app.database import SessionLocal
+from app.database import SessionLocal, process_application_name
 from app.seed import seed_all
 
 APP_ROLE = "foundryx"
@@ -89,10 +89,22 @@ def _apply_bootstrap_lock_timeout() -> None:
     os.environ["PGOPTIONS"] = f"{existing} {opt}".strip() if existing else opt
 
 
+def _name_bootstrap_sessions() -> None:
+    """Plan 34 - name every libpq connection this bootstrap opens (the role/db
+    probe, core Alembic, every module's Alembic engine - none of which pass
+    connect_args) through ``PGAPPNAME``, so the DEPLOY.md lock report shows
+    ``foundryx-bootstrap_db`` for a waiting migration instead of an empty
+    name. An operator's own ``PGAPPNAME`` wins. Postgres-only."""
+    if not settings.database_url.startswith("postgresql"):
+        return
+    os.environ.setdefault("PGAPPNAME", process_application_name())
+
+
 def main() -> None:
     # First thing: bound how long any bootstrap statement will WAIT for a lock,
     # so a lock held by the still-live blue color can't hang the deploy (300s).
     _apply_bootstrap_lock_timeout()
+    _name_bootstrap_sessions()
     if settings.database_url.startswith("postgresql"):
         ensure_role_and_db()
     run_migrations()
@@ -130,6 +142,7 @@ def main() -> None:
     db = SessionLocal()
     try:
         sweep_tenant_admin_grants(db)
+        db.commit()
     finally:
         db.close()
 
@@ -154,7 +167,10 @@ def main() -> None:
     if settings.environment == "development":
         from app.models.tenant import DEFAULT_TENANT_ID
         from modules.omnichannel.bootstrap import seed_demo_conversations
-        from modules.omnichannel.services.seed_demo_workflow import seed_demo_ai_workflow
+        from modules.omnichannel.services.seed_demo_workflow import (
+            seed_demo_ai_workflow,
+            seed_demo_progress_workflow,
+        )
 
         db = SessionLocal()
         try:
@@ -162,8 +178,18 @@ def main() -> None:
             print("omnichannel: demo conversations seeded")
             seed_demo_ai_workflow(db, DEFAULT_TENANT_ID)
             print("omnichannel: demo AI workflow seeded")
+            seed_demo_progress_workflow(db, DEFAULT_TENANT_ID)
+            print("omnichannel: demo progress-update workflow seeded")
         finally:
             db.close()
+
+    # Never report success over a stale module schema (issue #89): the same
+    # guard the API runs at start, so "bootstrap complete" implies every
+    # installed module is at its code head. No-op on non-Postgres.
+    from app.database import engine as _engine
+    from app.module_platform.drift_guard import check_module_schema_drift
+
+    check_module_schema_drift(_engine)
 
     print("bootstrap complete: migrated + seeded + modules")
 

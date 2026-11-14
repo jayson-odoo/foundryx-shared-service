@@ -14,13 +14,14 @@ existingFileId}, ``QuotaExceeded`` 413, ``UploadRejected`` 415, ``CycleError``
 422, ``JobNotReady`` 409.
 """
 import io
-import urllib.request
+import logging
 import zipfile
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.db_errors import db_error_text, is_db_error
 from app.models.document import (
     DOWNLOAD_FAILED,
     DOWNLOAD_PENDING,
@@ -46,9 +47,11 @@ from app.schemas.document import (
     FolderOut,
     TrashListingOut,
 )
-from app.services.storage import storage_for_tenant
+from app.services.storage import READ_CAP_BYTES, read_object, storage_for_tenant
 from app.uploads import detect_document_mime
 from app.workflow_engine.entity_events import emit_entity_event
+
+logger = logging.getLogger(__name__)
 
 MB = 1024 * 1024
 
@@ -567,22 +570,19 @@ class DocumentService:
             job.ready_at = datetime.now(timezone.utc)
         except Exception as exc:  # noqa: BLE001 - a failed build marks the job, never 500s
             job.status = DOWNLOAD_FAILED
-            job.error = str(exc)[:500]
+            logger.exception("Download build failed for job %s", job.id)
+            job.error = (
+                db_error_text(exc, "The download could not be built")
+                if is_db_error(exc)
+                else str(exc)
+            )[:500]
         self.db.commit()
 
     @staticmethod
     def _read_blob(storage, key: str) -> Optional[bytes]:
         try:
-            location, value = storage.resolve(key)
-        except Exception:  # noqa: BLE001
-            return None
-        try:
-            if location == "path":
-                with open(value, "rb") as fh:
-                    return fh.read()
-            with urllib.request.urlopen(value, timeout=30) as resp:  # noqa: S310
-                return resp.read()
-        except Exception:  # noqa: BLE001
+            return read_object(storage, key, timeout=30, max_bytes=READ_CAP_BYTES)
+        except Exception:  # noqa: BLE001 - a failed read is skipped by the caller
             return None
 
     def list_jobs(self, tenant_id: str, user_id: str) -> List[DownloadJobOut]:

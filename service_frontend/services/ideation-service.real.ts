@@ -4,12 +4,15 @@
  *
  * Endpoint map (backend slices 2-7):
  * - listProducts  → GET  /products               (core catalog; unified Product)
- * - listIdeas     → GET  /ideation/ideas         (bare IdeaOut[], newest-first)
+ * - listIdeas     → GET  /ideation/ideas?filter=&includeTest=  (bare IdeaOut[], server-ranked order)
  * - getIdea       → GET  /ideation/ideas/{id}
- * - setStatus     → POST /ideation/ideas/{id}/status  {status}
- * - vote          → POST /ideation/ideas/{id}/vote    {dir}
+ * - setStatus     → POST /ideation/ideas/{id}/status  {toStatusId}
+ * - vote          → POST /ideation/ideas/{id}/vote    {dir: "up"}
+ * - comments      → GET|POST /ideation/ideas/{id}/comments, PATCH|DELETE .../comments/{commentId}
  * - reorderPriority → PUT /ideation/ideas/reorder     {orderedIds}
  * - remove        → DELETE /ideation/ideas/{id}       (204)
+ * - uploadAttachment → POST /ideation/ideas/{id}/attachments   (multipart `file`)
+ * - fetchAttachment  → GET  <IdeaAttachment.contentPath>       (blob)
  *
  * Contract deltas vs the Phase-1 mock (documented, FE adjusted to the real BE -
  * we do NOT fork logic):
@@ -30,14 +33,18 @@
  * - Attachments on create are NOT persisted yet (idea_attachments writer is a
  *   later slice); the field is accepted by the FE input but dropped here.
  */
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, apiFetchBlob } from '@/lib/api-client';
 import type {
+  Board,
   Idea,
+  IdeaAttachment,
   IdeaClusterSuggestions,
-  IdeaStatus,
+  IdeaComment,
+  MergeFieldChoices,
   Product,
+  SimilarIdeas,
 } from '@/types/ideation';
-import type { IdeaCreateInput, IdeaService } from './ideation-service';
+import type { IdeaCreateInput, IdeaExtendedOps, IdeaService } from './ideation-service';
 
 /** Core catalog list envelope (app/schemas/catalog.py → ListResponse). */
 interface CoreProductRow {
@@ -59,7 +66,7 @@ function toProductKind(kind: string): Product['kind'] {
 
 const idea = (id: string) => `/ideation/ideas/${encodeURIComponent(id)}`;
 
-export const realIdeationService: IdeaService = {
+export const realIdeationService: IdeaService & IdeaExtendedOps = {
   async listProducts(): Promise<Product[]> {
     const res = await apiFetch<CoreProductList>('/products?page_size=200');
     return res.items.map((p) => ({
@@ -70,8 +77,12 @@ export const realIdeationService: IdeaService = {
     }));
   },
 
-  listIdeas(): Promise<Idea[]> {
-    return apiFetch<Idea[]>('/ideation/ideas');
+  listIdeas(opts?: { includeTest?: boolean; filter?: 'active' | 'archived' | 'all' }): Promise<Idea[]> {
+    const params = new URLSearchParams();
+    if (opts?.includeTest) params.set('includeTest', 'true');
+    if (opts?.filter) params.set('filter', opts.filter);
+    const qs = params.toString();
+    return apiFetch<Idea[]>(`/ideation/ideas${qs ? `?${qs}` : ''}`);
   },
 
   getIdea(id: string): Promise<Idea> {
@@ -86,6 +97,10 @@ export const realIdeationService: IdeaService = {
       body: JSON.stringify({
         productId: input.productId,
         problem: input.problem,
+        title: input.title ?? '',
+        desiredOutcome: input.desiredOutcome ?? '',
+        useCases: input.useCases ?? [],
+        currentWorkaround: input.currentWorkaround ?? '',
         proposedSolution: input.proposedSolution ?? '',
         impact: input.impact ?? '',
         department: input.department ?? '',
@@ -93,45 +108,70 @@ export const realIdeationService: IdeaService = {
       }),
     });
   },
-  // Operator-facing edit. The PATCH route is fields-only; a requested `status`
-  // that actually differs from the persisted one is applied afterwards via
-  // setStatus (POST /{id}/status) so the move stays server-authoritative. When
-  // status is unchanged we skip it - the status machine has no self-edge, so a
-  // captured→captured "move" would (correctly) 409.
-  async updateIdea(
-    id: string,
-    input: Partial<IdeaCreateInput> & { status?: IdeaStatus },
-  ): Promise<Idea> {
-    const { status, attachments, ...fields } = input;
+  // Operator-facing edit. The PATCH route is fields-only - a save never moves
+  // status any more (issue #94, ideation round 2, AC-94-34: the form dropped
+  // its Status control entirely, owner Q5). Any extra key on `input` (e.g. a
+  // stale caller still shaped like the old status-carrying payload) is simply
+  // not a recognised field and is ignored.
+  async updateIdea(id: string, input: Partial<IdeaCreateInput>): Promise<Idea> {
+    const { attachments, ...fields } = input;
     void attachments;
     const patch: Record<string, unknown> = {};
     if (fields.productId !== undefined) patch.productId = fields.productId;
     if (fields.problem !== undefined) patch.problem = fields.problem;
+    if (fields.title !== undefined) patch.title = fields.title;
+    if (fields.desiredOutcome !== undefined) patch.desiredOutcome = fields.desiredOutcome;
+    if (fields.useCases !== undefined) patch.useCases = fields.useCases;
+    if (fields.currentWorkaround !== undefined) patch.currentWorkaround = fields.currentWorkaround;
     if (fields.proposedSolution !== undefined) patch.proposedSolution = fields.proposedSolution;
     if (fields.impact !== undefined) patch.impact = fields.impact;
     if (fields.department !== undefined) patch.department = fields.department;
     if (fields.rawText !== undefined) patch.rawText = fields.rawText;
-    const updated =
-      Object.keys(patch).length > 0
-        ? await apiFetch<Idea>(idea(id), { method: 'PATCH', body: JSON.stringify(patch) })
-        : await apiFetch<Idea>(idea(id));
-    if (status !== undefined && status !== updated.status) {
-      return realIdeationService.setStatus(id, status);
-    }
-    return updated;
+    return Object.keys(patch).length > 0
+      ? apiFetch<Idea>(idea(id), { method: 'PATCH', body: JSON.stringify(patch) })
+      : apiFetch<Idea>(idea(id));
   },
 
-  setStatus(id: string, status: IdeaStatus): Promise<Idea> {
+  // `toStatusId` (AC-94-53) - the backend's `StatusIn` schema accepts EXACTLY
+  // ONE of `status` (the legacy lifecycle KEY, kept for the deferred Archive
+  // handler) or `toStatusId` (the status-engine target id, this call's
+  // shape) - never both, never the wrong key for the value carried.
+  setStatus(id: string, toStatusId: string): Promise<Idea> {
     return apiFetch<Idea>(`${idea(id)}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ toStatusId }),
     });
   },
 
-  vote(id: string, dir: 'up' | 'down'): Promise<Idea> {
+  vote(id: string, dir: 'up'): Promise<Idea> {
     return apiFetch<Idea>(`${idea(id)}/vote`, {
       method: 'POST',
       body: JSON.stringify({ dir }),
+    });
+  },
+
+  // Comments (plan 19, AC-19-25).
+  listComments(ideaId: string): Promise<IdeaComment[]> {
+    return apiFetch<IdeaComment[]>(`${idea(ideaId)}/comments`);
+  },
+
+  addComment(ideaId: string, body: string, parentId?: string): Promise<IdeaComment> {
+    return apiFetch<IdeaComment>(`${idea(ideaId)}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(parentId ? { body, parentId } : { body }),
+    });
+  },
+
+  editComment(ideaId: string, commentId: string, body: string): Promise<IdeaComment> {
+    return apiFetch<IdeaComment>(`${idea(ideaId)}/comments/${encodeURIComponent(commentId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    });
+  },
+
+  async deleteComment(ideaId: string, commentId: string): Promise<void> {
+    await apiFetch<void>(`${idea(ideaId)}/comments/${encodeURIComponent(commentId)}`, {
+      method: 'DELETE',
     });
   },
 
@@ -149,5 +189,47 @@ export const realIdeationService: IdeaService = {
 
   async remove(id: string): Promise<void> {
     await apiFetch<void>(idea(id), { method: 'DELETE' });
+  },
+
+  // Merge / unmerge (issue #94, ideation round 2, plan section 3.3). Static
+  // paths declared before `/{idea_id}` on the backend (the existing ordering
+  // rule) so `/merge` never collides with a dynamic id segment.
+  merge(survivorId: string, ideaIds: string[], fields?: MergeFieldChoices): Promise<Idea> {
+    return apiFetch<Idea>('/ideation/ideas/merge', {
+      method: 'POST',
+      body: JSON.stringify(fields ? { survivorId, ideaIds, fields } : { survivorId, ideaIds }),
+    });
+  },
+
+  similar(id: string): Promise<SimilarIdeas> {
+    return apiFetch<SimilarIdeas>(`${idea(id)}/similar`);
+  },
+
+  unmerge(id: string): Promise<Idea[]> {
+    return apiFetch<Idea[]>(`${idea(id)}/unmerge`, { method: 'POST' });
+  },
+
+  listMerged(id: string): Promise<Idea[]> {
+    return apiFetch<Idea[]>(`${idea(id)}/merged`);
+  },
+
+  // Attachment upload + serve (plan sprint-5/15). `apiFetch` skips the JSON
+  // content-type for a FormData body so the browser sets the multipart boundary.
+  uploadAttachment(id: string, file: File): Promise<IdeaAttachment> {
+    const body = new FormData();
+    body.append('file', file);
+    return apiFetch<IdeaAttachment>(`${idea(id)}/attachments`, { method: 'POST', body });
+  },
+
+  fetchAttachment(contentPath: string): Promise<Blob> {
+    return apiFetchBlob(contentPath);
+  },
+
+  getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board> {
+    const params = new URLSearchParams();
+    if (opts?.includeTest) params.set('includeTest', 'true');
+    if (opts?.productId) params.set('productId', opts.productId);
+    const qs = params.toString();
+    return apiFetch<Board>(`/ideation/ideas/board${qs ? `?${qs}` : ''}`);
   },
 };

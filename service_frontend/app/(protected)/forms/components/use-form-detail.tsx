@@ -9,8 +9,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { FileText, GitBranch, History, Inbox, PencilRuler } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import type { LayoutController } from '@/components/platform/status-engine';
 import { emptyFormDoc } from '@/lib/form-doc';
 import { FormPublishError, formService } from '@/services/form-service';
@@ -216,6 +217,20 @@ export function useFormDetail(
     }
   }, [formId, refresh]);
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      formService.getAt(query, index).then((r) => ({
+        recordId: r.form?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => formFormHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<FormDetail> | null>(() => {
     if (!isNew && !record) return null;
     return {
@@ -329,14 +344,7 @@ export function useFormDetail(
       onReload: formId ? () => void refresh(formId) : undefined,
       recordNav: isNew
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              formService.getAt(query, index).then((r) => ({
-                recordId: r.form?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => formFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     actions,
@@ -358,6 +366,8 @@ export function useFormDetail(
     publishProblems,
     record,
     refresh,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, form, isLoading, notFound };

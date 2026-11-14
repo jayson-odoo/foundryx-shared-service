@@ -1,19 +1,16 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useDatetime } from '@/hooks/use-datetime';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { DateRangePicker, resolvePresetRange } from '@/components/platform/date-range-picker';
+import type { DateRangePreset } from '@/components/platform/date-range-picker';
 import { MultiSelect } from '@/components/platform/multi-select';
+import { SearchSelect } from '@/components/platform/search-select';
 import type {
   FilterFieldDef,
   FilterFieldType,
@@ -43,6 +40,14 @@ const OPERATORS: Record<FilterFieldType, { value: FilterOperator; label: string 
     { value: 'is_false', label: 'is no' },
   ],
 };
+
+/** The operators a field offers: its type's list, narrowed by the field's own `operators`. */
+function operatorsFor(def: FilterFieldDef | undefined): { value: FilterOperator; label: string }[] {
+  const all = OPERATORS[def?.type ?? 'text'];
+  const allowed = def?.operators;
+  const narrowed = allowed && allowed.length > 0 ? all.filter((o) => allowed.includes(o.value)) : all;
+  return narrowed.length > 0 ? narrowed : all;
+}
 
 // ---- Internal draft tree (carries a stable React key per node) ----
 interface DraftCondition {
@@ -76,14 +81,32 @@ function isEmpty(group: DraftGroup): boolean {
   return group.rules.length === 0;
 }
 
+/** Inverse of `toFilterRule` (plan 26, "edit filter" on a saved segment) -
+ *  assigns a fresh draft `key` per node via the caller's key generator so
+ *  React identity stays stable while editing. */
+function ruleToDraft(rule: FilterRule, nextKey: () => string): DraftRule {
+  if (rule.kind === 'group') {
+    return {
+      key: nextKey(),
+      kind: 'group',
+      combinator: rule.combinator,
+      rules: rule.rules.map((r) => ruleToDraft(r, nextKey)),
+    };
+  }
+  return { key: nextKey(), kind: 'condition', field: rule.field, operator: rule.operator, value: rule.value };
+}
+
 export interface FilterBuilderProps {
   fields: FilterFieldDef[];
   /** Called with the built group (or null to clear) when the user applies. */
   onApply: (group: FilterGroup | null) => void;
   onClose?: () => void;
+  /** Seed the builder with an existing tree (plan 26 - editing a saved
+   *  segment's filter) instead of one blank condition. */
+  initialValue?: FilterGroup | null;
 }
 
-export function FilterBuilder({ fields, onApply, onClose }: FilterBuilderProps) {
+export function FilterBuilder({ fields, onApply, onClose, initialValue }: FilterBuilderProps) {
   const keyRef = useRef(0);
   const nextKey = () => `k${++keyRef.current}`;
 
@@ -91,16 +114,16 @@ export function FilterBuilder({ fields, onApply, onClose }: FilterBuilderProps) 
     key: nextKey(),
     kind: 'condition',
     field: fields[0]?.field ?? '',
-    operator: OPERATORS[fields[0]?.type ?? 'text'][0].value,
+    operator: operatorsFor(fields[0])[0].value,
     value: '',
   });
 
-  const [root, setRoot] = useState<DraftGroup>(() => ({
-    key: nextKey(),
-    kind: 'group',
-    combinator: 'and',
-    rules: [newCondition()],
-  }));
+  const [root, setRoot] = useState<DraftGroup>(() => {
+    if (initialValue && initialValue.rules.length > 0) {
+      return ruleToDraft(initialValue, nextKey) as DraftGroup;
+    }
+    return { key: nextKey(), kind: 'group', combinator: 'and', rules: [newCondition()] };
+  });
 
   const fieldDef = (name: string) => fields.find((f) => f.field === name);
 
@@ -251,45 +274,27 @@ interface ConditionRowProps {
 
 function ConditionRow({ condition, fields, fieldDef, onChange, onRemove }: ConditionRowProps) {
   const def = fieldDef(condition.field);
-  const type: FilterFieldType = def?.type ?? 'text';
-  const ops = OPERATORS[type];
+  const ops = operatorsFor(def);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Select
+      <SearchSelect
+        ariaLabel="Filter field"
+        className="h-8 w-32"
+        options={fields.map((f) => ({ label: f.label, value: f.field }))}
         value={condition.field}
-        onValueChange={(field) => {
-          const t = fieldDef(field)?.type ?? 'text';
-          onChange({ ...condition, field, operator: OPERATORS[t][0].value, value: '' });
+        onChange={(field) => {
+          onChange({ ...condition, field, operator: operatorsFor(fieldDef(field))[0].value, value: '' });
         }}
-      >
-        <SelectTrigger size="sm" className="w-32">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {fields.map((f) => (
-            <SelectItem key={f.field} value={f.field}>
-              {f.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      />
 
-      <Select
+      <SearchSelect
+        ariaLabel="Filter operator"
+        className="h-8 w-28"
+        options={ops}
         value={condition.operator}
-        onValueChange={(operator) => onChange({ ...condition, operator: operator as FilterOperator })}
-      >
-        <SelectTrigger size="sm" className="w-28">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {ops.map((o) => (
-            <SelectItem key={o.value} value={o.value}>
-              {o.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        onChange={(operator) => onChange({ ...condition, operator: operator as FilterOperator })}
+      />
 
       <ConditionValue condition={condition} def={def} onChange={onChange} />
 
@@ -329,44 +334,19 @@ function ConditionValue({
       );
     }
     return (
-      <Select
+      <SearchSelect
+        ariaLabel="Filter value"
+        className="h-8 w-36"
+        options={def?.options ?? []}
         value={typeof condition.value === 'string' ? condition.value : ''}
-        onValueChange={(value) => onChange({ ...condition, value })}
-      >
-        <SelectTrigger size="sm" className="w-36">
-          <SelectValue placeholder="Select…" />
-        </SelectTrigger>
-        <SelectContent>
-          {(def?.options ?? []).map((opt) => (
-            <SelectItem key={opt.value} value={opt.value}>
-              {opt.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        onChange={(value) => onChange({ ...condition, value })}
+      />
     );
   }
 
   if (type === 'date') {
     if (condition.operator === 'between') {
-      const v = Array.isArray(condition.value) ? (condition.value as string[]) : ['', ''];
-      return (
-        <div className="flex items-center gap-1">
-          <Input
-            type="date"
-            className="h-8 w-36"
-            value={v[0] ?? ''}
-            onChange={(e) => onChange({ ...condition, value: [e.target.value, v[1] ?? ''] })}
-          />
-          <span className="text-xs text-muted-foreground">to</span>
-          <Input
-            type="date"
-            className="h-8 w-36"
-            value={v[1] ?? ''}
-            onChange={(e) => onChange({ ...condition, value: [v[0] ?? '', e.target.value] })}
-          />
-        </div>
-      );
+      return <DateRangeCondition condition={condition} onChange={onChange} />;
     }
     return (
       <Input
@@ -385,6 +365,45 @@ function ConditionValue({
       placeholder="Value"
       value={typeof condition.value === 'string' ? condition.value : ''}
       onChange={(e) => onChange({ ...condition, value: e.target.value })}
+    />
+  );
+}
+
+/** The `between` date condition: the shared range picker (value stays `[from, to]` as YYYY-MM-DD). */
+function DateRangeCondition({
+  condition,
+  onChange,
+}: {
+  condition: DraftCondition;
+  onChange: (next: DraftCondition) => void;
+}) {
+  const { timeZone } = useDatetime();
+  const [preset, setPreset] = useState<DateRangePreset>('custom');
+  const v = Array.isArray(condition.value) ? (condition.value as string[]) : [];
+  const from = v[0] ?? '';
+  const to = v[1] ?? '';
+  const present = Boolean(from || to);
+
+  // A fresh `between` condition starts on a real range; a saved start-only or end-only
+  // range keeps its half (the picker shows the present day for both ends until edited).
+  useEffect(() => {
+    if (present) return;
+    const range = resolvePresetRange('last7', timeZone);
+    setPreset('last7');
+    onChange({ ...condition, value: [range.from, range.to] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seeds once per empty value
+  }, [present]);
+
+  if (!present) return null;
+  return (
+    <DateRangePicker
+      className="w-full sm:flex-row"
+      timeZone={timeZone}
+      value={{ preset, from, to }}
+      onChange={(next) => {
+        setPreset(next.preset);
+        onChange({ ...condition, value: [next.from, next.to] });
+      }}
     />
   );
 }

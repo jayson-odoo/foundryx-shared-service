@@ -29,7 +29,6 @@ export function embeddedListConfig<T extends object>(opts: {
     getRowId: opts.getRowId,
     rowHref: opts.rowHref,
     fetcher: opts.fetcher,
-    exporter: async () => '', // related lists don't export
     filterFields: [],
     exportColumns: [],
     actions: opts.actions ?? [],

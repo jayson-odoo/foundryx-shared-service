@@ -1,0 +1,187 @@
+'use client';
+
+import Link from 'next/link';
+import { Check, Copy, LoaderCircleIcon, Pencil, Plus, RefreshCw, TriangleAlert } from 'lucide-react';
+import { Alert, AlertContent, AlertDescription, AlertIcon } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, CardToolbar } from '@/components/ui/card';
+import { useCan } from '@/hooks/use-can';
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
+import { useDatetime } from '@/hooks/use-datetime';
+import type { ConnectorProduct, ConnectorSecretState } from '@/types/connector';
+import { useConnectorProducts } from './use-connector-products';
+import { productPath } from './use-connector-product-form';
+
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-1 gap-1 md:grid-cols-[200px_1fr] md:items-center md:gap-4">
+      <dt className="text-sm text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 text-sm">{children}</dd>
+    </div>
+  );
+}
+
+function SecretBadge({ state }: { state: ConnectorSecretState }) {
+  return (
+    <Badge variant={state === 'set' ? 'success' : 'destructive'} appearance="light" size="sm">
+      {state === 'set' ? 'Set' : 'Missing'}
+    </Badge>
+  );
+}
+
+function ProductCard({
+  product,
+  canManage,
+  canEdit,
+  refreshing,
+  onRefresh,
+}: {
+  product: ConnectorProduct;
+  canManage: boolean;
+  canEdit: boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
+  const { formatDateTime } = useDatetime();
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const name = product.displayName ?? product.key;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <CardTitle>{name}</CardTitle>
+          {product.status === 'misconfigured' && (
+            <Badge variant="destructive" appearance="light" size="sm">
+              Misconfigured
+            </Badge>
+          )}
+        </div>
+        <CardToolbar className="flex-wrap">
+          <Button type="button" size="sm" variant="outline" asChild>
+            <Link href={productPath(product.key)}>
+              <Pencil />
+              {canEdit ? 'Edit' : 'Settings'}
+            </Link>
+          </Button>
+          {canManage && product.status !== 'misconfigured' && (
+            <Button type="button" size="sm" variant="outline" disabled={refreshing} onClick={onRefresh}>
+              {refreshing ? <LoaderCircleIcon className="animate-spin" /> : <RefreshCw />}
+              Refresh manifest
+            </Button>
+          )}
+        </CardToolbar>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {product.stale && (
+          <Alert variant="warning" appearance="light">
+            <AlertIcon>
+              <TriangleAlert />
+            </AlertIcon>
+            <AlertContent>
+              <AlertDescription>
+                {`${name} manifest is stale: last refresh failed (${product.lastError ?? 'unknown'}). Serving the copy fetched ${product.fetchedAt ? formatDateTime(product.fetchedAt) : 'earlier'}.`}
+              </AlertDescription>
+            </AlertContent>
+          </Alert>
+        )}
+        <dl className="flex flex-col gap-3">
+          <Fact label="MCP URL">
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 break-all font-mono text-xs">{product.mcpUrl}</span>
+              <Button
+                type="button"
+                variant="outline"
+                mode="icon"
+                size="sm"
+                aria-label="Copy MCP URL"
+                onClick={() => copyToClipboard(product.mcpUrl)}
+              >
+                {isCopied ? <Check className="text-green-600" /> : <Copy />}
+              </Button>
+            </div>
+          </Fact>
+          <Fact label="Consent URL">
+            <span className="break-all font-mono text-xs">{product.consentUrl}</span>
+          </Fact>
+          <Fact label="API base">
+            <span className="break-all font-mono text-xs">{product.apiBase}</span>
+          </Fact>
+          <Fact label="Manifest version">
+            <span>{product.manifestVersion}</span>
+          </Fact>
+          <Fact label="Tools">
+            <span>{product.toolCount}</span>
+          </Fact>
+          {!product.stale && product.fetchedAt && (
+            <Fact label="Fetched">
+              <span>{formatDateTime(product.fetchedAt)}</span>
+            </Fact>
+          )}
+          <Fact label="Secret to product">
+            <SecretBadge state={product.secrets.ssToProduct} />
+          </Fact>
+          <Fact label="Secret from product">
+            <SecretBadge state={product.secrets.productToSs} />
+          </Fact>
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Products tab (AC-19-61): facts, secret set/missing, manifest refresh, plus Add/Edit
+ * into the database-backed settings form (lane SETTINGS-IN-DB-SS). */
+export function ProductsTab() {
+  const { can } = useCan();
+  const { products, isLoading, refreshingKey, refresh } = useConnectorProducts();
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-24 text-muted-foreground">
+        <LoaderCircleIcon className="size-6 animate-spin" />
+      </div>
+    );
+  }
+
+  const canEdit = can('connector.settings');
+  return (
+    <div className="flex flex-col gap-4">
+      {canEdit && (
+        <div className="flex justify-end">
+          <Button type="button" size="sm" asChild>
+            <Link href="/settings/claude-connector/products/new">
+              <Plus />
+              Add product
+            </Link>
+          </Button>
+        </div>
+      )}
+      {products.length === 0 && (
+        <div className="flex flex-col items-center gap-2 py-12 text-center text-sm text-muted-foreground">
+          <p>No products yet.</p>
+          {can('app_store.read') && (
+            <p data-testid="app-store-hint">
+              The Claude connector is installed per workspace from the{' '}
+              <Link href="/app-store/connector" className="text-primary underline-offset-4 hover:underline">
+                App Store
+              </Link>
+              .
+            </p>
+          )}
+        </div>
+      )}
+      {products.map((p) => (
+        <ProductCard
+          key={p.key}
+          product={p}
+          canEdit={canEdit}
+          canManage={can('connector.manage')}
+          refreshing={refreshingKey === p.key}
+          onRefresh={() => void refresh(p.key)}
+        />
+      ))}
+    </div>
+  );
+}

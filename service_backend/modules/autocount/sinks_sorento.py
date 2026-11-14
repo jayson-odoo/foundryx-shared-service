@@ -37,58 +37,669 @@ transaction and the exactly-once guarantee.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from decimal import Decimal
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
+from app.database import release_read_transactions
+from app.db_errors import db_error_in, stored_error_text
+
 from .canonical.base import CanonicalRecord
-from .canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER
+from .canonical.documents import (
+    PACKAGE_LINES_MIN_CONTRACT,
+    REPLACES_LINE_REF_MIN_CONTRACT,
+    CanonicalBillingDocument,
+    CanonicalDocument,
+    CanonicalPurchaseOrder,
+    CanonicalSalesOrder,
+    CanonicalShippingOrder,
+    CanonicalLinkedDocument,
+    ENTITY_PURCHASE_ORDER,
+    ENTITY_SALES_ORDER,
+    ENTITY_SHIPPING_ORDER,
+    LINKED_DOCUMENT_ENTITY_TYPES,
+    BILLING_DOCUMENT_ENTITY_TYPES,
+    ENTITY_AR_OUTSTANDING,
+)
+from .canonical.masters import (
+    ENTITY_BRAND,
+    ENTITY_BRANCH,
+    ENTITY_CUSTOMER,
+    ENTITY_ITEM_CLASS,
+    ENTITY_PAYMENT_TERM,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_SALES_AGENT,
+    ENTITY_STOCK_BALANCE,
+    ENTITY_SUPPLIER,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
+    CanonicalCustomer,
+)
+from .models import (
+    DOC_FEED_DELIVERY_ORDERS,
+    DOC_FEED_GOODS_RECEIVE_NOTES,
+)
 from .sinks import WriteResult
 
 logger = logging.getLogger("foundryx.autocount")
 
 SINK_SORENTO = "sorento"
 
-# Sorento's ingest batch ceiling (`MAX_BATCH`). We chunk at or below it; going
-# over is a 413 (or, until their fix lands, a 500), never a silent truncation.
-SORENTO_MAX_BATCH = 1000
+# Sorento's ingest batch ceiling (`MAX_BATCH`) - their PER-REQUEST limit and
+# the HARD ceiling here: the batch size a sink actually posts is
+# `settings.autocount_sink_batch_size` (default 200 since the 2026-09-06 prod
+# 504 - a 1,000-record purchase_order batch with per-record supplier
+# back-create outran Sorento nginx's 60s proxy timeout), clamped to this
+# constant. Going over it is a 413 (or, until their fix lands, a 500), never a
+# silent truncation. Defined in `app.config` (its validator needs it, core
+# must not import from modules) and re-exported here under its historic name.
+from app.config import SORENTO_MAX_BATCH  # noqa: E402 - re-export, see above
 
-# The canonical entity_type → Sorento's ingest path segment. A canonical entity
-# with no mapping here CANNOT be delivered to Sorento - raised loudly rather
-# than guessed, because a wrong path is a 404 that looks like an outage.
+# The CONNECT phase stays short regardless of `settings.
+# autocount_sink_timeout_seconds` (round 5) - a dead/unreachable endpoint
+# should fail fast, never wait for the same generous budget a slow-but-alive
+# Sorento needs to finish INGESTING a large document batch (read/write/pool).
+SINK_CONNECT_TIMEOUT_SECONDS = 10.0
+
+# The canonical entity_type → Sorento's ingest path segment (Appendix A6/A8 -
+# ``product_categories | units_of_measure | warehouses | suppliers | customers
+# | products | sales_agents``). A canonical entity with no mapping here CANNOT
+# be delivered to Sorento - raised loudly rather than guessed, because a wrong
+# path is a 404 that looks like an outage.
 _ENTITY_PATH: Dict[str, str] = {
     ENTITY_SUPPLIER: "suppliers",
     ENTITY_CUSTOMER: "customers",
+    ENTITY_PRODUCT_CATEGORY: "product_categories",
+    ENTITY_UNIT_OF_MEASURE: "units_of_measure",
+    ENTITY_WAREHOUSE: "warehouses",
+    ENTITY_PRODUCT: "products",
+    ENTITY_SALES_AGENT: "sales_agents",
+    # Plan 22 S5 (AC-22-24, Appendix A6/A8) - documents land end to end.
+    ENTITY_SALES_ORDER: "sales_orders",
+    ENTITY_PURCHASE_ORDER: "purchase_orders",
+    # sprint-5/02 S3 (addendum section 3) - a LINE-SET entity on Sorento's
+    # side (`spo_allocations`, no header table) but a normal ingest path.
+    ENTITY_SHIPPING_ORDER: "shipping_orders",
+    # sprint-5/08 (AC-08-32) - contract 2.3 (Appendix A). Present in
+    # ``_ENTITY_PATH`` unconditionally; ``sorento_supports_entity`` is what
+    # actually gates it behind the consumer's advertised contract, since a
+    # 2.2 consumer has no ``/ingest/brands`` route yet.
+    ENTITY_BRAND: "brands",
+    # Plan 37 (CRM contract 2.11) - gated exactly like ``brand`` above.
+    ENTITY_ITEM_CLASS: "item_classes",
+    # Plan 60 (CRM #2305, contract 2.14) - gated exactly like item classes.
+    ENTITY_PAYMENT_TERM: "payment_terms",
+    # plan 13 (BL-SS-207) - contract 2.5 (Appendix A2). Present here
+    # unconditionally, exactly like ``brand`` above; ``sorento_supports_
+    # entity`` is what actually gates it behind the consumer's advertised
+    # contract, since a pre-2.5 consumer has no ``/ingest/stock_balances``
+    # route yet.
+    ENTITY_STOCK_BALANCE: "stock_balances",
+    # sprint-5/14 (D3, D20, AC-14-80) - the two doc-feed door keys ARE the
+    # canonical entity types AND the ingest path segments; they cannot
+    # collide with the legacy ``goods_received_note`` canonical (a DIFFERENT
+    # key, no path at all - it keeps routing to the logging sink).
+    DOC_FEED_DELIVERY_ORDERS: DOC_FEED_DELIVERY_ORDERS,
+    DOC_FEED_GOODS_RECEIVE_NOTES: DOC_FEED_GOODS_RECEIVE_NOTES,
+    # sprint-5/14 section 11 (D26) - branches are the regular `branch` master
+    # entity now (NOT a doc-feed key): same door (`/ingest/branches`), same
+    # 2.7 gate, keyed by the singular entity type like every other master.
+    ENTITY_BRANCH: "branches",
+    # AC-CANCEL-PULL (contract 2.8) - Cancel SO / Cancel PO / Consignment /
+    # Consignment Return. Present unconditionally, gated below exactly like
+    # brand/stock/branch.
+    **{entity_type: f"{entity_type}s" for entity_type in LINKED_DOCUMENT_ENTITY_TYPES},
+    # Plan 32 (CRM #1770) - the four billing documents share ONE door
+    # (contract 2.6; the record's `document_type` tells them apart, and so do
+    # their refs: `{database}:{IV|CS|CN|DN}:{DocKey}`), and the AR snapshot has
+    # its own (contract 2.10, no deletions door). Gated below.
+    **{entity_type: "billing_documents" for entity_type in BILLING_DOCUMENT_ENTITY_TYPES},
+    ENTITY_AR_OUTSTANDING: "ar_outstanding",
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
 # `failed` = bad data (quarantine, do not retry); `retryable` = a referenced
-# master isn't synced yet and NOTHING was written (must not occur for
-# suppliers/customers - AC-14-24).
-_OUTCOME_DELIVERED = {"created", "updated"}
+# master isn't synced yet and NOTHING was written.
+#
+# sprint-5/14 (D3) - `unchanged` joins the delivered set: contract 2.6/2.7's
+# doc-feed verdict reports a record the CRM already holds identically as
+# `unchanged`, and today's fall-through ("unrecognised outcome" -> retryable)
+# would be wrong for EVERY entity, not only the doc feeds - so this is a
+# global sink change, pinned by a master-entity control test too.
+_OUTCOME_DELIVERED = {"created", "updated", "unchanged"}
+
+# TRANSIENT gateway faults only (fix/push-marks-per-chunk, prod finding
+# 2026-09-07: Sorento's own nginx answers a bare 502 on roughly 1 in 25
+# ingest POSTs - upstream momentarily unreachable, never reaches their app).
+# A plain 500 stays a GUARD-RAIL error until the companion Sorento fix lands
+# (see the class docstring) and a 4xx is a genuine rejection - neither is
+# retried; retrying them would just hammer an app that already answered.
+# A 504 is safe to retry for the SAME reason a 502/503 is even though it can
+# mean the FIRST attempt's request reached the app and simply timed out
+# waiting for the answer: ingest is UPSERT, keyed on ``source_ref`` per
+# record (Appendix A6/A8) - a retried POST that lands on already-processed
+# records resolves to the identical ``updated`` outcome, never a duplicate.
+_TRANSIENT_HTTP_STATUS = frozenset({502, 503, 504})
+
+# Per-connection push concurrency override (feat/sink-concurrency-ui). Unset
+# means the platform default (`settings.autocount_sink_concurrency`); the
+# operator flips this on the Sorento connection's own edit form during a
+# backlog drain, no deploy. See ``SorentoSink._resolve_concurrency``.
+SINK_CONCURRENCY_KEY = "sinkConcurrency"
+
+# Entities whose ``retryable`` is EXPECTED, not a defect (AC-22-23, extended
+# S5/AC-22-24): a product's ``category_code``/``uom_code`` may legitimately
+# not have synced yet, and a document ALWAYS carries at least one master
+# reference (``customer_ref``/``product_ref``/…) that may not have synced yet
+# either (Appendix A6 item 3 - "unknown ref = whole record retryable"), so
+# both resolve automatically once the dependency lands. Every OTHER master
+# here carries no such reference, so for them ``retryable`` stays the
+# AC-14-24 "must be unreachable" defect signal.
+_DEPENDENT_ENTITIES = {
+    ENTITY_PRODUCT, ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER,
+    # plan 13 (AC-13-04) - a stock pair whose item Sorento has not synced
+    # yet (as a product) is the SAME expected, self-resolving retryable
+    # every document's master reference already gets.
+    ENTITY_STOCK_BALANCE,
+    # sprint-5/14 - an unresolved ItemCode / Location on a DO or GRN line is
+    # expected and self-resolving, exactly like a document's other master
+    # references.
+    DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES,
+    # AC-CANCEL-PULL - a cancel/consignment line's unresolved item or
+    # location master is the same expected, self-resolving retryable.
+    *LINKED_DOCUMENT_ENTITY_TYPES,
+}
 
 
-def sorento_supports_entity(entity_type: str) -> bool:
+# ASCII digits only (``str.isdigit`` also takes "²" and "١٢"), each part
+# capped, an optional patch part ignored.
+_VERSION_PART_DIGITS = 6
+_CONTRACT_VERSION_RE = re.compile(
+    r"([0-9]{1,%d})(?:\.([0-9]{1,%d}))?(?:\.[0-9]{1,%d})?"
+    % (_VERSION_PART_DIGITS, _VERSION_PART_DIGITS, _VERSION_PART_DIGITS)
+)
+
+
+class ContractVersion(float):
+    """A CRM contract version compared as ``(major, minor)`` INTEGERS
+    (BL-SS-289). A plain float reads ``"2.10"`` as 2.1, below every 2.x gate;
+    CRM #1770 advertises exactly ``"2.10"``.
+
+    It subclasses ``float`` so every existing ``Dict[str, float]`` gate table,
+    pydantic ``float`` wire field and ``>=`` call site keeps working; only the
+    comparisons and the text change. A plain float or int on the other side of
+    a comparison is read through its shortest repr (``2.7`` is ``(2, 7)``,
+    ``2`` is ``(2, 0)``), so the existing float thresholds stay correct. A
+    threshold whose minor has two digits MUST be built as
+    ``ContractVersion(2, 10)``: the float literal ``2.10`` is 2.1.
+
+    On a float JSON wire field (``requiredVersion``, the gate banners) 2.10
+    still serialises as ``2.1``; that is display only, never a gate decision.
+    """
+
+    major: int
+    minor: int
+
+    def __new__(cls, major: int, minor: int = 0) -> "ContractVersion":
+        obj = super().__new__(cls, f"{int(major)}.{int(minor)}")
+        obj.major = int(major)
+        obj.minor = int(minor)
+        return obj
+
+    @classmethod
+    def parse(cls, value: Any) -> Optional["ContractVersion"]:
+        """``"2.10"`` / ``"2.10.3"`` / ``"3"`` / ``2.7`` / ``2`` -> a version;
+        anything else (blank, bool, ``None``, negative, non-ASCII digits,
+        absurdly long numbers) -> ``None``. Never raises: the text is
+        untrusted (`GET /contract`)."""
+        if isinstance(value, ContractVersion):
+            return value
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, int):
+            return cls(value, 0) if 0 <= value < 10 ** _VERSION_PART_DIGITS else None
+        text = repr(value) if isinstance(value, float) else str(value).strip()
+        match = _CONTRACT_VERSION_RE.fullmatch(text)
+        if match is None:
+            return None
+        return cls(int(match.group(1)), int(match.group(2) or 0))
+
+    def _key(self) -> Tuple[int, int]:
+        return (self.major, self.minor)
+
+    @staticmethod
+    def _other_key(other: Any) -> Optional[Tuple[int, int]]:
+        parsed = ContractVersion.parse(other) if isinstance(other, (int, float)) else None
+        return parsed._key() if parsed is not None else None
+
+    def __eq__(self, other: object) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() == key  # type: ignore[return-value]
+
+    def __ne__(self, other: object) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() != key  # type: ignore[return-value]
+
+    def __lt__(self, other: Any) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() < key
+
+    def __le__(self, other: Any) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() <= key
+
+    def __gt__(self, other: Any) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() > key
+
+    def __ge__(self, other: Any) -> bool:
+        key = self._other_key(other)
+        return NotImplemented if key is None else self._key() >= key
+
+    def __hash__(self) -> int:
+        # Equal values hash equally: when this version is the float it
+        # looks like (2.7 is (2, 7)), hash as that float so a dict keyed by
+        # the plain float finds it; 2.10 has no equal float (2.1 is (2, 1)).
+        if ContractVersion._other_key(float(self)) == self._key():
+            return float.__hash__(self)
+        return hash(self._key())
+
+    def __str__(self) -> str:
+        return f"{self.major}.{self.minor}"
+
+    def __repr__(self) -> str:
+        return f"ContractVersion({self.major}, {self.minor})"
+
+    def __format__(self, spec: str) -> str:
+        return format(str(self), spec) if not spec or spec[-1] == "s" else super().__format__(spec)
+
+    def __reduce__(self) -> Any:
+        return (ContractVersion, (self.major, self.minor))
+
+
+# The consumer contract `brand` needs (sprint-5/08, AC-08-33/AC-08-20's S5
+# banner field) - named so the ONE literal is shared between the gate check
+# below and whatever reports it to the operator, rather than the same magic
+# number typed twice and drifting the day 2.3 actually ships.
+BRAND_REQUIRED_CONTRACT_VERSION = 2.3
+
+# sprint-5/10 (R8, AC-10-69) - the consumer contract that carries "code
+# wins" product identity (``MasterIngestService`` UPDATEs a code-matched
+# product instead of raising ``ReferenceConflict`` on a ref miss) plus
+# optional ``codes`` on product deletions (AC-10-72). Unlike ``brand``,
+# products already have an ingest path at EVERY contract version - this is
+# a PUSH-mode activation refusal (``EtlService.activate_task``), never a
+# membership check inside ``sorento_supports_entity``.
+PRODUCT_CODE_WINS_CONTRACT_VERSION = 2.4
+
+# sprint-5/10 S5b (AC-10-15) - the consumer contract stock's PUSH switch
+# needs (`CompanyService.stock_push_gate_error`, `services/etl_service.py`'s
+# `set_delivery_mode`). Named here so the literal is shared between the
+# gate, the membership table below and whatever reports it to the operator.
+STOCK_BALANCES_CONTRACT_VERSION = 2.5
+
+# sprint-5/14 (D4) - the doc-feed contract every DO/GRN feed's mode
+# gate and every run's ``CONTRACT_GATE`` refusal need: >= 2.7 AND the door's
+# own name advertised in ``GET /external/contract``'s ``entities``.
+DOC_FEED_CONTRACT_VERSION = 2.7
+
+# AC-CANCEL-PULL - the consumer contract the four linked documents (Cancel
+# SO/PO, Consignment, Consignment Return) need: >= 2.8 AND the entity's own
+# plural ingest name advertised in ``GET /external/contract``'s ``entities``.
+LINKED_DOCUMENTS_CONTRACT_VERSION = 2.8
+
+# Plan 32 (CRM #1770) - the billing documents door (contract 2.6, section 12)
+# and the AR outstanding door (contract 2.10, section 14). 2.10 MUST be a
+# ``ContractVersion``: the float literal ``2.10`` is 2.1 (BL-SS-289).
+BILLING_DOCUMENTS_CONTRACT_VERSION = ContractVersion(2, 6)
+AR_OUTSTANDING_CONTRACT_VERSION = ContractVersion(2, 10)
+
+# Plan 37 (CRM #1988) - the item classes door (contract 2.11). A
+# ``ContractVersion`` for the same two-digit-minor reason as 2.10 above.
+ITEM_CLASSES_CONTRACT_VERSION = ContractVersion(2, 11)
+# Plan 60 (CRM #2305) - the payment terms door (contract 2.14); also the
+# version from which a customer record may carry `payment_terms_code`
+# (`masters.CUSTOMER_PAYMENT_TERMS_MIN_CONTRACT`, pinned equal by a test).
+PAYMENT_TERMS_CONTRACT_VERSION = ContractVersion(2, 14)
+
+# Plan 57 S5 - ``replaces_line_ref`` on PO / SPO / SO lines (contract 2.12); sent only
+# when the consumer ADVERTISES at least this (Sorento ingest uses ``extra="forbid"``).
+REPLACES_LINE_REF_CONTRACT_VERSION = ContractVersion(*REPLACES_LINE_REF_MIN_CONTRACT)
+
+# SS-PACKAGE-LINES - `line_type` / `parent_line_ref` on billing lines (contract
+# 2.13); sent only when the CRM ADVERTISES at least this (``extra="forbid"``).
+PACKAGE_LINES_CONTRACT_VERSION = ContractVersion(*PACKAGE_LINES_MIN_CONTRACT)
+
+# plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
+# is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
+# advertised contract to be at least this version AND to list this entity
+# name in ``GET /external/contract``'s ``entities``. ``brand`` (sprint-5/08,
+# AC-08-33) was the first; stock (plan 13, BL-SS-207) generalises the SAME
+# mechanism rather than cloning it - a future gated entity is one more row
+# here, never a second gate function.
+CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
+    ENTITY_BRAND: (BRAND_REQUIRED_CONTRACT_VERSION, "brands"),
+    ENTITY_STOCK_BALANCE: (STOCK_BALANCES_CONTRACT_VERSION, "stock_balances"),
+    # sprint-5/14 (contract 2.7) - the three doc-feed door keys ARE the
+    # canonical entity types (D3): no mapping layer, the feed key posts
+    # straight through as both the ingest path segment and the gated entity
+    # name.
+    DOC_FEED_DELIVERY_ORDERS: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_DELIVERY_ORDERS),
+    DOC_FEED_GOODS_RECEIVE_NOTES: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_GOODS_RECEIVE_NOTES),
+    # sprint-5/14 section 11 (D26) - `branch` rides the same 2.7 door as the
+    # doc feed; the consumer must advertise `branches`.
+    ENTITY_BRANCH: (DOC_FEED_CONTRACT_VERSION, "branches"),
+    # AC-CANCEL-PULL - contract 2.8, each door advertised by its own name.
+    **{
+        entity_type: (LINKED_DOCUMENTS_CONTRACT_VERSION, _ENTITY_PATH[entity_type])
+        for entity_type in LINKED_DOCUMENT_ENTITY_TYPES
+    },
+    # Plan 32 - the four billing documents need `billing_documents` advertised;
+    # the AR snapshot needs `ar_outstanding`.
+    **{
+        entity_type: (BILLING_DOCUMENTS_CONTRACT_VERSION, "billing_documents")
+        for entity_type in BILLING_DOCUMENT_ENTITY_TYPES
+    },
+    ENTITY_AR_OUTSTANDING: (AR_OUTSTANDING_CONTRACT_VERSION, "ar_outstanding"),
+    # Plan 37 - the consumer must advertise `item_classes`.
+    ENTITY_ITEM_CLASS: (ITEM_CLASSES_CONTRACT_VERSION, "item_classes"),
+    # Plan 60 - the consumer must advertise `payment_terms`.
+    ENTITY_PAYMENT_TERM: (PAYMENT_TERMS_CONTRACT_VERSION, "payment_terms"),
+}
+
+# Gated entities that must NEVER be "delivered" through the logging-sink
+# fallback while their gate is shut: the fallback marks staged rows PUSHED
+# though nothing reached the consumer, and changed-only staging would then
+# never offer them again - a silent, permanent loss. ``auto_push`` refuses a
+# run for these with ``errorCode == "CONTRACT_GATE"`` and leaves every row
+# STAGED (stock's AC-13-06 rule, generalised).
+# Plan 37 - `item_class` is a full list with no watermark: rows marked PUSHED
+# by the fallback would never be offered again after the CRM upgrades.
+PUSH_REFUSES_LOGGING_FALLBACK: Tuple[str, ...] = (
+    ENTITY_STOCK_BALANCE,
+) + LINKED_DOCUMENT_ENTITY_TYPES + BILLING_DOCUMENT_ENTITY_TYPES + (
+    ENTITY_AR_OUTSTANDING,
+    ENTITY_ITEM_CLASS,
+    # Plan 60 - a full list with no watermark, the item class reason.
+    ENTITY_PAYMENT_TERM,
+)
+
+
+def sorento_supports_entity(
+    entity_type: str,
+    *,
+    contract_version: Optional[float] = None,
+    contract_entities: Optional[Sequence[str]] = None,
+) -> bool:
     """Whether Sorento's ingest API accepts this canonical entity yet.
 
-    Sorento ingests MASTERS only (suppliers, customers). Documents (GRN, PO, …)
-    have no ingest endpoint on the consumer yet, so a document entity is absent
-    from ``_ENTITY_PATH``. A company set to push to Sorento falls back to the
-    logging sink for such an entity (it stages + logs, delivering nothing) rather
-    than erroring on a missing path - this is *deliverability*, an expected
-    not-yet-built state, not a misconfiguration. Delivering documents end-to-end
-    is a separate cross-repo cluster (Sorento has no document ingest today).
+    Sorento ingests masters (suppliers, customers, product categories, units
+    of measure, warehouses, products, sales agents - plan 22 S4) and the two
+    documents sales/purchase orders (plan 22 S5, Appendix A6/A8). GRN has no
+    ingest endpoint on the consumer yet, so it stays absent from
+    ``_ENTITY_PATH`` - a company set to push to Sorento falls back to the
+    logging sink for it (stages + logs, delivering nothing) rather than
+    erroring on a missing path - *deliverability*, an expected not-yet-built
+    state, not a misconfiguration.
+
+    Every entity in ``CONTRACT_GATED_ENTITIES`` (``brand`` sprint-5/08
+    AC-08-33, ``stock_balance`` plan 13 AC-13-02) is CONTRACT-GATED on top
+    of the plain membership check every other entity gets: it needs the
+    consumer's LIVE contract version >= its own required version AND its
+    own entity name advertised in ``GET /external/contract``'s ``entities``
+    list. ``contract_version``/``contract_entities`` unknown (the plain
+    1-arg call every OTHER caller still makes) reads as "not yet provable" -
+    the SAME logging-sink fallback a too-old consumer gets, never a 422.
+    Every other entity's signature/behaviour is BYTE-IDENTICAL to before
+    this kwarg pair existed.
     """
-    return entity_type in _ENTITY_PATH
+    if entity_type not in _ENTITY_PATH:
+        return False
+    gate = CONTRACT_GATED_ENTITIES.get(entity_type)
+    if gate is None:
+        return True
+    if contract_version is None or contract_entities is None:
+        return False
+    required_version, required_entity_name = gate
+    return contract_version >= required_version and required_entity_name in contract_entities
+
+
+def sorento_supported_entities_label() -> str:
+    """A human, comma-joined phrase naming every entity ``_ENTITY_PATH``
+    currently maps (S6 merge-gate review NIT 7).
+
+    Generated FROM the map itself - never a hand-maintained sentence - so a
+    future entity join (another document, another master) can never leave
+    the operator-facing "not previewable" reason stale again the way "it
+    currently accepts suppliers and customers only" did the moment documents
+    joined the map (plan 22 S5).
+
+    S3 (sprint-5/08 review round 1) - CONTRACT-GATED entities (``brand``,
+    AC-08-33; ``stock_balance``, plan 13 AC-13-02) are EXCLUDED: unqualified
+    membership in ``_ENTITY_PATH`` is not the same claim as "Sorento accepts
+    this today" for an entity whose real answer depends on the consumer's
+    advertised contract version, and this sentence was previously saying
+    "...and brand" on every 2.2 consumer while
+    ``sorento_supports_entity("brand")`` (no contract kwargs) answered
+    ``False`` for the exact same request - a direct contradiction an
+    operator would read as a bug report against us."""
+    names = [
+        entity_type.replace("_", " ")
+        for entity_type in _ENTITY_PATH
+        if entity_type not in CONTRACT_GATED_ENTITIES
+    ]
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+# ── product code recovery (sprint-5/10, R8, AC-10-72) ────────────────────────
+
+
+def codes_from_refs(
+    refs: Sequence[str], *, key_fields: Sequence[str]
+) -> Dict[str, str]:
+    """``{ref: ItemCode}`` recovered by splitting each ref once on ``":"`` -
+    pure, never raises. Guarded exactly as AC-10-72 states: only when the
+    task's ``key_fields`` is EXACTLY ``("ItemCode",)`` (a multi-key task has
+    no single code to recover) and only for a ref whose SUFFIX (everything
+    after the first ``:``) carries no ``"|"`` (a multi-key ref, however
+    produced). Either guard failing for the whole call returns ``{}`` -
+    never a guess for SOME refs and a miss for others.
+
+    No column, no migration: under R8 the ref already IS
+    ``{refPrefix}:{ItemCode}``, so the code is exactly the ref's own suffix.
+    """
+    if tuple(key_fields) != ("ItemCode",):
+        return {}
+    codes: Dict[str, str] = {}
+    for ref in refs:
+        prefix_and_suffix = str(ref or "").split(":", 1)
+        if len(prefix_and_suffix) != 2:
+            continue
+        suffix = prefix_and_suffix[1]
+        if "|" in suffix or not suffix:
+            continue
+        codes[ref] = suffix
+    return codes
+
+
+def pairs_from_refs(
+    refs: Sequence[str], *, key_fields: Sequence[str]
+) -> Dict[str, Dict[str, str]]:
+    """``{ref: {"item_code", "location_code"}}`` recovered by splitting each
+    ref once on ``":"`` then its suffix once on ``"|"`` - pure, never
+    raises. Mirrors ``codes_from_refs`` exactly (plan 13, AC-13-05): only
+    when the task's ``key_fields`` is EXACTLY ``("item_code",
+    "location_code")`` (the stock preset's own ``groupBy``); a ref whose
+    suffix does not split into exactly two non-empty parts is simply
+    omitted, never guessed. Either guard failing for the whole call returns
+    ``{}``.
+
+    No column, no migration: Sorento keeps no stock refs at all, so the
+    pair is the only way to find the row to delete - deriving it from the
+    ref needs no new storage (plan 10 D21's same argument).
+    """
+    if tuple(key_fields) != ("item_code", "location_code"):
+        return {}
+    pairs: Dict[str, Dict[str, str]] = {}
+    for ref in refs:
+        prefix_and_suffix = str(ref or "").split(":", 1)
+        if len(prefix_and_suffix) != 2:
+            continue
+        suffix = prefix_and_suffix[1]
+        # review round 2 NIT fix - split on the LAST ``|`` (``rsplit``,
+        # maxsplit 1), not the first: an item code that itself contains a
+        # ``|`` would otherwise split into more than two parts and this
+        # ref would be silently omitted, even though the location code
+        # (always the final segment) is perfectly recoverable.
+        parts = suffix.rsplit("|", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            continue
+        pairs[ref] = {"item_code": parts[0], "location_code": parts[1]}
+    return pairs
+
+
+# ── company anchor (plan 22 Appendix A6/A7) ───────────────────────────────────
+#
+#     !!  AN ANCHOR FAILURE IS A TASK-LEVEL FAULT, NEVER A PER-RECORD ONE.  !!
+#
+# Sorento resolves the target company from the top-level ``companyCode`` on
+# EVERY ingest/read/deletion call. When that resolution fails it answers 422
+# with a FLAT body - ``{"message": ..., "detail": null, "code": ...}`` - before
+# it looks at a single record. The records are fine; the company wiring is not.
+# Reporting it against the first record would send an operator to fix data that
+# is not broken, so it is surfaced on the TASK (``last_run_error_code``).
+COMPANY_ANCHOR_REQUIRED = "COMPANY_ANCHOR_REQUIRED"
+UNKNOWN_COMPANY = "UNKNOWN_COMPANY"
+COMPANY_BINDING_INVALID = "COMPANY_BINDING_INVALID"
+COMPANY_ANCHOR_AMBIGUOUS = "COMPANY_ANCHOR_AMBIGUOUS"
+ANCHOR_ERROR_CODES = frozenset(
+    {
+        COMPANY_ANCHOR_REQUIRED,
+        UNKNOWN_COMPANY,
+        COMPANY_BINDING_INVALID,
+        COMPANY_ANCHOR_AMBIGUOUS,
+    }
+)
+
+
+def contract_major(version: Any, *, default: Optional[int] = None) -> Optional[int]:
+    """The MAJOR of a Sorento contract version as the ``/contract`` endpoint
+    or the connection config states it: ``2`` / ``2.0`` / ``"2"`` / ``"2.1"``
+    all mean major 2. ``None`` / blank / anything that is not a version
+    yields ``default`` (``None`` unless the caller says what an absent
+    version means - ``fetch_contract`` says 1, the provider's ``test()``
+    resolves an absent config key to 1 before calling). Shared by the sink
+    (advisory mismatch warning) and the provider (Test verdict) so the two
+    can never parse the same answer differently.
+    """
+    if isinstance(version, bool) or version is None:
+        return default
+    if isinstance(version, (int, float)):
+        return int(version)
+    head = str(version).strip().split(".", 1)[0]
+    return int(head) if head.isdigit() else default
+
+
+# INGEST-LINE-DROP-GUARD - what a Sorento connection with NO stored (or an
+# unparseable) ``sorentoContractVersion`` speaks. Contract 2 is the floor every
+# live CRM advertises; contract 1 strips ``product_code`` from every document
+# line and the CRM then drops those lines silently, so an unset value must
+# never mean 1. An operator can still pick 1 explicitly; the sink then refuses
+# documents with lines (``SorentoSink._refuse_contract_1_line_drop``).
+DEFAULT_CONTRACT_VERSION = 2
+
+
+def resolve_contract_version(stored: Any) -> int:
+    """The connection's contract MAJOR: the stored select value ("1"/"2", or a
+    hand-set "2.0"/"2.1") when it is a version >= 1, else
+    ``DEFAULT_CONTRACT_VERSION``. Shared by the sink factory and the
+    provider's Test so the two never resolve the same config differently."""
+    major = contract_major(stored)
+    return major if major is not None and major >= 1 else DEFAULT_CONTRACT_VERSION
+
+
+def _doc_label(record: Any) -> str:
+    """A document's operator-facing number (its DocNo), else its source_ref."""
+    for attr in ("source_doc_no", "so_number", "po_number", "spo_number", "doc_no"):
+        value = getattr(record, attr, None)
+        if value:
+            return str(value)
+    return str(getattr(record, "source_ref", "") or "?")
+
+
+@dataclass(frozen=True)
+class SorentoContractInfo:
+    """``GET /external/contract``'s full answer (S2, sprint-5/08 review
+    round 1) - the RAW version (a float; ``fetch_contract``'s major-only int
+    cannot satisfy a ``>= 2.3`` gate) and the advertised ``entities`` list,
+    so ``sorento_supports_entity``'s contract-gate kwargs (AC-08-33) have a
+    real caller."""
+
+    version: "ContractVersion"
+    entities: List[str]
 
 
 class SorentoSinkError(Exception):
     """A transport- or contract-level failure that is not per-record. The whole
     batch is unresolved; the caller returns it to review rather than marking any
-    record pushed."""
+    record pushed.
+
+    ``status_code`` / ``body`` (both optional, ``None`` when the failure was
+    not an HTTP answer) carry what the consumer actually said, so a caller
+    that must SHOW the failure (``EtlService.preview_task`` -> 502) can quote
+    it instead of a fixed sentence - prod 2026-09-06: an operator saw "the
+    dry run failed" twice (a 504 and an unknown SO failure) with no way to
+    tell what Sorento had answered. ``str(exc)`` is unchanged for every
+    existing caller; ``body`` is the SAME bounded, key-free snippet the
+    message already embeds (``_safe_body``), never the request, never the
+    URL beyond its path.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        body: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+
+
+class SinkAnchorError(SorentoSinkError):
+    """Sorento could not resolve the company anchor (Appendix A6/A7).
+
+    A subclass of ``SorentoSinkError`` on purpose: every existing caller already
+    treats it as "the whole batch is unresolved, nothing was written", which is
+    exactly right. What the subclass ADDS is the ``code``, so the task can show
+    WHICH wiring is wrong instead of a generic delivery failure.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.sorento_message = message
+        super().__init__(f"{code}: {message}")
+
+
+class SinkUnknownEntity(SorentoSinkError):
+    """A 404 ``UNKNOWN_ENTITY`` (addendum section 5) - Sorento has not yet
+    shipped an endpoint for this entity/path (e.g. ``shipping_orders``'
+    ``/deletions`` before their build lands). Distinct from every other
+    non-200 (a genuine outage/misconfiguration): the caller retries later
+    rather than treating it as a defect."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=404)
 
 
 class SorentoRateLimited(SorentoSinkError):
@@ -97,7 +708,10 @@ class SorentoRateLimited(SorentoSinkError):
 
     def __init__(self, retry_after: int) -> None:
         self.retry_after = retry_after
-        super().__init__(f"Sorento rate-limited the push; retry after {retry_after}s.")
+        super().__init__(
+            f"Sorento rate-limited the push; retry after {retry_after}s.",
+            status_code=429,
+        )
 
 
 @dataclass
@@ -149,12 +763,56 @@ class SorentoSink:
         base_url: str,
         api_key: str,
         entity_type: str,
+        company_code: Optional[str] = None,
         timeout: float = 30.0,
         transport: Optional[httpx.BaseTransport] = None,
         max_rate_limit_waits: int = 2,
+        # AC-02-14 - the connection's OWN `sorentoContractVersion` setting.
+        # This is the AUTHORITATIVE gate on every
+        # push (`sink_payload(contract_version=)`) - Sorento's own advertised
+        # `/contract` version (`fetch_contract`) is ADVISORY ONLY and never
+        # auto-flips it. Default `DEFAULT_CONTRACT_VERSION` (2) - the same
+        # value an unset connection resolves to (INGEST-LINE-DROP-GUARD).
+        contract_version: int = DEFAULT_CONTRACT_VERSION,
+        # Records per ingest POST. Clamped to `SORENTO_MAX_BATCH` (their
+        # per-request limit); the factory passes
+        # `settings.autocount_sink_batch_size` (default 200). Every chunk
+        # loop below (`dry_run`, `read`, `delete_batch`, `write_batch`) uses
+        # it, so one setting governs every request shape.
+        batch_size: int = SORENTO_MAX_BATCH,
+        # feat/sink-concurrency-ui - the connection's OWN stored
+        # `sinkConcurrency` ("1".."4", a STRING like the contract-version
+        # select), or `None`/blank when unset. Resolved lazily, at CALL
+        # time, in `_resolve_concurrency` - never here - so a test (or an
+        # operator) that flips `settings.autocount_sink_concurrency` after
+        # construction is honoured on an unset connection.
+        concurrency_config: Optional[str] = None,
+        # sprint-5/14 (D3) - the doc-feed's own ``book`` (the vendor path
+        # segment, e.g. ``db1``), sent right after ``companyCode`` on every
+        # ingest/deletions call the feed sink makes. ``None`` (every
+        # pre-plan-14 caller) keeps posting the exact same two-key body it
+        # always has - `_body` below omits the key entirely when unset.
+        book: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self.contract_version = contract_version
+        self.book = (book or "").strip() or None
+        # AC-CONSIGN-PULL - the consumer's LIVE advertised ``/contract``
+        # version, set by ``CompanyService.sink_for_company`` from the SAME
+        # probe its contract gate already makes. Decides the contract-gated
+        # line columns of the linked documents (``TransferedQty`` from 2.9);
+        # ``None`` (never probed) sends the older shape - fail closed.
+        self.advertised_contract_version: Optional[ContractVersion] = None
+        # Plan 60 - set once `_customer_contract` has probed for the customer
+        # `payment_terms_code` field gate, so a sink probes at most once.
+        self._customer_contract_probed = False
+        self.batch_size = max(1, min(int(batch_size), SORENTO_MAX_BATCH))
+        # The Sorento company this sink delivers INTO (Appendix A6). Sent as the
+        # top-level ``companyCode`` on every call; a blank one is deliberately
+        # still SENT (as absent) so Sorento answers the authoritative
+        # ``COMPANY_ANCHOR_REQUIRED`` rather than us guessing its rules locally.
+        self.company_code = (company_code or "").strip() or None
         self.entity_type = entity_type
         path = _ENTITY_PATH.get(entity_type)
         if path is None:
@@ -162,20 +820,106 @@ class SorentoSink:
                 f"No Sorento ingest path for canonical entity '{entity_type}'."
             )
         self._path_segment = path
-        self._timeout = timeout
+        #     !!  CONNECT STAYS SHORT; READ/WRITE/POOL FOLLOW THE CALLER'S
+        #         `timeout` (round 5).  !!
+        # A dead/unreachable endpoint should fail fast (``SINK_CONNECT_
+        # TIMEOUT_SECONDS``, never the same generous budget); a slow-but-
+        # ALIVE Sorento genuinely ingesting a large document batch (lines
+        # included) needs the full `timeout` on the phases that actually
+        # wait for it. ``sorento_sink_from_connection`` passes ``settings.
+        # autocount_sink_timeout_seconds`` here - never the OLD hard-coded
+        # 30.0, which recorded a push FAILURE while Sorento was still
+        # processing a genuinely large batch.
+        self._timeout = httpx.Timeout(float(timeout), connect=SINK_CONNECT_TIMEOUT_SECONDS)
         self._transport = transport
         self._max_rate_limit_waits = max_rate_limit_waits
+        self._concurrency_config = concurrency_config
+        # ONE warning per sink instance (feat/sink-concurrency-ui) - an
+        # invalid stored value does not re-log on every chunked call a
+        # single sync makes.
+        self._concurrency_warned = False
+
+    # ── operator-facing text ────────────────────────────────────────────────
+
+    _REDACT_MIN_KEY_LEN = 8
+
+    def redact(self, text: str) -> str:
+        """``text`` with this sink's API key replaced by ``[redacted]``.
+
+        For anything that is about to be SHOWN or LOGGED (the preview's 502
+        detail, the approve gate's message): the sink's own error strings
+        never embed the key, but a consumer body could echo it back, so it is
+        scrubbed defensively. Keys shorter than 8 characters are not replaced
+        (a 1-3 character "key" would blank out ordinary words); such a key
+        is a misconfiguration the connection Test already refuses.
+        """
+        key = self._api_key or ""
+        if len(key) < self._REDACT_MIN_KEY_LEN:
+            return text
+        return text.replace(key, "[redacted]")
 
     # ── projection ──────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _to_records(records: Sequence[CanonicalRecord]) -> List[Dict[str, Any]]:
+    def _refuse_contract_1_line_drop(self, records: Sequence[CanonicalRecord]) -> None:
+        """INGEST-LINE-DROP-GUARD - never strip a line's identity silently.
+
+        At contract 1 a document line loses ``product_code`` and its linkage
+        refs (``CanonicalDocumentLine.FALLBACK_FIELDS``). The CRM matches a
+        line's product by code only, so it drops every such line and says
+        nothing. Refuse the whole batch loudly instead (the caller returns it
+        to review), naming the documents and the fix.
+        """
+        if self.contract_version >= 2:
+            return
+        affected = [
+            _doc_label(r)
+            for r in records
+            if isinstance(r, CanonicalDocument)
+            and r.CONTRACT_1_STRIPS_LINES
+            and r.lines
+        ]
+        if not affected:
+            return
+        shown = ", ".join(affected[:5]) + (f" and {len(affected) - 5} more" if len(affected) > 5 else "")
+        raise SorentoSinkError(
+            f"Refusing to push {len(affected)} {self.entity_type} document(s) ({shown}): "
+            "this Sorento connection is set to contract version 1, which strips "
+            "product_code from every document line, and Sorento drops a line it "
+            "cannot match by product_code. Set the connection's Contract version "
+            "to 2 (Settings > Integrations > Sorento > Edit), run Test, then retry."
+        )
+
+    def _customer_contract(self, records: Sequence[CanonicalRecord]) -> Optional["ContractVersion"]:
+        """Plan 60 - the consumer contract that decides the customer
+        ``payment_terms_code`` field gate (>= 2.14, CRM #2305).
+
+        Probed LAZILY, only when this batch holds a customer that actually
+        carries the field, and at most once per sink: a customer feed without
+        DisplayTerm values, a delete, or any other entity makes no extra
+        ``/contract`` call. An already-known advertised version (set by the
+        factory or the write-back stager) is reused. A failed probe is None,
+        which strips the field: it is never sent to a consumer that cannot be
+        shown to accept it."""
+        if self.advertised_contract_version is not None or self._customer_contract_probed:
+            return self.advertised_contract_version
+        if not any(
+            isinstance(r, CanonicalCustomer) and r.payment_terms_code for r in records
+        ):
+            return None
+        self._customer_contract_probed = True
+        info = self.fetch_contract_detail()
+        self.advertised_contract_version = info.version if info else None
+        return self.advertised_contract_version
+
+    def _to_records(self, records: Sequence[CanonicalRecord]) -> List[Dict[str, Any]]:
         """Project each canonical record to EXACTLY Sorento's field set.
 
         Uses the model's own ``sink_payload`` (the allow-list lives beside the
         model, AC-14-14) so provenance and locally-useful fields never cross the
         wire and trip ``extra="forbid"``.
         """
+        self._refuse_contract_1_line_drop(records)
+        customer_contract = self._customer_contract(records)
         out: List[Dict[str, Any]] = []
         for record in records:
             payload = getattr(record, "sink_payload", None)
@@ -184,21 +928,71 @@ class SorentoSink:
                     f"{type(record).__name__} has no sink_payload projection; "
                     "it cannot be delivered to Sorento safely."
                 )
-            out.append(payload())
+            # Documents accept `contract_version` (AC-02-14); a master's
+            # `sink_payload()` takes no arguments at all - dispatch on the
+            # record's OWN TYPE (S6, code review) rather than a bare
+            # `except TypeError` around the documents call: a real bug
+            # inside a document's `sink_payload()` implementation also
+            # raises `TypeError` and would silently be swallowed into the
+            # WRONG fallback branch (a bare call a document's signature does
+            # not even accept), masking the actual error as a v1 downgrade.
+            if isinstance(record, CanonicalLinkedDocument):
+                out.append(payload(
+                    contract_version=self.contract_version,
+                    advertised_contract=self.advertised_contract_version,
+                ))
+            elif isinstance(record, (CanonicalPurchaseOrder, CanonicalShippingOrder, CanonicalSalesOrder)):
+                out.append(payload(
+                    contract_version=self.contract_version,
+                    advertised_contract=self.advertised_contract_version,
+                ))
+            elif isinstance(record, CanonicalBillingDocument):
+                # SS-PACKAGE-LINES - package line fields ride the advertised
+                # contract (>= 2.13); an older CRM gets the 2.6 line unchanged.
+                out.append(payload(
+                    contract_version=self.contract_version,
+                    advertised_contract=self.advertised_contract_version,
+                ))
+            elif isinstance(record, CanonicalDocument):
+                out.append(payload(contract_version=self.contract_version))
+            elif isinstance(record, CanonicalCustomer):
+                # Plan 60 - `payment_terms_code` rides the advertised
+                # contract (>= 2.14); an older or unprovable CRM never sees it.
+                out.append(payload(advertised_contract=customer_contract))
+            else:
+                out.append(payload())
         return out
 
     # ── HTTP ────────────────────────────────────────────────────────────────
 
-    def _post(self, records: List[Dict[str, Any]], *, dry_run: bool) -> Dict[str, Any]:
-        """One ingest call, with bounded waits on 429. Returns the parsed body.
+    def _body(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Every call body carries the company anchor FIRST (Appendix A6).
 
-        Raises ``SorentoSinkError`` on any non-200 that is not a handled 429 -
-        the whole batch is then unresolved and the caller must not mark anything
-        delivered.
+        One helper for ingest, read-back and deletions alike - three call sites
+        that must never drift on the one field Sorento resolves before it looks
+        at anything else.
         """
-        url = f"{self._base_url}/api/v1/external/ingest/{self._path_segment}"
+        body: Dict[str, Any] = {}
+        if self.company_code:
+            body["companyCode"] = self.company_code
+        if self.book:
+            body["book"] = self.book
+        body.update(payload)
+        return body
+
+    def _call(
+        self, path: str, payload: Dict[str, Any], *, dry_run: bool
+    ) -> Dict[str, Any]:
+        """One POST to ``/api/v1/external/{path}``, with bounded waits on 429.
+
+        Raises ``SinkAnchorError`` on an anchor 422 (a TASK-level fault, see the
+        codes above) and ``SorentoSinkError`` on any other non-200 that is not a
+        handled 429 - the whole batch is then unresolved and the caller must not
+        mark anything delivered.
+        """
+        url = f"{self._base_url}/api/v1/external/{path}"
         params = {"dry_run": "true"} if dry_run else None
-        body = {"records": records}
+        body = self._body(payload)
         headers = {
             # X-API-Key, never Bearer (AC-14-15). Never logged.
             "X-API-Key": self._api_key,
@@ -207,6 +1001,9 @@ class SorentoSink:
 
         waits = 0
         while True:
+            # Plan 34 - never hold the caller's app-DB read transaction
+            # across a Sorento POST (300 s timeout, 429 waits).
+            release_read_transactions()
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
                 response = client.post(url, params=params, json=body, headers=headers)
 
@@ -225,19 +1022,43 @@ class SorentoSink:
                 time.sleep(retry_after)
                 continue
 
+            if response.status_code == 422:
+                anchor = _anchor_error(response)
+                if anchor is not None:
+                    raise anchor
+
+            if response.status_code == 404:
+                unknown = _unknown_entity_error(response)
+                if unknown is not None:
+                    raise unknown
+
             # Anything else is a batch-level failure. 500 may be a guard-rail
             # error until the companion Sorento fix lands; log the body (the
             # request is masked by the activity layer, not here) so it is
             # diagnosable rather than a bare status code.
             detail = _safe_body(response)
             raise SorentoSinkError(
-                f"Sorento ingest returned HTTP {response.status_code} for "
-                f"{self._path_segment}: {detail}"
+                f"Sorento returned HTTP {response.status_code} for "
+                f"{path}: {detail}",
+                status_code=response.status_code,
+                body=detail,
             )
+
+    def _post(self, records: List[Dict[str, Any]], *, dry_run: bool) -> Dict[str, Any]:
+        """One ingest call. Kept as the ingest-shaped wrapper over ``_call`` so
+        every existing caller (and its tests) is unchanged."""
+        return self._call(
+            f"ingest/{self._path_segment}", {"records": records}, dry_run=dry_run
+        )
 
     # ── dry run (AC-14-20/21) ────────────────────────────────────────────────
 
-    def dry_run(self, records: Sequence[CanonicalRecord]) -> DryRunResult:
+    def dry_run(
+        self,
+        records: Sequence[CanonicalRecord],
+        *,
+        on_chunk: Optional[Callable[[], None]] = None,
+    ) -> DryRunResult:
         """Ask Sorento what a push WOULD do, writing nothing.
 
         The prediction is authoritative because Sorento runs its real resolution
@@ -246,46 +1067,594 @@ class SorentoSink:
         one would be holding the safety gate.
         """
         projected = self._to_records(records)
-        if not projected:
-            return DryRunResult(
-                summary={"total": 0, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
-                predictions=[],
+        summary: Dict[str, int] = {
+            "total": 0, "created": 0, "updated": 0, "failed": 0, "retryable": 0
+        }
+        predictions: List[Prediction] = []
+        # CHUNKED at the vendor ceiling exactly like ``write_batch``. A dry run
+        # of an INITIAL LOAD (the activation gate, AC-22-18) is routinely larger
+        # than one batch, and an over-size body is a 413 - which would make the
+        # gate un-passable on precisely the companies that most need it.
+        for start in range(0, len(projected), self.batch_size):
+            body = self._post(projected[start : start + self.batch_size], dry_run=True)
+            if on_chunk is not None:
+                on_chunk()
+            for key, value in (body.get("summary") or {}).items():
+                if isinstance(value, int):
+                    summary[key] = summary.get(key, 0) + value
+            predictions.extend(
+                Prediction(
+                    source_ref=str(r.get("source_ref") or ""),
+                    outcome=str(r.get("outcome") or ""),
+                    entity_id=r.get("entity_id"),
+                    diff=r.get("diff") or {},
+                    errors=r.get("errors") or {},
+                )
+                for r in body.get("records", [])
             )
-        body = self._post(projected, dry_run=True)
-        predictions = [
-            Prediction(
-                source_ref=str(r.get("source_ref") or ""),
-                outcome=str(r.get("outcome") or ""),
-                entity_id=r.get("entity_id"),
-                diff=r.get("diff") or {},
-                errors=r.get("errors") or {},
+        return DryRunResult(summary=summary, predictions=predictions)
+
+    # ── read-back (Appendix A7 §3/§4, A8) ────────────────────────────────────
+
+    def read_back(self, source_refs: Sequence[str]) -> Dict[str, Any]:
+        """``POST /api/v1/external/read/{entity}`` → ``{records, not_found}``.
+
+        Two contract details are handled HERE so no caller re-learns them:
+
+        * **Numbers arrive as JSON numbers** (Sorento runs Decimals through
+          FastAPI's encoder). They are parsed via ``str()`` into ``Decimal`` -
+          never through a float, which silently rounds a 4-dp quantity.
+        * The envelope is ``{"records": [...], "not_found": [...]}`` and a ref
+          under the wrong company lists as ``not_found``, not as an error.
+        """
+        refs = [str(r) for r in source_refs if str(r or "").strip()]
+        records: List[Dict[str, Any]] = []
+        not_found: List[str] = []
+        for start in range(0, len(refs), self.batch_size):
+            body = self._call(
+                f"read/{self._path_segment}",
+                {"source_refs": refs[start : start + self.batch_size]},
+                dry_run=False,
             )
-            for r in body.get("records", [])
+            records.extend(_decimalize(r) for r in (body.get("records") or []))
+            not_found.extend(str(r) for r in (body.get("not_found") or []))
+        return {"records": records, "not_found": not_found}
+
+    # ── deletions (Appendix A4/A6, consumed by S3's delete intents) ──────────
+
+    def delete_batch(
+        self,
+        source_refs: Sequence[str],
+        *,
+        dry_run: bool = False,
+        on_chunk: Optional[
+            Callable[[List[str], Optional[List[Dict[str, Any]]], Optional[BaseException]], None]
+        ] = None,
+        # sprint-5/10 (R8, AC-10-72) - ``{ref: ItemCode}`` for `products`
+        # ONLY (``codes_from_refs``'s own guard decides which refs, if any,
+        # are eligible); each chunk's POST body carries ``codes`` restricted
+        # to THAT chunk's own refs, never the whole map. Omitted entirely
+        # when ``None`` or empty - contract 2.4 optional field.
+        codes: Optional[Dict[str, str]] = None,
+        # plan 13 (AC-13-05) - ``{ref: {"item_code", "location_code"}}`` for
+        # `stock_balance` ONLY (``pairs_from_refs``'s own guard decides
+        # which refs, if any, are eligible), mirroring ``codes`` exactly:
+        # each chunk's POST body carries ``pairs`` restricted to THAT
+        # chunk's own refs. Omitted entirely when ``None`` or empty -
+        # contract 2.5 optional field, so a caller that never passes it
+        # sends today's exact body shape.
+        pairs: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """``POST /api/v1/external/ingest/{entity}/deletions``.
+
+        Per-ref verdict ``deleted | deactivated | not_found | failed`` - Sorento
+        tries a hard DELETE and falls back to deactivating when dependents exist
+        (it probes the FK graph first, so a customer with orders is never
+        orphaned). Returns the merged ``{summary, records}``.
+
+        A 404 ``UNKNOWN_ENTITY`` (addendum section 5 - e.g. ``shipping_orders``
+        before Sorento's own build for it lands) is caught PER CHUNK and every
+        ref in that chunk reported ``retryable`` instead of raising - the
+        caller's staged delete intent stays STAGED and re-offers on the next
+        run, exactly like a dependency-order carry-over, rather than the whole
+        run failing on an endpoint that genuinely does not exist yet.
+
+        ``on_chunk`` mirrors ``write_batch``'s (fix/push-marks-per-chunk): a
+        chunk that resolves (delivered OR retried-as-unknown-entity) calls
+        ``on_chunk(chunk_refs, chunk_records, None)``; a TRANSIENT 5xx that
+        exhausts every retry attempt (``_post_with_retry``) fails ONLY that
+        chunk - ``on_chunk(chunk_refs, None, exc)``, then the loop continues
+        to the next chunk. Anything else stops the whole call, unchanged.
+
+        Concurrency (feat/sink-concurrency-ui) mirrors ``write_batch``: up to
+        ``_resolve_concurrency``'s N chunk POSTs run WITH REAL OVERLAP; a
+        chunk that fails outright (not the transient-exhausted case, which
+        never raises) cancels every NOT-YET-STARTED future and propagates,
+        same as before this connection setting existed.
+        """
+        refs = [str(r) for r in source_refs if str(r or "").strip()]
+        summary: Dict[str, int] = {
+            "total": 0, "deleted": 0, "deactivated": 0, "not_found": 0,
+            "failed": 0, "retryable": 0,
+        }
+        results: List[Dict[str, Any]] = []
+        chunks = [
+            refs[start : start + self.batch_size]
+            for start in range(0, len(refs), self.batch_size)
         ]
-        return DryRunResult(summary=body.get("summary") or {}, predictions=predictions)
+        if not chunks:
+            return {"dry_run": dry_run, "summary": summary, "records": results}
+
+        def merge(partial: Optional[Dict[str, int]]) -> None:
+            for key, value in (partial or {}).items():
+                summary[key] = summary.get(key, 0) + value
+
+        concurrency = self._resolve_concurrency(len(chunks))
+        if concurrency == 1:
+            #     !!  BYTE-IDENTICAL TO BEFORE feat/sink-concurrency-ui.  !!
+            for chunk in chunks:
+                partial, chunk_records, error = self._run_delete_chunk(
+                    chunk, dry_run, codes, pairs
+                )
+                if error is not None:
+                    if on_chunk is not None:
+                        on_chunk(chunk, None, error)
+                    continue
+                merge(partial)
+                results.extend(chunk_records or [])
+                if on_chunk is not None:
+                    on_chunk(chunk, chunk_records, None)
+        else:
+            # Plan 34 - the POSTs run on pool threads, whose release cannot
+            # reach this thread's session: end its read transaction here.
+            release_read_transactions()
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = [
+                    executor.submit(self._run_delete_chunk, chunk, dry_run, codes, pairs)
+                    for chunk in chunks
+                ]
+                try:
+                    for chunk, future in zip(chunks, futures):
+                        partial, chunk_records, error = future.result()
+                        if error is not None:
+                            if on_chunk is not None:
+                                on_chunk(chunk, None, error)
+                            continue
+                        merge(partial)
+                        results.extend(chunk_records or [])
+                        if on_chunk is not None:
+                            on_chunk(chunk, chunk_records, None)
+                except BaseException:
+                    # Same reasoning as `write_batch`: cancel every
+                    # NOT-YET-STARTED future, let anything already running
+                    # finish in the background, propagate unchanged.
+                    for pending in futures:
+                        pending.cancel()
+                    raise
+        return {"dry_run": dry_run, "summary": summary, "records": results}
+
+    def _run_delete_chunk(
+        self,
+        chunk: List[str],
+        dry_run: bool,
+        codes: Optional[Dict[str, str]] = None,
+        pairs: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> Tuple[Optional[Dict[str, int]], Optional[List[Dict[str, Any]]], Optional[BaseException]]:
+        """One deletion chunk POST, shared by ``delete_batch``'s sequential
+        and concurrent paths so a ``SinkUnknownEntity`` (addendum section 5)
+        is handled identically either way: every ref in the chunk reports
+        ``retryable`` rather than raising. Returns
+        ``(partial_summary, chunk_records, error)`` - ``error`` set means the
+        other two are ``None`` (a transient 5xx exhausted every retry
+        attempt); anything else NOT transient re-raises straight through, on
+        whichever thread is running it.
+        """
+        body_out: Dict[str, Any] = {"source_refs": chunk}
+        if codes:
+            # sprint-5/10 (AC-10-72) - restricted to THIS chunk's own refs,
+            # never the caller's whole map; a ref absent from ``codes`` is
+            # simply omitted from the sub-map rather than sent as ``null``.
+            restricted = {ref: codes[ref] for ref in chunk if ref in codes}
+            if restricted:
+                body_out["codes"] = restricted
+        if pairs:
+            # plan 13 (AC-13-05) - same restriction, for `stock_balance`.
+            restricted_pairs = {ref: pairs[ref] for ref in chunk if ref in pairs}
+            if restricted_pairs:
+                body_out["pairs"] = restricted_pairs
+        try:
+            body, error = self._post_with_retry(
+                f"ingest/{self._path_segment}/deletions",
+                body_out,
+                dry_run=dry_run,
+            )
+        except SinkUnknownEntity:
+            chunk_records = [{"source_ref": ref, "outcome": "retryable"} for ref in chunk]
+            return {"total": len(chunk), "retryable": len(chunk)}, chunk_records, None
+        if error is not None:
+            return None, None, error
+        partial: Dict[str, int] = {}
+        for key, value in (body.get("summary") or {}).items():
+            if isinstance(value, int):
+                partial[key] = partial.get(key, 0) + value
+        return partial, (body.get("records") or []), None
+
+    # ── doc-feed deletions (sprint-5/14, D3, contract 13.10) ─────────────────
+
+    def delete_doc_keys(
+        self,
+        doc_keys: Sequence[int],
+        *,
+        doc_date_from: str,
+        doc_date_to: str,
+        dry_run: bool = False,
+        on_chunk: Optional[Callable[[List[int]], None]] = None,
+    ) -> Dict[str, Any]:
+        """``POST /api/v1/external/ingest/{entity}/deletions`` with the
+        doc-feed's OWN body shape (13.10) - ``{doc_date_from, doc_date_to,
+        doc_keys}``, never ``source_refs`` (that is ``delete_batch`` above,
+        the master/document ETL shape). Chunked at ``batch_size`` (<= 1000,
+        the ruling); each chunk's ``summary`` is merged VERBATIM from the
+        CRM's own answer (it already counts a malformed or duplicate key as
+        `failed` on its own side, so this never re-derives a count).
+
+        Per-key verdict matching (C1, AC-14-42) is the CALLER's job (the
+        sweep runner): a verdict echoes ONLY ``source_ref`` =
+        ``{book}:DO:{DocKey}`` / ``{book}:GRN:{DocKey}`` - no ``doc_key``
+        field - so the runner parses the integer after the last ``:``.
+        """
+        keys = [int(k) for k in doc_keys]
+        summary: Dict[str, int] = {
+            "total": 0, "deleted": 0, "deactivated": 0, "not_found": 0, "failed": 0,
+        }
+        records: List[Dict[str, Any]] = []
+        chunks = [
+            keys[start : start + self.batch_size]
+            for start in range(0, len(keys), self.batch_size)
+        ]
+        for chunk in chunks:
+            body, error = self._post_with_retry(
+                f"ingest/{self._path_segment}/deletions",
+                {
+                    "doc_date_from": doc_date_from,
+                    "doc_date_to": doc_date_to,
+                    "doc_keys": chunk,
+                },
+                dry_run=dry_run,
+            )
+            if error is not None:
+                raise error
+            for key, value in (body.get("summary") or {}).items():
+                if isinstance(value, int):
+                    summary[key] = summary.get(key, 0) + value
+            records.extend(body.get("records") or [])
+            if on_chunk is not None:
+                on_chunk(chunk)
+        return {"dry_run": dry_run, "summary": summary, "records": records}
+
+    # ── contract (addendum section 11/12, AC-02-14) ──────────────────────────
+
+    def fetch_contract_detail(self) -> Optional["SorentoContractInfo"]:
+        """``GET /api/v1/external/contract`` -> the FULL version (a float,
+        e.g. ``2.3`` - ``fetch_contract`` below truncates to the major int,
+        which cannot ever satisfy a ``>= 2.3`` gate) plus the advertised
+        ``entities`` list, or ``None`` on ANY failure (network, non-200,
+        malformed body) - the SAME "unprovable = not yet provable" contract
+        ``fetch_contract`` follows.
+
+        S2 (sprint-5/08 review round 1) - ``sorento_supports_entity``'s
+        ``contract_version``/``contract_entities`` kwargs (AC-08-33) existed
+        with nothing feeding them: every call site only ever called
+        ``fetch_contract()`` (major-only) or nothing at all, so the
+        ``brand`` gate could never open even against a genuinely-2.3
+        consumer.
+        """
+        url = f"{self._base_url}/api/v1/external/contract"
+        headers = {"X-API-Key": self._api_key}
+        release_read_transactions()  # plan 34
+        try:
+            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+                response = client.get(url, headers=headers)
+            if response.status_code != 200:
+                return None
+            body = response.json()
+            if not isinstance(body, dict):
+                return None
+            raw_version = body.get("version")
+            if isinstance(raw_version, bool) or raw_version is None:
+                version = ContractVersion(1, 0)
+            else:
+                # BL-SS-289 - (major, minor) integers, never a float parse:
+                # ``"2.10"`` is 2.10, not 2.1. A patch part (``"2.3.1"``) is
+                # ignored, as before.
+                parsed = ContractVersion.parse(raw_version)
+                if parsed is None:
+                    return None
+                version = parsed
+            entities = body.get("entities")
+            entities_list = [str(e) for e in entities] if isinstance(entities, list) else []
+            return SorentoContractInfo(version=version, entities=entities_list)
+        except Exception:  # noqa: BLE001 - advisory only, must never propagate
+            return None
+
+    def fetch_contract(self) -> Optional[int]:
+        """``GET /api/v1/external/contract`` -> the version Sorento advertises,
+        or ``None`` on ANY failure (network, non-200, malformed body).
+
+        ADVISORY ONLY - never gates a push, never raised as a task-level
+        error. The caller compares it to ``self.contract_version`` (the
+        connection's own authoritative setting) and surfaces a mismatch as a
+        non-blocking preview warning only.
+        """
+        url = f"{self._base_url}/api/v1/external/contract"
+        headers = {"X-API-Key": self._api_key}
+        release_read_transactions()  # plan 34
+        try:
+            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+                response = client.get(url, headers=headers)
+            if response.status_code != 200:
+                return None
+            body = response.json()
+            if not isinstance(body, dict):
+                return None
+            # ``{"version": 2}`` (contract 2) or ``{"version": "2.1"}`` (2.1,
+            # a STRING - a point release of the same major); majors only. A
+            # contract endpoint that answers but names no version is a
+            # contract-1 Sorento.
+            return contract_major(body.get("version"), default=1)
+        except Exception:  # noqa: BLE001 - advisory only, must never propagate
+            return None
+
+    # ── concurrency (feat/sink-concurrency-ui) ────────────────────────────────
+
+    def _resolve_concurrency(self, num_chunks: int) -> int:
+        """How many chunk POSTs may run WITH REAL OVERLAP, resolved fresh on
+        every call (never cached on the instance beyond the one-time warning
+        below): the connection's own stored ``sinkConcurrency`` when it is
+        present and a valid ``"1".."4"``, else the LIVE platform setting
+        (``settings.autocount_sink_concurrency``, read at call time so a
+        setting flipped after construction still takes effect).
+
+        Either source is then clamped to 1..4 (a forced platform value past
+        the validator's own bound, or a future stored value outside the
+        select's options, never leaks through) AND to ``num_chunks`` (no
+        point opening more workers than there is work).
+
+        An unset connection value (``None``/blank) is NOT invalid - it is
+        the intended "use the platform default" state and never warns. A
+        genuinely invalid stored value ("0", "9", "abc") falls back to the
+        platform setting and logs exactly ONE warning for the lifetime of
+        this sink instance, naming the bad value, so an operator who typed
+        garbage into `config_json` by hand (there is no PATCH-level
+        validation hook yet) finds out without the log flooding on every
+        chunk of a large push.
+        """
+        raw = self._concurrency_config
+        value: Optional[int] = None
+        if raw not in (None, ""):
+            candidate: Optional[int] = None
+            try:
+                candidate = int(str(raw).strip())
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None and 1 <= candidate <= 4:
+                value = candidate
+            elif not self._concurrency_warned:
+                logger.warning(
+                    "Sorento connection has an invalid %s '%s'; using the "
+                    "platform default instead.",
+                    SINK_CONCURRENCY_KEY, raw,
+                )
+                self._concurrency_warned = True
+        if value is None:
+            from app.config import settings as _settings
+
+            value = int(getattr(_settings, "autocount_sink_concurrency", 1) or 1)
+        return max(1, min(value, 4, num_chunks))
+
+    # ── retry (fix/push-marks-per-chunk, prod 2026-09-07) ────────────────────
+
+    def _post_with_retry(
+        self, path: str, payload: Dict[str, Any], *, dry_run: bool
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[SorentoSinkError]]:
+        """One chunk POST, retrying a TRANSIENT 5xx (``_TRANSIENT_HTTP_STATUS``)
+        up to ``settings.autocount_sink_retry_attempts`` (default 3, read at
+        CALL time) attempts total, with a short bounded backoff between
+        attempts (``time.sleep`` - the SAME seam the 429 wait already uses, so
+        a test can patch one thing). Returns ``(body, None)`` on eventual
+        success.
+
+        A TRANSIENT status that is STILL failing once every attempt is spent
+        returns ``(None, exc)`` - the CALLER's chunk loop treats this as ONE
+        failed chunk and continues to the next one (a lone upstream hiccup
+        must not re-offer every chunk that already succeeded). Anything else
+        - a plain 500 (guard-rail error until the companion Sorento fix
+        lands), a 4xx, an anchor/unknown-entity error, a bare transport fault
+        - is NOT retried and is RE-RAISED on the first attempt, unchanged:
+        the whole push stops there, exactly as before this fix.
+        """
+        from app.config import settings as _settings
+
+        attempts = max(1, int(getattr(_settings, "autocount_sink_retry_attempts", 3) or 3))
+        last_exc: Optional[SorentoSinkError] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._call(path, payload, dry_run=dry_run), None
+            except SorentoSinkError as exc:
+                if exc.status_code not in _TRANSIENT_HTTP_STATUS:
+                    raise
+                last_exc = exc
+                if attempt < attempts:
+                    # 1s, 2s, 4s, ... - three attempts (the default) sleep
+                    # 1s + 2s = 3s total, comfortably under any run budget.
+                    time.sleep(min(2 ** (attempt - 1), 4))
+        return None, last_exc
 
     # ── real push (AC-14-16/18) ──────────────────────────────────────────────
 
-    def write_batch(
-        self, records: Sequence[CanonicalRecord], *, request_id: str
+    def _chunk_results(
+        self, chunk: Sequence[CanonicalRecord], body: Dict[str, Any]
     ) -> List[WriteResult]:
-        """Deliver a batch and return one ``WriteResult`` per input record, in
-        order. Chunks at the vendor batch ceiling.
+        # S6 (Sorento's 2026-09-25 review, correction 6) - a bare
+        # ``{ref: record}`` dict keeps only the LAST verdict for a ref that
+        # appears twice in one batch, so BOTH request records would read
+        # that same last verdict. Sorento processes duplicates IN ORDER, so
+        # match by OCCURRENCE instead (bucket + pop), exactly like
+        # ``SyncService._auto_push_upserts``/``_auto_push_deletes`` already
+        # do for the STAGED-row side of this same duplicate-ref problem.
+        by_ref: Dict[str, List[Dict[str, Any]]] = {}
+        for verdict in body.get("records", []):
+            by_ref.setdefault(str(verdict.get("source_ref") or ""), []).append(verdict)
+        results: List[WriteResult] = []
+        for record in chunk:
+            ref = getattr(record, "source_ref", "")
+            bucket = by_ref.get(ref)
+            verdict = bucket.pop(0) if bucket else None
+            results.append(self._result_for(ref, verdict))
+        return results
+
+    def _ingest_payload(
+        self, chunk: Sequence[CanonicalRecord], *, backfill: bool
+    ) -> Dict[str, Any]:
+        """One ingest chunk's payload; ``backfill: true`` only when asked
+        (DO-BACKFILL-SS), so a non-backfill body is byte-identical to before."""
+        payload: Dict[str, Any] = {"records": self._to_records(chunk)}
+        if backfill:
+            payload["backfill"] = True
+        return payload
+
+    def write_batch(
+        self,
+        records: Sequence[CanonicalRecord],
+        *,
+        request_id: str,
+        on_chunk: Optional[
+            Callable[
+                [Sequence[CanonicalRecord], Optional[List[WriteResult]], Optional[BaseException]],
+                None,
+            ]
+        ] = None,
+        # sprint-5/14 (D3) - passes through to `_post_with_retry`'s own
+        # `dry_run` kwarg (every pre-plan-14 caller hard-coded `False`, so
+        # this default keeps them byte-identical). A doc-feed dry run posts
+        # `?dry_run=true` on every ingest chunk and never advances any local
+        # state - the CALLER (the runner) is what actually withholds the
+        # ledger/issue writes; this flag only controls the wire query param.
+        dry_run: bool = False,
+        # DO-BACKFILL-SS - True ONLY for a delivery-orders doc-feed backfill
+        # run (`runner.run_backfill`): adds `"backfill": true` to every ingest
+        # envelope so the CRM takes its quiet ingest mode (no cancel relink,
+        # no embeddings). The CRM 422s the flag on any other entity, so a GRN
+        # backfill, poll, sweep re-check and sync pushes all leave it False
+        # and post the exact same body as before - the key is omitted, never
+        # sent as `false`.
+        backfill: bool = False,
+    ) -> List[WriteResult]:
+        """Deliver a batch and return one ``WriteResult`` per input record that
+        a chunk actually resolved, in order. Chunks at the vendor batch ceiling.
 
         A record's ``delivered`` is True only for a ``created``/``updated``
         outcome - Sorento's own verdict, never inferred from the HTTP status.
+
+        ``on_chunk`` (fix/push-marks-per-chunk, merged with fix/job-lease-
+        orphan-sweep's liveness ping: ``SyncService.apply_chunk`` marks +
+        COMMITS the chunk first, THEN calls ``self._chunk_beat(job_id)()`` -
+        a lost lease can only stop the push AFTER a chunk is durable, never
+        instead of committing it) fires once per chunk as it resolves:
+        ``on_chunk(chunk_records, chunk_results, None)`` on a delivered
+        chunk, ``on_chunk(chunk_records, None, exc)`` on a chunk that failed
+        AFTER exhausting its retry attempts (``_post_with_retry``) - the
+        caller marks + COMMITS per chunk so a later chunk's fault can never
+        undo an earlier chunk's delivery (prod finding 2026-09-07: one 502
+        out of 25 chunk POSTs discarded a whole clean run).
+
+        Failure handling, per ``_post_with_retry``:
+        * a TRANSIENT 5xx that exhausts every attempt fails ONLY that chunk -
+          the loop continues to the next one;
+        * anything else (a plain 500, a 4xx, an anchor error, a bare
+          transport fault) is NOT retried and stops the WHOLE push
+          immediately, propagating exactly like before this fix - no verdict
+          for any chunk from this point on.
+
+        Concurrency (S5b, performance round; feat/sink-concurrency-ui) lets
+        up to N chunk POSTs run WITH REAL OVERLAP instead of one at a time -
+        resolved per call via ``_resolve_concurrency`` (the connection's own
+        stored override, else ``settings.autocount_sink_concurrency``); a
+        chunk that stops the whole push still cancels every NOT-YET-STARTED
+        future, same as before.
         """
         record_list = list(records)
+        # INGEST-LINE-DROP-GUARD - refuse the WHOLE batch before any POST, so
+        # a concurrent push can never deliver earlier chunks (unmarked) and
+        # then stop on a later one. `_to_records` re-checks per chunk.
+        self._refuse_contract_1_line_drop(record_list)
+        chunks = [
+            record_list[start : start + self.batch_size]
+            for start in range(0, len(record_list), self.batch_size)
+        ]
+        if not chunks:
+            return []
+
+        concurrency = self._resolve_concurrency(len(chunks))
+
         results: List[WriteResult] = []
-        for start in range(0, len(record_list), SORENTO_MAX_BATCH):
-            chunk = record_list[start : start + SORENTO_MAX_BATCH]
-            projected = self._to_records(chunk)
-            body = self._post(projected, dry_run=False)
-            by_ref = {str(r.get("source_ref") or ""): r for r in body.get("records", [])}
-            for record in chunk:
-                ref = getattr(record, "source_ref", "")
-                verdict = by_ref.get(ref)
-                results.append(self._result_for(ref, verdict))
+        if concurrency == 1:
+            #     !!  BYTE-IDENTICAL TO BEFORE S5b - ONE POST AT A TIME, THE
+            #         SAME ORDER.  !!
+            for chunk in chunks:
+                body, error = self._post_with_retry(
+                    f"ingest/{self._path_segment}",
+                    self._ingest_payload(chunk, backfill=backfill),
+                    dry_run=dry_run,
+                )
+                if error is not None:
+                    if on_chunk is not None:
+                        on_chunk(chunk, None, error)
+                    continue
+                chunk_results = self._chunk_results(chunk, body)
+                results.extend(chunk_results)
+                if on_chunk is not None:
+                    on_chunk(chunk, chunk_results, None)
+        else:
+            # Plan 34 - the POSTs run on pool threads, whose release cannot
+            # reach this thread's session: end its read transaction here.
+            release_read_transactions()
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = [
+                    executor.submit(
+                        self._post_with_retry,
+                        f"ingest/{self._path_segment}",
+                        self._ingest_payload(chunk, backfill=backfill),
+                        dry_run=dry_run,
+                    )
+                    for chunk in chunks
+                ]
+                try:
+                    for chunk, future in zip(chunks, futures):
+                        body, error = future.result()
+                        if error is not None:
+                            if on_chunk is not None:
+                                on_chunk(chunk, None, error)
+                            continue
+                        chunk_results = self._chunk_results(chunk, body)
+                        results.extend(chunk_results)
+                        if on_chunk is not None:
+                            on_chunk(chunk, chunk_results, None)
+                except BaseException:
+                    # A chunk failed OUTRIGHT (not the transient-exhausted
+                    # case, which returns a tuple rather than raising) -
+                    # never submit/await anything further than the context
+                    # manager already will: cancel every NOT-YET-STARTED
+                    # future (a genuine no-op call to Sorento avoided), let
+                    # anything already running finish in the background (the
+                    # ``with`` block's own exit waits for it), and propagate
+                    # exactly like the sequential path always did - no
+                    # verdict for any later chunk reaches the caller either
+                    # way.
+                    for pending in futures:
+                        pending.cancel()
+                    raise
+
         return results
 
     def _result_for(self, ref: str, verdict: Optional[Dict[str, Any]]) -> WriteResult:
@@ -294,36 +1663,152 @@ class SorentoSink:
             # batch-level anomaly for this row, never as a silent success.
             return WriteResult(
                 ok=False, sink=self.name, external_id=None, delivered=False,
+                # No verdict at all is a batch-level ANOMALY, not a data
+                # rejection - re-offering it next run is the safe reading.
+                outcome="retryable",
                 message=f"Sorento returned no verdict for {ref}.",
             )
         outcome = str(verdict.get("outcome") or "")
         delivered = outcome in _OUTCOME_DELIVERED
         if delivered:
+            # sprint-5/10 (AC-10-70) - carried through verbatim on the
+            # DELIVERED branch only; an unknown code is informational and
+            # never downgrades this outcome.
+            warnings = tuple(str(w) for w in (verdict.get("warnings") or ()))
             return WriteResult(
                 ok=True, sink=self.name, external_id=verdict.get("entity_id"),
-                delivered=True, message=outcome,
+                delivered=True, message=outcome, outcome=outcome, warnings=warnings,
             )
         if outcome == "retryable":
-            # Must not happen for masters (AC-14-24). Loud, not re-queued.
+            if self.entity_type in _DEPENDENT_ENTITIES:
+                # EXPECTED for a product whose category/UOM has not synced yet
+                # (AC-22-23), or for a document referencing a master (customer/
+                # supplier/product/warehouse/sales agent) that has not synced
+                # yet (AC-22-24, Appendix A6 item 3) - stays STAGED and
+                # re-offers on the next run, never quarantined
+                # (``SyncService._auto_push_upserts``).
+                if self.entity_type == ENTITY_PRODUCT:
+                    dependency = "its category or unit of measure"
+                elif self.entity_type == ENTITY_STOCK_BALANCE:
+                    dependency = "its product"
+                elif self.entity_type in (
+                    DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES,
+                ):
+                    dependency = "its product or warehouse"
+                else:
+                    dependency = "a referenced master (customer/supplier/product/warehouse/agent)"
+                return WriteResult(
+                    ok=False, sink=self.name, external_id=None, delivered=False,
+                    outcome=outcome,
+                    message=(
+                        f"Sorento reported '{ref}' retryable - {dependency} has "
+                        "not synced yet. It resolves automatically once that "
+                        "dependency lands."
+                    ),
+                    errors=verdict.get("errors") or None,
+                )
+            # Must not happen for masters with no dependency reference
+            # (AC-14-24). Loud, not re-queued.
             return WriteResult(
                 ok=False, sink=self.name, external_id=None, delivered=False,
+                outcome=outcome,
                 message=(
                     f"Sorento reported '{ref}' retryable - a referenced master is "
-                    "unsynced. This should be unreachable for suppliers/customers; "
+                    "unsynced. This should be unreachable for this entity; "
                     "investigate rather than retry."
                 ),
+                errors=verdict.get("errors") or None,
             )
-        errors = verdict.get("errors") or {}
+        if outcome == "failed":
+            errors = verdict.get("errors") or {}
+            return WriteResult(
+                ok=False, sink=self.name, external_id=None, delivered=False,
+                outcome="failed",
+                message=f"Sorento rejected '{ref}': {json.dumps(errors) if errors else outcome}",
+                errors=errors or None,
+            )
+        #     !!  QUARANTINE ONLY ON THE EXPLICIT "failed" WORD.  !!
+        # A BLANK outcome or a word outside our known vocabulary (S2 review
+        # SHOULD-FIX 9 - a future Sorento outcome we haven't shipped support
+        # for yet, or a malformed record) reads the SAME safe way as no
+        # verdict at all: retryable. Defaulting an unrecognised word to
+        # "failed" would permanently quarantine a record over our own
+        # ignorance of the vocabulary, not proof the DATA was rejected.
         return WriteResult(
             ok=False, sink=self.name, external_id=None, delivered=False,
-            message=f"Sorento rejected '{ref}': {json.dumps(errors) if errors else outcome}",
+            outcome="retryable",
+            message=(
+                f"Sorento returned an unrecognised outcome "
+                f"'{outcome or '(blank)'}' for '{ref}'."
+            ),
         )
 
 
+def _anchor_error(response: httpx.Response) -> Optional[SinkAnchorError]:
+    """A 422 that is a COMPANY-ANCHOR failure → the typed error, else None.
+
+    The body is FLAT (Appendix A6 - ``{"message", "detail": null, "code"}``),
+    deliberately NOT FastAPI's usual ``{"detail": ...}`` wrapper, so it is read
+    at the top level. Anything else with a 422 falls through to the generic
+    batch-level error - never mislabelled as an anchor problem.
+    """
+    try:
+        body = response.json()
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    code = str(body.get("code") or "")
+    if code not in ANCHOR_ERROR_CODES:
+        return None
+    return SinkAnchorError(
+        code, str(body.get("message") or "Sorento could not resolve the company.")
+    )
+
+
+def _unknown_entity_error(response: httpx.Response) -> Optional[SinkUnknownEntity]:
+    """A 404 that is Sorento's ``UNKNOWN_ENTITY`` code (addendum section 5) ->
+    the typed error, else ``None`` (an ordinary 404 falls through to the
+    generic batch-level error)."""
+    try:
+        body = response.json()
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    if str(body.get("code") or "") != "UNKNOWN_ENTITY":
+        return None
+    return SinkUnknownEntity(str(body.get("message") or "Unknown entity."))
+
+
+def _decimalize(value: Any) -> Any:
+    """JSON numbers → ``Decimal`` via ``str()``, recursively.
+
+    Through ``str()`` and never ``Decimal(float)``: a 4-dp quantity round-tripped
+    through binary floating point comes back as 12.340000000000000497379915032,
+    and the diff layer then reports a change that does not exist. Booleans are
+    left alone (``isinstance(True, int)`` is True).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) or isinstance(value, int):
+        return Decimal(str(value))
+    if isinstance(value, list):
+        return [_decimalize(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _decimalize(v) for k, v in value.items()}
+    return value
+
+
 def _retry_after_seconds(response: httpx.Response) -> int:
+    """1..60s, whatever the header says - S5 (review round 2): an
+    uncooperative or misconfigured ``Retry-After`` (Sorento sent 3600 once)
+    must never park a chunk POST for an hour; 60s is already the
+    conservative default below, so capping the header at the same ceiling
+    keeps the ONE bound this method promises."""
     raw = response.headers.get("Retry-After", "")
     try:
-        return max(1, int(float(raw)))
+        return min(max(1, int(float(raw))), 60)
     except (TypeError, ValueError):
         # No/!int header - a conservative default beats hammering.
         return 60
@@ -336,23 +1821,143 @@ def _safe_body(response: httpx.Response) -> str:
         return (response.text or "")[:500]
 
 
+_CONSUMER_SNIPPET_MAX = 300
+_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+
+
+_HTTP_STATUS_RE = re.compile(r"\bHTTP (\d{3})\b")
+
+
+def describe_consumer_failure(
+    exc: BaseException, *, sink: Optional[Any] = None
+) -> Tuple[str, Optional[int], str]:
+    """The operator-facing account of a failed dry run / push:
+    ``(line, status_code, detail)``.
+
+    Shared by ``EtlService.preview_task`` (activation preview -> 502) and
+    ``SyncService``'s approve-gate dry run (-> 502) so the two never word
+    the same failure differently (prod 2026-09-06: a fixed generic sentence
+    left the operator unable to tell a 504 from an unknown SO failure).
+
+    Built from STATUS + captured BODY, never from an error string that might
+    embed a header or URL:
+
+    * a TRANSPORT error (``httpx.HTTPError`` - the sink does not wrap these,
+      so the caller catches them beside ``SorentoSinkError``) ->
+      ``Consumer unreachable: <Class>: <text>``, status ``None``;
+    * a ``SorentoSinkError`` carrying ``status_code`` (any non-200 answer,
+      a 429, an ``UNKNOWN_ENTITY`` 404) -> ``Consumer said: HTTP <n>
+      <captured body>``;
+    * a ``SorentoSinkError`` WITHOUT the attribute but whose text names an
+      ``HTTP <n>`` (an older sink, a test double) -> ``Consumer said: HTTP
+      <n>`` and nothing else - the text is not trusted onto the surface;
+    * a database error (on the exception or anywhere on its cause/context
+      chain) -> ``Consumer error (<Class>, code <c>).`` from
+      ``stored_error_text``, never the driver's message; the full exception
+      is logged and ``detail`` carries the same fixed text;
+    * a ``SorentoSinkError`` with no HTTP answer at all (an unroutable
+      entity, a record without a projection - the sink's own key-free
+      strings) -> ``Consumer error: <text>``.
+
+    ``detail`` is whitespace-collapsed, capped at exactly
+    ``_CONSUMER_SNIPPET_MAX`` characters (after ``_safe_body``'s own 500),
+    scrubbed through the sink's public ``redact`` when it has one (never a
+    private attribute), and any ``scheme://...`` token is replaced - the
+    sink's own strings carry only the request PATH and this keeps a consumer
+    body from re-introducing a URL.
+    """
+    if db_error_in(exc) is not None:
+        logger.warning("consumer step hit a database error", exc_info=exc)
+        line = stored_error_text(exc, "Consumer error")
+        return line, None, line
+    if isinstance(exc, httpx.HTTPError):
+        status: Optional[int] = None
+        raw = f"{type(exc).__name__}: {exc}"
+        prefix = "Consumer unreachable: "
+    else:
+        status = getattr(exc, "status_code", None)
+        body = getattr(exc, "body", None)
+        if status is not None:
+            raw = body or ""
+            prefix = f"Consumer said: HTTP {status} "
+        else:
+            match = _HTTP_STATUS_RE.search(str(exc))
+            if match:
+                status = int(match.group(1))
+                raw = ""
+                prefix = f"Consumer said: HTTP {status} "
+            else:
+                raw = str(exc)
+                prefix = "Consumer error: "
+    detail = " ".join(str(raw).split())
+    redact = getattr(sink, "redact", None)
+    if callable(redact):
+        detail = redact(detail)
+    detail = _URL_RE.sub("[url]", detail)[:_CONSUMER_SNIPPET_MAX]
+    return f"{prefix}{detail}".rstrip(), status, detail
+
+
 def sorento_sink_from_connection(
     config: Dict[str, Any],
     credentials: Dict[str, Any],
     *,
     entity_type: str,
+    company_code: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
+    timeout: Optional[float] = None,
+    # sprint-5/14 (D3) - the doc-feed's own book (a plain passthrough kwarg;
+    # every pre-plan-14 caller omits it, and `SorentoSink.__init__`'s own
+    # `None` default keeps the body byte-identical for them).
+    book: Optional[str] = None,
 ) -> SorentoSink:
     """Build a sink from a ``consumer`` connection's config + DECRYPTED creds.
 
     Credentials arrive already decrypted via ``app/secrets.py`` - this module
     never handles ciphertext. ``apiKey`` is refused if it is the legacy
     ``EXTERNAL_API_KEY`` shape is out of scope here; the operator supplies the
-    integration's own minted key.
+    integration's own minted key. ``timeout`` overrides the LIVE push setting
+    below - SF-1 (sprint-5/08 review round 2): a READ-path advisory probe
+    (``CompanyService.brand_contract_gate``) must never share the push
+    budget (300s, sized for a real ingest batch) with a plain task-view GET.
     """
+    from app.config import settings  # read at CALL time (round 5), never cached
+
     return SorentoSink(
         base_url=str(config.get("baseUrl", "")).strip(),
         api_key=str(credentials.get("apiKey", "")).strip(),
         entity_type=entity_type,
+        # From ``ac_company.sorento_company_code`` - the per-COMPANY anchor
+        # (Appendix A6). Deliberately not read off the connection: one Sorento
+        # connection legitimately serves several AutoCount companies, so binding
+        # the code to the connection would anchor them all to one Sorento
+        # company and silently cross-post their masters.
+        company_code=company_code,
+        # The LIVE setting (round 5), never the class default - an operator
+        # whose Sorento endpoint needs a longer (or shorter) budget retunes
+        # it without a code change. An explicit ``timeout`` (the read-path
+        # probe) always wins.
+        timeout=(
+            timeout if timeout is not None else settings.autocount_sink_timeout_seconds
+        ),
+        # Records per ingest POST, read at CALL time like ``timeout`` (default
+        # 200 since the 2026-09-06 prod 504; ceiling ``SORENTO_MAX_BATCH``).
+        batch_size=settings.autocount_sink_batch_size,
         transport=transport,
+        # AC-02-14 - the connection's own authoritative gate. The integrations
+        # form stores the select's value as the STRING "1" / "2"; "2" (and a
+        # hand-set "2.0"/"2.1") resolves to 2. INGEST-LINE-DROP-GUARD: no
+        # stored value, or one that is not a version ("abc" - the config PATCH
+        # merges verbatim), resolves to contract 2, never 1. Contract 1 strips
+        # product_code from every document line and the CRM drops such lines
+        # silently, so a connection saved before the field existed must not
+        # quietly run at 1. Picking 1 explicitly is still possible; the sink
+        # then refuses documents with lines (see `_refuse_contract_1_line_drop`).
+        contract_version=resolve_contract_version(config.get("sorentoContractVersion")),
+        # feat/sink-concurrency-ui - the connection's own override, else the
+        # platform default resolved lazily inside the sink (see
+        # `SorentoSink._resolve_concurrency`). Passed through verbatim
+        # (raw string or `None`); validity is checked at resolve time, not
+        # here.
+        concurrency_config=config.get(SINK_CONCURRENCY_KEY),
+        book=book,
     )

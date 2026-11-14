@@ -27,6 +27,75 @@
   --input: var(--color-zinc-200);
   --ring: var(--color-zinc-400);
   --radius: 0.5rem;
+
+  /**
+   * Materials. A translucent surface tinted by whatever is behind it, paired with a
+   * blur in the `.material-*` utilities (css/styles.css). `--scrim` is the lightbox
+   * backdrop; the preference blocks raise it and drop the blur.
+   *
+   * Only the steps with a consumer are here: regular = header, thick = sidebar.
+   */
+  --material-regular: color-mix(in oklab, var(--background) 72%, transparent);
+  --material-thick: color-mix(in oklab, var(--background) 88%, transparent);
+  --material-blur: 24px;
+  --material-edge: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --scrim: color-mix(in oklab, black 50%, transparent);
+
+  /**
+   * Named z-scale. Every fixed layer of the shell names its step here instead of
+   * inventing a `z-[N]`, so "what covers what" is answered in one place.
+   *
+   * `--z-sticky-content` is for sticky/pinned cells INSIDE page content (a frozen
+   * DataGrid column, a sticky table header) - it stays below `--z-header` and
+   * `--z-sidebar` on purpose: a fixed shell layer always has to win over a sticky
+   * cell scrolling underneath it.
+   *
+   * `--z-sticky-header` (T2 fix round 2) is the sticky `<thead>` AND the mobile-pinned
+   * HEADER cell inside it - one step above `--z-sticky-content` so a pinned body
+   * column slides UNDER the header when the grid scrolls (both classes shared the
+   * same step before this, so at <=640px the pinned column painted OVER the sticky
+   * header). Pinned BODY cells stay on `--z-sticky-content`.
+   *
+   * `--z-banner` (the impersonation banner) sits ABOVE `--z-modal` on purpose (T1 fix
+   * round 1 finding 2) - PAINT ORDER ONLY: the banner is never covered by an overlay's
+   * scrim, so "Exit impersonation" stays visible even with a dialog/sheet open. It is
+   * NOT a claim of clickability - a Radix Dialog/Sheet/AlertDialog sets
+   * `pointer-events: none` on the body while open, which can still swallow a click on
+   * the banner even though it paints on top (tracked BL-SS-050).
+   */
+  --z-header: 10;
+  --z-sidebar: 20;
+  --z-modal: 50;
+  --z-banner: 60;
+  --z-sticky-content: 5;
+  --z-sticky-header: 6;
+
+  /** Motion. One curve, three steps; every components/ui transition uses them. */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+
+  /** Bounded DataGrid scroller height (toolbar + header + pager). consumer = T2
+      DataGrid scroller. */
+  --grid-max-h: calc(100dvh - 17rem);
+
+  /**
+   * Mobile-pinned DataGrid BODY cell tints, hover/selected/striped (T2 fix round 3).
+   * The row itself paints these states as translucent (`bg-muted/40` etc, so it
+   * blends into whatever ANCESTOR surface it sits on - a card, a dialog). A pinned
+   * cell has no such ancestor to blend with at these screen pixels - the columns
+   * scrolled underneath it are unrelated content, not a backdrop - so it must be
+   * OPAQUE. `color-mix` bakes the same alpha math down against `--background`
+   * (the pinned cell's own resting colour) into a solid result, preserving the
+   * intended visual WEIGHT (selected reads slightly stronger than hover) without
+   * leaving anything to bleed through. One declaration - `--muted`/`--background`
+   * already flip under `.dark`, so this recomputes correctly per theme with no
+   * separate `.dark` entry needed (same as `--material-blur` above).
+   */
+  --pinned-cell-hover: color-mix(in oklab, var(--muted) 40%, var(--background));
+  --pinned-cell-selected: color-mix(in oklab, var(--muted) 50%, var(--background));
+  --pinned-cell-striped: color-mix(in oklab, var(--muted) 90%, var(--background));
 }
 
 .dark {
@@ -54,6 +123,29 @@
   --border: var(--color-zinc-800);
   --input: var(--color-zinc-800);
   --ring: var(--color-zinc-600);
+
+  --material-regular: color-mix(in oklab, var(--background) 76%, transparent);
+  --material-thick: color-mix(in oklab, var(--background) 90%, transparent);
+  /* --material-blur is not re-declared here - :root's 24px is identical and already
+     cascades (T1 fix round 3 finding 10). */
+  --material-edge: color-mix(in oklab, var(--foreground) 12%, transparent);
+  --scrim: color-mix(in oklab, black 62%, transparent);
+}
+
+/* prefers-reduced-motion collapses the motion tokens THEMSELVES to 1ms - every
+   PRESENT and FUTURE consumer that reads duration-(--duration-fast/base/slow)
+   (switch, accordion, progress, the sidebar width transition, ...) stops travelling
+   automatically, with no selector list to keep in sync as new components adopt the
+   tokens. css/styles.css's reduced-motion block (@layer base) covers what this can't
+   reach - Radix's animate-in/out keyframe utilities, which read --tw-enter-* vars,
+   not a duration token (T1 fix round 1 finding 4). */
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  .dark {
+    --duration-fast: 1ms;
+    --duration-base: 1ms;
+    --duration-slow: 1ms;
+  }
 }
 
 /** Theme Setup **/
@@ -97,11 +189,40 @@
   --radius-sm: calc(var(--radius) - 4px);
 }
 
-/** Custom Font Size **/
+/**
+ * Motion defaults + type scale.
+ *
+ * `--default-transition-*` are the Tailwind v4 theme keys every bare `transition`/
+ * `transition-colors`/etc utility resolves against when it carries no explicit
+ * `duration-*`/`ease-*` - so a component that never overrides them already animates
+ * on the house curve. Tracking and leading are baked per step so a heading never
+ * needs a hand-tuned `tracking-tight` beside it: large text tightens, small text
+ * opens up. `--font-sans` (Inter) / `--font-heading` (Poppins) stay in
+ * foundryx-tokens.css (brand values win there).
+ */
 @theme {
+  --default-transition-timing-function: var(--ease-standard);
+  --default-transition-duration: var(--duration-fast);
+
   --text-2sm: 0.8125rem;
   --text-2sm--line-height: calc(1.075 / 0.8125);
+  --text-2sm--letter-spacing: 0em;
 
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: calc(0.825 / 0.6875);
+  --text-2xs--letter-spacing: 0.02em;
+
+  --text-2xl--letter-spacing: -0.02em;
+  --text-2xl--line-height: 1.15;
+
+  --text-xl--letter-spacing: -0.015em;
+  --text-xl--line-height: 1.2;
+
+  --text-lg--letter-spacing: -0.01em;
+  --text-lg--line-height: 1.3;
+
+  --text-base--letter-spacing: 0em;
+  --text-base--line-height: 1.5;
+
+  --text-xs--letter-spacing: 0.01em;
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { LoaderCircleIcon, Plus, X } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -42,10 +42,17 @@ export interface BrIdeasTabProps {
  * bulk action) are preserved and gated by `.manage`; linking an idea mid-session
  * re-seeds the grill's source context next turn (AC-BI-33). Data via `useBrIdeas`
  * (UI → hook → service). */
+/** Grace-window action key encodes the composite (brId, ideaId) link row -
+ * the deferred-actions registry's `entity_id` is a bare string column and
+ * this link has no id of its own the frontend row type carries (fix round
+ * 1, T5, item 15). */
+const getUnlinkEntityId = (brId: string) => (row: Idea) => `${brId}:${row.id}`;
+
 export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasTabProps) {
   const { ideas } = useBrIdeas(brId, reloadToken);
   const { can } = useCan();
   const canManage = can('ideation.business_requirements.manage');
+  const unlinkEntityId = useMemo(() => getUnlinkEntityId(brId), [brId]);
 
   const config = useMemo<ResourceListConfig<Idea>>(() => {
     const rows = ideas ?? [];
@@ -58,18 +65,13 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
             icon: X,
             tone: 'destructive',
             surfaces: { row: true, bulk: true },
-            confirm: {
-              title: 'Unlink idea',
-              description:
-                'This removes the idea from this business requirement. The idea itself is kept.',
-              confirmLabel: 'Unlink',
-            },
-            run: async (selected) => {
-              for (const r of selected) {
-                await businessRequirementService.unlinkIdea(brId, r.id);
-              }
-              toast.success(selected.length === 1 ? 'Idea unlinked.' : 'Ideas unlinked.');
-              onChanged();
+            // Grace-window deferred action (sprint-4/23, T5 fix round 1,
+            // item 15) - no confirm, no `run` (the registered
+            // `ideation_business_requirements.unlink_idea` handler commits
+            // it server-side).
+            deferred: {
+              actionKey: 'ideation_business_requirements.unlink_idea',
+              entityType: 'ideation_br_idea_link',
             },
           },
         ]
@@ -78,6 +80,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
     const columns: ColumnDef<Idea>[] = [
       {
         id: 'problem',
+        meta: { headerTitle: 'Idea' },
         header: () => 'Idea',
         cell: ({ row }) => <ClampedText text={row.original.problem} lines={2} />,
         size: 360,
@@ -85,6 +88,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
       },
       {
         id: 'submitter',
+        meta: { headerTitle: 'Submitter' },
         header: () => 'Submitter',
         cell: ({ row }) => (
           <span className="text-muted-foreground">{row.original.submitterName}</span>
@@ -94,6 +98,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
       },
       {
         id: 'product',
+        meta: { headerTitle: 'Product' },
         header: () => 'Product',
         cell: ({ row }) => <Badge variant="secondary">{row.original.productName}</Badge>,
         size: 150,
@@ -113,6 +118,8 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
               rows={[row.original]}
               runtime={{ reload: table.options.meta?.reload ?? (() => {}) }}
               surface="row"
+              getEntityId={unlinkEntityId}
+              onDeferredCommitted={onChanged}
             />
           </div>
         ),
@@ -164,8 +171,9 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
         { id: 'submitter', label: 'Submitter' },
       ],
       actions,
+      getEntityId: unlinkEntityId,
     };
-  }, [ideas, canManage, brId, onChanged]);
+  }, [ideas, canManage, unlinkEntityId, onChanged]);
 
   return (
     <Card>
@@ -187,7 +195,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
           <p className="py-8 text-center text-sm text-muted-foreground">No linked ideas.</p>
         ) : (
           // Remount on reload so the freshly-fetched linked set drives the list.
-          <ResourceList key={reloadToken} config={config} />
+          <ResourceList key={reloadToken} config={config} hideHeader />
         )}
       </CardContent>
     </Card>
